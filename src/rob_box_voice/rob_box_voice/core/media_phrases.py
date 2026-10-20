@@ -20,6 +20,9 @@ TEMP(ADR-0148): проверка ответа LLM после хода — вре
 имени без запуска закрывает :func:`.music_turn.turn_reply` по словам человека. Гард остаётся только для хода БЕЗ
 такой просьбы (вопрос, болтовня, «сыграй что-нибудь грустное»), где модель сама сказала «ставлю…» с ``tools=[]``:
 узнать это можно лишь по тексту ответа. Снять его — когда такие ходы закроет структура (#3461).
+
+Тексты фраз — в одной таблице ``rob_box_dialog/phrases/ru.yaml`` (ключи ``music.*``, ADR-0150 PR-1); здесь —
+только сборка фразы по результату тула и событию плеера.
 """
 
 from __future__ import annotations
@@ -27,24 +30,26 @@ from __future__ import annotations
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.music_tools import MUSIC_LAUNCH_TOOLS
+from rob_box_dialog.phrases import text as _phrase
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
 
 
 def dj_started_text(persona: str, theme: str) -> str:
     """Фраза после ``started`` трека 1 сета (шаблон кода, I5)."""
-    about = f" Тема — {theme}." if theme else ""  # «тема — X»: падеж слов человека не ломается
-    return f"Я {persona}, включаю сет.{about}" if persona else f"Включаю диджей-сет.{about}"
+    about = " " + _phrase("music.theme", theme=theme) if theme else ""  # «тема — X»: падеж слов человека не ломается
+    head = _phrase("music.dj_started_persona", persona=persona) if persona else _phrase("music.dj_started")
+    return head + about
 
 
 def request_ok_text(name: str) -> str:
     """Фраза после ``started`` заказа «поставь клубный трек» (``request_music``)."""
-    return f"Включаю {name}." if name else "Включаю музыку."
+    return _phrase("music.request_ok_named", name=name) if name else _phrase("music.request_ok")
 
 
 def play_ok_text(title: str) -> str:
     """Короткая фраза после успешного заказа мелодии по имени."""
-    return f"Ставлю «{title}»."
+    return _phrase("music.play_ok", title=title)
 
 
 def piece_text(played: Mapping[str, Any]) -> str:
@@ -60,10 +65,10 @@ def piece_text(played: Mapping[str, Any]) -> str:
         title = f"{title}, {composer}"
     asked = str(played.get("replacement_for") or "")
     if asked:
-        return f"«{asked[:1].upper() + asked[1:]}» не нашёл. Ставлю ближайшее: {title}."
+        return _phrase("music.piece_replacement", asked=asked[:1].upper() + asked[1:], title=title)
     if played.get("source") == "rtttl":
-        return f"Ставлю {title} — мелодией, нот для полной аранжировки нет."
-    return f"Ставлю {title}."
+        return _phrase("music.piece_melody", title=title)
+    return _phrase("music.piece", title=title)
 
 
 def launch_text(phrase: str, data: Mapping[str, Any]) -> str:
@@ -88,11 +93,11 @@ def instrument_text(data: Mapping[str, Any]) -> str:
     if asked is None:
         return ""
     if played is asked:
-        return f"Играю на {asked.prepositional}."
+        return _phrase("music.instrument_played", played=asked.prepositional)
     if played is None:
-        return f"Для {asked.genitive} у меня нет пака — играю своим звуком."
+        return _phrase("music.instrument_no_pack", asked=asked.genitive)
     others = " или ".join(f"на {kn.INSTRUMENTS[k].prepositional}" for k in neighbors(str(data["instrument"])))
-    return f"Для {asked.genitive} у меня нет пака, могу сыграть {others} — играю на {played.prepositional}."
+    return _phrase("music.instrument_neighbors", asked=asked.genitive, others=others, played=played.prepositional)
 
 
 def with_instrument(phrase: str, data: Mapping[str, Any]) -> str:
@@ -101,17 +106,12 @@ def with_instrument(phrase: str, data: Mapping[str, Any]) -> str:
 
 
 #: Ответ на «что играет?», когда дека пуста (роутер и ``get_music_state`` — одна фраза, #3613).
-NOTHING_PLAYING_TEXT = "Сейчас ничего не играет."
+NOTHING_PLAYING_TEXT = _phrase("music.nothing_playing")
 #: Трек поставлен на деку, а ``started`` ещё не пришло: о звуке не говорим (A14).
-PENDING_TEXT = "Музыку поставил, она ещё не заиграла."
+PENDING_TEXT = _phrase("music.pending")
 
 #: Источник звучащего трека (``rob_box_mcp_tools.engine.tools_v2.SOURCE_*``) — словами для фразы «что играет».
-SOURCE_WORDS: Mapping[str, str] = {
-    "synth": "трек из синтов, его собрал код",
-    "piece": "пьеса по нотам партитуры",
-    "melody": "мелодия из архива, без полной аранжировки",
-    "generated": "сгенерированный трек из библиотеки",
-}
+SOURCE_WORDS: Mapping[str, str] = {k: _phrase(f"music.source.{k}") for k in ("synth", "piece", "melody", "generated")}
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -140,7 +140,7 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     if not facts.get("playing"):
         return PENDING_TEXT if facts.get("pending") else NOTHING_PLAYING_TEXT
     name = str(facts.get("name") or facts.get("title") or "")
-    head = f"Сейчас играет «{name}»" if name else "Сейчас играет музыка"
+    head = _phrase("music.now_playing_named", name=name) if name else _phrase("music.now_playing")
     if name and facts.get("composer"):  # автор — за кавычками, как во фразе запуска (piece_text)
         head += f", {facts['composer']}"
     about = _track_about(facts)
@@ -152,9 +152,9 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
 
 #: Сколько названий называть во фразе списка библиотеки (остальные — числом).
 LIBRARY_LIST_NAMES = 5
-LIBRARY_EMPTY_TEXT = "В библиотеке сгенерированной музыки пока пусто."
-LIBRARY_NO_TRACK_TEXT = "Не знаю, о каком треке речь: ничего из библиотеки ещё не играло."
-LIBRARY_FAIL_TEXT = "С библиотекой музыки не вышло."
+LIBRARY_EMPTY_TEXT = _phrase("music.library_empty")
+LIBRARY_NO_TRACK_TEXT = _phrase("music.library_no_track")
+LIBRARY_FAIL_TEXT = _phrase("music.library_fail")
 
 
 def library_list_text(titles: Sequence[str], total: int) -> str:
@@ -163,26 +163,27 @@ def library_list_text(titles: Sequence[str], total: int) -> str:
     if total <= 0:
         return LIBRARY_EMPTY_TEXT
     names = list(dict.fromkeys(t for t in titles if t))[:LIBRARY_LIST_NAMES]  # варианты одного заказа — одно имя
-    head = f"В библиотеке {total} {_plural(total, 'трек', 'трека', 'треков')}"
-    return f"{head}, например: {', '.join('«' + n + '»' for n in names)}." if names else head + "."
+    head = _phrase("music.library_list", total=total, tracks=_plural(total, "трек", "трека", "треков"))
+    examples = ", ".join("«" + n + "»" for n in names)
+    return head + _phrase("music.library_examples", names=examples) if names else head + "."
 
 
 def library_rate_text(title: str, liked: bool) -> str:
     """Фраза после оценки трека кэша: запись в БД уже сделана (``music_library(rate)``)."""
     name = f"«{title}»" if title else "этот трек"
-    return f"Запомнил: {name} нравится." if liked else f"Запомнил: {name} не нравится, больше не включу."
+    return _phrase("music.library_liked" if liked else "music.library_disliked", name=name)
 
 
 def library_delete_text(title: str) -> str:
     """Фраза после удаления трека из библиотеки."""
-    return f"Удалил {'«' + title + '»' if title else 'трек'} из библиотеки."
+    return _phrase("music.library_deleted", name=f"«{title}»" if title else "трек")
 
 
 def library_play_text(title: str, seconds: float) -> str:
     """Фраза после ``started`` трека из библиотеки генераций (``play_library_track``, ADR-0158 PR-2): название и
     длина — из кэша и файла, не от LLM."""
     name = f"«{title}»" if title else "трек"
-    return f"Включаю {name} из библиотеки — {duration_text(seconds)}."
+    return _phrase("music.library_play", name=name, duration=duration_text(seconds))
 
 
 def _track_about(facts: Mapping[str, Any]) -> list:
@@ -199,21 +200,21 @@ def _track_about(facts: Mapping[str, Any]) -> list:
 
 def _track_time(facts: Mapping[str, Any]) -> str:
     """Сколько трек играет и сколько осталось (пьеса — один проход формы; клубный трек — по кругу до стопа)."""
-    when = f"Играет уже {duration_text(float(facts['elapsed_s']), accusative=True)}"
+    when = _phrase("music.playing_for", elapsed=duration_text(float(facts["elapsed_s"]), accusative=True))
     if facts.get("remaining_s") is not None:
-        return when + f", осталось {duration_text(float(facts['remaining_s']))}."
-    return when + " и повторяется, пока не скажешь «стоп»."
+        return when + _phrase("music.remaining", remaining=duration_text(float(facts["remaining_s"])))
+    return when + _phrase("music.repeats")
 
 
 #: ADR-0149 PR-6: плеер отказал (``rejected``), ``started`` не пришло или тул не прошёл.
-DJ_FAIL_TEXT = "Не получилось включить диджей-сет — музыка не заиграла."
-REQUEST_FAIL_TEXT = "Не получилось включить музыку."
+DJ_FAIL_TEXT = _phrase("music.dj_fail")
+REQUEST_FAIL_TEXT = _phrase("music.request_fail")
 
 #: Код отказа ``request_music`` (``rob_box_mcp_tools.engine.tools_v2.SET_PLAYING``): сет запущен в этом же
 #: ходе и играет, заказ его не снял. Равенство кодов держит ``test_music_turn_set_vs_request``.
 SET_PLAYING_REASON = "set_playing"
 #: Что сказать после фразы о сете, когда заказ поверх него отклонён (:data:`SET_PLAYING_REASON`).
-SET_KEPT_TEXT = "Другую музыку поверх сета не ставлю."
+SET_KEPT_TEXT = _phrase("music.set_kept")
 
 #: Код отказа ``request_music`` на «продолжай играть Вагнера» (#3599): всё, что есть у этого автора, уже играло.
 #: Текст отказа — ``"<код>: <фраза>"`` (:func:`no_more_text`, :func:`no_more_phrase`): роутер говорит фразу кода как есть.
@@ -223,16 +224,16 @@ NO_MORE_REASON = "no_more"
 def no_more_text(asked: str, repeat: str) -> str:
     """Фраза кода, когда следующей пьесы автора нет: что просили (слова человека) и что можно повторить. Падеж слов
     человека не склоняется — название заказа в кавычках."""
-    return (f"По запросу «{asked}» новых пьес больше нет, всё уже играло. "
-            + (f"Могу повторить «{repeat}» или сыграть что-то другое." if repeat else "Могу сыграть что-то другое."))
+    tail = _phrase("music.no_more_repeat", repeat=repeat) if repeat else _phrase("music.no_more_other")
+    return _phrase("music.no_more", asked=asked) + " " + tail
 
 
 def composer_missing_text(composer: str) -> str:
     """Фраза кода, когда у названного композитора нет ни одной пьесы (#3604): чужое вместо него не играет. Называет
     автора, а не цитирует реплику (#3608: в реплике бывают слова просьбы и мат); имя в кавычках, не склоняется."""
     name = composer.strip()
-    who = f"автора «{name[:1].upper() + name[1:]}»" if name else "названного автора"
-    return f"Пьес {who} у меня не нашлось, чужое вместо него не ставлю. Могу сыграть что-то другое."
+    who = _phrase("music.author_named", name=name[:1].upper() + name[1:]) if name else _phrase("music.author_unnamed")
+    return _phrase("music.composer_missing", who=who)
 
 
 #: Код отказа ``request_music``: назван композитор, а его пьес нет (#3604). Текст отказа - ``"<код>: <фраза>"``
@@ -298,11 +299,11 @@ LAUNCH_PHRASE_STEMS: Tuple[str, ...] = (
 #: Что сказать вместо фразы запуска без тула. Без глаголов действия (их ловят гарды #2549/#2559) и с
 #: подсказкой, которую исполняет роутер без LLM.
 #: Состояние плеера не утверждает: прошлый сет может играть (06.10 15:30 UTC), нового в этом ходе не было.
-NOT_LAUNCHED_TEXT = "Новый сет я не начинал. Скажи: включи диджей сет на тему, и назови тему."
+NOT_LAUNCHED_TEXT = _phrase("music.not_launched")
 
 
 #: Просили пьесу/мелодию по имени, а в ходе ничего не заиграло (запуска нет, модель могла сказать «ставлю…»).
-NOT_PLAYED_TEXT = "Ничего не заиграло — я мелодию не запускал. Назови, что сыграть, ещё раз."
+NOT_PLAYED_TEXT = _phrase("music.not_played")
 
 
 def _norm(text: str) -> str:

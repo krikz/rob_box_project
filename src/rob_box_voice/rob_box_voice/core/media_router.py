@@ -46,6 +46,7 @@ from rob_box_harness.decision import (
     DecisionProvider,
     DeterministicProvider,
 )
+from rob_box_dialog.phrases import text as _phrase
 from rob_box_music.dj_line import now_playing_text, plain_fold, when_text
 
 from .media_command_grammar import (
@@ -130,12 +131,13 @@ class MediaPlan:
     confirm_started: bool = False
 
 
-VOLUME_FAIL_TEXT = "Не получилось поменять громкость музыки."
-STOP_OK_TEXT = "Выключил музыку."
-STOP_IDLE_TEXT = "Сейчас ничего не играет — на всякий случай всё остановил."
-STOP_FAIL_TEXT = "Не получилось выключить музыку."
+#: Тексты — ``rob_box_dialog/phrases/ru.yaml`` (ключи ``music.*``, ADR-0150 PR-1).
+VOLUME_FAIL_TEXT = _phrase("music.volume_fail")
+STOP_OK_TEXT = _phrase("music.stop_ok")
+STOP_IDLE_TEXT = _phrase("music.stop_idle")
+STOP_FAIL_TEXT = _phrase("music.stop_fail")
 #: Тул ответил, а ``started`` так и не пришло: об успехе не говорим (A14).
-NOT_STARTED_TEXT = "Музыка пока не заиграла."
+NOT_STARTED_TEXT = _phrase("music.not_started")
 
 #: Имена тулов движка v2 (``rob_box_mcp_tools.engine.tools_v2``).
 DJ_SET_TOOL = "dj_set"
@@ -144,9 +146,9 @@ REQUEST_MUSIC_TOOL = "request_music"
 GENERATE_MUSIC_TOOL = "generate_music"
 
 _VOLUME_ACTIONS: Mapping[MediaIntent, Tuple[str, str]] = {
-    MediaIntent.VOLUME_UP: ("louder", "Сделал музыку громче."),
-    MediaIntent.VOLUME_DOWN: ("quieter", "Сделал музыку тише."),
-    MediaIntent.VOLUME_MAX: ("max", "Музыка на максимуме."),
+    MediaIntent.VOLUME_UP: ("louder", _phrase("music.volume.louder")),
+    MediaIntent.VOLUME_DOWN: ("quieter", _phrase("music.volume.quieter")),
+    MediaIntent.VOLUME_MAX: ("max", _phrase("music.volume.max")),
 }
 
 

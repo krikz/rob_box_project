@@ -137,3 +137,50 @@ def test_session_budgets():
     assert kn.SILENCE_TTL_S == 600
     assert kn.IDENTITY_TTL_S == 15
     assert set(kn.SCENE_KINDS) == {"Silence", "Persona", "DJ", "OperatorHold", "Identity"}
+
+
+def test_reflexes_use_known_scenes_ring_modes_and_earcons():
+    known = set(_literal(REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "animations.py",
+                         "KNOWN_ANIMATIONS"))
+    scenes = known | set(kn.LAB_SCENES)
+    for stage, reflex in kn.REFLEXES.items():
+        assert set(reflex.face) <= scenes, stage
+        assert reflex.ring is None or reflex.ring in kn.RING_MODES, stage
+        assert reflex.earcon is None or reflex.earcon in kn.EARCONS, stage
+    for faces in kn.EXECUTING_FACE.values():
+        assert set(faces) <= scenes
+    assert {scene for _, scene in kn.MUSIC_SCENE_BPM} <= scenes
+    assert set(kn.TURN_STAGES) <= set(kn.REFLEXES)
+    assert set(kn.EXECUTING_FACE) <= set(kn.ACTION_CLASSES)
+    assert kn.REFLEXES["addressed"].earcon == "heard" and kn.REFLEXES["addressed"].deadline_ms == 300
+    assert set(kn.TOOL_PHRASES) <= set(kn.TOOL_CLASSES)
+
+
+def test_calendar_themes_exist_in_rear_lights():
+    themes = set(_literal(REPO_ROOT / "tools" / "led_face_lab" / "rear.py", "THEMES"))
+    for theme in kn.CALENDAR:
+        assert theme.rear in themes, theme
+        assert 1 <= theme.month <= 12 and 1 <= theme.day <= 31
+        assert theme.scene is None or theme.scene in kn.LAB_SCENES
+
+
+def test_composition_covers_every_pair_with_known_policy():
+    pairs = {(n, b) for n in kn.COMPOSITION_NEW for b in kn.COMPOSITION_BUSY}
+    assert set(kn.COMPOSITION) == pairs
+    for pair, rule in kn.COMPOSITION.items():
+        assert rule.policy in kn.POLICIES, pair
+        assert rule.boundary is None or rule.boundary in kn.BOUNDARIES, pair
+        assert (rule.policy == "REJECT") == (rule.ask is not None), pair
+
+
+@pytest.mark.parametrize("pair, policy, boundary", [
+    (("speech", "speech"), "MERGE", "segment"),        # О7: речь во время речи — на границе сегмента
+    (("perform", "track"), "REJECT", None),            # О9 (б): спросить, а не вытеснить трек молча
+    (("music", "perform"), "REPLACE", "bar"),          # «добавь бит во время рэпа» — речь не рвётся
+    (("motion", "track"), "MERGE", None),              # «направо» во время песни — параллельно
+    (("halt", "motion"), "REPLACE", "now"),            # «стой» — сразу
+    (("sfx", "sfx"), "APPEND", "block"),
+])
+def test_composition_reference_cells(pair, policy, boundary):
+    rule = kn.COMPOSITION[pair]
+    assert (rule.policy, rule.boundary) == (policy, boundary)
