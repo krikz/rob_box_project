@@ -57,11 +57,16 @@ dialogue_node:
     #  well-known defaults из _LLM_PROVIDER_REGISTRY в dialogue_node.py)
     # ═══════════════════════════════════════════════════════════════
 
-    # MiniMax (primary — M3, vision-capable, tools, streaming)
+    # MiniMax (primary — vision-capable, tools, streaming).
+    # Модель здесь НЕ задаётся: ``minimax.model`` ROS-параметр объявлен, но
+    # провайдер строит каталог (``assembly.build_agent`` → ``build_provider``)
+    # и берёт имя из ``rob_box_llm.providers.minimax.MiniMaxProvider.DEFAULT_MODEL``
+    # — единственная точка (сейчас MiniMax-M3; M3.1-Flash адаптер умеет, но не
+    # включён — решение Шифу 20.10, см. issue #3670). Строка ``model:`` тут
+    # раньше была мёртвой и врала, что смена модели — правка yaml.
     minimax:
       api_key: ""                  # MINIMAX_API_KEY env (или явно)
       base_url: "https://api.minimax.io/v1"
-      model: "MiniMax-M3"
       temperature: 0.7
       max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0

@@ -46,7 +46,28 @@ import urllib.request
 from typing import Any
 
 BASE_URL = "https://api.minimax.io/v1"
-MODEL = "MiniMax-M3"
+
+
+def _model() -> str:
+    """``PROBE_MODEL`` из окружения, иначе модель робота из кода (одна точка — ``DEFAULT_MODEL``).
+
+    Был ``"MiniMax-M3"`` намертво: после смены модели робота проба мерила бы не
+    ту модель. ADR-0143 снят с M3; на MiniMax-M3.1-Flash одна проба 20.10
+    (minimax_model_compat_probe.py, случай c3, ``PROBE_MODEL=MiniMax-M3.1-Flash``)
+    дала для ``required`` HTTP 200 без ``tool_calls`` — как у M3, но это три
+    запроса, не замер.
+    """
+    explicit = os.environ.get("PROBE_MODEL", "").strip()
+    if explicit:
+        return explicit
+    try:
+        from rob_box_llm.providers.minimax import MiniMaxProvider
+    except ImportError:
+        sys.exit("нет rob_box_llm в окружении: задай PROBE_MODEL=<модель> или запусти в образе voice-assistant")
+    return MiniMaxProvider.DEFAULT_MODEL
+
+
+MODEL = _model()
 API_KEY_ENV = "MINIMAX_API_KEY"
 REQUESTS_PER_VARIANT = 3
 PROMPT = "привет, как дела?"
