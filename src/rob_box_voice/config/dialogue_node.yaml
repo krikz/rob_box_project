@@ -63,7 +63,6 @@ dialogue_node:
     # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
     # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
     max_tokens: 3000
-    agent_max_turns: 20
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
     # MAP) обрабатывает command_node, dialogue_node НЕ дублирует их через
@@ -81,7 +80,6 @@ dialogue_node:
     # new_session_phrases:
     # - новая сессия
     # - сбрось всё
-    llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true
     # handle_navigation / handle_music — фасады, удалённые вместе со

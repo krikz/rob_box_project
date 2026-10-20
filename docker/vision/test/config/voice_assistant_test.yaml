@@ -39,7 +39,6 @@
     max_history_messages: 6
     history_window_tokens: 1000
 
-    llm_timeout_sec: 30.0
     max_iterations: 3
 
     # Не хранить вызовы memory-тулов в истории диалога.

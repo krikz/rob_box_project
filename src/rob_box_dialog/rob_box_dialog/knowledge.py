@@ -211,11 +211,18 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
 })
+#: Виды провайдеров (``ProviderState.kind``, ADR §8): ``music_gen`` - генерация музыки (KIE/Suno, ADR-0158).
+PROVIDER_KINDS: Tuple[str, ...] = ("llm", "stt", "tts", "music_gen")
+#: Классы здоровья провайдера (``ProviderState.health``). Единственная таблица: ``degraded`` - ещё пробуем (лимит
+#: частоты), остальные - провайдер пропускаем; причина (quota/network/timeout/auth) - класс, а не подстрока ответа.
+PROVIDER_HEALTH: Tuple[str, ...] = ("ok", "degraded", "quota", "network", "timeout", "auth", "down")
+#: Классы здоровья, при которых провайдер ещё годится в цепочку.
+PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded")
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
-    "provider.switched",
+    "provider.switched", "provider.no_fallback",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
 )

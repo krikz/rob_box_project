@@ -76,6 +76,7 @@ from rob_box_llm.errors import (
     CapabilityUnavailableError,
     ContentFilterError,
     ProviderError,
+    QuotaExhaustedError,
     RateLimitError,
     TimeoutError,
 )
@@ -184,6 +185,21 @@ class FirstChunkTimeoutError(TimeoutError):
     (сравним с бюджетом фразы STT #2767 — 20 с) уйдёт на ожидание
     вместо фолбека на следующий провайдер.
     """
+
+
+#: Подстроки ответа MiniMax «кончилась квота/баланс» (длинное окно, НЕ секундный burst): ``2056`` - Token Plan
+#: usage limit, ``1008`` - insufficient balance. Единственное место, где эти коды известны (ADR-0150 §8): наружу
+#: уходит класс ``QuotaExhaustedError``.
+MINIMAX_QUOTA_HINTS: tuple[str, ...] = ("2056", "1008", "token plan")
+
+
+def _classify_quota(exc: BaseException) -> BaseException:
+    """429 MiniMax с кодом квоты -> ``QuotaExhaustedError`` (остальное - как есть)."""
+    if isinstance(exc, RateLimitError) and not isinstance(exc, QuotaExhaustedError):
+        text = str(exc).lower()
+        if any(hint in text for hint in MINIMAX_QUOTA_HINTS):
+            return QuotaExhaustedError(str(exc), provider=getattr(exc, "provider", None) or "minimax")
+    return exc
 
 
 def _not_worth_retrying(exc: BaseException) -> bool:
@@ -624,13 +640,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # 🔴 FIX (issue #1082): quota-ошибка MiniMax (2056/1008) — не
                 # транзиент, ретраить бессмысленно; сразу в fallback-цепочку.
                 # Issue #2939: молчащий провайдер — тоже.
+                exc = _classify_quota(exc)
                 if _not_worth_retrying(exc):
                     _log.warning(
                         "%s (stream) — не ретраим, "
                         "передаём в fallback-цепочку",
                         exc,
                     )
-                    raise
+                    raise exc
                 # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
                 # (НЕ quota) — N×429 подряд (N≥3) → сдаёмся и передаём
                 # управление fallback-цепочке на этот turn (по аналогии с
@@ -722,13 +739,14 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
                 # робот ждал 15-19с на трёх попытках, потом всё равно
                 # падал на deepseek. Quota-ошибка → сразу наружу, чтобы
                 # health-aware fallback переключил провайдера.
+                exc = _classify_quota(exc)
                 if _not_worth_retrying(exc):
                     _log.warning(
                         "%s — не ретраим, "
                         "передаём в fallback-цепочку",
                         exc,
                     )
-                    raise
+                    raise exc
                 # 🔴 FIX (issue #1082 follow-up): per-request 429 rate-limit
                 # (НЕ quota) — N×429 подряд (N≥3) значит, что MiniMax
                 # залимитил нас на этом окне; ретраить дальше бессмысленно

@@ -229,7 +229,7 @@ except ImportError:  # pragma: no cover — only triggered if rob_box_llm not bu
     MiniMaxTTSRateLimitError = Exception  # type: ignore[assignment,misc]
 
 # Issue #2702 — общий health-кэш LLM-провайдеров (rob_box_harness.health).
-# MiniMax Token Plan общий для чата (LLM) и синтеза речи (T2A): если
+# тариф MiniMax общий для чата (LLM) и синтеза речи (T2A): если
 # dialogue_node/supervisor уже узнали «minimax unavailable (quota)»,
 # tts_node не должен повторно платить тем же честным HTTP-таймаутом —
 # он должен УВИДЕТЬ то же самое состояние и сразу пойти к следующему
@@ -670,7 +670,7 @@ class TTSNode(Node):
         # Пустой список → выводится из ``provider`` (см. _chain_from_provider).
         # Silero всегда последний в цепочке (офлайн fallback).
         self.declare_parameter("provider_chain", [])
-        # TTL кэша «мёртвых» провайдеров (сек): квота/auth (2056 Token Plan)
+        # TTL кэша «мёртвых» провайдеров (сек): квота/auth (квота)
         # → длинный TTL, transient (сеть/timeout) → короткий. Пока провайдер
         # в кэше — не долбим его на каждый ход (см. _mark_provider_dead).
         self.declare_parameter("provider_dead_ttl_s", 300.0)
@@ -678,7 +678,7 @@ class TTSNode(Node):
         # Issue #2702 — путь к ОБЩЕМУ с LLM-стороной health-кэшу
         # (rob_box_harness.health.HealthCache). Совпадает по умолчанию с
         # dialogue_node.health_cache_path — один файл на машину, один
-        # источник правды про MiniMax (Token Plan общий для LLM и T2A).
+        # источник правды про MiniMax (тариф общий для LLM и T2A).
         # Пустая строка отключает общий кэш (узел живёт только своим
         # локальным ``_provider_dead_until``, как до этого issue).
         self.declare_parameter("health_cache_path", "~/.rob_box/llm_health.json")
@@ -3774,7 +3774,7 @@ class TTSNode(Node):
         """
         # Issue #2702 — общий health-кэш (ключ провайдера "minimax" совпадает
         # с тем, что использует LLM-сторона в HealthAwareFallbackLLM/
-        # dialogue_node — Token Plan общий). Провайдеры, помеченные
+        # dialogue_node — тариф общий). Провайдеры, помеченные
         # unavailable ОТТУДА, тоже пропускаются здесь (см. _provider_is_dead);
         # а падения minimax отсюда зеркалятся туда (см. _mark_provider_dead).
         self._shared_health_cache = TTSNode._build_shared_health_cache(
@@ -3792,12 +3792,12 @@ class TTSNode(Node):
     def _provider_is_dead(self, provider_name: str) -> bool:
         """True, если провайдер лежит в кэше «мёртвых» (TTL не истёк).
 
-        Кэш «мёртвых» (как в LLM-health): если MiniMax ответил квотой 2056
+        Кэш «мёртвых» (как в LLM-health): если MiniMax ответил квотой
         (или сеть/таймаут), не долбим его на каждый ход — пропускаем до
         истечения TTL, затем пробуем снова (провайдер мог «ожить»).
 
         Issue #2702 — MiniMax дополнительно сверяется с ОБЩИМ health-кэшем
-        (``_shared_health_cache``): Token Plan общий для LLM и T2A, поэтому
+        (``_shared_health_cache``): тариф общий для LLM и T2A, поэтому
         если dialogue_node/supervisor уже увидели quota-отказ, T2A не должен
         честно ждать свой собственный таймаут, чтобы узнать то же самое.
         Только чтение — запись в общий кэш происходит в
@@ -3880,7 +3880,7 @@ class TTSNode(Node):
         из параметра provider_dead_ttl_s). Сохраняем причину для лога.
 
         Классификация TTL:
-        * quota/auth MiniMax (2056 Token Plan limit, 401/403,
+        * quota/auth MiniMax (квота, 401/403,
           ``MiniMaxTTSAuthError``/``MiniMaxTTSRateLimitError``) → длинный TTL
           (``provider_dead_ttl_s``, default 300 с) — issue #1083;
         * Yandex ``PERMISSION_DENIED``/``UNAUTHENTICATED`` → тоже длинный TTL
@@ -3891,7 +3891,7 @@ class TTSNode(Node):
           провайдера (issue #2702 п.3, :meth:`_transient_ttl_for_streak`).
 
         Issue #2702 п.1 — падение MiniMax зеркалится в ОБЩИЙ health-кэш
-        (``_shared_health_cache``): LLM-сторона делит тот же Token Plan,
+        (``_shared_health_cache``): LLM-сторона делит тот же тариф,
         так что должна узнать об отказе T2A без собственного отдельного
         таймаута (и наоборот, см. :meth:`_provider_is_dead`).
         """

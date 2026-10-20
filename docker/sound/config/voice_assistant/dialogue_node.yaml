@@ -116,8 +116,6 @@ dialogue_node:
     # Включать только после замера prefix-cache (задача 7.4).
     skill_tool_narrowing: false
     history_max_turns: 20
-    agent_max_turns: 20
-    llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true
     faq_mode_enabled: true
