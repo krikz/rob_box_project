@@ -1,0 +1,111 @@
+# Каталог фраз робота (ADR-0150 §5.4, ADR-0148): фразу об исполнении строит код по событию владельца.
+#
+# Ключ: {класс}.{статус}[.{причина}] (классы — rob_box_dialog.knowledge.ACTION_CLASSES) или особый ключ.
+# Значение — 1–3 варианта; слоты {name} заполняет код из данных события. Фигурные скобки — только слоты.
+# Один и тот же текст двух ключей — якорь YAML (&имя / *имя), а не копия.
+# Покрытие всех (класс, статус) держит test/test_phrases.py.
+
+# --- понимание и ход ---------------------------------------------------------------------------------------
+understand.invalid: ["Не понял, повтори, пожалуйста."]
+understand.timeout: ["Что-то я долго думаю — повтори, пожалуйста."]
+
+# --- провайдеры (§8): одна фраза на смену состояния ----------------------------------------------------------
+provider.exhausted.quota: ["Всё, братан, приплыли — у {provider} кончились деньги. {next}"]
+provider.exhausted.network: ["У {provider} пропала сеть. {next}"]
+provider.exhausted.timeout: ["{provider} не отвечает. {next}"]
+provider.exhausted.auth: ["{provider} меня не пускает — ключ не подходит. {next}"]
+provider.exhausted.error: ["У {provider} ошибка. {next}"]
+provider.switched: ["Переключаюсь на {provider}."]
+
+# --- классы действий (§5.1) ----------------------------------------------------------------------------------
+query.rejected: ["Не нашёл ответа."]
+query.timeout: ["Не дождался ответа — поиск не успел."]
+
+local.done: &done ["Готово."]
+local.rejected: ["Не вышло."]
+local.timeout: ["Не дождался подтверждения — не знаю, вышло ли."]
+
+media.done: &request_ok ["Включаю музыку."]
+media.rejected: &request_fail ["Не получилось включить музыку."]
+media.timeout: &not_started ["Музыка пока не заиграла."]
+
+motion.started: ["Еду к {target}."]
+motion.done: ["Приехал."]
+motion.rejected: ["Не могу поехать."]
+motion.rejected.no_motors: ["Не могу поехать — моторы выключены."]
+motion.timeout: ["Не доехал — время вышло."]
+motion.cancelled: ["Остановился."]
+
+identity.done: ["Запомнил тебя, {name}."]
+identity.rejected: ["Не смог запомнить голос."]
+identity.timeout: ["Не дождался, пока голос запишется."]
+identity.ask_name: ["Как тебя зовут?"]
+identity.confirm: ["{name}, это ты?"]
+
+memory.saved: ["Запомнил: {fact}."]
+
+speak_aloud.done: ["Озвучил ({seconds} с)."]
+speak_aloud.rejected: ["Не озвучил: динамики заняты."]
+speak_aloud.cancelled: ["Не озвучил: перебили."]
+
+perform.backing_started: ["Поехали!"]
+perform.finished: *done
+perform.no_backing: ["Бит не завёлся — читаю без него."]
+perform.no_backing.quota: ["Всё, братан, приплыли — бит сегодня без денег, читаю так."]
+perform.no_backing.network: ["Бит не скачался — сети нет, читаю без него."]
+perform.no_backing.timeout: ["Бит не успел — читаю без него."]
+perform.no_backing.error: ["С битом ошибка — читаю без него."]
+perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]
+
+# --- музыка (тексты rob_box_voice.core.media_phrases и media_router — по ссылке, как есть) -------------------
+music.dj_started: ["Включаю диджей-сет."]
+music.dj_started_persona: ["Я {persona}, включаю сет."]
+music.theme: ["Тема — {theme}."]
+music.request_ok: *request_ok
+music.request_ok_named: ["Включаю {name}."]
+music.play_ok: ["Ставлю «{title}»."]
+music.piece: ["Ставлю {title}."]
+music.piece_melody: ["Ставлю {title} — мелодией, нот для полной аранжировки нет."]
+music.piece_replacement: ["«{asked}» не нашёл. Ставлю ближайшее: {title}."]
+music.instrument_played: ["Играю на {played}."]
+music.instrument_no_pack: ["Для {asked} у меня нет пака — играю своим звуком."]
+music.instrument_neighbors: ["Для {asked} у меня нет пака, могу сыграть {others} — играю на {played}."]
+music.nothing_playing: ["Сейчас ничего не играет."]
+music.pending: ["Музыку поставил, она ещё не заиграла."]
+music.source.synth: ["трек из синтов, его собрал код"]
+music.source.piece: ["пьеса по нотам партитуры"]
+music.source.melody: ["мелодия из архива, без полной аранжировки"]
+music.source.generated: ["сгенерированный трек из библиотеки"]
+music.now_playing: ["Сейчас играет музыка"]
+music.now_playing_named: ["Сейчас играет «{name}»"]
+music.playing_for: ["Играет уже {elapsed}"]
+music.remaining: [", осталось {remaining}."]
+music.repeats: [" и повторяется, пока не скажешь «стоп»."]
+music.library_empty: ["В библиотеке сгенерированной музыки пока пусто."]
+music.library_no_track: ["Не знаю, о каком треке речь: ничего из библиотеки ещё не играло."]
+music.library_fail: ["С библиотекой музыки не вышло."]
+music.library_list: ["В библиотеке {total} {tracks}"]
+music.library_examples: [", например: {names}."]
+music.library_liked: ["Запомнил: {name} нравится."]
+music.library_disliked: ["Запомнил: {name} не нравится, больше не включу."]
+music.library_deleted: ["Удалил {name} из библиотеки."]
+music.library_play: ["Включаю {name} из библиотеки — {duration}."]
+music.dj_fail: ["Не получилось включить диджей-сет — музыка не заиграла."]
+music.request_fail: *request_fail
+music.set_kept: ["Другую музыку поверх сета не ставлю."]
+music.no_more: ["По запросу «{asked}» новых пьес больше нет, всё уже играло."]
+music.no_more_repeat: ["Могу повторить «{repeat}» или сыграть что-то другое."]
+music.no_more_other: ["Могу сыграть что-то другое."]
+music.composer_missing: ["Пьес {who} у меня не нашлось, чужое вместо него не ставлю. Могу сыграть что-то другое."]
+music.author_named: ["автора «{name}»"]
+music.author_unnamed: ["названного автора"]
+music.not_launched: ["Новый сет я не начинал. Скажи: включи диджей сет на тему, и назови тему."]
+music.not_played: ["Ничего не заиграло — я мелодию не запускал. Назови, что сыграть, ещё раз."]
+music.volume_fail: ["Не получилось поменять громкость музыки."]
+music.volume.louder: ["Сделал музыку громче."]
+music.volume.quieter: ["Сделал музыку тише."]
+music.volume.max: ["Музыка на максимуме."]
+music.stop_ok: ["Выключил музыку."]
+music.stop_idle: ["Сейчас ничего не играет — на всякий случай всё остановил."]
+music.stop_fail: ["Не получилось выключить музыку."]
+music.not_started: *not_started

@@ -6,6 +6,9 @@ setup(
     name=package_name,
     version="0.1.0",
     packages=find_packages(exclude=["test"]),
+    # Каталог фраз (ADR-0150 §5.4): colcon в образе ставит без --symlink-install — без этой строки YAML в
+    # install-дерево не попадёт и ``rob_box_dialog.phrases`` не загрузится.
+    package_data={"rob_box_dialog.phrases": ["*.yaml"]},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),

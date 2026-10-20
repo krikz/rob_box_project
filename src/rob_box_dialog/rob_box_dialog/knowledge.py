@@ -1,9 +1,10 @@
 """Одна таблица знания диалога v2 (ADR-0150 §2.2, §2.1 п.10; ADR-0148).
 
 Вейк-слова, слова тишины и её снятия, Tier-1 слова политики планировщика, слова и каналы громкости, классы
-действий с таймаутами и прерываемостью, словарь экспрессии (эмоции, жесты, earcon'ы, слоты сцены лица), кадры сцен
-сессии, бюджеты хода и пределы команды LLM. Остальные модули — и старый путь v1 — только импортируют отсюда; копий
-нет. Из таблиц генерируются фрагмент промпта (:func:`prompt_fragment`) и JSON-схема команды (:func:`command_schema`).
+действий с таймаутами и прерываемостью, ключи фраз, словарь экспрессии (эмоции, жесты, earcon'ы, слоты сцены лица),
+рефлексы по стадиям хода, календарь тем фар, кадры сцен сессии, бюджеты хода, матрица одновременности и пределы
+команды LLM. Остальные модули — и старый путь v1 — только импортируют отсюда; копий нет. Из таблиц генерируются
+фрагмент промпта (:func:`prompt_fragment`) и JSON-схема команды (:func:`command_schema`).
 
 Сверка текста со словами (границы слов) — :mod:`rob_box_dialog.words`.
 """
@@ -206,6 +207,18 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 SPEECH_CHANNEL_TOOLS: Tuple[str, ...] = ("speak_text",)
 #: Классы, действий которых в одной команде не больше одного (каждого): один трек и одна цель движения за ход.
 SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
+#: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
+TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    "memory_save": MappingProxyType({"done": "memory.saved"}),
+})
+#: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
+PHRASE_KEYS: Tuple[str, ...] = (
+    "understand.invalid", "understand.timeout",
+    *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
+    "provider.switched",
+    *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
+    "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
+)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Экспрессия (§5.5): эмоция → сцена лица, жесты, earcon'ы, слоты сцены для LLM
@@ -247,6 +260,77 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
 
+#: Режимы кольца LED ReSpeaker в рефлексах.
+RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse")
+
+
+@dataclass(frozen=True)
+class Reflex:
+    """Рефлекс кода на стадию хода/состояние робота (§5.5.3): сцены лица, кольцо, earcon — 0 вызовов LLM.
+
+    ``face`` — сцены по очереди/на выбор (``idle_stare ↔ idle_bored``); пусто — лицо не трогается. ``after_ms`` —
+    через сколько после события включается, ``deadline_ms`` — не позже чем. Минимальная длительность сцены и
+    ``ttl`` подбираются в PR-3b по видео и добавляются сюда же.
+    """
+
+    face: Tuple[str, ...]
+    ring: Optional[str] = None
+    earcon: Optional[str] = None
+    after_ms: Optional[int] = None
+    deadline_ms: Optional[int] = None
+
+
+#: Стадия хода / состояние → рефлекс. ``thinking``: зубы или орбита — выбор Шифу (В13), старт с зубов.
+REFLEXES: Mapping[str, Reflex] = MappingProxyType({
+    "idle": Reflex(("idle_stare", "idle_bored"), ring="breath", after_ms=3000),
+    "addressed": Reflex(("listening",), ring="doa_sector", earcon="heard", deadline_ms=300),
+    "thinking": Reflex(("thinking_teeth",), ring="spin_slow"),
+    "executing": Reflex(("thinking_teeth",)),
+    "speaking": Reflex(("talking",), ring="breath"),
+    "done": Reflex(("happy", "wink"), ring="flash", earcon="done"),
+    "failed": Reflex(("error",), ring="flash_red", earcon="fail"),
+    "timeout": Reflex(("sad",), ring="flash_red", earcon="fail"),
+    "silenced": Reflex(("sleep",), ring="off"),
+    "music.playing": Reflex(("music_groove", "music_shades", "music_vibe"), ring="beat_pulse"),
+    "not_addressed": Reflex(()),
+    "battery.low": Reflex(("low_battery",)),
+    "charging": Reflex(("charging",)),
+})
+#: Сцена лица на стадии ``executing`` по классу действия; класса нет — ``REFLEXES["executing"]``.
+EXECUTING_FACE: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "action.motion": ("turn_left", "turn_right", "accelerating"),
+    "action.media": ("music_groove", "music_shades", "music_vibe"),
+})
+#: Музыка (§5.5.5): верхняя граница BPM (не включая) → сцена; на слух Шифу.
+MUSIC_SCENE_BPM: Tuple[Tuple[float, str], ...] = ((100.0, "music_vibe"), (125.0, "music_groove"),
+                                                  (float("inf"), "music_shades"))
+#: Стадии хода (``TurnEvent.stage``, §2.3), на которые есть рефлекс.
+TURN_STAGES: Tuple[str, ...] = ("addressed", "thinking", "executing", "speaking", "done", "failed", "timeout")
+
+
+@dataclass(frozen=True)
+class CalendarTheme:
+    """Тема задних фар на дату (§5.5.6); ``scene`` — сцена на всё лицо, ``scene_s`` — сколько."""
+
+    month: int
+    day: int
+    rear: str
+    scene: Optional[str] = None
+    scene_s: Optional[float] = None
+
+
+#: Календарь тем фар: имена тем — ``tools/led_face_lab/rear.py:THEMES``. Окно — один день; дни рождения робота
+#: и Шифу добавляются, когда будут известны даты (в ADR их нет).
+CALENDAR: Tuple[CalendarTheme, ...] = (
+    CalendarTheme(1, 1, "new_year"),
+    CalendarTheme(2, 14, "valentine"),
+    CalendarTheme(2, 23, "defender_day"),
+    CalendarTheme(3, 8, "womens_day"),
+    CalendarTheme(4, 12, "cosmonautics"),
+    CalendarTheme(10, 31, "halloween"),
+    CalendarTheme(12, 31, "new_year", scene="new_year_eve", scene_s=60.0),
+)
+
 # ---------------------------------------------------------------------------------------------------------------
 # Сессия и сцены (§7.1–7.2), бюджеты хода (§8)
 # ---------------------------------------------------------------------------------------------------------------
@@ -263,6 +347,55 @@ IDENTITY_TTL_S = 15
 TURN_DEADLINE_S = 12
 #: Query-цикл (§4.1): не больше двух итераций данных → LLM на ход.
 LLM_QUERY_ITERATIONS_MAX = 2
+
+# ---------------------------------------------------------------------------------------------------------------
+# Матрица одновременности (§5.6.2) — данные; compose() читает её в PR-7b
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Что приходит (строка матрицы): реплика, выступление, экспрессия, SFX, старт музыки, движение, «стой», query.
+COMPOSITION_NEW: Tuple[str, ...] = ("speech", "perform", "expression", "sfx", "music", "motion", "halt", "query")
+#: Что занято (столбец): голос-реплика, голос-выступление, лицо/кольцо, SFX, подложка, трек/сет, движение.
+COMPOSITION_BUSY: Tuple[str, ...] = ("speech", "perform", "face", "sfx", "backing", "track", "motion")
+
+
+@dataclass(frozen=True)
+class Rule:
+    """Политика BML для пары «новое × занятое» и граница, на которой она срабатывает; ``ask`` — ключ вопроса."""
+
+    policy: str
+    boundary: Optional[str] = None
+    ask: Optional[str] = None
+
+
+_M = Rule("MERGE")
+
+
+def _row(**cells: Rule) -> Dict[str, Rule]:
+    return {busy: cells.get(busy, _M) for busy in COMPOSITION_BUSY}
+
+
+_ROWS: Dict[str, Dict[str, Rule]] = {
+    # речь во время речи (О7): текущий сегмент дочитывается, на границе — обновлённый план
+    "speech": _row(speech=Rule("MERGE", "segment"), perform=Rule("MERGE", "segment")),
+    # смена подложки на такте; трек/сет — не вытеснять молча, а спросить (О9 (б))
+    "perform": _row(speech=Rule("MERGE", "segment"), perform=Rule("MERGE", "segment"),
+                    backing=Rule("REPLACE", "bar"), track=Rule("REJECT", ask="perform.ask_replace_music")),
+    "expression": _row(),
+    # SFX на SFX — после текущего, всегда с событием, не молча
+    "sfx": _row(sfx=Rule("APPEND", "block")),
+    # подложка на такте, речь выступления не рвётся; трек/сет — на фразе (ADR-0149)
+    "music": _row(perform=Rule("REPLACE", "bar"), backing=Rule("REPLACE", "bar"), track=Rule("REPLACE", "phrase")),
+    # «направо» во время песни — параллельно; движение во время движения — preempt Nav2
+    "motion": _row(motion=Rule("REPLACE", "now")),
+    # Tier-1 «стой»: речь, выступление, движение, музыка — сразу
+    "halt": _row(speech=Rule("REPLACE", "now"), perform=Rule("REPLACE", "now"), backing=Rule("REPLACE", "now"),
+                 track=Rule("REPLACE", "now"), motion=Rule("REPLACE", "now")),
+    # query параллельно со всем; отменяется перебиванием (interrupt.py)
+    "query": _row(),
+}
+COMPOSITION: Mapping[Tuple[str, str], Rule] = MappingProxyType({
+    (new, busy): rule for new, row in _ROWS.items() for busy, rule in row.items()
+})
 
 # ---------------------------------------------------------------------------------------------------------------
 # Команда LLM (§4.1): пределы и перечисления; схема и промпт генерируются ниже
