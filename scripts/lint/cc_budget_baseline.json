@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-20",
-  "base_sha": "8a613345587c44ad09c4265204e13bf4ef43a687",
+  "base_sha": "33611afae34aace0a3b6c1d05b54bea503a156c1",
   "limits": {
     "method": 15,
     "init": 20
@@ -37,7 +37,7 @@
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 20
+      "TTSNode.dialogue_callback": 19
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._on_avatar_command": 17,
@@ -214,7 +214,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 20,
+      "cc": 19,
       "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {

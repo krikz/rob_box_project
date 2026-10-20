@@ -15,7 +15,7 @@
     ``/avatar/command_result`` + voice-mode swap;
   * пайплайн грипа (issue #1989, шаг 4б): ``/avatar/ptt/result`` +
     ``/avatar/voice_pipeline`` → transform (0|1 LLM, pure-логика в
-    ``grip_pipeline.py``) → ``/voice/tts/request``. Прямоточный путь, НЕ
+    ``grip_pipeline.py``) → ``SpeechRequest`` (ADR-0150 PR-3). Прямоточный путь, НЕ
     агентский цикл: без AgentCore / ToolProvider / памяти (§7.5, инвариант 6c).
 
 Параметр ``mode`` (default ``"monitor"``) остаётся гейтом применения
@@ -388,7 +388,7 @@ AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 
 # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5 target-operator-agent-and-dialogue.md) ──
 # Прямоточный путь речи оператора с левого грипа: /avatar/ptt/result + конфиг
-# /avatar/voice_pipeline → transform (0 или 1 вызов LLM) → /voice/tts/request.
+# /avatar/voice_pipeline → transform (0 или 1 вызов LLM) → SpeechRequest (speech_client.say).
 # Оба входа создают другие ноды (ptt/result — stt_node, шаг 05/#1990;
 # voice_pipeline — quest_node/панель); пока их нет — подписки дремлют.
 # Никакого AgentCore / ToolProvider / памяти на этом пути (инвариант 6c).
@@ -397,13 +397,12 @@ GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
 # Выход пайплайна — динамики робота: SpeechRequest клиентом речи (ADR-0150
 # PR-3), агент ``operator`` — как у инструмента say.
 GRIP_TTS_REQUEST_TOPIC: str = "/voice/speech/request"
-# ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Старый grip pipeline
-# публиковал в /voice/tts/request (этот топик оставлен ТОЛЬКО для инструмента
-# ``say``, см. ADR-0055 §Чего не делаем). Все собственные реплики
-# avatar_supervisor'а и грип-пайплайна идут в /avatar/tts/request (sink="headset"),
-# tts_node шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем.
+# ADR-0055 / issue #1993 — обратный канал ТАРС в шлем: собственные реплики
+# avatar_supervisor'а идут в /avatar/tts/request (sink="headset"), tts_node
+# шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем. Грип и
+# инструмент ``say`` говорят в динамики робота SpeechRequest-ом (ADR-0150 PR-3).
 AVATAR_TTS_REQUEST_TOPIC: str = "/avatar/tts/request"
-# source в /voice/tts/request от пайплайна грипа (для метрик tts_node).
+# priority реплики грипа в SpeechRequest (врезка за играющим чанком).
 GRIP_TTS_SOURCE: str = "operator"
 # Значения preset, означающие «без стиля» (0 вызовов LLM) даже при
 # llm_enabled=true — семантика ``preset=none`` из карточки #1989.
@@ -460,7 +459,7 @@ class AvatarSupervisor(Node):
     ``/avatar/set_voice``, preview) и агент оператора ТАРС
     (``/avatar/command`` + ``/avatar/stt/result`` → ``AgentCore``) плюс
     пайплайн грипа (issue #1989: ``/avatar/ptt/result`` +
-    ``/avatar/voice_pipeline`` → ``/voice/tts/request``).
+    ``/avatar/voice_pipeline`` → ``SpeechRequest``).
     Клиент floor-сервисов ходит на ``/avatar_arbiter/*``.
     """
 
@@ -650,7 +649,7 @@ class AvatarSupervisor(Node):
 
         # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5) ──────────────
         # Прямоточный путь, НЕ агентский цикл: ptt/result + конфиг панели →
-        # transform (0|1 LLM) → /voice/tts/request. Состояние конфигурации —
+        # transform (0|1 LLM) → SpeechRequest. Состояние конфигурации —
         # «одна точка правды на ноде оператора»; default — «Без стиля»
         # (llm_enabled=False), пока панель не пришлёт /avatar/voice_pipeline.
         self._pipeline_llm_enabled: bool = False
@@ -664,8 +663,7 @@ class AvatarSupervisor(Node):
         # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
         # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
         # ``{request_id, ssml, sink:\"headset\", voice?, language?}``.
-        # ``/voice/tts/request`` остаётся ТОЛЬКО для инструмента ``say``
-        # (там ALSA-путь + динамики робота, НЕ шлем).
+        # Динамики робота (грип, say) — SpeechRequest клиентом речи, НЕ шлем.
         self._avatar_tts_request_pub = self.create_publisher(
             RosString, AVATAR_TTS_REQUEST_TOPIC, 10
         )
@@ -2555,7 +2553,7 @@ class AvatarSupervisor(Node):
 
     # ── Шаг 4б (issue #1989): пайплайн грипа ─────────────────────────
     # Прямоточный путь (§7.5): /avatar/ptt/result + /avatar/voice_pipeline →
-    # transform(text, preset, language) → /voice/tts/request. Без AgentCore,
+    # transform(text, preset, language) → SpeechRequest. Без AgentCore,
     # ToolProvider, памяти и истории (инвариант 6c). Pure-логика
     # (классификация, загрузка пресетов, сборка сообщений) — в
     # :mod:`rob_box_supervisor.grip_pipeline`.
@@ -2672,7 +2670,7 @@ class AvatarSupervisor(Node):
         """ROS-callback ``/avatar/ptt/result`` — фраза с левого грипа.
 
         Запускает прямоточную трансформацию по текущей конфигурации панели
-        и публикует результат в ``/voice/tts/request`` (динамики робота,
+        и публикует результат как ``SpeechRequest`` (``speech_client.say``, агент operator) (динамики робота,
         §7.5). Целевая аудитория — люди рядом с роботом; оператор слышит
         свою реплику акустически (динамики → воздух → уши) и через
         PTT-гейт клиента, side-tone в шлем не нужен (инвариант 6b §7.4:
@@ -2794,16 +2792,15 @@ class AvatarSupervisor(Node):
     def _publish_grip_tts(
         self, text: str, language: Optional[str] = None
     ) -> None:
-        """Опубликовать текст в ``/voice/tts/request`` (динамики робота, §7.5).
+        """Сказать текст динамиками робота: ``SpeechRequest`` агента operator (§7.5).
 
         Прямоточный пайплайн грипа (issue #1989, §7.5):
         ``/avatar/ptt/result`` → ``/avatar/voice_pipeline`` →
-        ``transform`` → ``/voice/tts/request``. Целевая аудитория —
+        ``transform`` → ``speech_client.say``. Целевая аудитория —
         люди рядом с роботом, поэтому грип говорит голосом робота из
         динамиков (тот же канал, что и инструмент ``say``).
 
-        Payload — JSON ``{ssml, language?, priority: "operator"}``:
-        ``ssml`` обязателен (tts_node читает ssml в dialogue_callback),
+        ``SpeechRequest`` (ADR-0150 PR-3): SSML строит ``Utterance``,
         ``priority="operator"`` (ADR-0056 §3.5, _TTS_PRIORITY_PREEMPTS)
         чтобы voice-планировщик вставил реплику сразу за текущей
         озвучкой и положил её поверх очереди динамика — иначе грип
@@ -2823,7 +2820,7 @@ class AvatarSupervisor(Node):
         Issue #2137 — регресс против §7.5: ``_publish_grip_tts`` ошибочно
         слал в ``/avatar/tts/request`` (sink=headset), и оператор слышал
         «сам себя» в шлеме, а люди рядом — ничего. Фикс: обратно на
-        ``/voice/tts/request`` с ``priority="operator"``.
+        динамики с ``priority="operator"`` (с ADR-0150 PR-3 — ``SpeechRequest``).
         """
         # Issue #2096 — пустой text → DROP (warning). Раньше уходило в
         # /avatar/tts/request, tts_node ловил MiniMax bad-request, лог
@@ -2836,9 +2833,8 @@ class AvatarSupervisor(Node):
             return
 
         # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик. Для ``/voice/tts/request``
-        # ``sink`` НЕ включаем: канал по контракту — динамики робота, шлем
-        # (sink=headset) — это отдельный ``_publish_avatar_tts`` (инвариант 6b).
+        # XML-экранирование &, <, > делает сам сборщик. Канал — динамики робота;
+        # шлем (sink=headset) — отдельный ``_publish_avatar_tts`` (инвариант 6b).
         utterance = Utterance(
             text=text,
             sink=Sink.SPEAKERS,

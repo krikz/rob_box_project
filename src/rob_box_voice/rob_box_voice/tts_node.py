@@ -2311,7 +2311,8 @@ class TTSNode(Node):
             # the chain is skipped entirely (see ``prebaked_audio`` branch
             # in ``_synthesize_and_play``).
             try:
-                prebaked_audio = self.claim_pregen(speech_id or "")
+                # ADR-0150 PR-3 — сперва пред-синтез ``commit=false`` того же speech_id.
+                prebaked_audio = owner_of(self).claim_presynth(speech_id, self.claim_pregen)
             except Exception as exc:  # noqa: BLE001 — never crash ROS
                 # Bare ``_Stub`` test objects without ``_prefetch`` end
                 # up here; that's fine — treat as no-pregen.

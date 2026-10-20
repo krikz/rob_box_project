@@ -17,8 +17,7 @@
 
 Конвейер ``tts_node`` ест словарь-чанк v1; поле ``_speech`` несёт метаданные
 реплики (:func:`chunk_from_request`), старый JSON - :mod:`.speech_compat`.
-``at``/``boundary=sentence``/``commit=false`` в этой части не исполняются и
-получают честный ``rejected`` (следующая часть PR-3).
+``at`` / ``boundary=sentence`` / ``commit=false`` - :mod:`.speech_timing`.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -38,9 +37,10 @@ from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U
 from rob_box_core.utterance import Utterance
 
 from . import speech_compat
+from .speech_timing import Presynth, at_delay_s
 
 FRAME_MS = 40
-#: Шаг таймера владельца: прогресс по предложениям.
+#: Шаг таймера владельца: прогресс по предложениям и отмена на границе.
 TICK_S = 0.1
 #: Запись без перехода дольше этого - потерянная (воркер упал до финала).
 STALE_RECORD_S = 300.0
@@ -85,6 +85,9 @@ class SpeechMeta:
     epoch: int = 0
     turn_id: str = ""
     interruptible: bool = True
+    at: float = 0.0
+    boundary: int = 0
+    commit: bool = True
 
     @classmethod
     def from_chunk(cls, chunk: Dict[str, Any]) -> "SpeechMeta":
@@ -95,11 +98,9 @@ class SpeechMeta:
 
 
 def unsupported_field(msg: Any) -> str:
-    """Поле ``SpeechRequest``, которое владелец ещё не исполняет (``""`` - всё в порядке)."""
+    """Поле ``SpeechRequest``, которое владелец не исполняет (``""`` - всё в порядке)."""
     if (msg.sink or "") not in SPEAKER_SINKS:
         return "sink_unsupported"
-    if msg.at > 0 or msg.boundary != 0 or not msg.commit:
-        return "timing_unsupported"  # at / boundary=sentence / commit=false
     return ""
 
 
@@ -107,7 +108,8 @@ def chunk_from_request(msg: Any) -> Dict[str, Any]:
     """Словарь-чанк конвейера ``tts_node`` из ``SpeechRequest``."""
     text = msg.text or ""
     meta = SpeechMeta(agent=msg.agent or "personality", epoch=int(msg.epoch),
-                      turn_id=msg.turn_id, interruptible=bool(msg.interruptible))
+                      turn_id=msg.turn_id, interruptible=bool(msg.interruptible),
+                      at=float(msg.at), boundary=int(msg.boundary), commit=bool(msg.commit))
     chunk: Dict[str, Any] = {
         "ssml": text if text.lstrip().startswith("<speak") else Utterance(text=text).ssml,
         "speech_id": msg.speech_id or str(uuid.uuid4()),
@@ -134,6 +136,9 @@ class SpeechRecord:
     started_at: Optional[float] = None
     progress_idx: int = 0
     cancelled: bool = False
+    stop_at: Optional[float] = None
+    stop_chars: Optional[int] = None
+    wake: threading.Event = field(default_factory=threading.Event)
 
 
 class SpeechLedger:
@@ -182,6 +187,7 @@ class SpeechLedger:
                        if agent in (ANY_AGENT, r.meta.agent) and r.meta.epoch <= epoch and r.meta.interruptible]
             for rec in hit:
                 rec.cancelled = True
+                rec.wake.set()  # прервать ожидание ``at``
             return hit
 
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
@@ -192,7 +198,25 @@ class SpeechLedger:
         """Сколько символов прозвучало - доля текста по доле времени воспроизведения."""
         if rec.started_at is None or rec.duration_s <= 0:
             return 0
-        return int(round(rec.text_len * min(1.0, self.elapsed_s(rec) / rec.duration_s)))
+        spoken = int(round(rec.text_len * min(1.0, self.elapsed_s(rec) / rec.duration_s)))
+        return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
+
+    def schedule_boundary_stop(self, rec: SpeechRecord) -> None:
+        """``boundary=sentence``: заглушить на ближайшем конце предложения."""
+        spoken = self.spoken_chars(rec)
+        with self._lock:
+            rec.stop_chars = next((e for e in rec.ends if e >= spoken), rec.text_len)
+            share = rec.stop_chars / rec.text_len if rec.text_len else 0.0
+            rec.stop_at = (rec.started_at or self._clock()) + rec.duration_s * share
+
+    def due_stops(self) -> List[SpeechRecord]:
+        """Играющие реплики, чья граница отмены уже наступила."""
+        now = self._clock()
+        with self._lock:
+            due = [r for r in self._records.values() if r.stop_at is not None and now >= r.stop_at]
+            for rec in due:
+                rec.stop_at = None
+            return due
 
     def elapsed_s(self, rec: SpeechRecord) -> float:
         return 0.0 if rec.started_at is None else max(0.0, self._clock() - rec.started_at)
@@ -224,6 +248,7 @@ class SpeechOwner:
         self._event_pub: Any = None
         self._envelope_pub: Any = None
         self._msgs: Any = None
+        self.presynth = Presynth()
 
     def attach(self) -> None:
         """Подписки и публикаторы ``/voice/speech/*`` на ноде-владельце."""
@@ -243,6 +268,10 @@ class SpeechOwner:
             rec = SpeechRecord(chunk["speech_id"], SpeechMeta.from_chunk(chunk), 0, (0,))
             self._emit("rejected", rec, reason=reason)
             return
+        if not msg.commit:
+            self.admit(chunk, chunk["speech_id"])
+            self.presynth.run(self._node, chunk, self._presynth_done)
+            return
         self._node.dialogue_callback(_JsonMsg(json.dumps(chunk, ensure_ascii=False)))
 
     def on_cancel(self, msg: Any) -> None:
@@ -251,7 +280,11 @@ class SpeechOwner:
             f"🛑 SpeechCancel speech_id={msg.speech_id[:8] or '-'} epoch<={msg.epoch} "
             f"agent={msg.agent} reason={msg.reason or '-'}: отменено {len(targets)}"
         )
-        if any(rec.state == "playing" for rec in targets):
+        playing = [rec for rec in targets if rec.state == "playing"]
+        for rec in playing:
+            if rec.meta.boundary == 1:
+                self.ledger.schedule_boundary_stop(rec)  # заглушит tick на границе
+        if any(rec.meta.boundary != 1 for rec in playing):
             self._node._interrupt_playback()  # ожидающие снимут FIFO-ворота tts_node
 
     def cancel_all(self, reason: str) -> None:
@@ -279,10 +312,13 @@ class SpeechOwner:
                        provider=provider, reason="voice_unavailable")
 
     def started(self, speech_id: Optional[str], audio: Any, sample_rate: int) -> bool:
-        """Огибающая и ``started`` перед ``play_audio``; ``False`` - реплику уже отменили."""
+        """Дождаться ``at``, огибающая и ``started`` перед ``play_audio``; ``False`` - отменена."""
         rec = self.ledger.get(speech_id)
         if rec is None:
             return True
+        if rec.meta.at > 0:
+            now_s = self._node.get_clock().now().nanoseconds / 1e9
+            rec.wake.wait(at_delay_s(now_s, rec.meta.at, self.output_latency_ms))
         if rec.cancelled:
             return False
         duration_s = len(audio) / sample_rate if sample_rate else 0.0
@@ -306,9 +342,21 @@ class SpeechOwner:
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
         return self.ledger.is_cancelled(speech_id)
 
+    def claim_presynth(self, speech_id: Optional[str], fallback: Callable[[str], Any]) -> Any:
+        """Аудио пред-синтеза ``commit=false`` того же ``speech_id``, иначе ``fallback`` (pregen)."""
+        held = self.presynth.claim(speech_id)
+        return held if held is not None else fallback(speech_id or "")
+
     def tick(self) -> None:
         for rec, chars in self.ledger.due_progress():
             self._emit("progress", rec, spoken_chars=chars)
+        for rec in self.ledger.due_stops():
+            self._log(f"✂️ отмена на границе предложения: speech_id={rec.speech_id[:8]} chars={rec.stop_chars}")
+            self._node._interrupt_playback()
+
+    def _presynth_done(self, speech_id: str, duration_s: float, ctx: Dict[str, Any]) -> None:
+        self.synthesized(speech_id, duration_s, ctx, None)
+        self.ledger.close(speech_id)  # реплика ждёт commit=true с тем же speech_id
 
     # -- публикация ---------------------------------------------------------------
 
@@ -366,6 +414,9 @@ class _NullOwner:
 
     def started(self, *args: Any) -> bool:
         return True
+
+    def claim_presynth(self, speech_id: Optional[str], fallback: Callable[[str], Any]) -> Any:
+        return fallback(speech_id or "")
 
 
 def owner_of(node: Any) -> Any:

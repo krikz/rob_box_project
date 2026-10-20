@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -154,22 +156,20 @@ def test_request_without_speech_id_gets_one(setup):
     assert len(node.chunks[0]["speech_id"]) == 36
 
 
-@pytest.mark.parametrize(
-    "fields, reason",
-    [
-        ({"sink": "headset"}, "sink_unsupported"),
-        ({"at": 1234.5}, "timing_unsupported"),
-        ({"boundary": 1}, "timing_unsupported"),
-        ({"commit": False}, "timing_unsupported"),
-    ],
-)
-def test_unsupported_request_is_rejected_loudly(setup, fields, reason):
-    """Чего владелец ещё не исполняет - честный rejected, а не тихое «сыграл как смог»."""
+def test_request_to_headset_is_rejected_loudly(setup):
+    """Чего владелец не исполняет - честный rejected, а не тихое «сыграл как смог»."""
     node, _, _ = setup
-    node.subs["/voice/speech/request"](_request(**fields))
+    node.subs["/voice/speech/request"](_request(sink="headset"))
     assert node.chunks == []
     ((kind, ev),) = _events(node)
-    assert (kind, ev.reason, ev.speech_id) == ("rejected", reason, "sid-1")
+    assert (kind, ev.reason, ev.speech_id) == ("rejected", "sink_unsupported", "sid-1")
+
+
+def test_timing_fields_travel_with_the_chunk(setup):
+    node, _, _ = setup
+    node.subs["/voice/speech/request"](_request(at=1234.5, boundary=1))
+    meta = node.chunks[0]["_speech"]
+    assert (meta["at"], meta["boundary"], meta["commit"]) == (1234.5, 1, True)
 
 
 # -- жизнь реплики ---------------------------------------------------------------
@@ -231,6 +231,23 @@ def test_cancel_by_speech_id_hits_even_non_interruptible(setup):
     assert owner.is_cancelled("s")
 
 
+def test_boundary_sentence_cancel_waits_for_sentence_end(setup):
+    node, owner, clock = setup
+    tick = node.timers[0][1]
+    owner.admit(_chunk(agent="personality", boundary=1), "s")
+    owner.started("s", np.zeros((32000, 2), dtype=np.float32), 16000)  # 2 с на 20 символов
+    clock.t += 0.2  # 2 символа сказано
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(epoch=0, agent="personality"))
+    tick()
+    assert node.interrupts == 0  # до конца первого предложения (8 символов = 0.8 с) ещё звучит
+    clock.t += 0.7
+    tick()
+    assert node.interrupts == 1
+    node._publish_tts_finished("s", success=False, error="stopped")
+    kind, ev = _events(node)[-1]
+    assert (kind, ev.spoken_chars) == ("cancelled", 8)
+
+
 def test_progress_once_per_sentence(setup):
     node, owner, clock = setup
     tick = node.timers[0][1]
@@ -241,6 +258,80 @@ def test_progress_once_per_sentence(setup):
         tick()
     progress = [ev.spoken_chars for kind, ev in _events(node) if kind == "progress"]
     assert progress == [4, 9]  # концы первых двух предложений; последнее - finished
+
+
+def test_at_waits_until_moment_minus_output_latency(setup):
+    node, owner, _ = setup  # output_latency_ms=120 в фикстуре
+    owner.admit(_chunk(at=node.ros_now_s + 0.42), "s")
+    t0 = time.monotonic()
+    assert owner.started("s", np.zeros((160, 2)), 16000)
+    assert 0.25 <= time.monotonic() - t0 < 0.45  # 0.42 - 0.12 = 0.30 с
+    assert "started" in _kinds(node)
+
+
+def test_cancel_during_wait_for_at_returns_false(setup):
+    node, owner, _ = setup
+    owner.admit(_chunk(at=node.ros_now_s + 5.0), "s")
+    result = []
+    worker = threading.Thread(target=lambda: result.append(owner.started("s", np.zeros((160, 2)), 16000)))
+    worker.start()
+    time.sleep(0.05)
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
+    worker.join(timeout=2.0)
+    assert result == [False]
+    assert "started" not in _kinds(node)
+
+
+def test_at_in_the_past_plays_at_once(setup):
+    _, owner, _ = setup
+    owner.admit(_chunk(at=1.0), "s")
+    t0 = time.monotonic()
+    assert owner.started("s", np.zeros((160, 2)), 16000)
+    assert time.monotonic() - t0 < 0.2
+
+
+def _presynth_node(node):
+    node._synthesis_executor = types.SimpleNamespace(submit=lambda fn, *a: fn(*a))
+    node._extract_text_from_ssml = plain_text
+    node._parse_ssml_attributes = lambda ssml: {}
+
+    def chain(voice, language, attrs, text, sink, ctx):
+        ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider="minimax")
+
+    node._sap_run_provider_chain = chain
+
+
+def test_presynth_commit_false_holds_audio_until_commit(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False))
+
+    assert node.chunks == []  # не играем
+    assert _kinds(node) == ["queued", "synthesized"]
+    assert dict(_events(node))["synthesized"].duration_ms == 500
+    pregen = []
+    held = owner.claim_presynth("sid-1", pregen.append)
+    assert held["sample_rate"] == 16000 and held["audio_np"].size == 8000 and pregen == []
+    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"  # дальше - обычный pregen
+
+
+def test_presynth_then_commit_true_goes_to_pipeline(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False))
+    node.subs["/voice/speech/request"](_request(commit=True, at=node.ros_now_s + 1.0))
+    (chunk,) = node.chunks
+    assert chunk["speech_id"] == "sid-1" and chunk["_speech"]["at"] == node.ros_now_s + 1.0
+    assert owner.claim_presynth("sid-1", lambda sid: None)["audio_np"].size == 8000
+
+
+def test_presynth_in_streaming_mode_is_rejected(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.minimax_streaming = True
+    node.subs["/voice/speech/request"](_request(commit=False))
+    assert _kinds(node) == ["queued", "rejected"]
+    assert _events(node)[-1][1].reason == "presynth_unavailable"
 
 
 # -- адаптер v1 -------------------------------------------------------------------
