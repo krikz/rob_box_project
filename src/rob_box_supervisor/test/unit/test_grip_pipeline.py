@@ -4,17 +4,17 @@
 архитектуры: «в пайплайне грипа нет инструментов и нет истории»):
 
 1. **Путь грипа не имеет доступа к ToolProvider** — ``tool_calls`` от
-   заглушки-LLM игнорируются: в ``/voice/tts/request`` уходит только
+   заглушки-LLM игнорируются: в ``/voice/speech/request`` уходит только
    ``content``, ``complete`` вызывается с пустым ``tools=()``.
 2. **«Без стиля»** — STT-текст уходит в TTS дословно, 0 LLM-вызовов
    (замер счётчика: stub.call_count == 0 + метрика не инкрементится).
 3. **Пресет «Перевод»** — ровно 1 LLM-вызов, текст на целевом языке и
-   ``language``-override в ``/voice/tts/request``.
+   ``language``-override в ``/voice/speech/request``.
 4. **Память/история** — после прогона ``_agent_core`` остаётся ``None``,
    ``_ensure_agent_core``/журнал не вызываются (SQLite не трогается).
 
 Issue #2137 (регресс против §7.5) — грип говорит голосом робота ИЗ ДИНАМИКОВ,
-``/voice/tts/request`` с ``priority="operator"``. Шлем (sink="headset") — это
+``/voice/speech/request`` с ``priority="operator"``. Шлем (sink="headset") — это
 только собственные реплики ТАРС через ``_publish_avatar_tts`` (инвариант 6b §7.4).
 
 Используем mock-rclpy из conftest.py. Реального LLM в тестах НЕТ: подменяем
@@ -66,7 +66,7 @@ def _speech_payload(req) -> dict:
 
 
 def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
-    """Для тестов: грип шлёт в ``/voice/tts/request`` (динамики робота, §7.5)."""
+    """Для тестов: грип шлёт в ``/voice/speech/request`` (динамики робота, §7.5)."""
     pub = node._speech_client_pubs["request"]
     return [_speech_payload(m) for m in pub.published]
 
@@ -131,7 +131,7 @@ class TestGripPipelineTopology(unittest.TestCase):
         self.assertEqual(GRIP_VOICE_PIPELINE_TOPIC, "/avatar/voice_pipeline")
 
     def test_tts_request_publisher_declared(self) -> None:
-        """Грип публикует в /voice/tts/request — тот же канал, что say (§7.5)."""
+        """Грип публикует в /voice/speech/request — тот же канал, что say (§7.5)."""
         self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
         self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/speech/request")
 
@@ -167,7 +167,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
         pub = _published_voice_tts(self.node)
         self.assertEqual(len(pub), 1)
         self.assertEqual(pub[0]["ssml"], "<speak>мы начинаем</speak>")
-        # Issue #2137 / §7.5: грип идёт в /voice/tts/request с priority="operator"
+        # Issue #2137 / §7.5: грип идёт в /voice/speech/request с priority="operator"
         # (REPLACE-priority, ADR-0056 §3.5). Без sink=headset/request_id — это
         # канал say, а не headset-канал ТАРС.
         self.assertEqual(pub[0]["priority"], GRIP_TTS_SOURCE)
@@ -209,7 +209,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
         self.assertEqual(stub.call_count, 0)
 
     def test_empty_ptt_ignored(self) -> None:
-        """Issue #2096: пустой/blank ptt → drop, никакого /voice/tts/request."""
+        """Issue #2096: пустой/blank ptt → drop, никакого /voice/speech/request."""
         stub = _StubGripLLM()
         self.node._grip_llm = stub
         self._send_ptt("")
@@ -220,7 +220,7 @@ class TestGripNoStyleDirect(unittest.TestCase):
 
 
 class TestGripTranslateOneCall(unittest.TestCase):
-    """DoD: «Перевод» — 1 LLM-вызов, текст на целевом языке в /voice/tts/request."""
+    """DoD: «Перевод» — 1 LLM-вызов, текст на целевом языке в /voice/speech/request."""
 
     def setUp(self) -> None:
         self.node = AvatarSupervisor()
