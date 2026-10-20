@@ -299,6 +299,18 @@ def test_tts_fifo_gate_drops_cancelled_speech_without_sound(setup):
     assert _kinds(node)[-1] == "cancelled"
 
 
+def test_tts_worker_skips_synthesis_of_cancelled_speech(setup):
+    """Отменённая в очереди реплика не идёт в (платный) синтез."""
+    node, owner, _ = setup
+    owner.admit(_chunk(), "s")
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", agent="personality"))
+    n = _bare_tts(owner)
+    n._synthesize_and_play = MagicMock()
+    n._run_synthesis_worker("<speak>x</speak>", "x", None, {}, "s", None, None, None, play_seq=None)
+    n._synthesize_and_play.assert_not_called()
+    assert _kinds(node)[-1] == "cancelled"
+
+
 def test_epoch_watch_feeds_barge_in_cancel(setup):
     """stt_node: отмена «того, что звучит» по эпохе из событий владельца."""
     node, owner, _ = setup

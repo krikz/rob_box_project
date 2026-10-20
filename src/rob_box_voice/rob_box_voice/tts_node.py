@@ -3257,6 +3257,13 @@ class TTSNode(Node):
         # Forward FIFO-gate slot through kwargs (it's not in the
         # canonical positional arity so we extract it from **kwargs).
         play_seq = kwargs.get("play_seq", None)
+        # ADR-0150 PR-3 — реплику отменили, пока она ждала воркера: не тратим
+        # синтез (облако платное), а дожидаемся своей очереди и закрываем её
+        # ``cancelled`` теми же FIFO-воротами (живой прогон 20.10: отменённые
+        # ожидающие чанки всё равно синтезировались в MiniMax).
+        if owner_of(self).is_cancelled(speech_id):
+            self._sap_wait_fifo_and_dialogue(play_seq, speech_id, dialogue_id)
+            return
         # Issue #1219 — LLM voice selection: голос из запроса speak_text
         # (передан через kwargs, чтобы не ломать канонический positional
         # arity, см. test_speech_id_arg_chain).
@@ -5164,21 +5171,19 @@ class TTSNode(Node):
             f"batch={batch_index}/{batch_total}, "
             f"text={text!r}"
         )
-        _publish_finished = getattr(self, "_publish_tts_finished", None)
-        if _publish_finished is not None:
-            _publish_finished(
-                speech_id,
-                success=False,
-                error=error,
-                batch_id=batch_id,
-                batch_index=batch_index,
-                batch_total=batch_total,
-                batch_started_at=batch_started_at,
-                dialogue_id=dialogue_id,
-            )
-            self.get_logger().info(
-                f"📢 TTS finished event (ошибка): speech_id={(speech_id or '')[:8]}..."
-            )
+        self._publish_tts_finished(
+            speech_id,
+            success=False,
+            error=error,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_total=batch_total,
+            batch_started_at=batch_started_at,
+            dialogue_id=dialogue_id,
+        )
+        self.get_logger().info(
+            f"📢 TTS finished event (ошибка): speech_id={(speech_id or '')[:8]}..."
+        )
 
     def _sap_finalize_after_playback(
         self,
