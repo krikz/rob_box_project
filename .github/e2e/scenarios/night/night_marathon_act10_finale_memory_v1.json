@@ -75,9 +75,7 @@
         "expected_tool_calls": [
           "get_music_state"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ],
+        "must_not_call": [],
         "_comment": "Финальный якорь тишины: марафон не оставляет играющий плеер следующему прогону."
       }
     },
@@ -130,19 +128,6 @@
           "зелён|чай"
         ],
         "must_not_call": []
-      }
-    },
-    {
-      "label": "n1010_tracks_clean",
-      "voice": "anton",
-      "text": "Робот, покажи, что осталось у тебя в сохранённых треках.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "list_tracks"
-        ],
-        "must_not_call": [],
-        "_comment": "Проверка уборки: трек «ночная смена» удалён в акте 5, песня про енота — в акте 7. Список должен быть таким же, как до ночи."
       }
     },
     {

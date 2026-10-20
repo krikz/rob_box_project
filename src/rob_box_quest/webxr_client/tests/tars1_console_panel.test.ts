@@ -63,4 +63,14 @@ describe("tars1_text_panel — консоль в обе стороны (#3253 Ш
     panel.appendLine("tars", "ответ");
     expect(panel.getStats().pending).toBe(5);
   });
+
+  it("appendLine(reply) #3296: многострочный ответ, «≡ » у первой строки, все строки на экране", () => {
+    const { panel, texts } = recordingPanel();
+    panel.appendLine("reply", "**Список:**\n- первый\n- второй");
+    expect(texts.filter((x) => x.t === "≡ ").pop()?.color).toBe("#7a8a8a");
+    for (const line of ["Список:", "• первый", "• второй"]) {
+      expect(texts.filter((x) => x.t === line).pop()?.color).toBe("#e6f2f2");
+    }
+    expect(texts.filter((x) => x.t === "≡ ")).toHaveLength(1);
+  });
 });

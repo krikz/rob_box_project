@@ -39,7 +39,7 @@ ADR-0022 §4.1 GATE-1 — обязательный acceptance.json (next to scen
 ```json
 {
   "name": "music_library_suite_v1",
-  "expected_tool_calls": ["generate_music", "gen_list_library"],
+  "expected_tool_calls": ["generate_music", "music_library"],
   "must_not_call": ["execute_music_code"],
   "_comment": "GATE-1 contract: aggregate across all steps"
 }

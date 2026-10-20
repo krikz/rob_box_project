@@ -67,13 +67,14 @@ def test_master_prompt_has_few_shot_correct_and_wrong_examples() -> None:
     # (generate_music was removed 20.08.2026 — MiniMax Music API 410 Gone;
     # the prompt must NOT teach the LLM to call the dead tool.)
     assert "generate_music" not in content
-    assert "gen_list_library" in content
-    assert "gen_play_from_library" in content
+    assert "music_library" in content
+    assert "music_library" in content
     # ❌ Wrong: post-amble duplication — full example with the banned phrase.
     assert "⛔ WRONG — post-amble duplication (NEVER do this!):" in content
     assert "← ДУБЛЬ! Весь текст уже озвучен." in content
-    # The music section repeats the same anti-duplicate for BACKING.
-    assert "NO \"Повторю слова:\" / \"Вот и песенка!\" post-ambles!" in content
+    # ADR-0149 PR-13a: §5 MUSIC старого пути удалён; секция музыки v2
+    # ссылается на канонический §2.
+    assert "ANTI-DUP для музыки с текстом — see §2" in content
 
 
 def test_master_prompt_done_marker_rule_is_adjacent_to_speak_text() -> None:
@@ -92,24 +93,16 @@ def test_master_prompt_done_marker_rule_is_adjacent_to_speak_text() -> None:
 
 def test_master_prompt_has_library_playback_example() -> None:
     """live 20.08: «включи/случайный/следующий трек» — LLM не знал, что
-    воспроизведение готового трека = gen_list_library → gen_play_from_library,
+    воспроизведение готового трека = music_library → music_library,
     и импровизировал текстом «Запускаю следующий» без tool-вызова.
     Промпт обязан содержать явный пример для этого интента."""
     content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
 
-    assert "gen_list_library" in content
-    assert "gen_play_from_library" in content
+    assert "music_library" in content
+    assert "music_library" in content
     # The library-playback rule must explicitly cover the failing phrasings.
     assert "случайный" in content
     assert "следующий" in content
     assert "из библиотеки" in content
 
 
-def test_master_prompt_dj_mode_forbids_load_track() -> None:
-    """DJ-переходы не должны грузить сохранённые треки: ``load_track`` СРАЗУ
-    запускает трек из базы → резкая вставка между треками (жалоба Шифу)."""
-    content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
-
-    assert "ГЕНЕРИРУЙ СВЕЖИЙ ТРЕК" in content
-    assert "НЕ вызывай `load_track`" in content
-    assert "резкую вставку" in content

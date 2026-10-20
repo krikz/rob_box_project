@@ -46,7 +46,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HARNESS="$REPO_ROOT/.github/workflows/scripts/e2e_voice_test.sh"
-CONFIG="$REPO_ROOT/docker/vision/config/voice_assistant/audio_node.yaml"
+CONFIG="$REPO_ROOT/docker/sound/config/voice_assistant/audio_node.yaml"
 
 for f in "$HARNESS" "$CONFIG"; do
     [ -f "$f" ] || { printf '❌ отсутствует: %s\n' "$f"; exit 1; }
@@ -100,7 +100,7 @@ if h_max is None:
 elif abs(h_max - cfg_max) > 1e-9:
     fails.append(
         f"рассинхрон лимита: харнесс держит {h_max}, а робот грузит "
-        f"speech_max_duration={cfg_max} (docker/vision/config/voice_assistant/"
+        f"speech_max_duration={cfg_max} (docker/sound/config/voice_assistant/"
         f"audio_node.yaml). Тест окна VAD проверял бы не то число."
     )
 else:

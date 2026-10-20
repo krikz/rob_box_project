@@ -163,7 +163,6 @@ def _node():
         side_effect=lambda text, **kw: n.dispatched.append((text, kw))
     )
     n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     return n

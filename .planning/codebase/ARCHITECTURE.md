@@ -69,7 +69,7 @@
 | `ceiling-camera` | USB UVC ceiling-mounted camera for SLAM/localization | `docker/vision/ceiling-camera/` |
 | `voice-assistant` | AudioNode + STT + DialogueNode (LLM) + TTS + MCP server | `docker/vision/voice_assistant/`, `src/rob_box_voice/` |
 | `supercollider` | SuperCollider scsynth audio synthesis server for music | `docker/vision/supercollider/` |
-| `telegram-bot` | Telegram operator interface (photos, voice, cmd_vel, LLM) | `docker/vision/telegram_bot/`, `src/rob_box_telegram/` |
+| `telegram-bot` | Telegram operator interface (photos, voice, cmd_vel, LLM) | `docker/sound/telegram_bot/`, `src/rob_box_telegram/` |
 
 ## Pattern Overview
 

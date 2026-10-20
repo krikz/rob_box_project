@@ -8,14 +8,17 @@
     "cmd_vel_quest": "Потребитель — twist_mux, см. /cmd_vel_voice. Конфиг: docker/main/config/twist_mux/twist_mux.yaml (topic: cmd_vel_quest).",
     "/joystick_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел. Конфиг: docker/main/config/twist_mux/twist_mux.yaml.",
     "/teleop_lock": "Потребитель — twist_mux (lock-топик мультиплексора), внешний узел, зеркалит /joystick_lock по семантике «у меня руль». Конфиг: docker/main/config/twist_mux/twist_mux.yaml. Источник — avatar_arbiter (LockManager.holder(Floor.TELEOP), ADR-0081 R1/R3, #2191).",
-    "/panel_image": "Потребитель — ros2leds (src/ros2leds — git submodule, в этом чекауте не выкачан; C++/vendor-пакет, вне Python AST-скана). LED-матрица. См. docker/vision/scripts/led_matrix/start_led_matrix.sh (\"IN: /panel_image\").",
+    "/panel_image": "Потребитель — led_matrix_compositor из сабмодуля src/ros2leds. С ros2leds TD-7 имя входного топика композитор берёт из YAML (input_topic в docker/vision/config/led_matrix/led_matrix_compositor.yaml), поэтому AST-скан подписку не видит; без выкачанного сабмодуля её тем более не видно. LED-матрица.",
+    "panel_image": "То же, что /panel_image: относительное имя у отладочных публикаторов ros2leds (directory_image_publisher.py, spiral_fill_publisher.py). Потребитель — led_matrix_compositor, топик из YAML (TD-7), вне видимости AST-скана.",
     "joint_states": "Публикует src/rob_box_bringup/scripts/dummy_joint_state_publisher.py — dev-утилита для визуализации в RViz без реальных моторов (см. её докстринг). Реальный потребитель — robot_state_publisher/RViz (стандартный внешний ROS2-тулинг, не в src/).",
     "/avatar/wake_stream": "Диагностический heartbeat по дизайну (ADR-0071 шаг 5a) — наблюдатели (e2e-тесты через `ros2 topic echo`), не функциональный ROS-подписчик. См. комментарий у quest_node.py (wake_stream_pub, строка ~563).",
     "/harness/task_events": "Потребитель — docker/vision/test/scenario_runner/runner.py (E2E-сценарный раннер, живёт вне src/, поэтому вне скана этого сторожа). Реальная rclpy-подписка подтверждена в файле (TOPIC_TASK_EVENTS).",
     "/voice/tts/metrics": "Потребитель — scripts/tts_bench/chunk_latency_bench.py (офлайн-бенчмарк задержки TTS, вне src/).",
+    "/voice/music/event": "ADR-0149 §2.3, PR-4 (#3312): события владельца плеера v2 (started/rejected), публикуются владельцем плеера v2. Подписчики — SetSession/dialogue_node в PR-5/PR-6 той же миграции (ADR-0149 §9); до них наблюдатель — живая проверка `ros2 topic echo /voice/music/event`. Запись удалить в PR, где появится подписчик.",
     "/perception/observations": "ВРЕМЕННО (ADR-0138 §3, этап 1 ADR-0130): публикует VisionHailoNode (контейнеры vision-hailo и vision-face, src/rob_box_perception/rob_box_perception/vision_hailo_node.py, параметр observation_topic). Потребитель — камерный трекер на Main Pi, появится на этапе 2 ADR-0130; до него dead output — осознанный и зафиксирован в ADR-0138 §3 (фиктивного подписчика не заводим). Запись удалить в PR этапа 2, когда появится подписчик."
   },
   "subscribers_without_local_publisher": {
+    "led_matrix/data": "Публикует led_matrix_compositor (сабмодуль src/ros2leds): с TD-7 имя выходного топика берётся из YAML (output_topic в docker/vision/config/led_matrix/led_matrix_compositor.yaml), AST-скан публикацию не видит. Подписчик — led_matrix_driver того же сабмодуля.",
     "/battery_state": "Публикует ros2_control controller_manager (внешний ROS2-стек управления, не Python/не в src/). Конфиг: docker/main/config/controllers/controller_manager.yaml.",
     "/odom": "Публикует ros2_control controller_manager, см. /battery_state. Конфиг: docker/main/config/controllers/controller_manager.yaml.",
     "/dynamic_joint_states": "Публикует ros2_control controller_manager, см. /battery_state.",
@@ -33,6 +36,6 @@
     "/plan": "Публикует nav2 planner_server (внешний пакет, не в src/) — глобальный план, топик `plan` без namespace. Запуск: docker/main/scripts/nav2/start_nav2_direct.sh. Потребитель — quest_node nav_path (issue #3151).",
     "/rosout": "Встроенный топик логов ROS2 — публикуется рантаймом rclpy/rclcpp у КАЖДОГО узла автоматически, никогда через явный create_publisher(...). Подписчики (health_monitor.py, context_aggregator_node.py) легитимны.",
     "/sensors/motor_state/front_left": "Публикует vesc_nexus (VESC motor controller driver, src/vesc_nexus — git submodule, в этом чекауте не выкачан; сообщение vesc_msgs.VescStateStamped). Подписка в quest_node.py обёрнута в try/except ImportError на случай отсутствия vesc_msgs.",
-    "/device/snapshot": "Публикует ESP32 sensor hub через micro-ROS мост (прошивка/железо, вне Python-скана src/). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py."
+    "/device/snapshot": "Публикует ESP32 sensor hub (прошивка/железо, вне Python-скана src/; моста-агента больше нет, ADR-0159 §1.4). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py."
   }
 }

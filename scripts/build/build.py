@@ -21,7 +21,7 @@ source_hash / submodule_sha / pre_build.
     scripts/build/build.py base depthai
     scripts/build/build.py service oak-d            # один сервис (Pi ищется сам)
     scripts/build/build.py pi vision                # все сервисы Vision Pi
-    scripts/build/build.py all                      # базы + оба Pi
+    scripts/build/build.py all                      # базы + все три Pi
     scripts/build/build.py service quest --dry-run  # показать BUILD_*, не собирать
 
 Push: образы сервисов собираются FROM localhost:5000/... (базы), а
@@ -51,7 +51,7 @@ SOURCE_HASH = REPO_ROOT / "scripts" / "ci" / "source_hash.sh"
 PRE_BUILD_HOOKS = {
     "fetch_hailort_wheel": REPO_ROOT / "scripts" / "ci" / "fetch_hailort_wheel.sh"
 }
-PIS = ("vision", "main")
+PIS = ("main", "sound", "vision")
 
 
 def _gen(*args: str) -> object:
@@ -85,12 +85,10 @@ def base_entries(ros_distro: str | None) -> list[dict]:
 
 
 def pi_entries(pi: str, docker_tag: str, ros_distro: str | None) -> list[dict]:
-    """Сервисы Pi: сначала цепочка (топологически, как named job'ы), потом matrix."""
+    """Сервисы Pi по волнам — тот же порядок, что у wave-job'ов CI."""
     extra = ["--ros-distro", ros_distro] if ros_distro else []
-    common = ["--pi", pi, "--docker-tag", docker_tag, *extra]
-    chained = _gen(*common, "--mode", "chained")
-    matrix = _gen(*common, "--mode", "matrix")
-    return [e[0] for e in chained.values()] + list(matrix)
+    waves = _gen("--pi", pi, "--docker-tag", docker_tag, *extra, "--mode", "waves")
+    return [entry for wave in waves for entry in wave]
 
 
 def registry_up(host: str) -> bool:
@@ -156,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("what", choices=["list", "base", "service", "pi", "all"])
     p.add_argument(
-        "names", nargs="*", help="base: имя|all; service: имена; pi: vision|main"
+        "names", nargs="*", help="base: имя|all; service: имена; pi: main|sound|vision"
     )
     p.add_argument(
         "--docker-tag",
@@ -207,9 +205,9 @@ def main(argv: list[str] | None = None) -> int:
         unknown = set(args.names) - set(PIS)
         plan = [e for pi in args.names if pi in by_pi for e in by_pi[pi]]
         if not args.names:
-            p.error("pi: укажите vision и/или main")
+            p.error("pi: укажите один или несколько из: " + " ".join(PIS))
     else:  # all
-        plan = bases + by_pi["vision"] + by_pi["main"]
+        plan = bases + [e for pi in PIS for e in by_pi[pi]]
         unknown = set()
     if unknown:
         p.error(f"неизвестные имена: {' '.join(sorted(unknown))} (см. `build.py list`)")

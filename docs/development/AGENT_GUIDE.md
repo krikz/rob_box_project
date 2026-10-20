@@ -29,9 +29,9 @@
 
 ### ✅ ХОРОШО (specific + context + expected outcome):
 
-"Voice assistant на Vision Pi падает с ошибкой `ModuleNotFoundError: No module named 'nav2_msgs'` в command_node. 
+"Voice assistant на Sound Pi падает с ошибкой `ModuleNotFoundError: No module named 'nav2_msgs'` в command_node. 
 
-Проверь `docker/vision/voice_assistant/Dockerfile` - добавлен ли пакет `ros-humble-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-humble-*` зависимостями."
+Проверь `docker/sound/voice_assistant/Dockerfile` - добавлен ли пакет `ros-humble-nav2-msgs` в секцию `RUN apt-get install`. Если нет - добавь его в список пакетов вместе с другими `ros-humble-*` зависимостями."
 
 **Почему хорошо:**
 - ✅ Конкретная ошибка с текстом
@@ -196,7 +196,7 @@ Node(
 
 ## Обзор системы
 
-**Rob Box Project** - автономный робот на базе двух Raspberry Pi 5 с OAK-D Lite камерой и RTAB-Map SLAM.
+**Rob Box Project** - автономный робот на базе трёх Raspberry Pi 5 (Main, Vision, Sound — ADR-0159) с OAK-D Lite камерой и RTAB-Map SLAM.
 
 ### Компоненты системы
 
@@ -204,8 +204,14 @@ Node(
 - OAK-D Lite камера (Intel Movidius MyriadX)
 - AprilTag детекция
 - LED Matrix контроллер
-- Voice Assistant (ReSpeaker)
 - Zenoh router для маршрутизации данных
+
+**Sound Pi (10.1.1.12 eth0 / 10.1.1.22 wlan0)** — с 19.10.2026, ADR-0159
+- Voice Assistant (ReSpeaker: микрофоны и колонки)
+- SuperCollider (музыкальный движок), voice-action-server
+- ТАРС (avatar-supervisor), avatar-arbiter
+- Quest (WebXR), Telegram-бот — с PR-7 (волна 2)
+- Zenoh router (линки на Main Pi и Vision Pi)
 
 **Main Pi (10.1.1.10 eth0 / 10.1.1.20 wlan0)**
 - RTAB-Map SLAM система
@@ -219,10 +225,10 @@ Node(
 ### Сетевая топология
 
 ```
-Vision Pi (eth0: 10.1.1.11)  ←→  Main Pi (eth0: 10.1.1.10)
-     ↓                                    ↓
-WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)
-   (управление)                        (управление)
+Vision Pi (eth0: 10.1.1.11)  ←→  Main Pi (eth0: 10.1.1.10)  ←→  Sound Pi (eth0: 10.1.1.12)
+     ↓                                    ↓                              ↓
+WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)         WiFi (wlan0: 10.1.1.22)
+   (управление)                        (управление)                   (управление)
                                          ↓
                                zenoh.robbox.online:7447
 ```
@@ -230,7 +236,7 @@ WiFi (wlan0: 10.1.1.21)         WiFi (wlan0: 10.1.1.20)
 **⚠️ ВАЖНО**: 
 - **Gigabit Ethernet (eth0)**: ТОЛЬКО для передачи данных между Pi
 - **WiFi (wlan0)**: ТОЛЬКО для SSH доступа и управления
-- В конфигурациях Zenoh router используются ТОЛЬКО Ethernet IP (10.1.1.10, 10.1.1.11)
+- В конфигурациях Zenoh router используются ТОЛЬКО Ethernet IP (10.1.1.10, 10.1.1.11, 10.1.1.12)
 
 ---
 
@@ -253,10 +259,15 @@ docker/
 │       ├── Dockerfile
 │       ├── entrypoint.sh        (опционально)
 │       └── config/              (опционально - специфичные конфиги)
-└── vision/                      # Vision Pi (10.1.1.21)
+├── vision/                      # Vision Pi (10.1.1.21)
+│   ├── docker-compose.yaml
+│   ├── config/                  # Общие конфиги
+│   ├── scripts/                 # Утилитарные скрипты
+│   └── <service_name>/
+└── sound/                       # Sound Pi (10.1.1.22): голосовой стек, ADR-0159
     ├── docker-compose.yaml
-    ├── config/                  # Общие конфиги
-    ├── scripts/                 # Утилитарные скрипты
+    ├── config/
+    ├── scripts/
     └── <service_name>/
 ```
 
@@ -351,8 +362,8 @@ Feature Branch (feature/*)
 git checkout -b feature/fix-voice-assistant
 
 # 2. Делаешь изменения (например, в Dockerfile или docker-compose.yaml)
-vim docker/vision/voice_assistant/Dockerfile
-vim docker/vision/docker-compose.yaml
+vim docker/sound/voice_assistant/Dockerfile
+vim docker/sound/docker-compose.yaml
 
 # 3. Коммитишь и пушишь
 git add .
@@ -360,16 +371,16 @@ git commit -m "fix: добавить nav2-msgs для command_node"
 git push origin feature/fix-voice-assistant
 
 # 4. GitHub Actions автоматически:
-#    - Определяет что изменился Vision Pi
-#    - Запускает "L-Build Vision Pi Services.yml" (см. docs/CI_CD_PIPELINE.md)
+#    - Определяет что изменился Sound Pi
+#    - Запускает "L-Build Pi Services.yml" (-f pi=...) (см. docs/CI_CD_PIPELINE.md)
 #    - Собирает voice-assistant-humble-test
 #    - Пушит образ в ghcr.io
 #    - Мерджит в develop (если сборка успешна)
 #    - Удаляет feature ветку
 
-# 5. На Vision Pi - обновляешь код и подтягиваешь новый образ
-sshpass -p 'open' ssh ros2@10.1.1.21 \
-  'cd ~/rob_box_project/docker/vision && \
+# 5. На Sound Pi - обновляешь код и подтягиваешь новый образ
+sshpass -p 'open' ssh ros2@10.1.1.22 \
+  'cd ~/rob_box_project/docker/sound && \
    git pull && \
    docker compose pull voice-assistant && \
    docker compose up -d voice-assistant'
@@ -391,8 +402,8 @@ gh run view <run-id> --log
 
 **Проверка образов:**
 ```bash
-# На Vision Pi - проверить какой образ используется
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
+# На Sound Pi - проверить какой образ используется
+sshpass -p 'open' ssh ros2@10.1.1.22 'docker images | grep voice-assistant'
 
 # Должен показать: ghcr.io/krikz/rob_box  voice-assistant-humble-test
 ```
@@ -402,7 +413,7 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'docker images | grep voice-assistant'
 **Изменения БЕЗ rebuild** (применяются мгновенно через volumes):
 - Конфиги: `docker/vision/config/**`
 - Скрипты: `docker/vision/scripts/**`
-- Launch файлы: `docker/vision/config/voice_assistant/voice_assistant_headless.launch.py`
+- Launch файлы: `docker/sound/config/voice_assistant/voice_assistant_headless.launch.py`
 
 **Изменения С rebuild** (требуют GitHub Actions):
 - `Dockerfile` (установка пакетов, зависимостей)
@@ -607,8 +618,8 @@ cat ~/rob_box_project/docker/vision/.env.secrets
 ### Проверка секретов
 
 ```bash
-# На Vision Pi - проверить что ключи загружены в контейнер
-sshpass -p 'open' ssh ros2@10.1.1.21 \
+# На Sound Pi - проверить что ключи загружены в контейнер
+sshpass -p 'open' ssh ros2@10.1.1.22 \
   'docker exec voice-assistant printenv | grep -E "DEEPSEEK|YANDEX"'
 
 # Должен вернуть:

@@ -54,6 +54,7 @@ from rob_box_supervisor.metrics_source import (
     DEFAULT_PROMETHEUS_URL,
     MetricsSource,
     MetricsUnavailable,
+    metric_dictionary_text,
     summarize_for_speech,
 )
 
@@ -327,13 +328,11 @@ class TarsPanelDispatcher:
                 "and returns the latest values, so answer the operator with "
                 "what came back — do not claim a panel opened. Use for "
                 "charts, metrics, logs, CPU, memory, latency, errors. "
-                "Known-good queries: 'rate(process_cpu_seconds_total[5m])' "
-                "(CPU), 'process_resident_memory_bytes' (RAM), 'up' "
-                "(exporter health), "
-                "'rate(voice_llm_request_duration_seconds_sum[5m]) / "
-                "rate(voice_llm_request_duration_seconds_count[5m])' "
-                "(LLM latency). Plain words like 'cpu' or 'memory' also "
-                "work — they are resolved against the live metric catalog."
+                "For the query take a NAME FROM THIS DICTIONARY (do not "
+                "write PromQL for these): "
+                + metric_dictionary_text()
+                + ". Raw PromQL/LogQL is only a fallback for something "
+                "that is not in the dictionary."
             ),
             parameters={
                 "type": "object",
@@ -341,8 +340,10 @@ class TarsPanelDispatcher:
                     "query": {
                         "type": "string",
                         "description": (
-                            "PromQL expression, LogQL query, or a plain "
-                            "metric word ('cpu', 'memory', 'latency')."
+                            "A dictionary name (cpu, memory, llm_latency, "
+                            "stt_latency, tts_latency, barge_in, "
+                            "voice_confidence, services_up) — preferred; "
+                            "or, as a fallback, a PromQL/LogQL expression."
                         ),
                     },
                     "datasource": {

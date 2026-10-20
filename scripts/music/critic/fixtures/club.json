@@ -1,0 +1,69 @@
+{
+ "style": "club",
+ "source": "style_critic/club/club.md, раздел «Ответ после того как дали посмотреть на код» (Qwen3.8 Omni Max, 08.10); утверждения переведены вручную в схему judge.py; confidence=0.5 — судья его не давал",
+ "tracks": [
+  {
+   "model": "set52072_01_A_52d275e4.json",
+   "start_s": 0.0
+  },
+  {
+   "model": "set52072_02_B_5ca4afd7.json",
+   "start_s": 142.81
+  }
+ ],
+ "claims": [
+  {
+   "t0": 15,
+   "t1": 45,
+   "kind": "masking",
+   "claim": "бас конфликтует с бочкой, сайдчейна в параметрах play() нет — каша в низах",
+   "confidence": 0.5,
+   "args": {
+    "param": "sidechain",
+    "role": "bass"
+   }
+  },
+  {
+   "t0": 15,
+   "t1": 45,
+   "kind": "mix",
+   "claim": "amplify около 1 у многих дорожек, сумма превышает 0 dBFS — клиппинг",
+   "confidence": 0.5
+  },
+  {
+   "t0": 15,
+   "t1": 45,
+   "kind": "phrasing",
+   "claim": "a3/p3: плотные dur=1/4 с короткими паузами, инструменты наслаиваются каждую долю",
+   "confidence": 0.5,
+   "args": {
+    "role": "lead"
+   }
+  },
+  {
+   "t0": 0,
+   "t1": 15,
+   "kind": "param_reading",
+   "claim": "lpf=var([0,1200,400..]): на старте фильтр может быть закрыт — глухой звук",
+   "confidence": 0.5,
+   "args": {
+    "param": "lpf",
+    "value": 0
+   }
+  },
+  {
+   "t0": 45,
+   "t1": 60,
+   "kind": "mix",
+   "claim": "pan=((-1,1),): широкая стереобаза ухудшает моносовместимость центра",
+   "confidence": 0.5
+  },
+  {
+   "t0": 15,
+   "t1": 60,
+   "kind": "mix",
+   "claim": "в коде только lpf, HPF нет — энергия внизу у пэдов и лидов",
+   "confidence": 0.5
+  }
+ ]
+}

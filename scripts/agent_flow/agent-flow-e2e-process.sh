@@ -251,14 +251,14 @@ af_load_profile_env "$PROFILE_ENV"
 : "${BLOCKER_ROBOT_LOG_SINCE:=6h}"
 : "${BLOCKER_CONSECUTIVE_FAILS:=2}"
 # робот для pre-flight (ретро #R2: no-reaction rounds 29/31 — жечь e2e-раунд на мёртвом роботе бессмысленно)
-: "${E2E_ROBOT_HOST:=10.1.1.21}"
+: "${E2E_ROBOT_HOST:=10.1.1.22}"
 : "${E2E_ROBOT_USER:=ros2}"
 : "${E2E_ROBOT_PASS:=}"   # пароль из окружения, в скрипт не пишем; пусто → pre-flight SKIP с warn
 # Ретро 15.09 (t_2b4af5db, issue #2648): pre-check ping+ssh на целевой хост ДО
 # триггера build. Если хост лежит — не жечь 40 мин build+deploy, а degraded:
 # round завершается с пометкой DEGRADED, issue НЕ закрывается, требуется
 # ручное подтверждение. Настраивается списком хостов через пробел. По
-# умолчанию проверяем и робота (10.1.1.21), и build-machine (10.1.1.249) —
+# умолчанию проверяем и робота (10.1.1.22), и build-machine (10.1.1.249) —
 # оба критичны для round'а; любой лежит → degraded.
 : "${E2E_PRECHECK_HOSTS:=${E2E_ROBOT_HOST} 10.1.1.249}"
 : "${E2E_PRECHECK_PING_TIMEOUT:=2}"
@@ -703,7 +703,7 @@ detect_known_blocker() {
             # нужно сначала интерполировать локально — bash в одинарных кавычках
             # не подставляет, поэтому собираем команду через printf.
             _sig_logs="$(sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
-                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.21}" \
+                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.22}" \
                 "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_FRESH} 2>&1 | grep -m1 -F $(printf '%q' "$sig")" 2>/dev/null || true)"
             if [ -z "$_sig_logs" ]; then
                 # Сигнатуры нет в свежем окне — это stale (например, остатки
@@ -714,7 +714,7 @@ detect_known_blocker() {
             # (wake-word сработал → голосовой пайплайн работает → сигнатура
             # это обычная IDLE-диагностика шума/фраз без wake-word, не блокер).
             _priyato_logs="$(sshpass -p "$E2E_ROBOT_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
-                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.21}" \
+                "${E2E_ROBOT_USER:-ros2}@${E2E_ROBOT_HOST:-10.1.1.22}" \
                 "docker logs voice-assistant --since ${BLOCKER_ROBOT_LOG_FRESH} 2>&1 | grep -m1 -F 'ПРИНЯТО'" 2>/dev/null || true)"
             if [ -n "$_priyato_logs" ]; then
                 # Система жива, wake-word работает — IDLE-срабатывания не блокер.
@@ -2671,7 +2671,7 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
     # SHA-tag noise. Сравниваем с threshold уже real_behind.
     if [ "${_behind}" -gt "${threshold}" ] 2>/dev/null; then
         _real_behind="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
-            | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
+            | { grep -vE '^[0-9a-f]+ ci: (vision|main|sound) SHA tags ' || true; } \
             | wc -l | tr -d '[:space:]')"
         if [ -z "$_real_behind" ]; then
             _real_behind="$_behind"  # fail-safe: если log упал, считаем raw
@@ -2687,7 +2687,7 @@ stale_branch_check() {  # $1=agent_branch $2=pr_number $3=issue_number
         # голого «raw=53, real=32». Экономим 30-минутный detective-work.
         if [ "${DEBUG_E2E_PICKUP:-0}" = "1" ] || [ "${E2E_DIAG_STALE_COMMITS:-1}" = "1" ]; then
             _stale_top="$(git -C "$REPO_DIR" log --oneline "${_tip_sha}..${_dev_sha}" 2>/dev/null \
-                | { grep -vE '^[0-9a-f]+ ci: (vision|main) SHA tags ' || true; } \
+                | { grep -vE '^[0-9a-f]+ ci: (vision|main|sound) SHA tags ' || true; } \
                 | head -5)"
             if [ -n "$_stale_top" ]; then
                 log "stale-branch: top-$(( $(printf '%s\n' "$_stale_top" | wc -l) )) реальных коммитов (после whitelist SHA-tag noise):"
@@ -3634,7 +3634,7 @@ for t in data:
     # ПРОДОЛЖИТЬ, а не пересобирать: если для текущего HEAD round уже есть
     # успешный build-ран — пропускаем build (идём сразу в deploy/e2e).
     _round_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || echo '')"
-    # Issue #1826: defense in depth — CI commit SHA-tags (`ci: main|vision SHA
+    # Issue #1826: defense in depth — CI commit SHA-tags (`ci: main|vision|sound SHA
     # tags → ... [skip ci]`) уже заблокированы в L-Build Main/Vision для
     # round-веток, НО если когда-то этот guard отключат или появятся другие
     # workflow, коммитящие в round — agent-flow всё равно не должен бесконечно
@@ -3643,7 +3643,7 @@ for t in data:
     _round_parent="$(git -C "$WORKTREE_DIR" rev-parse HEAD^ 2>/dev/null || echo '')"
     _round_head_subject="$(git -C "$WORKTREE_DIR" log -1 --pretty=%s 2>/dev/null || echo '')"
     if [ -n "$_round_parent" ] \
-        && [[ "${_round_head_subject}" =~ ^ci:[[:space:]]*(main|vision)[[:space:]]+SHA[[:space:]]+tags ]] \
+        && [[ "${_round_head_subject}" =~ ^ci:[[:space:]]*(main|vision|sound)[[:space:]]+SHA[[:space:]]+tags ]] \
         && [ "$_round_parent" != "$_round_head" ]; then
         _parent_build="$(gh run list --repo "$GH_REPO" --workflow "$BUILD_WORKFLOW" --branch "$ROUND_BRANCH" \
             --limit 10 --json databaseId,conclusion,headSha \
@@ -4396,7 +4396,7 @@ _Generated by agent-flow-e2e-process._"
 
 ### Manual verification
 \`\`\`bash
-sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | grep -E \"ПРИНЯТО|LLM INPUT|TTS:|deepseek\"'
+sshpass -p open ssh ros2@10.1.1.22 'docker logs voice-assistant --since <ts> | grep -E \"ПРИНЯТО|LLM INPUT|TTS:|deepseek\"'
 \`\`\`"
         fi
 
@@ -4466,7 +4466,7 @@ sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts> | g
 
 **ЕСЛИ ДОКАЗАТЕЛЬСТВА ЕСТЬ** → рапортуй в PR #${pr_number:-?} первой строкой \`worker-evidence: <кратко>\`, тело: кусок лога 5-15 строк с таймстампами + ссылка на run. После этого процесс поставит needs-review и карточка закроется.
 
-**ЕСЛИ ДОКАЗАТЕЛЬСТВ НЕТ** в логе прогона → иди на 10.1.1.21 (\`sshpass -p open ssh ros2@10.1.1.21 'docker logs voice-assistant --since <ts>'\`), проиграй команду сам, добывай raw-лог. Чини **в той же ветке** \`${branch}\` (тот же PR, никаких новых веток — Шифу прямо: «не плодить ветки»), push, жди следующего прогона. Карточка остаётся до прогона с доказательствами.
+**ЕСЛИ ДОКАЗАТЕЛЬСТВ НЕТ** в логе прогона → иди на 10.1.1.22 (\`sshpass -p open ssh ros2@10.1.1.22 'docker logs voice-assistant --since <ts>'\`), проиграй команду сам, добывай raw-лог. Чини **в той же ветке** \`${branch}\` (тот же PR, никаких новых веток — Шифу прямо: «не плодить ветки»), push, жди следующего прогона. Карточка остаётся до прогона с доказательствами.
 
 **ЕСЛИ PR ЗАКРЫТ** (товарищ Шифу «Не делаем это») → карточка мёртвая: сделай \`kanban complete\` с пометкой \`PR closed, карточка не нужна\` (ретро 15.08 t_16325ddd).
 

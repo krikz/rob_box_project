@@ -107,7 +107,7 @@
       "text": "Робот, ну ты слышал, что просили. Сделай.",
       "patterns": [
         "\\[backlog\\] flushed to LLM backlog_handled=true",
-        "execute_music_code|compose_music|set_vibe_preset|generate_music"
+        "request_music|generate_music"
       ],
       "acceptance": {
         "must_not_call": [
@@ -145,7 +145,6 @@
       "patterns": [],
       "acceptance": {
         "must_not_call": [
-          "execute_music_code",
           "stop_music"
         ],
         "must_not_say": [

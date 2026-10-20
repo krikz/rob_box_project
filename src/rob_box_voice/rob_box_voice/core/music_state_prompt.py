@@ -123,24 +123,11 @@ class MusicStateMemory:
             return ENDED_FINISHED
         return ENDED_STOPPED
 
-    def render(
-        self,
-        *,
-        generated_title: Optional[str] = None,
-        now: Optional[float] = None,
-    ) -> str:
-        """Строка ``<music_state …/>`` для ``<system_context>``.
-
-        ``generated_title`` — mp3 из AI-библиотеки (``gen_play_from_library``)
-        играет в ``sound_node`` мимо ``MusicManager`` и в снимок плеера не
-        попадает; его состояние публикует сам плеер mp3
-        (``/voice/generated_music/state``), нода передаёт название, если
-        там ``playing``.
-        """
+    def render(self, *, now: Optional[float] = None) -> str:
+        """Строка ``<music_state …/>`` для ``<system_context>``: снимок владельца плеера — единственный источник
+        (трек библиотеки генераций тоже на деке, ADR-0158 PR-2)."""
         current = _now(now)
         attrs = self._playback_attrs(current)
-        ai = f"playing: {generated_title}" if generated_title else "idle"
-        attrs.append(("ai", ai))
         attrs.extend(self._last_ended_attrs(current))
         body = " ".join(f'{key}="{_xml_attr(value)}"' for key, value in attrs)
         return f"  <music_state {body} />"
@@ -153,15 +140,20 @@ class MusicStateMemory:
         dj = "on" if snap.dj else "off"
         if not snap.is_playing(now):
             return [("playing", "no"), ("dj", dj)]
-        attrs = [("playing", "yes"), ("track", self._name or UNNAMED_TRACK)]
-        if snap.stops_at is None:
+        title = self._name or str(snap.dj_info.get("title") or "") or UNNAMED_TRACK
+        attrs = [("playing", "yes"), ("track", title)]
+        stops_at = snap.stops_at
+        started, length = snap.dj_info.get("started_at"), snap.dj_info.get("length_s")
+        if stops_at is None and isinstance(started, (int, float)) and isinstance(length, (int, float)):
+            stops_at = float(started) + float(length)  # пьеса v2: один проход формы (#3613)
+        if stops_at is None:
             attrs.append(("repeat", "loop"))
         else:
             attrs.append(("repeat", "once"))
-            left = max(0, round(snap.stops_at - now))
+            left = max(0, round(stops_at - now))
             attrs.append(("ends_in_s", str(left)))
         attrs.append(("dj", dj))
-        return attrs
+        return attrs + _set_attrs(snap)
 
     def _effective_last_ended(self, now: float) -> Optional[EndedTrack]:
         """Последний замолчавший трек, включая «доиграл, а idle не дошёл».
@@ -195,6 +187,27 @@ class MusicStateMemory:
             ("last_ended", ended.how),
             ("last_ended_ago_s", str(max(0, round(now - ended.at)))),
         ]
+
+
+#: Поля сета v2 из снимка (``dj`` владельца плеера, ADR-0149 §2.3) → атрибуты тега: имя в теге ← ключ снимка.
+#: Факты играющего трека (``engine.dj_lines``): мелодия, следующие по плану, части темы без мелодий в библиотеке.
+SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks", "tracks"), ("melody", "melody"),
+             ("played", "played"), ("next_melodies", "next_melodies"), ("not_found", "not_found"), ("bpm", "bpm"),
+             ("persona", "persona"), ("source", "source"))
+
+
+def _set_attrs(snap: MusicPlayerState) -> list:
+    """Сет v2 — из latched-снимка, не из догадки (ADR-0149 §5.2); у v1 этих полей в снимке нет."""
+    info = snap.dj_info
+    return [(attr, _attr_value(info[key])) for attr, key in SET_ATTRS if info.get(key) not in (None, "", [])]
+
+
+def _attr_value(value: object) -> str:
+    """Список фактов (мелодии; сыгранные — «трек: мелодия») — через запятую, пустые пропущены; остальное — строкой."""
+    if not isinstance(value, (list, tuple)):
+        return str(value)
+    items = (f"{v[0]}: {v[1]}" if isinstance(v, (list, tuple)) and len(v) == 2 else str(v) for v in value)
+    return ", ".join(i for i in items if i)
 
 
 def _now(now: Optional[float]) -> float:

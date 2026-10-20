@@ -170,6 +170,9 @@ class MCPToolParameter:
     #: нормализуют вход: напр. ``speak_text(animation=...)`` принимает
     #: русские названия и псевдонимы и приводит их к реальной анимации.
     enum_strict: bool = True
+    #: Границы ``type="integer"|"number"`` в JSON Schema (узкая схема, ADR-0148); проверяет сам инструмент.
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Конвертировать в JSON Schema для OpenAI-совместимого Tool Calls формата."""
@@ -183,6 +186,11 @@ class MCPToolParameter:
 
         if self.default is not None:
             schema["default"] = self.default
+
+        if self.minimum is not None:
+            schema["minimum"] = self.minimum
+        if self.maximum is not None:
+            schema["maximum"] = self.maximum
 
         if self.type == "object" and self.properties:
             schema["properties"] = {name: param.to_json_schema() for name, param in self.properties.items()}
@@ -312,17 +320,6 @@ class MCPTool(ABC):
         return False
 
     @property
-    def satisfies_user_music(self) -> bool:
-        """Инструмент закрывает пользовательскую просьбу «включи X».
-
-        Отдельно от ``starts_music``: ``load_track`` запускает Renardo, но
-        в DJ-переходе не должен засчитываться за «музыка пошла» (DJ обязан
-        играть через compose_music/lookup_melody), поэтому у него
-        ``starts_music=False``, а ``satisfies_user_music=True``.
-        """
-        return False
-
-    @property
     def destructive(self) -> bool:
         """
         Инструмент выполняет разрушительные операции (destructiveHint)
@@ -349,10 +346,23 @@ class MCPTool(ABC):
         ``False`` — инструмент остаётся исполняемым через ``/mcp/execute``
         (внутренние вызовы, тесты, ручная отладка), но не попадает в
         каталог, который получает модель. Нужен ровно для инструментов,
-        чей внешний бэкенд умер: см. ``GenerateMusicTool`` (MiniMax Music
+        чей внешний бэкенд умер: так было с ``generate_music`` (MiniMax Music
         API отключён, 410 Gone) — LLM не должен видеть мёртвый тул.
         """
         return True
+
+    @property
+    def operator_visible(self) -> bool:
+        """Показывать ли инструмент оператору (ТАРС) сверх llm-видимых.
+
+        Реестр оператора = ``llm_visible`` ∪ ``operator_visible``. Нужен
+        инструментам «ТАРС-только» (``llm_visible=False``, но оператору
+        они нужны), например ``say``. Дефолт ``False``: без явного
+        решения инструмент оператору не предъявляется. Каждый
+        ``operator_visible`` инструмент обязан быть зарегистрирован в
+        ``mcp_server`` — иначе вызов вернёт «unknown tool».
+        """
+        return False
 
     @property
     def blocking(self) -> bool:

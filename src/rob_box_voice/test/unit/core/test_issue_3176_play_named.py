@@ -8,7 +8,7 @@
    (мораторий #3132): глагол заказа + название; родовые слова — не заказ;
 2. план роутера (:mod:`media_router`) — ``play_name``;
 3. поток (:mod:`named_play`) — ``lookup_melody`` → полное совпадение →
-   ``compose_music``; промах — реплика в LLM;
+   ``request_music`` движка v2 (PR-11; ``compose_music`` удалён в PR-13a); промах — реплика в LLM;
 4. приём (:class:`SttAdmission.resume_after`) — промах возвращается в
    шаги после ``MediaCommandStep``.
 """
@@ -24,7 +24,6 @@ import pytest
 from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.named_play import (
-    DEFAULT_ARRANGEMENT,
     NamedPlayStatus,
     melody_hit,
     play_ok_text,
@@ -129,7 +128,6 @@ def test_router_plan_is_play_named_in_any_state(media: MediaState) -> None:
     assert plan is not None
     assert plan.play_name == "к элизе"
     assert plan.tool_calls == ()
-    assert not plan.dj_off  # DJ-сет заказ не гасит
     assert not plan.cancel_inflight  # отмена — только если мелодия нашлась
     assert plan.say_ok == ""  # фраза — от потока, по найденной записи
 
@@ -170,35 +168,20 @@ def _run(tools: _Tools, name: str):
     return asyncio.new_event_loop().run_until_complete(run_named_play(tools, name))
 
 
-def test_found_melody_is_composed_by_record_key() -> None:
+def test_found_melody_is_played_by_request_music() -> None:
     tools = _Tools({
         "lookup_melody": [(True, _content(_FUR_ELISE))],
-        "compose_music": [(True, "Играет «Fur Elise»")],
+        "request_music": [(True, "{'ok': True, 'track_id': 'mel:01:A:aa'}")],
     })
     out = _run(tools, "к элизе")
     assert out.status is NamedPlayStatus.PLAYED
     assert out.hit.title == "Fur Elise"
     assert tools.calls == [
         ("lookup_melody", {"name": "к элизе"}),
-        ("compose_music", {"name": "furelise"}),
+        ("request_music", {"intent": "melody", "text": "к элизе"}),
     ]
-    assert out.tools_done == ("lookup_melody", "compose_music")
+    assert out.tools_done == ("lookup_melody", "request_music")
     assert play_ok_text(out.hit.title) == "Ставлю «Fur Elise»."
-
-
-def test_missing_arrangement_retries_with_default_timbres() -> None:
-    tools = _Tools({
-        "lookup_melody": [(True, _content(_FUR_ELISE))],
-        "compose_music": [
-            (False, "Мелодия 'furelise' найдена, но не задана аранжировка: "
-                    "не хватает lead_synth, bass_synth, pad_synth."),
-            (True, "ok"),
-        ],
-    })
-    out = _run(tools, "к элизе")
-    assert out.status is NamedPlayStatus.PLAYED
-    assert tools.calls[-1] == ("compose_music", {"name": "furelise", **DEFAULT_ARRANGEMENT})
-    assert set(DEFAULT_ARRANGEMENT) == {"lead_synth", "bass_synth", "pad_synth"}
 
 
 def test_not_found_is_miss_without_compose() -> None:
@@ -227,10 +210,10 @@ def test_partial_match_is_miss(match: Dict[str, Any]) -> None:
     assert [c[0] for c in tools.calls] == ["lookup_melody"]
 
 
-def test_compose_failure_is_failed_not_miss() -> None:
+def test_play_failure_is_failed_not_miss() -> None:
     tools = _Tools({
         "lookup_melody": [(True, _content(_FUR_ELISE))],
-        "compose_music": [(False, "SuperCollider недоступен")],
+        "request_music": [(False, "мелодия не заиграла: not_started")],
     })
     out = _run(tools, "к элизе")
     assert out.status is NamedPlayStatus.FAILED

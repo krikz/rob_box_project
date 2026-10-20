@@ -161,17 +161,6 @@ def _install_fake_mcp_server_dependencies(monkeypatch) -> None:
 
     tools_module.__getattr__ = _tools_module_fallback
 
-    class MusicManager:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    class TrackLibrary:
-        def __init__(self, *args, **kwargs):
-            raise FileNotFoundError("missing 004_music_library.sql")
-
-    tools_module.MusicManager = MusicManager
-    tools_module.TrackLibrary = TrackLibrary
-
     rclpy_node.Node = Node
     rclpy_callback_groups.ReentrantCallbackGroup = ReentrantCallbackGroup
     rclpy_qos.QoSProfile = QoSProfile

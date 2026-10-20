@@ -26,9 +26,6 @@ from rob_box_voice.core.dialogue_guards import (
     build_tool_call_markup_retry_prompt,
     is_tool_call_markup,
 )
-from rob_box_voice.core.turn import GuardContext, ToolCallMarkupGuard, VerdictKind
-
-from .test_turn import _reply, _state, _turn  # type: ignore[attr-defined]
 
 
 LIVE_N206 = (
@@ -79,45 +76,6 @@ class TestDetector:
     )
     def test_speech_is_not_markup(self, text) -> None:
         assert is_tool_call_markup(text) is False
-
-
-class TestGuard:
-    def test_fires_and_asks_for_a_real_tool_call(self) -> None:
-        g = ToolCallMarkupGuard()
-        v = g.evaluate(
-            GuardContext(
-                reply=_reply(spoken=LIVE_N206),
-                turn=_turn(user_input="запомни про меня: болею за Спартак"),
-                state=_state(),
-            )
-        )
-        assert v is not None, "разметка обязана ловиться до выхода в TTS"
-        assert v.kind is VerdictKind.RETRY
-        assert v.guard_name == "tool_call_markup"
-        assert v.prompt and "CRITICAL" in v.prompt
-
-    def test_defers_on_normal_reply(self) -> None:
-        g = ToolCallMarkupGuard()
-        v = g.evaluate(
-            GuardContext(
-                reply=_reply(spoken="Запомнила: зелёный чай без сахара."),
-                turn=_turn(user_input="запомни"),
-                state=_state(),
-            )
-        )
-        assert v is None
-
-    def test_defers_when_speech_already_happened(self) -> None:
-        """Если ``speak_text`` уже реально прозвучала — ретраить нечего."""
-        g = ToolCallMarkupGuard()
-        v = g.evaluate(
-            GuardContext(
-                reply=_reply(spoken=LIVE_N206, speak_text_real=1),
-                turn=_turn(user_input="x"),
-                state=_state(),
-            )
-        )
-        assert v is None
 
 
 class TestRetryPrompt:

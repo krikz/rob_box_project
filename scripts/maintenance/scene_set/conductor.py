@@ -27,7 +27,7 @@
     consent: <label>    устное согласие гостя + подтверждение оператора в stdin
 и общие поля: say (что сказать роботом ДО действия/метки), wait_s (пауза после).
 
-Запуск — через ``record_scene.sh`` на хосте Vision Pi (внутри voice-assistant).
+Запуск — через ``record_scene.sh`` на хосте Sound Pi (внутри voice-assistant, ADR-0159).
 ``--dry-run`` печатает шаги без ROS.
 """
 

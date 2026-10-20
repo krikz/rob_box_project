@@ -36,15 +36,16 @@ Examples:
     python tools/architecture_runtime_snapshot.py --topics /scan,/cmd_vel
     python tools/architecture_runtime_diff.py architecture/inventory.json architecture/runtime.json
 
-The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and reaches the robot over password SSH via `sshpass`: Main Pi `10.1.1.20` (container `nav2`) and, with `capture_vision`, Vision Pi `10.1.1.21` (container `oak-d`), user `ros2` by default. The password is taken from the `ROBOT_SSH_PASS` repository secret when it is set, otherwise the workflow falls back to the default robot password (the same one `L: Deploy and Verify` uses). This is a deliberate interim decision of the repository owner (28.09.2026): the robot is only reachable from the internal network, the secret has never been created, and #3120 making it mandatory broke every run. Do not make the secret mandatory again until the owner decides to move robot SSH (deploy included) to secrets or keys. Workflow inputs reach the scripts through `env:`, never as `${{ }}` expressions inside `run:`. GitHub-hosted runners are never used for live robot access.
+The `L: Architecture Audit` workflow runs on the self-hosted `rob-box` runner and reaches the robot over password SSH via `sshpass`: Main Pi `10.1.1.20` (container `nav2`) and, with `capture_vision`, Vision Pi `10.1.1.21` (container `oak-d`) and, with `capture_sound`, Sound Pi `10.1.1.22` (container `voice-assistant`, ADR-0159), user `ros2` by default. The password is taken from the `ROBOT_SSH_PASS` repository secret when it is set, otherwise the workflow falls back to the default robot password (the same one `L: Deploy and Verify` uses). This is a deliberate interim decision of the repository owner (28.09.2026): the robot is only reachable from the internal network, the secret has never been created, and #3120 making it mandatory broke every run. Do not make the secret mandatory again until the owner decides to move robot SSH (deploy included) to secrets or keys. Workflow inputs reach the scripts through `env:`, never as `${{ }}` expressions inside `run:`. GitHub-hosted runners are never used for live robot access.
 
 Remote capture inspects all topics in one `ssh` + one `docker exec`: a loop inside the container prints each `ros2 topic info --verbose` between `=====TOPIC <name>=====` / `=====RC <n>=====` markers, and the same call records `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` from the container. Topics whose block is empty, failed or missing are retried one `ssh` each; `--per-topic` skips the batch entirely. The batch call times out after at most 300 s, and `--budget` (480 s; 240 s per Pi with `capture_vision`) caps batch + fallback so the job stays inside its 15 min: topics left when it runs out are recorded as `present: false, returncode: null, skipped: "budget"`, with a `::warning::` and a count in the job summary.
 
-Both Pis see one shared Zenoh graph (run 36422274238: 52 nodes on each Pi, union 52), so the workflow captures from the Main Pi only. The `capture_vision` input adds the Vision Pi capture; `tools/architecture_runtime_merge.py` merges one or more snapshots into `runtime.json`:
+Both Pis see one shared Zenoh graph (run 36422274238: 52 nodes on each Pi, union 52), so the workflow captures from the Main Pi only. The `capture_vision` / `capture_sound` inputs add the Vision Pi / Sound Pi capture; `tools/architecture_runtime_merge.py` merges one or more snapshots into `runtime.json`:
 
     python tools/architecture_runtime_merge.py --output architecture/runtime.json \
       --capture "Main Pi|10.1.1.20|nav2|architecture/runtime-main.json" \
-      --capture "Vision Pi|10.1.1.21|oak-d|architecture/runtime-vision.json"
+      --capture "Vision Pi|10.1.1.21|oak-d|architecture/runtime-vision.json" \
+      --capture "Sound Pi|10.1.1.22|voice-assistant|architecture/runtime-sound.json"
 
 ## Node review questions
 

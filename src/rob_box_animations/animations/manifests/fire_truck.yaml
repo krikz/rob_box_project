@@ -1,72 +1,1649 @@
-# Fire Truck Emergency Lights Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "fire_truck"
-description: "Fire truck emergency lights with red and orange"
-version: "1.0"
-author: "rob_box"
+description: "Пожарная: глаза-маяки с вращающимся лучом, красно-белая балка, потом пламя во рту"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 1500
+duration_ms: 7000
 loop: true
-fps: 10
+fps: 25
 
-# Fade transitions
-fade_in_ms: 100
-fade_out_ms: 100
-
-# Panels
 panels:
-  # All wheels alternate red/orange
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/fire_truck/wheel_fl_red.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_fl_orange.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_fl_off.png"
-        duration_ms: 200
-
+      - image: "frames/fire_truck/p8_001.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_005.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_009.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_013.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_017.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_021.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_025.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_029.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_033.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_037.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_041.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_045.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_049.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_053.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_057.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_061.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_065.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_069.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_073.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_077.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_081.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_085.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_089.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_093.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_097.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_101.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_105.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_109.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_113.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_117.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_121.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_125.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_129.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_133.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_137.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_141.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_145.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_149.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_153.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_157.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_161.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_165.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_169.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_173.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_177.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_181.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_185.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_189.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_193.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_197.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_201.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_205.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_209.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_213.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_217.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_221.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_225.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_229.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_233.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_237.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_241.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_245.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_249.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_253.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_257.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_261.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_265.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_269.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_273.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_277.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_281.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_285.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_289.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_293.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_297.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_000.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_004.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_008.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_012.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_016.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_020.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_024.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_028.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_032.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_036.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_040.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_044.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_048.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_052.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_056.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_060.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_064.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_068.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_072.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_076.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_080.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_084.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_088.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_092.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_096.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_100.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_104.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_108.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_112.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_116.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_120.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_124.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_128.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_132.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_136.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_140.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_144.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_148.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_152.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_156.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_160.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_164.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_168.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_172.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_176.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_180.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_184.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_188.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_192.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_196.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_200.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_204.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_208.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_212.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_216.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_220.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_224.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_228.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_232.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_236.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_240.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_244.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_248.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_252.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_256.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_260.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_264.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_268.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_272.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_276.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_280.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_284.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_288.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_292.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_296.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_001.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_005.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_009.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_013.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_017.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_021.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_025.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_029.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_033.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_037.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_041.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_045.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_049.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_053.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_057.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_061.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_065.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_069.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_073.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_077.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_081.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_085.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_089.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_093.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_097.png"
+        duration_ms: 40
   - logical_group: "wheel_front_right"
-    offset_ms: 250
+    offset_ms: 0
     frames:
-      - image: "frames/fire_truck/wheel_fr_orange.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_fr_red.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_fr_off.png"
-        duration_ms: 200
-
+      - image: "frames/fire_truck/p8_000.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_004.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_008.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_012.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_016.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_020.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_024.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_028.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_032.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_036.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_040.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_044.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_048.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_052.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_056.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_060.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_064.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_068.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_072.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_076.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_080.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_084.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_088.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_092.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_096.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_100.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_104.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_108.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_112.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_116.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_120.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_124.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_128.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_132.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_136.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_140.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_144.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_148.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_152.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_156.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_160.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_164.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_168.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_172.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_176.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_180.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_184.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_188.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_192.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_196.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_200.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_204.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_208.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_212.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_216.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_220.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_224.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_228.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_232.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_236.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_240.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_244.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_248.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_252.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_256.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_260.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_264.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_268.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_272.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_276.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_280.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_284.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_288.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_292.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_296.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_001.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_005.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_009.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_013.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_017.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_021.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_025.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_029.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_033.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_037.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_041.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_045.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_049.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_053.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_057.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_061.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_065.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_069.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_073.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_077.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_081.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_085.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_089.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_093.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_097.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_101.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_105.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_109.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_113.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_117.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_121.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_125.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_129.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_133.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_137.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_141.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_145.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_149.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_153.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_157.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_161.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_165.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_169.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_173.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_177.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_181.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_185.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_189.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_193.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_197.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_201.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_205.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_209.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_213.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_217.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_221.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_225.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_229.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_233.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_237.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_241.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_245.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_249.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_253.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_257.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_261.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_265.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_269.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_273.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_277.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_281.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_285.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_289.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_293.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_297.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_000.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_004.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_008.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_012.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_016.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_020.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_024.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_028.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_032.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_036.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_040.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_044.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_048.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_052.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_056.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_060.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_064.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_068.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_072.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_076.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_080.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_084.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_088.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_092.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_096.png"
+        duration_ms: 40
   - logical_group: "wheel_rear_left"
-    offset_ms: 500
+    offset_ms: 0
     frames:
-      - image: "frames/fire_truck/wheel_rl_red.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_rl_orange.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_rl_off.png"
-        duration_ms: 200
-
+      - image: "frames/fire_truck/p8_002.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_006.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_010.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_014.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_018.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_022.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_026.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_030.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_034.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_038.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_042.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_046.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_050.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_054.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_058.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_062.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_066.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_070.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_074.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_078.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_082.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_086.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_090.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_094.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_098.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_102.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_106.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_110.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_114.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_118.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_122.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_126.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_130.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_134.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_138.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_142.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_146.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_150.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_154.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_158.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_162.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_166.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_170.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_174.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_178.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_182.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_186.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_190.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_194.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_198.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_202.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_206.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_210.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_214.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_218.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_222.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_226.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_230.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_234.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_238.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_242.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_246.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_250.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_254.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_258.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_262.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_266.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_270.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_274.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_278.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_282.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_286.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_290.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_294.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_298.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_003.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_007.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_011.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_015.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_019.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_023.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_027.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_031.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_035.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_039.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_043.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_047.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_051.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_055.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_059.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_063.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_067.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_071.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_075.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_079.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_083.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_087.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_091.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_095.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_099.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_103.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_107.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_111.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_115.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_119.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_123.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_127.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_131.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_135.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_139.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_143.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_147.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_151.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_155.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_159.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_163.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_167.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_171.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_175.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_179.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_183.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_187.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_191.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_195.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_199.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_203.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_207.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_211.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_215.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_219.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_223.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_227.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_231.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_235.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_239.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_243.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_247.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_251.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_255.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_259.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_263.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_267.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_271.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_275.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_279.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_283.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_287.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_291.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_295.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_299.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_002.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_006.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_010.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_014.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_018.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_022.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_026.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_030.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_034.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_038.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_042.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_046.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_050.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_054.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_058.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_062.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_066.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_070.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_074.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_078.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_082.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_086.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_090.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_094.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_098.png"
+        duration_ms: 40
   - logical_group: "wheel_rear_right"
-    offset_ms: 750
+    offset_ms: 0
     frames:
-      - image: "frames/fire_truck/wheel_rr_orange.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_rr_red.png"
-        duration_ms: 150
-      - image: "frames/fire_truck/wheel_rr_off.png"
-        duration_ms: 200
-
-  # Main display (FIRE text flashing)
+      - image: "frames/fire_truck/p8_003.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_007.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_011.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_015.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_019.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_023.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_027.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_031.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_035.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_039.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_043.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_047.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_051.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_055.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_059.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_063.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_067.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_071.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_075.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_079.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_083.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_087.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_091.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_095.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_099.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_103.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_107.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_111.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_115.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_119.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_123.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_127.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_131.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_135.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_139.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_143.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_147.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_151.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_155.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_159.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_163.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_167.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_171.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_175.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_179.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_183.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_187.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_191.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_195.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_199.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_203.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_207.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_211.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_215.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_219.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_223.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_227.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_231.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_235.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_239.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_243.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_247.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_251.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_255.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_259.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_263.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_267.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_271.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_275.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_279.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_283.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_287.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_291.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_295.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_299.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_002.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_006.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_010.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_014.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_018.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_022.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_026.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_030.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_034.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_038.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_042.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_046.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_050.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_054.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_058.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_062.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_066.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_070.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_074.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_078.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_082.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_086.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_090.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_094.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_098.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_102.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_106.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_110.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_114.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_118.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_122.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_126.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_130.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_134.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_138.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_142.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_146.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_150.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_154.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_158.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_162.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_166.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_170.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_174.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_178.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_182.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_186.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_190.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_194.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_198.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_202.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_206.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_210.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_214.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_218.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_222.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_226.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_230.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_234.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_238.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_242.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_246.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_250.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_254.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_258.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_262.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_266.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_270.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_274.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_278.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_282.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_286.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_290.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_294.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_298.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_003.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_007.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_011.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_015.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_019.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_023.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_027.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_031.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_035.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_039.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_043.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_047.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_051.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_055.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_059.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_063.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_067.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_071.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_075.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_079.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_083.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_087.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_091.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_095.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/p8_099.png"
+        duration_ms: 40
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/fire_truck/text_fire_on.png"
-        duration_ms: 500
-      - image: "frames/fire_truck/text_fire_off.png"
-        duration_ms: 500
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 160
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 160
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 160
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 160
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_000.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_001.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_002.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_003.png"
+        duration_ms: 120
+      - image: "frames/fire_truck/m_004.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_005.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_006.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_007.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_008.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_009.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_010.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_011.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_012.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_013.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_014.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_015.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_016.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_017.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_018.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_019.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_020.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_021.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_022.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_023.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_024.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_025.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_026.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_027.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_028.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_029.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_030.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_031.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_032.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_033.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_034.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_035.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_036.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_037.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_038.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_039.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_040.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_041.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_042.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_043.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_044.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_045.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_046.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_047.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_048.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_049.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_050.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_051.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_052.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_053.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_054.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_055.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_056.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_057.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_058.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_059.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_060.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_061.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_062.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_063.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_064.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_065.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_066.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_067.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_068.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_069.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_070.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_071.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_072.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_073.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_074.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_075.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_076.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_077.png"
+        duration_ms: 40
+      - image: "frames/fire_truck/m_078.png"
+        duration_ms: 40
 
-# Metadata
 metadata:
   priority: "high"
   category: "emergency"
-  tags: ["fire", "emergency", "lights", "red", "orange"]
+  tags: [fire, emergency, lights, red, orange]
+  brightness_budget: 245
+  bake_scale: 1.000
+  peak_ma_at_255: 4275

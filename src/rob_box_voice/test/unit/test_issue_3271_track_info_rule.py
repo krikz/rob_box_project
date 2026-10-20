@@ -1,9 +1,9 @@
-"""Issue #3271 — ml06: LLM пересказывает трек из истории, не зовёт gen_get_track_info.
+"""Issue #3271 — ml06: LLM пересказывает трек из истории, не зовёт music_library.
 
 Живой лог прогона 36777967495 (шаг ml06, «Робот, расскажи, что это за
 трек»): tools=[], ответ «баллада про дождь за окном, который … подыгрывает
 мыслям» — детали выдуманы (в истории была только «короткая грустная
-баллада»). Правило: вопрос про трек → ``gen_get_track_info`` ДО ответа, говорить
+баллада»). Правило: вопрос про трек → ``music_library`` ДО ответа, говорить
 по полям результата. Правило общее (не под фразу шага) и лежит и в
 RULE #DISCOVERY-TOOLS, и в блоке скилла player.
 """
@@ -32,17 +32,17 @@ def _player_block() -> str:
 
 def test_discovery_rule_requires_track_info_before_speak() -> None:
     block = _discovery_block()
-    assert "gen_get_track_info" in block
+    assert "music_library" in block
     assert "что это за трек" in block
-    assert "BEFORE" in block.split("gen_get_track_info", 1)[1][:300]
+    assert "BEFORE" in block.split("music_library", 1)[1][:300]
 
 
 def test_player_block_forbids_retelling_from_history() -> None:
     block = _player_block()
-    assert "gen_get_track_info" in block
+    assert "music_library" in block
     assert "по памяти" in block
 
 
 def test_player_skill_file_mentions_track_info_rule() -> None:
-    assert "gen_get_track_info" in PLAYER
+    assert "music_library" in PLAYER
     assert "по памяти" in " ".join(PLAYER.split())

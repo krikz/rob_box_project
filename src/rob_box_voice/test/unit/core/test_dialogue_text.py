@@ -224,7 +224,7 @@ class TestAccusativeRobota:
 
 
 # ---------------------------------------------------------------------------
-# Синхронность кодового списка и docker/vision/config/wake_words.yaml
+# Синхронность кодового списка и docker/sound/config/wake_words.yaml
 # ---------------------------------------------------------------------------
 
 
@@ -242,7 +242,7 @@ def test_wake_words_yaml_matches_code_list() -> None:
     import yaml
 
     repo_root = Path(__file__).resolve().parents[5]
-    cfg = repo_root / "docker" / "vision" / "config" / "wake_words.yaml"
+    cfg = repo_root / "docker" / "sound" / "config" / "wake_words.yaml"
     assert cfg.exists(), f"конфиг вейк-слов не найден: {cfg}"
 
     personality = yaml.safe_load(cfg.read_text(encoding="utf-8"))["personality"]

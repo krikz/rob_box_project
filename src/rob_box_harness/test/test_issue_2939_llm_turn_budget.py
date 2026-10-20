@@ -188,3 +188,68 @@ def test_hung_minimax_falls_back_to_next_provider_within_one_guard() -> None:
         "бессмысленно, бюджет хода уходит на ожидание вместо фолбека"
     )
     assert elapsed < 0.6, f"фолбек через {elapsed:.2f} с, ожидали ~один гуард (0.2 с)"
+
+
+# ---------------------------------------------------------------------------
+# 4. Гуард включён у провайдера, которого собирает каталог (живой ТАРС 19.10)
+# ---------------------------------------------------------------------------
+#
+# Живой лог avatar-supervisor (Sound Pi, 19.10)::
+#
+#     18:10:10  LLM REQUEST START provider=minimax mode=complete
+#     18:11:41  minimax: transient error on attempt 1/3 (TimeoutError)
+#     18:13:12  minimax: transient error on attempt 2/3 (TimeoutError)
+#     18:14:43  [health] provider=minimax transient error (Request timed out.)
+#     18:14:46  LLM RESPONSE (deepseek)
+#
+# Три попытки по 90 с: ``build_minimax_provider`` по умолчанию передаёт
+# конструктору ``first_chunk_timeout_s=None`` — гуард #2718 выключен, и
+# каталог (личность и ТАРС) его не включал. Проба в контейнере:
+# ``build_provider("minimax")._first_chunk_timeout_s`` == ``None``.
+
+
+def test_catalog_minimax_has_first_chunk_guard_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+    from rob_box_harness.providers.minimax import DEFAULT_FIRST_CHUNK_TIMEOUT_S
+
+    provider = build_provider("minimax")
+    assert provider._first_chunk_timeout_s == DEFAULT_FIRST_CHUNK_TIMEOUT_S, (
+        f"first_chunk_timeout_s={provider._first_chunk_timeout_s}: без гуарда "
+        "зависший MiniMax держит ход 3 × 90 с (ТАРС 19.10 молчал 4.5 мин)"
+    )
+
+
+class _HungComplete:
+    """Upstream, чей ``complete()`` не возвращается (сервер молчит)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def capabilities_for(self, model: str | None) -> ProviderCapabilities:
+        return ProviderCapabilities(text=True, streaming_text=True, tools=True, streaming_tools=True)
+
+    async def complete(self, messages: Any, *, tools: Any = (), settings: Any = None) -> Any:
+        self.calls += 1
+        await asyncio.sleep(3600)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_catalog_minimax_complete_gives_up_within_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``complete()`` ТАРС на молчащем MiniMax — один гуард и наружу, без ретраев."""
+    import rob_box_harness.providers.catalog as catalog
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "sk-test")
+    monkeypatch.setattr(catalog, "MINIMAX_FIRST_CHUNK_TIMEOUT_S", 0.2)
+    provider = catalog.build_provider("minimax")
+    inner = _HungComplete()
+    provider._inner = inner  # type: ignore[assignment]
+
+    t0 = time.monotonic()
+    with pytest.raises(LLMTimeoutError):
+        asyncio.run(provider.complete(_msgs()))
+    elapsed = time.monotonic() - t0
+
+    assert inner.calls == 1, f"молчащий MiniMax попробован {inner.calls} раз"
+    assert elapsed < 1.0, f"сдались через {elapsed:.2f} с, ожидали ~один гуард (0.2 с)"

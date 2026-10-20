@@ -143,8 +143,8 @@ journal_mode=WAL``, у ``speakers.db`` их обычно нет, но прове
 всегда), они бэкапятся тоже — иначе бэкап основного файла может не
 содержать самых свежих закоммиченных, но ещё не checkpoint'нутых строк.
 
-Как это запускают на Vision Pi
--------------------------------
+Как это запускают на Sound Pi (ADR-0159; до 19.10.2026 — на Vision Pi)
+----------------------------------------------------------------------
 ::
 
     docker exec voice-assistant bash -c \\
@@ -159,7 +159,7 @@ journal_mode=WAL``, у ``speakers.db`` их обычно нет, но прове
 теперь прописанный явно и здесь).
 
 * содержимое ``scripts/`` НЕ копируется в образ ``voice-assistant``
-  (``docker/vision/voice_assistant/Dockerfile`` копирует только
+  (``docker/sound/voice_assistant/Dockerfile`` копирует только
   ``src/rob_box_core``, ``src/rob_box_voice``, ``src/rob_box_harness`` и
   т. д. через colcon build) — доставка ТОЛЬКО разовым ``docker cp
   speaker_db_admin.py voice-assistant:/tmp/speaker_db_admin.py`` (или
@@ -174,7 +174,7 @@ journal_mode=WAL``, у ``speakers.db`` их обычно нет, но прове
   разработки/тестов из чекаута репозитория (см. issue #2775, тот же класс
   бага уже ловился на ``face_store_admin.py`` и исправлен там же);
 * ROS-окружение внутри контейнера ``voice-assistant`` живёт в
-  ``/ws/install`` (``docker/vision/voice_assistant/Dockerfile``:
+  ``/ws/install`` (``docker/sound/voice_assistant/Dockerfile``:
   ``colcon build`` пишет туда), а НЕ в ``/ros2_ws/install`` — это другой
   контейнер/другой сервис в этом репозитории;
 * путь к БД — параметром ``--db-path``, дефолт ``/data/speakers.db`` (тот
@@ -237,7 +237,7 @@ import numpy as np
 
 # ---------------------------------------------------------------------------
 # Импорт без установки пакета — см. большой блок докстринга модуля выше
-# («Как это запускают на Vision Pi») и исправленный после живого инцидента
+# («Как это запускают на Sound Pi») и исправленный после живого инцидента
 # приём в scripts/maintenance/face_store_admin.py (issue #2775): СНАЧАЛА
 # всегда пробуем обычный импорт (работает без единого вычисления путей,
 # если ROS-окружение source'нуто — ровно так внутри контейнера), и ТОЛЬКО

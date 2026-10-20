@@ -96,19 +96,14 @@ echo ""
 echo "============================================"
 echo "   LED Configuration"
 echo "============================================"
-echo "Total LEDs: 253"
+echo "Total LEDs: 381"
 echo "  - 5× 5×5 panels (main display): 125 LEDs"
-echo "  - 2× 8×8 panels (front panels): 128 LEDs"
+echo "  - 4× 8×8 panels (front + rear lights): 256 LEDs"
 echo ""
 echo "Physical Order (SPI chain):"
-echo "  [0-4]: Main Display (5×25)"
-echo "  [5]:   Front Left Panel (8×8)"
-echo "  [6]:   Front Right Panel (8×8)"
-echo ""
-echo "Logical Groups:"
-echo "  - main_display (5×25)"
-echo "  - panel_front_left (8×8)"
-echo "  - panel_front_right (8×8)"
+echo "  [0-4]: Main Display (25×5)"
+echo "  [5-6]: wheel_front_left / wheel_front_right (8×8)"
+echo "  [7-8]: wheel_rear_left / wheel_rear_right (8×8)"
 echo ""
 echo "Topics:"
 echo "  IN:  /panel_image (sensor_msgs/Image)"
@@ -120,7 +115,6 @@ echo ""
 echo -e "${GREEN}🚀 Starting LED Matrix System...${NC}"
 echo ""
 
-# Note: Compositor does not use YAML config - it has hardcoded configuration
-# If you need to change compositor config, edit the source code:
-# src/ros2leds/led_matrix_compositor/led_matrix_compositor/led_matrix_compositor.py
+# Раскладку панелей композитор берёт из $COMPOSITOR_CONFIG (ros2leds TD-7),
+# раскладка в коде — только запасной вариант, если файла нет.
 exec ros2 launch led_matrix_compositor led_matrix_compositor_launch.py

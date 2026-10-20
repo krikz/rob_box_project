@@ -33,6 +33,7 @@ from rob_box_core.tool_catalog import (
 )
 
 _PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
+
 _SKILLS_DIR = _PROMPTS / "skills"
 
 #: Правила, которые обязаны жить ТОЛЬКО в мастер-промпте. Фрагмент скилла,
@@ -123,7 +124,10 @@ def test_fragment_does_not_name_tools_it_does_not_own(skill: str) -> None:
     это маршрутизация («за готовыми mp3 иди в player»), а не обещание.
     """
     text = _fragment_text(skill).lower()
-    own = {e.name for e in tools_for_skill(skill, include_core=True)}
+    own = {
+        e.name
+        for e in tools_for_skill(skill, include_core=True)
+    }
     foreign = sorted(
         e.name
         for other in skill_names()

@@ -8,7 +8,7 @@
 #
 # Заменяет собой (поэтапно) четыре разных способа доставки одного и того же
 # класса вещей: два почти дословно одинаковых download_*_hef.sh и ступень
-# скачивания STT/TTS-моделей в docker/vision/voice_base/Dockerfile.
+# скачивания STT/TTS-моделей в docker/sound/voice_base/Dockerfile.
 #
 # ---------------------------------------------------------------------------
 # Контракт (план §2.3)
@@ -544,13 +544,30 @@ run_fetch_hook() {  # $1 = имя хука, $2 = целевой каталог; 
             python3 "${SCRIPT_DIR}/fetch_renardo_samples.py" --target "$tdir"
             return $?
             ;;
-        fetch_dj_dave_samples)
+        fetch_dj_dave_samples|fetch_sonicpi_samples|fetch_muldjord_kit)
+            local lock
+            case "$hook" in
+                fetch_dj_dave_samples) lock="dj_dave_samples.lock.json" ;;
+                fetch_sonicpi_samples) lock="sonicpi_samples.lock.json" ;;
+                fetch_muldjord_kit) lock="muldjord_kit.lock.json" ;;
+            esac
             if ! command -v python3 >/dev/null 2>&1; then
                 err "хук ${hook}: python3 не найден — скачать сэмплы нечем"
                 return 127
             fi
-            # stdlib-only; эталоны sha256 — dj_dave_samples.lock.json рядом.
-            python3 "${SCRIPT_DIR}/fetch_dj_dave_samples.py" --target "$tdir"
+            # Один фетчер на все сэмпл-паки; stdlib-only; эталоны sha256 —
+            # lock-файл пака рядом (имя зашито здесь, манифест его не задаёт).
+            python3 "${SCRIPT_DIR}/fetch_sample_pack.py" --target "$tdir" --lock "${SCRIPT_DIR}/${lock}"
+            return $?
+            ;;
+        fetch_score_library)
+            if ! command -v python3 >/dev/null 2>&1; then
+                err "хук ${hook}: python3 не найден — скачать библиотеку партитур нечем"
+                return 127
+            fi
+            # Архив библиотеки — блоб registry katana по sha256 из lock-файла
+            # (ADR-0154 §8 В7); stdlib-only, как фетчер сэмплов.
+            python3 "${SCRIPT_DIR}/fetch_score_library.py" --target "$tdir" --lock "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}"
             return $?
             ;;
         *)
@@ -559,6 +576,18 @@ run_fetch_hook() {  # $1 = имя хука, $2 = целевой каталог; 
             err "  (функция run_fetch_hook), а не команда из манифеста."
             exit 2
             ;;
+    esac
+}
+
+# Хук, у которого маркер обязан нести sha256 архива из своего lock-файла:
+# маркер прошлой версии тогда не выглядит как «на месте», и новая версия
+# lock-файла доезжает обычным деплоем, без --force. Печатает ожидаемую
+# первую строку маркера или ничего (у остальных хуков маркер — факт наличия).
+SCORE_LIBRARY_LOCK="score_library.lock.json"
+hook_marker_expect() {  # $1 = имя хука
+    case "$1" in
+        fetch_score_library)
+            sed -n 's/.*"sha256": *"\([0-9a-f]\{64\}\)".*/\1/p' "${SCRIPT_DIR}/${SCORE_LIBRARY_LOCK}" 2>/dev/null | head -1 ;;
     esac
 }
 
@@ -594,14 +623,23 @@ ensure_hook() {  # $1 = индекс записи
     # Критерий тот же, что у самого фетчера: маркер verify_file. Ни размер,
     # ни «каталог непустой» тут не годятся — полускачанный пак выглядел бы
     # как готовый.
-    local present=0
+    local present=0 expect
+    expect="$(hook_marker_expect "$hook")"
     if [ -d "$tpath" ] && { [ -z "$verify" ] || [ -f "${tpath}/${verify}" ]; }; then
         present=1
+    fi
+    if [ "$present" -eq 1 ] && [ -n "$expect" ] && [ "$(head -n 1 "${tpath}/${verify}" 2>/dev/null)" != "$expect" ]; then
+        log "${name}: ${tpath}/${verify} от другой версии (ждём sha256 ${expect}) — обновляю"
+        present=0
     fi
 
     if [ "$present" -eq 1 ] && [ "$FORCE" != "1" ]; then
         log "${name}: OK no-op — ${tpath} на месте${verify:+ (${verify} найден)}"
-        warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
+        if [ -n "$expect" ]; then
+            log "${name}: маркер = sha256 архива из lock-файла (${expect}), сверен при установке"
+        else
+            warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
+        fi
         NOOP=$((NOOP + 1))
         return 0
     fi
@@ -631,8 +669,16 @@ ensure_hook() {  # $1 = индекс записи
         return 0
     fi
 
+    if [ -n "$expect" ] && [ "$(head -n 1 "${tpath}/${verify}" 2>/dev/null)" != "$expect" ]; then
+        missing_resource "$name" "$required" "$note" "хук отработал, но маркер ${verify} не от версии lock-файла"
+        return 0
+    fi
     log "${name}: OK установлен — ${tpath}${verify:+ (${verify} на месте)}"
-    warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
+    if [ -n "$expect" ]; then
+        log "${name}: sha256 архива сверен хуком с lock-файлом (${expect})"
+    else
+        warn "${name}: sha256 у каталога-пака не бывает — целостность НЕ проверена, только маркер"
+    fi
     INSTALLED=$((INSTALLED + 1))
 }
 

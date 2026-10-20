@@ -97,7 +97,7 @@ class TestRejection:
 
     def test_tampered_tool_name_is_rejected(self):
         signed = _sender().sign(_request(tool_name="get_battery_level"))
-        signed["tool_name"] = "execute_music_code"
+        signed["tool_name"] = "stop_navigation"
         ok, err = _server().verify(signed)
         assert ok is False
 

@@ -69,7 +69,7 @@ ENV ROS_DISTRO=${ROS_DISTRO} \
     DEBIAN_FRONTEND=noninteractive
 
 # apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
-# (build-args в "L-Build Vision Pi Services.yml" / "L-Build Single Service.yml"),
+# (build-args в "L-Build Pi Services.yml" / "L-Build Single Service.yml"),
 # но Dockerfile его не объявлял — build-arg молча игнорировался, и apt ходил
 # напрямую в packages.ros.org. Та же дыра, что нашёл пилот led_matrix
 # (коммит dc7ed68a2): ARG APT_PROXY обязан быть в ОБЕИХ стадиях, иначе
@@ -266,7 +266,7 @@ COPY --from=builder /ws/install /ws/install
 # Wheel + libhailort.so.4.24.0 — артефакты Hailo Developer Zone (аккаунт), НЕ в git.
 # Wheel бандлит python-обвязку, но НЕ libhailort.so — её извлекаем из
 # hailort_4.24.0_arm64.deb. Workflow кладёт ОБА файла в build-context из
-# /opt/rob_box/vendor/ на build-машине (см. L-Build Vision Pi Services.yml)
+# /opt/rob_box/vendor/ на build-машине (см. L-Build Pi Services.yml)
 # и жёстко падает, если пака нет — сознательно, см. коммит 23dd5b5fb.
 # Без wheel'а (HAILO_INSTALL_BINDING != whl) нода capability-honest деградирует
 # в stub — HAILO_ENABLED=true без биндинга НЕ даёт real inference.

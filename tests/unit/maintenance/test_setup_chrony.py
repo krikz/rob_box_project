@@ -76,6 +76,34 @@ def test_print_config_main_serves_lan():
     assert "\nserver " not in res.stdout
 
 
+def test_print_config_sound_is_a_client_of_main_pi_like_vision():
+    """ADR-0159: Sound Pi — третий узел, клиент Main Pi (как Vision), без внешних пулов."""
+    sound = _run(["--print-config", "--role", "sound"])
+    vision = _run(["--print-config", "--role", "vision"])
+    assert sound.returncode == 0, sound.stderr
+    assert "# role: sound" in sound.stdout
+    assert sound.stdout.replace("# role: sound", "# role: vision") == vision.stdout
+    assert not any(ln.startswith(("pool ", "allow ")) for ln in sound.stdout.splitlines())
+
+
+@pytest.mark.parametrize(
+    "sources_csv, expected_rc, expected_verdict",
+    [
+        ("^,*,10.1.1.10,10,2,377,1,0.000850,0.000900,0.000200", 0, "verdict=PASS"),
+        ("^,*,10.1.1.10,10,2,377,1,0.008000,0.008000,0.000200", 2, "verdict=FAIL"),
+        ("^,*,91.206.16.3,2,6,377,1,0.000100,0.000100,0.010000", 2, "verdict=FAIL"),
+        ("^,?,10.1.1.10,0,2,0,-,0,0,0", 2, "source=none"),
+    ],
+    ids=["0.85ms", "8ms", "external-source", "unreachable"],
+)
+def test_check_sound(tmp_path, sources_csv, expected_rc, expected_verdict):
+    env = {"CHRONYC": _fake_chronyc(tmp_path, sources_csv), "CHRONY_CONF": _conf(tmp_path, "sound")}
+    res = _run(["--check"], env)  # роль sound берётся из маркера конфига
+    assert res.returncode == expected_rc, res.stdout + res.stderr
+    assert expected_verdict in res.stdout
+    assert "chrony_check role=sound" in res.stdout
+
+
 def test_bad_role_rejected():
     assert _run(["--print-config", "--role", "katana"]).returncode == 1
     assert _run(["--print-config"]).returncode == 1

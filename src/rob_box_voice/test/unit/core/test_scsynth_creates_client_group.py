@@ -81,7 +81,7 @@ def _repo_root(start: Path) -> Path:
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
 START_SCRIPT = (
-    REPO_ROOT / "docker" / "vision" / "scripts" / "supercollider"
+    REPO_ROOT / "docker" / "sound" / "scripts" / "supercollider"
     / "start_supercollider.sh"
 )
 

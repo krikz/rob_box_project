@@ -1,0 +1,138 @@
+# Python dependencies for Voice Assistant (rob_box_voice)
+# Оптимизировано для ARM64 (Raspberry Pi 5)
+# Только реально используемые пакеты!
+
+# =============================================================================
+# Base utilities
+# =============================================================================
+pyyaml
+requests
+omegaconf==2.3.1
+
+# =============================================================================
+# Async HTTP server (voice-action-server sidecar, action_server/http_server.py)
+# The package.xml declares <exec_depend>aiohttp</exec_depend> but rosdep
+# resolution on ARM64 (Raspberry Pi 5, Ubuntu 24.04 noble) is unreliable.
+# Until 5d3df7e2 the package wasn't pinned, which left the voice-action-server
+# container crashing with `ModuleNotFoundError: No module named 'aiohttp'`
+# (399 restarts since 06.08 01:03 — see E2E_TESTING_DESIGN_v2 §D A43).
+# Pin explicitly so apt-resolved python3-aiohttp vs pip-aiohttp drift can't
+# reintroduce the regression.
+# =============================================================================
+aiohttp>=3.14.3,<4.0
+
+# =============================================================================
+# Audio processing
+# =============================================================================
+pyaudio
+sounddevice
+soundfile
+pydub
+numpy<3.0.0
+
+# =============================================================================
+# Image processing (for LED matrix animations)
+# =============================================================================
+pillow
+
+# =============================================================================
+# USB interface for ReSpeaker (used in audio_node.py)
+# =============================================================================
+pyusb
+
+# =============================================================================
+# Machine Learning (PyTorch for Silero TTS)
+# CRITICAL: PyTorch 2.9.0+ required for ARM64 compatibility!
+# PyTorch 2.1.0 has broken MKLDNN matmul primitives on aarch64
+# PyTorch 2.9.0 fixes: "could not create a primitive descriptor for a matmul primitive"
+# scipy: Required by Silero v5 for audio resampling and processing
+#
+# Issue #2609 — must pin the CPU-only aarch64 wheel.
+# On a `pip install torch>=2.13.0` resolver picks `torch==2.14.0+cu130` (the
+# CUDA-13.0 build for x86_64+arm64 with NVIDIA stack). On Vision Pi 5 (no
+# GPU, no NVIDIA libs) this pulls in libtorch_cuda.so / libc10_cuda.so /
+# libnvpl_blas_*.so / libarm_compute*.so — ~1.6 GiB of useless CUDA binaries
+# that bloat RSS by ~800 MB per torch-using node (tts_node + speaker_id_node
+# = ~1.6 GiB мёртвого груза, OOM kill в 4 GB voice-assistant mem_limit).
+#
+# `--extra-index-url https://download.pytorch.org/whl/cpu` ДОБАВЛЯЕТ CPU-канал
+# рядом с PyPI. Именно `--extra-index-url`, а НЕ `--index-url`: последний —
+# глобальная опция pip, она заменяет PyPI целиком для ВСЕГО файла (независимо
+# от того, на какой строке стоит), и тогда с pytorch-индекса начали бы искаться
+# vosk / resemblyzer / renardo-lib / ddgs / yandex-cloud-ml-sdk / pyaudio и
+# прочие — их там нет, build падает на `No matching distribution found`.
+# Оба Dockerfile ставят файл одной командой `pip3 install -r requirements.txt`,
+# так что область действия опции — весь список.
+#
+# Пин ТОЧНЫЙ (`==2.14.0+cpu`), а не диапазон: с двумя индексами под
+# `>=2.14.0+cpu,<3.0.0` подходит и PyPI'шный `2.14.0` (это и есть +cu130-сборка
+# для aarch64), и resolver волен взять его — вся экономия пропадает. Local
+# version label `+cpu` существует только на pytorch-индексе, поэтому точный пин
+# однозначно выбирает CPU-wheel: `torch.version.cuda is None`.
+#
+# Наличие колёс проверено на индексе (2026-09-16):
+#   torch-2.14.0+cpu-cp310-cp310-manylinux_2_28_aarch64.whl
+#   torchaudio-2.11.0+cpu-cp310-cp310-manylinux_2_28_aarch64.whl
+# (база ROS2 Humble / Ubuntu 22.04 = cp310).
+#
+# Замер до пина (2026-09-15, dev-87f3818): tts_node RSS 866 MB, из них ~800 MB
+# — libtorch_cuda.so / libc10_cuda.so / libnvpl_blas_* / libarm_compute*.
+# =============================================================================
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+torchaudio==2.11.0+cpu
+scipy
+
+# =============================================================================
+# Speech-to-Text: Vosk (offline, lightweight Russian STT)
+# Used in: rob_box_voice/stt_node.py
+# =============================================================================
+vosk
+
+
+# =============================================================================
+# Speaker identification (issue #1077 — голосовая биометрия)
+# Used in: rob_box_voice/speaker_id_node.py + utils/speaker_embeddings.py
+# resemblyzer builds 256-dim GE2E speaker embeddings; scikit-learn:
+# cosine_similarity for nearest-neighbour matching.
+# =============================================================================
+resemblyzer
+scikit-learn
+# Issue #1101 — runtime pin: resemblyzer 0.1.4 → librosa → numba импортирует
+# `coverage.types` (Tracer API). Debian Bullseye ships coverage 6.2 без
+# `types` submodule → AttributeError: module 'coverage' has no attribute
+# 'types' → embed_audio returns None. Pin coverage>=7.0 (где types.Tracer
+# сохранён). Также pin pyyaml>=6.0 (resemblyzer models.yaml требует C-парсер).
+coverage>=7.0
+pyyaml>=6.0
+
+# =============================================================================
+# gRPC for Yandex Cloud API v3 (STT + TTS)
+# Used in: rob_box_voice/tts_node.py (TTS with anton voice)
+#          scripts/test_yandex_v3.py, scripts/record_yandex_voice.py
+# =============================================================================
+grpcio
+grpcio-tools
+protobuf
+yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
+
+# =============================================================================
+# Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
+# Used in: rob_box_voice/dialogue_node.py
+# =============================================================================
+openai>=2.53.0,<3.0.0
+openai-agents>=0.19.4,<1.0.0
+# =============================================================================
+# Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
+# Used in: rob_box_mcp_tools/tools/music.py (engine/renardo_runtime.py, stop_music...)
+# SuperCollider runs in separate container; renardo connects via OSC localhost:57110
+# =============================================================================
+renardo-lib
+# ddgs — DuckDuckGo search (free, no API key) used by the search_web tool
+# in rob_box_voice/skills/music_skill.py for DJ-mode "research first" workflow
+# (issue #1000) and by search_web MCP-tool (web_search.py, issue #1101/#1104).
+# NOTE: старый пакет duckduckgo_search переименован в ddgs и возвращает
+# 0/мусор — используем ТОЛЬКО ddgs (>=9.0.0, проверено на роботе 11.08).
+# Used by Compositor agent before handle_music to learn about
+# artist style, BPM, key, instruments.
+ddgs>=9.14.4

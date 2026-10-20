@@ -102,7 +102,7 @@ Thumbs.db
 
 .worktrees/
 .claude/worktrees/
-docker/vision/config/voice_assistant/event_mode.yaml
+docker/sound/config/voice_assistant/event_mode.yaml
 .colcon-bench/
 
 # e2e live test artefacts (regenerated each run)
@@ -115,9 +115,16 @@ tests/e2e/_artifacts/
 # data/ при необходимости.
 /data/
 
+# Боевые данные на Pi (ADR-0159): docker/<pi>/data/ — живые БД людей
+# (speakers.db, voice_memory.db, faces), root-owned, монтируются в контейнеры.
+# В git отслеживаемых файлов под этими путями нет (git ls-files docker/*/data → пусто).
+docker/*/data/
+
 # frontend
 node_modules/
 # Vite root cache — artefact of `npx vite` when invoked from a directory
 # without local vite/node_modules (e.g. wrong cwd in PowerShell). Normal
 # vite cache for webxr_client is in src/rob_box_quest/webxr_client/.gitignore.
 /.vite/
+/artifacts_live*
+/live_check*

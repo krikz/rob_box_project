@@ -19,9 +19,9 @@ Change ``skill-scoped-dialogue-context``, фаза 3, задача 3.1.
 
 * :class:`~rob_box_voice.core.command_parser.CommandParser` — тот же
   экземпляр, что обслуживает ``command_intent_gate`` (issue #1279);
-* музыкальные детекторы из
-  :mod:`~rob_box_voice.core.dialogue_guards` — ``user_wants_music``,
-  ``is_music_stop_command``, ``user_wants_performance``.
+* детекторы из :mod:`~rob_box_voice.core.dialogue_guards` —
+  ``is_music_stop_command``, ``user_wants_performance`` (``user_wants_music``
+  удалён вместе с музыкальным гуардом Bug C, ADR-0149 PR-13a).
 
 Отсюда граница ответственности: роутер НЕ обязан быть точным. Он обязан
 быть **дешёвым и безопасным**. Промах ничего не ломает — при выключенном
@@ -38,7 +38,6 @@ from typing import Optional
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_guards import (
     is_music_stop_command,
-    user_wants_music,
     user_wants_performance,
 )
 
@@ -92,11 +91,8 @@ _PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"\bкартир\w*", re.I),
         re.compile(r"\b(построй|создай|сделай|загрузи)\s+карт", re.I),
     ),
-    "renardo-library": (
-        re.compile(r"\bмедиатек\w*", re.I),
-    ),
     "player": (
-        re.compile(r"\bбиблиотек\w*", re.I),
+        re.compile(r"\b(библиотек|медиатек)\w*", re.I),
         re.compile(r"\b(что|какие)\b.{0,20}\bтрек", re.I),
         re.compile(r"\b(тот|этот|прошл\w+|раньше)\b.{0,20}\bтрек", re.I),
         re.compile(r"\bпослуша(ть|ем)\b.{0,20}\bещ[её]\b", re.I),
@@ -208,9 +204,7 @@ class SkillRouter:
             return "dj"
         if any(pattern.search(text) for pattern in _PATTERNS["player"]):
             return "player"
-        if any(pattern.search(text) for pattern in _PATTERNS["renardo-library"]):
-            return "renardo-library"
-        if user_wants_music(text) or user_wants_performance(text):
+        if user_wants_performance(text):
             return "composer"
         return None
 

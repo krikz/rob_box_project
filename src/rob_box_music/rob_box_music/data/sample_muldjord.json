@@ -1,0 +1,366 @@
+{
+ "_comment": [
+  "Каталог пака «DrumGizmo MuldjordKit (CC BY 4.0, Lars Muldjord)». Файлы в репозитории не лежат: их кладёт на хост Ресурсный пак",
+  "(запись манифеста по хуку muldjord_kit), пути = dest из",
+  "docker/vision/scripts/resource_pack/muldjord_kit.lock.json (сверяет тест).",
+  "seconds/channels/samplerate/peak_db/rms_db посчитаны python soundfile+numpy по реально скачанным файлам",
+  "07.10.2026 (scripts/music/build_sample_pack_catalog.py); роль — таблица правил в этом скрипте.",
+  "peak_db/rms_db в дБFS по всем каналам; на 16 кГц DAC робота НЕ прослушано.",
+  "В генератор пак НЕ подключён (ADR-0153 S3/S5): только данные."
+ ],
+ "pack_dir": "muldjord",
+ "roles": [
+  "kick",
+  "snare",
+  "tom",
+  "hat",
+  "ride",
+  "crash",
+  "break",
+  "loop",
+  "perc",
+  "bass",
+  "tonal",
+  "fx"
+ ],
+ "groups": {
+  "muldjord_china": "crash: muldjord_china",
+  "muldjord_crashl": "crash: muldjord_crashl",
+  "muldjord_crashr": "crash: muldjord_crashr",
+  "muldjord_hihatclosed": "hat: muldjord_hihatclosed",
+  "muldjord_hihatopen": "hat: muldjord_hihatopen",
+  "muldjord_kdruml": "kick: muldjord_kdruml",
+  "muldjord_kdrumr": "kick: muldjord_kdrumr",
+  "muldjord_ridel": "ride: muldjord_ridel",
+  "muldjord_ridelbell": "ride: muldjord_ridelbell",
+  "muldjord_rider": "ride: muldjord_rider",
+  "muldjord_riderbell": "ride: muldjord_riderbell",
+  "muldjord_snare": "snare: muldjord_snare",
+  "muldjord_tom1": "tom: muldjord_tom1",
+  "muldjord_tom2": "tom: muldjord_tom2",
+  "muldjord_tom3": "tom: muldjord_tom3",
+  "muldjord_tom4": "tom: muldjord_tom4"
+ },
+ "samples": {
+  "muldjord_china_06": {
+   "path": "China/6-China-OHL.flac",
+   "role": "crash",
+   "seconds": 3.119,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -14.6,
+   "rms_db": -38.7,
+   "group": "muldjord_china"
+  },
+  "muldjord_china_08": {
+   "path": "China/8-China-OHL.flac",
+   "role": "crash",
+   "seconds": 3.843,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -12.9,
+   "rms_db": -37.8,
+   "group": "muldjord_china"
+  },
+  "muldjord_crashl_08": {
+   "path": "CrashL/8-CrashL-OHL.flac",
+   "role": "crash",
+   "seconds": 5.194,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.4,
+   "rms_db": -30.1,
+   "group": "muldjord_crashl"
+  },
+  "muldjord_crashl_09": {
+   "path": "CrashL/9-CrashL-OHL.flac",
+   "role": "crash",
+   "seconds": 5.442,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -2.7,
+   "rms_db": -28.8,
+   "group": "muldjord_crashl"
+  },
+  "muldjord_crashr_07": {
+   "path": "CrashR/7-CrashR-OHR.flac",
+   "role": "crash",
+   "seconds": 4.702,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -10.9,
+   "rms_db": -34.6,
+   "group": "muldjord_crashr"
+  },
+  "muldjord_crashr_08": {
+   "path": "CrashR/8-CrashR-OHR.flac",
+   "role": "crash",
+   "seconds": 4.522,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -11.1,
+   "rms_db": -34.5,
+   "group": "muldjord_crashr"
+  },
+  "muldjord_hihatclosed_16": {
+   "path": "HihatClosed/16-HihatClosed-Hihat.flac",
+   "role": "hat",
+   "seconds": 0.446,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -14.0,
+   "rms_db": -36.0,
+   "group": "muldjord_hihatclosed"
+  },
+  "muldjord_hihatclosed_18": {
+   "path": "HihatClosed/18-HihatClosed-Hihat.flac",
+   "role": "hat",
+   "seconds": 0.366,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -13.3,
+   "rms_db": -34.2,
+   "group": "muldjord_hihatclosed"
+  },
+  "muldjord_hihatopen_14": {
+   "path": "HihatOpen/14-HihatOpen-Hihat.flac",
+   "role": "hat",
+   "seconds": 1.315,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -12.3,
+   "rms_db": -33.1,
+   "group": "muldjord_hihatopen"
+  },
+  "muldjord_hihatopen_16": {
+   "path": "HihatOpen/16-HihatOpen-Hihat.flac",
+   "role": "hat",
+   "seconds": 1.444,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -10.9,
+   "rms_db": -32.2,
+   "group": "muldjord_hihatopen"
+  },
+  "muldjord_kdruml_19": {
+   "path": "KdrumL/19-KdrumL-KdrumL.flac",
+   "role": "kick",
+   "seconds": 0.703,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -3.3,
+   "rms_db": -25.4,
+   "group": "muldjord_kdruml"
+  },
+  "muldjord_kdruml_20": {
+   "path": "KdrumL/20-KdrumL-KdrumL.flac",
+   "role": "kick",
+   "seconds": 0.639,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -3.1,
+   "rms_db": -25.0,
+   "group": "muldjord_kdruml"
+  },
+  "muldjord_kdrumr_20": {
+   "path": "KdrumR/20-KdrumR-KdrumR.flac",
+   "role": "kick",
+   "seconds": 0.677,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.2,
+   "rms_db": -24.5,
+   "group": "muldjord_kdrumr"
+  },
+  "muldjord_kdrumr_21": {
+   "path": "KdrumR/21-KdrumR-KdrumR.flac",
+   "role": "kick",
+   "seconds": 0.96,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.1,
+   "rms_db": -26.1,
+   "group": "muldjord_kdrumr"
+  },
+  "muldjord_ridel_07": {
+   "path": "RideL/7-RideL-RideL.flac",
+   "role": "ride",
+   "seconds": 7.965,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -18.2,
+   "rms_db": -44.3,
+   "group": "muldjord_ridel"
+  },
+  "muldjord_ridel_08": {
+   "path": "RideL/8-RideL-RideL.flac",
+   "role": "ride",
+   "seconds": 8.098,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -17.8,
+   "rms_db": -45.3,
+   "group": "muldjord_ridel"
+  },
+  "muldjord_ridelbell_02": {
+   "path": "RideLBell/2-RideLBell-RideL.flac",
+   "role": "ride",
+   "seconds": 8.273,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -9.6,
+   "rms_db": -40.1,
+   "group": "muldjord_ridelbell"
+  },
+  "muldjord_ridelbell_03": {
+   "path": "RideLBell/3-RideLBell-RideL.flac",
+   "role": "ride",
+   "seconds": 9.263,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -7.1,
+   "rms_db": -39.1,
+   "group": "muldjord_ridelbell"
+  },
+  "muldjord_rider_07": {
+   "path": "RideR/7-RideR-RideR.flac",
+   "role": "ride",
+   "seconds": 8.507,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -15.9,
+   "rms_db": -44.1,
+   "group": "muldjord_rider"
+  },
+  "muldjord_rider_09": {
+   "path": "RideR/9-RideR-RideR.flac",
+   "role": "ride",
+   "seconds": 7.655,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -15.9,
+   "rms_db": -43.2,
+   "group": "muldjord_rider"
+  },
+  "muldjord_riderbell_06": {
+   "path": "RideRBell/6-RideRBell-RideR.flac",
+   "role": "ride",
+   "seconds": 4.905,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -7.8,
+   "rms_db": -39.2,
+   "group": "muldjord_riderbell"
+  },
+  "muldjord_riderbell_08": {
+   "path": "RideRBell/8-RideRBell-RideR.flac",
+   "role": "ride",
+   "seconds": 4.984,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.2,
+   "rms_db": -34.3,
+   "group": "muldjord_riderbell"
+  },
+  "muldjord_snare_40": {
+   "path": "Snare/40-Snare-Snare_top.flac",
+   "role": "snare",
+   "seconds": 0.762,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.7,
+   "rms_db": -27.5,
+   "group": "muldjord_snare"
+  },
+  "muldjord_snare_43": {
+   "path": "Snare/43-Snare-Snare_top.flac",
+   "role": "snare",
+   "seconds": 0.824,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.0,
+   "rms_db": -27.0,
+   "group": "muldjord_snare"
+  },
+  "muldjord_tom1_07": {
+   "path": "Tom1/7-Tom1-Tom1.flac",
+   "role": "tom",
+   "seconds": 3.954,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -5.3,
+   "rms_db": -30.3,
+   "group": "muldjord_tom1"
+  },
+  "muldjord_tom1_08": {
+   "path": "Tom1/8-Tom1-Tom1.flac",
+   "role": "tom",
+   "seconds": 3.85,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -4.2,
+   "rms_db": -29.6,
+   "group": "muldjord_tom1"
+  },
+  "muldjord_tom2_07": {
+   "path": "Tom2/7-Tom2-Tom2.flac",
+   "role": "tom",
+   "seconds": 3.031,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -5.6,
+   "rms_db": -32.1,
+   "group": "muldjord_tom2"
+  },
+  "muldjord_tom2_08": {
+   "path": "Tom2/8-Tom2-Tom2.flac",
+   "role": "tom",
+   "seconds": 2.208,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -5.3,
+   "rms_db": -30.2,
+   "group": "muldjord_tom2"
+  },
+  "muldjord_tom3_07": {
+   "path": "Tom3/7-Tom3-Tom3.flac",
+   "role": "tom",
+   "seconds": 2.061,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -6.4,
+   "rms_db": -29.1,
+   "group": "muldjord_tom3"
+  },
+  "muldjord_tom3_08": {
+   "path": "Tom3/8-Tom3-Tom3.flac",
+   "role": "tom",
+   "seconds": 2.385,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -6.3,
+   "rms_db": -28.7,
+   "group": "muldjord_tom3"
+  },
+  "muldjord_tom4_08": {
+   "path": "Tom4/8-Tom4-Tom4.flac",
+   "role": "tom",
+   "seconds": 1.418,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -7.3,
+   "rms_db": -28.3,
+   "group": "muldjord_tom4"
+  },
+  "muldjord_tom4_09": {
+   "path": "Tom4/9-Tom4-Tom4.flac",
+   "role": "tom",
+   "seconds": 1.558,
+   "channels": 1,
+   "samplerate": 44100,
+   "peak_db": -6.9,
+   "rms_db": -28.2,
+   "group": "muldjord_tom4"
+  }
+ }
+}

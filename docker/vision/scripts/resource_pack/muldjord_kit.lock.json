@@ -1,0 +1,269 @@
+{
+ "_comment": [
+  "Пак DrumGizmo MuldjordKit (Lars Muldjord, Tama Superstar), CC BY 4.0, drumgizmo.org/wiki/doku.php?id=kits:muldjordkit.",
+  "Официальный архив MuldjordKit3.zip (больше 1.1 ГБ, md5 8a66a3e90bbf15687b2d34fd355024f2) на Pi тянуть незачем: берём",
+  "те же flac из конверсии sfzinstruments/DrumGizmo.MuldjordKit (лицензия репо cc-by-4.0) НА ПИННУТОМ коммите, по файлу.",
+  "Отбор (одноразово, 07.10.2026): по одному ближнему микрофону на инструмент (Kdrum*, Snare_top, Tom*, Hihat, Ride*,",
+  "OHL/OHR для крэшей и china); из всех силовых слоёв — 75-й перцентиль по пику и ближайший более сильный (два удара,",
+  "round-robin). 16 кГц выход робота многослойность не использует. Файлы в git не лежат."
+ ],
+ "title": "Muldjord kit",
+ "files": [
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/China/6-China-OHL.flac",
+   "dest": "China/6-China-OHL.flac",
+   "size": 197552,
+   "sha256": "58f5ca3695338988300909143ec0a22f5b3b94524cf4c6186adbd21c1ea1b14e"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/China/8-China-OHL.flac",
+   "dest": "China/8-China-OHL.flac",
+   "size": 232415,
+   "sha256": "82262fbaca3dbbeba273f7800ee86828252c8daed7b15a283a4d2cd29117cbab"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/CrashL/8-CrashL-OHL.flac",
+   "dest": "CrashL/8-CrashL-OHL.flac",
+   "size": 370043,
+   "sha256": "02a47b6d49d2fb061ece75493156f68d311b903e0014426ecff19c7ad18629d6"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/CrashL/9-CrashL-OHL.flac",
+   "dest": "CrashL/9-CrashL-OHL.flac",
+   "size": 387832,
+   "sha256": "b1c4442f787d1a94b8ba2077e90c8d354e0ecfe3f74cfdb721b94b8771da9a6e"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/CrashR/7-CrashR-OHR.flac",
+   "dest": "CrashR/7-CrashR-OHR.flac",
+   "size": 327614,
+   "sha256": "627c1e4f1c4aac795e2efbb78d8dde823d0e5ad85b9274ad4e4c0201d3936b8a"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/CrashR/8-CrashR-OHR.flac",
+   "dest": "CrashR/8-CrashR-OHR.flac",
+   "size": 319049,
+   "sha256": "cb09ca888d53f6e2981eaf015f6c90925a475f0a1963365383fa8ec63b96d45e"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/HihatClosed/16-HihatClosed-Hihat.flac",
+   "dest": "HihatClosed/16-HihatClosed-Hihat.flac",
+   "size": 34068,
+   "sha256": "866cf59b8fee4edfb4e0286260141f8044a8e91a897d7af131c70d89e9eb0b7b"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/HihatClosed/18-HihatClosed-Hihat.flac",
+   "dest": "HihatClosed/18-HihatClosed-Hihat.flac",
+   "size": 29553,
+   "sha256": "8070b0e88b8dc402c18449dd7f321d782ee4760b9957e6a54c7182bbd7ab14b0"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/HihatOpen/14-HihatOpen-Hihat.flac",
+   "dest": "HihatOpen/14-HihatOpen-Hihat.flac",
+   "size": 109366,
+   "sha256": "dc68ac6ad98cbb8aac0928c09fd91c9dd1e22c89562e2702963b7048c7d60eb3"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/HihatOpen/16-HihatOpen-Hihat.flac",
+   "dest": "HihatOpen/16-HihatOpen-Hihat.flac",
+   "size": 122392,
+   "sha256": "a2509ebbb093be916386bb46ae786fd9c90a0f0d87b512467b2e5ef9fe673e14"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/KdrumL/19-KdrumL-KdrumL.flac",
+   "dest": "KdrumL/19-KdrumL-KdrumL.flac",
+   "size": 37609,
+   "sha256": "15e15af5803eb213a26bb909c282f3345fe8939991ce4b51a24626bc278b8ea9"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/KdrumL/20-KdrumL-KdrumL.flac",
+   "dest": "KdrumL/20-KdrumL-KdrumL.flac",
+   "size": 35178,
+   "sha256": "8e9fd730e211e081a805488565bc3f9334e5a69242c1ea0ad1fc113bfdad4a40"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/KdrumR/20-KdrumR-KdrumR.flac",
+   "dest": "KdrumR/20-KdrumR-KdrumR.flac",
+   "size": 37300,
+   "sha256": "1d37db4dd47c9a9cdbeb43bb59081be1444f5771969d593e45e46b51a12b3360"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/KdrumR/21-KdrumR-KdrumR.flac",
+   "dest": "KdrumR/21-KdrumR-KdrumR.flac",
+   "size": 48320,
+   "sha256": "e250ac2142be34d9065406b09cd459128b1ff006e8b046ba9ef3dd73629cf3dc"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideL/7-RideL-RideL.flac",
+   "dest": "RideL/7-RideL-RideL.flac",
+   "size": 483077,
+   "sha256": "0e7ff7c25e893a8d527383107283313495c21eb49aa7624697bc6ef29e6d07e9"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideL/8-RideL-RideL.flac",
+   "dest": "RideL/8-RideL-RideL.flac",
+   "size": 482251,
+   "sha256": "7ebd5f2abf7a78846f9b2503edc2d1b74095bc5990c41ed88ac663c12610994c"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideLBell/2-RideLBell-RideL.flac",
+   "dest": "RideLBell/2-RideLBell-RideL.flac",
+   "size": 487235,
+   "sha256": "cf0fb02f74c41a6b6bb6b10c1ac29315c2b596fa3d58a29c8cd30c65f4a14ac4"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideLBell/3-RideLBell-RideL.flac",
+   "dest": "RideLBell/3-RideLBell-RideL.flac",
+   "size": 540701,
+   "sha256": "4fc5747219f7e6e514e9b96849f108786c9d89de1bdec905f9fb465ce88f15ef"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideR/7-RideR-RideR.flac",
+   "dest": "RideR/7-RideR-RideR.flac",
+   "size": 491232,
+   "sha256": "8f4e1c4c60836f4fe5a26b3501bcb10f115a4c4bfda3a515c8cbcc1ccf44c6bb"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideR/9-RideR-RideR.flac",
+   "dest": "RideR/9-RideR-RideR.flac",
+   "size": 454676,
+   "sha256": "eceb9a0e4f6477e03a3ed8858c2548939893e95cb74ba2109cfface09331823d"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideRBell/6-RideRBell-RideR.flac",
+   "dest": "RideRBell/6-RideRBell-RideR.flac",
+   "size": 289330,
+   "sha256": "39d5933eb6384a956745f5459adddf608aa34534219e3612f0bde8265a8f6e1d"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/RideRBell/8-RideRBell-RideR.flac",
+   "dest": "RideRBell/8-RideRBell-RideR.flac",
+   "size": 310594,
+   "sha256": "84a8a70efa7d5c997291cceb2a7cf4d925b92d9dea22e3ea37efeba6b4b5b73d"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Snare/40-Snare-Snare_top.flac",
+   "dest": "Snare/40-Snare-Snare_top.flac",
+   "size": 47954,
+   "sha256": "08e7695ac265cef02f293cdbfefba55959eea228185f614929d65edf7af2847f"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Snare/43-Snare-Snare_top.flac",
+   "dest": "Snare/43-Snare-Snare_top.flac",
+   "size": 51121,
+   "sha256": "2f26b2dcad4ca58b54383ada7498938089a3473a32915436d76b4724211e6450"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom1/7-Tom1-Tom1.flac",
+   "dest": "Tom1/7-Tom1-Tom1.flac",
+   "size": 192433,
+   "sha256": "962da7b49146f77e42499de7adcf892fa3a5c9daa82ea20f8cdb98e607382602"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom1/8-Tom1-Tom1.flac",
+   "dest": "Tom1/8-Tom1-Tom1.flac",
+   "size": 186789,
+   "sha256": "2405370bc7b2175c0d911f79894b6cad1da1217976da0a7c47be61c5d1e70ef6"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom2/7-Tom2-Tom2.flac",
+   "dest": "Tom2/7-Tom2-Tom2.flac",
+   "size": 147691,
+   "sha256": "b4f5bfb526b9f469be8f2b62da70c8bc117627cb3c593e430564d637c6878bf0"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom2/8-Tom2-Tom2.flac",
+   "dest": "Tom2/8-Tom2-Tom2.flac",
+   "size": 112027,
+   "sha256": "dc1ec9e2fda51b7a03e63b0f13cb076539ffb2e06ecdd144facffadc6cf34d31"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom3/7-Tom3-Tom3.flac",
+   "dest": "Tom3/7-Tom3-Tom3.flac",
+   "size": 105810,
+   "sha256": "6fc5cb74b7280aba291a2be67845552b35969c1eb92ecf7e418df012589c44f9"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom3/8-Tom3-Tom3.flac",
+   "dest": "Tom3/8-Tom3-Tom3.flac",
+   "size": 121499,
+   "sha256": "403f83a9b234a3a01e1d4d0e45972cbf2fe0f5169fa63f5dcf2b097573e58afd"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom4/8-Tom4-Tom4.flac",
+   "dest": "Tom4/8-Tom4-Tom4.flac",
+   "size": 78869,
+   "sha256": "2551dac9350c2c3ba7fa768afd1a383228e6e287e0b00e0956ba606ab4ac4435"
+  },
+  {
+   "repo": "sfzinstruments/DrumGizmo.MuldjordKit",
+   "commit": "fc165714974aa843125ce88597f341b31376e1d5",
+   "src": "DrumGizmo/MuldjordKit/Samples/Tom4/9-Tom4-Tom4.flac",
+   "dest": "Tom4/9-Tom4-Tom4.flac",
+   "size": 86369,
+   "sha256": "a4558ae62363491dc5259eb19310f09d44d96f37de04913b2158144d18ed0232"
+  }
+ ]
+}

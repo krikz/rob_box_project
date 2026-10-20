@@ -30,7 +30,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
-from rob_box_core.praise_gate import contains_praise
+from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.tool_loop import (
@@ -96,16 +96,6 @@ _MAX_TOOL_ITERATIONS: int = 8
 #: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
 #: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
 LOAD_SKILL_TOOL: str = "load_skill"
-
-#: ADR-0132 PR-7 — ``save_arrangement_preset`` (composer skill,
-#: ``rob_box_mcp_tools/tools/music.py``) сохраняет ручки последнего
-#: сыгранного трека под именем мелодии как дефолт для БУДУЩИХ
-#: проигрываний. Модель не вправе решить сама, что аранжировка достаточно
-#: хороша для этого — гейт по последней реплике юзера живёт здесь
-#: (единственное место, где agent_core уже знает
-#: ``current_user_input`` за каждый батч tool_calls), не в самом MCP-туле:
-#: тот процесс музыки не видит истории диалога вообще.
-SAVE_ARRANGEMENT_PRESET_TOOL: str = "save_arrangement_preset"
 
 
 def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
@@ -179,16 +169,11 @@ PromptObserver = Callable[[PromptStats], None]
 # (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
 # re-ordering fixes the *intra-batch* race:
 #
-# * music tools (``execute_music_code`` / ``set_vibe_preset`` / ``load_track``)
-#   run FIRST so the prelude starts before speech,
 # * ordinary tools keep their relative order,
 # * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
 #   flagged ``defer_until_voice_drained`` when the same batch also speaks —
 #   the flag tells the scheduler not to fire the side effect until the voice
 #   channel is empty.
-_MUSIC_PRELUDE_TOOLS: frozenset[str] = frozenset(
-    {"execute_music_code", "set_vibe_preset", "load_track"}
-)
 _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
 # ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
@@ -197,7 +182,7 @@ _VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
 # уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
 # публикация в топик (миллисекунды), порядок речи и музыки не меняет.
 _REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
-_RUN_FIRST_TOOLS: frozenset[str] = _MUSIC_PRELUDE_TOOLS | _REGISTER_FIRST_TOOLS
+_RUN_FIRST_TOOLS: frozenset[str] = _REGISTER_FIRST_TOOLS
 _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
     {"stop_music", "stop_navigation"}
 )
@@ -244,7 +229,7 @@ _SOURCE_PREFIX_RE = re.compile(
 
 def _raw_user_utterance(text: str) -> str:
     """Issue #2955 -- the user's OWN words, for the praise/vocal-request
-    gates (``_gate_save_arrangement_preset``, ``_is_hallucinated_speak_text``).
+    gate (``_is_hallucinated_speak_text``).
 
     Both gates used to read the LAST ``role=user`` LLMMessage off the
     live ``messages`` list (:meth:`AgentCore._find_last_user_input`) --
@@ -300,7 +285,7 @@ _EXECUTED_ACTIONS_QUOTE = 60
 
 #: Заголовок блока. Слова «выполнено в прошл…» и «вызваны инструменты»
 #: оставлены намеренно: их уже знает страховочный детектор пересказа
-#: служебного текста (``is_service_context_paraphrased`` в rob_box_voice,
+#: служебного текста (бывший ``is_service_context_paraphrased``, удалён,
 #: #2766/#2817), новых регексов для него не нужно (мораторий #3132).
 _EXECUTED_ACTIONS_HEADER = (
     "[выполнено в прошлых ходах] вызваны инструменты "
@@ -325,6 +310,13 @@ def _keep_no_turns(turns: list[Turn]) -> list[Turn]:
 def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
     """Отзываемый ответ хода живёт, только пока он ещё в окне."""
     return reply if any(turn is reply for turn in kept) else None
+
+
+def _reply_text(spoken: str, internal_marker: str | None) -> str:
+    """Issue #3598 — финальный текст, годный в историю: рассуждение → ``""``."""
+    if internal_marker:
+        return ""
+    return spoken
 
 
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
@@ -479,6 +471,7 @@ from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — bac
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
     is_tool_call_markup,  # Issue #2760
+    quoted_turn_context,  # Issue #3598
 )
 
 
@@ -495,12 +488,12 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 )
 
 
-# Issue #1708 — hallucinated-lyrics guard. After ``execute_music_code``
-# (Renardo instrumental), the LLM sometimes also calls ``speak_text`` with
+# Issue #1708 — hallucinated-lyrics guard. After a music-launch tool
+# (``generate_music`` / ``music_library``), the LLM sometimes also calls ``speak_text`` with
 # invented lyrics («Нига-стайл, Колобок-флоу...»). The user hears a
 # robotic voice reading hallucinated text on top of (or instead of) the
 # beat. Master prompt only authorises ONE short accept phrase after
-# ``execute_music_code`` («Ок, играю Бах»), not full lyrics. We drop
+# a music launch («Ок, играю Бах»), not full lyrics. We drop
 # ``speak_text`` calls that follow a music tool AND exceed the accept-
 # phrase threshold AND the user request was NOT a vocal one (rap / poem /
 # song — there backing mode legitimately calls speak_text × N).
@@ -514,7 +507,7 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 # * там — «просил ли пользователь голос БЕЗ бита?». Список у́же
 #   намеренно: для речитатива (рэп / зачитай / частушка) бит обязателен,
 #   и music-guard Bug C (issue #992) должен нуднуть модель, если она не
-#   вызвала ``execute_music_code``.
+#   вызвала тул запуска музыки.
 #
 # Слить их — значит молча снять требование бита с рэпа. Инвариант
 # «voice — строгое подмножество harness» закреплён тестом
@@ -533,15 +526,6 @@ _VOCAL_REQUEST_KEYWORDS: tuple = (
 # this on a non-vocal request is a hallucination. The number matches the
 # existing TRACK-mode accept test in test_issue_992_batch_cleanup.
 _ACCEPT_PHRASE_MAX_CHARS: int = 40
-#: Broader set than ``_MUSIC_PRELUDE_TOOLS`` — adds ``generate_music``
-#: (MiniMax Music API) and ``gen_play_from_library``. The prelude set
-#: only governs execution ORDER (music tools must run first), but the
-#: hallucinated-lyrics guard must fire for ANY music tool that leaves
-#: the user hearing lyrics on top of audio (issue #1708 / #1561).
-_MUSIC_LAUNCH_TOOLS: frozenset[str] = frozenset({
-    "execute_music_code", "set_vibe_preset", "load_track",
-    "generate_music", "gen_play_from_library",
-})
 
 
 def _extract_track_name(
@@ -703,6 +687,12 @@ class DialogResult:
     # validation, the retry in the same turn succeeded» looked exactly
     # like a failure to dialogue_node's music guard (#2966 rule).
     succeeded_tools: list[str] = field(default_factory=list)
+    # Issue #3598 — финальный текст хода цитирует служебное из контекста
+    # хода (``"<music_state>"``) или имя тула (``"speak_text"``): это
+    # рассуждение модели, а не реплика человеку. ``None`` — текст чистый.
+    # Ядро такой текст в историю не пишет; оболочка его не озвучивает
+    # (см. :func:`~rob_box_harness.core.tool_loop.text_classify.quoted_turn_context`).
+    internal_text_marker: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1157,12 @@ class AgentCore:
                 result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
                 result.succeeded_tools = list(outcome.succeeded_tools)
+                # Issue #3598 — рассуждение с тегами контекста/именами тулов
+                # не реплика: в историю не ложится (иначе задаёт тон
+                # следующим ходам — живой лог 13.10, ``[3] assistant``).
+                result.internal_text_marker = quoted_turn_context(
+                    outcome.spoken_text, dynamic_system
+                )
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1174,7 +1170,9 @@ class AgentCore:
                     # "done" misleads the model into (a) echoing old topics
                     # and (b) replying "done" itself (silent failures). Silent
                     # turns are dropped entirely — they add no useful context.
-                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
+                    assistant_content = outcome.spoken_via_tool or _reply_text(
+                        outcome.spoken_text, result.internal_text_marker
+                    )
                     if not self._is_silent_spoken(assistant_content, ()):
                         assistant_metadata = dict(user_metadata)
                         # 🔴 FIX (live 01.09, vision-pi): история хранила
@@ -1292,7 +1290,7 @@ class AgentCore:
         fake-confirmation turn before it becomes a few-shot example for
         the next similar request. Removed directly from the in-memory window.
 
-        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E, TurnGuards,
+        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E,
         music, tool-skipped…), не только из music-путей: иначе после ответа
         ретрая в окне два assistant подряд (живой лог 28.09 — 28 мест), и
         модель перечитывает собственную неправду как пример. Снимается
@@ -1729,14 +1727,14 @@ class AgentCore:
             # before and after the candidate speak_text). The order
             # inside the batch doesn't matter for the guard — the LLM
             # sometimes calls ``speak_text(title)`` BEFORE
-            # ``execute_music_code`` (issue #1708 live shape) and
+            # the music tool (issue #1708 live shape) and
             # sometimes AFTER. Pre-compute the set from the model's
             # ORIGINAL tool_calls (before our re-ordering) so we cover
             # both shapes.
             same_batch_music_calls: set[str] = {
                 call.name
                 for call in response.tool_calls
-                if call.name in _MUSIC_LAUNCH_TOOLS
+                if call.name in MUSIC_AUDIBLE_LYRICS_TOOLS
             }
             results_by_call_id: dict[str, ToolResult] = {}
             suppressed_texts = await self._execute_tool_batch(
@@ -2145,18 +2143,6 @@ class AgentCore:
                 results_by_call_id[call.id] = self._handle_load_skill(call)
                 continue
 
-            # ADR-0132 PR-7 — save_arrangement_preset: hard gate по
-            # похвале/просьбе сохранить в ПОСЛЕДНЕЙ реплике юзера (см.
-            # SAVE_ARRANGEMENT_PRESET_TOOL docstring). Отказ — не ошибка
-            # тула (как и у track_start_guard): модель должна закончить
-            # ход репликой, а не получить ``is_error``.
-            if call.name == SAVE_ARRANGEMENT_PRESET_TOOL:
-                guarded = _gate_save_arrangement_preset(call, current_user_input)
-                if isinstance(guarded, ToolResult):
-                    results_by_call_id[call.id] = guarded
-                    continue
-                call = guarded
-
             results_by_call_id[call.id] = await self._tools.execute(call)
         return suppressed_texts
 
@@ -2445,7 +2431,7 @@ class AgentCore:
         # 🔴 FIX: system prompt обязателен первым сообщением — раньше
         # dialogue_node грузил _system_prompt, но никогда не передавал
         # его в LLM: deepseek работала БЕЗ системного промпта (все
-        # правила «ALWAYS execute_music_code», NO METALANGUAGE и т.д.
+        # правила про запуск музыки, NO METALANGUAGE и т.д.
         # не доходили до модели). Найдено через verbose-трейс 09:08:
         # в messages не было [0] system.
         if self._system_prompt:
@@ -2533,18 +2519,17 @@ def _is_hallucinated_speak_text(
     when ALL of the following hold:
 
     * The call is ``speak_text`` (other tools are passed through).
-    * A music-launch tool (``execute_music_code`` / ``set_vibe_preset``
-      / ``load_track`` / ``generate_music`` / ``gen_play_from_library``)
+    * A music-launch tool (``generate_music`` / ``music_library``)
       appears in the SAME LLM batch (either before OR after this
       ``speak_text`` call) — ``same_batch_music_calls`` carries those
       names. The order in the batch does NOT matter: the LLM
       sometimes calls ``speak_text(title)`` BEFORE
-      ``execute_music_code`` (issue #1708 live shape) and sometimes
+      the music tool (issue #1708 live shape) and sometimes
       AFTER (other variants). Either way the user hears robotic text
       on top of the beat.
     * The user request was NOT a vocal one (no «спой/пой/песня/рэп/
       зачитай/стих» cues) — rap / poem / song backing mode legitimately
-      calls ``speak_text`` × N after ``execute_music_code``.
+      calls ``speak_text`` × N after the music tool.
     * The ``text`` argument is longer than ``_ACCEPT_PHRASE_MAX_CHARS``
       — a short accept («Ок, играю Бах») is allowed even on non-vocal
       requests per the master prompt §5.
@@ -2581,47 +2566,13 @@ def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:
     return ToolResult(
         tool_call_id=call.id,
         content=(
-            "[SYSTEM] speak_text подавлен после execute_music_code: "
+            "[SYSTEM] speak_text подавлен после запуска музыки: "
             "нельзя читать сгенерированный текст поверх музыки. "
             "В этом режиме разрешён только КОРОТКИЙ accept "
             "(«Ок, играю <трек>», ≤40 символов). "
-            "Верни 'done' сразу после execute_music_code."
+            "Верни 'done' сразу после запуска музыки."
         ),
         is_error=True,
-    )
-
-
-def _gate_save_arrangement_preset(
-    call: ToolCall, user_input: str
-) -> ToolCall | ToolResult:
-    """ADR-0132 PR-7 — hard gate: ``save_arrangement_preset`` нужна явная
-    похвала/просьба сохранить в ПОСЛЕДНЕЙ реплике юзера.
-
-    Модель не оценивает свою аранжировку сама — она отдаёт этот трек как
-    дефолт для ВСЕХ будущих проигрываний этой мелодии, и одно субъективное
-    «получилось» не должно масштабироваться на весь архив без ведома
-    юзера. Похвала проходит → ``approved_by_user_quote`` в аргументах
-    переписывается на РЕАЛЬНУЮ реплику (не то, что могла бы придумать
-    модель) и вызов идёт исполняться. Похвалы нет → отказ, не ошибка
-    тула (как ``track_start_guard.refusal_content`` — ход должен
-    закончиться репликой, а не ``is_error``).
-    """
-    if contains_praise(user_input):
-        return replace(
-            call, arguments={**call.arguments, "approved_by_user_quote": user_input}
-        )
-    return ToolResult(
-        tool_call_id=call.id,
-        content=(
-            "[SYSTEM] save_arrangement_preset отклонён: последняя реплика "
-            "юзера не содержит явной похвалы («кайф», «супер», «класс», "
-            "«отлично» и т.п.) или прямой просьбы сохранить/запомнить "
-            "именно этот вариант («сохрани», «запомни этот вариант»). "
-            "Ты не можешь сама решить, что аранжировка достаточно хороша — "
-            "дождись явной реакции юзера, прежде чем вызывать этот тул "
-            "снова."
-        ),
-        is_error=False,
     )
 
 

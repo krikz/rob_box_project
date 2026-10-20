@@ -33,7 +33,7 @@ LLM, включая строку
   ADR-0022 гейт был декоративным.
 * ``must_not_call`` падал ВСЕГДА, когда его выставляли. В акте 1
   марафона шаг «у тебя сейчас играет музыка?» получил
-  «❌ forbidden tool calls invoked: ['stop_music', 'execute_music_code']»,
+  «❌ forbidden tool calls invoked: ['stop_music', 'request_music']»,
   хотя робот в этом ходе не вызвал вообще ни одного тула (``tools=[]``).
 
 Как отличить вызов от доступности

@@ -11,23 +11,14 @@ setup(
     # ``importlib.resources.files("rob_box_mcp_tools.data")``, а не через
     # ament share. Значит доставка — package_data, а не data_files:
     # прод-образ собирается БЕЗ ``--symlink-install``
-    # (docker/vision/voice_assistant/Dockerfile:239), то есть пакет реально
+    # (docker/sound/voice_assistant/Dockerfile:239), то есть пакет реально
     # устанавливается, и без этой строки .yaml в install-дерево не попадает.
     # Последствие пропуска — ``load_default_authority()`` бросает ConfigError,
     # mcp_server стартует с пустой политикой и блокирует ВСЕ инструменты.
     # Регрессия закрыта тестом test_slice_policy_packaging.py.
     package_data={
-        # sample_loops.json — каталог лупов и белый список pack 1 (#2841).
-        # sample_fx.json — каталог FX-одиночек pack 1 (#2968).
-        # sample_dave.json — каталог сэмплов DJ_Dave (#3219).
-        # arrangement_presets.json — shipped-пресеты ручек compose_music
-        # (ADR-0132 PR-7): рецепты под конкретные песни, вынесенные из
-        # composer.txt.
-        'rob_box_mcp_tools.data': [
-            '*.yaml', 'rtttl_melodies.jsonl.gz', 'sample_loops.json',
-            'sample_fx.json', 'sample_dave.json',
-            'arrangement_presets.json',
-        ],
+        # Каталоги сэмплов (DJ_Dave, FX, лупы) живут в rob_box_music; старый санитайзер Renardo-кода удалён (#3614).
+        'rob_box_mcp_tools.data': ['*.yaml', '*.txt', 'rtttl_melodies.jsonl.gz'],
     },
     data_files=[
         ('share/ament_index/resource_index/packages',

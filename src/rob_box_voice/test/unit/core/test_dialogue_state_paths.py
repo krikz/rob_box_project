@@ -26,19 +26,19 @@ def _repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _repo_root(Path(__file__).resolve())
-COMPOSE = REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
+COMPOSE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
 
 # Every config that sets the parameter — a fix in one and not the others is
 # how it drifted in the first place.
 CONFIGS = (
-    REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant" / "dialogue_node.yaml",
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "dialogue_node.yaml",
     REPO_ROOT / "src" / "rob_box_voice" / "config" / "dialogue_node.yaml",
 )
 
 # Per ADR-0004 (issue #1004) every node reads its own `<node>.yaml`.
 PACKAGE_CONFIG_DIR = REPO_ROOT / "src" / "rob_box_voice" / "config"
 DEPLOYED_CONFIG_DIR = (
-    REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant"
+    REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant"
 )
 
 # `docker-compose.yaml` mounts `./data/voice` here for the voice-assistant.

@@ -74,9 +74,18 @@ def test_command_result_sends_tool_and_error_events(quest_node_mod):
     assert "secret" not in json.dumps(_console(host)) and "sk-1" not in json.dumps(_console(host))
 
 
-def test_command_result_ok_without_tools_sends_nothing(quest_node_mod):
+def test_command_result_ok_with_summary_sends_reply(quest_node_mod):
     host = _host()
     quest_node_mod.QuestNode._on_avatar_command_result(
-        host, _msg({"request_id": "r", "ok": True, "summary": "ок", "tool_calls": []})
+        host, _msg({"request_id": "r", "ok": True, "summary": "полный ответ\n- пункт", "tool_calls": []})
+    )
+    evs = _console(host)
+    assert [(e["kind"], e["text"]) for e in evs] == [("reply", "полный ответ\n- пункт")]
+
+
+def test_command_result_ok_without_text_sends_nothing(quest_node_mod):
+    host = _host()
+    quest_node_mod.QuestNode._on_avatar_command_result(
+        host, _msg({"request_id": "r", "ok": True, "summary": "ok", "tool_calls": []})
     )
     assert _console(host) == []

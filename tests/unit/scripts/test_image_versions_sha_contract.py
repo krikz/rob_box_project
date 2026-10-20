@@ -42,12 +42,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Workflows that own the .image-versions.{test,dev,latest} SHA-tags written
-# during a build (Main Pi, Vision Pi, Single Service).  ``L-Build All & Push
+# during a build (all Pis via one workflow with input `pi`, Single Service).  ``L-Build All & Push
 # to GHCR`` uses a different code path (push to ghcr.io with `imagetools
 # create`) and is out of scope for the round-branch race fixed in #1482.
 WORKFLOWS = [
-    REPO_ROOT / ".github/workflows/L-Build Vision Pi Services.yml",
-    REPO_ROOT / ".github/workflows/L-Build Main Pi Services.yml",
+    REPO_ROOT / ".github/workflows/L-Build Pi Services.yml",
     REPO_ROOT / ".github/workflows/L-Build Single Service.yml",
 ]
 

@@ -5,7 +5,7 @@
     "ADR-0022 GATE-1 acceptance for voice_core_suite_v1.json.",
     "AND-semantics: каждый listed tool должен встретиться хотя бы раз за весь прогон.",
     "  set_voice          — мульти-голос #1219 (mv01/mv02/mv03)",
-    "  execute_music_code — Renardo start (dj01)",
+    "  request_music — Renardo start (dj01)",
     "  stop_music         — Renardo stop (dj02, после start)",
     "ds01..ds03 (спор→арбитр) НЕ ожидают конкретных tools: LLM сам решает вызвать",
     "  что-то или просто ответить. Семантическая проверка — patterns в логах",
@@ -15,11 +15,11 @@
     "  промыть backlog в LLM (лог 'flushed to LLM'). Backlog-аккумулятор —",
     "  unit/integration покрыт в test_speech_backlog_accumulator.py.",
     "ИСКЛЮЧЕНО: generate_music (MiniMax Music API недоступен),",
-    "  gen_delete_from_library, gen_play_from_library, register_speaker."
+    "  music_library, register_speaker."
   ],
   "expected_tool_calls": [
     "set_voice",
-    "execute_music_code",
+    "request_music",
     "stop_music"
   ],
   "must_not_call": [],

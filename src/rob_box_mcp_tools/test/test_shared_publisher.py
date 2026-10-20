@@ -213,8 +213,13 @@ def test_no_direct_create_publisher_for_issue_3108_topics(topic):
     assert offenders == [], f"{topic}: прямой create_publisher в {offenders} — используйте shared_publisher"
 
 
+#: ADR-0158 PR-2: ``/voice/generated_music/state`` и mp3-стоп ``/voice/sound/stop`` из ``mcp_server`` удалены — трек
+#: кэша играет на деке ``PlayerOwner``; общим publisher'ом остаются два топика.
+_SHARED_TOPICS = ("/voice/animation/request", "/voice/tts/set_provider")
+
+
 @pytest.mark.unit
-@pytest.mark.parametrize("topic", _ISSUE_3108_TOPICS)
+@pytest.mark.parametrize("topic", _SHARED_TOPICS)
 def test_issue_3108_topics_go_through_shared_publisher(topic):
     users = []
     for path in _package_sources():

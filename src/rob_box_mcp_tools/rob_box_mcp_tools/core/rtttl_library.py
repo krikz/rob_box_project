@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import math
@@ -20,15 +21,20 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 from datetime import datetime, timezone
 from importlib.resources import as_file, files
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, TextIO, Union
+from typing import Any, Dict, Iterator, List, Optional, TextIO, Tuple, Union
+
+from rob_box_music import knowledge as kn
+from rob_box_music.works import alias_pairs, ru_phrase_by_query
 
 from .translit_ru import strip_version_tail, transliterate_ru
 
 __all__ = [
-    "RtttlLibrary", "covers_tokens", "display_title", "human_track_title", "match_info", "melody_quality",
+    "RtttlLibrary", "covers_tokens", "display_title", "fix_mojibake", "human_track_title", "match_info",
+    "melody_quality", "spoken_title",
 ]
 
 #: Имя архива внутри пакета ``rob_box_mcp_tools/data/``.
@@ -55,58 +61,23 @@ CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_title ON rtttl_melodies(title);
 CREATE INDEX IF NOT EXISTS idx_rtttl_melodies_artist ON rtttl_melodies(artist);
 """
 
-#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный).
-_ALIASES = {
-    "гимн ссср": "soviet anthem",
-    "гимн россии": "soviet anthem",
-    "советский гимн": "soviet anthem",
-    "гимн": "soviet anthem",
-    "ссср": "soviet anthem",
-    "ussr": "soviet anthem",
-    "имперский марш": "imperial march",
-    "дарт вейдер": "imperial march",
-    "в пещере горного короля": "mountain king",
-    "григ": "mountain king",
-    "тетрис": "tetris",
-    "коробейники": "tetris",
-    "марио": "mario",
-    "супер марио": "mario",
-    "нокиа": "nokia",
-    "к элизе": "fur elise",
-    "ода к радости": "ode to joy",
-    "с днём рождения": "happy birthday",
-    "с днем рождения": "happy birthday",
-    "джингл белс": "jingle bells",
-    "звёздные войны": "star wars",
-    "звездные войны": "star wars",
-    # Архив хранит русский гимн под существительным «Russia» («National
-    # Anthem Of Russia»), не под прилагательным «Russian» — без этой
-    # замены токен «russian» не матчит запись вовсе, и «russian anthem»
-    # решает голое совпадение «anthem» по полусотне чужих гимнов (#2840).
-    "russian": "russia",
-}
-
-_ALIAS_SORTED = sorted(_ALIASES.items(), key=lambda kv: -len(kv[0]))
-
-#: issue #3178 — обратная связка канонический англ. запрос → первая (по
-#: порядку :data:`_ALIASES`) русская фраза на него. Используется, чтобы
-#: назвать играющий трек по-русски (:func:`human_track_title`), а не
-#: архивным ``title`` («Hall Of The Mountain King (Alton Towers Theme) 2»).
-#: ``dict.setdefault`` берёт САМУЮ первую фразу для каждого канонического
-#: запроса — у «soviet anthem» их пять, для голоса нужна одна.
-#: Нерусские ключи (``"russian"`` — обходной алиас для архивного
-#: написания, не разговорная фраза) сюда не попадают.
-_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = {}
-for _ru_phrase, _canonical_query in _ALIASES.items():
-    if any("а" <= ch <= "я" or ch == "ё" for ch in _ru_phrase):
-        _ALIAS_CANONICAL_TO_RU_PHRASE.setdefault(_canonical_query, _ru_phrase)
-del _ru_phrase, _canonical_query
+#: Русские/жаргонные названия → канонический англ. запрос (архив англоязычный) и обратная связка «канонический
+#: запрос → первая русская фраза на него» (issue #3178: назвать играющий трек по-русски, а не архивным ``title``
+#: «Hall Of The Mountain King (Alton Towers Theme) 2») — из реестра произведений ``rob_box_music.works`` (ADR-0155
+#: K-2): семена связей ``data/theme_link_seeds.json`` (#3493), они же — ``Work.aliases``.
+#: Нерусские ключи («russian» — обходной
+#: алиас архивного написания) в обратную связку не попадают.
+_ALIAS_SORTED = alias_pairs()
+_ALIAS_CANONICAL_TO_RU_PHRASE: Dict[str, str] = ru_phrase_by_query()
 
 #: issue #3178 — технические хвосты архивного ``title``, которые робот не
 #: должен произносить: номер повтора записи того же трека («… 2») и
 #: авторская ремарка в скобках («(Alton Towers Theme)»). Срезаются с конца
 #: title, по одному хвосту за проход (могут комбинироваться).
-_TRAILING_DUPLICATE_NUM_RE = re.compile(r"\s+\d+$")
+#: Номер повтора записи в конце названия («… King 2»); номер после слова нумерации — часть названия
+#: («Brandenburg Concert No. 3», «Op. 27», «BWV 565», «#5»; прогон 12.10: голос говорил «… No.»).
+_TRAILING_DUPLICATE_NUM_RE = re.compile(r"(?<!\bno\.)(?<!\bno)(?<!\bop\.)(?<!\bop)(?<!\bnr\.)(?<!\bbwv)(?<!\bkv)"
+                                        r"(?<!\bopus)(?<!#)\s+\d+$", re.IGNORECASE)
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)$")
 
 #: Известные мусорные записи архива: под правдоподобным именем/тегами лежит
@@ -181,6 +152,7 @@ def _row_rtttl(row: sqlite3.Row) -> str:
     return row["rtttl"] if "rtttl" in row.keys() else ""
 
 
+@functools.lru_cache(maxsize=16384)  # чистая функция строки; поиск темы считает её для тысяч кандидатов (#3493)
 def _melody_quality(rtttl: str) -> float:
     """Эвристическое качество мелодии: длина, разнообразие, повтор, октава.
 
@@ -215,6 +187,11 @@ def _melody_quality(rtttl: str) -> float:
     if default_octave >= 7 or default_octave <= 2:
         score -= abs(default_octave - 5) * 2.0
     return score
+
+
+def db_path_of(library: Any) -> Optional[str]:
+    """Файл SQLite библиотеки: в нём же реестр произведений и связи тем (``rob_box_music.works``, #3493)."""
+    return getattr(library, "_db_path", None)
 
 
 def melody_quality(rtttl: str) -> float:
@@ -328,6 +305,26 @@ class _TokenWeights:
         return weight
 
 
+class _ArchiveWords:
+    """Слова опознавательных полей всех записей (``name/title/artist/rtttl_name``) — для разбора русских слов
+    запроса в токены архива (``engine.search``, #3399). Считаются один раз на инстанс библиотеки."""
+
+    def __init__(self, library: "RtttlLibrary") -> None:
+        self._library = library
+        self._words: Optional[frozenset] = None
+
+    def __call__(self) -> frozenset:
+        if self._words is None:
+            lib = self._library
+            with lib._lock:
+                rows = lib._conn.execute("SELECT name, title, artist, rtttl_name FROM rtttl_melodies").fetchall()
+            words = set()
+            for row in rows:
+                words.update(re.findall(r"[a-z0-9]{2,}", " ".join(str(v or "") for v in row).lower()))
+            self._words = frozenset(words)
+        return self._words
+
+
 def _is_informative_title(weights: "_TokenWeights", title: str) -> bool:
     """Хотя бы один токен title достаточно редок в корпусе (не «Theme»)?
 
@@ -417,6 +414,113 @@ def human_track_title(library: "RtttlLibrary", record: Dict[str, Any]) -> str:
     if not title:
         return melody_key
     return _strip_technical_suffixes(title)
+
+
+# ── Произносимое название пьесы (#3577): что робот говорит о партитуре PDMX ─────────────────────────────────────
+#: Пара «UTF-8, прочитанный как latin-1/cp1252» («Ã©» → «é»).
+_MOJIBAKE_RE = re.compile("[Â-ô][\u0080-¿ŒœŠšŸŽžƒ"
+                          "ˆ˜–-›€™]+")
+#: Ведущий байт UTF-8 без продолжения внутри слова: продолжение потеряно в самих данных PDMX (индекс робота 12.10:
+#: ``'Su\xcc\xdfmayr'`` — от «ü» остался только ``0xCC``, от «é» в «Bourrée» — ``0xC3``). Восстановить букву
+#: нельзя, честно — убрать обломок: «Sußmayr», «Bourre».
+_MOJIBAKE_LOST_RE = re.compile("(?<=[A-Za-z])[ÃÌ](?=[A-Za-zß]|\\b)")
+_SPOKEN_CATALOG_RE = re.compile(r"\(?\b(?:BWV|HWV|KV|K|Op|Opus|Hob|RV|WoO)\.?\s*(?:\d+[a-z]?|(?-i:[IVX]+)\b)"
+                                r"(?:\s*,?\s*(?:No|Nr)\.?\s*\d+)?\)?", re.I)
+_SPOKEN_TAIL_RE = re.compile(r"[\s,(-]+\b(?:arr|arranged|arrangement|transcribed|beginner|easy|simplified|"
+                             r"(?:piano|violin|guitar|flute|cello|organ)\s+(?:solo|duet))\b.*$", re.I)
+_SPOKEN_SEP_RE = re.compile(r"\s+[-–—]\s+|:\s+")
+_SPOKEN_PAREN_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]|\{[^{}]*\}")
+#: Слова имени, не называющие композитора: инициалы и частицы («J. S.», «van», «von»).
+_NAME_PARTICLES = frozenset({"van", "von", "de", "der", "di", "da", "le", "la"})
+
+
+def fix_mojibake(text: Any) -> str:
+    """Починка кракозябр PDMX без новой зависимости: пары UTF-8→latin-1/cp1252 декодируются обратно, обломки с
+    потерянным байтом продолжения убираются (:data:`_MOJIBAKE_LOST_RE`), итог — NFC."""
+    def back(match: "re.Match[str]") -> str:
+        for codec in ("latin-1", "cp1252"):
+            try:
+                return match.group().encode(codec).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+        return match.group()
+    fixed = _MOJIBAKE_LOST_RE.sub("", _MOJIBAKE_RE.sub(back, str(text or "")))
+    return unicodedata.normalize("NFC", fixed)
+
+
+def _name_words(text: str) -> List[str]:
+    return re.findall(r"[^\W\d_]+", text.lower())
+
+
+def _composer_ru(*texts: str) -> str:
+    """Русское имя первого композитора из таблицы ``knowledge.COMPOSER_RU``, найденного в текстах по порядку."""
+    for text in texts:
+        found = next((kn.COMPOSER_RU[w] for w in _name_words(text) if w in kn.COMPOSER_RU), "")
+        if found:
+            return found
+    return ""
+
+
+def _is_name(part: str, names: frozenset) -> bool:
+    """Кусок названия — только имя композитора («J. S. Bach», «Ludwig van Beethoven», «Mozart»)."""
+    words = [w for w in _name_words(part) if len(w) > 1 and w not in _NAME_PARTICLES]
+    return bool(words) and all(w in names for w in words)
+
+
+def _drop_names(title: str, names: frozenset) -> str:
+    """Срезать имя композитора: куски между « - »/«: » из одного имени, «By <имя>» в конце, имя первым словом."""
+    parts = [p for p in _SPOKEN_SEP_RE.split(title) if p.strip() and not _is_name(p, names)]
+    title = ": ".join(p.strip() for p in parts) if parts else title
+    by = re.search(r"\s+by\s+(.+)$", title, re.I)
+    if by and _is_name(by.group(1), names):
+        title = title[:by.start()]
+    words = title.split()
+    lead = next((k for k in range(min(4, len(words) - 1), 0, -1) if _is_name(" ".join(words[:k]), names)), 0)
+    return " ".join(words[lead:])
+
+
+def _drop_remarks(title: str, names: frozenset) -> str:
+    """Скобки-ремарки («(real audio)», «(Piano solo)», «{…}», «[First Book]», «(Bach/Gounod)») прочь; «(1st
+    Movement)» остаётся. Квадратные и фигурные — всегда: TTS читает их как разметку (прогон 13.10: «Clavier »)."""
+    def keep(match: "re.Match[str]") -> str:
+        inner = match.group(1)
+        if inner is None:
+            return " "
+        words = set(_name_words(inner))
+        return " " if not words or words & kn.SPOKEN_TITLE_JUNK or words & names else match.group()
+    return _SPOKEN_PAREN_RE.sub(keep, title)
+
+
+def _tidy(title: str) -> str:
+    title = re.sub(r"\(\s*\)", " ", title)
+    title = re.sub(r"\s+([,.:;])", r"\1", re.sub(r"\s+", " ", title))
+    return title.strip(" -–—:;,/")
+
+
+def _shorten(title: str, limit: int) -> str:
+    """Не длиннее ``limit``: сначала без скобок, затем по границе слова."""
+    if len(title) > limit:
+        title = _tidy(re.sub(r"\([^()]*\)", " ", title))
+    if len(title) > limit:
+        title = _tidy(title[:limit + 1].rsplit(" ", 1)[0])
+    return title
+
+
+def spoken_title(title: Any, composer: Any = "", limit: int = kn.SPOKEN_TITLE_MAX) -> Tuple[str, str]:
+    """``(название, композитор)``, как их говорит робот о пьесе (#3577; фразу строит ``media_phrases.piece_text``):
+    кракозябры починены (:func:`fix_mojibake`), служебные хвосты PDMX срезаны («(real audio)», «Arr. for 2 Pianos»,
+    «{Professional production score.}», «By W. A. Mozart», номера BWV/K/Op), имя композитора из названия убрано,
+    композитор — по-русски из ``knowledge.COMPOSER_RU`` (нет в таблице — как в каталоге, без кракозябр), название —
+    не длиннее ``limit``. Прогон 12.10: «Requiem in D Minor K. 626 III. Sequentia: Rex Tremendae By W. A. Mozart»,
+    «Wolfgang Amadeus Mozart Franz Xaver SuÌßmayr» → «Requiem in D Minor III. Sequentia: Rex Tremendae», «Моцарт».
+    Русский алиас RTTTL (:func:`human_track_title`) проходит как есть."""
+    raw, author = fix_mojibake(title).strip(), fix_mojibake(composer).strip()
+    names = frozenset(_name_words(author)) | frozenset(kn.COMPOSER_RU)
+    text = _drop_remarks(raw, names)
+    text = _SPOKEN_TAIL_RE.sub("", _SPOKEN_CATALOG_RE.sub(" ", text))
+    text = _shorten(_tidy(_drop_names(_tidy(text), names)), limit)
+    plain = _tidy(_SPOKEN_PAREN_RE.sub(" ", _SPOKEN_CATALOG_RE.sub(" ", author)))  # «Louis Vierne Op. 53»
+    return text or _shorten(_tidy(raw), limit), _composer_ru(author, raw) or plain
 
 
 def match_info(library: "RtttlLibrary", record: Dict[str, Any], query: str) -> Dict[str, Any]:
@@ -541,12 +645,20 @@ def _iter_json_lines(fh: TextIO) -> Iterator[Dict[str, Any]]:
             yield json.loads(line)
 
 
+def tagged(library: "RtttlLibrary", tag: str) -> List[Dict[str, Any]]:
+    """Все записи архива с меткой ``tag`` (``tags`` записи, например ``classical``), с RTTTL, по имени."""
+    with library._lock:
+        rows = library._conn.execute(
+            "SELECT * FROM rtttl_melodies WHERE tags LIKE ? ORDER BY name", (f'%"{tag}"%',)).fetchall()
+    return [library._to_dict(r, include_rtttl=True) for r in rows]
+
+
 class RtttlLibrary:
     """Мигратор архива RTTTL-мелодий + поиск через SQLite (без in-memory).
 
     При первом ``__init__`` читает ``data/rtttl_melodies.jsonl.gz`` и
     разворачивает его в таблицу ``rtttl_melodies`` той же БД, что и
-    TrackLibrary (``VOICE_MEMORY_DB_PATH`` → ``/data/voice_memory.db``).
+    WaypointStore/FAQStore (``VOICE_MEMORY_DB_PATH`` → ``/data/voice_memory.db``).
     Импорт идемпотентен: если таблица уже заполнена — архив не читается.
     """
 
@@ -566,6 +678,8 @@ class RtttlLibrary:
         # или ``None``): голая функция резолвит до десятка алиасов через
         # :meth:`get` на каждый вызов, кэш экономит это на повторных треках.
         self._ru_alias_cache: Dict[str, Optional[str]] = {}
+        # #3399 — слова архива для разбора русских слов запроса (``engine.search``), см. _ArchiveWords.
+        self.vocabulary = _ArchiveWords(self)
 
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -867,21 +981,20 @@ class RtttlLibrary:
         на каждый — тот же путь, что реальный поиск по имени, поэтому
         совпадение честное (не текстовое сравнение канонического запроса с
         ``melody_key``, оно решает то же самое, что ``compose_music`` увидел
-        бы при заказе этой фразой). Результат кэшируется — эта запись не
-        меняется между вызовами внутри процесса.
+        бы при заказе этой фразой). Обратная таблица «запись → фраза» строится один раз на процесс (по одному
+        :meth:`get` на алиас, первый алиас побеждает — как прежний перебор): раньше каждый ключ перебирал все
+        алиасы заново, и названия 30 хуков сета на Pi не успевали к ``started`` трека 1 (живой прогон 06.10).
         """
         if not melody_key:
             return None
-        if melody_key in self._ru_alias_cache:
-            return self._ru_alias_cache[melody_key]
-        found: Optional[str] = None
-        for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
-            rec = self.get(canonical)
-            if rec is not None and str(rec.get("name") or "") == melody_key:
-                found = phrase
-                break
-        self._ru_alias_cache[melody_key] = found
-        return found
+        if not self._ru_alias_cache:
+            for canonical, phrase in _ALIAS_CANONICAL_TO_RU_PHRASE.items():
+                rec = self.get(canonical)
+                name = str((rec or {}).get("name") or "")
+                if name:
+                    self._ru_alias_cache.setdefault(name, phrase)
+            self._ru_alias_cache.setdefault("", None)  # таблица построена (даже пустая)
+        return self._ru_alias_cache.get(melody_key)
 
     def search(self, query: str, limit: int = 20, include_rtttl: bool = False) -> List[Dict[str, Any]]:
         """Поиск по токенам запроса (SQL кандидаты → скоринг в Python), top-N.

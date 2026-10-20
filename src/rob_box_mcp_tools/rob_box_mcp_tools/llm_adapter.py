@@ -51,6 +51,17 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
         "intro_registered",
         "known_speaker_name",
     ),
+    # 06.10: длина сета, которую назвал человек («сэт на 30 минут» → 24 трека,
+    # ``rob_box_voice.core.set_length_words``) — LLM вызвала dj_set без tracks,
+    # и сет шёл 10 треков «по умолчанию».
+    # ``turn_id`` — ход LLM: ``request_music`` не снимает сет, заигравший в этом
+    # же ходе (06.10 set98207: dj_set → request_music → тишина).
+    # ``heard_text`` — реплика хода: тема сета не из неё (из истории диалога, 06.10 18:04) заменяется темой реплики.
+    "dj_set": ("heard_tracks", "turn_id", "heard_text"),
+    # ADR-0157 §2.4: инструмент («на балалайке») — из реплики хода, а не из пересказа LLM в ``text``.
+    "request_music": ("turn_id", "heard_text"),
+    # ADR-0158 PR-3: путь (синтез / кэш / генерация / отказ) решает код по словам реплики, не по пересказу LLM.
+    "generate_music": ("turn_id", "heard_text"),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]

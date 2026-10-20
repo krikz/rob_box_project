@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CONSOLE_STYLES,
   ConsoleBuffer,
+  REPLY_MAX_LINES,
+  plainReplyText,
   parseConsoleEvent
 } from "../src/state/tars_console_lines";
 
@@ -35,8 +37,8 @@ describe("CONSOLE_STYLES", () => {
     expect(CONSOLE_STYLES.operator.textColor).toBe("#33e0ff");
     const colors = new Set(Object.values(CONSOLE_STYLES).map((s) => s.textColor));
     const prefixes = new Set(Object.values(CONSOLE_STYLES).map((s) => s.prefix));
-    expect(colors.size).toBe(3);
-    expect(prefixes.size).toBe(3);
+    expect(colors.size).toBe(4);
+    expect(prefixes.size).toBe(4);
   });
 });
 
@@ -89,5 +91,41 @@ describe("ConsoleBuffer", () => {
     b.appendTars("");
     b.pushLine("operator", "");
     expect(b.length).toBe(1);
+  });
+});
+
+describe("reply — полный текст ответа ТАРС (#3296)", () => {
+  it("parseConsoleEvent: markdown → простой текст, переводы строк и списки остаются", () => {
+    const ev = parseConsoleEvent({
+      type: "tars_console",
+      kind: "reply",
+      text: "**Prometheus:**\n- `cpu` — общий CPU\n- `up` — статус\n\n\n## Итог\nготово"
+    });
+    expect(ev).toEqual({
+      kind: "reply",
+      text: "Prometheus:\n• cpu — общий CPU\n• up — статус\n\nИтог\nготово"
+    });
+  });
+
+  it("пустой reply → null", () => {
+    expect(parseConsoleEvent({ type: "tars_console", kind: "reply", text: " \n \n" })).toBeNull();
+  });
+
+  it("длинный ответ режется видимо: REPLY_MAX_LINES строк + маркер «ещё N»", () => {
+    const text = Array.from({ length: REPLY_MAX_LINES + 5 }, (_, i) => `строка ${i}`).join("\n");
+    const lines = plainReplyText(text);
+    expect(lines).toHaveLength(REPLY_MAX_LINES + 1);
+    expect(lines[0]).toBe("строка 0");
+    expect(lines[REPLY_MAX_LINES]).toContain("ещё 5");
+  });
+
+  it("ConsoleBuffer.pushBlock: первая строка с префиксом, остальные — cont", () => {
+    const b = new ConsoleBuffer(32);
+    b.pushBlock("reply", "a\nb\nc");
+    expect(b.lines.map((l) => [l.kind, l.text, !!l.cont])).toEqual([
+      ["reply", "a", false],
+      ["reply", "b", true],
+      ["reply", "c", true]
+    ]);
   });
 });

@@ -19,8 +19,6 @@ def node():
     n._wake_words = ["робок", "робот", "роббокс", "робокс", "robbox", "rob box"]
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.IDLE
-    n._dj = MagicMock()
-    n._dj.state.enabled = False
     n._cancel_run = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._publish_state = MagicMock()
@@ -47,7 +45,6 @@ def node():
 
     # Для _build_dynamic_system_context
     n.get_parameter = MagicMock(return_value=MagicMock(value="minimax"))
-    n._generated_music_state = {}
     return n
 
 

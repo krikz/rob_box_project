@@ -45,34 +45,6 @@ def test_master_prompt_has_no_old_stop_music_after_rap() -> None:
     assert "the system will fade out music automatically" not in content
 
 
-def test_master_prompt_forbids_llm_owned_stop_music() -> None:
-    """The LLM must NEVER stop music itself after rap/poem/singing."""
-    content = _read(MASTER_PROMPT)
-    assert "NEVER call `stop_music()` yourself after rap/poem/singing" in content
-    assert "tts_batch_complete" in content
-    assert "the system manages music lifecycle" in content
-
-
-def test_master_prompt_forbids_clock_future_music_stop() -> None:
-    """The sneaky bypass — Clock.future inside execute_music_code — is banned."""
-    content = _read(MASTER_PROMPT)
-    assert (
-        "NEVER use `Clock.future` or any timer to schedule music stop"
-        in content
-    )
-    assert "no `stop_music()` after rap/poem/singing, no `Clock.future`" in content
-
-
-def test_master_prompt_describes_fire_and_forget_model() -> None:
-    """Prompt must describe the scheduler model: LLM conducts, system owns channels."""
-    content = _read(MASTER_PROMPT)
-    assert "FIRE-AND-FORGET MODEL" in content
-    assert "The system owns the channels" in content
-    # New music contract: segments safety net, duration_sec deprecated.
-    assert "segments" in content
-    assert "NEVER pass `duration_sec` (deprecated, ignored)" in content
-
-
 def test_master_prompt_no_old_crutch_mechanisms() -> None:
     """Old crutch wording (3s-timer, debounce) must not reappear."""
     content = _read(MASTER_PROMPT)

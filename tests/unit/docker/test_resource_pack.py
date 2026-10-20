@@ -29,6 +29,7 @@ import functools
 import hashlib
 import http.server
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -43,6 +44,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACK_DIR = REPO_ROOT / "docker" / "vision" / "scripts" / "resource_pack"
 SCRIPT = PACK_DIR / "apply_resource_pack.sh"
+#: Хуки, которые apply_resource_pack.sh отдаёт общему фетчеру fetch_sample_pack.py (свой lock-файл на пак).
+SAMPLE_PACK_HOOKS = ("fetch_dj_dave_samples", "fetch_sonicpi_samples", "fetch_muldjord_kit")
 MANIFEST = PACK_DIR / "manifest.yaml"
 
 BASH = shutil.which("bash")
@@ -868,11 +871,14 @@ def test_fetch_hook_script_exists_for_every_declared_hook() -> None:
         hook = res.get("fetch_hook")
         if not hook:
             continue
-        assert f"{hook})" in script, (
+        # Метка case: ``hook)`` или в списке ``a|hook|b)`` (сэмпл-паки делят один фетчер).
+        assert re.search(rf"(^|[\s|]){re.escape(hook)}[|)]", script, re.M), (
             f"{res['name']}: apply_resource_pack.sh не знает хук {hook!r} — "
             f"деплой упал бы с 'неизвестный fetch_hook'"
         )
-        assert (PACK_DIR / f"{hook}.py").exists(), (
+        # Свой скрипт ``<хук>.py`` либо общий фетчер сэмпл-паков.
+        shared = (PACK_DIR / "fetch_sample_pack.py").exists() and hook in SAMPLE_PACK_HOOKS
+        assert (PACK_DIR / f"{hook}.py").exists() or shared, (
             f"{res['name']}: нет {PACK_DIR / (hook + '.py')}"
         )
 
@@ -883,8 +889,9 @@ def test_samples_are_not_delivered_by_an_image_anymore() -> None:
         "каталог docker/vision/voice_resources вернулся — сэмплы снова "
         "доставляются двумя способами сразу"
     )
+    # supercollider и voice-assistant переехали на Sound Pi (ADR-0159 PR-2b).
     compose = yaml.safe_load(
-        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
+        (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(
             encoding="utf-8"
         )
     )
@@ -931,8 +938,9 @@ def test_container_paths_did_not_move() -> None:
     Весь смысл §6.1 плана: ни один Python-файл не правится, потому что
     /models/... остаётся /models/... — меняется только, чем он наполнен.
     """
+    # voice-assistant — на Sound Pi (ADR-0159 PR-2b), telegram-bot — тоже (PR-7, В9).
     compose = yaml.safe_load(
-        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
+        (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(
             encoding="utf-8"
         )
     )
@@ -944,7 +952,7 @@ def test_container_paths_did_not_move() -> None:
     )
 
     stt_cfg = (
-        REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant" / "stt_node.yaml"
+        REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant" / "stt_node.yaml"
     ).read_text(encoding="utf-8")
     assert "/models/vosk-model-small-ru-0.22" in stt_cfg
 
@@ -976,7 +984,7 @@ def test_container_paths_did_not_move() -> None:
 def test_voice_base_no_longer_downloads_models() -> None:
     """Ступень скачивания моделей ушла из образа (deletion test, план §8)."""
     dockerfile = (
-        REPO_ROOT / "docker" / "vision" / "voice_base" / "Dockerfile"
+        REPO_ROOT / "docker" / "sound" / "voice_base" / "Dockerfile"
     ).read_text(encoding="utf-8")
     active = [
         line
@@ -1006,7 +1014,7 @@ def test_telegram_bot_no_longer_downloads_vosk() -> None:
     манифестом молча — потому что манифест о ней не знал.
     """
     dockerfile = (
-        REPO_ROOT / "docker" / "vision" / "telegram_bot" / "Dockerfile"
+        REPO_ROOT / "docker" / "sound" / "telegram_bot" / "Dockerfile"
     ).read_text(encoding="utf-8")
     active = [
         line

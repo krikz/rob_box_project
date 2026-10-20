@@ -2,6 +2,7 @@
 # - ROBOT_ID: ID робота для фильтрации метрик и логов
 # - MAIN_PI_IP: IP адрес Main Pi (по умолчанию 10.1.1.10)
 # - VISION_PI_IP: IP адрес Vision Pi (по умолчанию 10.1.1.11)
+# - SOUND_PI_IP: IP адрес Sound Pi (по умолчанию 10.1.1.12, ADR-0159)
 
 services:
   # Init container to create Loki directories with proper permissions

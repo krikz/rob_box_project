@@ -45,9 +45,13 @@ _CORE_DIR = Path(__file__).resolve().parents[3] / "rob_box_voice" / "core"
 # удалённого ``music_volume_request.py``, 4 из удалённого ``dj_request.py``
 # и ``MUSIC_STOP_COMMAND_RE`` из ``dialogue_guards.py`` (35 -> 34). Новых нет:
 # ``_VOLUME_CORE_RE`` заменён одним ``_WORD_CLASS_RE`` (классы слов).
+#
+# ADR-0149 PR-13a: детекторы старого пути музыки удалены из
+# ``dialogue_guards.py`` (34 -> 21: user_wants_music & Co, музыкальные
+# ActionClaimRule, unknown-melody, Renardo-код, hallucinated MIDI);
+# ``music_guard.py`` удалён целиком.
 _MAX_RE_COMPILE: dict[str, int] = {
-    "dialogue_guards.py": 34,
-    "music_guard.py": 0,
+    "dialogue_guards.py": 21,
     "media_command_grammar.py": 8,
 }
 

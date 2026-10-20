@@ -1,0 +1,182 @@
+#!/bin/bash
+# Startup script для Voice Assistant контейнера
+
+set -e
+
+echo "=========================================="
+echo "  Voice Assistant System Starting"
+echo "=========================================="
+
+# Source ROS2
+source /opt/ros/${ROS_DISTRO}/setup.bash
+source /ws/install/setup.bash
+
+# Проверка подключения ReSpeaker
+echo "Проверка ReSpeaker USB device..."
+if lsusb | grep -q "2886:0018"; then
+    echo "✓ ReSpeaker найден"
+else
+    echo "⚠ ReSpeaker НЕ найден!"
+fi
+
+# Проверка аудио устройства
+echo "Проверка аудио устройств..."
+arecord -l | grep -i "respeaker" || echo "⚠ ReSpeaker audio не найден"
+
+# Проверка renardo-сэмплов. Раньше это был named-volume, который заливал
+# one-shot контейнер voice-resources-init (маркер .initialized); теперь это
+# bind-mount хостового /opt/rob_box/samples, который наполняет Ресурсный пак
+# на деплое, а маркером служит downloaded_at.txt самого фетчера.
+SAMPLES_DIR=/root/.config/renardo/samples
+if [ -f "${SAMPLES_DIR}/0_foxdot_default/downloaded_at.txt" ]; then
+    echo "✓ Renardo samples ready ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
+elif [ -d "${SAMPLES_DIR}" ] && [ -n "$(find "${SAMPLES_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    echo "✓ Renardo samples present without marker ($(find "${SAMPLES_DIR}" -name '*.wav' | wc -l) WAV files)"
+else
+    echo "⚠ Renardo samples missing (/opt/rob_box/samples на хосте пуст) — synth-only mode"
+fi
+
+# Создать директорию для ТТС кэша
+mkdir -p ${TTS_CACHE_DIR}
+
+# Настройка ALSA (если нужно)
+if [ -f /config/voice_assistant/asoundrc ]; then
+    echo "Копирование ALSA конфигурации..."
+    cp /config/voice_assistant/asoundrc /root/.asoundrc
+fi
+
+# Ожидание Zenoh router
+echo "Ожидание Zenoh router..."
+RETRY_COUNT=0
+MAX_RETRIES=30
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if wget -qO- http://localhost:8000/@/local/router > /dev/null 2>&1; then
+        echo "✓ Zenoh router доступен"
+        break
+    fi
+    echo "Попытка $((RETRY_COUNT + 1))/$MAX_RETRIES..."
+    sleep 2
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+    echo "✗ Zenoh router недоступен после $MAX_RETRIES попыток"
+    echo "Продолжаем без Zenoh (local mode)"
+fi
+
+echo ""
+echo "=========================================="
+echo "  Запуск sclang (FoxDot SynthDef compiler)"
+echo "=========================================="
+
+# Запуск sclang для компиляции SynthDef-ов (Renardo/FoxDot pipeline)
+# sclang слушает OSC /foxdot на порту 57120
+# Renardo посылает пути к .scd файлам → sclang компилирует → /d_recv → scsynth
+if command -v sclang > /dev/null 2>&1; then
+    if RENARDO_SCLANG_DIR=$(python3 -c 'import renardo_lib; from pathlib import Path; print(Path(renardo_lib.__file__).resolve().parent / "SynthDefManagement" / "sclang_code" / "scsynth")' 2>/dev/null); then
+        echo "Renardo SynthDef dir: ${RENARDO_SCLANG_DIR}"
+        sed "s|__RENARDO_SCLANG_DIR__|${RENARDO_SCLANG_DIR}|g" /ws/foxdot_init.sc > /tmp/foxdot_init_resolved.sc
+    else
+        echo "⚠ Не удалось определить путь к Renardo SynthDefs"
+        cp /ws/foxdot_init.sc /tmp/foxdot_init_resolved.sc
+    fi
+    echo "Запуск sclang с FoxDot OSCdef..."
+    QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox \
+        sclang -i none /tmp/foxdot_init_resolved.sc > /tmp/sclang.log 2>&1 &
+    SCLANG_PID=$!
+    echo "sclang запущен (PID: ${SCLANG_PID})"
+    # Ждём, пока sclang не закончит прелоад SynthDef'ов.
+    #
+    # Ретро 22.08 / issue #1520 (deploy round-178 / run 32573594346):
+    # validate_music_stack.py вызывался через 5с после старта sclang,
+    # но sclang реально требует ~20с чтобы:
+    #   (a) дождаться alive-thread scsynth,
+    #   (b) зарегистрировать OSCdef (SystemClock.sched 3.0с),
+    #   (c) последовательно скомпилировать ~38 .scd SynthDef'ов
+    #       (Renardo startupSynths + customSynths, ~0.3-0.8с каждый).
+    # На 5-й секунде /tmp/sclang.log ещё пустой (sclang не успел
+    # напечатать даже "sclang started") → load_sclang_health рапортует
+    # "Log file not found" и ВСЕ критичные SynthDefs как missing,
+    # хотя через несколько секунд sclang доходит до конца прелоада
+    # и music stack становится healthy.
+    #
+    # 🔴 FIX (живой инцидент 21.09.2026): первая версия этого цикла ждала
+    # только "FoxDot OSCdef registered" + фиксированные 3с — но прелоад
+    # (63 синта: 53 renardo + 10 custom, ~0.3-0.8с КАЖДЫЙ с Server.sync
+    # после каждого, см. foxdot_init.sc) СТАРТУЕТ сразу после этого
+    # маркера и может занимать до ~50с. 3с хватало не всегда: на роботе
+    # /tmp/sclang.log существовал (подтверждено ls -la), но валидатор
+    # ловил его ДО того, как прелоад дописал строки про конкретные синты
+    # — "Missing critical SynthDefs" на все 11 критичных при живых 63
+    # defs в scsynth. Ждём явный маркер конца прелоада
+    # ("SynthDef preload finished:", foxdot_init.sc:189) вместо слепой
+    # паузы — таймаут поднят до 60с, чтобы покрыть медленный cold-start
+    # self-hosted runner + весь прелоад с запасом.
+    SCLANG_BOOT_TIMEOUT=60
+    SCLANG_BOOT_ELAPSED=0
+    while [ "${SCLANG_BOOT_ELAPSED}" -lt "${SCLANG_BOOT_TIMEOUT}" ]; do
+        if [ -f /tmp/sclang.log ] && grep -q "SynthDef preload finished:" /tmp/sclang.log; then
+            break
+        fi
+        sleep 1
+        SCLANG_BOOT_ELAPSED=$((SCLANG_BOOT_ELAPSED + 1))
+    done
+    if [ "${SCLANG_BOOT_ELAPSED}" -ge "${SCLANG_BOOT_TIMEOUT}" ]; then
+        echo "⚠ sclang не завершил прелоад SynthDef'ов за ${SCLANG_BOOT_TIMEOUT}с — продолжаем с тем, что есть"
+    fi
+    if [ -f /ws/src/rob_box_voice/scripts/validate_music_stack.py ]; then
+        echo "Проверка music stack readiness..."
+        MUSIC_STACK_RC=0
+        python3 /ws/src/rob_box_voice/scripts/validate_music_stack.py \
+            /tmp/sclang.log \
+            --critical-synth strings \
+            --critical-synth wobblebass \
+            --critical-synth pianovel \
+            --critical-synth warmpad \
+            --critical-synth retrobass \
+            --critical-synth supersawlead \
+            --critical-synth imperialbrass \
+            --critical-synth marchstrings \
+            --critical-synth strangerpulsepad \
+            --critical-synth strangerarp \
+            --critical-synth strangerbrass || MUSIC_STACK_RC=$?
+        if [ "${MUSIC_STACK_RC}" -eq 0 ]; then
+            echo "✓ Music stack validation passed"
+        else
+            # Issue #2716: раньше здесь был текст, называвший это "usable
+            # degradation" — но тембр, не подтвердившийся в scsynth, играет
+            # ТИШИНОЙ (ReplaceOut на несуществующий synth), а не музыкой
+            # чуть похуже. Честный статус — FAILED, с прямым путём к причине.
+            echo "✗ Music stack validation FAILED (music tools will produce silent notes)"
+            echo "  └─ Подробности: /tmp/sclang.log"
+            echo "  └─ Диагностика: grep -E 'ERROR|SynthDef in scsynth|SynthDef preload finished' /tmp/sclang.log"
+        fi
+    fi
+    echo "sclang готов"
+else
+    echo "⚠ sclang не найден — музыкальный синтез недоступен"
+fi
+
+echo ""
+echo "=========================================="
+echo "  Запуск Voice Assistant Nodes (Headless)"
+echo "=========================================="
+
+# Запуск через headless launch file (без animation_player_node)
+# Animation player запускается отдельно на Main Pi
+# Issue #1004 fix (ADR-0004): launch грузит per-node YAML
+# (audio_node.yaml, tts_node.yaml, ...) из config_dir. Операторские
+# конфиги лежат в /config/voice_assistant (монтируется из
+# docker/sound/config/voice_assistant/) — правки применяются при
+# рестарте контейнера. Монолитного voice_assistant.yaml больше нет:
+# вложенные <node>: секции создавали dotted-имена, которые ноды не читали.
+if [ -f /config/voice_assistant/tts_node.yaml ]; then
+    echo "Используется конфигурация: /config/voice_assistant/<node>.yaml (per-node, issue #1004)"
+    echo "Используется headless launch (без animation_player_node)"
+    exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py \
+        config_dir:=/config/voice_assistant
+else
+    echo "Используется конфигурация по умолчанию (per-node YAML из образа)"
+    exec ros2 launch /config/voice_assistant/voice_assistant_headless.launch.py
+fi

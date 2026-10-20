@@ -18,7 +18,7 @@ Related documents:
   diarization side-channel; chain sections superseded)
 * ADR-0108 — empty-text semantics
 * Config — `src/rob_box_voice/config/stt_node.yaml` and
-  `docker/vision/config/voice_assistant/stt_node.yaml`.
+  `docker/sound/config/voice_assistant/stt_node.yaml`.
   There is **no** `stt_chain.yaml` — it was deleted in ADR-0124 §2.6.
 * LLM-side MiniMax operator guide — `docs/guides/MINIMAX.md`
 * Unit tests — `src/rob_box_voice/test/unit/stt/test_minimax_provider.py`

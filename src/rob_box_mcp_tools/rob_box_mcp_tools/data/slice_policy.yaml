@@ -71,38 +71,25 @@ slices:
     - set_volume
     - set_pitch
     - set_speed
-    - set_dj_mode
+    # ADR-0149: музыка — движок v2 (DJ-сет и одиночный трек/мелодия)
+    - dj_set
+    - request_music
     # поиск / память
     - search_web
     - faq_search
     - memory_save
     - memory_search
     - memory_context
-    # MiniMax Music (LLM-генерация)
+    # генерация музыки (KIE/Suno) и её кэш
     - generate_music
-    - gen_list_library
-    - gen_search_library
-    - gen_save_to_library
-    - gen_play_from_library
-    - gen_delete_from_library
-    - gen_get_track_info
-    - execute_music_code
-    # локальная библиотека и продюсирование
-    - compose_music
+    - music_library
+    # локальная библиотека
     - stop_music
     # Issue #3125 — громкость музыки (мастер-фейдер), не голоса
     - set_music_volume
-    - set_vibe_preset
-    - save_track
-    - list_tracks
-    - load_track
-    - delete_track
-    - search_samples
     - lookup_melody
     - search_melody
     - add_music_material
-    - save_arrangement_preset
-    - preview_arrangement
     # навигация и mapping
     - navigate_to_waypoint
     - navigate_to_coordinates

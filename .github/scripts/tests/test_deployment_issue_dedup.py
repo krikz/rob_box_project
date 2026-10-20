@@ -817,9 +817,47 @@ def test_extract_relevant_log_line_ignores_audio_node_hpfonoff_fallback() -> Non
         "Используется дефолт firmware."
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    # ADR-0159: voice-assistant переехал на Sound Pi — правило живёт в scope "sound".
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is None
+    # ...и не продублировано в vision: там голосового стека больше нет.
+    assert MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning") is not None
+
+
+def test_sound_scope_is_accepted_by_extract_log_cli_and_still_flags_real_errors() -> None:
+    """ADR-0159: `extract-log --scope sound` (шаг Check Container Logs для Sound Pi)."""
+    parser = MODULE.build_parser()
+    args = parser.parse_args(["extract-log", "--scope", "sound", "--severity", "critical"])
+    assert args.scope == "sound"
+
+    line = MODULE.extract_relevant_log_line(
+        "[voice_assistant] ERROR scsynth crashed: segfault in audio thread", scope="sound", severity="critical"
+    )
+    assert line is not None
+
+
+def test_issue_body_for_sound_scope_points_at_sound_pi() -> None:
+    candidates = MODULE.prepare_issue_candidates(
+        findings=[
+            {
+                "environment": "staging",
+                "scope": "sound",
+                "container": "voice-assistant",
+                "kind": "critical_log",
+                "severity": "critical",
+                "summary": "Critical log pattern detected",
+                "raw_text": "boom",
+            }
+        ],
+        branch="develop",
+        workflow_run_url="https://example/run/1",
+        timestamp="t",
+        vision_pi_ip="10.1.1.11",
+        main_pi_ip="10.1.1.10",
+        sound_pi_ip="10.1.1.12",
+    )
+    assert "ros2@10.1.1.12" in candidates[0]["body"]
 
 
 def test_extract_relevant_log_line_ignores_respeaker_threshold_warnings() -> None:
@@ -890,7 +928,7 @@ def test_extract_relevant_log_line_ignores_voice_assistant_music_stack_validatio
     startup wrapper prints `⚠ Music stack validation found non-critical
     errors (degraded but usable)` whenever validate_music_stack.py exits
     non-zero without declaring a fatal sclang crash (see
-    docker/vision/scripts/voice_assistant/start_voice_assistant.sh:138
+    docker/sound/scripts/voice_assistant/start_voice_assistant.sh:138
     and src/rob_box_voice/scripts/validate_music_stack.py — returns 1 on
     degraded mode). The container is INTENTIONALLY continuing with a
     degraded music stack; voice/TTS/STT stay healthy. The plain word
@@ -1453,7 +1491,7 @@ def test_extract_relevant_log_line_still_catches_rtabmap_real_critical_error() -
     assert "rtabmap" in line
 
 
-def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_vision() -> None:
+def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_sound() -> None:
     """Issue #2229 (deploy run 34300912847 09.09 / kanban t_8bf3e909).
 
     When the `audio_common_msgs` python package is not installed in
@@ -1468,7 +1506,7 @@ def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_v
     fires on every test deploy and would otherwise surface as a
     false `warning_log` finding → `DEPLOYMENT COMPLETED WITH
     ISSUES`. The exclusion must silence the literal
-    `audio_common_msgs недоступен` signature in the vision scope.
+    `audio_common_msgs недоступен` signature in the sound scope (ADR-0159 PR-7: telegram-bot on Sound Pi).
     """
     log_text = (
         "[telegram_node] [WARN] [1788918991.569701997]: "
@@ -1476,7 +1514,7 @@ def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_v
         "из Telegram публиковаться не будут"
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is None
 
@@ -1495,7 +1533,7 @@ def test_extract_relevant_log_line_still_catches_other_telegram_node_warnings() 
         "unknown command from chat 42: /foo_bar_baz, ignored"
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is not None
     assert "unknown command" in line

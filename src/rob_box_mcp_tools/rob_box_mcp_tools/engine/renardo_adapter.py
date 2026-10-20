@@ -1,0 +1,450 @@
+"""Адаптер Renardo для владельца плеера v2 (ADR-0149 §2.2, §4.3; эпик #3312, PR-4).
+
+Старт программы на границе формы с фазы 0, следующий трек сета на другой деке: встык на границе
+формы уходящего (PR-5) или блэндом — входящий встаёт за ``overlap`` долей до неё, уходящая дека
+снимается на границе и освобождается (PR-8); проверка ресурсов до exec, спуск
+``gate=0 → /g_freeAll``. Сам Renardo (контекст, сокет к scsynth, палитра синтов,
+подтверждённая сервером) поднимает ``renardo_runtime.RenardoRuntime`` (#3614): адаптер получает его
+пространство имён, ``known_synth_names`` и ``send_osc`` как функции, второй инициализации Renardo нет.
+
+Здесь же живут разбор ответа scsynth ``/fail`` (#1808), спуск группы (#3137), загрузка буферов
+сэмплов (#1815).
+
+Темп: ``Clock.update_tempo_now(bpm)``. Пара ``Clock.bpm = N`` + ``Clock.set_time`` теряет
+смену темпа: ``update_tempo`` откладывает её на следующий такт, а ``set_time`` сбрасывает
+``bpm_start_time`` (``renardo_lib/TempoClock.py:218,420``; найдено в PR-2, #3329).
+``Clock.clear()`` не вызывается (ADR-0149 §3.2).
+"""
+
+from __future__ import annotations
+
+import os
+import struct
+import time
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+
+from rob_box_music import knowledge as kn
+
+#: Issue #3112: ``Clock.set_time`` ставит клок в середину такта за 2 доли до начала формы —
+#: ``next_bar()`` тогда даёт ровно k·F при любом ``nudge`` в (-2, +2) долей (перенесено из
+#: ``core/arranger.py`` при удалении старого пути, PR-13b ADR-0149).
+ALIGN_LEAD_BEATS = 2
+
+#: ``Clock.latency`` при v2 (#3328): на живом роботе 01.10 опоздавших бандлов в scsynth
+#: 250/мин при 0.25 с и 2/мин при 0.5 с (PR-2, #3329). Цена — реакция на 0.25 с позже.
+V2_CLOCK_LATENCY_S = 0.5
+
+#: Узел мастер-шины ``masterfilter`` (``foxdot_init.sc``: ниже 1000, Renardo его не переиспользует).
+MASTER_NODE = 999
+
+#: Пауза между ``gate=0`` и ``/g_freeAll`` (#3137, как у #1000 в ``stop_all``).
+RAMP_DOWN_RELEASE_SECONDS = 0.05
+
+#: Уходящая дека снимается за 1/32 до доли стыка: её события на самой доле (повтор формы —
+#: бочка, аккорд пэда) не звучат поверх входящего трека (PR-5).
+HANDOFF_STOP_BEATS = 0.125
+
+#: Проблема с ресурсом до exec: ``(reason, detail)``.
+Problem = Tuple[str, str]
+
+
+def split_osc_address(data: bytes) -> Tuple[Optional[str], bytes]:
+    """Извлечь OSC-адрес из пакета; вернуть (адрес, остаток-с-выравниванием)."""
+    if not data or data[0:1] != b"/":
+        return None, b""
+    end = data.find(b"\x00")
+    if end == -1:
+        return None, b""
+    address = data[:end].decode("ascii", "replace")
+    consumed = end + 1
+    while consumed % 4:
+        consumed += 1
+    return address, data[consumed:]
+
+
+def _decode_one(tag: str, rest: bytes, offset: int) -> Tuple[Any, int]:
+    """Один аргумент OSC; ``(None, -1)`` — дальше не разбираем."""
+    if tag in ("i", "f"):
+        if offset + 4 > len(rest):
+            return None, -1
+        return struct.unpack(">" + tag, rest[offset:offset + 4])[0], offset + 4
+    if tag == "s":
+        str_end = rest.find(b"\x00", offset)
+        if str_end == -1:
+            return None, -1
+        value = rest[offset:str_end].decode("utf-8", "replace")
+        offset = str_end + 1
+        while offset % 4:
+            offset += 1
+        return value, offset
+    # blob (b) и прочие типы не разбираем — для лога достаточно накопленного.
+    return None, -1
+
+
+def decode_osc_args(rest: bytes) -> List[Any]:
+    """Разобрать OSC type-tag строку (``,ssif``...) и аргументы за ней."""
+    if not rest or rest[0:1] != b",":
+        return []
+    end = rest.find(b"\x00")
+    if end == -1:
+        return []
+    tags = rest[1:end].decode("ascii", "replace")
+    offset = end + 1
+    while offset % 4:
+        offset += 1
+    args: List[Any] = []
+    for tag in tags:
+        value, offset = _decode_one(tag, rest, offset)
+        if offset < 0:
+            break
+        args.append(value)
+    return args
+
+
+def osc_fail_detail(data: bytes) -> Optional[str]:
+    """Текст отказа scsynth, если пакет — ``/fail``; иначе ``None`` (``/done`` и пр. — норма)."""
+    address, rest = split_osc_address(data)
+    if address != "/fail":
+        return None
+    args = decode_osc_args(rest)
+    return " ".join(str(a) for a in args) if args else rest.decode("utf-8", "replace")
+
+
+def ramp_down_group(send_osc: Callable[..., None], group: int = 1,
+                    release_s: float = RAMP_DOWN_RELEASE_SECONDS) -> None:
+    """``/n_set <group> gate 0`` → пауза → ``/g_freeAll <group>`` (anti-click, #1000/#3137).
+
+    ``gate`` есть у меньшинства синтов (~60 из ~370), у остальных ``/n_set`` — no-op; главное —
+    когда звать ``freeAll`` относительно последней ноты (#3137). Best-effort: SC
+    недоступен — старые ноды умрут сами.
+    """
+    try:
+        send_osc("/n_set", group, "gate", 0.0)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        time.sleep(release_s)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        send_osc("/g_freeAll", group)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def set_master_controls(send_osc: Callable[..., None], master: Mapping[str, float], lag_s: float) -> None:
+    """``/n_set 999`` — ручки мастер-шины трека поверх ``knowledge.MASTER_DEFAULTS`` (ADR-0149 §3.10, PR-7).
+
+    Все ручки выставляются каждый раз, поэтому трек вне сета получает ``trim 0`` и обычный выравниватель (правило
+    сброса ADR-0147 §3.2). ``trimLag`` — время переезда громкости (в блэнде — его длина). Образ без ``trim`` в
+    ``masterfilter.scd`` неизвестную ручку молча пропускает. Best-effort: SC недоступен — музыку не роняем.
+    """
+    args: List[Any] = ["trimLag", float(lag_s)]
+    for name, value in {**kn.MASTER_DEFAULTS, **master}.items():
+        args += [name, float(value)]
+    try:
+        send_osc("/n_set", MASTER_NODE, *args)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_sample_buffers(samples: Any, symbols: Iterable[str]) -> List[str]:
+    """Загрузить буферы символов ``play()`` до exec; вернуть символы без сэмпла.
+
+    ``"."`` — пауза, пробел — разделитель; ``"-"`` — звучащий хэт (#1815). ``"X:12"`` — символ с
+    номером файла ``sample=`` (``Program.samples`` v2, бочка ``knowledge.KICK_SOUNDS``): грузится тот
+    буфер, что прозвучит, а не нулевой. Renardo отдаёт буфер-заглушку ``nil`` с ``bufnum == 0``,
+    когда файла нет (``BufferManagement.py:116,209``). Повторный вызов — попадание в кэш Renardo.
+    Путь с ``/`` — файл ``loop()`` от корня сэмплов (``Program.sample_files`` v2, каталог DJ_Dave, PR-3d):
+    ``loadBuffer('../../<путь>')`` — тот же путь, что в программе; ``0`` — файла нет. Абсолютный путь — wav
+    сгенерированного трека (``render.audio``, ADR-0158 PR-2): ``loadBuffer(<путь>)`` как есть.
+    """
+    missing: List[str] = []
+    for entry in symbols:
+        symbol, _, index = entry.partition(":") if len(entry) > 2 and entry[1] == ":" else (entry, "", "")
+        if symbol.isspace() or symbol == ".":
+            continue
+        try:
+            if os.path.isabs(entry):
+                bufnum = samples.loadBuffer(entry)
+            elif "/" in entry:
+                bufnum = samples.loadBuffer(f"../../{entry}")
+            else:
+                args = (symbol, 0, int(index)) if index else (symbol, 0)  # (символ, spack, номер файла)
+                bufnum = getattr(samples.getBufferFromSymbol(*args), "bufnum", None)
+        except Exception:  # noqa: BLE001 — символ может не иметь сэмпла
+            missing.append(entry)
+            continue
+        if bufnum == 0:
+            missing.append(entry)
+    return missing
+
+
+def audio_files(program: Any) -> Tuple[str, ...]:
+    """Файлы целых треков программы (абсолютные пути ``sample_files``, ``render.audio``): их буферы — десятки МБ."""
+    return tuple(sorted(f for f in getattr(program, "sample_files", ()) if os.path.isabs(f)))
+
+
+def free_buffers(samples: Any, files: Iterable[str]) -> None:
+    """Освободить буферы целых треков (``Samples.free``): кэш Renardo сам буферы не отпускает, а трек 240 с — 31 МБ
+    в контейнере scsynth на 512 МБ (спайк ADR-0158 PR-2). Звать после снятия нод (``ramp_down_group``)."""
+    for path in files:
+        try:
+            samples.free(path)
+        except Exception:  # noqa: BLE001 — буфер не загружался или уже свободен
+            pass
+
+
+class RenardoAdapter:
+    """Деки на живом Renardo: проверка ресурсов, старт с фазы 0, стык следующего трека, стоп.
+
+    Args:
+        namespace: функция → текущее пространство имён Renardo (``Clock``, ``Samples``, плееры).
+        known_synths: функция → синты, подтверждённые сервером (``None`` — палитра неизвестна).
+        send_osc: отправка raw OSC в scsynth (``RenardoRuntime.send_osc``).
+        latency_s: ``Clock.latency`` на время v2.
+        lead_beats: за сколько долей до границы формы ставится клок (плееры встают на такт).
+    """
+
+    def __init__(self, namespace: Callable[[], Mapping[str, Any]],
+                 known_synths: Callable[[], Optional[frozenset]],
+                 send_osc: Callable[..., None], *, latency_s: float = V2_CLOCK_LATENCY_S,
+                 lead_beats: float = ALIGN_LEAD_BEATS) -> None:
+        self._namespace = namespace
+        self._known_synths = known_synths
+        self._send_osc = send_osc
+        self.latency_s = float(latency_s)
+        self._lead_beats = float(lead_beats)
+        self._live_slots: Tuple[str, ...] = ()
+        self._leaving: Tuple[str, ...] = ()  # дека уходящего трека, пока идёт блэнд
+        # Буферы целых треков на деках (ADR-0158 PR-2): нота файла звучит всю ``sus`` и после снятия плеера —
+        # её гасит только группа, а буфер освобождается после неё.
+        self._audio: Tuple[str, ...] = ()
+        # Поколение: start/stop делают устаревшим всё, что раньше запланировано на клоке
+        # (стык, nearly_finished) — после стопа запланированный стык музыку не воскрешает.
+        self._generation = 0
+        self._arc_track: Optional[str] = None  # чей ``Program.arc`` ведёт мастер-шину
+        # Прошлый процесс мог упасть посреди сета с ``trim −9`` на мастер-шине: она переживает рестарт mcp_server.
+        set_master_controls(send_osc, {}, kn.TRIM_LAG_S)
+
+    def check(self, program: Any) -> Optional[Problem]:
+        """Синты и буферы программы есть на сервере? ``None`` — да; иначе ``(reason, detail)``."""
+        ns = self._namespace() or {}
+        if ns.get("Clock") is None or ns.get("Samples") is None:
+            return "renardo_unavailable", "нет Clock/Samples в контексте Renardo"
+        known = self._known_synths()
+        if known is None:
+            return "synth_palette_unknown", "палитра синтов сервера неизвестна"
+        unknown = sorted(s for s in program.synths if s.lower() not in known or not callable(ns.get(s)))
+        if unknown:
+            return "unknown_synth", f"синтов нет на сервере: {', '.join(unknown)}"
+        missing = load_sample_buffers(ns["Samples"], sorted(program.samples | program.sample_files))
+        if missing:
+            return "missing_sample", f"нет сэмплов для символов: {' '.join(missing)}"
+        return None
+
+    def start(self, program: Any, on_started: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+        """Исполнить программу так, чтобы форма началась с доли, кратной ``form_beats``.
+
+        Старые плееры деки снимаются; клок ставится на ``k·form − lead`` (плееры нового трека
+        встают на ``Clock.next_bar() = k·form``); ``on_started`` зовётся из потока клока на
+        фактической доле старта плееров. Бросает исключение exec — владелец превратит его в
+        ``rejected``. Темп ставится здесь, один раз на сет: следующие треки сета — :meth:`cue`.
+        """
+        ns = self._namespace()
+        clock = ns["Clock"]
+        self._generation += 1
+        # Снять и прошлый трек, и слоты новой программы: играющий плеер на ``>>`` лишь меняет
+        # атрибуты и продолжает с текущей доли — фаза не 0 (живой прогон 01.10: 126.25 из 128).
+        self._stop_slots(ns, (*self._live_slots, *self._leaving, *program.slots.values()))
+        self._live_slots, self._leaving = (), ()
+        self._release_audio(ns)
+        if getattr(clock, "now_flag", False):
+            clock.now_flag = False  # иначе плееры встанут не на такт (#3166)
+        clock.latency = self.latency_s
+        clock.update_tempo_now(program.bpm)
+        form = float(program.form_beats)
+        now = float(clock.now())
+        clock.set_time(((now + self._lead_beats) // form + 1) * form - self._lead_beats)
+        exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
+        self._live_slots, self._audio = tuple(program.slots.values()), audio_files(program)
+        return self._arm_started(ns, program, on_started, origin=None, lag_s=kn.TRIM_LAG_S)
+
+    def cue(self, program: Any, at_beat: float, on_started: Callable[[Dict[str, Any]], None],
+            on_failed: Callable[[str, str], None], *, leave_at: Optional[float] = None,
+            on_left: Optional[Callable[[], None]] = None, fade: Tuple[Optional[str], float] = (None, 0.0)) -> None:
+        """Следующий трек сета: плееры программы встают ровно на долю ``at_beat`` (фаза 0).
+
+        Встык (``leave_at`` нет) ``at_beat`` — граница формы играющего трека (ADR-0149 §4.3);
+        блэнд (PR-8, §3.12) — ``at_beat`` за ``overlap`` долей до границы ``leave_at``: оба трека
+        звучат вместе, своп баса и бочки — в самих формах (``model.blend_bars``). Программа
+        исполняется в потоке клока за ``lead_beats`` до ``at_beat`` (``Clock.next_bar()`` =
+        ``at_beat``) на другой деке; плееры уходящего снимаются за ``HANDOFF_STOP_BEATS`` до
+        ``leave_at`` (его повтор формы не звучит), дека свободна — ``on_left``. Без ``set_time``
+        и без смены темпа: темп один на сет (§4.4). Ошибка exec → ``on_failed``, уходящий трек
+        при этом играет дальше (не тишина). ``fade`` — ``(дека, доли)``: ноты файла уходящей деки гаснут с доли
+        ``at_beat`` (вход результата посреди прохода моста-файла, ``BridgeHold``), а не звучат до конца ``sus``.
+        """
+        ns = self._namespace()
+        clock = ns["Clock"]
+        generation = self._generation
+
+        def _rbx_cue() -> None:
+            if generation != self._generation:
+                return  # стоп/рестарт раньше стыка
+            leaving = tuple(s for s in self._live_slots if s not in program.slots.values())
+            try:
+                self._stop_slots(ns, program.slots.values())
+                exec(program.code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
+            except Exception as exc:  # noqa: BLE001 — отказ громкий, уходящий трек играет дальше
+                on_failed("exec_error", f"{type(exc).__name__}: {exc}")
+                return
+            self._live_slots, self._leaving = tuple(program.slots.values()), leaving
+            self._audio = (*self._audio, *audio_files(program))  # стык с файлом (блэнд) — PR-8 ADR-0158
+            leave = float(at_beat) if leave_at is None else float(leave_at)
+            # Громкость энергии переезжает за блэнд: уходящий трек звучит под той же мастер-шиной.
+            lag = max(kn.TRIM_LAG_S, (leave - float(at_beat)) * 60.0 / float(program.bpm))
+            info = self._arm_started(ns, program, on_started, origin=float(at_beat), lag_s=lag)
+            leave = info["start_beat"] if leave_at is None else leave
+
+            def _rbx_deck_free() -> None:
+                # Своей группы SC у деки нет: ``gate=0``/``/g_freeAll 1`` сняли бы и входящий трек.
+                # Плееры уходящего снимаются с клока (новых нот нет), звучащие ноты доигрывают ``sus``.
+                if generation != self._generation:
+                    return  # стоп/рестарт уже снял обе деки
+                self._stop_slots(ns, leaving)
+                self._leaving = ()
+                if on_left is not None:
+                    on_left()
+
+            clock.schedule(_rbx_deck_free, leave - HANDOFF_STOP_BEATS)
+            if fade[0] and fade[1]:
+                self._fade_deck(clock, float(at_beat), program.bpm, fade, generation)
+
+        clock.schedule(_rbx_cue, float(at_beat) - self._lead_beats)
+
+    def _fade_deck(self, clock: Any, at_beat: float, bpm: float, fade: Tuple[Optional[str], float],
+                   generation: int) -> None:
+        """Ноты файла деки ``fade[0]`` гаснут за ``fade[1]`` долей с доли ``at_beat`` — как она слышна: ноты Renardo
+        звучат на ``Clock.latency`` позже своей доли клока, ``/n_set`` без метки времени — сразу."""
+        from rob_box_music.render.audio import deck_fade_args
+
+        deck, beats = fade
+        args = deck_fade_args(str(deck), beats * 60.0 / float(bpm))
+
+        def _rbx_fade() -> None:
+            if generation == self._generation:
+                try:
+                    self._send_osc("/n_set", 1, *args)
+                except Exception:  # noqa: BLE001 — SC недоступен: мост доиграет проход, музыку не роняем
+                    pass
+
+        clock.schedule(_rbx_fade, at_beat + float(clock.latency) * float(bpm) / 60.0)
+
+    def beat_now(self) -> float:
+        """Доля клока Renardo сейчас (вход результата по такту поверх моста ожидания)."""
+        return float(self._namespace()["Clock"].now())
+
+    def at(self, beat: float, fn: Callable[[], None]) -> None:
+        """Позвать ``fn`` из потока клока на доле ``beat``, если до неё не было start/stop."""
+        generation = self._generation
+
+        def _rbx_at() -> None:
+            if generation == self._generation:
+                fn()
+
+        self._namespace()["Clock"].schedule(_rbx_at, float(beat))
+
+    def stop(self) -> None:
+        """Снять плееры деки и погасить группу 1 (``gate=0`` → ``/g_freeAll``)."""
+        self._generation += 1
+        ns = self._namespace() or {}
+        self._stop_slots(ns, (*self._live_slots, *self._leaving))
+        self._live_slots, self._leaving = (), ()
+        ramp_down_group(self._send_osc, 1)
+        free_buffers(ns.get("Samples"), self._audio)
+        self._audio = ()
+        set_master_controls(self._send_osc, {}, kn.TRIM_LAG_S)  # тишина: trim 0 и обычный выравниватель
+
+    def _release_audio(self, ns: Mapping[str, Any]) -> None:
+        """Перед новым треком: нота файла прошлого трека звучала бы поверх — снять группу и отдать буферы."""
+        if self._audio:
+            ramp_down_group(self._send_osc, 1)
+            free_buffers(ns.get("Samples"), self._audio)
+            self._audio = ()
+
+    def _arm_started(self, ns: Mapping[str, Any], program: Any, on_started: Callable[[Dict[str, Any]], None],
+                     origin: Optional[float], lag_s: float) -> Dict[str, Any]:
+        """Доля старта — из самих плееров после exec; колбэк ``started`` — на эту долю.
+
+        Фаза: у первого трека — остаток от формы; у стыка — сдвиг от ``origin`` (границы формы
+        уходящего); 0 — встал ровно на неё. На той же доле — ручки мастер-шины трека (``Program.master``),
+        дальше по долям секций — дуга громкости (``Program.arc``): её ведёт последний вставший трек.
+        """
+        clock = ns["Clock"]
+        form = float(program.form_beats)
+        starts = {slot: float(ns[slot].event_index) for slot in program.slots.values()}
+        start_beat = min(starts.values())
+        phase = start_beat % form if origin is None else start_beat - origin
+        info = {"track_id": program.track_id, "deck": program.deck, "form_beats": form,
+                "start_beat": start_beat, "players_aligned": len(set(starts.values())) == 1,
+                "phase_in_form": round(phase, 3)}
+
+        master = dict(getattr(program, "master", {}))
+        arc = tuple(getattr(program, "arc", ()))
+        generation = self._generation
+
+        def trimmed(offset_db: float) -> Dict[str, float]:
+            return {**master, "trim": master.get("trim", kn.MASTER_DEFAULTS["trim"]) + offset_db}
+
+        def owns_master() -> bool:
+            """Дугу ведёт последний вставший трек; стоп и рестарт её обрывают."""
+            return generation == self._generation and self._arc_track == program.track_id
+
+        def _rbx_section(offset_db: float, section_lag_s: float) -> None:
+            if owns_master():
+                set_master_controls(self._send_osc, trimmed(offset_db), section_lag_s)
+
+        def _rbx_arc_pass(pass_start: float) -> None:
+            """Секции одного прохода формы; трек на повторе (вне сета) получает дугу заново."""
+            if not owns_master():
+                return
+            for at, offset_db, section_lag_s in arc[1:]:
+                clock.schedule(lambda o=offset_db, s=section_lag_s: _rbx_section(o, s), pass_start + at)
+            clock.schedule(lambda: (_rbx_section(arc[0][1], arc[0][2]), _rbx_arc_pass(pass_start + form)),
+                           pass_start + form)
+
+        # Мастер переходит к треку уже сейчас, до его первой доли: секция уходящего, попавшая на ту же долю
+        # (его outro = начало блэнда), не должна спорить со стартом входящего.
+        self._arc_track = program.track_id
+
+        def _rbx_track_started() -> None:
+            set_master_controls(self._send_osc, trimmed(arc[0][1]) if arc else master, lag_s)
+            if arc:
+                _rbx_arc_pass(start_beat)
+            beat = float(clock.now())
+            on_started(dict(info, clock_beat=round(beat, 3), late_beats=round(beat - start_beat, 3),
+                            bpm=float(clock.get_bpm()), latency_s=float(clock.latency)))
+
+        clock.schedule(_rbx_track_started, start_beat)
+        return info
+
+    @staticmethod
+    def _stop_slots(ns: Mapping[str, Any], slots: Iterable[str]) -> None:
+        """Снять плееры слотов. ``current_dur`` — в ``None``: Renardo (``Player.count``) ставит первое событие
+        следующего ``>>`` на долю, кратную сумме ``dur`` ПРОШЛОЙ программы слота, — снятый плеер её не обновляет
+        (ADR-0158 PR-2, живой прогон 13.10: трек кэша 60 с после трека 88.8 с не встал и за 4 мин)."""
+        for slot in dict.fromkeys(slots):
+            player = ns.get(slot)
+            stop = getattr(player, "stop", None)
+            if callable(stop):
+                stop()
+                if hasattr(player, "current_dur"):
+                    player.current_dur = None
+
+
+__all__ = [
+    "HANDOFF_STOP_BEATS", "MASTER_NODE", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
+    "audio_files", "decode_osc_args", "free_buffers", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "set_master_controls",
+    "split_osc_address",
+]

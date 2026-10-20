@@ -559,14 +559,14 @@ create_issue \
 - \`docs/adr/0028-avatar-supervisor.md\` §4.6 (деплой)
 - \`docs/development/DOCKER_STANDARDS.md\` (правила Docker)
 - \`docker/vision/docker-compose.yaml:170\` (образец \`voice-assistant\`)
-- \`docker/vision/voice_assistant/Dockerfile\` (образец app-layer Dockerfile)
-- \`docker/vision/scripts/voice_assistant/\` (образец start-скрипта)
+- \`docker/sound/voice_assistant/Dockerfile\` (образец app-layer Dockerfile)
+- \`docker/sound/scripts/voice_assistant/\` (образец start-скрипта)
 - \`docs/plans/2026-08-24-avatar-decomposition.md\` §4 (AV-9 acceptance)
 
 ## Acceptance criteria
 
-- [ ] \`docker/vision/supervisor/Dockerfile\` создан по образцу
-      \`docker/vision/voice_assistant/Dockerfile\`. ❌ НЕ \`COPY config/\`,
+- [ ] \`docker/sound/supervisor/Dockerfile\` создан по образцу
+      \`docker/sound/voice_assistant/Dockerfile\`. ❌ НЕ \`COPY config/\`,
       ❌ НЕ \`COPY scripts/\` (DOCKER_STANDARDS.md).
 - [ ] \`docker/vision/supervisor/start_supervisor.sh\` — запуск
       \`ros_with_namespace.sh rob_box_supervisor supervisor_node\`.

@@ -7,7 +7,7 @@
 # Priority:
 #   1. If voice_file is a repo-relative path (.github/e2e/voice_commands/...) — push it from checkout
 #   2. If voice_file exists on build machine — use it
-#   3. If missing — generate via Yandex TTS on robot (10.1.1.21), push to build machine (10.1.1.249)
+#   3. If missing — generate via Yandex TTS on robot (10.1.1.22), push to build machine (10.1.1.249)
 # Usage: ensure_voice_file.sh <voice_text> <voice_file_path>
 set -e
 
@@ -30,7 +30,7 @@ fi
 
 echo "VOICE_FILE_MISSING — generating via Yandex TTS on robot..."
 # Ключи Yandex живут в voice-assistant контейнере на роботе
-sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 "cat > /tmp/gen_voice_e2e.py << 'PYEOF'
+sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 "cat > /tmp/gen_voice_e2e.py << 'PYEOF'
 import os, json, urllib.request, base64
 text = \"${VOICE_TEXT}\"
 key = os.environ['YANDEX_API_KEY']
@@ -60,7 +60,7 @@ docker exec voice-assistant python3 /tmp/gen_voice_e2e.py && \
 docker cp voice-assistant:/tmp/voice_cmd.wav /tmp/voice_cmd.wav"
 
 echo "Fetching WAV + converting to OGG..."
-sshpass -e scp -o StrictHostKeyChecking=no ros2@10.1.1.21:/tmp/voice_cmd.wav /tmp/voice_cmd.wav
+sshpass -e scp -o StrictHostKeyChecking=no ros2@10.1.1.22:/tmp/voice_cmd.wav /tmp/voice_cmd.wav
 ffmpeg -y -i /tmp/voice_cmd.wav -c:a libopus -b:a 48k /tmp/voice_gen.ogg 2>/dev/null
 
 echo "Pushing to build machine..."

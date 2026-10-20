@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 
 // Phase 1.5: клиент собирается vite'ом, артефакт уезжает в dist/.
 // base='/' — ассеты Three.js идут по /assets/*, обслуживаются Caddy file_server
-// из /srv/quest_static (см. docker/vision/quest/Caddyfile).
+// из /srv/quest_static (см. docker/sound/quest/Caddyfile).
 // WSS-канал /quest остаётся в aiohttp через reverse_proxy.
 // Никаких CDN: все зависимости через npm + bundle.
 export default defineConfig({

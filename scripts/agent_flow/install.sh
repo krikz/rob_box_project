@@ -314,7 +314,7 @@ EXPECTED=(
     agent-flow-rotation-watchdog.sh
     # Padavan-vakhta STEP 4 voice-smoke (issue #1772): "живая" проверка
     # робота — проигрывает 2 .wav через динамик 10.1.1.249, читает логи
-    # voice-assistant на 10.1.1.21. Устойчив к отсутствию .wav (NO-OP +
+    # voice-assistant на 10.1.1.22. Устойчив к отсутствию .wav (NO-OP +
     # WARN, не валит cron tick). Вызывается LLM'ом в ШАГ 4 промпта
     # падаван-вахты (5a070bf3ed3e).
     padavan-step4-voice-smoke.sh

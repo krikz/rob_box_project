@@ -81,53 +81,77 @@ _HTTP_TIMEOUT_S = 5.0
 # метрики» и список того, что есть (ADR-0018).
 #
 # Ключ — то, что LLM (или оператор) реально произносит; значение — рабочий
-# PromQL. Проверено на стенде: все выражения возвращают непустой результат.
+# PromQL. Выражения cpu/memory/llm_latency/tts_latency/stt_latency/uptime
+# проверялись на стенде 08.09.2026; barge_in/voice_confidence и ×100 у cpu
+# добавлены в #3298 и на живом Prometheus НЕ прогонялись.
 
-QUERY_ALIASES: Mapping[str, str] = {
-    # CPU. cAdvisor на обеих Pi поднимается только с профилем "monitoring"
-    # (docker/{main,vision}/docker-compose.yaml: profiles: ["monitoring"]) и
-    # сейчас не запущен — оба таргета cadvisor-* в Prometheus down. Поэтому
-    # «CPU» = process_cpu_seconds_total, который отдают сами voice-ноды
-    # через prometheus_client. Это честный CPU процессов ТАРСа, просто не
-    # общесистемный.
-    "cpu": "rate(process_cpu_seconds_total[5m])",
-    "cpu_usage": "rate(process_cpu_seconds_total[5m])",
-    "cpu_percent": "rate(process_cpu_seconds_total[5m])",
-    "node_cpu_seconds_total": "rate(process_cpu_seconds_total[5m])",
-    "container_cpu_usage_seconds_total": "rate(process_cpu_seconds_total[5m])",
-    # Память.
-    "memory": "process_resident_memory_bytes",
-    "mem": "process_resident_memory_bytes",
-    "ram": "process_resident_memory_bytes",
-    "container_memory_usage_bytes": "process_resident_memory_bytes",
-    "node_memory_MemAvailable_bytes": "process_resident_memory_bytes",
-    # Задержки голосового тракта — то, ради чего метрики вообще собирают.
-    "latency": "rate(voice_llm_request_duration_seconds_sum[5m]) "
-    "/ rate(voice_llm_request_duration_seconds_count[5m])",
-    "network_latency_ms": "rate(voice_llm_request_duration_seconds_sum[5m]) "
-    "/ rate(voice_llm_request_duration_seconds_count[5m])",
-    "llm_latency": "rate(voice_llm_request_duration_seconds_sum[5m]) "
-    "/ rate(voice_llm_request_duration_seconds_count[5m])",
-    "tts_latency": "rate(voice_tts_synthesize_duration_seconds_sum[5m]) "
-    "/ rate(voice_tts_synthesize_duration_seconds_count[5m])",
-    "stt_latency": "rate(voice_stt_recognize_duration_seconds_sum[5m]) "
-    "/ rate(voice_stt_recognize_duration_seconds_count[5m])",
-    # Живость экспортеров — «кто отвечает».
-    "uptime": "up",
-    "health": "up",
-    "errors": "rate(voice_llm_request_total[5m])",
-    # Оператор говорит по-русски, и LLM иногда прокидывает его слово в query
-    # как есть. Дешевле принять их здесь, чем объяснять модели в промпте.
-    "цпу": "rate(process_cpu_seconds_total[5m])",
-    "процессор": "rate(process_cpu_seconds_total[5m])",
-    "загрузка": "rate(process_cpu_seconds_total[5m])",
-    "память": "process_resident_memory_bytes",
-    "озу": "process_resident_memory_bytes",
-    "задержка": "rate(voice_llm_request_duration_seconds_sum[5m]) "
-    "/ rate(voice_llm_request_duration_seconds_count[5m])",
-    "ошибки": "rate(voice_llm_request_total[5m])",
-    "живость": "up",
-}
+
+def _mean_rate(family: str) -> str:
+    """Среднее значение наблюдений гистограммы за 5 минут: rate(sum)/rate(count)."""
+    return f"rate({family}_sum[5m]) / rate({family}_count[5m])"
+
+
+_CPU_PERCENT = "100 * rate(process_cpu_seconds_total[5m])"
+_MEMORY_BYTES = "process_resident_memory_bytes"
+_LLM_LATENCY = _mean_rate("voice_llm_request_duration_seconds")
+_STT_LATENCY = _mean_rate("voice_stt_recognize_duration_seconds")
+_TTS_LATENCY = _mean_rate("voice_tts_synthesize_duration_seconds")
+_BARGE_IN = "rate(voice_barge_in_total[5m])"
+_VOICE_CONFIDENCE = _mean_rate("voice_speaker_recognize_confidence")
+_SERVICES_UP = "up"
+
+#: Словарь человеческих имён для ``show_metrics``: (имя для LLM, что это,
+#: единица, PromQL, русские синонимы оператора). Имя из этой таблицы LLM
+#: передаёт в ``query`` как есть — писать PromQL самой ей не нужно (#3298).
+#: Описание инструмента строится из неё же (:func:`metric_dictionary_text`),
+#: поэтому словарь и подсказка модели расходиться не могут.
+METRIC_DICTIONARY: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("cpu", "загрузка процессора", "проценты", _CPU_PERCENT,
+     ("цпу", "процессор", "загрузка", "cpu_usage", "cpu_percent")),
+    ("memory", "память", "байты", _MEMORY_BYTES,
+     ("mem", "ram", "память", "озу")),
+    ("llm_latency", "задержка LLM", "секунды", _LLM_LATENCY,
+     ("latency", "задержка", "задержка llm", "network_latency_ms")),
+    ("stt_latency", "задержка распознавания речи", "секунды", _STT_LATENCY,
+     ("задержка stt",)),
+    ("tts_latency", "задержка синтеза речи", "секунды", _TTS_LATENCY,
+     ("задержка tts",)),
+    ("barge_in", "перебивания робота голосом", "событий в секунду", _BARGE_IN,
+     ("перебивания", "barge-in", "barge_in_rate")),
+    ("voice_confidence", "уверенность распознавания голоса", "от 0 до 1",
+     _VOICE_CONFIDENCE, ("уверенность", "уверенность голоса", "speaker_confidence")),
+    ("services_up", "статус сервисов (1 — жив, 0 — лежит)", "0 или 1",
+     _SERVICES_UP, ("up", "uptime", "health", "живость", "сервисы",
+                    "статус сервисов")),
+)
+
+
+def _build_query_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for key, _title, _unit, expr, synonyms in METRIC_DICTIONARY:
+        for name in (key, *synonyms):
+            aliases[name.lower()] = expr
+    # Имена метрик, которые LLM по памяти выдумывает или берёт из чужих
+    # стеков (node_exporter/cAdvisor, которых у нас нет): тоже ведём на CPU/RAM.
+    aliases["node_cpu_seconds_total"] = _CPU_PERCENT
+    aliases["container_cpu_usage_seconds_total"] = _CPU_PERCENT
+    aliases["container_memory_usage_bytes"] = _MEMORY_BYTES
+    aliases["node_memory_MemAvailable_bytes".lower()] = _MEMORY_BYTES
+    aliases["errors"] = "rate(voice_llm_request_total[5m])"
+    aliases["ошибки"] = aliases["errors"]
+    return aliases
+
+
+QUERY_ALIASES: Mapping[str, str] = _build_query_aliases()
+
+
+def metric_dictionary_text() -> str:
+    """Перечень имён словаря для описания инструмента ``show_metrics``."""
+    return "; ".join(
+        f"'{key}' — {title} ({unit})"
+        for key, title, unit, _expr, _syn in METRIC_DICTIONARY
+    )
+
 
 # Слова PromQL, которые НЕ являются именами метрик: их нельзя резолвить по
 # каталогу. Список закрытый — всё, что реально встречается в наших запросах.
@@ -599,6 +623,8 @@ __all__ = [
     "MAX_SERIES",
     "MetricsSource",
     "MetricsUnavailable",
+    "METRIC_DICTIONARY",
     "QUERY_ALIASES",
+    "metric_dictionary_text",
     "summarize_for_speech",
 ]

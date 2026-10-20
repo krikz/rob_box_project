@@ -42,7 +42,8 @@ Use this skill when:
 | Машина | IP (eth0) | IP (wlan0) | Роль |
 |--------|-----------|-----------|------|
 | Main Pi | 10.1.1.10 | 10.1.1.20 | SLAM, Nav2, Control, API |
-| Vision Pi | 10.1.1.11 | 10.1.1.21 | Vision, Voice, LED |
+| Vision Pi | 10.1.1.11 | 10.1.1.21 | Vision, LED |
+| Sound Pi | 10.1.1.12 | 10.1.1.22 | Voice (ReSpeaker), SuperCollider, ТАРС (ADR-0159) |
 | Build Machine | локальная сеть | — | сборка Docker образов |
 | Host PC | — | 10.1.1.5 | Grafana, мониторинг |
 
@@ -50,6 +51,7 @@ Use this skill when:
 ```bash
 sshpass -p 'open' ssh ros2@10.1.1.20   # Main Pi
 sshpass -p 'open' ssh ros2@10.1.1.21   # Vision Pi
+sshpass -p 'open' ssh ros2@10.1.1.22   # Sound Pi
 ```
 
 **⛔ КРИТИЧНЫЕ ПРАВИЛА ДЕПЛОЯ:**

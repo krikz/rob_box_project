@@ -316,7 +316,7 @@ def test_real_archive_weak_match_table(tmp_path):
     не нашлось, поэтому ``get()`` больше не отказывает молча: он всегда
     возвращает лучшего по тексту кандидата (как до #2882), а прозрачность
     для модели (title + alternatives) обеспечивают вызывающие тулы
-    (``ComposeMusicTool``/``LookupMelodyTool``, см. ``tools/music.py``) и
+    (``LookupMelodyTool``, см. ``tools/music.py``) и
     промпт скилла composer — не сама библиотека. Таблица — на РЕАЛЬНОМ
     архиве (``RtttlLibrary()`` без ``archive_path``, тот же бандл
     ``data/rtttl_melodies.jsonl.gz``)."""
@@ -455,7 +455,7 @@ def test_real_archive_query_table_stays_on_topic(tmp_path):
     lib = RtttlLibrary(db_path=str(tmp_path / "real2.db"))
     expected_title_substrings = {
         "russian anthem": "russia",
-        "гимн россии": "soviet",  # алиас архива — см. _ALIASES
+        "гимн россии": "soviet",  # алиас архива — семя rob_box_music/data/theme_link_seeds.json
         "soviet anthem": "soviet",
         "in the hall of the mountain king": "mountain king",
         "still dre": "dre",
@@ -678,6 +678,16 @@ def test_human_track_title_strips_technical_suffixes(tmp_path):
     lib = _make_lib(tmp_path)
     rec = {"name": "hallofth_2", "title": "Hall Of The Mountain King (Alton Towers Theme) 2"}
     assert human_track_title(lib, rec) == "Hall Of The Mountain King"
+
+
+def test_human_track_title_keeps_the_number_of_a_numbered_work(tmp_path):
+    """Прогон 12.10 (PR-2): «Ставлю «Brandenburg Concert No.»» — номер после «No.»/«Op.»/«BWV» — часть названия,
+    не номер повтора записи."""
+    lib = _make_lib(tmp_path)
+    for title in ("Brandenburg Concert No. 3", "Symphony No 5", "Toccata BWV 565", "Sonata Op. 27"):
+        assert human_track_title(lib, {"name": "x_key", "title": title}) == title
+    assert human_track_title(lib, {"name": "x_key", "title": "Brandenburg Concert No. 3 2"}) == (
+        "Brandenburg Concert No. 3")
 
 
 def test_ru_alias_for_is_cached(tmp_path):

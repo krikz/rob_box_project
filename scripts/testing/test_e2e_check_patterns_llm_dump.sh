@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Unit-тест check_patterns: дамп LLM-запроса не считается доказательством (issue #3270).
 #
-# Зачем: лог каждого LLM-запроса печатает «  tools(61): ..., gen_get_track_info, ...»
+# Зачем: лог каждого LLM-запроса печатает «  tools(61): ..., music_library, ...»
 # и «  [N] system: ...» с текстом промпта. Голый grep -E по такому логу находил
-# имя тула, которого никто не вызывал (ml06: PATTERN_OK gen_get_track_info).
+# имя тула, которого никто не вызывал (ml06: PATTERN_OK music_library).
 #
 # Случаи:
 #   1. имя тула только в tools(N) -> PATTERN_MISS, rc=1 (ml06-подобный);
@@ -44,9 +44,9 @@ fake_ssh() { cat "$WORKDIR/docker_logs.txt"; }
 ROBOT_SSH="fake_ssh"
 
 DUMP="🔎 LLM REQUEST START provider=minimax mode=stream
-  [0] system: 'Ты Робби. Для трека зови gen_get_track_info и save_waypoint'
+  [0] system: 'Ты Робби. Для трека зови music_library и save_waypoint'
   [1] assistant: '' tool_calls=[{\"name\": \"memory_save\", \"args\": {}}]
-  tools(3): add_music_material, gen_get_track_info, speak_text
+  tools(3): add_music_material, music_library, speak_text
 🔎 LLM REQUEST END"
 
 run() { # $1=лог, остальное=паттерны; вывод в OUT, код в RC
@@ -55,8 +55,8 @@ run() { # $1=лог, остальное=паттерны; вывод в OUT, к�
 }
 
 # 1. имя тула только в tools(N)
-run "$DUMP" 'gen_get_track_info'
-{ [ "$RC" = 1 ] && printf '%s' "$OUT" | grep -q 'PATTERN_MISS: gen_get_track_info'; } \
+run "$DUMP" 'music_library'
+{ [ "$RC" = 1 ] && printf '%s' "$OUT" | grep -q 'PATTERN_MISS: music_library'; } \
     && ok "1: имя тула в tools(N) -> MISS" || bad "1: ждали MISS, rc=$RC out=$OUT"
 
 # 2. имя в промпте и в tool_calls истории
@@ -66,7 +66,7 @@ run "$DUMP" 'save_waypoint' 'memory_save'
 
 # 3. реальный вызов рядом с дампом
 run "$DUMP
-Запрос выполнения: gen_get_track_info с параметрами {}" 'gen_get_track_info'
+Запрос выполнения: music_library с параметрами {}" 'music_library'
 [ "$RC" = 0 ] && ok "3: строка вызова -> OK" || bad "3: rc=$RC out=$OUT"
 
 # 4. не-тул паттерн вне дампа

@@ -2,8 +2,8 @@
 
 scripts/ci/gen_build_matrix.py — читатель docker/build-manifest.yaml,
 Phase 1 плана docs/plans/2026-09-15-service-manifest.md. Эти тесты
-проверяют только библиотечные функции (load_manifest, independent_services,
-chained_services, topo_layers, image_versions_map) на СИНТЕТИЧЕСКИХ
+проверяют только библиотечные функции (load_manifest, topo_layers,
+wave_entries, image_versions_map) на СИНТЕТИЧЕСКИХ
 мини-манифестах — сверка с РЕАЛЬНЫМИ workflow-файлами делается отдельным
 guard-тестом (scripts/ci/tests/test_service_manifest_sync.py).
 
@@ -63,17 +63,13 @@ def test_single_independent_service(tmp_path):
     manifest = gen_build_matrix.load_manifest(manifest_path)
     services = gen_build_matrix.services_for_pi(manifest, "test")
 
-    independent = gen_build_matrix.independent_services(services)
-    chained = gen_build_matrix.chained_services(services)
-
-    assert [s["name"] for s in independent] == ["alone"]
-    assert chained == []
+    assert gen_build_matrix.topo_layers(services) == [["alone"]]
 
 
-# --- 2. двухуровневая цепочка voice-base → voice-assistant → supervisor --
+# --- 2. цепочка voice-base → voice-assistant → supervisor = три волны ------
 
 
-def test_chained_services_topological_order(tmp_path):
+def test_chain_becomes_one_wave_per_level(tmp_path):
     manifest_path = _write_manifest(
         tmp_path,
         """\
@@ -110,15 +106,13 @@ def test_chained_services_topological_order(tmp_path):
     manifest = gen_build_matrix.load_manifest(manifest_path)
     services = gen_build_matrix.services_for_pi(manifest, "test")
 
-    independent = gen_build_matrix.independent_services(services)
-    chained = gen_build_matrix.chained_services(services)
-
-    assert [s["name"] for s in independent] == ["voice-base"]
-    assert [s["name"] for s in chained] == ["voice-assistant", "supervisor"]
-    # chained_services обязан сохранить depends_on в каждой записи — это то,
-    # что потребитель (workflow-шаблон) использует для needs:.
-    assert chained[0]["depends_on"] == ["voice-base"]
-    assert chained[1]["depends_on"] == ["voice-assistant"]
+    # Волна k ждёт волну k-1 через needs: — supervisor не соберётся раньше,
+    # чем voice-assistant допушит свежий образ (гонка 09.09.2026).
+    assert gen_build_matrix.topo_layers(services) == [
+        ["voice-base"],
+        ["voice-assistant"],
+        ["supervisor"],
+    ]
 
 
 # --- 3. цикл в depends_on → понятная ошибка, не RecursionError -----------
@@ -235,20 +229,82 @@ def test_image_versions_map_skips_false():
 @pytest.mark.skipif(
     not REAL_MANIFEST.exists(), reason="docker/build-manifest.yaml ещё не создан"
 )
-def test_real_manifest_parses_and_has_18_services():
+def test_real_manifest_parses_and_splits_into_waves():
     manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
     vision = gen_build_matrix.services_for_pi(manifest, "vision")
+    sound = gen_build_matrix.services_for_pi(manifest, "sound")
     main = gen_build_matrix.services_for_pi(manifest, "main")
 
-    # Было 11: узел voice-resources удалён вместе с образом — Renardo-сэмплы
-    # кладёт на хост Ресурсный пак, а не собирает CI.
-    assert len(vision) == 10, f"expected 10 Vision Pi services, got {sorted(vision)}"
+    # ADR-0159: голосовой стек и supervisor (наследует voice-assistant)
+    # собираются для Sound Pi — вся цепочка FROM живёт в одном Pi.
+    # + telegram-bot и quest (ADR-0159 PR-7, В9): своя база ros2-zenoh, в цепочку FROM не входят.
+    assert sorted(sound) == [
+        "quest", "supercollider", "supervisor", "telegram-bot", "voice-assistant", "voice-base",
+    ]
+    assert len(vision) == 4, f"expected 4 Vision Pi services, got {sorted(vision)}"
     assert len(main) == 8, f"expected 8 Main Pi services, got {sorted(main)}"
 
-    # Двухуровневая цепочка должна разрешиться без ошибок и в правильном
-    # порядке — это же покрытие интеграционно, не только синтетически.
-    chained = gen_build_matrix.chained_services(vision)
-    assert [s["name"] for s in chained] == ["voice-assistant", "supervisor"]
+    assert gen_build_matrix.topo_layers(sound) == [
+        ["quest", "supercollider", "telegram-bot", "voice-base"],
+        ["voice-assistant"],
+        ["supervisor"],
+    ]
+    # У Vision и Main графы плоские — одна волна.
+    assert len(gen_build_matrix.topo_layers(vision)) == 1
+    assert len(gen_build_matrix.topo_layers(main)) == 1
+    assert gen_build_matrix.max_wave_count(manifest) == 3
+
+
+# --- зависимость между Pi запрещена (ADR-0159 PR-3) ------------------------
+#
+# "L: Build All Services" собирает Pi параллельно: ребро в чужой Pi означало
+# бы сборку FROM старого образа. load_manifest отказывает сразу.
+
+
+_CROSS_PI_MANIFEST = """\
+version: 1
+pis:
+  vision:
+    services:
+      child:
+        dockerfile: docker/vision/child/Dockerfile
+        build_context: "."
+        base:
+          service: parent
+        depends_on: [parent]
+        tag:
+          ros_distro: true
+        image_versions: false
+  sound:
+    services:
+      parent:
+        dockerfile: docker/sound/parent/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        tag:
+          ros_distro: true
+        image_versions: false
+"""
+
+
+def test_dependency_on_service_of_another_pi_is_rejected(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text(_CROSS_PI_MANIFEST, encoding="utf-8")
+    with pytest.raises(gen_build_matrix.ManifestError, match="pis.vision"):
+        gen_build_matrix.load_manifest(p)
+
+
+def test_same_service_name_in_two_pis_is_rejected(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text(
+        _CROSS_PI_MANIFEST.replace("[parent]", "[]")
+        .replace("service: parent", "family: ros2-zenoh")
+        .replace("      parent:", "      child:"),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen_build_matrix.ManifestError, match="уже занято"):
+        gen_build_matrix.load_manifest(p)
 
 
 # --- CLI smoke --------------------------------------------------------------
@@ -269,7 +325,7 @@ def test_cli_mode_tags_prints_json(tmp_path, capsys):
 """,
         pi="vision",
     )
-    # --pi ограничен choices=["vision", "main"] (план §4.2 — CLI работает
+    # --pi ограничен choices=["vision", "sound", "main"] (план §4.2 — CLI работает
     # только над реальными Pi), поэтому синтетический манифест здесь тоже
     # использует ключ "vision", а не произвольное имя "test".
     rc = gen_build_matrix.main(
@@ -295,7 +351,7 @@ def test_cli_unknown_manifest_error_exits_nonzero(tmp_path, capsys):
         pi="vision",
     )
     rc = gen_build_matrix.main(
-        ["--manifest", str(manifest_path), "--pi", "vision", "--mode", "matrix"]
+        ["--manifest", str(manifest_path), "--pi", "vision", "--mode", "waves"]
     )
     assert rc == 1
     assert "image_versions" in capsys.readouterr().err
@@ -318,31 +374,15 @@ def _real(pi: str, docker_tag: str = "dev"):
     return services, ctx
 
 
-# --- разделение "matrix vs именованные job'ы" -----------------------------
+# --- волны реального манифеста -------------------------------------------
 
 
-def test_dependency_target_is_not_a_matrix_service():
-    """voice-base НЕ имеет depends_on, но на него ссылается voice-assistant.
-
-    Он обязан остаться именованным job'ом: `needs:` умеет ссылаться только на
-    job ID, не на элемент матрицы (план §3.1). Если бы voice-base уехал в
-    matrix, build-voice-assistant пришлось бы вешать на ВЕСЬ matrix-job —
-    огрубление графа и изменение поведения при падении соседнего сервиса.
-    """
-    services, _ = _real("vision")
-    matrix = gen_build_matrix.matrix_service_names(services)
-    named = gen_build_matrix.named_service_names(services)
-
-    assert "voice-base" not in matrix
-    assert named == ["voice-base", "voice-assistant", "supervisor"], named
-    assert set(matrix) | set(named) == set(services)
-    assert not set(matrix) & set(named)
-
-
-def test_main_pi_graph_is_flat_so_everything_is_matrix():
-    services, _ = _real("main")
-    assert gen_build_matrix.named_service_names(services) == []
-    assert len(gen_build_matrix.matrix_service_names(services)) == 8
+def test_waves_resolve_build_params_in_topological_order():
+    """wave_entries — те же элементы matrix_entry, разложенные по волнам."""
+    services, ctx = _real("sound")
+    waves = gen_build_matrix.wave_entries(services, ctx)
+    assert [[e["name"] for e in w] for w in waves] == gen_build_matrix.topo_layers(services)
+    assert waves[1][0] == gen_build_matrix.matrix_entry("voice-assistant", services, ctx)
 
 
 # --- формула тега ----------------------------------------------------------
@@ -361,7 +401,7 @@ def test_tag_formula_omits_ros_distro_for_supercollider():
     """Единственный сервис с tag.ros_distro: false ("tag naming is
     inconsistent"). Манифест фиксирует факт, генератор его воспроизводит.
     """
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")
     entry = gen_build_matrix.matrix_entry("supercollider", services, ctx)
     assert entry["tags"].splitlines() == [
         "ghcr.io/krikz/rob_box:supercollider-dev",
@@ -386,7 +426,7 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
     """supervisor наследует ОБРАЗ voice-assistant из локального реестра —
     именно поэтому у него есть и base.service, и depends_on (план §2.3).
     """
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")
     entry = gen_build_matrix.matrix_entry("supervisor", services, ctx)
     assert (
         "BASE_IMAGE=localhost:5000/krikz/rob_box:voice-assistant-humble-dev"
@@ -396,7 +436,7 @@ def test_base_service_resolves_to_local_prefix_tag_of_that_service():
 
 
 def test_service_without_base_gets_no_base_image_arg():
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")
     # voice-resources тут был вторым примером сервиса без base; узел удалён
     # вместе с образом (сэмплы едут Ресурсным паком на хост).
     for name in ("supercollider",):
@@ -443,7 +483,7 @@ def test_source_hash_spec_converts_extensions_to_find_patterns():
 
 
 def test_source_hash_spec_keeps_group_order_for_multi_group_services():
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")  # quest — Sound Pi с ADR-0159 PR-7
     entry = gen_build_matrix.matrix_entry("quest", services, ctx)
     assert entry["source_hash_spec"].splitlines() == [
         "src/rob_box_quest/rob_box_quest\t*.py",
@@ -463,13 +503,9 @@ def test_every_matrix_entry_has_the_same_keys():
     """Шаблон job'а один на все сервисы, поэтому набор ключей обязан
     совпадать — иначе `matrix.<key>` у части сервисов молча даст пустоту.
     """
-    for pi in ("vision", "main"):
+    for pi in ("vision", "sound", "main"):
         services, ctx = _real(pi)
-        entries = gen_build_matrix.matrix_entries(services, ctx) + [
-            e
-            for lst in gen_build_matrix.named_entries(services, ctx).values()
-            for e in lst
-        ]
+        entries = [e for w in gen_build_matrix.wave_entries(services, ctx) for e in w]
         keys = {frozenset(e) for e in entries}
         assert len(keys) == 1, f"{pi}: элементы matrix с разным набором ключей: {keys}"
 
@@ -477,20 +513,20 @@ def test_every_matrix_entry_has_the_same_keys():
 # --- CLI Phase 2/3 ---------------------------------------------------------
 
 
-def test_cli_matrix_requires_docker_tag(capsys):
+def test_cli_waves_requires_docker_tag(capsys):
     rc = gen_build_matrix.main(
-        ["--manifest", str(REAL_MANIFEST), "--pi", "vision", "--mode", "matrix"]
+        ["--manifest", str(REAL_MANIFEST), "--pi", "vision", "--mode", "waves"]
     )
     assert rc == 1
     assert "--docker-tag" in capsys.readouterr().err
 
 
-def test_cli_matrix_emits_single_line_json(capsys):
+def test_cli_waves_emits_single_line_json(capsys):
     rc = gen_build_matrix.main(
         [
             "--manifest", str(REAL_MANIFEST),
-            "--pi", "vision",
-            "--mode", "matrix",
+            "--pi", "sound",
+            "--mode", "waves",
             "--docker-tag", "test",
         ]
     )
@@ -499,29 +535,21 @@ def test_cli_matrix_emits_single_line_json(capsys):
     # В $GITHUB_OUTPUT однострочная форма `key=value` не переживёт перевод
     # строки — JSON обязан быть в одну строку.
     assert "\n" not in out
-    entries = json.loads(out)
+    waves = json.loads(out)
     manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
-    services = gen_build_matrix.services_for_pi(manifest, "vision")
-    assert [e["name"] for e in entries] == gen_build_matrix.matrix_service_names(services)
+    services = gen_build_matrix.services_for_pi(manifest, "sound")
+    assert [[e["name"] for e in w] for w in waves] == gen_build_matrix.topo_layers(services)
 
 
-def test_cli_chained_is_keyed_by_service_name(capsys):
-    rc = gen_build_matrix.main(
-        [
-            "--manifest", str(REAL_MANIFEST),
-            "--pi", "vision",
-            "--mode", "chained",
-            "--docker-tag", "dev",
-        ]
-    )
-    assert rc == 0
-    out = json.loads(capsys.readouterr().out)
-    assert set(out) == {"voice-base", "voice-assistant", "supervisor"}
-    # Каждое значение — массив из ОДНОГО элемента: strategy.matrix.include
-    # принимает только массив.
-    for name, entries in out.items():
-        assert isinstance(entries, list) and len(entries) == 1
-        assert entries[0]["name"] == name
+def test_cli_old_matrix_and_chained_modes_are_gone(capsys):
+    """Режимы named-job'ов удалены вместе с per-Pi workflow (ADR-0159 PR-3)."""
+    for mode in ("matrix", "chained"):
+        with pytest.raises(SystemExit):
+            gen_build_matrix.main(
+                ["--manifest", str(REAL_MANIFEST), "--pi", "sound", "--mode", mode,
+                 "--docker-tag", "dev"]
+            )
+    capsys.readouterr()
 
 
 def test_cli_tags_shell_format_prints_var_and_tag(capsys):

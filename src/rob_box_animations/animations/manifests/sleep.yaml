@@ -1,75 +1,1173 @@
-# Sleep Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "sleep"
-description: "Sleeping mode with closed eyes and ZZZ"
-version: "2.5"
-author: "rob_box"
+description: "Сон: веки «︶» дышат, z, похрапывает"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 2500
+duration_ms: 9000
 loop: true
-fps: 10
+fps: 25
 
-# Panels
 panels:
-  # Closed eyes
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/system/eye_fl_closed.png"
-        duration_ms: 2500
-
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_011.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_013.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_015.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_017.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_019.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_021.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_023.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_025.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_027.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_029.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_031.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_033.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_035.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_037.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_039.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_040.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_042.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_043.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_044.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_045.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_046.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_047.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_048.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_049.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_050.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_051.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_052.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_053.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_054.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_055.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_056.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_057.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_058.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_059.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_060.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_061.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_062.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_063.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_064.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_065.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_066.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_067.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_068.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_069.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_070.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_071.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_072.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_074.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_076.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_078.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_080.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_082.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_084.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_086.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_088.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_089.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_091.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_092.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_093.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_094.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_095.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_096.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_097.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_098.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_099.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_100.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_101.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_102.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_103.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_104.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_105.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_106.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_107.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_108.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_109.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_110.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_111.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_112.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_113.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_114.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_115.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_116.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_117.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_118.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_119.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_120.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_061.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_121.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_122.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_123.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_124.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_125.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_126.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_127.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_128.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_129.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_130.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_131.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_132.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_133.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_134.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_135.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_136.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_137.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_138.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_139.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_140.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_141.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_142.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_143.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_144.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_145.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_146.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_147.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_148.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_149.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_150.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_111.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_151.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_152.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_153.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_154.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_155.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_156.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_157.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_158.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_159.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_160.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_161.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_090.png"
+        duration_ms: 240
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_083.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_081.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_162.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_163.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_164.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_165.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_166.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_167.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_168.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_169.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_170.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_171.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_172.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_173.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_174.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_175.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_176.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_177.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_178.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_179.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_180.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_141.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_181.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_182.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_183.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_184.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_185.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_186.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_187.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_188.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_189.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_051.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_190.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_191.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_192.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_193.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_194.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_195.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_196.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_197.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_198.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_199.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_200.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_201.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_202.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_203.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_204.png"
+        duration_ms: 40
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/system/eye_fr_closed.png"
-        duration_ms: 2500
-
-  # Rear wheels - dim pulsing
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_041.png"
+        duration_ms: 160
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_063.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_064.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_065.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_066.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_067.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_068.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_069.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_070.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_071.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_072.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_073.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_075.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_077.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_079.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_081.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_083.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_090.png"
+        duration_ms: 240
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_083.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_081.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_079.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_077.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_075.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_073.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_072.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_071.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_070.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_069.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_068.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_067.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_066.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_065.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_064.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_063.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_041.png"
+        duration_ms: 160
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_063.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_064.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_065.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_066.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_067.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_068.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_069.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_070.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_071.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_072.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_073.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_075.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_077.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_079.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_081.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_083.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_090.png"
+        duration_ms: 240
+      - image: "frames/sleep/p8_087.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_085.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_083.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_081.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_079.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_077.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_075.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_073.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_072.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_071.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_070.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_069.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_068.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_067.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_066.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_065.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_064.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_063.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_041.png"
+        duration_ms: 160
+      - image: "frames/sleep/p8_038.png"
+        duration_ms: 80
+      - image: "frames/sleep/p8_036.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_034.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_032.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_030.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_024.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_014.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_006.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/p8_002.png"
+        duration_ms: 40
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/system/wheel_rl_sleep_01.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rl_sleep_02.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rl_sleep_03.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rl_sleep_04.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rl_sleep_05.png"
-        duration_ms: 500
-
+      - image: "frames/sleep/p8_001.png"
+        duration_ms: 9000
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/system/wheel_rr_sleep_01.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rr_sleep_02.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rr_sleep_03.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rr_sleep_04.png"
-        duration_ms: 500
-      - image: "frames/system/wheel_rr_sleep_05.png"
-        duration_ms: 500
-
-  # Main display (ZZZ animation)
+      - image: "frames/sleep/p8_001.png"
+        duration_ms: 9000
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/system/zzz_01.png"
-        duration_ms: 500
-      - image: "frames/system/zzz_02.png"
-        duration_ms: 500
-      - image: "frames/system/zzz_03.png"
-        duration_ms: 500
-      - image: "frames/system/zzz_04.png"
-        duration_ms: 500
-      - image: "frames/system/zzz_05.png"
-        duration_ms: 500
+      - image: "frames/sleep/m_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_015.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_017.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_019.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_021.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_023.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_024.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_025.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_027.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_029.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_030.png"
+        duration_ms: 120
+      - image: "frames/sleep/m_031.png"
+        duration_ms: 320
+      - image: "frames/sleep/m_030.png"
+        duration_ms: 120
+      - image: "frames/sleep/m_029.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_027.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_025.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_024.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_023.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_021.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_019.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_017.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_015.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_017.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_019.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_021.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_023.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_024.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_025.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_027.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_029.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_030.png"
+        duration_ms: 120
+      - image: "frames/sleep/m_031.png"
+        duration_ms: 320
+      - image: "frames/sleep/m_030.png"
+        duration_ms: 120
+      - image: "frames/sleep/m_029.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_028.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_027.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_026.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_025.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_024.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_023.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_022.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_021.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_020.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_019.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_018.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_017.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_016.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_000.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_015.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_014.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_013.png"
+        duration_ms: 160
+      - image: "frames/sleep/m_012.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_011.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_010.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_009.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_008.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_007.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_006.png"
+        duration_ms: 80
+      - image: "frames/sleep/m_005.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_004.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_003.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_002.png"
+        duration_ms: 40
+      - image: "frames/sleep/m_001.png"
+        duration_ms: 40
 
-# Metadata
 metadata:
   priority: "low"
   category: "system"
-  tags: ["sleep", "idle", "rest", "power_save"]
+  tags: [sleep, idle, rest, power_save]
+  brightness_budget: 255
+  bake_scale: 1.000
+  peak_ma_at_255: 2176

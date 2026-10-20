@@ -220,11 +220,11 @@ def test_every_retry_flag_is_forwarded_to_run_turn() -> None:
 def test_known_retry_flags_are_all_present() -> None:
     """Smoke: список флагов не должен молча сжаться.
 
-    Bug B/C (music) живёт в ``MusicGuard`` и своего флага здесь не имеет;
-    остальные guard'ы — имеют.
+    ``is_code_retry`` (Bug C′, Renardo-код в реплике) удалён вместе с
+    гуардом в ADR-0149 PR-13a; остальные guard'ы флаги имеют.
     """
     params = _params(_methods()["_run_turn"])
-    for flag in ("is_babble_retry", "is_action_claim_retry", "is_code_retry"):
+    for flag in ("is_babble_retry", "is_action_claim_retry"):
         assert flag in params, f"{flag} исчез из _run_turn"
 
 

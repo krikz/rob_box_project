@@ -1,8 +1,7 @@
-"""Тул add_music_material (issue #3227): библиотека, дубликат, честная ошибка, путь до club-хука и истории."""
+"""Тул add_music_material (issue #3227): библиотека, дубликат, честная ошибка, мелодия в каталоге."""
 
 import gzip
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -10,13 +9,12 @@ from .._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
-    from rob_box_mcp_tools.core.music_diversity import MusicHistory
     from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
-    from rob_box_mcp_tools.tools.music import ComposeMusicTool
     from rob_box_mcp_tools.tools.music_material import AddMusicMaterialTool
 _ros_stubs = _ros.fixture()
 
-from .test_music import _make_manager  # noqa: E402
+from rob_box_mcp_tools.core.music_material import _hook_like  # noqa: E402
+from rob_box_mcp_tools.core.rtttl import parse_rtttl  # noqa: E402
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "strudel_stranger_things.txt"
 
@@ -48,18 +46,9 @@ def test_add_then_duplicate_then_garbage(mock_node, library):
     assert bad.success is False and "не распознал" in bad.error and library.total() == 1
 
 
-def test_material_flows_into_club_hook_and_music_history(mock_node, library):
+def test_material_lands_in_the_catalog_as_a_hook_like_melody(mock_node, library):
+    """Присланный материал — мелодия каталога по имени (её играет ``request_music``), начало годится как хук."""
     added = AddMusicMaterialTool(mock_node, library).execute(text=FIXTURE.read_text(encoding="utf-8"))
-    name = added.data["name"]
-    history = MusicHistory(":memory:")
-    tool = ComposeMusicTool(
-        mock_node, _make_manager(sc_running=True, renardo_available=True),
-        rtttl_library=library, music_history=history,
-    )
-    with patch("builtins.exec"):
-        result = tool.execute(style="club", name=name, bpm=124, root="A#", scale="minor", seed=6261504)
-    assert result.success is True, result.error
-    info = result.data["club_hook"]
-    assert info is not None and info["id"] == name  # хук — из присланного материала, не пентатоника
-    row = history.recent()[0]
-    assert row["melody_name"] == name and row["hook_fingerprint"]
+    rec = library.get(added.data["name"])
+    _title, bpm, notes = parse_rtttl(rec["rtttl"])
+    assert bpm == 83 and _hook_like(notes)

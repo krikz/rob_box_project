@@ -113,3 +113,15 @@ ADR-0111 §6 вопрос 3 — не сделать ли `1_pitchglitch_samples`
 Теперь у него есть готовый механизм: это была бы вторая запись манифеста с
 `required: soft`, независимая от первой. Но менять состав паков без запроса
 от музыкальной части — не задача этого ADR.
+
+## 7. Дополнение 07.10.2026: один фетчер на все сэмпл-паки
+
+Решение товарища Шифу 07.10: добавить два свободных пака (Sonic Pi samples, CC0; DrumGizmo MuldjordKit, CC BY 4.0) тем
+же механизмом, сами файлы в репозиторий не лить. Вместо второго фетчера `fetch_dj_dave_samples.py` обобщён: теперь это
+`fetch_sample_pack.py --target <dir> --lock <файл>`; лог и маркер те же, пофайловый sha256 и пиннутый коммит — как
+раньше. Записи манифеста `dj-dave-samples`, `sonicpi-samples`, `muldjord-kit` — три хука одного скрипта; имя lock-файла
+хука зашито в `apply_resource_pack.sh` (манифест команду не задаёт). Для Muldjord выбран per-file lock, а не «архив +
+sha256 архива»: официальный `MuldjordKit3.zip` больше 1.1 ГБ ради 7 МБ выборки; те же flac лежат в конверсии
+`sfzinstruments/DrumGizmo.MuldjordKit` (cc-by-4.0) на пиннутом коммите. Авторство — `docs/music/ATTRIBUTION.md`.
+Паки в генератор не подключены (ADR-0153 S3/S5): только доставка и каталог
+(`rob_box_music/data/sample_sonicpi.json`, `sample_muldjord.json`).

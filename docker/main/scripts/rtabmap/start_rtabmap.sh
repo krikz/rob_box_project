@@ -16,7 +16,7 @@ source /opt/ros/humble/setup.bash
 echo "[start_rtabmap.sh] Starting in localization mode (always safe default)"
 
 # Patch rtabmap.launch.py to inject explicit LiDAR-only ROS2 parameters.
-python3 /ros_scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch_rtabmap_launch.py failed"
+python3 /scripts/patch_rtabmap_launch.py || echo "[start_rtabmap.sh] WARN: patch_rtabmap_launch.py failed"
 
 echo "[start_rtabmap.sh] Launching with localization:=true: $@"
 exec "$@" "localization:=true"

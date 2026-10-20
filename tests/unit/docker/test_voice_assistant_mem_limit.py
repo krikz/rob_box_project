@@ -1,5 +1,5 @@
 """Regression tests for voice-assistant memory limits in
-``docker/vision/docker-compose.yaml``.
+``docker/sound/docker-compose.yaml``.
 
 Issue #2676 — voice-assistant контейнер жонглировал RSS 3.4-3.9 GB на
 лимите 4 GB, пики до 99.6% → каскадные SIGKILL exit code -9 у tts_node /
@@ -33,7 +33,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-COMPOSE_FILE = REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
+COMPOSE_FILE = REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ def _parse_bytes(value: str | int | float) -> int:
 
 @pytest.fixture(scope="module")
 def compose_doc() -> dict:
-    """Парсит docker/vision/docker-compose.yaml один раз на модуль."""
+    """Парсит docker/sound/docker-compose.yaml один раз на модуль."""
     assert COMPOSE_FILE.exists(), f"compose file missing: {COMPOSE_FILE}"
     with COMPOSE_FILE.open(encoding="utf-8") as f:
         return yaml.safe_load(f)

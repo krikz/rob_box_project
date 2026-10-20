@@ -114,7 +114,7 @@ case "$_user_host" in
                 ;;
         esac
         ;;
-    *@10.1.1.21|*@*21*)
+    *@10.1.1.22|*@*22*)
         # Robot. docker logs → MOCK_ROBOT_LOGS
         echo "${MOCK_ROBOT_LOGS:-}"
         exit 0

@@ -24,7 +24,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_CONFIG = REPO_ROOT / "src/rob_box_voice/config"
-DOCKER_CONFIG = REPO_ROOT / "docker/vision/config/voice_assistant"
+DOCKER_CONFIG = REPO_ROOT / "docker/sound/config/voice_assistant"
 NODE_SRC = REPO_ROOT / "src/rob_box_voice/rob_box_voice"
 
 # node name → (source file, yaml files to check)

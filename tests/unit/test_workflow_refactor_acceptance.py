@@ -1,4 +1,8 @@
-"""Regression tests for the refactored L-Build Main/Vision Pi Services workflows.
+"""Regression tests for the refactored L-Build Pi Services workflow.
+
+ADR-0159 PR-3: L-Build Main/Vision Pi Services.yml стали одним
+"L-Build Pi Services.yml" с входом `pi` — проверки уровня workflow идут по
+одному файлу, проверки уровня сервиса — по всем Pi манифеста.
 
 Issue #2280 acceptance + docs/plans/2026-09-15-service-manifest.md Phase 2:
 - сборка КАЖДОГО сервиса идёт через ./.github/actions/l-build-service
@@ -43,8 +47,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MAIN_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml"
-VISION_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml"
+PI_WF = REPO_ROOT / ".github" / "workflows" / "L-Build Pi Services.yml"
 BUILD_MANIFEST = REPO_ROOT / "docker" / "build-manifest.yaml"
 GEN_SCRIPT = REPO_ROOT / "scripts" / "ci" / "gen_build_matrix.py"
 
@@ -65,14 +68,12 @@ _SPEC.loader.exec_module(gen_build_matrix)  # type: ignore[union-attr]
 
 _MANIFEST = gen_build_matrix.load_manifest(BUILD_MANIFEST)
 
-MAIN_SERVICES = gen_build_matrix.services_for_pi(_MANIFEST, "main")
-VISION_SERVICES = gen_build_matrix.services_for_pi(_MANIFEST, "vision")
-
-PI_DATA = {"main": (MAIN_WF, MAIN_SERVICES), "vision": (VISION_WF, VISION_SERVICES)}
+PI_SERVICES = {
+    pi: gen_build_matrix.services_for_pi(_MANIFEST, pi) for pi in _MANIFEST["pis"]
+}
 
 ALL_SERVICES = sorted(
-    [("main", name) for name in MAIN_SERVICES]
-    + [("vision", name) for name in VISION_SERVICES]
+    (pi, name) for pi, services in PI_SERVICES.items() for name in services
 )
 
 # Тег, с которым прогоняется генератор в тестах. В CI сюда приезжает
@@ -92,7 +93,7 @@ def _load(path: Path) -> dict:
 
 
 def _build_jobs(path: Path) -> dict[str, dict]:
-    """Все job'ы, которые что-то собирают: общий matrix-job + именованные."""
+    """Все job'ы, которые что-то собирают: wave-job'ы `build`, `build-wave-<k>`."""
     data = _load(path)
     return {
         name: job
@@ -110,23 +111,21 @@ def _composite_step(steps: list[dict]) -> dict | None:
 
 def _entry(pi: str, service: str) -> dict[str, str]:
     """Параметры сборки сервиса — то, что реально уедет в composite action."""
-    _, services = PI_DATA[pi]
     ctx = gen_build_matrix.build_context(_MANIFEST, docker_tag=DOCKER_TAG)
-    return gen_build_matrix.matrix_entry(service, services, ctx)
+    return gen_build_matrix.matrix_entry(service, PI_SERVICES[pi], ctx)
 
 
 # --- уровень workflow: шаблон job'а ---------------------------------------
 
 
-@pytest.mark.parametrize("pi", ["main", "vision"])
-def test_every_build_job_uses_composite_action(pi):
+def test_every_build_job_uses_composite_action():
     """Любой собирающий job делегирует ./.github/actions/l-build-service.
 
     Headline-acceptance issue #2280 — если где-то остался inline
     `docker buildx build --load ...`, рефакторинг неполный и кто-то
     копипастит назад.
     """
-    path, _ = PI_DATA[pi]
+    path, pi = PI_WF, PI_WF.name
     jobs = _build_jobs(path)
     assert jobs, f"{pi}: в workflow не осталось ни одного build-job'а"
     for job_name, job in jobs.items():
@@ -136,8 +135,7 @@ def test_every_build_job_uses_composite_action(pi):
         )
 
 
-@pytest.mark.parametrize("pi", ["main", "vision"])
-def test_every_build_job_checks_out_before_composite(pi):
+def test_every_build_job_checks_out_before_composite():
     """Локальный composite вызывается только ПОСЛЕ actions/checkout.
 
     GitHub резолвит `uses: ./.github/actions/...` из рабочего каталога job'а,
@@ -145,7 +143,7 @@ def test_every_build_job_checks_out_before_composite(pi):
     "Can't find action.yml ... Did you forget to run actions/checkout"
     (регрессия run #34366133083, 18/18 build-job'ов красные).
     """
-    path, _ = PI_DATA[pi]
+    path, pi = PI_WF, PI_WF.name
     for job_name, job in _build_jobs(path).items():
         steps = job["steps"]
         composite_idx = next(
@@ -168,15 +166,14 @@ def test_every_build_job_checks_out_before_composite(pi):
         ], f"{pi}/{job_name}: нет actions/checkout до вызова composite"
 
 
-@pytest.mark.parametrize("pi", ["main", "vision"])
-def test_no_inline_docker_buildx_push_or_load(pi):
+def test_no_inline_docker_buildx_push_or_load():
     """Вся docker-логика живёт в composite action.
 
     Негативный контроль: ни один build-job не должен содержать inline
     `docker buildx build` / `docker push` / `--load` в своих собственных
     шагах (это был бы симптом вернувшейся копипасты).
     """
-    path, _ = PI_DATA[pi]
+    path, pi = PI_WF, PI_WF.name
     for job_name, job in _build_jobs(path).items():
         for step in job["steps"]:
             if (step.get("uses") or "").endswith("/actions/l-build-service"):
@@ -191,14 +188,13 @@ def test_no_inline_docker_buildx_push_or_load(pi):
                 )
 
 
-@pytest.mark.parametrize("pi", ["main", "vision"])
-def test_composite_inputs_come_from_matrix_not_from_literals(pi):
+def test_composite_inputs_come_from_matrix_not_from_literals():
     """`with:` композит-вызова заполняется из matrix, а не вписан руками.
 
     Это тот самый шов, ради которого затевался манифест: состав сборки —
     данные, а job — тонкий адаптер над ними (план §2.1).
     """
-    path, _ = PI_DATA[pi]
+    path, pi = PI_WF, PI_WF.name
     expected = {
         "service-name": "${{ matrix.name }}",
         "dockerfile-path": "${{ matrix.dockerfile }}",
@@ -220,15 +216,14 @@ def test_composite_inputs_come_from_matrix_not_from_literals(pi):
         ], f"{pi}/{job_name}: build-args={with_block['build-args']!r}"
 
 
-@pytest.mark.parametrize("pi", ["main", "vision"])
-def test_update_image_versions_waits_for_every_build_job(pi):
+def test_update_image_versions_waits_for_every_build_job():
     """update-image-versions/summary зависят от ВСЕХ собирающих job'ов.
 
     Matrix-job завершается только когда закончились все его элементы,
-    поэтому `needs: [prepare, build, ...именованные]` даёт ту же гарантию,
+    поэтому `needs: [prepare, build, build-wave-1, ...]` даёт ту же гарантию,
     что прежний список из 11/8 job'ов.
     """
-    path, _ = PI_DATA[pi]
+    path, pi = PI_WF, PI_WF.name
     data = _load(path)
     build_jobs = set(_build_jobs(path))
     for consumer in ("update-image-versions", "summary"):
@@ -294,10 +289,10 @@ def test_dockerfile_and_context_exist_on_disk(pi, service):
         # Те же регрессионные проверки per-service build-arg'ов, что были до
         # Phase 2 — только источником стал манифест, а не текст workflow.
         ("main", "robot-state-publisher", "URDF_FILES_HASH"),
-        ("vision", "voice-assistant", "SOURCE_HASH"),
-        ("vision", "telegram-bot", "SOURCE_HASH"),
-        ("vision", "supervisor", "SOURCE_HASH"),
-        ("vision", "quest", "SOURCE_HASH"),
+        ("sound", "voice-assistant", "SOURCE_HASH"),
+        ("sound", "telegram-bot", "SOURCE_HASH"),
+        ("sound", "supervisor", "SOURCE_HASH"),
+        ("sound", "quest", "SOURCE_HASH"),
         ("vision", "vision-hailo", "SOURCE_HASH"),
     ],
 )
@@ -334,7 +329,7 @@ def test_base_image_arg_matches_manifest_base(pi, service):
     тоже не было --build-arg BASE_IMAGE. Вторым таким сервисом был
     voice-resources — его узел удалён вместе с образом.
     """
-    _, services = PI_DATA[pi]
+    services = PI_SERVICES[pi]
     entry = _entry(pi, service)
     has_base_arg = any(
         line.startswith("BASE_IMAGE=") for line in entry["build_args"].splitlines()

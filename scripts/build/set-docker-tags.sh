@@ -65,7 +65,7 @@ echo "Env файл: $(basename $ENV_FILE)"
 echo "Image tag: $IMAGE_TAG"
 echo ""
 
-# Копируем нужный .env файл в docker/vision и docker/main
+# Копируем нужный .env файл в docker/vision, docker/sound и docker/main
 if [ -f "$ENV_FILE" ]; then
     # Vision Pi
     if [ -d "$DOCKER_DIR/vision" ]; then
@@ -73,6 +73,12 @@ if [ -f "$ENV_FILE" ]; then
         echo "✅ Скопирован $ENV_FILE → docker/vision/.env"
     fi
     
+    # Sound Pi (ADR-0159)
+    if [ -d "$DOCKER_DIR/sound" ]; then
+        cp "$ENV_FILE" "$DOCKER_DIR/sound/.env"
+        echo "✅ Скопирован $ENV_FILE → docker/sound/.env"
+    fi
+
     # Main Pi
     if [ -d "$DOCKER_DIR/main" ]; then
         cp "$ENV_FILE" "$DOCKER_DIR/main/.env"
@@ -93,6 +99,7 @@ if [ -f "$ENV_FILE" ]; then
     echo ""
     echo "Для деплоя выполните:"
     echo "  cd docker/vision && docker-compose pull && docker-compose up -d"
+    echo "  cd docker/sound && docker-compose pull && docker-compose up -d"
     echo "  cd docker/main && docker-compose pull && docker-compose up -d"
     echo ""
 else

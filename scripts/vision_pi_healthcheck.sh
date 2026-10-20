@@ -10,7 +10,7 @@
 #   - питание, аптайм, throttling (Raspberry Pi);
 #   - сетевые интерфейсы (wlan0=10.1.1.21, eth0=10.1.1.11) и ARP;
 #   - WiFi link (ESSID=ROS2, signal);
-#   - docker-контейнеры (voice-assistant, hailort, zenoh);
+#   - docker-контейнеры (vision-hailo, oak-d, zenoh);
 #   - journalctl NetworkManager за последние 5 минут;
 #   - swap (после PR #2643 ожидается zram0).
 #
@@ -143,10 +143,10 @@ section_wifi() {
 }
 
 section_docker() {
-    log "[5] Docker: контейнеры (ожидаем running: voice-assistant, hailort, zenoh)"
+    log "[5] Docker: контейнеры (ожидаем running: vision-hailo, oak-d, zenoh-router-vision; голос — на Sound Pi, ADR-0159)"
     log "---"
     if have_cmd docker; then
-        docker ps --format '  table {{.Names}}\t{{.Status}}' 2>&1 | grep -E 'voice-assistant|hailort|zenoh|oak-d|apriltag' || echo "  (ничего из критичных сервисов не запущено)"
+        docker ps --format '  table {{.Names}}\t{{.Status}}' 2>&1 | grep -E 'vision-hailo|hailort|zenoh|oak-d|apriltag' || echo "  (ничего из критичных сервисов не запущено)"
     else
         log "(docker недоступен)"
     fi

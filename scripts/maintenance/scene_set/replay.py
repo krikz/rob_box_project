@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""replay.py — офлайн-прогон одной сцены через конвейер 1.1 (или 2.0) на Vision Pi (ADR-0144 §5).
+"""replay.py — офлайн-прогон одной сцены через конвейер 1.1 (или 2.0) на Sound Pi (ADR-0144 §5, ADR-0159).
 
-Запускается на ХОСТЕ Vision Pi (python3 stdlib + docker CLI). Поднимает
+Запускается на ХОСТЕ Sound Pi (python3 stdlib + docker CLI). Поднимает
 изолированный граф из отдельных контейнеров:
 
     router   eclipse/zenoh:1.6.2 — свой роутер, 127.0.0.1:7457, никуда не подключён
@@ -291,7 +291,7 @@ def check_isolation(plan: Plan) -> List[str]:
     return bad
 
 
-# ── исполнение (только на Vision Pi) ─────────────────────────────────────────
+# ── исполнение (только на Sound Pi) ─────────────────────────────────────────
 
 
 def sh(argv: Sequence[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:

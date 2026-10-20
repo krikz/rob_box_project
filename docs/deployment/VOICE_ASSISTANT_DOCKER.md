@@ -62,13 +62,13 @@
 - **Memory limits:** 2GB RAM + 2.5GB swap
 
 ### 4. Конфигурация
-- **Config:** `docker/vision/config/voice_assistant/voice_assistant.yaml`
+- **Config:** `docker/sound/config/voice_assistant/voice_assistant.yaml`
   - Все параметры для 7 ROS2 nodes
   - Yandex Cloud STT/TTS settings
   - DeepSeek LLM settings
   - ReSpeaker audio parameters
   - LED colors и effects
-- **Secrets:** `docker/vision/config/voice_assistant/secrets.yaml.example`
+- **Secrets:** `docker/sound/config/voice_assistant/secrets.yaml.example`
   - Template для API ключей
   - `.gitignore` настроен
 

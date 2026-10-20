@@ -8,7 +8,7 @@
 %%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#e8f4f8','primaryTextColor':'#000','primaryBorderColor':'#2c5282'}}}%%
 graph TB
     subgraph Dashboard1["🖥️ Dashboard 1: Системный обзор и ошибки"]
-        D1_CPU["CPU/Memory Gauges<br/>Main Pi + Vision Pi"]
+        D1_CPU["CPU/Memory Gauges<br/>Main Pi + Vision Pi + Sound Pi"]
         D1_GRAPHS["CPU по контейнерам<br/>Графики в реальном времени"]
         D1_ERRORS["Все ошибки<br/>Единый лог всех контейнеров"]
     end
@@ -25,14 +25,13 @@ graph TB
     subgraph Dashboard3["🖥️ Dashboard 3: Восприятие и сенсоры"]
         D3_OAKD["OAK-D Camera<br/>RGB-D + AprilTag"]
         D3_CEILING["Ceiling Camera<br/>USB обзор сверху"]
-        D3_MICROROS["micro-ROS Agent<br/>ESP32 Sensor Hub"]
         D3_PERCEPTION["Perception System<br/>5 нод анализа"]
     end
     
     subgraph Dashboard4["🖥️ Dashboard 4: Голос и интерфейс"]
-        D4_VOICE["Voice Assistant<br/>7 нод голоса"]
+        D4_VOICE["Voice Assistant (Sound Pi)<br/>7 нод голоса"]
         D4_LED["LED Matrix<br/>NeoPixel дисплей"]
-        D4_ZENOH["Zenoh Routers<br/>Main + Vision Pi"]
+        D4_ZENOH["Zenoh Routers<br/>Main + Vision + Sound Pi"]
     end
     
     style Dashboard1 fill:#fff3cd,stroke:#856404,stroke-width:3px
@@ -54,6 +53,8 @@ graph TB
 | Main Pi Memory | Gauge (%) | Prometheus |
 | Vision Pi CPU | Gauge (%) | Prometheus |
 | Vision Pi Memory | Gauge (%) | Prometheus |
+| Sound Pi CPU | Gauge (%) | Prometheus (`cadvisor-sound`, `host: sound-pi`) |
+| Sound Pi Memory | Gauge (%) | Prometheus (`cadvisor-sound`, `host: sound-pi`) |
 | CPU по контейнерам | Timeseries | cAdvisor |
 | Все ошибки | Logs | Loki |
 
@@ -129,7 +130,7 @@ perception [Main Pi]
 **Ноды:** ~10
 
 ```
-voice-assistant [Vision Pi]
+voice-assistant [Sound Pi]
 ├── audio_node (обработка аудио ReSpeaker)
 ├── led_node (LED индикаторы ReSpeaker)
 ├── dialogue_node (диалоговая система DeepSeek)
@@ -146,6 +147,9 @@ zenoh-router [Main Pi]
 
 zenoh-router-vision [Vision Pi]
 └── zenoh (DDS router)
+
+zenoh-router-sound [Sound Pi]
+└── zenoh (DDS router)
 ```
 
 ---
@@ -159,9 +163,15 @@ zenoh-router-vision [Vision Pi]
 
 ### Vision Pi (10.1.1.11)
 - **Камеры:** oak-d, ceiling-camera
-- **Голос:** voice-assistant (7 nodes)
 - **Интерфейс:** led-matrix
 - **Связь:** zenoh-router-vision
+
+### Sound Pi (10.1.1.12 eth0 / 10.1.1.22 wlan0, ADR-0159)
+- **Голос:** voice-assistant (7 nodes), voice-action-server, supercollider
+- **ТАРС:** avatar-supervisor, avatar-arbiter
+- **Оператор:** quest (WebXR), telegram-bot (с PR-7)
+- **Связь:** zenoh-router-sound
+- **Метрики:** `cadvisor-sound`, `promtail-sound` (label `host: sound-pi`)
 
 ---
 

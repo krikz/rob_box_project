@@ -1,71 +1,111 @@
-# Angry Emotion Animation
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "angry"
-description: "Angry emotion with red pulsing eyes"
-version: "2.5"
-author: "rob_box"
+description: "Злость: веки клином, глаза краснеют, скрежет зубами"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 1500
+duration_ms: 6000
 loop: true
-fps: 10
+fps: 25
 
-# Panels
 panels:
-  # Eyes pulsing red (angry)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fl_angry_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/eye_fl_angry_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/eye_fl_angry_03.png"
-        duration_ms: 500
-
+      - image: "frames/angry/p8_000.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_003.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_005.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_007.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_009.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_011.png"
+        duration_ms: 5800
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/eye_fr_angry_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/eye_fr_angry_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/eye_fr_angry_03.png"
-        duration_ms: 500
-
-  # Rear wheels - aggressive red pulsing
+      - image: "frames/angry/p8_000.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_002.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_004.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_006.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_008.png"
+        duration_ms: 40
+      - image: "frames/angry/p8_010.png"
+        duration_ms: 5800
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rl_angry_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/wheel_rl_angry_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/wheel_rl_angry_03.png"
-        duration_ms: 500
-
+      - image: "frames/angry/p8_001.png"
+        duration_ms: 6000
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/wheel_rr_angry_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/wheel_rr_angry_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/wheel_rr_angry_03.png"
-        duration_ms: 500
-
-  # Main display (angry face with furrowed brows)
+      - image: "frames/angry/p8_001.png"
+        duration_ms: 6000
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/emotions/mouth_angry_01.png"
-        duration_ms: 500
-      - image: "frames/emotions/mouth_angry_02.png"
-        duration_ms: 500
-      - image: "frames/emotions/mouth_angry_03.png"
-        duration_ms: 500
+      - image: "frames/angry/m_000.png"
+        duration_ms: 40
+      - image: "frames/angry/m_001.png"
+        duration_ms: 40
+      - image: "frames/angry/m_002.png"
+        duration_ms: 40
+      - image: "frames/angry/m_003.png"
+        duration_ms: 40
+      - image: "frames/angry/m_004.png"
+        duration_ms: 40
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 120
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 2240
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 80
+      - image: "frames/angry/m_006.png"
+        duration_ms: 80
+      - image: "frames/angry/m_005.png"
+        duration_ms: 2160
 
-# Metadata
 metadata:
   priority: "normal"
   category: "emotions"
-  tags: ["angry", "emotion", "red", "intense"]
+  tags: [angry, emotion, red, intense]
+  brightness_budget: 162
+  bake_scale: 1.000
+  peak_ma_at_255: 6448

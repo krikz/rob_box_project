@@ -3,8 +3,8 @@
 Issue: deployment_issue_dedup.extract_relevant_log_line() must exclude
 [telegram_node] errors when scanning the perception container logs.
 
-Reasoning: telegram_node lives in the Vision Pi `telegram-bot` container
-(docker/vision/docker-compose.yaml). The `perception` container's
+Reasoning: telegram_node lives in the `telegram-bot` container on Sound Pi
+(docker/sound/docker-compose.yaml; до ADR-0159 PR-7 — Vision Pi). The `perception` container's
 health_monitor subscribes to /rosout (shared ROS_DOMAIN_ID=0 bus) and
 prints ERROR lines from any node. When telegram_node crashes and restarts
 (e.g. due to a duplicate TELEGRAM_BOT_TOKEN held by multiple gateways),
@@ -54,12 +54,12 @@ def test_extract_relevant_log_line_ignores_telegram_node_in_main_scope() -> None
     assert line is None
 
 
-def test_extract_relevant_log_line_still_catches_telegram_node_in_vision_scope() -> (
+def test_extract_relevant_log_line_still_catches_telegram_node_in_sound_scope() -> (
     None
 ):
-    """Negative test: same line in vision scope MUST still be reported.
+    """Negative test: same line in sound scope MUST still be reported.
 
-    The vision container IS the real owner of telegram_node. We must
+    The sound container IS the real owner of telegram_node (ADR-0159 PR-7). We must
     only silence it for the main scope.
     """
 
@@ -69,13 +69,13 @@ def test_extract_relevant_log_line_still_catches_telegram_node_in_vision_scope()
     )
 
     line = MODULE.extract_relevant_log_line(
-        log_text, scope="vision", severity="critical"
+        log_text, scope="sound", severity="critical"
     )
 
     assert line == log_text
 
 
-def test_extract_relevant_log_line_ignores_telegram_start_polling_timeout_in_vision_scope() -> (
+def test_extract_relevant_log_line_ignores_telegram_start_polling_timeout_in_sound_scope() -> (
     None
 ):
     """Issue #1433 / deploy run 32170854307 (test round-147): on the first
@@ -101,19 +101,19 @@ def test_extract_relevant_log_line_ignores_telegram_start_polling_timeout_in_vis
     )
 
     line = MODULE.extract_relevant_log_line(
-        log_text, scope="vision", severity="critical"
+        log_text, scope="sound", severity="critical"
     )
 
     assert line is None
 
 
-def test_extract_relevant_log_line_still_catches_telegram_real_conflict_in_vision_scope() -> (
+def test_extract_relevant_log_line_still_catches_telegram_real_conflict_in_sound_scope() -> (
     None
 ):
     """Negative test for the issue #1433 exclusion: a REAL telegram_node
     failure (different exception type — ``Conflict: terminated by other
     getUpdates request``, i.e. duplicate-token holder caught by the
-    PR #1145 watchdog) MUST still be reported in the vision scope. The
+    PR #1145 watchdog) MUST still be reported in the sound scope. The
     exclusion is narrow to the start_polling TimeoutError transient only.
     """
 
@@ -125,18 +125,18 @@ def test_extract_relevant_log_line_still_catches_telegram_real_conflict_in_visio
     )
 
     line = MODULE.extract_relevant_log_line(
-        log_text, scope="vision", severity="critical"
+        log_text, scope="sound", severity="critical"
     )
 
     assert line == log_text
 
 
-def test_extract_relevant_log_line_still_catches_telegram_unrelated_error_in_vision_scope() -> (
+def test_extract_relevant_log_line_still_catches_telegram_unrelated_error_in_sound_scope() -> (
     None
 ):
     """Negative test for the issue #1433 exclusion: an unrelated
     telegram_node ERROR that doesn't mention ``Timed out. Retry in``
-    MUST still be reported in the vision scope (e.g. a YAML parse
+    MUST still be reported in the sound scope (e.g. a YAML parse
     failure on TELEGRAM_ALLOWED_USERS).
     """
 
@@ -147,7 +147,7 @@ def test_extract_relevant_log_line_still_catches_telegram_unrelated_error_in_vis
     )
 
     line = MODULE.extract_relevant_log_line(
-        log_text, scope="vision", severity="critical"
+        log_text, scope="sound", severity="critical"
     )
 
     assert line == log_text

@@ -75,7 +75,7 @@ async def main() -> None:
 
 - **FIFO на канал.** На одном канале задачи идут строго по очереди,
   `asyncio.Lock` не даёт двум executor'ам работать одновременно.
-- **Параллельность между каналами.** `execute_music_code` не
+- **Параллельность между каналами.** `request_music` не
   задерживает `speak_text` — два канала независимы.
 - **FIFO для voice = фикс регресса v36.** `speak_text` → TTS-finished
   → `speak_text` → TTS-finished → `stop_music` строго в этом порядке;
@@ -136,7 +136,7 @@ PYTHONPATH=src/rob_box_voice:src/rob_box_harness \
 
 Диалоговый shell (`dialogue_node.py`) подключается к планировщику
 через тонкий адаптер: каждый `function_tool` (speak_text,
-execute_music_code, stop_music, play_animation, …) оборачивается в
+request_music, stop_music, play_animation, …) оборачивается в
 `SchedulerTask` и кладётся в нужный канал. Acceptance-гейт
 (фаза 1.5) остаётся поверх — он решает, класть ли сегмент в
 `AWAITING_CONFIRMATION` или сразу в `PENDING`. MVP-планировщик

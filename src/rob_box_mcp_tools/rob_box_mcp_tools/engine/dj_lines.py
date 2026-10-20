@@ -1,0 +1,273 @@
+"""Реплика диджея на каждом переходе сета (ADR-0149 §12 В2 — решение Шифу 06.10; I23; ADR-0148).
+
+На компоновке трека N (``SetPlanBox.compose_mark``: трек 1 — на старте сета, N+1 — когда он готовится в очередь)
+:class:`TransitionLines` в своём потоке собирает факты трека из плана (``rob_box_music.dj_line.LineFacts``: номер и
+длина сета, тема, человеческое название мелодии-хука из RTTTL-библиотеки, фаза дуги энергии) и спрашивает LLM
+раскраску (тот же провайдер, клиент и circuit breaker, что у ризонера плана — ``SetReasoner.ask``). На ``started``
+трека — ровно одна фраза (I23): готова и прошла валидатор фраза LLM — она, иначе шаблон кода с теми же фактами.
+Музыку реплика не трогает: фраза уходит в ``speak_text`` (тот же путь в TTS, что у LLM) поверх сета, без паузы и
+приглушения; ``speak_text`` в потоке, переход и клок его не ждут.
+
+Те же факты играющего трека (человеческое название мелодии, следующие мелодии по плану, части темы без мелодий)
+уходят в снимок плеера (``PlayerOwner.update_dj`` → ``dj`` в ``/voice/music/state`` → ``<music_state>``) и в
+``dj_set.status`` (``get_music_state``): на «что играет / когда будет X» отвечает код по фактам, а не догадка LLM
+по теме (06.10: «Марио реально играет» при хуках tetris_2/spacecha).
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from rob_box_music import dj_line as dl
+from rob_box_music.set_plan import SetPlan
+
+_LOG = logging.getLogger(__name__)
+
+#: Сколько поток реплики на ``started`` ждёт фразу LLM (трек 1: LLM спрошена за миг до старта; дальше — за трек).
+GRACE_S = 3.0
+#: Дедлайн одного вызова LLM за фразу: опоздала — шаблон.
+LINE_DEADLINE_S = 20.0
+#: Сколько ждать фактов трека к его ``started`` (локальный расчёт; без них снимок не получает мелодию).
+KNOWN_WAIT_S = 30.0
+
+#: ``(system, user, tool, deadline_s) -> (outcome, response, detail)`` — ``SetReasoner.ask``.
+Ask = Callable[[str, str, Dict[str, Any], float], Tuple[str, Any, str]]
+#: Человеческие названия мелодий по id: ``ids -> {id: название}``.
+Titles = Callable[[Iterable[str]], Dict[str, str]]
+
+
+def _thread(fn: Callable[[], None]) -> None:
+    threading.Thread(target=fn, name="rbx-dj-line", daemon=True).start()
+
+
+@dataclass
+class _Entry:
+    no: int
+    seed: int
+    plan: SetPlan
+    hook_id: Optional[str]
+    facts: Optional[dl.LineFacts] = None
+    llm: Optional[str] = None
+    known: threading.Event = field(default_factory=threading.Event)  # факты собраны
+    ready: threading.Event = field(default_factory=threading.Event)  # и LLM ответила (или нет)
+
+
+def line_payload(response: Any) -> Any:
+    """Строка из вызова ``submit_dj_line``; без вызова — ``LineInvalid``."""
+    for call in getattr(response, "tool_calls", ()) or ():
+        if call.name == dl.SUBMIT_TOOL:
+            return dl.payload_line(dict(call.arguments))
+    raise dl.LineInvalid("no_call", f"нет вызова {dl.SUBMIT_TOOL}")
+
+
+class TransitionLines:
+    """Реплики и факты одного сета. ``ask=None`` — LLM не спрашивается, звучат шаблоны; ``speak=None`` — переходы
+    молчат (``music_v2_dj_lines: false``), но факты трека всё равно уходят в снимок (``publish``) и в :meth:`now`."""
+
+    def __init__(self, speak: Optional[Callable[[str], None]], *, titles: Titles, ask: Optional[Ask] = None,
+                 missing: Iterable[str] = (), persona: Optional[str] = None,
+                 publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+                 fold: dl.Fold = dl.plain_fold, logger: Any = None, spawn: Callable[[Callable[[], None]], None] = _thread,
+                 grace_s: float = GRACE_S, deadline_s: float = LINE_DEADLINE_S) -> None:
+        self._speak = speak
+        self._publish = publish
+        self._missing = tuple(missing)  # части темы-перечисления без мелодий (``ThemeHits.missing``)
+        self._titles = titles
+        self._ask = ask
+        self._persona = persona
+        self._fold = fold
+        self._log = logger or _LOG
+        self._spawn = spawn
+        self._grace = float(grace_s)
+        self._deadline = float(deadline_s)
+        self._lock = threading.Lock()
+        self._entries: Dict[str, _Entry] = {}
+        self._spoken: set = set()
+        self._last: Optional[str] = None
+        self._title_map: Dict[str, str] = {}
+        self._played: List[Tuple[int, Optional[str], str]] = []  # (номер, хук, название) сыгранных треков
+        self._now: Dict[str, Any] = {}
+        self._now_id: Optional[str] = None
+        #: ``(первый_номер, сколько) -> мелодии треков`` — источник «дальше будет»; задаёт владелец сета (``plan_source``)
+        self.forecast: Optional[Callable[[int, int], List[Optional[str]]]] = None
+
+    def prepare(self, track_id: str, no: int, plan: SetPlan, hook_id: Optional[str]) -> None:
+        """Компоновка трека ``no``: факты и фраза LLM — в фоне (не на пути звука)."""
+        entry = _Entry(no, plan.seed + no, plan, hook_id)
+        with self._lock:
+            self._entries[track_id] = entry
+        self._spawn(lambda: self._prepare(track_id, entry, plan, hook_id))
+
+    def _prepare(self, track_id: str, entry: _Entry, plan: SetPlan, hook_id: Optional[str]) -> None:
+        try:
+            hook = (self._titles([hook_id]).get(hook_id) or None) if hook_id else None  # одна запись — быстро
+            energies = [plan.track(n).energy for n in range(1, max(entry.no, len(plan.tracks)) + 1)]
+            entry.facts = dl.facts_for(entry.no, len(plan.tracks), plan.profile.theme, hook, energies)
+            self._plan_titles(plan)
+            entry.known.set()
+            self._next_composed(entry)
+            entry.facts = replace(entry.facts, names=self._names())
+            entry.llm = self._colour(track_id, entry.facts)
+        except Exception as exc:  # noqa: BLE001 — сбой фактов/LLM: на started прозвучит шаблон
+            self._log.warning(f"⚠️ [dj line] {track_id} факты/LLM: {type(exc).__name__}: {exc}")
+        finally:
+            entry.known.set()
+            entry.ready.set()
+
+    def _plan_titles(self, plan: SetPlan) -> None:
+        """Названия мелодий плана — один раз на хук (поправка LLM может добавить хуки)."""
+        new = [h for h in plan.profile.hook_ids if h not in self._title_map]
+        if new:
+            found = self._titles(new)
+            with self._lock:
+                self._title_map.update({h: found.get(h, "") for h in new})
+
+    def _names(self) -> Tuple[str, ...]:
+        with self._lock:
+            return tuple(dict.fromkeys((*(t for t in self._title_map.values() if t), *self._missing)))
+
+    def _colour(self, track_id: str, facts: dl.LineFacts) -> Optional[str]:
+        """Фраза LLM по фактам или ``None``; исход — в лог одной строкой. Трек 1 реплики не получает."""
+        if self._ask is None or facts.track_no <= 1:
+            return None
+        system, user = dl.prompt(facts, self._persona)
+        outcome, response, detail = self._ask(system, user, dl.tool(), self._deadline)
+        line = None
+        if outcome == "ok":
+            try:
+                line = dl.validate_line(line_payload(response), facts, self._fold)
+            except dl.LineInvalid as exc:
+                outcome, detail = "invalid", f"line_invalid{{{exc.reason}}} {exc}"
+        text = f"🗣️ [dj line] {track_id} line_outcome={outcome} {detail}".rstrip()
+        if outcome == "ok":  # rclpy: severity привязана к месту вызова — info и warning из разных строк
+            self._log.info(text)
+        else:
+            self._log.warning(text)
+        return line
+
+    def on_started(self, track_id: str) -> str:
+        """``started`` трека: факты — в снимок; реплика — одна (I23), в потоке, переход её не ждёт. Трек 1 реплики
+        не получает: старт сета уже озвучивает фраза запуска (роутер или ответ на ``dj_set``) — 06.10 две реплики
+        подряд за 6 с. Пометка для лога ``started``."""
+        with self._lock:
+            entry = self._entries.get(track_id)
+            if entry is None or track_id in self._spoken:
+                return ""
+            self._spoken.add(track_id)
+            self._entries = {k: e for k, e in self._entries.items() if e.no >= entry.no}  # сыгранное не нужно
+        self._spawn(lambda: self._say(track_id, entry))
+        if self._speak is None:
+            return ""
+        return "dj_line=on" if entry.no > 1 else "dj_line=start_phrase"
+
+    def _say(self, track_id: str, entry: _Entry) -> None:
+        entry.known.wait(KNOWN_WAIT_S)  # факты — локальный расчёт; без них не публикуем выдумку
+        self._share(track_id, entry)
+        if self._speak is None or entry.no <= 1:
+            return
+        entry.ready.wait(self._grace)
+        facts = entry.facts or dl.LineFacts(entry.no, 0, "", None, 0)  # факты не успели — только номер трека
+        with self._lock:
+            if entry.llm:
+                source, text = "llm", entry.llm
+            else:
+                source, text = "template", dl.template_line(facts, entry.seed, self._last)
+            self._last = text
+        total = facts.tracks or "?"
+        self._log.info(f"🗣️ [dj line] {track_id} трек {entry.no}/{total} phase={facts.phase} source={source} "
+                       f"hook={facts.hook!r} text={text!r}")
+        try:
+            self._speak(text)
+        except Exception as exc:  # noqa: BLE001 — реплика не роняет поток и не трогает музыку
+            self._log.warning(f"⚠️ [dj line] {track_id} не озвучена: {type(exc).__name__}: {exc}")
+
+    def _share(self, track_id: str, entry: _Entry) -> None:
+        """Факты играющего трека — в снимок (``dj``) и в :meth:`now`: мелодия, сыгранное, план дальше, не найденное.
+        Факты не успели — ``melody`` нет вовсе (не «свой мотив»: это было бы утверждение)."""
+        facts = entry.facts
+        with self._lock:
+            fields: Dict[str, Any] = {
+                "track_no": entry.no, "tracks": len(entry.plan.tracks),
+                "played": [[no, title] for no, _h, title in self._played if no < entry.no and title],
+                "next_melodies": [], "next_known": False, "not_found": list(self._missing)}
+            if facts is not None:
+                self._played.append((entry.no, entry.hook_id, facts.hook or ""))
+                fields["melody"] = facts.hook or ""
+            fields["next_melodies"] = self._upcoming(entry)
+            if fields.get("melody"):
+                fields["title"] = f"«{fields['melody']}» · трек {entry.no} из {fields['tracks']}"
+            self._now, self._now_id = fields, track_id
+        self._send(track_id, fields)
+
+    def _next_composed(self, entry: _Entry) -> None:
+        """Трек N+1 скомпонован — его мелодия известна точно: первое место «дальше» в фактах играющего N."""
+        with self._lock:
+            if self._now.get("track_no") != entry.no - 1 or entry.facts is None:
+                return
+            fields = {**self._now, "next_known": True}
+            fields["next_melodies"] = [entry.facts.hook or "", *self._now["next_melodies"][1:]]
+            self._now, track_id = fields, self._now_id
+        self._send(track_id, fields)
+
+    def _send(self, track_id: Optional[str], fields: Dict[str, Any]) -> None:
+        if self._publish is not None and track_id:
+            try:
+                self._publish(track_id, fields)
+            except Exception as exc:  # noqa: BLE001 — снимок не роняет поток реплики
+                self._log.warning(f"⚠️ [dj line] {track_id} факты не в снимке: {type(exc).__name__}: {exc}")
+        self._log.info(f"🎧 [dj facts] {track_id} melody={fields.get('melody')!r} played={fields['played']} "
+                       f"next={fields['next_melodies']} next_known={fields['next_known']} "
+                       f"not_found={fields['not_found']}")
+
+    def _upcoming(self, entry: _Entry) -> List[str]:
+        """Названия мелодий оставшихся треков: ``[i]`` — трек N+1+i. Мелодии даёт ``forecast`` — та же очередь, что у
+        компоновки (``compose.upcoming_hooks``: скомпонованные треки как сыграют, прочие по ``compose.hook_order`` с
+        историей сета и прошлых сетов, #3497); своей копии очереди здесь нет. Нет ``forecast`` или тема без найденных
+        мелодий (пул выбирает сид) — честно пусто. Длиннее остатка сета список не бывает."""
+        left = len(entry.plan.tracks) - entry.no
+        if self.forecast is None or left <= 0:
+            return []
+        titles = [self._title_map.get(h, "") if h else "" for h in self.forecast(entry.no + 1, left)]
+        return [t for t in titles if t][:left]
+
+    def now(self) -> Dict[str, Any]:
+        """Факты трека, который сейчас играет (последний ``started``); пусто — ещё не известны."""
+        with self._lock:
+            return dict(self._now)
+
+
+def latin_fold(text: str) -> str:
+    """Свёртка для сверки названий: ``Тетрис`` и ``Tetris`` — один ключ (транслит + звуковой ключ поиска)."""
+    from ..core.translit_ru import transliterate_ru
+    from .search import sound_key
+
+    return sound_key(transliterate_ru(dl.plain_fold(text)))
+
+
+def library_titles(library_factory: Callable[[], Any]) -> Titles:
+    """``{id: название}`` для голоса — ``human_track_title`` (русский алиас записи или title без хвостов)."""
+    cache: Dict[str, str] = {}
+
+    def titles(ids: Iterable[str]) -> Dict[str, str]:
+        from ..core.rtttl_library import human_track_title
+
+        out: Dict[str, str] = {}
+        lib = None
+        for melody_id in ids:
+            if melody_id not in cache:
+                lib = lib or library_factory()
+                record = lib.get(melody_id) or {}
+                same = str(record.get("name", "")).lower() == melody_id.lower()
+                cache[melody_id] = human_track_title(lib, record) if same else ""
+            if cache[melody_id]:
+                out[melody_id] = cache[melody_id]
+        return out
+
+    return titles
+
+
+__all__ = ["Ask", "GRACE_S", "LINE_DEADLINE_S", "Titles", "TransitionLines", "latin_fold", "library_titles",
+           "line_payload"]

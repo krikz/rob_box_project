@@ -3,9 +3,10 @@
 
 Thin ROS2 shell that composes AgentCore over the harness ports
 (LLMProvider, ToolProvider, MemoryStore, DSM). Owns only ROS2 pub/sub,
-the asyncio loop driver, DJ-mode hook, barge-in/cancel, TTS/sound
+the asyncio loop driver, barge-in/cancel, TTS/sound
 awaiter release, and lifecycle. Wake-word / silence classification
-lives in core.dialogue_text; DJ-mode state machine in core.dj_mode;
+lives in core.dialogue_text; music is owned by the v2 engine in
+mcp_server (ADR-0149, PR-13a removed the old DJ path);
 TTS chunking + SSML framing + awaiter registry in core.speak_helpers.
 
 Replaces the 2181-line predecessor by extracting the agent loop, every
@@ -18,8 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 import functools
 import json
 import logging
@@ -32,7 +33,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -47,6 +48,7 @@ from nav_msgs.msg import Odometry
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_TOPIC,
 )
+from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -94,14 +96,20 @@ from rob_box_harness.providers import (
     build_deepseek_provider,
     build_minimax_provider,
 )
-from rob_box_harness.providers.reasoning import TURN_REASONING
 from rob_box_harness.tools import FakeToolProvider, ToolProvider
 from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
 from rob_box_voice.core.skill_router import SkillRouter
-from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_voice.core.music_player_state import (
+    MUSIC_EVENT_TOPIC,
+    MUSIC_STATE_TOPIC,
+    MusicEventLog,
+    parse_music_state,
+)
+from rob_box_voice.core.coordinator_address import skip_coordinator_tg
+from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
     DEFAULT_BARGE_IN_POLICY,
@@ -141,43 +149,26 @@ from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
-    MUSIC_GUARD_KEYWORDS,
-    MUSIC_GUARD_VOCAL_KEYWORDS,
-    MUSIC_MODE_TOOLS,
     MUSIC_STOP_TOOLS,
     MUSIC_STARTING_TOOLS,
-    MUSIC_RETRY_PROMPT_PREFIX,
-    MUSIC_STOP_OVERRIDES,
     build_action_claim_failure_fallback,  # Issue #2949
     build_fact_memory_save_fallback,  # Issue #2780 п.3
-    build_hallucinated_midi_retry_prompt,
-    build_music_prose_action_fallback,
-    build_music_retry_prompt,
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
-    build_renardo_code_retry_prompt,
     build_system_regurgitate_retry_prompt,
     build_tool_call_markup_retry_prompt,  # Issue #2760
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,
     build_tool_retry_prompt as build_tool_retry_prompt,
-    build_unknown_melody_retry_prompt,  # Issue #2562 Bug F
-    detect_hallucinated_midi_in_tools,  # Issue #2560 hallucinated-MIDI guard
     detect_required_tool as detect_required_tool,
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_unbacked_action_claim,
-    detect_unknown_melody_claim,  # Issue #2562 Bug F
     detect_universal_action_claim,
-    extract_renardo_code_lines,
-    is_metalanguage_babble,
     is_music_stop_command,
     is_planning_narration,
     is_system_template_regurgitated,
     is_tool_call_markup,  # Issue #2760
-    is_vocal_request,
     spoken_matches_claim_category,  # Issue #2780 п.3
     UniversalActionClaimHit,  # Issue #3174
-    user_wants_music,
-    user_wants_performance,
 )
 from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
@@ -188,30 +179,11 @@ from rob_box_voice.core.dialogue_helpers import (
     map_emotion_to_animation,
     sanitize_speaker_name,
 )
-from rob_box_voice.core.music_guard import (
-    MusicGuard,
-    MusicGuardVerdict,
-    MusicGuardVerdictKind,
-    hurry_dj_set_start,
-)
-# Issue #2241 / ADR-0080 §2.4 — TurnGuards owns guard order + retry budget.
-# The legacy ``_*_retry_used`` flags and ``_consume_synthetic_retry``
-# remain the source of truth during the incremental migration; the bridge
-# helpers added below (``_evaluate_turn_guards``,
-# ``_dispatch_turn_guards_retry``) are wired OFF by default so the
-# existing regression suite (``test_dialogue_guards.py``,
-# ``test_issue_992_*``, ``test_issue_1777_*``,
-# ``test_issue_1881_synthetic_retry_budget.py``) is unchanged until the
-# next voice-vr card flips the flag for a single catch site.
+# Issue #2266 / ADR-0021 R2 — чистая политика babble-ретрая и бюджета.
+# ADR-0148 §2.4: оркестратор ``TurnGuards`` удалён (был выключен с 09.09).
 from rob_box_voice.core.turn import (
-    Reply as TurnReply,
-    TurnContext as TurnContext,
-    TurnGuards as TurnGuards,
     TurnState as TurnState,
-    VerdictKind as TurnVerdictKind,
     begin_babble_retry as begin_babble_retry,
-    default_guards as turn_guards_default_order,
-    music_guard_adapter as turn_guards_music_adapter,
     reset_budget as turn_guards_reset_budget,
 )
 from rob_box_voice.core.speech_accumulator import SpeechAccumulator
@@ -232,48 +204,41 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     _PENDING_USER_MESSAGES_MAX as _PENDING_USER_MESSAGES_MAX,
     _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
 )
-from rob_box_voice.core.dj_material import MaterialIntake
 from rob_box_voice.core.tars_status_feed import start_status_feeds
-from rob_box_voice.core.dj_mode import DJHook, DJModeController, dj_final_turn
-from rob_box_voice.core.dj_set_boundary import (
-    DJSetBoundary,
-    apply_dj_mode_message,
-    dj_state_lines,
-    settle_dj_set_boundary,
-)
 from rob_box_voice.core.media_router import (
     MediaPlan,
     MediaRouter,
     MediaState,
     MediaToolCall,
+    dj_theme_switch_plan,
+    media_state_from_snapshot,
+    media_tool_succeeded,
 )
+from rob_box_voice.core.media_phrases import honest_launch_reply
+from rob_box_voice.core.music_turn import executor_turn_reply, history_recorder, next_turn_id, turn_heard_text
 from rob_box_voice.core.named_play import (
-    COMPOSE_TOOL,
     NamedPlayStatus,
-    play_fail_text,
-    play_ok_text,
+    outcome_text,
     run_named_play,
     user_phrase_title,
 )
 from rob_box_voice.core.session_epoch import TURN_EPOCH, SessionEpoch
-from rob_box_voice.core.turn_origin import (
-    TURN_DJ_SET_FINAL,
-    TURN_IS_DJ_AUTO,
-    retry_is_dj_auto,
-)
-from rob_box_voice.core.turn_reasoning import turn_wants_reasoning
 from rob_box_voice.core.turn_speech import (
-    TurnSpeechHold, decide_turn_speech, wants_lyrics,
+    TurnSpeechHold, decide_turn_speech, final_text_for_speech,
+    final_text_skipped_log, wants_lyrics,
 )
 from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
+from rob_box_voice.core.turn_identity import user_profile_lines
 from rob_box_voice.core.self_intro import (
     extract_self_intro_name,
     same_person_name,
 )
+from rob_box_voice.core.set_length_words import heard_set_length
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
-    ensure_dj_music_response, split_into_chunks,
+    split_into_chunks,
     strip_done_marker, strip_history_marker, strip_markdown,
+    EMPTY_REPLY_PHRASE,
     strip_meta_markers,  # Issue #2547 — strip internal section headers
     strip_speaker_tag, strip_thinking_blocks,
 )
@@ -314,9 +279,6 @@ from rob_box_voice.observability import (
     init_tracing,
     is_metrics_enabled,
     record_barge_in,
-    record_fallback,
-    record_hallucinated_midi,
-    record_music_retry_exhausted,
     record_pending_queue_latency,
     record_session_duration,
     record_task_updated,
@@ -385,54 +347,6 @@ def _has_singing_intent(text: "str | None") -> bool:
 # they are imported at the top of this module so
 # ``dialogue_node.BABBLE_BANNED_OPENERS`` / ``BABBLE_PERFORMANCE_KEYWORDS``
 # keep working for external importers and tests.
-
-
-class _FallbackLLM:
-    """LLM-обёртка с fallback-цепочкой (live 06.08).
-
-    Primary (MiniMax) → при ЛЮБОЙ ошибке (429 Token Plan limit, таймаут,
-    5xx) переключается на fallback (DeepSeek), чтобы робот не немел, пока
-    primary недоступен. ``LLMConfig.fallback`` декларативно существует,
-    но ``_build_llm`` его не использовал → 429 оставлял робота немым.
-
-    Оба метода (``complete`` / ``stream``) пробуют primary, при исключении
-    логируют и отдают fallback.
-
-    .. deprecated::
-        Заменён на :class:`rob_box_harness.health.HealthAwareFallbackLLM`
-        (issue #1082) — реактивная цепочка «пробуем → падаем →
-        переключаемся» тратила 15-19с на retry мёртвого MiniMax.
-        Класс оставлен для обратной совместимости, ``_build_llm`` его
-        больше не использует.
-    """
-
-    def __init__(self, primary: Any, fallback: Any, logger: Any) -> None:
-        self._primary = primary
-        self._fallback = fallback
-        self._log = logger
-        self._pname = getattr(primary, "name", type(primary).__name__)
-        self._fname = getattr(fallback, "name", type(fallback).__name__)
-
-    async def complete(self, messages, tools=None):
-        try:
-            return await self._primary.complete(messages, tools=tools)
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"🔄 LLM {self._pname} упал: {exc} — fallback {self._fname}"
-            )
-            return await self._fallback.complete(messages, tools=tools)
-
-    async def stream(self, messages, tools=None):
-        try:
-            async for chunk in self._primary.stream(messages, tools=tools):
-                yield chunk
-            return
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(
-                f"🔄 LLM {self._pname} stream упал: {exc} — fallback {self._fname}"
-            )
-        async for chunk in self._fallback.stream(messages, tools=tools):
-            yield chunk
 
 
 # 🔴 FIX (13.08, надзор): monkey-patch `_rclpy_logger_safe` УДАЛЁН.
@@ -681,7 +595,7 @@ class DialogueNode(Node):
         )
 
         self._loop = asyncio.new_event_loop()
-        self._asyncio_loop_executor = concurrent.futures.ThreadPoolExecutor(
+        self._asyncio_loop_executor = ThreadPoolExecutor(
             max_workers=ASYNCIO_LOOP_DRIVER_MAX_WORKERS,
             thread_name_prefix=ASYNCIO_LOOP_DRIVER_NAME_PREFIX,
         )
@@ -929,7 +843,7 @@ class DialogueNode(Node):
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
-        # runs ``MusicManager.stop_music_on_session_end()`` for us.
+        # stops the deck (``MCPServer._stop_deck``: dj_set + player owner) and the mp3 for us.
         try:
             self._music_cleanup_pub = self.create_publisher(
                 String, "/mcp/music_cleanup", 10)
@@ -941,23 +855,11 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
             )
-        # Issue #1016 — empty-response music fallback. When the LLM returns
-        # an empty reply to a music request, dialogue_node asks mcp_server
-        # to play the top-rated human track from the library instead of
-        # leaving the user in silence.
-        try:
-            self._music_fallback_pub = self.create_publisher(
-                String, "/mcp/music_fallback", 10)
-            self.get_logger().info(
-                "🎵 [dialogue_node] Publisher на /mcp/music_fallback готов (issue #1016)"
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._music_fallback_pub = None
-            self.get_logger().warning(
-                f"⚠️ [dialogue_node] Не удалось создать /mcp/music_fallback publisher: {exc}"
-            )
         self.create_subscription(
-            String, "/voice/stt/result", self._on_stt, qos_r, callback_group=cbg)
+            String, "/voice/stt/result",
+            # Issue #3518 -- «Клод …» из Telegram адресовано координатору.
+            skip_coordinator_tg(self._on_stt, self.get_logger),
+            qos_r, callback_group=cbg)
         # ADR-0066 §6.1 — единственная связь с агентом оператора:
         # sub /dialogue/control (String JSON {action: pause|resume}),
         # pub /dialogue/control_ack (String JSON {state, since_ms, ts_s, reason}).
@@ -1044,11 +946,6 @@ class DialogueNode(Node):
         self.create_subscription(
             String, "/voice/tts/provider_state", self._on_tts_provider_state, 10,
             callback_group=cbg)
-        # Issue #1392 follow-up — состояние сгенерированной музыки
-        # (gen_play_from_library / stop_music / sound_node публикуют JSON).
-        self.create_subscription(
-            String, "/voice/generated_music/state", self._on_generated_music_state, 10,
-            callback_group=cbg)
         # 🔴 FIX (live 31.08): «после нескольких генераций робот начинает
         # тупить и говорит, что растерялся». Музыку останавливает watchdog в
         # mcp_server (reason=idle_ttl, 300 с без диалога), а диалог об этом
@@ -1066,8 +963,8 @@ class DialogueNode(Node):
         # топика (``_music_player_state`` → ``_music_playing_now``). Latched,
         # как у публикатора: после рестарта ноды снимок приходит сразу.
         self._music_player_state = None
-        # Issue #3161 — те же снимки + имя темы из /voice/music/form → тег
-        # <music_state> для LLM (что играет и что замолчало недавно).
+        # Issue #3161 — те же снимки → тег <music_state> для LLM (что играет
+        # и что замолчало недавно; имя трека — ``dj.title`` снимка v2).
         self._music_state_memory = MusicStateMemory()
         self.create_subscription(
             String, MUSIC_STATE_TOPIC, self._on_music_state,
@@ -1076,6 +973,17 @@ class DialogueNode(Node):
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
                 history=HistoryPolicy.KEEP_LAST,
                 depth=1,
+            ),
+            callback_group=cbg)
+        # ADR-0149 PR-6: события владельца плеера v2 (started/rejected) — фраза
+        # роутера об успехе запуска только по ``started`` (core/media_plan_run.py).
+        self._music_events = MusicEventLog()
+        self.create_subscription(
+            String, MUSIC_EVENT_TOPIC, self._music_events.observe_msg,
+            QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
             ),
             callback_group=cbg)
         # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
@@ -1107,16 +1015,6 @@ class DialogueNode(Node):
             self.create_subscription(Odometry, "/odom", self._on_odom_snapshot, 10, callback_group=cbg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(f"⚠️ [dialogue_node] /odom подписка не удалась: {exc}")
-        self.create_subscription(
-            String, "/voice/dj_mode",
-            lambda m: self._on_dj_mode_msg(m.data), 10, callback_group=cbg)
-        # Issue #2461 — структурный канал конца прохода формы для DJ-тикера.
-        # С issue #3133 те же form_ends_at/stops_at есть в снимке
-        # ``/voice/music/state``; DJState переедет на него в #3134, до тех
-        # пор читает этот топик. См. ``_on_music_form``.
-        self.create_subscription(
-            String, "/voice/music/form", self._on_music_form, 10,
-            callback_group=cbg)
         # Issue #2599 PR-C — лицевой канал как повод заговорить.
         # Отдельным методом, а не инлайном: try/except здесь упирал
         # DialogueNode.__init__ в потолок цикломатической сложности
@@ -1193,43 +1091,12 @@ class DialogueNode(Node):
         # обязан каждый ``_check_*_and_retry`` — это проверяет
         # ``test_dialogue_retry_flag_wiring.py``.
         self._retry_dispatched_in_turn: bool = False
-        # Issue #992 Bug B / Bug C — retry budgets and policy now live
-        # in :class:`MusicGuard` (TD-2 decomposition, ARCH-review #1405 /
-        # ADR-0021). ``_run_turn`` resets the user-budget via
-        # ``reset_for_new_user_request``; ``_dispatch_dj_turn`` resets the
-        # DJ budget via ``reset_for_new_dj_transition``. No more
-        # duplicated counters across the two scopes.
-        # Issue #2561 — babble-retry success rate ~62%, 38% retry не
-        # помогает (live 2026-09-15 round3). AC #3 требует: 3 retry
-        # подряд → на 4-м fallback. Дефолт класса — 8 (для обратной
-        # совместимости с прежним «нудно, пока не получится»); для
-        # продового диалога ставим 3, чтобы юзер слышал контекстное
-        # предложение альтернативы максимум после 3 раундов горения.
-        self._music_guard: MusicGuard = MusicGuard(
-            max_user_retries=3,
-            logger=self.get_logger(),
-        )
-        # Issue #2967 — full argument dict of the last SUCCESSFUL
-        # ``compose_music`` call, across turns. Compared against the
-        # current turn's ``result.music_call_args`` (byte-for-byte) so
-        # the #2549 anti-hallucination guard can catch a spoken
-        # «переделал/поменял» claim backed by a no-op replay of the same
-        # arguments — see ``_compute_repeated_music_call_args``.
-        self._last_music_call_args: Optional[dict] = None
         # Issue #2835 — поколение диалоговой сессии: ход/ретрай, родившийся
         # до «новой сессии», после неё не запускается и не включает DJ.
         self._session_epoch = SessionEpoch()
 
-        # Issue #2241 / ADR-0080 §2.4 — TurnGuards is the future home of the
-        # guard order + retry budget. During the incremental migration
-        # (voice-vr 19 → 23) the orchestrator is constructed but NOT used by
-        # the existing ``_check_*_and_retry`` path — ``_evaluate_turn_guards``
-        # below is the single bridge call that flips behaviour for one
-        # catch-site at a time. ``_use_turn_guards`` is OFF by default so
-        # the legacy behaviour (and its regression suite) is preserved
-        # bit-for-bit until a later card turns the flag on.
-        self._use_turn_guards: bool = False
-        self._turn_guards: Optional[TurnGuards] = None
+        # Issue #2266 — ``core/``-зеркало бюджета синтетических ретраев
+        # (читает ``begin_babble_retry``); сбрасывается на user-turn.
         self._turn_state: Optional[TurnState] = None
 
         # Issue #992 Bug D — metalanguage / babble detector.
@@ -1244,10 +1111,6 @@ class DialogueNode(Node):
         # Тот же одноразовый контракт, что у babble-флага выше: ретраим
         # РОВНО один раз, иначе LLM и код уходят в пинг-понг.
         self._action_claim_retry_used: bool = False
-
-        # Issue #992 Bug C' — Renardo-код, попавший в реплику вместо
-        # execute_music_code. Тот же одноразовый контракт.
-        self._code_speech_retry_used: bool = False
 
         # Issue #1777 / #1762 — non-music tool-skipped retry budget.
         # ``True`` после того как Bug C retry для явного tool-based
@@ -1276,18 +1139,7 @@ class DialogueNode(Node):
         # «вплела тему Грига» — user_input не содержит «сделай»).
         # Тот же одноразовый контракт: один ретрай на turn.
         self._universal_action_claim_retry_used: bool = False
-        # Issue #2562 Bug F — «не знаю мелодии» без поиска.
-        # Тот же одноразовый контракт, что у Bug E / Bug C' / Regurgitate:
-        # один ретрай на user-turn, иначе LLM уходит в ping-pong.
-        self._unknown_melody_retry_used: bool = False
 
-# Issue #2560 — LLM выдумывает MIDI-паттерн «pe<num>le<num>f»
-        # (FoxDot/renardo-синтаксис) вместо lookup_melody на известных
-        # мелодиях (Григ, Бетховен, etc.). PR #2551 текстовое правило
-        # не помогло — round-3 live дал 6 случаев за 60 мин. Поэтому
-        # ОДИН CRITICAL-ретрай на turn с явным требованием «сначала
-        # lookup_melody». Иначе LLM и код уходят в пинг-понг.
-        self._hallucinated_midi_retry_used: bool = False
         # Issue #2559 — phantom-action claim (общий, НЕ music-only):
         # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
         # Round 3 live (Vision Pi 10.1.1.21, 15.09.2026) — 6 случаев за
@@ -1299,10 +1151,10 @@ class DialogueNode(Node):
         # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
         # Раньше у каждого guard'а был свой одноразовый флаг
         # (``_babble_retry_used`` / ``_action_claim_retry_used`` /
-        # ``_code_speech_retry_used`` / ``_tool_retry_used``), и каждый
+        # ``_tool_retry_used``), и каждый
         # СВОЙ сбрасывал ЧУЖИЕ на следующем turn — ping-pong был неизбежен.
         # Единый бюджет декрементируется любым guard'ом; на свежем
-        # user-initiated turn (или DJ-transition) — ресетится в
+        # user-initiated turn — ресетится в
         # ``_dispatch_turn`` / ``_run_turn``. Чтобы существующие
         # поимённые флаги не разъехались с новым бюджетом (тесты читают
         # их напрямую), все три guard'а синхронно выставляют и
@@ -1316,33 +1168,7 @@ class DialogueNode(Node):
         self._session_started_at: Optional[float] = None
         self._session_end_reason: str = "success"
 
-        # Issue #992 Bug A — DJ auto-transitions MUST NOT take the
-        # ``new_dialogue`` cleanup path. Wrapping ``_dispatch_turn`` here
-        # sets ``is_dj_auto=True`` so the dispatcher skips
-        # ``_publish_music_cleanup(reason="new_dialogue")`` and the
-        # barge-in cancel that would otherwise wipe an in-flight
-        # track and feed the LLM an empty input.
-        self._dj = DJModeController(
-            hook=DJHook(
-                dispatch=self._dispatch_dj_turn,
-                is_active=lambda: (self._run_task is not None
-                                   and not self._run_task.done()),
-                is_dialogue_active=lambda: self._dsm.current_state in (
-                    DialogueStateKind.DIALOGUE, DialogueStateKind.SILENCED),
-                on_stop=self._on_dj_stop_farewell,
-            ),
-            logger=self.get_logger(),
-        )
-        # ADR-0129 (issue #3000) — смена сета вычищает окно от прошлых
-        # сетов на ближайшем ходе и штампует <dj_state> в system_context.
-        self._dj_set_boundary = DJSetBoundary()
-        # Issue #3227 — материал из реплики (Strudel/RTTTL/ноты) → тул
-        # add_music_material → следующий DJ-переход играет его хук.
-        self._material_intake = MaterialIntake(
-            self._dj, lambda: self._scheduler_executor, lambda: self._loop, self.get_logger()
-        )
         self.create_timer(5.0, self._on_inactivity_check)
-        self.create_timer(DJModeController.DJ_TICK_INTERVAL_S, self._dj.tick)
         # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
         # (замена отдельной startup_greeting_node, #1003). Одноразовый
         # таймер: через startup_greeting_sec секунд после старта говорим
@@ -1451,7 +1277,7 @@ class DialogueNode(Node):
         # обрабатывает NAVIGATE/STOP/STATUS/MAP (публикует
         # /voice/command/intent и выполняет), dialogue_node НЕ должен
         # дублировать обработку через LLM: иначе LLM интерпретирует
-        # «вперёд» как музыку → execute_music_code вместо движения.
+        # «вперёд» как музыку → запуск музыки вместо движения.
         # True = фразы-команды НЕ идут в LLM (обрабатывает command_node).
         self.declare_parameter("command_intent_gate_enabled", True)
         # Порог уверенности CommandParser, при котором фраза считается
@@ -1591,11 +1417,6 @@ class DialogueNode(Node):
         # видела голоса фактического провайдера, а не номинального.
         self._actual_tts_provider: str | None = None
         self._actual_tts_voice: str | None = None
-        # Issue #1392 follow-up — состояние сгенерированной музыки
-        # (JSON {"status": "playing"|"idle", "track_id", "title",
-        # "duration_ms"}) из /voice/generated_music/state. Показывается LLM
-        # в <system_context>, чтобы она сама решала когда вызвать stop_music.
-        self._generated_music_state: Optional[dict] = None
         # Issue #1160 — Prometheus metrics endpoint. 9100 = voice (LLM
         # latency / fallback). 0 = отключить старт сервера (полезно для
         # юнит-тестов и CI, где рконфликтует с другими тестами).
@@ -1841,9 +1662,7 @@ class DialogueNode(Node):
         for skill, text in sorted(fragments.items()):
             lowered = text.lower()
             try:
-                tools = tools_for_skill(
-                    skill, include_core=(skill == CORE_SKILL)
-                )
+                tools = tools_for_skill(skill, include_core=(skill == CORE_SKILL))
             except KeyError:
                 self.get_logger().warning(
                     f"⚠️ [skills] фрагмент {skill!r} не соответствует ни "
@@ -1926,17 +1745,8 @@ class DialogueNode(Node):
             )
         return rendered.system_prompt, merged
 
-    def _activate_skill_for(
-        self, text: str, *, force_skill: str | None = None
-    ) -> None:
+    def _activate_skill_for(self, text: str) -> None:
         """Активировать домен ДО обращения к LLM.
-
-        ``force_skill`` обходит regex-роутер: DJ_AUTO-переходы обязаны
-        детерминированно получать composer-фрагмент (issue #2441) — у
-        синтетического текста перехода литерал «диджей»/«вечеринка»
-        случайно матчит dj-паттерн на n=1, а на n≥2 результат зависит от
-        текста persona. Аранжировка живёт в composer, поэтому DJ-ход
-        форсирует именно его.
 
         Промах роутера безвреден: при выключенном сужении каталога LLM
         видит все инструменты и при необходимости позовёт ``load_skill``
@@ -1950,21 +1760,16 @@ class DialogueNode(Node):
         router = getattr(self, "_skill_router", None)
         if router is None:
             return
-        if force_skill is not None:
-            skill = force_skill
-        else:
-            try:
-                skill = router.route(text)
-            except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
-                self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
-                return
-            if not skill:
-                return
+        try:
+            skill = router.route(text)
+        except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
+            self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
+            return
+        if not skill:
+            return
         try:
             self._core.set_active_skill(skill)
-            record_skill_activation(
-                skill, source="dj-auto" if force_skill is not None else "router"
-            )
+            record_skill_activation(skill, source="router")
             self.get_logger().debug(f"🧭 [skills] активирован {skill!r}")
         except Exception as exc:  # noqa: BLE001
             self.get_logger().debug(f"⚠️ [skills] activation failed: {exc}")
@@ -2098,6 +1903,13 @@ class DialogueNode(Node):
                 getattr(self, "_turn_intro_registered", False)
             ),
             "known_speaker_name": self._confident_speaker_name(uid),
+            # 06.10: длина сета из слов человека («замути сэт на 30 минут») —
+            # решает грамматика, а не LLM: dj_set без tracks брал 10.
+            "heard_tracks": getattr(self, "_turn_set_tracks", None),
+            # 06.10 set98207: request_music не снимает сет этого же хода.
+            "turn_id": getattr(self, "_turn_id", None),
+            # 06.10 18:04: тема dj_set сверяется с репликой хода, а не с историей.
+            "heard_text": getattr(self, "_turn_heard_text", None),
         }
 
     def _confident_speaker_name(
@@ -2199,6 +2011,7 @@ class DialogueNode(Node):
         # ({type: function, function: {name, description,
         # parameters}}); build it from ToolRegistry.list_tools()
         # so the LLM-facing surface is the single source of truth.
+        # ADR-0149 PR-6: LLM видит dj_set/request_music движка v2, а не compose_music & Co.
         registry = ToolRegistry()
         provider.update_tools(
             [
@@ -2427,12 +2240,12 @@ class DialogueNode(Node):
                 "ВАЖНО: сначала подними факты из FAQ (faq_search), "
                 "потом стилизуй ответ. Для стилизации можешь "
                 "использовать рэп или стихи. "
-                "Для музыки используй execute_music_code / load_track."
+                "Для музыки вызывай request_music."
             )
         else:
             parts.append(
                 "Для стилизации используй рэп или стихи. "
-                "Для музыки используй execute_music_code / load_track."
+                "Для музыки вызывай request_music."
             )
 
         parts.append(base_prompt)
@@ -2462,7 +2275,7 @@ class DialogueNode(Node):
             if a:
                 lines.append(f"  A: {a}")
         lines.append(
-            "Для музыкального оформления используй execute_music_code / load_track."
+            "Для музыкального оформления вызывай request_music."
         )
         return "\n".join(lines)
 
@@ -3170,8 +2983,7 @@ class DialogueNode(Node):
         Issue #2628 — extracted because the orchestrator stops at the
         LAST PASS step (typically :class:`DispatchTriggerStep`, which
         runs the FSM transitions + thinking SFX). Everything below
-        builds the final user-turn text: DJ preamble, verbose log,
-        ``_dispatch_turn``. The thinking SFX is **already** published
+        builds the final user-turn text: verbose log, ``_dispatch_turn``. The thinking SFX is **already** published
         inside :class:`DispatchTriggerStep` via
         :meth:`_DialogueSttHost.trigger_thinking_sfx`, so we do not
         publish it again here.
@@ -3190,10 +3002,6 @@ class DialogueNode(Node):
         through ``_dispatch_turn`` → ``_run_turn`` for that purpose.
         """
         raw_user_command = clean
-        # Issue #3145 — DJ-преамбула («[🎧 Музыкальный режим активен …]»)
-        # больше НЕ клеится к реплике: реплика уходит в историю, и префикс
-        # жил там до 10 ходов (82 штуки в логе 28.09). Состояние DJ подаётся
-        # только в текущем запросе — см. :meth:`_dj_turn_hint`.
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
         # Issue #1766 — markers the operator / e2e harness grep for.
@@ -3204,8 +3012,7 @@ class DialogueNode(Node):
                 f"in _prepare_user_input_context; backlog_handled=true "
                 f"появится при _build_dynamic_system_context)"
             )
-        # Issue #live 12:45 — Bug C guard sees the *raw* command, not
-        # the DJ-preamble wrapper. ``raw_user_command`` keeps it.
+        # Issue #live 12:45 — guards see the *raw* command.
         self._dispatch_turn(
             clean,
             was_idle=was_idle,
@@ -3325,22 +3132,6 @@ class DialogueNode(Node):
             f"(voice: {actual_voice}, reason: {payload.get('reason')})"
         )
 
-    def _on_generated_music_state(self, msg: String) -> None:
-        """Issue #1392 follow-up — состояние сгенерированной музыки.
-
-        mcp_server (gen_play_from_library / stop_music) и sound_node (конец
-        воспроизведения) публикуют JSON {"status": "playing"|"idle", ...}.
-        Храним для <generated_music> в system_context, чтобы LLM сама
-        решала, когда останавливать трек через stop_music.
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        if not isinstance(payload, dict):
-            return
-        self._generated_music_state = payload
-
     def _on_music_state(self, msg: String) -> None:
         """Снимок плеера ``/voice/music/state`` (issue #3133, ADR-0141).
 
@@ -3363,47 +3154,6 @@ class DialogueNode(Node):
                 "watchdog/внешний стоп)"
             )
 
-    def _on_music_form(self, msg: String) -> None:
-        """Issue #2461 — конец прохода формы для DJModeController.tick().
-
-        ``/voice/music/form`` — ОТДЕЛЬНЫЙ от ``/voice/music/state`` топик
-        (mcp_server публикует оба в одном месте, ``publish_music_state()``).
-        Заводили его, пока ``/voice/music/state`` был плоской строкой; с
-        issue #3133 снимок плеера несёт те же поля, и DJState переедет на
-        него (#3134). Здесь — JSON
-        ``{"form_ends_at": <epoch float|null>, "playing": bool}``.
-
-        ``form_ends_at`` — уже АБСОЛЮТНОЕ стенное время: mcp_server сам
-        считает ``time.time() + form_cycle_remaining_s`` перед публикацией
-        (см. его ``publish_music_state``). Класть сюда пришлось бы
-        ``time.monotonic()``-значение из ``MusicManager`` — но
-        ``mcp_server`` и ``dialogue_node`` РАЗНЫЕ ОС-процессы
-        (``voice_assistant.launch.py``: один ``Node(...)``, другой
-        ``ExecuteProcess(...)``), и монотонные часы одного процесса ничего
-        не значат в другом. ``time.time()`` — стенные часы, общие для
-        обоих процессов на одной машине, поэтому эпоха передаётся как
-        есть, без пересчёта на этой стороне.
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        if not isinstance(payload, dict):
-            return
-        form_ends_at = payload.get("form_ends_at")
-        self._dj.state.form_ends_at = (
-            float(form_ends_at) if isinstance(form_ends_at, (int, float)) else None
-        )
-        # Issue #3113 — остановка конечного трека: переход раньше неё;
-        # сыгранная тема — в список «не повторять» сета.
-        self._dj.note_form_stop(payload.get("stops_at"))
-        self._dj.note_track_name(payload.get("track"))
-        # Issue #3134 — название играющего трека для роутера медиакоманд
-        # («горный король погромче»); читается только через _media_state.
-        track = payload.get("track")
-        self._music_form_track = track if isinstance(track, str) and track else None
-        # Issue #3161 — имя играющей темы для <music_state>.
-        self._music_state_mem().observe_track_name(self._music_form_track)
 
     def _on_tts_batch_registered(self, msg: String) -> None:
         """Pre-register an in-flight TTS batch (issue #992).
@@ -3497,7 +3247,7 @@ class DialogueNode(Node):
             )
             return
         # 🔴 FIX (issue 992 live 09:09): LLM часто делает speak_text(прелюдия)
-        # ПЕРЕД execute_music_code в одном цикле. Прелюдия — короткий batch
+        # ПЕРЕД тулом запуска музыки в одном цикле. Прелюдия — короткий batch
         # (2-5s), его batch_complete приходит ПОКА цикл LLM ещё крутится
         # (дальше Мурка/зайчики). Если чистить здесь — музыка убивается
         # через секунды после старта. Откладываем cleanup, пока _run_turn
@@ -3538,79 +3288,14 @@ class DialogueNode(Node):
             }
         except Exception:  # noqa: BLE001
             pass
-    def _on_dj_stop_farewell(self, persona: str) -> None:
-        """Speak a short goodbye when DJ mode turns off.
 
-        Invoked by DJModeController._reset_state() through the DJHook.
-        We do not want the user to hear abrupt silence when the party
-        ends, so we publish a one-shot speak_text via the same
-        response publisher used by every other turn.
-        """
-        # Fall back to a friendly default if persona was empty.
-        persona_part = (persona or '').strip() or 'Роббокс'
-        farewell = (
-            'Вечеринка подошла к концу. '
-            + persona_part
-            + ' выключается, но вернется по первому запросу!'
-        )
-        try:
-            self.get_logger().info(f"DJ farewell: {farewell}")
-        except Exception:
-            pass
-        try:
-            self._publish_response(farewell, animation='happy')
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self.get_logger().warning(
-                    f"DJ farewell publish failed: {type(exc).__name__}: {exc}"
-                )
-            except Exception:
-                pass
-
-    def _dispatch_dj_turn(self, user_input: str, from_tick: bool = False) -> None:
-        """Issue #992 Bug A — DJ auto-transition dispatcher.
-
-        Behaves like :meth:`_dispatch_turn` but:
-
-        * does NOT publish ``music_cleanup`` with ``reason="new_dialogue"`` —
-          a DJ tick is an autonomous transition, not a fresh user dialogue.
-          Wiping the active track on every transition would either cut the
-          music mid-phrase (no execute_music_code in this cycle) or feed
-          the LLM an empty input and trip the
-          "Что-то я задумался, повтори пожалуйста" fallback.
-        * does NOT cancel an in-flight ``_run_task`` — DJ transitions
-          compose with the existing DJ cycle instead of barging in. If
-          the current task is still running (e.g. the previous DJ turn's
-          LLM call hasn't returned yet) we simply queue the next tick;
-          :meth:`DJModeController.tick` already defers by 15 s when a
-          dialogue is active, so collisions are rare and safe.
-        * forwards ``is_dj_auto=True`` so :meth:`_run_turn` applies
-          DJ-specific post-turn guards (Bug B + Bug C). The DJ flag is
-          threaded through the parameter rather than stored on ``self``
-          to avoid a race where :meth:`_apply_music_guard`'s synchronous
-          retry is dispatched *before* the next turn's ``_run_turn`` reads
-          the flag — without this, a retry launched from inside the
-          ``finally`` block would observe the parent's already-cleared
-          flag and silently lose the ``was_dj_auto=True`` semantics.
-
-        ``from_tick`` distinguishes a fresh tick transition (resets the
-        Bug-B retry budget) from a synchronous retry triggered by the
-        music-guard in :meth:`_run_turn` (keeps the budget intact).
-        """
-        if from_tick:
-            self._music_guard.reset_for_new_dj_transition()
-        # Issue #3220 — thinking только у свежего перехода (тик), не у
-        # ретрая Bug B: см. ``core/turn_reasoning.py``.
-        self._dispatch_turn(user_input, is_dj_auto=True, dj_transition=from_tick)
 
     def _dispatch_turn(
         self,
         user_input: str,
-        is_dj_auto: bool = False,
         was_idle: bool = False,
         is_babble_retry: bool = False,
         is_action_claim_retry: bool = False,
-        is_code_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -3619,16 +3304,7 @@ class DialogueNode(Node):
         occasion: "Occasion | None" = None,
         backlog_pending: bool = False,
         utterance_id: str | None = None,
-        dj_transition: bool = False,
     ) -> None:
-        # Issue #3144 — синтетический ретрай гуарда (Bug D/E, TurnGuards,
-        # tool-skipped, …), отправленный изнутри DJ-автоперехода, остаётся
-        # DJ-автопереходом. Иначе ретрай становился «ходом юзера», промпт
-        # DJ_AUTO — «запросом юзера», и Bug C выжигал бюджет до фразы
-        # «Музыка играет, а вот эту просьбу я выполнить не смог».
-        is_dj_auto = retry_is_dj_auto(
-            is_dj_auto=is_dj_auto, is_synthetic=is_synthetic
-        )
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
         # PR-B…F); сигнатура принимает ``occasion``, логирует только при
         # явной передаче. occasion=None → байт-в-байт прежнее поведение.
@@ -3636,24 +3312,12 @@ class DialogueNode(Node):
             self.get_logger().info(
                 f"🎯 [occasion] started turn occasion={occasion.kind}"
             )
-        # Issue #992 Bug A — DJ auto-transitions must NOT publish
-        # ``music_cleanup`` with ``reason="new_dialogue"``. Without this
-        # guard the LLM cycle is reset mid-track, which in turn trips the
-        # empty-assistant fallback ("Что-то я задумался, повтори
-        # пожалуйста") and makes the robot sound broken during a DJ
-        # session. Bug C guards against the complementary failure mode
-        # (LLM skips execute_music_code).
-        if is_dj_auto:
-            self.get_logger().debug(
-                "🎧 [issue 992] DJ auto-transition — skipping "
-                "new_dialogue music_cleanup"
-            )
-        elif self._pending_music_cleanup and was_idle:
+        if self._pending_music_cleanup and was_idle:
             # 🔴 FIX (issue 992 live 08:55): music_cleanup reason=new_dialogue
             # ТОЛЬКО при новом диалоге из IDLE. Продолжение диалога
             # (barge-in: «ещё спой про зайчиков» во время ответа) — это
             # тот же диалог: музыка живёт до tts_batch_complete (#968),
-            # LLM сам сменит/оставит трек через execute_music_code.
+            # LLM сам сменит/оставит трек тулом запуска музыки.
             # Раньше cleanup слался на ЛЮБОЙ STT → музыка убивалась
             # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
             self._pending_music_cleanup = False
@@ -3662,7 +3326,7 @@ class DialogueNode(Node):
         # Issue #1160 — Prometheus metrics: новый диалог из IDLE (первый
         # wake-word) открывает сессию; DIALOGUE_END / timeout закроет её
         # histogram'ом voice_session_duration_seconds.
-        if was_idle and not is_dj_auto and self._session_started_at is None:
+        if was_idle and self._session_started_at is None:
             self._session_started_at = time.monotonic()
             self._session_end_reason = "success"
         # Issue #3145 — синтетический ретрай значит «гуард отверг ответ
@@ -3673,10 +3337,8 @@ class DialogueNode(Node):
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
                 user_input,
-                is_dj_auto=is_dj_auto,
                 is_babble_retry=is_babble_retry,
                 is_action_claim_retry=is_action_claim_retry,
-                is_code_retry=is_code_retry,
                 is_synthetic=is_synthetic,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
@@ -3684,7 +3346,6 @@ class DialogueNode(Node):
                 from_tg=from_tg,
                 backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
-                dj_transition=dj_transition,
                 # Issue #2835 — поколение сессии, в котором родился ход
                 # (для ретрая изнутри хода — поколение родителя).
                 session_epoch=self._session_epoch_gate().epoch_for_dispatch(),
@@ -4410,15 +4071,15 @@ tentative_plan(question, kind, name)
     # чтобы решать «стоп музыку» / «давай трек» / «хватит диджеить».
     #
     # Issue #3161 (ADR-0141) — тег строится ТОЛЬКО из того, что публикует
-    # плеер: снимок ``/voice/music/state`` + имя темы из
-    # ``/voice/music/form`` (см. ``core/music_state_prompt.py``). Прежняя
+    # плеер: снимок ``/voice/music/state`` (имя трека — ``dj.title`` снимка
+    # движка v2, см. ``core/music_state_prompt.py``). Прежняя
     # эвристика ``beat`` («играет», если взведён cleanup или живы
     # TTS-батчи) врала после стопа: живой прогон 28.09 22:32 — через 10 с
     # после «выключи музыку» модель прочла «играет» и так и сказала.
     #
     #   <music_state playing="yes" track="клубный трек" repeat="once"
-    #                ends_in_s="42" dj="off" ai="idle" />
-    #   <music_state playing="no" dj="off" ai="idle" last_track="клубный трек"
+    #                ends_in_s="42" dj="off" />
+    #   <music_state playing="no" dj="off" last_track="клубный трек"
     #                last_ended="stopped" last_ended_ago_s="13" />
 
     def _music_state_mem(self) -> MusicStateMemory:
@@ -4429,17 +4090,9 @@ tentative_plan(question, kind, name)
         return memory
 
     def _build_music_state_snapshot(self) -> str:
-        """Единый ``<music_state>`` для LLM (issue #1544, #3161).
-
-        ``ai=`` — mp3 из AI-библиотеки играет в ``sound_node`` мимо
-        ``MusicManager`` и в снимок плеера не попадает; его состояние
-        публикует сам плеер mp3 (``/voice/generated_music/state``).
-        """
-        gm = getattr(self, "_generated_music_state", None) or {}
-        title = None
-        if gm.get("status") == "playing":
-            title = gm.get("title") or "без названия"
-        return self._music_state_mem().render(generated_title=title)
+        """Единый ``<music_state>`` для LLM (issue #1544, #3161): всё, что играет, — на деке владельца плеера v2,
+        трек библиотеки генераций тоже (ADR-0158 PR-2, бывший ``ai=`` из ``/voice/generated_music/state``)."""
+        return self._music_state_mem().render()
 
     def _pending_identity_hint_lines(self) -> list:
         """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
@@ -4481,8 +4134,14 @@ tentative_plan(question, kind, name)
             ]
         return []
 
-    def _build_dynamic_system_context(self) -> str:
+    def _build_dynamic_system_context(
+        self, tg_chat_id: Optional[int] = None
+    ) -> str:
         """Two-system-prompt pattern: собрать <system_context> snapshot.
+
+        ``tg_chat_id`` (issue #3598) — ход пришёл из Telegram: личность в
+        ``<user_profile>`` — по chat_id (:mod:`core.turn_identity`), голос
+        комнаты к нему не применяется. ``None`` — голосовой ход.
 
         Возвращает XML-строку для второго system-message в messages[].
         Содержит runtime info: текущий спикер (resemblyzer), TTS provider
@@ -4498,8 +4157,6 @@ tentative_plan(question, kind, name)
         with self._speaker_lock:
             sp = dict(self._current_speaker)
         sp_name = sp.get("name") or ""
-        sp_conf = float(sp.get("confidence") or 0.0)
-        sp_id = sp.get("speaker_id") or ""
         # 🔴 FIX (live 12.08): защита от мусорных имён ("Null", "null", etc.)
         sp_name = sanitize_speaker_name(sp_name)
 
@@ -4545,64 +4202,17 @@ tentative_plan(question, kind, name)
         # строим XML
         lines = ["<system_context>"]
         lines.append("  <user_profile>")
-        if sp_name:
-            lines.append(f"    <name>{sp_name}</name>")
-        else:
-            lines.append("    <name>unknown</name>")
-            # Issue #2779 — незнакомец получил факты и имя Бориса: биометрия
-            # верно сказала unknown, но LLM всё равно нашла в истории
-            # диалога/памяти данные ПРЕДЫДУЩЕГО известного собеседника и
-            # адресовала их новому человеку. Явный запрет прямо рядом с
-            # <name>unknown</name> — LLM не должна домысливать личность по
-            # истории/памяти, когда биометрия честно говорит «не знаю».
-            lines.append(
-                "    <privacy_note>Текущий собеседник НЕ опознан голосом. "
-                "НЕ обращайся к нему по имени другого (даже недавнего) "
-                "диктора и не пересказывай факты/предпочтения, "
-                "относящиеся к другому диктору — ни из истории этого "
-                "диалога, ни из долговременной памяти. Отвечай по сути "
-                "вопроса, не приписывая его чужой личности.</privacy_note>"
-            )
-        if sp_conf:
-            lines.append(f"    <voice_confidence>{sp_conf:.2f}</voice_confidence>")
-        # Issue #2440 — полный id, без усечения до 8 символов: 8 символов не
-        # несут анонимизирующей функции (тот же id уходит в лог целиком), зато
-        # создают несовпадение с полным UUID в voice_memory (точное сравнение
-        # в БД). LLM и MCP-тулы должны видеть один и тот же полный id.
-        if sp_id:
-            lines.append(f"    <speaker_id>{sp_id}</speaker_id>")
-        # Issue #1787 — внутренняя кличка. Даёт LLM якорь, когда имён
-        # два одинаковых или имени нет вовсе. Research §5.3: озвучивать
-        # её НЕЛЬЗЯ — юзер этого слова никогда не слышал, «привет,
-        # Гроссмейстер» звучало бы как обращение к постороннему.
-        # Issue #2864 — живой прогон: на «кого запомнил?» LLM насчитала
-        # троих при двух профилях, приняв кличку Саши «Незнакомец» за
-        # отдельного человека. Правило явно говорит, что кличка — второе
-        # обозначение ЭТОГО собеседника и при подсчёте людей не считается.
-        sp_epithet = str(sp.get("epithet") or "").strip()
-        if sp_epithet:
-            lines.append(
-                f"    <epithet internal=\"true\">{sp_epithet}</epithet>"
-            )
-            lines.append(
-                "    <epithet_rule>Внутренняя метка робота для различения "
-                "тёзок. НИКОГДА не произноси её вслух и не упоминай в "
-                "ответе — используй только как признак «это тот же "
-                "человек». Кличка — НЕ отдельный человек, а второе "
-                "обозначение ЭТОГО собеседника: когда считаешь или "
-                "перечисляешь знакомых, не считай и не называй её как "
-                "ещё одного человека.</epithet_rule>"
-            )
-        # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
-        # tentative-личность, если _apply_speaker_identity этой же реплики
-        # решила, что сейчас уместно спросить (см. _handle_tentative_speaker
-        # и _pending_identity_hint_lines). Вызов безусловный (список пуст,
-        # если подсказки нет) -- не добавляет ветвление в этот метод, чей CC
-        # уже на грани баджета (cc_budget baseline=24).
-        lines.extend(self._pending_identity_hint_lines())
-        # Issue #2828 -- вопрос и исход переспроса по ack регистрации:
-        # вопрос шёл мимо LLM, без подсказки она не поймёт ответ.
-        lines.extend(self._identity_ack_state().pop_hint_lines())
+        # Issue #3598 — TG-ход: личность по chat_id; голос, privacy_note и
+        # кличка голоса комнаты — только голосовому ходу (turn_identity).
+        lines.extend(user_profile_lines(sp_name, sp, tg_chat_id))
+        if tg_chat_id is None:
+            # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
+            # tentative-личность (см. _handle_tentative_speaker и
+            # _pending_identity_hint_lines). Issue #2828 -- вопрос и исход
+            # переспроса по ack регистрации. Обе -- про ГОЛОС в комнате:
+            # TG-ход их не тратит, они дождутся следующей голосовой реплики.
+            lines.extend(self._pending_identity_hint_lines())
+            lines.extend(self._identity_ack_state().pop_hint_lines())
         lines.append("  </user_profile>")
         lines.append("  <hardware>")
         lines.append(f"    <battery>{battery}</battery>")
@@ -4628,32 +4238,16 @@ tentative_plan(question, kind, name)
         # Issue #1392 follow-up (legacy): раньше был только <generated_music>
         # для AI-генерации; DJ/Renardo бит туда не попадал → баг #1544.
         lines.append(self._build_music_state_snapshot())
-        # ADR-0129 (issue #3000) — текущий DJ-сет или «сет не идёт» и
-        # правило «прошлые сеты завершены»: ходы старых сетов в окне не
-        # должны подсказывать тему/персону нового.
-        lines.extend(dj_state_lines(
-            getattr(self, "_dj_set_boundary", None), getattr(self, "_dj", None)
-        ))
-        # Issue #1544 — SYSTEM REMINDER: «стоп музыку» ведёт себя по-разному
-        # в зависимости от того, ИГРАЕТ ли сейчас что-то. Без этого LLM
-        # решает «нечего останавливать» → verbal «уже выключено» вместо
-        # вызова stop_music tool. Один блок на весь turn — short enough.
-        lines.append(
-            "  <reminder>Если юзер говорит «стоп музыку / выключи / хватит "
-            "диджеить»: посмотри <music_state> выше — если playing=\"yes\" "
-            "или ai=\"playing: …\", ОБЯЗАТЕЛЬНО вызови stop_music tool, а "
-            "потом коротко подтверди; если playing=\"no\" и ai=\"idle\" — "
-            "verbal «уже выключено» без tool call.</reminder>"
-        )
+        # ADR-0149 PR-13a (§5.2): музыкальные reminder'ы («стоп музыку →
+        # stop_music», «состояние музыки → get_music_state») удалены — стоп
+        # исполняет роутер медиакоманд до LLM, состояние уже в <music_state>.
         # Issue #2406 (n201/n204 intro — register_speaker на discovery-шаге) —
         # SYSTEM REMINDER: на intro-сценарии («давай знакомиться, меня зовут
         # Саша») LLM по умолчанию отвечает verbal-only «Приятно познакомиться!»
         # на основе <name>unknown</name> тега и пропускает register_speaker tool.
         # e2e-гейт n201_sasha_intro_long / n204_boris_intro_long требует
-        # tool call в трейсе. Ставим МЕЖДУ stop_music и get_music_state —
-        # reminders[-1] остаётся time-reminder (test_issue_1777_time_format),
-        # reminders[-2] остаётся get_music_state (test_issue_2347), а новый
-        # reminder занимает reminders[1] (после stop_music).
+        # tool call в трейсе. reminders[-1] остаётся time-reminder
+        # (test_issue_1777_time_format), этот — reminders[0].
         lines.append(
             "  <reminder>Если юзер представляется («давай знакомиться», "
             "«я …», «зовут меня …», «привет, я …», «запомни меня как …», "
@@ -4664,29 +4258,6 @@ tentative_plan(question, kind, name)
             "тега — он stale для нового юзера (profile ещё не создан, "
             "warm-up не догрелся). Tool call обязателен даже если кажется, "
             "что ответ и так очевиден — e2e ловит verbal-only как fail.</reminder>"
-        )
-        # Issue #2347 (n313 silence_restored) — SYSTEM REMINDER: на
-        # state-запрос LLM по умолчанию делает verbal-only ответ из
-        # <music_state> тега и пропускает get_music_state tool. e2e-гейт
-        # n313_silence_restored требует tool call в трейсе. Ставим МЕЖДУ
-        # stop_music и time — test_issue_1777_time_format берёт
-        # reminders[-1] как time-reminder, не сдвигаем его.
-        # Issue #3161: «тег может быть stale» больше не правда — он из
-        # снимка плеера; вместо этого учим отвечать про прошлое по last_*.
-        # Issue #3165: «ОБЯЗАТЕЛЬНО get_music_state» наказывало правильный
-        # ответ по снимку (Bug E → ретраи → «Не получилось выполнить»).
-        # Тул — только когда в теге ответа нет (playing="unknown").
-        lines.append(
-            "  <reminder>Если юзер спрашивает про состояние музыки "
-            "(«тихо?», «тишина?», «тише?», «играет ли музыка?», «что играет?», "
-            "«что сейчас играет?», «музыка включена?», «слышно что-нибудь?»): "
-            "ответ уже в <music_state> — это снимок плеера на начало хода. "
-            "playing=\"no\" — тишина, НЕ говори «сейчас играет»; "
-            "playing=\"yes\" — назови track. Про прошлое («что играло?», «что "
-            "ты включал?») отвечай по last_track / last_ended / "
-            "last_ended_ago_s («минуту назад играл …, я его остановил»). "
-            "get_music_state вызывай, только если в <music_state> ответа нет "
-            "(playing=\"unknown\").</reminder>"
         )
         # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
         # ``get_current_time`` уже возвращает ``formatted_time`` русской
@@ -4858,10 +4429,8 @@ tentative_plan(question, kind, name)
         self,
         user_input: str,
         *,
-        is_dj_auto: bool = False,
         is_babble_retry: bool = False,
         is_action_claim_retry: bool = False,
-        is_code_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -4870,28 +4439,12 @@ tentative_plan(question, kind, name)
         backlog_pending: bool = False,
         utterance_id: str | None = None,
         session_epoch: int | None = None,
-        dj_transition: bool = False,
     ) -> None:
         # Issue #2835 — ход/ретрай, поставленный в loop до «новой сессии»,
         # а стартовавший после неё, не запускается вовсе.
         if not self._admit_turn_epoch(session_epoch):
             return
         epoch_token = TURN_EPOCH.set(session_epoch)
-        # Issue #3144 — происхождение хода для ретраев гуардов (см.
-        # ``core/turn_origin.py``): ретрай наследует его через контекст.
-        dj_auto_token = TURN_IS_DJ_AUTO.set(is_dj_auto)
-        # Issue #3247 — DJ_AUTO-ход после финального промпта сета: гард
-        # исполнителя тулов не даст ему снова включить DJ.
-        dj_final_token = TURN_DJ_SET_FINAL.set(
-            dj_final_turn(getattr(self, "_dj", None), is_dj_auto)
-        )
-        # Issue #3220 — думает ли этот ход (thinking MiniMax); провайдер
-        # читает флаг из контекста хода.
-        reasoning_token = TURN_REASONING.set(turn_wants_reasoning(
-            is_dj_auto=is_dj_auto,
-            dj_transition=dj_transition,
-            is_synthetic=is_synthetic,
-        ))
         with self._task_lock:
             self._run_task = asyncio.current_task()
         # Issue #2913 -- решения о речи speak_text -- по этому ходу.
@@ -4902,16 +4455,20 @@ tentative_plan(question, kind, name)
         # #2842: RegisterSpeakerTool runs in the mcp_server process, so
         # it gets this via _mcp_turn_context → hidden /mcp/execute arg.
         self._current_turn_utterance_id = utterance_id
+        # 06.10 set98207: ход для скрытого turn_id (request_music не снимает
+        # сет своего хода); синтетический ретрай продолжает ход.
+        self._turn_id = next_turn_id(
+            getattr(self, "_turn_id", None),
+            is_synthetic, is_babble_retry, is_action_claim_retry,
+        )
+        self._turn_heard_text = turn_heard_text(
+            getattr(self, "_turn_heard_text", None), user_input, is_synthetic)
         # Issue #2925 -- самопредставление этой реплики; выставляет
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None
         self._turn_intro_registered = False
+        self._turn_set_tracks = None
         self._run_cancelled = False
-        # Issue #992 Bug B / Bug C — ``is_dj_auto`` is threaded through
-        # ``_dispatch_turn`` rather than read from ``self`` so a
-        # synchronous DJ retry dispatched from inside this turn's
-        # ``finally`` block does not race with the parent's flag reset.
-        was_dj_auto = is_dj_auto
         # Issue #992 Bug D — reset the babble-retry budget only at the
         # TOP of a *user-initiated* turn. When ``is_babble_retry=True``
         # we are inside the LLM-triggered follow-up dispatched by
@@ -4929,11 +4486,7 @@ tentative_plan(question, kind, name)
         # вызовов на одну фразу (vision-pi 02.09, raw в карточке #1881).
 # Issue #2631 (ADR-0021 R1) — reset policy вынесен в helper, чтобы
         # удержать CC ``_run_turn`` ≤15.
-        self._reset_turn_retry_budgets(
-            is_synthetic=is_synthetic,
-            was_dj_auto=was_dj_auto,
-            user_input=user_input,
-        )
+        self._reset_turn_retry_budgets(is_synthetic=is_synthetic)
         # Issue #992 Bug D — when the babble detector schedules a retry
         # we MUST NOT end the dialogue at the bottom of this turn. The
         # retry's ``_run_turn`` will run on the same DSM session and
@@ -4948,15 +4501,6 @@ tentative_plan(question, kind, name)
         # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
         self._retry_dispatched_in_turn = False
         self._retry_budget_exhausted_in_turn = False
-        # Issue #2967 — DJ-переход провалился (нет музыкального тула) И
-        # ретрай-бюджет Bug B на этом ходе исчерпан, значит НИКАКОГО
-        # ретрая за этим ходом не последует. Ход всё равно не должен
-        # звучать: это очередной пустой анонс без трека, а не финальный
-        # ход сета. Отдельный от ``_retry_dispatched_in_turn`` флаг —
-        # он влияет ТОЛЬКО на решение "озвучивать ли этот ход" и НЕ
-        # должен откладывать DIALOGUE_END (ретрая не будет, откладывать
-        # закрытие сессии не для чего — см. ``_release_turn_speech``).
-        self._dj_giveup_silent_in_turn = False
         # Issue #2914 -- «в этом ходе прозвучал вопрос о личности».
         self._identity_question_asked_in_turn = False
         guard_retry_pending = False
@@ -4975,7 +4519,7 @@ tentative_plan(question, kind, name)
             # от нестабильных tags Yandex. Vosk fallback (tag=None) —
             # профиль не трогаем (edge case #4).
             speaker_context: Optional[str] = None
-            if speaker_tag and not is_dj_auto:
+            if speaker_tag:
                 speaker_context = await self._handle_speaker_turn(
                     speaker_tag,
                     user_input=user_input,
@@ -4986,7 +4530,6 @@ tentative_plan(question, kind, name)
             user_input, dynamic_system = await self._prepare_user_input_context(
                 user_input=user_input,
                 from_tg=from_tg,
-                was_dj_auto=was_dj_auto,
                 speaker_context=speaker_context,
                 backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
@@ -4998,7 +4541,7 @@ tentative_plan(question, kind, name)
             # и не сломал guard.
             self.get_logger().info(
                 f"🚀 [turn] calling process_input: user_input={user_input[:100]!r} "
-                f"speaker_tag={speaker_tag!r} was_dj_auto={was_dj_auto}"
+                f"speaker_tag={speaker_tag!r}"
             )
             # Issue #1160 — Prometheus metrics: замер LLM-запроса.
             # ``time.monotonic`` (а не time.time) — чтобы NTP-resync
@@ -5018,7 +4561,6 @@ tentative_plan(question, kind, name)
             # ветка) вынесены в helper.
             result = await self._invoke_llm_with_telemetry(
                 user_input=user_input,
-                was_dj_auto=was_dj_auto,
                 is_synthetic=is_synthetic,
                 speaker_tag=speaker_tag,
                 speaker_context=speaker_context,
@@ -5048,7 +4590,6 @@ tentative_plan(question, kind, name)
             self._deliver_turn_result(
                 result,
                 user_input=user_input,
-                is_dj_auto=was_dj_auto,
                 raw_user_command=raw_user_command,
             )
             guard_retry_pending = bool(self._retry_dispatched_in_turn)
@@ -5065,15 +4606,14 @@ tentative_plan(question, kind, name)
             # вынесен в helper. Семантика 1-в-1: сначала speak_direct
             # (живой 12.08 FIX — НЕ падать, если логгер уронит RcutilsLogger),
             # затем логгер (в try/except, чтобы и тут не падать).
-            self._handle_llm_error(exc, was_dj_auto, user_input, raw_user_command)
+            self._handle_llm_error(exc, user_input, raw_user_command)
             result = None
         finally:
-            # Issue #992 Bug B: ``_apply_music_guard`` may synchronously
-            # dispatch a follow-up DJ turn, which sets ``self._run_task``
-            # to a fresh coroutine. We must not wipe that reference here
-            # or the test driver (and any future hook that watches
-            # ``self._run_task``) would lose the retry. Only clear the
-            # slot when no replacement was scheduled.
+            # A post-turn guard may synchronously dispatch a retry turn,
+            # which sets ``self._run_task`` to a fresh coroutine. We must
+            # not wipe that reference here or the test driver (and any
+            # hook that watches ``self._run_task``) would lose the retry.
+            # Only clear the slot when no replacement was scheduled.
             # Issue #2828 -- ack с переспросом, пришедший уже ПОСЛЕ выдачи
             # ответа хода, забираем под тем же локом, что освобождает слот:
             # иначе он проскочил бы между «ход идёт» и «хода нет» и потерялся.
@@ -5102,17 +4642,13 @@ tentative_plan(question, kind, name)
             # вынесена в helper.
             self._finalize_music_cleanup_policy(
                 result=result,
-                was_dj_auto=was_dj_auto,
                 raw_user_command=raw_user_command,
                 user_input=user_input,
             )
-            # Issue #992 Bug B / Bug C — DJ-mode post-turn guard.
-            # ``is_dj_auto`` was threaded through the dispatch path so no
-            # shared flag needs to be cleared here. The guard may
-            # synchronously dispatch a follow-up DJ turn while we are
-            # still inside this turn's ``finally``; that is intentional —
-            # ``drive_one_turn`` (and any production loop) drains the
-            # retry as part of this very turn cycle.
+            # Post-turn tool-skipped guard. It may synchronously dispatch
+            # a retry turn while we are still inside this turn's
+            # ``finally``; ``drive_one_turn`` (and any production loop)
+            # drains the retry as part of this very turn cycle.
             #
             # 🔴 FIX (issue #1204, 13.08 DJ incident): guard вызывается
             # ДО DIALOGUE_END. Сам guard переоткрывает DIALOGUE перед
@@ -5124,10 +4660,9 @@ tentative_plan(question, kind, name)
             # ``result=None`` → ``tools_called=()``, и Bug C принимал это за
             # «музыку просили, тула не вызвали» → [CRITICAL]-ретрай после
             # сброса (живой лог 23.09 14:18:08).
-            music_retry_dispatched, tool_retry_dispatched = (
+            tool_retry_dispatched = (
                 self._apply_post_turn_retry_guards(
                     result=result,
-                    was_dj_auto=was_dj_auto,
                     user_input=raw_user_command or user_input,
                     retries_allowed=self._session_epoch_gate().retries_allowed(
                         turn_epoch=session_epoch, cancelled=turn_cancelled
@@ -5143,19 +4678,8 @@ tentative_plan(question, kind, name)
             # Issue #2874 — гуарды сказали своё: ход с ретраем молчит,
             # отозванный гуардом ответ молчит, остальное звучит. Переспрос
             # #2828, пришедший после ответа, — после него, как и раньше.
-            # Issue #2967 — ``_dj_giveup_silent_in_turn`` тоже молчит: DJ-
-            # переход провалился и ретрай-бюджет на нём исчерпан, но это
-            # НЕ повод отложить DIALOGUE_END (см. ``_finalize_turn_dsm``
-            # ниже, которому передаётся исходный ``music_retry_dispatched``
-            # без этой добавки).
             self._release_turn_speech(
-                speech_hold,
-                retry_dispatched=(
-                    music_retry_dispatched
-                    or tool_retry_dispatched
-                    or getattr(self, "_dj_giveup_silent_in_turn", False)
-                ),
-                was_dj_auto=was_dj_auto,
+                speech_hold, retry_dispatched=tool_retry_dispatched,
             )
             self._speak_identity_question(
                 leftover_identity_question, after_answer=True
@@ -5174,14 +4698,10 @@ tentative_plan(question, kind, name)
             # идентичны inline-блоку.
             self._finalize_turn_dsm(
                 guard_retry_pending=guard_retry_pending,
-                music_retry_dispatched=music_retry_dispatched,
                 pending_queue_dispatched=pending_queue_dispatched,
                 tool_retry_dispatched=tool_retry_dispatched,
                 session_handed_over=self._take_session_handover(),
             )
-            TURN_IS_DJ_AUTO.reset(dj_auto_token)
-            TURN_DJ_SET_FINAL.reset(dj_final_token)
-            TURN_REASONING.reset(reasoning_token)
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
@@ -5202,8 +4722,7 @@ tentative_plan(question, kind, name)
         """Пускать ли ход поколения ``session_epoch`` (issue #2835).
 
         Ход, поставленный в loop до «новой сессии» (ретрай гуарда, дренаж
-        очереди), после сброса отбрасывается. Пропущенный ход текущего
-        поколения снимает забор на включение DJ.
+        очереди), после сброса отбрасывается.
         """
         gate = self._session_epoch_gate()
         if gate.is_stale(session_epoch):
@@ -5212,21 +4731,21 @@ tentative_plan(question, kind, name)
                 f"после сброса идёт сессия #{gate.current}"
             )
             return False
-        gate.note_turn_started(session_epoch)
         return True
 
     def _apply_post_turn_retry_guards(
         self,
         *,
         result: Optional["DialogResult"],
-        was_dj_auto: bool,
         user_input: str,
         retries_allowed: bool,
         identity_question_asked: bool = False,
-    ) -> tuple[bool, bool]:
-        """Music-гуард (Bug B/C) + tool-skipped гуард из ``finally`` хода.
+    ) -> bool:
+        """Tool-skipped гуард из ``finally`` хода; ``True`` — ретрай отправлен.
 
-        Возвращает ``(music_retry_dispatched, tool_retry_dispatched)``.
+        ADR-0149 PR-13a: музыкальный гуард (Bug B/C, ``MusicGuard``) удалён
+        вместе со старым путём музыки — успех запуска говорит код по событию
+        ``started`` плеера, ретраить LLM «вызови compose_music» больше нечем.
         Issue #2835 — при ``retries_allowed=False`` (ход отменён barge-in'ом
         или «новой сессией», либо пережил сброс) гуарды не зовутся вовсе:
         ретрай такого хода — [CRITICAL]-ход в уже чужой сессии.
@@ -5242,241 +4761,32 @@ tentative_plan(question, kind, name)
         if not retries_allowed:
             self.get_logger().info(
                 "🧹 [issue 2835] ход отменён/сессия сброшена — "
-                "post-turn ретраи (music/tool) не диспатчим"
+                "post-turn ретраи (tool) не диспатчим"
             )
-            return False, False
+            return False
         if identity_question_asked:
             self.get_logger().info(
                 "👤 [issue #2914] в ходе задан вопрос о личности — "
-                "post-turn ретраи (music/tool) не диспатчим: ждём ответ человека"
+                "post-turn ретраи (tool) не диспатчим: ждём ответ человека"
             )
-            return False, False
-        if was_dj_auto and not self._dj_session_active():
-            # Issue #3144 — DJ-автопереход, а DJ уже выключен: Bug B
-            # неприменим, а Bug C/tool-skipped читали бы промпт DJ_AUTO
-            # как просьбу юзера (живой прогон 28.09 18:48).
-            self.get_logger().info(
-                "🎧 [issue 3144] DJ-автопереход при выключенном DJ — "
-                "music/tool ретраи не диспатчим: это не ход юзера"
-            )
-            return False, False
-        tools_called = result.tools_called if result else ()
-        music_retry_dispatched = self._apply_music_guard(
-            was_dj_auto=was_dj_auto,
-            user_input=user_input,
-            tools_called=tools_called,
-            # Issue #2565 — phantom-action deferral needs the LLM's
-            # reply text to detect «запустил/загрузил» claims before
-            # the FORCE_STOP branch silences the active track. Pass
-            # ``spoken_text`` (post-strip-history, pre-TTS) so the
-            # :func:`is_phantom_music_action` detector sees the
-            # actual response.
-            spoken=(result.spoken_text if result else None),
-            # Issue #2966 — a music-starting tool NAME in ``tools_called``
-            # doesn't mean it succeeded (``compose_music`` refused for
-            # ``groove_loop`` still shows up here). Thread the turn's
-            # error flag so the guard can tell the two apart.
-            tool_error_occurred=bool(
-                getattr(result, "tool_error_occurred", False)
-            ),
-            # Issue #3004 — per-call success: validation error + successful
-            # retry of the music tool in the same turn is a success.
-            succeeded_tools=tuple(getattr(result, "succeeded_tools", None) or ()),
-        )
+            return False
         # Issue #1777 / #1762 — Bug C retry для non-music tool-based
         # запросов (``get_current_time`` / ``search_web`` / ``set_voice`` /
         # ``memory_search`` / ``faq_search``): ОДИН CRITICAL retry с явным
-        # указанием нужного tool. Вызывается ПОСЛЕ music guard — чтобы не
-        # дублировать retry для пересекающихся случаев.
-        # Issue #3144 — на DJ-автопереходе промпт DJ_AUTO не просьба юзера:
-        # tool-skipped (Bug C для не-музыкальных тулов) его не читает.
-        tool_retry_dispatched = (not was_dj_auto) and self._apply_tool_skipped_guard(
+        # указанием нужного tool.
+        return self._apply_tool_skipped_guard(
             user_input=user_input,
-            tools_called=tools_called,
-            other_retry_dispatched=music_retry_dispatched,
-        )
-        return music_retry_dispatched, tool_retry_dispatched
-
-    def _on_dj_mode_msg(self, payload: str) -> None:
-        """``/voice/dj_mode`` → DJ-контроллер, с забором issue #2835.
-
-        ``set_dj_mode`` исполняет mcp_server (другой процесс) и шлёт топик —
-        запоздалое ``enabled=true`` от хода, начатого до «новой сессии»,
-        приходит уже после сброса. Пока в новой сессии не начался ни один
-        ход, включение игнорируется; выключение проходит всегда.
-        """
-        if not self._session_epoch_gate().admits_dj_payload(payload):
-            self.get_logger().warning(
-                "🧹 [issue 2835] запоздалый set_dj_mode(enabled=true) от хода "
-                f"до «новой сессии» — игнорирую: {payload[:120]!r}"
-            )
-            return
-        # Issue #3181 — реплика юзера, как пришла в STT, для фолбэка темы
-        # (``DJModeController._apply_enable_payload``), когда LLM включила
-        # DJ без ``theme=``. ``_last_stt_text`` — последняя реплика,
-        # которую видел ``quick_decide`` (тот же текст, что и
-        # media_router для этого хода); DJ_AUTO-переходы STT не шлют, так
-        # что фолбэк срабатывает только на генуинном старте от юзера.
-        # ADR-0129 — граница сета сверяется до и после (dj_set_boundary).
-        apply_dj_mode_message(
-            getattr(self, "_dj_set_boundary", None),
-            self._dj,
-            payload,
-            raw_utterance=getattr(self, "_last_stt_text", None) or "",
+            tools_called=result.tools_called if result else (),
         )
 
-    def _publish_dj_off(self, reason: str) -> None:
-        """Опубликовать ``/voice/dj_mode`` ``enabled=false``.
+    def _reset_session_music(self) -> None:
+        """Issue #2835 — «новая сессия» гасит музыку прошлой сессии.
 
-        Нужен mcp_server'у: его DJ-watchdog (``MusicManager.set_dj_mode``)
-        живёт по этому топику. Собственная подписка ноды получит эхо —
-        ``DJModeController.handle_message`` на уже выключенном DJ прощание
-        не говорит (issue #2835).
+        Сет движка v2 гасит ``music_cleanup`` (mcp_server), DJ-контроллера на
+        голосовой стороне больше нет (ADR-0149 PR-13a).
         """
-        try:
-            dj_msg = String()
-            dj_msg.data = json.dumps({"enabled": False})
-            if getattr(self, "_dj_mode_pub", None) is None:
-                self._dj_mode_pub = self.create_publisher(
-                    String, "/voice/dj_mode", 10
-                )
-            self._dj_mode_pub.publish(dj_msg)
-            self.get_logger().info(f"🎵 DJ off published ({reason})")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"🎵 DJ off publish failed: {exc}")
-
-    def _force_dj_off_for_stop_command(self, *, reason: str) -> None:
-        """Issue #2897 — стоп-команда юзера гасит DJ-режим в коде.
-
-        Единственный источник правды для «DJ должен выключиться» —
-        ``is_music_stop_command(user_input)`` на стороне вызывающего
-        (:meth:`_apply_music_guard`), а НЕ тул, который решила вызвать
-        модель: ``stop_music`` глушит звук, но никогда не трогал DJ-флаг
-        (см. ``MUSIC_HARD_STOP_TOOLS`` в ``core/dialogue_guards.py``), а
-        модель не обязана сама вызвать ``set_dj_mode(enabled=false)`` —
-        живой инцидент 23.09 показал, что она этого не сделала.
-        ``reset_silently`` — БЕЗ прощания поверх ответа модели, и отменяет
-        уже отложенное прощание (issue #2875): «Вечеринка подошла к концу»
-        вторым голосом поверх «Готово, музыка выключена!» — тот же класс
-        бага, что и #2835 «новая сессия».
-        """
-        if not self._dj.state.enabled:
-            return
-        self._dj.reset_silently()
-        self._publish_dj_off(reason=reason)
-
-    @staticmethod
-    def _should_force_dj_off_for_stop_command(
-        user_input: str, tools_called: tuple
-    ) -> bool:
-        """Issue #2971 — should :meth:`_force_dj_off_for_stop_command` run?
-
-        Two conditions, both required:
-
-        1. ``is_music_stop_command(user_input)`` — the raw text looks like
-           a stop-command (issue #2897's original source of truth).
-        2. The model did NOT itself call ``set_dj_mode`` this turn.
-
-        Condition 2 is the issue #2971 fix: live incident 24.09.2026
-        «Paul Oakenfold» — a long DJ-persona prompt ended with «…как
-        системный промт для робота-диджея», the model correctly called
-        ``set_dj_mode(enabled=true)`` + started the track, but the raw
-        ``user_input`` still matched the stop heuristic and force-killed
-        the DJ mode 4s after it started. If the model called
-        ``set_dj_mode`` at all this turn, it already made an explicit
-        decision about the DJ flag — the code must not second-guess that
-        decision from a heuristic over the raw user text. When the model
-        did NOT call it (issue #2897's original failure — it closed
-        ``stop_music`` but forgot ``set_dj_mode(enabled=false)``), this
-        defensive force-off still fires.
-        """
-        if not is_music_stop_command(user_input):
-            return False
-        return "set_dj_mode" not in (tools_called or ())
-
-    def _reset_session_music_and_dj(self) -> None:
-        """Issue #2835 — «новая сессия» гасит DJ, музыку и бюджеты гуарда.
-
-        DJ выключается МОЛЧА: прощание «Вечеринка подошла к концу» поверх
-        «Начинаю новую сессию…» — второй голос в тот же момент.
-        """
-        dj = getattr(self, "_dj", None)
-        if dj is not None:
-            dj.reset_silently()
-        self._publish_dj_off(reason="new_session")
         self._pending_music_cleanup = False
         self._publish_music_cleanup(reason="new_session")
-        guard = getattr(self, "_music_guard", None)
-        if guard is not None:
-            guard.reset_for_new_session()
-        # Issue #2967 — прошлая сессия не должна «забраковывать» первый
-        # compose_music новой сессии как повтор.
-        self._last_music_call_args = None
-
-    # ── Issue #992 Bug B / Bug C — DJ-mode music guard ────────────────
-
-    # Issue #1016 Bug C — narrow keyword heuristic. ``трек`` and ``бит``
-    # are deliberately excluded because they fire on chit-chat like
-    # "роббокс какой трек посоветуешь?" (issue 992 test_user_normal_chat
-    # regression). Keep the list focused on unambiguous "play something
-    # NOW" commands so the spoken nudge only fires when the user clearly
-    # asked for generated music.
-    # Issue #992 Bug C/D — keyword sets live in
-    # :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
-    # class-level aliases keep ``node._MUSIC_GUARD_KEYWORDS`` etc.
-    # working for existing call sites and tests.
-    _MUSIC_GUARD_KEYWORDS = MUSIC_GUARD_KEYWORDS
-
-    # Issue #1016 — empty-response music fallback. Более широкая эвристика
-    # чем _MUSIC_GUARD_KEYWORDS: используется ТОЛЬКО в ветке «LLM вернула
-    # пустоту и не вызвала ни одного тула» — там цена ложного
-    # срабатывания ниже (вместо «Принял.» + тишины юзер услышит топ-трек
-    # из библиотеки). «Поставь что-нибудь» — канонический TRACK-триггер
-    # из issue #1016, поэтому «поставь» и «включи» входят сюда.
-    # Жанровые слова (джаз/рок/блюз) и «трек»/«бит» сознательно НЕ
-    # включены — они встречаются в вопросах-рекомендациях («какой трек
-    # посоветуешь?»), где музыка ни к чему.
-    _MUSIC_FALLBACK_KEYWORDS = (
-        "спой",
-        "пой ",
-        "рэп",
-        "рап",
-        "диджей",
-        "dj ",
-        "dj-",
-        "песня",
-        "песню",
-        "песенк",
-        "зачитай",
-        "зачита",
-        "зачитывай",
-        "сыграй",
-        "играй",
-        "поставь",
-        "включи",
-        "музык",
-        "мелоди",
-        "классик",
-        "танцевальн",
-    )
-
-
-
-    # 🔴 FIX (live 06.08): «хватит диджеить/выключи музыку» — юзер просит
-    # остановить музыку/DJ, а НЕ замолчать робота. Подстрока «хватит»
-    # в silence_commands перехватывала такие команды до LLM. Эти фразы
-    # пробивают silence-гейт и идут в LLM (который вызовет stop_music +
-    # set_dj_mode(enabled=false)).
-    _MUSIC_STOP_OVERRIDES = MUSIC_STOP_OVERRIDES
-
-    # 🔴 FIX (live 10:00): для ГОЛОСОВЫХ запросов («спой/пой/песня»)
-    # speak_text достаточно — бит не обязателен (юзер мог попросить
-    # спеть ПОД уже играющую музыку, как «спой про мурку в этот
-    # момент» — Григ играл, LLM правильно не перезапустила трек).
-    # Bug C нудит только если LLM вообще НИЧЕГО не сделала (tools
-    # пуст). Для БИТО-обязательных («рэп/зачитай/диджей») — как было:
-    # нуднуть если нет execute_music_code.
-    _MUSIC_GUARD_VOCAL_KEYWORDS = MUSIC_GUARD_VOCAL_KEYWORDS
 
     # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
     # голосовые фразы, после которых робот сбрасывает весь контекст
@@ -5532,125 +4842,8 @@ tentative_plan(question, kind, name)
         )
         return any(phrase in target for phrase in phrases)
 
-    def _user_wants_music(self, user_input: str) -> bool:
-        """Heuristic: does the user request music / a track?
-
-        Used by :meth:`_apply_music_guard` to decide whether Bug C's
-        code-side fallback should fire. The check is intentionally
-        narrow so we don't retry on ordinary chit-chat that happens
-        to mention "track" in passing.
-
-        Delegates to :func:`rob_box_voice.core.dialogue_guards.user_wants_music`
-        (TD-1 decomposition).
-        """
-        return user_wants_music(user_input, logger=self.get_logger())
-
-    def _user_wants_music_fallback(self, user_input: str) -> bool:
-        """Issue #1016 — broader heuristic for the empty-response fallback.
-
-        Unlike :meth:`_user_wants_music` (which drives the spoken
-        "бит не запустился" nudge), this one is used ONLY in the
-        empty-response branch where the LLM returned nothing and no
-        tool was called. There the cost of a false positive is low —
-        the robot would otherwise say «Принял.» and stay silent, so
-        playing the top library track is strictly better.
-        """
-        if not user_input:
-            return False
-        low = user_input.lower()
-        matched = [kw for kw in self._MUSIC_FALLBACK_KEYWORDS if kw in low]
-        if matched:
-            self.get_logger().debug(
-                f"🎵 [music_fallback] user_input={user_input!r} matched "
-                f"keywords={matched!r} → fallback music"
-            )
-            return True
-        return False
-
-    def _classify_music_user_input_kind(self, user_input: str) -> str:
-        """Issue #2561 — грубая категоризация для Prometheus-лейбла.
-
-        Возвращает одну из меток:
-        * ``"vocal"`` — вокальный запрос («спой/пой/песня»);
-        * ``"track_name"`` — конкретное имя/трек («поставь X»,
-          «включи трек X»);
-        * ``"genre"`` — жанр/настроение («техно», «лаундж»);
-        * ``"general"`` — общий («включи музыку», «давай бит»);
-        * ``"unknown"`` — пустой ввод.
-
-        Эвристика простая и намеренно грубая: нам нужна видимость
-        «на КАКИХ запросах retry выгорает», а не точная классификация.
-        Узкая по построению, чтобы НЕ считать треком обычное
-        «включи музыку».
-        """
-        if not user_input:
-            return "unknown"
-        low = user_input.lower()
-        if is_vocal_request(user_input):
-            return "vocal"
-        # Конкретное имя — слова после префикса содержат существительное
-        # кроме жанров. Эвристика узкая.
-        track_prefixes = (
-            "поставь ", "включи ", "запусти ",
-            "играй ", "сыграй ", "давай ",
-        )
-        for prefix in track_prefixes:
-            if low.startswith(prefix):
-                tail = low[len(prefix):].strip()
-                # если в хвосте есть жанр — это жанр-запрос, не имя
-                if any(
-                    g in tail
-                    for g in (
-                        "музык", "бит", "мелоди", "трек",
-                        "техно", "хаус", "джаз", "рок",
-                        "лаундж", "лаунж", "рэп",
-                    )
-                ):
-                    if "трек" in tail or "мелоди" in tail or tail.startswith("песн"):
-                        return "track_name"
-                    return "genre"
-                return "track_name"
-        if any(g in low for g in ("музык", "бит", "мелоди", "трек")):
-            return "general"
-        return "general"
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
-
-    def _is_metalanguage_babble(self, spoken_text: str) -> bool:
-        """Issue #992 Bug D — does this LLM output read as meta-talk?
-
-        Returns ``True`` when the LLM final response text starts with a
-        known metalanguage opener («зачита», «могу», «хочешь»,
-        «сейчас», «устроим», «погнали», «давай», «слушай», «окей»,
-        «так», «переключ», «ну что ж»). The check operates on the
-        first 80 chars after :func:`strip_markdown` so a lone "**"
-        that survived cleaning cannot mask the opener.
-
-        The detector is intentionally *conservative*: a normal answer
-        that happens to contain «слушай» somewhere in the middle is
-        safe — only the first 80 chars are inspected. When in doubt,
-        return ``False``; :meth:`_check_babble_and_retry` will fall
-        through to the standard TTS publish path.
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.is_metalanguage_babble`
-        (TD-1 decomposition).
-        """
-        return is_metalanguage_babble(spoken_text)
-
-    def _user_wants_performance(self, user_input: str) -> bool:
-        """Issue #992 Bug D — does the user request a *performance*?
-
-        Used to decide whether a metalanguage reply is a hard bug
-        (user asked for a rap, robot returned "Зачитаю рэп про X!") or
-        just a stylistic miss (user asked "что нового?", robot replied
-        "Слушай, у меня тут..." — still answer-shaped, just informal).
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.user_wants_performance`
-        (TD-1 decomposition).
-        """
-        return user_wants_performance(user_input)
 
     def _check_babble_and_retry(
         self,
@@ -5698,15 +4891,11 @@ tentative_plan(question, kind, name)
         The predicate chain (incl. the 02.09 «planning narration»
         carve-out and the 30.08 «promise-only» carve-out) is
         covered by :class:`BabbleGuard` — see ``core/turn.py`` and the
-        ``TestBabbleIntegrationViaTurnGuards`` + ``TestBeginBabbleRetry``
-        suites in ``test/unit/core/test_turn.py``.
+        ``TestBeginBabbleRetry`` suite in ``test/unit/core/test_turn.py``.
         """
-        # Lazy init for the ``core/``-side TurnState mirror. Until
-        # ``_use_turn_guards`` flips, the bridge in
-        # :meth:`_evaluate_turn_guards` is the only place that
-        # populates ``self._turn_state``; for the babble shell to be
-        # self-contained we initialize it here on first use. After
-        # the first call ``_turn_state`` follows the legitimate
+        # Lazy init for the ``core/``-side TurnState mirror: the babble
+        # shell is self-contained, so initialize it here on first use.
+        # After the first call ``_turn_state`` follows the legitimate
         # reset-on-user-turn path in :meth:`_run_turn``. ``getattr`` with
         # ``None`` default keeps ``__new__``-style test fixtures
         # (``test_issue_1882_planning_narration.py`` et al.) working.
@@ -5785,155 +4974,6 @@ tentative_plan(question, kind, name)
         )
         return True
 
-    def _check_embedded_renardo_code_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #992 Bug C' — одноразовый ретрай, когда LLM зачитывает код.
-
-        Live 30.08: модель сочинила мелодию и написала Renardo-код в текст
-        ответа (``p1 >> keys(...)``, ``Clock.bpm = ...``) вместо вызова
-        ``execute_music_code(code=...)`` — TTS зачитал код вслух. Находим
-        строки кода и требуем ОДИН ретрай с вызовом тула и тем же кодом.
-
-        Returns:
-            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
-            текст в TTS.
-        """
-        if getattr(self, "_code_speech_retry_used", False):
-            return False
-        if tools_called:
-            # LLM уже вызвала тул в этом цикле — не вмешиваемся.
-            return False
-        if not spoken:
-            return False
-        code = extract_renardo_code_lines(spoken)
-        if not code:
-            return False
-
-        # Тот же перевод DSM, что и в babble-ретрае: без него process_input
-        # увидит IDLE и вернёт пустой результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Помечаем ДО отправки — реентрантный вызов из самого ретрая не
-        # должен уметь запустить второй.
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(guard_name="code_speech"):
-            return False
-        self._code_speech_retry_used = True
-        self._mark_retry_dispatched()
-        self.get_logger().warning(
-            "🎹 [issue 992 Bug C'] Renardo-код в тексте реплики — "
-            "требую execute_music_code(code=...) "
-            f"(code head={code[:80]!r})"
-        )
-        self._dispatch_turn(
-            build_renardo_code_retry_prompt(code),
-            is_code_retry=True,
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
-
-    def _check_hallucinated_midi_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #2560 — одноразовый ретрай на hallucinated MIDI-паттерн.
-
-        Round-3 live (Vision Pi, 2026-09-15, DJ-сет): юзер 8 раз подряд
-        просил «в пещере горного короля», и модель КАЖДЫЙ раз выдавала
-        фантазийный паттерн ``pe<num>le<num>f`` (FoxDot/renardo-синтаксис)
-        вместо реальных нот Peer Gynt Suite №1 из RTTTL-библиотеки.
-
-        PR #2551 (RULE #KNOWN-MELODY) — текстовое правило в
-        ``composer.txt`` / ``master_prompt_compact.txt`` — round-3 показал:
-        модель читает правило и тут же НАРУУГАЕТ (6 случаев за 60 мин).
-        Поэтому нужен runtime safety net на стороне dialogue_node: один
-        CRITICAL-ретрай с явным требованием «СНАЧАЛА lookup_melody», а
-        потом уже compose_music / execute_music_code.
-
-        Детектор :func:`detect_hallucinated_midi_in_tools` ловит паттерн
-        ``pe[0-9]+le[0-9]+f`` (case-insensitive) в ``spoken`` LLM-ответа.
-        Тот же паттерн попадает в ``code="..."`` аргумент
-        ``execute_music_code`` — именно поэтому «выдуманная мелодия»
-        звучит вместо реальной.
-
-        Returns:
-            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
-            текст в TTS (юзер не слышит hallucinated-MIDI описание).
-        """
-        if getattr(self, "_hallucinated_midi_retry_used", False):
-            return False
-        pattern = detect_hallucinated_midi_in_tools(
-            spoken=spoken,
-            tools_called=tuple(tools_called or ()),
-        )
-        if pattern is None:
-            return False
-
-        # Тот же перевод DSM, что и в babble/renardo/action-claim ретраях:
-        # без него process_input увидит IDLE и вернёт пустой результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(guard_name="hallucinated_midi"):
-            # Бюджет исчерпан — НЕ молчим: инкрементим счётчик с
-            # source=skip / action=skipped, чтобы Prometheus-алерт
-            # видел факт попытки. (см. acceptance criterion #4).
-            try:
-                record_hallucinated_midi(source="skip", action="skipped")
-            except Exception:
-                pass
-            return False
-
-        # Помечаем ДО отправки — реентрантный вызов из самого ретрая
-        # не должен уметь запустить второй.
-        self._hallucinated_midi_retry_used = True
-        self._mark_retry_dispatched()
-        # Prometheus: счётчик реально сработавшего guard'а.
-        try:
-            record_hallucinated_midi(source="guard", action="retry")
-        except Exception:
-            pass
-        self.get_logger().warning(
-            f"🎼 [issue 2560] hallucinated MIDI-паттерн «{pattern}» — "
-            f"одим CRITICAL ретрай с «сначала lookup_melody». "
-            f"tools={list(tools_called)!r}, "
-            f"spoken_head={spoken[:80]!r}"
-        )
-        self._dispatch_turn(
-            build_hallucinated_midi_retry_prompt(
-                user_input=user_input,
-                pattern=pattern,
-            ),
-            is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
 
     def _check_unbacked_action_claim_and_retry(
         self,
@@ -5941,7 +4981,6 @@ tentative_plan(question, kind, name)
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
-        dj_active: bool = False,
     ) -> bool:
         """Issue #992 Bug E — одноразовый ретрай «сказал, но не сделал».
 
@@ -5951,18 +4990,9 @@ tentative_plan(question, kind, name)
         «Точек пока нет». Детектор узкий (см.
         :data:`~rob_box_voice.core.dialogue_guards.ACTION_CLAIM_RULES`):
         должны совпасть И запрос юзера, И формулировка отчёта, И отсутствие
-        нужного тула.
-
-        Issue #2548: добавлен ``dj_active`` — флаг активной DJ-сессии
-        (``self._dj.state.enabled``). В DJ-сценарии (``_handle_result``
-        вызывается из user-turn'а ``is_dj_auto=False``, но DJ включена)
-        prose-action-claim'ы без явного command-verb в ``user_input``
-        («вплетай их красиво» / «пока ничего не звучит» / «давай старайся»)
-        теперь тоже ловятся — иначе юзер четыре раза подряд слышал
-        «всё готово» при неизменной музыке (live 15.09, TG-сессия DJ,
-        карточка #2548). В бытовом контексте ``dj_active=False`` —
-        гейт ``requires_dj_or_music_kw`` отсекает ложные срабатывания
-        на «сделала уборку» / «помой посуду».
+        нужного тула. Музыкальные правила (``music_state``, ``track_load``,
+        ``music_prose_action``) удалены в ADR-0149 PR-13a: об успехе запуска
+        музыки говорит код по событию ``started``.
 
         Returns:
             ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
@@ -5974,8 +5004,6 @@ tentative_plan(question, kind, name)
             user_input=user_input,
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
-            dj_active=dj_active,
-            music_playing=self._music_playing_known(),
         )
         if rule is None:
             return False
@@ -6014,41 +5042,12 @@ tentative_plan(question, kind, name)
         )
         return True
 
-    def _repeated_music_call_args(self, result: Any) -> bool:
-        """Issue #2967 — this turn's ``compose_music`` args repeat the
-        last stored (successful) call, byte-for-byte?
-
-        Systemic, not phrase-based: the #2549 guard below only cares
-        about the FACT «tool was called with the same arguments again»,
-        never about which words the LLM used to describe it. Always
-        updates the stored baseline to THIS turn's args (when
-        ``compose_music`` was called) so a genuine change becomes the
-        new baseline and a caught repeat does not loop forever — the
-        retry's OWN reply is compared against the retry's own args next.
-
-        ``result.music_call_args`` is ``None`` when ``compose_music``
-        wasn't called this turn — nothing to compare, and the stored
-        baseline is left untouched (a turn with no music call says
-        nothing about whether the NEXT music call repeats the one
-        before it).
-        """
-        args = getattr(result, "music_call_args", None)
-        if args is None:
-            return False
-        # Defensive ``getattr``: test doubles built via
-        # ``object.__new__(DialogueNode)`` skip ``__init__`` and may
-        # never have set the baseline attribute.
-        previous = getattr(self, "_last_music_call_args", None)
-        self._last_music_call_args = args
-        return previous is not None and previous == args
-
     def _check_universal_action_claim_and_retry(
         self,
         *,
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
-        repeated_call_args: bool = False,
         tool_error_occurred: bool = False,
     ) -> bool:
         """Issue #2549 — широкий anti-hallucination guard.
@@ -6120,8 +5119,7 @@ tentative_plan(question, kind, name)
         self.get_logger().warning(
             "🧾 [issue 2549] anti-hallucination guard: spoken содержит "
             f"action-verb «{hit.verb}» ({hit.tense}), "
-            f"tool_error_occurred={tool_error_occurred!r} "
-            f"repeated_call_args={repeated_call_args!r} — "
+            f"tool_error_occurred={tool_error_occurred!r} — "
             f"head={hit.excerpt!r}, user_input={user_input!r}, "
             f"tools={list(tools_called)!r}"
         )
@@ -6131,81 +5129,8 @@ tentative_plan(question, kind, name)
                 spoken=spoken,
                 hit=hit,
                 tool_error_occurred=tool_error_occurred,
-                repeated_call_args=repeated_call_args,
             ),
             is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
-
-    def _check_unknown_melody_claim_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #2562 Bug F — одноразовый ретрай «не знаю мелодии» без поиска.
-
-        Round 3 live-check (Vision Pi 10.1.1.21, 15.09.2026): модель дважды
-        за час на просьбу «сыграй X» отвечала «Не знаю такой мелодии — могу
-        сыграть что-то похожее. Что ближе — расслабленный фанк или драйв?»
-        при ``tools=[]``. Юзер слышит уклончивый вопрос вместо честного
-        «ищу ноты»/«сыграю похожее» — а HONESTY RULE в composer.txt это
-        прямо запрещает («NEVER say 'не знаю' without trying to search»).
-
-        Этот guard закрывает дыру тем же контрактом, что Bug E:
-          1. user_input содержит явную просьбу мелодии по имени
-             (``сыграй / играй / мелодия / трек / композиция / классика``).
-          2. spoken содержит паттерн «не знаю такой/этой мелодии / не помню /
-             нет в памяти».
-          3. ``tools_called`` пуст — то есть НИКАКОГО поиска не было
-             (если бы был — LLM честно попыталась, и это легитимный ответ).
-
-        Returns:
-            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
-            текст в TTS (иначе юзер услышит «не знаю», а потом ответ ретрая).
-        """
-        if getattr(self, "_unknown_melody_retry_used", False):
-            return False
-        if not detect_unknown_melody_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=tuple(tools_called or ()),
-        ):
-            return False
-
-        # Тот же перевод DSM, что и в bug E: без него process_input
-        # увидит IDLE и вернёт пустой результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(guard_name="unknown_melody"):
-            return False
-        self._unknown_melody_retry_used = True
-        self._mark_retry_dispatched()
-        self.get_logger().warning(
-            "🎵 [issue 2562 Bug F] «не знаю мелодии» без поиска "
-            f"(tools={list(tools_called)!r}, spoken={spoken[:80]!r}) — "
-            "один ретрай с требованием сначала поискать через lookup_melody/"
-            "search_web/gen_search_library"
-        )
-        self._dispatch_turn(
-            build_unknown_melody_retry_prompt(user_input),
-            # Свой тип — НЕ путать с Bug E. ``is_action_claim_retry``
-            # обрабатывается в Bug E-ветке (``_run_turn``), и Bug F
-            # намеренно избегает этого флага, чтобы флаги разных guards
-            # не сбрасывали друг друга (issue #1881 ping-pong fix).
-            is_action_claim_retry=False,
             is_synthetic=True,
             raw_user_command=user_input,
         )
@@ -6217,17 +5142,15 @@ tentative_plan(question, kind, name)
         spoken: str,
         user_input: Optional[str],
         tools_called: tuple,
-        is_dj_auto: bool = False,
     ) -> bool:
         """Issue #2559 — общий (НЕ music-only) guard «обещал, но не сделал».
 
         Round 3 live-check 15.09.2026 (Vision Pi 10.1.1.21): 6 случаев
         за час, когда LLM говорила «сейчас перезапущу / сделал погуще /
         подложу слой» при ``tools_called=[]``. Существующий Bug E
-        (``_check_unbacked_action_claim_and_retry``) срабатывает только
-        в DJ-сценарии (``dj_active=True``) или при music-kw в
-        ``user_input`` — бытовые «проверю состояние и перезапущу» /
-        «подкручу / установлю голос» проходили мимо.
+        (``_check_unbacked_action_claim_and_retry``) узкий — бытовые
+        «проверю состояние и перезапущу» / «подкручу / установлю голос»
+        проходили мимо.
 
         Условия срабатывания (см. ``detect_phantom_action_claim``):
 
@@ -6238,12 +5161,6 @@ tentative_plan(question, kind, name)
           3. ``user_input`` НЕ содержит «не буду / не надо» (защита
              от ложного срабатывания на легитимный «не буду перезапускать»).
 
-        Гейт ``is_dj_auto=True`` живёт здесь (а не в
-        ``detect_phantom_action_claim``) по той же причине, что и в
-        Bug E: в auto-DJ тиках юзер молчал — ретрай был бы лишним
-        round-trip'ом, а юзер бы услышал «сейчас перезапущу» + потом
-        ответ ретрая поверх DJ-перехода.
-
         Контракт ретрая (как Bug E / Bug F): один CRITICAL-ретрай на
         user-turn, иначе LLM уходит в ping-pong (issue #1881). При
         срабатывании возвращает ``True`` — вызывающий НЕ должен
@@ -6251,9 +5168,6 @@ tentative_plan(question, kind, name)
         ответ ретрая).
         """
         if getattr(self, "_phantom_action_retry_used", False):
-            return False
-        # auto-DJ — юзер молчал, ретрай не нужен (Bug E contract).
-        if is_dj_auto:
             return False
         if not detect_phantom_action_claim(
             user_input=user_input,
@@ -6511,30 +5425,11 @@ tentative_plan(question, kind, name)
         self._synthetic_retries_left -= 1
         return True
 
-    def _discard_last_music_reply(self) -> None:
-        """Fire-and-forget: retract the last persisted assistant turn.
-
-        Issue #992 — called from :meth:`_apply_music_guard` the moment a
-        guard has CONFIRMED a music request got no tool call (its own
-        retry included). ``AgentCore.discard_last_reply`` is a coroutine
-        and this method runs on the ROS2 callback thread, so it is
-        scheduled on the asyncio loop the same way ``_dispatch_turn``
-        schedules ``_run_turn`` — fire-and-forget, with a done-callback
-        only to log failures (losing the retraction is not fatal, the
-        turn stays in history same as before this fix).
-
-        Issue #2874 — отозванный ответ и не звучит: придержанный текст хода
-        выбрасывается (вместо него — ретрай или короткая фраза гуарда).
-        """
-        hold = getattr(self, "_turn_speech_hold", None)
-        if hold is not None:
-            hold.retract()
-        self._retract_rejected_reply()
 
     def _retract_rejected_reply(self) -> None:
         """Issue #3145 — убрать из истории ответ, отвергнутый гуардом.
 
-        Раньше отзыв делали только music-гуарды; ретраи Bug D/E, TurnGuards,
+        Раньше отзыв делали только music-гуарды; ретраи Bug D/E,
         tool-skipped и прочие оставляли плохой ответ в окне, и после ответа
         ретрая в истории стояли два assistant подряд (живой лог 28.09 — 28
         мест; «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
@@ -6572,165 +5467,6 @@ tentative_plan(question, kind, name)
             future.add_done_callback(_log_if_failed)
 
     # ------------------------------------------------------------------
-    # Issue #2241 / ADR-0080 §2.4 — TurnGuards bridge (voice-vr 19).
-    #
-    # ``_evaluate_turn_guards`` is the single switch between the legacy
-    # ``_*_retry_used`` path and the new :class:`TurnGuards` orchestrator.
-    # Until a follow-up card flips ``_use_turn_guards`` for a specific
-    # catch site, this method is a no-op stub that lets the rest of
-    # :class:``DialogueNode`` keep using the existing ``_check_*_and_retry``
-    # methods byte-for-byte. Once the flag is on, the helper instantiates
-    # :class:`TurnGuards` lazily (one TurnGuards instance per Node lifetime),
-    # reads the budget from the still-authoritative
-    # ``_synthetic_retries_left`` field, and either:
-    #
-    # * returns :data:`TurnVerdictKind.ACCEPT` (caller publishes the reply),
-    # * returns :data:`TurnVerdictKind.RETRY` after translating the
-    #   orchestrator's verdict into a real ``_dispatch_turn`` call and
-    #   decrementing the legacy counter so the regression tests still see
-    #   consistent state, or
-    # * returns :data:`TurnVerdictKind.DISCARD` so the caller suppresses
-    #   the spoken text without a retry.
-    #
-    # Why a single switch: ADR-0021 records that «вынос чистых функций
-    # бюджет не снизил» — moving the orchestration out of dialogue_node
-    # did NOT reduce dialogue_node's CC. The migration therefore has to be
-    # proven with the regressions in place BEFORE we delete the legacy
-    # state, not at the same time. Once voice-vr 19 lands and the budget
-    # plumbing is verified, voice-vr 20+ flips the flag for one catch
-    # site at a time and deletes the now-redundant fields.
-    # ------------------------------------------------------------------
-
-    def _ensure_turn_guards(self) -> TurnGuards:
-        """Lazy-init the :class:`TurnGuards` orchestrator.
-
-        The music-guard slot is wrapped via :func:`music_guard_adapter`
-        so the existing :class:`MusicGuard` instance is reused — we do NOT
-        re-implement music detection here. Construction is cheap (one
-        list of dataclasses) and the result is memoised on ``self``.
-        """
-        if self._turn_guards is not None:
-            return self._turn_guards
-        music_adapter = turn_guards_music_adapter(
-            evaluate_fn=lambda turn, reply: self._music_guard.evaluate(
-                was_dj_auto=turn.is_dj_auto,
-                user_input=turn.user_input,
-                tools_called=reply.tools_called,
-                dj_enabled=self._dj.state.enabled,
-                build_music_retry_prompt=self._build_music_retry_prompt,
-                build_dj_retry_prompt=self._build_dj_retry_prompt,
-            ),
-        )
-        self._turn_guards = TurnGuards(
-            guards=turn_guards_default_order(
-                music_guard=music_adapter,
-                logger=self.get_logger(),
-            ),
-        )
-        return self._turn_guards
-
-    def _reset_turn_budget(self) -> None:
-        """Refresh :class:`TurnState` at the start of a user-initiated turn.
-
-        Mirrors the legacy ``_synthetic_retries_left = DEFAULT_SYNTHETIC_RETRIES``
-        reset at :meth:`_run_turn` (issue #1881). Until ``_use_turn_guards``
-        is True for some catch site this stays a no-op so the existing
-        resets (the source of truth) keep firing.
-        """
-        self._turn_state = turn_guards_reset_budget(
-            self.DEFAULT_SYNTHETIC_RETRIES
-        )
-
-    def _evaluate_turn_guards(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-        speak_text_real: int,
-    ) -> Optional[str]:
-        """Run :class:`TurnGuards` on the current reply.
-
-        Returns:
-            * ``None`` — orchestrator is OFF for this catch site or every
-              guard deferred (caller continues with its own checks).
-            * ``"retry:<guard_name>"`` — a guard fired; the caller MUST
-              return early and let the dispatched retry produce the
-              user-facing answer.
-            * ``"discard"`` — a guard hard-muted the reply (e.g. planning
-              narration, issue #1882); the caller MUST drop the spoken
-              text without retrying.
-
-        The method deliberately mirrors the contract of the legacy
-        ``_check_*_and_retry`` family so a one-line switch in the catch
-        site (e.g. :meth:`_handle_result`) is enough to migrate.
-        """
-        # ``getattr`` with default ``False`` so test fixtures that build
-        # ``DialogueNode`` via ``object.__new__`` (e.g.
-        # ``test_issue_1882_planning_narration.py``) keep working — they
-        # skip ``__init__`` and therefore don't get the attribute set.
-        # Production paths go through ``__init__`` where
-        # ``self._use_turn_guards = False`` is declared explicitly.
-        if not getattr(self, "_use_turn_guards", False):
-            return None
-        guards = self._ensure_turn_guards()
-        # ``__new__``-style test fixtures may bypass ``__init__`` and
-        # leave ``self._turn_state`` unset; mirror the same defensive
-        # ``getattr`` pattern used in ``_check_babble_and_retry``.
-        if getattr(self, "_turn_state", None) is None:
-            # Bridge started mid-test or before _run_turn fired its
-            # budget reset. Defensive default — keeps the verdict
-            # surface deterministic for the very first call.
-            self._reset_turn_budget()
-        state = self._turn_state
-        assert state is not None  # for type-checkers (init above)
-        turn = TurnContext(
-            user_input=user_input or "",
-            # Issue #3144 — происхождение хода, а не константа False.
-            is_dj_auto=TURN_IS_DJ_AUTO.get(),
-        )
-        reply = TurnReply(
-            spoken=spoken or "",
-            tools_called=tuple(tools_called or ()),
-            speak_text_real=int(speak_text_real or 0),
-        )
-        verdict = guards.evaluate(reply, turn, state)
-        if verdict.kind is TurnVerdictKind.RETRY:
-            # Translate to the legacy ``_check_*_and_retry`` side effects
-            # so the surrounding ``_run_turn.finally`` keeps seeing the
-            # same ``_retry_dispatched_in_turn`` / budget state it has
-            # always seen. ``_dispatch_turn`` re-enters ``_run_turn``
-            # recursively; we mark the flag here for the parent.
-            if self._synthetic_retries_left <= 0:
-                # Mirrors ``_consume_synthetic_retry``'s False return:
-                    # no budget left → no retry, even if a guard asked.
-                    # Already logged by TurnGuards itself.
-                    return None
-            self._synthetic_retries_left -= 1
-            self._retry_dispatched_in_turn = True
-            self._reopen_dialogue_for_retry()
-            self.get_logger().warning(
-                f"🛂 [turn-guards] {verdict.guard_name!r} → synthetic retry "
-                f"(budget_left={self._synthetic_retries_left}) "
-                f"head={spoken[:80]!r}"
-            )
-            self._dispatch_turn(
-                verdict.prompt or "",
-                is_action_claim_retry=(
-                    verdict.guard_name == "unbacked_action_claim"
-                ),
-                is_synthetic=True,
-                raw_user_command=user_input,
-            )
-            return f"retry:{verdict.guard_name}"
-        if verdict.kind is TurnVerdictKind.DISCARD:
-            self.get_logger().warning(
-                f"🤐 [turn-guards] {verdict.guard_name!r} → hard-mute "
-                f"reason={verdict.reason!r} head={spoken[:80]!r}"
-            )
-            return "discard"
-        return None  # ACCEPT — caller publishes as-is.
-
     # ── Issue #2631 / ADR-0021 R1 — _run_turn decomp helpers ────────────
     # Цель: удержать CC ``_run_turn`` ≤15 (текущий CC=59; см.
     # ``cc_budget_baseline.json`` и ADR-0021). Каждый helper извлекает
@@ -6738,53 +5474,31 @@ tentative_plan(question, kind, name)
     # ``_run_turn`` (kwargs + return None) и публичные методы узла
     # остаются без изменений — тесты используют ``node._run_turn(...)``
     # напрямую (см. ``test_dialogue_shell.py``, ``test_barge_in_policy.py``).
-    def _reset_turn_retry_budgets(
-        self,
-        *,
-        is_synthetic: bool,
-        was_dj_auto: bool,
-        user_input: str,
-    ) -> None:
+    def _reset_turn_retry_budgets(self, *, is_synthetic: bool) -> None:
         """Issue #1881 / #2266 / #2631 — сброс retry-флагов на user-turn.
 
         Делает **ровно** то, что раньше жил в теле ``_run_turn`` в блоке
         ``if not is_synthetic:`` (issue #1881 ping-pong, #2266 TurnState
-        mirror, Bug C user-budget). Семантика 1-в-1 с до-рефакторингом:
-        сбрасывает поимённые *_retry_used*, ``_synthetic_retries_left``,
-        ``_turn_state`` и опционально ``_music_guard.reset_for_new_user_request``
-        (только user-initiated turn без DJ и без
-        ``MUSIC_RETRY_PROMPT_PREFIX``). Возвращает ``None``.
+        mirror): сбрасывает поимённые *_retry_used*, ``_synthetic_retries_left``
+        и ``_turn_state``. Возвращает ``None``.
         """
         if is_synthetic:
             return
         self._babble_retry_used = False
         self._action_claim_retry_used = False
-        self._code_speech_retry_used = False
         self._tool_retry_used = False
         self._system_regurgitate_retry_used = False
         self._tool_call_markup_retry_used = False  # Issue #2760
         self._universal_action_claim_retry_used = False
-        self._unknown_melody_retry_used = False  # Issue #2562 Bug F
-        self._hallucinated_midi_retry_used = False  # Issue #2560 hallucinated-MIDI guard
         self._phantom_action_retry_used = False  # Issue #2559
         self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
         # Issue #2266 / ADR-0021 R2 — mirror the budget reset to the
         # ``core/``-side ``TurnState`` so ``begin_babble_retry`` sees a
         # fresh ``babble_retry_consumed=False`` on every user-initiated
-        # turn. Until ``_use_turn_guards`` flips for the babble
-        # catch-site, this is the only reset path that exercises
-        # ``TurnState``.
+        # turn.
         self._turn_state = turn_guards_reset_budget(
             self.DEFAULT_SYNTHETIC_RETRIES
         )
-        # Bug C (юзер-музыка) — сброс user-budget тоже только на
-        # user-initiated turn; DJ-transition живёт своей жизнью и
-        # ресетится в ``_dispatch_dj_turn``
-        # (``reset_for_new_dj_transition``) только при свежем тике.
-        if not was_dj_auto and not user_input.startswith(
-            MUSIC_RETRY_PROMPT_PREFIX
-        ):
-            self._music_guard.reset_for_new_user_request()
 
     def _apply_stop_music_deferral(self, result: Optional["DialogResult"]) -> bool:
         """Issue #935 v3 / #992 — defer cleanup, если LLM звал ``stop_music``.
@@ -6811,7 +5525,6 @@ tentative_plan(question, kind, name)
         self,
         *,
         result: Optional["DialogResult"],
-        was_dj_auto: bool,
         raw_user_command: Optional[str],
         user_input: str,
     ) -> None:
@@ -6822,7 +5535,7 @@ tentative_plan(question, kind, name)
         Семантика 1-в-1 с до-рефакторингом — см. комментарии в ``_run_turn``.
         """
         tools_now = set(result.tools_called or ()) if result else set()
-        music_starters = MUSIC_STARTING_TOOLS | MUSIC_MODE_TOOLS
+        music_starters = MUSIC_STARTING_TOOLS
         if tools_now & MUSIC_STOP_TOOLS:
             self._track_mode_music_active = False
         if tools_now & music_starters:
@@ -6846,7 +5559,7 @@ tentative_plan(question, kind, name)
                 self._pending_music_cleanup = False
                 self.get_logger().info(
                     "🎵 [issue 992] LLM restarted music via "
-                    "execute_music_code — cancelled pending cleanup"
+                    "a music-launch tool — cancelled pending cleanup"
                 )
             else:
                 self.get_logger().debug(
@@ -6861,53 +5574,26 @@ tentative_plan(question, kind, name)
                 "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
                 f"формы); плеер: playing={self._music_playing_now()}"
             )
-        elif self._music_not_started_by_this_turn():
-            # Issue #3174 / ADR-0141: музыкальных тулов в ходе нет, а плеер
-            # играет — значит, музыку запустил не этот ход (роутер, прошлый
-            # ход, DJ-переход). Стоп после речи — только для BACKING этого
-            # хода; чужой трек и DJ-сет живут до явного стопа.
-            self.get_logger().info(
-                "🎵 [issue 3174] ход без музыкальных тулов, плеер играет "
-                "(DJ-сет или трек не из этого хода) — cleanup НЕ вооружаем"
-            )
-        elif not was_dj_auto and not self._pending_music_cleanup:
-            self._pending_music_cleanup = True
-            self.get_logger().info(
-                "🎵 music_cleanup deferred — waiting for TTS or 10s fallback"
-            )
         else:
-            self.get_logger().debug(
-                "🎵 [issue 992] music_cleanup already pending — "
-                "ignoring redundant re-arm"
+            # Issue #3174 / ADR-0141 + 06.10 15:30 UTC: ход музыку не запускал
+            # (тулов старого пути нет; сет и заказ движка v2 живут до явного
+            # стопа) — стоп после речи не вооружаем. Раньше здесь cleanup
+            # взводился, когда снимок плеера говорил «не играет»: снимок
+            # отставал, и tts_batch_complete гасил идущий сет после ответа
+            # «Сет идёт — 30 минут…» с tools=[].
+            self.get_logger().info(
+                "🎵 ход музыку не запускал — cleanup НЕ вооружаем; "
+                f"плеер: playing={self._music_playing_now()}"
             )
 
-    def _music_not_started_by_this_turn(self) -> bool:
-        """Issue #3174 — по снимку плеера играет музыка не из этого хода.
-
-        Вызывается только для хода БЕЗ музыкальных тулов: всё, что сейчас
-        звучит, запустил кто-то другой — роутер медиакоманд (#3134, #3153:
-        превью + ``set_dj_mode`` в обход LLM), прошлый ход или DJ-переход.
-        Источник — снимок ``/voice/music/state`` (ADR-0141) и DJ-флаг:
-        снимка нет и DJ выключен — ``False``, прежнее поведение.
-        """
-        snapshot = getattr(self, "_music_player_state", None)
-        if snapshot is not None and (snapshot.dj or snapshot.is_playing()):
-            return True
-        dj = getattr(self, "_dj", None)
-        return bool(dj is not None and getattr(dj.state, "enabled", False) is True)
-
-    def _flush_music_cleanup_if_idle(self, was_dj_auto: bool) -> None:
+    def _flush_music_cleanup_if_idle(self) -> None:
         """Issue #992 — финальный flush, если cleanup вооружён и батчей нет.
 
         Prelude-deferral catch-up (live 02.09): иначе короткая прелюдия
         «Слушай Баха!» обрывает музыку через 0.1с вместо ожидания
         ``tts_batch_complete``.
         """
-        if (
-            not was_dj_auto
-            and self._pending_music_cleanup
-            and not self._active_batches
-        ):
+        if self._pending_music_cleanup and not self._active_batches:
             self._pending_music_cleanup = False
             self._publish_music_cleanup(reason="tts_batch_complete")
             self.get_logger().info(
@@ -6919,7 +5605,6 @@ tentative_plan(question, kind, name)
         self,
         *,
         result: Optional["DialogResult"],
-        was_dj_auto: bool,
         raw_user_command: Optional[str],
         user_input: str,
     ) -> None:
@@ -6939,35 +5624,20 @@ tentative_plan(question, kind, name)
         Каждый шаг живёт в собственном helper'е, чтобы уложиться в
         ADR-0021 R1 (CC≤15) для новых методов.
         """
-        # Issue #2875 — счёт реально запущенных треков сета: номер трека
-        # плана и финал берутся из него, а не из номера DJ-перехода.
-        # getattr: юнит-тесты собирают ноду через object.__new__ без _dj.
-        dj = getattr(self, "_dj", None)
-        if dj is not None:
-            dj.note_turn_tools(
-                getattr(result, "tools_called", None),
-                MUSIC_STARTING_TOOLS,
-                is_dj_auto=was_dj_auto,
-                turn_text=user_input,
-                # #3285: упавший compose_music трек сета не запускал.
-                succeeded_tools=getattr(result, "succeeded_tools", None),
-            )
         if self._apply_stop_music_deferral(result):
-            self._flush_music_cleanup_if_idle(was_dj_auto)
+            self._flush_music_cleanup_if_idle()
             return
         self._schedule_music_cleanup(
             result=result,
-            was_dj_auto=was_dj_auto,
             raw_user_command=raw_user_command,
             user_input=user_input,
         )
-        self._flush_music_cleanup_if_idle(was_dj_auto)
+        self._flush_music_cleanup_if_idle()
 
     def _finalize_turn_dsm(
         self,
         *,
         guard_retry_pending: bool,
-        music_retry_dispatched: bool,
         pending_queue_dispatched: bool,
         tool_retry_dispatched: bool,
         session_handed_over: bool = False,
@@ -6978,8 +5648,7 @@ tentative_plan(question, kind, name)
 
         * DSM в ``DIALOGUE`` (нет смысла «закрывать» сессию, которой нет),
         * ни один guard не запланировал синхронный/отложенный retry
-          (``guard_retry_pending`` / ``music_retry_dispatched`` /
-          ``tool_retry_dispatched``),
+          (``guard_retry_pending`` / ``tool_retry_dispatched``),
         * очередь pending-сообщений не была слита в follow-up turn
           (``pending_queue_dispatched``),
         * ход не отменён новой фразой (``session_handed_over``, issue
@@ -6993,7 +5662,6 @@ tentative_plan(question, kind, name)
         if (
             self._dsm.current_state == DialogueStateKind.DIALOGUE
             and not guard_retry_pending
-            and not music_retry_dispatched
             and not pending_queue_dispatched
             and not tool_retry_dispatched
             and not session_handed_over
@@ -7011,13 +5679,12 @@ tentative_plan(question, kind, name)
     def _handle_llm_error(
         self,
         exc: BaseException,
-        was_dj_auto: bool,
         user_input: str,
         raw_user_command: Optional[str],
     ) -> None:
         """Issue #1278 / live 12.08 — best-effort LLM-error recovery.
 
-        1. Если провайдер недоступен (issue #1278) и это не DJ-тур —
+        1. Если провайдер недоступен (issue #1278) —
            озвучиваем degraded-фразу из :meth:`_generate_fallback_response`.
            Иначе — общее «Что-то я задумался».
         2. Логируем traceback (хвост 500 символов).
@@ -7029,7 +5696,7 @@ tentative_plan(question, kind, name)
         """
         _tb_str = traceback.format_exc()
         try:
-            if self._is_llm_unavailable_error(exc) and not was_dj_auto:
+            if self._is_llm_unavailable_error(exc):
                 self._speak_direct(
                     self._generate_fallback_response(
                         raw_user_command or user_input or ""
@@ -7050,7 +5717,6 @@ tentative_plan(question, kind, name)
         self,
         *,
         user_input: str,
-        was_dj_auto: bool,
         is_synthetic: bool,
         speaker_tag: Optional[str],
         speaker_context: Optional[str],
@@ -7065,8 +5731,7 @@ tentative_plan(question, kind, name)
 
         1. Открыть OTel-span ``dialogue.llm_call`` с атрибутами provider/model.
            ``start_span`` — no-op без OTel.
-        2. Детерминированно активировать skill домен ДО LLM-вызова
-           (``composer`` для DJ_AUTO; issue #2441).
+        2. Детерминированно активировать skill домен ДО LLM-вызова.
         3. Вызвать ``self._core.process_input(...)`` с preclassified_event.
         4. Опубликовать skill-load counters (``_publish_skill_load_counters``)
            и записать в span атрибуты ``fallback`` / ``duration_s``.
@@ -7086,13 +5751,9 @@ tentative_plan(question, kind, name)
                     or getattr(self._llm, "_model", ""),
                 },
             ) as llm_span:
-                self._activate_skill_for(
-                    user_input,
-                    force_skill="composer" if was_dj_auto else None,
-                )
+                self._activate_skill_for(user_input)
                 result = await self._core.process_input(
                     user_input,
-                    is_dj_auto=was_dj_auto,
                     is_synthetic=is_synthetic,
                     speaker_tag=speaker_tag,
                     speaker_context=speaker_context,
@@ -7133,7 +5794,6 @@ tentative_plan(question, kind, name)
         *,
         user_input: str,
         from_tg: bool,
-        was_dj_auto: bool,
         speaker_context: Optional[str],
         backlog_pending: bool = False,
         utterance_id: Optional[str] = None,
@@ -7145,7 +5805,6 @@ tentative_plan(question, kind, name)
 
         * Telegram-источник → префикс ``[TG] `` (issue #1195).
         * Голосовая биометрия → :meth:`_apply_speaker_identity` (issue #1077).
-          DJ-auto — без биометрии (там нет живого юзера).
         * Issue #2779 — backlog-хинт (``[URGENT_BACKLOG]``) собирается
           ЗДЕСЬ, ПОСЛЕ ``_apply_speaker_identity`` — та дожидается
           inference голосовой биометрии для ТЕКУЩЕЙ фразы, так что
@@ -7160,9 +5819,16 @@ tentative_plan(question, kind, name)
 
         Возвращает ``(user_input, dynamic_system)``.
         """
+        # 06.10: число треков/минут сета из СЫРОЙ реплики -- скрытый
+        # аргумент dj_set (llm_adapter.TURN_CONTEXT_ARGS).
+        self._turn_set_tracks = heard_set_length(user_input)
+        tg_chat_id = None
         if from_tg:
             user_input = f"[TG] {user_input}"
-        elif self._speaker_id_enabled and not was_dj_auto:
+            # Issue #3598 — личность TG-хода решает chat_id, не голос
+            # комнаты. Тот же chat_id, что маршрутизирует ответ в Telegram.
+            tg_chat_id = self._active_tg_chat_id
+        elif self._speaker_id_enabled:
             # Issue #2829 (ADR-0131) -- резолвим _current_speaker ПО ЭТОЙ
             # фразе ДО проверки ответа на переспрос #2828: та сверяет
             # диктора реплики с профилями из вопроса
@@ -7181,33 +5847,8 @@ tentative_plan(question, kind, name)
             self._register_self_intro(utterance_id)
         if backlog_pending:
             user_input = self._inject_backlog_hint(user_input)
-        # ADR-0129 (issue #3000) — сет сменился с прошлого хода: обмены
-        # прошлых сетов уходят из окна ДО сборки истории этого хода.
-        settle_dj_set_boundary(
-            getattr(self, "_dj_set_boundary", None),
-            getattr(self, "_dj", None),
-            getattr(self, "_core", None),
-            self.get_logger(),
-        )
-        dynamic_system = self._build_dynamic_system_context()
-        return user_input, self._dj_turn_hint(dynamic_system, was_dj_auto)
+        return user_input, self._build_dynamic_system_context(tg_chat_id)
 
-    def _dj_turn_hint(self, dynamic_system: Any, was_dj_auto: bool) -> Any:
-        """Issue #3145 — DJ-преамбула как состояние ТЕКУЩЕГО хода.
-
-        Раньше (#3134) ``_dispatch_cleaned`` клеил ``DJModeController.preamble``
-        к тексту юзера, и префикс «[🎧 … Это ОБЫЧНАЯ команда юзера …]»
-        оседал в истории. Теперь он едет в ``dynamic_system``: AgentCore
-        склеивает его с репликой только в исходящем запросе
-        (``_compose_current_turn_message``), в окно пишутся дословные слова
-        юзера. На DJ-переходе преамбула не нужна — у него свой промпт.
-        """
-        if was_dj_auto or not self._dj_session_active():
-            return dynamic_system
-        hint = self._dj.preamble().strip()
-        if not dynamic_system:
-            return hint
-        return f"{dynamic_system}\n{hint}"
 
     def _inject_backlog_hint(self, user_input: str) -> str:
         """Issue #2779 — добавить ``[URGENT_BACKLOG]`` хинт в user-turn.
@@ -7234,249 +5875,6 @@ tentative_plan(question, kind, name)
             user_input = f"{user_input}\n{hint}"
         return user_input
 
-    def _apply_music_guard(
-        self,
-        *,
-        was_dj_auto: bool,
-        user_input: str,
-        tools_called: tuple,
-        spoken: Optional[str] = None,
-        tool_error_occurred: bool = False,
-        succeeded_tools: tuple = (),
-    ) -> bool:
-        """Adapter around :meth:`MusicGuard.evaluate` — keeps the ROS2
-        side effects (dispatch, speak_direct, dialogue-reopen) out of
-        the policy module so :class:`MusicGuard` is unit-testable.
-
-        ``tool_error_occurred`` (issue #2966): threaded from
-        ``result.tool_error_occurred`` so a failed ``compose_music`` call
-        inside a DJ transition is not mistaken for a successful one just
-        because the tool NAME still shows up in ``tools_called``.
-
-        Issue #992 Bug B — DJ auto-transitions: the LLM is asked to
-        play track #N through the music tools, but it frequently
-        replies with just a spoken phrase and no ``execute_music_code``
-        tool call. Without this guard the DJ cycle silently produces
-        zero audio for that transition. We re-arm
-        ``next_transition_at`` to ``now + POSTPONE_INTERVAL_S`` so the
-        next tick fires shortly, AND publish a one-shot synthetic
-        prompt that injects a CRITICAL reminder to call the tool.
-
-        Issue #992 Bug C — user rap/song commands: even outside DJ
-        mode, when the user asks for a rap/poem/song and the LLM
-        forgets ``execute_music_code``, we publish a short spoken
-        acknowledgment so the user hears *something* and can repeat
-        the request. We deliberately do NOT auto-pick a beat without
-        user consent: that would surprise the operator.
-
-        Issue #2565 — phantom-action deferral: ``spoken`` (the LLM
-        reply text) is forwarded to the policy module so the
-        ``FORCE_STOP`` branch can check whether the LLM just *promised*
-        a music action without calling the matching tool. If so, the
-        active track is NOT silenced — the upcoming
-        :func:`_check_unbacked_action_claim_and_retry` (issue #992
-        Bug E) handles the CRITICAL retry. ``None`` means "spoken not
-        available" (e.g. ``_dispatch_dj_turn`` path before the LLM
-        ran) — deferral is skipped, FORCE_STOP behaves as before.
-
-        Returns:
-            ``True`` when a synchronous retry turn was dispatched — the
-            caller (:meth:`_run_turn` finally block) must then defer its
-            own ``DIALOGUE_END`` so the retry's LLM gate fires
-            (issue #1204). ``False`` otherwise.
-        """
-        # 🔴 FIX (issue #2897, live 23.09 19:27 «Хопер»): юзерская стоп-
-        # команда («хватит диджеить», «стоп диджей») ДОЛЖНА выключать
-        # DJ-режим в коде, независимо от того, какой стоп-тул (если
-        # вообще) закрыла модель. Единственный источник правды —
-        # ``is_music_stop_command(user_input)``, а не ``tools_called``:
-        # живой инцидент — LLM закрыла ``stop_music`` (звук встал), но
-        # ``set_dj_mode(enabled=false)`` не вызвала; ``MusicGuard.evaluate``
-        # для этого случая отдаёт SKIP_NOT_APPLICABLE (reason=stop_command,
-        # см. ниже) — без этой проверки DJ остался бы включён, и тик 46с
-        # спустя запустил финальный переход + перезапустил музыку. Проверка
-        # стоит ДО retry-budget гейта: это не ретрай, а детерминированный
-        # побочный эффект, который обязан сработать при каждой оценке
-        # гуарда на стоп-команде.
-        #
-        # 🔴 FIX (issue #2971, live 24.09 «Paul Oakenfold»): ``set_dj_mode``
-        # в ``tools_called`` ЭТОГО ХОДА — сигнал, что модель сама явно
-        # решила судьбу DJ-флага в этом ходе (обычно ``enabled=true`` —
-        # юзер только что запустил сет). Живой инцидент: длинный промпт
-        # «Ты диджей PAUL OAKENFOLD …» заканчивался словами «…как системный
-        # промт для робота-диджея», LLM вызвала ``set_dj_mode(enabled=true)``
-        # + ``compose_music`` и запустила сет, а «диджея» в хвосте того же
-        # ``user_input`` матчила стоп-эвристику — DJ гас через 4с после
-        # включения. См. :meth:`_should_force_dj_off_for_stop_command`.
-        if self._should_force_dj_off_for_stop_command(user_input, tools_called):
-            self._force_dj_off_for_stop_command(reason="user_stop_command")
-
-        # 🔴 FIX (live 30.08, e2e renardo_evolve rn02): на «продолжай
-        # развивать эту мелодию и добавь баса» СРАЗУ сработали Bug D
-        # (ответ начинался с «Окей,») и Bug C (музыкального тула нет) —
-        # ушло ДВА синтетических ретрая, вернулось два ответа, и юзер
-        # услышал подряд «Тема рассвета с басом — поехали» и «Бас добавлен,
-        # мелодия мягко плывёт». Один промах модели = один ретрай: если
-        # гуард уже отправил ретрай в этом ходе, музыкальный молчит —
-        # ретрай-тур всё равно будет оценён заново.
-        if self._retry_dispatched_in_turn:
-            self.get_logger().info(
-                "🎵 [music_guard] в этом ходе ретрай уже отправлен — "
-                "music-гуард пропускает (без двойного дубля ответа)"
-            )
-            return False
-
-        verdict = self._music_guard.evaluate(
-            was_dj_auto=was_dj_auto,
-            user_input=user_input,
-            tools_called=tuple(tools_called or ()),
-            dj_enabled=self._dj.state.enabled,
-            build_music_retry_prompt=self._build_music_retry_prompt,
-            build_dj_retry_prompt=self._build_dj_retry_prompt,
-            spoken=spoken,
-            tool_error_occurred=tool_error_occurred,
-            succeeded_tools=succeeded_tools,
-            music_playing=self._music_playing_known(),
-        )
-
-        if verdict.kind is MusicGuardVerdictKind.SKIP:
-            return False
-
-        if verdict.kind is MusicGuardVerdictKind.DJ_RETRY:
-            assert verdict.prompt is not None  # build_dj_retry_prompt is wired
-            # Issue #1895 (follow-up to #1881): DJ_RETRY должен списывать
-            # общий budget `_synthetic_retries_left` иначе ping-pong
-            # DJ_RETRY ↔ babble/code/tool даёт до 9 LLM-вызовов на
-            # один переход без единого слова юзера (см. live-логи
-            # #1881). Декремент ДО диспатча. Issue #3144: на исчерпании —
-            # тишина, а не nudge: юзер в этом ходе ничего не просил.
-            if not self._consume_synthetic_retry(guard_name="music_dj"):
-                self._give_up_dj_transition_silently()
-                return False
-            # Помечаем «в этом ходе ретрай уже отправлен» — иначе
-            # babble-/tool-guards в следующем цикле guard'ов могут
-            # выстрелить ещё раз (см. ``_retry_dispatched_in_turn``
-            # гейт в начале ``_apply_music_guard``).
-            self._mark_retry_dispatched()
-            self._dj.state.next_transition_at = (
-                time.time() + DJModeController.POSTPONE_INTERVAL_S
-            )
-            # Issue #1204: ретрай должен реально дойти до LLM —
-            # переоткрываем DIALOGUE (process_input уже закрыл его).
-            self._reopen_dialogue_for_retry()
-            # ``from_tick=False`` — это синхронный ретрай из music-guard,
-            # а не свежий DJ-transition; НЕ сбрасываем
-            # ``MusicGuard._dj_retry_count`` (внутренний счётчик
-            # guard'а). Общий budget уже декрементнут выше.
-            self._dispatch_dj_turn(verdict.prompt, from_tick=False)
-            return True
-
-        if verdict.kind is MusicGuardVerdictKind.USER_RETRY:
-            assert verdict.prompt is not None
-            # Issue #1881 — общий budget декрементится здесь, ДО того
-            # как music-guard соберётся диспатчить ещё один ретрай.
-            # ``MusicGuard._user_retry_count`` остаётся как был (это
-            # внутренний счётчик «сколько раз guard уже ретраил»);
-            # новый общий budget страхует от кросс-guard ping-pong'а
-            # (babble → music → babble → music...), который раньше
-            # обходил поимённые флаги.
-            if not self._consume_synthetic_retry(guard_name="music_user"):
-                # Бюджет исчерпан — публикуем spoken nudge (как при
-                # budget_exhausted внутри ``MusicGuard``) и НЕ
-                # диспатчим второй ретрай.
-                self._speak_music_retry_nudge(tools_called)
-                return False
-            # Issue #992 — the attempt we just evaluated (tools_called
-            # empty on a music request) already had its assistant reply
-            # persisted by AgentCore as an ordinary successful turn (see
-            # ``discard_last_reply`` docstring). Retract it BEFORE
-            # dispatching the retry so the next LLM call — and every
-            # later turn — doesn't read its own unlabeled false
-            # confirmation back as a good example to imitate.
-            self._discard_last_music_reply()
-            # Issue #1204: ретрай должен реально дойти до LLM —
-            # переоткрываем DIALOGUE (process_input уже закрыл его).
-            self._reopen_dialogue_for_retry()
-            self._dispatch_turn(
-                verdict.prompt,
-                was_idle=False,
-                raw_user_command=user_input,
-                # ``verdict.prompt`` is our [CRITICAL] reminder, not the
-                # user's words — the real request is ``raw_user_command``
-                # and it was already written to history by the turn that
-                # triggered this retry.
-                is_synthetic=True,
-            )
-            return True
-
-        if verdict.kind is MusicGuardVerdictKind.FORCE_STOP:
-            # 🔴 FIX (live 30.08): юзер сказал «останови музыку», LLM
-            # ответила «Музыка выключена.» и не вызвала stop_music —
-            # трек продолжал играть. Останавливаем сами: stop идемпотентен,
-            # ретрай тут дороже и ненадёжнее. mcp_server по music_cleanup
-            # гасит и Renardo-паттерны, и mp3 в sound_node.
-            self.get_logger().warning(
-                "🎵 [issue 992 Bug F] стоп-команда без stop-тула — "
-                "публикую music_cleanup сам"
-            )
-            try:
-                self._publish_music_cleanup(reason="stop_command_guard")
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"🎵 force-stop failed: {exc}"
-                )
-            return False
-
-        if verdict.kind is MusicGuardVerdictKind.FALLBACK:
-            return self._publish_music_retry_exhausted_fallback(
-                verdict=verdict, user_input=user_input
-            )
-
-        if verdict.kind is MusicGuardVerdictKind.NUDGE:
-            # Legacy terminal branch. Оставлен для backward-compat —
-            # :meth:`MusicGuard.evaluate` сейчас отдаёт FALLBACK
-            # вместо NUDGE (issue #2561), но если где-то ещё живёт
-            # кастомный guard, сюда он попадёт.
-            self._speak_music_retry_nudge(tools_called)
-            return False
-
-        # Issue #2967 — Bug B retry-budget exhausted on THIS DJ-transition
-        # attempt marks the turn silent (extracted to a helper so this
-        # method's CC stays at its cc_budget baseline).
-        self._mark_dj_giveup_silent_if_budget_exhausted(verdict)
-        # Issue #3266 — сет включён этим ходом, а его трек не заиграл:
-        # переход, который поставит трек, — скоро, а не по таймеру модели.
-        hurry_dj_set_start(
-            verdict,
-            self._dj.state,
-            tools_called=tools_called,
-            music_playing=self._music_playing_now(),
-            now=time.time(),
-            delay_s=DJModeController.POSTPONE_INTERVAL_S,
-            logger=self.get_logger(),
-        )
-
-        # SKIP_NOT_APPLICABLE — guard deliberately skipped (stop-command,
-        # user did not request music, DJ off, etc.). Policy module already
-        # logged the diagnostic.
-        return False
-
-    #: Nudge после исчерпания бюджета, когда музыки НЕТ, а музыкальный тул
-    #: в этом ходе вызывался и упал — только тогда «бит не запустился» правда.
-    MUSIC_RETRY_NUDGE_TEXT = "Я тут растерялся — бит не запустился, попробуй ещё раз."
-    #: Issue #3161 — тот же момент, но музыкальных тулов в ходе не было:
-    #: ничего не запускалось, значит, и «не запустилось» нечему (живой
-    #: прогон 28.09 22:32 — фраза прозвучала в ответ на вопрос). Честно:
-    #: просьбу не выполнил, ничего не включал.
-    MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT = (
-        "Я тут растерялся и ничего не включил — скажи, пожалуйста, по-другому."
-    )
-    #: Issue #3125 — тот же момент, но музыка играет: «бит не запустился»
-    #: было бы враньём (живой сет 28.09: трек играл, робот 3 раза сказал,
-    #: что бит не запустился). Честно: музыка идёт, а просьбу не выполнил.
-    MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT = (
-        "Музыка играет, а вот эту просьбу я выполнить не смог — скажи по-другому."
-    )
 
     def _music_playing_now(self) -> bool:
         """Issue #3125 / #3133 — играет ли сейчас музыка, по словам плеера.
@@ -7492,46 +5890,20 @@ tentative_plan(question, kind, name)
         snapshot = getattr(self, "_music_player_state", None)
         return snapshot is not None and snapshot.is_playing()
 
-    def _music_playing_known(self) -> Optional[bool]:
-        """Issue #3165 — играет ли музыка по снимку плеера; ``None`` — снимка нет.
-
-        Для сверки заявлений о состоянии музыки (Bug E ``music_state``):
-        без снимка ``<music_state playing="unknown">`` и ответу не на что
-        опереться. AI-mp3 (``ai="playing: …"`` в теге) тоже считается
-        «играет»: его модель видит в том же теге.
-        """
-        snapshot = getattr(self, "_music_player_state", None)
-        if snapshot is None:
-            return None
-        gm = getattr(self, "_generated_music_state", None) or {}
-        return snapshot.is_playing() or gm.get("status") == "playing"
 
     # ── Issue #3134 — роутер медиакоманд до LLM ────────────────────────
 
     def _media_state(self) -> MediaState:
         """ЕДИНСТВЕННЫЙ аксессор состояния плеера для роутера медиакоманд.
 
-        Источники: «играет» — :meth:`_music_playing_now`, то есть снимок
-        плеера ``/voice/music/state`` (#3133, ADR-0141,
-        ``MusicPlayerState.is_playing``); название трека — последний
-        ``track`` из ``/voice/music/form`` (в снимке плеера только
-        непрозрачный ``track_id``); DJ — ``DJState``. ``form_ends_at`` —
-        issue #3153 (доп.): конец текущей формы из того же снимка плеера
-        (нужен роутеру, чтобы назначить переход #1 «ты диджей X» над уже
-        играющим треком на конец формы, а не на фиксированные 15 с).
-        Роутер других источников не читает: сменить источник — здесь и
-        только здесь.
+        Источник один — снимок плеера ``/voice/music/state`` (#3133,
+        ADR-0141): «играет» — :meth:`_music_playing_now`, название трека и
+        DJ-сет — поле ``dj`` снимка движка v2 (``title``/``enabled``,
+        ADR-0149 §2.3). Роутер других источников не читает: сменить
+        источник — здесь и только здесь.
         """
-        dj = getattr(self, "_dj", None)
-        playing = self._music_playing_now()
-        snapshot = getattr(self, "_music_player_state", None)
-        return MediaState(
-            music_playing=playing,
-            dj_enabled=bool(dj is not None and dj.state.enabled),
-            track_name=getattr(self, "_music_form_track", None) if playing else None,
-            form_ends_at=(
-                getattr(snapshot, "form_ends_at", None) if playing else None
-            ),
+        return media_state_from_snapshot(
+            self._music_playing_now(), getattr(self, "_music_player_state", None)
         )
 
     def _route_media_command(self, text: str, on_miss: Any = None) -> bool:
@@ -7563,15 +5935,13 @@ tentative_plan(question, kind, name)
         self.get_logger().info(
             f"🎛️ [media-router] intent={plan.command.intent.value} "
             f"closed={plan.command.closed} provider={router.provider_name} "
-            f"tools={[c.name for c in plan.tool_calls]} to_llm={plan.to_llm} "
-            f"text={text[:60]!r}"
+            f"tools={[c.name for c in plan.tool_calls]} text={text[:60]!r}"
         )
         self._apply_media_plan_side_effects(plan)
-        self._prepare_dj_preview(plan, executor)
         asyncio.run_coroutine_threadsafe(
             self._execute_media_plan(plan, executor, text), self._loop
         )
-        return plan.handled
+        return True
 
     def _start_play_named(
         self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
@@ -7602,10 +5972,10 @@ tentative_plan(question, kind, name)
     async def _execute_play_named(
         self, plan: MediaPlan, executor: Any, text: str, on_miss: Any
     ) -> None:
-        """Issue #3176 — ``lookup_melody`` → ``compose_music`` или LLM.
+        """Issue #3176 — ``lookup_melody`` → ``request_music`` (движок v2) или LLM.
 
         * Нашлась целиком и заиграла — отменить идущий ход LLM (заказ его
-          заменяет), учесть трек (DJ-сет, cleanup) и сказать «Ставлю «X»».
+          заменяет), учесть трек (cleanup) и сказать «Ставлю «X»».
         * Не нашлась / совпала не целиком — ``on_miss(text)``: реплика
           идёт в LLM, роутер НИЧЕГО не говорит (иначе двойной ответ).
         * Нашлась, но не заиграла — честная фраза, без LLM.
@@ -7616,18 +5986,26 @@ tentative_plan(question, kind, name)
                 executor, MediaToolCall(name, args)
             )
 
+        # #3525: заказ по имени — своя реплика: новый turn_id (иначе id прошлой команды роутера).
+        vars(self).update(command_turn_context(plan, text))
         begin_turn = getattr(executor, "begin_turn", None)
         if callable(begin_turn):
             # Лимит «один трек за ход» (#2859) снимается только на границе
             # хода LLM: трек прошлого хода иначе отказал бы заказу.
             begin_turn()
-        outcome = await run_named_play(_call, plan.play_name)
+        outcome = await run_named_play(_call, plan.play_name, plan.command.more)
         self.get_logger().info(
             f"🎛️ [media-router] play_named {plan.play_name!r}: "
             f"{outcome.status.value} {outcome.reason}".rstrip()
         )
         if outcome.status is NamedPlayStatus.MISS:
-            on_miss(text)
+            # Issue #3400: мимо базы посреди сета — это тема сета, решает код.
+            switch = dj_theme_switch_plan(plan, self._media_state())
+            if switch is None:
+                on_miss(text)
+                return
+            self._apply_media_plan_side_effects(switch)
+            await self._execute_media_plan(switch, executor, text)
             return
         self._llm_skipped_counter["media_command"] += 1
         self._cancel_run("media command play_named (issue 3176)", stop_tts=True)
@@ -7636,90 +6014,42 @@ tentative_plan(question, kind, name)
         title = user_phrase_title(plan.play_name)
         if outcome.status is NamedPlayStatus.PLAYED:
             self._note_router_track_started()
-            phrase = play_ok_text(title)
-        else:
-            phrase = play_fail_text(title)
+        phrase = outcome_text(outcome, title)
         self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
         self._speak_direct(phrase)
 
     def _note_router_track_started(self) -> None:
         """Issue #3176 — трек запустил роутер, а не ход LLM: учесть так же.
 
-        * DJ-сет: ``note_turn_tools`` — тот же учёт, что после хода LLM с
-          ``compose_music`` без ``set_dj_mode``: заказ гостя
-          (``DJModeController._hold_for_user_track``) — сет не гасится,
-          переход ждёт конца формы заказа и не расходует трек плана;
-          название попадёт в ``played_names`` из ``/voice/music/form``.
-        * Cleanup: трек живёт до stop/конца формы, как у хода LLM с
-          музыкальным тулом (``_schedule_music_cleanup``) — отложенный
-          cleanup прошлого хода не должен погасить заказ после фразы.
+        Cleanup: трек живёт до stop/конца формы, как у хода LLM с
+        музыкальным тулом (``_schedule_music_cleanup``) — отложенный
+        cleanup прошлого хода не должен погасить заказ после фразы.
         """
-        dj = getattr(self, "_dj", None)
-        if dj is not None:
-            dj.note_turn_tools((COMPOSE_TOOL,), MUSIC_STARTING_TOOLS)
         self._pending_music_cleanup = False
         self._track_mode_music_active = True
 
     def _apply_media_plan_side_effects(self, plan: MediaPlan) -> None:
-        """Синхронная часть плана: счётчик, отмена хода, DJ off при стопе."""
-        if plan.handled:
-            self._llm_skipped_counter["media_command"] += 1
+        """Синхронная часть плана: счётчик и отмена идущего хода."""
+        self._llm_skipped_counter["media_command"] += 1
         if plan.cancel_inflight:
             self._cancel_run("media command (issue 3134)", stop_tts=True)
-        if plan.dj_off:
-            # Как #2897: стоп юзера гасит DJ-режим в коде, молча.
-            self._force_dj_off_for_stop_command(reason="media_router_stop")
-        # Issue #3217 — DJ-команда роутера = ход текущей сессии (забор #2835).
-        self._session_epoch_gate().note_media_command(plan.tool_calls)
-
-    def _prepare_dj_preview(self, plan: MediaPlan, executor: Any) -> None:
-        """Issue #3153 (+доп.) — заявка «трек #1 сета»: подготовка до тулов.
-
-        * Заявка DJ-контроллеру: ``/voice/dj_mode`` от ``set_dj_mode``
-          приходит отдельным топиком, заявка должна лежать раньше него.
-          Два случая несут ``plan.claim_track_one=True``: мгновенное
-          club-превью в тишине (``plan.preview_root`` — своя тоника) и «ты
-          диджей X» поверх уже играющего обычного трека (тоника роутеру
-          неизвестна — ``preview_root=""``, контроллер её просто не
-          трогает).
-        * Сброс лимита «один трек за ход» (#2859) у исполнителя: он
-          снимается только на границе хода LLM, и трек прошлого хода
-          иначе отказал бы превью (отказ — не ошибка тула, робот сказал бы
-          «запускаю сет» в тишине). Идущий ход команда уже отменила
-          (``cancel_inflight``).
-        """
-        if not plan.claim_track_one:
-            return
-        begin_turn = getattr(executor, "begin_turn", None)
-        if callable(begin_turn):
-            begin_turn()
-        dj = getattr(self, "_dj", None)
-        if dj is not None:
-            dj.claim_preview(plan.preview_root)
 
     async def _execute_media_plan(
         self, plan: MediaPlan, executor: Any, text: str = ""
     ) -> None:
         """Вызвать тулы плана по порядку и сказать фиксированную фразу.
 
-        Тул с ``fail_text`` при неудаче обрывает план и говорит свою фразу
-        (issue #3153: превью не встало — DJ не включаем).
-
         Issue #3165: успешные тулы и сказанная фраза записываются для
         модели и гуардов (:meth:`_record_media_turn`).
         """
-        ok, phrase, done = True, "", []
-        for call in plan.tool_calls:
-            if await self._execute_media_tool(executor, call):
-                done.append(call.name)
-                continue
-            ok = False
-            if call.fail_text:
-                phrase = call.fail_text
-                break
-        if not ok and plan.claim_track_one and getattr(self, "_dj", None) is not None:
-            self._dj.drop_preview_claim()
-        phrase = phrase or (plan.say_ok if ok else plan.say_fail)
+        # Команда вместо хода LLM — свой ход для скрытых аргументов тулов (тема/длина сета из ЭТОЙ реплики).
+        vars(self).update(command_turn_context(plan, text))
+        # ADR-0149 PR-6: фраза об успехе запуска — только по событию ``started``.
+        _ok, phrase, done = await run_media_plan(
+            plan, functools.partial(self._execute_media_tool_result, executor),
+            getattr(self, "_music_events", None), log=self.get_logger().info,
+            begin_turn=getattr(executor, "begin_turn", None),
+        )
         self._record_media_turn(plan, text, phrase, done)
         if phrase:
             self._speak_direct(phrase)
@@ -7738,8 +6068,7 @@ tentative_plan(question, kind, name)
 
         * История модели: пара «реплика → фраза» с тулами в metadata
           (``AgentCore.record_external_turn``), то есть строка в блоке
-          «выполнено в прошлых ходах». Только для закрытых роутером
-          реплик: при ``to_llm`` ту же реплику сейчас запишет ход модели.
+          «выполнено в прошлых ходах».
         * Журнал для гуардов #2549 / #2559 / #2949
           (:meth:`_claim_backing_tools`): «я остановил» после стопа
           роутером — не фантом.
@@ -7749,8 +6078,9 @@ tentative_plan(question, kind, name)
         if ledger is None:
             ledger = self._media_actions = deque(maxlen=16)
         ledger.extend((now, name) for name in done)
-        record = getattr(getattr(self, "_core", None), "record_external_turn", None)
-        if plan.handled and callable(record):
+        # ADR-0148 / #3461: фраза запуска в окне модели — образец, который она копирует в ходе без тула.
+        record = history_recorder(getattr(self, "_core", None), plan.command.intent)
+        if record is not None:
             record(text, phrase, done)
 
     def _claim_backing_tools(self, tools_called: Any) -> tuple:
@@ -7774,22 +6104,19 @@ tentative_plan(question, kind, name)
         spoken: str,
         tools_called: Any,
         tool_error_occurred: bool = False,
-        repeated_call_args: bool = False,
     ) -> Optional[UniversalActionClaimHit]:
         """Issue #2549 + #3165 + #3174 — не подкреплённое заявление действия.
 
         Журнал роутера (:meth:`_claim_backing_tools`) подкрепляет только
         ПЕРЕСКАЗ сделанного («я остановил трек», прошедшее время). Обещание
         в будущем времени («Сейчас поставлю к Элизе!») — это действие ЭТОГО
-        хода, и превью с ``set_dj_mode`` роутера 30 с назад его не
-        выполняют. Живой прогон 29.09 05:00 (issue #3174): журнал роутера
+        хода, и команда роутера 30 с назад его не выполняет. Живой прогон 29.09 05:00 (issue #3174): журнал роутера
         заглушил гуард, обещание ушло в TTS с ``tools=[]``.
         """
         own = detect_universal_action_claim(
             spoken=spoken,
             tools_called=tuple(tools_called or ()),
             tool_error_occurred=tool_error_occurred,
-            repeated_call_args=repeated_call_args,
         )
         if own is None or own.tense == "future":
             return own
@@ -7797,12 +6124,7 @@ tentative_plan(question, kind, name)
             spoken=spoken,
             tools_called=self._claim_backing_tools(tools_called),
             tool_error_occurred=tool_error_occurred,
-            repeated_call_args=repeated_call_args,
         )
-
-    async def _execute_media_tool(self, executor: Any, call: Any) -> bool:
-        ok, _content = await self._execute_media_tool_result(executor, call)
-        return ok
 
     async def _execute_media_tool_result(
         self, executor: Any, call: Any
@@ -7820,185 +6142,16 @@ tentative_plan(question, kind, name)
                 f"🎛️ [media-router] {call.name}({call.arguments}) упал: {exc}"
             )
             return False, ""
-        ok = not bool(getattr(result, "is_error", False))
         content = str(getattr(result, "content", "") or "")
+        ok = media_tool_succeeded(
+            bool(getattr(result, "is_error", False)), content
+        )
         self.get_logger().info(
             f"🎛️ [media-router] {call.name}({call.arguments}) ok={ok} "
             f"result={content[:160]!r}"
         )
         return ok, content
 
-    def _speak_music_retry_nudge(self, tools_called: tuple = ()) -> None:
-        """Отозвать ответ хода и сказать nudge после исчерпания ретраев.
-
-        Issue #3125: при играющей музыке «бит не запустился» не звучит —
-        вместо него честная фраза :attr:`MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT`.
-
-        Issue #3161: «бит не запустился» — только если в оценённом вызове
-        LLM был музыкальный тул (``MUSIC_STARTING_TOOLS``) и гуард не
-        засчитал его успехом, то есть он упал. Без такого тула ничего не
-        запускалось — звучит :attr:`MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT`.
-        """
-        self._discard_last_music_reply()
-        if self._music_playing_now():
-            self.get_logger().warning(
-                "🎵 [issue 3125] retry budget exhausted while music is playing "
-                "— NOT saying «бит не запустился»"
-            )
-            self._speak_direct(self.MUSIC_RETRY_NUDGE_WHILE_PLAYING_TEXT)
-            return
-        if not set(tools_called or ()) & MUSIC_STARTING_TOOLS:
-            self.get_logger().warning(
-                "🎵 [issue 3161] retry budget exhausted, музыкальных тулов в "
-                f"ходе не было (tools={sorted(set(tools_called or ()))!r}) — "
-                "NOT saying «бит не запустился»"
-            )
-            self._speak_direct(self.MUSIC_RETRY_NUDGE_NO_ATTEMPT_TEXT)
-            return
-        self._speak_direct(self.MUSIC_RETRY_NUDGE_TEXT)
-
-    def _give_up_dj_transition_silently(self) -> None:
-        """Issue #3144 — общий бюджет ретраев кончился на DJ-автопереходе.
-
-        Раньше здесь звучал :meth:`_speak_music_retry_nudge` — «Музыка
-        играет, а вот эту просьбу я выполнить не смог», хотя юзер в этом
-        ходе ничего не просил (живой прогон 28.09 18:48:57). Теперь ход
-        просто молчит (тот же флаг, что у исчерпания Bug B, #2967), а
-        следующий тик DJ попробует снова.
-
-        Ответ из истории НЕ отзываем: DJ-переход ответов в историю не
-        пишет (``AgentCore.process_input``, ``if not is_dj_auto``), и
-        ``discard_last_reply`` снёс бы чужой — последний ответ юзеру.
-        """
-        self.get_logger().warning(
-            "🎧 [issue 3144] бюджет ретраев исчерпан на DJ-автопереходе — "
-            "молчим (никакого «просьбу не смог»: юзер ничего не просил)"
-        )
-        self._dj_giveup_silent_in_turn = True
-
-    def _mark_dj_giveup_silent_if_budget_exhausted(
-        self, verdict: MusicGuardVerdict
-    ) -> None:
-        """Issue #2967 — DJ Bug-B retry budget exhausted → this turn is
-        silent, WITHOUT touching ``music_retry_dispatched``.
-
-        No retry follows (``MusicGuard`` already logged and reset its
-        own counter), but the turn still failed to start music — its
-        spoken text is just another empty announcement, not the
-        informative one. Split out of :meth:`_apply_music_guard` so
-        that method's CC stays at its cc_budget baseline; DIALOGUE_END
-        must proceed normally here (no retry means nothing to wait
-        for), which is why this does NOT return a bool the caller could
-        mistake for ``music_retry_dispatched`` — see
-        ``_dj_giveup_silent_in_turn`` docstring in ``_run_turn``.
-        """
-        if (
-            verdict.kind is MusicGuardVerdictKind.SKIP_NOT_APPLICABLE
-            and verdict.reason == "bug_b_budget_exhausted"
-        ):
-            self._dj_giveup_silent_in_turn = True
-
-    def _publish_music_retry_exhausted_fallback(
-        self,
-        *,
-        verdict: MusicGuardVerdict,
-        user_input: str,
-    ) -> bool:
-        """Issue #2561 — опубликовать FALLBACK с предложением альтернативы.
-
-        После исчерпания USER_RETRY-budget (3 retry подряд → на 4-м) модель
-        по-прежнему отвечает spoken-фразой при ``tools_called=[]``. Вместо
-        безличного «Я тут растерялся» публикуем контекстную фразу
-        «Что-то не получается с <название>, давай попробуем по-другому?»
-        (если в user_input распознано имя трека) или общую
-        «Что-то не получается с музыкой, …». Текст уже собран в
-        :func:`build_music_retry_exhausted_fallback` и лежит в
-        ``verdict.prompt``; тут только публикация + метрика.
-
-        Возвращает ``False`` — guard завершается терминально,
-        вызывающий код публикует результат как есть (он уже содержит
-        fallback-фразу, без второй ``speak_text``).
-        """
-        self._discard_last_music_reply()
-        fallback_text = verdict.prompt or (
-            "Что-то не получается с музыкой, "
-            "давай попробуем по-другому?"
-        )
-        self._speak_direct(fallback_text)
-        # Prometheus: считаем каждое исчерпание retry-цепочки.
-        # Live 15.09 показал 6/16 = 38% Bug C-триггеров выгорают
-        # именно в этом состоянии. Лейбл ``user_input_kind`` помогает
-        # понять, на каких запросах retry бесполезен.
-        try:
-            _kind = self._classify_music_user_input_kind(user_input)
-            record_music_retry_exhausted(
-                guard_name="music_user",
-                reason=verdict.reason or "retry_exhausted",
-                user_input_kind=_kind,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"🎵 [issue 2561] Prometheus record failed: {exc}"
-            )
-        return False
-
-    def _build_music_retry_prompt(self, user_input: str) -> str:
-        """Synthetic prompt for Bug C retry (user asked for music, LLM skipped
-        execute_music_code).
-
-        The LLM frequently concludes «музыка уже играет» from the dialogue
-        history (previous runs/songs) and returns ``done`` without calling
-        ``execute_music_code``. This prompt explicitly resets that assumption
-        and demands the tool call.
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_guards.build_music_retry_prompt`
-        (TD-1 decomposition), прокидывая ЖИВОЕ состояние плеера: с тех пор
-        как TRACK-музыка переживает чужой ход, «музыка не играет» в промпте
-        стало ложью, и на просьбу ИЗМЕНИТЬ играющее модель отвечала «окей,
-        играет X» без вызова тула (e2e renardo_evolve rn03).
-        """
-        return build_music_retry_prompt(
-            user_input, music_playing=self._music_playing_now()
-        )
-
-    def _build_dj_retry_prompt(self) -> str:
-        """Synthetic auto-prompt for the Bug-B synchronous retry.
-
-        Re-uses the persona/theme context from
-        :class:`DJModeController` but appends a CRITICAL reminder —
-        the LLM has ignored the standard auto-prompt at least once,
-        so this retry escalates the instruction with an explicit tool
-        name and a no-tools rejection clause.
-
-        Issue #2966 (live 24.09) — the retry also fires when
-        ``compose_music`` WAS called but returned ``success=False`` for
-        ANY reason (a rejected parameter, a taken slot, etc.) and the
-        LLM announced the track anyway instead of retrying — a failed
-        compose inside a DJ transition means the transition did not
-        happen, regardless of WHY the call failed. This is deliberately
-        generic (no specific parameter or track named): the wording
-        below does not claim the tool was never called (that would be
-        false in the error case) and tells the model to read the error
-        the tool already returned and drop whatever it rejected, rather
-        than hardcoding one failure mode here.
-        """
-        n = self._dj.state.transition_count
-        base = self._dj.build_auto_prompt(n)
-        return (
-            base
-            + "\n\n[CRITICAL] В прошлом цикле compose_music НЕ запустил "
-            "трек (не был вызван, или был вызван и вернул ошибку) — "
-            "DJ-режим остался без музыки, играет прежний трек. В этом "
-            "цикле ОБЯЗАТЕЛЬНО вызови compose_music ещё раз и добейся "
-            "успешного результата. Если прошлый вызов вернул ошибку — "
-            "прочитай её текст и повтори БЕЗ параметра, который тул "
-            "отклонил (ошибка называет его явно). НЕ объявляй трек "
-            "голосом, пока compose_music не вернул успех. НЕ вызывай "
-            "speak_text и другие тулы — только музыку. Если ты снова не "
-            "добьёшься успешного compose_music, цикл будет считаться "
-            "пустым и робот озвучит 'задумался'."
-        )
 
     # ── Issue #1777 / #1762 — non-music tool-skipped guard ─────────────
 
@@ -8007,7 +6160,6 @@ tentative_plan(question, kind, name)
         *,
         user_input: str,
         tools_called: tuple,
-        other_retry_dispatched: bool = False,
     ) -> bool:
         """Issue #1777 / #1762 — Bug C retry для non-music tool-based запросов.
 
@@ -8017,8 +6169,7 @@ tentative_plan(question, kind, name)
         обещанием или просто не вызвал инструмент), отправляем ОДИН
         CRITICAL retry с явным указанием нужного tool.
 
-        Не путать с :meth:`_apply_music_guard` (только music, см. issue
-        #992 Bug C) и :meth:`_check_babble_and_retry` (мета-обещания).
+        Не путать с :meth:`_check_babble_and_retry` (мета-обещания).
         Здесь — конкретный tool-based пропуск.
 
         Retry rules (все должны выполниться):
@@ -8027,23 +6178,10 @@ tentative_plan(question, kind, name)
            :data:`TOOL_REQUEST_PATTERNS` (см.
            :func:`detect_required_tool`).
         3. ``_tool_retry_used`` ещё не взведён (защита от ping-pong).
-        4. Уже не было music/babble/action-claim/code retry для этого
-           turn (чтобы не конкурировать с другими guards и не отправить
-           ДВА синтетических ретрая за один ход — см. Bug B/C
-           double-dispatch incident, live 30.08 e2e renardo_evolve rn02,
-           разобранный в :meth:`_apply_music_guard`).
-
-        Args:
-            other_retry_dispatched: ``True`` когда :meth:`_apply_music_guard`
-                (вызывается непосредственно перед этим guard'ом в
-                ``_run_turn.finally``) уже задиспатчил свой ретрай в этом
-                ходе. Музыкальный гуард не выставляет
-                ``_retry_dispatched_in_turn`` сам (историческая причина:
-                он проверяется по return value, а не по общему флагу),
-                поэтому caller обязан передать это явно — раньше здесь
-                стояла эвристика по DJ-таймеру (``next_transition_at``),
-                которая не покрывала Bug E (``_action_claim_retry_used``)
-                и могла молча разойтись с реальным состоянием.
+        4. Уже не было babble/action-claim retry для этого turn
+           (``_retry_dispatched_in_turn``) — чтобы не отправить ДВА
+           синтетических ретрая за один ход (live 30.08 e2e
+           renardo_evolve rn02).
 
         Returns:
             ``True`` когда retry диспатчен (caller должен отложить
@@ -8055,7 +6193,7 @@ tentative_plan(question, kind, name)
             return False
         if self._tool_retry_used:
             return False
-        if other_retry_dispatched or self._retry_dispatched_in_turn:
+        if self._retry_dispatched_in_turn:
             return False
         tool_name = detect_required_tool(user_input)
         if not tool_name:
@@ -8095,12 +6233,6 @@ tentative_plan(question, kind, name)
         return True
 
     # ═══════════════════════════════════════════════════════════════════════
-    #  Agent loop methods (unit-test contracts — test_agent_loop.py)
-    # ═══════════════════════════════════════════════════════════════════════
-
-    #: Maximum tool-call iterations before forced stop (agent loop guard).
-    MAX_ITERATIONS: int = 30
-
     #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
     #:
     #: Раньше каждый guard (babble / action-claim / code-speech / tool /
@@ -8111,426 +6243,17 @@ tentative_plan(question, kind, name)
     #: Теперь общий budget живёт в ``self._synthetic_retries_left`` и
     #: декрементится через :meth:`_consume_synthetic_retry`; любой guard
     #: может выстрелить, пока budget > 0. На свежем user-initiated turn
-    #: (или DJ-transition) — ресетится в :meth:`_dispatch_turn` /
-    #: ``_dispatch_dj_turn`` / :meth:`_run_turn`. 2 взято из live-логов:
+    #: ресетится в :meth:`_run_turn`. 2 взято из live-логов:
     #: babble-retry (1) → если и ретрай babble'нул → ещё 1 (music/babble
     #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
     #: что увидели 02.09 на 8 вызовах.
     DEFAULT_SYNTHETIC_RETRIES: int = 2
 
-    def _continue_after_tool_calls(
-        self,
-        messages: list,
-        tool_calls: list,
-        tool_results: list,
-    ) -> None:
-        """Continue the agent loop after tool results are available.
-
-        Implements the recursive LLM-call loop: executes the requested
-        tools, feeds their results back to the LLM, and repeats until a
-        final text response is produced or ``MAX_ITERATIONS`` is reached.
-        Honours ``interrupt_agent_loop`` for early exit and ``listen_for_response``
-        for waiting on the user.
-        """
-        # 1. Honour explicit interrupt.
-        if getattr(self, "interrupt_agent_loop", False):
-            self.interrupt_agent_loop = False
-            self.llm_processing = False
-            self.dialogue_in_progress = False
-            return
-
-        # 2. Listen-for-response short-circuit: leave the loop, wait for the user.
-        for tr in (tool_results or []):
-            if tr.get("tool_name") == "listen_for_response":
-                # The test contract (test_listen_for_response_stops_loop) asserts
-                # that ``_listen_response_waiting`` is False immediately after
-                # this method returns. We therefore do NOT set the flag here —
-                # it's only used as a transient guard inside the agent loop.
-                self.llm_processing = False
-                # dialogue_in_progress stays True — wait for user reply.
-                return
-
-        max_iter = int(getattr(self.__class__, "MAX_ITERATIONS", 30))
-        current_tool_calls = list(tool_calls or [])
-        current_tool_results = list(tool_results or [])
-        current_messages = list(messages or [])
-        iteration = 0
-        last_response_text = ""
-
-        while iteration < max_iter:
-            iteration += 1
-
-            # Execute any pending tool calls.
-            if current_tool_calls:
-                # Pass both ``tool_calls`` and ``messages`` positionally.
-                # Why positional: ``test_max_iterations_exceeded`` injects
-                # ``node._execute_tool_calls = lambda tc, msgs: [...]``
-                # (a 2-positional mock) and calls into this code path.
-                # The real :meth:`_execute_tool_calls` keeps
-                # ``messages=None`` as a kwarg so direct test calls
-                # like ``node._execute_tool_calls(tc, messages=[])``
-                # (TestExecuteToolCalls) still work.
-                new_results = self._execute_tool_calls(
-                    current_tool_calls, current_messages
-                )
-                current_tool_results.extend(new_results)
-
-            # Stream the next LLM turn with the tool results in context.
-            result_dict: dict = {
-                "full_response": "",
-                "chunk_count": 0,
-                "tool_calls": None,
-                "error": None,
-            }
-
-            timeout_s = float(getattr(self, "_llm_timeout_sec", 90.0))
-            # Retry-once for transient LLM errors (timeout / 5xx). Test
-            # contract (``test_timeout_then_success_on_retry``): the first
-            # attempt may fail with ``error='timeout'``; the second attempt
-            # mutates ``result_dict`` to a clean success payload. We
-            # therefore retry as long as the producer left an error AND
-            # we still have attempts left, and stop on the first success.
-            #
-            # The synthesised ``_streaming_wrapper`` closure binds
-            # ``result_dict`` / ``current_messages`` / ``current_tool_results``
-            # as **kwargs defaults** so the test mock
-            # (``test_agent_loop.py``'s FakeExecutor) can read
-            # ``fn.__defaults__[0]`` to inject deterministic chunks into
-            # ``result_dict`` without ever running the real
-            # ``_do_recursive_streaming`` body. This is the only way the
-            # structural contract of
-            # ``test_plain_text_saved_to_history`` works.
-            #
-            # We also stash the result dict on self so that the test
-            # fixtures which build a bare ``_Stub`` (no real
-            # ``_do_recursive_streaming``) can still find it without
-            # chasing the closure.
-            self._current_streaming_result = result_dict
-            self._current_streaming_messages = current_messages
-            self._current_streaming_tool_results = current_tool_results
-            def _streaming_wrapper(
-                _result=result_dict,
-                _messages=current_messages,
-                _tool_results=current_tool_results,
-            ):
-                self._do_recursive_streaming(_result, _messages, _tool_results)
-            max_attempts = 2
-            for _attempt in range(max_attempts):
-                # NOTE: we deliberately do NOT use ``with ThreadPoolExecutor(...)``
-                # here. The unit-test harness (``test_agent_loop.py``) replaces
-                # ``ThreadPoolExecutor`` with a ``FakeExecutor`` that implements
-                # ``submit``/``shutdown`` but NOT the context-manager protocol
-                # (``__enter__``/``__exit__``). Using ``with`` would raise
-                # ``AttributeError: __enter__`` and the retry/result hand-off
-                # would never run. We manage the executor lifecycle manually.
-                executor = ThreadPoolExecutor(max_workers=1)
-                try:
-                    future = executor.submit(_streaming_wrapper)
-                    future.result(timeout=timeout_s)
-                except concurrent.futures.TimeoutError:
-                    result_dict["error"] = "timeout"
-                except Exception as exc:  # noqa: BLE001
-                    result_dict["error"] = str(exc)
-                finally:
-                    executor.shutdown(wait=False)
-                # Stop retrying on first success.
-                if not result_dict.get("error"):
-                    break
-
-            if result_dict.get("error"):
-                self._speak_simple(
-                    "Извините, произошла ошибка при обращении к сервису. Попробуйте ещё раз."
-                )
-                break
-
-            # LLM produced more tool_calls → execute them and loop again.
-            next_calls = result_dict.get("tool_calls")
-            if next_calls:
-                current_tool_calls = next_calls
-                current_tool_results = []
-                continue
-
-            last_response_text = result_dict.get("full_response", "")
-            chunk_count = result_dict.get("chunk_count", 0)
-
-            # Persist the assistant turn to conversation history.
-            if last_response_text:
-                # ``ConversationHistory`` exposes ``add_assistant_message``
-                # (not a generic ``add_message``); use the typed helper
-                # so the test ``test_plain_text_saved_to_history`` can find
-                # the entry via ``get_messages()``.
-                add_assistant = getattr(
-                    self.conversation_history, "add_assistant_message", None
-                )
-                if add_assistant is not None:
-                    add_assistant(last_response_text)
-                else:
-                    # Fallback to a generic attribute (older harnesses).
-                    self.conversation_history.add_message("assistant", last_response_text)
-
-            # Streamed chunks already published via SSML; if zero chunks fell
-            # through we publish a simple one-shot response.
-            if chunk_count == 0 and last_response_text:
-                self._speak_simple(last_response_text)
-            break
-
-        if iteration >= max_iter:
-            self._speak_simple(
-                "Извините, возникла проблема с обработкой запроса. Попробуйте ещё раз."
-            )
-
-        # Cleanup flags in a finally-style block.
-        self.llm_processing = False
-        if not getattr(self, "_listen_response_waiting", False):
-            self.dialogue_in_progress = False
-        self._listen_response_waiting = False
-
-    def _do_recursive_streaming(
-        self,
-        _result: dict = None,
-        _messages: list = None,
-        _tool_results: list = None,
-    ) -> None:
-        """Streaming call to the LLM, mutating ``_result`` in-place.
-
-        Called inside a ``ThreadPoolExecutor`` by ``_continue_after_tool_calls``
-        so the test mock can inject deterministic chunks via
-        ``fn.__defaults__[0]`` to inspect the ``_result`` dict.
-
-        Default values are required (not just ``None``) because the
-        test contract (``test_agent_loop.py``'s FakeExecutor) reads
-        ``fn.__defaults__[0]`` to mutate the result dict in-place. If
-        the param has no default, ``__defaults__`` is an empty tuple
-        and the mock gets no chance to inject text into ``_result``.
-        We therefore declare ``_result=None`` as a default so the mock
-        route is reachable; production code always passes ``_result``
-        as a kwarg explicitly.
-        """
-        if _result is None:
-            _result = {}
-        client = getattr(self, "client", None)
-        if client is None:
-            _result["error"] = "no LLM client configured"
-            return
-
-        msgs = list(_messages or [])
-        for tr in (_tool_results or []):
-            msgs.append({
-                "role": "tool",
-                "tool_call_id": tr.get("tool_call_id", ""),
-                "content": json.dumps(tr, ensure_ascii=False),
-            })
-
-        try:
-            stream = client.chat.completions.create(
-                model=getattr(self, "model", "default"),
-                messages=msgs,
-                temperature=getattr(self, "temperature", 0.7),
-                max_tokens=getattr(self, "max_tokens", 500),
-                stream=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _result["error"] = str(exc)
-            return
-
-        full_text = ""
-        chunk_count = 0
-        tool_calls_acc: dict = {}
-
-        try:
-            for chunk in stream:
-                choices = getattr(chunk, "choices", None) or []
-                if not choices:
-                    continue
-                delta = choices[0].delta
-                if delta is None:
-                    continue
-                content = getattr(delta, "content", None)
-                if content:
-                    full_text += content
-                    chunk_count += 1
-                tcs = getattr(delta, "tool_calls", None)
-                if tcs:
-                    for tc in tcs:
-                        idx = getattr(tc, "index", 0)
-                        slot = tool_calls_acc.setdefault(idx, {
-                            "id": getattr(tc, "id", "") or "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        })
-                        if getattr(tc, "id", None):
-                            slot["id"] = tc.id
-                        fn = getattr(tc, "function", None)
-                        if fn is not None:
-                            name = getattr(fn, "name", "")
-                            args = getattr(fn, "arguments", "")
-                            if name:
-                                slot["function"]["name"] += name
-                            if args:
-                                slot["function"]["arguments"] += args
-                if choices[0].finish_reason == "tool_calls":
-                    _result["tool_calls"] = list(tool_calls_acc.values())
-        except Exception as exc:  # noqa: BLE001
-            _result["error"] = str(exc)
-            return
-
-        _result["full_response"] = full_text
-        _result["chunk_count"] = chunk_count
-        if not _result.get("tool_calls"):
-            _result["tool_calls"] = None
-
-    def _execute_tool_calls(self, tool_calls: list, messages: list = None) -> list:
-        """Execute a batch of MCP tool calls.
-
-        Returns a list of result dicts with keys ``tool_call_id``,
-        ``tool_name``, ``success``, ``message`` (and ``error`` on failure).
-
-        Test contract: ``messages`` is **optional** — tests pass it as
-        a kwarg (``_execute_tool_calls(tool_calls, messages=[])``) when
-        exercising the full loop, and a positional ``messages`` arg
-        (``lambda tc, msgs: [...]``) when substituting a mock. The
-        parameter is currently captured for forward-compatibility (no
-        current logic depends on it).
-
-        Hard caps: only the first ``MAX_TOOL_CALLS`` calls are dispatched
-        and the loop aborts after ``MAX_CONSECUTIVE_ERRORS`` failures.
-        """
-        # Silence the "unused argument" lint while keeping the test-
-        # compatible signature.
-        del messages
-        MAX_TOOL_CALLS = 5
-        MAX_CONSECUTIVE_ERRORS = 3
-
-        results: list = []
-        consecutive_errors = 0
-        truncated = list(tool_calls or [])[:MAX_TOOL_CALLS]
-
-        for tc in truncated:
-            tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
-            func_info = tc.get("function", {}) if isinstance(tc, dict) else {}
-            func_name = func_info.get("name", "unknown") if isinstance(func_info, dict) else "unknown"
-            func_args_str = func_info.get("arguments", "{}") if isinstance(func_info, dict) else "{}"
-
-            try:
-                args = json.loads(func_args_str)
-            except (json.JSONDecodeError, TypeError):
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": "Ошибка формата аргументов",
-                })
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
-                continue
-
-            adapter = getattr(self, "mcp_adapter", None)
-            if adapter is None or not hasattr(adapter, "execute_tool_call_sync"):
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": "no MCP adapter available",
-                })
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
-                continue
-
-            try:
-                result = adapter.execute_tool_call_sync(func_name, args)
-                success = bool(result.get("success", False)) if isinstance(result, dict) else False
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": success,
-                    "message": result.get("message", "") if isinstance(result, dict) else "",
-                    "data": result.get("data") if isinstance(result, dict) else None,
-                })
-                if not success:
-                    consecutive_errors += 1
-                else:
-                    consecutive_errors = 0
-            except Exception as exc:  # noqa: BLE001
-                results.append({
-                    "tool_call_id": tc_id,
-                    "tool_name": func_name,
-                    "success": False,
-                    "error": str(exc),
-                })
-                consecutive_errors += 1
-
-            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                break
-
-        return results
-
-    def _publish_dj_fallback(
-        self,
-        spoken: str,
-        tools_called: tuple,
-        is_dj_auto: bool,
-        user_input: str,
-        result: DialogResult,
-    ) -> bool:
-        """Issue #2557/#2857 — DJ music-tool fallback publish.
-
-        Extracted out of ``_handle_result`` (issue #2857) purely to
-        keep that method's cyclomatic complexity at its CC-budget
-        baseline — ``ensure_dj_music_response`` in
-        ``core/speak_helpers.py`` remains the single source of truth
-        for the actual decision logic; this wrapper only feeds it the
-        cheap DJ context (the real track name AgentCore already
-        captured off ``compose_music(name=...)`` this turn — see
-        ``result.track_name`` / ``agent_core._extract_track_name`` —
-        plus the transition number for deterministic template
-        rotation) and turns the result into a publish-or-not.
-
-        Returns ``True`` if a response was published OR the turn was
-        deliberately left silent (either way the caller must return
-        without falling through to the rest of ``_handle_result``);
-        ``False`` means nothing changed and the caller should continue
-        as normal (``dj_fallback == spoken`` — e.g. ``speak_text`` ran
-        this turn, or the reply was already real).
-        """
-        _dj_state = (
-            getattr(self._dj, "state", None)
-            if hasattr(self, "_dj") else None
-        )
-        dj_fallback = ensure_dj_music_response(
-            spoken, list(tools_called),
-            is_dj_auto=is_dj_auto,
-            track_name=(getattr(result, "track_name", None) or None),
-            transition_count=getattr(_dj_state, "transition_count", 0) or 0,
-        )
-        if dj_fallback == spoken:
-            return False
-        if dj_fallback:
-            self.get_logger().warning(
-                "🎙 [issue 2557/2857] tools_called с music-tools, "
-                f"spoken={spoken[:60]!r} — публикую DJ fallback. "
-                f"tools={list(tools_called)!r} "
-                f"user_input={user_input!r} is_dj_auto={is_dj_auto}"
-            )
-            self._publish_response(dj_fallback, animation="neutral")
-        else:
-            # DJ auto-transition, no speak_text, and no track name
-            # (compose_music wasn't called, or called without a
-            # usable ``name``) to announce — stay silent rather than
-            # repeat the dull generic phrase.
-            self.get_logger().info(
-                "🎙 [issue 2857] DJ auto-transition без реплики и "
-                "без названия трека — молчу. "
-                f"tools={list(tools_called)!r}"
-            )
-        return True
 
     def _handle_result(
         self,
         result: DialogResult,
         user_input: Optional[str] = None,
-        is_dj_auto: bool = False,
         raw_user_command: Optional[str] = None,
     ) -> None:
         """Publish (or swallow) the LLM response for one turn.
@@ -8549,14 +6272,7 @@ tentative_plan(question, kind, name)
         На синтетических ретрай-турах ``user_input`` содержит CRITICAL-
         промпт (со словом «диджея» внутри), который НЕЛЬЗЯ сканировать
         эвристиками стоп-слов / music-intent — иначе ложный
-        «stop-command» убивает музыку и выключает DJ.
-
-        ``is_dj_auto`` marks DJ auto-transition turns (was_dj_auto=True,
-        generated by the DJ ticker every ~45s, not by the user). For such
-        turns an empty LLM response must NOT be answered with a spoken
-        «Принял.» — the user did not say anything, so a confirmation
-        phrase is noise (13.08: robot said «Принял.» every DJ transition
-        in silence).
+        «stop-command» убивает музыку.
         """
         if result.error is not None:
             # 🔴 FIX (live 12.08): безопасный лог ошибки — если логгер
@@ -8571,10 +6287,7 @@ tentative_plan(question, kind, name)
             # базовые команды работают»), а НЕ «Принял.»/«задумался».
             # Раньше ProviderError тонул в empty-response fallback ниже и
             # юзер слышал «Принял.» вместо объяснения.
-            # 🔴 FIX (13.08, DJ): на DJ auto-transition degraded-фразу НЕ
-            # озвучиваем — юзер ничего не говорил, каждые ~45с это шум
-            # в тишине (тот же принцип, что подавление «Принял.» ниже).
-            if self._is_llm_unavailable_error(result.error) and not is_dj_auto:
+            if self._is_llm_unavailable_error(result.error):
                 try:
                     fallback_text = self._generate_fallback_response(
                         raw_user_command or user_input or ""
@@ -8592,7 +6305,11 @@ tentative_plan(question, kind, name)
                     except Exception:
                         pass
                 return
-        spoken = strip_history_marker(result.spoken_text or "")
+        # Issue #3598 — рассуждение модели (цитирует <music_state>, имена
+        # тулов; пометило ядро) не озвучиваем и в Telegram не дублируем.
+        spoken = strip_history_marker(
+            final_text_for_speech(result, self.get_logger().warning)
+        )
         # 🔴 FIX (live 20.08 DJ): LLM скопировала входной маркер
         # ``[Spkr:<имя>]`` в свой ответ → служебный текст ``[CRITICAL]
         # ...`` озвучивался целиком (маркер спикера сбивал
@@ -8644,17 +6361,18 @@ tentative_plan(question, kind, name)
             )
             spoken = ""
         tools_called = tuple(result.tools_called or ())
+        # Issue #3455 — фраза запуска музыки (шаблон кода) без тула запуска
+        # в этом ходе: наружу честная фраза, неправда снимается из истории.
+        # TEMP(ADR-0148) — #3461.
+        spoken = honest_launch_reply(
+            spoken, tools_called, log=self.get_logger().warning,
+            on_replace=self._retract_rejected_reply,
+        )
         # Issue #2949 — was any tool THIS TURN called-but-errored (refused /
         # threw)? A called tool alone does not "back" a spoken claim of
         # success (``CLAIM_JUSTIFYING_TOOLS`` guards below need this to
         # not treat a refused ``save_arrangement_preset`` as a done deal).
         tool_error_occurred = bool(getattr(result, "tool_error_occurred", False))
-        # Issue #2967 — computed ONCE per turn (the check has a side
-        # effect: it also updates ``self._last_music_call_args`` to this
-        # turn's value). Both action-claim call sites below (the retry
-        # and its post-budget fallback) reuse this SAME value so the
-        # detector's verdict cannot disagree with itself within one turn.
-        repeated_music_args = self._repeated_music_call_args(result)
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
         # phrase) was voiced directly by the MCP tool via
@@ -8683,12 +6401,8 @@ tentative_plan(question, kind, name)
         # ``tools_called`` still lists both names so operators can see
         # the suppression happened. Log a one-line diagnostic so the
         # live log makes the pattern obvious without grepping.
-        # Mirrors agent_core._MUSIC_LAUNCH_TOOLS — keep the two lists
-        # in sync if a new music tool is added to the manifest.
-        _music_tool_names = {
-            "execute_music_code", "generate_music",
-            "gen_play_from_library", "set_vibe_preset", "load_track",
-        }
+        # Единая таблица музыкальных тулов — rob_box_core.music_tools (ADR-0158 §7).
+        _music_tool_names = MUSIC_AUDIBLE_LYRICS_TOOLS
         _has_music_tool = any(
             name in _music_tool_names for name in tools_called
         )
@@ -8700,81 +6414,37 @@ tentative_plan(question, kind, name)
             # — only log at debug to avoid noise.
             if speak_text_real == 0:
                 self.get_logger().warning(
-                    "🎤 [issue 1708] execute_music_code + speak_text в "
+                    "🎤 [issue 1708] music tool + speak_text в "
                     "одном turn — speak_text ПОДАВЛЕН (hallucinated "
                     f"lyrics guard). tools={list(tools_called)!r} "
                     f"user_input={user_input!r}"
                 )
             elif self._verbose_llm:
                 self.get_logger().debug(
-                    "🎤 [issue 1708] execute_music_code + speak_text "
+                    "🎤 [issue 1708] music tool + speak_text "
                     "(backing mode, lyrics allowed) — both ran. "
                     f"tools={list(tools_called)!r}"
                 )
-        if speak_text_real > 0:
-            if self._verbose_llm:
-                self.get_logger().info(
-                    f"🔇 [issue 988] speak_text called in cycle — "
-                    f"skipping auto-TTS of final text: {spoken[:200]!r}"
-                )
-            else:
-                self.get_logger().info(
-                    f"🔇 [issue 988] speak_text called — final text skipped "
-                    f"(anti-duplicate): {spoken[:80]!r}"
-                )
-            return
-        # Issue #2557 (DJ live round 3, 2026-09-15, 22 cases/hour —
-        # ×4.4 vs round 2's 5/h): when LLM calls music tools
-        # (``compose_music``, ``execute_music_code``, ``set_dj_mode``, …)
-        # and returns the cycle-end marker (``done``, «готово», «всё»,
-        # …) or empty ``spoken`` WITHOUT ``speak_text``, the user
-        # hears the music start/stop but no audible acknowledgement.
-        # ``speak_text_real == 0`` → no early-return at #988 →
-        # ``spoken`` becomes empty → falls into ``if not spoken:`` /
-        # ``else: TRACK-запрос выполнен тулами — тихо завершаю`` →
-        # pure silence. 22/h on Vision Pi DJ-set 2026-09-15 round3,
-        # 10 distinct tool combinations (3 without ``speak_text``).
-        #
-        # Issue #2547 previously published a fixed ``"Сделаю."`` here,
-        # but #2549 refactor removed it (CC-budget pressure). This
-        # re-adds a narrower fallback that ONLY fires for music-tool
-        # turns (DJ set is the live bug surface) using the helper
-        # ``ensure_dj_music_response`` (single source of truth in
-        # ``core/speak_helpers.py``).
-        #
-        # Why DJ-auto is NOT excluded here: on a DJ transition
-        # ``Готово, играю.`` IS the information («трек сменился»), not
-        # noise. The 13.08 «Принял.» suppression was for the empty
-        # ``user_input`` case where the user said nothing — that path
-        # is unaffected (still gated by ``if not tools_called`` further
-        # down). We do NOT retry here (retry budget pressure #2548 /
-        # #2549); the master-prompt patch is the upstream fix.
-        if tools_called and not result.error:
-            if self._publish_dj_fallback(
-                spoken, tools_called, is_dj_auto, user_input, result,
-            ):
-                return
-# 🔴 FIX (live 02.09): «во время сочинения музыки LLM много говорит».
-        # На DJ-переходе речь идёт ТОЛЬКО через speak_text (короткая
-        # тематическая фраза на середине сета) или хук (прощание). Свободный
-        # текст ответа — это мета-болтовня («Переход номер два отыгран —
-        # нарастание с дропом в ре миноре фригийском, сто сорок ударов!»),
-        # которую модель писала мимо speak_text, и она уходила в TTS поверх
-        # бита каждые 45 секунд. Юзер про такие переходы ничего не
-        # спрашивал: это тик таймера.
-        # #1 («СТАРТ ВЕЧЕРИНКИ») — свободная форма разрешена (представление),
-        # см. DJModeController.suppresses_free_text.
-        if (
-            spoken
-            and is_dj_auto
-            and self._dj.suppresses_free_text(self._dj.state.transition_count)
-        ):
-            self.get_logger().info(
-                "🔇 [DJ] переход #"
-                f"{self._dj.state.transition_count} — свободный текст НЕ "
-                f"озвучиваю (речь только через speak_text/хук): "
-                f"{spoken[:120]!r}"
+        # ADR-0148 (06.10 set98207/set97492, 15:30 UTC): о музыке хода
+        # говорит код по результату dj_set/request_music (MusicTurn
+        # исполнителя тулов) и по словам человека, а не текст модели;
+        # ответ модели отзывается из истории.
+        music_phrase = executor_turn_reply(
+            getattr(self, "_scheduler_executor", None),
+            (raw_user_command, user_input),
+            getattr(self, "_turn_set_tracks", None),
+            speak_text_real,
+            tools_called,
+        )
+        if music_phrase is not None:
+            self.get_logger().warning(
+                f"🎛️ [music turn] фраза кода вместо ответа модели: {music_phrase!r}"
             )
+            self._retract_rejected_reply()
+            self._speak_direct(music_phrase)
+            return
+        if speak_text_real > 0:
+            self.get_logger().info(final_text_skipped_log(spoken, self._verbose_llm))
             return
         # Issue #1882 — planning-narration guard (hard-mute).
         #
@@ -8804,7 +6474,7 @@ tentative_plan(question, kind, name)
                 f"speaking nothing (head={spoken[:120]!r})"
             )
             return
-        # Два guard'а, которые обязаны отработать ДО babble/renardo/
+        # Два guard'а, которые обязаны отработать ДО babble/
         # action-claim: их вход — не речь вообще, и остальные детекторы
         # его не узнают (ищут глаголы или мета-обещания).
         #
@@ -8843,11 +6513,7 @@ tentative_plan(question, kind, name)
         # over the pure ``core.turn.begin_babble_retry``, so the
         # orchestration (predicates + budget + one-shot flag) already
         # lives in ``core/`` while this call site keeps the exact
-        # signature and ``bool`` contract it had before. Adding a
-        # second ``_evaluate_turn_guards`` branch here would inflate
-        # ``_handle_result`` (CC 65 → 69) — the opposite of what
-        # ADR-0021 asks for. The bridge stays available for voice-vr 23
-        # when ``_use_turn_guards`` flips for ALL catch-sites at once.
+        # signature and ``bool`` contract it had before.
         if spoken and self._check_babble_and_retry(
             spoken=spoken,
             # Issue #1204: на синтетических ретрай-турах юзер-интент
@@ -8858,41 +6524,11 @@ tentative_plan(question, kind, name)
             tool_error_occurred=tool_error_occurred,
         ):
             return
-        # Issue #992 Bug C' — LLM написала сочинённый Renardo-код в реплику
-        # вместо execute_music_code(code=...). Код НЕ читаем вслух —
-        # требуем вызов тула.
-        if spoken and self._check_embedded_renardo_code_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
-        # Issue #2560 — модель выдумала MIDI-паттерн «pe<num>le<num>f»
-        # вместо lookup_melody на известной мелодии (Григ, Бетховен,
-        # etc.). Текстовое RULE #KNOWN-MELODY (issue #2550 / PR #2551)
-        # модель прочитала и тут же нарушила — round-3 live (Vision Pi,
-        # 2026-09-15) дал 6 случаев за 60 мин. Один CRITICAL-ретрай с
-        # явным требованием «сначала lookup_melody». Должен идти ПОСЛЕ
-        # ``_check_embedded_renardo_code_and_retry`` (Bug C') — если
-        # модель написала Renardo-код в реплику, не hallucinated-MIDI
-        # guard; и ПЕРЕД action-claim — hallucinated-MIDI это НЕ
-        # action-claim, это специфический pattern в тексте.
-        if spoken and self._check_hallucinated_midi_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
         # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
         # Live 30.08: «Точка сохранена.» / «Точка удалена.» / ««Тисбит»
         # удалён из медиатеки.» — всё с tools=[]. Один ретрай, тем же
         # контрактом, что и Bug D выше.
         #
-        # Issue #2548 — в DJ-сессии ``dj_active=self._dj.state.enabled``;
-        # prose-action-claim без явного command-verb в user_input
-        # («вплетай их красиво» / «давай старайся» / «пока ничего не
-        # звучит») теперь тоже триггерит одноразовый ретрай, чтобы
-        # юзер не слышал «всё готово» при неизменной музыке.
         # CC-budget: прямые вызовы здесь +3 (две ``if spoken and ...``
         # ветки), baseline скорректирован 65 → 68. Заворачивать в
         # helper нельзя — test_dialogue_retry_flag_wiring
@@ -8904,10 +6540,9 @@ tentative_plan(question, kind, name)
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
-            dj_active=self._dj_session_active(),
         ):
             return
-        # Issue #2548 (музыка) + #2780 п.3 (память) — общая точка входа
+        # Issue #2780 п.3 (память) + #2949 (generic) — общая точка входа
         # для fallback'ов «ретрай уже потрачен, а claim повторился».
         # Диспетчер, а не два отдельных ``if`` подряд: ``_handle_result``
         # грандфазерен в cc_budget_baseline.json на CC=85 с открытой
@@ -8919,71 +6554,41 @@ tentative_plan(question, kind, name)
             tools_called=tuple(tools_called or ()),
             user_input=user_input,
             raw_user_command=raw_user_command,
-            is_dj_auto=is_dj_auto,
             has_error=result.error is not None,
             speak_text_real=speak_text_real,
             tool_error_occurred=tool_error_occurred,
-            repeated_call_args=repeated_music_args,
         ):
             return
-        # Issue #2562 Bug F — «не знаю такой мелодии» без поиска. Round 3
-        # live-check 15.09.2026 (Vision Pi 10.1.1.21): модель дважды за час
-        # ответила «Не знаю такой мелодии — могу сыграть похожее» при
-        # tools=[]. Юзер слышит уклончивый вопрос вместо честного «ищу
-        # ноты»/«сыграю похожее». Закрываем той же логикой, что Bug E:
-        # один CRITICAL-ретрай с явным указанием СНАЧАЛА поискать через
-        # lookup_melody / search_web / gen_search_library, а если пусто —
-        # предложить альтернативы через speak_text + compose_music. Это
-        # HONESTY RULE из composer.txt, и сейчас она только прописана, но
-        # не enforced — ретрай закрывает дыру.
-        if spoken and self._check_unknown_melody_claim_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
-# Issue #2549 — широкий anti-hallucination guard для action-claim.
+        # Issue #2549 — широкий anti-hallucination guard для action-claim.
         # Узкий Bug E guard выше ловит только случаи, где И запрос юзера,
-        # И утверждение LLM попадают в :data:`ACTION_CLAIM_RULES`. DJ-сет
-        # 2026-09-15 показал, что LLM часто отчитывается о действии в
-        # свободной форме («сделала два pass», «вплела тему Грига»,
-        # «проверю состояние и перезапущу») при пустом ``tools_called``.
-        # Это guard-fallback по action-глаголам в spoken (см.
-        # :func:`detect_universal_action_claim`).
-        #
-        # Сужающие условия:
-        #  * ``is_dj_auto`` — на DJ auto-transition spoken-action без tool
-        #    допустимо (юзер молчал, фантомное действие не вредит);
-        #  * ``result.error is not None`` — на ошибке LLM не ретраим
-        #    (Babble/Action guard'ы ниже тоже смотрят на это).
+        # И утверждение LLM попадают в :data:`ACTION_CLAIM_RULES`. LLM часто
+        # отчитывается о действии в свободной форме («проверю состояние и
+        # перезапущу») при пустом ``tools_called``. Это guard-fallback по
+        # action-глаголам в spoken (см. :func:`detect_universal_action_claim`).
+        # На ошибке LLM (``result.error``) не ретраим.
         if (
             spoken
-            and not is_dj_auto
             and result.error is None
             and self._check_universal_action_claim_and_retry(
                 spoken=spoken,
                 user_input=raw_user_command or user_input,
                 tools_called=tools_called,
                 tool_error_occurred=tool_error_occurred,
-                repeated_call_args=repeated_music_args,
             )
         ):
             return
         # Issue #2559 — phantom-action guard (общий, НЕ music-only).
         # Round 3 live (15.09.2026, Vision Pi 10.1.1.21): 6 случаев за час
         # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
-        # Bug E ловит только узкие music-claim'ы при ``dj_active=True``
-        # или music-kw; phantom-action закрывает ОБЩИЙ класс
+        # Bug E узкий; phantom-action закрывает ОБЩИЙ класс
         # «обещал действие — но не вызвал тул» (issue #2559, расширение
-        # Bug E / #2548 на ВСЕ action-verb'ы). Гейт ``is_dj_auto`` живёт
-        # внутри метода (юзер молчал → ретрай лишний). CC-budget: +1
+        # Bug E на ВСЕ action-verb'ы). CC-budget: +1
         # прямая ветка в этом catch-site, _handle_result уже в exemptions
         # cc_budget_baseline.json (DialogueNode._handle_result: 75).
         if spoken and self._check_phantom_action_and_retry(
             spoken=spoken,
             user_input=raw_user_command or user_input,
             tools_called=tools_called,
-            is_dj_auto=is_dj_auto,
         ):
             return
         # 💡 Diagnostic: log the actual state before deciding what to do.
@@ -8995,7 +6600,7 @@ tentative_plan(question, kind, name)
         if not spoken:
             # 🔴 FIX (live 10:49): пустой spoken НЕ всегда ошибка — LLM
             # могла выполнить TRACK-запрос («сыграй баха») через
-            # execute_music_code и вернуть 'done' без speak_text (новый
+            # тул запуска музыки и вернуть 'done' без speak_text (новый
             # TRACK-контракт: музыка без болтовни). Мой done-strip
             # обнулил spoken → «задумался» был ЛОЖНЫМ. Fallback — только
             # если LLM вообще ничего не сделала (tools пуст).
@@ -9007,28 +6612,9 @@ tentative_plan(question, kind, name)
             # делать не надо. Юзер не получает ложного «задумался».
             if not tools_called:
                 # Issue #1204: на синтетических ретрай-турах ``user_input`` —
-                # это CRITICAL-промпт («...музыку/диджея...»), а не слова
-                # юзера. Все эвристики ниже (music_fallback, стоп-команды)
-                # должны смотреть на оригинальную команду юзера.
+                # это CRITICAL-промпт, а не слова юзера. Стоп-команду ниже
+                # смотрим по оригинальной команде юзера.
                 _source = raw_user_command or user_input
-                # Issue #1016 — empty-response music fallback: LLM вернула
-                # пустоту на музыкальный запрос («поставь что-нибудь»,
-                # «сыграй классику», «включи музыку») и НЕ вызвала ни одного
-                # тула. Просим mcp_server сыграть топ-трек из библиотеки
-                # (rating DESC), чтобы юзер услышал музыку, а не тишину.
-                # Эвристика шире _MUSIC_GUARD_KEYWORDS — это единственная
-                # ветка, где цена ложного срабатывания низкая (робот и так
-                # молчал бы).
-                try:
-                    if self._user_wants_music_fallback(_source or ""):
-                        self._publish_music_fallback(reason="empty_response")
-                except Exception as exc:  # noqa: BLE001
-                    try:
-                        self.get_logger().warning(
-                            f"⚠️ music_fallback trigger failed: {exc}"
-                        )
-                    except Exception:
-                        pass
                 # 🔴 FIX (live 12.08): весь empty-response fallback
                 # обёрнут в try/except — если любой внутренний вызов
                 # (включая логгер!) упадёт, пользователь ВСЁ РАВНО
@@ -9048,24 +6634,16 @@ tentative_plan(question, kind, name)
                     if _source and is_music_stop_command(_source):
                         self.get_logger().warning(
                             "🎵 [issue 992 Bug C] stop-command + empty LLM "
-                            "response — forcing music_cleanup + DJ off"
+                            "response — forcing music_cleanup"
                         )
                         # Публикуем cleanup — mcp_server остановит музыку
-                        # (MusicManager.stop_music_on_session_end).
+                        # (MCPServer._on_music_cleanup → _stop_deck).
                         try:
                             self._publish_music_cleanup(reason="user_stop_command")
                         except Exception as exc:  # noqa: BLE001
                             self.get_logger().warning(
                                 f"🎵 stop fallback failed: {exc}"
                             )
-                        # 🔴 FIX (live 06.08 #2): cleanup гасит ТОЛЬКО музыку,
-                        # но DJ-тикер (core/dj_mode, tick каждые 5с) живёт по
-                        # флагу state.enabled — его сбрасывает только
-                        # публикация /voice/dj_mode с enabled=false. Без этого
-                        # DJ продолжал генерить переходы (#5, #6...) и после
-                        # «говори» снова включал музыку («продолжил диджейский
-                        # сет»). Публикуем set_dj_mode(enabled=false) сами.
-                        self._publish_dj_off(reason="stop-command fallback")
                     # Короткая диагностика: что именно вернул провайдер.
                     raw_hint = ""
                     if raw is not None:
@@ -9105,24 +6683,12 @@ tentative_plan(question, kind, name)
                 # with an «accept + silence» experience.
                 # 🔴 FIX (live 12.08): этот вызов ВНЕ внутреннего try/except
                 # и выполняется ВСЕГДА — даже если логгер или память упали.
-                # 🔴 FIX (13.08): для DJ auto-transition пустой ответ НЕ
-                # подтверждаем голосом — юзер ничего не говорил, «Принял.»
-                # каждые ~45с (каждый переход DJ-тикера) — шум в тишине.
-                if not is_dj_auto:
+                try:
+                    self._publish_response(EMPTY_REPLY_PHRASE, animation="neutral")
+                except Exception as exc:  # noqa: BLE001
                     try:
-                        self._publish_response("Принял.", animation="neutral")
-                    except Exception as exc:  # noqa: BLE001
-                        try:
-                            self.get_logger().warning(
-                                f"⚠️ empty-fallback publish failed: {exc}"
-                            )
-                        except Exception:
-                            pass
-                else:
-                    try:
-                        self.get_logger().info(
-                            "🔇 DJ auto-transition: пустой ответ LLM — "
-                            "«Принял.» подавлен (юзер ничего не говорил)"
+                        self.get_logger().warning(
+                            f"⚠️ empty-fallback publish failed: {exc}"
                         )
                     except Exception:
                         pass
@@ -9148,7 +6714,7 @@ tentative_plan(question, kind, name)
                         "with no spoken text — user heard silence "
                         f"(user_input={user_hint!r}). "
                         "LLM must follow up with speak_text or "
-                        "execute_music_code when stop_music is used."
+                        "a music-launch tool when stop_music is used."
                     )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
@@ -9199,7 +6765,6 @@ tentative_plan(question, kind, name)
 
     def _release_turn_speech(
         self, hold: Optional[TurnSpeechHold], *, retry_dispatched: bool,
-        was_dj_auto: bool,
     ) -> None:
         """Выпустить (или выбросить) придержанный текст хода (issue #2874)."""
         if hold is None:
@@ -9215,7 +6780,12 @@ tentative_plan(question, kind, name)
             retracted=hold.retracted,
         )
         self._unregister_active_batch(self._HELD_SPEECH_BATCH_ID)
-        self._flush_music_cleanup_if_idle(was_dj_auto)
+        self._flush_music_cleanup_if_idle()
+
+    def _music_reply_context(self) -> bool:
+        """Issue #2874 — музыкальный контекст по снимку плеера: идёт сет или играет музыка."""
+        snapshot = getattr(self, "_music_player_state", None)
+        return bool(snapshot is not None and (snapshot.dj or snapshot.is_playing()))
 
     def _publish_turn_text(
         self, spoken: str, *, user_input: Optional[str],
@@ -9229,9 +6799,7 @@ tentative_plan(question, kind, name)
             retry_dispatched=retry_dispatched,
             retracted=retracted,
             budget_exhausted=getattr(self, "_retry_budget_exhausted_in_turn", False),
-            music_context=self._music_prose_fallback_eligible(
-                user_input, self._dj_session_active()
-            ),
+            music_context=self._music_reply_context(),
             lyrics_requested=wants_lyrics(user_input),
         )
         if text is None:
@@ -9553,8 +7121,7 @@ tentative_plan(question, kind, name)
 
         Best-effort: if the publisher was never created (e.g. mcp_server
         not running in this container), this is a silent no-op. mcp_server
-        decides what to do — currently it logs and calls
-        ``MusicManager.stop_music_on_session_end()``.
+        decides what to do — currently it logs and stops the deck via ``MCPServer._stop_deck``.
         """
         # Что бы ни было причиной — стоп, новый диалог, конец BACKING-хода —
         # после cleanup живой TRACK-музыки больше нет (live 30.08).
@@ -9573,57 +7140,6 @@ tentative_plan(question, kind, name)
                 f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
             )
 
-    def _publish_music_fallback(self, reason: str = "empty_response") -> None:
-        """Issue #1016 — ask mcp_server to play the top-rated library track.
-
-        Used in the empty-response fallback: when the LLM returns no text
-        AND no tool calls for a music request («поставь что-нибудь»,
-        «сыграй классику»), the user should hear *something* — the best
-        human track from the library — instead of silence.
-
-        Best-effort: if the publisher was never created (mcp_server not
-        running in this container), this is a silent no-op. mcp_server
-        decides what to do — currently it plays the top-rated track from
-        ``music_tracks`` (rating DESC).
-        """
-        if getattr(self, "_music_fallback_pub", None) is None:
-            self.get_logger().debug("music_fallback publisher not available")
-            return
-        try:
-            payload = json.dumps({"reason": reason})
-            msg = String()
-            msg.data = payload
-            self._music_fallback_pub.publish(msg)
-            self.get_logger().info(f"music_fallback sent: reason={reason}")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось опубликовать /mcp/music_fallback: {exc}"
-            )
-
-    def _dj_session_active(self) -> bool:
-        """Issue #2548 — DJ-сессия активна?
-
-        ``getattr(self, "_dj", None)`` для безопасности: часть node-тестов
-        (test_issue_1343, test_service_text_leak) создают ``DialogueNode``
-        через ``object.__new__`` без ``_dj`` — AttributeError в prod-коде
-        быть не должно.
-        """
-        return bool(
-            getattr(self, "_dj", None)
-            and getattr(self._dj.state, "enabled", False)
-        )
-
-    def _music_prose_fallback_eligible(
-        self, user_input: Optional[str], dj_active: bool,
-    ) -> bool:
-        """Issue #2548 — DJ активна ИЛИ user_wants_music(user_input)?"""
-        if dj_active:
-            return True
-        try:
-            return bool(user_wants_music(user_input or ""))
-        except Exception:
-            return False
-
     def _publish_action_claim_fallback_if_needed(
         self,
         *,
@@ -9631,13 +7147,11 @@ tentative_plan(question, kind, name)
         tools_called: Tuple[str, ...],
         user_input: Optional[str],
         raw_user_command: Optional[str],
-        is_dj_auto: bool,
         has_error: bool,
         speak_text_real: int,
         tool_error_occurred: bool = False,
-        repeated_call_args: bool = False,
     ) -> bool:
-        """Issue #2548 + #2780 п.3 + #2949 — диспетчер fallback'ов после ретрая.
+        """Issue #2780 п.3 + #2949 — диспетчер fallback'ов после ретрая.
 
         Одноразовый ретрай action-claim'а (``_action_claim_retry_used``)
         тратится на ПЕРВОМ ложном заявлении в ходе. Если модель повторяет
@@ -9648,13 +7162,12 @@ tentative_plan(question, kind, name)
         замену, получает свой ``_publish_*_fallback_if_needed``; здесь —
         единственная точка входа из ``_handle_result``.
 
-        Порядок: музыка (#2548) → память (#2780) → generic anti-
-        hallucination (#2949). Ветки не пересекаются — у каждой свой
-        контекстный гейт (музыка требует DJ-сессию или music-keyword,
-        память — «запомни/запиши/сохрани» не про точку и не про трек,
-        generic — любой тул из ``CLAIM_JUSTIFYING_TOOLS`` вызван, но
-        ошибся ИЛИ не вызван вовсе), так что порядок тут даёт
-        стабильность, а не приоритет.
+        Порядок: память (#2780) → generic anti-hallucination (#2949).
+        Ветки не пересекаются — у каждой свой контекстный гейт (память —
+        «запомни/запиши/сохрани» не про точку и не про трек, generic —
+        любой тул из ``CLAIM_JUSTIFYING_TOOLS`` вызван, но ошибся ИЛИ не
+        вызван вовсе), так что порядок тут даёт стабильность, а не
+        приоритет. Музыкальный fallback (#2548) удалён в ADR-0149 PR-13a.
 
         Returns:
             ``True`` — fallback опубликован, вызывающий обязан сделать
@@ -9666,18 +7179,14 @@ tentative_plan(question, kind, name)
             tools_called=tools_called,
             user_input=user_input,
             raw_user_command=raw_user_command,
-            is_dj_auto=is_dj_auto,
             has_error=has_error,
             speak_text_real=speak_text_real,
         )
-        if self._publish_music_prose_action_fallback_if_needed(**kwargs):
-            return True
         if self._publish_fact_memory_save_fallback_if_needed(**kwargs):
             return True
         return self._publish_universal_action_claim_fallback_if_needed(
             **kwargs,
             tool_error_occurred=tool_error_occurred,
-            repeated_call_args=repeated_call_args,
         )
 
     def _publish_universal_action_claim_fallback_if_needed(
@@ -9687,11 +7196,9 @@ tentative_plan(question, kind, name)
         tools_called: Tuple[str, ...],
         user_input: Optional[str],
         raw_user_command: Optional[str],
-        is_dj_auto: bool,
         has_error: bool,
         speak_text_real: int,
         tool_error_occurred: bool = False,
-        repeated_call_args: bool = False,
     ) -> bool:
         """Issue #2949 — fallback после НЕудачного universal-action-claim ретрая.
 
@@ -9704,23 +7211,17 @@ tentative_plan(question, kind, name)
         (``_universal_action_claim_retry_used``) и молчит; без подмены
         ``spoken`` юзер слышит вторую по счёту ложь подряд.
 
-        Условия — ретрай уже потрачен, ход НЕ DJ-auto и НЕ с ошибкой
-        LLM, и :func:`detect_universal_action_claim` (с той же
+        Условия — ретрай уже потрачен, ход НЕ с ошибкой LLM, и :func:`detect_universal_action_claim` (с той же
         ``tool_error_occurred``) СНОВА считает заявление непокрытым.
         Один и тот же детектор для ретрая и для fallback'а — критерий
         «подкреплено» не может разъехаться между двумя местами.
         """
-        if (
-            is_dj_auto
-            or has_error
-            or not getattr(self, "_universal_action_claim_retry_used", False)
-        ):
+        if has_error or not getattr(self, "_universal_action_claim_retry_used", False):
             return False
         hit = self._universal_claim_hit(
             spoken=spoken,
             tools_called=tools_called,
             tool_error_occurred=tool_error_occurred,
-            repeated_call_args=repeated_call_args,
         )
         if hit is None:
             return False
@@ -9744,102 +7245,6 @@ tentative_plan(question, kind, name)
             except Exception:
                 pass
         return True
-
-    def _publish_music_prose_action_fallback_if_needed(
-        self,
-        *,
-        spoken: str,
-        tools_called: Tuple[str, ...],
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-        is_dj_auto: bool,
-        has_error: bool,
-        speak_text_real: int,
-    ) -> bool:
-        """Issue #2548 — fallback spoken после НЕудачного action-claim ретрая.
-
-        Условия все ОДНОВРЕМЕННО:
-
-        1. ``_action_claim_retry_used == True`` — ретрай уже стрелял
-           в этой user-turn (на следующем ходе guard молчит);
-        2. ``spoken`` содержит action-claim-verb (тот же ``claim_re``,
-           что и ``music_prose_action``);
-        3. ``tools_called=()`` и ``speak_text_real == 0`` (как у других
-           guards в этой цепочке);
-        4. DJ-сессия активна ИЛИ :user_wants_music(user_input);
-        5. не ``is_dj_auto`` — на DJ auto-transition этот fallback
-           подавляется (там своя ветка DJ-подавления);
-        6. нет ``result.error`` — не маскируем честное сообщение
-           об ошибке LLM.
-
-        При выполнении всех условий — заменяем spoken на констатацию
-        «не получилось, попробую ещё раз» БЕЗ claim о выполнении.
-        Это acceptance criterion #2: юзер НЕ слышит «всё готово» /
-        «сделала» / «обновил» при неизменной музыке.
-
-        Returns:
-            ``True`` — fallback опубликован, вызывающий должен
-            вернуть ``return`` из ``_handle_result`` (не отдавать
-            оригинальный spoken в TTS).
-        """
-        if (
-            is_dj_auto
-            or has_error
-            or tools_called
-            or speak_text_real != 0
-            or not getattr(self, "_action_claim_retry_used", False)
-        ):
-            return False
-        dj_active = self._dj_session_active()
-        if not self._music_prose_fallback_eligible(
-            raw_user_command or user_input, dj_active,
-        ):
-            return False
-        if not self._spoken_matches_music_prose_claim(spoken):
-            return False
-        self._emit_music_prose_action_fallback(spoken, user_input, raw_user_command)
-        return True
-
-    @staticmethod
-    def _spoken_matches_music_prose_claim(spoken: str) -> bool:
-        """Issue #2548 — spoken содержит prose-action claim-verb из music_prose_action?
-
-        Если ретрай был по waypoint-claim, а не music-claim, fallback
-        не должен срабатывать на ЛЮБОЙ spoken после ретрая.
-
-        Issue #2780 п.3: тело переехало в
-        :func:`spoken_matches_claim_category` (``core/dialogue_guards.py``)
-        — та же проверка нужна для категории ``fact_memory_save``, и
-        держать две копии ``next(... claim_re.search ...)`` рядом незачем.
-        Метод остаётся тонкой обёрткой: его зовёт
-        ``_publish_music_prose_action_fallback_if_needed``.
-        """
-        return spoken_matches_claim_category("music_prose_action", spoken)
-
-    def _emit_music_prose_action_fallback(
-        self,
-        spoken: str,
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-    ) -> None:
-        """Issue #2548 — публикуем fallback-spoken + warning в лог."""
-        fallback = build_music_prose_action_fallback(
-            raw_user_command or user_input or ""
-        )
-        self.get_logger().warning(
-            f"🛟 [issue 2548 fallback] action-claim повторился после "
-            f"ретрая — публикую констатацию вместо claim'а: "
-            f"spoken={spoken[:80]!r}"
-        )
-        try:
-            self._publish_response(fallback, animation="neutral")
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self.get_logger().warning(
-                    f"⚠️ fallback publish failed: {exc}"
-                )
-            except Exception:
-                pass
 
     @staticmethod
     def _fact_memory_save_rule():
@@ -9868,9 +7273,7 @@ tentative_plan(question, kind, name)
     ) -> bool:
         """Issue #2780 п.3 — юзер в этом ходе правда просил ЗАПОМНИТЬ?
 
-        Аналог :meth:`_music_prose_fallback_eligible`, только гейт другой:
-        у памяти нет DJ-сессии и music-keyword'ов, зато есть ``user_re``
-        того же правила («запомни/запиши/сохрани/не забудь/заметь», с
+        Гейт — ``user_re`` того же правила («запомни/запиши/сохрани/не забудь/заметь», с
         negative lookahead на точку/трек — у них свои правила и свои
         тулы). Без этого гейта потраченный на waypoint-claim ретрай
         заставил бы «Не получилось точно сохранить факт» звучать в
@@ -9891,7 +7294,6 @@ tentative_plan(question, kind, name)
         tools_called: Tuple[str, ...],
         user_input: Optional[str],
         raw_user_command: Optional[str],
-        is_dj_auto: bool,
         has_error: bool,
         speak_text_real: int,
     ) -> bool:
@@ -9917,9 +7319,8 @@ tentative_plan(question, kind, name)
         1. ``_action_claim_retry_used == True`` — ретрай уже потрачен
            в этой user-turn;
         2. ни один тул из ``rule.tools`` (``memory_save`` /
-           ``register_speaker``) не вызван. ВАЖНО: в отличие от
-           музыкального fallback'а здесь НЕЛЬЗЯ требовать пустой
-           ``tools_called`` — в живом логе он равен ``['memory_context']``
+           ``register_speaker``) не вызван. ВАЖНО: здесь НЕЛЬЗЯ требовать
+           пустой ``tools_called`` — в живом логе он равен ``['memory_context']``
            (чтение), и проверка «список пуст» пропустила бы ровно тот
            случай, ради которого карточка заведена;
         3. ``speak_text_real == 0`` (как у остальных guard'ов цепочки);
@@ -9927,8 +7328,7 @@ tentative_plan(question, kind, name)
            (см. :meth:`_fact_memory_fallback_eligible`);
         5. ``spoken`` всё ещё матчит ``claim_re`` категории
            ``fact_memory_save``;
-        6. не ``is_dj_auto`` (юзер молчал — просьбы запомнить не было)
-           и нет ``result.error`` — честное сообщение об ошибке LLM
+        6. нет ``result.error`` — честное сообщение об ошибке LLM
            не маскируем.
 
         Returns:
@@ -9936,8 +7336,7 @@ tentative_plan(question, kind, name)
             ``return`` из ``_handle_result``.
         """
         if (
-            is_dj_auto
-            or has_error
+            has_error
             or speak_text_real != 0
             or (set(tools_called or ()) & self._fact_memory_save_tools())
             or not getattr(self, "_action_claim_retry_used", False)
@@ -10226,14 +7625,12 @@ tentative_plan(question, kind, name)
         # 0. Issue #2835 — новое поколение сессии ДО отмены хода: его
         # ``finally`` (отмена асинхронная) уже увидит, что сессия сброшена,
         # и не пошлёт [CRITICAL]-ретрай; ходы/ретраи, стоящие в loop,
-        # отбросятся на старте; запоздалый set_dj_mode(enabled=true) —
-        # проигнорируется.
+        # отбросятся на старте.
         self._session_epoch_gate().advance()
         # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
         self._cancel_run("new session reset", stop_tts=True)
-        # 1b. Issue #2835 — DJ выключен (молча), музыка остановлена,
-        # бюджеты MusicGuard с нуля.
-        self._reset_session_music_and_dj()
+        # 1b. Issue #2835 — музыка прошлой сессии остановлена.
+        self._reset_session_music()
         # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
         # STOP (пришедший в той же STT-фразе) не отменил подтверждение
         # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex

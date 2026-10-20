@@ -35,7 +35,7 @@ def _repo_root(start: Path) -> Path:
 
 MASTERFILTER = (
     _repo_root(Path(__file__).resolve())
-    / "docker" / "vision" / "voice_assistant" / "custom_synthdefs" / "masterfilter.scd"
+    / "docker" / "sound" / "voice_assistant" / "custom_synthdefs" / "masterfilter.scd"
 )
 
 

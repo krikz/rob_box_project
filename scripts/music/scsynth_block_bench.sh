@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # scsynth_block_bench.sh — замер CPU scsynth и xrun'ов JACK по block size (-z).
-# Issue #3114. Запускать НА Vision Pi, из клона репо:
+# Issue #3114. Запускать НА Sound Pi (ADR-0159), из клона репо:
 #
-#   ssh ros2@10.1.1.21
+#   ssh ros2@10.1.1.22
 #   cd ~/rob_box_project && git pull
 #   bash scripts/music/scsynth_block_bench.sh                 # 1024 512 256 128 64, по 60 с
 #   bash scripts/music/scsynth_block_bench.sh --sizes "1024 256 64" --duration 90
 #
 # Что делает для каждого размера:
 #   1. Пересоздаёт контейнер supercollider с SCSYNTH_BLOCK_SIZE=<N> (env
-#      интерполируется в docker/vision/docker-compose.yaml). Образ тот же, что
+#      интерполируется в docker/sound/docker-compose.yaml). Образ тот же, что
 #      крутился до бенча (--pull never, тег берётся из `docker inspect`).
 #   2. Проверяет по /proc/<pid>/cmdline, что scsynth реально запущен с -z <N>.
 #   3. Idle-замер CPU scsynth/jackd (без нот), затем нагрузка: 6 плееров из
@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STIMULUS="$SCRIPT_DIR/scsynth_bench_stimulus.py"
 
-COMPOSE_DIR="${COMPOSE_DIR:-$REPO_ROOT/docker/vision}"
+COMPOSE_DIR="${COMPOSE_DIR:-$REPO_ROOT/docker/sound}"
 SC_SERVICE="supercollider"
 SC_CONTAINER="${SC_CONTAINER:-supercollider}"
 VA_SERVICE="voice-assistant"
@@ -62,7 +62,7 @@ Usage: $(basename "$0") [options]
   --dry-run                      только проверить окружение и напечатать план
   -h, --help                     эта справка
 
-Env: COMPOSE_DIR (default $REPO_ROOT/docker/vision), SC_CONTAINER, VA_CONTAINER.
+Env: COMPOSE_DIR (default $REPO_ROOT/docker/sound), SC_CONTAINER, VA_CONTAINER.
 EOF
 }
 

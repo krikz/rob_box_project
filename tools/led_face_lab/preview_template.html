@@ -1,0 +1,461 @@
+<title>Лицо Робби</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Silkscreen&display=swap">
+<style>
+/* Layout: a bench rig — the robot's LED plates up top, controls under them, then power, frame rate and direction notes. */
+:root {
+  --bg: #eceef1;
+  --surface: #f8f9fa;
+  --fg: #16181d;
+  --muted: #5b6270;
+  --line: #d3d7de;
+  --accent: #8a5a00;
+  --accent-soft: #f3e3bd;
+  --ok: #1d7a3d;
+  --warn: #a35a00;
+  --bad: #b3261e;
+  --stage: #0b0c0f;
+  --stage-edge: #23262d;
+  --stage-text: #9aa1ad;
+  --font-display: "Silkscreen", "Courier New", monospace;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121418; --surface: #1a1d23; --fg: #e7e9ee; --muted: #9aa1ad; --line: #2c3039;
+    --accent: #f0c15a; --accent-soft: #3a2f16; --ok: #5fcf86; --warn: #f0a24a; --bad: #ff7a70;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121418; --surface: #1a1d23; --fg: #e7e9ee; --muted: #9aa1ad; --line: #2c3039;
+  --accent: #f0c15a; --accent-soft: #3a2f16; --ok: #5fcf86; --warn: #f0a24a; --bad: #ff7a70;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 64px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: clamp(30px, 6vw, 46px); line-height: 1; margin: 0; letter-spacing: 0.02em; text-wrap: balance; }
+h1 span { color: var(--accent); }
+.lede { margin: 0; color: var(--muted); max-width: 70ch; }
+h2 { font-size: 19px; margin: 0; text-wrap: balance; }
+.eyebrow { font-family: var(--font-data); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+.rig { background: var(--stage); border: 1px solid var(--stage-edge); border-radius: 14px; padding: 18px; display: grid; gap: 14px; }
+.plates { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 1.25fr); gap: 14px; }
+.plate { display: grid; gap: 8px; min-width: 0; align-content: start; }
+.plate .tag { font-family: var(--font-display); font-size: 11px; color: var(--stage-text); letter-spacing: 0.06em; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.plate canvas { width: 100%; height: auto; display: block; background: #07080a; border-radius: 10px; border: 1px solid var(--stage-edge); }
+.caption { color: var(--stage-text); font-size: 13px; min-height: 2.6em; }
+.caption b { color: #e8d39a; font-weight: 500; }
+.caption code { background: #15171c; border-color: #2a2d35; color: #c9ccd3; }
+@media (max-width: 720px) { .plates { grid-template-columns: 1fr; } }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row > .eyebrow { min-width: 108px; }
+.chip { font: 500 13.5px/1 var(--font-body); padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+.chip:hover { border-color: var(--accent); }
+.chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.chip:focus-visible, select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip.small { padding: 6px 10px; font-size: 12.5px; }
+select { font: 14px var(--font-body); padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); max-width: 100%; }
+.btn { font: 600 13.5px/1 var(--font-body); padding: 9px 14px; border-radius: 8px; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; }
+.btn.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+.btn.ghost[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+input[type=range] { width: min(280px, 100%); accent-color: var(--accent); }
+.nums { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--font-data); font-size: 13px; font-variant-numeric: tabular-nums; }
+.nums b { font-weight: 500; }
+.fine { font-size: 12.5px; color: var(--muted); margin: 0; }
+
+.power { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 720px) { .power { grid-template-columns: 1fr; } }
+.meter { display: grid; gap: 8px; min-width: 0; align-content: start; }
+.bar { position: relative; height: 16px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.bar i { position: absolute; inset: 0 auto 0 0; background: var(--ok); border-radius: 4px 0 0 4px; }
+.bar .budget { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg); }
+.bar .psu { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--bad); right: 0; }
+
+.tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.scroll { max-height: 240px; overflow: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+.wide table { min-width: 760px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--font-data); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--surface); }
+tr:last-child td { border-bottom: 0; }
+td.n { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; }
+td ul { margin: 0; padding-left: 16px; display: grid; gap: 3px; }
+.yes { color: var(--ok); font-weight: 600; }
+.no { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent); }
+code { font-family: var(--font-data); font-size: 12.5px; background: var(--bg); border: 1px solid var(--line); padding: 1px 5px; border-radius: 5px; overflow-wrap: anywhere; }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+.cols > * { min-width: 0; }
+.cols ol, .cols ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; }
+section { display: grid; gap: 12px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">rob_box · LED-матрицы · прототип, версия 2, 20.10.2026</div>
+    <h1>Лицо <span>Робби</span></h1>
+    <p class="lede">Глаза и рот в духе Бендера, задние фары с праздниками и музыкой, 30 кадров в секунду. Кадры посчитаны тем же кодом, что поедет на робота. Превью квантует их под выбранную яркость так же, как драйвер, поэтому градаций видно ровно столько, сколько получат светодиоды.</p>
+  </header>
+
+  <div class="rig" aria-label="Симуляция LED-панелей">
+    <div class="plates">
+      <div class="plate">
+        <div class="tag"><span>ПЕРЕД, лицом к вам: фара П робота · рот · фара Л робота</span><span id="frameNo">—</span></div>
+        <canvas id="front" width="1176" height="300" aria-label="Передние панели"></canvas>
+      </div>
+      <div class="plate">
+        <div class="tag"><span>ЗАД, со спины: Л · П</span><span id="rearTag">—</span></div>
+        <canvas id="rear" width="560" height="300" aria-label="Задние панели"></canvas>
+      </div>
+    </div>
+    <div class="caption" id="caption">—</div>
+  </div>
+
+  <div class="panel">
+    <div class="row" role="group" aria-label="Состояние"><span class="eyebrow">Состояние</span><span class="row" id="groups"></span></div>
+    <div class="row" role="group" aria-label="Вариация"><span class="eyebrow">Вариация</span><span class="row" id="variants"></span></div>
+    <div class="row"><span class="eyebrow">Задние фары</span>
+      <select id="theme" aria-label="Тема задних фар">
+        <option value="default">Обычные: красный обод</option>
+        <option value="new_year">Новый год: ёлка, гирлянда, снег</option>
+        <option value="halloween">Хэллоуин: тыква со свечой</option>
+        <option value="valentine">14 февраля: сердце тук-тук</option>
+        <option value="defender_day">23 февраля: звезда с бликом</option>
+        <option value="womens_day">8 марта: тюльпаны</option>
+        <option value="cosmonautics">12 апреля: ракета</option>
+        <option value="birthday">День рождения: торт</option>
+      </select>
+      <span class="fine">Музыка, езда, экстренные, победа и полночь рисуют зад сами.</span>
+    </div>
+    <div class="row"><span class="eyebrow">Цель яркости</span>
+      <input id="bright" type="range" min="10" max="255" step="1" value="128" aria-label="Целевая яркость">
+      <span class="nums"><span>цель <b id="brightVal">128</b></span><span>у сцены: <b id="clipB">—</b></span><span>бюджет сцены: <b id="clipBudget">—</b></span></span>
+    </div>
+    <div class="row">
+      <button class="btn" id="play" type="button">Пауза</button>
+      <button class="btn ghost" id="before" type="button" aria-pressed="false">Показать «было»</button>
+      <button class="btn ghost" id="step" type="button">Кадр ›</button>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="pw">
+    <div class="eyebrow">Ток и бюджет яркости</div>
+    <h2 id="pw">У каждой сцены своя предельная яркость с запасом 25% на баке</h2>
+    <div class="power">
+      <div class="meter">
+        <div class="bar" aria-hidden="true"><i id="barFill"></i><span class="budget" id="barBudget"></span><span class="psu"></span></div>
+        <div class="nums"><span>ток кадра: <b id="nowA">—</b></span><span>пик сцены: <b id="peakA">—</b></span></div>
+        <p class="fine">Шкала до 6 А (бак 5 В × 30 Вт), чёрная риска — 4,5 А. Бюджет сцены считается по её самому тяжёлому кадру вместе с задними фарами: 255 × (4500 − 381) / ток пика при 255. Модель тока паспортная: 20 мА на канал при 255 и 1 мА покоя на светодиод. На роботе ток не мерили.</p>
+        <p class="fine">Для сравнения при 255: всё белое — 22,9 А, старая <code>victory</code> — 15,5 А (бюджет 67), старая <code>happy</code> — 11,1 А (бюджет 94).</p>
+      </div>
+      <div class="meter">
+        <div class="eyebrow">Бюджет каждой сцены, от строгих к свободным</div>
+        <div class="tablebox scroll"><table><thead><tr><th>Сцена</th><th>обычные фары</th><th>ракета сзади</th></tr></thead><tbody id="budgets"></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="fps">
+    <div class="eyebrow">Частота кадров</div>
+    <h2 id="fps">Почему сейчас дёргается и сколько выдержит железо</h2>
+    <div class="cols">
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>Одно обновление ленты</th><th>мс</th></tr></thead>
+          <tbody>
+            <tr><td>кодирование в <code>pi5neo</code>, замер на Vision Pi</td><td class="n">2,56</td></tr>
+            <tr><td>цикл драйвера, замер</td><td class="n">0,40</td></tr>
+            <tr><td>композитор, панели и буфер, замер</td><td class="n">&lt;0,5</td></tr>
+            <tr><td>SPI: 9144 байта на 8,19 МГц, расчёт</td><td class="n">8,9</td></tr>
+            <tr><td><b>сон после записи: <code>update_strip()</code> по умолчанию</b></td><td class="n"><b>100</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li>Сейчас потолок около 9 обновлений ленты в секунду на всё.</li>
+        <li>Каждая панель уходит отдельным сообщением, и на каждое лента пишется целиком. Говорящее лицо шлёт 20–40 сообщений в секунду; очередь глубиной 10 копит отставание до секунды и выбрасывает кадры. Это расчёт по коду, задержку на роботе не мерил.</li>
+        <li>Без сна и с одним кадром на всё лицо потолок около 80 обновлений в секунду. 30 к/с займут около 3 мс процессора Vision Pi на кадр, это примерно 10% одного ядра.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="dir">
+    <div class="eyebrow">Режиссура</div>
+    <h2 id="dir">Что рассматривал для каждого состояния и что выбрал</h2>
+    <div class="tablebox wide">
+      <table>
+        <thead><tr><th>Состояние</th><th>Варианты</th><th>Почему так</th><th>Сигнал на роботе</th></tr></thead>
+        <tbody>
+          <tr><td><b>Покой</b></td><td><ul>
+            <li class="yes">«Взгляд»: моргания 2–6 с, иногда двойные, саккады, осмотр, ухмылка</li>
+            <li class="yes">«Скучно»: веки ниже, зевок, через минуту тишины</li>
+            <li class="no">Дыхание яркостью, как сейчас</li>
+            <li class="no">Сканер KITT</li></ul></td>
+            <td>Живость дают случайные моргания и мелкие движения зрачка. Плавная яркость на 26 градациях идёт ступеньками.</td>
+            <td><code>/voice/dialogue/state</code> = IDLE</td></tr>
+          <tr><td><b>Слушает</b></td><td><ul>
+            <li class="yes">Веки вскидываются, зрачки на говорящего, кивок</li>
+            <li class="no">Уровень микрофона во рту</li>
+            <li class="no">Только кольцо ReSpeaker</li></ul></td>
+            <td>Микрофон во рту путается с речью. Взгляд на человека читается сразу и берёт готовое направление звука.</td>
+            <td>LISTENING, <code>/audio/direction</code></td></tr>
+          <tr><td><b>Думает</b></td><td><ul>
+            <li class="yes">Огонёк бежит по зубам, прищур одним глазом</li>
+            <li class="yes">Зрачки по кругу, прикус наискось «хмм»</li>
+            <li class="no">Спиннер вместо глаз</li>
+            <li class="no">Три точки, как сейчас</li></ul></td>
+            <td>Индикатор загрузки нарисован самим ртом, персонаж не пропадает.</td>
+            <td>от <code>/voice/stt/result</code> до первого synthesizing</td></tr>
+          <tr><td><b>Говорит</b></td><td><ul>
+            <li class="yes">«Челюсть»: решётка на месте, проём линзой, внутри тёплая «глотка»</li>
+            <li class="yes">«Резина»: сжатие и растяжение — закрытый рот широкий и тонкий, открытый уже и выше</li>
+            <li class="yes">«Голос-решётка»: зубы разгораются от центра по громкости, как у KITT</li>
+            <li class="no">Волна-осциллограф, как сейчас</li>
+            <li class="no">Бегущая строка с текстом речи: 15 знаков в секунду на 25 столбцах не прочитать</li></ul></td>
+            <td>Во всех трёх играет лицо: в начале фразы взгляд в сторону, на ударном слоге веки вверх и кивок, в конце фразы моргание. Рот идёт за огибающей громкости, поэтому на роботе будет следовать за настоящим голосом.</td>
+            <td><code>/voice/tts/state</code> + уровень звука TTS (такого топика пока нет)</td></tr>
+          <tr><td><b>Эмоции</b></td><td><ul>
+            <li class="yes">Радость ^^ с хихиканьем, подмигивание</li>
+            <li class="yes">Грусть: веки домиком, слеза</li>
+            <li class="yes">Злость: веки клином, краснеет, скрежет</li>
+            <li class="yes">Удивление: моргнул, зрачок-точка, «О»</li>
+            <li class="yes">Победа: глаза ^^ прыгают, радуга по зубам, салют сзади</li>
+            <li class="no">Заливка панелей радугой, как сейчас</li></ul></td>
+            <td>Эмоцию несут веки и линия прикуса. Заливка целых панелей съедала до 15 А при 255 и не читалась как лицо.</td>
+            <td><code>/voice/animation/request</code></td></tr>
+          <tr><td><b>Музыка</b></td><td><ul>
+            <li class="yes">«Грув»: кивок на долю, эквалайзер в зубах, кольца-динамики сзади</li>
+            <li class="yes">«Очки»: съезжают сверху, блик раз в такт, диско сзади</li>
+            <li class="yes">«Кайф»: глаза ^^, тёплая волна по зубам, эквалайзер сзади</li>
+            <li class="no">Стробоскоп</li></ul></td>
+            <td>Всё идёт от BPM из снимка плеера: доля, такт, смена вариации через несколько тактов. Строб бьёт по глазам и по току.</td>
+            <td><code>/voice/music/state</code> playing, <code>dj.bpm</code></td></tr>
+          <tr><td><b>Экстренные</b></td><td><ul>
+            <li class="yes">Полиция: Бендер-патрульный, строгие глаза в красно-синих отсветах, рот — световая балка</li>
+            <li class="yes">Пожарная: глаза-маяки с вращающимся лучом, балка красно-белая, потом пламя во рту</li>
+            <li class="yes">Скорая: крест бьётся в такт пульсу, во рту кардиограмма</li>
+            <li class="yes">Дорожная: жёлтые маяки, во рту табло со стрелками</li>
+            <li class="no">Сплошные вспышки всей панелью, как сейчас</li></ul></td>
+            <td>Каждый зуб решётки работает сегментом балки: узор вспышек богаче, рот остаётся узнаваемым.</td>
+            <td><code>/voice/animation/request</code></td></tr>
+          <tr><td><b>Езда</b></td><td><ul>
+            <li class="yes">Поворотник бегущей заливкой, глаз со стороны поворота мигает жёлтым, взгляд туда же</li>
+            <li class="yes">Стоп-сигнал, прищур</li>
+            <li class="yes">Разгон: прищур, сжатые зубы, дрожь, сзади форсаж</li>
+            <li class="no">Вложенные стрелки из точек, как сейчас</li></ul></td>
+            <td>Бегущая заливка читается издалека. Лево и право привязаны к бортам робота: его левая фара у человека напротив справа.</td>
+            <td><code>cmd_vel</code> / <code>odom</code></td></tr>
+          <tr><td><b>Сон и система</b></td><td><ul>
+            <li class="yes">Сон: веки «︶» дышат, z, похрапывает</li>
+            <li class="yes">Пробуждение: включение как у ЭЛТ, зубы грузятся, зевок</li>
+            <li class="yes">Ошибка: глаза-крестики, глитч</li>
+            <li class="yes">Батарея и зарядка: батарейка во рту</li></ul></td>
+            <td>Сон самый лёгкий по току, бюджет 255.</td>
+            <td>SILENCED / таймер тишины, батарея</td></tr>
+          <tr><td><b>Праздники</b></td><td><ul>
+            <li class="yes">Новый год, Хэллоуин, 14.02, 23.02, 8.03, 12.04, день рождения</li>
+            <li class="yes">Полночь 31.12: салют сзади, «2027» во рту</li></ul></td>
+            <td>Праздник меняет только зад и редкие акценты, лицо остаётся собой.</td>
+            <td>календарь в коде + ручной выбор</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="cols" aria-label="Что меняем в движке">
+    <div class="panel">
+      <div class="eyebrow">Движок сейчас</div>
+      <ul>
+        <li>PNG-кадры 8×8 и 25×5 плюс YAML, 100–500 мс на кадр, около 640 картинок.</li>
+        <li>Плеер знает только «говорит / молчит» и ручной запрос, через 5–10 с возвращает покой.</li>
+        <li>Каждый кадр уходит пятью сообщениями, композитор на каждое пишет всю ленту, драйвер после записи спит 100 мс.</li>
+        <li><code>fade_in_ms</code>, <code>audio_range</code> и приоритеты описаны в манифестах, но плеер их не читает.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Предложение</div>
+      <ol>
+        <li>Процедурное лицо: модели глаза и рта, 30 к/с, случайность с ритмом.</li>
+        <li>Состояние решает код по топикам; праздник берётся из одного модуля-календаря.</li>
+        <li>Драйвер без сна, один кадр на всё лицо, очередь глубиной 1.</li>
+        <li>Драйвер на 255, яркость задаёт сцена по своему бюджету; ограничитель тока в драйвере как страховка от чужих кадров.</li>
+        <li>Уровень голоса TTS отдельным топиком, чтобы рот шёл за настоящей речью.</li>
+        <li>Старые PNG и манифесты удалить после переноса.</li>
+      </ol>
+    </div>
+  </section>
+</div>
+
+<script>
+const DATA = __DATA__;
+const FPS = DATA.fps;
+const GROUPS = [
+  ['idle', 'Покой'], ['listening', 'Слушает'], ['thinking', 'Думает'], ['talking', 'Говорит'],
+  ['emotion', 'Эмоции'], ['music', 'Музыка'], ['emergency', 'Экстренные'], ['driving', 'Езда'],
+  ['system', 'Сон и система'], ['holiday', 'Праздник']
+];
+const SIGNAL = { idle: 'IDLE', listening: 'LISTENING + /audio/direction', thinking: 'ждёт ответ LLM', talking: '/voice/tts/state + уровень голоса',
+  emotion: '/voice/animation/request', music: '/voice/music/state, bpm', emergency: '/voice/animation/request',
+  system: 'сон, батарея, ошибки', driving: 'cmd_vel / odom', holiday: 'календарь' };
+const M = DATA.model;
+const IDLE_MA = M.leds * M.idle_ma;
+const max = (a) => a.reduce((m, v) => v > m ? v : m, 0);
+function budgetFor(peak255) { return peak255 <= 0 ? 255 : Math.min(255, Math.floor(255 * (M.budget_ma - IDLE_MA) / peak255)); }
+
+function decode(b64) {
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0);
+      res({ w: img.width, h: img.height, px: x.getImageData(0, 0, img.width, img.height).data });
+    };
+    img.src = 'data:image/png;base64,' + b64;
+  });
+}
+const cache = new Map();
+function strip(key, b64) { if (!cache.has(key)) cache.set(key, decode(b64)); return cache.get(key); }
+
+// Quantise like the driver (PWM = round(v * B / 255)), then show perceived brightness relative to B.
+function drawPanel(ctx, ox, oy, pitch, src, sx, sy, w, h, B) {
+  const r = pitch * 0.36;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = ((sy + y) * src.w + (sx + x)) * 4;
+    const q = [src.px[i], src.px[i + 1], src.px[i + 2]].map(v => Math.round(v * B / 255));
+    const cx = ox + x * pitch + pitch / 2, cy = oy + y * pitch + pitch / 2;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    if (q[0] + q[1] + q[2] === 0) { ctx.fillStyle = '#17181d'; ctx.fill(); continue; }
+    const c = q.map(v => Math.round(255 * Math.pow(v / B, 1 / 2.2)));
+    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`; ctx.fill();
+  }
+}
+const GLOW = (() => { try { const c = document.createElement('canvas').getContext('2d'); c.filter = 'blur(2px)'; return c.filter === 'blur(2px)'; } catch (e) { return false; } })();
+function glow(ctx) {
+  if (!GLOW) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.5; ctx.filter = 'blur(9px)';
+  ctx.drawImage(ctx.canvas, 0, 0); ctx.restore();
+}
+
+const front = document.getElementById('front').getContext('2d');
+const rearC = document.getElementById('rear').getContext('2d');
+const P = 30;
+function renderFront(face, row, B) {
+  front.clearRect(0, 0, 1176, 300);
+  const yEye = 30, yMouth = 30 + 1.5 * P, xL = 30, xM = 30 + 8 * P + 36, xR = xM + 25 * P + 36;
+  drawPanel(front, xL, yEye, P, face, 0, row * 8, 8, 8, B);
+  drawPanel(front, xM, yMouth, P, face, 8, row * 8, 25, 5, B);
+  drawPanel(front, xR, yEye, P, face, 33, row * 8, 8, 8, B);
+  glow(front);
+}
+function renderRear(rear, row, B) {
+  rearC.clearRect(0, 0, 560, 300);
+  drawPanel(rearC, 20, 30, P, rear, 0, row * 8, 8, 8, B);
+  drawPanel(rearC, 20 + 8 * P + 20, 30, P, rear, 8, row * 8, 8, 8, B);
+  glow(rearC);
+}
+
+const st = { group: 'idle', clip: 'idle_stare', theme: 'default', before: false, playing: true, frame: 0, rearFrame: 0 };
+const $ = (id) => document.getElementById(id);
+function clipsOf(g) { return Object.entries(DATA.clips).filter(([, v]) => v.group === g); }
+
+function buildGroups() {
+  const box = $('groups'); box.innerHTML = '';
+  for (const [g, label] of GROUPS) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = label;
+    b.setAttribute('aria-pressed', String(g === st.group));
+    b.onclick = () => { st.group = g; st.clip = clipsOf(g)[0][0]; st.frame = 0; buildGroups(); buildVariants(); updateCaption(); tick(); };
+    box.appendChild(b);
+  }
+}
+function buildVariants() {
+  const box = $('variants'); box.innerHTML = '';
+  for (const [k, v] of clipsOf(st.group)) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip small';
+    b.textContent = v.title.includes('·') ? v.title.split('·')[1].trim() : v.title;
+    b.setAttribute('aria-pressed', String(k === st.clip));
+    b.onclick = () => { st.clip = k; st.frame = 0; buildVariants(); updateCaption(); tick(); };
+    box.appendChild(b);
+  }
+}
+function current() {
+  if (st.before) { const o = DATA.clips[st.clip].legacy; if (o && DATA.old[o]) return { kind: 'old', key: o, d: DATA.old[o] }; }
+  return { kind: 'new', key: st.clip, d: DATA.clips[st.clip] };
+}
+function updateCaption() {
+  const c = DATA.clips[st.clip];
+  let html = `<b>${c.title}</b>: ${c.note}. <span style="opacity:.75">Сигнал: ${SIGNAL[c.group]}.</span>`;
+  if (st.before) html = c.legacy ? `<b>Было:</b> текущая <code>${c.legacy}.yaml</code> на тех же панелях, яркость 25, как сейчас на роботе.` : `<b>Было:</b> такой анимации раньше не было, показываю новую.`;
+  $('caption').innerHTML = html;
+}
+function sceneBudget(cur) {
+  const d = cur.d;
+  const peak = d.ma_rear ? max(d.ma_face.map((v, i) => v + d.ma_rear[i])) : max(d.ma_face) + max(DATA.themes[st.theme].ma_rear);
+  return { peak, B: budgetFor(peak) };
+}
+let busy = false;
+async function tick() {
+  if (busy) return; busy = true;
+  try {
+    const cur = current();
+    const face = await strip(cur.kind + ':' + cur.key + ':f', cur.d.face);
+    const n = cur.d.n, row = st.frame % n;
+    const sb = sceneBudget(cur);
+    const target = +$('bright').value;
+    const B = cur.kind === 'old' ? 25 : Math.min(target, sb.B);
+    renderFront(face, row, B);
+    let rearSrc, rRow, rearMa;
+    if (cur.d.rear) { rearSrc = await strip(cur.kind + ':' + cur.key + ':r', cur.d.rear); rRow = row; rearMa = cur.d.ma_rear[row]; $('rearTag').textContent = st.before ? 'было' : 'своё у сцены'; }
+    else { const t = DATA.themes[st.theme]; rearSrc = await strip('t:' + st.theme, t.rear); rRow = st.rearFrame % t.n; rearMa = t.ma_rear[rRow]; $('rearTag').textContent = $('theme').selectedOptions[0].text.split(':')[0]; }
+    renderRear(rearSrc, rRow, B);
+    $('frameNo').textContent = `${(row / FPS).toFixed(2)} с · кадр ${row + 1}/${n}`;
+    const now = IDLE_MA + (cur.d.ma_face[row] + rearMa) * B / 255;
+    const peak = IDLE_MA + sb.peak * B / 255;
+    $('nowA').textContent = (now / 1000).toFixed(2).replace('.', ',') + ' А';
+    $('peakA').textContent = (peak / 1000).toFixed(2).replace('.', ',') + ' А';
+    $('clipB').textContent = cur.kind === 'old' ? '25, как сейчас' : (B < target ? `${B}, срезано бюджетом` : String(B));
+    $('clipBudget').textContent = cur.kind === 'old' ? '—' : String(sb.B);
+    const fill = $('barFill'); fill.style.width = Math.min(100, now / 60) + '%';
+    fill.style.background = now > M.budget_ma ? 'var(--bad)' : (now > M.budget_ma * 0.75 ? 'var(--warn)' : 'var(--ok)');
+  } finally { busy = false; }
+}
+$('barBudget').style.left = (M.budget_ma / 60) + '%';
+(function fillBudgets() {
+  const hv = 'cosmonautics';
+  const rows = Object.entries(DATA.clips).map(([k, d]) => {
+    const own = !!d.ma_rear;
+    const p1 = own ? max(d.ma_face.map((v, i) => v + d.ma_rear[i])) : max(d.ma_face) + max(DATA.themes.default.ma_rear);
+    const p2 = own ? p1 : max(d.ma_face) + max(DATA.themes[hv].ma_rear);
+    return [d.title, budgetFor(p1), own ? 'свой зад' : budgetFor(p2)];
+  }).sort((a, b) => a[1] - b[1]);
+  $('budgets').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td class="n">${r[1]}</td><td class="n">${r[2]}</td></tr>`).join('');
+})();
+
+let last = 0, acc = 0;
+function loop(ts) {
+  if (!last) last = ts;
+  acc += ts - last; last = ts;
+  const step = 1000 / FPS;
+  if (st.playing && acc >= step) { const k = Math.floor(acc / step); acc -= k * step; st.frame += k; st.rearFrame += k; tick(); }
+  else if (!st.playing) acc = 0;
+  requestAnimationFrame(loop);
+}
+$('theme').onchange = (e) => { st.theme = e.target.value; tick(); };
+$('play').onclick = () => { st.playing = !st.playing; $('play').textContent = st.playing ? 'Пауза' : 'Играть'; };
+$('step').onclick = () => { st.playing = false; $('play').textContent = 'Играть'; st.frame++; st.rearFrame++; tick(); };
+$('before').onclick = () => { st.before = !st.before; $('before').setAttribute('aria-pressed', String(st.before)); $('before').textContent = st.before ? 'Показать «стало»' : 'Показать «было»'; st.frame = 0; updateCaption(); tick(); };
+$('bright').oninput = (e) => { $('brightVal').textContent = e.target.value; tick(); };
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) { st.playing = false; $('play').textContent = 'Играть'; }
+buildGroups(); buildVariants(); updateCaption(); tick(); requestAnimationFrame(loop);
+</script>

@@ -51,13 +51,35 @@ from dataclasses import dataclass, field, replace
 from statistics import median
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .arranger import (
-    BEATS_PER_BAR,
-    PAD_STAB_SUS,
-    SCALE_INTERVALS,
-    VALID_ROOTS,
-    check_root,
-)
+from rob_box_music.knowledge import CHROMATIC, ROOTS as VALID_ROOTS, SCALES
+from rob_box_music.model import BEATS_PER_BAR
+
+#: Интервалы ладов — таблица знания ``rob_box_music.knowledge.SCALES`` без хроматики (одна таблица,
+#: ADR-0149 §2.2; до PR-13b — копия в ``arranger.SCALE_INTERVALS``).
+SCALE_INTERVALS: Dict[str, Tuple[int, ...]] = {k: tuple(v) for k, v in SCALES.items() if k != CHROMATIC}
+
+#: Длительность удара пэда-остинато в долях (до PR-13b жила в ``arranger.PAD_STAB_SUS``).
+PAD_STAB_SUS = 0.4
+
+#: Бемоль → диез той же высоты (тоника пишется в ``VALID_ROOTS`` диезами).
+_FLAT_SUFFIXES = ("b", "♭")
+_SHARP_SUFFIXES = ("#", "♯")
+
+
+def check_root(root: Optional[str]) -> Optional[str]:
+    """Нормализовать тонику: ``'a'`` → ``'A'``, ``'Bb'`` → ``'A#'``; ``None``/пусто → ``None``.
+
+    Raises:
+        ValueError: не нота — со списком допустимых.
+    """
+    text = (root or "").strip()
+    if not text:
+        return None
+    letter, accidental = text[:1].upper(), text[1:]
+    if letter in VALID_ROOTS and accidental in ("",) + _SHARP_SUFFIXES + _FLAT_SUFFIXES:
+        shift = 1 if accidental in _SHARP_SUFFIXES else -1 if accidental else 0
+        return VALID_ROOTS[(VALID_ROOTS.index(letter) + shift) % 12]
+    raise ValueError(f"Неизвестная тоника root={root!r}. Доступны: {', '.join(VALID_ROOTS)} (бемоль можно: Bb = A#).")
 
 __all__ = [
     "ChordWindow",
@@ -387,7 +409,7 @@ class Harmonization:
     drums: str
     hats: str
     #: Длина звучания аккорда пэда в битах (ADR-0132 PR-3, ``pad_style``):
-    #: короткий удар остинато (:data:`arranger.PAD_STAB_SUS`) или ``None`` —
+    #: короткий удар остинато (:data:`PAD_STAB_SUS`) или ``None`` —
     #: аккорд держится всю свою длительность (``sustain``). Аранжировщик
     #: ставит его слою пэда как ``sus``.
     pad_sus: Optional[float] = PAD_STAB_SUS
@@ -1055,7 +1077,7 @@ def _styled_pad(
     """Пэд по ручке ``pad_style`` (ADR-0132 PR-3) и его ``sus``.
 
     ``auto``/``stab`` — остинато :func:`_build_pad` с коротким ударом
-    :data:`arranger.PAD_STAB_SUS`; ``sustain`` — один аккорд на окно
+    :data:`PAD_STAB_SUS`; ``sustain`` — один аккорд на окно
     гармонии, звучит всю длину (``sus=None``); ``off`` — партии нет.
     """
     if style == "off":

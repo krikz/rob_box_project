@@ -26,7 +26,7 @@
     открытом помещении мерится точность самого массива, в рабочей комнате —
     то, что увидит этап 5. Разные места — разные ``--csv``.
 
-Запуск на Vision Pi (скрипт в контейнер не смонтирован — копируем):
+Запуск на Sound Pi (ReSpeaker там с ADR-0159; скрипт в контейнер не смонтирован — копируем):
     docker cp scripts/maintenance/measure_doa.py voice-assistant:/tmp/measure_doa.py
     docker exec -it voice-assistant bash -lc \\
       'source /opt/ros/humble/setup.bash && \\

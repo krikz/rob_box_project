@@ -35,7 +35,7 @@ _DEFAULT_WHISPER_URL = "https://whisper.local/v1/audio/transcriptions"
 WHISPER_URL = os.getenv("WHISPER_URL", _DEFAULT_WHISPER_URL)
 
 # Same default as stt_node.py (rob_box_voice) — bundled by the image build
-# (see docker/vision/telegram_bot/Dockerfile) so this fallback works fully
+# (see docker/sound/telegram_bot/Dockerfile) so this fallback works fully
 # offline, no Yandex balance/quota/network dependency.
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "/models/vosk-model-small-ru-0.22")
 VOSK_SAMPLE_RATE_HZ = 16000

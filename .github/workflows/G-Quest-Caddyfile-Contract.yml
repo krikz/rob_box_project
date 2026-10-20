@@ -10,7 +10,7 @@ name: "G: Quest Caddyfile Contract"
 #   «красивым PASS», от которого он должен защищать (ADR-0018).
 #
 # Что проверяем:
-#   docker/vision/quest/Caddyfile склеивает HTTPS (443/8443) с aiohttp-
+#   docker/sound/quest/Caddyfile склеивает HTTPS (443/8443) с aiohttp-
 #   приложением quest_node. Оба маршрута (/healthz и /quest) отдаёт ОДНО
 #   приложение (server/ws_server.py::build_app), поэтому обязаны смотреть в
 #   один upstream-порт = WS_PORT из docker-compose.
@@ -34,8 +34,8 @@ on:
       - main
       - 'feature/**'
     paths:
-      - 'docker/vision/quest/Caddyfile'
-      - 'docker/vision/docker-compose.yaml'
+      - 'docker/sound/quest/Caddyfile'
+      - 'docker/sound/docker-compose.yaml'
       - 'local_test/test_quest_caddyfile.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
   pull_request:
@@ -44,8 +44,8 @@ on:
       - main
       - 'feature/**'
     paths:
-      - 'docker/vision/quest/Caddyfile'
-      - 'docker/vision/docker-compose.yaml'
+      - 'docker/sound/quest/Caddyfile'
+      - 'docker/sound/docker-compose.yaml'
       - 'local_test/test_quest_caddyfile.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
   workflow_dispatch:
@@ -89,7 +89,7 @@ jobs:
           echo "Оба эндпоинта отдаёт одно aiohttp-приложение quest_node"
           echo "(src/rob_box_quest/rob_box_quest/server/ws_server.py::build_app),"
           echo "поэтому порт должен быть один и совпадать с WS_PORT из"
-          echo "docker/vision/docker-compose.yaml (\${QUEST_WS_PORT:-8766})."
+          echo "docker/sound/docker-compose.yaml (\${QUEST_WS_PORT:-8766})."
           echo ""
           echo "НЕ ставьте сюда 8765 — это порт voice-action-server, который"
           echo "в host-network живёт рядом и отвечает 200 на /healthz своим"

@@ -134,7 +134,7 @@ def _node():
     n._handle_result = MagicMock(
         side_effect=lambda result, **_kw: n.tts.append(result.spoken_text)
     )
-    n._build_dynamic_system_context = lambda: "\n".join(
+    n._build_dynamic_system_context = lambda tg_chat_id=None: "\n".join(
         n._pending_identity_hint_lines()
     )
 
@@ -149,7 +149,6 @@ def _node():
     n._retry_dispatched_in_turn = False
     n._drain_pending_user_messages = MagicMock(return_value=False)
     n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     return n
@@ -301,3 +300,23 @@ class TestCase3TurnContextForRegisterGate:
         n._current_speaker = _known("Борис", BORIS_ID, 0.9)
         _turn(n, DARYA_TEXT, _known("Борис", BORIS_ID, 0.9), None)
         assert n.turn_context[-1]["known_speaker_name"] is None
+
+
+class TestSetLengthRidesTurnContext:
+    """06.10: «…замути сэт на 30 минут» закрыла LLM, dj_set без tracks — 10
+    треков «по умолчанию». Длину из сырой реплики решает грамматика
+    (set_length_words) и кладёт в контекст хода → скрытый heard_tracks."""
+
+    def test_minutes_in_phrase_become_heard_tracks(self):
+        n = _node()
+        n.llm_reply = "Погнали!"
+        _turn(n, "Ты диджей 8битный и нас сегодня вечеринка любителей денди "
+              "и классической музыки, замути сэт на 30 минут",
+              _unknown(), "utt-dj")
+        assert n.turn_context[-1]["heard_tracks"] == 24
+
+    def test_phrase_without_length_carries_none(self):
+        n = _node()
+        n.llm_reply = "Погнали!"
+        _turn(n, "замути сэт про денди", _unknown(), "utt-dj2")
+        assert n.turn_context[-1]["heard_tracks"] is None

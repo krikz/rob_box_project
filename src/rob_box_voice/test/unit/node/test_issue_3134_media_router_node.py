@@ -20,7 +20,7 @@ from rob_box_llm.provider import ToolResult
 
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
-from rob_box_voice.core.media_router import DJ_START_TRANSITION_SEC, NOTHING_PLAYING_TEXT
+from rob_box_voice.core.media_router import NOT_STARTED_TEXT, NOTHING_PLAYING_TEXT
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
@@ -54,19 +54,19 @@ def _make_node(*, playing=False, dj=False, track=None, fail=False, state_name="I
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
     n._dsm.current_state.name = state_name
-    n._dj = MagicMock()
-    n._dj.state.enabled = dj
     n._cancel_run = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._publish_state = MagicMock()
-    n._publish_dj_off = MagicMock()
     n._dispatch_turn = MagicMock()
     n._speak_direct = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
-    # Снимок плеера /voice/music/state (#3133) — источник «играет».
-    n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
-    n._music_form_track = track
+    # Снимок плеера /voice/music/state (#3133) — источник «играет», DJ-сета и
+    # названия трека (поле ``dj`` движка v2, ADR-0149 §2.3).
+    n._music_player_state = MusicPlayerState(
+        state="playing" if playing else "idle", dj=dj,
+        dj_info={"enabled": dj, "title": track} if track else {"enabled": dj},
+    )
     n._scheduler_executor = _FakeExecutor(fail=fail)
     n._loop = MagicMock()
     return n
@@ -161,54 +161,34 @@ def test_stop_is_executed_by_code(run_plans, state):
     _stt(n, "Робот, выключи музыку")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("stop_music", {})]
+    assert n._scheduler_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     n._cancel_run.assert_called_once()
-    if state == "dj":
-        n._dj.reset_silently.assert_called_once()
-        n._publish_dj_off.assert_called_once()
-    else:
-        n._publish_dj_off.assert_not_called()
     n._speak_direct.assert_called_once()
 
 
 # ── «ты диджей X» × состояние ──────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", ["playing"])  # тишина — превью, #3153
-def test_dj_persona_starts_set_without_llm(run_plans, state):
+@pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
+def test_dj_persona_starts_engine_set_without_llm(run_plans, state):
+    # ADR-0149 PR-13a: ни превью compose_music, ни set_dj_mode — dj_set движка v2;
+    # фраза об успехе только по ``started`` (здесь событий нет → честное «не заиграла»).
     n = _make_node(**STATES[state])
     _stt(n, "Робот, ты диджей Снупдог, давай сет")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [(
-        "set_dj_mode",
-        {
-            "enabled": True,
-            "persona": "диджей Снупдог",
-            "next_transition_sec": DJ_START_TRANSITION_SEC,
-        },
-    )]
-    assert "Снупдог" in n._speak_direct.call_args[0][0]
-
-
-def test_dj_persona_mid_set_switches_without_stop(run_plans):
-    n = _make_node(**STATES["dj"], state_name="DIALOGUE")
-    _stt(n, "Робот, ты диджей Снупдог")
-    run_plans()
-    n._dispatch_turn.assert_not_called()
     assert n._scheduler_executor.calls == [
-        ("set_dj_mode", {"enabled": True, "persona": "диджей Снупдог"})
+        ("dj_set", {"action": "start", "persona": "диджей Снупдог"})
     ]
-    n._publish_dj_off.assert_not_called()
-    assert n._speak_direct.call_args[0][0].startswith("Теперь я диджей Снупдог")
+    n._speak_direct.assert_called_once_with(NOT_STARTED_TEXT)
 
 
-def test_open_dj_request_runs_set_dj_mode_and_still_reaches_llm(run_plans):
+def test_open_dj_request_goes_to_llm_without_tools(run_plans):
     n = _make_node()
     text = "Робот, ты диджей Пёс, сыграй Still Dre и Next Episode"
     _stt(n, text)
     run_plans()
-    assert n._scheduler_executor.calls[0][0] == "set_dj_mode"
+    assert n._scheduler_executor.calls == []
     n._dispatch_turn.assert_called_once()
     n._speak_direct.assert_not_called()
 
@@ -272,11 +252,3 @@ def test_media_state_is_the_single_accessor():
     assert n._media_state().music_playing is False
     assert n._media_state().track_name is None  # название — только пока играет
 
-
-def test_media_state_exposes_form_ends_at_only_while_playing():
-    """Issue #3153 (доп.) — роутеру нужен конец формы играющего трека."""
-    n = _make_node(playing=True, track="Still Dre")
-    n._music_player_state = MusicPlayerState(state="playing", form_ends_at=123.0)
-    assert n._media_state().form_ends_at == 123.0
-    n._music_player_state = MusicPlayerState(state="idle", form_ends_at=123.0)
-    assert n._media_state().form_ends_at is None

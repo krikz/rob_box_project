@@ -33,24 +33,28 @@ alias rbpull='docker compose pull --policy always'
 # Навигация
 alias rbvision='cd ~/rob_box_project/docker/vision'
 alias rbmain='cd ~/rob_box_project/docker/main'
+alias rbsound='cd ~/rob_box_project/docker/sound'
 
 # Логи сервисов Vision Pi
 alias rblog-oak='docker compose logs -f oak-d'
 alias rblog-lidar='docker compose logs -f lslidar'
 alias rblog-led='docker compose logs -f led-matrix'
-alias rblog-voice='docker compose logs -f voice-assistant'
 alias rblog-apriltag='docker compose logs -f apriltag'
 
+# Логи сервисов Sound Pi (ADR-0159: голосовой стек и ТАРС)
+alias rblog-voice='docker compose logs -f voice-assistant'
+alias rblog-sc='docker compose logs -f supercollider'
+alias rblog-supervisor='docker compose logs -f supervisor'
+
 # Логи сервисов Main Pi
-alias rblog-agent='docker compose logs -f micro-ros-agent'
 alias rblog-zenoh='docker compose logs -f zenoh-router'
 
 # Полное обновление
 alias rbupdate='rbstop && git pull origin develop && docker compose pull --policy always && rbstart'
 
 # Остановка всех узлов
-alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
-alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; cd ~/rob_box_project/docker/main && docker compose up -d'
+alias rbstop-all='cd ~/rob_box_project/docker/vision && docker compose down; cd ~/rob_box_project/docker/sound && docker compose down; cd ~/rob_box_project/docker/main && docker compose down'
+alias rbstart-all='cd ~/rob_box_project/docker/vision && docker compose up -d; cd ~/rob_box_project/docker/sound && docker compose up -d; cd ~/rob_box_project/docker/main && docker compose up -d'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 🔍 МОНИТОРИНГ И ДИАГНОСТИКА
@@ -199,7 +203,7 @@ rbalias() {
     echo ""
     echo -e "${ROBBOX_COLOR_BLUE}Docker:${ROBBOX_COLOR_NC}"
     echo "  rbstart, rbstop, rbrestart, rbstatus, rblogs, rbpull"
-    echo "  rbvision, rbmain, rbupdate, rbsync"
+    echo "  rbvision, rbsound, rbmain, rbupdate, rbsync"
     echo ""
     echo -e "${ROBBOX_COLOR_BLUE}Мониторинг:${ROBBOX_COLOR_NC}"
     echo "  rbhealth, rbcheck, rbmonitor, rbfailing, rbdebug, rbresources"

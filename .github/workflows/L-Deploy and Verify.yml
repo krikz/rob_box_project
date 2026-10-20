@@ -2,7 +2,7 @@ name: "L: Deploy and Verify"
 
 # Автоматизированный деплой и проверка работоспособности робота на self-hosted runner
 # Требует: self-hosted runner с доступом к локальной сети (10.1.1.x) и Raspberry Pi устройствам
-# - Останавливает контейнеры на обоих Pi
+# - Останавливает контейнеры на трёх Pi (Vision → Sound → Main, ADR-0159 §3.4)
 # - Обновляет код из выбранной ветки
 # - Подтягивает свежие образы
 # - Запускает контейнеры
@@ -95,16 +95,19 @@ jobs:
             production)
               echo "IMAGE_TAG=latest" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             staging)
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             test)
               echo "IMAGE_TAG=test" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
@@ -119,6 +122,7 @@ jobs:
               echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
               echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
+              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
               echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
           esac
@@ -143,8 +147,10 @@ jobs:
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
           echo "VISION_FINDINGS_FILE=${RUNNER_TEMP}/vision_deployment_findings.jsonl" >> $GITHUB_ENV
+          echo "SOUND_FINDINGS_FILE=${RUNNER_TEMP}/sound_deployment_findings.jsonl" >> $GITHUB_ENV
           echo "MAIN_FINDINGS_FILE=${RUNNER_TEMP}/main_deployment_findings.jsonl" >> $GITHUB_ENV
           : > "${RUNNER_TEMP}/vision_deployment_findings.jsonl"
+          : > "${RUNNER_TEMP}/sound_deployment_findings.jsonl"
           : > "${RUNNER_TEMP}/main_deployment_findings.jsonl"
 
           # SSH options: timeout protection against WiFi flakiness / Pi unresponsiveness
@@ -220,6 +226,23 @@ jobs:
           fi
           
           echo ""
+          echo "Testing Sound Pi (${{ env.sound_pi_ip }})..."
+          if ping -c 1 -W 2 ${{ env.sound_pi_ip }} &> /dev/null; then
+            echo "✅ Sound Pi is reachable via ICMP"
+          else
+            echo "⚠️  Sound Pi is NOT reachable via ICMP (ping)"
+            CONNECTIVITY_OK=false
+          fi
+
+          # Проверка доступности SSH порта
+          if timeout 3 bash -c "</dev/tcp/${{ env.sound_pi_ip }}/22" 2>/dev/null; then
+            echo "✅ Sound Pi SSH port (22) is open"
+          else
+            echo "❌ Sound Pi SSH port (22) is NOT accessible"
+            CONNECTIVITY_OK=false
+          fi
+
+          echo ""
           echo "Testing Main Pi (${{ env.main_pi_ip }})..."
           if ping -c 1 -W 2 ${{ env.main_pi_ip }} &> /dev/null; then
             echo "✅ Main Pi is reachable via ICMP"
@@ -258,6 +281,7 @@ jobs:
             echo ""
             echo "Target IPs:"
             echo "  • Vision Pi: ${{ env.vision_pi_ip }}"
+            echo "  • Sound Pi: ${{ env.sound_pi_ip }}"
             echo "  • Main Pi: ${{ env.main_pi_ip }}"
             echo ""
             exit 1
@@ -279,6 +303,7 @@ jobs:
           echo "Image Tag: ${{ env.IMAGE_TAG }}"
           echo "Registry: ${{ env.registry_display }}"
           echo "Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "Sound Pi: ${{ env.sound_pi_ip }}"
           echo "Main Pi: ${{ env.main_pi_ip }}"
           echo ""
 
@@ -407,104 +432,6 @@ jobs:
             exit "$rp_rc"
           fi
 
-      - name: "[Vision Pi] Ensure STT/TTS models (Ресурсный пак, Этап 3)"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🗣  Ресурсный пак: Vosk + Silero на Vision Pi..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # Этап 3 плана docs/plans/2026-09-15-resource-pack.md §7.
-          # РАНЬШЕ обе модели (~227 МиБ на диске, измерено на Vision Pi
-          # 21.09.2026 — не «113 МБ», как говорили комментарии) лежали
-          # ВНУТРИ образа voice-base:
-          # их качала ступень сборки, и сборка падала целиком при недоступной
-          # сети. Теперь их кладёт на хост этот шаг, а voice-assistant видит
-          # их через bind-mount /opt/rob_box/models:/models:ro. Пути внутри
-          # контейнера не изменились (stt_node.yaml:8, tts_node.py:1853).
-          #
-          # ОТДЕЛЬНЫЙ шаг от HEF намеренно: у HEF записи soft (нет модели →
-          # нода в stub, деплой жив), у Vosk/Silero — hard (без модели
-          # stt_node не стартует вовсе). Разные последствия должны и падать
-          # по-разному, иначе в логе непонятно, что именно случилось.
-          #
-          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
-          # voice-assistant стартует с пустым /models.
-          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
-          rp_rc=0
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            "echo 'open' | sudo -S bash $RESOURCE_PACK --only vosk-ru-small,silero-tts-v5-ru" || rp_rc=$?
-
-          # Проверяем ФАКТ наличия, а не только код возврата (§11.5 плана):
-          # sentinel-файлы те же, что проверял Dockerfile до переезда.
-          MODELS_MISSING=""
-          for probe in \
-            "/opt/rob_box/models/vosk-model-small-ru-0.22/README" \
-            "/opt/rob_box/models/silero/v5_ru.pt"; do
-            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $probe"; then
-              echo "✅ $probe на месте"
-            else
-              MODELS_MISSING="$MODELS_MISSING $probe"
-              echo "::error title=Model missing::$probe не встал на Vision Pi — stt_node/tts_node не поднимутся"
-            fi
-          done
-
-          if [ "$rp_rc" -ne 0 ] || [ -n "$MODELS_MISSING" ]; then
-            echo "::error title=Resource pack failed::STT/TTS модели не разложены (exit=$rp_rc, missing:$MODELS_MISSING)"
-            echo "Откат: см. docs/plans/2026-09-15-resource-pack.md §7 Этап 3 — вернуть ступень скачивания в voice_base/Dockerfile."
-            exit 1
-          fi
-
-      - name: "[Vision Pi] Ensure Renardo samples (Ресурсный пак, хук)"
-        if: '!inputs.dry_run'
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎵 Ресурсный пак: Renardo/FoxDot сэмплы на Vision Pi..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          # РАНЬШЕ сэмплы (~600 МБ) ехали ОТДЕЛЬНЫМ образом voice-resources:
-          # его тянул с registry one-shot контейнер voice-resources-init при
-          # каждом деплое и раскладывал в named-volume renardo_samples. Образ,
-          # init-контейнер, volume и предыдущий шаг «Run voice-resources-init»
-          # удалены: сэмплы кладёт на хост этот шаг, а supercollider и
-          # voice-assistant видят их bind-mount'ом /opt/rob_box/samples.
-          # Пути ВНУТРИ контейнеров не изменились.
-          #
-          # ОТДЕЛЬНЫЙ шаг от STT/TTS-моделей намеренно, по той же причине, по
-          # которой HEF отделён от моделей: у сэмплов запись soft (нет сэмплов
-          # → музыка в synth-only, диалог/STT/TTS живы), у Vosk/Silero — hard
-          # (нет модели → stt_node не стартует вовсе). Слить их в один --only
-          # значило бы либо ронять деплой из-за музыки, либо перестать ронять
-          # его из-за распознавания речи: шаг выше проверяет наличие каждого
-          # своего sentinel-файла через `exit 1`, и сэмплы в этом списке вели
-          # бы себя как hard-ресурс вопреки манифесту.
-          #
-          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
-          # первый старт стека получит пустой bind-mount.
-          #
-          # Первый прогон на «чистом» роботе качает ~600 МБ и идёт долго;
-          # дальше это no-op по маркеру 0_foxdot_default/downloaded_at.txt,
-          # без единого сетевого запроса.
-          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
-          rp_rc=0
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples" || rp_rc=$?
-
-          # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
-          # маркер тот же, на котором стоит идемпотентность фетчера.
-          SAMPLES_MARKER="/opt/rob_box/samples/0_foxdot_default/downloaded_at.txt"
-          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} "test -f $SAMPLES_MARKER"; then
-            echo "✅ Renardo сэмплы на месте ($SAMPLES_MARKER)"
-          else
-            echo "::warning title=Renardo samples missing::сэмплы не разложены — музыка уйдёт в synth-only (MusicSkill не найдёт WAV, scsynth не прочитает буферы). Диалог/STT/TTS не затронуты."
-            echo "⚠️  Проверить: [Vision Pi] Check Container Logs на 'samples not found' / 'Buffer UGen: no buffer data'"
-          fi
-
-          # exit 1 только на 1/2 от самого скрипта (сломанный манифест,
-          # неизвестный хук). Отсутствие soft-ресурса скрипт кодом 0 и
-          # отдаёт — деплой из-за музыки не падает.
-          if [ "$rp_rc" -ne 0 ]; then
-            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc на renardo-samples — сломан манифест или вызов, см. вывод выше"
-            exit "$rp_rc"
-          fi
-
       - name: "[Vision Pi] .image-versions — из текущей ветки (реверт #1139 v2, 15.08)"
         if: '!inputs.dry_run'
         run: |
@@ -630,7 +557,255 @@ jobs:
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=vision' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
              echo '🚀 compose up'; \
-             docker compose up -d --force-recreate --pull never --remove-orphans"
+             docker compose up -d --force-recreate --pull never --remove-orphans; rc=\$?; \
+             echo '📈 #3300: агенты мониторинга (profile monitoring) — best-effort, образы cadvisor/promtail тянутся из сети'; \
+             docker compose --profile monitoring up -d cadvisor promtail || echo '::warning::monitoring agents не поднялись (нет сети/образов?)'; \
+             exit \$rc"
+
+      # ==================== SOUND PI DEPLOYMENT (ADR-0159) ====================
+      # Третий узел: voice-assistant, supercollider, voice-action-server,
+      # avatar-supervisor, zenoh-router-sound и (волна 2, PR-7, В9) avatar-arbiter,
+      # rob-box-quest, telegram-bot (+ cadvisor/promtail, profile
+      # monitoring; sensor-bridge, profile sensors, по умолчанию выключен).
+      # Порядок узлов — ADR-0159 §3.4: Vision → Sound → Main. Шаги — по образцу
+      # Vision Pi; намеренно НЕ скопированы «Ensure systemd unit» (ADR-0159 §2.5:
+      # robbox-sound.service не нужен CI) и Hailo (PCIe-карта стоит на Vision).
+
+      - name: "[Sound Pi] Update Code"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Updating Sound Pi code from branch: ${{ github.ref_name }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Retry + reset --hard — по тем же причинам, что на Vision Pi
+          # (force-push'нутые ветки e2e-раундов, flaky WiFi до github.com).
+          for attempt in 1 2 3; do
+            sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+              "cd ~/rob_box_project && \
+               git fetch origin && \
+               git checkout ${{ github.ref_name }} && \
+               git reset --hard origin/${{ github.ref_name }}" \
+              && break
+            echo "⚠️  Attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
+
+      # docker/sound/.env.secrets (MIMO/DEEPSEEK/YANDEX/KIE/MINIMAX-ключи для
+      # voice-assistant и avatar-supervisor, TELEGRAM_*-ключи для telegram-bot,
+      # compose `env_file`) лежит ТОЛЬКО на
+      # хосте — как docker/vision/.env.secrets: деплой секретов не копирует, в
+      # репозитории только .env.secrets.template. Без файла `compose up` падает
+      # на env_file, а с пустым — голосовой стек молча стартует без ключей
+      # (диалог/TTS уходят в деградацию, ADR-0018). Проверяем ДО Stop Containers,
+      # чтобы работающий стек не снесло зря.
+      - name: "[Sound Pi] Check .env.secrets (хостовый, не из репозитория)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔑 Checking docker/sound/.env.secrets on Sound Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          SECRETS='~/rob_box_project/docker/sound/.env.secrets'
+          if ! sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "test -s $SECRETS"; then
+            echo "::error title=Sound Pi .env.secrets missing::docker/sound/.env.secrets нет на Sound Pi или он пуст — голосовой стек стартует без API-ключей. Создать: cp docker/sound/.env.secrets.template docker/sound/.env.secrets и заполнить ключи (деплой секретов не копирует)."
+            exit 1
+          fi
+          echo "✅ $SECRETS на месте"
+          # Шаблон скопирован, но не заполнен — не провал (часть ключей
+          # опциональна), но не молчим.
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "grep -Eq '=(sk-)?your_' $SECRETS"; then
+            echo "::warning title=Sound Pi .env.secrets has placeholders::в docker/sound/.env.secrets остались значения-заглушки your_* из шаблона — соответствующие провайдеры не заработают"
+          fi
+
+      - name: "[Sound Pi] Ensure STT/TTS models (Ресурсный пак, Этап 3)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🗣  Ресурсный пак: Vosk + Silero на Sound Pi (ADR-0159: STT/TTS живут здесь)..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Этап 3 плана docs/plans/2026-09-15-resource-pack.md §7.
+          # РАНЬШЕ обе модели (~227 МиБ на диске, измерено на Sound Pi
+          # 21.09.2026 — не «113 МБ», как говорили комментарии) лежали
+          # ВНУТРИ образа voice-base:
+          # их качала ступень сборки, и сборка падала целиком при недоступной
+          # сети. Теперь их кладёт на хост этот шаг, а voice-assistant видит
+          # их через bind-mount /opt/rob_box/models:/models:ro. Пути внутри
+          # контейнера не изменились (stt_node.yaml:8, tts_node.py:1853).
+          #
+          # ОТДЕЛЬНЫЙ шаг от HEF намеренно: у HEF записи soft (нет модели →
+          # нода в stub, деплой жив), у Vosk/Silero — hard (без модели
+          # stt_node не стартует вовсе). Разные последствия должны и падать
+          # по-разному, иначе в логе непонятно, что именно случилось.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # voice-assistant стартует с пустым /models.
+          # Скрипт ресурсного пака лежит в docker/vision/scripts/resource_pack (его делят
+          # Vision: HEF, и Sound: модели/сэмплы/партитуры; чекаут на Sound Pi полный).
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "echo 'open' | sudo -S bash $RESOURCE_PACK --only vosk-ru-small,silero-tts-v5-ru" || rp_rc=$?
+
+          # Проверяем ФАКТ наличия, а не только код возврата (§11.5 плана):
+          # sentinel-файлы те же, что проверял Dockerfile до переезда.
+          MODELS_MISSING=""
+          for probe in \
+            "/opt/rob_box/models/vosk-model-small-ru-0.22/README" \
+            "/opt/rob_box/models/silero/v5_ru.pt"; do
+            if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "test -f $probe"; then
+              echo "✅ $probe на месте"
+            else
+              MODELS_MISSING="$MODELS_MISSING $probe"
+              echo "::error title=Model missing::$probe не встал на Sound Pi — stt_node/tts_node не поднимутся"
+            fi
+          done
+
+          if [ "$rp_rc" -ne 0 ] || [ -n "$MODELS_MISSING" ]; then
+            echo "::error title=Resource pack failed::STT/TTS модели не разложены (exit=$rp_rc, missing:$MODELS_MISSING)"
+            echo "Откат: см. docs/plans/2026-09-15-resource-pack.md §7 Этап 3 — вернуть ступень скачивания в voice_base/Dockerfile."
+            exit 1
+          fi
+
+      - name: "[Sound Pi] Ensure Renardo samples (Ресурсный пак, хук)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎵 Ресурсный пак: Renardo/FoxDot сэмплы на Sound Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # РАНЬШЕ сэмплы (~600 МБ) ехали ОТДЕЛЬНЫМ образом voice-resources:
+          # его тянул с registry one-shot контейнер voice-resources-init при
+          # каждом деплое и раскладывал в named-volume renardo_samples. Образ,
+          # init-контейнер, volume и предыдущий шаг «Run voice-resources-init»
+          # удалены: сэмплы кладёт на хост этот шаг, а supercollider и
+          # voice-assistant видят их bind-mount'ом /opt/rob_box/samples.
+          # Пути ВНУТРИ контейнеров не изменились.
+          #
+          # ОТДЕЛЬНЫЙ шаг от STT/TTS-моделей намеренно, по той же причине, по
+          # которой HEF отделён от моделей: у сэмплов запись soft (нет сэмплов
+          # → музыка в synth-only, диалог/STT/TTS живы), у Vosk/Silero — hard
+          # (нет модели → stt_node не стартует вовсе). Слить их в один --only
+          # значило бы либо ронять деплой из-за музыки, либо перестать ронять
+          # его из-за распознавания речи: шаг выше проверяет наличие каждого
+          # своего sentinel-файла через `exit 1`, и сэмплы в этом списке вели
+          # бы себя как hard-ресурс вопреки манифесту.
+          #
+          # Шаг обязан отработать ДО `docker compose up` (он ниже) — иначе
+          # первый старт стека получит пустой bind-mount.
+          #
+          # Первый прогон на «чистом» роботе качает ~600 МБ и идёт долго;
+          # дальше это no-op по маркеру 0_foxdot_default/downloaded_at.txt,
+          # без единого сетевого запроса.
+          # Скрипт ресурсного пака лежит в docker/vision/scripts/resource_pack (его делят
+          # Vision: HEF, и Sound: модели/сэмплы/партитуры; чекаут на Sound Pi полный).
+          RESOURCE_PACK='~/rob_box_project/docker/vision/scripts/resource_pack/apply_resource_pack.sh'
+          rp_rc=0
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }}             "echo 'open' | sudo -S bash $RESOURCE_PACK --only renardo-samples,dj-dave-samples,sonicpi-samples,muldjord-kit,score-library" || rp_rc=$?
+
+          # Факт наличия проверяем отдельно от кода возврата (§11.5 плана):
+          # маркер тот же, на котором стоит идемпотентность фетчера.
+          SAMPLES_MARKER="/opt/rob_box/samples/0_foxdot_default/downloaded_at.txt"
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "test -f $SAMPLES_MARKER"; then
+            echo "✅ Renardo сэмплы на месте ($SAMPLES_MARKER)"
+          else
+            echo "::warning title=Renardo samples missing::сэмплы не разложены — музыка уйдёт в synth-only (MusicSkill не найдёт WAV, scsynth не прочитает буферы). Диалог/STT/TTS не затронуты."
+            echo "⚠️  Проверить: [Sound Pi] Check Container Logs на 'samples not found' / 'Buffer UGen: no buffer data'"
+          fi
+
+          # Библиотека партитур (ADR-0154 §8 В7) — тот же шаг: soft, как сэмплы.
+          # Архив — блоб registry katana по sha256 из score_library.lock.json;
+          # маркер .complete несёт эту сумму (первая строка), поэтому новая
+          # версия lock-файла доезжает этим же деплоем, без --force.
+          SCORES_MARKER="/opt/rob_box/scores/.complete"
+          if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} "test -f $SCORES_MARKER && head -n 3 $SCORES_MARKER"; then
+            echo "✅ Библиотека партитур на месте ($SCORES_MARKER)"
+          else
+            echo "::warning title=Score library missing::библиотеки партитур нет — сет по теме играет хуки RTTTL (как до ADR-0154 PR-5). Диалог/STT/TTS не затронуты."
+          fi
+
+          # exit 1 только на 1/2 от самого скрипта (сломанный манифест,
+          # неизвестный хук). Отсутствие soft-ресурса скрипт кодом 0 и
+          # отдаёт — деплой из-за музыки не падает.
+          if [ "$rp_rc" -ne 0 ]; then
+            echo "::error title=Resource pack failed::apply_resource_pack.sh exit=$rp_rc на renardo-samples — сломан манифест или вызов, см. вывод выше"
+            exit "$rp_rc"
+          fi
+
+      - name: "[Sound Pi] Pull Docker Images"
+        # Issue #2930: preflight перед Stop Containers (см. Vision-шаг):
+        # упал ⇒ Stop/Start не выполняются, работающий стек не тронут.
+        # .image-versions.<tag> (docker/sound/) берётся из текущей ветки —
+        # так же, как на Vision/Main (реверт #1139 v2, 15.08).
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Pulling Docker images on Sound Pi..."
+          echo "   Registry: ${{ env.registry_display }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "cd ~/rob_box_project/docker/sound && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
+
+      - name: "[Sound Pi] Sync System Time"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🕐 Syncing system time (NTP) on Sound Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          # Зачем — см. «[Vision Pi] Sync System Time». sync_time.sh при активном
+          # chrony только проверяет его (setup_chrony.sh --check, роль sound —
+          # клиент Main Pi, как vision), без chrony настраивает timesyncd.
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "if [ -f ~/rob_box_project/scripts/maintenance/sync_time.sh ]; then \
+               echo 'open' | sudo -S bash ~/rob_box_project/scripts/maintenance/sync_time.sh || true; \
+             else \
+               echo '⚠️  sync_time.sh not found (old code) — skipping'; \
+             fi" \
+            || echo "⚠️  Warning: time sync failed on Sound Pi"
+
+      # Stop — ПОСЛЕ Pull (issue #2930), как на Vision/Main.
+      - name: "[Sound Pi] Stop Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🛑 Stopping Sound Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            'cd ~/rob_box_project/docker/sound && docker compose down --remove-orphans --timeout 20' \
+            || echo "⚠️  Warning: Failed to stop containers (may not be running)"
+
+      - name: "[Sound Pi] Start Containers"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Starting Sound Pi containers..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Та же защита от name-slot race (issue #2499), что на Vision Pi:
+          # явный `docker rm -f` всех контейнеров compose-проекта `sound`
+          # (проект = имя каталога docker/sound) перед `up`; network sound_default
+          # снимаем на случай, если daemon держит её после неудачного recreate.
+          # container_name'ы (zenoh-router-sound, supercollider, voice-assistant,
+          # ...) в списке не хардкодим — фильтр по compose-label.
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "cd ~/rob_box_project/docker/sound && \
+             export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+             export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
+             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             echo '🔧 cleanup stale containers/networks (sound)'; \
+             docker network rm sound_default 2>/dev/null || true; \
+             docker container prune -f 2>/dev/null || true; \
+             echo '🔧 issue #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
+             docker ps -a --filter 'label=com.docker.compose.project=sound' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
+             echo '🚀 compose up'; \
+             docker compose up -d --force-recreate --pull never --remove-orphans; rc=\$?; \
+             echo '📈 #3300: агенты мониторинга (profile monitoring) — best-effort, образы cadvisor/promtail тянутся из сети'; \
+             docker compose --profile monitoring up -d cadvisor promtail || echo '::warning::monitoring agents не поднялись (нет сети/образов?)'; \
+             exit \$rc"
 
       # ==================== MAIN PI DEPLOYMENT ====================
 
@@ -754,7 +929,10 @@ jobs:
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
              docker ps -a --filter 'label=com.docker.compose.project=main' --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null || true; \
-             docker compose up -d --force-recreate --pull never"
+             docker compose up -d --force-recreate --pull never; rc=\$?; \
+             echo '📈 #3300: агенты мониторинга (profile monitoring) — best-effort, образы cadvisor/promtail тянутся из сети'; \
+             docker compose --profile monitoring up -d cadvisor promtail || echo '::warning::monitoring agents не поднялись (нет сети/образов?)'; \
+             exit \$rc"
 
       # ==================== INITIALIZATION WAIT ====================
 
@@ -770,11 +948,11 @@ jobs:
 
       # ==================== POST-DEPLOY CLEANUP ====================
 
-      - name: "[Vision Pi + Main Pi] Cleanup Docker Artifacts (parallel)"
+      - name: "[Vision Pi + Sound Pi + Main Pi] Cleanup Docker Artifacts (parallel)"
         if: '!inputs.dry_run'
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 Cleaning up unused Docker artifacts on both Pi (parallel)..."
+          echo "🧹 Cleaning up unused Docker artifacts on all three Pi (parallel)..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # Разбор тайминга деплоя run 35645507502 (16m41s vs обычных ~8-9м,
           # docs/plans/2026-09-21-cicd-pipeline-handoff.md): два этих шага были
@@ -783,6 +961,8 @@ jobs:
           # читает вывод другого, ни один более поздний шаг не смотрит на
           # id/outputs этих двух (в отличие от Check Container Status ниже,
           # чьи outputs разбирает "Deployment Summary" — те НЕ трогаем).
+          # ADR-0159: третья независимая сессия (Sound Pi) идёт тем же параллельным
+          # паттерном — время шага остаётся максимумом, а не суммой.
           # Объединение меняет только время выполнения (сумма → максимум),
           # не поведение: обе ветки по-прежнему `|| warning`, шаг по-прежнему
           # никогда не проваливает деплой сам по себе.
@@ -804,14 +984,20 @@ jobs:
             || echo "⚠️  Warning: Docker cleanup failed on Main Pi" >> "${RUNNER_TEMP}/cleanup_main.log" &
           MAIN_CLEANUP_PID=$!
 
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }}             "docker system df &&              docker image prune -af &&              docker builder prune -af &&              docker system df"             > "${RUNNER_TEMP}/cleanup_sound.log" 2>&1             || echo "⚠️  Warning: Docker cleanup failed on Sound Pi" >> "${RUNNER_TEMP}/cleanup_sound.log" &
+          SOUND_CLEANUP_PID=$!
+
           # wait на каждый PID отдельно и без учёта кода возврата — как и
           # раньше, провал очистки только предупреждает (`|| echo warning`
           # уже внутри каждой фоновой ветки), деплой из-за неё не падает.
           wait "$VISION_CLEANUP_PID" || true
+          wait "$SOUND_CLEANUP_PID" || true
           wait "$MAIN_CLEANUP_PID" || true
 
           echo "--- [Vision Pi] ---"
           cat "${RUNNER_TEMP}/cleanup_vision.log"
+          echo "--- [Sound Pi] ---"
+          cat "${RUNNER_TEMP}/cleanup_sound.log"
           echo "--- [Main Pi] ---"
           cat "${RUNNER_TEMP}/cleanup_main.log"
 
@@ -864,6 +1050,49 @@ jobs:
             cat vision_status_summary.txt
           fi
 
+      - name: "[Sound Pi] Check Container Status"
+        if: '!inputs.dry_run'
+        id: sound_status
+        # См. комментарий в "[Vision Pi] Check Container Status" — тот же скрипт.
+        # EXPECTED_CONTAINERS — обязательные контейнеры узла (сервисы без profile из
+        # docker/sound/docker-compose.yaml): пустой `compose ps` не должен давать
+        # зелёный статус. Список сверяет с compose тест
+        # scripts/testing/test_deploy_workflow_cleanup.py (дрейф ловится в CI).
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Checking Sound Pi container status..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          PI_HOST="${{ env.sound_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/sound' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          CONFIRM_INTERVAL=15 \
+          SUMMARY_FILE=sound_status_summary.txt \
+          FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          SCOPE=sound \
+          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant voice-action-server avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
+            bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
+
+          touch sound_status_summary.txt
+
+          SOUND_HEALTHY=$(jq -r '.healthy' /tmp/sound_status.json)
+          SOUND_FAILED_COUNT=$(jq -r '.failed_count' /tmp/sound_status.json)
+
+          echo "sound_healthy=$SOUND_HEALTHY" >> $GITHUB_OUTPUT
+          echo "failed_count=$SOUND_FAILED_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$SOUND_HEALTHY" = "true" ]; then
+            echo "✅ All Sound Pi containers running and confirmed stable"
+          else
+            echo "❌ $SOUND_FAILED_COUNT container(s) unhealthy on Sound Pi"
+            echo "--- sound_status_summary.txt ---"
+            cat sound_status_summary.txt
+          fi
+
       - name: "[Main Pi] Check Container Status"
         if: '!inputs.dry_run'
         id: main_status
@@ -907,237 +1136,68 @@ jobs:
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: vision_logs
+        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
+        # Тесты: .github/scripts/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Vision Pi container logs..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Создаем временный файл для сбора логов
-          LOGS_FILE="vision_logs.txt"
-          echo "" > $LOGS_FILE
+          PI_HOST="${{ env.vision_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/vision' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          SCOPE=vision \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          FINDINGS_FILE="$VISION_FINDINGS_FILE" \
+          LOGS_FILE=vision_logs.txt \
+            python3 .github/scripts/check_container_logs.py
 
-          # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-            'cd ~/rob_box_project/docker/vision && docker compose ps --format json' | jq -r '.Name')
+      - name: "[Sound Pi] Check Container Logs"
+        if: '!inputs.dry_run'
+        id: sound_logs
+        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
+        # Тесты: .github/scripts/tests/test_check_container_logs.py.
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Checking Sound Pi container logs..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Define error exclusion patterns
-          # NOTE: These patterns are redefined in each section (Vision Pi, Main Pi)
-          # because GitHub Actions workflow steps don't share shell variable scope.
-          # This is intentional and not a DRY violation.
-          
-          # Common patterns (used on both Pi)
-          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
-          # Promtail connection errors when monitoring system is not available
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
-          
-          # Warning exclusion patterns
-          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
-          # Promtail warnings about monitoring system
-          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
-
-          CRITICAL_COUNT=0
-          WARNING_COUNT=0
-
-          for container in $CONTAINERS; do
-            echo "Checking logs for: $container"
-
-            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-              "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
-              "docker logs --tail 150 $container 2>&1")
-            
-            # Объединяем логи для анализа
-            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
-
-            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
-            CRITICAL=$(printf "%s\n" "$LOGS" | \
-              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity critical || true)
-            if [ ! -z "$CRITICAL" ]; then
-              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
-              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
-              echo "  ❌ CRITICAL errors found in $container"
-              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
-              echo "$CRITICAL" >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "vision" \
-                --arg container "$container" \
-                --arg kind "critical_log" \
-                --arg severity "critical" \
-                --arg summary "Critical log pattern detected" \
-                --arg raw_text "$CRITICAL_SAMPLE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$VISION_FINDINGS_FILE"
-            fi
-
-            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
-            WARNINGS=$(printf "%s\n" "$LOGS" | \
-              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope vision --severity warning || true)
-            if [ ! -z "$WARNINGS" ]; then
-              WARNING_COUNT=$((WARNING_COUNT + 1))
-              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
-              echo "  ⚠️  Warnings found in $container"
-              echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "vision" \
-                --arg container "$container" \
-                --arg kind "warning_log" \
-                --arg severity "warning" \
-                --arg summary "Warning log pattern detected" \
-                --arg raw_text "$WARNING_SAMPLE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$VISION_FINDINGS_FILE"
-            fi
-            
-            # Если найдены критические ошибки, добавляем полный контекст инициализации
-            if [ ! -z "$CRITICAL" ]; then
-              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
-              echo "$LOGS_START" >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-            fi
-          done
-
-          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
-          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
-
-          # Сохраняем логи как артефакт
-          if [ -s $LOGS_FILE ]; then
-            cat $LOGS_FILE
-            echo "has_issues=true" >> $GITHUB_OUTPUT
-          else
-            echo "✅ No critical errors or warnings found"
-            echo "has_issues=false" >> $GITHUB_OUTPUT
-          fi
+          PI_HOST="${{ env.sound_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/sound' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          SCOPE=sound \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
+          LOGS_FILE=sound_logs.txt \
+            python3 .github/scripts/check_container_logs.py
 
       - name: "[Main Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: main_logs
+        # Логика вынесена в .github/scripts/check_container_logs.py (одна на все
+        # три Pi; раньше ~110 строк bash копировались на каждый узел, ADR-0159).
+        # Тесты: .github/scripts/tests/test_check_container_logs.py.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Checking Main Pi container logs..."
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # Создаем временный файл для сбора логов
-          LOGS_FILE="main_logs.txt"
-          echo "" > $LOGS_FILE
-
-          # Получаем список контейнеров
-          CONTAINERS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-            'cd ~/rob_box_project/docker/main && docker compose ps --format json' | jq -r '.Name')
-
-          # Define error exclusion patterns
-          # NOTE: These patterns are redefined here (same as Vision Pi section)
-          # because GitHub Actions workflow steps don't share shell variable scope.
-          # This is intentional and not a DRY violation.
-          
-          # Common patterns (used on both Pi)
-          EXCLUDE_COMMON="Serial port /dev/ttyUSB0|Loki.*connection|entry too far behind"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|could not inspect container|could not fetch logs"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|Scouting delay elapsed|No such container"
-          # Promtail connection errors when monitoring system is not available
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|error sending batch.*loki.*push|Post.*loki.*push"
-          EXCLUDE_COMMON="$EXCLUDE_COMMON|context deadline exceeded|dial tcp.*3100.*no route to host"
-          
-          # Main Pi specific exclusions (includes common + additional patterns)
-          EXCLUDE_MAIN="$EXCLUDE_COMMON|Robot is out of bounds|Cannot transform tag pose"
-          EXCLUDE_MAIN="$EXCLUDE_MAIN|Sensor origin.*out of map bounds|CAN controller state: ERROR-ACTIVE"
-          
-          # Warning exclusion patterns
-          # Common warning patterns (used on both Pi)
-          EXCLUDE_WARN_COMMON="Scouting delay elapsed|Нода не найдена|Unknown logical group"
-          # Promtail warnings about monitoring system
-          EXCLUDE_WARN_COMMON="$EXCLUDE_WARN_COMMON|error sending batch.*loki|enable watchConfig"
-          
-          # Main Pi inherits from common + adds specific patterns
-          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_COMMON|could not find a connection.*tree"
-          EXCLUDE_WARN_MAIN="$EXCLUDE_WARN_MAIN|root link.*inertia|No real-time kernel"
-
-          CRITICAL_COUNT=0
-          WARNING_COUNT=0
-
-          for container in $CONTAINERS; do
-            echo "Checking logs for: $container"
-
-            # Получаем первые 50 строк (инициализация) и последние 150 строк логов
-            LOGS_START=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-              "docker logs --tail 10000 $container 2>&1 | head -50")
-            LOGS_END=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
-              "docker logs --tail 150 $container 2>&1")
-            
-            # Объединяем логи для анализа
-            LOGS=$(printf "%s\n---[...SKIPPED MIDDLE LOGS...]---\n%s" "$LOGS_START" "$LOGS_END")
-
-            # Проверяем на критические ошибки через helper c дедуп/false-positive правилами.
-            CRITICAL=$(printf "%s\n" "$LOGS" | \
-              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity critical || true)
-            if [ ! -z "$CRITICAL" ]; then
-              CRITICAL_COUNT=$((CRITICAL_COUNT + 1))
-              CRITICAL_SAMPLE=$(printf "%s\n" "$CRITICAL" | sed '/^[[:space:]]*$/d' | head -1)
-              echo "  ❌ CRITICAL errors found in $container"
-              echo "=== $container CRITICAL ERRORS ===" >> $LOGS_FILE
-              echo "$CRITICAL" >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "main" \
-                --arg container "$container" \
-                --arg kind "critical_log" \
-                --arg severity "critical" \
-                --arg summary "Critical log pattern detected" \
-                --arg raw_text "$CRITICAL_SAMPLE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$MAIN_FINDINGS_FILE"
-            fi
-
-            # Проверяем на предупреждения через helper c дедуп/false-positive правилами.
-            WARNINGS=$(printf "%s\n" "$LOGS" | \
-              python3 .github/scripts/deployment_issue_dedup.py extract-log --scope main --severity warning || true)
-            if [ ! -z "$WARNINGS" ]; then
-              WARNING_COUNT=$((WARNING_COUNT + 1))
-              WARNING_SAMPLE=$(printf "%s\n" "$WARNINGS" | sed '/^[[:space:]]*$/d' | head -1)
-              echo "  ⚠️  Warnings found in $container"
-              echo "=== $container WARNINGS ===" >> $LOGS_FILE
-              printf "%s\n" "$WARNINGS" | head -30 >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-              jq -nc \
-                --arg environment "${{ inputs.environment }}" \
-                --arg scope "main" \
-                --arg container "$container" \
-                --arg kind "warning_log" \
-                --arg severity "warning" \
-                --arg summary "Warning log pattern detected" \
-                --arg raw_text "$WARNING_SAMPLE" \
-                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
-                >> "$MAIN_FINDINGS_FILE"
-            fi
-            
-            # Если найдены критические ошибки, добавляем полный контекст инициализации
-            if [ ! -z "$CRITICAL" ]; then
-              echo "=== $container INITIALIZATION CONTEXT ===" >> $LOGS_FILE
-              echo "$LOGS_START" >> $LOGS_FILE
-              echo "" >> $LOGS_FILE
-            fi
-          done
-
-          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
-          echo "warning_count=$WARNING_COUNT" >> $GITHUB_OUTPUT
-
-          # Сохраняем логи как артефакт
-          if [ -s $LOGS_FILE ]; then
-            cat $LOGS_FILE
-            echo "has_issues=true" >> $GITHUB_OUTPUT
-          else
-            echo "✅ No critical errors or warnings found"
-            echo "has_issues=false" >> $GITHUB_OUTPUT
-          fi
+          PI_HOST="${{ env.main_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          SCOPE=main \
+          ENVIRONMENT="${{ inputs.environment }}" \
+          FINDINGS_FILE="$MAIN_FINDINGS_FILE" \
+          LOGS_FILE=main_logs.txt \
+            python3 .github/scripts/check_container_logs.py
 
       - name: "[Vision Pi] Check ROS2 Topics"
         if: '!inputs.dry_run'
@@ -1195,6 +1255,67 @@ jobs:
                 --arg raw_text "Missing expected topics:$MISSING_TOPICS" \
                 '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
                 >> "$VISION_FINDINGS_FILE"
+            else
+              echo "✅ All expected topics present"
+              echo "topics_healthy=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: "[Sound Pi] Check ROS2 Topics"
+        if: '!inputs.dry_run'
+        id: sound_topics
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📡 Checking ROS2 topics on Sound Pi..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # Топики голосового стека видны из контейнера voice-assistant.
+          # /voice/stt/result публикует stt_node — его присутствие говорит, что
+          # voice-assistant дошёл до Zenoh-графа (ADR-0159: сквозной путь Sound→Main→Vision).
+          # Статус topics_healthy НЕ влияет на deploy_status (как на Vision/Main):
+          # это finding, не провал деплоя.
+          echo "Checking voice-assistant container topics..."
+          TOPICS=$(sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "docker exec voice-assistant bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list 2>/dev/null'" || echo "")
+
+          if [ -z "$TOPICS" ]; then
+            echo "❌ No topics found (ROS2 may not be initialized yet)"
+            echo "topics_healthy=false" >> $GITHUB_OUTPUT
+            jq -nc \
+              --arg environment "${{ inputs.environment }}" \
+              --arg scope "sound" \
+              --arg container "voice-assistant" \
+              --arg kind "topic_check" \
+              --arg severity "critical" \
+              --arg summary "No ROS2 topics found" \
+              --arg raw_text "No ROS2 topics found in voice-assistant container" \
+              '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+              >> "$SOUND_FINDINGS_FILE"
+          else
+            echo "Topics found:"
+            echo "$TOPICS" | grep -E "^/voice" || echo "  (no /voice topics)"
+
+            EXPECTED_TOPICS="/voice/stt/result"
+            MISSING_TOPICS=""
+            for topic in $EXPECTED_TOPICS; do
+              if ! echo "$TOPICS" | grep -qx "$topic"; then
+                MISSING_TOPICS="$MISSING_TOPICS $topic"
+              fi
+            done
+
+            if [ -n "$MISSING_TOPICS" ]; then
+              echo "⚠️  Missing expected topics:$MISSING_TOPICS"
+              echo "topics_healthy=partial" >> $GITHUB_OUTPUT
+              jq -nc \
+                --arg environment "${{ inputs.environment }}" \
+                --arg scope "sound" \
+                --arg container "voice-assistant" \
+                --arg kind "topic_check" \
+                --arg severity "warning" \
+                --arg summary "Expected ROS2 topics missing" \
+                --arg raw_text "Missing expected topics:$MISSING_TOPICS" \
+                '{environment:$environment, scope:$scope, container:$container, kind:$kind, severity:$severity, summary:$summary, raw_text:$raw_text}' \
+                >> "$SOUND_FINDINGS_FILE"
             else
               echo "✅ All expected topics present"
               echo "topics_healthy=true" >> $GITHUB_OUTPUT
@@ -1270,11 +1391,13 @@ jobs:
 
           python3 .github/scripts/deployment_issue_dedup.py prepare \
             --findings-file "$VISION_FINDINGS_FILE" \
+            --findings-file "$SOUND_FINDINGS_FILE" \
             --findings-file "$MAIN_FINDINGS_FILE" \
             --branch "${{ github.ref_name }}" \
             --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --timestamp "${{ steps.setup.outputs.timestamp }}" \
             --vision-pi-ip "${{ env.vision_pi_ip }}" \
+            --sound-pi-ip "${{ env.sound_pi_ip }}" \
             --main-pi-ip "${{ env.main_pi_ip }}" \
             > "$CANDIDATES_FILE"
 
@@ -1352,6 +1475,15 @@ jobs:
           echo "Topics Status: ${{ steps.vision_topics.outputs.topics_healthy || 'unknown' }}"
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Sound Pi (${{ env.sound_pi_ip }})"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Containers Healthy: ${{ steps.sound_status.outputs.sound_healthy || 'unknown' }}"
+          echo "Failed Containers: ${{ steps.sound_status.outputs.failed_count || '0' }}"
+          echo "Critical Errors: ${{ steps.sound_logs.outputs.critical_count || '0' }}"
+          echo "Warnings: ${{ steps.sound_logs.outputs.warning_count || '0' }}"
+          echo "Topics Status: ${{ steps.sound_topics.outputs.topics_healthy || 'unknown' }}"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Main Pi (${{ env.main_pi_ip }})"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Containers Healthy: ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
@@ -1376,12 +1508,14 @@ jobs:
             echo "⚠️  DEPLOYMENT RUN CANCELLED OR SKIPPED"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Run was cancelled by user or interrupted before health checks completed."
-            echo "Container Status: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }} / ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
+            echo "Container Status: ${{ steps.vision_status.outputs.vision_healthy || 'unknown' }} / ${{ steps.sound_status.outputs.sound_healthy || 'unknown' }} / ${{ steps.main_status.outputs.main_healthy || 'unknown' }}"
             echo "No deploy-issue will be created — this is not a deployment failure."
             echo "deploy_status=cancelled" >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.vision_status.outputs.vision_healthy }}" == "true" ] && \
+               [ "${{ steps.sound_status.outputs.sound_healthy }}" == "true" ] && \
                [ "${{ steps.main_status.outputs.main_healthy }}" == "true" ] && \
                [ "${{ steps.vision_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
+               [ "${{ steps.sound_logs.outputs.critical_count || 0 }}" -eq 0 ] && \
                [ "${{ steps.main_logs.outputs.critical_count || 0 }}" -eq 0 ]; then
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "✅ DEPLOYMENT SUCCESSFUL"
@@ -1435,9 +1569,13 @@ jobs:
           # начале job).
           DIAGNOSTICS_FILE="$(mktemp)"
           : > "$DIAGNOSTICS_FILE"
-          for f in vision_status_summary.txt main_status_summary.txt; do
+          for f in vision_status_summary.txt sound_status_summary.txt main_status_summary.txt; do
             if [ -s "$f" ]; then
-              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_status_summary.txt" ] && SCOPE_LABEL="Main Pi"
+              case "$f" in
+                vision_*) SCOPE_LABEL="Vision Pi" ;;
+                sound_*) SCOPE_LABEL="Sound Pi" ;;
+                *) SCOPE_LABEL="Main Pi" ;;
+              esac
               {
                 echo "### ${SCOPE_LABEL}: unhealthy/restart-looping containers"
                 echo '```'
@@ -1447,9 +1585,13 @@ jobs:
               } >> "$DIAGNOSTICS_FILE"
             fi
           done
-          for f in vision_logs.txt main_logs.txt; do
+          for f in vision_logs.txt sound_logs.txt main_logs.txt; do
             if [ -s "$f" ]; then
-              SCOPE_LABEL="Vision Pi"; [ "$f" = "main_logs.txt" ] && SCOPE_LABEL="Main Pi"
+              case "$f" in
+                vision_*) SCOPE_LABEL="Vision Pi" ;;
+                sound_*) SCOPE_LABEL="Sound Pi" ;;
+                *) SCOPE_LABEL="Main Pi" ;;
+              esac
               {
                 echo "### ${SCOPE_LABEL}: log tail (critical/warning findings)"
                 echo '```'
@@ -1525,6 +1667,7 @@ jobs:
           echo "  Image Tag: ${{ env.IMAGE_TAG }}"
           echo "  Registry: ${{ env.registry_display }}"
           echo "  Vision Pi: ${{ env.vision_pi_ip }}"
+          echo "  Sound Pi: ${{ env.sound_pi_ip }}"
           echo "  Main Pi: ${{ env.main_pi_ip }}"
           echo ""
           echo "To perform actual deployment, run without dry_run flag."

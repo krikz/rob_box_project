@@ -119,7 +119,6 @@ def _turn_node(ack_during_llm=None, ack_after_result=None):
     n._retry_dispatched_in_turn = False
     n._drain_pending_user_messages = MagicMock(return_value=False)
     n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_music_guard = MagicMock(return_value=False)
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     return n
@@ -226,7 +225,7 @@ class TestAnswerResolvesConflict:
         n._build_dynamic_system_context = MagicMock(return_value="")
 
         asyncio.run(DialogueNode._prepare_user_input_context(
-            n, user_input="это я", from_tg=False, was_dj_auto=False,
+            n, user_input="это я", from_tg=False,
             speaker_context=None,
         ))
 

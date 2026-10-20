@@ -1,0 +1,451 @@
+"""DJ-сет v2: очередь, предгенерация N+1, переход по ``nearly_finished`` (ADR-0149 §4.1–§4.4, PR-5).
+
+``SetSession`` решает, *что* играет следующим и *когда* переходить; звук, события и снимок —
+у ``PlayerOwner`` (единственный писатель). Время — только доли клока Renardo от реального
+старта трека (колбэк ``started``): ``form_end_beat = start_beat + form_beats``; стенные часы
+сессия не читает.
+
+* На ``started(N)`` в фоне сразу компонуется и рендерится N+1 на другой деке → ``queued``.
+* ``nearly_finished(N)`` за ``lead_beats`` до конца формы: N+1 в очереди — **блэнд** (PR-8, §3.12):
+  N+1 встаёт за ``model.blend_bars(N, N+1)`` тактов до границы формы N (фаза 0 на такте), оба
+  трека звучат вместе, бочка и бас меняются на такте свопа (это свойство форм, а не движка),
+  дека N снимается на границе и свободна. Формы не сводятся (``blend_bars = 0``) — стык ровно на
+  границе формы (PR-5). Не готов (не успел, отказ рендера, чужой темп) — **текущий трек играет ещё
+  проход формы** («продлить, а не замолчать», I1), проверка повторяется через проход.
+* Энергия трека плана → ``trim`` мастер-шины после динамики и профиль выравнивателя сета (PR-7, §3.10, §4.6):
+  ``Program.master``, выставляет адаптер на доле старта трека.
+* Сет конечный: ``tracks`` треков (``set_plan.DEFAULT_TRACKS`` или число из фразы, решение Шифу 06.10 — сет без
+  конца дошёл до 53-го трека). Последний трек играет форму один раз (``PlayerOwner``: ``once`` → ``finished`` →
+  ``idle``), N+1 после него не компонуется и не ждётся, на ``finished`` сет закрывается: «сет окончен».
+* Темп один на сет (I7, §4.4): его ставит первый трек (``Clock.update_tempo_now``), трек с
+  другим темпом до деки не доходит — ``rejected{tempo_mismatch}`` и продление.
+
+Источник следующего трека — шов ``TrackSource``: ``(track_no, deck) -> Track``. По умолчанию
+:func:`compose_source` — ``arrange.compose`` по плану сета (``set_plan.seeded_plan``, PR-3b: темп,
+дуга энергии, тоника — там, своей копии плана здесь нет). План от LLM (PR-10) — тот же шов:
+:func:`plan_source` читает текущий план на каждый трек, а :meth:`SetSession.replan` перегенерирует ещё не
+сыгранный N+1 (§4.2).
+
+Сет из генерации (ADR-0158 §2.7, PR-8): шов тот же, источник отдаёт ``AudioTrack`` (файл кэша) вместо ``Track`` —
+:func:`deck_program` рендерит его ``render_audio`` с кроссфейдом ``knowledge.GEN_XFADE_S`` секунд, а стык с файлом
+(синтез-мост → файл) — блэнд на такты вокруг него (:meth:`SetSession._blend_beats`); уходящий файл петлёй (``tail_beats``) —
+встык на границе прохода, его хвост и есть кроссфейд (хвост PR-8, 14.10); остаток такта входящий отрабатывает сдвигом
+звука (``carry_beats`` → :meth:`SetSession._entry_lead`, В15). Мост ожидания генерации
+(кавер, песня — ``BridgeHold``) — тот же сет из двух треков с фактами заказа вместо фактов сета (``fields``).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+from dataclasses import replace
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+
+from rob_box_music import knowledge as kn
+from rob_box_music.arrange.compose import compose, upcoming_hooks
+from rob_box_music.arrange.harmony import PROGRESSION_LOOKBACK
+from rob_box_music.arrange.mix import set_master
+from rob_box_music.diversity import HISTORY_FIELDS, track_composition, track_history, track_json
+from rob_box_music.dj_line import tracks_word
+from rob_box_music.model import BEATS_PER_BAR, AudioTrack, Track, blend_bars
+from rob_box_music.render.audio import entry_blend, render_audio
+from rob_box_music.render.program import Program
+from rob_box_music.render.renardo import render
+from rob_box_music.set_plan import DEFAULT_TRACKS, SetPlan
+
+_LOG = logging.getLogger(__name__)
+
+#: ``nearly_finished`` за ``(phrase_bars + 1) × 4`` доли до конца формы (ADR-0149 §4.3): 36 долей
+#: ≈ 16 с при 132 BPM — запас на предгенерацию повторно, если первая не удалась.
+PHRASE_BARS = 8
+NEARLY_LEAD_BEATS = float((PHRASE_BARS + 1) * 4)
+
+#: Источник следующего трека: ``(track_no, deck) -> Track``.
+TrackSource = Callable[[int, str], Track]
+#: Текущий план сета и мелодии его хуков: ``() -> (SetPlan, {id: rtttl})``.
+PlanNow = Callable[[], Tuple[SetPlan, Optional[Mapping[str, str]]]]
+
+
+def compose_source(plan: SetPlan, melodies: Optional[Mapping[str, str]] = None) -> TrackSource:
+    """Треки сета из ``arrange.compose`` по одному плану на весь сет."""
+    return plan_source(lambda: (plan, melodies))
+
+
+#: Сколько файлов ``<track_id>.json`` держит каталог треков (старые удаляются по mtime).
+TRACK_FILES_KEEP = 200
+
+
+def write_track_file(directory: str, track: Track, keep: int = TRACK_FILES_KEEP) -> str:
+    """Полная модель трека в ``<directory>/<track_id>.json`` (ADR-0152 §2.3, I24); ротация — не больше ``keep`` файлов.
+    ``track_id`` содержит ``:`` — в имени файла он заменён на ``_``. Возвращает путь."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, track.track_id.replace(":", "_") + ".json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(track_json(track))
+    files = sorted((os.path.join(directory, n) for n in os.listdir(directory) if n.endswith(".json")),
+                   key=os.path.getmtime)
+    for old in files[:max(len(files) - keep, 0)]:
+        os.remove(old)
+    return path
+
+
+class SetMemory:
+    """Строки треков прошлых сетов (свежие первыми) — разнообразие МЕЖДУ сетами (A13, I17).
+
+    Приёмка 02.10 (A13): история жила только внутри сета, и окно «прогрессия ≤ 3 из 10 треков подряд» на стыке
+    сетов не держалось (5 из 10). Глубина — окно этого критерия плюс запас на не сыгранные треки
+    (``PROGRESSION_LOOKBACK``, #3460) или три полных сета для свежести хуков (``knowledge.HOOK_MEMORY_TRACKS``, #3399) —
+    что больше. ``store`` — ``diversity.MusicHistory``
+    (таблица ``music_history``): память переживает перезапуск процесса, треки сета пишутся в неё на старте
+    следующего (#3399: хуки недавних сетов уходят в конец очереди ``compose.hook_candidates``).
+    """
+
+    def __init__(self, depth: int = max(PROGRESSION_LOOKBACK, kn.HOOK_MEMORY_TRACKS), store: Any = None) -> None:
+        self._depth = depth
+        self._store = store
+        self._past: Tuple[Dict[str, Any], ...] = tuple(store.recent(depth)) if store is not None else ()
+        self._rows: Dict[int, Dict[str, Any]] = {}
+
+    def peek(self) -> Tuple[Dict[str, Any], ...]:
+        """Память, какой её увидит :meth:`begin` на старте нового сета, но без записи в ``store`` и без сдвига: план
+        сета (``seeded_plan``: жанровое окно, тоника, бочки, формы) штрафует за прошлые сеты ДО первого трека."""
+        last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))
+        return (last + self._past)[:self._depth]
+
+    def begin(self) -> Tuple[Dict[str, Any], ...]:
+        """Новый сет: треки прошлого уходят в память (и в ``store``); вернуть её (свежие первыми)."""
+        last = tuple(self._rows[no] for no in sorted(self._rows, reverse=True))
+        if self._store is not None:
+            for row in reversed(last):
+                self._store.record(**{k: v for k, v in row.items() if k in HISTORY_FIELDS})
+        self._past, self._rows = (last + self._past)[:self._depth], {}
+        return self._past
+
+    def remember(self, track_no: int, row: Dict[str, Any]) -> None:
+        self._rows[track_no] = row
+
+
+def plan_source(current: PlanNow, memory: Optional[SetMemory] = None,
+                materials: Optional[Mapping[str, Any]] = None) -> TrackSource:
+    """Треки по плану, который сейчас у сета, с историей сета по всем осям (``diversity.track_history``, PR-3d):
+    каркас, прогрессия, хук, сэмплы не повторяются подряд. История — строки треков с МЕНЬШИМ номером (свежие
+    первыми): повторная компоновка того же N+1 (``replan``, повтор после отказа) заменяет его строку и не видит
+    саму себя; за ними — треки прошлых сетов из ``memory``. Запись в ``music_history`` (между перезапусками) —
+    отдельный шаг владельца (по ``started``). ``materials`` — ``{material_id: ScoreMaterial}`` для
+    ``TrackPlan.material`` (ADR-0154 PR-5): загружены при старте сета, компоновка их не читает с диска."""
+    rows: Dict[int, Dict[str, Any]] = {}
+    past = memory.begin() if memory is not None else ()
+
+    def next_track(track_no: int, deck: str) -> Track:
+        plan, melodies = current()
+        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < track_no) + past
+        track = compose(plan, track_no, melodies=melodies, history=history, deck=deck, materials=materials)
+        rows[track_no] = track_history(track, plan.set_id)
+        if memory is not None:
+            memory.remember(track_no, rows[track_no])
+        return track
+
+    def upcoming(first_no: int, count: int) -> List[Optional[str]]:
+        """Мелодии треков ``first_no`` … (#3497): скомпонованные — как сыграют, остальные — по той же очереди, что у
+        :func:`compose` (``compose.hook_order``), с историей до ``first_no``; нет найденных по теме — пусто."""
+        plan, melodies = current()
+        history = tuple(rows[no] for no in sorted(rows, reverse=True) if no < first_no) + past
+        done = {no: row.get("melody_name") for no, row in list(rows.items()) if no >= first_no}
+        return upcoming_hooks(plan.profile, melodies or {}, history, plan.set_id, first_no, count, done)
+
+    next_track.upcoming = upcoming  # type: ignore[attr-defined]
+    return next_track
+
+
+def deck_program(track: Any, deck: str, last: bool, lead_beats: float = 0.0) -> Any:
+    """Программа деки трека сета: синтез — ``render`` + мастер-шина энергии/стиля (PR-7, #3549); файл генерации —
+    ``render_audio`` с кроссфейдом, последний трек — один проход файла (ADR-0158 PR-8); готовая программа (мост,
+    уже собранный заказом, ``engine.gen.gen_session.BridgeHold``) — как есть. ``lead_beats`` — сдвиг входа файла."""
+    if isinstance(track, Program):
+        return track
+    if isinstance(track, AudioTrack):
+        return render_audio(track, deck, xfade_s=kn.GEN_XFADE_S, once=last, lead_beats=lead_beats)
+    return replace(render(track, deck), master=set_master(track.energy, kn.STYLES[track.style]))
+
+
+def _other_deck(deck: str) -> str:
+    return "B" if deck == "A" else "A"
+
+
+def _start_thread(fn: Callable[[], None]) -> None:
+    threading.Thread(target=fn, name="rbx-set-pregen", daemon=True).start()
+
+
+class SetSession:
+    """Один DJ-сет поверх ``PlayerOwner``.
+
+    Args:
+        owner: :class:`~rob_box_mcp_tools.engine.player_owner.PlayerOwner` (или фейк с тем же API).
+        source: следующий трек сета, см. :data:`TrackSource`.
+        set_id: идентификатор сета (префикс ``track_id``).
+        bpm: темп сета — единственный (I7).
+        dj: поля снимка ``dj`` (персона, тема…); ``set_id``/``track_no``/``bpm`` дописываются.
+        submit: где компоновать N+1 (по умолчанию — фоновый поток: клок не ждёт рендера).
+        lead_beats: за сколько долей до конца формы ``nearly_finished``.
+        on_track_started: ``track_id -> str`` на ``started`` — пометка в лог (``source=…``, PR-10).
+        tracks_dir: каталог ``<track_id>.json`` с полной моделью трека (``None`` — не писать, ADR-0152 §2.3).
+        tracks: длина сета; трек с этим номером — последний (один проход формы, потом сет окончен).
+    """
+
+    def __init__(self, owner: Any, source: TrackSource, *, set_id: str, bpm: int,
+                 dj: Optional[Mapping[str, Any]] = None, submit: Callable[[Callable[[], None]], None] = _start_thread,
+                 lead_beats: float = NEARLY_LEAD_BEATS, logger: Any = None,
+                 on_track_started: Callable[[str], str] = lambda _track_id: "",
+                 tracks_dir: Optional[str] = None, tracks: int = DEFAULT_TRACKS,
+                 fields: Optional[Callable[[int], Dict[str, Any]]] = None, entry_lead: bool = True) -> None:
+        self._owner = owner
+        self.tracks = max(1, int(tracks))
+        self._source = source
+        self.set_id = set_id
+        self.bpm = int(bpm)
+        self._dj = dict(dj or {})
+        self._submit = submit
+        self._lead = float(lead_beats)
+        self._log = logger or _LOG
+        self._note = on_track_started
+        self._tracks_dir = tracks_dir
+        self._lock = threading.Lock()
+        self._active = False
+        self._tracks: Dict[str, int] = {}  # track_id → номер в сете
+        self._models: Dict[str, Track] = {}  # track_id → модель (играющий и в очереди: длина блэнда)
+        self._seams = Seams()  # хвосты и остатки тактов программ (кроссфейд файлов)
+        self._entry_lead_on = bool(entry_lead)  # мост ожидания: результат встаёт на такт без сдвига (``cut_in_beat``)
+        self._next_id: Optional[str] = None  # что последним поставлено в очередь
+        self._current: Optional[Dict[str, Any]] = None  # {track_id, no, deck, form_beats}
+        self._preparing = False
+        self._ended = False  # последний трек доиграл: сет окончен сам, не стопом
+        self._fields = fields  # факты снимка по номеру трека вместо фактов сета (мост ожидания генерации)
+
+    def dj_fields(self, track_no: int) -> Dict[str, Any]:
+        if self._fields is not None:
+            return self._fields(track_no)
+        title = f"{self._dj.get('theme') or 'диджей-сет'} · трек {track_no} из {self.tracks}"  # <music_state> (§2.3)
+        return {**self._dj, "enabled": True, "set_id": self.set_id, "track_no": track_no, "tracks": self.tracks,
+                "bpm": self.bpm, "title": title}
+
+    def start(self) -> Dict[str, Any]:
+        """Трек 1 на деке A; звук — по ``started``. Отказ — ``{ok: False, reason}`` (громко, I25)."""
+        program = self._prepare(1, "A")
+        if program is None:
+            return {"ok": False, "reason": "track_rejected", "set_id": self.set_id}
+        with self._lock:
+            self._active = True
+        self._owner.on_started = self._on_started
+        self._owner.on_finished = self._on_finished
+        result = self._owner.play(program, dj=self.dj_fields(1), once=self.tracks == 1)
+        if not result.get("ok"):
+            self._deactivate()
+        return {**result, "set_id": self.set_id, "bpm": self.bpm}
+
+    def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
+        """Сет закрыт: очередь пуста, плеер ``idle``; запланированное на клоке устаревает."""
+        self._deactivate()
+        self._log.info(f"🎧 [set v2] {self.set_id} stop reason={reason}")
+        return {**self._owner.stop(reason), "set_id": self.set_id}
+
+    def detach(self) -> None:
+        """Деку занял другой заказ: сет больше не слушает владельца, деку не трогает."""
+        self._deactivate()
+
+    def replan(self) -> None:
+        """План сменился (LLM, PR-10): N+1, ещё не сыгранный, компонуется заново (ADR-0149 §4.2)."""
+        self._pregenerate_soon()
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @property
+    def ended(self) -> bool:
+        """Сет доиграл последний трек сам (не стоп человеком)."""
+        return self._ended
+
+    @property
+    def track_no(self) -> int:
+        """Номер трека, который сейчас играет (до ``started`` первого — 1)."""
+        with self._lock:
+            return int((self._current or {}).get("no") or 1)
+
+    def _deactivate(self) -> None:
+        with self._lock:
+            self._active = False
+        if self._owner.on_started == self._on_started:
+            self._owner.on_started = None
+        if getattr(self._owner, "on_finished", None) == self._on_finished:
+            self._owner.on_finished = None
+
+    def _on_finished(self, track_id: str) -> None:
+        """Поток клока: конечный трек доиграл. Последний трек сета — сет окончен (плеер уже ``idle``)."""
+        with self._lock:
+            last = self._active and self._tracks.get(track_id) == self.tracks
+        if not last:
+            return
+        self._ended = True
+        self._deactivate()
+        self._log.info(f"🎧 [set v2] {self.set_id} сет окончен: {self.tracks} {tracks_word(self.tracks)}")
+
+    def _prepare(self, track_no: int, deck: str) -> Optional[Any]:
+        """Компоновка → рендер → тот же темп. ``None`` — артефакт отвергнут (событие ``rejected``)."""
+        try:
+            track = self._source(track_no, deck)
+            program = deck_program(track, deck, track_no >= self.tracks, self._entry_lead(track))
+        except Exception as exc:  # noqa: BLE001 — отказ громкий; музыка (если есть) играет дальше
+            self._owner.reject(f"{self.set_id}:{track_no:02d}:{deck}", "compose_error", f"{type(exc).__name__}: {exc}")
+            return None
+        if program.bpm != self.bpm:
+            self._owner.reject(program.track_id, "tempo_mismatch", f"bpm {program.bpm} ≠ темп сета {self.bpm}")
+            return None
+        with self._lock:
+            self._tracks[program.track_id] = track_no
+            self._models[program.track_id] = track
+            self._seams.put(program)
+        return program
+
+    def _entry_lead(self, track: Any) -> float:
+        """Сдвиг звука входящего файла внутри такта (:meth:`Seams.lead`) от того, что играет сейчас."""
+        with self._lock:
+            current = (self._current or {}).get("track_id")
+            leaving = self._models.get(current)
+        return self._seams.lead(track, leaving, current, self.bpm) if self._entry_lead_on else 0.0
+
+    def _on_started(self, snap: Mapping[str, Any]) -> None:
+        """Поток клока: трек N встал — считать конец формы от его доли и готовить N+1."""
+        track_id = snap.get("track_id")
+        with self._lock:
+            no = self._tracks.get(track_id)
+            if not self._active or no is None:
+                return
+            self._current = {"track_id": track_id, "no": no, "deck": snap.get("deck"),
+                             "form_beats": float(snap["form_beats"])}
+            model = self._models.get(track_id)
+            self._models = {k: v for k, v in self._models.items() if k == track_id}
+            self._seams.keep(track_id)
+        form_end = float(snap["start_beat"]) + float(snap["form_beats"])
+        self._log.info(f"🎧 [set v2] {self.set_id} трек {no}/{self.tracks} started track_id={track_id} "
+                       f"form_end_beat={form_end} {self._note(track_id)} {self._composition_note(model)}".rstrip())
+        if no >= self.tracks:  # последний: плеер доиграет форму один раз (once), следующего нет
+            self._log.info(f"🎧 [set v2] {self.set_id} трек {no} последний — играет форму до конца, следующего нет")
+            return
+        self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
+        self._pregenerate_soon()
+
+    def _composition_note(self, model: Optional[Track]) -> str:
+        """``composition={…}`` одной строкой JSON (+ файл модели, если задан каталог); сбой записи — в лог."""
+        if not isinstance(model, Track):  # файл генерации: модели трека нет (ADR-0158 PR-8)
+            return ""
+        if self._tracks_dir:
+            try:
+                write_track_file(self._tracks_dir, model)
+            except OSError as exc:
+                self._log.warning(f"⚠️ [set v2] {self.set_id} модель трека не записана: {type(exc).__name__}: {exc}")
+        return "composition=" + json.dumps(track_composition(model), ensure_ascii=False, separators=(",", ":"))
+
+    def _pregenerate_soon(self) -> None:
+        with self._lock:
+            if self._preparing or not self._active or (self._current or {}).get("no", 0) >= self.tracks:
+                return
+            self._preparing = True
+        self._submit(self._pregenerate)
+
+    def _pregenerate(self) -> None:
+        """Фон: N+1 на другой деке → ``queued`` с токеном N."""
+        with self._lock:
+            current = dict(self._current or {})
+        try:
+            program = self._prepare(current["no"] + 1, _other_deck(current["deck"])) if current else None
+        finally:
+            with self._lock:
+                self._preparing = False
+        with self._lock:
+            still = self._active and (self._current or {}).get("track_id") == current.get("track_id")
+        if program is not None and still:
+            with self._lock:
+                self._next_id = program.track_id
+            self._owner.enqueue(program, current["track_id"])
+
+    def _on_nearly_finished(self, track_id: str, form_end: float) -> None:
+        """Поток клока: N+1 готов — блэнд до ``form_end`` (или стык на ней); нет — ещё проход формы N (I1)."""
+        with self._lock:
+            current = dict(self._current or {})
+            if not self._active or current.get("track_id") != track_id:
+                return
+        if self._owner.now_playing().get("pending"):  # N+1 уже поставлен (вход по такту, BridgeHold) — ждёт started
+            self._owner.watch(track_id, form_end + current["form_beats"], self._lead, self._on_nearly_finished)
+            return
+        overlap = self._blend_beats(track_id)
+        advanced = self._owner.advance(form_end - overlap, dj=self.dj_fields(current["no"] + 1),
+                                       leave_at=form_end if overlap else None,
+                                       once=current["no"] + 1 >= self.tracks)
+        if not advanced:
+            self._log.warning(f"⚠️ [set v2] {self.set_id} трек {current['no'] + 1} не готов — "
+                              f"продлеваю трек {current['no']} ещё на проход формы")
+            self._pregenerate_soon()
+        elif overlap:
+            self._log.info(f"🎧 [set v2] {self.set_id} блэнд трек {current['no']}→{current['no'] + 1}: "
+                           f"{overlap / BEATS_PER_BAR:g} тактов с доли {form_end - overlap}")
+        # Страховка и при стыке: не встанет N+1 (exec упал) — N играет, проверка через проход.
+        self._owner.watch(track_id, form_end + current["form_beats"], self._lead, self._on_nearly_finished)
+
+    def _blend_beats(self, track_id: str) -> float:
+        """Доли блэнда играющего трека с тем, что в очереди; 0 — стык встык (формы не сводятся)."""
+        with self._lock:
+            leaving, incoming = self._models.get(track_id), self._models.get(self._next_id or "")
+            tail = self._seams.tail(track_id)
+        beats = blend_beats(leaving, incoming, tail, self.bpm)
+        if beats is None:
+            return 0.0
+        if not beats or beats > self._lead - BEATS_PER_BAR:  # вход должен успеть встать на такт после события
+            self._log.warning(f"⚠️ [set v2] {self.set_id} блэнда нет ({leaving.track_id}→{incoming.track_id}: "
+                              f"{beats:g} долей при lead {self._lead:g}) — стык на границе формы")
+            return 0.0
+        return beats
+
+
+class Seams:
+    """Стык файлов сета по ``track_id`` программы: ``tail_beats`` — хвост ноты за границей прохода (файл петлёй), и
+    ``carry_beats`` — остаток такта, который входящий файл отрабатывает сдвигом звука (кроссфейд ровно ``GEN_XFADE_S``)."""
+
+    def __init__(self) -> None:
+        self._by_id: Dict[str, Tuple[float, float]] = {}
+
+    def put(self, program: Any) -> None:
+        self._by_id[program.track_id] = (float(getattr(program, "tail_beats", 0.0)),
+                                         float(getattr(program, "carry_beats", 0.0)))
+
+    def keep(self, track_id: str) -> None:
+        self._by_id = {k: v for k, v in self._by_id.items() if k == track_id}
+
+    def tail(self, track_id: str) -> float:
+        return self._by_id.get(track_id, (0.0, 0.0))[0]
+
+    def lead(self, track: Any, leaving: Any, leaving_id: str, bpm: int) -> float:
+        """Сдвиг звука входящего файла внутри такта: после уходящего файла — остаток его прохода, после синтеза —
+        недостача блэнда до целого такта (:func:`entry_blend`); иначе 0."""
+        if not isinstance(track, AudioTrack):
+            return 0.0
+        tail, carry = self._by_id.get(leaving_id, (0.0, 0.0))
+        return carry if tail else (entry_blend(bpm)[1] if isinstance(leaving, Track) else 0.0)
+
+
+def blend_beats(leaving: Any, incoming: Any, tail: float, bpm: int) -> Optional[float]:
+    """Доли блэнда уходящего с входящим; ``None`` — стык на границе формы без блэнда и без предупреждения: нечего
+    сводить, уходящий файл петлёй (``tail`` — хвост его ноты за границей прохода — и есть кроссфейд) или готовая
+    программа моста (форм нет)."""
+    if leaving is None or incoming is None or tail:
+        return None
+    if isinstance(leaving, AudioTrack) or isinstance(incoming, AudioTrack):  # кроссфейд огибающей файла
+        return entry_blend(bpm)[0]
+    if isinstance(leaving, Track) and isinstance(incoming, Track):
+        return float(blend_bars(leaving, incoming) * BEATS_PER_BAR)
+    return None
+
+
+__all__ = ["NEARLY_LEAD_BEATS", "PHRASE_BARS", "PlanNow", "SetMemory", "SetSession", "TrackSource", "blend_beats",
+           "compose_source", "deck_program", "plan_source"]

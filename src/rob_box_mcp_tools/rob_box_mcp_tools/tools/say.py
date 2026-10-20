@@ -77,6 +77,11 @@ class SayTool(MCPTool):
         return False
 
     @property
+    def operator_visible(self) -> bool:
+        # Оператор (ТАРС) её зовёт, личность — нет (issue #3305).
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "Произнести текст голосом от имени оператора робота. "

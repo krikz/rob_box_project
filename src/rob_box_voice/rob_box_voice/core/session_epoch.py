@@ -10,9 +10,10 @@ in-flight turn, но у отменённого хода остаются хво�
   (живой лог 23.09 14:18:08 — ретрай стартует в ту же секунду, что и
   ``session reset``);
 * ретраи, уже поставленные в loop (``run_coroutine_threadsafe``), но ещё
-  не начавшиеся — ``_cancel_run`` отменяет только текущий ``_run_task``;
-* запоздалый ``set_dj_mode(enabled=true)`` из mcp_server (другой процесс,
-  топик ``/voice/dj_mode``) от хода, начатого до сброса.
+  не начавшиеся — ``_cancel_run`` отменяет только текущий ``_run_task``.
+
+(Забор на запоздалый ``set_dj_mode(enabled=true)`` удалён в ADR-0149 PR-13a
+вместе с DJ-контроллером старого пути.)
 
 :class:`SessionEpoch` — счётчик поколений: сброс сессии его продвигает,
 каждый ход несёт поколение, в котором родился, и ход/ретрай чужого
@@ -23,34 +24,16 @@ in-flight turn, но у отменённого хода остаются хво�
 from __future__ import annotations
 
 import contextvars
-import json
 from typing import Optional
 
 #: Поколение сессии, в котором родился ТЕКУЩИЙ ход. Выставляется в
 #: ``_run_turn`` на время хода; asyncio-задачи копируют контекст, поэтому
 #: синхронный ретрай, задиспатченный изнутри хода, наследует поколение
-#: родителя, а не текущее (после сброса — уже новое). Вне хода (STT-колбэк,
-#: DJ-тикер в ROS-потоке) переменная не выставлена.
+#: родителя, а не текущее (после сброса — уже новое). Вне хода (STT-колбэк)
+#: переменная не выставлена.
 TURN_EPOCH: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
     "rob_box_turn_epoch", default=None
 )
-
-
-#: Тул, включающий DJ (его ``enabled=true`` и режет забор).
-DJ_MODE_TOOL = "set_dj_mode"
-
-
-def _payload_enables_dj(payload: str) -> bool:
-    """``True`` если JSON ``/voice/dj_mode`` включает DJ.
-
-    Битый payload — ``False``: решать, что с ним делать (warning), будет
-    ``DJModeController.handle_message``, а не забор.
-    """
-    try:
-        data = json.loads(payload)
-    except (TypeError, ValueError):
-        return False
-    return isinstance(data, dict) and bool(data.get("enabled", False))
 
 
 class SessionEpoch:
@@ -58,19 +41,14 @@ class SessionEpoch:
 
     def __init__(self) -> None:
         self._value = 0
-        # «Забор» на включение DJ: поднимается сбросом сессии, снимается
-        # первым ходом, родившимся в новом поколении. Пока забор стоит,
-        # ``enabled=true`` может прийти только от хода старой сессии.
-        self._dj_enable_fenced = False
 
     @property
     def current(self) -> int:
         return self._value
 
     def advance(self) -> int:
-        """Сброс сессии: новое поколение + забор на включение DJ."""
+        """Сброс сессии: новое поколение."""
         self._value += 1
-        self._dj_enable_fenced = True
         return self._value
 
     def is_stale(self, epoch: Optional[int]) -> bool:
@@ -83,39 +61,12 @@ class SessionEpoch:
         parent = TURN_EPOCH.get()
         return self._value if parent is None else parent
 
-    def note_turn_started(self, epoch: Optional[int]) -> None:
-        """Ход текущего поколения начался — снимаем забор на DJ."""
-        if not self.is_stale(epoch):
-            self._dj_enable_fenced = False
-
-    def note_media_command(self, tool_calls) -> None:
-        """Команда юзера, исполняемая кодом без хода LLM (issue #3217).
-
-        Закрытая DJ-команда медиароутера («ты диджей X») приходит в
-        текущем поколении и есть генуинный ход новой сессии: её
-        ``set_dj_mode(enabled=true)`` не должен резаться забором. Снимаем
-        забор, только если среди тулов есть ``set_dj_mode``; поколение —
-        текущее, так что запоздалый ``enabled=true`` от хода ДО сброса
-        по-прежнему режется (его поколение не совпадает).
-        """
-        if any(c.name == DJ_MODE_TOOL for c in tool_calls):
-            self.note_turn_started(self._value)
-
     def retries_allowed(
         self, *, turn_epoch: Optional[int], cancelled: bool
     ) -> bool:
-        """Можно ли ходу диспатчить post-turn ретраи (music/tool гуарды).
+        """Можно ли ходу диспатчить post-turn ретраи (tool-гуард).
 
         Нельзя, если ход отменён (barge-in / сброс — результата нет, «тула
         не вызвали» тут ложь) или если за время хода сессию сбросили.
         """
         return not cancelled and not self.is_stale(turn_epoch)
-
-    def admits_dj_payload(self, payload: str) -> bool:
-        """Пропустить ли сообщение ``/voice/dj_mode`` в DJ-контроллер.
-
-        Выключение проходит всегда. Включение режется, пока после сброса
-        не начался ни один ход новой сессии: такой ``enabled=true`` может
-        прийти только от хода, начатого до сброса.
-        """
-        return not (self._dj_enable_fenced and _payload_enables_dj(payload))

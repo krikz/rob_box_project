@@ -93,3 +93,17 @@ def test_execute_empty_text_publishes_nothing(say_tool):
 
     assert result.success is False
     publisher.publish.assert_not_called()
+
+
+def test_say_executes_via_mcp_registry_not_unknown_tool(say_tool):
+    """MCPToolRegistry.execute — не «unknown tool» (issue #3305)."""
+    from rob_box_mcp_tools.registry import MCPToolRegistry
+
+    tool, _node, publisher = say_tool
+    registry = MCPToolRegistry()
+    registry.register(tool)
+
+    result = registry.execute("say", text="Привет, люди")
+
+    assert result.success is True, result
+    publisher.publish.assert_called_once()

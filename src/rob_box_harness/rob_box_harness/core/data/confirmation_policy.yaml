@@ -63,10 +63,6 @@ tools:
     class: require
     reason: "перезапись существующего waypoint (политика §8.2)"
     plan_template: "Сохраняю waypoint. Подтверждаешь?"
-  execute_music_code:
-    class: require
-    reason: "выполняет Python-код от LLM в процессе MCP-сервера"
-    plan_template: "Запускаю музыкальный код. Подтверждаешь?"
 
   # ── 🟡 NOTIFY: обратимо, но стоит озвучить ──────────────────────────
   set_speed:
@@ -84,9 +80,6 @@ tools:
   optimize_map:
     class: notify
     reason: "долгая обработка — уведомление без блокировки"
-  set_dj_mode:
-    class: notify
-    reason: "смена режима — обратимо"
 
   # ── 🟢 PASS_THROUGH: read-only / безопасные / аварийные ────────────
   stop_navigation:
@@ -143,24 +136,6 @@ tools:
   list_waypoints:
     class: pass_through
     reason: "🟢 read-only"
-  list_tracks:
-    class: pass_through
-    reason: "🟢 read-only"
   stop_music:
     class: notify
     reason: "🟡 останавливает музыку — озвучиваем, но не блокируем (аварийная семантика)"
-  set_vibe_preset:
-    class: pass_through
-    reason: "🟢 обратимо"
-  search_samples:
-    class: pass_through
-    reason: "🟢 read-only"
-  save_track:
-    class: pass_through
-    reason: "🟢 обратимо"
-  load_track:
-    class: pass_through
-    reason: "🟢 обратимо"
-  delete_track:
-    class: pass_through
-    reason: "🟢 обратимо (можно пересоздать)"

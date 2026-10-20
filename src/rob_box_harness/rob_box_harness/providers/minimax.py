@@ -240,8 +240,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         ``MINIMAX_API_KEY`` from ``os.environ``. The key is never
         logged.
     model:
-        Default model name. Defaults to ``"MiniMax-M3"`` (the
-        upstream default; vision-capable).
+        Default model name. Defaults to :data:`DEFAULT_MODEL` (the
+        upstream default, ``MiniMax-M3``; vision-capable).
     base_url:
         Endpoint URL. Defaults to ``https://api.minimax.io/v1``.
     timeout:
@@ -872,12 +872,11 @@ def build_minimax_provider(
         base_url=DEFAULT_BASE_URL,
         timeout=timeout,
         retry=retry,
-        # Issue #2718: ``None`` from caller → constructor default
-        # (``DEFAULT_FIRST_CHUNK_TIMEOUT_S`` = 10 s); pass-through
-        # otherwise. We forward the raw value rather than substituting
-        # the default ourselves so a future caller can disable the
-        # timeout entirely by passing ``None`` (== "no first-chunk
-        # guard") — same intent as the constructor signature.
+        # Issue #2718: значение уходит в конструктор как есть, и
+        # ``None`` (дефолт фабрики) ВЫКЛЮЧАЕТ гуард — дефолт конструктора
+        # (10 с) сюда не подставляется. Так задумано для пакетных вызовов
+        # со своим дедлайном (reasoner, текст песни: ответ дольше 10 с);
+        # агентские цепочки включают гуард явно в ``catalog.build_provider``.
         first_chunk_timeout_s=first_chunk_timeout_s,
         client=client,
         # 🔴 FIX (live 06.08): вернули DEFAULT_THINKING_POLICY — вчера (b5879b79)

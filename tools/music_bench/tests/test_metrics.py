@@ -12,7 +12,7 @@ from tools.music_bench.metrics import (
     spectral_centroid_hz,
     true_peak_approx,
 )
-from tools.music_bench.note_extract import NoteEvent
+from tools.music_bench.synth import NoteEvent
 
 SR = 16000
 

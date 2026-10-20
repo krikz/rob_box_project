@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_mcp_tools.core.arranger import BEATS_PER_BAR
+from rob_box_music.model import BEATS_PER_BAR
 from rob_box_mcp_tools.core.rtttl_compose import (
     RtttlMelody,
     detect_contour_breaks,
@@ -166,7 +166,7 @@ def reference_harmonies(tmp_path_factory):
 
 
 def _scale_pcs(harmony):
-    from rob_box_mcp_tools.core.arranger import SCALE_INTERVALS, VALID_ROOTS
+    from rob_box_mcp_tools.core.harmonize import SCALE_INTERVALS, VALID_ROOTS
 
     root = VALID_ROOTS.index(harmony.root)
     return {(root + i) % 12 for i in SCALE_INTERVALS[harmony.scale]}
@@ -374,12 +374,9 @@ def test_lead_has_no_pickup_driven_octave_leap(pad_register_harmonies, key):
 # тест поощряет тот же цикл: жалоба на тему X → хак под X → регрессия Y.
 #
 # Вместо гейта:
-#   * ``scripts/music/reference_report.py`` — информационный отчёт точности
-#     ``detect_key`` (auto vs profile) по этим же темам + по сиду-выборке
-#     архива. НЕ падает, только печатает таблицу.
-#   * ``test/test_arrangement_invariants.py`` — гейт CI: инварианты
-#     аранжировки (бас в ладу/аккорде, регистры, лид, санитайзер,
-#     детерминизм), а не конкретная тональность конкретной песни.
+#   * инварианты аранжировки (бас в ладу/аккорде, регистры, лид) — тесты
+#     движка v2 (``rob_box_music``, ``test_engine_classic.py``), а не
+#     конкретная тональность конкретной песни.
 # ---------------------------------------------------------------------------
 
 

@@ -21,6 +21,37 @@ CRITICAL_MATCH_RE = re.compile(
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
 
+# Заголовок строки klog (cadvisor и прочие Go-демоны на k8s.io/klog):
+#   I1019 20:55:15.630362       1 gce.go:45] Error while reading product_name: ...
+# Первая буква — уровень, который выставил сам эмиттер: I(nfo), W(arning), E(rror),
+# F(atal). Слова «Error» / «failed to» в тексте I- и W-строки не делают её ошибкой
+# (issue #3664 п.1: INFO-проба GCE-провайдера cadvisor давала critical на каждом
+# деплое — на Raspberry Pi нет /sys/class/dmi/id/product_name и не будет).
+KLOG_LINE_RE = re.compile(r"^([IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ \S+:\d+\]")
+
+# Строки, которые по тексту похожи на ошибку, но относятся к ИЗВЕСТНЫМ проблемам
+# мониторинга, у каждой из которых есть своя issue. Они понижаются с critical до
+# warning: остаются в отчёте шага «Check Container Logs» (WARNINGS), но
+# critical_count не растёт, и «🚨 Deploy issues» из-за них не заводится.
+# Правило узкое: любая другая ошибка того же контейнера остаётся critical.
+# Когда проблема закрыта, строку отсюда нужно удалить — иначе рецидив будет молчать
+# как warning.
+CRITICAL_DEMOTED_TO_WARNING = [
+    # #3664 п.2: cadvisor v0.52.1 на Docker 29 с containerd snapshotter (Vision,
+    # Sound) ищет слой контейнера в image/overlayfs/layerdb/mounts, а там пусто —
+    # тысячи E-строк "Failed to create existing container ... failed to identify
+    # the read-write layer ID", поконтейнерных метрик нет. Лечится обновлением
+    # cadvisor (отдельная работа по #3664 п.2), деплой от этого не сломан.
+    r"failed to identify the read-write layer id",
+    # #3659: promtail 2.9.2 (docker_sd) говорит с Docker API 1.42, а Docker 29
+    # требует >= 1.44: "component=docker_discovery msg=\"Unable to refresh target
+    # groups\" err=\"... client version 1.42 is too old ...\"". Логи контейнеров не
+    # доезжают в Loki, но сами контейнеры здоровы. Привязано к docker_discovery
+    # promtail: то же сообщение от приложения, которое ходит в Docker SDK, —
+    # настоящий сбой и остаётся critical.
+    r"component=docker_discovery.*client version \d+\.\d+ is too old",
+]
+
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
     r"✓ error:",
@@ -113,7 +144,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # "JackAudioDriver::ProcessGraphAsyncMaster: Process error" whenever a
     # single DSP cycle overruns the period (typically the scsynth client
     # under ALSA dmix without realtime scheduling, see
-    # docker/vision/scripts/supercollider/start_supercollider.sh). jackd
+    # docker/sound/scripts/supercollider/start_supercollider.sh). jackd
     # drops the cycle and recovers automatically — scsynth stays up and
     # music/TTS keep flowing. Deploy gate must not flag this as critical.
     r"jackaudiodriver::processgraphasyncmaster: process error",
@@ -190,7 +221,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # 31.08): start_voice_assistant.sh prints `⚠ Music stack validation
     # found non-critical errors (degraded but usable)` whenever
     # validate_music_stack.py exits non-zero but did not declare a fatal
-    # sclang crash — see docker/vision/scripts/voice_assistant/start_voice_
+    # sclang crash — see docker/sound/scripts/voice_assistant/start_voice_
     # assistant.sh:138 and src/rob_box_voice/scripts/validate_music_stack.py
     # (returns 1 on degraded mode). The container is INTENTIONALLY
     # continuing with a degraded music stack; voice/TTS/STT stay healthy
@@ -495,7 +526,10 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # a real librtabmap_core crash) is still surfaced.
         r"rtabmap\.icp_odometry.*didn't receive imu newer than previous image/scan \(0\.0000 sec\)$",
     ],
-    "vision": [
+    # ADR-0159 PR-7 (В9): telegram-bot переехал на Sound Pi — его логи разбираются в
+    # scope "sound". Правило ниже раньше стояло в "vision" (там жил telegram-bot);
+    # перенесено, а не продублировано.
+    "sound": [
         # telegram_node start_polling transient (issue #1433 / deploy run
         # 32170854307, test round-147): on the first long-poll to
         # api.telegram.org the Vision Pi WiFi AP (10.1.1.1, see docs/adr/)
@@ -799,7 +833,11 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # surfaces to the operator.
         r"memory\.cpp:\d+::computetransform\(\) missing visual features",
     ],
-    "vision": [
+    # ADR-0159: voice-assistant/supercollider/supervisor и (PR-7, В9) telegram-bot
+    # живут на Sound Pi, их логи разбираются в scope "sound". Правила ниже раньше
+    # стояли в "vision" (там жили voice-assistant и telegram-bot) — перенесены,
+    # а не продублированы.
+    "sound": [
         # telegram_node /radio disabled echo (issue #2229, deploy run
         # 34300912847 09.09 / kanban t_8bf3e909): when the
         # `audio_common_msgs` python package is not installed in the
@@ -812,7 +850,7 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # (ADR-0018 "honest degradation": the chain is OFF, not
         # silently broken — the `publish_voice_audio_chunk` path
         # short-circuits on the `AudioData is None` guard and never
-        # crashes the bot loop). On the Vision+main test-rig the
+        # crashes the bot loop). On the test-rig (Sound Pi с ADR-0159 PR-7, раньше Vision Pi) the
         # /radio radio stack is intentionally absent (the
         # `audio_common_msgs` dependency ships in the deploy-time
         # overlay, not the test rig), so this WARN fires on every
@@ -885,35 +923,67 @@ def _vesc_segfault_window_active(log_text: str) -> bool:
     return bool(_VESC_SEGFAULT_WINDOW_MARKER.search(log_text))
 
 
+def _klog_level(line: str) -> str | None:
+    """Уровень klog-строки (I/W/E/F) или None, если это не klog."""
+    match = KLOG_LINE_RE.match(line)
+    return match.group(1) if match else None
+
+
+def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
+    patterns = list(CRITICAL_EXCLUDE_COMMON)
+    # The bare "Segmentation fault (Address not mapped to object
+    # [(nil)])" pattern is only meaningful inside the vesc race
+    # window. Outside of it (a non-vesc segfault on the same
+    # hardware), the operator must still see the deploy-fail issue.
+    # See _vesc_segfault_window_active() for the rationale.
+    if not _vesc_segfault_window_active(log_text):
+        patterns = [
+            p for p in patterns
+            if p != r"segmentation fault \(address not mapped to object \[\(nil\)\]\)"
+        ]
+    return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
+
+
+def _classify_error_like_line(line: str, exclude_patterns: Iterable[str]) -> str | None:
+    """Серьёзность строки, похожей по тексту на ошибку: "critical" | "warning" | None.
+
+    None — шум: текст не похож на ошибку, либо строка в исключениях, либо это
+    klog-INFO (слово «Error» в тексте INFO-строки ошибкой её не делает).
+    "warning" — понижение: klog-WARNING (эмиттер сам назвал её предупреждением)
+    или известная проблема мониторинга из CRITICAL_DEMOTED_TO_WARNING. Уровень
+    решает код по формату строки, а не по тому, что в ней написано (ADR-0148).
+    """
+    if not CRITICAL_MATCH_RE.search(line):
+        return None
+    level = _klog_level(line)
+    if level == "I" or _matches_any(exclude_patterns, line):
+        return None
+    if level == "W" or _matches_any(CRITICAL_DEMOTED_TO_WARNING, line):
+        return "warning"
+    return "critical"
+
+
 def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
 
     lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    critical_patterns = _critical_exclude_patterns(log_text, scope)
     if severity == "critical":
-        patterns = list(CRITICAL_EXCLUDE_COMMON)
-        # The bare "Segmentation fault (Address not mapped to object
-        # [(nil)])" pattern is only meaningful inside the vesc race
-        # window. Outside of it (a non-vesc segfault on the same
-        # hardware), the operator must still see the deploy-fail issue.
-        # See _vesc_segfault_window_active() for the rationale.
-        if not _vesc_segfault_window_active(log_text):
-            patterns = [
-                p for p in patterns
-                if p != r"segmentation fault \(address not mapped to object \[\(nil\)\]\)"
-            ]
-        patterns += CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
         for line in lines:
-            if not CRITICAL_MATCH_RE.search(line):
-                continue
-            if _matches_any(patterns, line):
-                continue
-            return line
+            if _classify_error_like_line(line, critical_patterns) == "critical":
+                return line
         return None
 
     patterns = WARNING_EXCLUDE_COMMON + WARNING_EXCLUDE_BY_SCOPE.get(scope, [])
     for line in lines:
-        if not WARNING_MATCH_RE.search(line):
+        # Warning — это и строка со словом warn/warning, и строка, понижённая из
+        # critical (см. _classify_error_like_line): без второго условия понижённые
+        # строки пропали бы из отчёта совсем, а не стали предупреждением.
+        if not (
+            WARNING_MATCH_RE.search(line)
+            or _classify_error_like_line(line, critical_patterns) == "warning"
+        ):
             continue
         if _matches_any(patterns, line):
             continue
@@ -958,8 +1028,9 @@ def _build_issue_body(
     timestamp: str,
     vision_pi_ip: str,
     main_pi_ip: str,
+    sound_pi_ip: str = "",
 ) -> str:
-    diagnostic_ip = vision_pi_ip if candidate["scope"] == "vision" else main_pi_ip
+    diagnostic_ip = {"vision": vision_pi_ip, "sound": sound_pi_ip or main_pi_ip}.get(candidate["scope"], main_pi_ip)
     marker = build_signature_marker(candidate["signature"])
     return f"""## Deployment Problem Report
 
@@ -1007,6 +1078,7 @@ def prepare_issue_candidates(
     timestamp: str,
     vision_pi_ip: str,
     main_pi_ip: str,
+    sound_pi_ip: str = "",
 ) -> list[dict[str, str | int | list[str]]]:
     grouped: dict[str, dict[str, str | int | list[str]]] = {}
 
@@ -1037,6 +1109,7 @@ def prepare_issue_candidates(
                 timestamp=timestamp,
                 vision_pi_ip=vision_pi_ip,
                 main_pi_ip=main_pi_ip,
+                sound_pi_ip=sound_pi_ip,
             )
             grouped[signature] = candidate
             continue
@@ -1053,6 +1126,7 @@ def prepare_issue_candidates(
             timestamp=timestamp,
             vision_pi_ip=vision_pi_ip,
             main_pi_ip=main_pi_ip,
+            sound_pi_ip=sound_pi_ip,
         )
 
     return sorted(candidates, key=lambda item: str(item["signature"]))
@@ -1099,6 +1173,7 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
         timestamp=args.timestamp,
         vision_pi_ip=args.vision_pi_ip,
         main_pi_ip=args.main_pi_ip,
+        sound_pi_ip=args.sound_pi_ip,
     )
     json.dump(candidates, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
@@ -1133,6 +1208,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--timestamp", required=True)
     prepare_parser.add_argument("--vision-pi-ip", required=True)
     prepare_parser.add_argument("--main-pi-ip", required=True)
+    # ADR-0159: третий узел. Необязателен — старые вызовы без него валидны
+    # (scope=sound без адреса получит диагностику с main_pi_ip, как раньше любой не-vision).
+    prepare_parser.add_argument("--sound-pi-ip", default="")
     prepare_parser.set_defaults(func=_cmd_prepare)
 
     filter_parser = subparsers.add_parser("filter", help="Remove candidates that already exist as open issues.")
@@ -1141,7 +1219,7 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser.set_defaults(func=_cmd_filter)
 
     extract_parser = subparsers.add_parser("extract-log", help="Extract the first relevant log line for a scope and severity.")
-    extract_parser.add_argument("--scope", required=True, choices=["main", "vision"])
+    extract_parser.add_argument("--scope", required=True, choices=["main", "vision", "sound"])
     extract_parser.add_argument("--severity", required=True, choices=["critical", "warning"])
     extract_parser.set_defaults(func=_cmd_extract_log)
 

@@ -1,63 +1,163 @@
-# Turn Right Navigation Signal
+# Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
+# менять сцену в генераторе и перезапекать.
 name: "turn_right"
-description: "Turn right signal with orange flashing on right wheels"
-version: "2.5"
-author: "rob_box"
+description: "Поворот направо: правая фара робота мигает жёлтым, взгляд в поворот, сзади бегущая заливка"
+version: "3.0"
+author: "led_face_lab"
 
-# Timing
-duration_ms: 1000
+duration_ms: 4000
 loop: true
-fps: 10
+fps: 25
 
-# Panels
 panels:
-  # Right front wheel (orange flashing)
-  - logical_group: "wheel_front_right"
-    offset_ms: 0
-    frames:
-      - image: "frames/navigation/wheel_fr_orange.png"
-        duration_ms: 500
-      - image: "frames/navigation/wheel_fr_off.png"
-        duration_ms: 500
-
-  # Right rear wheel (orange flashing)
-  - logical_group: "wheel_rear_right"
-    offset_ms: 0
-    frames:
-      - image: "frames/navigation/wheel_rr_orange.png"
-        duration_ms: 500
-      - image: "frames/navigation/wheel_rr_off.png"
-        duration_ms: 500
-
-  # Left front wheel - dim white (headlight)
   - logical_group: "wheel_front_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_fl_dim.png"
-        duration_ms: 1000
-
-  # Left rear wheel - red brake light
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 4000
+  - logical_group: "wheel_front_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 480
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 280
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 480
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 280
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 440
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 320
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 440
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 280
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 480
+      - image: "frames/turn_right/p8_001.png"
+        duration_ms: 280
+      - image: "frames/turn_right/p8_000.png"
+        duration_ms: 240
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/wheel_rl_red.png"
-        duration_ms: 1000
-
-  # Main display (right arrow animation)
+      - image: "frames/turn_right/p8_002.png"
+        duration_ms: 4000
+  - logical_group: "wheel_rear_right"
+    offset_ms: 0
+    frames:
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 80
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 320
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 80
+      - image: "frames/turn_right/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_011.png"
+        duration_ms: 80
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 360
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 360
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 360
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_008.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_009.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_010.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_011.png"
+        duration_ms: 120
+      - image: "frames/turn_right/p8_003.png"
+        duration_ms: 320
+      - image: "frames/turn_right/p8_004.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_005.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_006.png"
+        duration_ms: 40
+      - image: "frames/turn_right/p8_007.png"
+        duration_ms: 80
   - logical_group: "main_display"
     offset_ms: 0
     frames:
-      - image: "frames/navigation/arrow_right_01.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_right_02.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_right_03.png"
-        duration_ms: 250
-      - image: "frames/navigation/arrow_right_04.png"
-        duration_ms: 250
+      - image: "frames/turn_right/m_000.png"
+        duration_ms: 4000
 
-# Metadata
 metadata:
   priority: "normal"
   category: "navigation"
-  tags: ["turn", "right", "signal", "orange", "navigation", "brake"]
+  tags: [turn, right, signal, orange, navigation, brake]
+  brightness_budget: 144
+  bake_scale: 1.000
+  peak_ma_at_255: 7293

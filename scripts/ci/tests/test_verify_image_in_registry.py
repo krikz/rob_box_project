@@ -1,8 +1,8 @@
 """Тесты scripts/ci/verify-image-in-registry.sh.
 
 Скрипт вынесен из ТРЁХ копий функции `verify_in_registry`
-(L-Build Vision Pi Services.yml, L-Build Main Pi Services.yml,
-L-Build Single Service.yml) по docs/plans/2026-09-15-image-versions-seam.md §7.4.
+(тогда L-Build Vision/Main Pi Services.yml — теперь один L-Build Pi Services.yml,
+и L-Build Single Service.yml) по docs/plans/2026-09-15-image-versions-seam.md §7.4.
 Копии уже разъехались на одну строку сообщения — значит их синхронность
 держалась ни на чём.
 
@@ -127,8 +127,7 @@ def test_workflows_do_not_reimplement_the_check() -> None:
     Именно так и появились три копии, разъехавшиеся на строку сообщения.
     """
     workflows = [
-        REPO_ROOT / ".github" / "workflows" / "L-Build Vision Pi Services.yml",
-        REPO_ROOT / ".github" / "workflows" / "L-Build Main Pi Services.yml",
+        REPO_ROOT / ".github" / "workflows" / "L-Build Pi Services.yml",
         REPO_ROOT / ".github" / "workflows" / "L-Build Single Service.yml",
     ]
     for path in workflows:

@@ -2,25 +2,23 @@
 """live_check_mcp_call.py — один подписанный вызов MCP-тула в обход LLM (#3115).
 
 Запускается ВНУТРИ контейнера ``voice-assistant`` (там же живёт
-``mcp_server``), скрипт ``live_check_3115.sh`` подаёт его через stdin::
+``mcp_server``), скрипты ``live_dj/*.sh`` подают его через stdin::
 
     docker exec -i voice-assistant bash -lc \
         'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; \
-         python3 - compose_music <params_b64> 90' < live_check_mcp_call.py
+         python3 - dj_set <params_b64> 90' < live_check_mcp_call.py
 
 Путь тот же, что у LLM: ``/mcp/execute`` → ``MCPServer.on_execute_request``
 → ``registry.execute``. Запрос подписывается штатным
 :class:`rob_box_mcp_tools.mcp_auth.RequestAuthenticator` с sender
 ``harness`` (он есть в ``DEFAULT_ALLOWED_SENDERS`` и в срезе
 ``personality`` из ``data/slice_policy.yaml``, где лежат
-``execute_music_code`` / ``compose_music`` / ``stop_music``). Секрет —
+``dj_set`` / ``request_music`` / ``stop_music``). Секрет —
 тот же файл ``/data/.mcp_token`` (или ``ROB_BOX_MCP_TOKEN``), что читает
 ``mcp_server``; по топику ходит только подпись.
 
 Печатает в stdout ОДНУ строку JSON — ответ ``/mcp/result`` целиком
-(``{"tool_name", "request_id", "result": {...}}``); в ``result.data.code``
-у ``execute_music_code``/``compose_music`` лежит реально исполненный код
-после санитайзера. Код выхода: 0 — ответ получен (успех тула смотри в
+(``{"tool_name", "request_id", "result": {...}}``). Код выхода: 0 — ответ получен (успех тула смотри в
 ``result.success``), 2 — таймаут, 3 — нечем подписать.
 """
 

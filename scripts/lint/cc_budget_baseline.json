@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-09-29",
-  "base_sha": "2865630f57854997aa5aef9cb3c4d80ab468241b",
+  "created": "2026-10-05",
+  "base_sha": "d54ae3d7bcd2d3da2dd901a6a9e7bb7604a27b15",
   "limits": {
     "method": 15,
     "init": 20
@@ -13,15 +13,9 @@
     "src/rob_box_voice/rob_box_voice/core/music_stack_validation.py": {
       "classify_sclang_log": 19
     },
-    "src/rob_box_voice/rob_box_voice/core/sample_search.py": {
-      "search_renardo_samples": 31
-    },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
-      "DialogueNode._build_dynamic_system_context": 24,
-      "DialogueNode._continue_after_tool_calls": 22,
-      "DialogueNode._do_recursive_streaming": 22,
-      "DialogueNode._execute_tool_calls": 18,
-      "DialogueNode._handle_result": 82
+      "DialogueNode._build_dynamic_system_context": 18,
+      "DialogueNode._handle_result": 58
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
@@ -65,9 +59,6 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/async_executor.py": {
       "AsyncToolExecutor.execute_tools_parallel": 22
     },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py": {
-      "MinimaxMusicClient.generate": 25
-    },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py": {
       "ToolSliceAuthority.extended_with": 16,
       "ToolSliceAuthority.from_mapping": 21
@@ -78,12 +69,6 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
       "StartMappingTool.execute": 18
-    },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py": {
-      "GenSaveToLibraryTool.execute": 18
-    },
-    "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py": {
-      "MusicManager.execute_code": 19
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py": {
       "GetSoundInfoTool.execute": 19
@@ -156,32 +141,8 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_voice/rob_box_voice/core/sample_search.py",
-      "method": "search_renardo_samples",
-      "cc": 31,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._build_dynamic_system_context",
-      "cc": 24,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._continue_after_tool_calls",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._do_recursive_streaming",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._execute_tool_calls",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
@@ -306,12 +267,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/core/minimax_music_client.py",
-      "method": "MinimaxMusicClient.generate",
-      "cc": 25,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/slice_authority.py",
       "method": "ToolSliceAuthority.extended_with",
       "cc": 16,
@@ -340,18 +295,6 @@
       "method": "StartMappingTool.execute",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/minimax_music.py",
-      "method": "GenSaveToLibraryTool.execute",
-      "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py",
-      "method": "MusicManager.execute_code",
-      "cc": 19,
-      "since": "Bumped 23->22 after refactor in issue 2626 (CC-budget guard, closed) — extracted volume-decision helper; живая карточка долга: #3290. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/sound.py",

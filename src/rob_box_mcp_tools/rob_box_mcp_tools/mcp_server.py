@@ -40,21 +40,30 @@ import json
 import math
 import os
 import threading
-import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # Issue #2442 — единый шов «Встреча» вместо самостоятельного
 # ``current_speaker_id``. См. ``_on_speaker_result`` ниже и ADR-0105 §3.
 from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
+from rob_box_music.diversity import MusicHistory
 
 from rob_box_voice.core.music_player_state import (
+    MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
-    build_music_state_payload,
+    MusicEventLog,
 )
 
-from .base import shared_publisher
+from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
+from .engine.gen.kie_suno import KieSunoProvider
+from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_lyrics_ask
+from .engine.player_owner import PlayerOwner
+from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
+from .engine.renardo_runtime import RenardoRuntime
+from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
+from .engine.request_slots import harness_ask
+from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -94,24 +103,10 @@ from .tools import (
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
-    MusicManager,
-    TrackLibrary,
     RtttlLibrary,
-    ExecuteMusicCodeTool,
-    ComposeMusicTool,
-    PreviewArrangementTool,
-    SaveArrangementPresetTool,
-    ArrangementPresetStore,
     StopMusicTool,
-    SetVibePresetTool,
     GetMusicStateTool,
     SetMusicVolumeTool,
-    SaveTrackTool,
-    ListTracksTool,
-    LoadTrackTool,
-    DeleteTrackTool,
-    SetDjModeTool,
-    SearchSamplesTool,
     LookupMelodyTool,
     SearchMelodyTool,
     AddMusicMaterialTool,
@@ -121,34 +116,23 @@ from .tools import (
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     ShowMetricsTool,
+    SayTool,
 )
 
-# Issue #1392 — MiniMax music generation + generated-music library tools.
+# Issue #1392 / ADR-0158 — library of generated tracks (cache) + music_library tool.
 # Imported explicitly (not via wildcard) so the heavy ``tools.music``
 # dependency tree stays opt-in.
 try:
-    from .core.minimax_music_client import MinimaxMusicClient
-    from .core.generated_music_library import GeneratedMusicLibrary
-    from .tools.minimax_music import (
-        GenerateMusicTool,
-        GenListLibraryTool,
-        GenSearchLibraryTool,
-        GenSaveToLibraryTool,
-        GenPlayFromLibraryTool,
-        GenDeleteFromLibraryTool,
-        GenGetTrackInfoTool,
-    )
-    _MINIMAX_MUSIC_AVAILABLE = True
+    from .engine.gen.library import GeneratedMusicLibrary
+    from .engine.gen.library_play import play_library_track
+    from .engine.gen.quota import MIB, enforce_quota
+    from .tools.gen_library import MusicLibraryTool
+    _GEN_LIBRARY_AVAILABLE = True
 except ImportError as _exc:  # noqa: BLE001
-    MinimaxMusicClient = None  # type: ignore[assignment,misc]
     GeneratedMusicLibrary = None  # type: ignore[assignment,misc]
-    GenerateMusicTool = GenListLibraryTool = GenSearchLibraryTool = None  # type: ignore[assignment,misc]
-    GenSaveToLibraryTool = GenPlayFromLibraryTool = None  # type: ignore[assignment,misc]
-    GenDeleteFromLibraryTool = GenGetTrackInfoTool = None  # type: ignore[assignment,misc]
-    _MINIMAX_MUSIC_AVAILABLE = False
-    _MINIMAX_MUSIC_IMPORT_ERROR = str(_exc)
-from .core.music_diversity import MusicHistory
-from .core.web_melody import attach_web_search
+    MusicLibraryTool = play_library_track = enforce_quota = MIB = None  # type: ignore[assignment,misc]
+    _GEN_LIBRARY_AVAILABLE = False
+    _GEN_LIBRARY_IMPORT_ERROR = str(_exc)
 from .mcp_auth import RequestAuthenticator
 from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
@@ -172,7 +156,7 @@ except ImportError:
 # facade over SQLiteVoiceMemory) — gated by this env var so production can
 # roll back to the legacy VoiceMemory without code edits.
 #
-# WaypointStore, FAQStore and TrackLibrary (tools/music.py) are NOT part of
+# WaypointStore and FAQStore are NOT part of
 # this switch and stay on ``VOICE_MEMORY_DB_PATH`` (default
 # /data/voice_memory.db) regardless of this flag. Investigated for Phase 2
 # (issue #2000) and rejected as a plain path swap: SQLiteVoiceMemory already
@@ -183,7 +167,7 @@ except ImportError:
 # (indexed_at, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS`` would silently
 # keep whichever schema got created first and every write from the other
 # store would then fail with "no such column". See the comment on
-# ``sqlite_db_path`` in docker/vision/config/voice_assistant/dialogue_node.yaml
+# ``sqlite_db_path`` in docker/sound/config/voice_assistant/dialogue_node.yaml
 # and docs/adr/0055-voice-memory-db-unify-with-harness.md (§1.3, §3) for the
 # full analysis. Merging them needs a schema-reconciling adapter (like this
 # one, but for waypoints/faq), not a default-value edit.
@@ -203,37 +187,6 @@ except ImportError:
     _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
 
 
-def _music_form_ends_at_epoch(state: Dict[str, Any]) -> Optional[float]:
-    """``form_cycle_remaining_s`` (monotonic-остаток) → epoch (issue #2461).
-
-    Модульная функция, а не метод — она не зависит от ``self``/``Node``,
-    что делает её проверяемой юнит-тестом без поднятия ROS-паблишера или
-    даже фейкового ``MCPServer``: тест кладёт ``remaining_s`` и сверяет
-    результат против ``time.time()``, доказывая, что наружу уходит
-    стенное время, а не ``time.monotonic()`` из процесса mcp_server
-    (несопоставим с dialogue_node — см. docstring ``publish_music_state``).
-    """
-    return _remaining_to_epoch(state.get("form_cycle_remaining_s"))
-
-
-def _remaining_to_epoch(remaining_s: Any) -> Optional[float]:
-    if not isinstance(remaining_s, (int, float)) or isinstance(remaining_s, bool) or remaining_s <= 0:
-        return None
-    return time.time() + float(remaining_s)
-
-
-def _music_form_stops_at_epoch(state: Dict[str, Any]) -> Optional[float]:
-    """Issue #3113 — когда конечный (``repeat=False``) трек ЗАМОЛЧИТ, epoch.
-
-    ``form_ends_at`` — конец прохода формы для любого трека (зацикленный
-    играет дальше), а ``stops_at`` — только для трека, который сам
-    остановится ``Clock.future(..., Clock.clear)``. DJModeController
-    назначает переход раньше ``stops_at``, иначе между треками тишина
-    (живой прогон 28.09: ~15 с). ``None`` — трек зациклен или ничего нет.
-    """
-    return _remaining_to_epoch(state.get("form_stop_remaining_s"))
-
-
 #: Issue #3174 — причины ``/mcp/music_cleanup``, которые означают конец речи
 #: или диалога, а не просьбу остановить музыку. По ним DJ-сет не гасится
 #: (см. ``MCPServer._cleanup_spares_dj_set``); остальные причины — явный стоп.
@@ -241,45 +194,161 @@ SOFT_MUSIC_CLEANUP_REASONS = frozenset(
     {"tts_batch_complete", "dialogue_end", "new_dialogue"}
 )
 
-#: Issue #3133 — сериализует перевзвод одноразового таймера конца формы
-#: (publish_music_state зовут потоки тулов, watchdog и сам таймер).
-_FORM_END_TIMER_LOCK = threading.Lock()
+def _string_publisher(publisher: Any) -> Any:
+    """``text -> publisher.publish(String(data=text))`` — публикация для ``PlayerOwner``."""
+    def publish(text: str) -> None:
+        msg = String()
+        msg.data = text
+        publisher.publish(msg)
+    return publish
 
 
-def _positive_seconds(value: Any) -> Optional[float]:
-    """Число секунд > 0 или ``None`` (bool, None, мусор, ноль)."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14).
+V2_STARTED_WAIT_S = 6.0
+
+
+def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable[[str], None]:
+    """Публикация ``/voice/music/event`` + тот же поток в процессе: тулы v2 ждут ``started`` (ADR-0149 PR-6)."""
+    def publish_event(text: str) -> None:
+        publish(text)
+        log.observe_json(text)
+    return publish_event
+
+
+def _set_reasoner(node: Any) -> SetReasoner:
+    """PR-10: ризонер плана сета по параметрам ноды; ``music_v2_reasoner: false`` — ноль вызовов LLM."""
+    return SetReasoner(enabled=bool(node.get_parameter("music_v2_reasoner").value),
+                       deadline_s=float(node.get_parameter("music_v2_reasoner_deadline_s").value),
+                       logger=node.get_logger())
+
+
+def _speaker(node: Any) -> Callable[[str], None]:
+    """Реплика диджея на переходе (§12 В2) — тем же ``speak_text``, что у LLM: один путь в TTS (SSML строит тул)."""
+    return lambda line: node.registry.execute("speak_text", text=line)
+
+
+def _tts_provider(node: Any) -> str:
+    """Провайдер TTS, как у ``speak_text``: фактический от tts_node, пока его нет — параметр ``tts_provider``."""
+    from .tools.dialogue import _active_tts_provider
+
+    return _active_tts_provider(node)
+
+
+def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
+    """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
+    Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
+    provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
+    if lyrics is None or not provider.configured:
+        node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
         return None
-    return float(value)
+    return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
+                      lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
+                      play=_play_cached(node),
+                      speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
 
 
-def _finish_music_form(manager: Any, logger: Any) -> Optional[Dict[str, Any]]:
-    """Issue #3133 (ADR-0141) — закрыть сессию, если конечный трек доиграл.
+def _play_cached(node: Any) -> Any:
+    """Шов «сыграть трек кэша» для внутренних исполнителей (путь, песня, кавер, сет; ADR-0158 PR-9): функция
+    ``play_library_track`` на кэше ноды, а не тул по реестру. Кэш поднимается позже движка — читаем лениво.
+    ``hold`` — мост ожидания песни (петля с кроссфейдом через ``BridgeHold``, ``tools_v2.hold_start``)."""
+    def play(track_id: str, hold: Any = None) -> Any:
+        library = getattr(node, "_generated_music_library", None)
+        if library is None:
+            from .base import MCPToolResult
 
-    Один путь для watchdog'а и одноразового таймера. ``MusicManager``
-    решает сам (:meth:`MusicManager.finish_form_if_ended`); здесь только
-    вызов и лог с id трека — по нему сверяют живой прогон
-    («finished track_id=… → /voice/music/state idle»).
+            return MCPToolResult(success=False, error="библиотека генераций недоступна — трек не заиграл")
+        return play_library_track(node, library, track_id, hold=hold)
 
-    Returns:
-        Описание доигравшего трека или ``None``.
+    return play
+
+
+def _cover_maker(node: Any) -> Any:
+    """Кавер пьесы (ADR-0158 PR-4): Suno через KIE (ключ ``KIE_API`` окружения), кэш — ``/data/music_library``
+    (поднимается позже движка — лениво). Ключа нет — исполнитель есть, но не готов: кавер-кандидатов нет."""
+    from .engine.gen.cover import CoverMaker
+    from .engine.gen.kie_suno import KieSunoProvider
+
+    return CoverMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None),
+                      log=node.get_logger)
+
+
+def _instrumental_maker(node: Any, cover: Any) -> Any:
+    """Одиночный инструментал («сгенерируй рок»): тот же KIE и кэш, баланс — последний известный у кавера. Ключа
+    нет — исполнитель есть, но не готов: кандидата генерации нет."""
+    from .engine.gen.instrumental import InstrumentalMaker
+
+    return InstrumentalMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None),
+                             balance=cover.balance, log=node.get_logger)
+
+
+def _gen_set_maker(node: Any, cover: Any) -> Any:
+    """Сет из генерации (ADR-0158 PR-8): тот же KIE, тот же кэш, баланс — последний известный у кавера; путь сета
+    выбирает тот же чойсер (``music_chooser``). Ключа нет — исполнитель есть, но не готов: генерации в сете нет."""
+    from .engine.chooser_model import chooser_from_env
+    from .engine.gen.gen_session import GenSetMaker
+
+    chooser = chooser_from_env(str(node.get_parameter("music_chooser").value), log=node.get_logger)
+    return GenSetMaker(KieSunoProvider(), lambda: getattr(node, "_generated_music_library", None), chooser,
+                       balance=cover.balance, log=node.get_logger, cover=cover)
+
+
+def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
+    """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
+
+    ``PlayerOwner`` — единственный писатель ``/voice/music/state`` и
+    ``/voice/music/event``: latched-публикатор снимка уходит владельцу, у ноды
+    ``music_state_pub`` становится ``None``. Renardo поднимает ``RenardoRuntime`` (#3614):
+    адаптер берёт его контекст, палитру, подтверждённую сервером, ``send_osc``, а
+    ``/fail`` scsynth уходит владельцу. Старый путь удалён (PR-13, #3614), движок один.
     """
-    finish = getattr(manager, "finish_form_if_ended", None)
-    if not callable(finish):
+    if runtime is None:
+        node.get_logger().error("❌ RenardoRuntime не создан — музыкальный движок v2 выключен")
         return None
-    try:
-        finished = finish()
-    except Exception as exc:  # noqa: BLE001 — watchdog не должен падать
-        logger.warning(f"⚠️ [music] finish_form_if_ended упал: {exc}")
-        return None
-    if not isinstance(finished, dict):
-        return None
-    logger.info(
-        f"🎵 [music] finished track_id={finished.get('track_id')} "
-        f"name={finished.get('track_name')!r} reason={finished.get('reason')} "
-        "— форма доиграла, сессия → idle (issue #3133)"
-    )
-    return finished
+    latency = float(node.get_parameter("music_v2_clock_latency").value)
+    event_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+    node.music_event_pub = node.create_publisher(String, MUSIC_EVENT_TOPIC, event_qos)
+    adapter = RenardoAdapter(runtime.context, runtime.known_synth_names, runtime.send_osc, latency_s=latency)
+    events = MusicEventLog()
+    owner = PlayerOwner(adapter, _string_publisher(node.music_state_pub),
+                        _teed_events(_string_publisher(node.music_event_pub), events), logger=node.get_logger())
+    runtime.osc_fail_listener = owner.on_server_fail
+    node.music_state_pub = None  # писатель снимка — только владелец
+
+    def confirm(track_id: Optional[str]) -> Any:
+        return events.wait(track_id, V2_STARTED_WAIT_S)
+
+    node._music_confirm = confirm  # play_library_track: трек кэша на деке, ok — по started (ADR-0158 PR-2)
+
+    history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
+    history.announce(node.get_logger())
+    dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
+                       history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                       lines=bool(node.get_parameter("music_v2_dj_lines").value))
+    node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
+    node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
+    cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
+    dj_set.gen_sets = _gen_set_maker(node, cover)  # ADR-0158 PR-8: рок/гранж-сет — кэш и генерация
+    # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
+    # ADR-0157 PR-2: одиночная пьеса читает и пишет ту же music_history (свежесть пьес между заказами)
+    request = RequestMusicTool(node, owner, dj_set, confirm=confirm, history=history,
+                               tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
+                               chooser_mode=str(node.get_parameter("music_chooser").value),
+                               slots_ask=harness_ask(log=node.get_logger),  # #3609: LLM-разбор фразы в слоты
+                               # ADR-0158 PR-3: кэш генераций поднимается позже (_register_gen_library_tools) —
+                               # читаем лениво; трек кэша играет play_library_track на деке (PR-2)
+                               gen_library=lambda: getattr(node, "_generated_music_library", None),
+                               play_cached=_play_cached(node),
+                               cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
+                               songs=_song_studio(node, events),  # PR-7: песня голосом робота
+                               instrumental=_instrumental_maker(node, cover))  # «сгенерируй рок»
+    node.registry.register(request)
+    node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
+    request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
+    owner.publish_state()
+    node.get_logger().info(
+        f"🎵 движок v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "
+        f"{MUSIC_EVENT_TOPIC}; Clock.latency={latency} (ADR-0149 PR-4)")
+    return owner
 
 
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -316,20 +385,25 @@ class MCPServer(Node):
         super().__init__("mcp_server")
 
         # Параметры ноды
-        # Громкость музыки — ДВА разных параметра, см.
-        # docs/analysis/2026-08-30-music-quality-audit.md (RC1).
-        #
-        # music_max_amp — санитарный потолок ОДНОГО слоя, не регулятор
-        # громкости. Issue 986 («музыка орала, голос не был слышен») чинили
-        # понижением до 0.42, но это выравнивало все слои по одному потолку:
-        # микс становился плоским, а клиппинг оставался (капается каждый amp,
-        # а не их сумма — 4 слоя * 0.42 = 1.68 на шине). Теперь сумму держит
-        # синт masterlimiter в scsynth, поэтому потолок поднят.
-        self.declare_parameter("music_max_amp", 0.85)
         # music_master_gain — ЕДИНСТВЕННАЯ ручка уровня музыки относительно
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
         self.declare_parameter("music_master_gain", 0.5)
+        # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
+        # /voice/music/state и /voice/music/event.
+        # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
+        self.declare_parameter("music_v2_clock_latency", V2_CLOCK_LATENCY_S)
+        # ADR-0149 PR-10: ризонер плана сета (В1 MiniMax). §12 В2 (решение Шифу 06.10): реплика диджея на
+        # каждом переходе — факты из плана, LLM ризонера раскрашивает, иначе шаблон; музыку не трогает.
+        # Старый ключ music_v2_hype_line (выкрик один раз за сет) больше не читается.
+        self.declare_parameter("music_v2_reasoner", True)
+        self.declare_parameter("music_v2_reasoner_deadline_s", V2_REASONER_DEADLINE_S)
+        self.declare_parameter("music_v2_dj_lines", True)
+        # ADR-0152 §2.3: полная модель каждого трека сета — <track_id>.json (ротация); "" — не писать.
+        self.declare_parameter("music_v2_tracks_dir", "/data/music_v2/tracks")
+        # ADR-0157 PR-7 (#3564): кто выбирает пьесу при неоднозначном заказе - режим как у провайдеров LLM/STT/TTS
+        # (параметр ноды, не env): deterministic | jev | chain (Jev 900 мс → LLM 2 с → кубик кода; решение Шифу 13.10).
+        self.declare_parameter("music_chooser", CHOOSER_DEFAULT_MODE)
         # Issue #1219 — активный TTS-провайдер для валидации голосов в
         # speak_text/set_voice. Должен совпадать с tts_node.yaml provider
         # (minimax). Используется для выбора списка голосов (Q4).
@@ -436,30 +510,7 @@ class MCPServer(Node):
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
-
-        # Issue #2461 — структурный канал конца прохода формы для
-        # DJModeController.tick() (dialogue_node). С issue #3133 те же
-        # form_ends_at/stops_at есть и в /voice/music/state; этот топик
-        # остаётся, пока DJState не переведён на снимок плеера (#3134).
-        # Payload и его monotonic/epoch нюанс — см. publish_music_state().
-        self.music_form_pub = self.create_publisher(String, "/voice/music/form", qos_profile)
-
-        # 🔴 FIX (live 30.08, vision-pi 12:33): mp3-трек из
-        # ``gen_play_from_library`` играет в ``sound_node``, а не в Renardo.
-        # ``MusicManager.stop_all()`` про него ничего не знает, поэтому и
-        # ``music_cleanup``, и watchdog его не гасили: юзер сказал «останови
-        # музыку», робот ответил «Музыка выключена.», а трек доиграл до
-        # конца. Единственным местом, которое реально его останавливало,
-        # был ``StopMusicTool``. Публикуем те же два топика здесь, а тул
-        # теперь делегирует сюда (одна точка правды).
-        #
-        # Issue #3108: через shared_publisher — StopMusicTool и
-        # PlayGeneratedMusicTool публикуют в эти же топики на этой же ноде
-        # и получают тот же объект, а не второй/третий writer.
-        self.sound_stop_pub = shared_publisher(self, String, "/voice/sound/stop", qos_profile)
-        self.generated_music_state_pub = shared_publisher(
-            self, String, "/voice/generated_music/state", qos_profile
-        )
+        self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
@@ -574,39 +625,10 @@ class MCPServer(Node):
         self.publish_tools()
 
         # --------------------------------------------------------------
-        # Music session safety-net — issue #935
+        # Music cleanup — issue #935, ADR-0141
         # --------------------------------------------------------------
-        # Two redundant mechanisms so the robot stops playing music when
-        # the LLM forgets (e.g. the tool-loop is exhausted at
-        # ``_MAX_TOOL_ITERATIONS=5``).  Either of them is sufficient on
-        # its own; both together = belt-and-braces.
-        #
-        # (1) Periodic watchdog timer runs ``auto_stop_idle_music`` every
-        #     ``_MUSIC_WATCHDOG_PERIOD_S`` seconds (default 5s).
-        # (2) ``/mcp/music_cleanup`` topic subscription lets the
-        #     dialogue_node push a single-shot "dialogue ended" message
-        #     that triggers ``stop_music_on_session_end`` immediately.
-        try:
-            self._music_watchdog_period_s: float = float(
-                os.environ.get("MUSIC_WATCHDOG_PERIOD_S", "5.0")
-            )
-        except (TypeError, ValueError):
-            self._music_watchdog_period_s = 5.0
-        self._music_watchdog_enabled: bool = (
-            os.environ.get("MUSIC_WATCHDOG_ENABLED", "true").lower()
-            in ("1", "true", "yes", "on")
-        )
-        # Issue #1812 — idle-TTL threshold, explicitly passed to
-        # ``auto_stop_idle_music`` on every tick so it overrides whatever
-        # default ``MusicManager`` picked up on construction. 300s was too
-        # short for "listening to a track in silence" (the normal case);
-        # 1800s (30 min) matches an actually abandoned session instead.
-        try:
-            self._music_watchdog_idle_ttl_s: float = float(
-                os.environ.get("MUSIC_WATCHDOG_IDLE_TTL_S", "1800.0")
-            )
-        except (TypeError, ValueError):
-            self._music_watchdog_idle_ttl_s = 1800.0
+        # dialogue_node публикует в /mcp/music_cleanup конец речи/диалога и
+        # явные стопы; мягкие причины деку не трогают (_cleanup_spares_deck).
         # Subscribe to /mcp/music_cleanup — payload is JSON like
         # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
         # payload defaults to dialogue_end.
@@ -622,39 +644,6 @@ class MCPServer(Node):
             self.get_logger().warning(
                 f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
             )
-
-        # 🔴 FIX (live 10:13 DJ): подписка на /voice/dj_mode — watchdog
-        # должен знать, что DJ-режим активен (непрерывный сет с
-        # переходами каждые 30-120с). Без этого segments-дедлайн #990
-        # (~30с при segments:16) убивал музыку посреди DJ-сета:
-        # «чуть музыки потом замолкает».
-        try:
-            self._dj_mode_sub = self.create_subscription(
-                String,
-                "/voice/dj_mode",
-                self._on_dj_mode,
-                qos_profile,
-            )
-            self.get_logger().info("🎧 Подписан на /voice/dj_mode (DJ watchdog)")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось подписаться на /voice/dj_mode: {exc}"
-            )
-
-        if self._music_watchdog_enabled:
-            period = max(0.1, self._music_watchdog_period_s)
-            try:
-                self._music_watchdog_timer = self.create_timer(
-                    period, self._run_music_watchdog
-                )
-                self.get_logger().info(
-                    f"🎵 Music watchdog timer запущен (period={period}s, "
-                    f"ttl={self._music_watchdog_idle_ttl_s}s)"
-                )
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ Не удалось запустить watchdog timer: {exc}"
-                )
 
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
@@ -762,31 +751,6 @@ class MCPServer(Node):
             return None
         return current.who.id
 
-    def _on_dj_mode(self, msg: "String") -> None:
-        """Адаптер на шве /voice/dj_mode → MusicManager.set_dj_mode().
-
-        Один владелец DJ-флага — :meth:`MusicManager.set_dj_mode`. Топик
-        нужен только как транспорт от dialogue_node (тот публикует
-        ``enabled=false`` в stop-fallback), а сам ``SetDjModeTool`` ставит
-        флаг напрямую и публикует топик для ``DJModeController``.
-
-        segments-дедлайн (#990) ставится на каждый execute_music_code
-        (~30с при segments:16) — если DJ активен и мы его соблюдаем,
-        музыка умирает посреди сета. Пока DJ включён — дедлайн
-        игнорируется; музыка живёт по idle-TTL, а каждый переход
-        обновляет активность.
-        """
-        try:
-            data = json.loads(msg.data) if msg.data else {}
-            enabled = bool(data.get("enabled", False))
-            manager = getattr(self, "_music_manager", None)
-            if manager is not None:
-                manager.set_dj_mode(enabled)
-            state = "ON" if enabled else "OFF"
-            self.get_logger().info(f"🎧 [DJ watchdog] DJ mode: {state}")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(f"⚠️ DJ mode parse failed: {exc}")
-
     def _on_music_cleanup(self, msg: "String") -> None:
         """Topic callback: force-stop music on dialogue/shutdown events.
 
@@ -794,305 +758,55 @@ class MCPServer(Node):
         :class:`dialogue_node` when the dialogue ends. Payload is JSON;
         an empty/non-JSON string defaults to ``reason="dialogue_end"``.
         """
-        if not getattr(self, "_music_manager", None):
-            return
         try:
             payload = json.loads(msg.data) if msg.data else {}
         except (TypeError, ValueError):
             payload = {}
         reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
-        if self._cleanup_spares_dj_set(reason):
+        if self._cleanup_spares_deck(reason):
             return
-        result = self._music_manager.stop_music_on_session_end()
-        if result.get("was_active"):
-            self.get_logger().warning(
-                f"🎵 [{reason}] Авто-стоп {len(result.get('stopped_patterns', []))} "
-                f"активных паттернов (issue #935). msg={result.get('message')}"
-            )
-        else:
-            self.get_logger().info(
-                f"🎵 [{reason}] Cleanup: активной музыки не обнаружено "
-                f"(stop_all вызван профилактически). msg={result.get('message')}"
-            )
-        # Renardo погашен — гасим и mp3-трек в sound_node (см. комментарий
-        # у ``sound_stop_pub``).
-        self.stop_generated_track_playback()
+        playing = music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None))
+        self._stop_deck(reason)
+        self.get_logger().info(f"🎵 [{reason}] cleanup: дека {'снята' if playing else 'и так пуста'}")
 
-    def _cleanup_spares_dj_set(self, reason: str) -> bool:
-        """Issue #3174 / ADR-0141 — мягкий cleanup не гасит идущий DJ-сет.
+    def _cleanup_spares_deck(self, reason: str) -> bool:
+        """Issue #3174 / ADR-0141 — мягкий cleanup не гасит играющую деку.
 
         ``tts_batch_complete`` / ``dialogue_end`` / ``new_dialogue`` — конец
-        речи или диалога, а не просьба остановить. Стоп после речи нужен
-        только BACKING-музыке своего хода; DJ-сет живёт до явного стопа
-        (``stop_music``, ``user_stop_command``, ``stop_command_guard``,
-        ``new_session``, ``shutdown`` — они проходят). Живой прогон 29.09
-        05:00: ход «поставь к Элизе» без тулов взвёл cleanup, и сет,
-        запущенный роутером, замолчал на 38 с.
+        речи или диалога, а не просьба остановить. Дека движка (сет или
+        одиночный трек) живёт до явного стопа (``user_stop_command``,
+        ``stop_command_guard``, ``new_session``, ``shutdown`` — они
+        проходят). Играет ли дека — знает её владелец, ``PlayerOwner``.
+        Живой прогон 29.09 05:00: ход «поставь к Элизе» без тулов взвёл
+        cleanup, и сет, запущенный роутером, замолчал на 38 с.
+        06.10 15:30 UTC: ход с ``tools=[]`` взвёл cleanup, и
+        ``tts_batch_complete`` погасил идущий сет — идущий сет (его владелец
+        ``DjSetTool``) мягкий cleanup тоже не трогает, даже если дека в этот
+        миг не отметилась ``started``.
         """
         if reason not in SOFT_MUSIC_CLEANUP_REASONS:
             return False
-        if getattr(self._music_manager, "dj_mode_enabled", False) is not True:
+        if not music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None)):
             return False
         self.get_logger().info(
-            f"🎧 [{reason}] DJ-сет идёт — мягкий cleanup музыку не трогает "
+            f"🎧 [{reason}] дека играет — мягкий cleanup музыку не трогает "
             "(issue #3174, ADR-0141)"
         )
         return True
 
-    def stop_generated_track_playback(self) -> None:
-        """Остановить mp3 из библиотеки сгенерированной музыки.
+    def _stop_deck(self, reason: str) -> None:
+        """Жёсткий cleanup: закрыть сет и снять деку через их владельцев.
 
-        ``gen_play_from_library`` публикует путь в ``sound_node``; ни
-        ``MusicManager.stop_all()``, ни ``/g_freeAll`` до него не достают.
-        Одна точка правды для ``StopMusicTool``, ``music_cleanup`` и
-        watchdog — issue #1392 follow-up.
+        Одна точка стопа для ``stop_music`` и ``/mcp/music_cleanup``: глушить
+        Renardo за спиной ``PlayerOwner`` нельзя — снимок остался бы
+        ``playing``, а ``SetSession`` поставила бы следующий трек.
         """
-        try:
-            msg = String()
-            msg.data = "STOP"
-            self.sound_stop_pub.publish(msg)
-            state = String()
-            state.data = json.dumps({"status": "idle"})
-            self.generated_music_state_pub.publish(state)
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось остановить mp3 в sound_node: {exc}"
-            )
-
-    def _on_music_fallback(self, msg: "String") -> None:
-        """Issue #1016 — play the top-rated library track when the LLM
-        returned an empty reply to a music request.
-
-        Triggered by messages on ``/mcp/music_fallback`` published by
-        :class:`dialogue_node` (empty-response branch). The library query
-        is already ordered ``rating DESC, name ASC`` (:meth:`TrackLibrary.
-        list_tracks`), so the first result is the best human track we have.
-
-        Best-effort: if the music stack is unavailable, or the library is
-        empty, this is a silent no-op (the robot already said "Принял.").
-        """
-        manager = getattr(self, "_music_manager", None)
-        library = getattr(self, "_track_library", None)
-        if manager is None or library is None:
-            self.get_logger().warning(
-                "🎵 [music_fallback] music manager/library unavailable — skip"
-            )
-            return
-        try:
-            reason = ""
-            if msg.data:
-                try:
-                    payload = json.loads(msg.data)
-                    if isinstance(payload, dict):
-                        reason = f" ({payload.get('reason', '')})"
-                except (TypeError, ValueError):
-                    pass
-            listing = library.list_tracks(min_rating=0)
-            tracks = listing.get("tracks", [])
-            if not tracks:
-                self.get_logger().warning(
-                    "🎵 [music_fallback] библиотека пуста — нечего играть"
-                )
-                return
-            top = tracks[0]
-            loaded = library.load_track(top["name"])
-            if not loaded.get("success"):
-                self.get_logger().warning(
-                    f"🎵 [music_fallback] не удалось загрузить "
-                    f"'{top['name']}': {loaded.get('error')}"
-                )
-                return
-            result = manager.execute_code(
-                loaded["code"], pattern_name=top["name"]
-            )
-            if result.get("success"):
-                self.get_logger().info(
-                    f"🎵 [music_fallback{reason}] играю топ-трек "
-                    f"'{top['name']}' (rating={top.get('rating')})"
-                )
-            else:
-                self.get_logger().warning(
-                    f"🎵 [music_fallback] топ-трек '{top['name']}' "
-                    f"не запустился: {result.get('error')}"
-                )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ [music_fallback] обработчик упал: {exc}"
-            )
-
-    def _run_music_watchdog(self) -> None:
-        """Timer callback: auto-stop idle music when TTL is exceeded."""
-        manager = getattr(self, "_music_manager", None)
-        if manager is None:
-            return
-        # Issue #3133 — страховка к одноразовому таймеру конца формы
-        # (_arm_form_end_timer): если тот не сработал, idle наступит здесь.
-        _finish_music_form(manager, self.get_logger())
-        try:
-            # Issue #1812 — explicit TTL from the (now 30-min-default)
-            # ROS-side parameter, so it always wins over whatever default
-            # MusicManager picked up on construction.
-            result = manager.auto_stop_idle_music(
-                ttl_seconds=self._music_watchdog_idle_ttl_s
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Music watchdog failed: {exc}"
-            )
-            return
-        if result.get("held_reason"):
-            # Issue #1812 — не спамим warning на каждый тик (period~5s) пока
-            # форма не доиграла; debug делает причину видимой при разборе
-            # логов, не засоряя обычный вывод.
-            idle_s = result.get("idle_seconds")
-            remaining_s = result.get("form_deadline_remaining_s")
-            idle_str = f"{idle_s:.1f}s" if isinstance(idle_s, (int, float)) else str(idle_s)
-            remaining_str = (
-                f" form_remaining={remaining_s:.1f}s"
-                if isinstance(remaining_s, (int, float))
-                else ""
-            )
-            self.get_logger().debug(
-                f"🎵 [watchdog] Не гашу: reason={result['held_reason']} "
-                f"idle={idle_str}{remaining_str}"
-            )
-        if result.get("stopped"):
-            patterns = result.get("active_patterns", [])
-            idle = result.get("idle_seconds", "?")
-            ttl = result.get("ttl_seconds", "?")
-            # 🔴 FIX (live 30.08): без ``stop_reason`` строка врала — писала
-            # «после 20.1s (ttl=300s)», хотя музыку убил segments-дедлайн,
-            # а не idle-TTL. Из лога было не понять, почему бит прожил 20
-            # секунд при ttl=300.
-            reason = result.get("stop_reason", "idle_ttl")
-            deadline_segments = result.get("deadline_segments")
-            self.get_logger().warning(
-                f"🎵 [watchdog] Авто-стоп {len(patterns)} паттернов: "
-                f"reason={reason} idle={idle:.1f}s ttl={ttl:.0f}s"
-                + (f" segments={deadline_segments}" if deadline_segments else "")
-                + ". Issue #935."
-            )
-            self.stop_generated_track_playback()
-        # Issue 989 Fix C: синхронизируем состояние музыки для audio_node
-        # (поднятие VAD threshold при активной музыке). Watchdog тикает
-        # каждые ~5s — достаточно для strict mode; tool-вызовы публикуют
-        # состояние немедленно (см. publish_music_state).
-        self.publish_music_state()
-
-    def publish_music_state(self) -> None:
-        """Опубликовать /voice/music/state и /voice/music/form.
-
-        ``/voice/music/state`` (issue #3133, ADR-0141): JSON-снимок плеера
-        ``{state, track_id, form_ends_at, stops_at, dj, finished_track_id,
-        ts}``, контракт и парсер — ``rob_box_voice.core.music_player_state``.
-        ``state="playing"``, если у MusicManager есть открытая сессия
-        (``music_session_active_since`` не None) или именованные паттерны.
-        Сессию закрывает стоп, idle-TTL, segments-дедлайн и — с #3133 —
-        конец формы конечного трека (:func:`_finish_music_form`). До #3133
-        payload был плоской строкой "playing"/"idle", и audio_node сравнивал
-        её точным равенством; теперь оба подписчика разбирают JSON через
-        ``parse_music_state`` (старый формат он тоже понимает).
-
-        Публикуется после каждого музыкального тула, на каждом тике
-        watchdog'а (~5 с) и одноразовым таймером в момент ``stops_at``
-        (:meth:`_arm_form_end_timer`).
-
-        ``/voice/music/form`` (issue #2461): JSON
-        ``{"form_ends_at": <epoch float|null>, "playing": bool}`` — конец
-        текущего прохода формы для ``DJModeController.tick()`` в
-        dialogue_node. ``form_cycle_remaining_s`` из ``MusicManager.get_state()``
-        посчитан через ``time.monotonic()`` — эти часы НЕСОПОСТАВИМЫ между
-        процессами (mcp_server и dialogue_node — РАЗНЫЕ ОС-процессы, см.
-        voice_assistant.launch.py: один Node(...), другой ExecuteProcess(...)).
-        Публиковать monotonic-значение наружу нельзя — в чужом процессе оно
-        бессмысленно. Поэтому здесь остаток переводится в АБСОЛЮТНОЕ стенное
-        время (``time.time() + remaining``) ПРЯМО ПЕРЕД публикацией;
-        получатель сравнивает его со своим собственным ``time.time()`` —
-        wall-clock общий для обоих процессов на одной машине.
-        """
-        manager = getattr(self, "_music_manager", None)
-        pub = getattr(self, "music_state_pub", None)
-        if manager is None or pub is None:
-            return
-        try:
-            state = manager.get_state()
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().debug(f"⚠️ publish_music_state: get_state failed: {exc}")
-            return
-        playing = bool(state.get("active_patterns")) or state.get("music_session_active_since") is not None
-        form_ends_at = _music_form_ends_at_epoch(state)
-        stops_at = _music_form_stops_at_epoch(state)
-        msg = String()
-        msg.data = build_music_state_payload(
-            playing=playing,
-            track_id=state.get("track_id"),
-            form_ends_at=form_ends_at,
-            stops_at=stops_at,
-            dj=state.get("dj_mode_enabled") is True,
-            finished_track_id=state.get("last_finished_track_id"),
-        )
-        pub.publish(msg)
-        self._arm_form_end_timer(state.get("form_stop_remaining_s"))
-
-        form_pub = getattr(self, "music_form_pub", None)
-        if form_pub is None:
-            return
-        form_msg = String()
-        form_msg.data = json.dumps({
-            "form_ends_at": form_ends_at,
-            "playing": playing,
-            # Issue #3113: когда конечный трек замолчит (DJ-переход раньше)
-            # и какая тема играет (DJ-сет не повторяет песню).
-            "stops_at": stops_at,
-            "track": state.get("track_name") if isinstance(state.get("track_name"), str) else None,
-        })
-        form_pub.publish(form_msg)
-
-    #: Issue #3133 — на сколько позже расчётного конца формы срабатывает
-    #: одноразовый таймер: Renardo гасит трек по долям клока, а не по
-    #: стенным часам; небольшой запас, чтобы не закрыть сессию до
-    #: последней ноты. Acceptance: idle не позже ``stops_at + 1 с``.
-    FORM_END_TIMER_SLACK_S = 0.3
-
-    def _arm_form_end_timer(self, remaining_s: Any) -> None:
-        """Issue #3133 — одноразовый таймер на конец формы конечного трека.
-
-        Watchdog тикает раз в ~5 с — idle запаздывал бы до 5 с. Таймер
-        ставится на ``remaining + FORM_END_TIMER_SLACK_S`` и перевзводится
-        только если конец формы сдвинулся (новый трек). ``remaining_s``
-        не число (зацикленный трек, тишина) — таймер снимается.
-
-        ``threading.Timer``, а не rclpy-таймер: одноразовый, отменяемый и
-        не требует живого Node в юнит-тестах. Колбэк зовёт тот же путь,
-        что и watchdog, — :func:`_finish_music_form` + публикация.
-        """
-        remaining = _positive_seconds(remaining_s)
-        with _FORM_END_TIMER_LOCK:
-            pending = getattr(self, "_form_end_timer", None)
-            due = None if remaining is None else time.monotonic() + remaining + self.FORM_END_TIMER_SLACK_S
-            if pending is not None and due is not None and abs(pending[0] - due) < 0.5:
-                return  # тот же трек — таймер уже стоит
-            if pending is not None:
-                pending[1].cancel()
-            self._form_end_timer = None
-            if due is None:
-                return
-            timer = threading.Timer(due - time.monotonic(), self._on_form_end_timer)
-            timer.daemon = True
-            self._form_end_timer = (due, timer)
-            timer.start()
-
-    def _on_form_end_timer(self) -> None:
-        """Issue #3133 — колбэк одноразового таймера конца формы."""
-        with _FORM_END_TIMER_LOCK:
-            pending = getattr(self, "_form_end_timer", None)
-            if pending is not None and pending[1] is threading.current_thread():
-                self._form_end_timer = None
-        manager = getattr(self, "_music_manager", None)
-        if manager is None:
-            return
-        _finish_music_form(manager, self.get_logger())
-        self.publish_music_state()
+        set_tool = getattr(self, "_dj_set_tool", None)
+        if set_tool is not None:
+            set_tool.close_set(reason)
+        owner = getattr(self, "_player_owner", None)
+        if owner is not None and owner.is_playing():
+            owner.stop(reason)
 
     def _init_waypoint_store(self) -> WaypointAdapter:
         """Инициализация адаптера для вейпоинтов.
@@ -1227,6 +941,7 @@ class MCPServer(Node):
         # set_voice персистентно меняет голос на диалог, speak_text без
         # voice= говорит установленным голосом (Q7).
         voice_store = VoiceStateStore()
+        self._voice_store = voice_store  # песня голосом робота читает установленный голос (ADR-0158 PR-7)
         self.registry.register(SpeakTextTool(self, voice_store=voice_store))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
@@ -1251,6 +966,10 @@ class MCPServer(Node):
         # Без этой регистрации mcp_server отвечал бы «unknown tool» на
         # show_metrics — даже если срез-гард пропускал avatar_supervisor.
         self.registry.register(ShowMetricsTool(self))
+        # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
+        # /voice/tts/request (нужен только node.create_publisher). Без
+        # регистрации /mcp/execute отвечал «unknown tool».
+        self.registry.register(SayTool(self))
         # Issue #968 (S6) — task_delta: schema-only registration so the
         # LLM sees the tool. Real execution is intercepted in-process by
         # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
@@ -1266,40 +985,22 @@ class MCPServer(Node):
 
     def _register_music_tools(self) -> None:
         """Регистрирует music tools, не роняя весь MCP server при частичной деградации."""
-        music_max_amp = self.get_parameter("music_max_amp").value
         music_master_gain = self.get_parameter("music_master_gain").value
-        self.get_logger().info(
-            f"🎵 Music max_amp: {music_max_amp:.2f}, "
-            f"master_gain: {music_master_gain:.2f}"
-        )
-
+        self.get_logger().info(f"🎵 Music master_gain: {music_master_gain:.2f}")
+        # Renardo и scsynth для движка v2 (#3614): контекст, палитра, raw OSC, /fail, мастер-фейдер.
+        # Не поднялся — нода живёт, get_music_state честно скажет «движок недоступен».
+        runtime: Optional[RenardoRuntime]
         try:
-            music_manager = MusicManager(
-                max_amp=music_max_amp, master_gain=music_master_gain
-            )
-        except Exception as exc:
-            self.get_logger().error(
-                f"❌ Music subsystem disabled: MusicManager init failed: {exc}"
-            )
-            return
-        # Issue #3166: лог «[#3112] трек started» идёт из потока клока Renardo.
-        # getattr: тестовые двойники MusicManager этого метода не имеют.
-        attach_logger = getattr(music_manager, "attach_logger", None)
-        if callable(attach_logger):
-            attach_logger(self.get_logger())
-
-        # Expose the manager so the watchdog / DialogueNode can hook into
-        # session cleanup. Issue #935: when the dialog finishes without
-        # ``stop_music``, an external safety-net (the dialog-end hook below)
-        # calls ``music_manager.stop_music_on_session_end()`` to stop
-        # playback automatically.
-        self._music_manager: Optional[MusicManager] = music_manager
-        self.registry.register(ExecuteMusicCodeTool(self, music_manager))
+            runtime = RenardoRuntime(master_gain=music_master_gain)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"❌ Music subsystem disabled: RenardoRuntime init failed: {exc}")
+            runtime = None
+        if runtime is not None:
+            runtime.attach_logger(self.get_logger())
+        self._renardo_runtime = runtime
 
         # RTTTL-библиотека (архив data/rtttl_melodies.jsonl.gz) — независима от
-        # SQLite. Поиск по имени/жанру + конвертация RTTTL→Renardo при игре.
-        # Создаём ДО ComposeMusicTool: композитор по name= сам ищет точные
-        # ноты известной мелодии в этой библиотеке.
+        # SQLite. Поиск по имени/жанру; играет мелодию v2 (``request_music``).
         rtttl_library: Optional[RtttlLibrary] = None
         try:
             rtttl_library = RtttlLibrary()
@@ -1309,137 +1010,51 @@ class MCPServer(Node):
         except Exception as exc:
             self.get_logger().error(f"❌ RTTTL library disabled: {exc}")
 
-        # ADR-0132 PR-7: пресеты ручек по мелодии (shipped + learned,
-        # $MUSIC_LIBRARY_PATH — та же персистентная точка, что TrackLibrary
-        # ниже). Один экземпляр — общий для compose_music/preview_arrangement
-        # (тот же пресет, что реально применится) и save_arrangement_preset.
-        preset_store = ArrangementPresetStore()
+        self.registry.register(StopMusicTool(self))
+        self.registry.register(GetMusicStateTool(self, runtime))
+        if runtime is not None:
+            # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
+            self.registry.register(SetMusicVolumeTool(self, runtime))
 
-        # Форма трека строится кодом, а не LLM (RC4 в
-        # docs/analysis/2026-08-30-music-quality-audit.md).
-        # Issue #3224 / ADR-0146: персистентная история сыгранного (та же БД,
-        # что у RTTTL-библиотеки). Недоступна → WARNING в логе и выбор без памяти.
-        music_history = MusicHistory()
-        music_history.announce(self.get_logger())
-        self._compose_music_tool = ComposeMusicTool(
-            self, music_manager, rtttl_library, preset_store, music_history
-        )
-        self.registry.register(self._compose_music_tool)
-        # Issue #3228: мелодия темы, которой нет в архиве, — через search_web (сниппеты).
-        attach_web_search(self._compose_music_tool, getattr(self, "_search_web_tool", None))
-        self.registry.register(
-            PreviewArrangementTool(self, music_manager, rtttl_library, preset_store)
-        )
-        self.registry.register(
-            SaveArrangementPresetTool(self, self._compose_music_tool, preset_store)
-        )
-        self.registry.register(StopMusicTool(self, music_manager))
-        self.registry.register(SetVibePresetTool(self, music_manager))
-        self.registry.register(GetMusicStateTool(self, music_manager))
-        # Issue #3125 — громкость МУЗЫКИ (мастер-фейдер), не голоса.
-        self.registry.register(SetMusicVolumeTool(self, music_manager))
-        self.registry.register(SetDjModeTool(self, music_manager))
-        self.registry.register(SearchSamplesTool(self))
+        if rtttl_library is not None:
+            self.registry.register(LookupMelodyTool(self, rtttl_library))
 
-        try:
-            track_library = TrackLibrary()
-        except Exception as exc:
-            self.get_logger().error(
-                f"❌ Music library disabled: TrackLibrary init failed: {exc}"
-            )
-            return
-
-        self._track_library = track_library
-        self.get_logger().info(f"🎵 Track library: {track_library.list_tracks()['total']} трек(ов)")
-        self.registry.register(SaveTrackTool(self, track_library, music_manager))
-        self.registry.register(ListTracksTool(self, track_library))
-        self.registry.register(LoadTrackTool(self, track_library, music_manager))
-        self.registry.register(DeleteTrackTool(self, track_library))
-        # Issue #2956: тот же preset_store — lookup_melody говорит модели,
-        # что у мелодии есть сохранённый пресет (играть name= без синтов).
-        self.registry.register(
-            LookupMelodyTool(self, track_library, music_manager, rtttl_library, preset_store)
-        )
-
-        # Issue #1392 — MiniMax music generation + persistent library.
-        # Graceful degradation: any failure (no API key, no /data volume,
-        # import error) only disables the new tools — Renardo tools keep
-        # working. This mirrors the same try/except pattern used above.
-        self._register_minimax_music_tools()
-
-        # Issue #1016 — empty-response music fallback. When the LLM returns
-        # an empty reply to a music request ("поставь что-нибудь", "сыграй
-        # классику"), dialogue_node publishes /mcp/music_fallback and we
-        # play the top-rated human track from the library instead of
-        # leaving the user in silence.
-        # 🔴 FIX (live 13.08): _register_music_tools() выполняется в
-        # _register_tools() РАНЬШЕ, чем __init__ присваивает
-        # self._qos_profile → AttributeError глотался try/except'ом, и
-        # подписка на /mcp/music_fallback никогда не создавалась.
-        qos = getattr(self, "_qos_profile", None)
-        if qos is None:
-            qos = QoSProfile(
-                reliability=ReliabilityPolicy.RELIABLE,
-                history=HistoryPolicy.KEEP_LAST,
-                depth=10,
-            )
-            self._qos_profile = qos
-        try:
-            self._music_fallback_sub = self.create_subscription(
-                String,
-                "/mcp/music_fallback",
-                self._on_music_fallback,
-                qos,
-            )
-            self.get_logger().info("🎵 Подписан на /mcp/music_fallback (issue #1016)")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось подписаться на /mcp/music_fallback: {exc}"
-            )
+        # Issue #1392 / ADR-0158 — библиотека сгенерированных треков (кэш).
+        # Graceful degradation: любой сбой (нет /data, ImportError) выключает
+        # только music_library — Renardo-тулы продолжают работать.
+        self._register_gen_library_tools()
 
     # ------------------------------------------------------------------
-    # Issue #1392 — MiniMax music generation + persistent library tools.
+    # Issue #1392 / ADR-0158 — библиотека сгенерированных треков.
     # ------------------------------------------------------------------
 
-    def _register_minimax_music_tools(self) -> None:
-        """Регистрирует 6 gen_* библиотечных тулзов (graceful degradation).
+    def _register_gen_library_tools(self) -> None:
+        """Регистрирует ``music_library`` — один узкий тул над кэшем генераций (graceful degradation).
 
-        Tools registered on success:
-            gen_list_library, gen_search_library, gen_save_to_library,
-            gen_play_from_library, gen_delete_from_library, gen_get_track_info
+        Новый узкий ``generate_music`` (ADR-0158 PR-3) регистрируется рядом с
+        ``request_music`` в ``_attach_player_owner_v2``: он просьба к чойсеру пути.
 
-        ``generate_music`` НЕ регистрируется с 20.08.2026: MiniMax Music API
-        отключён для новых юзеров (410 Gone, status_code 2153).
-
-        Failure modes (each disables only the new tools, Renardo keeps working):
-            * Module import failed (e.g. missing package)         → log + return
-            * /data volume not writable (GeneratedMusicLibrary)   → log + skip lib tools
+        Failure modes (each disables only music_library, Renardo keeps working):
+            * Module import failed                              → log + return
+            * /data volume not writable (GeneratedMusicLibrary) → log + skip
         """
-        if not _MINIMAX_MUSIC_AVAILABLE:
+        if not _GEN_LIBRARY_AVAILABLE:
             self.get_logger().warning(
-                f"⚠️ MiniMax music tools disabled: import failed "
-                f"({_MINIMAX_MUSIC_IMPORT_ERROR})"
+                f"⚠️ music_library tool disabled: import failed "
+                f"({_GEN_LIBRARY_IMPORT_ERROR})"
             )
             return
 
-        # Type-narrow for Pyright: _MINIMAX_MUSIC_AVAILABLE gates the rest.
-        assert MinimaxMusicClient is not None
+        # Type-narrow for Pyright: _GEN_LIBRARY_AVAILABLE gates the rest.
         assert GeneratedMusicLibrary is not None
-        assert GenerateMusicTool is not None
-        assert GenListLibraryTool is not None
-        assert GenSearchLibraryTool is not None
-        assert GenSaveToLibraryTool is not None
-        assert GenPlayFromLibraryTool is not None
-        assert GenDeleteFromLibraryTool is not None
-        assert GenGetTrackInfoTool is not None
+        assert MusicLibraryTool is not None
 
-        # Library — initialised first; required by ALL gen_* tools.
         try:
             music_library = GeneratedMusicLibrary()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
-                f"⚠️ MiniMax music library disabled: init failed ({exc}). "
-                "gen_* tools will NOT be registered."
+                f"⚠️ Generated music library disabled: init failed ({exc}). "
+                "music_library will NOT be registered."
             )
             return
         self._generated_music_library = music_library
@@ -1448,25 +1063,10 @@ class MCPServer(Node):
             f"в {music_library.root_dir}"
         )
 
-        # Register library-only tools (they don't need the API client).
-        self.registry.register(GenListLibraryTool(self, music_library))
-        self.registry.register(GenSearchLibraryTool(self, music_library))
-        self.registry.register(GenSaveToLibraryTool(self, music_library))
-        self.registry.register(GenDeleteFromLibraryTool(self, music_library))
-        self.registry.register(GenGetTrackInfoTool(self, music_library))
-        # play tool is registered even without client — uses library only
-        self.registry.register(GenPlayFromLibraryTool(self, music_library))
-
-        # 20.08.2026 — MiniMax Music API отключён для новых юзеров (410 Gone,
-        # status_code 2153, проверено вживую). ``generate_music`` больше НЕ
-        # регистрируется: LLM не должен видеть/вызывать мёртвый инструмент
-        # (e2e regression: dj01 «сыграй renardo бит» → forbidden tool call).
-        # gen_* библиотечные тулзы (list/search/save/play/delete/get_info)
-        # остаются — они работают с локальной /data/music_library без API.
-        self.get_logger().info(
-            "🎼 MiniMax music generation disabled (API discontinued 410 Gone). "
-            "gen_* library tools only."
-        )
+        self.registry.register(MusicLibraryTool(self, music_library))
+        quota = enforce_quota(music_library)  # ADR-0158 PR-9: квота диска проверяется и на старте
+        self.get_logger().info(f"🎼 Квота кэша: занято {quota['used'] // MIB} МиБ из {quota['quota'] // MIB}, "
+                               f"вычищено {len(quota['removed'])}")
 
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.

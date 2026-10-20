@@ -24,6 +24,16 @@ on:
         required: false
         default: "oak-d"
         type: string
+      sound_host:
+        description: "Sound Pi SSH host (ADR-0159: voice stack)"
+        required: false
+        default: "10.1.1.22"
+        type: string
+      sound_container:
+        description: "Sound Pi Docker container containing the ROS2 CLI"
+        required: false
+        default: "voice-assistant"
+        type: string
       runtime_user:
         description: "SSH user on the robot"
         required: false
@@ -41,6 +51,11 @@ on:
         type: boolean
       capture_vision:
         description: "Also capture from the Vision Pi. Both Pis see one shared Zenoh graph, so Main Pi alone is the default (~5 min saved)"
+        required: false
+        default: false
+        type: boolean
+      capture_sound:
+        description: "Also capture from the Sound Pi (same shared Zenoh graph, so opt-in like capture_vision)"
         required: false
         default: false
         type: boolean
@@ -63,9 +78,12 @@ jobs:
       MAIN_CONTAINER: ${{ inputs.main_container }}
       VISION_HOST: ${{ inputs.vision_host }}
       VISION_CONTAINER: ${{ inputs.vision_container }}
+      SOUND_HOST: ${{ inputs.sound_host }}
+      SOUND_CONTAINER: ${{ inputs.sound_container }}
       RUNTIME_USER: ${{ inputs.runtime_user }}
       RUNTIME_TOPICS: ${{ inputs.runtime_topics }}
       CAPTURE_VISION: ${{ inputs.capture_vision }}
+      CAPTURE_SOUND: ${{ inputs.capture_sound }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -91,12 +109,16 @@ jobs:
           if [ "$CAPTURE_VISION" = "true" ]; then
             targets+=("$RUNTIME_USER@$VISION_HOST")
           fi
+          if [ "$CAPTURE_SOUND" = "true" ]; then
+            targets+=("$RUNTIME_USER@$SOUND_HOST")
+          fi
           for target in "${targets[@]}"; do
             sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$target" "hostname"
           done
           echo "Runner: $(hostname)"
           echo "Main Pi: $RUNTIME_USER@$MAIN_HOST"
           echo "Vision Pi: $RUNTIME_USER@$VISION_HOST (capture_vision=$CAPTURE_VISION)"
+          echo "Sound Pi: $RUNTIME_USER@$SOUND_HOST (capture_sound=$CAPTURE_SOUND)"
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -135,12 +157,12 @@ jobs:
             python tools/architecture_runtime_snapshot.py "${args[@]}"
           }
           # Both Pis see one shared Zenoh graph (run 36422274238: 52 == 52 == 52
-          # nodes), so the Vision Pi capture is opt-in.
+          # nodes), so the Vision Pi and Sound Pi captures are opt-in.
           # Deep-inspection wall-clock budget per capture (batch <= 300 s + per-topic
           # fallback), so the captures stay inside timeout-minutes: 15. Topics left
           # when it runs out are recorded as skipped: "budget" with a ::warning::.
           budget=480
-          if [ "$CAPTURE_VISION" = "true" ]; then
+          if [ "$CAPTURE_VISION" = "true" ] || [ "$CAPTURE_SOUND" = "true" ]; then
             budget=240
           fi
           capture "$MAIN_HOST" "$MAIN_CONTAINER" architecture/runtime-main.json
@@ -148,6 +170,10 @@ jobs:
           if [ "$CAPTURE_VISION" = "true" ]; then
             capture "$VISION_HOST" "$VISION_CONTAINER" architecture/runtime-vision.json
             merge_args+=(--capture "Vision Pi|$VISION_HOST|$VISION_CONTAINER|architecture/runtime-vision.json")
+          fi
+          if [ "$CAPTURE_SOUND" = "true" ]; then
+            capture "$SOUND_HOST" "$SOUND_CONTAINER" architecture/runtime-sound.json
+            merge_args+=(--capture "Sound Pi|$SOUND_HOST|$SOUND_CONTAINER|architecture/runtime-sound.json")
           fi
 
           python tools/architecture_runtime_merge.py --output architecture/runtime.json "${merge_args[@]}"
@@ -171,7 +197,7 @@ jobs:
             --repo-root . \
             --output-dir architecture
 
-      # runtime-vision.json exists only with capture_vision. upload-artifact@v4 globs
+      # runtime-vision.json / runtime-sound.json exist only with capture_vision / capture_sound. upload-artifact@v4 globs
       # all paths together and skips a missing one silently (@actions/glob: ENOENT ->
       # continue); if-no-files-found only fires when nothing matches at all. Every
       # other file is produced by an earlier step that fails the job if it cannot.
@@ -191,6 +217,7 @@ jobs:
             architecture/runtime.json
             architecture/runtime-main.json
             architecture/runtime-vision.json
+            architecture/runtime-sound.json
             architecture/runtime-diff.json
             architecture/runtime-diff.md
             architecture/runtime-findings.json

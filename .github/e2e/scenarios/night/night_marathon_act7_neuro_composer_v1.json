@@ -34,9 +34,7 @@
         "expected_tool_calls": [
           "generate_music"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ],
+        "must_not_call": [],
         "_comment": "Разводка коллизии имён (PR #1372): «спой песню» — это нейрогенерация, а не renardo-код."
       },
       "retry_acceptance": 1
@@ -56,17 +54,15 @@
       }
     },
     {
-      "label": "n704_gen_list_library",
+      "label": "n704_music_library",
       "voice": "anton",
       "text": "Робот, что у тебя вообще лежит в музыкальной библиотеке?",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_list_library"
+          "music_library"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ]
+        "must_not_call": []
       }
     },
     {
@@ -76,11 +72,9 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_search_library"
+          "music_library"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ]
+        "must_not_call": []
       }
     },
     {
@@ -90,11 +84,9 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_save_to_library"
+          "music_library"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ]
+        "must_not_call": []
       }
     },
     {
@@ -104,11 +96,9 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_get_track_info"
+          "music_library"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ]
+        "must_not_call": []
       }
     },
     {
@@ -118,11 +108,9 @@
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_play_from_library"
+          "music_library"
         ],
-        "must_not_call": [
-          "execute_music_code"
-        ]
+        "must_not_call": []
       },
       "retry_acceptance": 1
     },
@@ -144,11 +132,11 @@
       "voice": "anton",
       "text": "Робот, удали последний трек из библиотеки, он всё-таки так себе.",
       "patterns": [
-        "gen_list_library|gen_delete_from_library"
+        "music_library"
       ],
       "acceptance": {
         "expected_tool_calls": [
-          "gen_delete_from_library"
+          "music_library"
         ],
         "must_not_call": [],
         "_comment": "Уборка за собой + проверка, что «последний» робот определяет через список, а не наугад."
@@ -159,7 +147,7 @@
       "voice": "anton",
       "text": "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
       "patterns": [
-        "execute_music_code|compose_music"
+        "request_music"
       ],
       "acceptance": {
         "must_not_call": [

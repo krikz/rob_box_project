@@ -15,11 +15,11 @@ echo ""
 # Параметры
 IMAGE_NAME_LOCAL="rob_box:voice-assistant-humble-test"
 IMAGE_NAME_PROD="ghcr.io/krikz/rob_box:voice-assistant-humble-latest"
-DOCKERFILE="docker/vision/voice_assistant/Dockerfile"
+DOCKERFILE="docker/sound/voice_assistant/Dockerfile"
 CONTEXT="."
 
 # Переход в корень проекта
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 
 # Проверка существования Dockerfile
 if [ ! -f "$DOCKERFILE" ]; then
@@ -58,8 +58,8 @@ echo "     - Push to feature branch"
 echo "     - Merge to develop → builds $IMAGE_NAME_PROD with 'dev' tag"
 echo "     - Merge to main → builds $IMAGE_NAME_PROD with 'latest' tag"
 echo ""
-echo "  3. Deploy on Vision Pi from GitHub registry:"
-echo "     cd docker/vision"
+echo "  3. Deploy on Sound Pi (ADR-0159) from GitHub registry:"
+echo "     cd docker/sound"
 echo "     docker-compose pull voice-assistant"
 echo "     docker-compose up -d voice-assistant"
 echo ""

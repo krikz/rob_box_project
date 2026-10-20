@@ -13,11 +13,9 @@
    слово не осталось непонятым для поиска (``ignored`` пуст — кириллица,
    которой нет в алиасах, до поиска просто не доходит: «гимн германии»
    без этой проверки сыграл бы гимн СССР). Иначе — промах.
-2. ``compose_music(name=<ключ записи>)`` — ключ записи из шага 1, чтобы
-   сыграла та же запись. Сначала без тембров: сохранённый пресет мелодии
-   и подстройка играющего трека (ADR-0132 PR-7, #2950) подставляются
-   тулом сами. Если тул ответил «найдена, но не задана аранжировка» —
-   второй вызов с тембрами по умолчанию (:data:`DEFAULT_ARRANGEMENT`).
+2. ``request_music(intent="melody", text=<название>)`` (ADR-0149 PR-11) — играет
+   песню движка v2 и отвечает ``ok`` только по ``started`` (поиск в туле — то же
+   правило :func:`melody_hit`). Старый шаг ``compose_music(name=…)`` удалён в PR-13a.
 
 Промах — реплика уходит в LLM, как до #3176, и роутер ничего не говорит
 (иначе был бы двойной ответ). Поток чистый: без ROS и без I/O, тулы
@@ -31,23 +29,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
-#: Тембры для ``compose_music(name=…)``, если у мелодии нет пресета.
-#: Тул требует ``lead_synth`` + ``bass_synth`` + ``pad_synth`` при
-#: ``name=`` (``ComposeMusicTool._missing_arrangement_fields``). Лид —
-#: фортепиано: сухой соло-инструмент из ``MELODIC_LEAD_SYNTHS``, годится
-#: для классики, игровых и киношных тем; бас и пэд — нейтральные из
-#: описаний параметров тула.
-DEFAULT_ARRANGEMENT: Mapping[str, str] = {
-    "lead_synth": "pianovel",
-    "bass_synth": "bass",
-    "pad_synth": "warmpad",
-}
-
-#: Маркер ответа ``compose_music``: мелодия найдена, тембров не хватает.
-ARRANGEMENT_MISSING_MARKER = "не задана аранжировка"
+from .media_phrases import composer_missing_phrase, launch_text, no_more_phrase, play_ok_text
 
 LOOKUP_TOOL = "lookup_melody"
-COMPOSE_TOOL = "compose_music"
+REQUEST_TOOL = "request_music"
 
 ToolExec = Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, str]]]
 
@@ -59,8 +44,12 @@ class NamedPlayStatus(str, Enum):
     PLAYED = "played"
     #: Нет в базе или совпало не целиком — реплика в LLM, роутер молчит.
     MISS = "miss"
-    #: Нашлась, но ``compose_music`` не прошёл — честная фраза.
+    #: Нашлась, но ``request_music`` не прошёл — честная фраза.
     FAILED = "failed"
+    #: «Ещё <автор>», а всё подходящее уже играло (#3599) — фраза кода в ``data["message"]``.
+    NO_MORE = "no_more"
+    #: Назван композитор, а его пьес по запросу нет (#3604) — фраза кода в ``data["message"]``, чужое не играет.
+    NO_COMPOSER = "no_composer"
 
 
 @dataclass(frozen=True)
@@ -79,6 +68,17 @@ class NamedPlayOutcome:
     hit: Optional[MelodyHit] = None
     tools_done: Tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
+    #: ``data`` ответа ``request_music`` (инструмент заказа, ADR-0157 §2.4) — для фразы :func:`outcome_text`.
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+
+def outcome_text(outcome: NamedPlayOutcome, title: str) -> str:
+    """Фраза итога найденного заказа: «Ставлю «X».» (+ об инструменте по результату тула) или честный отказ."""
+    if outcome.status is NamedPlayStatus.PLAYED:
+        return launch_text(play_ok_text(title), outcome.data)
+    if outcome.status in (NamedPlayStatus.NO_MORE, NamedPlayStatus.NO_COMPOSER):
+        return str(outcome.data.get("message") or "")
+    return play_fail_text(title)
 
 
 def user_phrase_title(play_name: str) -> str:
@@ -92,11 +92,6 @@ def user_phrase_title(play_name: str) -> str:
     предложение, не английский Title Case каждого слова).
     """
     return play_name[:1].upper() + play_name[1:] if play_name else play_name
-
-
-def play_ok_text(title: str) -> str:
-    """Короткая фраза после успешного заказа."""
-    return f"Ставлю «{title}»."
 
 
 def play_fail_text(title: str) -> str:
@@ -144,44 +139,53 @@ def melody_hit(data: Optional[Mapping[str, Any]]) -> Tuple[Optional[MelodyHit], 
     return MelodyHit(key=key, title=title), ""
 
 
-async def _compose(execute: ToolExec, hit: MelodyHit) -> bool:
-    ok, content = await execute(COMPOSE_TOOL, {"name": hit.key})
-    if ok or ARRANGEMENT_MISSING_MARKER not in (content or ""):
-        return ok
-    args: Dict[str, Any] = {"name": hit.key, **DEFAULT_ARRANGEMENT}
-    ok, _content = await execute(COMPOSE_TOOL, args)
-    return ok
+async def _request(execute: ToolExec, name: str, hit: Optional[MelodyHit],
+                   tools_done: Tuple[str, ...]) -> NamedPlayOutcome:
+    """``request_music(intent="melody")``: заиграло — :data:`PLAYED`; «больше нет» — фраза кода; иначе ``FAILED`` с
+    записью ``hit`` (она есть, когда поиск нашёл мелодию целиком) или ``MISS`` без неё («ещё» без находки — реплика LLM)."""
+    played, content = await execute(REQUEST_TOOL, {"intent": "melody", "text": name})
+    data = tool_data(content) or {}
+    if played:
+        shown = data.get("played") if isinstance(data.get("played"), Mapping) else {}
+        found = hit or MelodyHit(key=str(data.get("melody_id") or ""), title=str(shown.get("title") or name))
+        return NamedPlayOutcome(NamedPlayStatus.PLAYED, hit=found, tools_done=(*tools_done, REQUEST_TOOL), data=data)
+    phrase = no_more_phrase(content)
+    if phrase:
+        return NamedPlayOutcome(NamedPlayStatus.NO_MORE, tools_done=tools_done, reason="больше нет",
+                                data={"message": phrase})
+    phrase = composer_missing_phrase(content)
+    if phrase:
+        return NamedPlayOutcome(NamedPlayStatus.NO_COMPOSER, tools_done=tools_done, reason="нет пьес композитора",
+                                data={"message": phrase})
+    if hit is None:
+        return NamedPlayOutcome(NamedPlayStatus.MISS, tools_done=tools_done, reason=f"{REQUEST_TOOL}: не заиграло")
+    return NamedPlayOutcome(NamedPlayStatus.FAILED, hit=hit, tools_done=tools_done, reason=f"{REQUEST_TOOL} не прошёл")
 
 
-async def run_named_play(execute: ToolExec, name: str) -> NamedPlayOutcome:
-    """``lookup_melody`` → (полное совпадение) → ``compose_music``."""
+async def run_named_play(execute: ToolExec, name: str, more: bool = False) -> NamedPlayOutcome:
+    """``lookup_melody`` → (полное совпадение) → ``request_music(intent="melody")``.
+
+    ``more`` («продолжай играть Вагнера», #3599) — поиск названия не нужен: автор — слово заказа, а «ещё» читает
+    ``request_music`` из реплики хода и берёт то, чего недавно не играло."""
+    if more:
+        return await _request(execute, name, None, ())
     ok, content = await execute(LOOKUP_TOOL, {"name": name})
     if not ok:
         return NamedPlayOutcome(NamedPlayStatus.MISS, reason="lookup: не найдена")
     hit, reason = melody_hit(tool_data(content))
     if hit is None:
-        return NamedPlayOutcome(
-            NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason
-        )
-    if await _compose(execute, hit):
-        return NamedPlayOutcome(
-            NamedPlayStatus.PLAYED, hit=hit, tools_done=(LOOKUP_TOOL, COMPOSE_TOOL)
-        )
-    return NamedPlayOutcome(
-        NamedPlayStatus.FAILED, hit=hit, tools_done=(LOOKUP_TOOL,),
-        reason="compose_music не прошёл",
-    )
+        return NamedPlayOutcome(NamedPlayStatus.MISS, tools_done=(LOOKUP_TOOL,), reason=reason)
+    return await _request(execute, name, hit, (LOOKUP_TOOL,))
 
 
 __all__ = [
-    "ARRANGEMENT_MISSING_MARKER",
-    "COMPOSE_TOOL",
-    "DEFAULT_ARRANGEMENT",
     "LOOKUP_TOOL",
     "MelodyHit",
     "NamedPlayOutcome",
     "NamedPlayStatus",
+    "REQUEST_TOOL",
     "melody_hit",
+    "outcome_text",
     "play_fail_text",
     "play_ok_text",
     "run_named_play",

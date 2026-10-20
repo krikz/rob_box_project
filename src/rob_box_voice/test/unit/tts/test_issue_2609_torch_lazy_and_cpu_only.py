@@ -74,8 +74,8 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[3]  # rob_box_voice/
 _REPO_ROOT = _PACKAGE_ROOT.parents[1]                # rob_box_project/
 
 _DOCKER_REQUIREMENTS_FILES = [
-    _REPO_ROOT / "docker" / "vision" / "voice_base" / "requirements.txt",
-    _REPO_ROOT / "docker" / "vision" / "voice_assistant" / "requirements.txt",
+    _REPO_ROOT / "docker" / "sound" / "voice_base" / "requirements.txt",
+    _REPO_ROOT / "docker" / "sound" / "voice_assistant" / "requirements.txt",
 ]
 
 _TTS_NODE_SRC = _PACKAGE_ROOT / "rob_box_voice" / "tts_node.py"
@@ -490,7 +490,7 @@ def test_tts_node_init_does_not_touch_torch_attribute() -> None:
 
 # ── Layer 4: the DEPLOYED configs actually turn the warm-loads off ──────────
 
-_DOCKER_VOICE_CONFIG = _REPO_ROOT / "docker" / "vision" / "config" / "voice_assistant"
+_DOCKER_VOICE_CONFIG = _REPO_ROOT / "docker" / "sound" / "config" / "voice_assistant"
 
 
 def test_deployed_tts_yaml_disables_silero_warm_load() -> None:

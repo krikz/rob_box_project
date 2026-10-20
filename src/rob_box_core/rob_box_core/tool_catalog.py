@@ -34,6 +34,7 @@ __all__ = [
     "CORE_SKILL",
     "get_tool",
     "llm_visible_tools",
+    "operator_visible_tools",
     "skill_names",
     "tool_names",
     "tools_for_skill",
@@ -56,6 +57,10 @@ class ToolCatalogEntry:
     #: over ``/mcp/execute`` while hiding it from the model — used for tools
     #: whose backend is gone (``generate_music``: MiniMax API 410 Gone).
     llm_visible: bool = True
+    #: Предъявлять ли инструмент оператору (ТАРС) сверх llm-видимых. Для
+    #: «ТАРС-только» инструментов (``llm_visible=False``), которые оператору
+    #: нужны (``say``). Реестр оператора = ``operator_visible_tools()``.
+    operator_visible: bool = False
     read_only: bool = False
     destructive: bool = True
     idempotent: bool = False
@@ -63,9 +68,6 @@ class ToolCatalogEntry:
     #: ``dialogue_guards.MUSIC_STARTING_TOOLS`` — единственный источник для
     #: post-turn music guard'а (был дублирован в frozenset'ах и дрейфовал).
     starts_music: bool = False
-    #: Инструмент закрывает пользовательскую просьбу «включи X»
-    #: (напр. ``load_track``), не будучи универсальным «запустил музыку».
-    satisfies_user_music: bool = False
     execution_type: str = "medium"
     #: Доменные скиллы, в которые входит инструмент. Инструмент может
     #: входить в несколько (``stop_music`` — в composer, dj и player);
@@ -103,11 +105,11 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             description=raw["description"],
             parameters=MappingProxyType(dict(raw["parameters"])),
             llm_visible=raw.get("llm_visible", True),
+            operator_visible=raw.get("operator_visible", False),
             read_only=raw.get("read_only", False),
             destructive=raw.get("destructive", True),
             idempotent=raw.get("idempotent", False),
             starts_music=raw.get("starts_music", False),
-            satisfies_user_music=raw.get("satisfies_user_music", False),
             execution_type=raw.get("execution_type", "medium"),
             skill=tuple(raw.get("skill", ())),
             signature=MappingProxyType(dict(raw.get("signature", {}))),
@@ -138,6 +140,18 @@ def get_tool(name: str) -> ToolCatalogEntry:
 def llm_visible_tools() -> tuple[ToolCatalogEntry, ...]:
     """Return the tools that should be offered to the LLM."""
     return tuple(entry for entry in TOOL_CATALOG if entry.llm_visible)
+
+
+def operator_visible_tools() -> tuple[ToolCatalogEntry, ...]:
+    """Вернуть инструменты оператора (ТАРС): llm-видимые ∪ operator_visible.
+
+    Личность по-прежнему видит только :func:`llm_visible_tools`.
+    """
+    return tuple(
+        entry
+        for entry in TOOL_CATALOG
+        if entry.llm_visible or entry.operator_visible
+    )
 
 
 def skill_names() -> tuple[str, ...]:
@@ -176,8 +190,9 @@ def tools_for_skill(
         )
     return tuple(
         entry
-        for entry in llm_visible_tools()
-        if requested.intersection(entry.skill)
+        for entry in TOOL_CATALOG
+        if entry.llm_visible
+        and requested.intersection(entry.skill)
     )
 
 

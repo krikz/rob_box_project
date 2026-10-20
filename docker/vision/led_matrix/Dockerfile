@@ -52,7 +52,7 @@ ARG ROS2LEDS_SHA
 ARG APT_PROXY=""
 
 # apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
-# (build-args в "L-Build Vision Pi Services.yml" / "L-Build Single Service.yml"),
+# (build-args в "L-Build Pi Services.yml" / "L-Build Single Service.yml"),
 # но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
 # ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
 # ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
@@ -177,7 +177,7 @@ ARG ROS_DISTRO
 ARG APT_PROXY=""
 
 # apt-cacher-ng на build-хосте. Раннер уже передаёт APT_PROXY этому сервису
-# (build-args в "L-Build Vision Pi Services.yml" / "L-Build Single Service.yml"),
+# (build-args в "L-Build Pi Services.yml" / "L-Build Single Service.yml"),
 # но Dockerfile его не объявлял — build-arg молча игнорировался, и обе стадии
 # ходили напрямую в packages.ros.org. Это уронило сборку run 35027911983
 # ("Hash Sum mismatch" на Packages.gz): multi-stage гоняет apt-get update в двух
