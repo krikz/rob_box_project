@@ -93,8 +93,13 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return ""
 
         # ── logger ─────────────────────────────────────────────────────
-        def get_clock(self) -> MagicMock:
-            return MagicMock()  # stamp SpeechRequest (speech_client.say)
+        def get_clock(self) -> Any:
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки
+            # rob_box_dialog_msgs, что под рукой (rosidl в CI отвергает MagicMock).
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
 
         def get_logger(self) -> MagicMock:
             return self._logger
