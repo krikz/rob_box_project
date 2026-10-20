@@ -1,7 +1,7 @@
 # Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
 # менять сцену в генераторе и перезапекать.
 name: "accelerating"
-description: "Разгон: прищур, сжатые зубы, дрожь, сзади форсаж"
+description: "Разгон: прищур, сжатые зубы, сзади форсаж"
 version: "3.0"
 author: "led_face_lab"
 
@@ -14,80 +14,18 @@ panels:
     offset_ms: 0
     frames:
       - image: "frames/accelerating/p8_001.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 160
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 120
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_005.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_001.png"
-        duration_ms: 4040
+        duration_ms: 5000
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
       - image: "frames/accelerating/p8_000.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 160
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 120
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 80
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_004.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_000.png"
-        duration_ms: 4040
+        duration_ms: 5000
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
       - image: "frames/accelerating/p8_002.png"
+        duration_ms: 40
+      - image: "frames/accelerating/p8_004.png"
         duration_ms: 40
       - image: "frames/accelerating/p8_006.png"
         duration_ms: 40
@@ -335,12 +273,12 @@ panels:
         duration_ms: 40
       - image: "frames/accelerating/p8_250.png"
         duration_ms: 40
-      - image: "frames/accelerating/p8_252.png"
-        duration_ms: 40
   - logical_group: "wheel_rear_right"
     offset_ms: 0
     frames:
       - image: "frames/accelerating/p8_003.png"
+        duration_ms: 40
+      - image: "frames/accelerating/p8_005.png"
         duration_ms: 40
       - image: "frames/accelerating/p8_007.png"
         duration_ms: 40
@@ -587,8 +525,6 @@ panels:
       - image: "frames/accelerating/p8_249.png"
         duration_ms: 40
       - image: "frames/accelerating/p8_251.png"
-        duration_ms: 40
-      - image: "frames/accelerating/p8_253.png"
         duration_ms: 40
   - logical_group: "main_display"
     offset_ms: 0

@@ -235,12 +235,10 @@ def road_service(T=6.0, direction=1):
 
 # ------------------------------------------------------------ driving
 def accelerating(T=5.0):
-    rng = random.Random(9)
     out = []
     for t in frames(T):
         f = Frame()
-        rumble = rng.choice((0, 0, 1)) if t < 1.2 else 0
-        e = Eye(top=2.4, slant=0.6, gy=0, y_shift=rumble)
+        e = Eye(top=2.4, slant=0.6, gy=0)
         draw_eye(f.eye_l, e, 'l')
         draw_eye(f.eye_r, e, 'r')
         draw_mouth(f.mouth, Mouth(curve=1.0, grid=0.0, color=col(25, 25, 22)))
@@ -290,7 +288,8 @@ def victory(T=6.0):
     for t in frames(T):
         f = Frame()
         bounce = (t * 2.5) % 1.0 < 0.25
-        e = Eye(top=0.0, bot=6.2, bot_arc=3.4, gy=-1, y_shift=-1 if bounce else 0, bot_lid_dark=True)
+        squeeze = 0.5 + 0.5 * math.cos(t * math.tau * 2.5)
+        e = Eye(top=0.0, bot=6.2, bot_arc=2.9 + 0.8 * squeeze, gy=-1, bot_lid_dark=True)
         draw_eye(f.eye_l, e, 'l')
         draw_eye(f.eye_r, e, 'r')
         draw_mouth(f.mouth, Mouth(curve=1.0, shape='E1' if bounce else 'C'))

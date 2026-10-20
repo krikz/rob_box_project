@@ -1,7 +1,7 @@
 # Сгенерировано tools/led_face_lab/bake_manifests.py — руками не править,
 # менять сцену в генераторе и перезапекать.
 name: "happy"
-description: "Радость: глаза ^^, хихиканье, улыбка в линии прикуса"
+description: "Радость: глаза ^^ щурятся от смеха, хихиканье, улыбка в линии прикуса"
 version: "3.0"
 author: "led_face_lab"
 
@@ -28,45 +28,83 @@ panels:
       - image: "frames/happy/p8_007.png"
         duration_ms: 40
       - image: "frames/happy/p8_008.png"
+        duration_ms: 80
+      - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
+        duration_ms: 80
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
         duration_ms: 40
       - image: "frames/happy/p8_009.png"
-        duration_ms: 80
+        duration_ms: 40
       - image: "frames/happy/p8_008.png"
-        duration_ms: 120
-      - image: "frames/happy/p8_009.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
-      - image: "frames/happy/p8_009.png"
-        duration_ms: 3880
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_013.png"
+        duration_ms: 3800
   - logical_group: "wheel_front_right"
     offset_ms: 0
     frames:
@@ -85,45 +123,83 @@ panels:
       - image: "frames/happy/p8_007.png"
         duration_ms: 40
       - image: "frames/happy/p8_008.png"
+        duration_ms: 80
+      - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
+        duration_ms: 80
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
         duration_ms: 40
       - image: "frames/happy/p8_009.png"
-        duration_ms: 80
+        duration_ms: 40
       - image: "frames/happy/p8_008.png"
-        duration_ms: 120
-      - image: "frames/happy/p8_009.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_008.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
       - image: "frames/happy/p8_009.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_010.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_012.png"
         duration_ms: 80
-      - image: "frames/happy/p8_008.png"
-        duration_ms: 120
-      - image: "frames/happy/p8_009.png"
-        duration_ms: 3880
+      - image: "frames/happy/p8_011.png"
+        duration_ms: 40
+      - image: "frames/happy/p8_013.png"
+        duration_ms: 3800
   - logical_group: "wheel_rear_left"
     offset_ms: 0
     frames:
@@ -186,6 +262,6 @@ metadata:
   priority: "normal"
   category: "emotion"
   tags: [happy, smile, positive, emotion, rainbow, gradient]
-  brightness_budget: 169
+  brightness_budget: 176
   bake_scale: 1.000
-  peak_ma_at_255: 6189
+  peak_ma_at_255: 5946
