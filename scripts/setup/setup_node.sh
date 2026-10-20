@@ -98,14 +98,14 @@ show_node_menu() {
     echo ""
     echo -e "${BOLD}${CYAN}Выберите тип узла РОББОКС:${NC}"
     echo ""
-    echo -e "  ${GREEN}1)${NC} 🎥 Vision Pi      - Камера, лидар, LED матрица, голосовой ассистент"
+    echo -e "  ${GREEN}1)${NC} 🎥 Vision Pi      - Камера, лидар, LED матрица, Hailo, Quest, Telegram-бот (голос — на Sound Pi, ADR-0159)"
     echo -e "  ${GREEN}2)${NC} 🧠 Main Pi        - Главный узел, навигация, планирование"
-    echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Датчики (IMU, GPS, энкодеры, мотор-драйверы)"
+    echo -e "  ${GREEN}3)${NC} 📡 Sensor Hub     - Прошивка ESP32 (хост-сторона — роль 6 Sound Pi, perception_bridge)"
     echo -e "  ${GREEN}4)${NC} 🦾 Manipulator    - Манипулятор/рука (в разработке)"
     echo -e "  ${GREEN}5)${NC} 🛠️  Custom         - Пользовательская конфигурация"
     echo -e "  ${GREEN}6)${NC} 🔊 Sound Pi       - ReSpeaker, голосовой стек, SuperCollider, perception_bridge для ESP32 (ADR-0159)"
     echo ""
-    echo -e "${YELLOW}Примечание:${NC} Sensor Hub — прошивка ESP32; нода связи с ним (serial, без micro-ROS) живёт на Sound Pi (ADR-0159)"
+    echo -e "${YELLOW}Примечание:${NC} Sensor Hub — прошивка ESP32; нода связи с ним (serial, без агента-моста) живёт на Sound Pi (ADR-0159)"
     echo ""
 }
 
@@ -846,12 +846,7 @@ setup_vision_node() {
         log_warning "! LSLidar не найден (подключите позже)"
     fi
     
-    # ReSpeaker
-    if lsusb | grep -q "2886"; then
-        log_success "✓ ReSpeaker Mic Array обнаружен"
-    else
-        log_warning "! ReSpeaker не найден (подключите позже)"
-    fi
+    # ReSpeaker с 19.10.2026 живёт на Sound Pi (ADR-0159) — здесь его не ждём.
     
     log_info "Проверка SPI для LED матрицы..."
     if grep -q "dtparam=spi=on" /boot/firmware/config.txt 2>/dev/null || grep -q "dtparam=spi=on" /boot/config.txt 2>/dev/null; then
@@ -872,7 +867,6 @@ setup_vision_node() {
 setup_main_node() {
     log_info "Настройка Main Pi..."
     log_info "Main Pi будет управлять:"
-    log_info "  - micro-ROS agent (связь с ESP32)"
     log_info "  - Zenoh router (DDS мост)"
     log_info "  - Navigation stack (в разработке)"
     log_success "Базовая настройка завершена"
@@ -880,10 +874,11 @@ setup_main_node() {
 
 setup_sensor_hub() {
     log_info "Настройка Sensor Hub (ESP32)..."
-    log_warning "Sensor Hub использует micro-ROS на ESP32"
-    log_info "Для прошивки используйте:"
-    log_info "  cd ~/rob_box_project/src/sensor_hub"
-    log_info "  pio run -t upload"
+    log_info "Прошивка ESP32 живёт в отдельном репозитории:"
+    log_info "  https://github.com/krikz/robot_sensor_hub (ветка humble)"
+    log_info "Хост-сторона — perception_bridge на Sound Pi (serial через TTL-USB,"
+    log_info "profile sensors, сервис sensor-bridge в docker/sound/docker-compose.yaml):"
+    log_info "  bash setup_node.sh sound"
     log_success "Инструкции добавлены"
 }
 
@@ -893,7 +888,7 @@ setup_sensor_hub() {
 # Третий узел робота. Сюда переезжают с Vision Pi контейнеры, привязанные к
 # ReSpeaker (voice-assistant, supercollider, voice-action-server), и
 # perception_bridge (образ perception) — обычная ROS-нода, говорящая с ESP32 по serial через
-# TTL-USB конвертер (от micro-ROS отказались, решение Шифу 19.10.2026). LED-матрица
+# TTL-USB конвертер (от агента-моста отказались, решение Шифу 19.10.2026). LED-матрица
 # остаётся на Vision Pi (SPI), общение с ней — по ROS-топикам через Zenoh.
 #
 # Что делает эта роль (всё идемпотентно, повторный запуск безопасен):
@@ -909,6 +904,11 @@ setup_sensor_hub() {
 #      Pi их нет, и каждый раз приходится лезть внутрь контейнера).
 #   5. zram-своп — та же функция, что для Vision Pi (#2621, ADR-0111):
 #      voice-assistant один держит mem_limit 5g на 8 ГБ узле.
+#   6. /etc/docker/daemon.json: insecure-registries 10.1.1.249:5000 — как на
+#      Vision Pi; без него деплой с registry_source=local не тянет образы.
+#      Ключ дописывается к существующему файлу, docker перезапускается только
+#      при изменении.
+#   7. chrony (--role sound): время ведёт Main Pi, как на Vision Pi (ADR-0137).
 
 setup_sound_network() {
     log_step "Настройка сети Sound Pi: eth0 (metric 100) + wlan0 (metric 600)"
@@ -1023,6 +1023,74 @@ UDEVEOF
     log_success "udev-правило установлено/обновлено: $rule"
 }
 
+# Локальный registry на katana: на Vision Pi это insecure-registries в
+# daemon.json; на Sound Pi 19.10.2026 файл ставили руками.
+SOUND_LOCAL_REGISTRY="${SOUND_LOCAL_REGISTRY:-10.1.1.249:5000}"
+SOUND_DAEMON_JSON="${SOUND_DAEMON_JSON:-/etc/docker/daemon.json}"
+
+setup_sound_docker_registry() {
+    log_step "Docker: insecure-registry $SOUND_LOCAL_REGISTRY (daemon.json)"
+    local tmp verdict
+    tmp="$(mktemp)"
+    # Python, а не sed: daemon.json может уже содержать чужие ключи
+    # (log-driver, mtu…) — их нельзя затирать. Битый JSON → rc!=0, файл не трогаем.
+    # python3 БЕЗ sudo: daemon.json читается всем (0644), а писать в $tmp надо от
+    # своего пользователя — root не открывает на запись чужой файл в /tmp
+    # (fs.protected_regular=2 на Sound Pi, замер 20.10.2026), sudo нужен только
+    # для install ниже.
+    if ! verdict="$(python3 - "$SOUND_DAEMON_JSON" "$SOUND_LOCAL_REGISTRY" "$tmp" << 'PYEOF'
+import json, os, sys
+path, registry, out = sys.argv[1:4]
+cfg = {}
+if os.path.exists(path):
+    raw = open(path, encoding="utf-8").read().strip()
+    if raw:
+        cfg = json.loads(raw)
+regs = cfg.get("insecure-registries", [])
+if registry in regs:
+    print("unchanged")
+else:
+    cfg["insecure-registries"] = list(regs) + [registry]
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print("changed")
+PYEOF
+    )"; then
+        rm -f "$tmp"
+        log_error "$SOUND_DAEMON_JSON не прочитан или не разобран как JSON — не трогаю, поправьте руками"
+        return 1
+    fi
+    if [ "$verdict" = "unchanged" ]; then
+        rm -f "$tmp"
+        log_success "$SOUND_LOCAL_REGISTRY уже в $SOUND_DAEMON_JSON — docker не перезапускаю"
+        return 0
+    fi
+    sudo mkdir -p "$(dirname "$SOUND_DAEMON_JSON")"
+    sudo install -m 0644 "$tmp" "$SOUND_DAEMON_JSON"
+    rm -f "$tmp"
+    log_info "Записан $SOUND_DAEMON_JSON, перезапускаю docker (контейнеры на узле перезапустятся)..."
+    sudo systemctl restart docker
+    log_success "insecure-registries: $SOUND_LOCAL_REGISTRY"
+}
+
+# chrony на хосте (ADR-0137): Sound Pi — клиент Main Pi, как Vision Pi.
+# Скрипт сам идемпотентен; его код 2/3 (не синхронизировано / chronyd не
+# отвечает) не должен ронять остальную настройку узла — только предупреждаем.
+setup_sound_chrony() {
+    log_step "Синхронизация времени: chrony --role sound"
+    local script="$HOME/rob_box_project/scripts/maintenance/setup_chrony.sh"
+    if [ ! -f "$script" ]; then
+        log_warning "$script не найден — chrony не настроен"
+        return 0
+    fi
+    if sudo bash "$script" --role sound; then
+        log_success "chrony настроен (role=sound)"
+    else
+        log_warning "setup_chrony.sh --role sound завершился с ошибкой — проверьте: bash $script --check"
+    fi
+}
+
 setup_sound_node() {
     log_info "Настройка Sound Pi (ADR-0159)..."
 
@@ -1049,6 +1117,8 @@ setup_sound_node() {
     setup_sound_network
     setup_sound_boot_config
     setup_sound_udev
+    setup_sound_docker_registry
+    setup_sound_chrony
 
     # Каталоги ресурсного пака — те же пути, что на Vision Pi, чтобы
     # docker/sound/docker-compose.yaml монтировал их без переименований

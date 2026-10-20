@@ -101,14 +101,12 @@ graph TB
 - 🎮 **twist_mux** — мультиплексирование команд управления
 - 🚗 **VESC Driver** — управление моторами через CAN
 - 📡 **Zenoh Router** — центральный роутер сообщений
-- 🔬 **Micro-ROS Agent** — связь с ESP32 сенсорным хабом
 
 #### Подключенные устройства
 | Устройство | Интерфейс | Порт | Назначение |
 |------------|-----------|------|------------|
 | LS LiDAR N10 | Ethernet | eth0 (PoE) | 2D лазерное сканирование |
 | VESC Controllers | CAN Bus | GPIO (MCP2515) | Управление приводом |
-| ESP32 Hub | USB Serial | USB 2.0 | Сенсоры (Micro-ROS) |
 | Vision Pi | Gigabit Ethernet | eth0 | Передача данных |
 | Storage SSD | USB 3.0 | USB 3.0 | Persistent данные RTAB-Map |
 
@@ -136,8 +134,7 @@ graph TB
 - 🏷️ **AprilTag Detection** — детекция визуальных маркеров
 - 📡 **LS LiDAR Driver** — 2D лазерное сканирование
 - 📷 **MJPEG Camera** — потолочная навигация
-- � **ReSpeaker Mic Array** — голосовое управление
-- �🎨 **LED Matrix Driver** — управление 381 NeoPixel LED (4× 8×8 + 1× 25×5)
+- 🎨 **LED Matrix Driver** — управление 381 NeoPixel LED (4× 8×8 + 1× 25×5)
 - 📡 **Zenoh Router** — локальный роутер (client mode)
 
 #### Подключенные устройства
@@ -146,7 +143,6 @@ graph TB
 | OAK-D Lite | USB 3.0 | USB 3.0 | Стерео-камера RGB-D, AprilTag |
 | LS LiDAR N10 | USB CDC ACM | /dev/ttyACM0 | 2D лазерное сканирование 360° |
 | MJPEG Camera | USB 2.0 (UVC) | /dev/video0 | Потолочная камера 720p YUY2 |
-| ReSpeaker Mic v2 | USB 2.0 (Audio) | — | 6-микрофонный массив |
 | 381× NeoPixel LED | SPI (WS2812B) | GPIO 10 (MOSI/SPI0) | 4× 8×8 (колёса) + 1× 25×5 (дисплей) |
 | Main Pi | Gigabit Ethernet | eth0 | Связь через Zenoh |
 
@@ -158,23 +154,40 @@ graph TB
 - **eth0**: 10.1.1.11 (статический) — связь с Main Pi (ROS/Zenoh)
 - **wlan0**: 10.1.1.21 (DHCP) — SSH доступ
 
+> ReSpeaker и голосовой стек с 19.10.2026 живут на Sound Pi (п. 2.3, ADR-0159).
+
 ---
 
-### 2.3. Сенсорный хаб (ESP32)
+### 2.3. Sound Pi (Raspberry Pi 5 8GB, ADR-0159)
+
+#### Назначение
+- 🎙️ **ReSpeaker Mic Array v2.0** — микрофоны и динамики (USB, `2886:0018`)
+- 🗣️ **Голосовой стек** — `voice-assistant`, `voice-action-server`, `supercollider`
+- 🤖 **ТАРС** — `avatar-supervisor`
+- 📡 **Zenoh Router** — локальный роутер, прямой линк на Vision Pi и линк на Main Pi
+- 🔌 **TTL-USB конвертер** `/dev/sensor_hub` — для ESP32-хаба (п. 2.4), хаб пока не подключён
+
+#### Конфигурация сети
+- **eth0**: 10.1.1.12 (DHCP; закрепление адреса по MAC на роутере — на стороне владельца) — основной канал
+- **wlan0**: 10.1.1.22 (DHCP) — SSH доступ
+
+---
+
+### 2.4. Сенсорный хаб (ESP32)
 
 #### Технические характеристики
 - **Микроконтроллер**: ESP32-WROOM-32 (Dual-core Xtensa LX6 @ 240 MHz)
 - **RAM**: 520 KB SRAM
 - **Flash**: 4 MB
 - **Интерфейсы**: I2C, SPI, UART, PWM, ADC
-- **Питание**: 5V (от Main Pi USB)
-- **Связь**: micro-ROS через UART (/dev/ttyUSB0)
+- **Питание**: 5V (через TTL-USB конвертер на Sound Pi)
+- **Связь**: serial (UART) через TTL-USB конвертер → `/dev/sensor_hub` на Sound Pi → нода `perception_bridge` (profile `sensors`, ADR-0159 §2.4); хаб пока не подключён
 
 #### Назначение
 - 🌡️ **Мониторинг температуры** — критичные компоненты (Pi, VESC, батарея)
 - 🌀 **Управление охлаждением** — PWM вентиляторы по данным температуры
 - 🔋 **BMS мониторинг** (planned) — связь с BMS аккумуляторов по UART
-- 📊 **Агрегация данных** — публикация через micro-ROS → ROS2
+- 📊 **Агрегация данных** — `perception_bridge` публикует JSON в `/sensors/data` (ROS2)
 
 #### Подключенные сенсоры
 | Сенсор | Интерфейс | Количество | Назначение |
@@ -404,7 +417,7 @@ python tuning.py -p            # Список всех параметров
 - 🛡️ **Эхоподавление** — предотвращение самопрослушивания при TTS
 
 #### Подключение
-- **Интерфейс**: USB 2.0 (Vision Pi 5)
+- **Интерфейс**: USB 2.0 (Sound Pi 5, ADR-0159; до 19.10.2026 — Vision Pi)
 - **Device ID**: `idVendor=0x2886, idProduct=0x0018`
 - **Audio device**: `plughw:CARD=ArrayUAC10,DEV=0`
 - **Udev правило**: `/etc/udev/rules.d/60-respeaker.rules`
@@ -454,7 +467,7 @@ python tuning.py -p            # Список всех параметров
 | **Интерфейс** | I2C |
 | **Температура** | Диапазон: -40°C — +85°C, точность: ±0.3°C |
 | **Влажность** | Диапазон: 0-100% RH, точность: ±2% RH |
-| **Частота опроса** | 1 Hz (через Micro-ROS) |
+| **Частота опроса** | 1 Hz (через `perception_bridge`) |
 | **Питание** | 3.3V, <1 mA |
 
 **Зоны мониторинга (8 сенсоров)**:

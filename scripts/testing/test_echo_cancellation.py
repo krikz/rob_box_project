@@ -27,7 +27,7 @@ class Colors:
 
 def run_ssh_command(command: str) -> tuple[int, str]:
     """Выполнить команду на Vision Pi через SSH"""
-    full_command = f"wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 '{command}'"
+    full_command = f"wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 '{command}'"
     result = subprocess.run(
         full_command,
         shell=True,
@@ -58,7 +58,7 @@ def monitor_logs_realtime(duration: int = 30):
     print(f"{Colors.WARNING}   И попробуйте говорить ПОКА робот говорит{Colors.ENDC}\n")
     
     # Запускаем docker logs в реальном времени
-    full_command = f"wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker logs -f voice-assistant --tail 20'"
+    full_command = f"wsl sshpass -p 'open' ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 'docker logs -f voice-assistant --tail 20'"
     
     try:
         process = subprocess.Popen(

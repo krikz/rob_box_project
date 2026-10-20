@@ -13,11 +13,13 @@
 #
 # Что настраивает роль `sound` (см. setup_node.sh → setup_sound_node):
 #   - Docker + compose, клон репо, MOTD, aliases, systemd robbox-sound.service
-#     (WorkingDirectory docker/sound — compose появится отдельным PR, см. ADR-0159 §5)
+#     (WorkingDirectory docker/sound)
 #   - netplan: eth0 metric 100 + wlan0 metric 600 (как на Main/Vision Pi)
 #   - config.txt: usb_max_current_enable=1, enable_uart=1 (нужна перезагрузка)
 #   - udev: /dev/sensor_hub для TTL-USB конвертера ESP32
 #   - alsa-utils, каталоги /opt/rob_box/{models,samples,scores}, zram-своп
+#   - /etc/docker/daemon.json: insecure-registries 10.1.1.249:5000 (деплой с registry_source=local)
+#   - chrony --role sound (клиент времени Main Pi, ADR-0137)
 # ═══════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

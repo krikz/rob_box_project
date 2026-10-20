@@ -21,7 +21,7 @@
 #   every 5m: bash watchdog-tts.sh
 #
 # Env:
-#   ROBOT_HOST=10.1.1.21  (default)
+#   ROBOT_HOST=10.1.1.22  (default)
 #   SSHPASS=open          (default)
 # ============================================================================
 
@@ -29,7 +29,7 @@ set -e
 
 SCRIPT_NAME="watchdog-tts"
 LOG_PREFIX="[${SCRIPT_NAME}]"
-ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
+ROBOT_HOST="${ROBOT_HOST:-10.1.1.22}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
 SSHPASS_VAL="${SSHPASS:-open}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"

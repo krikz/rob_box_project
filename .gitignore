@@ -115,6 +115,11 @@ tests/e2e/_artifacts/
 # data/ при необходимости.
 /data/
 
+# Боевые данные на Pi (ADR-0159): docker/<pi>/data/ — живые БД людей
+# (speakers.db, voice_memory.db, faces), root-owned, монтируются в контейнеры.
+# В git отслеживаемых файлов под этими путями нет (git ls-files docker/*/data → пусто).
+docker/*/data/
+
 # frontend
 node_modules/
 # Vite root cache — artefact of `npx vite` when invoked from a directory

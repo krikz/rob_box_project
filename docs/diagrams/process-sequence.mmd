@@ -18,7 +18,7 @@ sequenceDiagram
     participant MG as merge-gate<br/>(cron 5min)
     participant EP as e2e-process<br/>(cron 60min)
     participant WF as L-Build/Deploy/E2E<br/>(workflow_dispatch)
-    participant R as Robot<br/>(10.1.1.21)
+    participant R as Robot<br/>(Sound Pi 10.1.1.22)
     participant CC as completion-check<br/>(GATE-3)
 
     U->>GH: gh issue create --label needs-e2e

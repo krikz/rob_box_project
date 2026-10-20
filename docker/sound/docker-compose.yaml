@@ -637,7 +637,7 @@ services:
   # ============ Sensor hub (ADR-0159 §2.4, решения Шифу В6/В7) ============
   # perception_bridge из образа perception (его же собирает Main Pi) читает
   # serial ESP32-сенсорхаба через TTL-USB конвертер и публикует /sensors/data.
-  # Новой ноды нет, micro-ROS нет. Под profile `sensors` — по умолчанию НЕ
+  # Новой ноды нет, моста-агента нет (обычная ROS-нода + serial). Под profile `sensors` — по умолчанию НЕ
   # стартует: хаб пока не подключён. Включить: `docker compose --profile
   # sensors up -d sensor-bridge` (когда подключат ESP32 — отдельная задача:
   # снять perception_bridge с Main Pi, решить, кто слушает /sensors/data).

@@ -417,7 +417,8 @@ services:
       - /tmp/hailort_uds.sock:/tmp/hailort_uds.sock
       # FaceStore (ADR-0123 §4): "не в образе, переживает пересоздание
       # контейнера". Тот же приём, что у VoiceMemory (voice-assistant,
-      # ./data/voice:/data выше) — отдельный host-каталог под docker/vision,
+      # ./data/voice:/data в docker/sound/docker-compose.yaml, ADR-0159) —
+      # отдельный host-каталог под docker/vision,
       # НЕ под /opt/rob_box (там живут только read-only модели Ресурсного
       # пака). Без :ro — FaceStore пишет сюда эмбеддинги, снимки, meta.json.
       - ./data/faces:/data/faces

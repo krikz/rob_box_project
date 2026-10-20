@@ -44,7 +44,7 @@ jobs:
       - name: "Пинг ROS2-сети (до подключения)"
         shell: bash
         run: |
-          for ip in 10.1.1.1 10.1.1.21 10.1.1.10 10.1.1.11; do
+          for ip in 10.1.1.1 10.1.1.21 10.1.1.22 10.1.1.10 10.1.1.11 10.1.1.12; do
             if ping -c 1 -W 2 $ip >/dev/null 2>&1; then
               echo "✅ $ip ALIVE"
             else
@@ -77,7 +77,7 @@ jobs:
           echo "--- ip после ---"
           ip -4 addr show 2>/dev/null | grep 'inet ' | head -5
           echo "--- пинг ---"
-          for ip in 10.1.1.1 10.1.1.21 10.1.1.249; do
+          for ip in 10.1.1.1 10.1.1.21 10.1.1.22 10.1.1.249; do
             if ping -c 1 -W 2 $ip >/dev/null 2>&1; then
               echo "✅ $ip ALIVE"
             else

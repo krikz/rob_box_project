@@ -2,7 +2,7 @@
 # Приёмка PR-5 ADR-0149 (эпик #3312): DJ-сет движка v2 на роботе — A1 (тишина ≤ 5 с), A3 (DJ_AUTO = 0),
 # A5 (один темп), переходы по nearly_finished, artifact_stale только при смене трека.
 #
-# Где: Vision Pi, ПОСЛЕ пересборки образа с PR-5 (движок v2 единственный, флага больше нет).
+# Где: Sound Pi (ADR-0159), ПОСЛЕ пересборки образа с PR-5 (движок v2 единственный, флага больше нет).
 # Как: flock -w 900 /tmp/music_test.lock bash dj_set_v2.sh <каталог> [секунд=1200] [тема=космос]
 # Нужны рядом: accept.py, compare.py, audit_wav.py (эта папка) и ../live_check_mcp_call.py.
 # TG_CHAT_ID=<chat> — запись уйдёт Шифу голосовым через tgogg.sh.
@@ -25,6 +25,8 @@ call() {  # call <json> — dj_set по /mcp/execute (подпись harness), �
   $VAI "$ROS; python3 - dj_set $(printf '%s' "$1" | base64 -w 0) 60" < "$HERE/../live_check_mcp_call.py"
 }
 
+# ADR-0159: oak-d и vision-face живут на Vision Pi (здесь их нет), а rob-box-quest с PR-7 — на Sound Pi,
+# так что на этом узле гасится только он; тяжёлые контейнеры Vision Pi с CPU Sound Pi не конкурируют.
 up=$(docker ps --format '{{.Names}}' | grep -xE 'oak-d|rob-box-quest|vision-face' || true)
 [ -n "$up" ] && { echo "гашу (политика стенда): $up"; docker stop $up >/dev/null; }
 

@@ -2,7 +2,7 @@
 # ============================================================================
 # preflight_pull_images.sh — «сначала образы, потом остановка» (issue #2930).
 #
-# Запускается на Pi из каталога compose-проекта (docker/main или docker/vision)
+# Запускается на Pi из каталога compose-проекта (docker/main, docker/vision или docker/sound)
 # шагом «[… Pi] Pull Docker Images» в ".github/workflows/L-Deploy and Verify.yml",
 # ДО шага «Stop Containers». Если скрипт вернул не 0 — шаг падает, Stop/Start
 # не выполняются, работающий стек остаётся как был.

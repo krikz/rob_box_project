@@ -34,7 +34,7 @@ stt_node:
     # stt_node.py (гард: test_yaml_param_consistency.py).
     stt_provider_chain: [yandex, minimax, vosk]
     # MiniMax STT. Ключ приезжает из ENV MINIMAX_API_KEY (тот же, что у
-    # TTS/LLM — см. docker/vision/.env). Без ключа провайдер тихо
+    # TTS/LLM — см. docker/sound/.env.secrets.template). Без ключа провайдер тихо
     # выпадает из цепочки, робот работает на Yandex + Vosk.
     minimax_stt_enabled: true
     minimax_stt_api_key_env: MINIMAX_API_KEY

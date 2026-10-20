@@ -40,14 +40,16 @@ updates:
         patterns: ["*"]
 
   # ── Docker base images (Dockerfiles) ──────────────────────────────────────
-  # Scans FROM lines in all service Dockerfiles under docker/main/ and docker/vision/
+  # Scans FROM lines in all service Dockerfiles under docker/main/, docker/vision/ and docker/sound/
   # Glob: /docker/main/* → each service subdir (lslidar, nav2, perception, …)
-  #       /docker/vision/* → each service subdir (voice_assistant, oak-d, …)
+  #       /docker/vision/* → each service subdir (oak-d, led_matrix, quest, …)
+  #       /docker/sound/* → each service subdir (voice_assistant, supercollider, supervisor, …; ADR-0159)
   #       /docker/vision/test/* → test service subdirs (mock_llm, ollama, …)
   - package-ecosystem: "docker"
     directories:
       - "/docker/main/*"
       - "/docker/vision/*"
+      - "/docker/sound/*"
       - "/docker/vision/test/*"
     schedule:
       interval: "weekly"

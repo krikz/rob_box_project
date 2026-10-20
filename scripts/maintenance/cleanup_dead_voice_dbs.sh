@@ -51,11 +51,11 @@
 # Использование
 # -------------
 #   # план, ничего не трогает (дефолт)
-#   DATA_DIR=~/rob_box_project/docker/vision/data/voice \
+#   DATA_DIR=~/rob_box_project/docker/sound/data/voice \
 #       bash scripts/maintenance/cleanup_dead_voice_dbs.sh
 #
 #   # применить (только человек, только после дефолт-прогона выше)
-#   DATA_DIR=~/rob_box_project/docker/vision/data/voice \
+#   DATA_DIR=~/rob_box_project/docker/sound/data/voice \
 #       bash scripts/maintenance/cleanup_dead_voice_dbs.sh --apply
 # =============================================================================
 set -u

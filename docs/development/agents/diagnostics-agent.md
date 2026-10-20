@@ -286,21 +286,21 @@ sshpass -p 'open' ssh ros2@10.1.1.21 'lsusb | grep MyriadX\|Luxonis\|OAK'
 
 ---
 
-### 🟣 voice-assistant (Vision Pi)
+### 🟣 voice-assistant (Sound Pi, `ros2@10.1.1.22`, ADR-0159)
 
 ```bash
 # Логи голосового ассистента
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs voice-assistant --tail 50'
+sshpass -p 'open' ssh ros2@10.1.1.22 'docker logs voice-assistant --tail 50'
 
 # Проверить что Vosk/STT загрузился
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker logs voice-assistant --tail 100 | grep -iE "vosk|model|loaded|silero|ready"'
+sshpass -p 'open' ssh ros2@10.1.1.22 'docker logs voice-assistant --tail 100 | grep -iE "vosk|model|loaded|silero|ready"'
 
 # Статус LLM провайдера
-sshpass -p 'open' ssh ros2@10.1.1.21 \
+sshpass -p 'open' ssh ros2@10.1.1.22 \
   'docker exec voice-assistant bash -c "source /opt/ros/humble/setup.bash && ros2 topic echo /rob_box/voice/status --once" 2>/dev/null || echo "Топик не найден"'
 
 # Микрофон доступен?
-sshpass -p 'open' ssh ros2@10.1.1.21 'docker exec voice-assistant arecord -l 2>&1 | head -10'
+sshpass -p 'open' ssh ros2@10.1.1.22 'docker exec voice-assistant arecord -l 2>&1 | head -10'
 ```
 
 ---

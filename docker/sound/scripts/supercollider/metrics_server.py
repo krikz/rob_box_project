@@ -4,7 +4,7 @@
 Контейнер содержит только scsynth (SuperCollider server, без Python-пакетов),
 поэтому не тащим prometheus_client — отдаём Prometheus text format напрямую
 через stdlib ``http.server``. Prometheus scrape target:
-``10.1.1.11:9102/metrics`` (см. docker/monitoring/config/prometheus.yml).
+``10.1.1.12:9102/metrics`` (см. docker/monitoring/config/prometheus.yml).
 
 Метрики:
 * ``supercollider_up`` — 1 если scsynth жив (pgrep), иначе 0

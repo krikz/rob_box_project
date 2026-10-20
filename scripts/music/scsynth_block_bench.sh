@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scsynth_block_bench.sh — замер CPU scsynth и xrun'ов JACK по block size (-z).
-# Issue #3114. Запускать НА Vision Pi, из клона репо:
+# Issue #3114. Запускать НА Sound Pi (ADR-0159), из клона репо:
 #
-#   ssh ros2@10.1.1.21
+#   ssh ros2@10.1.1.22
 #   cd ~/rob_box_project && git pull
 #   bash scripts/music/scsynth_block_bench.sh                 # 1024 512 256 128 64, по 60 с
 #   bash scripts/music/scsynth_block_bench.sh --sizes "1024 256 64" --duration 90

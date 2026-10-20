@@ -26,7 +26,7 @@
 #   ./voice_e2e_dialog.sh [ROBOT_HOST]
 #
 # Env:
-#   ROBOT_HOST          IP робота (default 10.1.1.21)
+#   ROBOT_HOST          IP робота (default 10.1.1.22)
 #   ROBOT_USER          SSH user (default ros2)
 #   SSHPASS             SSH password (default open)
 #   PHASE_TEXT          STT-фраза (default 'робок расскажи длинный анекдот')
@@ -42,7 +42,7 @@
 # ============================================================================
 set -u
 
-ROBOT_HOST="${ROBOT_HOST:-10.1.1.21}"
+ROBOT_HOST="${ROBOT_HOST:-10.1.1.22}"
 ROBOT_USER="${ROBOT_USER:-ros2}"
 SSHPASS="${SSHPASS:-open}"
 PHASE_TEXT="${PHASE_TEXT:-робок расскажи длинный анекдот}"
