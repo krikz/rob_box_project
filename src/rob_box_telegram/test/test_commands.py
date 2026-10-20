@@ -2,7 +2,7 @@
 """Tests for Telegram command handlers (Phase 6 v2 / W7).
 
 After W7 the Telegram node is a *thin transport*: every slash-command
-that used to invoke a tool now forwards its intent to ``/voice/stt/result``
+that used to invoke a tool now forwards its intent to ``/voice/stt/utterance``
 through ``TelegramNode.forward_to_stt``. These tests assert that the
 forwarding happens and the user receives an acknowledgement.
 """
@@ -62,7 +62,7 @@ def _load_commands_module():
 
 
 class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
-    """Verify that W7 handlers forward intents to /voice/stt/result."""
+    """Verify that W7 handlers forward intents to /voice/stt/utterance."""
 
     def setUp(self):
         self.commands = _load_commands_module()

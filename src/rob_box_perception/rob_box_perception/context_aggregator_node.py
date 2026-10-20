@@ -17,7 +17,7 @@ Perception Context Aggregator node.
 - /device/snapshot (ESP32 sensors)
 - /apriltag/detections (AprilTags)
 - /rosout (system logs)
-- /voice/stt/result (входящая речь)
+- /voice/stt/utterance (входящая речь, rob_box_dialog_msgs/Utterance)
 - /voice/dialogue/response (ответы робота)
 - /voice/command/intent (intent команд)
 - /voice/command/feedback (feedback команд)
@@ -54,6 +54,7 @@ from rob_box_perception.vision_hailo_loader import (
     is_stub_event,
 )
 
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import String
 
 # Custom messages
@@ -200,8 +201,8 @@ class ContextAggregatorNode(Node):
 
         # STT (входящая речь пользователя)
         self.stt_sub = self.create_subscription(
-            String,
-            '/voice/stt/result',
+            Utterance,
+            '/voice/stt/utterance',
             self.on_user_speech,
             10
         )
@@ -396,9 +397,9 @@ class ContextAggregatorNode(Node):
                     self.current_sensors['battery'] = value
                     break
 
-    def on_user_speech(self, msg: String):
-        """Получена речь пользователя (STT)."""
-        text = msg.data.strip()
+    def on_user_speech(self, msg: Utterance):
+        """Получена речь пользователя (STT, ``Utterance`` - ADR-0150 PR-2)."""
+        text = msg.text.strip()
         if text:
             # Команды движения (вперед, назад, налево, направо, стой)
             # НЕ добавляем в память. Они обрабатываются CommandNode и не

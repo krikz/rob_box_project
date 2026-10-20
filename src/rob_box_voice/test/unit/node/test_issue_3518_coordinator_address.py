@@ -3,9 +3,15 @@
 from unittest.mock import MagicMock
 
 import pytest
-from types import SimpleNamespace
 
-from rob_box_voice.core.coordinator_address import is_coordinator_address, skip_coordinator_tg
+from ros_stubs import make_utterance
+from rob_box_core.msg_stub import install_dialog_msgs_stub
+from rob_box_voice.core.coordinator_address import (
+    TELEGRAM_SOURCE,
+    is_coordinator_address,
+    skip_coordinator_tg,
+    stt_log_label,
+)
 from rob_box_voice.dialogue_node import DialogueNode
 
 
@@ -33,7 +39,7 @@ def _wrapped():
 
 def test_tg_klod_never_reaches_dialogue():
     w, handler = _wrapped()
-    w(SimpleNamespace(data="[TG:495039871] Клод на Моцарте не попадает в ритм"))
+    w(make_utterance("[TG:495039871] Клод на Моцарте не попадает в ритм"))
     handler.assert_not_called()
 
 
@@ -44,9 +50,28 @@ def test_tg_klod_never_reaches_dialogue():
 ])
 def test_other_messages_pass(data):
     w, handler = _wrapped()
-    msg = SimpleNamespace(data=data)
+    msg = make_utterance(data)
     w(msg)
     handler.assert_called_once_with(msg)
+
+
+def test_operator_source_with_klod_text_is_not_a_telegram_chat():
+    w, handler = _wrapped()
+    msg = make_utterance("Клод тест", source="operator")
+    w(msg)
+    handler.assert_called_once_with(msg)
+
+
+def test_telegram_source_constant_matches_msg_definition():
+    """Модуль не импортирует сообщение: константа обязана совпадать с ``.msg``."""
+    assert TELEGRAM_SOURCE == install_dialog_msgs_stub().Utterance.SOURCE_TELEGRAM
+
+
+def test_log_label_keeps_tg_format_for_coordinator_log_reader():
+    """Координатор читает «Клод …» из строки ``🎤 STT: [TG:<id>] …`` лога."""
+    assert stt_log_label(make_utterance("[TG:495039871] Клод, привет")) == "[TG:495039871] Клод, привет"
+    assert stt_log_label(make_utterance("робот стоп")) == "робот стоп"
+    assert stt_log_label(make_utterance("   ")) == ""
 
 
 def test_dialogue_node_subscribes_through_filter():

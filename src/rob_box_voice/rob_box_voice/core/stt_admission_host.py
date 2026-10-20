@@ -3,8 +3,7 @@
 ADR-0145 §4 (DialogueNode P1 step 1) — pure move out of
 ``dialogue_node.py`` (no behaviour change). Owns:
 
-* ``_PENDING_USER_MESSAGES_MAX`` / ``_UTTERANCE_ID_WAIT_SEC`` — the two
-  timing constants that gate the STT admission queue;
+* ``_PENDING_USER_MESSAGES_MAX`` — the cap of the STT admission queue;
 * ``_DialogueSttHost`` — the adapter that satisfies the
   :class:`rob_box_voice.core.stt_admission.SttAdmissionHost` Protocol for
   :class:`rob_box_voice.dialogue_node.DialogueNode`.
@@ -54,13 +53,6 @@ _NO_INTAKE = _NoIntake()
 # drops the OLDEST queued phrase (keep the most recent user intent) and
 # logs a warning — see ``_DialogueSttHost.enqueue_pending``.
 _PENDING_USER_MESSAGES_MAX: int = 5
-
-# Issue #2862 — сколько ``_on_stt`` ждёт ``/voice/stt/utterance`` своей
-# фразы, если текст обогнал id. Оба топика публикуются stt_node подряд из
-# одного потока, расхождение — задержка планировщика executor'а (мс), а не
-# секунды. Текст без id вовсе (GUI/bench/инъекция харнесса) платит эту
-# задержку один раз и идёт с ``utterance_id=None``.
-_UTTERANCE_ID_WAIT_SEC: float = 0.5
 
 
 # ---------------------------------------------------------------------------

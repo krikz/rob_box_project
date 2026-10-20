@@ -19,6 +19,7 @@ import pytest
 
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 
 def _make_node(new_session_enabled: bool = True) -> DialogueNode:
@@ -56,9 +57,7 @@ def _make_node(new_session_enabled: bool = True) -> DialogueNode:
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 class TestIsNewSessionCommand:

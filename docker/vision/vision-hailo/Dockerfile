@@ -138,6 +138,9 @@ RUN mkdir -p src
 
 # 1. package.xml (метаданные) — кэшируются отдельно
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+# ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
+# (vision_face_node читает SpeakerResult для слияния голос -> лицо).
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. rosdep (best-effort — apt-зависимости явно установлены выше)
@@ -181,6 +184,7 @@ COPY src/rob_box_perception/launch /ws/src/rob_box_perception/launch
 ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
 # 6. сборка (сначала msgs, потом nodes)
@@ -193,7 +197,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # В одностадийном образе это не проявлялось: /ws/src и /ws/build лежали рядом.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_perception \
+    --packages-select rob_box_perception_msgs rob_box_dialog_msgs rob_box_perception \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # ============================================================

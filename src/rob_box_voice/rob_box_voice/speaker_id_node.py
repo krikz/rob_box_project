@@ -18,10 +18,13 @@ Subscribes:
                                          принимается после валидации
 
 Publishes:
-    /voice/speaker/result (String) — JSON SpeakerMatch or {"is_known":false};
-                                     у известного спикера есть поле "epithet"
+    /voice/speaker/result (rob_box_dialog_msgs/SpeakerResult) — результат
+                                     биометрии (is_known/speaker_id/name/...);
+                                     у известного спикера есть поле epithet
                                      (внутренняя кличка, issue #1787). Тем же
-                                     топиком уходит ack на merge.
+                                     топиком уходят ack на register/merge/rename
+                                     (поле event). Ключи словаря <-> поля -
+                                     rob_box_core.speaker_wire.
     /voice/speaker/epithet_request (String) — JSON {"speaker_id","fallback",
                                      "cluster","hints","messages"} — просьба к
                                      dialogue_node придумать кличку через LLM
@@ -89,7 +92,9 @@ from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
+from rob_box_core.speaker_wire import fill_speaker_result
 
 from .core import epithets
 from .core.utterance_id import compute_utterance_id
@@ -233,6 +238,16 @@ def is_name_confident(
         classify_name_confidence(match, candidates, band_high=band_high, min_gap=min_gap)
         == NAME_CONFIDENT
     )
+
+
+def _publish_speaker_result(pub, payload: dict) -> None:
+    """Типизированная публикация ``SpeakerResult`` (ADR-0150 PR-2).
+
+    Словарь собирает вызывающий, соответствие ключ <-> поле знает один
+    модуль - ``rob_box_core.speaker_wire``. Функция модуля, а не метод:
+    класс под бюджетом размера (ADR-0145).
+    """
+    pub.publish(fill_speaker_result(SpeakerResult(), payload))
 
 
 class SpeakerIdNode(Node):
@@ -569,7 +584,7 @@ class SpeakerIdNode(Node):
         )
 
         # ── Publishers ────────────────────────────────────────────────────────
-        self._result_pub = self.create_publisher(String, "/voice/speaker/result", reliable_qos)
+        self._result_pub = self.create_publisher(SpeakerResult, "/voice/speaker/result", reliable_qos)
         # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
         # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
         # работать офлайн), поэтому запрос уходит топиком, а ответ
@@ -623,7 +638,7 @@ class SpeakerIdNode(Node):
         )
         # Issue #1787 — реплики известного спикера для выбора эпитета.
         # Текст живёт в dialogue_node (STT), голос — здесь; связывает их
-        # speaker_id. Отдельный топик, а не расширение /voice/stt/result:
+        # speaker_id. Отдельный топик, а не расширение /voice/stt/utterance:
         # эпитет нужен ТОЛЬКО когда биометрия уже опознала говорящего,
         # иначе теми чужой речи испортили бы чужой профиль.
         self.create_subscription(
@@ -942,17 +957,15 @@ class SpeakerIdNode(Node):
         asks the person to repeat on ANY register_error reason (see
         PR-2's dialogue_node.py diff) -- no new UX branch needed there.
         """
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "register_error",
                 "error": error,
                 "name": name,
                 "utterance_id": utterance_id,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
 
     # ── Processing ────────────────────────────────────────────────────────────
 
@@ -1376,12 +1389,10 @@ class SpeakerIdNode(Node):
                 f"not found in DB"
             )
 
-        ack = String()
-        ack.data = json.dumps(
-            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name},
-            ensure_ascii=False,
+        _publish_speaker_result(
+            self._result_pub,
+            {"event": "renamed", "ok": ok, "speaker_id": speaker_id, "new_name": new_name}
         )
-        self._result_pub.publish(ack)
 
     def _on_merge_request(self, msg: String) -> None:
         """Issue W5-4 + #2440 — склеить два профиля одного голоса.
@@ -1426,8 +1437,8 @@ class SpeakerIdNode(Node):
                 "(src==dst, src not found, or dst not found in DB)"
             )
 
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "merged",
                 "ok": ok,
@@ -1435,10 +1446,8 @@ class SpeakerIdNode(Node):
                 "dst_speaker_id": dst_id,
                 "embeddings_moved": embeddings_moved,
                 "facts_moved": facts_moved,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
 
     def _wipe_e2e_db_file(self) -> None:
         """Issue #2750 — стереть файл ``e2e_db_path`` перед каждым включением.
@@ -1737,8 +1746,8 @@ class SpeakerIdNode(Node):
                 f"{exc.duration_sec:.2f}s < {exc.min_required_sec:.1f}s "
                 "required. Профиль НЕ создан — прошу повторить фразу."
             )
-            ack = String()
-            ack.data = json.dumps(
+            _publish_speaker_result(
+                self._result_pub,
                 {
                     "event": "register_error",
                     "error": "too_short",
@@ -1746,10 +1755,8 @@ class SpeakerIdNode(Node):
                     "duration_s": round(exc.duration_sec, 2),
                     "min_required_s": exc.min_required_sec,
                     "utterance_id": utterance_id,
-                },
-                ensure_ascii=False,
+                }
             )
-            self._result_pub.publish(ack)
             return False
         sid, reused = outcome
         if reused:
@@ -1773,7 +1780,6 @@ class SpeakerIdNode(Node):
         # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
         self._ensure_epithet(sid)
         # Publish a registration-ack so dialogue_node can confirm verbally
-        ack = String()
         ack_payload = {
             "event": "registered",
             "name": name,
@@ -1813,8 +1819,7 @@ class SpeakerIdNode(Node):
                     else round(float(outcome.twin_score), 4)
                 ),
             }
-        ack.data = json.dumps(ack_payload, ensure_ascii=False)
-        self._result_pub.publish(ack)
+        _publish_speaker_result(self._result_pub, ack_payload)
 
         # Issue #2748 — до этой правки нода НИЧЕГО не публиковала в момент
         # регистрации, КРОМЕ служебного ack выше (``event: "registered"``),
@@ -1912,8 +1917,8 @@ class SpeakerIdNode(Node):
             f"узнана как '{known.name}' (id={known.speaker_id[:8]}, "
             f"score={known.confidence:.3f}) — новый эталон не нужен, «уже знаю»"
         )
-        ack = String()
-        ack.data = json.dumps(
+        _publish_speaker_result(
+            self._result_pub,
             {
                 "event": "registered",
                 "name": known.name,
@@ -1921,10 +1926,8 @@ class SpeakerIdNode(Node):
                 "reused_profile": True,
                 "already_known": True,
                 "utterance_id": utterance_id,
-            },
-            ensure_ascii=False,
+            }
         )
-        self._result_pub.publish(ack)
         self._open_growth_session(known.speaker_id, known.name)
 
     def _open_growth_session(self, speaker_id: str, name: str) -> None:
@@ -2314,9 +2317,7 @@ class SpeakerIdNode(Node):
                 + (f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else "")
             )
 
-        msg = String()
-        msg.data = json.dumps(payload, ensure_ascii=False)
-        self._result_pub.publish(msg)
+        _publish_speaker_result(self._result_pub, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

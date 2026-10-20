@@ -19,6 +19,7 @@ from datetime import datetime
 
 import rclpy
 from rclpy.node import Node
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import String
 
 
@@ -36,12 +37,12 @@ class RobotControlGUI(Node):
 
         # ROS2 publishers
         self.tts_pub = self.create_publisher(String, "/voice/tts/request", 10)
-        self.stt_pub = self.create_publisher(String, "/voice/stt/result", 10)
+        self.stt_pub = self.create_publisher(Utterance, "/voice/stt/utterance", 10)
         self.animation_pub = self.create_publisher(String, "/voice/animation/request", 10)
         self.sound_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
 
         # ROS2 subscribers
-        self.create_subscription(String, "/voice/stt/result", self.stt_callback, 10)
+        self.create_subscription(Utterance, "/voice/stt/utterance", self.stt_callback, 10)
         self.create_subscription(String, "/voice/dialogue/response", self.dialogue_callback, 10)
         self.create_subscription(String, "/voice/tts/request", self.tts_callback, 10)
 
@@ -173,7 +174,7 @@ class RobotControlGUI(Node):
     def stt_callback(self, msg):
         """Получение сообщений от STT (речь пользователя)"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        text = msg.data
+        text = msg.text
 
         self.stt_log.configure(state=tk.NORMAL)
         self.stt_log.insert(tk.END, f"[{timestamp}] ", "timestamp")

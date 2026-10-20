@@ -48,7 +48,6 @@ Touchpoints:
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Optional
 
 from rob_box_perception.vision_face_loader import make_face_loader
@@ -415,12 +414,12 @@ class VisionFaceNode(VisionHailoNode):
         приходит от голоса — это и есть слияние каналов ADR-0123 §6.
         """
         try:
-            from std_msgs.msg import String
+            from rob_box_dialog_msgs.msg import SpeakerResult
         except ImportError:  # pragma: no cover — вне ROS-окружения
             return
         try:
             self._speaker_sub = self.create_subscription(
-                String, SPEAKER_RESULT_TOPIC, self._on_speaker_result, 10
+                SpeakerResult, SPEAKER_RESULT_TOPIC, self._on_speaker_result, 10
             )
             self.get_logger().info(
                 f'[слияние] подписка на {SPEAKER_RESULT_TOPIC} — имя для '
@@ -435,27 +434,21 @@ class VisionFaceNode(VisionHailoNode):
     def _on_speaker_result(self, msg: Any) -> None:
         if self._recognizer is None:
             return
-        try:
-            payload = json.loads(msg.data)
-        except (ValueError, AttributeError):
+        # ADR-0150 PR-2: типизированный SpeakerResult. Любое служебное событие
+        # (registered/register_error/renamed/merged) - не сигнал присутствия
+        # (тот же контракт, что у dialogue_node/voice_adapter). Не считаем его
+        # как «голос не опознан» - это отдельный, третий случай. EVENT_MATCH == 0.
+        if int(getattr(msg, 'event', 0)) != 0:
             return
-        if not isinstance(payload, dict):
-            return
-        # Registration-ack (``{"event": "registered", ...}``) без is_known —
-        # служебное сообщение speaker_id_node, не сигнал присутствия
-        # (тот же контракт, что у dialogue_node/voice_adapter). Не считаем
-        # его как «голос не опознан» — это отдельный, третий случай.
-        if payload.get('event') == 'registered':
-            return
-        if not payload.get('is_known'):
+        if not msg.is_known:
             # Issue #2748 — причина №1, почему «слияний=0»: голос ЕЩЁ не
             # опознан (обычное identify() ниже порога, issue #2747) —
             # note_voice_identification() в этом случае вообще не
             # вызывается, поэтому считаем здесь, а не там.
             self._speaker_unknown_total += 1
             return
-        speaker_id = str(payload.get('speaker_id') or '')
-        name = str(payload.get('name') or '')
+        speaker_id = str(msg.speaker_id or '')
+        name = str(msg.name or '')
         if not speaker_id or not name:
             return
         # Issue #2748 — источник ``source="register"`` (speaker_id_node,

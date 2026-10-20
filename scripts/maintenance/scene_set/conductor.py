@@ -220,6 +220,7 @@ class Runtime:
         import rclpy
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.qos import qos_profile_sensor_data
+        from rob_box_dialog_msgs.msg import Utterance
         from rob_box_perception_msgs.msg import Observation
         from sensor_msgs.msg import CompressedImage
         from std_msgs.msg import String
@@ -237,7 +238,7 @@ class Runtime:
         self.node.create_subscription(String, "/voice/tts/finished", lambda _m: self._finished.set(), 10)
         self.node.create_subscription(Observation, "/perception/observations", self._on_obs, 10)
         self.node.create_subscription(CompressedImage, CAMERA_TOPIC, self._on_frame, qos_profile_sensor_data)
-        self.node.create_subscription(String, "/voice/stt/result", self._on_stt, 10)
+        self.node.create_subscription(Utterance, "/voice/stt/utterance", self._on_stt, 10)
         self.executor = MultiThreadedExecutor()
         self.executor.add_node(self.node)
         threading.Thread(target=self.executor.spin, daemon=True).start()
@@ -254,7 +255,7 @@ class Runtime:
                 self.watcher.frame(time.time())
 
     def _on_stt(self, msg) -> None:
-        self.stt.append((time.time(), msg.data))
+        self.stt.append((time.time(), msg.text))
 
     def say(self, text: str, timeout_s: float = 25.0) -> bool:
         self._finished.clear()

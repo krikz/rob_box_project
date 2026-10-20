@@ -29,7 +29,6 @@ test_issue_2828_identity_question_collision.py).
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 import types
@@ -48,6 +47,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 GREETING = "Добрый вечер, Борис! Рад знакомству. Чем занимаешься?"
 NOT_HEARD = "Не расслышал"
@@ -63,7 +63,7 @@ INTRO = "добрый вечер, меня зовут Борис"
 
 
 def _msg(payload: dict):
-    return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+    return make_speaker_result(payload)
 
 
 class _Result:

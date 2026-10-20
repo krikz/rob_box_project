@@ -82,6 +82,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerMatch  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
 BAND_HIGH = 0.80
 MIN_GAP = 0.15
@@ -218,11 +219,9 @@ def sid():
 
 
 def _published_payload(pub_mock):
-    import json
-
     assert pub_mock.publish.call_count == 1
     msg = pub_mock.publish.call_args.args[0]
-    return json.loads(msg.data)
+    return speaker_result_to_payload(msg)
 
 
 class TestPublishResultNameDecisionWiring:

@@ -49,6 +49,7 @@ from rob_box_voice.core.identity_ack import (  # noqa: E402
     classify_identity_ack_answer,
 )
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 BORIS_ID = "f65d3050-0000-0000-0000-000000000000"
 SASHA_ID = "5d99f474-0000-0000-0000-000000000000"
@@ -70,7 +71,7 @@ GREETING = "Привет, Борис! Приятно познакомиться 
 
 
 def _msg(payload: dict):
-    return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+    return make_speaker_result(payload)
 
 
 class _Result:

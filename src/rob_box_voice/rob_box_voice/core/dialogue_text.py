@@ -157,7 +157,7 @@ def strip_wake_word(text: str, wake_words: Sequence[str] | None = None) -> str:
 def load_wake_word_namespaces(path: str | os.PathLike[str] | None) -> dict[str, list[str]]:
     """Прочитать ``config/wake_words.yaml`` (SSoT) в ``{namespace: [words]}``.
 
-    Namespaces: ``personality`` (только ReSpeaker → ``/voice/stt/result``) и
+    Namespaces: ``personality`` (только ReSpeaker → ``/voice/stt/utterance``) и
     ``operator`` (только микрофон шлема, wake-поток). Порядок списка
     сохраняется КАК В ФАЙЛЕ — от него зависит :func:`strip_wake_word`
     (regex leftmost-first, длинные варианты первыми).

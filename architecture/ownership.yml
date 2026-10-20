@@ -1,7 +1,265 @@
 schema_version: 1
 # Human-reviewed ownership map.
 # Do not infer canonical ownership from names alone.
-nodes: {}
-topics: {}
+#
+# ADR-0150 PR-2 (#3687) заполняет карту владельцев диалога: топики с префиксами
+#   /dialog/*  /voice/speech/*  /voice/expression/*  /voice/providers/*
+#   /voice/stt/*  /voice/speaker/*  /voice/music/*  /telegram/*  /avatar/session
+# Гард scripts/lint/ownership_check.py (G-Lint Code):
+#   (а) каждый топик этих префиксов, который код публикует через create_publisher,
+#       объявлен здесь и имеет owner;
+#   (б) писателей в коде не больше writers_allowed (узел определяется по
+#       nodes.<имя>.source), а запись runtime-baseline.json multiple_writers для
+#       такого топика несёт номер PR-долга (поле debt).
+#
+# Поля топика:
+#   owner            узел-владелец состояния (единственный, кто вправе менять смысл топика)
+#   type             тип сообщения
+#   status           live - публикуется кодом сегодня; planned - вводится в PR introduced_by
+#   writers_allowed  полный список узлов-писателей; шире списка писать нельзя
+#   readers          реальные читатели на 20.10.2026 (planned - ожидаемые по ADR-0150)
+#   introduced_by    PR эпика #3683, вводящий топик (planned); списки writers_allowed/readers
+#                    у planned-топиков - ожидаемые по ADR-0150, их уточняет этот PR
+#   debt             что ещё держит лишнего читателя/писателя и какой PR снимает
+
+nodes:
+  stt_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/stt_node.py]
+  speaker_id_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/speaker_id_node.py]
+  dialogue_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/dialogue_node.py]
+  command_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/command_node.py]
+  telegram_node:
+    owner: telegram
+    package: rob_box_telegram
+    source: ["src/rob_box_telegram/rob_box_telegram/*.py"]
+  mcp_server:
+    owner: tools
+    package: rob_box_mcp_tools
+    # тулы исполняются внутри процесса mcp_server (tools/dialogue.py публикует register_speaker)
+    source:
+      - src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/*.py"
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/engine/*.py"
+      - "src/rob_box_mcp_tools/rob_box_mcp_tools/core/*.py"
+  context_aggregator_node:
+    owner: perception
+    package: rob_box_perception
+    source: [src/rob_box_perception/rob_box_perception/context_aggregator_node.py]
+  vision_face_node:
+    owner: perception
+    package: rob_box_perception
+    source: [src/rob_box_perception/rob_box_perception/vision_face_node.py]
+  quest_node:
+    owner: quest
+    package: rob_box_quest
+    source: ["src/rob_box_quest/rob_box_quest/quest_node.py", "src/rob_box_quest/rob_box_quest/core/*.py"]
+  supervisor_node:
+    owner: supervisor
+    package: rob_box_supervisor
+    source: [src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py]
+  # Узлы ниже вводятся эпиком #3683 (status planned у их топиков).
+  dialog_node:
+    owner: dialog-v2
+    package: rob_box_dialog
+    source: ["src/rob_box_dialog/rob_box_dialog/*.py"]
+  tts_node:
+    owner: voice
+    package: rob_box_voice
+    source: [src/rob_box_voice/rob_box_voice/tts_node.py]
+  face_node:
+    owner: dialog-v2
+    package: rob_box_animations
+    source: [src/rob_box_animations/rob_box_animations/face_node.py]
+
+topics:
+  # -- Вход речи и собеседник (PR-2: оба топика типизированы) ------------------
+  /voice/stt/utterance:
+    owner: stt_node
+    type: rob_box_dialog_msgs/Utterance
+    status: live
+    # telegram_node пишет сообщения чата и кнопки меню (source=telegram|operator);
+    # различает писателей поле Utterance.source, не имя топика.
+    writers_allowed: [stt_node, telegram_node]
+    readers: [dialogue_node, command_node, context_aggregator_node]
+    debt: "command_node читает прямо (разбор команд до LLM): снимает PR-5 (#3694), команда идёт через /dialog/intent; context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором"
+  /voice/stt/speaker:
+    owner: stt_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [stt_node]
+    readers: [dialogue_node]
+    debt: "дублирует Utterance.speaker_tag; топик и _speaker_by_text уйдут в PR, который переведёт dialogue_node на speaker_tag (после PR-2, номер за координатором)"
+  /voice/stt/state:
+    owner: stt_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [stt_node]
+    readers: []
+  /voice/speaker/result:
+    owner: speaker_id_node
+    type: rob_box_dialog_msgs/SpeakerResult
+    status: live
+    writers_allowed: [speaker_id_node]
+    # ADR-0150 §2.3 называет единственным читателем dialog_node; в коде 20.10 читают ещё четверо
+    # (память, лицо, шлем): они берут тот же типизированный снимок, а не свой парсер JSON.
+    readers: [dialogue_node, mcp_server, vision_face_node, quest_node]
+    debt: "лишние читатели оставляем: идентичность для памяти/лица/ТАРС до ADR-0130 этапа 3 (реестр Знакомых); PR-5b (#3695) переводит диалог на SpeakerRef"
+  /voice/speaker/register:
+    owner: dialogue_node
+    type: std_msgs/String
+    status: live
+    # тул register_speaker (mcp_server) и dialogue_node (переспрос) просят зарегистрировать голос
+    writers_allowed: [dialogue_node, mcp_server]
+    readers: [speaker_id_node]
+    debt: "два писателя: PR-5b (#3695) оставляет одного (путь через SpeakerRef)"
+  /voice/speaker/rename:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    writers_allowed: [mcp_server]
+    readers: [speaker_id_node]
+  /voice/speaker/merge:
+    owner: dialogue_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [dialogue_node]
+    readers: [speaker_id_node]
+  /voice/speaker/observe:
+    owner: dialogue_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [dialogue_node]
+    readers: [speaker_id_node]
+  /voice/speaker/epithet:
+    owner: dialogue_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [dialogue_node]
+    readers: [speaker_id_node]
+  /voice/speaker/epithet_request:
+    owner: speaker_id_node
+    type: std_msgs/String
+    status: live
+    writers_allowed: [speaker_id_node]
+    readers: [dialogue_node]
+  # -- Музыка: владелец плеера v2 (ADR-0149 §2.3) ------------------------------
+  /voice/music/state:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    writers_allowed: [mcp_server]
+    readers: [dialogue_node, quest_node]
+  /voice/music/event:
+    owner: mcp_server
+    type: std_msgs/String
+    status: live
+    writers_allowed: [mcp_server]
+    readers: [dialogue_node]
+  # -- Эпик #3683: топики вводятся вместе с потребителем в своём PR ------------
+  /voice/speech/request:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechRequest
+    status: planned
+    introduced_by: "PR-3 (#3688)"
+    writers_allowed: [dialog_node, dialogue_node, telegram_node, mcp_server]
+    readers: [tts_node]
+  /voice/speech/cancel:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechCancel
+    status: planned
+    introduced_by: "PR-3 (#3688)"
+    writers_allowed: [dialog_node, dialogue_node, stt_node]
+    readers: [tts_node]
+  /voice/speech/event:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechEvent
+    status: planned
+    introduced_by: "PR-3 (#3688)"
+    writers_allowed: [tts_node]
+    readers: [dialog_node, dialogue_node, face_node]
+  /voice/speech/envelope:
+    owner: tts_node
+    type: rob_box_dialog_msgs/SpeechEnvelope
+    status: planned
+    introduced_by: "PR-3 (#3688), потребитель face_node - PR-3a (#3689)"
+    writers_allowed: [tts_node]
+    readers: [face_node]
+  /voice/expression/request:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/ExpressionRequest
+    status: planned
+    introduced_by: "PR-3a (#3689)"
+    writers_allowed: [dialog_node, dialogue_node]
+    readers: [face_node]
+  /voice/expression/event:
+    owner: face_node
+    type: rob_box_dialog_msgs/ExpressionEvent
+    status: planned
+    introduced_by: "PR-3a (#3689)"
+    writers_allowed: [face_node]
+    readers: [dialog_node, dialogue_node]
+  /voice/providers/state:
+    owner: tts_node
+    type: rob_box_dialog_msgs/ProviderStateArray
+    status: planned
+    introduced_by: "PR-4 (#3693)"
+    # каждая нода публикует состояние своего вида провайдера (ADR-0150 §2.3)
+    writers_allowed: [tts_node, stt_node, dialogue_node, dialog_node]
+    readers: [dialog_node, dialogue_node]
+  /dialog/session:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/SessionState
+    status: planned
+    introduced_by: "PR-7 (#3698)"
+    writers_allowed: [dialog_node]
+    readers: [tts_node, command_node, quest_node, telegram_node]
+  /dialog/turn_event:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/TurnEvent
+    status: planned
+    introduced_by: "PR-7 (#3698)"
+    writers_allowed: [dialog_node]
+    readers: [face_node]
+  /dialog/plan_event:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/PlanEvent
+    status: planned
+    introduced_by: "PR-7 (#3698)"
+    writers_allowed: [dialog_node]
+    readers: []
+  /dialog/intent:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/Intent
+    status: planned
+    introduced_by: "PR-5 (#3694)"
+    writers_allowed: [dialog_node, dialogue_node]
+    readers: [command_node]
+  /telegram/session:
+    owner: telegram_node
+    type: rob_box_dialog_msgs/SessionState
+    status: planned
+    introduced_by: "PR-12a (#3706)"
+    writers_allowed: [telegram_node]
+    readers: [dialog_node]
+  /avatar/session:
+    # сессию ТАРС ведёт агент оператора в avatar-supervisor (ADR-0150 §2.3), не dialog_node
+    owner: supervisor_node
+    type: rob_box_dialog_msgs/SessionState
+    status: planned
+    introduced_by: "PR-S1 (#3709)"
+    writers_allowed: [supervisor_node]
+    readers: [dialog_node]
+
 capabilities: {}
 features: {}

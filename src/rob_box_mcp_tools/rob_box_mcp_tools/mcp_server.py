@@ -35,6 +35,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
+from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_core.speaker_wire import speaker_result_to_payload
 import asyncio
 import json
 import math
@@ -593,7 +595,7 @@ class MCPServer(Node):
         self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
         try:
             self._speaker_result_sub = self.create_subscription(
-                String,
+                SpeakerResult,
                 "/voice/speaker/result",
                 self._on_speaker_result,
                 10,
@@ -672,7 +674,7 @@ class MCPServer(Node):
             f"(reason: {payload.get('reason')})"
         )
 
-    def _on_speaker_result(self, msg: "String") -> None:
+    def _on_speaker_result(self, msg: "SpeakerResult") -> None:
         """Issue #1770 / #2442 — учесть сигнал голосовой биометрии в ``EncounterSeam``.
 
         Формат: ``{"is_known": true, "speaker_id": "<uuid>",
@@ -702,12 +704,7 @@ class MCPServer(Node):
         ``InMemoryStore`` (без диска), поэтому вызов не блокируется на
         реальном I/O и безопасен внутри ROS executor'а.
         """
-        try:
-            data = json.loads(msg.data or "{}")
-        except (TypeError, ValueError):
-            return
-        if not isinstance(data, dict):
-            return
+        data = speaker_result_to_payload(msg)
         # Issue #2863 — служебные ack и неоценённые фразы не сигнал.
         relevant, new_speaker_id = _speaker_signal(data)
         if not relevant:

@@ -42,6 +42,8 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
 )
+from ros_stubs import make_utterance  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -376,7 +378,7 @@ class TestIdentityClarification:
     """
 
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_name_twin_asks_whether_same_person(self):
         """Имя совпало, голос не дотянул — спрашиваем, тот же ли человек.
@@ -465,7 +467,7 @@ class TestIdentityClarification:
 
 class TestOnSpeakerResultRegisterError:
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_registered_event_is_logged_and_not_treated_as_match(self):
         n = _make_node()
@@ -546,7 +548,7 @@ class TestOnSpeakerResultInconclusive:
     """Issue #2863 — «не смог оценить» не сбрасывает узнанного диктора."""
 
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_inconclusive_unknown_keeps_current_speaker(self):
         """Живой лог: речь=0.36s, -66.6 dBFS, STT пустой → раньше сброс в ∅."""
@@ -641,9 +643,7 @@ class TestMaybeLogSkipSummary:
 
 class TestOnStt:
     def _msg(self, data: str):
-        msg = MagicMock()
-        msg.data = data
-        return msg
+        return make_utterance(data)
 
     def test_empty_text_ignored(self):
         n = _make_node()

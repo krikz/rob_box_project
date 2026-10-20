@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from rob_box_core.msg_stub import install_dialog_msgs_stub
+from rob_box_core.speaker_wire import fill_speaker_result
 from rob_box_quest.core.tars_status import (
     HEARTBEAT_S,
     MIN_INTERVAL_S,
@@ -98,6 +100,11 @@ class _Msg:
         self.data = data
 
 
+def _speaker(payload: dict):
+    """``SpeakerResult`` из настоящего .msg (ADR-0150 PR-2)."""
+    return fill_speaker_result(install_dialog_msgs_stub().SpeakerResult(), payload)
+
+
 def _relay(tts=("minimax", "v1")):
     sent: list = []
     logs: list = []
@@ -108,7 +115,7 @@ def _relay(tts=("minimax", "v1")):
 def test_relay_timer_broadcasts_status_from_topics() -> None:
     relay, sent, _ = _relay()
     relay.on_music_state(_Msg(json.dumps({"state": "playing", "dj": {"enabled": True, "theme": "джаз"}})))
-    relay.on_speaker_result(_Msg(json.dumps({"is_known": True, "name": "Борис"})))
+    relay.on_speaker_result(_speaker({"is_known": True, "name": "Борис"}))
     relay.on_timer()
     assert len(sent) == 1
     ev = sent[0]
@@ -124,7 +131,7 @@ def test_relay_timer_broadcasts_status_from_topics() -> None:
 def test_relay_silent_without_data_and_survives_bad_json() -> None:
     relay, sent, _ = _relay(tts=("", ""))
     relay.on_music_state(_Msg("не json"))
-    relay.on_speaker_result(_Msg(""))
+    relay.on_speaker_result(install_dialog_msgs_stub().SpeakerResult())
     relay.on_timer()
     assert sent == []
 

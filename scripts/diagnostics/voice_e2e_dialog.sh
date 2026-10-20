@@ -7,7 +7,7 @@
 #
 # Сценарий (тот же, что в разделе «Воспроизведение» issue #933):
 #   1. Прямая инъекция STT-фразы «робок расскажи длинный анекдот»
-#      в /voice/stt/result — LLM (DeepSeek) отвечает ДЛИННЫМ текстом
+#      в /voice/stt/utterance — LLM (DeepSeek) отвечает ДЛИННЫМ текстом
 #      (>1000 chars).
 #   2. tts_node дробит ответ на per-provider chunks
 #      (yandex=250 / silero=800 / minimax=5000, config voice_assistant.yaml)
@@ -73,7 +73,7 @@ log "Инъекция STT: ${PHASE_TEXT}"
 # Цитируем фразу так, чтобы она пережила: локальный bash → ssh → bash -c → ros2.
 # Простая фраза без кавычек по умолчанию; при необходимости задавайте PHASE_TEXT
 # одним словом-аргументом (см. --ros-args ниже).
-INJECT_CMD="bash -lc 'source /opt/ros/humble/setup.bash && source /ws/install/setup.bash 2>/dev/null; ros2 topic pub --once /voice/stt/result std_msgs/msg/String \"data: ${PHASE_TEXT}\" 2>&1'"
+INJECT_CMD="bash -lc 'source /opt/ros/humble/setup.bash && source /ws/install/setup.bash 2>/dev/null; ros2 topic pub --once /voice/stt/utterance rob_box_dialog_msgs/msg/Utterance \"{text: \\\"${PHASE_TEXT}\\\", source: respeaker}\" 2>&1'"
 if ! ${ROBOT_SSH} "docker exec voice-assistant ${INJECT_CMD}" >/tmp/voice_e2e_inject.log 2>&1; then
     log "⚠️  ros2 topic pub вернул ненулевой rc — смотрим, дошла ли фраза через логи"
     tail -5 /tmp/voice_e2e_inject.log >&2

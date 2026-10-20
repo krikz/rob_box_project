@@ -21,7 +21,7 @@ SETS=(
 "jazz|джаз|Моцарт"
 )
 ONLY="${ONLY:-}"
-inj(){ docker exec -e T="$1" voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 topic pub --once /voice/stt/result std_msgs/msg/String "{data: \"$T\"}" >/dev/null 2>&1'; }
+inj(){ docker exec -e T="$1" voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 topic pub --once /voice/stt/utterance rob_box_dialog_msgs/msg/Utterance "{text: \"$T\", source: respeaker}" >/dev/null 2>&1'; }
 shifu_busy(){ docker logs voice-assistant --since "$1" 2>&1 | grep 'STT: \[TG:495039871\]' | grep -v 'Клод'; }
 LAST=$(date -u -d '-3 min' +%Y-%m-%dT%H:%M:%SZ)
 echo "=== START $(date -u +%FT%TZ)" | tee -a "$D/index.txt"

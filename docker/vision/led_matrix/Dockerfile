@@ -117,6 +117,9 @@ RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}" && \
     echo "Cache breaker created: $(cat /tmp/ros2leds_build_sha)"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
+# ADR-0150 PR-2 (#3687): типы диалога v2 нужны face_node (PR-3a), который будет
+# жить в этом образе; пакет собирается здесь заранее, чтобы PR-3a не менял образ.
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
 
@@ -139,6 +142,7 @@ COPY src/ros2leds/led_matrix_driver/setup.py /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
 
 # 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 
@@ -163,7 +167,7 @@ COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 # не нужен.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select led_matrix_driver led_matrix_compositor \
+    --packages-select rob_box_dialog_msgs led_matrix_driver led_matrix_compositor \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

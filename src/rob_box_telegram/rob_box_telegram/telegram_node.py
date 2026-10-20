@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
+from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
 from telegram.ext import (
     Application,
@@ -85,7 +86,7 @@ _VOICE_IN_QOS = QoSProfile(
 
 
 class TelegramNode(Node):
-    """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge.
+    """Telegram Bot API ↔ /voice/stt/utterance + /voice/dialogue/response bridge.
 
     AV-10 (ADR-0028 §4.4): после рефакторинга эта нода — клиент
     ``avatar_supervisor``. Движение и TTS публикуются только после
@@ -165,7 +166,9 @@ class TelegramNode(Node):
         self.create_subscription(
             OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g
         )
-        self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
+        # ADR-0150 PR-2: тот же типизированный топик, что у stt_node; источник
+        # (telegram/operator) и chat_id - поля, а не префикс "[TG:id]" в тексте.
+        self._stt_pub = self.create_publisher(UtteranceMsg, "/voice/stt/utterance", _RE)
         self._response_pub = self.create_publisher(
             String, "/voice/dialogue/response", _RE
         )
@@ -305,19 +308,23 @@ class TelegramNode(Node):
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text:
             return
-        # Issue #1195 — source marker: [TG:chat_id] text. dialogue_node
-        # parses it to skip the wake-word gate (chat messages are explicit
-        # address), remembers the chat for echo routing and does NOT attach
-        # the voice-biometry speaker tag. chat_id also becomes the "active
-        # chat" so voice-initiated replies echo into the same chat.
+        # Issue #1195 — источник реплики: source=telegram + chat_id. dialogue_node
+        # по ним пропускает wake-word gate (сообщение в чат - явное обращение),
+        # запоминает чат для эхо-маршрута и НЕ цепляет метку голосовой биометрии.
+        # chat_id также становится "active chat", чтобы голосовые ответы эхом
+        # уходили в тот же чат. Без chat_id (кнопки меню) source=operator.
+        m = UtteranceMsg()
+        m.text = text
+        m.provider = "telegram"
         if chat_id is not None:
             self.set_active_chat(chat_id)
-            text = f"[TG:{chat_id}] {text}"
+            m.source = UtteranceMsg.SOURCE_TELEGRAM
+            m.chat_id = int(chat_id)
+        else:
+            m.source = UtteranceMsg.SOURCE_OPERATOR
         # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
         if is_metrics_enabled():
             record_telegram_message("in", message_type="text")
-        m = String()
-        m.data = text
         self._stt_pub.publish(m)
 
     def publish_avatar_command(self, text: str, chat_id: int) -> Optional[str]:

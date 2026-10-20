@@ -301,7 +301,7 @@ def _make_stt_node_stub(**param_overrides):
         list(defaults["stt_provider_chain"])
     )
     # Mock publishers/subscribers/loggers
-    node.result_pub = MagicMock()
+    node.utterance_pub = MagicMock()
     node.state_pub = MagicMock()
     node.tts_control_pub = MagicMock()
     node.audio_sub = MagicMock()
@@ -820,7 +820,7 @@ class TestSpeakUnclear:
         stt_node.tts_request_pub = MagicMock()
         stt_node._last_unclear_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
 
         msg = MagicMock()
@@ -828,7 +828,7 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         # Результат не опубликован, «не расслышал» НЕ запрошен
-        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 0
 
     def test_speech_audio_callback_short_rejected_still_speaks(self, stt_node):
@@ -838,14 +838,14 @@ class TestSpeakUnclear:
         stt_node._last_unclear_at = 0.0
         # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
         stt_node._recognize_with_fallback = MagicMock(return_value=("не", []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
 
         msg = MagicMock()
         msg.data = [0] * (16000 * 2)  # 1с PCM
         stt_node.speech_audio_callback(msg)
 
-        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
 
     def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
@@ -862,7 +862,7 @@ class TestSpeakUnclear:
         stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
         stt_node._recognize_vosk = MagicMock(return_value="не")  # 2 chars мусор
         stt_node.tts_request_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node._last_unclear_at = 0.0
 
@@ -872,7 +872,7 @@ class TestSpeakUnclear:
 
         # Результат НЕ опубликован (слишком короткое), но робот просит
         # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
-        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 1
         payload = stt_node.tts_request_pub.publish.call_args[0][0].data
         assert "Не расслышал" in payload
@@ -894,7 +894,7 @@ class TestTTSGracePeriod:
         stt_node.is_robot_speaking = False
         stt_node._tts_ended_at = _time.monotonic() - 1.0  # 1с назад — внутри grace
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
         stt_node.publish_result = MagicMock()
@@ -905,7 +905,7 @@ class TestTTSGracePeriod:
 
         # Внутри grace — фраза не доходит до распознавания
         stt_node._recognize_with_fallback.assert_not_called()
-        assert stt_node.result_pub.publish.call_count == 0
+        assert stt_node.utterance_pub.publish.call_count == 0
         assert stt_node.tts_request_pub.publish.call_count == 0
 
     def test_phrase_outside_grace_is_processed(self, stt_node):
@@ -917,7 +917,7 @@ class TestTTSGracePeriod:
         stt_node.is_robot_speaking = False
         stt_node._tts_ended_at = _time.monotonic() - 10.0  # 10с назад — вне grace
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
 
@@ -927,7 +927,7 @@ class TestTTSGracePeriod:
 
         stt_node._recognize_with_fallback.assert_called_once()
         # "робок привет" принят — publish_result дёрнут (внутри него
-        # происходит публикация в /voice/stt/result)
+        # происходит публикация в /voice/stt/utterance)
         assert stt_node.publish_result.call_count == 1
 
 
@@ -976,7 +976,7 @@ class TestBargeInWakeWordStopTTS:
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
         # для этого теста нужен РЕАЛЬНЫЙ метод — bind через __get__.
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
@@ -989,7 +989,7 @@ class TestBargeInWakeWordStopTTS:
         stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
         assert stop_call.data == "STOP"
         # Результат всё равно публикуется (dialogue_node обработает)
-        assert stt_node.result_pub.publish.call_count == 1
+        assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_publish_result_without_wake_word_no_stop(self, stt_node, monkeypatch):
         """Фраза без wake word (эхо собственного голоса) → БЕЗ STOP TTS."""
@@ -998,7 +998,7 @@ class TestBargeInWakeWordStopTTS:
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
         stt_node.tts_control_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
         )
@@ -1006,7 +1006,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node.publish_result("не расслышал скажи")
 
         stt_node.tts_control_pub.publish.assert_not_called()
-        assert stt_node.result_pub.publish.call_count == 1
+        assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_full_chain_barge_in_stop_tts(self, stt_node, monkeypatch):
         """Полная цепочка: фраза с wake word во время TTS → STOP TTS.
@@ -1028,7 +1028,7 @@ class TestBargeInWakeWordStopTTS:
             return_value=("робот добавь бит", [])
         )
         stt_node.tts_control_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
@@ -1042,7 +1042,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node._recognize_with_fallback.assert_called_once()
         stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
         assert stop_call.data == "STOP"
-        assert stt_node.result_pub.publish.call_count == 1
+        assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_short_phrase_during_tts_ignored(self, stt_node):
         """Hardware AEC: короткая фраза <0.8s во время TTS → игнор (эхо).
@@ -1055,7 +1055,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node.is_robot_speaking = True
         stt_node._tts_ended_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
         stt_node.publish_result = MagicMock()
@@ -1093,7 +1093,7 @@ class TestBargeInClassifyPolicyDefersStop:
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "classify"
         stt_node.tts_control_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
         )
@@ -1103,7 +1103,7 @@ class TestBargeInClassifyPolicyDefersStop:
         stt_node.tts_control_pub.publish.assert_not_called()
         # Результат всё равно публикуется — dialogue_node должен его увидеть,
         # чтобы вообще смочь прогнать quick_decide.
-        assert stt_node.result_pub.publish.call_count == 1
+        assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_classify_without_wake_word_no_stop(self, stt_node, monkeypatch):
         """policy=classify без wake word — тоже без STOP (как и раньше)."""
@@ -1112,7 +1112,7 @@ class TestBargeInClassifyPolicyDefersStop:
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "classify"
         stt_node.tts_control_pub = MagicMock()
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
         )
@@ -1120,7 +1120,7 @@ class TestBargeInClassifyPolicyDefersStop:
         stt_node.publish_result("не расслышал скажи")
 
         stt_node.tts_control_pub.publish.assert_not_called()
-        assert stt_node.result_pub.publish.call_count == 1
+        assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_default_policy_is_replace_before_any_topic_message(self, stt_node):
         """Fail-safe: до первого сообщения от dialogue_node __init__
@@ -1401,7 +1401,7 @@ class TestTelemetryPhraseToAccept:
         stt_node.is_robot_speaking = False
         stt_node._tts_ended_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
         stt_node.publish_result = MagicMock()
@@ -1431,7 +1431,7 @@ class TestTelemetryPhraseToAccept:
         stt_node.is_robot_speaking = False
         stt_node._tts_ended_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
-        stt_node.result_pub = MagicMock()
+        stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
         stt_node._maybe_speak_unclear = MagicMock()

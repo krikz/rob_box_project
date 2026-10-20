@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CommandNode - распознавание голосовых команд для управления роботом
-Подписывается: /voice/stt/result (String)
+Подписывается: /voice/stt/utterance (rob_box_dialog_msgs/Utterance)
 Публикует: /voice/command/intent (String), /voice/command/feedback (String)
 Action Clients: NavigateToPose, FollowPath
 
@@ -18,12 +18,14 @@ from typing import Optional, Dict, List
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 
 # Import from core module
 from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
+from rob_box_voice.core.coordinator_address import stt_log_label
 
 
 class CommandNode(Node):
@@ -45,8 +47,8 @@ class CommandNode(Node):
 
         # Subscribers
         self.stt_sub = self.create_subscription(
-            String,
-            '/voice/stt/result',
+            Utterance,
+            '/voice/stt/utterance',
             self.stt_callback,
             10
         )
@@ -97,9 +99,9 @@ class CommandNode(Node):
         self.dialogue_state = msg.data
         self.get_logger().debug(f'📊 Dialogue state: {self.dialogue_state}')
 
-    def stt_callback(self, msg: String):
-        """Обработка распознанной речи."""
-        text = msg.data.strip()
+    def stt_callback(self, msg: Utterance):
+        """Обработка распознанной речи (``Utterance``, ADR-0150 PR-2)."""
+        text = stt_log_label(msg)
         if not text:
             return
 

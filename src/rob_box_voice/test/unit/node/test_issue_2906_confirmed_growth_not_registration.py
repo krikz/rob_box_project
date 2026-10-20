@@ -61,6 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 UTT_ID = "c4a4d9c4772c"
 NOT_HEARD = "Не расслышал"
@@ -84,7 +86,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 class _SyncExecutor:
@@ -193,9 +195,7 @@ def _roundtrip(speaker_node, dialogue_node, payload: dict) -> list:
     acks = list(speaker_node._result_pub.messages)
     for ack in acks:
         if ack.get("event"):
-            dialogue_node._on_speaker_result(
-                type("Msg", (), {"data": json.dumps(ack, ensure_ascii=False)})()
-            )
+            dialogue_node._on_speaker_result(make_speaker_result(ack))
     return acks
 
 

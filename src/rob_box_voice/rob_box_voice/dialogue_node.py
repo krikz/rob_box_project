@@ -44,11 +44,14 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
+from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_TOPIC,
 )
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
+from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -121,7 +124,6 @@ from rob_box_voice.core.stt_admission import (
     SttOutcome,
     SttOutcomeKind,
     parse_speaker_event,
-    parse_tg_prefix,
 )
 from rob_box_voice.core.dialogue_text import (
     DEFAULT_OPERATOR_WAKE_WORDS,
@@ -202,7 +204,6 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ``_DialogueSttHost.enqueue_pending`` -- hence the blanket noqa above.)
     _DialogueSttHost as _DialogueSttHost,
     _PENDING_USER_MESSAGES_MAX as _PENDING_USER_MESSAGES_MAX,
-    _UTTERANCE_ID_WAIT_SEC as _UTTERANCE_ID_WAIT_SEC,
 )
 from rob_box_voice.core.tars_status_feed import start_status_feeds
 from rob_box_voice.core.media_router import (
@@ -266,7 +267,6 @@ from rob_box_voice.tts_voice_registry import (
 )
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
-from rob_box_voice.core.utterance_binding import UtteranceIdBinder
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
@@ -317,10 +317,9 @@ ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 
-# ADR-0145 §4 (P1 step 1) -- ``_PENDING_USER_MESSAGES_MAX`` and
-# ``_UTTERANCE_ID_WAIT_SEC`` moved to
+# ADR-0145 §4 (P1 step 1) -- ``_PENDING_USER_MESSAGES_MAX`` moved to
 # :mod:`rob_box_voice.core.stt_admission_host` together with
-# ``_DialogueSttHost`` (pure move, no behaviour change) and are
+# ``_DialogueSttHost`` (pure move, no behaviour change) and is
 # re-exported via the import above.
 
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
@@ -588,7 +587,7 @@ class DialogueNode(Node):
         self._barge_in_policy: str = self._resolve_barge_in_policy()
         # Issue #2628 / ADR-0021 R1 — STT admission pipeline (refactor
         # of the inline 12-branch barrier chain inside ``_on_stt``).
-        # Built once at init, re-used on every ``/voice/stt/result``.
+        # Built once at init, re-used on every ``/voice/stt/utterance``.
         self._stt_admission: SttAdmission = DefaultSttAdmission(
             barge_in_policy=self._barge_in_policy,
             logger=self.get_logger(),
@@ -650,10 +649,6 @@ class DialogueNode(Node):
         # как «последнее РАЗРЕШЁННОЕ по utterance_id значение» -- теперь
         # его пишет только _apply_speaker_identity, после resolve().
         self._utterance_speaker = UtteranceSpeakerRegistry()
-        # Issue #2862 -- id связывается с фразой по ТЕКСТУ, а не по порядку
-        # прихода /voice/stt/utterance vs /voice/stt/result (DDS порядок
-        # между топиками не гарантирует, колбэки Reentrant).
-        self._utterance_ids = UtteranceIdBinder()
         # Issue #2829 — какой utterance_id уже резолвнут в _current_speaker
         # (см. _resolve_speaker_for_utterance) -- не резолвим дважды.
         self._last_resolved_utterance_id: Optional[str] = None
@@ -718,8 +713,8 @@ class DialogueNode(Node):
         )
         self._accumulate_no_wake_enabled = bool(self.get_parameter("accumulate_no_wake_enabled").value)
         self._pending_backlog_flush = False
-        # Issue #1195 — последний chat_id из Telegram (source-маркер
-        # [TG:chat_id] в /voice/stt/result). Используется для
+        # Issue #1195 — последний chat_id из Telegram (поле chat_id у
+        # Utterance с source=telegram). Используется для
         # маршрутизации ответа: dialogue_node кладёт tg_chat_id в
         # payload /voice/dialogue/response, telegram_node читает его и
         # шлёт send_message в нужный чат. None = голосовой ввод.
@@ -855,8 +850,10 @@ class DialogueNode(Node):
             self.get_logger().warning(
                 f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
             )
+        # ADR-0150 PR-2: один типизированный вход реплики (голос и Telegram);
+        # id фразы, источник и chat_id - поля, склейки по тексту больше нет.
         self.create_subscription(
-            String, "/voice/stt/result",
+            UtteranceMsg, "/voice/stt/utterance",
             # Issue #3518 -- «Клод …» из Telegram адресовано координатору.
             skip_coordinator_tg(self._on_stt, self.get_logger),
             qos_r, callback_group=cbg)
@@ -885,27 +882,18 @@ class DialogueNode(Node):
             String, "/voice/command/feedback", self._on_command_feedback,
             qos_r, callback_group=cbg)
         # Issue #1077 — speaker_tag от Yandex speaker_analysis (отдельный
-        # топик, чтобы не ломать plain-text контракт /voice/stt/result).
-        # JSON: {"speaker_tag", "text", "duration_s"}. stt_node публикует
-        # speaker ПЕРЕД result, поэтому _on_speaker обычно приходит раньше
-        # _on_stt; храним по тексту и забираем в _on_stt.
+        # топик). JSON: {"speaker_tag", "text", "duration_s"}. stt_node
+        # публикует speaker ПЕРЕД utterance, поэтому _on_speaker обычно
+        # приходит раньше _on_stt; храним по тексту и забираем в _on_stt.
         self.create_subscription(
             String, "/voice/stt/speaker", self._on_speaker, qos_r,
             callback_group=cbg)
-        # Issue #2829 (ADR-0131) — utterance_id этой фразы. Issue #2862 —
-        # JSON {"utterance_id", "text"}; порядок относительно
-        # /voice/stt/result НЕ гарантирован, связываем по тексту
-        # (UtteranceIdBinder), _on_stt ждёт id своей фразы до
-        # _UTTERANCE_ID_WAIT_SEC.
-        self.create_subscription(
-            String, "/voice/stt/utterance", self._on_stt_utterance, qos_r,
-            callback_group=cbg)
         # Issue #1077 — голосовая биометрия: результат speaker_id_node
-        # (resemblyzer d-vector, JSON: is_known/speaker_id/name/confidence).
+        # (resemblyzer d-vector). ADR-0150 PR-2: типизированный SpeakerResult.
         if self._speaker_id_enabled:
             self.create_subscription(
-                String, "/voice/speaker/result", self._on_speaker_result, qos_r,
-                callback_group=cbg)
+                SpeakerResult, "/voice/speaker/result", self._on_speaker_result,
+                qos_r, callback_group=cbg)
             self._speaker_register_pub = self.create_publisher(
                 String, "/voice/speaker/register", 10)
             # Issue #2828 -- ответ «это я» на переспрос про личность
@@ -2562,54 +2550,17 @@ class DialogueNode(Node):
                 self._current_speaker["speaker_id"] = plan["known_id"]
                 self._current_speaker["name"] = plan["known_name"]
 
-    def _on_stt_utterance(self, msg: String) -> None:
-        """Issue #2829 (ADR-0131) — id фразы от stt_node.
-
-        Issue #2862 — JSON ``{"utterance_id", "text"}``. Кладём в
-        :class:`UtteranceIdBinder` под текстом фразы; ``_on_stt`` заберёт
-        id по тому же тексту независимо от того, какой топик доехал первым.
-        Сообщение без текста не с чем связать — отбрасываем.
-        """
-        try:
-            data = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        binder = getattr(self, "_utterance_ids", None)
-        if binder is None or not isinstance(data, dict):
-            return
-        binder.offer(str(data.get("text") or ""), str(data.get("utterance_id") or ""))
-
-    def _claim_utterance_id(self, raw_text: str, wait: bool) -> Optional[str]:
-        """Issue #2862 — id ЭТОЙ фразы (по тексту), с коротким ожиданием,
-        если ``/voice/stt/result`` обогнал ``/voice/stt/utterance``.
-
-        Забирается ДО SttAdmission: фраза, которая не станет ходом
-        (backlog no_wake_word, silenced, rejected), всё равно поглощает
-        свой id — он не может достаться следующей фразе. Не нашлось за
-        отведённое время → ``None`` (честный unknown), а опоздавший id
-        будет выброшен binder'ом.
-
-        ``wait=False`` для Telegram-ввода (у него id не бывает). Test
-        doubles через ``object.__new__(DialogueNode)`` без binder'а →
-        ``None``.
-        """
-        binder = getattr(self, "_utterance_ids", None)
-        if binder is None:
-            return None
-        return binder.claim(raw_text, _UTTERANCE_ID_WAIT_SEC if wait else 0.0)
-
-    def _on_speaker_result(self, msg: String) -> None:
+    def _on_speaker_result(self, msg: SpeakerResult) -> None:
         """Issue #1077 — результат голосовой биометрии (speaker_id_node).
 
-        JSON: ``{"is_known": true, "speaker_id": "...", "name": "...",
-        "confidence": 0.93}`` или ``{"is_known": false}``. Храним
-        последний результат; _run_turn использует его для префикса
-        [Говорит <имя>] / [Говорит: незнакомец] и session lock.
+        ADR-0150 PR-2: типизированный ``SpeakerResult``; словарь
+        ``{"is_known": true, "speaker_id": "...", "name": "...",
+        "confidence": 0.93}`` (или ``{"is_known": false}``) строит
+        ``rob_box_core.speaker_wire`` - единственное место соответствия
+        поле <-> ключ. Храним последний результат; _run_turn использует его
+        для префикса [Говорит <имя>] / [Говорит: незнакомец] и session lock.
         """
-        try:
-            data = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
+        data = speaker_result_to_payload(msg)
         if data.get("event") in ("registered", "register_error"):
             try:
                 self._on_register_outcome(data)
@@ -2840,26 +2791,31 @@ class DialogueNode(Node):
         out.data = json.dumps(payload, ensure_ascii=False)
         self._dialogue_control_pub.publish(out)
 
-    def _on_stt(self, msg: String) -> None:
+    def _on_stt(self, msg: UtteranceMsg) -> None:
         """STT text admission — Issue #2628 / ADR-0021 R1 refactor.
 
         Drives the :class:`rob_box_voice.core.stt_admission.SttAdmission`
         pipeline. The 12 inline branches of the predecessor (CC=54) are
         now one ``evaluate()`` call plus a 7-line dispatch tail; CC budget
-        dropped to ≤15 (ADR-0021 R1). Pure parsing helpers
-        (:func:`parse_tg_prefix`, :func:`parse_speaker_event`) live in
-        ``core/`` and are unit-tested without ROS2.
+        dropped to ≤15 (ADR-0021 R1). Pure parsing helper
+        (:func:`parse_speaker_event`) lives in ``core/`` and is unit-tested
+        without ROS2.
+
+        ADR-0150 PR-2: вход - типизированный ``Utterance``; источник,
+        ``chat_id`` и ``utterance_id`` приходят полями, префикс ``[TG:id]``
+        в тексте и склейка id по тексту (#2862) больше не нужны.
 
         Lock order documented in :class:`_DialogueSttHost` docstring.
         """
-        raw_text = (msg.data or "").strip()
+        raw_text = (msg.text or "").strip()
         if not raw_text:
             return
-        text, tg_chat_id = parse_tg_prefix(raw_text)
-        # Issue #2829/#2862 (ADR-0131) -- id забирается по тексту ДО
-        # SttAdmission: если фраза не дойдёт до _dispatch_cleaned (backlog,
-        # silenced, rejected), её id НЕ должен утечь в следующую фразу.
-        utterance_id = self._claim_utterance_id(raw_text, wait=tg_chat_id is None)
+        text = raw_text
+        from_tg = msg.source == UtteranceMsg.SOURCE_TELEGRAM and bool(msg.chat_id)
+        tg_chat_id = int(msg.chat_id) if from_tg else None
+        # Issue #2829/#2862 (ADR-0131) -- id фразы приходит в самом Utterance
+        # (у Telegram и оператора его нет -> None).
+        utterance_id = msg.utterance_id or None
         if tg_chat_id is not None:
             # Issue #1195 — store chat id for echo routing.
             self._active_tg_chat_id = tg_chat_id

@@ -19,6 +19,7 @@ import pytest
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 _GATE_CONFIDENCE = 0.7
 
@@ -66,9 +67,7 @@ def _make_node(gate_enabled: bool = True) -> DialogueNode:
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 class TestCommandIntentGate:

@@ -18,7 +18,17 @@ This conftest makes the intent explicit at the dir level so pytest 9.x
 (automatic-discovery mode) does not try to import them.
 """
 
+import sys
 from pathlib import Path
+
+# ``from ros_stubs import make_utterance`` должно работать из любого каталога тестов.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# ADR-0150 PR-2: ``rob_box_dialog_msgs`` (rosidl) без ROS не собирается;
+# заглушка строится из настоящих ``.msg`` и ставится до импорта любых нод.
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()
 
 
 # This file lives at test/conftest.py — ``test`` IS a Python package thanks

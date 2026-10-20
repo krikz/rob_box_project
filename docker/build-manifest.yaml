@@ -103,6 +103,9 @@ pis:
               extensions: [".py"]
             - paths: [src/rob_box_perception_msgs]
               extensions: [".msg", "CMakeLists.txt", "package.xml"]
+            # ADR-0150 PR-2 (#3687): vision_face_node читает SpeakerResult.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         build_args:
           HAILO_INSTALL_BINDING: whl
         # Императивный pre-build хук (копирование HailoRT wheel/lib из
@@ -162,6 +165,9 @@ pis:
                 - src/rob_box_core
                 - src/rob_box_music/rob_box_music
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): типы диалога v2 собираются в этом образе.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         image_versions: VOICE_ASSISTANT_TAG
@@ -193,6 +199,9 @@ pis:
                 - src/rob_box_telegram/rob_box_telegram
                 - src/rob_box_core
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): telegram_node публикует Utterance.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         image_versions: TELEGRAM_BOT_TAG
@@ -211,6 +220,9 @@ pis:
               extensions: [".ts", ".json", ".html"]
             - paths: [src/rob_box_core]
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): quest_node читает SpeakerResult.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
@@ -231,6 +243,9 @@ pis:
                 - src/rob_box_supervisor/rob_box_supervisor
                 - src/rob_box_core
               extensions: [".py"]
+            # ADR-0150 PR-2 (#3687): база voice-assistant несёт типы диалога v2.
+            - paths: [src/rob_box_dialog_msgs]
+              extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]
         tag:
           ros_distro: true
         # SHA-тег пишется в docker/sound/.image-versions.*: образ запускают

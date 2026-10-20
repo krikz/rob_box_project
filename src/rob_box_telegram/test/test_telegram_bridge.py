@@ -5,7 +5,7 @@ After W8 ``rob_box_telegram.telegram_node.TelegramNode`` is a thin ROS 2
 input bridge that forwards Telegram messages into the dialogue pipeline and
 keeps camera frames available to Telegram handlers:
 
-    Telegram user --text/voice--> /voice/stt/result         (dialogue in)
+    Telegram user --text/voice--> /voice/stt/utterance         (dialogue in)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
 
 The node subscribes to ``/voice/dialogue/response`` and duplicates every
@@ -16,7 +16,7 @@ asyncio-loop bug t_aad8e224).
 These tests cover the W9 acceptance criteria from
 ``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
 
-    1. Telegram message -> published to /voice/stt/result (with [TG:chat_id] source marker)
+    1. Telegram message -> published to /voice/stt/utterance (with [TG:chat_id] source marker)
     2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat
     3. Camera image -> forwarded to appropriate topic (CameraCache update)
     4. Telegram bot starts (mock Application builder)
@@ -214,6 +214,11 @@ def _install_fake_rclpy() -> None:
     std_msgs.msg = std_msgs_msg
     sys.modules["std_msgs"] = std_msgs
     sys.modules["std_msgs.msg"] = std_msgs_msg
+
+    # ADR-0150 PR-2: telegram_node публикует типизированный Utterance;
+    # класс строится из настоящего rob_box_dialog_msgs/msg/Utterance.msg.
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    install_dialog_msgs_stub()
 
     # Expose the stub String class at module scope so tests can build
     # ``std_msgs.msg.String`` messages without re-importing.
@@ -456,12 +461,13 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
                 return sub
         raise AssertionError(f"No subscription registered for {topic}")
 
-    # ── Test 1: Telegram message → /voice/stt/result ──────────────────
+    # ── Test 1: Telegram message → /voice/stt/utterance (Utterance) ───
 
     def test_telegram_message_published_to_stt_topic(self) -> None:
-        """``forward_to_stt`` must publish the raw text on /voice/stt/result."""
+        """Без chat_id ``forward_to_stt`` публикует Utterance с source=operator."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertEqual(pub.publish.call_count, 0)
 
         self.node.forward_to_stt("Привет, робот!")
@@ -469,21 +475,28 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(pub.publish.call_count, 1)
         published = pub.publish.call_args.args[0]
-        self.assertIsInstance(published, _STD_STRING_CLS)
-        self.assertEqual(published.data, "Привет, робот!")
+        self.assertIsInstance(published, Utterance)
+        self.assertEqual(published.text, "Привет, робот!")
+        self.assertEqual(published.source, Utterance.SOURCE_OPERATOR)
+        self.assertEqual(published.chat_id, 0)
+        self.assertEqual(published.utterance_id, "")
 
     def test_forward_to_stt_with_chat_id_adds_source_marker(self) -> None:
-        """``forward_to_stt(text, chat_id=...)`` must add the [TG:chat_id]
-        source marker (issue #1195) and record the active chat."""
+        """``forward_to_stt(text, chat_id=...)`` кладёт источник и chat_id в
+        поля (issue #1195, ADR-0150 PR-2), текст остаётся без префикса
+        ``[TG:id]``, активный чат запоминается."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertIsNone(self.node._active_chat_id)
 
         self.node.forward_to_stt("продолжай", chat_id=-5269346516)
 
         self.assertEqual(self.node._active_chat_id, -5269346516)
         published = pub.publish.call_args.args[0]
-        self.assertEqual(published.data, "[TG:-5269346516] продолжай")
+        self.assertEqual(published.text, "продолжай")
+        self.assertEqual(published.source, Utterance.SOURCE_TELEGRAM)
+        self.assertEqual(published.chat_id, -5269346516)
 
     def test_set_active_chat_records_chat(self) -> None:
         """``set_active_chat`` must store the chat for echo routing."""

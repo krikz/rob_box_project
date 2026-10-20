@@ -25,6 +25,7 @@ from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.core.music_turn import MusicTurn
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
+from ros_stubs import make_utterance  # noqa: E402
 
 LIVE_1908 = ("Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки "
              "замути сэт на 30 минут")
@@ -112,9 +113,7 @@ def run_plans(monkeypatch):
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 def test_live_phrase_starts_dj_set_without_llm(run_plans):

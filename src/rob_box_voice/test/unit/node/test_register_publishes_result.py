@@ -48,7 +48,6 @@ docstring test_gallery_warmup.py). Теперь галерея растёт по
 from __future__ import annotations
 
 import collections
-import json
 import sys
 import threading
 import types
@@ -74,6 +73,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
 
 class _Embed:
@@ -119,7 +119,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 @pytest.fixture()
