@@ -100,7 +100,8 @@ class TestIsShortPhrase:
         assert is_short_phrase("а") is True
 
     def test_two_chars_is_short(self):
-        assert is_short_phrase("да") is True
+        assert is_short_phrase("ау") is True
+        assert is_short_phrase("да") is False  # ответ на вопрос робота (knowledge.SHORT_ANSWERS)
 
     def test_three_chars_at_threshold_is_not_short(self):
         # DEFAULT_MIN_TEXT_CHARS=3, 'abc' has 3 chars: не < 3
@@ -765,10 +766,16 @@ class TestProviderPrepare:
 
 
 class TestPhraseGateIgnoresProviderPunctuationAndScript:
-    def test_punctuation_added_by_provider_does_not_make_short_word_long(self):
-        assert is_short_phrase("Да.") is True  # было: 3 символа с точкой проходило порог 3
-        assert is_short_phrase("да") is True
-        assert is_short_phrase("Нет.") is False and is_short_phrase("Стоп!") is False
+    def test_punctuation_added_by_provider_does_not_make_garbage_long(self):
+        assert is_short_phrase("э.") is True and is_short_phrase("мм.") is True
+
+    def test_answers_to_robot_questions_pass_with_or_without_punctuation(self):
+        for text in ("Да.", "да", "Нет!", "нет", "Не.", "ага", "Угу.", "ок", "ладно", "Стоп!"):
+            assert is_short_phrase(text) is False, text
+
+    def test_garbage_is_still_rejected(self):
+        for text in ("э", "ммм", "Ммм.", "аааа", "а", "ы", "係啊。", ""):
+            assert is_short_phrase(text) is True, text
 
     def test_hieroglyphs_are_garbage_not_a_phrase(self):
         assert is_short_phrase("係啊。") is True
@@ -798,11 +805,18 @@ def test_fallback_garbage_after_low_confidence_is_not_accepted_as_phrase():
     assert is_short_phrase(text)  # итог для stt_node - rejected(short), «не расслышал», а не реплика личности
 
 
-def test_fallback_punctuated_short_word_is_not_accepted():
-    text, attempts = select_recognition([_Prov("yandex", "да"), _Prov("minimax", "Да.")], b"\x00" * 3200,
+def test_fallback_punctuated_short_garbage_is_not_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Э.")], b"\x00" * 3200,
                                         max_total_s=None)
     assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
     assert is_short_phrase(text)
+
+
+def test_yes_from_the_first_provider_is_accepted_without_fallback():
+    """Ответ на вопрос робота проходит сразу у Yandex: на develop «да» уходило в MiniMax и принималось лишь как «Да.»."""
+    text, attempts = select_recognition([_Prov("yandex", "да"), _Prov("minimax", "Да.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["ok"] and text == "да"
 
 
 def test_fallback_real_phrase_still_accepted():
