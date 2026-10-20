@@ -26,6 +26,10 @@ class MiMoProvider(_OpenAICompatibleProvider):
     DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
     DEFAULT_MODEL = "mimo-v2.5-pro"
 
+    # ADR-0150 §4.5: MiMo's tool_choice / json_object support is NOT measured
+    # yet -> inherited conservative flags (all False) => json_in_text mode.
+    # Raise only with an ``adapter_benchmark`` run as evidence.
+
     def __init__(
         self,
         *,
