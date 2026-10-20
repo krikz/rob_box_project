@@ -32,7 +32,7 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
 - **Какая сцена когда:** речь — `talk_<mouth_design>` (рот по голосу, В13:
   `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
   музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —
-  `idle_stare`, раз в минуту `idle_bored`; нет голосового стека 10 с —
+  `idle_stare`, раз в минуту `idle_bored`; нет голосового стека 7 с —
   `sleep`, вернулся — `wakeup`. Порядок — `face_director.py`.
 
 ## Галерея

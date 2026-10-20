@@ -11,12 +11,13 @@ voice), ``/voice/tts/state`` (transitional «speaking»), ``/audio/direction`` +
 tempo), ``/voice/animation/request`` (v1 ``play_animation``, until PR-3b),
 ``/voice/expression/request`` (``ExpressionRequest``; writers come in PR-3b),
 ``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
-``voice_timeout_s`` (no messages and no ``/voice/speech/event`` publisher in
+``voice_timeout_s`` (no messages, no voice publishers in
 the graph) -> ``sleep``; it is back -> ``wakeup`` -> idle.
 """
 from __future__ import annotations
 
 import time
+from typing import Optional
 
 import rclpy
 from rclpy.node import Node
@@ -29,6 +30,8 @@ from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, f
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
 VOICE_OWNER_TOPIC = '/voice/speech/event'
+#: Publishers in the graph that mean «voice-assistant is up» (tts_node, audio_node).
+VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/voice/tts/state', '/audio/direction')
 
 
 class PanelPublisher:
@@ -67,7 +70,7 @@ class FaceNode(Node):
         super().__init__('face_node')
         p = {
             'fps': float(FPS), 'mouth_design': 'jaw', 'thinking_design': 'thinking_teeth',
-            'idle_bored_every_s': 60.0, 'voice_timeout_s': 10.0, 'test_pattern': False,
+            'idle_bored_every_s': 60.0, 'voice_timeout_s': 7.0, 'test_pattern': False,
             'doa_front_deg': 0.0, 'doa_ccw': True, 'rear_theme': 'default', 'metrics_period_s': 10.0,
         }
         for name, default in p.items():
@@ -79,6 +82,7 @@ class FaceNode(Node):
             rear_theme=g['rear_theme'], test_pattern=g['test_pattern'],
             gaze=GazeTrack(front_deg=g['doa_front_deg'], ccw=g['doa_ccw']))
         self.panels = PanelPublisher(self)
+        self._graph_present: Optional[bool] = None
         self._subscribe()
         self._metrics_period = g['metrics_period_s']
         self._reset_metrics(time.time())
@@ -147,8 +151,13 @@ class FaceNode(Node):
             self.get_logger().info(f'сцена по запросу: {name} -> {scene} ({seconds or "по умолчанию"} с)')
 
     def _check_voice_owner(self) -> None:
-        if self.count_publishers(VOICE_OWNER_TOPIC) > 0:
+        counts = {t: self.count_publishers(t) for t in VOICE_PRESENCE_TOPICS}
+        present = any(counts.values())
+        if present:
             self.director.voice_seen(time.time())
+        if present != self._graph_present:
+            self._graph_present = present
+            self.get_logger().info(f'голосовой стек в графе: {"есть" if present else "нет"} {counts}')
 
     # -- output ---------------------------------------------------------------
     def _on_frame(self) -> None:
