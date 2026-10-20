@@ -177,7 +177,6 @@ rob_box_animations/
 │   └── frame_renderer.py             # Генератор кадров
 ├── scripts/
 │   ├── animation_player_node.py      # ROS 2 нода
-│   ├── generate_animation_frames.py  # Генератор PNG кадров
 │   └── visualize_animations.py       # Превью анимаций
 ├── animations/
 │   ├── manifests/                    # YAML описания (v2.5)
@@ -289,18 +288,13 @@ metadata:
 
 #### Генерация кадров
 
+PNG и манифесты генерирует процедурный код `tools/led_face_lab/` (лицо в духе
+Бендера), руками их не правят — см. `src/rob_box_animations/docs/ANIMATIONS.md`.
+
 ```bash
-# Сгенерировать все анимации (600+ кадров)
-python3 scripts/generate_animation_frames.py --animation all
-
-# Конкретная анимация
-python3 scripts/generate_animation_frames.py --animation happy
-
-# Превью анимаций
-python3 scripts/visualize_animations.py
+python3 tools/led_face_lab/bake_manifests.py src/rob_box_animations/animations
+python3 tools/led_face_lab/render_gifs.py src/rob_box_animations/animations docs/assets/animations
 ```
-
-**Cyrillic Font**: Custom 3×5 pixel шрифт для текста "ПОЛИЦИЯ"
 
 #### ROS 2 интерфейс
 

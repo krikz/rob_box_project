@@ -78,78 +78,31 @@ ros2 topic echo /animation_player/status
 
 ## 📋 Available Animations
 
-### Emergency Services (3)
-- `police_lights` - Blue/red police lights
-- `road_service` - Yellow rotating beacon
-- `ambulance` - Red cross emergency
+21 animations, names are the LLM tool vocabulary
+(`rob_box_mcp_tools/animations.py`): `idle`, `talking`, `thinking`, `happy`,
+`sad`, `angry`, `surprised`, `victory`, `sleep`, `wakeup`, `charging`,
+`low_battery`, `error`, `turn_left`, `turn_right`, `braking`, `accelerating`,
+`police_lights`, `fire_truck`, `ambulance`, `road_service`.
+Gallery with previews: [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
 
-### Robot States (2)
-- `idle` - Soft breathing in standby
-- `charging` - Battery filling progress
+## 🎨 Creating or Changing Animations
 
-### Emotions (1)
-- `happy` - Smile with bright eyes
-
-### Navigation (1)
-- `turn_left` - Left turn signal
-
-## 🎨 Creating Custom Animations
-
-### 1. Create frame images
-
-Create PNG images with exact dimensions:
-- **Headlights (front/rear):** 8×8 pixels, RGB
-- **Main display:** 25×5 pixels, RGB (width × height)
-
-Save in `animations/frames/my_animation/`:
-```
-animations/frames/my_animation/
-├── front_left_01.png
-├── front_right_01.png
-├── mouth_01.png
-└── ...
-```
-
-### 2. Create manifest YAML
-
-Create `animations/manifests/my_animation.yaml`:
-
-```yaml
-name: "my_animation"
-description: "My custom animation"
-version: "1.0"
-author: "your_name"
-
-duration_ms: 2000
-loop: true
-fps: 10
-
-panels:
-  - logical_group: "headlight_front_left"
-    offset_ms: 0
-    frames:
-      - image: "frames/my_animation/front_left_01.png"
-        duration_ms: 100
-      - image: "frames/my_animation/front_left_02.png"
-        duration_ms: 100
-  
-  - logical_group: "main_display"
-    offset_ms: 0
-    frames:
-      - image: "frames/my_animation/mouth_01.png"
-        duration_ms: 200
-
-metadata:
-  priority: "normal"
-  category: "decorative"
-  tags: ["custom", "test"]
-```
-
-### 3. Test animation
+Frames and manifests under `animations/` are **generated** by the procedural
+face in `tools/led_face_lab/` — do not edit the PNGs or YAML by hand. Change
+the scene there and re-bake:
 
 ```bash
-ros2 service call /animation_player/load_animation std_msgs/srv/String "data: 'my_animation'"
-ros2 service call /animation_player/play std_srvs/srv/Trigger
+python tools/led_face_lab/bake_manifests.py src/rob_box_animations/animations
+python tools/led_face_lab/render_gifs.py src/rob_box_animations/animations docs/assets/animations
+```
+
+The manifest format is unchanged (see below); the generator adds
+`brightness_budget`, `bake_scale` and `peak_ma_at_255` to `metadata`.
+
+### Test an animation on the robot
+
+```bash
+ros2 topic pub --once /voice/animation/request std_msgs/String "data: 'police_lights:10'"
 ```
 
 ## 🔧 ROS2 API
