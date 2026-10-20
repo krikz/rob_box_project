@@ -69,6 +69,7 @@ from rob_box_llm.provider import (
     LLMSettings,
     ProviderCapabilities,
 )
+from rob_box_llm.providers.minimax import LOWEST_REASONING_EFFORT
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +246,7 @@ def test_default_base_url_and_model_are_exposed() -> None:
     """``DEFAULT_BASE_URL`` / ``DEFAULT_MODEL`` are importable from the.
     harness-side module and match the upstream values."""
     assert DEFAULT_BASE_URL == "https://api.minimax.io/v1"
-    assert DEFAULT_MODEL == "MiniMax-M3"
+    assert DEFAULT_MODEL == "MiniMax-M3.1-Flash"
 
 
 def test_api_key_env_name_is_minimax_api_key() -> None:
@@ -442,7 +443,7 @@ def test_build_passes_model_from_config() -> None:
 
 
 def test_build_uses_default_model_when_unset() -> None:
-    """The default model is vision-capable (``MiniMax-M3``)."""
+    """The default model is vision-capable (``MiniMax-M3.1-Flash``, проба 20.10)."""
     cfg = LLMConfig(provider="minimax", api_key="sk-test")
     p = build_minimax_provider(cfg, env={})
     assert p.capabilities_for(DEFAULT_MODEL).image_input is True
@@ -478,8 +479,11 @@ async def test_complete_passes_model_and_messages() -> None:
     assert kwargs["stream"] is False
     assert kwargs["messages"][0]["role"] == "system"
     assert kwargs["messages"][1]["role"] == "user"
-    # Default thinking policy is injected via settings.extra → extra_body.
-    assert kwargs["extra_body"]["thinking"] == DEFAULT_THINKING_POLICY
+    # Default thinking policy is injected via settings.extra → extra_body. The
+    # default model (Flash) cannot run with thinking disabled (HTTP 400), so
+    # the "off" policy reaches the wire as the lowest reasoning depth.
+    assert "thinking" not in kwargs["extra_body"]
+    assert kwargs["extra_body"]["reasoning_effort"] == LOWEST_REASONING_EFFORT
 
 
 @pytest.mark.asyncio
@@ -1326,7 +1330,7 @@ def test_default_provider_name_matches_adr_0001() -> None:
     assert p.name == "minimax"
     # Defaults are stable across the harness / upstream boundary.
     assert DEFAULT_BASE_URL == "https://api.minimax.io/v1"
-    assert DEFAULT_MODEL == "MiniMax-M3"
+    assert DEFAULT_MODEL == "MiniMax-M3.1-Flash"
 
 
 @pytest.mark.asyncio

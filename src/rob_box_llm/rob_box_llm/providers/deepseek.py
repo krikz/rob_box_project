@@ -599,11 +599,16 @@ def _thinking_label(kwargs: Mapping[str, Any]) -> str:
     ``model-default`` — поля нет (MiniMax думает сам, adaptive).
     """
     body = kwargs.get("extra_body") or {}
+    parts: list[str] = []
     if "thinking" in body:
-        return json.dumps(body["thinking"], ensure_ascii=False, sort_keys=True)
-    if "enable_thinking" in body:
-        return f"enable_thinking={body['enable_thinking']}"
-    return "model-default"
+        parts.append(json.dumps(body["thinking"], ensure_ascii=False, sort_keys=True))
+    elif "enable_thinking" in body:
+        parts.append(f"enable_thinking={body['enable_thinking']}")
+    # Глубина рассуждения (MiniMax-M3.1-Flash, у которой thinking не выключить):
+    # без неё в логе «model-default» врал бы про дефолт модели — max.
+    if "reasoning_effort" in body:
+        parts.append(f"reasoning_effort={body['reasoning_effort']}")
+    return " ".join(parts) or "model-default"
 
 
 def _content_chunk(delta: Any) -> Optional[LLMChunk]:

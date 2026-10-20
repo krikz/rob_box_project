@@ -1,7 +1,10 @@
-"""MiniMax provider (MiniMax-M3, OpenAI-compatible).
+"""MiniMax provider (MiniMax-M3.1-Flash, OpenAI-compatible).
 
 Adds ``MiniMaxProvider`` to the ``rob_box_llm`` shared layer. The endpoint is
-``https://api.minimax.io/v1`` (global), the default model is ``MiniMax-M3``.
+``https://api.minimax.io/v1`` (global), the default model is
+``MiniMax-M3.1-Flash`` — the ONE place the robot's MiniMax model is named
+(``DEFAULT_MODEL``); every caller (personality, TARS, set reasoner, song
+lyrics, chooser) reaches it through ``rob_box_harness`` ``catalog``.
 
 MiniMax is NOT the same as Xiaomi MiMo — the latter is already shipped as
 ``MiMoProvider`` against ``api.xiaomimimo.com``. Use this adapter only when
@@ -15,10 +18,13 @@ Design constraints (see ``architecture/minimax-provider.md`` and
 * ``streaming_tools=False`` — streaming tool-call delta aggregation is not yet
   implemented in the wire-format adapter; callers must use ``complete()`` for
   tool requests.
-* Image input is gated per-model: only MiniMax vision-capable models (today:
-  ``MiniMax-M3`` and any other ``*M3*`` / ``*vision*`` names) accept
-  ``ImagePart``. Other models raise ``CapabilityUnavailableError`` BEFORE
-  hitting the network.
+* Image input is gated per-model by an explicit list
+  (:data:`_MINIMAX_VISION_MODELS`, filled from live probes, not from a
+  substring of the name). Other models raise ``CapabilityUnavailableError``
+  BEFORE hitting the network.
+* Thinking is model knowledge too: ``MiniMax-M3`` can switch it off,
+  ``MiniMax-M3.1-Flash`` cannot (HTTP 400 on ``thinking.type=disabled``) and
+  takes a depth instead — see :func:`apply_model_thinking`.
 * Image payloads are bounded at 10 MB per frame — an engineering default that
   matches MiniMax's published guidance (the documented value may move; this
   constant lives here so a single edit updates the limit).
@@ -63,13 +69,33 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-#: Substrings that mark a model as vision-capable (lowercase comparison).
-#: Conservative default: only MiniMax-M3 and MiniMax-M2 vision variants.
-_MINIMAX_VISION_MODEL_TOKENS: tuple[str, ...] = (
+#: Models that accept ``ImagePart`` (lowercase, exact match after
+#: :func:`_normalize_model`). A model joins this list ONLY after a live probe
+#: with a picture (``scripts/research/minimax_model_compat_probe.py``, case
+#: ``d``): the earlier substring ``"minimax-m3"`` also vouched for every future
+#: ``MiniMax-M3.*`` and for ``MiniMax-M3-chat`` (text-only) without anyone
+#: having checked them.
+_MINIMAX_VISION_MODELS: frozenset[str] = frozenset({
     "minimax-m3",
+    "minimax-m3.1-flash",
+})
+
+#: Substrings of legacy vision-model names (``MiniMax-M2-vision`` & co.).
+_MINIMAX_VISION_NAME_TOKENS: tuple[str, ...] = (
     "minimax-m2-vision",
     "minimax-vision",
 )
+
+#: Models whose thinking cannot be switched off: the API answers HTTP 400
+#: ``requires adaptive thinking; thinking.type="disabled" ... is not allowed``
+#: (live 20.10, ``MiniMax-M3.1-Flash``). Such a model gets a thinking DEPTH
+#: (``reasoning_effort``) instead of ``thinking: disabled``.
+_ALWAYS_THINKING_MODELS: frozenset[str] = frozenset({"minimax-m3.1-flash"})
+
+#: Lowest depth the API takes (``low`` < ``medium`` < ``high`` < ``xhigh`` <
+#: ``max``; ``none`` is a 400, omitted means ``max``). This is what "thinking
+#: off" for the voice path turns into on an always-thinking model.
+LOWEST_REASONING_EFFORT: str = "low"
 
 #: Engineering-default upper bound for a single image payload (10 MB).
 #: Matches MiniMax's published guidance as of writing; if the official limit
@@ -196,12 +222,47 @@ def _validate_image_bytes(messages: Iterable[Any]) -> None:
                 )
 
 
+def _normalize_model(model: str | None) -> str:
+    """Lowercase model id without the ``-preview`` suffix MiniMax also accepts."""
+    lowered = (model or "").strip().lower()
+    return lowered[: -len("-preview")] if lowered.endswith("-preview") else lowered
+
+
 def _model_supports_vision(model: str | None) -> bool:
     """Return True if ``model`` advertises image-input support."""
-    if not model:
+    name = _normalize_model(model)
+    if not name:
         return False
-    lowered = model.lower()
-    return any(tok in lowered for tok in _MINIMAX_VISION_MODEL_TOKENS)
+    return name in _MINIMAX_VISION_MODELS or any(tok in name for tok in _MINIMAX_VISION_NAME_TOKENS)
+
+
+def model_always_thinks(model: str | None) -> bool:
+    """True if ``model`` cannot run with thinking disabled."""
+    return _normalize_model(model) in _ALWAYS_THINKING_MODELS
+
+
+def apply_model_thinking(model: str | None, extra: Mapping[str, Any]) -> dict[str, Any]:
+    """``extra`` of a request, adapted to what ``model`` can do about thinking.
+
+    The caller states an INTENT in ``extra["thinking"]``: ``{"type":
+    "disabled"}`` (latency-sensitive voice turn) or ``None`` / absent (the
+    model's own default — turns that are allowed to think). The model decides
+    how the intent reaches the wire:
+
+    * a model that can switch thinking off gets the intent unchanged;
+    * an always-thinking model never gets ``disabled`` (HTTP 400, and the robot
+      would answer from the fallback provider every turn): ``thinking`` is
+      dropped and the lowest depth :data:`LOWEST_REASONING_EFFORT` is sent in
+      its place. A depth the caller set explicitly wins.
+    """
+    adapted = dict(extra)
+    if not model_always_thinks(model):
+        return adapted
+    thinking = adapted.get("thinking")
+    if isinstance(thinking, Mapping) and thinking.get("type") == "disabled":
+        del adapted["thinking"]
+        adapted.setdefault("reasoning_effort", LOWEST_REASONING_EFFORT)
+    return adapted
 
 
 def _raise_for_base_resp(resp: Any) -> None:
@@ -240,7 +301,7 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
     """MiniMax (global) chat-completions adapter.
 
     Default base URL: ``https://api.minimax.io/v1``.
-    Default model:    ``MiniMax-M3`` (vision-capable).
+    Default model:    ``MiniMax-M3.1-Flash`` (vision-capable, always thinks).
 
     Pass ``api_key`` directly in tests; in production set the
     ``MINIMAX_API_KEY`` env var and pass it through the composition root /
@@ -248,9 +309,9 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
     """
 
     DEFAULT_BASE_URL = "https://api.minimax.io/v1"
-    DEFAULT_MODEL = "MiniMax-M3"
+    DEFAULT_MODEL = "MiniMax-M3.1-Flash"
 
-    # ``MiniMax-M3`` supports image input, tools and streaming text.
+    # The default model supports image input, tools and streaming text.
     # Streaming tool calls are deliberately False — the OpenAI-compatible
     # wire-format adapter doesn't aggregate streaming tool-call deltas.
     _CAPABILITIES = ProviderCapabilities(
@@ -384,6 +445,11 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         6901a14e (06.08) MiniMax-M3 answered with ``<think>`` blocks,
         +10-20 s per turn. ``{"type": "enabled"}`` was never checked
         against the API, so we do not send it.
+
+        The merged intent is then adapted to the model that will answer
+        (:func:`apply_model_thinking`): ``MiniMax-M3.1-Flash`` cannot run with
+        thinking disabled, so ``disabled`` becomes the lowest
+        ``reasoning_effort`` there.
         """
         if settings is None:
             settings = LLMSettings()
@@ -395,13 +461,17 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
             merged_extra["thinking"] = dict(self._thinking or {})
         if merged_extra["thinking"] is None:
             del merged_extra["thinking"]
+        merged_extra = apply_model_thinking(settings.model or self._default_model, merged_extra)
         return dataclasses.replace(settings, extra=merged_extra)
 
 
 __all__ = [
     "MiniMaxProvider",
     "MINIMAX_MAX_IMAGE_BYTES",
+    "LOWEST_REASONING_EFFORT",
     "DEFAULT_THINKING_POLICY",
     "DEFAULT_TIMEOUT",
     "MiniMaxRedactedLogFilter",
+    "apply_model_thinking",
+    "model_always_thinks",
 ]

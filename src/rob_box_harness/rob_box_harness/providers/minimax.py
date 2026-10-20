@@ -240,8 +240,8 @@ class HarnessMiniMaxProvider(LLMProvider):  # type: ignore[misc]
         ``MINIMAX_API_KEY`` from ``os.environ``. The key is never
         logged.
     model:
-        Default model name. Defaults to ``"MiniMax-M3"`` (the
-        upstream default; vision-capable).
+        Default model name. Defaults to :data:`DEFAULT_MODEL` (the
+        upstream default, ``MiniMax-M3.1-Flash``; vision-capable).
     base_url:
         Endpoint URL. Defaults to ``https://api.minimax.io/v1``.
     timeout:

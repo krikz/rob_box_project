@@ -45,7 +45,7 @@ config = HarnessConfig.from_dict(
         "harness": {"kind": "echo"},
         "llm": {
             "provider": "minimax",
-            "model": "MiniMax-M3",
+            "model": "MiniMax-M3.1-Flash",
             "timeout_s": 30,
             "api_key": "${MINIMAX_API_KEY}",  # resolved via env
         },
@@ -57,7 +57,7 @@ provider = build_minimax_provider(config.llm)
 # 2. Or construct directly (handy for scripts / notebooks).
 provider = MiniMaxProvider(
     api_key="sk-test",
-    model="MiniMax-M3",
+    model="MiniMax-M3.1-Flash",
     retry=RetryPolicy(max_attempts=4, backoff_base=0.5),
 )
 
@@ -87,7 +87,7 @@ harness:
 
 llm:
   provider: minimax
-  model: MiniMax-M3        # default; vision-capable
+  model: MiniMax-M3.1-Flash   # default; vision-capable; thinking always on (see below)
   timeout_s: 30            # HTTP timeout; default 30
   api_key: ${MINIMAX_API_KEY}   # required; resolved from env
   fallback:
@@ -129,19 +129,31 @@ root.addFilter(MiniMaxRedactedLogFilter(api_key_env="MINIMAX_API_KEY"))
 | `streaming_text`  | all                    | `True`.                                              |
 | `tools`           | all                    | `True`; use `complete()` (not `stream()`) for tool calls. |
 | `streaming_tools` | n/a                    | `False` — streaming tool-call delta aggregation is not implemented. |
-| `image_input`     | vision models only     | `True` for `MiniMax-M3`, `MiniMax-M2-vision`, `*vision*`; `False` otherwise. |
+| `image_input`     | vision models only     | `True` for the probed list (`MiniMax-M3`, `MiniMax-M3.1-Flash`, `MiniMax-M2-vision`, `*vision*`); `False` otherwise — a name match on `M3` is not enough. |
 
 Use `provider.capabilities_for(model_name)` to narrow the
 capabilities to a specific model (the harness' fallback chain
 relies on this).
 
 ```python
-caps = provider.capabilities_for("MiniMax-M3")
+caps = provider.capabilities_for("MiniMax-M3.1-Flash")
 assert caps.image_input is True
 
 caps = provider.capabilities_for("MiniMax-M2.7")
 assert caps.image_input is False
 ```
+
+### Thinking depends on the model
+
+The voice path asks for "thinking off" (`DEFAULT_THINKING_POLICY`). `MiniMax-M3`
+honours it; `MiniMax-M3.1-Flash` always thinks and answers HTTP 400 to
+`thinking.type="disabled"` (live probe 20.10). The upstream provider
+(`rob_box_llm.providers.minimax.apply_model_thinking`) turns "off" into the
+lowest `reasoning_effort` for such a model; a turn that is allowed to think
+(`extra={"thinking": None}`) sends no depth and gets the model default
+(`max` on Flash). Reasoning arrives in a separate `reasoning_content` field and
+never reaches the spoken text. To re-check a model change against the real API:
+`scripts/research/minimax_model_compat_probe.py`.
 
 ## Error handling
 

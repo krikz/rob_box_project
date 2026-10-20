@@ -23,7 +23,7 @@ and `docs/refactoring-plan.md`.
 |----------|--------|---------------|------------|--------|----------|
 | `DeepSeekProvider` | `deepseek` | `deepseek-chat` | `https://api.deepseek.com/v1` | ❌ | Production default for dialogue / Telegram (P0) |
 | `MiMoProvider` | `mimo` | `MiMo-7B` | `https://api.xiaomimimo.com/v1` | ❌ | Xiaomi MiMo opt-in |
-| **`MiniMaxProvider`** | **`minimax`** | **`MiniMax-M3`** | **`https://api.minimax.io/v1`** | **✅** | **Opt-in: text + tools + vision (PR #907, M0+M1+M4)** |
+| **`MiniMaxProvider`** | **`minimax`** | **`MiniMax-M3.1-Flash`** | **`https://api.minimax.io/v1`** | **✅** | **Opt-in: text + tools + vision (PR #907, M0+M1+M4)** |
 | `FakeLLMProvider` | `fake` | — | — | configurable | In-memory test stand-in |
 
 > **MiniMax ≠ Xiaomi MiMo.** Despite the visual similarity, these are
@@ -59,7 +59,7 @@ resp = await provider.complete(
         ImagePart(source=Path("/tmp/frame.jpg").read_bytes(),
                   media_type="image/jpeg", detail="low"),
     ))],
-    settings=LLMSettings(model="MiniMax-M3"),
+    settings=LLMSettings(model="MiniMax-M3.1-Flash"),
 )
 ```
 
