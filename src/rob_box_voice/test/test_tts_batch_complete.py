@@ -8,7 +8,7 @@ Pure-Python tests that exercise:
    single-chunk path (back-compat).
 2. ``speak_helpers.split_into_chunks`` is the chunker ``dialogue_node``
    uses to decide whether a turn is single- vs multi-chunk.
-3. (снято в ADR-0150 PR-3: ``EffectAwaiterRegistry.register_tts`` без
+3. (снято в ADR-0150 PR-3: регистратор awaiter-ов ``EffectAwaiterRegistry`` без
    вызывающих удалён, его тест вместе с ним).
 
 The tests do not spin up ROS — they import the helper module directly and
