@@ -33,7 +33,7 @@ class RobboxPhraseGenerator:
         """
         Args:
             api_key: DeepSeek API key
-            master_prompt_path: Путь к master_prompt.txt
+            master_prompt_path: Путь к master_prompt_compact.txt
         """
         self.client = OpenAI(
             api_key=api_key,
@@ -298,21 +298,21 @@ Examples:
   # Generate 200 questions (recommended for fine-tuning)
   python3 generate_phrases_deepseek.py \\
     --api-key sk-xxx \\
-    --master-prompt ../prompts/master_prompt.txt \\
+    --master-prompt ../prompts/master_prompt_compact.txt \\
     --output expanded_sentences_deepseek.txt \\
     --num-questions 200
 
   # Generate 1000 questions for full training
   python3 generate_phrases_deepseek.py \\
     --api-key sk-xxx \\
-    --master-prompt ../prompts/master_prompt.txt \\
+    --master-prompt ../prompts/master_prompt_compact.txt \\
     --output full_dataset_deepseek.txt \\
     --num-questions 1000
 
   # Save Q&A pairs for reference
   python3 generate_phrases_deepseek.py \\
     --api-key sk-xxx \\
-    --master-prompt ../prompts/master_prompt.txt \\
+    --master-prompt ../prompts/master_prompt_compact.txt \\
     --output dataset.txt \\
     --save-qa qa_pairs.json
 
@@ -331,8 +331,8 @@ Get API key:
 
     parser.add_argument(
         "--master-prompt",
-        default="../prompts/master_prompt.txt",
-        help="Path to master_prompt.txt"
+        default="../prompts/master_prompt_compact.txt",
+        help="Path to master_prompt_compact.txt"
     )
 
     parser.add_argument(
@@ -376,7 +376,7 @@ Get API key:
     master_prompt_path = Path(args.master_prompt)
     if not master_prompt_path.exists():
         print(f"❌ Master prompt not found: {master_prompt_path}")
-        print("\nExpected location: src/rob_box_voice/prompts/master_prompt.txt")
+        print("\nExpected location: src/rob_box_voice/prompts/master_prompt_compact.txt")
         return 1
 
     print("=" * 60)

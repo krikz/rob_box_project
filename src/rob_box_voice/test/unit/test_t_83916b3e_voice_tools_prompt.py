@@ -25,7 +25,7 @@ LLM prompt that ``dialogue_node`` ships to the LLM every turn
    that path skipped the tool. Fix: add ``list_tts_voices()`` to the
    enumeration branch of RULE #VOICE itself.
 
-2. **n410** (``Робот, говори быстрее / тараторь``) — ``master_prompt.txt``
+2. **n410** (``Робот, говори быстрее / тараторь``) — ``master_prompt_compact.txt``
    documents ``set_speed`` (line 630), but ``master_prompt_compact.txt``
    dropped it during the W1-W7 compaction (commit 84ad604, "split
    master-prompt behind a flag"). The compact prompt only lists
@@ -124,7 +124,7 @@ def test_voice_settings_rule_teaches_set_speed_tool() -> None:
     """RULE #VOICE-SETTINGS должен явно перечислять ``set_speed(action)``.
 
     Без этого LLM, получив «говори быстрее», не знает что инструмент
-    существует. До фикса set_speed был только в master_prompt.txt, но
+    существует. До фикса set_speed был только в master_prompt_compact.txt, но
     не в master_prompt_compact.txt (default для dialogue_node.yaml).
     """
     block = _voice_settings_rule_block()

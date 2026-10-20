@@ -90,6 +90,21 @@ jobs:
         run: |
           python -m unittest scripts.lint.test_cc_budget -v
 
+      # ADR-0148 / ADR-0150 A8 (#3684): метка TEMP(ADR-0148 = заплатка по тексту ответа LLM. Число меток в src вне
+      # тестов не растёт (scripts/lint/temp_adr0148_baseline.json), цель — 0. Hard gate.
+      - name: TEMP(ADR-0148) guard
+        run: |
+          python scripts/lint/temp_adr0148_check.py
+
+      - name: TEMP(ADR-0148) guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_temp_adr0148_check -v
+
+      # ADR-0150 PR-0 (#3684): скрипты метрик/аудита честности по логу робота и эталонный набор фраз.
+      - name: Dialog metrics scripts self-tests
+        run: |
+          python -m pytest -q -o addopts= tests/unit/dialog
+
       # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
       # was "extracted" into more private methods of the SAME class (DialogueNode:
       # 4062 LOC/74 methods on 18.08 -> 9872 LOC/218 methods, WMC 1184). A class is

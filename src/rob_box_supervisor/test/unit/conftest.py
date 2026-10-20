@@ -11,7 +11,7 @@ CI-окружение (Debian без ROS) не имеет rclpy. Этот confte
 - heartbeat трип → ``/avatar/state`` обновляется.
 
 Паттерн скопирован из ``src/rob_box_voice/test/unit/greeting/conftest.py``
-(см. rob_box_voice/test_startup_greeting_node.py), но расширен под
+(см. rob_box_voice/test/ros_stubs.py), но расширен под
 rclpy.qos, std_srvs.srv и Zenoh-сессию.
 """
 

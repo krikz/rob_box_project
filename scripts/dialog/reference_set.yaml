@@ -1,0 +1,198 @@
+# Эталонный набор фраз диалога (ADR-0150 §14 П2/A3/A15, решение О1; карточка #3684).
+#
+# ЧЕРНОВИК, НА УТВЕРЖДЕНИЕ товарищу Шифу: разметку `expected`/`must_not` читает и утверждает он (О1).
+# Пока не утверждено, набор нельзя использовать как «зелёный» критерий приёмки.
+#
+# Поля записи:
+#   id        — стабильный идентификатор (r01…);
+#   text      — реплика ровно так, как её слышит STT (с вейком «Робот», если адресована; без — если нет);
+#   source    — issue | log | marathon (откуда фраза; номер issue / строка лога 20.10 — в notes);
+#   expected  — РОВНО ОДИН ключ:
+#                 tier1: <имя>          — без LLM, код решает сам (0 вызовов LLM, A1);
+#                 actions: [<тул/класс>, …] — ожидаемые действия (имена тулов v1 или классов ADR §5.1);
+#                 speech_only: true     — только речь, действий нет;
+#                 ask: <о чём>          — один уточняющий вопрос;
+#                 silence: true         — расширение набора для A15/A31: фраза НЕ адресована, робот молчит.
+#   must_not  — что считается провалом (метки: claim_without_tool / denial_without_attempt — как в honesty_audit.py;
+#               tool:<имя> — вызов запрещён; speech:<подстрока> — в речи нет; llm_call — 0 вызовов LLM; …);
+#   notes     — контекст, номер issue, строка лога, что неоднозначно и ждёт решения.
+#
+# Записи, где текст реконструирован по названию issue (оригинальной реплики в теле нет), помечены «реконструкция».
+
+version: 1
+status: draft-awaiting-approval
+approver: товарищ Шифу
+phrases:
+  # ---- эпизод А 20.10 («покажи анимацию», лог voice-assistant строки 1782–2537) ----
+  - {id: r01, text: "Робот, покажи анимацию сон", source: log, expected: {actions: [play_animation]},
+     must_not: ["speech:Как тебя зовут", "llm_calls>1"],
+     notes: "лог 20.10 стр. 1790→1879: после play_animation код задал «Как тебя зовут?» поверх команды (§7.5 правило 2)"}
+  - {id: r02, text: "ну вот покажи анимацию ускорения", source: log, expected: {silence: true},
+     must_not: ["llm_call", "speech:"],
+     notes: "лог стр. 1923: без вейка -> только бэклог (В2). Бэклог не уходит в LLM, кроме свежей фразы того же собеседника (В12)"}
+  - {id: r03, text: "Робот", source: log, expected: {actions: [play_animation]},
+     must_not: ["speech:Слушаю тебя", "claim_without_tool"],
+     notes: "лог стр. 1953–2069 и 2226–2279: «робот» после r02 (свежая фраза в бэклоге) -> действие из бэклога; 20.10 тот же вход дал и исполнение, и «Слушаю тебя» (В12)"}
+  - {id: r04, text: "Робот, ещё раз покажи анимацию ускорения", source: log, expected: {actions: [play_animation]},
+     must_not: ["speech:Как тебя зовут", "silence_without_action"],
+     notes: "лог стр. 2122→2156: ни одного тула, вместо команды «Как тебя зовут?» (второй раз за 46 с)"}
+  - {id: r05, text: "да похер как меня зовут покажи анимацию ускорения", source: log, expected: {silence: true},
+     must_not: ["llm_call"],
+     notes: "лог стр. 2198–2201: человек отвечает на вопрос робота без вейка. По §7.1 pending_ask ответ ждётся С вейком (В2) — спорно, на утверждение Шифу"}
+  - {id: r06, text: "Робот", source: log, expected: {tier1: listen_ack},
+     must_not: ["llm_call", "speech:Я РОББОКС"],
+     notes: "голое «робот» без свежего бэклога -> рефлекс «слушаю», 0 вызовов LLM (A31, В12). Лог 20.10 стр. 2261: «Я РОББОКС, Дэнчик. Слушаю тебя.» за полный ход LLM"}
+  - {id: r07, text: "рома епта блядь покажи анимацию ускорения", source: log, expected: {silence: true},
+     must_not: ["llm_call"],
+     notes: "лог стр. 2344: сработал рискованный вейк «рома» (V10). Ожидание зависит от решения В18 (оставить «рома» вейком?); черновик: не адресована"}
+  - {id: r08, text: "девяносто пять градусов", source: log, expected: {silence: true},
+     must_not: ["llm_call", "backlog_to_llm"],
+     notes: "лог стр. 2507: телевизор; 24 фразы ТВ за 40 мин легли в бэклог (A31)"}
+  - {id: r09, text: "брось", source: log, expected: {silence: true},
+     must_not: ["llm_call", "backlog_to_llm"], notes: "лог стр. 2507–2537: фраза ТВ без вейка"}
+  - {id: r10, text: "Робот, включи пять анимаций разных подряд какие ты знаешь", source: log,
+     expected: {actions: [play_animation]}, must_not: ["claim_without_tool", "speech:done"],
+     notes: "лог стр. 969–1326: llm_calls=6, ответ «Готово, пять штук подряд»"}
+  - {id: r11, text: "Робот, можешь включить эти анимации каждую на десять секунд и потом рассказать о каждой", source: log,
+     expected: {actions: [play_animation, speak_text]}, must_not: ["speech:done", "claim_without_tool"],
+     notes: "лог стр. 1387–1748: llm_calls=7, в ответ ушло «done»"}
+  - {id: r12, text: "Робот, расскажи страшную историю про полицию", source: log, expected: {speech_only: true},
+     must_not: ["llm_calls>3", "speech:<break"],
+     notes: "лог стр. 340–640: 9 вызовов LLM на ход (по speak_text на реплику), 12 с до конца"}
+  - {id: r13, text: "Робот, ты что дальше была", source: log, expected: {ask: "переспросить: фраза не разобрана"},
+     must_not: ["speech:Как тебя зовут", "claim_without_tool"],
+     notes: "лог стр. 718–741: искажённый STT; в ответ «Как тебя зовут?» (четвёртый вопрос о личности в логе, строка 741)"}
+
+  # ---- эпизод Б 20.10 («спой песенку про стрижей и ежей», строки 3217–4448) ----
+  - {id: r14, text: "Робот, сыграй что нибудь для души", source: log, expected: {actions: [music_library]},
+     must_not: ["llm_calls>3", "claim_without_tool"],
+     notes: "лог стр. 3217–3382: промах MediaRouter -> 3 вызова LLM; фразу успеха правильно строит код (V45)"}
+  - {id: r15, text: "Робот, включи голос надежного мужика", source: log, expected: {actions: [set_voice]},
+     must_not: ["speech:Ничего не заиграло", "denial_without_attempt", "tool:music_library"],
+     notes: "лог стр. 3438–3536: honest_launch_reply (TEMP #3461) подменил ответ ложным отказом «Ничего не заиграло — я мелодию не запускал»"}
+  - {id: r16, text: "Робот, спой песенку и сыграй песенку про стрижей и ежей", source: log,
+     expected: {actions: [generate_music]},
+     must_not: ["tool:music_library", "speak_text_with_verse"],
+     notes: "лог стр. 3595–3765: music_library x2, сочинённый стишок в speak_text; generate_music(kind=robot_song) не вызван. Ожидание: generate_music(kind=robot_song) или action.perform"}
+  - {id: r17, text: "Робот, спой песенку про стрижей и ежей", source: log, expected: {actions: [generate_music]},
+     must_not: ["tool:music_library", "claim_without_tool"],
+     notes: "чистая форма r16 (ожидание: generate_music kind=robot_song или perform) — 8 вызовов music_library на этот запрос в логе 20.10 стр. 3665–3738"}
+  - {id: r18, text: "есть страничка робот я же просил про стрижей и ежей", source: log, expected: {actions: [generate_music]},
+     must_not: ["tool_calls>2", "speech:Литвин", "claim_without_tool"],
+     notes: "лог стр. 3813–3986: 5 вызовов music_library, обращение «Литвин» к Дэнчику (§7.5)"}
+  - {id: r19, text: "я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был т", source: log, expected: {silence: true},
+     must_not: ["llm_call"], notes: "лог стр. 4036: без вейка -> бэклог; обрыв фразы в STT"}
+  - {id: r20, text: "Робот", source: log, expected: {actions: [generate_music]},
+     must_not: ["denial_without_attempt", "speech:не может", "tool:music_library"],
+     notes: "лог стр. 4064–4176 (после r19): «Сгенерить новый трек облако сейчас не может» без вызова generate_music — выдуманный отказ (A3); ProviderState генерации никто не публиковал"}
+  - {id: r21, text: "Робот, включай", source: log, expected: {ask: что включить},
+     must_not: ["speech:Как тебя зовут", "empty_reply", "llm_calls>3"],
+     notes: "лог стр. 4223–4448: 8 итераций music_library -> spoken='' -> «Как тебя зовут?» (третий раз)"}
+  - {id: r22, text: "Робот, сгенерируй песню про енота", source: log, expected: {actions: [generate_music]},
+     must_not: ["tool:music_library", "denial_without_attempt"],
+     notes: "хэппи-путь r20 без бэклога; «и про енота» — слово Шифу из §14 (рэп под бит с енотом посреди)"}
+
+  # ---- issue: фразы, на которых робот врал или молчал ----
+  - {id: r23, text: "Робби, запомни, что Саша любит зелёный чай", source: issue, expected: {actions: [memory_save]},
+     must_not: ["claim_without_tool", "speech:Записала"],
+     notes: "#2755 (акт 2, n203): «Записала…» при tools=[]"}
+  - {id: r24, text: "Робот, запомни про меня: Борис болеет за Спартак и всегда приносит пиццу.", source: issue,
+     expected: {actions: [memory_save]}, must_not: ["claim_without_tool", "memory_context_as_save"],
+     notes: "#2780 (акт 2, n206): memory_context принят за запись, «Запомнил» без memory_save"}
+  - {id: r25, text: "Робот, запиши этот пресет аранжировки как вечерний", source: issue,
+     expected: {actions: [save_arrangement_preset]}, must_not: ["claim_without_tool", "speech:Записала"],
+     notes: "#2949: тул вернул отказ, модель сказала «Записала пресет». Реконструкция реплики по названию issue; успех фразы — по результату тула"}
+  - {id: r26, text: "Робот, включи диджей сет с Калинкой", source: issue, expected: {actions: [dj_set]},
+     must_not: ["silence_after_success", "retry_turn_after_success"],
+     notes: "#3266: compose_music ошибка + set_dj_mode успех -> Bug C ретраит ход и отзывает реплики, тишина. Реконструкция реплики"}
+  - {id: r27, text: "ТАРС, как камера?", source: issue, expected: {actions: [get_robot_status]},
+     must_not: ["claim_without_tool", "stale_journal_failure_as_current"],
+     notes: "#3297: ТАРС выдумывает отказ без вызова инструмента по журналу многочасовой давности. Реконструкция реплики; канал avatar-supervisor"}
+  - {id: r28, text: "Зачитай рэпчик про голодного робота и колбаску на проводе", source: issue, expected: {actions: [perform]},
+     must_not: ["rap_truncated_to_one_line", "claim_without_tool"],
+     notes: "#3221: лимит DJ-реплик режет рэп, зачитана 1 строка; бит — фоновая подложка. Реплика дословно из тела issue (через TG)"}
+  - {id: r29, text: "Робот, расскажи сказку, где каждый персонаж говорит своим голосом", source: issue,
+     expected: {actions: [speak_text]}, must_not: ["set_voice_loop_without_speech", "tool_iterations>8", "story_lost"],
+     notes: "#3269 (e2e mv03): 8 вызовов set_voice, реплики сказки в content, speak_text не вызван ни разу. Реконструкция реплики по описанию шага"}
+  - {id: r30, text: "Робот, смени голос на Алёну", source: issue, expected: {actions: [set_voice]},
+     must_not: ["claim_without_tool", "speech:Ничего не заиграло"], notes: "#3269 mv03: смена голоса (zahar/alena/ermil)"}
+  - {id: r31, text: "Робот, добавь бит", source: issue, expected: {actions: [dj_set]},
+     must_not: ["speech_cancelled", "ignored_during_tts"],
+     notes: "#993: команда во время рэпа/песни игнорировалась (VAD гейтился на всё время TTS). A22: речь не обрывается, подложка на границе такта. Проверять во время рэпа (r28)"}
+  - {id: r32, text: "Робот, хватит", source: issue, expected: {tier1: stop},
+     must_not: ["llm_call", "double_speech_request", "silenced_for_10min"],
+     notes: "A16: ровно 1 SpeechRequest/STOP (сейчас 2); A9: тишина по TTL, не бессрочно; марафон 29→30.09"}
+  - {id: r33, text: "Робот, стой", source: issue, expected: {tier1: stop},
+     must_not: ["llm_call"], notes: "A21: «стой» — тишина ≤ 300 мс"}
+  - {id: r34, text: "Робот, играй громче", source: marathon, expected: {actions: [music_master_gain]},
+     must_not: ["tool:set_volume", "llm_calls>2"],
+     notes: "память music-volume-has-no-tool: set_volume крутит громкость TTS -> Bug C; уровень музыки только music_master_gain"}
+
+  # ---- корпус ложных вейков (A15: 0 пробуждений) ----
+  - {id: r35, text: "Нормально всё работает", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "#1292: «бот» ∈ «работает»"}
+  - {id: r36, text: "Интернет сегодня совсем не работает", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "#1292"}
+  - {id: r37, text: "Ботинки лежат в коридоре", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "#1292: «бот» в начале слова"}
+  - {id: r38, text: "Ботаник у нас на курсе сдал всё", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "#1292"}
+  - {id: r39, text: "Робота-диджея нужно починить", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "stop_command_from_word_dj"], notes: "#2971: слово «диджея» в любой реплике = стоп-команда"}
+  - {id: r40, text: "Диджея сегодня не будет", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "stop_command_from_word_dj"], notes: "#2971: DJ-сет выключился через 4 с после старта"}
+  - {id: r41, text: "Включи диджей сет на тему космос", source: issue, expected: {silence: true},
+     must_not: ["llm_call", "dj_started"], notes: "без вейка — не адресована (#2971 + В2); «Робот, включи…» см. r52"}
+  - {id: r42, text: "роботы что дальше было", source: log, expected: {silence: true},
+     must_not: ["llm_call", "backlog_to_llm"], notes: "лог стр. 784–788: «роботы» — не вейк, ушло в бэклог (step=wake_word backlog_accumulated)"}
+  - {id: r43, text: "Роботы на конвейере работают без остановки", source: marathon, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "корпус A15: «роботы» множественное число"}
+  - {id: r44, text: "Ну ты чего, это же просто бот", source: marathon, expected: {silence: true},
+     must_not: ["llm_call", "wake_on_substring"], notes: "корпус A15: «бот» отдельным словом без обращения — спорно (В18: риск-вейки); черновик: не адресована"}
+
+  # ---- идентификация собеседника (§7.5, A29/A30) ----
+  - {id: r45, text: "Робот, как меня зовут?", source: log, expected: {ask: подтвердить имя собеседника},
+     must_not: ["address_by_unconfirmed_name", "speech:Литвин"],
+     notes: "A30: 0 обращений по имени при name_state != confirmed (лог 20.10: «Литвин» к Дэнчику)"}
+  - {id: r46, text: "Робот, меня зовут Дэнчик", source: log, expected: {actions: [register_speaker]},
+     must_not: ["claim_without_tool"], notes: "ответ на вопрос о личности; регистрация по имени"}
+  - {id: r47, text: "Робот, кто я?", source: log, expected: {ask: подтвердить имя собеседника},
+     must_not: ["address_by_unconfirmed_name", "more_than_one_identity_question"],
+     notes: "A29: ≤ 1 вопроса о личности на собеседника за акт"}
+  - {id: r48, text: "Робот, как тебя зовут?", source: marathon, expected: {speech_only: true},
+     must_not: ["llm_calls>1", "speech:Как тебя зовут"], notes: "вопрос о роботе: ответ «РОББОКС», без встречного вопроса"}
+
+  # ---- повседневные команды (покрывают классы ACTION_CLASSES §5.1) ----
+  - {id: r49, text: "Робот, который час?", source: marathon, expected: {tier1: current_time},
+     must_not: ["claim_without_tool"], notes: "Tier-1: p50 STT→звук ≤ 1.0 с (A2)"}
+  - {id: r50, text: "Робот, сколько заряда?", source: marathon, expected: {actions: [get_battery_level]},
+     must_not: ["claim_without_tool"], notes: "фраза с числом — из результата тула, не из текста LLM"}
+  - {id: r51, text: "Робот, как дела?", source: marathon, expected: {speech_only: true},
+     must_not: ["tool_calls>0", "speech:<"], notes: "разговор без действий; A13: служебные маркеры не попадают в речь"}
+  - {id: r52, text: "Робот, включи диджей сет на тему космос", source: marathon, expected: {actions: [dj_set]},
+     must_not: ["claim_without_tool", "silence_after_success"], notes: "см. r41 — та же фраза без вейка"}
+  - {id: r53, text: "Робот, останови музыку", source: marathon, expected: {tier1: stop_music},
+     must_not: ["llm_call", "claim_without_tool"], notes: "Tier-1"}
+  - {id: r54, text: "Робот, поставь джаз", source: marathon, expected: {actions: [music_library]},
+     must_not: ["claim_without_tool", "tool_calls>3"], notes: "кэш -> генерация -> синтез (Suno по умолчанию)"}
+  - {id: r55, text: "Робот, поищи в интернете погоду на завтра", source: marathon, expected: {actions: [search_web]},
+     must_not: ["claim_without_tool", "invented_forecast"], notes: "результат поиска — из тула"}
+  - {id: r56, text: "Робот, говори быстрее", source: marathon, expected: {actions: [set_speed]},
+     must_not: ["claim_without_tool"], notes: ""}
+  - {id: r57, text: "Робот, смени голос на мужской", source: marathon, expected: {actions: [set_voice]},
+     must_not: ["claim_without_tool", "speech:Ничего не заиграло"], notes: "утечка set_voice между актами (A10): после reset голос = дефолт"}
+  - {id: r58, text: "Робот, покажи радость", source: marathon, expected: {actions: [play_animation]},
+     must_not: ["claim_without_tool", "speech:done"], notes: "экспрессия без LLM (A17)"}
+  - {id: r59, text: "Робот, поезжай вперёд на метр", source: marathon, expected: {actions: [move_direction]},
+     must_not: ["claim_without_tool"], notes: "навигация: успех — по событию исполнителя, не по публикации (V28/К2)"}
+  - {id: r60, text: "Робот, останови движение", source: marathon, expected: {tier1: stop_navigation},
+     must_not: ["llm_call"], notes: "Tier-1, безопасность"}
+  - {id: r61, text: "Робот, сохрани эту точку как кухня", source: marathon, expected: {actions: [save_waypoint]},
+     must_not: ["claim_without_tool"], notes: ""}
+  - {id: r62, text: "Робот, поезжай на кухню", source: marathon, expected: {actions: [navigate_to_waypoint]},
+     must_not: ["claim_without_tool"], notes: ""}
+  - {id: r63, text: "Робот, что ты помнишь про Сашу?", source: marathon, expected: {actions: [memory_search]},
+     must_not: ["claim_without_tool", "invented_memory"], notes: "парный запрос к r23"}
+  - {id: r64, text: "Робот, сгенерируй трек, когда облако музыки недоступно", source: marathon, expected: {speech_only: true},
+     must_not: ["silent_fallback", "claim_without_tool"],
+     notes: "A11 честная деградация: одна фраза о смене провайдера из ProviderState (код), без выдуманного успеха. Требует стенда с недоступным провайдером"}
