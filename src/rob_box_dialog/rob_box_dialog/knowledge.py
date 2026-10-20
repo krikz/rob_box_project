@@ -211,6 +211,10 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
 })
+#: Короткие ответы на вопросы робота («выключить и зачитать?», «это ты, Вася?», «верно?»): STT не отклоняет их как
+#: «слишком короткую фразу» (порог ``min_text_chars``). Сравнение - по нормализованной форме (нижний регистр, без
+#: пунктуации): «Да.» = «да». Единственная таблица; мусор («э», «ммм») в неё не входит.
+SHORT_ANSWERS: Tuple[str, ...] = ("да", "нет", "не", "ага", "угу", "ок", "ладно", "стоп")
 #: Виды провайдеров (``ProviderState.kind``, ADR §8): ``music_gen`` - генерация музыки (KIE/Suno, ADR-0158).
 PROVIDER_KINDS: Tuple[str, ...] = ("llm", "stt", "tts", "music_gen")
 #: Классы здоровья провайдера (``ProviderState.health``). Единственная таблица: ``degraded`` - ещё пробуем (лимит

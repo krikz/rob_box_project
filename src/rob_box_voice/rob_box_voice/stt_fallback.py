@@ -439,13 +439,29 @@ class STTAttempt:
 
 
 def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS) -> bool:
-    """Слишком короткая фраза — отклонить.
+    """Фраза непригодна как реплика человека - отклонить («не расслышал»). Единый гейт для ВСЕХ провайдеров.
 
-    ``min_chars`` — порог после ``strip()``. Принимаем None как короткую фразу.
+    1. Короткая: ``min_chars`` считается по буквам и цифрам, а не по длине строки. Пунктуацию добавляет сам
+       провайдер (MiniMax возвращает «Да.» на «да»): с ней двухбуквенный мусор проходил порог 3 (#3724). Ответы
+       из ``knowledge.SHORT_ANSWERS`` («да», «нет», «ага», «ок»...) порог не касается - робот сам задаёт вопросы
+       да/нет, и на develop голое «да» отклонялось (2 символа < 3), проходило лишь «Да.» из-за точки.
+    2. Не по-русски: больше 10% букв вне кириллицы и латиницы (иероглифы, деванагари) - мусор распознавания, а
+       не речь (MiniMax на односложный звук вернул «係啊。», и stt_node отдал его личности, #3724).
+
+    Принимаем None как короткую фразу.
     """
     if text is None:
         return True
-    return len(text.strip()) < min_chars
+    from rob_box_dialog.knowledge import SHORT_ANSWERS  # noqa: PLC0415 - единственная таблица ответов да/нет
+    from .tts_text_guard import should_skip  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+
+    if should_skip(text):
+        return True
+    normalized = " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
+    if normalized in SHORT_ANSWERS:
+        return False
+    letters = normalized.replace(" ", "")
+    return len(letters) < min_chars or len(set(letters)) == 1  # «э», «ммм», «ааа» - междометия, не речь
 
 
 def _measure(
