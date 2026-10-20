@@ -301,9 +301,12 @@ def test_total_service_count_matches_known_inventory() -> None:
     total = len(all_services)
     # Было 17, стало 16: voice-resources-init удалён вместе с образом.
     # ADR-0159 PR-2b: voice-assistant, supercollider, voice-action-server уехали
-    # на Sound Pi → на Vision 13. Допускаем ±2 для будущих PR с обоснованным изменением.
-    assert 11 <= total <= 15, (
-        f"обнаружено {total} сервисов в compose, ожидалось ~13. "
+    # на Sound Pi → на Vision 13. ADR-0159 PR-7 (В9): avatar-arbiter, quest, telegram-bot
+    # тоже уехали на Sound Pi → на Vision 9 (zenoh-router, oak-d, led-matrix, ceiling-camera,
+    # cadvisor, promtail, ollama, vision-hailo, vision-face). Допускаем ±2 для будущих PR с
+    # обоснованным изменением.
+    assert 7 <= total <= 11, (
+        f"обнаружено {total} сервисов в compose, ожидалось ~9. "
         f"Сервисы: {sorted(all_services.keys())}. "
         f"Если это намеренное изменение — обновите этот guard."
     )

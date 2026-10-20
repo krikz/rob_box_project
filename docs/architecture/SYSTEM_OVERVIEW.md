@@ -368,7 +368,7 @@ Vision Pi (10.1.1.11)
 │                /audio/tts
 │                /voice/dialogue/state
 └─ /rob_box_quest             # Meta Quest / WebXR telepresence (Phase 1+, ADR-0027)
-   ├─ WSS: wss://10.1.1.11:8443/quest (Caddy + self-signed TLS)
+   ├─ WSS: wss://10.1.1.12:8443/quest (Caddy + self-signed TLS)
    ├─ Publishes: cmd_vel_quest, cmd_vel_emergency
    └─ Subscribes: /camera/color/image_raw, /scan, /voice/dialogue/state
 ```
@@ -397,7 +397,7 @@ Vision Pi (10.1.1.11)
 > **Статус:** Proposed (дизайн-фаза, реализация отложена на Phase 2 #1576).
 > Полное решение — [ADR-0028](adr/0028-avatar-supervisor.md).
 
-Vision Pi обслуживает **внешних клиентов** аватара — Quest WebXR-оператор
+Sound Pi (до ADR-0159 PR-7 — Vision Pi) обслуживает **внешних клиентов** аватара — Quest WebXR-оператор
 (см. [ADR-0027](adr/0027-meta-quest-ar-control.md)) и Telegram-бот
 (`rob_box_telegram`). Без общей state-машины эти клиенты публикуют
 `cmd_vel_*` и TTS-команды параллельно, что приводит к race conditions
@@ -528,10 +528,11 @@ docker/
 | `ceiling-camera` | USB потолочная камера 720p, локализация | `zenoh-router-vision` |
 | `supercollider` | Audio synthesis server (JACK/ALSA); renardo-сэмплы приходят bind-mount'ом с хоста (Ресурсный пак, ADR-0125/ADR-0126), не из отдельного образа/init-контейнера | — |
 | `voice-assistant` | Vosk STT, TTS, LLM dialogue; Vosk/Silero — bind-mount `/opt/rob_box/models` (ADR-0125), не запечены в образ | `zenoh-router-vision`, `supercollider` |
-| `telegram-bot` | Telegram operator interface с LLM и голосом | `zenoh-router-vision` |
 | `ollama` *(profile: ai)* | Local LLM inference | — |
 | `cadvisor-vision` *(profile: monitoring)* | Container metrics → Prometheus | — |
 | `promtail-vision` *(profile: monitoring)* | Log shipping → Loki | — |
+
+> **Sound Pi (ADR-0159):** голосовой стек (`voice-assistant`, `supercollider`, `voice-action-server`), ТАРС (`supervisor`) и, с волны 2 (PR-7, решение Шифу 20.10), `avatar-arbiter`, `rob-box-quest`, `telegram-bot` живут в `docker/sound` (см. `docker/sound/README.md`). Строки `supercollider`/`voice-assistant` в таблице выше — прежнее место до PR-2b, будут переписаны вместе с остальным обзором.
 
 > **Примечание**: `docker/vision/apriltag/` — orphaned директория. AprilTag detection работает **внутри `oak-d` контейнера**. Отдельного `apriltag` сервиса нет.
 

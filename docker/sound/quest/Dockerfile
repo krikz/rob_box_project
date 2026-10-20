@@ -278,8 +278,8 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script
-COPY docker/vision/quest/Caddyfile       /etc/caddy/Caddyfile
-COPY docker/vision/scripts/quest/start_quest.sh /scripts/start_quest.sh
+COPY docker/sound/quest/Caddyfile        /etc/caddy/Caddyfile
+COPY docker/sound/scripts/quest/start_quest.sh /scripts/start_quest.sh
 RUN chmod +x /scripts/start_quest.sh
 
 # /etc/caddy — rob_box_base:ros2-zenoh (ros:humble-ros-base) его НЕ

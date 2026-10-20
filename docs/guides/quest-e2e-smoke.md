@@ -1,12 +1,12 @@
 # Quest e2e smoke — ручная методичка + скрипт-помощник
 
 > **Цель документа:** за один подход (~10 минут) проверить, что Phase 1.6
-> (Caddy + Docker-сервис `rob-box-quest` на Vision Pi) живёт, отдаёт
+> (Caddy + Docker-сервис `rob-box-quest` на Sound Pi (до ADR-0159 PR-7 — Vision Pi)) живёт, отдаёт
 > TLS, шлёт heartbeat, отдаёт видео + LiDAR, и что Quest на самом
 > деле может через него рулить.
 >
 > Это **ручной** checklist для Шифу / шисюна после `docker compose up
-> quest` на Vision Pi. Для автоматического smoke (DNS + TLS + WSS) есть
+> quest` на Sound Pi. Для автоматического smoke (DNS + TLS + WSS) есть
 > [`local_test/quest_smoke.sh`](../../local_test/quest_smoke.sh) — он
 > покрывает первые 4 пункта чеклиста и подъезжает к п. 5 (видео +
 > LiDAR latency). Пункты 6–8 требуют живого шлема и оператора.
@@ -34,15 +34,15 @@
 
 ## 1. Что понадобится
 
-- Vision Pi в той же Wi-Fi сети, что и Quest (для `https://quest.rob_box.local:8443`).
+- Sound Pi в той же Wi-Fi сети, что и Quest (для `https://quest.rob_box.local:8443`).
 - Quest 2/3/Pro, **Developer Mode** включён + ADB-доступ (для импорта self-signed cert).
-- Dev-машина с доступом к Vision Pi по SSH (`ros2@10.1.1.21`) — для проверки `docker logs`.
+- Dev-машина с доступом к Sound Pi по SSH (`ros2@10.1.1.22`) — для проверки `docker logs`.
 - (Опционально) `local_test/quest_smoke.sh` — должен быть уже в репо.
 
 Проверить, что Docker-стек Quest жив:
 
 ```bash
-ssh ros2@10.1.1.21
+ssh ros2@10.1.1.22
 docker ps --filter name=rob-box-quest --filter name=zenoh-router
 # Ожидаемо: 2+ контейнера в state Up+healthy.
 ```
@@ -52,7 +52,7 @@ docker ps --filter name=rob-box-quest --filter name=zenoh-router
 ## 2. Шаг 0 — `docker compose up quest` жив
 
 ```bash
-ssh ros2@10.1.1.21
+ssh ros2@10.1.1.22
 docker logs --tail=50 rob-box-quest 2>&1 | head -80
 ```
 
@@ -86,7 +86,7 @@ cd /home/builder/hermes-share/rob_box_project   # или где у тебя work
 rob_box_quest smoke report
   section          status  detail
   ---------------- ------  ----------------------------------------
-  dns              PASS             quest.rob_box.local → 10.1.1.11
+  dns              PASS             quest.rob_box.local → 10.1.1.12
   tls              PASS             subject=CN = quest.rob_box.local; SAN DNS=['quest.rob_box.local']; expires in 363d
   healthz          PASS             status=ok, sessions_active=0, version=0.1.0
   wss_handshake    PASS             WELCOME received (session_id=…)
@@ -102,7 +102,7 @@ EXIT=0
 
 | Секция FAIL   | Скорее всего                                     | Как чинить |
 |---------------|--------------------------------------------------|------------|
-| `dns`         | Vision Pi не в DNS, или firewall блокирует UDP/53 | Добавить запись в роутер или `/etc/hosts` на Quest + dev |
+| `dns`         | Sound Pi не в DNS, или firewall блокирует UDP/53 | Добавить запись в роутер или `/etc/hosts` на Quest + dev |
 | `tls`         | `openssl x509` не находит `DNS:quest.rob_box.local` в SAN | Перегенерировать cert через `start_quest.sh` (проверь `addext subjectAltName=...`) |
 | `healthz`     | Caddy не проксирует → aiohttp                     | Проверь `Caddyfile` (`reverse_proxy localhost:8765`) |
 | `wss_handshake` | Неверный PIN, или aiohttp не стартовал          | Свежий PIN в `docker logs rob-box-quest` |
@@ -118,9 +118,9 @@ EXIT=0
 > перегенерирует и придётся повторить.
 
 ```bash
-# С dev-машины (Vision Pi в той же сети):
-scp ros2@10.1.1.21:/certs/selfsigned.crt ~/Downloads/quest-rob_box-local.crt
-# (или с Vision Pi: docker cp rob-box-quest:/certs/selfsigned.crt ~/Downloads/)
+# С dev-машины (Sound Pi в той же сети):
+scp ros2@10.1.1.22:/certs/selfsigned.crt ~/Downloads/quest-rob_box-local.crt
+# (или с Sound Pi: docker cp rob-box-quest:/certs/selfsigned.crt ~/Downloads/)
 
 adb push ~/Downloads/quest-rob_box-local.crt /sdcard/Download/
 
@@ -166,12 +166,12 @@ Quest-сцене. Ориентир — **≤ 200 ms** (meta-quest-api.md §7).
 
 Альтернативный замер (без человека):
 
-1. На Vision Pi: `date +%s.%N` перед вспышкой лазерной указки в камеру.
+1. На Sound Pi: `date +%s.%N` перед вспышкой лазерной указки в камеру.
 2. В Quest: `date +%s.%N` по появлению пятна на сцене.
 3. Разница = latency.
 
 Если > 200 ms — проверить `flush_interval -1` в Caddyfile
-(см. `docker/vision/quest/Caddyfile` §reverse_proxy).
+(см. `docker/sound/quest/Caddyfile` §reverse_proxy).
 
 ---
 

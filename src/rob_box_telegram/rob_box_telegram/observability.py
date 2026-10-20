@@ -2,7 +2,7 @@
 """Observability — Prometheus metrics for the Telegram bot (issue #1160).
 
 Lёгкий автономный аналог ``rob_box_voice.observability``: telegram-bot —
-отдельный контейнер (см. ``docker/vision/telegram_bot/Dockerfile``), он
+отдельный контейнер (см. ``docker/sound/telegram_bot/Dockerfile``), он
 не должен тянуть ``rob_box_voice``. Здесь только то, что нужно для
 ``telegram_message_total``.
 

@@ -564,7 +564,8 @@ jobs:
 
       # ==================== SOUND PI DEPLOYMENT (ADR-0159) ====================
       # Третий узел: voice-assistant, supercollider, voice-action-server,
-      # avatar-supervisor, zenoh-router-sound (+ cadvisor/promtail, profile
+      # avatar-supervisor, zenoh-router-sound и (волна 2, PR-7, В9) avatar-arbiter,
+      # rob-box-quest, telegram-bot (+ cadvisor/promtail, profile
       # monitoring; sensor-bridge, profile sensors, по умолчанию выключен).
       # Порядок узлов — ADR-0159 §3.4: Vision → Sound → Main. Шаги — по образцу
       # Vision Pi; намеренно НЕ скопированы «Ensure systemd unit» (ADR-0159 §2.5:
@@ -591,7 +592,8 @@ jobs:
           done
 
       # docker/sound/.env.secrets (MIMO/DEEPSEEK/YANDEX/KIE/MINIMAX-ключи для
-      # voice-assistant и avatar-supervisor, compose `env_file`) лежит ТОЛЬКО на
+      # voice-assistant и avatar-supervisor, TELEGRAM_*-ключи для telegram-bot,
+      # compose `env_file`) лежит ТОЛЬКО на
       # хосте — как docker/vision/.env.secrets: деплой секретов не копирует, в
       # репозитории только .env.secrets.template. Без файла `compose up` падает
       # на env_file, а с пустым — голосовой стек молча стартует без ключей
@@ -1072,7 +1074,7 @@ jobs:
           FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=sound \
-          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant voice-action-server avatar-supervisor" \
+          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant voice-action-server avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
             bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
 
           touch sound_status_summary.txt

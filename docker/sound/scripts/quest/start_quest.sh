@@ -1,9 +1,9 @@
 #!/bin/bash
-# Startup script для rob_box_quest (Vision Pi, ADR-0027, Phase 1.6)
+# Startup script для rob_box_quest (Sound Pi с ADR-0159 PR-7; ADR-0027, Phase 1.6)
 #
 # Ответственности:
 #   1. Генерим self-signed TLS-сертификат, если отсутствует (DNS=quest.rob_box.local,
-#      IP=10.1.1.11 — оба в SAN через subjectAltName).
+#      IP=${QUEST_IP}, по умолчанию 10.1.1.12 — оба в SAN через subjectAltName).
 #   2. Ждём Zenoh router (нужен для ROS2-стыка WSS-сервера).
 #   3. Запускаем `caddy run` и `ros2 run rob_box_quest quest_node` оба в фоне.
 #   4. PID 1 = этот shell; корректный shutdown на SIGTERM/SIGINT через trap
@@ -43,7 +43,7 @@ CERT_DIR="${CERT_DIR:-/certs}"
 CERT_FILE="${CERT_DIR}/selfsigned.crt"
 KEY_FILE="${CERT_DIR}/selfsigned.key"
 QUEST_HOST="${QUEST_HOST:-quest.rob_box.local}"
-QUEST_IP="${QUEST_IP:-10.1.1.11}"
+QUEST_IP="${QUEST_IP:-10.1.1.12}"
 CERT_DAYS="${CERT_DAYS:-365}"
 
 mkdir -p "${CERT_DIR}"

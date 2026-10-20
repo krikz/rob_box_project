@@ -5,7 +5,7 @@
 > fix 2026-09-08, см. §13 «Amendment history»).
 >
 > Описывает **точный** wire-протокол между веб-клиентом (браузер desktop/планшет
-> или Meta Quest WebXR) и сервисом `rob_box_quest` (Vision Pi). Это reference
+> или Meta Quest WebXR) и сервисом `rob_box_quest` (Sound Pi с ADR-0159 PR-7, раньше Vision Pi). Это reference
 > для реализации и для клиента; **обновляется при каждом изменении wire-протокола**.
 > Каждое значимое изменение фиксируется amendment-ом (см. §13).
 >
@@ -17,11 +17,11 @@
 ## 1. Транспорт
 
 - **Сетевой уровень:** HTTPS + WSS (WebSocket over TLS 1.3).
-- **Endpoint:** `wss://10.1.1.11:8443/quest` (single endpoint, multiplexed).
+- **Endpoint:** `wss://10.1.1.12:8443/quest` (single endpoint, multiplexed).
 - **Альтернативный HTTP-endpoint** (для healthcheck и pre-auth UI):
-  `https://10.1.1.11:8443/healthz`, `https://10.1.1.11:8443/`.
+  `https://10.1.1.12:8443/healthz`, `https://10.1.1.12:8443/`.
 - **TLS:** self-signed сертификат на Caddy (см. ADR-0027 §4.1). CN =
-  `quest.rob_box.local`, SAN = `10.1.1.11`. Импортируется в Meta Quest
+  `quest.rob_box.local`, SAN = `10.1.1.12` (сертификат, выпущенный до PR-7, несёт `10.1.1.11`; имя `quest.rob_box.local` в нём то же). Импортируется в Meta Quest
   через Settings → Privacy → Security → Trusted Sources (один раз).
 - **Auth:** 6-значный PIN, передаётся в `HELLO`-фрейме.
 - **Subprotocol:** `robbox-quest-v1` обязателен для Phase 1 (Quest →

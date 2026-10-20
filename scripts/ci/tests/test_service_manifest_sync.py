@@ -383,7 +383,7 @@ def test_image_versions_file_has_a_field_for_every_manifest_service(pi):
 def test_compose_tag_vars_of_manifest_images_are_declared_for_that_pi(compose_pi):
     """Compose Pi ссылается на `${X_TAG:-…}` образа из манифеста — поле X_TAG
     обязано быть в docker/<этот Pi>/.image-versions.*, даже если образ собирает
-    другой Pi (avatar-arbiter на Vision берёт supervisor из Sound-сборки).
+    другой Pi (до ADR-0159 PR-7 avatar-arbiter на Vision брал supervisor из Sound-сборки).
     Иначе deploy этого Pi молча катит плавающий IMAGE_TAG, а не SHA-тег сборки.
     """
     all_vars = {

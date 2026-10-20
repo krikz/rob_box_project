@@ -3,8 +3,8 @@
   "stability": "stable",
   "description": "Deploy smoke-test: rob-box-quest после фикса #2089 не должен уходить в Restarting loop. Проверяет что ModuleNotFoundError 'rob_box_supervisor_msgs' исчез (supervisor_msgs теперь COPY'ится в quest image и собирается через colcon build). Контракт: docker ps показывает 'Up ... (healthy)' без 'Restarting'. Голос не нужен — это чистый deploy-smoke.",
   "scope": "deploy",
-  "robot_host": "10.1.1.21",
-  "robot_ssh": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21",
+  "robot_host": "10.1.1.22",
+  "robot_ssh": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.22",
   "image": "10.1.1.249:5000/krikz/rob_box:quest-humble-dev",
   "compose_service": "rob-box-quest",
   "acceptance": {
@@ -15,7 +15,7 @@
     {
       "label": "pull_new_image",
       "description": "Загрузить свежий quest image с registry билдовой машины 10.1.1.249",
-      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker pull 10.1.1.249:5000/krikz/rob_box:quest-humble-dev'",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 'docker pull 10.1.1.249:5000/krikz/rob_box:quest-humble-dev'",
       "timeout_seconds": 300,
       "patterns": [
         "Status: Downloaded newer image",
@@ -25,7 +25,7 @@
     {
       "label": "restart_quest_container",
       "description": "Перезапустить rob-box-quest через docker compose",
-      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'cd ~/robbox && docker compose restart rob-box-quest'",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 'cd ~/robbox && docker compose restart rob-box-quest'",
       "timeout_seconds": 60,
       "patterns": [
         "Container .* Restarting",
@@ -41,7 +41,7 @@
     {
       "label": "check_no_restart_loop",
       "description": "Главная проверка acceptance: docker ps должен показать Up/healthy, без Restarting",
-      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker ps --filter name=rob-box-quest --format \"{{.Names}}\\t{{.Status}}\"'",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 'docker ps --filter name=rob-box-quest --format \"{{.Names}}\\t{{.Status}}\"'",
       "timeout_seconds": 30,
       "patterns": [
         "rob-box-quest\\s+Up\\s+\\d+\\s+second"
@@ -53,7 +53,7 @@
     {
       "label": "check_no_module_not_found",
       "description": "Убедиться что в логе нет ModuleNotFoundError rob_box_supervisor_msgs",
-      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.21 'docker logs --since 1m rob-box-quest 2>&1 | grep -E \"ModuleNotFoundError|ros2run.*Process exited\" || echo NO_ERROR_FOUND'",
+      "command": "sshpass -p open ssh -o StrictHostKeyChecking=no ros2@10.1.1.22 'docker logs --since 1m rob-box-quest 2>&1 | grep -E \"ModuleNotFoundError|ros2run.*Process exited\" || echo NO_ERROR_FOUND'",
       "timeout_seconds": 30,
       "patterns": [
         "NO_ERROR_FOUND"

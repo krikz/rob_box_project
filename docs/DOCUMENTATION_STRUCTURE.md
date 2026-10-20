@@ -32,7 +32,7 @@
 | Пакет | Pi | Назначение |
 |-------|-----|-----------|
 | `rob_box_voice` | Vision | STT, TTS, диалог, голосовое управление |
-| `rob_box_telegram` | Vision | Telegram-бот, LLM-интерфейс оператора |
+| `rob_box_telegram` | Sound | Telegram-бот, LLM-интерфейс оператора (Sound Pi с ADR-0159 PR-7) |
 | `rob_box_animations` | Vision | LED-анимации (381 NeoPixel) |
 | `led_matrix_driver` | Vision | Низкоуровневый драйвер LED-матрицы |
 | `rob_box_perception` | Main | Health monitor, context aggregator |

@@ -37,12 +37,12 @@ scrape_configs:
           host: 'vision-pi'
           service: 'voice-assistant'
 
-  # Issue #1160 — telegram-bot metrics (Vision Pi)
+  # Issue #1160 — telegram-bot metrics (Sound Pi с ADR-0159 PR-7; до этого Vision Pi)
   - job_name: 'telegram-bot'
     static_configs:
-      - targets: ['10.1.1.11:9101']
+      - targets: ['10.1.1.12:9101']
         labels:
-          host: 'vision-pi'
+          host: 'sound-pi'
           service: 'telegram-bot'
 
   # Issue #1160 — supercollider music metrics (Vision Pi, когда появится)

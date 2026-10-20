@@ -1,9 +1,11 @@
 # Sound Pi image versions — staging (develop branch)
 # Managed automatically by CI (L-Build Single Service workflow)
 # supercollider тега здесь нет: compose берёт supercollider-${IMAGE_TAG} (манифест: image_versions: false).
+# quest тега здесь нет (манифест: image_versions: false) — compose берёт quest-${ROS_DISTRO}-${IMAGE_TAG}.
 # PERCEPTION_TAG — для sensor-bridge (profile sensors); образ perception собирает Main-сборка.
 
 VOICE_ASSISTANT_TAG=dev-2ed4c89
+TELEGRAM_BOT_TAG=dev-2ed4c89
 SUPERVISOR_TAG=dev-2ed4c89
 # ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
 PERCEPTION_TAG=dev-2ed4c89

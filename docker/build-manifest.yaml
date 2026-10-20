@@ -91,43 +91,6 @@ pis:
           ros_distro: true
         image_versions: CEILING_CAMERA_TAG
 
-      telegram-bot:
-        dockerfile: docker/vision/telegram_bot/Dockerfile
-        build_context: "."
-        base:
-          family: ros2-zenoh
-        source_hash:
-          arg: SOURCE_HASH
-          groups:
-            - paths:
-                - src/rob_box_telegram/rob_box_telegram
-                - src/rob_box_core
-              extensions: [".py"]
-        tag:
-          ros_distro: true
-        image_versions: TELEGRAM_BOT_TAG
-
-      quest:
-        dockerfile: docker/vision/quest/Dockerfile
-        build_context: "."
-        base:
-          family: ros2-zenoh
-        source_hash:
-          arg: SOURCE_HASH
-          groups:
-            - paths: [src/rob_box_quest/rob_box_quest]
-              extensions: [".py"]
-            - paths: [src/rob_box_quest/webxr_client]
-              extensions: [".ts", ".json", ".html"]
-            - paths: [src/rob_box_core]
-              extensions: [".py"]
-        tag:
-          ros_distro: true
-        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
-        # Без комментария в коде, объясняющего исключение — причина не
-        # найдена (план §1.3, §11, открытый вопрос №1).
-        image_versions: false
-
       vision-hailo:
         dockerfile: docker/vision/vision-hailo/Dockerfile
         build_context: "."
@@ -157,6 +120,8 @@ pis:
   # с Vision Pi: блоки перенесены без изменений (PR-2b), каталоги сборки —
   # в docker/sound/ (PR-3). Цепочка FROM целиком здесь, три волны:
   # voice-base + supercollider → voice-assistant → supervisor.
+  # Волна 2 (PR-7, В9, решение Шифу 20.10): telegram-bot и quest — тоже сюда;
+  # у них своя база (ros2-zenoh), к голосовой цепочке FROM они не относятся.
   # ---------------------------------------------------------------------
   sound:
     services:
@@ -216,6 +181,43 @@ pis:
         # tag_and_push/verify_in_registry объяснено комментарием.
         image_versions: false
 
+      telegram-bot:
+        dockerfile: docker/sound/telegram_bot/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths:
+                - src/rob_box_telegram/rob_box_telegram
+                - src/rob_box_core
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        image_versions: TELEGRAM_BOT_TAG
+
+      quest:
+        dockerfile: docker/sound/quest/Dockerfile
+        build_context: "."
+        base:
+          family: ros2-zenoh
+        source_hash:
+          arg: SOURCE_HASH
+          groups:
+            - paths: [src/rob_box_quest/rob_box_quest]
+              extensions: [".py"]
+            - paths: [src/rob_box_quest/webxr_client]
+              extensions: [".ts", ".json", ".html"]
+            - paths: [src/rob_box_core]
+              extensions: [".py"]
+        tag:
+          ros_distro: true
+        # НЕ в tag_and_push/verify_in_registry/.image-versions.dev сегодня.
+        # Без комментария в коде, объясняющего исключение — причина не
+        # найдена (план §1.3, §11, открытый вопрос №1).
+        image_versions: false
+
       supervisor:
         dockerfile: docker/sound/supervisor/Dockerfile
         build_context: "."
@@ -231,11 +233,11 @@ pis:
               extensions: [".py"]
         tag:
           ros_distro: true
-        # SHA-тег пишется в docker/sound И docker/vision .image-versions.*:
-        # образ запускают avatar-supervisor (Sound Pi) и avatar-arbiter
-        # (Vision Pi), оба через ${SUPERVISOR_TAG:-${IMAGE_TAG}} — поле объявлено
-        # в обоих файлах, scripts/ci/write-image-versions.sh пишет во все
-        # (ADR-0159 PR-3). До этого образ шёл только плавающим IMAGE_TAG.
+        # SHA-тег пишется в docker/sound/.image-versions.*: образ запускают
+        # avatar-supervisor и avatar-arbiter (оба на Sound Pi с PR-7, В9), оба
+        # через ${SUPERVISOR_TAG:-${IMAGE_TAG}}. До PR-7 арбитр жил на Vision Pi, и
+        # поле было объявлено в обоих файлах (ADR-0159 PR-3); write-image-versions.sh
+        # пишет во все файлы, где поле объявлено.
         image_versions: SUPERVISOR_TAG
 
   # ---------------------------------------------------------------------
@@ -330,7 +332,7 @@ pis:
           ros_distro: true
         image_versions: PERCEPTION_TAG
 
-# Итого: 18 сервисов (6 Vision + 4 Sound + 8 Main). "L-Build Single Service.yml"
+# Итого: 18 сервисов (4 Vision + 6 Sound + 8 Main). "L-Build Single Service.yml"
 # и base-образы (ros2-zenoh/depthai/pcl/rtabmap как базовые образы,
 # zenoh-router) сознательно вне области манифеста (план §11, открытый
 # вопрос №2).

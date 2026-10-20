@@ -12,7 +12,7 @@ name: "L: Build Single Service"
 # весь набор из ~11 сервисов ради одной правки (см. docs/guides/
 # SINGLE_SERVICE_BUILD.md — держи список сервисов там тоже синхронным).
 # Особое внимание: имя тега (IMAGE_NAME) должно совпадать с именем
-# компонента, которое ждёт deploy (docker/vision/docker-compose.yaml
+# компонента, которое ждёт deploy (docker/<pi>/docker-compose.yaml
 # image: ...:<component>-${ROS_DISTRO}-<tag>), а не с container_name —
 # разъедешься здесь и deploy молча возьмёт старый образ (см. quest:
 # container_name=rob-box-quest, но тег компонента — "quest").
@@ -63,13 +63,14 @@ on:
           - voice-assistant
           - supercollider
           - supervisor
+          # Волна 2 (PR-7, В9): telegram-bot и quest — Sound Pi
+          - telegram-bot
+          - quest
           # Vision Pi services
           - oak-d
           - led-matrix
           - ceiling-camera
-          - telegram-bot
           - apriltag
-          - quest
           - vision-hailo
           # zenoh-router здесь нет: compose берёт готовый eclipse/zenoh:1.6.2,
           # а docker/{main,vision}/zenoh-router/Dockerfile (rmw_zenohd, ни разу
@@ -246,6 +247,30 @@ jobs:
                   BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box:voice-assistant-${ROS_DISTRO}-${DOCKER_TAG}"
                   ;;
+                "telegram-bot"|"telegram_bot")
+                  SERVICE_NAME="telegram_bot"
+                  IMAGE_NAME="telegram-bot"
+                  DOCKERFILE="docker/sound/telegram_bot/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
+                  ;;
+                "quest")
+                  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль. Тег
+                  # компонента в реестре/деплое — "quest" (см.
+                  # docker/sound/docker-compose.yaml: image: ...:quest-${ROS_DISTRO}-...),
+                  # НЕ "rob-box-quest" (это только container_name). Разъедешься
+                  # в имени тега здесь — deploy молча возьмёт старый образ.
+                  #
+                  # ARCH-quest (#2278): Dockerfile наследует
+                  # rob_box_base:ros2-zenoh (FROM ${BASE_IMAGE}), НЕ
+                  # voice-assistant. База тянется из локального registry
+                  # (в ghcr тега ros2-zenoh-humble без -latest нет).
+                  SERVICE_NAME="quest"
+                  IMAGE_NAME="quest"
+                  DOCKERFILE="docker/sound/quest/Dockerfile"
+                  BUILD_CONTEXT="."
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
+                  ;;
                 *)
                   echo "❌ Unknown Sound Pi service: $SERVICE"
                   exit 1
@@ -281,30 +306,6 @@ jobs:
                   IMAGE_NAME="apriltag"
                   DOCKERFILE="docker/vision/apriltag/Dockerfile"
                   BUILD_CONTEXT="docker/vision"
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
-                  ;;
-                "telegram-bot"|"telegram_bot")
-                  SERVICE_NAME="telegram_bot"
-                  IMAGE_NAME="telegram-bot"
-                  DOCKERFILE="docker/vision/telegram_bot/Dockerfile"
-                  BUILD_CONTEXT="."
-                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
-                  ;;
-                "quest")
-                  # Phase 1.6 (ADR-0027): Meta Quest WebXR-консоль. Тег
-                  # компонента в реестре/деплое — "quest" (см.
-                  # docker/vision/docker-compose.yaml: image: ...:quest-${ROS_DISTRO}-...),
-                  # НЕ "rob-box-quest" (это только container_name). Разъедешься
-                  # в имени тега здесь — deploy молча возьмёт старый образ.
-                  #
-                  # ARCH-quest (#2278): Dockerfile наследует
-                  # rob_box_base:ros2-zenoh (FROM ${BASE_IMAGE}), НЕ
-                  # voice-assistant. База тянется из локального registry
-                  # (в ghcr тега ros2-zenoh-humble без -latest нет).
-                  SERVICE_NAME="quest"
-                  IMAGE_NAME="quest"
-                  DOCKERFILE="docker/vision/quest/Dockerfile"
-                  BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "vision-hailo"|"vision_hailo")
@@ -585,7 +586,7 @@ jobs:
           case "$SERVICE_NAME" in
             voice_assistant)       VERSION_VAR="VOICE_ASSISTANT_TAG" ;;
             telegram_bot)          VERSION_VAR="TELEGRAM_BOT_TAG" ;;
-            # supervisor: поле в docker/sound и docker/vision (avatar-arbiter) —
+            # supervisor: поле в docker/sound (avatar-supervisor и avatar-arbiter, PR-7) —
             # write-image-versions.sh пишет во все файлы, где оно объявлено.
             supervisor)            VERSION_VAR="SUPERVISOR_TAG" ;;
             oak-d)                 VERSION_VAR="OAK_D_TAG" ;;

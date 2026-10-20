@@ -41,11 +41,10 @@ logger = logging.getLogger(__name__)
 
 
 #: Filesystem location of the live face store inside the telegram-bot
-#: container. Same host directory (``./data/faces`` under
-#: ``docker/vision/``) is bind-mounted read-only into both
-#: ``vision-face`` (writer, :no-ro) and ``telegram-bot`` (reader,
-#: :ro) — see ``docker/vision/docker-compose.yaml``. Issue #3025 +
-#: ADR-0123 §4: the bot must never write here.
+#: container. ``vision-face`` (Vision Pi, writer) and ``telegram-bot``
+#: (reader, :ro, Sound Pi since ADR-0159 PR-7 — a copy of the store, not
+#: the live one until #3655) mount ``./data/faces`` under their own
+#: ``docker/<pi>/``. Issue #3025 + ADR-0123 §4: the bot must never write here.
 FACE_STORE_MOUNT = "/data/faces"
 
 

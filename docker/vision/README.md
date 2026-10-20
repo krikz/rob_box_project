@@ -2,6 +2,9 @@
 
 Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - обработка визуальных данных, лидара, голосового управления и анимаций.
 
+> **ADR-0159 (PR-7, волна 2, В9):** `avatar-arbiter`, `quest` и `telegram-bot` тоже переехали на Sound Pi
+> (решение Шифу 20.10: на Vision остаётся тяжёлое — камеры и распознавание лиц). Пункты 8–10 ниже — прежнее место.
+>
 > **ADR-0159 (PR-2b):** `voice-assistant`, `supercollider`, `voice-action-server` и `supervisor` (ТАРС, В8), а с ними
 > `config/{voice_assistant,audio,wake_words.yaml}` и `scripts/{voice_assistant,supercollider}`
 > переехали на Sound Pi — см. [`docker/sound`](../sound/docker-compose.yaml). Разделы ниже про голосовой
@@ -22,10 +25,10 @@ Docker compose инфраструктура для Vision Pi (Raspberry Pi 5) - 
 > ADR-0089 §3 touchpoint #6 (запуск через launch) — выполнен ADR-0110 (`vision_hailo.launch.py`). Downstream consumer `context_aggregator_node` → `/perception/context_update.vision_events_json` остаётся в scope отдельной задачи.
 
 7. **ceiling-camera** - USB-потолочная MJPEG-камера (720p, ceiling context для LLM)
-8. **supervisor** / **avatar-arbiter** - Avatar state machine + floor arbitration
-   (ADR-0028, ADR-0051)
-9. **quest** - WebXR-консоль для Meta Quest 3 (ADR-0027, ADR-0086)
-10. **telegram-bot** - операторский Telegram-интерфейс
+8. ~~**supervisor** / **avatar-arbiter**~~ - Avatar state machine + floor arbitration
+   (ADR-0028, ADR-0051) — на Sound Pi
+9. ~~**quest**~~ - WebXR-консоль для Meta Quest 3 (ADR-0027, ADR-0086) — на Sound Pi
+10. ~~**telegram-bot**~~ - операторский Telegram-интерфейс — на Sound Pi
 11. **supercollider** - SynthDef-сервер scsynth (renardo samples + synthdefs
     шарены с voice-assistant).
     Renardo-сэмплы (~600 МБ) больше НЕ едут отдельным образом

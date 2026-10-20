@@ -526,7 +526,10 @@ CRITICAL_EXCLUDE_BY_SCOPE = {
         # a real librtabmap_core crash) is still surfaced.
         r"rtabmap\.icp_odometry.*didn't receive imu newer than previous image/scan \(0\.0000 sec\)$",
     ],
-    "vision": [
+    # ADR-0159 PR-7 (В9): telegram-bot переехал на Sound Pi — его логи разбираются в
+    # scope "sound". Правило ниже раньше стояло в "vision" (там жил telegram-bot);
+    # перенесено, а не продублировано.
+    "sound": [
         # telegram_node start_polling transient (issue #1433 / deploy run
         # 32170854307, test round-147): on the first long-poll to
         # api.telegram.org the Vision Pi WiFi AP (10.1.1.1, see docs/adr/)
@@ -830,7 +833,11 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # surfaces to the operator.
         r"memory\.cpp:\d+::computetransform\(\) missing visual features",
     ],
-    "vision": [
+    # ADR-0159: voice-assistant/supercollider/supervisor и (PR-7, В9) telegram-bot
+    # живут на Sound Pi, их логи разбираются в scope "sound". Правила ниже раньше
+    # стояли в "vision" (там жили voice-assistant и telegram-bot) — перенесены,
+    # а не продублированы.
+    "sound": [
         # telegram_node /radio disabled echo (issue #2229, deploy run
         # 34300912847 09.09 / kanban t_8bf3e909): when the
         # `audio_common_msgs` python package is not installed in the
@@ -843,7 +850,7 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # (ADR-0018 "honest degradation": the chain is OFF, not
         # silently broken — the `publish_voice_audio_chunk` path
         # short-circuits on the `AudioData is None` guard and never
-        # crashes the bot loop). On the Vision+main test-rig the
+        # crashes the bot loop). On the test-rig (Sound Pi с ADR-0159 PR-7, раньше Vision Pi) the
         # /radio radio stack is intentionally absent (the
         # `audio_common_msgs` dependency ships in the deploy-time
         # overlay, not the test rig), so this WARN fires on every
@@ -858,11 +865,6 @@ WARNING_EXCLUDE_BY_SCOPE = {
         # bug (e.g. an unrelated ImportError mid-loop) keeps its
         # WARN severity.
         r"audio_common_msgs недоступен",
-    ],
-    # ADR-0159: voice-assistant/supercollider/supervisor живут на Sound Pi, их
-    # логи разбираются в scope "sound". Правило ниже раньше стояло в "vision"
-    # (там жил voice-assistant) — перенесено, а не продублировано.
-    "sound": [
         # audio_node HPFONOFF write (issue #1680, deploy round-244):
         # voice-assistant prints "[WARN] HPFONOFF: write_parameter вернул
         # False (устройство занято?). Используется дефолт firmware."

@@ -1491,7 +1491,7 @@ def test_extract_relevant_log_line_still_catches_rtabmap_real_critical_error() -
     assert "rtabmap" in line
 
 
-def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_vision() -> None:
+def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_sound() -> None:
     """Issue #2229 (deploy run 34300912847 09.09 / kanban t_8bf3e909).
 
     When the `audio_common_msgs` python package is not installed in
@@ -1506,7 +1506,7 @@ def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_v
     fires on every test deploy and would otherwise surface as a
     false `warning_log` finding → `DEPLOYMENT COMPLETED WITH
     ISSUES`. The exclusion must silence the literal
-    `audio_common_msgs недоступен` signature in the vision scope.
+    `audio_common_msgs недоступен` signature in the sound scope (ADR-0159 PR-7: telegram-bot on Sound Pi).
     """
     log_text = (
         "[telegram_node] [WARN] [1788918991.569701997]: "
@@ -1514,7 +1514,7 @@ def test_extract_relevant_log_line_ignores_telegram_audio_common_msgs_disabled_v
         "из Telegram публиковаться не будут"
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is None
 
@@ -1533,7 +1533,7 @@ def test_extract_relevant_log_line_still_catches_other_telegram_node_warnings() 
         "unknown command from chat 42: /foo_bar_baz, ignored"
     )
 
-    line = MODULE.extract_relevant_log_line(log_text, scope="vision", severity="warning")
+    line = MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
 
     assert line is not None
     assert "unknown command" in line

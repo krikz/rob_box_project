@@ -23,7 +23,7 @@ echo "=========================================="
 source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
 source /ws/install/setup.bash
 
-# Ждём Zenoh router (имя сервиса zenoh-router, container_name zenoh-router-vision)
+# Ждём Zenoh router (имя сервиса zenoh-router, container_name zenoh-router-sound)
 # арбитр не публикует /avatar/state до того, как Zenoh доступен — иначе
 # late-join snapshot теряется (transient_local /avatar/state).
 echo "Ожидание Zenoh router..."

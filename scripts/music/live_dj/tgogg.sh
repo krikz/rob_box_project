@@ -1,6 +1,6 @@
 #!/bin/bash
 # usage: TG_CHAT_ID=<chat> bash tgogg.sh <wav on host> "<caption>"
-# на Vision Pi; токен берётся из окружения контейнера telegram-bot. Моно не форсируем (без -ac 1).
+# на Sound Pi (там telegram-bot, с ADR-0159 PR-7); токен берётся из окружения контейнера telegram-bot. Моно не форсируем (без -ac 1).
 # Отправка — tg_send_voice.py: повторы при сетевой ошибке, токен в вывод не попадает,
 # exit != 0 если не отправилось.
 set -o pipefail
