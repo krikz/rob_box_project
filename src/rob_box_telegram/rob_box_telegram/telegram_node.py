@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, json, logging, os, re, threading, time, uuid
+import asyncio, json, logging, os, re, threading, time
 from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
@@ -36,6 +36,7 @@ from rob_box_core.avatar_command import (
     make_telegram_client_id,
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+from rob_box_core import speech_client
 from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
@@ -169,9 +170,6 @@ class TelegramNode(Node):
         # ADR-0150 PR-2: тот же типизированный топик, что у stt_node; источник
         # (telegram/operator) и chat_id - поля, а не префикс "[TG:id]" в тексте.
         self._stt_pub = self.create_publisher(UtteranceMsg, "/voice/stt/utterance", _RE)
-        self._response_pub = self.create_publisher(
-            String, "/voice/dialogue/response", _RE
-        )
         # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
         # Тот же топик, что и quest-нода, единый контракт
         # (worker-brief §3.3, rob_box_core.avatar_command). RELIABLE depth=10 —
@@ -201,12 +199,11 @@ class TelegramNode(Node):
             callback_group=g,
         )
         # AV-10 — direct publishers оставлены как fallback для Phase 1
-        # (монитор-режим). В active-режиме супервизор сам публикует в
-        # ``/cmd_vel_web`` и TTS-канал от имени клиента; здесь
-        # публикации должны идти только после успешного AcquireFloor
-        # (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
+        # (монитор-режим). Публикации идут только после успешного
+        # AcquireFloor (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
-        self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # ADR-0150 PR-3 (#3688): речь из Telegram — клиентом речи (агент telegram).
+        speech_client.prepare(self, "request")
         # AV-23 (issue #1915, P8) — рация из Telegram в /avatar/voice_in
         # + явный STOP в /voice/sound/stop (закрыть stream после рации,
         # barge-in уже использует тот же канал). best-effort + volatile
@@ -357,30 +354,18 @@ class TelegramNode(Node):
         )
         return payload["request_id"]
 
-    def publish_tts(self, text: str) -> None:
-        """AV-10 backward-compat shim.
+    def publish_tts(self, text: str) -> str:
+        """Сказать текст роботом (агент ``telegram``, ADR-0150 PR-3); вернуть ``speech_id``.
 
-        Старый код (commands.py:336 say_handler, messages.py:176
-        playvoice) вызывает ``node.publish_tts(text)`` напрямую. Чтобы
-        не ломать существующие интеграции до того, как callers будут
-        переведены на ``publish_tts_with_floor``, мы оставляем
-        ``publish_tts`` как «голую» публикацию в TTS-канал, и
-        дополнительно даём обёртку ``publish_tts_with_floor``, которая
-        сначала просит ``voice_floor`` у супервизора.
+        Старый код (commands.py say_handler, messages.py playvoice) зовёт
+        ``node.publish_tts(text)`` напрямую; ``publish_tts_with_floor`` — то же
+        после AcquireFloor(voice). Раньше реплика шла JSON-ом в
+        ``/voice/dialogue/response`` или ``/voice/tts/request`` (по режиму);
+        теперь — один ``SpeechRequest``, итог — ``SpeechEvent`` того же id.
         """
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
-        m = String()
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        m.data = json.dumps(
-            Utterance(
-                text=text,
-                sink=Sink.SPEAKERS,
-                extra={"speech_id": str(uuid.uuid4())},
-            ).to_request(),
-            ensure_ascii=False,
-        )
-        self._response_pub.publish(m)
+        return speech_client.say(self, Utterance(text=text, sink=Sink.SPEAKERS), agent="telegram")
 
     def publish_tts_with_floor(self, text: str):
         """AV-10: publish TTS, обернув в AcquireFloor(voice).
@@ -390,32 +375,7 @@ class TelegramNode(Node):
             пользователю (например, погасить кнопки если
             ``granted=False``).
         """
-
-        def _do_publish() -> None:
-            m = String()
-            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-            m.data = json.dumps(
-                Utterance(
-                    text=text,
-                    sink=Sink.SPEAKERS,
-                    extra={"speech_id": str(uuid.uuid4())},
-                ).to_request(),
-                ensure_ascii=False,
-            )
-            # AV-10: в active-режиме супервизор сам перешлёт
-            # TTS-запрос в dialogue_node, и эта публикация в
-            # /voice/tts/request будет no-op. Поэтому в active
-            # используем _response_pub (который dialogue_node
-            # слушает как «вход для готовых реплик»). В monitor —
-            # оставлена оригинальная семантика.
-            if is_metrics_enabled():
-                record_telegram_message("out", message_type="voice")
-            target = (
-                self.tts_pub if self.supervisor.mode != "active" else self._response_pub
-            )
-            target.publish(m)
-
-        return self.supervisor.with_floor(Floor.VOICE, _do_publish)
+        return self.supervisor.with_floor(Floor.VOICE, lambda: self.publish_tts(text))
 
     def publish_move_with_floor(self, twist):
         """AV-10: publish cmd_vel, обернув в AcquireFloor(teleop).

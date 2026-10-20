@@ -226,27 +226,7 @@ from rob_box_voice.core.dialogue_text import (  # noqa: E402 — как сосе
     strip_wake_word,
 )
 
-try:
-    from rob_box_voice.core.speak_helpers import build_ssml_payload
-
-    _BUILD_SSML_AVAILABLE = True
-except ImportError:  # pragma: no cover — защита для standalone-запуска
-    _BUILD_SSML_AVAILABLE = False
-
-    def build_ssml_payload(text: str, animation: str = "neutral") -> str:  # type: ignore[no-redef]
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # Раньше было ``f"<speak>{text}</speak>"`` без экранирования.
-        from rob_box_core.utterance import Sink, Utterance
-
-        return json.dumps(
-            Utterance(
-                text=text,
-                sink=Sink.SPEAKERS,
-                emotion=animation,
-                extra={"speech_id": "stt-unclear"},
-            ).to_request(),
-            ensure_ascii=False,
-        )
+from rob_box_core.utterance import Utterance as SpokenUtterance
 
 # Yandex Cloud STT API v3 (gRPC)
 try:
@@ -577,10 +557,8 @@ class STTNode(Node):
         # (scope=speaker:<tag>). Поле Utterance.speaker_tag дублирует метку:
         # отдельный топик уйдёт в PR, который переведёт читателя на Utterance.
         self.speaker_pub = self.create_publisher(String, "/voice/stt/speaker", 10)
-        # Прямой запрос TTS для фразы «не расслышал» (issue #979). tts_node
-        # слушает /voice/tts/request тем же JSON-SSML контрактом, что и
-        # /voice/dialogue/response — build_ssml_payload даёт ровно это.
-        self.tts_request_pub = self.create_publisher(String, "/voice/tts/request", 10)
+        # Фраза «не расслышал» (issue #979) — клиентом речи (ADR-0150 PR-3).
+        speech_client.prepare(self, "request")
         # Issue #1251 — ранний «бульк»: публикуем триггер на /voice/sound/trigger
         # (sound_node воспроизведёт короткий звук «услышал, wake word есть»).
         self.boop_pub = self.create_publisher(String, "/voice/sound/trigger", 10)
@@ -1152,10 +1130,9 @@ class STTNode(Node):
         now = time.monotonic()
         self._last_unclear_at = now  # метрика (PR-F выпилит)
         self._occasion_gate.mark_consumed(occasion)
-        payload = build_ssml_payload(self.unclear_phrase, animation="confused")
-        msg = String()
-        msg.data = payload
-        self.tts_request_pub.publish(msg)
+        speech_client.say(
+            self, SpokenUtterance(text=self.unclear_phrase, emotion="confused"), agent="personality"
+        )
         self.get_logger().info(
             f"🗣️ Неясный результат → говорю: {self.unclear_phrase!r}"
         )

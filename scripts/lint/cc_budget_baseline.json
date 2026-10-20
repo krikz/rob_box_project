@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-20",
-  "base_sha": "b059f62dca2c936ed0e2f2745ea8ef42133131b1",
+  "base_sha": "8a613345587c44ad09c4265204e13bf4ef43a687",
   "limits": {
     "method": 15,
     "init": 20
@@ -64,7 +64,7 @@
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
       "SpeakTextTool._split_sentences": 18,
-      "SpeakTextTool.execute": 22
+      "SpeakTextTool.execute": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
       "StartMappingTool.execute": 18
@@ -280,7 +280,7 @@
     {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
       "method": "SpeakTextTool.execute",
-      "cc": 22,
+      "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

@@ -36,10 +36,18 @@ def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
     return [json.loads(m.data) for m in pub.published]
 
 
+def _speech_payload(req) -> dict:
+    """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
+    out = {"ssml": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
+    if req.language:
+        out["language"] = req.language
+    return out
+
+
 def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
     """Опубликованные в /voice/tts/request payloads (parsed JSON)."""
-    pub = node._tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    pub = node._speech_client_pubs["request"]
+    return [_speech_payload(m) for m in pub.published]
 
 
 class TestAvatarTtsPublisherDeclared(unittest.TestCase):
@@ -59,7 +67,7 @@ class TestAvatarTtsPublisherDeclared(unittest.TestCase):
         # /voice/tts/request оставлен ТОЛЬКО для инструмента say.
         # Грип больше туда не ходит; supervisor для собственных реплик — тоже.
         self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/tts/request")
+        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/speech/request")
 
 
 class TestPublishAvatarTtsWithDefaults(unittest.TestCase):

@@ -304,6 +304,7 @@ def _make_stt_node_stub(**param_overrides):
     node.utterance_pub = MagicMock()
     node.state_pub = MagicMock()
     node._speech_client_pubs = {"cancel": MagicMock()}
+    node.get_clock = MagicMock()  # stamp SpeechRequest (speech_client.say)
     node.audio_sub = MagicMock()
     node.tts_state_sub = MagicMock()
     real_logger = logging.getLogger("test_stt_node_fallback")
@@ -785,39 +786,39 @@ class TestSpeakUnclear:
     """
 
     def test_speaks_unclear_phrase_on_reject(self, stt_node):
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0  # сброс cooldown
 
         stt_node._maybe_speak_unclear()
 
-        assert stt_node.tts_request_pub.publish.call_count == 1
-        payload = stt_node.tts_request_pub.publish.call_args[0][0].data
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
+        payload = stt_node._speech_client_pubs["request"].publish.call_args[0][0].text
         assert "Не расслышал, скажи ещё раз" in payload
         assert "<speak>" in payload
 
     def test_cooldown_blocks_repeat(self, stt_node):
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
 
         stt_node._maybe_speak_unclear()  # 1-й раз — говорит
-        assert stt_node.tts_request_pub.publish.call_count == 1
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
         stt_node._maybe_speak_unclear()  # сразу второй раз — cooldown
-        assert stt_node.tts_request_pub.publish.call_count == 1  # не повторил
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1  # не повторил
 
     def test_empty_phrase_disables(self, stt_node):
         stt_node.unclear_phrase = ""
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
 
         stt_node._maybe_speak_unclear()
 
-        assert stt_node.tts_request_pub.publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
     def test_speech_audio_callback_empty_rejected_stays_silent(self, stt_node):
         """Issue 989 Fix A: STT вернул None (empty) → робот МОЛЧИТ,
         «не расслышал» НЕ говорится (это эхо/музыка, не речь пользователя)."""
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
         stt_node.utterance_pub = MagicMock()
@@ -829,12 +830,12 @@ class TestSpeakUnclear:
 
         # Результат не опубликован, «не расслышал» НЕ запрошен
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node.tts_request_pub.publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
     def test_speech_audio_callback_short_rejected_still_speaks(self, stt_node):
         """Issue 989 Fix A: STT вернул короткий текст (Vosk «не»/«пути»)
         → это реальный речевой ввод, можно переспросить."""
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._last_unclear_at = 0.0
         # Короткий текст "не" (2 chars < min_text_chars=3) → rejected(short)
         stt_node._recognize_with_fallback = MagicMock(return_value=("не", []))
@@ -846,7 +847,7 @@ class TestSpeakUnclear:
         stt_node.speech_audio_callback(msg)
 
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node.tts_request_pub.publish.call_count == 1
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
 
     def test_speech_audio_callback_vosk_garbage_speaks_unclear_real_path(self, stt_node):
         """Issue #979 acceptance: реальный путь Yandex empty → Vosk «не»
@@ -861,7 +862,7 @@ class TestSpeakUnclear:
         stt_node.recognizer = MagicMock()
         stt_node._recognize_yandex = MagicMock(return_value=None)  # empty x2
         stt_node._recognize_vosk = MagicMock(return_value="не")  # 2 chars мусор
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node._last_unclear_at = 0.0
@@ -873,8 +874,8 @@ class TestSpeakUnclear:
         # Результат НЕ опубликован (слишком короткое), но робот просит
         # повторить: «Не расслышал, скажи ещё раз» — вместо молчания.
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node.tts_request_pub.publish.call_count == 1
-        payload = stt_node.tts_request_pub.publish.call_args[0][0].data
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 1
+        payload = stt_node._speech_client_pubs["request"].publish.call_args[0][0].text
         assert "Не расслышал" in payload
 
 
@@ -896,7 +897,7 @@ class TestTTSGracePeriod:
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node.publish_result = MagicMock()
 
         msg = MagicMock()
@@ -906,7 +907,7 @@ class TestTTSGracePeriod:
         # Внутри grace — фраза не доходит до распознавания
         stt_node._recognize_with_fallback.assert_not_called()
         assert stt_node.utterance_pub.publish.call_count == 0
-        assert stt_node.tts_request_pub.publish.call_count == 0
+        assert stt_node._speech_client_pubs["request"].publish.call_count == 0
 
     def test_phrase_outside_grace_is_processed(self, stt_node):
         """Фраза после истечения grace обрабатывается нормально."""
@@ -919,7 +920,7 @@ class TestTTSGracePeriod:
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
 
         msg = MagicMock()
         msg.data = [0] * (16000 * 2)  # 1с PCM
@@ -1030,7 +1031,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
         )
@@ -1057,7 +1058,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node.publish_result = MagicMock()
 
         msg = MagicMock()
@@ -1403,7 +1404,7 @@ class TestTelemetryPhraseToAccept:
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node.publish_result = MagicMock()
 
         # Публикация «не расслышал» не должна происходить при успехе
@@ -1433,7 +1434,7 @@ class TestTelemetryPhraseToAccept:
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
-        stt_node.tts_request_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
         stt_node._maybe_speak_unclear = MagicMock()
 
         caplog.set_level(logging.INFO, logger="test_stt_node_fallback")

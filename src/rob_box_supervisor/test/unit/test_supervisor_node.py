@@ -114,7 +114,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
-        """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б, и
+        """Нет publisher-ов на /voice/ (кроме /voice/speech/request — грип/say, ADR-0150 PR-3, и
         /voice/tts/set_voice, voice-vr 21 / ADR-0080 §2.7) +
         в /dialogue/ — только ``/dialogue/control`` (ADR-0066 §6.7,
         pause/resume для личности). Голос-параметры — через топик
@@ -124,7 +124,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
         voice_pubs = [t for t in self.node._publishers if t.startswith("/voice/")]
         self.assertEqual(
             sorted(voice_pubs),
-            sorted(["/voice/tts/request", "/voice/tts/set_voice"]),
+            sorted(["/voice/speech/request", "/voice/tts/set_voice"]),
         )
         dialogue_pubs = [
             t for t in self.node._publishers if t.startswith("/dialogue/")

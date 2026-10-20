@@ -4,7 +4,7 @@ test_voice_selection.py — issue #1219: LLM voice selection in MCP tools.
 Covers:
 * SpeakTextTool accepts ``voice`` param, validates against the active
   provider's voice list, includes ``voice_used`` + ``provider`` in the
-  result, and publishes ``voice`` in the /voice/tts/request payload;
+  result, and publishes ``voice`` in the SpeechRequest (/voice/speech/request);
 * unknown voice → provider default + voice_fell_back=True (Q6);
 * VoiceStateStore: set_voice persists current_voice; next speak_text
   without voice= uses it (Q7);
@@ -41,14 +41,9 @@ from rob_box_mcp_tools.voice_state import VoiceStateStore  # noqa: E402
 
 
 def _published_tts_payloads(tool) -> list:
-    pub = tool.node.get_publisher("/voice/tts/request")
-    out = []
-    for m in pub.published_messages:
-        try:
-            out.append(json.loads(m.data))
-        except (TypeError, ValueError):
-            out.append({"_raw": m.data})
-    return out
+    """Поля ``SpeechRequest`` (ADR-0150 PR-3), опубликованных speak_text."""
+    pub = tool.node.get_publisher("/voice/speech/request")
+    return [{"voice": m.voice, "ssml": m.text, "agent": m.agent} for m in pub.published_messages]
 
 
 @pytest.mark.unit

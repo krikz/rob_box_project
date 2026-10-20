@@ -93,6 +93,14 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return ""
 
         # ── logger ─────────────────────────────────────────────────────
+        def get_clock(self) -> Any:
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки
+            # rob_box_dialog_msgs, что под рукой (rosidl в CI отвергает MagicMock).
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
         def get_logger(self) -> MagicMock:
             return self._logger
 
@@ -469,3 +477,9 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
 
 _install_ros_mocks()
+
+# ADR-0150 PR-3 (#3688): grip/say говорят клиентом речи - нужны rob_box_dialog_msgs
+# (настоящий пакет в CI после colcon build, иначе заглушка из .msg).
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()

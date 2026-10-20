@@ -130,6 +130,11 @@ class MockNode:
     def get_logger(self) -> MockLogger:
         return self._logger
 
+    def get_clock(self):
+        """stamp ``SpeechRequest`` (rob_box_core.speech_client.say, ADR-0150 PR-3)."""
+        stamp_cls = type(install_dialog_msgs_stub().SpeechRequest().stamp)
+        return Mock(now=lambda: Mock(to_msg=lambda: stamp_cls()))
+
     def create_publisher(self, msg_type, topic: str, qos: int = 10) -> MockPublisher:
         pub = MockPublisher(msg_type, topic, qos)
         self._publishers[topic] = pub

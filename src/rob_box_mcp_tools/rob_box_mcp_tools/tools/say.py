@@ -16,56 +16,26 @@ say.py - Инструмент «say» для супервизор-агента (
   без эмоций. Личность в этот момент МОЛЧИТ (ADR-0028 S5, voice-mode
   swap «off»), и ``say`` отвечает за «голос в тишине».
 
-Это каркас (AV-21), не финальная интеграция. Полный TTS через
-voice-floor — карточка AV-27; в этом PR ``say`` публикует в
-``/voice/tts/request`` (тот же топик, что и ``speak_text``), и
-``tts_node`` синтезирует независимо от dialogue_node state.
+ADR-0150 PR-3 (#3688): реплика уходит единственным клиентом речи
+``rob_box_core.speech_client.say`` (``SpeechRequest``, агент ``operator``);
+``tts_node`` синтезирует независимо от состояния dialogue_node. Подтверждение
+по ``SpeechEvent`` — PR-13 (ТАРС: say как action.speak_aloud).
 """
 
-import json
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import List
 
-if TYPE_CHECKING:
-    from std_msgs.msg import String
-
+from rob_box_core import speech_client
+from rob_box_core.utterance import Sink, Utterance
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-
-
-def build_say_request(text: str) -> Dict[str, Any]:
-    """Payload ``/voice/tts/request`` для реплики оператора.
-
-    ``tts_node.dialogue_callback`` принимает только запросы с полем ``ssml``
-    (контракт — ``rob_box_core.utterance.missing_tts_request_fields``);
-    голый ``{"text": ...}`` он отбрасывал с «⚠ Chunk без SSML», а ``say``
-    при этом отвечал success=True (живой робот, 29.09.2026). Поэтому SSML
-    собирает общий сборщик ``Utterance`` — с XML-экранированием ``&<>``.
-    ``source`` — маркер для метрик (avatar_agent_tool_calls_total).
-    """
-    from rob_box_core.utterance import Sink, Utterance
-
-    return Utterance(
-        text=text,
-        sink=Sink.SPEAKERS,
-        extra={"source": "operator"},
-    ).to_request()
 
 
 class SayTool(MCPTool):
     """Произнести текст голосом оператора через TTS-канал (AV-21)."""
 
-    #: Канонический ROS-топик, который уже слушает ``tts_node``.
-    #: Совпадает с ``speak_text`` — это умышленно: ``tts_node`` не знает,
-    #: от кого пришёл запрос, и ему не нужно (пол отправителя определяется
-    #: на уровне супервизора через voice_floor).
-    TTS_REQUEST_TOPIC: str = "/voice/tts/request"
-
     def __init__(self, node) -> None:
         super().__init__(node)
-        # Динамический импорт, чтобы unit-тесты могли работать без ROS 2.
-        from std_msgs.msg import String
-
-        self._tts_pub = node.create_publisher(String, self.TTS_REQUEST_TOPIC, 10)
+        speech_client.prepare(node, "request")
 
     @property
     def name(self) -> str:
@@ -135,17 +105,14 @@ class SayTool(MCPTool):
                 message="Текст для произнесения пустой",
             )
 
-        from std_msgs.msg import String
-
-        msg = String()
-        msg.data = json.dumps(build_say_request(text), ensure_ascii=False)
-        self._tts_pub.publish(msg)
-
+        speech_id = speech_client.say(
+            self.node, Utterance(text=text, sink=Sink.SPEAKERS), agent="operator"
+        )
         return MCPToolResult(
             success=True,
-            data={"text": text, "source": "operator"},
+            data={"text": text, "source": "operator", "speech_id": speech_id},
             message=f"say: опубликовано {len(text)} символов в TTS-канал",
         )
 
 
-__all__ = ["SayTool", "build_say_request"]
+__all__ = ["SayTool"]
