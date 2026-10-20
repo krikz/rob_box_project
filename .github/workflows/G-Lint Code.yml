@@ -274,6 +274,17 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Сабмодуль ros2leds (драйвер и композитор LED-матриц) исключён из
+      # G-Run Tests и из линта как вендорный, а своего CI у него нет — его
+      # тесты не гонял никто. Здесь они идут на заглушках ROS и pi5neo,
+      # из зависимостей нужен только pyyaml.
+      - name: ros2leds driver/compositor logic tests
+        run: |
+          python -m pytest src/ros2leds/tests \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       # Issue #2846: вердикт шага E2E-харнесса по исходу register_speaker.
       # Тот же класс дефекта (ADR-0057 "тест написан, но не в CI"):
       # tests/unit/e2e_scripts/ не гоняется ни одним workflow, а этот тест

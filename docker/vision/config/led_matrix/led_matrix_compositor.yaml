@@ -1,80 +1,90 @@
-# LED Matrix Compositor Configuration
-# Конфигурация композитора для объединения физических LED панелей
-# в логические группы для Rob Box
+# LED Matrix Compositor Configuration (volume робота: /config/led_matrix/)
+#
+# С ros2leds TD-7 композитор ЧИТАЕТ этот файл (параметр config_file,
+# приоритет volume > install), а не раскладку из кода. Содержимое обязано
+# совпадать с src/ros2leds/led_matrix_compositor/config/led_matrix_compositor.yaml —
+# это сторожит tests/unit/docker/test_led_matrix_config.py.
 #
 # Физическое подключение (цепочка через SPI):
-#   Panel 0-1: 2× 8×8 панели (передние фары) = 128 LEDs
-#   Panel 2-6: 5× 5×5 панели (main_display) = 125 LEDs
-#   Total: 253 LEDs (задние фары пока не подключены)
+#   Panel 0-4: 5x 5x5 панели (main_display, рот 25x5) = 125 LEDs
+#   Panel 5-6: 8x8 передние фары (wheel_front_left / wheel_front_right)
+#   Panel 7-8: 8x8 задние фары (wheel_rear_left / wheel_rear_right)
+#   Total: 381 LEDs
+# Лево/право — борта робота: у человека напротив wheel_front_left справа.
 
 led_matrix_compositor:
   ros__parameters:
     # Физические панели (в порядке подключения в цепочке)
     physical_panels:
-      # Передняя левая фара 8×8
-      - width: 8
-        height: 8
+      # Main Display: 5 панелей 5×5
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
+        snake_connection: true
+      - width: 5
+        height: 5
         snake_connection: true
 
-      # Передняя правая фара 8×8
+      # Колёса: 4 панели 8×8 (передние/задние)
       - width: 8
         height: 8
-        snake_connection: true
-
-      # Main display: 5 панелей 5×5 соединенных в линию (5×25)
-      - width: 5
-        height: 5
-        snake_connection: true
-      - width: 5
-        height: 5
-        snake_connection: true
-      - width: 5
-        height: 5
-        snake_connection: true
-      - width: 5
-        height: 5
-        snake_connection: true
-      - width: 5
-        height: 5
-        snake_connection: true
+        snake_connection: false
+      - width: 8
+        height: 8
+        snake_connection: false
+      - width: 8
+        height: 8
+        snake_connection: false
+      - width: 8
+        height: 8
+        snake_connection: false
 
     # Логические группы (как приложения обращаются к панелям)
     logical_groups:
-      # Отдельные матрицы на колёсах (управляются индивидуально)
-      - name: wheel_front_left
-        physical_indices: [0] # Panel 0
-        arrangement: [1, 1] # 1×1 панель
+      # Главный дисплей: 5 панелей объединены горизонтально (5×25)
+      - name: main_display
+        physical_indices: [0, 1, 2, 3, 4]
+        arrangement: [5, 1]
         flip_x: false
-        flip_y: false
+        flip_y: true
         snake_arrangement: false
 
-      - name: wheel_front_right
-        physical_indices: [1] # Panel 1
+      # Передняя левая фара (8×8)
+      - name: wheel_front_left
+        physical_indices: [5]
         arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
-      # Главный дисплей: 5 панелей объединены горизонтально
-      - name: main_display
-        physical_indices: [2, 3, 4, 5, 6] # Panels 2-6 (после закомментирования задних)
-        arrangement: [5, 1] # 5 панелей в ряд, 1 ряд
-        flip_x: false
-        flip_y: true # Перевернуть по Y для правильной ориентации
-        snake_arrangement: false # Панели соединены без змейки
+      # Передняя правая фара (8×8)
+      - name: wheel_front_right
+        physical_indices: [6]
+        arrangement: [1, 1]
+        flip_x: true
+        flip_y: true
+        snake_arrangement: false
 
-      # Передние колёса как группа (для синхронных эффектов)
-      - name: wheels_front
-        physical_indices: [0, 1] # Panels 0-1
-        arrangement: [2, 1] # 2 панели в ряд
+      # Задняя левая фара (8×8)
+      - name: wheel_rear_left
+        physical_indices: [7]
+        arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
 
-      # Все передние колёса (только активные панели)
-      - name: wheels_all
-        physical_indices: [0, 1] # Только передние панели 0-1
-        arrangement: [2, 1] # 2 панели в ряд
+      # Задняя правая фара (8×8)
+      - name: wheel_rear_right
+        physical_indices: [8]
+        arrangement: [1, 1]
         flip_x: false
         flip_y: false
         snake_arrangement: false
@@ -82,3 +92,7 @@ led_matrix_compositor:
     # Топики
     output_topic: led_matrix/data # Выход в драйвер
     input_topic: panel_image # Вход от приложений (sensor_msgs/Image)
+
+    # Лента уходит в драйвер не чаще этой частоты и только если изменилась
+    # хоть одна панель (0 = как раньше, на каждое изображение панели)
+    max_publish_hz: 60.0
