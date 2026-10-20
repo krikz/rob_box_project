@@ -1,0 +1,173 @@
+"""Контрактный тест адаптера (ADR-0150 §4.5, A14; #3686).
+
+FakeLLMProvider в каждом из 4 режимов отвечает на эталонный набор так, как отвечал бы честный провайдер этого режима;
+оба канала речи (FieldChannel/ToolChannel) строят запрос, разбирают ответ, и парсер даёт валидную команду в 100 %.
+Тест проверяет водопровод (запрос -> ответ -> один парсер), а не качество живой модели: живые адаптеры меряет
+``scripts/dialog/adapter_benchmark.py``.
+
+Парсер: ``pick_parser`` берёт ``rob_box_dialog.command.parse`` (PR-1), пока его нет — ``scripts/dialog/stub_parse``. Какой парсер работал, видно в id.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+import pytest
+import yaml
+
+from rob_box_dialog.degrade import MODE_ORDER, select_mode
+from rob_box_dialog.speech_channel import (
+    COMMAND_TOOL,
+    SPEAK_TOOL,
+    ModeReply,
+    FieldChannel,
+    ToolChannel,
+)
+from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
+from rob_box_llm.providers.fake import FakeLLMProvider
+from scripts.dialog.stub_parse import pick_parser, stub_parse
+
+REFERENCE_SET = Path(__file__).resolve().parents[3] / "scripts" / "dialog" / "reference_set.yaml"
+SCHEMA = {"type": "object", "properties": {"speech": {"type": "string", "maxLength": 280}}}
+
+
+PARSER_KIND, PARSE = pick_parser()
+
+
+# ---- эталонный набор -------------------------------------------------------------------------------------------
+
+
+def _canonical(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Команда, которую должна выдать модель на фразу; None — LLM не вызывается (tier1)."""
+    exp = entry["expected"]
+    if "tier1" in exp:
+        return None
+    if "silence" in exp:
+        return {"passed": "not_addressed"}
+    if "ask" in exp:
+        return {"ask": {"expects": "free", "text": str(exp["ask"])}}
+    if "speech_only" in exp:
+        return {"speech": "Хорошо."}
+    tools = [t for t in exp["actions"] if t != SPEAK_TOOL]
+    cmd: dict[str, Any] = {"actions": [{"tool": t, "args": {}} for t in tools]}
+    if SPEAK_TOOL in exp["actions"]:
+        cmd["speech"] = "Готово."
+    return cmd
+
+
+def load_cases() -> list[tuple[str, dict[str, Any]]]:
+    data = yaml.safe_load(REFERENCE_SET.read_text(encoding="utf-8"))
+    cases = [(p["id"], c) for p in data["phrases"] if (c := _canonical(p)) is not None]
+    assert len(cases) >= 20, "эталонный набор слишком мал для контракта"
+    return cases
+
+
+CASES = load_cases()
+
+
+# ---- честный fake-провайдер -------------------------------------------------------------------------------------
+
+
+def caps_for_mode(mode: str) -> ProviderCapabilities:
+    return ProviderCapabilities(
+        text=True,
+        tools=mode in ("structured_output", "tool_choice"),
+        structured_output=mode == "structured_output",
+        tool_choice=mode in ("structured_output", "tool_choice"),
+        json_mode=mode in ("structured_output", "json_mode"),
+    )
+
+
+def _honest_fake(canonical: dict[str, Any], mode: str) -> FakeLLMProvider:
+    """Отвечает по тому, что РЕАЛЬНО пришло в запросе (тулы/response_format), а не по заранее известному режиму."""
+
+    async def on_complete(msgs, tools, settings: LLMSettings | None) -> LLMResponse:
+        names = [t["function"]["name"] for t in tools]
+        if COMMAND_TOOL in names:
+            return LLMResponse(tool_calls=(ToolCall("c1", COMMAND_TOOL, canonical),), finish_reason="tool_calls")
+        if SPEAK_TOOL in names:
+            calls = [ToolCall(f"a{i}", a["tool"], a["args"]) for i, a in enumerate(canonical.get("actions", []))]
+            if "speech" in canonical:
+                calls.append(ToolCall("s1", SPEAK_TOOL, {"text": canonical["speech"]}))
+            # content с мусором: ToolChannel обязан его игнорировать
+            return LLMResponse(content='{"speech": "УТЕЧКА"}', tool_calls=tuple(calls), finish_reason="tool_calls")
+        body = json.dumps(canonical, ensure_ascii=False)
+        if settings is not None and settings.extra.get("response_format"):
+            return LLMResponse(content=body, finish_reason="stop")
+        return LLMResponse(content=f"Конечно! {body} Надеюсь, помогло.", finish_reason="stop")
+
+    return FakeLLMProvider(on_complete=on_complete, capabilities=caps_for_mode(mode))
+
+
+def _ask(provider: FakeLLMProvider, channel, mode: str) -> ModeReply:
+    req = channel.build_request(mode)
+    extra: Mapping[str, Any] = {"response_format": req.response_format} if req.response_format else {}
+    settings = LLMSettings(tool_choice=req.tool_choice, extra=extra)
+    msgs = [LLMMessage(role="system", content=req.instruction or "-"), LLMMessage(role="user", content="Робот, ...")]
+    resp = asyncio.run(provider.complete(msgs, tools=req.tools, settings=settings))
+    return ModeReply(resp.content, tuple((tc.name, tc.arguments) for tc in resp.tool_calls))
+
+
+# ---- тесты -------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", MODE_ORDER)
+def test_fake_caps_select_their_own_mode(mode):
+    assert select_mode(caps_for_mode(mode)) == mode
+
+
+@pytest.mark.parametrize("mode", MODE_ORDER)
+def test_field_channel_parses_every_reference_phrase(mode):
+    channel = FieldChannel(SCHEMA)
+    failures = []
+    for pid, canonical in CASES:
+        provider = _honest_fake(canonical, mode)
+        try:
+            parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
+        except Exception as exc:  # noqa: BLE001 - собираем все провалы в один отчёт
+            failures.append(f"{pid}: {exc}")
+            continue
+        if PARSER_KIND == "stub" and parsed != canonical:
+            failures.append(f"{pid}: {parsed} != {canonical}")
+    assert failures == [], f"[{PARSER_KIND} parser, mode={mode}] {len(failures)}/{len(CASES)} failed"
+
+
+@pytest.mark.parametrize("mode", MODE_ORDER)
+def test_tool_channel_parses_speech_and_action_phrases_and_ignores_content(mode):
+    """ToolChannel (вариант B) выражает только speech и actions; ask/passed в нём нет — это факт для бейк-оффа PR-1c."""
+    channel = ToolChannel()
+    checked = 0
+    for pid, canonical in CASES:
+        if not ({"speech", "actions"} & set(canonical)):
+            continue
+        provider = _honest_fake(canonical, mode)
+        parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
+        if PARSER_KIND == "stub":
+            assert parsed.get("speech") == canonical.get("speech"), pid  # «УТЕЧКА» из content не просочилась
+            assert parsed.get("actions") == canonical.get("actions", []), pid
+        checked += 1
+    assert checked >= 20
+
+
+@pytest.mark.parametrize("mode", MODE_ORDER)
+def test_request_shape_matches_mode(mode):
+    req = FieldChannel(SCHEMA).build_request(mode)
+    assert req.mode == mode
+    assert (req.response_format is not None) == (mode in ("structured_output", "json_mode"))
+    assert bool(req.tools) == (mode == "tool_choice")
+    assert req.tool_choice == ("required" if mode == "tool_choice" else None)
+
+
+def test_tool_channel_requires_tool_only_where_adapter_enforces_it():
+    ch = ToolChannel()
+    assert ch.build_request("tool_choice").tool_choice == "required"
+    assert ch.build_request("json_in_text").tool_choice == "auto"
+
+
+def test_field_channel_tool_mode_without_command_call_is_unparseable_not_silently_empty():
+    """Модель не позвала тул `command`: текст пуст -> парсер обязан отказать (потеря видна, а не молчаливая)."""
+    with pytest.raises(ValueError):
+        FieldChannel(SCHEMA).parse(ModeReply(content="просто текст"), "tool_choice", stub_parse)

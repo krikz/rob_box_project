@@ -24,6 +24,7 @@ from rob_box_llm.provider import (
     LLMProvider,
     LLMResponse,
     LLMSettings,
+    ProviderCapabilities,
     ToolCall,
 )
 
@@ -72,6 +73,10 @@ class FakeLLMProvider(LLMProvider):
         Override / augment scripted responses.
     name:
         Provider name reported in errors / logs. Defaults to ``"fake"``.
+    capabilities:
+        What the fake advertises (ADR-0150 §4.5: tests switch the four
+        command modes through ``tool_choice`` / ``json_mode`` /
+        ``structured_output``). Defaults to the conservative text-only set.
     """
 
     def __init__(
@@ -82,13 +87,19 @@ class FakeLLMProvider(LLMProvider):
         on_complete: Optional[Callable[[tuple[LLMMessage, ...], tuple[Mapping[str, Any], ...], Optional[LLMSettings]], Awaitable[LLMResponse]]] = None,
         on_stream: Optional[Callable[[tuple[LLMMessage, ...], tuple[Mapping[str, Any], ...], Optional[LLMSettings]], AsyncIterator[LLMChunk]]] = None,
         name: str = "fake",
+        capabilities: Optional[ProviderCapabilities] = None,
     ) -> None:
         self.name = name
+        self._capabilities = capabilities or ProviderCapabilities()
         self._responses: list[LLMResponse] = list(responses or [])
         self._stream_scripts: list[Any] = list(stream_scripts or [])
         self._on_complete = on_complete
         self._on_stream = on_stream
         self.calls: list[FakeCall] = []
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return self._capabilities
 
     # -- helpers -----------------------------------------------------------
 
