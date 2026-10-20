@@ -214,40 +214,14 @@ _SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/result (ли�
 _SRC_PTT = "ptt"  # /audio/quest_in (левый грип) → /avatar/ptt/result (пайплайн грипа)
 _SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оператора)
 
-try:
-    from rob_box_voice.core.dialogue_text import (
-        DEFAULT_OPERATOR_WAKE_WORDS,
-        DEFAULT_WAKE_WORDS,
-        has_wake_word,
-        resolve_wake_word_namespaces,
-        strip_wake_word,
-    )
-
-    _HAS_WAKE_WORD_AVAILABLE = True
-except ImportError:  # pragma: no cover — защита для standalone-запуска
-    _HAS_WAKE_WORD_AVAILABLE = False
-    DEFAULT_WAKE_WORDS = ()
-    DEFAULT_OPERATOR_WAKE_WORDS = ()
-
-    def has_wake_word(text_lower: str, wake_words: list) -> bool:  # type: ignore[no-redef]
-        if not wake_words:
-            return True
-        return any(w in text_lower for w in wake_words)
-
-    def strip_wake_word(text: str, wake_words: list | None = None) -> str:  # type: ignore[no-redef]
-        if not wake_words:
-            return text.strip()
-        text_lower = text.lower()
-        for word in sorted(wake_words, key=len, reverse=True):
-            if word in text_lower:
-                idx = text_lower.find(word)
-                return (text[:idx] + text[idx + len(word) :]).strip()
-        return text.strip()
-
-    def resolve_wake_word_namespaces(  # type: ignore[no-redef]
-        path=None, personality_fallback=DEFAULT_WAKE_WORDS, operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS
-    ):
-        return list(personality_fallback), list(operator_fallback)
+# Вейк-слова — одна таблица rob_box_dialog.knowledge (ADR-0150 PR-1); запасной копии на случай ImportError нет.
+from rob_box_voice.core.dialogue_text import (  # noqa: E402 — как соседние импорты после констант
+    DEFAULT_OPERATOR_WAKE_WORDS,
+    DEFAULT_WAKE_WORDS,
+    has_wake_word,
+    resolve_wake_word_namespaces,
+    strip_wake_word,
+)
 
 try:
     from rob_box_voice.core.speak_helpers import build_ssml_payload

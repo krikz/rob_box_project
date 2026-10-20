@@ -16,7 +16,7 @@ name: "G: Defer E2E Environment"
 # pytest_args or by calling this workflow from the implementation task).
 #
 # Local equivalent (from repo root):
-#   PYTHONPATH=src/rob_box_voice:src/rob_box_llm:src/rob_box_core:src/rob_box_harness \
+#   PYTHONPATH=src/rob_box_voice:src/rob_box_llm:src/rob_box_core:src/rob_box_harness:src/rob_box_dialog \
 #     python3 -m pytest src/rob_box_voice/test/test_tool_executor.py -q
 
 on:
@@ -76,6 +76,7 @@ jobs:
           PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_llm"
           PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_core"
           PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_harness"
+          PY="${PY}:${GITHUB_WORKSPACE}/src/rob_box_dialog"
           echo "PYTHONPATH=${PY}" >> "${GITHUB_ENV}"
 
       - name: Set up Python

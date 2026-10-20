@@ -162,6 +162,9 @@ pis:
                 - src/rob_box_core
                 - src/rob_box_music/rob_box_music
               extensions: [".py"]
+            # ADR-0150: ядро диалога v2 (знание; каталог фраз — YAML рядом с кодом)
+            - paths: [src/rob_box_dialog/rob_box_dialog]
+              extensions: [".py", ".yaml"]
         tag:
           ros_distro: true
         image_versions: VOICE_ASSISTANT_TAG
