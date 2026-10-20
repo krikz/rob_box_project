@@ -92,6 +92,10 @@ RUN mkdir -p src
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+# ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
+# (context_aggregator_node читает Utterance); package.xml нужен rosdep, чтобы
+# ключ резолвился из workspace, а не искался в apt.
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. Устанавливаем ROS зависимости через rosdep (кэшируется если package.xml не изменился)
@@ -133,6 +137,7 @@ COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 
 # 6. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
 COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
 # 7. Сборка пакетов (сначала msgs, потом nodes)
@@ -146,7 +151,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # лежали в том же слое.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_perception \
+    --packages-select rob_box_perception_msgs rob_box_dialog_msgs rob_box_perception \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
 

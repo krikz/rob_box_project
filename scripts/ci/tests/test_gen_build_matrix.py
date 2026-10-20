@@ -489,6 +489,7 @@ def test_source_hash_spec_keeps_group_order_for_multi_group_services():
         "src/rob_box_quest/rob_box_quest\t*.py",
         "src/rob_box_quest/webxr_client\t*.ts *.json *.html",
         "src/rob_box_core\t*.py",
+        "src/rob_box_dialog_msgs\t*.msg *.srv CMakeLists.txt package.xml",  # ADR-0150 PR-2
     ]
 
 

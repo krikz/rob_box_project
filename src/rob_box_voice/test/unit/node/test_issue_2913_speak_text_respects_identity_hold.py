@@ -24,7 +24,6 @@ Issue #2913 — реплика ``speak_text`` обходила механизм 
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 import time
@@ -46,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from rob_box_llm.provider import ToolCall, ToolResult  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
 from rob_box_voice.scheduler.task_scheduler import ChannelKind  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 BORIS_ID = "e6daabb1-0000-0000-0000-000000000000"
 SASHA_ID = "ca4f6b3a-0000-0000-0000-000000000000"
@@ -78,7 +78,7 @@ INTRO = "здравствуй, меня зовут Борис"
 
 
 def _msg(payload: dict):
-    return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+    return make_speaker_result(payload)
 
 
 class _Result:

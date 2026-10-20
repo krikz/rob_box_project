@@ -3,7 +3,7 @@
 handlers/messages.py — Handlers for text messages and voice messages.
 
 After Phase 6 v2 / W7 this module is a *thin transport*: every text and
-voice message is forwarded to ``/voice/stt/result`` so the unified
+voice message is forwarded to ``/voice/stt/utterance`` so the unified
 AgentCore/harness pipeline (in ``dialogue_node``) can decide what to
 do with it. There is no LLM call here.
 
@@ -42,7 +42,7 @@ async def _react_eyes(update: Update) -> None:
         logger.debug("set_reaction(👀) not available or failed: %s", e)
 
 
-# ─── Text messages → forward to /voice/stt/result ─────────────────────────
+# ─── Text messages → forward to /voice/stt/utterance ─────────────────────────
 
 
 @authorized
@@ -137,7 +137,7 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
 
     # Forward to the unified dialogue pipeline with the source marker
-    # (issue #1195): [TG:chat_id] lets dialogue_node skip the wake-word
+    # (issue #1195): source=telegram + chat_id lets dialogue_node skip the wake-word
     # gate (chat messages are explicit address) and route the LLM reply
     # back into this chat. The chat_id is also recorded as "active chat"
     # so voice-initiated replies echo here too.
@@ -156,7 +156,7 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
          (рация, STT НЕ запускается).
       2. ``/playvoice`` (one-shot) — STT → TTS (робот произносит
          распознанный текст).
-      3. default — STT → forward to ``/voice/stt/result`` (как раньше).
+      3. default — STT → forward to ``/voice/stt/utterance`` (как раньше).
 
     Разделение ``playvoice`` vs ``radio`` см. в ``commands.playvoice_handler``
     (ADR-0021 говорит не плодить механизмы, но это РАЗНЫЕ задачи: STT→TTS

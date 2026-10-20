@@ -4,7 +4,7 @@ handlers/callbacks.py — Inline keyboard callback handlers (movement, quick act
 
 After Phase 6 v2 / W7 the Telegram node is a thin transport: every
 callback intent that needs to invoke a tool (status / pose / waypoints /
-stop / volume) is forwarded as plain text to ``/voice/stt/result`` so
+stop / volume) is forwarded as plain text to ``/voice/stt/utterance`` so
 the unified dialogue pipeline can run it. Movement and camera callback
 actions stay here because they talk directly to ROS topics.
 """

@@ -99,7 +99,7 @@ effects:
 transport:
   kind: ros2
   topics:
-    stt_result: /voice/stt/result
+    stt_result: /voice/stt/utterance
     vad: /audio/vad
     telegram: /telegram/updates
 logging:

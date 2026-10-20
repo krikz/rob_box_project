@@ -14,7 +14,7 @@
 │  │  dialogue_node (only)       │  1. inject STT msg   │ │
 │  │  ARM image via QEMU  ←opt   │  2. wait response    │ │
 │  │                    ┐        │  3. assert           │ │
-│  │  /voice/stt/result │        └──────────────────────┘ │
+│  │  /voice/stt/utterance │        └──────────────────────┘ │
 │  │  /audio/vad        │                                 │
 │  │  /voice/dialogue/response                            │
 │  │  /voice/animation/request                            │
@@ -78,7 +78,7 @@ default_response: "Понял."
 scenarios:
   - name: greeting_test
     steps:
-      - inject_stt: "привет"        # публикуем в /voice/stt/result
+      - inject_stt: "привет"        # публикуем в /voice/stt/utterance
         timeout_s: 15               # ждём ответ
         assert_response_contains:   # проверяем содержимое
           - "Привет"
@@ -98,7 +98,7 @@ scenarios:
 
 | Поле | Описание |
 |------|----------|
-| `inject_stt: "text"` | Публикует в `/voice/stt/result` |
+| `inject_stt: "text"` | Публикует в `/voice/stt/utterance` |
 | `inject_vad: true/false` | Публикует в `/audio/vad` |
 | `wait_ms: 500` | Пауза в миллисекундах |
 | `set_llm_responses: [...]` | Загружает очередь ответов в mock-llm |

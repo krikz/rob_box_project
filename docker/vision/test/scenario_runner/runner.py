@@ -5,7 +5,7 @@ scenario_runner/runner.py — Исполнитель интеграционны�
 Логика:
   1. Читает все *.yaml файлы из SCENARIOS_DIR
   2. Для каждого сценария выполняет шаги:
-     - inject_stt      → публикует строку в /voice/stt/result
+     - inject_stt      → публикует Utterance в /voice/stt/utterance
      - inject_vad      → публикует bool в /audio/vad
      - wait_ms         → пауза без публикации
   3. После каждого inject_stt ждёт ответ на /voice/dialogue/response
@@ -44,6 +44,7 @@ import yaml
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import Bool, String
 
 
@@ -54,7 +55,7 @@ SCENARIO_PATTERN = os.getenv("SCENARIO_PATTERN", "*.yaml")
 RESULTS_FILE = os.getenv("RESULTS_FILE", "/results/test_results.json")
 DEFAULT_SCENARIO_TIMEOUT = int(os.getenv("DEFAULT_SCENARIO_TIMEOUT", "90"))
 
-TOPIC_STT = "/voice/stt/result"
+TOPIC_STT = "/voice/stt/utterance"
 TOPIC_VAD = "/audio/vad"
 TOPIC_RESPONSE = "/voice/dialogue/response"
 TOPIC_ANIMATION = "/voice/animation/request"
@@ -265,7 +266,7 @@ class ScenarioRunner(Node):
         super().__init__("scenario_runner")
 
         # Publishers
-        self.stt_pub = self.create_publisher(String, TOPIC_STT, 10)
+        self.stt_pub = self.create_publisher(Utterance, TOPIC_STT, 10)
         self.vad_pub = self.create_publisher(Bool, TOPIC_VAD, 10)
 
         # ── Mock MCP Server ──────────────────────────────────────────────────
@@ -477,8 +478,9 @@ class ScenarioRunner(Node):
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def inject_stt(self, text: str):
-        msg = String()
-        msg.data = text
+        msg = Utterance()
+        msg.text = text
+        msg.source = Utterance.SOURCE_RESPEAKER
         self.stt_pub.publish(msg)
         self.get_logger().info(f"[inject_stt] {text!r}")
 

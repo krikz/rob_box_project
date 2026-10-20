@@ -73,7 +73,7 @@ def parse_tg_prefix(text: str) -> Tuple[str, Optional[int]]:
     so the caller doesn't need to wrap it in a ``try/except``.
 
     Args:
-        text: Raw ``/voice/stt/result`` payload string.
+        text: Raw ``Utterance.text``-like string (legacy ``[TG:id]`` prefix kept for tests only).
 
     Returns:
         ``(cleaned_text, tg_chat_id)`` — ``cleaned_text`` is the original

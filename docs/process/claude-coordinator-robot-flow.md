@@ -100,8 +100,11 @@ flowchart LR
   свободен, нет идущего сета за 3 мин, нет реплик Шифу роботу.
 - Отладка без сборки: `scripts/robot_dev/hotpatch.sh push` → проверка →
   `revert` (статус обязан вернуться к «чистый образ»).
-- Реплика роботу — инъекцией в `/voice/stt/result` изнутри
-  `voice-assistant` (`ros2 topic pub --once …`), целиком, с «Робот,».
+- Реплика роботу — инъекцией в `/voice/stt/utterance` (тип
+  `rob_box_dialog_msgs/msg/Utterance`, ADR-0150 PR-2) изнутри
+  `voice-assistant`: `ros2 topic pub --once /voice/stt/utterance
+  rob_box_dialog_msgs/msg/Utterance "{text: 'Робот, …', source: respeaker}"`,
+  целиком, с «Робот,». Топик `/voice/stt/result` (String) удалён.
   Ответы робота дублируются в Telegram Шифу: в тексте инъекции не может
   быть команд и секретов.
 - После рестарта контейнера ждать «MCP Server запущен» (~35 с).

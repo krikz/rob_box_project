@@ -31,6 +31,12 @@ for _pkg in _SIBLINGS:
     if _present and _pkg_root not in sys.path:
         sys.path.insert(0, _pkg_root)
 
+# ADR-0150 PR-2: mcp_server импортирует rob_box_dialog_msgs (rosidl, в unit-CI
+# не собран). Заглушка строится из настоящих .msg одним общим механизмом.
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()
+
 
 # ============================================================
 # Mock ROS 2 Components

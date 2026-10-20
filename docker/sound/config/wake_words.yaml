@@ -2,7 +2,7 @@
 # issue #1990). Namespace жёстко привязан к источнику аудио, а не только к тексту:
 #
 #   personality — слышит ТОЛЬКО /audio/speech_audio (ReSpeaker на роботе,
-#                 люди рядом) → маршрут /voice/stt/result (личность).
+#                 люди рядом) → маршрут /voice/stt/utterance (личность).
 #   operator    — слышит ТОЛЬКО /audio/quest_wake (микрофон шлема оператора,
 #                 wake-поток) → маршрут /avatar/stt/result (агент оператора).
 #

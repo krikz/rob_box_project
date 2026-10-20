@@ -4,7 +4,7 @@
 Проверяет единственную точку маршрутизации речи (целевая §7.1) на уровне
 ``_process_audio``/``_route_wake_result``/``_publish_ptt_result``:
 
-* respeaker (``/audio/speech_audio``) → ``/voice/stt/result``; «ТАРС» из
+* respeaker (``/audio/speech_audio``) → ``/voice/stt/utterance``; «ТАРС» из
   ReSpeaker-канала НЕ создаёт маршрут в ``/avatar/stt/result`` (namespace
   привязан к источнику, а не только к тексту — DoD #1990).
 * ptt (``/audio/quest_in``, левый грип) → ``/avatar/ptt/result`` plain text.
@@ -160,7 +160,7 @@ def _make_node(**overrides):
         wake_words=["робокс", "робот"],
         operator_wake_words=["тарс", "tars"],
         # публикаторы — mocks
-        result_pub=MagicMock(),
+        utterance_pub=MagicMock(),
         avatar_ptt_result_pub=MagicMock(),
         avatar_stt_result_pub=MagicMock(),
         state_pub=MagicMock(),
@@ -206,10 +206,11 @@ def _run_route(node, source: str, recognized_text: str):
 
 
 class TestRespeakerRoute:
-    def test_respeaker_publishes_to_voice_stt_result(self):
+    def test_respeaker_publishes_to_voice_stt_utterance(self):
         node = _make_node()
         _run_route(node, "respeaker", "робокс включи музыку")
-        node.publish_result.assert_called_once_with("робокс включи музыку")
+        node.publish_result.assert_called_once()
+        assert node.publish_result.call_args.args[0] == "робокс включи музыку"
         node._publish_speaker.assert_called_once()
         node.avatar_stt_result_pub.publish.assert_not_called()
         node.avatar_ptt_result_pub.publish.assert_not_called()
@@ -224,7 +225,8 @@ class TestRespeakerRoute:
         _run_route(node, "respeaker", "тарс поверни камеру")
         # личность получает фразу как есть (дальше dialogue_node сам решит —
         # там вейк-список только personality, «тарс» не адресует)
-        node.publish_result.assert_called_once_with("тарс поверни камеру")
+        node.publish_result.assert_called_once()
+        assert node.publish_result.call_args.args[0] == "тарс поверни камеру"
         node.avatar_stt_result_pub.publish.assert_not_called()
         node.avatar_ptt_result_pub.publish.assert_not_called()
 

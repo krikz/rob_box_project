@@ -21,6 +21,7 @@ import pytest
 
 from rob_box_voice.core.speak_helpers import build_ssml_payload
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,9 +63,7 @@ def node():
 
 
 def _make_stt_msg(data: str):
-    msg = MagicMock()
-    msg.data = data
-    return msg
+    return make_utterance(data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,3 +210,46 @@ class TestTgChatIdInPayload:
         published = n._response_pub.publish.call_args.args[0]
         payload = json.loads(published.data)
         assert "tg_chat_id" not in payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ADR-0150 PR-2: источник, chat_id и utterance_id приходят ПОЛЯМИ Utterance
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUtteranceFields:
+    def _utt(self, text, **fields):
+        from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+        return install_dialog_msgs_stub().Utterance(text=text, **fields)
+
+    def test_telegram_fields_replace_text_prefix(self, node):
+        """source=telegram + chat_id: wake-gate пропущен, префикса в тексте нет."""
+        node._on_stt(self._utt("продолжай", source="telegram", chat_id=42))
+
+        assert node._active_tg_chat_id == 42
+        assert node._dispatch_turn.call_args.args[0] == "продолжай"
+        assert node._dispatch_turn.call_args.kwargs.get("from_tg") is True
+
+    def test_literal_tg_prefix_in_text_is_not_parsed_anymore(self, node):
+        """Текст «[TG:42] привет» из голоса - это просто текст, чат не выставляется."""
+        node._on_stt(self._utt("[TG:42] привет", source="respeaker"))
+
+        assert node._active_tg_chat_id is None
+        node._dispatch_turn.assert_not_called()  # нет вейка - gate закрыт
+
+    def test_operator_source_is_not_a_telegram_chat(self, node):
+        """Кнопки меню бота (source=operator, chat_id=0): чат не запоминается."""
+        node._on_stt(self._utt("робот привет", source="operator"))
+
+        assert node._active_tg_chat_id is None
+        assert node._dispatch_turn.call_args.kwargs.get("from_tg") is False
+
+    def test_utterance_id_comes_from_the_message(self, node):
+        node._on_stt(self._utt("робот привет", source="respeaker", utterance_id="a5d8a1212530"))
+
+        assert node._dispatch_turn.call_args.kwargs.get("utterance_id") == "a5d8a1212530"
+
+    def test_telegram_has_no_utterance_id(self, node):
+        node._on_stt(self._utt("привет", source="telegram", chat_id=7))
+
+        assert node._dispatch_turn.call_args.kwargs.get("utterance_id") is None

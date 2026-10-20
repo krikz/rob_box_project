@@ -315,6 +315,20 @@ _msgs_msg.PerceptionEvent = _PerceptionEvent
 sys.modules['rob_box_perception_msgs'] = _msgs
 sys.modules['rob_box_perception_msgs.msg'] = _msgs_msg
 
+# ADR-0150 PR-2: context_aggregator_node подписан на типизированный Utterance.
+_dialog_msgs = _types.ModuleType('rob_box_dialog_msgs')
+_dialog_msgs_msg = _types.ModuleType('rob_box_dialog_msgs.msg')
+
+
+class _Utterance:
+    def __init__(self, text: str = ''):
+        self.text = text
+
+
+_dialog_msgs_msg.Utterance = _Utterance
+sys.modules['rob_box_dialog_msgs'] = _dialog_msgs
+sys.modules['rob_box_dialog_msgs.msg'] = _dialog_msgs_msg
+
 # Import after the shim is registered.  Fresh import: another test file may
 # have already imported the node against ITS stubs (conftest.py rolls the
 # stubs back after each module, but not the real module bound to them).
@@ -478,8 +492,7 @@ class TestContextAggregator(unittest.TestCase):
     def test_stt_result_subscription(self):
         """Тест: Подписка на результаты STT."""
         # Создаём STT сообщение
-        stt_msg = String()
-        stt_msg.data = 'Привет робот'
+        stt_msg = _Utterance('Привет робот')
 
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_user_speech'))
@@ -621,8 +634,7 @@ class TestCallbacks(unittest.TestCase):
 
     def test_on_user_speech_movement_command_filtered(self):
         """Тест: команды движения фильтруются."""
-        msg = String()
-        msg.data = 'вперёд'
+        msg = _Utterance('вперёд')
 
         initial_count = len(self.node.speech_events)
         self.node.on_user_speech(msg)
@@ -632,8 +644,7 @@ class TestCallbacks(unittest.TestCase):
 
     def test_on_user_speech_dialogue(self):
         """Тест: диалоговая речь добавляется."""
-        msg = String()
-        msg.data = 'Как дела?'
+        msg = _Utterance('Как дела?')
 
         self.node.on_user_speech(msg)
 

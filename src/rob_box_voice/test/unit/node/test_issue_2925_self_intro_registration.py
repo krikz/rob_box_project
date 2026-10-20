@@ -43,6 +43,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 SASHA_ID = "d8844740-0000-0000-0000-000000000000"
 BORIS_ID = "4de3d7cc-0000-0000-0000-000000000000"
@@ -115,8 +116,7 @@ def _node():
         if n.ack is not None:
             ack = dict(n.ack, name=payload["name"],
                        utterance_id=payload.get("utterance_id"))
-            n._on_speaker_result(types.SimpleNamespace(
-                data=json.dumps(ack, ensure_ascii=False)))
+            n._on_speaker_result(make_speaker_result(ack))
 
     n._speaker_register_pub = MagicMock()
     n._speaker_register_pub.publish.side_effect = _publish_register

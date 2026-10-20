@@ -194,6 +194,7 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 WORKDIR /ws
 RUN mkdir -p \
       src/rob_box_supervisor_msgs \
+      src/rob_box_dialog_msgs \
       src/rob_box_core \
       src/rob_box_quest
 
@@ -235,6 +236,15 @@ COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
 COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
 COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
 
+# ADR-0150 PR-2 (#3687): quest_node подписан на типизированный SpeakerResult
+# (/voice/speaker/result -> экран ТАРС 1). Образ строится на ros2-zenoh, а не
+# на voice-assistant, поэтому пакет копируем и собираем здесь же, как
+# rob_box_supervisor_msgs (rosidl-генераторы поставлены apt-блоком выше).
+COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
+COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
+
 # Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
 COPY src/rob_box_quest/setup.py   /ws/src/rob_box_quest/
@@ -274,7 +284,7 @@ COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 # graph-build-order, но явный порядок оставляем для воспроизводимости).
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
  && colcon build \
-        --packages-select rob_box_supervisor_msgs rob_box_core rob_box_quest \
+        --packages-select rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_core rob_box_quest \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script

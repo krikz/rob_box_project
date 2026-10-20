@@ -10,6 +10,7 @@
   <depend>rclpy</depend>
   <depend>rob_box_perception_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>rob_box_dialog_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>

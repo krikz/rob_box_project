@@ -99,12 +99,16 @@ RUN pip3 install --no-cache-dir \
 # ModuleNotFoundError на старте контейнера.
 WORKDIR /ws/src
 COPY src/rob_box_core /ws/src/rob_box_core
+# ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
+# (rob_box_dialog_msgs); rosidl-пакет собирается тем же colcon build, раньше
+# rob_box_telegram (depend в package.xml). rosidl-генераторы есть в ros:humble-ros-base.
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
 
 # Собираем ROS 2 пакеты
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --packages-select rob_box_core rob_box_telegram && \
+    colcon build --packages-select rob_box_dialog_msgs rob_box_core rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws

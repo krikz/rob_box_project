@@ -3,7 +3,7 @@
 test_dialogue_node_echo.py — Unit-тесты Fix A (issue 989) для DialogueNode.
 
 Проверяет, что dialogue_node НЕ реагирует на rejected(empty)/маркеры
-отклонения в /voice/stt/result: молчит, не запускает диалог, не дёргает
+отклонения в /voice/stt/utterance: молчит, не запускает диалог, не дёргает
 TTS/LLM. Тест НЕ требует rclpy: DialogueNode._on_stt тестируется через
 __new__ + ручные моки (как в test_stt_node_fallback).
 """

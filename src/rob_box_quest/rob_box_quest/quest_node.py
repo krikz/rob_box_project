@@ -52,6 +52,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import CompressedImage, LaserScan
+from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
@@ -1932,7 +1933,7 @@ class QuestNode(Node):
             lambda text: self.get_logger().debug(text),
         )
         self._speaker_result_sub = self.create_subscription(
-            String, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
+            SpeakerResult, "/voice/speaker/result", self._tars_status.on_speaker_result, 10
         )
         # #3253 Ш3б: llm/wake-слова — latched-топики dialogue_node.
         _tars_latched = QoSProfile(

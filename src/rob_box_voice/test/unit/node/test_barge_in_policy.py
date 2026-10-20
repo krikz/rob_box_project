@@ -15,6 +15,7 @@ import pytest
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 
 @pytest.fixture
@@ -73,9 +74,7 @@ def node():
 
 
 def _stt(data):
-    msg = MagicMock()
-    msg.data = data
-    return msg
+    return make_utterance(data)
 
 
 class TestBargeInPolicyDispatch:

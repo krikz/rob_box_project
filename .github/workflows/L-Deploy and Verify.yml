@@ -1270,7 +1270,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Топики голосового стека видны из контейнера voice-assistant.
-          # /voice/stt/result публикует stt_node — его присутствие говорит, что
+          # /voice/stt/utterance публикует stt_node — его присутствие говорит, что
           # voice-assistant дошёл до Zenoh-графа (ADR-0159: сквозной путь Sound→Main→Vision).
           # Статус topics_healthy НЕ влияет на deploy_status (как на Vision/Main):
           # это finding, не провал деплоя.
@@ -1295,7 +1295,7 @@ jobs:
             echo "Topics found:"
             echo "$TOPICS" | grep -E "^/voice" || echo "  (no /voice topics)"
 
-            EXPECTED_TOPICS="/voice/stt/result"
+            EXPECTED_TOPICS="/voice/stt/utterance"
             MISSING_TOPICS=""
             for topic in $EXPECTED_TOPICS; do
               if ! echo "$TOPICS" | grep -qx "$topic"; then

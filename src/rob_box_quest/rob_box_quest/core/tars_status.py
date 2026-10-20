@@ -15,6 +15,8 @@ import json
 import time
 from typing import Any, Callable, Optional
 
+from rob_box_core.speaker_wire import speaker_result_to_payload
+
 # Не чаще одного события в 1.5 с при изменениях.
 MIN_INTERVAL_S = 1.5
 # Повтор без изменений — чтобы клиент, подключившийся позже, получил статус.
@@ -187,8 +189,8 @@ class TarsStatusRelay:
         self._agg.note_wake(self._parse(msg))
 
     def on_speaker_result(self, msg: Any) -> None:
-        """Колбэк ``/voice/speaker/result``."""
-        self._agg.note_speaker(self._parse(msg), time.monotonic())
+        """Колбэк ``/voice/speaker/result`` (``SpeakerResult``, ADR-0150 PR-2)."""
+        self._agg.note_speaker(speaker_result_to_payload(msg), time.monotonic())
 
     def on_timer(self) -> None:
         """Колбэк таймера 1 Гц: событие уходит только если пора."""

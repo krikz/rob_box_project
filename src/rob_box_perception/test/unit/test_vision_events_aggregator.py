@@ -331,6 +331,20 @@ _perception_msgs_msg.VisionEvent = _VisionEvent
 sys.modules['rob_box_perception_msgs'] = _perception_msgs
 sys.modules['rob_box_perception_msgs.msg'] = _perception_msgs_msg
 
+# ADR-0150 PR-2: context_aggregator_node подписан на типизированный Utterance.
+_dialog_msgs = types.ModuleType('rob_box_dialog_msgs')
+_dialog_msgs_msg = types.ModuleType('rob_box_dialog_msgs.msg')
+
+
+class _Utterance:
+    def __init__(self, text: str = ''):
+        self.text = text
+
+
+_dialog_msgs_msg.Utterance = _Utterance
+sys.modules['rob_box_dialog_msgs'] = _dialog_msgs
+sys.modules['rob_box_dialog_msgs.msg'] = _dialog_msgs_msg
+
 # ---- utils stubs (просто чтобы import работал) ----
 # issue #2703/#2704 фикс-побочка: __path__ раньше был [] (пустой). Это
 # ГЛОБАЛЬНО (через sys.modules.setdefault — без teardown) "запирало" имя

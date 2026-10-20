@@ -11,6 +11,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import String
 import json
 import time
@@ -29,7 +30,7 @@ class VoiceExampleNode(Node):
 
         # Publisher для STT result (имитация user речи)
         self.stt_pub = self.create_publisher(
-            String, '/voice/stt/result', 10
+            Utterance, '/voice/stt/utterance', 10
         )
 
         self.get_logger().info('✅ VoiceExampleNode запущен')
@@ -49,8 +50,9 @@ class VoiceExampleNode(Node):
 
     def send_user_command(self, text: str):
         """Имитация пользовательской команды."""
-        msg = String()
-        msg.data = text
+        msg = Utterance()
+        msg.text = text
+        msg.source = Utterance.SOURCE_RESPEAKER
         self.stt_pub.publish(msg)
 
         self.get_logger().info(f'👤 User: {text}')

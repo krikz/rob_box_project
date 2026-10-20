@@ -286,7 +286,7 @@ def pick_names(archive: Mapping[str, object], n: int, seed: int) -> List[str]:
 
 
 def theme_text(title: str) -> str:
-    """Название как тема для фразы: только буквы/цифры/пробелы (кавычки ломают инъекцию в ``/voice/stt/result``)."""
+    """Название как тема для фразы: только буквы/цифры/пробелы (кавычки ломают инъекцию в ``/voice/stt/utterance``)."""
     return " ".join(re.sub(r"[^\w ]", " ", title).split())
 
 

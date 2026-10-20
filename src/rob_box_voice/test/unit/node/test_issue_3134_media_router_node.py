@@ -24,6 +24,7 @@ from rob_box_voice.core.media_router import NOT_STARTED_TEXT, NOTHING_PLAYING_TE
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
+from ros_stubs import make_utterance  # noqa: E402
 
 
 class _FakeExecutor:
@@ -97,9 +98,7 @@ def run_plans(monkeypatch):
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 STATES = {

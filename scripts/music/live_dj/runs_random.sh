@@ -13,7 +13,7 @@ else
 fi
 [ "${#THEMES[@]}" -eq 5 ] || { echo "нужно 5 тем, получено ${#THEMES[@]}" >&2; exit 1; }
 echo "=== SEED $SEED themes: ${THEMES[*]}" | tee -a "$D"/index.txt
-inj(){ docker exec -e T="$1" voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 topic pub --once /voice/stt/result std_msgs/msg/String "{data: \"$T\"}" >/dev/null 2>&1'; }
+inj(){ docker exec -e T="$1" voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 topic pub --once /voice/stt/utterance rob_box_dialog_msgs/msg/Utterance "{text: \"$T\", source: respeaker}" >/dev/null 2>&1'; }
 i=0
 for T in "${THEMES[@]}"; do
   i=$((i+1))

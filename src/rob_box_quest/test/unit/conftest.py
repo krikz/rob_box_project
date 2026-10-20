@@ -74,6 +74,8 @@ _ROS_MODULES = (
     "sensor_msgs.msg",
     "std_msgs",
     "std_msgs.msg",
+    "rob_box_dialog_msgs",
+    "rob_box_dialog_msgs.msg",
     "rob_box_core",
     "rob_box_core.avatar_command",
     "rob_box_core.speech_segmentation",
@@ -163,6 +165,8 @@ _STUB_ATTRS = {
     "nav_msgs.msg": {"OccupancyGrid": _StubMsg, "Odometry": _StubMsg, "Path": _StubMsg},
     "sensor_msgs.msg": {"CompressedImage": _StubMsg, "LaserScan": _StubMsg},
     "std_msgs.msg": {"String": _StubString},
+    # ADR-0150 PR-2: /voice/speaker/result типизирован (SpeakerResult).
+    "rob_box_dialog_msgs.msg": {"SpeakerResult": _StubMsg},
     "rob_box_core.avatar_command": {
         "AVATAR_COMMAND_RESULT_TOPIC": "/avatar/command/result"
     },

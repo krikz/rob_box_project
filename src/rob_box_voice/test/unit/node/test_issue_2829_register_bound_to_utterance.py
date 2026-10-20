@@ -67,6 +67,7 @@ from rob_box_voice.utils.speaker_embeddings import (  # noqa: E402
     SpeakerDatabase,
     SpeakerMatch,
 )
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
 
 class _Embed:
@@ -97,7 +98,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 def _msg(payload):

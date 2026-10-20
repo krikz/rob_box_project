@@ -39,7 +39,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs
+RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -68,6 +68,15 @@ COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
 COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
 COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
 COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
+# ADR-0150 PR-2 (#3687): типы диалога v2 (Utterance, SpeakerResult, ...).
+# rosidl-пакет собирается в том же colcon build, раньше rob_box_voice /
+# rob_box_mcp_tools (depend в package.xml). Копируем целиком (package.xml,
+# CMakeLists.txt, msg/, srv/) - иначе find_package/rosidl падает так же, как
+# у rob_box_supervisor_msgs выше.
+COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
+COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
 
 # Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
 #
@@ -291,7 +300,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
+    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

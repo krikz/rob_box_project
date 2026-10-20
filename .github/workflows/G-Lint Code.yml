@@ -480,6 +480,20 @@ jobs:
         run: |
           python -m unittest scripts.lint.test_seam_without_consumer -v
 
+      # ADR-0150 §10.3 / PR-2 (#3687): владельцы топиков диалога. Каждый топик
+      # /dialog/*, /voice/speech|expression|providers|stt|speaker|music/*,
+      # /telegram/*, /avatar/session, который код публикует, объявлен в
+      # architecture/ownership.yml; писателей не больше writers_allowed;
+      # multiple_writers в runtime-baseline.json несут debt с номером PR.
+      # Hard gate (no continue-on-error). Блок отдельный от шагов cc_budget/PR-0.
+      - name: Dialog topic ownership guard (ADR-0150 §10.3)
+        run: |
+          python scripts/lint/ownership_check.py
+
+      - name: Dialog topic ownership guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_ownership_check -v
+
       # ADR-AF-0030 §2.4 / issue #2076 Phase 2: ADR-namespace collision guard
       # с поддержкой двух доменов (AF для agent-flow, RT для рантайма).
       # Hard gate (no continue-on-error) — PR с новым docs/adr/(AF-)?NNNN-*.md
