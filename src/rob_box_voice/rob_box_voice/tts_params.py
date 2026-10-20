@@ -131,7 +131,7 @@ _TTS_PRIORITY_PREEMPTS = frozenset({"operator"})
 #
 # ``"speakers"`` — значение ``Sink.SPEAKERS`` из SoT-сборщика
 # ``rob_box_core.utterance`` (ADR-0080 §2.3). Продюсеры (dialogue_node,
-# telegram_node, stt_node, startup_greeting_node, core.speak_helpers)
+# telegram_node, stt_node, core.speak_helpers; нода приветствия удалена в #3684)
 # перешли на него в voice-vr 12 (#2197), а consumer в voice-vr 13 (#2198)
 # остался на единственном числе ``"speaker"`` — рассинхрон контракта,
 # из-за которого КАЖДАЯ реплика в динамики уходила в DROP (deploy #2318:

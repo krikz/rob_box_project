@@ -8,7 +8,7 @@ startup_greeting.py — данные и хелперы приветствия п
 * pick_greeting() / pick_finish_sound() — случайный выбор.
 
 Этот модуль использует dialogue_node (inline-приветствие через
-startup_greeting_sec) и standalone-нода startup_greeting_node.py.
+startup_greeting_sec) (standalone-нода приветствия удалена в #3684).
 """
 
 from __future__ import annotations

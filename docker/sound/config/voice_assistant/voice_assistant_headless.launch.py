@@ -177,7 +177,7 @@ def generate_launch_description():
     )
 
     # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
-    # Отдельная startup_greeting_node убрана — страдала гонкой с
+    # Отдельная нода приветствия убрана — страдала гонкой с
     # инициализацией tts_node (фраза терялась). dialogue_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 

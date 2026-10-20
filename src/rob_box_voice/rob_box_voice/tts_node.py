@@ -2882,7 +2882,7 @@ class TTSNode(Node):
             Это значение ``Sink.SPEAKERS`` из SoT-сборщика
             ``rob_box_core.utterance`` (ADR-0080 §2.3), которым публикуют
             ВСЕ пять продюсеров (dialogue_node, telegram_node, stt_node,
-            startup_greeting_node, speak_helpers). До фикса оно не было в
+            speak_helpers; нода приветствия удалена в #3684). До фикса оно не было в
             whitelist → каждая реплика в динамики уходила в DROP.
             Канонизируем в ``"speaker"``, чтобы ниже по стеку
             (``_submit_synthesis(sink=...)`` → ``_sap_publish_for_sink``)

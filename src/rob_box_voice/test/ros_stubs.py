@@ -142,7 +142,7 @@ class FakeNode:
     def create_client(self, *args, **kwargs):
         return MagicMock()
 
-    # ── introspection (startup_greeting_node waits on real subscribers) ──
+    # ── introspection (the removed greeting node waited on real subscribers) ──
     def get_publisher_names_and_types_by_node(self, name, namespace):
         return [(topic, ["std_msgs/String"]) for topic, _ in self._publishers]
 
