@@ -30,7 +30,7 @@ from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ProviderC
 from rob_box_llm.providers.fake import FakeLLMProvider
 from scripts.dialog.stub_parse import pick_parser, stub_parse
 
-REFERENCE_SET = Path(__file__).resolve().parents[3] / "scripts" / "dialog" / "reference_set.yaml"
+REFERENCE_SET = Path(__file__).resolve().parents[2] / "scripts" / "dialog" / "reference_set.yaml"
 SCHEMA = {"type": "object", "properties": {"speech": {"type": "string", "maxLength": 280}}}
 
 
