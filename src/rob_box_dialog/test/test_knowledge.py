@@ -130,3 +130,10 @@ def test_prompt_fragment_names_every_enum_value():
               *(v for vs in kn.FACE_SCENE_SLOTS.values() for v in vs)]
     assert [v for v in values if v not in text] == []
     assert str(kn.SPEECH_MAX_CHARS) in text and str(kn.ACTIONS_MAX) in text
+
+
+def test_session_budgets():
+    assert kn.TURN_DEADLINE_S == 12
+    assert kn.SILENCE_TTL_S == 600
+    assert kn.IDENTITY_TTL_S == 15
+    assert set(kn.SCENE_KINDS) == {"Silence", "Persona", "DJ", "OperatorHold", "Identity"}

@@ -5,7 +5,6 @@ import inspect
 import json
 import pathlib
 import random
-import types
 
 import pytest
 
@@ -13,11 +12,11 @@ from rob_box_core.tool_catalog import TOOL_CATALOG, get_tool
 from rob_box_dialog import command as cm
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Command, FaceScene, Invalid, parse, validate
+from rob_box_dialog.session import Session
 
 ALL = [t.name for t in TOOL_CATALOG]
-#: Снимок сессии агента оператора: валидатору нужно только поле ``agent`` (``SessionSnapshot`` — ч.3 PR-1).
-OPERATOR = types.SimpleNamespace(agent="operator")
-PERSONALITY = types.SimpleNamespace(agent="personality")
+OPERATOR = Session("operator").snapshot
+PERSONALITY = Session("personality").snapshot
 
 
 def ok(raw, tools=ALL, **kw):
