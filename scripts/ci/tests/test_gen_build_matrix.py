@@ -237,12 +237,15 @@ def test_real_manifest_parses_and_splits_into_waves():
 
     # ADR-0159: голосовой стек и supervisor (наследует voice-assistant)
     # собираются для Sound Pi — вся цепочка FROM живёт в одном Pi.
-    assert sorted(sound) == ["supercollider", "supervisor", "voice-assistant", "voice-base"]
-    assert len(vision) == 6, f"expected 6 Vision Pi services, got {sorted(vision)}"
+    # + telegram-bot и quest (ADR-0159 PR-7, В9): своя база ros2-zenoh, в цепочку FROM не входят.
+    assert sorted(sound) == [
+        "quest", "supercollider", "supervisor", "telegram-bot", "voice-assistant", "voice-base",
+    ]
+    assert len(vision) == 4, f"expected 4 Vision Pi services, got {sorted(vision)}"
     assert len(main) == 8, f"expected 8 Main Pi services, got {sorted(main)}"
 
     assert gen_build_matrix.topo_layers(sound) == [
-        ["supercollider", "voice-base"],
+        ["quest", "supercollider", "telegram-bot", "voice-base"],
         ["voice-assistant"],
         ["supervisor"],
     ]
@@ -480,7 +483,7 @@ def test_source_hash_spec_converts_extensions_to_find_patterns():
 
 
 def test_source_hash_spec_keeps_group_order_for_multi_group_services():
-    services, ctx = _real("vision")
+    services, ctx = _real("sound")  # quest — Sound Pi с ADR-0159 PR-7
     entry = gen_build_matrix.matrix_entry("quest", services, ctx)
     assert entry["source_hash_spec"].splitlines() == [
         "src/rob_box_quest/rob_box_quest\t*.py",

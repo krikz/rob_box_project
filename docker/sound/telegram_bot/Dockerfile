@@ -1,7 +1,7 @@
 # Dockerfile для Telegram Bot — операторский интерфейс через Telegram
 #
 # Легковесный контейнер: python-telegram-bot + rclpy + aiohttp
-# Деплоится на Vision Pi рядом с voice-assistant
+# Деплоится на Sound Pi рядом с voice-assistant (до ADR-0159 PR-7 жил на Vision Pi)
 #
 # ВАЖНО: конфиги и скрипты монтируются через volumes, НЕ COPY!
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
@@ -79,7 +79,7 @@ RUN pip3 install --no-cache-dir \
 #
 # Куда переехало: docker/vision/scripts/resource_pack/manifest.yaml, запись
 # `vosk-ru-small` (required: hard). Файл кладёт на ХОСТ шаг деплоя
-# «[Vision Pi] Ensure STT/TTS models», контейнер получает его bind-mount'ом
+# «[Sound Pi] Ensure STT/TTS models», контейнер получает его bind-mount'ом
 # `/opt/rob_box/models:/models:ro` (docker-compose.yaml, telegram-bot — тот
 # же том, что уже был у voice-assistant).
 #

@@ -113,14 +113,19 @@ zenoh-router
 oak-d
 led-matrix              (led_matrix)
 ceiling-camera
+apriltag
+vision-hailo            (vision_hailo)
+```
+
+### Sound Pi Services (ADR-0159; `telegram-bot` и `quest` — с волны 2, PR-7)
+
+```
 voice-base              (voice_base)
 voice-assistant         (voice_assistant)
-telegram-bot            (telegram_bot)
 supercollider
-apriltag
 supervisor
+telegram-bot            (telegram_bot)
 quest
-zenoh-router
 ```
 
 > `quest` and `supervisor` build the same way `L: Build Pi Services`

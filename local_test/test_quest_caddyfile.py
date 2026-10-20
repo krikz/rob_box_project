@@ -2,7 +2,7 @@
 
 Зачем это существует
 --------------------
-`docker/vision/quest/Caddyfile` — единственная точка, где HTTPS-фронтенд
+`docker/sound/quest/Caddyfile` — единственная точка, где HTTPS-фронтенд
 (порты 443/8443) склеивается с aiohttp-приложением `quest_node`. Приложение
 одно (`server/ws_server.py::build_app` регистрирует `/healthz` и `/quest`),
 поэтому оба маршрута ОБЯЗАНЫ смотреть в один и тот же upstream-порт.
@@ -34,7 +34,7 @@ import pytest
 
 # local_test/ -> repo root
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_CADDYFILE = _REPO_ROOT / "docker" / "vision" / "quest" / "Caddyfile"
+_CADDYFILE = _REPO_ROOT / "docker" / "sound" / "quest" / "Caddyfile"
 _COMPOSE = _REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
 
 # Порт voice-action-server. Для quest-апстрима он ЗАПРЕЩЁН: сервис чужой,

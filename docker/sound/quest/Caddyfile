@@ -1,6 +1,6 @@
 # Caddyfile для Meta Quest WebXR-консоли (Phase 1.6, ADR-0027 §4.1)
 #
-# Lab-only self-signed TLS. Никакого ACME / certbot: 10.1.1.11 — приватный IP,
+# Lab-only self-signed TLS. Никакого ACME / certbot: 10.1.1.12 (Sound Pi; до ADR-0159 PR-7 — 10.1.1.11) — приватный IP,
 # 80-порт наружу не нужен. Cert генерируется на старте контейнера
 # (см. start_quest.sh).
 #

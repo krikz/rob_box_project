@@ -938,14 +938,9 @@ def test_container_paths_did_not_move() -> None:
     Весь смысл §6.1 плана: ни один Python-файл не правится, потому что
     /models/... остаётся /models/... — меняется только, чем он наполнен.
     """
-    # voice-assistant — на Sound Pi (ADR-0159 PR-2b), telegram-bot — пока на Vision.
+    # voice-assistant — на Sound Pi (ADR-0159 PR-2b), telegram-bot — тоже (PR-7, В9).
     compose = yaml.safe_load(
         (REPO_ROOT / "docker" / "sound" / "docker-compose.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    vision_compose = yaml.safe_load(
-        (REPO_ROOT / "docker" / "vision" / "docker-compose.yaml").read_text(
             encoding="utf-8"
         )
     )
@@ -965,7 +960,7 @@ def test_container_paths_did_not_move() -> None:
     # Его Dockerfile качал её сам; том обязан быть ровно тем же, иначе бот
     # молча теряет офлайн-фолбэк STT (и падает обратно на один Yandex —
     # ровно тот сценарий 2026-09-03, ради которого Vosk сюда и завезли).
-    tg_volumes = vision_compose["services"]["telegram-bot"]["volumes"]
+    tg_volumes = compose["services"]["telegram-bot"]["volumes"]
     assert "/opt/rob_box/models:/models:ro" in tg_volumes, (
         "telegram-bot не монтирует host-каталог моделей: после удаления "
         "ступени скачивания из telegram_bot/Dockerfile Vosk-фолбэка в боте "
@@ -1019,7 +1014,7 @@ def test_telegram_bot_no_longer_downloads_vosk() -> None:
     манифестом молча — потому что манифест о ней не знал.
     """
     dockerfile = (
-        REPO_ROOT / "docker" / "vision" / "telegram_bot" / "Dockerfile"
+        REPO_ROOT / "docker" / "sound" / "telegram_bot" / "Dockerfile"
     ).read_text(encoding="utf-8")
     active = [
         line

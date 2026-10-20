@@ -4,6 +4,10 @@
 # TTL-USB конвертер сенсорного хаба. Всё остальное общается с ним топиками
 # через Zenoh и compose-зависимостями с другими узлами не связано.
 #
+# Волна 2 (ADR-0159 PR-7, решение Шифу 20.10 — В9): сюда же переехали avatar-arbiter,
+# quest и telegram-bot — им не нужны устройства Vision Pi (только топики), а Vision
+# оставляет за собой тяжёлое: камеры и распознавание лиц.
+#
 # Общие шаблоны конфигов и скрипты лежат в docker/common; узел отличается
 # только ZENOH_LISTEN_IP (здесь) и ZENOH_CONNECT_ENDPOINTS (сервис zenoh-router).
 # Дефолт = адрес eth0 этого Pi; переопределение — в .env.
@@ -354,7 +358,7 @@ services:
   # ============ Avatar Supervisor (AV-9, ADR-0028) — ТАРС на Sound Pi (ADR-0159 В8) ============
   # Решение Шифу 19.10: ТАРС и личность пишут в один /data/harness_voice.db (ADR-0083 §E),
   # поэтому supervisor живёт на одном узле с voice-assistant (и mcp_server: .mcp_token снова
-  # на одном хосте, В5 снята). avatar-arbiter остался на Vision Pi.
+  # на одном хосте, В5 снята). avatar-arbiter приехал сюда следом, в волне 2 (В9, ниже).
   # Phase 1 monitor-only: publishes /avatar/state, no twist_mux /
   # dialogue_node mutation. Phase 2 (mode=active) — after voice_input_mode
   # lands in dialogue_node (расхождение #1 плана Quest).
@@ -403,7 +407,7 @@ services:
     #   _build_operator_llm: deepseek build failed: missing API key
     #   _build_operator_llm: no LLM provider built (chain=['deepseek'])
     # Агент оператора принимал фразы из шлема и молча не мог ответить.
-    # Тот же файл подключён у voice-assistant (выше) и telegram-bot (на Vision Pi).
+    # Тот же файл подключён у voice-assistant (выше) и telegram-bot (ниже, волна 2).
     env_file:
       - .env.secrets  # MINIMAX_API_KEY, DEEPSEEK_API_KEY — операторский LLM (ТАРС)
     volumes:
@@ -430,6 +434,199 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'supervisor_node' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Avatar Arbiter (ADR-0051 §2.2, issue #1987) — Sound Pi с волны 2 (ADR-0159 В9) ============
+  # Отдельная нода без LLM: арбитр floor/FSM (LockManager, ModeManager,
+  # агрегатор), сервисы /avatar_arbiter/{acquire_floor,release_floor,
+  # set_avatar_mode}, публикация /avatar/state. Арбитраж вынесен из
+  # supervisor (там остались голос + супервизор-агент оператора).
+  #
+  # Переиспользует supervisor-образ: тот собирает ВЕСЬ пакет
+  # rob_box_supervisor (console_scripts: supervisor_node + avatar_arbiter).
+  # Образ тот же, что у supervisor выше (тег SUPERVISOR_TAG) — второго образа и
+  # второй копии скрипта нет: start_arbiter.sh лежит рядом со start_supervisor.sh
+  # в ./scripts/supervisor (общий каталог, монтируется в /scripts у обоих).
+  avatar-arbiter:
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:supervisor-${ROS_DISTRO:-humble}-${SUPERVISOR_TAG:-${IMAGE_TAG}}
+    container_name: avatar-arbiter
+    pull_policy: if_not_present
+    network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 230 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - PYTHONUNBUFFERED=1
+      # Арбитр по умолчанию в active-режиме — это его единственная роль
+      # (он не monitor-нода). Захват/освобождение floor + FSM работают.
+      - AVATAR_ARBITER_MODE=active
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/supervisor:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_arbiter.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'avatar_arbiter' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Meta Quest WebXR-консоль (Phase 1.6, ADR-0027) — Sound Pi с волны 2 (ADR-0159 В9) ============
+  # Лёгкий лёгкий сервис (caddy:2-alpine + aiohttp): статика WebXR-клиента +
+  # reverse_proxy на rob_box_quest. Self-signed TLS, без certbot.
+  #
+  # Адрес для шлема сменился с 10.1.1.11 на 10.1.1.12 (eth0 Sound Pi): DNS-запись
+  # quest.rob_box.local на роутере надо перевести на новый адрес. Порты host-сети
+  # (443, 8443, 8766) на Sound Pi свободны (ss -ltn, 20.10); 8765 держит voice-action-server.
+  # Видео не сырое: quest подписывается на *compressed* топики камер (JPEG/PNG, по запросу
+  # шлема, см. rob_box_quest/streams/ros_demand.py) — с Vision Pi это идёт по Zenoh-линку Sound↔Vision.
+  #
+  # Build context: docker/sound/quest/Dockerfile — multi-stage:
+  #   node:20-alpine (Vite build) → caddy:2-alpine (runtime + pip aiohttp).
+  # Не использует voice-assistant image (нет тяги pytorch/Renardo, ~10GB).
+  #
+  # Зависимость: webxr_client/ (Phase 1.5) должен быть merged в текущую
+  # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
+  # (явная ошибка зависимости, не silent degradation).
+  quest:
+    # Тег QUEST_TAG в .image-versions не пишется (манифест: image_versions: false),
+    # поэтому образ берётся по ${IMAGE_TAG} (dev/test/latest), как и на Vision Pi.
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
+    container_name: rob-box-quest
+    pull_policy: if_not_present
+    network_mode: host
+    # mem_limit ADR-0111 (issue #2621): 266 MB RSS замер, даём 512 MB
+    mem_limit: 512m
+    memswap_limit: 512m
+    build:
+      context: .
+      dockerfile: docker/sound/quest/Dockerfile
+    environment:
+      - ROS_DOMAIN_ID=0
+      - ROS_DISTRO=humble
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - PYTHONUNBUFFERED=1
+      - QUEST_HOST=${QUEST_HOST:-quest.rob_box.local}
+      # IP в SAN самоподписанного сертификата (start_quest.sh): адрес eth0 Sound Pi.
+      # Сертификат из тома quest-certs НЕ пересоздаётся, если файл уже есть.
+      - QUEST_IP=${QUEST_IP:-10.1.1.12}
+      - CERT_DAYS=${QUEST_CERT_DAYS:-365}
+      # WS_PORT=8766 чтобы не конфликтовать с voice-action-server,
+      # который по дефолту биндит 127.0.0.1:8765. В host-network оба
+      # порта = 8765 → второй стартующий получает OSError EADDRINUSE
+      # и aiohttp-сабтред падает → Caddy получает 404 на /quest (Phase 1.6).
+      # Меняем только rob-box-quest на 8766, voice-action-server остаётся на 8765.
+      - WS_PORT=${QUEST_WS_PORT:-8766}
+      # Фиксированный PIN для dev-сессий. Если задан — используется вместо
+      # случайного из generate_pin(). Чтобы перебить: export QUEST_PIN=XXXXXX
+      # до docker compose up, либо через .env (QUEST_PIN=XXXXXX).
+      - QUEST_PIN=${QUEST_PIN:-103856}
+    volumes:
+      # certs persist between restarts; монтируем именованный путь,
+      # чтобы self-signed не пересоздавался на каждом redeploy
+      - quest-certs:/certs
+      # Конфиги Zenoh + scripts (DOCKER_STANDARDS: нет COPY config/scripts)
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/quest:/scripts:ro
+    command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_quest.sh"]
+    depends_on:
+      zenoh-router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # pgrep проверяет оба ключевых процесса — Caddy + quest_node.
+      # Если один упал, healthcheck fail → compose restart.
+      test: ["CMD-SHELL", "pgrep -f 'caddy run' >/dev/null && pgrep -f 'ros2 run rob_box_quest' >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    labels:
+      logging: "promtail"
+
+  # ============ Telegram Bot — Sound Pi с волны 2 (ADR-0159 В9) ============
+  # Операторский интерфейс через Telegram
+  # Управление роботом с телефона: фото, голос, движение, LLM чат
+  # ОДИН getUpdates на токен: бот не должен жить одновременно на Vision и Sound
+  # (409 Conflict). Деплой снимает старый контейнер с Vision (`compose down
+  # --remove-orphans`) раньше, чем поднимает Sound.
+  telegram-bot:
+    # Tag tracked in docker/sound/.image-versions.{env} — updated by CI after each build
+    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:telegram-bot-${ROS_DISTRO:-humble}-${TELEGRAM_BOT_TAG:-${IMAGE_TAG}}
+    container_name: telegram-bot
+    pull_policy: if_not_present
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_zenoh_cpp
+      - ROBOT_ID=${ROBOT_ID}
+      - ZENOH_ROUTER_CHECK_ATTEMPTS=10
+      - RUST_LOG=zenoh=info
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+      - ZENOH_SESSION_CONFIG_URI=/tmp/zenoh_session_config.json5
+      - *zenoh_listen_ip  # адрес локального роутера для session config
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env.secrets  # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS, DEEPSEEK_API_KEY, YANDEX_API_KEY, etc.
+    volumes:
+      - ./config:/config:ro
+      - ../common/scripts:/ros_scripts:ro
+      - ../common/config:/common_config:ro
+      - ./scripts/telegram_bot:/scripts:ro
+      # Vosk-модель с хоста (Ресурсный пак, ADR-0125) — тот же каталог, что
+      # монтирует voice-assistant (выше, тот же compose). До 21.09.2026 telegram_bot/Dockerfile качал
+      # ЭТУ ЖЕ модель на этапе сборки своего образа: одна модель жила в двух
+      # образах, а сборка падала целиком при недоступном alphacephei.com.
+      # Путь ВНУТРИ контейнера не изменился — voice_processor.py:40 читает
+      # `/models/vosk-model-small-ru-0.22` (дефолт VOSK_MODEL_PATH).
+      # :ro — модели кладёт только хост (шаг деплоя «Ensure STT/TTS models»).
+      # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
+      # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
+      - /opt/rob_box/models:/models:ro
+      # issue #3025: том лицевой базы, пишет её vision-face (Vision Pi, без :ro).
+      # :ro гарантирует, что telegram-bot только ЧИТАЕТ (ADR-0123 §4: FaceStore
+      # пишет только в своём контейнере).
+      # НА SOUND PI это КОПИЯ-СНИМОК (cutover 19.10), а не живая база: пока нет
+      # синхронизации Vision→Sound (карточка #3655), команды бота /faces и карточки
+      # лиц показывают галерею на момент копирования и отстают от vision-face.
+      - ./data/faces:/data/faces:ro
+    mem_limit: 512m
+    memswap_limit: 640m
+    command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]
+    depends_on:
+      - zenoh-router
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f telegram_node || exit 1"]
       interval: 15s
       timeout: 5s
       start_period: 20s
@@ -549,3 +746,13 @@ volumes:
   # and supercollider (scsynth reads them). Without this, scsynth can't find SynthDefs by name
   # → "bassguitar.scsyndef could not be opened" + negative node IDs (issue 986).
   sc_synthdefs:
+  # Self-signed TLS-сертификат для rob_box_quest (Phase 1.6, ADR-0027 §4.1).
+  # Без named-volume cert пересоздавался бы при каждом redeploy → пришлось
+  # бы заново импортировать его в Meta Quest.
+  # ВНИМАНИЕ (переезд с Vision Pi, ADR-0159 PR-7): на Sound Pi том называется
+  # sound_quest-certs и стартует ПУСТЫМ — start_quest.sh сгенерирует новый
+  # сертификат (SAN: quest.rob_box.local + QUEST_IP), и шлему придётся принять его
+  # заново. Чтобы сохранить доверие шлема, до первого старта quest скопировать
+  # содержимое vision_quest-certs в sound_quest-certs (команды — в описании PR-7)
+  # и перевести DNS quest.rob_box.local на 10.1.1.12.
+  quest-certs:

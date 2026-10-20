@@ -32,8 +32,8 @@
 #   - docs/architecture/meta-quest-api.md §2/§3/§7/§8 (wire protocol + heartbeat)
 #   - src/rob_box_quest/rob_box_quest/protocol/frame.py (frame codec contract)
 #   - src/rob_box_quest/rob_box_quest/server/session.py (HEARTBEAT_INTERVAL_S, WATCHDOG)
-#   - docker/vision/quest/Caddyfile (TLS + reverse_proxy flush_interval=-1)
-#   - docker/vision/scripts/quest/start_quest.sh (self-signed cert generation)
+#   - docker/sound/quest/Caddyfile (TLS + reverse_proxy flush_interval=-1)
+#   - docker/sound/scripts/quest/start_quest.sh (self-signed cert generation)
 #
 # ADR-0018: «Честный FAIL лучше красивого PASS». Этот скрипт НЕ маскирует
 # ошибки: пропущенная зависимость → exit 65, отсутствующий сервер → fail

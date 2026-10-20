@@ -520,7 +520,7 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 
 ### 2.7. rob_box_telegram
 
-**Описание**: Telegram operator interface — управление роботом через Telegram-бота с поддержкой LLM-диалога, голосовых сообщений и фото. Запускается на **Vision Pi**.
+**Описание**: Telegram operator interface — управление роботом через Telegram-бота с поддержкой LLM-диалога, голосовых сообщений и фото. Запускается на **Sound Pi** (с ADR-0159 PR-7; раньше — Vision Pi).
 
 **Ноды**:
 - `telegram_node` — основная нода: принимает команды от оператора, публикует в ROS 2

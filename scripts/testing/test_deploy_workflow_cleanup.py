@@ -176,20 +176,35 @@ def test_no_systemd_unit_reinstall_for_sound():
     assert not [n for n in names if n.startswith("[Sound Pi]") and "Systemd" in n]
 
 
-def test_vision_pull_still_covers_supervisor_image_used_by_avatar_arbiter():
-    """avatar-arbiter остаётся на Vision Pi, но его образ — supervisor, который
-    после ADR-0159 собирает Sound-сборка. Vision-pull берёт образы из
-    `docker compose config --images` (preflight), поэтому образ подтянется, пока
-    arbiter описан в compose Vision — этот тест ловит удаление/переезд arbiter'а."""
+def test_sound_pull_covers_supervisor_image_used_by_supervisor_and_avatar_arbiter():
+    """ТАРС и avatar-arbiter — один образ supervisor, оба на Sound Pi (ADR-0159 PR-7, В9).
+    Sound-pull берёт образы из `docker compose config --images` (preflight), поэтому образ
+    подтянется, пока оба описаны в compose Sound; тест ловит переезд арбитра обратно/в третье
+    место и появление арбитра в compose Vision (две реализации)."""
     import yaml
 
     root = Path(__file__).resolve().parents[2]
-    compose = yaml.safe_load((root / "docker/vision/docker-compose.yaml").read_text(encoding="utf-8"))
-    arbiter = next(s for s in compose["services"].values() if s.get("container_name") == "avatar-arbiter")
-    assert ":supervisor-" in arbiter["image"]
-    pull = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))["[Vision Pi] Pull Docker Images"]
-    assert "cd ~/rob_box_project/docker/vision" in pull and "preflight_pull_images.sh" in pull
+    sound = yaml.safe_load((root / "docker/sound/docker-compose.yaml").read_text(encoding="utf-8"))["services"]
+    vision = yaml.safe_load((root / "docker/vision/docker-compose.yaml").read_text(encoding="utf-8"))["services"]
+    by_name = {s["container_name"]: s for s in sound.values() if s.get("container_name")}
+    assert ":supervisor-" in by_name["avatar-arbiter"]["image"]
+    assert by_name["avatar-arbiter"]["image"] == by_name["avatar-supervisor"]["image"]
+    assert not [s for s in vision.values() if s.get("container_name") == "avatar-arbiter"]
+    pull = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))["[Sound Pi] Pull Docker Images"]
+    assert "cd ~/rob_box_project/docker/sound" in pull and "preflight_pull_images.sh" in pull
     assert "docker compose config --images" in (root / "scripts/deploy/preflight_pull_images.sh").read_text(encoding="utf-8")
+
+
+def test_wave2_services_are_expected_on_sound_and_gone_from_vision_checks():
+    """quest, telegram-bot, avatar-arbiter — обязательные контейнеры Sound Pi (EXPECTED_CONTAINERS);
+    в шагах Vision на них ничего не завязано."""
+    steps = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    sound_status = steps["[Sound Pi] Check Container Status"]
+    for name in ("rob-box-quest", "telegram-bot", "avatar-arbiter"):
+        assert name in re.search(r'EXPECTED_CONTAINERS="([^"]*)"', sound_status).group(1).split()
+        for step_name, body in steps.items():
+            if step_name.startswith("[Vision Pi]"):
+                assert f"docker exec {name}" not in body and f"--filter name={name}" not in body, step_name
 
 
 def test_every_referenced_step_id_is_defined_once():

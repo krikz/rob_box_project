@@ -10,7 +10,7 @@ name: "G: Quest Caddyfile Contract"
 #   «красивым PASS», от которого он должен защищать (ADR-0018).
 #
 # Что проверяем:
-#   docker/vision/quest/Caddyfile склеивает HTTPS (443/8443) с aiohttp-
+#   docker/sound/quest/Caddyfile склеивает HTTPS (443/8443) с aiohttp-
 #   приложением quest_node. Оба маршрута (/healthz и /quest) отдаёт ОДНО
 #   приложение (server/ws_server.py::build_app), поэтому обязаны смотреть в
 #   один upstream-порт = WS_PORT из docker-compose.
@@ -34,7 +34,7 @@ on:
       - main
       - 'feature/**'
     paths:
-      - 'docker/vision/quest/Caddyfile'
+      - 'docker/sound/quest/Caddyfile'
       - 'docker/vision/docker-compose.yaml'
       - 'local_test/test_quest_caddyfile.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
@@ -44,7 +44,7 @@ on:
       - main
       - 'feature/**'
     paths:
-      - 'docker/vision/quest/Caddyfile'
+      - 'docker/sound/quest/Caddyfile'
       - 'docker/vision/docker-compose.yaml'
       - 'local_test/test_quest_caddyfile.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'

@@ -290,9 +290,9 @@ def test_dockerfile_and_context_exist_on_disk(pi, service):
         # Phase 2 — только источником стал манифест, а не текст workflow.
         ("main", "robot-state-publisher", "URDF_FILES_HASH"),
         ("sound", "voice-assistant", "SOURCE_HASH"),
-        ("vision", "telegram-bot", "SOURCE_HASH"),
+        ("sound", "telegram-bot", "SOURCE_HASH"),
         ("sound", "supervisor", "SOURCE_HASH"),
-        ("vision", "quest", "SOURCE_HASH"),
+        ("sound", "quest", "SOURCE_HASH"),
         ("vision", "vision-hailo", "SOURCE_HASH"),
     ],
 )
