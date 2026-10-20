@@ -208,7 +208,7 @@ topics:
     type: rob_box_dialog_msgs/SpeechEvent
     status: live
     writers_allowed: [tts_node]
-    readers: [stt_node, mcp_server, face_node]
+    readers: [stt_node, mcp_server, face_node, telegram_node]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope

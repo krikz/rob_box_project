@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, json, logging, os, re, threading, time
+import asyncio, functools, json, logging, os, re, threading, time, uuid
 from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
+from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
 from telegram.ext import (
@@ -48,6 +49,7 @@ from .handlers.messages import text_message_handler, voice_message_handler
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
 from .radio import RadioPublisher
+from .speech_receipts import SpeechReceipts
 
 # Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
 # отдельный контейнер, поэтому у него свой лёгкий observability-модуль
@@ -84,6 +86,39 @@ _VOICE_IN_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
 )
+
+
+
+def _say_with_receipt(node, text: str, chat_id: Optional[int]) -> str:
+    """Сказать ``text`` ровно одним SpeechRequest; квитанцию ждёт ``speech_id``, заведённый ДО публикации."""
+    speech_id = str(uuid.uuid4())
+    if chat_id is not None:
+        node._speech_receipts.expect(speech_id, chat_id)
+    return node.publish_tts(text, speech_id=speech_id)
+
+
+def _send_chat_text(node, chat_id: int, text: str) -> None:
+    """Текст в чат с ROS-потока: через очередь telegram-loop, как эхо диалога (без run_coroutine_threadsafe)."""
+    loop, queue = node._telegram_loop, node._response_queue
+    if not (loop and queue and chat_id):
+        node.get_logger().warning(f"Квитанция не доставлена: бот не готов (chat_id={chat_id!r}): {text!r}")
+        return
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
+    except RuntimeError as exc:
+        node.get_logger().error(f"Не удалось отправить квитанцию (loop закрыт?): {exc!r}")
+
+
+def _on_speech_event(receipts, send, msg) -> None:
+    """``/voice/speech/event`` -> квитанция в чат, если это итог реплики из /say."""
+    receipt = receipts.on_event(int(msg.kind), msg.speech_id, msg.reason, float(msg.seconds))
+    if receipt is not None:
+        send(*receipt)
+
+
+def _flush_expired(receipts, send) -> None:
+    for chat_id, text in receipts.expired():
+        send(chat_id, text)
 
 
 class TelegramNode(Node):
@@ -204,6 +239,14 @@ class TelegramNode(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
         # ADR-0150 PR-3 (#3688): речь из Telegram — клиентом речи (агент telegram).
         speech_client.prepare(self, "request")
+        # #3727: итог /say - по SpeechEvent той же реплики (finished / rejected{reason} / cancelled / таймаут), а не
+        # «Озвучиваю» до итога. Квитанции уходят в чат через ту же очередь, что эхо диалога.
+        self._speech_receipts = SpeechReceipts()
+        self.create_subscription(
+            SpeechEvent, "/voice/speech/event",
+            functools.partial(_on_speech_event, self._speech_receipts, functools.partial(_send_chat_text, self)), _RE, callback_group=g)
+        self.create_timer(5.0, functools.partial(_flush_expired, self._speech_receipts, functools.partial(_send_chat_text, self)),
+                          callback_group=g)
         # AV-23 (issue #1915, P8) — рация из Telegram в /avatar/voice_in
         # + явный STOP в /voice/sound/stop (закрыть stream после рации,
         # barge-in уже использует тот же канал). best-effort + volatile
@@ -354,7 +397,7 @@ class TelegramNode(Node):
         )
         return payload["request_id"]
 
-    def publish_tts(self, text: str) -> str:
+    def publish_tts(self, text: str, speech_id: Optional[str] = None) -> str:
         """Сказать текст роботом (агент ``telegram``, ADR-0150 PR-3); вернуть ``speech_id``.
 
         Старый код (commands.py say_handler, messages.py playvoice) зовёт
@@ -365,17 +408,20 @@ class TelegramNode(Node):
         """
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
-        return speech_client.say(self, Utterance(text=text, sink=Sink.SPEAKERS), agent="telegram")
+        return speech_client.say(self, Utterance(text=text, sink=Sink.SPEAKERS, speech_id=speech_id), agent="telegram")
 
-    def publish_tts_with_floor(self, text: str):
+    def publish_tts_with_floor(self, text: str, receipt_chat_id: Optional[int] = None):
         """AV-10: publish TTS, обернув в AcquireFloor(voice).
+
+        ``receipt_chat_id`` - чат, которому уйдёт квитанция по ``SpeechEvent`` этой реплики (#3727); ``None`` -
+        квитанции нет (старое поведение остальных вызывающих).
 
         Returns:
             ``AcquireResult`` — вызывающий код решает, что показать
             пользователю (например, погасить кнопки если
             ``granted=False``).
         """
-        return self.supervisor.with_floor(Floor.VOICE, lambda: self.publish_tts(text))
+        return self.supervisor.with_floor(Floor.VOICE, lambda: _say_with_receipt(self, text, receipt_chat_id))
 
     def publish_move_with_floor(self, twist):
         """AV-10: publish cmd_vel, обернув в AcquireFloor(teleop).
