@@ -280,7 +280,7 @@ services:
     #   - stt_node (Vosk model ~200-500 MB)
     #   - sound_node (sclang + scsynth + FoxDot pipeline ~300-500 MB)
     #   - tts_node (PyTorch + Silero v5 fallback model ~150-200 MB)
-    #   - dialogue_node + mcp_server + animation_player + led + command
+    #   - dialogue_node + mcp_server + led + command
     # 2 GiB was hitting OOM kill (#929) when Silero v5 tried to lazy-load
     # after Yandex gRPC fallback.  Investigated 2026-07-30 in t_42726db6:
     # heap_snapshot_repro confirmed no leak in _synthesize_and_play itself

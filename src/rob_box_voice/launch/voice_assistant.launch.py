@@ -105,21 +105,7 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Animation Player Node ===
-    animation_node = Node(
-        package='rob_box_animations',
-        executable='animation_player_node.py',
-        name='voice_animation_player',
-        namespace=namespace,
-        parameters=[{
-            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'autostart_animation': 'idle',
-            'loop': True
-        }],
-        output='screen',
-        respawn=True,
-        respawn_delay=3.0
-    )
+    # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     # Issue #1004: dialog_node.yaml грузится первым, потом launch-override
@@ -256,7 +242,6 @@ def generate_launch_description():
         tool_provider_arg,
         audio_node,
         led_node,
-        animation_node,
         dialogue_node,  # ✅ Phase 2: DeepSeek streaming
         tts_node,       # ✅ Phase 2: Silero TTS (MiniMax opt-in via provider=minimax)
         stt_node,       # ✅ Phase 3: Vosk STT

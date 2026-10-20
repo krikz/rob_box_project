@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Headless Voice Assistant Launch для Vision Pi
-Включает animation_player_node для LED анимаций
+Лицо LED-матрицы здесь не запускается: face_node живёт в led-matrix на Vision Pi (ADR-0150 PR-3a)
 
 Issue #1004 fix (ADR-0004): каждый Node грузит СВОЙ per-node YAML
 (audio_node.yaml / tts_node.yaml / ...) из config_dir (по умолчанию —
@@ -81,22 +81,7 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Animation Player Node ===
-    # Интегрирован с голосовым ассистентом для LED анимаций
-    animation_node = Node(
-        package='rob_box_animations',
-        executable='animation_player_node.py',
-        name='voice_animation_player',
-        namespace=namespace,
-        parameters=[{
-            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'autostart_animation': 'idle',
-            'loop': True
-        }],
-        output='screen',
-        respawn=True,
-        respawn_delay=3.0
-    )
+    # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     dialogue_node = Node(
@@ -199,7 +184,6 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        animation_node,
         dialogue_node,
         tts_node,
         stt_node,

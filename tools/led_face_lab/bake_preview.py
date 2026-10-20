@@ -3,6 +3,8 @@
 Strips are stored at full scale (PWM at brightness 255). The page quantises
 them to the chosen brightness the same way the robot will, so the preview
 shows exactly as many shades as the LEDs get.
+
+    python tools/led_face_lab/bake_preview.py <out.json>
 """
 import base64
 import io
@@ -11,15 +13,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import yaml
 from PIL import Image
 
-import rear as R
-import states as S
-from face import FPS, Frame
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src' / 'rob_box_animations'))
 
-REPO_ANIM = Path(sys.argv[1])
-OUT = Path(sys.argv[2])
+from rob_box_animations.face import rear as R  # noqa: E402
+from rob_box_animations.face import states as S  # noqa: E402
+from rob_box_animations.face.face import FPS, Frame  # noqa: E402
+from rob_box_animations.face.scene import clip  # noqa: E402
+
+OUT = Path(sys.argv[1])
 
 MA_PER_CH = 20.0          # WS2812B, one channel at PWM 255 (datasheet)
 IDLE_MA = 1.0             # per LED, conservative
@@ -66,11 +69,11 @@ def budget(peak_ma255):
 data = {'fps': FPS, 'clips': {}, 'themes': {}, 'old': {},
         'model': {'ma_per_ch': MA_PER_CH, 'idle_ma': IDLE_MA, 'leds': N_LEDS, 'psu_ma': PSU_MA, 'budget_ma': BUDGET_MA}}
 
-for name, (fn, group, title, note, legacy) in S.CLIPS.items():
-    fr = fn()
+for name, spec in S.SCENES.items():
+    fr = clip(spec)
     b64, img = strip(fr, 'face')
-    d = {'n': len(fr), 'face': b64, 'ma_face': ma255(img, len(fr)), 'group': group, 'title': title,
-         'note': note, 'legacy': legacy}
+    d = {'n': len(fr), 'face': b64, 'ma_face': ma255(img, len(fr)), 'group': spec.group, 'title': spec.title,
+         'note': spec.note, 'legacy': None}
     if any(f.rear_l.any() or f.rear_r.any() for f in fr):
         rb, rimg = strip(fr, 'rear')
         d['rear'] = rb
@@ -88,61 +91,6 @@ for th, fn in R.THEMES.items():
     data['themes'][th] = {'n': len(fr), 'rear': b64, 'ma_rear': ma255(img, len(fr))}
     print('theme', th)
 
-
-# ---- the current PNG animations, resampled; stored so that brightness 25 reproduces them
-def old_clip(name):
-    m = yaml.safe_load((REPO_ANIM / 'manifests' / f'{name}.yaml').read_text(encoding='utf-8'))
-    total = m['duration_ms']
-    n = int(round(total / 1000 * FPS))
-    loops = max(1, int(round(6000 / total)))
-    cache = {}
-
-    def load(p):
-        if p not in cache:
-            lv = np.asarray(Image.open(REPO_ANIM / p).convert('RGB'), int) * 25 // 255
-            cache[p] = lv.astype(float)          # levels 0..25 as the driver emits them
-        return cache[p]
-
-    out = []
-    for i in range(n * loops):
-        t = (i / FPS * 1000) % total
-        f = Frame()
-        for p in m['panels']:
-            tt = t - p.get('offset_ms', 0)
-            if tt < 0:
-                continue
-            acc, img = 0, p['frames'][-1]['image']
-            for fr_ in p['frames']:
-                if acc <= tt < acc + fr_['duration_ms']:
-                    img = fr_['image']
-                    break
-                acc += fr_['duration_ms']
-            a = load(img)
-            g = p['logical_group']
-            # wheel_* panels follow the robot's sides: its left is the viewer's right on the face
-            if g == 'wheel_front_left':
-                f.eye_r = a
-            elif g == 'wheel_front_right':
-                f.eye_l = a
-            elif g == 'main_display':
-                f.mouth = a
-            elif g == 'wheel_rear_left':
-                f.rear_l = a
-            elif g == 'wheel_rear_right':
-                f.rear_r = a
-            elif g == 'wheels_all' and a.shape[0] == 8:
-                f.eye_l = f.eye_r = f.rear_l = f.rear_r = a
-        out.append(f)
-    return out
-
-
-for mf in sorted((REPO_ANIM / 'manifests').glob('*.yaml')):
-    name = mf.stem
-    fr = old_clip(name)
-    fb, fimg = strip(fr, 'face')
-    rb, rimg = strip(fr, 'rear')
-    data['old'][name] = {'n': len(fr), 'face': fb, 'rear': rb, 'ma_face': ma255(fimg, len(fr)), 'ma_rear': ma255(rimg, len(fr))}
-    print('old', name, len(fr))
 
 OUT.write_text(json.dumps(data, separators=(',', ':')), encoding='utf-8')
 print('bytes', OUT.stat().st_size)
@@ -162,6 +110,3 @@ for name, d in data['clips'].items():
 print(f'{"clip":16s} {"peak@255 mA":>12s} {"B (taillight)":>14s} {"B (heaviest theme)":>19s}')
 for r in sorted(rows, key=lambda r: r[2]):
     print(f'{r[0]:16s} {r[1]:12d} {r[2]:14d} {r[3]:19d}')
-for name, d in data['old'].items():
-    peak = max(a + b for a, b in zip(d['ma_face'], d['ma_rear']))
-    print(f'old {name:12s} peak@255 {peak:7.0f} mA -> budget {budget(peak)}')

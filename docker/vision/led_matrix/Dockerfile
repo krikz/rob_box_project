@@ -4,6 +4,8 @@
 # Архитектура:
 #   - led_matrix_driver: низкоуровневый драйвер (SPI → LED через pi5neo)
 #   - led_matrix_compositor: композитор панелей (sensor_msgs/Image → driver)
+#   - face_node (rob_box_animations): процедурное лицо 25 к/с → /panel_image
+#     (ADR-0150 §5.5, решение В14: кадры не ходят через Zenoh)
 #
 # Физическая конфигурация:
 #   - 4× панели 8×8 (фары передние/задние)
@@ -117,9 +119,9 @@ RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}" && \
     echo "Cache breaker created: $(cat /tmp/ros2leds_build_sha)"
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
-# ADR-0150 PR-2 (#3687): типы диалога v2 нужны face_node (PR-3a), который будет
-# жить в этом образе; пакет собирается здесь заранее, чтобы PR-3a не менял образ.
+# ADR-0150 PR-2 (#3687) / PR-3a (#3689): типы диалога v2 и лицо (face_node).
 COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/package.xml /ws/src/led_matrix_compositor/
 
@@ -143,6 +145,7 @@ COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
 
 # 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
 COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
 COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 
@@ -167,7 +170,7 @@ COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 # не нужен.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_dialog_msgs led_matrix_driver led_matrix_compositor \
+    --packages-select rob_box_dialog_msgs led_matrix_driver led_matrix_compositor rob_box_animations \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -253,5 +256,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
 # Точка входа - source ROS и запуск через startup script
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
 
-# По умолчанию запускаем оба компонента через launch file
-CMD ["bash", "-c", "source /ws/install/setup.bash && ros2 launch led_matrix_compositor led_matrix_compositor_launch.py"]
+# По умолчанию — драйвер, композитор и лицо одним launch-файлом
+CMD ["bash", "-c", "source /ws/install/setup.bash && ros2 launch rob_box_animations face_led_matrix.launch.py"]

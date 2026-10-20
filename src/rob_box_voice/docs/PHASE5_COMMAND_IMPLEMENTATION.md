@@ -247,17 +247,11 @@ User Speech → STT → Command Node → Nav2
                 ↓                     ↓
          Dialogue Node ← Feedback ←─┘
                 ↓
-              TTS → Speech + Audio-Reactive Animations
+              TTS → Speech + /voice/speech/envelope
                          ↓
-                   🎤 Audio Output
+              face_node (Vision Pi, ADR-0150 PR-3a)
                          ↓
-              audio_reactive_animation_node
-                         ↓
-                   /audio/level (Float32)
-                         ↓
-              animation_player_node
-                         ↓
-                   👄 Mouth Animation (lip-sync)
+                   👄 Mouth by the real voice
 ```
 
 **Пример диалога**:
@@ -267,105 +261,17 @@ User Speech → STT → Command Node → Nav2
 3. **Command**: Intent=NAVIGATE, waypoint="точка 3"
 4. **Feedback**: "Иду к точка 3" → TTS
 5. **TTS**: Синтез речи → `/voice/audio/speech`
-6. **Audio Reactive Node**: Мониторинг звуковой карты → `/audio/level`
-7. **Animation Player**: Mouth frames (0-11) в зависимости от громкости
+6. **TTS**: огибающая чанка → `/voice/speech/envelope`
+7. **face_node**: рот по огибающей
 8. **Nav2**: NavigateToPose(x=3.0, y=0.0)
 9. *[робот едет, рот двигается при речи]*
 10. **Nav2 Result**: SUCCESS
 11. **Feedback**: "Прибыл в точку назначения" → TTS + Mouth Animation
 
-### Audio-Reactive Animations
+### Рот по голосу
 
-**Система синхронизации рта робота с речью**:
-
-**Компоненты**:
-- `audio_reactive_animation_node.py` - Мониторинг аудио выхода (PyAudio)
-- `animation_player_node` - Выбор кадра анимации по уровню громкости
-- `talking.yaml` - Манифест с 12 кадрами mouth animation
-
-**Алгоритм**:
-1. PyAudio захватывает аудио выход системы (loopback/stereo mix)
-2. Вычисляется RMS громкость
-3. Применяется сглаживание (smoothing)
-4. Публикуется в `/audio/level` (0.0-1.0)
-5. Animation player выбирает кадр: `frame = int(audio_level * 11)`
-6. LED матрица отображает рот (открытый/закрытый)
-
-**Конфигурация** (`animations/manifests/talking.yaml`):
-```yaml
-mouth_panel:
-  audio_controlled: true  # Реактивность на звук
-  frames:
-    - frame_0.png  # Рот закрыт (audio_level = 0.0)
-    - frame_1.png  # Чуть приоткрыт
-    ...
-    - frame_11.png # Широко открыт (audio_level = 1.0)
-```
-
-**Результат**: Рот робота открывается/закрывается синхронно с речью (эффект как у Bender из Futurama)
-
-### Emotion-Based Animations
-
-**Система эмоциональных анимаций** (будущая интеграция):
-
-**DeepSeek Response JSON** (текущий формат):
-```json
-{
-  "chunk": 1,
-  "ssml": "<speak>Текст</speak>",
-  "emotion": "happy"  ← Поле эмоции (опционально)
-}
-```
-
-**Поддерживаемые эмоции**:
-- `neutral` - Нейтральное состояние (eyes_neutral.yaml)
-- `happy` - Радость (happy.yaml + sound: cute/very_cute)
-- `sad` - Грусть (sad.yaml)
-- `thinking` - Размышление (thinking.yaml + sound: thinking)
-- `alert` - Тревога (alert.yaml)
-- `angry` - Злость (angry.yaml + sound: angry_1/angry_2)
-- `surprised` - Удивление (surprised.yaml + sound: surprise)
-
-**TODO - Интеграция с dialogue_node**:
-```python
-def dialogue_callback(self, msg: String):
-    chunk_data = json.loads(msg.data)
-    
-    # Текущее: только TTS
-    ssml = chunk_data['ssml']
-    self.tts_pub.publish(ssml)
-    
-    # TODO: Триггер анимации по эмоции
-    if 'emotion' in chunk_data:
-        emotion = chunk_data['emotion']
-        self._trigger_animation(emotion)  # → /animations/trigger
-        self._trigger_sound(emotion)      # → /voice/sound/trigger
-```
-
-**Планируемый поток**:
-```
-DeepSeek → {"emotion": "happy"}
-    ↓
-dialogue_node
-    ↓
-    ├→ TTS (speech)
-    ├→ /animations/trigger ("happy")
-    └→ /voice/sound/trigger ("cute")
-         ↓
-    Animation Player + Sound Node
-         ↓
-    😊 Робот улыбается + звук радости
-```
-
-### Command Confirmation
-
-**TODO**: Опциональное подтверждение опасных команд:
-```
-User: "Двигайся к обрыв"
-Robot: "Вы уверены? Там может быть опасно"
-User: "Да, уверен"
-Robot: "Хорошо, выполняю"
-```
+Исторический аудиореактивный узел и PNG-плеер удалены (ADR-0150 PR-3a #3689): рот
+ведёт `face_node` по огибающей `/voice/speech/envelope`, см. `src/rob_box_animations/README.md`.
 
 ## Testing
 
@@ -551,44 +457,13 @@ ros2 topic hz /diff_cont/cmd_vel_unstamped  # Должно быть ~10-20 Hz
 docker restart twist-mux
 ```
 
-### Проблема: Mouth animation не синхронизирована
+### Проблема: рот не двигается при речи
 
-**Причины**:
-1. `audio_reactive_animation_node` не запущен
-2. PyAudio не может захватить аудио выход
-3. Неправильный аудио девайс
-4. `audio_controlled: false` в манифесте
-
-**Диагностика**:
 ```bash
-# 1. Проверить ноду
-ros2 node list | grep audio_reactive
-
-# 2. Проверить топик уровня звука
-ros2 topic hz /audio/level  # Должно быть ~20-50 Hz
-
-# 3. Проверить PyAudio devices
-python3 -c "import pyaudio; pa = pyaudio.PyAudio(); \
-    print([pa.get_device_info_by_index(i) for i in range(pa.get_device_count())])"
-
-# 4. Проверить манифест
-grep "audio_controlled" src/rob_box_animations/animations/manifests/talking.yaml
-```
-
-**Решение**:
-```bash
-# 1. Запустить audio reactive node
-ros2 run rob_box_animations audio_reactive_animation_node
-
-# 2. Включить loopback на звуковой карте (Linux)
-pactl load-module module-loopback
-
-# 3. Указать правильный device в параметрах
-ros2 param set /audio_reactive_animation_node audio_device_index 2
-
-# 4. Проверить что манифест talking.yaml имеет:
-# mouth_panel:
-#   audio_controlled: true
+# огибающая доходит до Vision Pi?
+ros2 topic echo /voice/speech/envelope --once
+# лицо живо и что показывает
+docker logs led-matrix --since 1m | grep face.metrics
 ```
 
 ## Future Enhancements

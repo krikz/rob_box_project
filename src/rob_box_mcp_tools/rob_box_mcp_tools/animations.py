@@ -1,9 +1,10 @@
 """LED animation vocabulary — one declaration for every tool that uses it.
 
-The robot's animations are defined by the manifests in
-``src/rob_box_animations/animations/manifests/*.yaml``; that directory is
-the source of truth, and ``test_animation_catalog_matches_manifests``
-fails the build when this list drifts from it.
+The robot's face draws procedural scenes (``face_node``, ADR-0150 §5.5):
+every name here resolves to a scene of ``rob_box_animations.face.states``
+(``SCENES`` / ``LEGACY``), and ``tests/unit/docker/test_animation_assets.py``
+fails the build when a name has nothing behind it. The scene catalogue is
+wider than this list; extending the tool vocabulary is PR-3c (#3691).
 
 Before this module the same vocabulary existed three times and disagreed:
 
@@ -32,7 +33,7 @@ __all__ = [
     "normalize_animation",
 ]
 
-#: Every animation with a manifest, i.e. every name the player can render.
+#: Every name the ``play_animation`` tool offers; each resolves to a face scene.
 KNOWN_ANIMATIONS: tuple[str, ...] = (
     "accelerating",
     "ambulance",

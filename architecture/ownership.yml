@@ -93,7 +93,10 @@ nodes:
   face_node:
     owner: dialog-v2
     package: rob_box_animations
-    source: [src/rob_box_animations/rob_box_animations/face_node.py]
+    # PR-3a (#3689): лицо в контейнере led-matrix на Vision Pi; решает FaceDirector.
+    source:
+      - src/rob_box_animations/rob_box_animations/face_node.py
+      - src/rob_box_animations/rob_box_animations/face_director.py
 
 topics:
   # -- Вход речи и собеседник (PR-2: оба топика типизированы) ------------------
@@ -199,14 +202,13 @@ topics:
     type: rob_box_dialog_msgs/SpeechEvent
     status: live
     writers_allowed: [tts_node]
-    readers: [stt_node, mcp_server]
+    readers: [stt_node, mcp_server, face_node]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope
     status: live
     writers_allowed: [tts_node]
-    readers: []
-    debt: "потребитель face_node - PR-3a (#3689); до него - seam_allowlist.json"
+    readers: [face_node]
   /voice/expression/request:
     owner: dialog_node
     type: rob_box_dialog_msgs/ExpressionRequest

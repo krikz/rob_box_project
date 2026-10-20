@@ -44,7 +44,8 @@ jobs:
       - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest
+          # numpy: tests/unit/docker/test_animation_assets.py рендерит сцены лица (PR-3a #3689)
+          pip install black==24.4.2 flake8==7.0.0 isort==5.13.2 pyyaml pytest numpy
 
       - name: Validate dialogue skip-reason keys
         run: |
