@@ -110,7 +110,7 @@ jobs:
       # capabilities адаптеров (остальные тесты rob_box_llm гоняют другие job'ы).
       - name: Dialog engine + adapter contract tests (ADR-0150)
         run: |
-          pip install httpx openai pytest-asyncio
+          pip install httpx openai respx pytest-asyncio
           PYTHONPATH="src/rob_box_dialog:src/rob_box_llm:src/rob_box_core" \
           python -m pytest -v -o addopts= -p no:cacheprovider \
             src/rob_box_dialog/test \
