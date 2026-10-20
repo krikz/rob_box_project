@@ -690,7 +690,7 @@ source scripts/set-docker-tags.sh
 make build SERVICE=voice-assistant BUILD_FLAGS="--platform linux/amd64 --no-push"
 
 # 3. Протестировать локально
-cd docker/vision
+cd docker/sound   # голосовой стек на Sound Pi (ADR-0159)
 IMAGE_TAG=local docker-compose up voice-assistant
 
 # 4. Запушить изменения - GitHub Actions соберёт для ARM64
@@ -700,8 +700,8 @@ git push
 
 # 5. Через ~10 минут образ с правильным тегом будет на ghcr.io
 # 6. На Raspberry Pi выполнить:
-ssh ros2@10.1.1.21
-cd ~/rob_box_project/docker/vision
+ssh ros2@10.1.1.22   # Sound Pi
+cd ~/rob_box_project/docker/sound
 source ../../scripts/set-docker-tags.sh
 docker-compose pull voice-assistant
 docker-compose up -d voice-assistant
@@ -710,8 +710,8 @@ docker-compose up -d voice-assistant
 **Сценарий 2: Разработка непосредственно на Raspberry Pi**
 
 ```bash
-# 1. SSH на Raspberry Pi
-ssh ros2@10.1.1.21
+# 1. SSH на Raspberry Pi (Sound Pi — там voice-assistant)
+ssh ros2@10.1.1.22
 
 # 2. Перейти в проект
 cd ~/rob_box_project
@@ -723,7 +723,7 @@ source scripts/set-docker-tags.sh
 make build SERVICE=voice-assistant
 
 # 5. Запустить
-cd docker/vision
+cd docker/sound
 IMAGE_TAG=local docker-compose up -d voice-assistant
 
 # 6. Проверить логи

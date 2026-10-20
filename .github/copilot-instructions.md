@@ -94,6 +94,7 @@ Dual Raspberry Pi 5: Main (10.1.1.10) + Vision (10.1.1.11)
 **IP-адреса:**
 - Main Pi: `10.1.1.10` (eth0), `10.1.1.20` (wlan0)
 - Vision Pi: `10.1.1.11` (eth0), `10.1.1.21` (wlan0)
+- Sound Pi: `10.1.1.12` (eth0), `10.1.1.22` (wlan0) — голосовой стек (ADR-0159)
 
 **Zenoh конфигурация:**
 ```yaml
@@ -111,7 +112,11 @@ docker/
 │   ├── config/    # ✅ Конфиги (монтируются volumes, НЕ COPY!)
 │   ├── scripts/   # ✅ Скрипты (монтируются volumes, НЕ COPY!)
 │   └── <service>/ # Только Dockerfile
-└── vision/        # Vision Pi сервисы (oak-d, voice, led-matrix, apriltag)
+├── vision/        # Vision Pi сервисы (oak-d, led-matrix, vision-hailo, vision-face, ceiling-camera)
+│   ├── config/    # ✅ Конфиги (volumes)
+│   ├── scripts/   # ✅ Скрипты (volumes)
+│   └── <service>/ # Только Dockerfile
+└── sound/         # Sound Pi сервисы (voice-assistant, supercollider, voice-action-server, supervisor, avatar-arbiter, quest, telegram-bot)
     ├── config/    # ✅ Конфиги (volumes)
     ├── scripts/   # ✅ Скрипты (volumes)
     └── <service>/ # Только Dockerfile
@@ -123,6 +128,9 @@ docker/
 ```bash
 # Vision Pi
 sshpass -p 'open' ssh ros2@10.1.1.21
+
+# Sound Pi (голос: docker logs voice-assistant)
+sshpass -p 'open' ssh ros2@10.1.1.22
 
 # Main Pi  
 sshpass -p 'open' ssh ros2@10.1.1.20

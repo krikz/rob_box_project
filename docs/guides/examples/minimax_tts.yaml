@@ -10,7 +10,7 @@
 #       config_file:=/abs/path/to/this.yaml provider:=minimax
 #
 # Секреты (MINIMAX_API_KEY, MINIMAX_GROUP_ID) сюда НЕ вставляйте —
-# они подтягиваются из ENV (см. docker/vision/.env.secrets.template).
+# они подтягиваются из ENV (см. docker/sound/.env.secrets.template).
 #
 # Подробнее:
 #   - docs/guides/MINIMAX_TTS.md — пользовательский гайд

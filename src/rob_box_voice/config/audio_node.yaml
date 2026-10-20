@@ -85,7 +85,7 @@ audio_node:
     # VAD видит речь по USB HID (независимый канал), а буфер захвата пуст
     # («Речь отклонена: 0.00с») K раз подряд.
     audio_stall_empty_speech_count: 3
-    # audio_heartbeat_file: файл для healthcheck контейнера (docker/vision/
+    # audio_heartbeat_file: файл для healthcheck контейнера (docker/sound/
     # scripts/voice_assistant/healthcheck_audio.sh) — пустая строка
     # отключает запись.
     audio_heartbeat_file: /tmp/rob_box_audio_heartbeat

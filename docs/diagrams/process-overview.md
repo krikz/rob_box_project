@@ -40,7 +40,7 @@ sequenceDiagram
     participant MG as merge-gate<br/>(cron 5min)
     participant EP as e2e-process<br/>(cron 60min)
     participant WF as L-Build/Deploy/E2E<br/>(workflow_dispatch)
-    participant R as Robot<br/>(10.1.1.21)
+    participant R as Robot<br/>(Sound Pi 10.1.1.22)
     participant CC as completion-check<br/>(GATE-3)
 
     U->>GH: gh issue create --label needs-e2e
@@ -186,7 +186,7 @@ flowchart TD
 | `L-Build-All-Services` | `.github/workflows/L-Build-All-Services.yml` | сборка docker-образов |
 | `L-Deploy and Verify` | `.github/workflows/L-Deploy and Verify.yml` | деплой на 249/.11/.21 |
 | `L-E2E Voice Test` | `.github/workflows/L-E2E Voice Test.yml` | GATE-1 + e2e_voice_test.sh |
-| Robot 10.1.1.21 | SSH 249 → 10.1.1.21 | voice pipeline + tool calls |
+| Robot Sound Pi 10.1.1.22 | SSH 249 → 10.1.1.22 | voice pipeline + tool calls |
 
 ## Связанные документы
 

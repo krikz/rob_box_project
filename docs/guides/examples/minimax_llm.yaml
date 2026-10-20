@@ -8,7 +8,7 @@
 # напрямую в factory.
 #
 # Секреты (MINIMAX_API_KEY) сюда НЕ вставляйте — они подтягиваются из ENV
-# по имени, указанному в api_key_env (см. docker/vision/.env.secrets.template).
+# по имени, указанному в api_key_env (см. docker/sound/.env.secrets.template).
 #
 # Подробнее:
 #   - docs/guides/MINIMAX.md              — пользовательский гайд
