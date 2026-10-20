@@ -64,6 +64,7 @@ _PACKAGE_ROOTS = (
     "src/rob_box_llm/rob_box_llm",
     "src/rob_box_core/rob_box_core",
     "src/rob_box_music/rob_box_music",  # ADR-0149 PR-1
+    "src/rob_box_dialog/rob_box_dialog",  # ADR-0150 PR-1
 )
 DEFAULT_TARGETS: tuple[Path, ...] = tuple(REPO_ROOT / p for p in _PACKAGE_ROOTS)
 

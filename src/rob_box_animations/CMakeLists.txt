@@ -20,7 +20,6 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/animation_player_node.py
-  scripts/audio_reactive_animation_node.py
   scripts/animation_test.py
   DESTINATION lib/${PROJECT_NAME}
 )

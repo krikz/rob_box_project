@@ -48,7 +48,7 @@ jobs:
 
       - name: Validate dialogue skip-reason keys
         run: |
-          PYTHONPATH=src/rob_box_voice python scripts/lint/dialogue_skip_reasons.py
+          PYTHONPATH=src/rob_box_voice:src/rob_box_dialog python scripts/lint/dialogue_skip_reasons.py
 
       # ADR-0021 R1 / issue #1984, #2077, #2186: CC-budget guard across the nine
       # active packages (rob_box_voice, rob_box_supervisor, rob_box_harness,
@@ -89,6 +89,33 @@ jobs:
       - name: CC-budget guard self-tests
         run: |
           python -m unittest scripts.lint.test_cc_budget -v
+
+      # ADR-0148 / ADR-0150 A8 (#3684): метка TEMP(ADR-0148 = заплатка по тексту ответа LLM. Число меток в src вне
+      # тестов не растёт (scripts/lint/temp_adr0148_baseline.json), цель — 0. Hard gate.
+      - name: TEMP(ADR-0148) guard
+        run: |
+          python scripts/lint/temp_adr0148_check.py
+
+      - name: TEMP(ADR-0148) guard self-tests
+        run: |
+          python -m unittest scripts.lint.test_temp_adr0148_check -v
+
+      # ADR-0150 PR-0 (#3684): скрипты метрик/аудита честности по логу робота и эталонный набор фраз.
+      - name: Dialog metrics scripts self-tests
+        run: |
+          python -m pytest -q -o addopts= tests/unit/dialog
+
+      # ADR-0150 PR-1b (#3686): контракт адаптеров LLM. Тесты тянут rob_box_llm (openai/httpx/respx), поэтому лежат в
+      # tests/dialog_adapters (отдельный каталог: ни TTS-job rob_box_llm, ни G-Run Tests его не собирают; зависимостей pyyaml/rob_box_llm в лёгком tests/unit/dialog быть не должно). Чистые тесты пакета rob_box_dialog (в т.ч. test_degrade)
+      # гоняет G-Run Tests (шаг pytest: rob_box_dialog) — здесь их нет, чтобы не дублировать.
+      - name: Dialog adapter contract tests (ADR-0150)
+        run: |
+          pip install httpx openai respx pytest-asyncio
+          PYTHONPATH="src/rob_box_dialog:src/rob_box_llm:src/rob_box_core" \
+          python -m pytest -v -o addopts= -p no:cacheprovider \
+            tests/dialog_adapters/test_llm_adapter_contract.py \
+            tests/dialog_adapters/test_adapter_benchmark.py \
+            src/rob_box_llm/test/test_provider_capabilities_3686.py
 
       # ADR-0145: class-size budget. ADR-0021 bounds only per-method CC, so code
       # was "extracted" into more private methods of the SAME class (DialogueNode:
@@ -412,7 +439,7 @@ jobs:
       - name: mcp_server voice_memory e2e isolation (issue #2781/#2890)
         run: |
           pip install httpx openai
-          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music" \
+          PYTHONPATH="src/rob_box_harness:src/rob_box_llm:src/rob_box_core:src/rob_box_voice:src/rob_box_mcp_tools:src/rob_box_music:src/rob_box_dialog" \
           python -m pytest src/rob_box_mcp_tools/test/test_issue_2781_voice_memory_e2e_isolation.py \
             -v \
             -o addopts="" \

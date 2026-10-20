@@ -24,7 +24,7 @@ import pytest
 # том, что в каталоге worktree тул есть). На colcon/CI рядом этих каталогов
 # может не быть — тогда ничего не трогаем.
 _SRC_DIR = Path(__file__).resolve().parents[2]
-_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core")
+_SIBLINGS = ("rob_box_llm", "rob_box_harness", "rob_box_voice", "rob_box_core", "rob_box_dialog")
 for _pkg in _SIBLINGS:
     _pkg_root = str(_SRC_DIR / _pkg)
     _present = Path(_pkg_root, _pkg, "__init__.py").is_file()

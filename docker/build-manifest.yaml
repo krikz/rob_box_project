@@ -165,6 +165,9 @@ pis:
                 - src/rob_box_core
                 - src/rob_box_music/rob_box_music
               extensions: [".py"]
+            # ADR-0150: ядро диалога v2 (знание; каталог фраз — YAML рядом с кодом)
+            - paths: [src/rob_box_dialog/rob_box_dialog]
+              extensions: [".py", ".yaml"]
             # ADR-0150 PR-2 (#3687): типы диалога v2 собираются в этом образе.
             - paths: [src/rob_box_dialog_msgs]
               extensions: [".msg", ".srv", "CMakeLists.txt", "package.xml"]

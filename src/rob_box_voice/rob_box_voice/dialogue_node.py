@@ -556,10 +556,8 @@ class DialogueNode(Node):
         self._command_intent_gate_confidence: float = float(
             self.get_parameter("command_intent_gate_confidence").value
         )
-        self._command_parser = CommandParser(
-            wake_words=["робот", "робокс", "робобокс"],
-            confidence_base=0.8,
-        )
+        # Вейк-слова парсера — по умолчанию из одной таблицы rob_box_dialog.knowledge.
+        self._command_parser = CommandParser(confidence_base=0.8)
         # Пред-роутер домена переиспользует ТОТ ЖЕ CommandParser, что и
         # command_intent_gate — второй классификатор не заводим.
         if self._skill_prompts:
@@ -1158,7 +1156,7 @@ class DialogueNode(Node):
 
         self.create_timer(5.0, self._on_inactivity_check)
         # 🔴 FIX (live 06.08): startup-приветствие внутри dialogue_node
-        # (замена отдельной startup_greeting_node, #1003). Одноразовый
+        # (замена отдельной ноды приветствия, #1003). Одноразовый
         # таймер: через startup_greeting_sec секунд после старта говорим
         # фразу. tts_node к этому моменту уже прогрет (он стартует раньше
         # и грузится ~3-5с), поэтому гонки нет. 0 = выключено.
@@ -1362,7 +1360,7 @@ class DialogueNode(Node):
         # publishers.
         self.declare_parameter("tool_provider", "ros_mcp")
         # 🔴 FIX (live 06.08): startup-приветствие БЕЗ отдельной ноды (#1003).
-        # Отдельная startup_greeting_node страдала гонкой (tts_node ещё не
+        # Отдельная нода приветствия страдала гонкой (tts_node ещё не
         # инициализирован → сообщение терялось). Теперь сам dialogue_node
         # через N секунд после старта говорит фразу напрямую через
         # _publish_response (тот же путь, что и обычная речь робота).
@@ -6785,7 +6783,7 @@ tentative_plan(question, kind, name)
     def _on_startup_greeting(self) -> None:
         """Одноразовое приветствие при старте (issue #1003, редизайн 06.08).
 
-        Раньше была отдельная startup_greeting_node — она публиковала
+        Раньше была отдельная нода приветствия — она публиковала
         приветствие до того, как tts_node завершал инициализацию, и
         фраза терялась. Теперь dialogue_node сам ждёт N секунд и шлёт
         текст тем же путём, что обычная речь (build_ssml_payload →
@@ -6814,7 +6812,7 @@ tentative_plan(question, kind, name)
         self._sound_trigger_pub.publish(sfx)
 
         # Через 2с — радостный звук, ещё через 1.5с — фраза (как в
-        # оригинальной startup_greeting_node до рефакторинга).
+        # оригинальной ноды приветствия до рефакторинга).
         self._greeting_timer = self.create_timer(
             2.0, self._on_startup_greeting_finish
         )
