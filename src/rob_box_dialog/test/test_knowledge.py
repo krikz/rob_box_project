@@ -11,6 +11,8 @@ from rob_box_core.tool_catalog import TOOL_CATALOG
 from rob_box_dialog import knowledge as kn
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+#: Сцены процедурного лица (ADR-0150 PR-3a #3689: генератор переехал из tools/led_face_lab в пакет).
+FACE = REPO_ROOT / "src" / "rob_box_animations" / "rob_box_animations" / "face"
 WAKE_YAML = REPO_ROOT / "docker" / "sound" / "config" / "wake_words.yaml"
 
 
@@ -93,7 +95,7 @@ def test_action_classes_follow_adr_5_1():
 def test_emotions_and_gestures_are_scenes_of_player_or_lab():
     known = set(_literal(REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "animations.py",
                          "KNOWN_ANIMATIONS"))
-    lab = set(_literal(REPO_ROOT / "tools" / "led_face_lab" / "states.py", "CLIPS"))
+    lab = set(_literal(FACE / "states.py", "SCENES"))
     assert set(kn.LAB_SCENES) <= lab
     scenes = known | set(kn.LAB_SCENES)
     assert set(kn.EMOTIONS.values()) <= scenes
@@ -157,7 +159,7 @@ def test_reflexes_use_known_scenes_ring_modes_and_earcons():
 
 
 def test_calendar_themes_exist_in_rear_lights():
-    themes = set(_literal(REPO_ROOT / "tools" / "led_face_lab" / "rear.py", "THEMES"))
+    themes = set(_literal(FACE / "rear.py", "THEMES"))
     for theme in kn.CALENDAR:
         assert theme.rear in themes, theme
         assert 1 <= theme.month <= 12 and 1 <= theme.day <= 31
