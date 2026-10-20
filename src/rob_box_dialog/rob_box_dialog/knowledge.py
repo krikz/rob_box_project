@@ -234,7 +234,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
 # ---------------------------------------------------------------------------------------------------------------
 
 #: Анимации с манифестом, которые умеет сегодняшний плеер (``rob_box_mcp_tools.animations.KNOWN_ANIMATIONS``),
-#: плюс сцены лаборатории ``tools/led_face_lab`` (§5.5.2): ими именуются сцены лица в v1 и v2.
+#: плюс сцены лица ``rob_box_animations/face/states.py:SCENES`` (§5.5.2): ими именуются сцены лица в v1 и v2.
 LAB_SCENES: Tuple[str, ...] = (
     "idle_stare", "idle_bored", "listening", "thinking_teeth", "thinking_orbit", "wink",
     "music_groove", "music_shades", "music_vibe", "new_year_eve",
@@ -328,7 +328,7 @@ class CalendarTheme:
     scene_s: Optional[float] = None
 
 
-#: Календарь тем фар: имена тем — ``tools/led_face_lab/rear.py:THEMES``. Окно — один день; дни рождения робота
+#: Календарь тем фар: имена тем — ``rob_box_animations/face/rear.py:THEMES``. Окно — один день; дни рождения робота
 #: и Шифу добавляются, когда будут известны даты (в ADR их нет).
 CALENDAR: Tuple[CalendarTheme, ...] = (
     CalendarTheme(1, 1, "new_year"),

@@ -1,199 +1,50 @@
-# rob_box_animations
+# rob_box_animations — лицо робота
 
-ROS2 package for LED Matrix animation playback on rob_box robot.
-
-## 🎬 Features
-
-- **Multi-panel synchronization** - Coordinate animations across 5 LED panels simultaneously
-- **YAML-based manifests** - Easy to create and edit animations
-- **Frame caching** - Optimized image loading and rendering
-- **ROS2 services** - Control playback via standard ROS2 interfaces
-- **Priority system** - Handle animation conflicts intelligently
-- **Loop support** - Seamless animation looping with configurable transitions
-
-## 📦 Package Contents
+Процедурное LED-лицо Rob Box (ADR-0150 §5.5, PR-3a #3689): сцены рисуются в
+реальном времени, 25 к/с, PNG-кадров нет.
 
 ```
 rob_box_animations/
-├── rob_box_animations/          # Python modules
-│   ├── animation_loader.py      # YAML manifest loader
-│   ├── animation_player.py      # Animation playback engine
-│   └── frame_renderer.py        # Image to ROS message converter
-├── scripts/                     # ROS2 nodes
-│   └── animation_player_node.py # Main animation player node
-├── animations/                  # Animation data
-│   ├── manifests/              # YAML animation definitions
-│   └── frames/                 # PNG image frames
-└── launch/                     # Launch files
-    └── animation_player.launch.py
+├── rob_box_animations/
+│   ├── face/                 # сцены: face.py (модели, палитра 0..25, раскладка, ток),
+│   │                         # states.py (SCENES), talk.py (рты), rear.py (фары),
+│   │                         # vehicles.py (экстренные, езда), scene.py (Scene.frame), sides.py (тест-кадр)
+│   ├── face_director.py      # что показать: речь, запрос, музыка, покой, сон (чистый Python)
+│   └── face_node.py          # ROS-нода: 25 Гц -> /panel_image
+├── scripts/face_node.py      # точка входа ros2 run
+├── launch/face_led_matrix.launch.py   # драйвер + композитор ros2leds + face_node
+└── docs/ANIMATIONS.md        # галерея сцен
 ```
 
-## 🚀 Quick Start
+## Где и как работает
 
-### Build the package
+Контейнер `led-matrix` на Vision Pi (решение В14): `start_led_matrix.sh`
+запускает `face_led_matrix.launch.py`. Параметры — `docker/vision/config/led_matrix/face_node.yaml`
+(том `/config/led_matrix/`): `mouth_design` (`jaw|rubber|voicebox`, В13),
+`thinking_design`, `idle_bored_every_s`, `voice_timeout_s`, `test_pattern`,
+калибровка DOA `doa_front_deg`/`doa_ccw`, `rear_theme`.
+
+| Вход | Что делает |
+|---|---|
+| `/voice/speech/envelope`, `/voice/speech/event` | рот по огибающей настоящего TTS, `cancelled` — рот закрыт сразу |
+| `/voice/tts/state` | переходный источник «говорит» (дебаунс 0,6 с между чанками) |
+| `/audio/direction` + `/audio/vad` | взгляд на говорящего, пока VAD слышит речь (+ 8 с) |
+| `/voice/music/state` | сцена музыки по `dj.bpm`, фаза от `dj.started_at` |
+| `/voice/animation/request` | v1 `play_animation`: `имя` или `имя:секунды` |
+| `/voice/expression/request` | `ExpressionRequest` (эмоция/жест; `face_json` — PR-3c) |
+| `~/scene` | отладка: `ros2 topic pub --once /face_node/scene std_msgs/msg/String "{data: 'happy:5'}"` |
+
+Выход — `/panel_image` (`sensor_msgs/Image` rgb8, `frame_id` = логическая
+группа), только изменившиеся панели и все раз в секунду. Раз в 10 с в логе
+`face.metrics … fps=… render_ms_avg=… face.peak_ma=…`.
+
+Тест-кадр сторон: `test_pattern: true` в `face_node.yaml` и `docker restart
+led-matrix` — во рту стрелка вправо (на левую фару робота), на фарах `L1`,
+`R2` (перед), `L3`, `R4` (зад).
+
+## Тесты
 
 ```bash
-cd /path/to/rob_box_project
-colcon build --packages-select rob_box_animations
-source install/setup.bash
+cd src/rob_box_animations && python -m pytest test -v      # директор и нода (ROS-заглушки)
+python -m pytest tests/unit/docker/test_animation_assets.py  # рендер всех сцен, детерминизм, ток, раскладка
 ```
-
-### Launch animation player
-
-```bash
-# Start with no animation
-ros2 launch rob_box_animations animation_player.launch.py
-
-# Start with idle animation
-ros2 launch rob_box_animations animation_player.launch.py autostart_animation:=idle
-```
-
-### Control via services
-
-```bash
-# List available animations
-ros2 service call /animation_player/list_animations std_srvs/srv/Trigger
-
-# Load animation
-ros2 service call /animation_player/load_animation std_msgs/srv/String "data: 'police_lights'"
-
-# Start playback
-ros2 service call /animation_player/play std_srvs/srv/Trigger
-
-# Pause
-ros2 service call /animation_player/pause std_srvs/srv/SetBool "data: true"
-
-# Resume
-ros2 service call /animation_player/pause std_srvs/srv/SetBool "data: false"
-
-# Stop
-ros2 service call /animation_player/stop std_srvs/srv/Trigger
-```
-
-### Monitor status
-
-```bash
-ros2 topic echo /animation_player/status
-```
-
-## 📋 Available Animations
-
-21 animations, names are the LLM tool vocabulary
-(`rob_box_mcp_tools/animations.py`): `idle`, `talking`, `thinking`, `happy`,
-`sad`, `angry`, `surprised`, `victory`, `sleep`, `wakeup`, `charging`,
-`low_battery`, `error`, `turn_left`, `turn_right`, `braking`, `accelerating`,
-`police_lights`, `fire_truck`, `ambulance`, `road_service`.
-Gallery with previews: [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
-
-## 🎨 Creating or Changing Animations
-
-Frames and manifests under `animations/` are **generated** by the procedural
-face in `tools/led_face_lab/` — do not edit the PNGs or YAML by hand. Change
-the scene there and re-bake:
-
-```bash
-python tools/led_face_lab/bake_manifests.py src/rob_box_animations/animations
-python tools/led_face_lab/render_gifs.py src/rob_box_animations/animations docs/assets/animations
-```
-
-The manifest format is unchanged (see below); the generator adds
-`brightness_budget`, `bake_scale` and `peak_ma_at_255` to `metadata`.
-
-### Test an animation on the robot
-
-```bash
-ros2 topic pub --once /voice/animation/request std_msgs/String "data: 'police_lights:10'"
-```
-
-## 🔧 ROS2 API
-
-### Services
-
-| Service | Type | Description |
-|---------|------|-------------|
-| `~/load_animation` | `std_msgs/String` | Load animation by name |
-| `~/play` | `std_srvs/Trigger` | Start playback |
-| `~/stop` | `std_srvs/Trigger` | Stop playback |
-| `~/pause` | `std_srvs/SetBool` | Pause/resume (true/false) |
-| `~/list_animations` | `std_srvs/Trigger` | List available animations |
-
-### Topics
-
-| Topic | Type | Direction | Description |
-|-------|------|-----------|-------------|
-| `~/status` | `std_msgs/String` | Out | Playback status (1 Hz) |
-| `/panel_image` | `sensor_msgs/Image` | Out | Frame images for LED panels |
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `animations_dir` | string | pkg share | Path to animations directory |
-| `autostart_animation` | string | "" | Animation to start on launch |
-| `loop` | bool | true | Loop animations by default |
-
-## 📐 Panel Logical Groups
-
-| Logical Group | Size | Description |
-|---------------|------|-------------|
-| `headlight_front_left` | 8×8 | Front left headlight (left eye) |
-| `headlight_front_right` | 8×8 | Front right headlight (right eye) |
-| `headlight_rear_left` | 8×8 | Rear left taillight |
-| `headlight_rear_right` | 8×8 | Rear right taillight |
-| `headlights_front` | 16×8 | Both front headlights |
-| `headlights_rear` | 16×8 | Both rear taillights |
-| `headlights_all` | 16×16 | All headlights (2×2 grid) |
-| `main_display` | 25×5 | Main display (mouth) |
-
-## 🎯 Animation Priority Levels
-
-When multiple animations are requested:
-
-1. **CRITICAL** - Emergency stops, critical errors (always wins)
-2. **HIGH** - Emergency services, safety warnings
-3. **NORMAL** - Robot states, missions, navigation
-4. **LOW** - Emotions, decorative (can be interrupted)
-
-## 🔍 Troubleshooting
-
-### Animation not found
-```
-ERROR: Manifest not found
-```
-Check that YAML file exists in `animations/manifests/` directory.
-
-### Frame image not found
-```
-ERROR: Frame image not found
-```
-Verify image paths in manifest are correct and PNG files exist.
-
-### Wrong image size
-```
-ERROR: Invalid image shape
-```
-Ensure images match expected panel dimensions (8×8 or 25×5).
-
-### No publishers
-```
-WARNING: No publisher for logical_group
-```
-Check that logical group name in manifest matches LED panel configuration.
-
-## 📚 Related Documentation
-
-- [LED Matrix Driver](https://github.com/krikz/ros2leds)
-- [Animation List](animations/ANIMATIONS_LIST.md)
-- [ros2leds Package](https://github.com/krikz/ros2leds)
-
-## 📝 License
-
-MIT License - Copyright (c) 2025 rob_box
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Create animations following the manifest format
-2. Test thoroughly before submitting
-3. Document any new features
-4. Add animations to ANIMATIONS_LIST.md

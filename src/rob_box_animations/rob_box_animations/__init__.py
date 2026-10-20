@@ -12,22 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-rob_box_animations - LED Matrix Animation System
+"""rob_box_animations — the robot's LED face.
 
-This package provides animation playback for LED matrices on rob_box robot.
+``face`` renders the procedural face scenes; ``face_node`` (ROS node, Vision Pi,
+container ``led-matrix``) shows them in real time on ``/panel_image``.
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "krikz"
 __license__ = "MIT"
-
-from .animation_loader import AnimationLoader
-from .animation_player import AnimationPlayer
-from .frame_renderer import FrameRenderer
-
-__all__ = [
-    'AnimationLoader',
-    'AnimationPlayer',
-    'FrameRenderer',
-]

@@ -117,4 +117,6 @@ echo ""
 
 # Раскладку панелей композитор берёт из $COMPOSITOR_CONFIG (ros2leds TD-7),
 # раскладка в коде — только запасной вариант, если файла нет.
-exec ros2 launch led_matrix_compositor led_matrix_compositor_launch.py
+# Рядом — face_node (ADR-0150 §5.5, PR-3a #3689), параметры лица —
+# /config/led_matrix/face_node.yaml.
+exec ros2 launch rob_box_animations face_led_matrix.launch.py

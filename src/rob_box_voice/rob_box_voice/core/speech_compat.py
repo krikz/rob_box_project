@@ -16,7 +16,7 @@ barge-in STOP теперь даёт эпоха (``speech_client.cancel(epoch=...
 
 ``/voice/tts/state`` и ``/voice/tts/finished`` публикуются из тех же переходов,
 что и ``SpeechEvent`` (одна воронка ``tts_node._publish_tts_finished``), для
-``animation_player``/``stt_node``/``dialogue_node`` до PR-3b/PR-8.
+``face_node``/``stt_node``/``dialogue_node`` до PR-3b/PR-8.
 
 Удаляется целиком, когда у старых топиков не останется писателей.
 """

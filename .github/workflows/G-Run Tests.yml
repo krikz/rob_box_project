@@ -298,6 +298,21 @@ jobs:
             || { echo "❌ rob_box_music FAILED"; exit 1; }
           echo "✅ rob_box_music passed"
 
+          # rob_box_animations (ADR-0150 PR-3a #3689): FaceDirector и face_node — чистый
+          # Python + numpy, ROS-заглушки в conftest. Раньше тестов кроме ament-линтеров не было.
+          ANIM_DIR="${{ github.workspace }}/test_ws/src/rob_box_animations"
+          echo "=== pytest: rob_box_animations (timeout 240s) ==="
+          ( cd "$ANIM_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 240 python3 -m pytest \
+              -p no:launch_testing \
+              -p no:ament_flake8 -p no:ament_pep257 \
+              -p no:ament_copyright -p no:ament_xmllint \
+              -p no:ament_lint -p no:colcon_core \
+              --tb=short --no-header -q \
+              --junitxml "${{ github.workspace }}/test_ws/build/rob_box_animations/pytest.xml" \
+              test/ ) \
+            || { echo "❌ rob_box_animations FAILED"; exit 1; }
+          echo "✅ rob_box_animations passed"
+
           # rob_box_dialog (ADR-0150 PR-1): чистое ядро диалога v2 — знание, сверка слов; без ROS/сети/LLM.
           # pytest only, по образцу rob_box_core / rob_box_music. Собирается colcon'ом как зависимость
           # rob_box_voice/rob_box_harness (--packages-up-to выше).
@@ -391,7 +406,7 @@ jobs:
           # pytest-only for other packages»), а любой упавший юнит-тест
           # или таймаут (rc=124) красит job.
           #
-          # rob_box_animations — ament_cmake, тестов кроме ament-линтеров нет.
+          # rob_box_animations — ament_cmake; здесь только ament-линтеры (pytest — выше).
           # copyright/flake8/pep257 — стилевой долг (≈130 pep257, flake8,
           # нет copyright-шапок), исключены по ctest-лейблу; lint_cmake и
           # xmllint зелёные и продолжают гейтить.

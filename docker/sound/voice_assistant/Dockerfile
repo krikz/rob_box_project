@@ -3,7 +3,6 @@
 #
 # Компоненты:
 #   - rob_box_voice: голосовой ассистент (AudioNode, STTNode, TTSNode, DialogueNode, LEDNode, SoundNode)
-#   - rob_box_animations: LED матричные анимации для эмоций и состояний
 #
 # Hardware:
 #   - ReSpeaker Mic Array v2.0 (USB, 4 микрофона, 12× RGB LED)
@@ -28,7 +27,7 @@ ARG ROS_DISTRO=humble
 
 # Метаданные
 LABEL org.opencontainers.image.title="Voice Assistant System for Vision Pi"
-LABEL org.opencontainers.image.description="AI voice assistant with ReSpeaker and LED animations"
+LABEL org.opencontainers.image.description="AI voice assistant with ReSpeaker"
 LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Тяжёлые зависимости, Python runtime, STT/TTS модели, ReSpeaker drivers и
@@ -39,7 +38,7 @@ LABEL org.opencontainers.image.source="https://github.com/krikz/rob_box_project"
 
 # Рабочая директория
 WORKDIR /ws
-RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_animations src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
+RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_voice src/rob_box_mcp_tools src/rob_box_perception_msgs src/rob_box_harness src/rob_box_llm src/rob_box_supervisor_msgs src/rob_box_dialog_msgs
 
 # ============================================================
 # ОПТИМИЗАЦИЯ СЛОЕВ ДЛЯ КЕШИРОВАНИЯ (dependencies → config → code)
@@ -48,7 +47,6 @@ RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_v
 # Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
 COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
-COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/package.xml /ws/src/rob_box_music/
 # ADR-0150 PR-1: одна таблица знания диалога (вейк, тишина, громкость) — её импортируют voice и harness
@@ -161,7 +159,6 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
-COPY src/rob_box_animations/CMakeLists.txt /ws/src/rob_box_animations/
 COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/setup.py /ws/src/rob_box_music/
 COPY src/rob_box_dialog/setup.py /ws/src/rob_box_dialog/
@@ -191,13 +188,10 @@ COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
 COPY src/rob_box_voice/prompts /ws/src/rob_box_voice/prompts
-COPY src/rob_box_animations/launch /ws/src/rob_box_animations/launch
 
 # Шаг 6: Копируем message файлы для rob_box_perception_msgs
 COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
 
-# Шаг 7: Копируем animations data
-COPY src/rob_box_animations/animations /ws/src/rob_box_animations/animations
 
 # ============================================================
 # ИНВАЛИДАЦИЯ КЕША ДЛЯ PYTHON КОДА
@@ -211,7 +205,6 @@ RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
 # Шаг 8: Копируем исходный код Python (меняется чаще всего - последний слой!)
 COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 COPY src/rob_box_voice/rob_box_voice /ws/src/rob_box_voice/rob_box_voice
-COPY src/rob_box_animations/rob_box_animations /ws/src/rob_box_animations/rob_box_animations
 COPY src/rob_box_music/rob_box_music /ws/src/rob_box_music/rob_box_music
 COPY src/rob_box_dialog/rob_box_dialog /ws/src/rob_box_dialog/rob_box_dialog
 COPY src/rob_box_mcp_tools/rob_box_mcp_tools /ws/src/rob_box_mcp_tools/rob_box_mcp_tools
@@ -277,7 +270,6 @@ PY
 
 # Шаг 9: Копируем scripts
 COPY src/rob_box_voice/scripts /ws/src/rob_box_voice/scripts
-COPY src/rob_box_animations/scripts /ws/src/rob_box_animations/scripts
 
 # Шаг 10: Копируем FoxDot SC init скрипт для sclang
 # sclang читает этот файл при старте контейнера, регистрирует OSCdef /foxdot
@@ -300,7 +292,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice rob_box_animations \
+    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -326,7 +318,7 @@ ENV TTS_CACHE_DIR=/config/voice_assistant/tts_cache
 
 # Проверка доступности нод
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD ros2 node list | grep -q "audio_node\|animation_player" || exit 1
+    CMD ros2 node list | grep -q "audio_node" || exit 1
 
 # Точка входа
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]

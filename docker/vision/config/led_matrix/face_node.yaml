@@ -1,0 +1,24 @@
+# face_node — процедурное лицо (ADR-0150 §5.5, PR-3a #3689). Том робота: /config/led_matrix/.
+# Правка без пересборки: поменять значение и `docker restart led-matrix`.
+face_node:
+  ros__parameters:
+    fps: 25.0
+    # Рот при речи (решение В13): jaw | rubber | voicebox. Превью — tools/led_face_lab.
+    mouth_design: jaw
+    # Сцена «думает» (В13): thinking_teeth | thinking_orbit.
+    thinking_design: thinking_teeth
+    # Через сколько секунд покоя лицо «заскучает» (idle_bored, 14 с) и вернётся в idle_stare.
+    idle_bored_every_s: 60.0
+    # Нет голосового стека (ни сообщений, ни издателей /voice/speech/event, /voice/tts/state,
+    # /audio/direction в графе) столько секунд -> sleep. Граф Zenoh отпускает издателя упавшего
+    # контейнера ещё ~3 с (замер 20.10: kill 21:52:16 -> sleep через 13 с при 10 с), отсюда 7 с.
+    voice_timeout_s: 7.0
+    # Тест-кадр сторон: стрелка во рту, L/R и номер панели на фарах (A27).
+    test_pattern: false
+    # DOA ReSpeaker -> взгляд: какой угол — нос робота и растёт ли угол к левому борту.
+    # Не откалибровано на роботе (стартовые значения).
+    doa_front_deg: 0.0
+    doa_ccw: true
+    # Задние фары в сценах, которые их не рисуют: default | new_year | halloween | valentine | ...
+    rear_theme: default
+    metrics_period_s: 10.0
