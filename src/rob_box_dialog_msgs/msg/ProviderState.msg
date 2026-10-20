@@ -2,9 +2,9 @@
 
 # Имя провайдера.
 string name
-# Вид (llm, tts, stt).
+# Вид (llm, tts, stt, music_gen).
 string kind
-# Здоровье: ok | degraded | down.
+# Здоровье: ok | degraded | quota | network | timeout | auth | down (rob_box_dialog.knowledge.PROVIDER_HEALTH).
 string health
 # С какого времени состояние.
 builtin_interfaces/Time since

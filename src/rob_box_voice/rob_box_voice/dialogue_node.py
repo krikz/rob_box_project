@@ -44,6 +44,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
+from rob_box_dialog_msgs.msg import ProviderStateArray
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 
@@ -105,6 +106,7 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
+from rob_box_voice.core.provider_reporter import ProviderStateReporter, publish_provider_states
 from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
@@ -814,6 +816,14 @@ class DialogueNode(Node):
         self._last_skip_summary_ts: float = time.monotonic()
         # ADR-0150 PR-3 — отмена речи личности (SpeechCancel) одним клиентом.
         speech_client.prepare(self, "cancel")
+        # ADR-0150 PR-4 (#3693) - здоровье LLM-провайдеров: latched /voice/providers/state + одна фраза на смену.
+        self._provider_state_pub = self.create_publisher(
+            ProviderStateArray, "/voice/providers/state",
+            QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._provider_reporter = ProviderStateReporter(
+            self._llm, functools.partial(publish_provider_states, self._provider_state_pub), self._speak_direct)
+        self.create_timer(2.0, self._provider_reporter.tick)
         # Issue #1734 — единственный источник истины для barge_in_policy:
         # latched (TRANSIENT_LOCAL) топик вместо ВТОРОГО параметра в
         # stt_node.yaml. Дублирование параметра — ровно тот класс ошибки,
@@ -1228,7 +1238,6 @@ class DialogueNode(Node):
         # (Migration Plan change'а, шаг 3).
         self.declare_parameter("skill_tool_narrowing", False)
         self.declare_parameter("history_max_turns", 20)
-        self.declare_parameter("agent_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
         # Scheduler segments/MERGE plan (S1) — "replace" = today's behaviour
         # (barge-in stops TTS unconditionally); "classify" = quick_decide
@@ -1247,7 +1256,6 @@ class DialogueNode(Node):
         # (docker, монтируется в /config). Пусто в dev-env → кодовый фолбек.
         self.declare_parameter("wake_words_file", "")
         self.declare_parameter("enable_mcp_tools", True)
-        self.declare_parameter("llm_timeout_sec", 90.0)
         self.declare_parameter("verbose_llm", True)
         # Issue #1279 — gate команд движения/статуса. command_node уже
         # обрабатывает NAVIGATE/STOP/STATUS/MAP (публикует

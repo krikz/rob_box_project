@@ -224,11 +224,12 @@ topics:
   /voice/providers/state:
     owner: tts_node
     type: rob_box_dialog_msgs/ProviderStateArray
-    status: planned
+    status: live
     introduced_by: "PR-4 (#3693)"
-    # каждая нода публикует состояние своего вида провайдера (ADR-0150 §2.3)
+    # каждая нода публикует состояние своего вида провайдера (ADR-0150 §2.3); ч.1 - dialogue_node (kind=llm)
     writers_allowed: [tts_node, stt_node, dialogue_node, dialog_node]
-    readers: [dialog_node, dialogue_node]
+    readers: []
+    debt: "потребители (панель ТАРС, dialog_node) - PR-6/PR-7; tts/stt/music_gen - ч.2 PR-4; до них - seam_allowlist.json"
   /dialog/session:
     owner: dialog_node
     type: rob_box_dialog_msgs/SessionState

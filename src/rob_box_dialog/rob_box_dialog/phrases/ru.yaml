@@ -16,6 +16,7 @@ provider.exhausted.timeout: ["{provider} не отвечает. {next}"]
 provider.exhausted.auth: ["{provider} меня не пускает — ключ не подходит. {next}"]
 provider.exhausted.error: ["У {provider} ошибка. {next}"]
 provider.switched: ["Переключаюсь на {provider}."]
+provider.no_fallback: ["Запасного нет — потерпи, пока вернётся."]
 
 # --- классы действий (§5.1) ----------------------------------------------------------------------------------
 query.rejected: ["Не нашёл ответа."]

@@ -8,18 +8,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Literal, Protocol, Sequence
+from typing import Dict, Iterable, List, Literal, Optional, Protocol, Sequence, Tuple
+
+from . import phrases
+from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_USABLE_HEALTH
 
 CommandMode = Literal["structured_output", "tool_choice", "json_mode", "json_in_text"]
 
 # Порядок §4.5: от самого строгого к самому слабому. Единственная таблица знания о режимах.
 MODE_ORDER: tuple[CommandMode, ...] = ("structured_output", "tool_choice", "json_mode", "json_in_text")
 
-ProviderKind = Literal["llm", "stt", "tts"]
-ProviderHealth = Literal["ok", "degraded", "quota", "auth", "down"]
+ProviderKind = Literal["llm", "stt", "tts", "music_gen"]
+ProviderHealth = Literal["ok", "degraded", "quota", "network", "timeout", "auth", "down"]
 
-# Состояния, при которых провайдер ещё можно пробовать (в порядке предпочтения).
-_USABLE_HEALTH: tuple[ProviderHealth, ...] = ("ok", "degraded")
+# Состояния, при которых провайдера ещё можно пробовать (в порядке предпочтения): таблица знания - knowledge.
+_USABLE_HEALTH: Tuple[str, ...] = PROVIDER_USABLE_HEALTH
+#: Не чаще одной фразы деградации на (вид, провайдер) за это время (ADR §8).
+ANNOUNCE_MIN_INTERVAL_S = 600.0
+#: Состояние -> причина в ключе ``provider.exhausted.{причина}``; ``down`` - непонятная ошибка (``error``).
+_EXHAUSTED_REASON: Dict[str, str] = {
+    "quota": "quota", "network": "network", "timeout": "timeout", "auth": "auth", "down": "error",
+}
 
 
 class Capabilities(Protocol):
@@ -53,12 +62,12 @@ def select_mode(caps: Capabilities) -> CommandMode:
     return "json_in_text"
 
 
-def provider_order(states: Iterable[ProviderState], priority: Sequence[str]) -> tuple[str, ...]:
-    """Порядок LLM-провайдеров: приоритет из конфига, здоровые впереди, мёртвые (quota/auth/down) отброшены.
+def provider_order(states: Iterable[ProviderState], priority: Sequence[str], kind: str = "llm") -> tuple[str, ...]:
+    """Порядок провайдеров вида ``kind`` (по умолчанию LLM): приоритет из конфига, здоровые впереди, мёртвые (quota/auth/down) отброшены.
 
     Провайдер без записи в ``states`` считается здоровым (состояние ещё не опубликовано).
     """
-    health = {s.name: s.health for s in states if s.kind == "llm"}
+    health = {s.name: s.health for s in states if s.kind == kind}
     ranked: list[tuple[int, int, str]] = []
     for index, name in enumerate(priority):
         state = health.get(name, "ok")
@@ -66,3 +75,56 @@ def provider_order(states: Iterable[ProviderState], priority: Sequence[str]) -> 
             ranked.append((_USABLE_HEALTH.index(state), index, name))
     ranked.sort()
     return tuple(name for _, _, name in ranked)
+
+
+def phrase_on_change(prev: Optional[ProviderState], cur: ProviderState) -> Optional[str]:
+    """Ключ фразы о смене состояния или ``None``: молчим, пока ничего не изменилось и при возврате в ``ok``.
+
+    Фраза - только на переход в состояние, из которого провайдер пропускают (quota/network/timeout/auth/down);
+    ``degraded`` (лимит частоты) и выздоровление не озвучиваются: человеку нечего делать.
+    """
+    reason = _EXHAUSTED_REASON.get(cur.health)
+    if reason is None or (prev is not None and prev.health == cur.health):
+        return None
+    return f"provider.exhausted.{reason}"
+
+
+class ProviderAnnouncer:
+    """Одна фраза на смену состояния, не чаще ``ANNOUNCE_MIN_INTERVAL_S`` на (вид, провайдер).
+
+    Состояние хранит само: вызывающий отдаёт текущий снимок ``observe(states, priority, now)`` и получает готовые
+    тексты (ключ и слоты - код, текст - ``phrases``). Что провайдер вылечился, помнится: следующий отказ после
+    паузы озвучится снова. ``priority`` - порядок провайдеров того же вида: запасной берётся из него.
+    """
+
+    def __init__(self, min_interval_s: float = ANNOUNCE_MIN_INTERVAL_S) -> None:
+        self._min_interval_s = min_interval_s
+        self._seen: Dict[Tuple[str, str], ProviderState] = {}
+        self._spoken_at: Dict[Tuple[str, str], float] = {}
+
+    def observe(self, states: Sequence[ProviderState], priority: Sequence[str], now: float) -> List[str]:
+        """Тексты фраз о переходах с прошлого вызова (обычно пусто)."""
+        out: List[str] = []
+        for cur in states:
+            key = (cur.kind, cur.name)
+            prev = self._seen.get(key)
+            self._seen[key] = cur
+            phrase_key = phrase_on_change(prev, cur)
+            if phrase_key is None:
+                continue
+            last = self._spoken_at.get(key)
+            if last is not None and now - last < self._min_interval_s:
+                continue
+            self._spoken_at[key] = now
+            out.append(_compose(phrase_key, cur, states, priority))
+        return out
+
+
+def _compose(phrase_key: str, cur: ProviderState, states: Sequence[ProviderState], priority: Sequence[str]) -> str:
+    """Фраза об отказе + «что делаю дальше»: запасной того же вида из ``provider_order`` или честное «запасного нет»."""
+    alt = next(iter(provider_order(states, [p for p in priority if p != cur.name], cur.kind)), None)
+    nxt = phrases.text("provider.switched", provider=alt) if alt else phrases.text("provider.no_fallback")
+    return phrases.text(phrase_key, provider=cur.name, next=nxt)
+
+
+assert set(_EXHAUSTED_REASON) <= set(PROVIDER_HEALTH) and "music_gen" in PROVIDER_KINDS
