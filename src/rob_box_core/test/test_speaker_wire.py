@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from rob_box_core.msg_stub import install_dialog_msgs_stub
+from rob_box_core.msg_stub import build_dialog_msgs_module, install_dialog_msgs_stub
 from rob_box_core.speaker_wire import fill_speaker_result, speaker_result_to_payload
 
 M = install_dialog_msgs_stub()
@@ -21,11 +21,12 @@ def _roundtrip(payload):
 
 
 def test_stub_built_from_msg_files():
-    utt = M.Utterance(text="привет", source=M.Utterance.SOURCE_TELEGRAM, chat_id=42)
+    S = build_dialog_msgs_module()
+    utt = S.Utterance(text="привет", source=S.Utterance.SOURCE_TELEGRAM, chat_id=42)
     assert (utt.utterance_id, utt.text, utt.chat_id, utt.source) == ("", "привет", 42, "telegram")
-    assert utt.started_at.sec == 0 and M.SessionState().scenes == []
+    assert utt.started_at.sec == 0 and S.SessionState().scenes == []
     with pytest.raises(AttributeError):
-        M.Utterance(no_such_field=1)
+        S.Utterance(no_such_field=1)
 
 
 def test_match_known_roundtrip():

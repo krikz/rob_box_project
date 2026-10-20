@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 import types
@@ -114,17 +115,27 @@ def build_msg_module(msg_dir: Path, package: str, module_name: Optional[str] = N
     return module
 
 
-def install_dialog_msgs_stub() -> types.ModuleType:
-    """Положить ``rob_box_dialog_msgs.msg`` (из ``.msg`` репозитория) в ``sys.modules``.
+def build_dialog_msgs_module() -> types.ModuleType:
+    """Заглушка ``rob_box_dialog_msgs.msg``, всегда построенная из ``.msg`` репозитория."""
+    msg_dir = Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs" / "msg"
+    return build_msg_module(msg_dir, "rob_box_dialog_msgs")
 
-    Идемпотентно: если модуль уже есть (настоящий или заглушка), он
-    возвращается как есть.
+
+def install_dialog_msgs_stub() -> types.ModuleType:
+    """Дать тестам ``rob_box_dialog_msgs.msg``: настоящий пакет, если он собран, иначе заглушка.
+
+    Единый механизм для всех unit-окружений (mcp_tools, voice, telegram, ...):
+    в CI-образе после ``colcon build`` берётся настоящий rosidl-пакет, без ROS
+    (Windows, lint-job) - заглушка из ``.msg``. Идемпотентно.
     """
     existing = sys.modules.get("rob_box_dialog_msgs.msg")
     if existing is not None:
         return existing
-    msg_dir = Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs" / "msg"
-    module = build_msg_module(msg_dir, "rob_box_dialog_msgs")
+    try:
+        return importlib.import_module("rob_box_dialog_msgs.msg")
+    except ImportError:
+        pass
+    module = build_dialog_msgs_module()
     package = types.ModuleType("rob_box_dialog_msgs")
     package.msg = module
     sys.modules["rob_box_dialog_msgs"] = package
