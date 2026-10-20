@@ -77,6 +77,44 @@ def test_warning_counted_separately_and_scope_exclusions_apply():
     assert vision["warning"] == 1 and vision["findings"][0]["kind"] == "warning_log"
 
 
+def test_healthy_cadvisor_info_klog_line_does_not_give_critical_finding():
+    # Issue #3664 п.1: на каждом деплое три cadvisor (Vision/Sound/Main) давали critical
+    # из-за INFO-строки klog; контейнеры при этом здоровы -> deploy-issue быть не должно.
+    gce = (
+        "I1019 20:55:15.630362       1 gce.go:45] Error while reading product_name: "
+        "open /sys/class/dmi/id/product_name: no such file or directory"
+    )
+    for scope, name in (("vision", "cadvisor-vision"), ("sound", "cadvisor-sound"), ("main", "cadvisor")):
+        started = "I1019 20:55:14.000000       1 main.go:1] started"
+        _, result = run({name: "\n".join([started, gce])}, scope=scope)
+        assert result["critical"] == 0, scope
+        assert result["warning"] == 0 and result["findings"] == [], scope
+
+
+def test_cadvisor_blind_on_docker29_is_a_warning_finding_not_critical():
+    # Issue #3664 п.2 пока не починен (cadvisor слеп на containerd snapshotter): строка
+    # остаётся видна как warning, но critical_count == 0, и deploy-issue не заводится.
+    layer = (
+        "E1019 20:59:21.591612       1 manager.go:1116] Failed to create existing container: "
+        "/system.slice/docker-782c.scope: failed to identify the read-write layer ID for container "
+        '"782c". - open /rootfs/var/lib/docker/image/overlayfs/layerdb/mounts/782c/mount-id: '
+        "no such file or directory"
+    )
+    _, result = run({"cadvisor-sound": layer}, scope="sound")
+    assert result["critical"] == 0
+    assert result["warning"] == 1
+    assert [(f["severity"], f["kind"]) for f in result["findings"]] == [("warning", "warning_log")]
+    assert "=== cadvisor-sound WARNINGS ===" in "\n".join(result["report"])
+
+
+def test_real_error_next_to_cadvisor_noise_is_still_critical():
+    gce = "I1019 20:55:15.630362       1 gce.go:45] Error while reading product_name: no such file or directory"
+    real = "E1019 21:00:01.000000       1 manager.go:77] Failed to start container manager: cannot mount cgroup"
+    _, result = run({"cadvisor": "\n".join([gce, real])}, scope="main")
+    assert result["critical"] == 1
+    assert result["findings"][0]["raw_text"] == real
+
+
 def test_logs_are_fetched_head_and_tail_per_container():
     pi, _ = run({"a": "ok", "b": "ok"})
     logs_cmds = [c for c in pi.commands if "docker logs" in c]

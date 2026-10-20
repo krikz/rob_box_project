@@ -21,6 +21,37 @@ CRITICAL_MATCH_RE = re.compile(
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
 
+# Заголовок строки klog (cadvisor и прочие Go-демоны на k8s.io/klog):
+#   I1019 20:55:15.630362       1 gce.go:45] Error while reading product_name: ...
+# Первая буква — уровень, который выставил сам эмиттер: I(nfo), W(arning), E(rror),
+# F(atal). Слова «Error» / «failed to» в тексте I- и W-строки не делают её ошибкой
+# (issue #3664 п.1: INFO-проба GCE-провайдера cadvisor давала critical на каждом
+# деплое — на Raspberry Pi нет /sys/class/dmi/id/product_name и не будет).
+KLOG_LINE_RE = re.compile(r"^([IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ \S+:\d+\]")
+
+# Строки, которые по тексту похожи на ошибку, но относятся к ИЗВЕСТНЫМ проблемам
+# мониторинга, у каждой из которых есть своя issue. Они понижаются с critical до
+# warning: остаются в отчёте шага «Check Container Logs» (WARNINGS), но
+# critical_count не растёт, и «🚨 Deploy issues» из-за них не заводится.
+# Правило узкое: любая другая ошибка того же контейнера остаётся critical.
+# Когда проблема закрыта, строку отсюда нужно удалить — иначе рецидив будет молчать
+# как warning.
+CRITICAL_DEMOTED_TO_WARNING = [
+    # #3664 п.2: cadvisor v0.52.1 на Docker 29 с containerd snapshotter (Vision,
+    # Sound) ищет слой контейнера в image/overlayfs/layerdb/mounts, а там пусто —
+    # тысячи E-строк "Failed to create existing container ... failed to identify
+    # the read-write layer ID", поконтейнерных метрик нет. Лечится обновлением
+    # cadvisor (отдельная работа по #3664 п.2), деплой от этого не сломан.
+    r"failed to identify the read-write layer id",
+    # #3659: promtail 2.9.2 (docker_sd) говорит с Docker API 1.42, а Docker 29
+    # требует >= 1.44: "component=docker_discovery msg=\"Unable to refresh target
+    # groups\" err=\"... client version 1.42 is too old ...\"". Логи контейнеров не
+    # доезжают в Loki, но сами контейнеры здоровы. Привязано к docker_discovery
+    # promtail: то же сообщение от приложения, которое ходит в Docker SDK, —
+    # настоящий сбой и остаётся critical.
+    r"component=docker_discovery.*client version \d+\.\d+ is too old",
+]
+
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
     r"✓ error:",
@@ -890,35 +921,67 @@ def _vesc_segfault_window_active(log_text: str) -> bool:
     return bool(_VESC_SEGFAULT_WINDOW_MARKER.search(log_text))
 
 
+def _klog_level(line: str) -> str | None:
+    """Уровень klog-строки (I/W/E/F) или None, если это не klog."""
+    match = KLOG_LINE_RE.match(line)
+    return match.group(1) if match else None
+
+
+def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
+    patterns = list(CRITICAL_EXCLUDE_COMMON)
+    # The bare "Segmentation fault (Address not mapped to object
+    # [(nil)])" pattern is only meaningful inside the vesc race
+    # window. Outside of it (a non-vesc segfault on the same
+    # hardware), the operator must still see the deploy-fail issue.
+    # See _vesc_segfault_window_active() for the rationale.
+    if not _vesc_segfault_window_active(log_text):
+        patterns = [
+            p for p in patterns
+            if p != r"segmentation fault \(address not mapped to object \[\(nil\)\]\)"
+        ]
+    return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
+
+
+def _classify_error_like_line(line: str, exclude_patterns: Iterable[str]) -> str | None:
+    """Серьёзность строки, похожей по тексту на ошибку: "critical" | "warning" | None.
+
+    None — шум: текст не похож на ошибку, либо строка в исключениях, либо это
+    klog-INFO (слово «Error» в тексте INFO-строки ошибкой её не делает).
+    "warning" — понижение: klog-WARNING (эмиттер сам назвал её предупреждением)
+    или известная проблема мониторинга из CRITICAL_DEMOTED_TO_WARNING. Уровень
+    решает код по формату строки, а не по тому, что в ней написано (ADR-0148).
+    """
+    if not CRITICAL_MATCH_RE.search(line):
+        return None
+    level = _klog_level(line)
+    if level == "I" or _matches_any(exclude_patterns, line):
+        return None
+    if level == "W" or _matches_any(CRITICAL_DEMOTED_TO_WARNING, line):
+        return "warning"
+    return "critical"
+
+
 def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
 
     lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    critical_patterns = _critical_exclude_patterns(log_text, scope)
     if severity == "critical":
-        patterns = list(CRITICAL_EXCLUDE_COMMON)
-        # The bare "Segmentation fault (Address not mapped to object
-        # [(nil)])" pattern is only meaningful inside the vesc race
-        # window. Outside of it (a non-vesc segfault on the same
-        # hardware), the operator must still see the deploy-fail issue.
-        # See _vesc_segfault_window_active() for the rationale.
-        if not _vesc_segfault_window_active(log_text):
-            patterns = [
-                p for p in patterns
-                if p != r"segmentation fault \(address not mapped to object \[\(nil\)\]\)"
-            ]
-        patterns += CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
         for line in lines:
-            if not CRITICAL_MATCH_RE.search(line):
-                continue
-            if _matches_any(patterns, line):
-                continue
-            return line
+            if _classify_error_like_line(line, critical_patterns) == "critical":
+                return line
         return None
 
     patterns = WARNING_EXCLUDE_COMMON + WARNING_EXCLUDE_BY_SCOPE.get(scope, [])
     for line in lines:
-        if not WARNING_MATCH_RE.search(line):
+        # Warning — это и строка со словом warn/warning, и строка, понижённая из
+        # critical (см. _classify_error_like_line): без второго условия понижённые
+        # строки пропали бы из отчёта совсем, а не стали предупреждением.
+        if not (
+            WARNING_MATCH_RE.search(line)
+            or _classify_error_like_line(line, critical_patterns) == "warning"
+        ):
             continue
         if _matches_any(patterns, line):
             continue
