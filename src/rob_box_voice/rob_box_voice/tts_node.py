@@ -102,6 +102,11 @@ from .core.speak_helpers import (
 )
 from rob_box_core.utterance import missing_tts_request_fields
 
+# ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
+# огибающая; старые JSON-входы — один адаптер speech_compat.
+from .core import speech_compat
+from .core.speech_owner import SpeechOwner, owner_of
+
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
 # (no behaviour change). NOT ``utils/audio_utils.py``: that module does
 # ``import pyaudio`` at top level, which ``tts_node.py`` never depended on
@@ -517,7 +522,7 @@ _TTS_LOOP_FUTURE: "concurrent.futures.Future | None" = None
 _TTS_LOOP_ATEXIT_REGISTERED = False
 
 
-def _register_tts_loop_atexit() -> None:
+def _install_tts_loop_atexit() -> None:
     """Arrange for the loop to be stopped before the interpreter joins threads.
 
     ``ThreadPoolExecutor`` workers are **non-daemon**, and CPython joins them
@@ -559,7 +564,7 @@ def _ensure_tts_loop() -> asyncio.AbstractEventLoop:
             thread_name_prefix="minimax-tts-loop",
         )
         _TTS_LOOP_FUTURE = _TTS_LOOP_EXECUTOR.submit(_TTS_LOOP.run_forever)
-        _register_tts_loop_atexit()
+        _install_tts_loop_atexit()
         return _TTS_LOOP
 
 
@@ -782,6 +787,9 @@ class TTSNode(Node):
         # (M5/M6). Эта настройка сейчас полезна для тестов и как
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
+        # ADR-0150 PR-3 (#3688) §5.5.4 — задержка от play_audio до звука в
+        # колонке, мс: t0 огибающей = now + output_latency_ms (замер — PR-3 ч.3).
+        self.declare_parameter("output_latency_ms", 0)
         # Issue #1780 / issue #1004: дефолтные emotion / pitch / volume /
         # pronunciation_dict для MiniMax T2A v2 (см. minimax_tts.py —
         # ``voice_setting`` принимает ``emotion``, ``pitch`` int semitones,
@@ -1248,31 +1256,22 @@ class TTSNode(Node):
         # Менеджер воспроизведения (предотвращает ALSA конфликты)
         self.playback_manager = AudioPlaybackManager.get_instance()
 
-        # Подписка на dialogue response (от dialogue_node)
-        self.dialogue_sub = self.create_subscription(
-            String, "/voice/dialogue/response", self.dialogue_callback, 10
+        # ADR-0150 PR-3 (#3688) — владелец речи: /voice/speech/{request,cancel}
+        # → конвейер ниже → /voice/speech/{event,envelope}. Старые JSON-входы
+        # (/voice/dialogue/response, /voice/tts/request, STOP в /voice/tts/control
+        # и avatar-control) — один адаптер ``core/speech_compat.py``.
+        self._speech = SpeechOwner(
+            self, output_latency_ms=int(self.get_parameter("output_latency_ms").value)
         )
-
-        # Подписка на TTS requests (от reflection_node и других)
-        self.tts_request_sub = self.create_subscription(
-            String,
-            "/voice/tts/request",
-            self.dialogue_callback,
-            10,  # Используем тот же callback
-        )
-
-        # Подписка на control commands (STOP)
-        self.control_sub = self.create_subscription(
-            String, "/voice/tts/control", self.control_callback, 10
-        )
+        self._speech.attach()
+        speech_compat.attach_legacy(self, avatar_control_topic=self.avatar_control_topic)
 
         # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
         # Контракт String JSON повторяет /voice/tts/request (см. dialogue_callback)
         # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
         # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
-        # и DROP (ADR-0055 §tts_node). Контроль (STOP / IGNORE_STOP_MS) —
-        # общий с /voice/tts/control, формат команды совпадает (тот же
-        # control_callback, см. C2 impl-plan §5).
+        # и DROP (ADR-0055 §tts_node). STOP — общий с /voice/tts/control
+        # (адаптер speech_compat).
         self._avatar_tts_request_sub = self.create_subscription(
             String, self.avatar_request_topic, self._on_avatar_tts_request, 10
         )
@@ -1300,19 +1299,8 @@ class TTSNode(Node):
         self._preview_error_pub = self.create_publisher(
             String, self._preview_error_topic, 10
         )
-        self._avatar_tts_control_sub = self.create_subscription(
-            String, self.avatar_control_topic, self.control_callback, 10
-        )
-        # Текущий avatar-request_id (один активный). Используется в
-        # control_callback для отсечения устаревших запросов от старого
-        # avatar-запроса при barge-in / STOP.
+        # Текущий avatar-request_id (один активный, диагностика).
         self._avatar_tts_request_id: Optional[str] = None
-
-        # Подписка на новый dialogue_id от dialogue_node.
-        # Позволяет отбрасывать устаревшие TTS-запросы от старого диалога после barge-in.
-        self._new_dialogue_id_sub = self.create_subscription(
-            String, "/voice/current_dialogue_id", self._on_new_dialogue_id, 1
-        )
 
         # Issue #1765 — переключение TTS-провайдера по запросу LLM через
         # SetVoiceTool(provider=...) / SetTtsProviderTool. mcp_server
@@ -1412,16 +1400,6 @@ class TTSNode(Node):
         # Serialize synth/play workers; callbacks stay non-blocking while queued
         # requests are dropped by dialogue-id checks after barge-in.
         self._synthesis_lock = threading.Lock()
-        # Issue #1563 — защита от «STOP после синтеза, но до воспроизведения».
-        # Когда barge-in (wake-word) приходит во время синтеза, а фраза
-        # «робот новая сессия» уже зарезолвлена как session-reset — поздний
-        # STOP не должен отменять УЖЕ готовый к воспроизведению синтез.
-        # Поэтому: 1) в окне IMMUNE STOP игнорируется (например после reset
-        # сессии); 2) STOP между успешным синтезом и play_audio буферизуется
-        # для СЛЕДУЮЩЕГО запроса, не отменяя текущий.
-        self._immune_until_ts = 0.0  # monotonic — до этого момента STOP игнор
-        self._post_synth_stop_pending = False  # STOP пришёл между synth/play
-
         # 🔴 FIX (live 12:02 «анекдот перепутан»): FIFO-порядок воспроизведения.
         # LLM вызвала 5 speak_text подряд (анекдот) — 5 задач ушли в пул
         # параллельно, каждый ждал _synthesis_lock, и порядок воспроизведения
@@ -1501,11 +1479,6 @@ class TTSNode(Node):
             1, int(self.get_parameter("pregenerate_history_window").value)
         )
 
-        # Dialogue session tracking (для синхронизации с dialogue_node)
-        self.current_dialogue_id = None
-        self.processing_dialogue_id = (
-            None  # ID диалога в процессе синтеза/воспроизведения
-        )
         self.current_speech_id = None  # ID текущего произношения (для MCP tools)
 
         # Issue #1160 — Prometheus metrics server (этап 1).
@@ -1830,125 +1803,9 @@ class TTSNode(Node):
                 f"⚠️  Silero warm-load executor shutdown raised: {e}"
             )
 
-    def control_callback(self, msg: String):
-        """Обработка control commands (STOP, IMMUNE)."""
-        raw = (msg.data or "").strip()
-        command = raw.upper()
-
-        if command == "STOP":
-            self._handle_stop_command(raw)
-            return
-
-        # Issue #1563 — dialogue_node шлёт «IGNORE_STOP_MS:<n>» после
-        # _reset_dialogue_session(), чтобы barge-in от wake-word в той же
-        # фразе не отменил свежезапущенный синтез «Начинаю новую сессию…».
-        # В окне IMMUNE STOP-команды логируются, но не прерывают текущий
-        # синтез/воспроизведение. Следующий STOP ПОСЛЕ окна работает штатно.
-        if command.startswith("IGNORE_STOP_MS:"):
-            try:
-                ms = int(command.split(":", 1)[1].strip())
-            except (ValueError, IndexError):
-                self.get_logger().warn(
-                    f"⚠️ [issue 1563] Bad IGNORE_STOP_MS payload: {raw!r}"
-                )
-                return
-            import time as _time
-
-            self._immune_until_ts = _time.monotonic() + (ms / 1000.0)
-            self.get_logger().info(
-                f"🛡️ [issue 1563] STOPs ignored for next {ms} ms "
-                f"(until t={self._immune_until_ts:.3f})"
-            )
-            return
-
-        # Неизвестная команда — логируем и игнорируем (не падаем).
-        self.get_logger().debug(f"ℹ️ [tts control] unknown command: {raw!r}")
-
-    def _handle_stop_command(self, raw: str) -> None:
-        """Issue #1563 — обработка STOP с учётом IMMUNE-окна и POST_SYNTH буфера.
-
-        Логика:
-        * В окне IMMUNE (между ``_immune_until_ts``) STOP игнорируется
-          полностью — текущий синтез/воспроизведение НЕ прерывается.
-          Это нужно для «робот новая сессия»: barge-in STOP приходит
-          в той же фразе, но dialogue_node уже решил что это session-reset
-          и шлёт IMMUNE-маркер ДО _publish_response.
-        * Если STOP пришёл во время синтеза (state=synthesizing) и
-          синтез УЖЕ завершён (audio_np готов, ждём play_audio) —
-          вместо немедленной отмены буферизуем STOP для СЛЕДУЮЩЕГО
-          запроса: ``_post_synth_stop_pending = True``. Текущий chunk
-          доигрывается полностью.
-        * В остальных случаях — старое поведение (немедленная остановка).
-        """
-        import time as _time
-
-        now = _time.monotonic()
-
-        # 1. IMMUNE-окно: STOP игнорируется.
-        if now < self._immune_until_ts:
-            self.get_logger().info(
-                f"🛡️ [issue 1563] STOP ignored (immune window, "
-                f"{max(0.0, self._immune_until_ts - now) * 1000:.0f} ms left)"
-            )
-            # Публикуем stopped для UI, но не прерываем фактический TTS.
-            self.publish_state("stopped")
-            return
-
-        # 2. Если мы в фазе «синтез готов, воспроизведение не начато»
-        #    (state == «synthesized») — буферизуем STOP для следующего
-        #    запроса, а текущий chunk доигрываем полностью. Сигнал
-        #    «между synth и play» прост: current_stream ещё None, но
-        #    идёт активный FIFO-gate (next_play_seq == play_seq).
-        if self._is_post_synth_phase():
-            self._post_synth_stop_pending = True
-            self.get_logger().info(
-                "⏭️ [issue 1563] STOP buffered for NEXT request "
-                "(current chunk will play to completion)"
-            )
-            return
-
-        # 3. Обычный путь: немедленная остановка.
-        self.get_logger().warn("🔇 STOP command received - немедленная остановка TTS")
-        self._interrupt_playback()
-        self.publish_state("stopped")
-        # Issue #2003 / ADR-0056 §3.5 site #3 — explicit STOP msg
-        # also cancels in-flight speculative chunks (independent of
-        # ``_interrupt_playback`` which already does it; here for
-        # the case where the caller bypassed ``_interrupt_playback``).
-        try:
-            self.cancel_pregen(reason="control_stop")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().debug(f"cancel_pregen on control STOP failed: {exc!r}")
-
-    def _is_post_synth_phase(self) -> bool:
-        """Issue #1563 — между synth_done и play_audio?
-
-        Эвристика: synthesis идёт в worker-thread, между завершением
-        синтеза и стартом ``play_audio`` окно ~миллисекунды (FIFO-gate
-        ожидание + resample). В этом окне STOP должен буферизоваться,
-        а не отменять готовый к воспроизведению chunk.
-
-        Признаки «между synth и play»:
-        * ``processing_dialogue_id`` задан (синтез завершился, объект жив)
-        * ``stop_requested`` ещё False (никто не прерывал)
-        * FIFO-gate активен или ещё не освобождён — проще всего
-          проверить, что state == "synthesized" (мы его публикуем
-          неявно через publish_state("playing") перед play_audio;
-          если ещё "playing" не был вызван — мы в post-synth окне).
-        """
-        return (
-            self.processing_dialogue_id is not None
-            and not self.stop_requested
-            and not self.current_stream
-        )
-
     def _interrupt_playback(self):
         """Прервать текущее воспроизведение (helper метод)."""
         self.stop_requested = True
-        # Сбрасываем current_dialogue_id: последующие TTS-запросы без dialogue_id
-        # или с устаревшим dialogue_id будут отброшены.
-        self.current_dialogue_id = None
-        self.processing_dialogue_id = None
 
         # Issue #2003 / ADR-0056 — drop every in-flight speculative
         # chunk. Without this, the dialogue-switch window could let a
@@ -1967,28 +1824,6 @@ class TTSNode(Node):
                 self.current_stream = None
             except Exception as e:
                 self.get_logger().error(f"❌ Ошибка остановки stream: {e}")
-
-    def _on_new_dialogue_id(self, msg: String):
-        """Обновляем current_dialogue_id как только dialogue_node начинает новый диалог.
-        Если в очереди tts_node ещё остались запросы от старого диалога — они будут отброшены.
-        """
-        new_id = msg.data
-        if new_id and new_id != self.current_dialogue_id:
-            self.get_logger().info(
-                f"🔄 Новый диалог: {new_id[:8]} "
-                f"(старый: {self.current_dialogue_id[:8] if self.current_dialogue_id else 'None'}) "
-                f"— устаревшие TTS-запросы будут отброшены"
-            )
-            self.current_dialogue_id = new_id
-            # Issue #2003 / ADR-0056 §3.5 site #1 — clear the
-            # speculative cache so a pre-gen for the OLD dialogue
-            # cannot be claimed by the NEW one.
-            try:
-                self.cancel_pregen(reason="new_dialogue_id")
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().debug(
-                    f"cancel_pregen on dialogue switch failed: {exc!r}"
-                )
 
     def _on_set_provider(self, msg: String):
         """Issue #1765 — переключить активного TTS-провайдера по запросу LLM.
@@ -2309,12 +2144,10 @@ class TTSNode(Node):
             speech_id = chunk_data.get("speech_id", str(uuid.uuid4()))
             self.current_speech_id = speech_id
 
-            # Проверяем dialogue_id (если присутствует) — вынесено
-            # в helper чтобы CC ``dialogue_callback`` оставался в лимите
-            # (ADR-0021 R1). Возвращает ``True`` если chunk надо отбросить.
+            # ADR-0150 PR-3 — реплика в журнале владельца речи: ``queued``.
+            # Отмена — по эпохе/speech_id (FIFO-ворота), не по dialogue_id.
             dialogue_id = chunk_data.get("dialogue_id", None)
-            if self._handle_dialogue_id_change(chunk_data, dialogue_id):
-                return
+            owner_of(self).admit(chunk_data, speech_id)
 
             ssml = chunk_data["ssml"]
 
@@ -2362,6 +2195,8 @@ class TTSNode(Node):
             text = self._extract_text_from_ssml(ssml)
 
             if not text.strip():
+                # Честный финал вместо молчаливого return: ждущий не висит.
+                self._publish_tts_finished(speech_id, success=False, error="empty_text")
                 return
 
             # Issue #1709 — Unicode-script guard на ЕДИНСТВЕННОМ чокпоинте,
@@ -2442,8 +2277,7 @@ class TTSNode(Node):
             # forget — by the time ``batch_complete`` of the current
             # chunk fires, the speculative audio for the next chunk is
             # either cached (claimed by the next iteration) or has been
-            # rejected by the quality gate. ``ctx=None`` — the pre-gen
-            # helper reads ``current_dialogue_id`` lazily inside.
+            # rejected by the quality gate. ``ctx=None``.
             try:
                 self.pregenerate(chunk_data, ctx=None)
             except Exception as exc:  # noqa: BLE001 — never crash ROS
@@ -2615,8 +2449,8 @@ class TTSNode(Node):
         ниже.
 
         Различия от ``dialogue_callback``:
-        * ``_avatar_tts_request_id`` обновляется при старте — для control_callback
-          (STOP через /avatar/tts/control видит, что есть активный запрос).
+        * ``_avatar_tts_request_id`` обновляется при старте (диагностика;
+          STOP через /avatar/tts/control — адаптер speech_compat).
         * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
           для контроля провайдера есть существующий /voice/tts/set_provider.
         * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
@@ -2664,32 +2498,6 @@ class TTSNode(Node):
         speech_id = chunk_data.get("speech_id", str(_uuid.uuid4()))
 
         dialogue_id = chunk_data.get("dialogue_id", None)
-        # Защита от устаревшего dialogue (barge-in) — общий шаблон с
-        # dialogue_callback, см. там комментарий про issue #1563.
-        if (
-            dialogue_id
-            and self.current_dialogue_id
-            and dialogue_id != self.current_dialogue_id
-        ):
-            self.get_logger().warning(
-                f"❌ [ADR-0055] Отбрасываем устаревший avatar chunk "
-                f"dialogue_id={dialogue_id[:8]} (текущий: {self.current_dialogue_id[:8]})"
-            )
-            self._publish_tts_finished(
-                speech_id,
-                success=False,
-                error="stale_dialogue",
-                batch_id=chunk_data.get("batch_id"),
-                batch_index=chunk_data.get("batch_index"),
-                batch_total=chunk_data.get("batch_total"),
-                dialogue_id=dialogue_id,
-            )
-            return
-
-        if dialogue_id:
-            if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
-                self._interrupt_playback()
-            self.current_dialogue_id = dialogue_id
 
         # Issue #2096 — guard пустого text/ssml для /avatar/tts/request
         # (ADR-0055, sink="headset"). По образцу dialogue_callback (line 2063-2069):
@@ -2788,8 +2596,7 @@ class TTSNode(Node):
             streaming=True,
             done=True,
         )
-        # Запоминаем текущий avatar-request_id — control_callback использует
-        # его, чтобы сбрасывать синтезирующийся worker при STOP.
+        # Запоминаем текущий avatar-request_id (диагностика).
         self._avatar_tts_request_id = chunk_data.get("request_id")
 
         # Тот же slot pool, что и для /voice/tts/request (BLK-9 fix).
@@ -3262,12 +3069,14 @@ class TTSNode(Node):
                 f"⚠️  Dropping TTS submit after executor shutdown "
                 f"(speech_id={speech_id[:8] if speech_id else 'None'})"
             )
+            self._publish_tts_finished(speech_id, success=False, error="shutdown")
             return
         if not self._synthesis_slots.acquire(blocking=False):
             self.get_logger().warning(
                 f"⚠️  TTS synth pool full "
                 f"(speech_id={speech_id[:8] if speech_id else 'None'}) — dropping"
             )
+            self._publish_tts_finished(speech_id, success=False, error="busy")
             return
         self._synthesis_in_flight += 1
         priority = _normalize_tts_priority(kwargs.get("priority"))
@@ -3445,14 +3254,16 @@ class TTSNode(Node):
         ``fn(... play_seq=N)`` but the positional arity stays aligned
         with the rest of the pipeline.
         """
-        if dialogue_id and self.current_dialogue_id != dialogue_id:
-            self.get_logger().warning(
-                f"Dropping queued TTS for stale dialogue {dialogue_id[:8]}"
-            )
-            return
         # Forward FIFO-gate slot through kwargs (it's not in the
         # canonical positional arity so we extract it from **kwargs).
         play_seq = kwargs.get("play_seq", None)
+        # ADR-0150 PR-3 — реплику отменили, пока она ждала воркера: не тратим
+        # синтез (облако платное), а дожидаемся своей очереди и закрываем её
+        # ``cancelled`` теми же FIFO-воротами (живой прогон 20.10: отменённые
+        # ожидающие чанки всё равно синтезировались в MiniMax).
+        if owner_of(self).is_cancelled(speech_id):
+            self._sap_wait_fifo_and_dialogue(play_seq, speech_id, dialogue_id)
+            return
         # Issue #1219 — LLM voice selection: голос из запроса speak_text
         # (передан через kwargs, чтобы не ломать канонический positional
         # arity, см. test_speech_id_arg_chain).
@@ -3712,7 +3523,6 @@ class TTSNode(Node):
                     current_chunk,
                     fallback_voice=self._prefetch_fallback_voice(),
                     fallback_language=self._prefetch_fallback_language(),
-                    fallback_dialogue_id=self.current_dialogue_id,
                 )
                 if speech_id is not None and self._prefetch is None:
                     self._prefetch = {
@@ -3764,10 +3574,8 @@ class TTSNode(Node):
 
         Called from the four sites enumerated in §3.5:
 
-        1. ``_on_new_dialogue_id`` (dialogue switch);
-        2. ``_interrupt_playback`` (STOP/barge-in);
-        3. ``control_callback`` (explicit STOP);
-        4. ``_on_set_provider`` (REPLACE).
+        1. ``_interrupt_playback`` (STOP/barge-in, SpeechCancel);
+        2. ``_on_set_provider`` (REPLACE).
 
         Returns the count of cancelled tasks (for metrics).
 
@@ -4479,6 +4287,8 @@ class TTSNode(Node):
                 if ctx["sample_rate"] > 0
                 else 0.0
             )
+            # ADR-0150 PR-3 — ``synthesized{duration_ms}`` (+ ``voice_changed``).
+            owner_of(self).synthesized(speech_id, raw_duration_sec, ctx, voice)
 
             # 5) FIFO-gate + dialogue-id freshness check.
             # 🔴 FIX (live 12:28 «робот замолчал после barge-in»): FIFO-gate
@@ -4602,27 +4412,8 @@ class TTSNode(Node):
         ssml_attributes: Optional[dict],
         text: str,
     ) -> None:
-        """Сбросить stop-флаг, применить buffered STOP, установить
-        ``processing_dialogue_id`` и дефолтный ``ssml_attributes``."""
-        # Сбрасываем флаг stop при новом запросе
+        """Сбросить stop-флаг нового запроса (отмену ведёт журнал владельца речи)."""
         self.stop_requested = False
-        # Issue #1563 — потребляем буферизованный STOP, пришедший
-        # в окне «synth_done → play_audio» прошлого chunk'а. Если
-        # поздний STOP был отложен для текущего запроса — применяем
-        # его ДО старта синтеза (новый запрос не нужен).
-        if getattr(self, "_post_synth_stop_pending", False):
-            self._post_synth_stop_pending = False
-            self.get_logger().info(
-                "⏭️ [issue 1563] consuming buffered STOP at start of new request"
-            )
-            self._interrupt_playback()
-
-        # Устанавливаем processing_dialogue_id для этого синтеза
-        if dialogue_id:
-            self.processing_dialogue_id = dialogue_id
-            self.get_logger().debug(
-                f"🎯 Начинаем обработку dialogue_id: {dialogue_id[:8]}..."
-            )
 
     def _sap_consume_prefetch(
         self,
@@ -5094,11 +4885,7 @@ class TTSNode(Node):
         """Опубликовать ``silero_warming`` finished-маркер (skipped chunk).
         Используется, когда warm-load Silero не успел к 1.5-секундному
         таймауту — чтобы downstream знал, что чанк пропущен, а не потерян.
-        ``dialogue_id`` явно передаётся, потому что мы сбрасываем
-        ``self.processing_dialogue_id`` ДО публикации маркера (иначе
-        следующий чанк будет ждать вечно).
         """
-        self.processing_dialogue_id = None
         try:
             self.publish_state("tts_silero_warming")
             _fin = String()
@@ -5154,9 +4941,9 @@ class TTSNode(Node):
         speech_id: Optional[str],
         dialogue_id: Optional[str],
     ) -> bool:
-        """FIFO-gate + dialogue-id freshness check.  Возвращает ``False``,
-        если ``dialogue_id`` рассинхронизирован (вышел — helper уже отпустил
-        FIFO-slot через ``_release_play_seq``).  ``True`` — можно продолжать.
+        """FIFO-gate + проверка отмены.  Возвращает ``False``, если реплику
+        отменили (``SpeechCancel``/STOP), пока она ждала очереди — helper уже
+        отпустил FIFO-slot и закрыл реплику ``cancelled``.  ``True`` — играть.
         Issue #1996: при наличии ``speech_id`` gate читает актуальный seq из
         ``_pending_seqs[speech_id]`` (а не застывший локальный ``play_seq``),
         чтобы operator-приоритет мог «вклиниться» под тем же lock'ом.
@@ -5173,16 +4960,12 @@ class TTSNode(Node):
             with self._play_order_cond:
                 while self._next_play_seq != play_seq:
                     self._play_order_cond.wait()
-        if dialogue_id and self.current_dialogue_id != dialogue_id:
+        if owner_of(self).is_cancelled(speech_id):
             self.get_logger().warning(
-                f"⚠️  Dialogue изменился во время синтеза! "
-                f"Отменяем воспроизведение старого chunk "
-                f"(было: {dialogue_id[:8]}..., сейчас: {self.current_dialogue_id[:8]}...)"
+                f"🛑 Реплика отменена до воспроизведения: speech_id={(speech_id or '')[:8]}"
             )
-            self.processing_dialogue_id = None
-            release = getattr(self, "_release_play_seq", None)
-            if release is not None:
-                release(play_seq, speech_id=speech_id)
+            self._release_play_seq(play_seq, speech_id=speech_id)
+            self._publish_tts_finished(speech_id, success=False, error="cancelled")
             return False
         return True
 
@@ -5203,8 +4986,6 @@ class TTSNode(Node):
         ``/avatar/tts/audio``.  ``/voice/tts/finished`` всё равно
         публикуем (метрики/корреляция, тот же speech_id/dialogue_id/batch_*).
         """
-        if dialogue_id and self.processing_dialogue_id == dialogue_id:
-            self.processing_dialogue_id = None
         self.get_logger().info(
             f"🎧 [ADR-0055] headset: TTS chunk готов "
             f"(оператор услышит через шлем), "
@@ -5268,6 +5049,12 @@ class TTSNode(Node):
                 # из ТОГО ЖЕ batch (продолжение)» от «новый chunk из
                 # ДРУГОГО batch (babble-retry / DJ-overlap)».
                 self._active_batch_id = batch_id
+        # ADR-0150 PR-3 — ждём ``at``, публикуем огибающую и ``started``.
+        if not owner_of(self).started(speech_id, audio_stereo, target_rate):
+            self.publish_state("stopped")
+            self._release_play_seq(play_seq, speech_id=speech_id)
+            self._publish_tts_finished(speech_id, success=False, error="cancelled")
+            return
         try:
             with ignore_stderr(enable=True):
                 self.current_stream = True  # Маркер что воспроизведение идёт
@@ -5311,9 +5098,6 @@ class TTSNode(Node):
             batch_started_at,
             raw_duration_sec,
         )
-        # Очищаем processing_dialogue_id после завершения.
-        if dialogue_id and self.processing_dialogue_id == dialogue_id:
-            self.processing_dialogue_id = None
 
     def _sap_prepare_audio_for_playback(
         self,
@@ -5387,23 +5171,19 @@ class TTSNode(Node):
             f"batch={batch_index}/{batch_total}, "
             f"text={text!r}"
         )
-        _publish_finished = getattr(self, "_publish_tts_finished", None)
-        if _publish_finished is not None:
-            _publish_finished(
-                speech_id,
-                success=False,
-                error=error,
-                batch_id=batch_id,
-                batch_index=batch_index,
-                batch_total=batch_total,
-                batch_started_at=batch_started_at,
-                dialogue_id=dialogue_id,
-            )
-            self.get_logger().info(
-                f"📢 TTS finished event (ошибка): speech_id={(speech_id or '')[:8]}..."
-            )
-        if dialogue_id and self.processing_dialogue_id == dialogue_id:
-            self.processing_dialogue_id = None
+        self._publish_tts_finished(
+            speech_id,
+            success=False,
+            error=error,
+            batch_id=batch_id,
+            batch_index=batch_index,
+            batch_total=batch_total,
+            batch_started_at=batch_started_at,
+            dialogue_id=dialogue_id,
+        )
+        self.get_logger().info(
+            f"📢 TTS finished event (ошибка): speech_id={(speech_id or '')[:8]}..."
+        )
 
     def _sap_finalize_after_playback(
         self,
@@ -5422,7 +5202,7 @@ class TTSNode(Node):
         обновляем pre-fetch calibration histogram (#2003) + chunk-to-chunk
         latency (#2003 DoD #2).
         """
-        if self.stop_requested:
+        if self.stop_requested or owner_of(self).is_cancelled(speech_id):
             self.publish_state("stopped")
             self.get_logger().warn("🔇 Воспроизведение прервано")
             # Issue #1709 — ПОЛНЫЙ текст прерванного чанка.
@@ -5526,8 +5306,6 @@ class TTSNode(Node):
                 batch_started_at=batch_started_at,
                 dialogue_id=dialogue_id,
             )
-        if dialogue_id and self.processing_dialogue_id == dialogue_id:
-            self.processing_dialogue_id = None
 
     def _synthesize_silero(
         self, text: str, ssml_attributes: dict | None = None, voice: str | None = None
@@ -6757,6 +6535,8 @@ class TTSNode(Node):
         """
         if not speech_id:
             return
+        # ADR-0150 PR-3 — финал реплики: finished / cancelled / rejected.
+        owner_of(self).terminal(speech_id, success, error, queued)
         payload: Dict[str, Any] = {"speech_id": speech_id, "success": success}
         if queued:
             # Маркер, который dialogue_node / mcp_server может
@@ -6880,82 +6660,6 @@ class TTSNode(Node):
     #: спамит (dialogue_node / DJModeController), и лучше залогировать
     #: warning + drop, чем уйти в бесконечный рост памяти.
     _PENDING_SPEECH_QUEUE_MAX = 8
-
-    def _handle_dialogue_id_change(
-        self,
-        chunk_data: dict,
-        dialogue_id: Optional[str],
-    ) -> bool:
-        """Issue #1996 / pre-existing — stale-dialogue guard для TTS chunks.
-
-        Вынесено из ``dialogue_callback`` чтобы удержать CC в ADR-0021
-        лимите (=15). Обрабатывает три случая:
-
-        1. **Stale dialogue** — есть текущий ``current_dialogue_id`` и
-           входящий chunk от другого диалога → drop с
-           ``finished_pub(success=False, error="stale_dialogue")``.
-        2. **Dialogue switch** — пришёл новый dialogue_id → прерываем
-           предыдущий playback (``_interrupt_playback``) и обновляем
-           ``current_dialogue_id``.
-        3. **Mid-processing foreign chunk** — есть
-           ``processing_dialogue_id`` и он не совпадает с входящим → drop.
-
-        Returns:
-            ``True`` если chunk надо отбросить (caller делает ``return``);
-            ``False`` если chunk идёт в основной pipeline.
-        """
-        # Старый запрос от устаревшего диалога — отбрасываем ДО синтеза
-        if (
-            dialogue_id
-            and self.current_dialogue_id
-            and dialogue_id != self.current_dialogue_id
-        ):
-            self.get_logger().warning(
-                f"❌ Отбрасываем устаревший TTS диалога {dialogue_id[:8]} "
-                f"(текущий: {self.current_dialogue_id[:8]})"
-            )
-            # Опубликуем finished с error=True чтобы MCP speak_text не вис в ожидании
-            speech_id_to_drop = chunk_data.get("speech_id")
-            if speech_id_to_drop:
-                import json as _json
-
-                _drop_msg = String()
-                _drop_msg.data = _json.dumps(
-                    {
-                        "speech_id": speech_id_to_drop,
-                        "success": False,
-                        "error": "stale_dialogue",
-                    },
-                    ensure_ascii=False,
-                )
-                self.finished_pub.publish(_drop_msg)
-            return True
-
-        if dialogue_id:
-            # Если это новый диалог - прерываем предыдущий
-            if self.current_dialogue_id and dialogue_id != self.current_dialogue_id:
-                self.get_logger().warning(
-                    f"🔄 Новый диалог обнаружен! "
-                    f"Прерываем предыдущий ({self.current_dialogue_id[:8]}...) → "
-                    f"новый ({dialogue_id[:8]}...)"
-                )
-                # Прерываем воспроизведение
-                self._interrupt_playback()
-
-            # Обновляем текущий dialogue_id
-            self.current_dialogue_id = dialogue_id
-
-            # Проверяем: если мы сейчас обрабатываем другой диалог - отбрасываем chunk
-            if (
-                self.processing_dialogue_id
-                and self.processing_dialogue_id != dialogue_id
-            ):
-                self.get_logger().warning(
-                    f"❌ Отбрасываем устаревший chunk (dialogue_id: {dialogue_id[:8]}..., "
-                    f"ожидается: {self.processing_dialogue_id[:8]}...)"
-                )
-                return True
-        return False
 
     def _should_queue_for_overlap(
         self,

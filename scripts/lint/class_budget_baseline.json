@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-20",
-  "base_sha": "766274b25fc4094f128fa912cfb6f712e29f975a",
+  "base_sha": "b059f62dca2c936ed0e2f2745ea8ef42133131b1",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -80,8 +80,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 885,
-      "methods": 174
+      "wmc": 881,
+      "methods": 173
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,
@@ -96,8 +96,8 @@
       "methods": 41
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 717,
-      "methods": 112
+      "wmc": 672,
+      "methods": 107
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
       "wmc": 99,

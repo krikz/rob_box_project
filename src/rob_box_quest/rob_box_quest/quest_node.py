@@ -30,7 +30,7 @@ import logging
 import math
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Phase 2 (issue #2002, ADR-0051 §2.1): kind-значения для
 # ``Command.msg`` (должны совпадать с
@@ -56,6 +56,7 @@ from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
+from rob_box_core import speech_client
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 from rob_box_core.speech_segmentation import (
     DEFAULT_ROBOT_VOICE_CONFIG,
@@ -304,7 +305,7 @@ class QuestBridge:
         cmd_vel_emergency_pub,
         ws_server: Optional[WSSServer] = None,
         voice_in_pub=None,
-        tts_control_pub=None,
+        stop_speech: Optional[Callable[[], None]] = None,
         sound_stop_pub=None,
         stt_in_pub=None,
         quest_wake_pub=None,  # issue #1992: /audio/quest_wake (wake-канал → stt_node)
@@ -328,7 +329,8 @@ class QuestBridge:
         self._pub_emergency = cmd_vel_emergency_pub
         # Рация (P3): голос оператора + STOP-каналы. None в unit-тестах моста.
         self._voice_in_pub = voice_in_pub
-        self._tts_control_pub = tts_control_pub
+        # ADR-0150 PR-3: отмена речи робота одним клиентом (SpeechCancel).
+        self._stop_speech = stop_speech
         self._sound_stop_pub = sound_stop_pub
         # Робот-голос (P7): буфер PCM → /audio/quest_in (STT).
         self._stt_in_pub = stt_in_pub
@@ -527,14 +529,14 @@ class QuestBridge:
     # --- Voice passthrough (рация, P3) ---------------------------------
 
     def publish_voice_barge_in(self) -> None:
-        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        """PTT start: SpeechCancel всей речи робота + /voice/sound/stop (barge-in)."""
         # issue #3253 (Ш2): клиент на PTT уже оборвал реплику ТАРС в шлеме —
         # закрываем её стадию и на сервере (tars_state idle), иначе экран
         # ждёт конца звука, которого не будет.
         _notify_tars_barge_in(self._node)
-        if self._tts_control_pub is None or self._sound_stop_pub is None:
+        if self._stop_speech is None or self._sound_stop_pub is None:
             return
-        self._tts_control_pub.publish(_stop_msg())
+        self._stop_speech()
         self._sound_stop_pub.publish(_stop_msg())
 
     def publish_voice_audio(self, payload: bytes) -> None:
@@ -1750,8 +1752,8 @@ class QuestNode(Node):
         self._voice_in_pub = self.create_publisher(
             AudioData, "/avatar/voice_in", _VOICE_QOS
         )
-        self._tts_control_pub = self.create_publisher(String, "/voice/tts/control", _RE)
         self._sound_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+        speech_client.prepare(self, "cancel")  # ADR-0150 PR-3: PTT -> SpeechCancel
         # Робот-голос (P7): буфер операторского PCM → STT через /audio/quest_in.
         self._stt_in_pub = self.create_publisher(
             AudioData, "/audio/quest_in", _VOICE_QOS
@@ -2197,7 +2199,9 @@ class QuestNode(Node):
             cmd_vel_emergency_pub=self._pub_emergency,
             ws_server=self.ws_server,
             voice_in_pub=self._voice_in_pub,
-            tts_control_pub=self._tts_control_pub,
+            stop_speech=lambda: speech_client.cancel(
+                self, agent=speech_client.ANY_AGENT, reason="ptt"
+            ),
             sound_stop_pub=self._sound_stop_pub,
             stt_in_pub=self._stt_in_pub,
             quest_wake_pub=self._quest_wake_pub,

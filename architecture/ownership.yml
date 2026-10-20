@@ -76,7 +76,18 @@ nodes:
   tts_node:
     owner: voice
     package: rob_box_voice
-    source: [src/rob_box_voice/rob_box_voice/tts_node.py]
+    # PR-3 (#3688): владелец речи - журнал/события/огибающая и адаптер v1
+    source:
+      - src/rob_box_voice/rob_box_voice/tts_node.py
+      - src/rob_box_voice/rob_box_voice/core/speech_owner.py
+      - src/rob_box_voice/rob_box_voice/core/speech_compat.py
+  speech_client:
+    owner: voice
+    package: rob_box_core
+    # PR-3 (#3688): единственный клиент речи (say/cancel), один публикатор на ноду.
+    # Через него пишут: dialogue_node, stt_node, quest_node (cancel); писатели
+    # /voice/tts/request переводятся на say() по частям PR-3.
+    source: [src/rob_box_core/rob_box_core/speech_client.py]
   face_node:
     owner: dialog-v2
     package: rob_box_animations
@@ -170,31 +181,30 @@ topics:
   /voice/speech/request:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechRequest
-    status: planned
-    introduced_by: "PR-3 (#3688)"
-    writers_allowed: [dialog_node, dialogue_node, telegram_node, mcp_server]
+    status: live
+    # публикует только клиент rob_box_core.speech_client.say (вызывающие - в nodes.speech_client)
+    writers_allowed: [speech_client]
     readers: [tts_node]
   /voice/speech/cancel:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechCancel
-    status: planned
-    introduced_by: "PR-3 (#3688)"
-    writers_allowed: [dialog_node, dialogue_node, stt_node]
+    status: live
+    # speech_client.cancel: dialogue_node (_cancel_run), stt_node (barge-in), quest_node (PTT)
+    writers_allowed: [speech_client]
     readers: [tts_node]
   /voice/speech/event:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEvent
-    status: planned
-    introduced_by: "PR-3 (#3688)"
+    status: live
     writers_allowed: [tts_node]
-    readers: [dialog_node, dialogue_node, face_node]
+    readers: [stt_node]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope
-    status: planned
-    introduced_by: "PR-3 (#3688), потребитель face_node - PR-3a (#3689)"
+    status: live
     writers_allowed: [tts_node]
-    readers: [face_node]
+    readers: []
+    debt: "потребитель face_node - PR-3a (#3689); до него - seam_allowlist.json"
   /voice/expression/request:
     owner: dialog_node
     type: rob_box_dialog_msgs/ExpressionRequest

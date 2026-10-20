@@ -376,7 +376,7 @@ class SpeculativeExecutor:
             # current_chunk mapping — the helper already filled
             # ``dialogue_id`` from ``current_chunk["dialogue_id"]``
             # when available, but the caller may have a stronger
-            # source (e.g. ``self.current_dialogue_id``).
+            # source (e.g. its own dialogue tracking).
             object.__setattr__(task, "dialogue_id", fallback_dialogue_id)
 
         estimate: SegmentEstimate = estimate_confidence(

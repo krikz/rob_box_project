@@ -468,6 +468,7 @@ def build_ssml_payload(
     tg_chat_id: Optional[int] = None,
     voice: Optional[str] = None,
     language: Optional[str] = None,
+    epoch: Optional[int] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -483,6 +484,9 @@ def build_ssml_payload(
     Issue #1195 — ``tg_chat_id`` (Telegram chat the reply should be echoed
     into) is an extra routing hint for telegram_node; tts_node ignores
     unknown fields.
+
+    ADR-0150 PR-3 — ``epoch`` (поколение сессии личности) читает адаптер
+    ``speech_compat``: barge-in отменяет реплики не новее увиденной эпохи.
     """
     payload: Dict[str, Any] = Utterance(
         text=text,
@@ -496,6 +500,7 @@ def build_ssml_payload(
             "tg_chat_id": tg_chat_id,
             "voice": voice,
             "language": language,
+            "epoch": epoch,
         },
     ).to_request()
     # ``Utterance.to_request`` ставит ``emotion="neutral"`` по умолчанию и
@@ -508,6 +513,7 @@ def build_ssml_payload(
         "tg_chat_id",
         "voice",
         "language",
+        "epoch",
     ):
         if k in payload and payload[k] is None:
             payload.pop(k)
@@ -546,10 +552,6 @@ class EffectAwaiterRegistry:
         self._release_sound = release_sound
 
     # ── TTS side ────────────────────────────────────────────────────
-
-    def register_tts(self, speech_id: str, event: asyncio.Event) -> None:  # type: ignore[type-arg]
-        with self._tts_lock:
-            self._tts_events[speech_id] = event
 
     @property
     def has_pending_tts(self) -> bool:

@@ -235,8 +235,6 @@ class TestDefaultProviderPath:
         node.provider = "yandex"
         node.normalize_text = False
         node.stop_requested = False
-        node.processing_dialogue_id = None
-        node.current_dialogue_id = None
         node.yandex_stub = object()
         node.yandex_speed = 1.0
         node._synthesize_yandex = MagicMock(

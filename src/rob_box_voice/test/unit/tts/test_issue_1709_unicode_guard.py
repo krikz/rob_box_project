@@ -165,8 +165,6 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n.finished_pub = _CapturingPublisher()
     n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()

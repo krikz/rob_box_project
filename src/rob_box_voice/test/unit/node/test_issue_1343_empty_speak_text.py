@@ -35,7 +35,6 @@ def _make_node() -> DialogueNode:
     n.animation_pub = MagicMock()
     n.sound_trigger_pub = MagicMock()
     n.state_pub = MagicMock()
-    n.current_dialogue_id = None
     n.available_tools = []
     n.mcp_tools_available = False
     n.internet_available = True

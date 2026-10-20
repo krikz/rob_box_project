@@ -55,7 +55,6 @@ def _make_node() -> MagicMock:
     node._pregenerate_enabled = True
     node._pregenerate_confidence_floor = 0.6
     node._pregenerate_history_window = 10
-    node.current_dialogue_id = "d1"
     node.provider = "yandex"
     node.yandex_voice = "anton"
     node.minimax_voice = "male-qn-qingse"

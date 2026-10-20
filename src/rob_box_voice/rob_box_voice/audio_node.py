@@ -149,7 +149,6 @@ class AudioNode(Node):
         self.vad_pub = self.create_publisher(Bool, '/audio/vad', 10)
         self.direction_pub = self.create_publisher(Int32, '/audio/direction', 10)
         self.state_pub = self.create_publisher(String, '/audio/state', 10)
-        self.tts_control_pub = self.create_publisher(String, '/voice/tts/control', 10)  # Для прерывания TTS
 
         # Issue 989: подписки на состояние TTS и музыки для анти-эхо гейтов.
         # /voice/tts/state — "synthesizing"/"playing" пока робот говорит,

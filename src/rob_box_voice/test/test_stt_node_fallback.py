@@ -303,7 +303,7 @@ def _make_stt_node_stub(**param_overrides):
     # Mock publishers/subscribers/loggers
     node.utterance_pub = MagicMock()
     node.state_pub = MagicMock()
-    node.tts_control_pub = MagicMock()
+    node._speech_client_pubs = {"cancel": MagicMock()}
     node.audio_sub = MagicMock()
     node.tts_state_sub = MagicMock()
     real_logger = logging.getLogger("test_stt_node_fallback")
@@ -970,12 +970,12 @@ class TestBargeInWakeWordStopTTS:
         monkeypatch.setattr(stt_node_module, "String", _String)
 
     def test_publish_result_wake_word_stops_tts(self, stt_node, monkeypatch):
-        """Фраза с wake word → tts_control_pub получает 'STOP' (barge-in)."""
+        """Фраза с wake word → SpeechCancel речи личности (barge-in, ADR-0150 PR-3)."""
         from rob_box_voice import stt_node as stt_node_module
 
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
-        stt_node.tts_control_pub = MagicMock()
+        stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         # В фикстуре publish_result замокан (чтобы другие тесты не публиковали),
         # для этого теста нужен РЕАЛЬНЫЙ метод — bind через __get__.
@@ -986,8 +986,8 @@ class TestBargeInWakeWordStopTTS:
         stt_node.publish_result("робот, добавь бит")
 
         # Немедленный STOP TTS (barge-in)
-        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
-        assert stop_call.data == "STOP"
+        stop_call = stt_node._speech_client_pubs["cancel"].publish.call_args[0][0]
+        assert (stop_call.agent, stop_call.reason) == ("personality", "barge_in")
         # Результат всё равно публикуется (dialogue_node обработает)
         assert stt_node.utterance_pub.publish.call_count == 1
 
@@ -997,7 +997,7 @@ class TestBargeInWakeWordStopTTS:
 
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "replace"  # issue #1734: явный regression-pin
-        stt_node.tts_control_pub = MagicMock()
+        stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
@@ -1005,7 +1005,7 @@ class TestBargeInWakeWordStopTTS:
 
         stt_node.publish_result("не расслышал скажи")
 
-        stt_node.tts_control_pub.publish.assert_not_called()
+        stt_node._speech_client_pubs["cancel"].publish.assert_not_called()
         assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_full_chain_barge_in_stop_tts(self, stt_node, monkeypatch):
@@ -1027,7 +1027,7 @@ class TestBargeInWakeWordStopTTS:
         stt_node._recognize_with_fallback = MagicMock(
             return_value=("робот добавь бит", [])
         )
-        stt_node.tts_control_pub = MagicMock()
+        stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
         stt_node.tts_request_pub = MagicMock()
@@ -1040,8 +1040,8 @@ class TestBargeInWakeWordStopTTS:
         stt_node.speech_audio_callback(msg)
 
         stt_node._recognize_with_fallback.assert_called_once()
-        stop_call = stt_node.tts_control_pub.publish.call_args[0][0]
-        assert stop_call.data == "STOP"
+        stop_call = stt_node._speech_client_pubs["cancel"].publish.call_args[0][0]
+        assert (stop_call.agent, stop_call.reason) == ("personality", "barge_in")
         assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_short_phrase_during_tts_ignored(self, stt_node):
@@ -1092,7 +1092,7 @@ class TestBargeInClassifyPolicyDefersStop:
 
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "classify"
-        stt_node.tts_control_pub = MagicMock()
+        stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
@@ -1100,7 +1100,7 @@ class TestBargeInClassifyPolicyDefersStop:
 
         stt_node.publish_result("робот и ещё про енота")
 
-        stt_node.tts_control_pub.publish.assert_not_called()
+        stt_node._speech_client_pubs["cancel"].publish.assert_not_called()
         # Результат всё равно публикуется — dialogue_node должен его увидеть,
         # чтобы вообще смочь прогнать quick_decide.
         assert stt_node.utterance_pub.publish.call_count == 1
@@ -1111,7 +1111,7 @@ class TestBargeInClassifyPolicyDefersStop:
 
         self._patch_string_factory(monkeypatch, stt_node_module)
         stt_node._barge_in_policy = "classify"
-        stt_node.tts_control_pub = MagicMock()
+        stt_node._speech_client_pubs = {"cancel": MagicMock()}
         stt_node.utterance_pub = MagicMock()
         stt_node.publish_result = stt_node_module.STTNode.publish_result.__get__(
             stt_node, stt_node_module.STTNode
@@ -1119,7 +1119,7 @@ class TestBargeInClassifyPolicyDefersStop:
 
         stt_node.publish_result("не расслышал скажи")
 
-        stt_node.tts_control_pub.publish.assert_not_called()
+        stt_node._speech_client_pubs["cancel"].publish.assert_not_called()
         assert stt_node.utterance_pub.publish.call_count == 1
 
     def test_default_policy_is_replace_before_any_topic_message(self, stt_node):

@@ -54,7 +54,7 @@ def node():
     n._loop.call_soon_threadsafe = lambda fn, *a, **kw: fn(*a, **kw)
     n._run_cancelled = False
     n._effects = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
 
     n._barge_in_policy = "replace"
     n._pending_user_messages = deque()
@@ -82,15 +82,15 @@ class TestBargeInPolicyDispatch:
         """policy=replace — регресс: STOP уходит на новый STT-ввод."""
         node._barge_in_policy = "replace"
         node._on_stt(_stt("робот спой про комара"))
-        node._tts_control_pub.publish.assert_called_once()
-        published = node._tts_control_pub.publish.call_args.args[0]
-        assert published.data == "STOP"
+        node._speech_client_pubs["cancel"].publish.assert_called_once()
+        published = node._speech_client_pubs["cancel"].publish.call_args.args[0]
+        assert published.agent == "personality"
 
     def test_classify_does_not_publish_stop(self, node):
         """policy=classify — сегмент доигрывает, STOP не уходит."""
         node._barge_in_policy = "classify"
         node._on_stt(_stt("робот и ещё про енота"))
-        node._tts_control_pub.publish.assert_not_called()
+        node._speech_client_pubs["cancel"].publish.assert_not_called()
 
     def test_classify_still_cancels_turn_and_releases_awaiters(self, node):
         """R1: даже без STOP турн отменяется и awaiter'ы отпускаются —
@@ -119,7 +119,7 @@ class TestQuickDecideDispatch:
         node._on_stt(_stt("робот угу"))
         node._dispatch_turn.assert_not_called()
         node._effects.release_all_tts.assert_not_called()
-        node._tts_control_pub.publish.assert_not_called()
+        node._speech_client_pubs["cancel"].publish.assert_not_called()
         assert node._run_cancelled is False
         assert node._llm_skipped_counter["quick_decide_ignore"] == 1
 
@@ -168,9 +168,9 @@ class TestQuickDecideDispatch:
                 f"pipeline did not reach cancel_inflight(stop_tts=True) "
                 f"for barge_in_policy=classify + verdict=replace"
             )
-            node._tts_control_pub.publish.assert_called_once()
-            published = node._tts_control_pub.publish.call_args.args[0]
-            assert published.data == "STOP"
+            node._speech_client_pubs["cancel"].publish.assert_called_once()
+            published = node._speech_client_pubs["cancel"].publish.call_args.args[0]
+            assert published.agent == "personality"
             node._dispatch_turn.assert_called_once()
         finally:
             adapter.cancel_inflight = _orig  # type: ignore[assignment]
@@ -181,7 +181,7 @@ class TestQuickDecideDispatch:
         path's own test class for S4.2 traceability)."""
         node._barge_in_policy = "classify"
         node._on_stt(_stt("робот и ещё про енота"))
-        node._tts_control_pub.publish.assert_not_called()
+        node._speech_client_pubs["cancel"].publish.assert_not_called()
         node._dispatch_turn.assert_called_once()
 
     def test_replace_policy_never_calls_quick_decide(self, node, monkeypatch):
@@ -234,7 +234,7 @@ class TestPendingUserMessagesQueueOnStt:
         node._on_stt(_stt("робот и ещё про енота"))
 
         node._dispatch_turn.assert_not_called()
-        node._tts_control_pub.publish.assert_not_called()
+        node._speech_client_pubs["cancel"].publish.assert_not_called()
         node._effects.release_all_tts.assert_not_called()
         assert node._run_cancelled is False
         assert len(node._pending_user_messages) == 1
@@ -274,7 +274,7 @@ class TestPendingUserMessagesQueueOnStt:
         node._on_stt(_stt("робот стоп"))
 
         node._dispatch_turn.assert_called_once()
-        node._tts_control_pub.publish.assert_called_once()
+        node._speech_client_pubs["cancel"].publish.assert_called_once()
         assert len(node._pending_user_messages) == 0
 
     def test_replace_policy_never_queues_even_with_live_task(self, node):
@@ -288,7 +288,7 @@ class TestPendingUserMessagesQueueOnStt:
         node._on_stt(_stt("робот и ещё про енота"))
 
         node._dispatch_turn.assert_called_once()
-        node._tts_control_pub.publish.assert_called_once()
+        node._speech_client_pubs["cancel"].publish.assert_called_once()
         assert len(node._pending_user_messages) == 0
 
     def test_ignore_verdict_with_live_task_still_does_not_queue(self, node):
@@ -420,7 +420,7 @@ class TestPendingUserMessagesClearedOnReset:
         n = object.__new__(DialogueNode)
         n.get_logger = lambda: MagicMock()
         n._cancel_run = MagicMock()
-        n._tts_control_pub = MagicMock()
+        n._speech_client_pubs = {"cancel": MagicMock()}
         n._pending_backlog_flush = False
         n._dsm = MagicMock()
         n._speaker_lock = threading.Lock()

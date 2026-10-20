@@ -6,7 +6,6 @@ test_pure_methods.py — Unit-тесты «лёгких» методов Dialogu
   - _generate_fallback_response  (чистый string matching)
   - _detect_volume_intent        (regex, без ROS)
   - _detect_pitch_intent         (regex, без ROS)
-  - _speak_simple                (publish + json)
   - _trigger_sound               (publish)
   - _on_mcp_tools_update         (JSON parse → attributes)
   - _on_perception_update        (attribute update)
@@ -42,7 +41,6 @@ def node():
     n.state_pub = MagicMock()
 
     # State attrs
-    n.current_dialogue_id = None
     n.available_tools = []
     n.mcp_tools_available = False
     n.internet_available = True
@@ -208,42 +206,6 @@ class TestDetectPitchIntent:
     def test_no_match_returns_none(self, node):
         assert node._detect_pitch_intent("расскажи сказку") is None
         assert node._detect_pitch_intent("") is None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _speak_simple
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSpeakSimple:
-    def test_publishes_ssml_json(self, node):
-        node._speak_simple("Привет мир")
-
-        node.response_pub.publish.assert_called_once()
-        published = node.response_pub.publish.call_args[0][0]
-        data = json.loads(published.data)
-        assert "<speak>Привет мир</speak>" in data["ssml"]
-        assert "dialogue_id" in data
-
-    def test_sets_current_dialogue_id(self, node):
-        node._speak_simple("Тест")
-        assert node.current_dialogue_id is not None
-
-    def test_without_error_animation_no_anim_publish(self, node):
-        node._speak_simple("Тест", show_error_animation=False)
-        node.animation_pub.publish.assert_not_called()
-
-    def test_with_error_animation_publishes_error(self, node):
-        node._speak_simple("Ошибка", show_error_animation=True)
-        node.animation_pub.publish.assert_called_once()
-        anim_data = node.animation_pub.publish.call_args[0][0].data
-        assert "error" in anim_data
-
-    def test_dialogue_id_unique_per_call(self, node):
-        node._speak_simple("раз")
-        id1 = node.current_dialogue_id
-        node._speak_simple("два")
-        id2 = node.current_dialogue_id
-        assert id1 != id2
 
 
 # ─────────────────────────────────────────────────────────────────────────────

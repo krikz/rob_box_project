@@ -111,8 +111,6 @@ def _playback_node() -> _Bare:
     node.provider = "minimax"
     node.normalize_text = False
     node.stop_requested = False
-    node.processing_dialogue_id = None
-    node.current_dialogue_id = None
     node.minimax_streaming = False
     node.minimax_model = "speech-02-hd"
     node.minimax_voice = "male-qn-qingse"
