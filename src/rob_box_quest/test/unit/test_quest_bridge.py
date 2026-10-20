@@ -252,7 +252,7 @@ def _make_voice_bridge():
         cmd_vel_quest_pub=_MockPublisher(),
         cmd_vel_emergency_pub=_MockPublisher(),
         voice_in_pub=voice_in,
-        tts_control_pub=tts_control,
+        stop_speech=lambda: tts_control.publish("cancel"),
         sound_stop_pub=sound_stop,
         stt_in_pub=stt_in,
         set_voice_mode_pub=set_voice_mode,
@@ -307,7 +307,7 @@ def test_voice_robot_mode_flushes_on_silence():
 
     bridge, voice_in, tts_control, sound_stop, stt_in, _svm = _make_voice_bridge()
     bridge.publish_voice_robot_start()
-    assert len(tts_control.published) == 1  # barge-in STOP TTS
+    assert len(tts_control.published) == 1  # barge-in: SpeechCancel речи робота
     assert len(sound_stop.published) == 1  # barge-in STOP sound
 
     # 20 × 20 мс = 0.4 с речи — больше min_phrase_s (0.25 с).

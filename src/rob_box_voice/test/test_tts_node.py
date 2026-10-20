@@ -87,10 +87,9 @@ class TestTTSNode(unittest.TestCase):
         self.assertGreater(self.node.chunk_size, 0)
         print(f"  ✅ Chunk size: {self.node.chunk_size}")
 
-    def test_dialogue_id_tracking(self):
-        """Тест: Отслеживание dialogue_id."""
-        self.assertTrue(hasattr(self.node, 'current_dialogue_id'))
-        print("  ✅ Dialogue ID tracking включен")
+    def test_speech_owner_attached(self):
+        """ADR-0150 PR-3: владелец речи (журнал реплик, отмена по эпохе)."""
+        self.assertTrue(hasattr(self.node, '_speech'))
 
     def test_ssml_parsing_method_exists(self):
         """Тест: Метод парсинга SSML существует."""

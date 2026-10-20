@@ -8,9 +8,8 @@
   с ``sink="headset"`` (worker берёт headset-путь).
 * ``_publish_headset_audio`` шлёт AudioData в ``headset_audio_topic``,
   формат — int16 LE PCM (тот же, что ``/voice/audio/speech``).
-* Управляющий топик ``/avatar/tts/control`` идёт через существующий
-  ``control_callback`` (тот же формат команды) — регресс: STOP сбрасывает
-  ``_avatar_tts_request_id``.
+* Управляющий топик ``/avatar/tts/control`` идёт через адаптер
+  ``core/speech_compat.on_control`` (тот же STOP, ADR-0150 PR-3).
 * Параметры ноды: ``headset_audio_topic`` / ``avatar_request_topic`` /
   ``avatar_error_topic`` / ``avatar_control_topic`` объявлены в ``__init__``.
 
@@ -79,8 +78,6 @@ def _make_request_node():
     n._avatar_tts_error_pub = _CapturingPublisher()
     n._avatar_tts_request_id = None
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n._submit_synthesis = MagicMock()
     # dialogue_id-check / interrupt_playback зависимости.
     n._interrupt_playback = MagicMock()
@@ -246,26 +243,6 @@ def test_avatar_tts_request_emits_finished_with_speech_id_on_unsupported_script(
     assert finished[0]["success"] is False
     assert finished[0]["error"] == "unsupported_script"
     assert finished[0]["speech_id"] == "sid-cjk-1"
-
-
-def test_avatar_tts_request_stale_dialogue_dropped():
-    """Защита от barge-in: чужой dialogue_id → DROP без синтеза."""
-    node = _make_request_node()
-    node.current_dialogue_id = "dlg-current"
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-stale",
-            "speech_id": "sid-stale",
-            "ssml": "<speak>устарело</speak>",
-            "text": "устарело",
-            "sink": "headset",
-            "dialogue_id": "dlg-old",
-        })
-    )
-    node._submit_synthesis.assert_not_called()
-    finished = _finished_payloads(node)
-    assert finished[0]["success"] is False
-    assert finished[0]["error"] == "stale_dialogue"
 
 
 def test_avatar_tts_request_bad_json_does_not_crash():

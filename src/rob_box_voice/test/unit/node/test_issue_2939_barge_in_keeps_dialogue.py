@@ -99,7 +99,7 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
     n._pending_user_messages = deque()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._effects = MagicMock()
     n._action_claim_retry_used = False
     return n

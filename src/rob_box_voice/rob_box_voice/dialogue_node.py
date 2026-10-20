@@ -52,6 +52,7 @@ from rob_box_core.avatar_command import (
 )
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.speaker_wire import speaker_result_to_payload
+from rob_box_core import speech_client
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -811,8 +812,8 @@ class DialogueNode(Node):
         # literal keys still raise KeyError and are rejected by the CI checker.
         self._llm_skipped_counter: dict[str, int] = new_llm_skip_counter()
         self._last_skip_summary_ts: float = time.monotonic()
-        self._tts_control_pub = self.create_publisher(
-            String, "/voice/tts/control", 10)
+        # ADR-0150 PR-3 — отмена речи личности (SpeechCancel) одним клиентом.
+        speech_client.prepare(self, "cancel")
         # Issue #1734 — единственный источник истины для barge_in_policy:
         # latched (TRANSIENT_LOCAL) топик вместо ВТОРОГО параметра в
         # stt_node.yaml. Дублирование параметра — ровно тот класс ошибки,
@@ -7034,6 +7035,7 @@ tentative_plan(question, kind, name)
             tg_chat_id=self._active_tg_chat_id,
             voice=getattr(self, "_current_tts_voice", None),
             language=language,
+            epoch=self._session_epoch_gate().epoch_for_dispatch(),
         )
         self._response_pub.publish(msg)
 
@@ -7066,6 +7068,7 @@ tentative_plan(question, kind, name)
                 batch_total=total,
                 tg_chat_id=self._active_tg_chat_id,
                 voice=getattr(self, "_current_tts_voice", None),
+                epoch=self._session_epoch_gate().epoch_for_dispatch(),
             )
             self._response_pub.publish(msg)
         return total
@@ -7408,30 +7411,6 @@ tentative_plan(question, kind, name)
         """
         return detect_pitch_intent(text)
 
-    def _speak_simple(self, text: str, show_error_animation: bool = False) -> None:
-        """Publish a one-off TTS payload via SSML JSON with a unique ``dialogue_id``."""
-        dialogue_id = str(uuid.uuid4())
-        self.current_dialogue_id = dialogue_id
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик.
-        payload = json.dumps(
-            Utterance(
-                text=text,
-                sink=Sink.SPEAKERS,
-                extra={"dialogue_id": dialogue_id},
-            ).to_request(),
-            ensure_ascii=False,
-        )
-        msg = String()
-        msg.data = payload
-        self.response_pub.publish(msg)
-        if show_error_animation:
-            anim_msg = String()
-            anim_msg.data = "error"
-            pub = getattr(self, "animation_pub", None)
-            if pub is not None:
-                pub.publish(anim_msg)
-
     def _trigger_sound(self, name: str) -> None:
         """Publish a one-shot sound trigger; swallows publish exceptions."""
         try:
@@ -7558,8 +7537,8 @@ tentative_plan(question, kind, name)
         """Issue #XXXX — сброс текущей диалоговой сессии.
 
         ``announce=False`` (issue #2890, E2E-сброс между актами) — тот же
-        сброс, но молча: без IMMUNE-окна TTS и без фразы «Начинаю новую
-        сессию…», которая иначе попала бы в запись первого шага акта.
+        сброс, но молча: без фразы «Начинаю новую сессию…», которая иначе
+        попала бы в запись первого шага акта.
         Возвращает future очистки окна ходов (``None``, если asyncio-цикла
         нет) — E2E-путь ждёт её, чтобы подтверждать сброс, а не надеяться.
 
@@ -7569,35 +7548,22 @@ tentative_plan(question, kind, name)
         вызывается —
         вместо этого говорим детерминированное подтверждение.
 
-        Issue #1563 — после ``_publish_response`` TTS должен успеть синтези-
-        ровать и доиграть «Начинаю новую сессию…», даже если barge-in от
-        wake-word в той же фразе успел прислать STOP в ``/voice/tts/control``
-        ДО того, как этот код увидел STT-результат. Поэтому ДО отправки
-        подтверждения публикуем ``IGNORE_STOP_MS:700`` — TTS игнорирует
-        STOP-команды в этом окне и спокойно синтезирует/воспроизводит.
+        Issue #1563 / ADR-0150 PR-3 — подтверждение «Начинаю новую сессию…»
+        несёт НОВУЮ эпоху, а barge-in от wake-word той же фразы отменяет
+        реплики не новее старой (``speech_client.cancel(epoch=...)``):
+        подтверждение не задевается, окно игнора STOP (#1563) не нужно.
         """
         # 0. Issue #2835 — новое поколение сессии ДО отмены хода: его
         # ``finally`` (отмена асинхронная) уже увидит, что сессия сброшена,
         # и не пошлёт [CRITICAL]-ретрай; ходы/ретраи, стоящие в loop,
         # отбросятся на старте.
+        old_epoch = self._session_epoch_gate().current
         self._session_epoch_gate().advance()
-        # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects).
-        self._cancel_run("new session reset", stop_tts=True)
+        # 1. Отменяем in-flight turn (barge-in + stop TTS + release effects);
+        # речь отменяется только старой эпохи — подтверждение уже новой.
+        self._cancel_run("new session reset", stop_tts=True, speech_epoch=old_epoch)
         # 1b. Issue #2835 — музыка прошлой сессии остановлена.
         self._reset_session_music()
-        # 1a. Issue #1563 — открыть IMMUNE-окно для TTS, чтобы barge-in
-        # STOP (пришедший в той же STT-фразе) не отменил подтверждение
-        # «Начинаю новую сессию…». 700 мс — с запасом на синтез Yandex
-        # (~300-500 мс) + ALSA-буфер + grace перед AEC-эхо.
-        if announce:
-            try:
-                ignore_msg = String()
-                ignore_msg.data = "IGNORE_STOP_MS:700"
-                self._tts_control_pub.publish(ignore_msg)
-            except Exception as exc:  # noqa: BLE001 — best-effort, не роняем reset
-                self.get_logger().warn(
-                    f"⚠️ [issue 1563] IGNORE_STOP_MS publish failed: {exc}"
-                )
         # 2. Бэклог-аккумулятор фоновой речи (если реализован).
         acc = getattr(self, "_speech_accumulator", None)
         if acc is not None:
@@ -7754,7 +7720,12 @@ tentative_plan(question, kind, name)
         return marked
 
     def _cancel_run(
-        self, reason: str, *, stop_tts: bool = True, hand_over: bool = False
+        self,
+        reason: str,
+        *,
+        stop_tts: bool = True,
+        hand_over: bool = False,
+        speech_epoch: Optional[int] = None,
     ) -> None:
         """Cancel the in-flight LLM turn, optionally muting TTS.
 
@@ -7778,9 +7749,14 @@ tentative_plan(question, kind, name)
             self.get_logger().info(f"🛑 Cancel: {reason}")
             self._loop.call_soon_threadsafe(task.cancel)
         if stop_tts:
-            stop_msg = String()
-            stop_msg.data = "STOP"
-            self._tts_control_pub.publish(stop_msg)
+            # ADR-0150 PR-3 — отмена речи личности по эпохе (не STOP «всего»):
+            # реплики оператора/Telegram и новой эпохи не трогаются.
+            speech_client.cancel(
+                self,
+                agent="personality",
+                epoch=self._session_epoch_gate().current if speech_epoch is None else speech_epoch,
+                reason=reason,
+            )
         self._effects.release_all_tts()
         self._effects.clear_sound_event()
 

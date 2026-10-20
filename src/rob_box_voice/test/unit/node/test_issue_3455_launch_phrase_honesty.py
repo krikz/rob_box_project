@@ -77,7 +77,7 @@ def _make_node() -> DialogueNode:
     logger = MagicMock()
     n._logger = logger
     n.get_logger = lambda: logger
-    for attr in ("_response_pub", "_state_pub", "_sound_trigger_pub", "_tts_control_pub", "_music_cleanup_pub",
+    for attr in ("_response_pub", "_state_pub", "_sound_trigger_pub", "_speech_client_pubs", "_music_cleanup_pub",
                  "_dsm", "_effects", "_task_lock", "_dispatch_turn", "_loop", "_core", "_cancel_run",
                  "_speak_direct", "_retract_rejected_reply"):
         setattr(n, attr, MagicMock())

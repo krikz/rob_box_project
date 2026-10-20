@@ -71,7 +71,7 @@ def _make_node(loop, core):
     n._core = core
     n._cancel_run = MagicMock()
     n._reset_session_music_and_dj = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._pending_backlog_flush = False
     n._dsm = MagicMock()
     n._speaker_lock = threading.Lock()
@@ -113,10 +113,6 @@ def test_e2e_reset_is_silent(loop):
 
     assert core.turns == [], "сброса не было — проверять тишину бессмысленно"
     n._publish_response.assert_not_called()
-    published = [
-        c.args[0].data for c in n._tts_control_pub.publish.call_args_list if c.args
-    ]
-    assert not any("IGNORE_STOP_MS" in str(p) for p in published)
 
 
 def test_explicit_reset_line_in_robot_log(loop):
@@ -170,7 +166,7 @@ def test_voice_new_session_still_announces(loop):
     n._reset_dialogue_session()
 
     n._publish_response.assert_called_once()
-    published = [
-        c.args[0].data for c in n._tts_control_pub.publish.call_args_list if c.args
-    ]
-    assert any("IGNORE_STOP_MS" in str(p) for p in published)
+    # ADR-0150 PR-3: речь отменяется только старой эпохи (0), подтверждение
+    # уже несёт новую (1) — окна игнора STOP больше нет.
+    assert n._cancel_run.call_args.kwargs["speech_epoch"] == 0
+    assert n._session_epoch_gate().current == 1

@@ -26,7 +26,8 @@ import rclpy
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import Utterance
+from rob_box_dialog_msgs.msg import SpeechEvent, Utterance
+from rob_box_core import speech_client
 from std_msgs.msg import String
 from vosk import KaldiRecognizer, Model
 
@@ -530,6 +531,14 @@ class STTNode(Node):
 
         # Подписка на состояние TTS (чтобы не слышать себя)
         self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
+        # ADR-0150 PR-3 (#3688) — эпоха речи личности, которая сейчас звучит:
+        # barge-in по wake-word отменяет реплики не новее неё (подтверждение
+        # новой сессии уже в новой эпохе и не задевается).
+        self._speech_epoch = speech_client.EpochWatch("personality")
+        self.speech_event_sub = self.create_subscription(
+            SpeechEvent, "/voice/speech/event", self._speech_epoch.on_event, 10
+        )
+        speech_client.prepare(self, "cancel")
 
         # Issue #1734 — подписка на действующую barge_in_policy от
         # dialogue_node (единый источник истины, см. self._barge_in_policy
@@ -562,7 +571,6 @@ class STTNode(Node):
         self.avatar_ptt_result_pub = self.create_publisher(String, "/avatar/ptt/result", 10)
         self.avatar_stt_result_pub = self.create_publisher(String, "/avatar/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
-        self.tts_control_pub = self.create_publisher(String, "/voice/tts/control", 10)  # Для прерывания TTS
         # Issue #1077 — speaker_analysis (speaker_tag) от Yandex SpeechKit v3.
         # Публикуем отдельным топиком (String, JSON: {"speaker_tag", "text"}).
         # dialogue_node подписывается и создаёт профиль спикера
@@ -1995,10 +2003,12 @@ class STTNode(Node):
                     f"dialogue_node/quick_decide)"
                 )
             else:
-                self.get_logger().info(f'🎯 Wake word detected: "{text[:30]}" → STOP TTS')
-                stop_msg = String()
-                stop_msg.data = "STOP"
-                self.tts_control_pub.publish(stop_msg)
+                epoch = self._speech_epoch.epoch
+                self.get_logger().info(
+                    f'🎯 Wake word detected: "{text[:30]}" → SpeechCancel '
+                    f"personality epoch<={epoch}"
+                )
+                speech_client.cancel(self, agent="personality", epoch=epoch, reason="barge_in")
 
         pub.publish(
             fill_respeaker_utterance(

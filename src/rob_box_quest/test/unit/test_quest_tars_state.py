@@ -355,7 +355,7 @@ def test_bridge_barge_in_notifies_node(quest_node_mod):
         node=node,
         cmd_vel_quest_pub=MagicMock(),
         cmd_vel_emergency_pub=MagicMock(),
-        tts_control_pub=MagicMock(),
+        stop_speech=MagicMock(),
         sound_stop_pub=MagicMock(),
     )
     bridge.publish_voice_barge_in()

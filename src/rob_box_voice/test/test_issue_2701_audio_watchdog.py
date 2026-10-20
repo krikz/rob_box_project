@@ -227,7 +227,6 @@ def _make_audio_node_stub(**param_overrides):
     node.vad_pub = MagicMock()
     node.direction_pub = MagicMock()
     node.state_pub = MagicMock()
-    node.tts_control_pub = MagicMock()
     # initialize_hardware() в __init__ не смог найти железо (моки) — стрим
     # не открыт. Тесты watchdog'а сами выставляют node.stream по сценарию.
     node.stream = None

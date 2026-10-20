@@ -69,7 +69,7 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._response_pub = MagicMock()
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._music_cleanup_pub = MagicMock()
     # ADR-0066 — pub для /dialogue/control_ack (тест-dialogue_control).
     n._dialogue_control_pub = MagicMock()
@@ -252,9 +252,9 @@ class TestCancelRunSplit:
         n._cancel_run("reason", stop_tts=True)
         assert n._run_cancelled is True
         task.cancel.assert_called_once()
-        n._tts_control_pub.publish.assert_called_once()
-        published = n._tts_control_pub.publish.call_args.args[0]
-        assert published.data == "STOP"
+        n._speech_client_pubs["cancel"].publish.assert_called_once()
+        published = n._speech_client_pubs["cancel"].publish.call_args.args[0]
+        assert published.agent == "personality"
         n._effects.release_all_tts.assert_called_once()
         n._effects.clear_sound_event.assert_called_once()
 
@@ -262,7 +262,7 @@ class TestCancelRunSplit:
         """Обратная совместимость: вызов без kwarg ведёт себя как раньше."""
         n, task = self._running_task_node()
         n._cancel_run("reason")
-        n._tts_control_pub.publish.assert_called_once()
+        n._speech_client_pubs["cancel"].publish.assert_called_once()
 
     def test_stop_tts_false_does_not_publish_stop_but_releases_awaiters(self):
         """Ключевой инвариант R1: STOP не уходит, но awaiter'ы всё равно
@@ -272,7 +272,7 @@ class TestCancelRunSplit:
         n._cancel_run("reason", stop_tts=False)
         assert n._run_cancelled is True
         task.cancel.assert_called_once()
-        n._tts_control_pub.publish.assert_not_called()
+        n._speech_client_pubs["cancel"].publish.assert_not_called()
         n._effects.release_all_tts.assert_called_once()
         n._effects.clear_sound_event.assert_called_once()
 

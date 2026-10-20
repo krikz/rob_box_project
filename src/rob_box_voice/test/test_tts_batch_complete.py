@@ -8,9 +8,8 @@ Pure-Python tests that exercise:
    single-chunk path (back-compat).
 2. ``speak_helpers.split_into_chunks`` is the chunker ``dialogue_node``
    uses to decide whether a turn is single- vs multi-chunk.
-3. ``EffectAwaiterRegistry`` still releases ``/voice/tts/finished`` awaiters
-   exactly once per speech_id even when the JSON payload includes the new
-   batch fields.
+3. (снято в ADR-0150 PR-3: ``EffectAwaiterRegistry.register_tts`` без
+   вызывающих удалён, его тест вместе с ним).
 
 The tests do not spin up ROS — they import the helper module directly and
 use ``json.loads`` to verify the on-the-wire contract that ``tts_node`` and
@@ -25,12 +24,10 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import json
 import unittest
 
 from rob_box_voice.core.speak_helpers import (
-    EffectAwaiterRegistry,
     build_ssml_payload,
     split_into_chunks,
 )
@@ -104,44 +101,6 @@ class TestSplitIntoChunks(unittest.TestCase):
         )
         chunks = split_into_chunks(text, max_len=80)
         self.assertGreaterEqual(len(chunks), 2)
-
-
-class _FakeLoop:
-    """Minimal stand-in for an asyncio loop's ``call_soon_threadsafe``."""
-
-    def __init__(self) -> None:
-        self.events: list[asyncio.Event] = []
-
-    def __call__(self, ev: asyncio.Event) -> None:
-        # Immediately release the event; the test then inspects the registry.
-        ev.set()
-        self.events.append(ev)
-
-
-class TestEffectAwaiterRegistryBatch(unittest.TestCase):
-    """``handle_tts_finished`` still releases one awaiter per speech_id."""
-
-    def test_finished_releases_awaiter_with_batch_fields(self):
-        loop = _FakeLoop()
-        reg = EffectAwaiterRegistry(
-            release_tts=loop, release_sound=loop
-        )
-
-        ev = asyncio.Event()
-        reg.register_tts("sid-1", ev)
-        reg.handle_tts_finished(
-            json.dumps(
-                {
-                    "speech_id": "sid-1",
-                    "success": True,
-                    "batch_id": "b-1",
-                    "batch_index": 1,
-                    "batch_total": 3,
-                }
-            )
-        )
-        self.assertTrue(ev.is_set())
-        self.assertIsNone(reg.pop_tts("sid-1"))
 
 
 class TestBatchCompleteFireRule(unittest.TestCase):

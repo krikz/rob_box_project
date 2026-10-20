@@ -218,7 +218,6 @@ def _make_audio_node_stub(**param_overrides):
     node.vad_pub = MagicMock()
     node.direction_pub = MagicMock()
     node.state_pub = MagicMock()
-    node.tts_control_pub = MagicMock()
     return node
 
 

@@ -5,7 +5,7 @@
 (анимация рта). Каждый держит СВОЙ список строк, и списки разъехались:
 
 * ``stt_node`` не знал ``"stopped"`` — а его публикует STOP/barge-in
-  (``tts_node._handle_stop_command``). Флаг ``is_robot_speaking``
+  (STOP адаптера ``speech_compat`` / ``SpeechCancel``). Флаг ``is_robot_speaking``
   оставался ``True``, и в hardware-AEC (это конфиг робота,
   ``docker/sound/config/voice_assistant/stt_node.yaml``) фразы короче
   0.8 с молча отбрасывались — «робот», «стоп», «да».
@@ -115,5 +115,5 @@ def test_stopped_ends_speech_for_every_consumer() -> None:
     ):
         assert "stopped" in _state_literals(path, callback), (
             f"{path.name}:{callback} не знает 'stopped'; его публикует "
-            "tts_node._handle_stop_command на каждый barge-in"
+            "STOP/SpeechCancel на каждый barge-in"
         )

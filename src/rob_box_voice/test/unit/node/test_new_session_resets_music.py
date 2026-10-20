@@ -33,7 +33,7 @@ def _make_reset_node() -> DialogueNode:
     n = object.__new__(DialogueNode)
     n.get_logger = lambda: MagicMock()
     n._cancel_run = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._pending_backlog_flush = False
     n._dsm = MagicMock()
     n._speaker_lock = threading.Lock()

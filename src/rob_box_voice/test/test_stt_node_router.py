@@ -165,7 +165,6 @@ def _make_node(**overrides):
         avatar_stt_result_pub=MagicMock(),
         state_pub=MagicMock(),
         speaker_pub=MagicMock(),
-        tts_control_pub=MagicMock(),
         tts_request_pub=MagicMock(),
         boop_pub=MagicMock(),
         # поведенческие mocks (обходим реальную публикацию/LLM-сайд-эффекты)

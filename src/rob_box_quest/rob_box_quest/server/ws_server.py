@@ -359,7 +359,7 @@ class Bridge(Protocol):
         ...
 
     def publish_voice_barge_in(self) -> None:
-        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        """PTT start: SpeechCancel речи робота + /voice/sound/stop (barge-in)."""
         ...
 
     def publish_voice_audio(self, payload: bytes) -> None:

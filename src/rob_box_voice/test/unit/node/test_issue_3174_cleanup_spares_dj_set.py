@@ -72,7 +72,7 @@ def _make_node(snapshot) -> DialogueNode:
     n._response_pub = MagicMock()
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._music_cleanup_pub = MagicMock()
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
