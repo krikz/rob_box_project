@@ -13,9 +13,10 @@
 # длинные/специфичные варианты идут ПЕРВЫМИ, иначе «роб» съест «роб бокс».
 #
 # personality — байт-в-байт копия DEFAULT_WAKE_WORDS в
-# src/rob_box_voice/rob_box_voice/core/dialogue_text.py (кодовая копия =
-# фолбек для dev-env/юнит-тестов без этого файла). При правке списка — менять
-# ОБА места в одном коммите (это инвариант test_wake_word_sync / #1252).
+# src/rob_box_dialog/rob_box_dialog/knowledge.py (одна таблица знания, ADR-0150;
+# кодовая копия = фолбек для dev-env/юнит-тестов без этого файла). При правке
+# списка — менять ОБА места в одном коммите (держит
+# src/rob_box_dialog/test/test_knowledge.py::test_wake_words_yaml_matches_code).
 
 personality:
   - роб бокс

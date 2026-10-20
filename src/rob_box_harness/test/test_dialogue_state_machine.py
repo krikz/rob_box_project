@@ -215,13 +215,18 @@ class TestUserInputClassification:
         dsm = _make_dsm()
         assert dsm.on_user_input("робот") == DialogueEvent.WAKE_WORD
 
-    def test_silence_tikho(self) -> None:
+    def test_silence_words_come_from_the_knowledge_table(self) -> None:
+        """ADR-0150 PR-1: своего словаря тишины у DSM больше нет. В прод-пути (``is_silence_command``)
+        «тихо»/«молчи» тишиной и не были, а «тише» — громкость; одна таблица ``SILENCE_WORDS``."""
         dsm = _make_dsm()
-        assert dsm.on_user_input("тихо") == DialogueEvent.SILENCE_COMMAND
+        assert dsm.on_user_input("помолчи") == DialogueEvent.SILENCE_COMMAND
+        assert dsm.on_user_input("тихо") == DialogueEvent.STT_RESULT
+        assert dsm.on_user_input("он захватит флаг") == DialogueEvent.STT_RESULT
 
-    def test_silence_molchi(self) -> None:
+    def test_wake_word_by_word_boundary_not_substring(self) -> None:
         dsm = _make_dsm()
-        assert dsm.on_user_input("молчи") == DialogueEvent.SILENCE_COMMAND
+        assert dsm.on_user_input("у меня всё работает") == DialogueEvent.STT_RESULT
+        assert dsm.on_user_input("робби привет") == DialogueEvent.WAKE_WORD
 
     def test_silence_zamolchi(self) -> None:
         dsm = _make_dsm()
@@ -231,9 +236,10 @@ class TestUserInputClassification:
         dsm = _make_dsm()
         assert dsm.on_user_input("хватит") == DialogueEvent.SILENCE_COMMAND
 
-    def test_silence_stop(self) -> None:
+    def test_stop_is_not_silence(self) -> None:
+        """«стоп» — Tier-1 стоп (ADR-0150 §5.6.4), не кадр тишины."""
         dsm = _make_dsm()
-        assert dsm.on_user_input("стоп") == DialogueEvent.SILENCE_COMMAND
+        assert dsm.on_user_input("стоп") == DialogueEvent.STT_RESULT
 
     def test_silence_priority_over_wake_word(self) -> None:
         """Silence command in text takes priority over wake word."""

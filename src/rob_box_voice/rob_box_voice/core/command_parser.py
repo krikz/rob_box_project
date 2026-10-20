@@ -33,6 +33,8 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
+
 
 class IntentType(Enum):
     """Command intent types."""
@@ -91,10 +93,11 @@ class CommandParser:
         Initialize CommandParser.
 
         Args:
-            wake_words: List of wake words to remove (default: ['робот', 'робокс'])
+            wake_words: List of wake words to remove (default: the one table,
+                ``rob_box_dialog.knowledge.DEFAULT_WAKE_WORDS``)
             confidence_base: Base confidence score for matches (default: 0.8)
         """
-        self.wake_words = wake_words or ['робот', 'робокс', 'робобокс']
+        self.wake_words = wake_words or list(DEFAULT_WAKE_WORDS)
         self.confidence_base = confidence_base
         self.patterns = self._build_default_patterns()
 
@@ -197,8 +200,10 @@ class CommandParser:
             Text with wake word removed
         """
         for wake_word in self.wake_words:
-            if text.startswith(wake_word):
-                text = text[len(wake_word):].strip()
+            rest = text[len(wake_word):]
+            # Граница слова: «роботы …» не начинается с вейка «робот», «роб» не съедает «робко».
+            if text.startswith(wake_word) and not (rest[:1].isalnum() or rest[:1] in ("-", "_")):
+                text = rest.strip()
                 # Remove common punctuation after wake word
                 text = text.lstrip(',.:;!')
                 break

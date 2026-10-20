@@ -151,6 +151,12 @@ class TestIsSilenceCommand:
         assert is_silence_command("тишина!", ["тиш"]) is True
         assert is_silence_command("помолчи", ["тиш"]) is False
 
+    def test_silence_matches_whole_word_not_substring(self) -> None:
+        """ADR-0150 PR-1: «хватит» — по границе слова, а не подстрокой (было ``cmd in text``)."""
+        assert is_silence_command("робот, понял, хватит, останавливай") is True
+        assert is_silence_command("нехватка денег") is False
+        assert is_silence_command("он захватит флаг") is False
+
 
 # ---------------------------------------------------------------------------
 # is_unsilence_command
@@ -251,3 +257,12 @@ def test_wake_words_yaml_matches_code_list() -> None:
         "правь ОБА места в одном коммите: на роботе действует YAML, "
         "в юнит-тестах кодовый список"
     )
+
+
+def test_old_path_imports_the_one_knowledge_table() -> None:
+    """ADR-0150 PR-1: у старого пути нет своих списков — те же объекты, что в rob_box_dialog.knowledge."""
+    from rob_box_dialog import knowledge
+
+    assert DEFAULT_WAKE_WORDS is knowledge.DEFAULT_WAKE_WORDS
+    assert DEFAULT_SILENCE_COMMANDS is knowledge.SILENCE_WORDS
+    assert DEFAULT_UNSILENCE_COMMANDS is knowledge.UNSILENCE_WORDS
