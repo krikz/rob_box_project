@@ -757,3 +757,55 @@ class TestProviderPrepare:
         assert text is None
         assert vosk.prepare_calls == 1
         assert [a.provider for a in attempts] == ["yandex", "vosk"]
+
+
+# ---------------------------------------------------------------------------
+# #3724: фолбек-ответ проверяется тем же гейтом (пунктуация провайдера, чужая письменность)
+# ---------------------------------------------------------------------------
+
+
+class TestPhraseGateIgnoresProviderPunctuationAndScript:
+    def test_punctuation_added_by_provider_does_not_make_short_word_long(self):
+        assert is_short_phrase("Да.") is True  # было: 3 символа с точкой проходило порог 3
+        assert is_short_phrase("да") is True
+        assert is_short_phrase("Нет.") is False and is_short_phrase("Стоп!") is False
+
+    def test_hieroglyphs_are_garbage_not_a_phrase(self):
+        assert is_short_phrase("係啊。") is True
+        assert is_short_phrase("你好世界，今天天气很好") is True
+
+    def test_one_stray_foreign_char_in_long_russian_phrase_is_fine(self):
+        assert is_short_phrase("идиома звучит как 好 в китайском языке") is False
+
+    def test_latin_phrase_is_fine(self):
+        assert is_short_phrase("hello robot") is False
+
+
+class _Prov:
+    def __init__(self, name, answer):
+        self.name = name
+        self._answer = answer
+
+    def recognize(self, audio_bytes):
+        return self._answer
+
+
+def test_fallback_garbage_after_low_confidence_is_not_accepted_as_phrase():
+    """Живой кейс 20.10: yandex:low_confidence('э') -> minimax:'係啊。' - принять нельзя, фраза отклоняется."""
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "係啊。")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert is_short_phrase(text)  # итог для stt_node - rejected(short), «не расслышал», а не реплика личности
+
+
+def test_fallback_punctuated_short_word_is_not_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "да"), _Prov("minimax", "Да.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "low_confidence"]
+    assert is_short_phrase(text)
+
+
+def test_fallback_real_phrase_still_accepted():
+    text, attempts = select_recognition([_Prov("yandex", "э"), _Prov("minimax", "Включи свет.")], b"\x00" * 3200,
+                                        max_total_s=None)
+    assert [a.reason for a in attempts] == ["low_confidence", "ok"] and text == "Включи свет."

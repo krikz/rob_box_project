@@ -990,7 +990,7 @@ class STTNode(Node):
         (ADR-0021 R1, ``scripts/lint/cc_budget_baseline.json``).
         """
         if text:
-            self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое, <{self.min_text_chars} chars): "{text}"')
+            self.get_logger().warning(f'❌ ОТКЛОНЕНО (короткое <{self.min_text_chars} букв или не по-русски): "{text}"')
         else:
             self.get_logger().warning("❌ ОТКЛОНЕНО (пустое)")
         if source == _SRC_WAKE:

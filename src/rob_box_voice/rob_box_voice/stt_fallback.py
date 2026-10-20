@@ -439,13 +439,21 @@ class STTAttempt:
 
 
 def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS) -> bool:
-    """Слишком короткая фраза — отклонить.
+    """Фраза непригодна как реплика человека - отклонить («не расслышал»). Единый гейт для ВСЕХ провайдеров.
 
-    ``min_chars`` — порог после ``strip()``. Принимаем None как короткую фразу.
+    1. Короткая: ``min_chars`` считается по буквам и цифрам, а не по длине строки. Пунктуацию добавляет сам
+       провайдер (MiniMax возвращает «Да.» на «да»): с ней двухбуквенное «да» проходило порог 3 (#3724).
+    2. Не по-русски: больше 10% букв вне кириллицы и латиницы (иероглифы, деванагари) - мусор распознавания, а
+       не речь (MiniMax на односложный звук вернул «係啊。», и stt_node отдал его личности, #3724).
+
+    Принимаем None как короткую фразу.
     """
     if text is None:
         return True
-    return len(text.strip()) < min_chars
+    from .tts_text_guard import should_skip  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+
+    significant = sum(1 for ch in text if ch.isalnum())
+    return significant < min_chars or should_skip(text)
 
 
 def _measure(
