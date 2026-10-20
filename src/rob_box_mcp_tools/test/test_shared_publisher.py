@@ -191,7 +191,7 @@ _ISSUE_3108_TOPICS = (
     "/voice/generated_music/state",
     "/voice/animation/request",
     "/voice/sound/stop",
-    "/voice/tts/set_provider",
+    "/voice/tts/set_provider",  # топик снят в PR-4 ч.3: гард остаётся, чтобы его не вернули прямым publisher'ом
 )
 
 _CREATE_PUBLISHER_CALL = re.compile(r"\.create_publisher\(\s*[^,]+,\s*\"([^\"]+)\"", re.S)
@@ -215,7 +215,8 @@ def test_no_direct_create_publisher_for_issue_3108_topics(topic):
 
 #: ADR-0158 PR-2: ``/voice/generated_music/state`` и mp3-стоп ``/voice/sound/stop`` из ``mcp_server`` удалены — трек
 #: кэша играет на деке ``PlayerOwner``; общим publisher'ом остаются два топика.
-_SHARED_TOPICS = ("/voice/animation/request", "/voice/tts/set_provider")
+#: PR-4 ч.3 (#3693): /voice/tts/set_provider больше никто не публикует - провайдера переключает VoiceOwner tts_node.
+_SHARED_TOPICS = ("/voice/animation/request",)
 
 
 @pytest.mark.unit

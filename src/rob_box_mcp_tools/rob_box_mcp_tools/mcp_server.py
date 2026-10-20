@@ -142,7 +142,6 @@ from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from .engine.gen.provider import gen_provider_states
-from .voice_state import VoiceStateStore
 from .perception_projection import project_perception_event
 
 try:
@@ -240,13 +239,13 @@ def _tts_provider(node: Any) -> str:
 
 def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
     """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
-    Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
+    Голос - провайдер и голос из ``/voice/tts/provider_state`` (то, что реально звучит; читаем лениво)."""
     provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
     if lyrics is None or not provider.configured:
         node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
         return None
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
-                      lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
+                      lambda: current_voice(_tts_provider(node), getattr(node, "actual_tts_voice", None)),
                       play=_play_cached(node),
                       speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
 
@@ -615,6 +614,7 @@ class MCPServer(Node):
         # иначе LLM выбирает minimax-голоса, которых нет у yandex после
         # фолбека, и слышит один и тот же дефолтный голос.
         self.actual_tts_provider: str | None = None
+        self.actual_tts_voice: str | None = None
         # ADR-0150 §8 (PR-4 ч.2): здоровье генерации музыки (kind=music_gen) - переиздание раз в 2 с.
         self._providers_publisher = ProviderStatePublisher(self, gen_provider_states)
         try:
@@ -673,6 +673,7 @@ class MCPServer(Node):
         if not provider:
             return
         self.actual_tts_provider = str(provider)
+        self.actual_tts_voice = payload.get("voice")  # голос, который реально звучит (песня голосом робота, PR-7)
         self.get_logger().info(
             f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
             f"(reason: {payload.get('reason')})"
@@ -938,20 +939,17 @@ class MCPServer(Node):
         self.registry.register(FaqSearchTool(self))
 
         # Dialogue tools (критично для агентного диалога!)
-        # Issue #1219 — SpeakTextTool и SetVoiceTool делят VoiceStateStore:
-        # set_voice персистентно меняет голос на диалог, speak_text без
-        # voice= говорит установленным голосом (Q7).
-        voice_store = VoiceStateStore()
-        self._voice_store = voice_store  # песня голосом робота читает установленный голос (ADR-0158 PR-7)
-        self.registry.register(SpeakTextTool(self, voice_store=voice_store))
+        # Голос хранит один владелец - tts_node (VoiceOwner, PR-4 ч.3): speak_text без voice= говорит текущим голосом,
+        # set_voice/set_tts_provider просят через /voice/tts/voice_request и ждут SpeechEvent voice_changed.
+        self.registry.register(SpeakTextTool(self))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
-        self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        self.registry.register(SetVoiceTool(self))
         # Issue #1765 — переключение TTS-провайдера + список голосов
         # по провайдеру (кросс-провайдерный кейс: «Яндекс Артём» при
         # активном minimax). Оба tool'а публикуют /voice/tts/set_provider,
         # tts_node подписан и пересобирает provider_chain.
-        self.registry.register(SetTtsProviderTool(self, voice_store=voice_store))
+        self.registry.register(SetTtsProviderTool(self))
         self.registry.register(ListTtsVoicesTool(self))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)

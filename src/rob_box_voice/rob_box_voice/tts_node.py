@@ -103,6 +103,7 @@ from .core.speak_helpers import (
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
 from .core.provider_health import record_tts_death, tts_provider_states
+from .core.voice_owner import attach_voice_owner
 
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
 # огибающая; старые JSON-входы — один адаптер speech_compat.
@@ -157,6 +158,8 @@ from .tts_params import (  # noqa: F401 re-export
 # Pure-Python модуль, общий с rob_box_mcp_tools (SpeakTextTool).
 from .tts_text_guard import analyze as _tts_guard_analyze
 from .tts_text_guard import describe as _tts_guard_describe
+from .tts_text_guard import ensure_readable as _tts_guard_ensure_readable
+from .tts_text_guard import readable_chain as _tts_guard_readable_chain
 from .tts_text_guard import should_skip as _tts_guard_should_skip
 
 # Issue #2175 — defense-in-depth: refuse to synthesize MiniMax's
@@ -1312,9 +1315,8 @@ class TTSNode(Node):
         # всегда последним), чистим dead_until для нового провайдера и
         # публикуем provider_state для dialogue_node/mcp_server (LLM
         # увидит нового провайдера в [TTS] строке контекста).
-        self.set_provider_sub = self.create_subscription(
-            String, "/voice/tts/set_provider", self._on_set_provider, 10
-        )
+        # PR-4 ч.3: внешних писателей /voice/tts/set_provider больше нет - провайдера переключает VoiceOwner напрямую
+        # (``_on_set_provider`` вызывается из ``/voice/tts/voice_request``).
 
         # ADR-0080 §2.7 / voice-vr 21: явный контракт смены голоса.
         # ``supervisor_node`` НЕ пишет в ``yandex_voice``/``minimax_voice``/
@@ -1502,6 +1504,10 @@ class TTSNode(Node):
                     f"📊 TTS metrics port {self._metrics_port} not bound "
                     "(busy or prometheus_client missing)"
                 )
+
+        # ADR-0150 §8 (PR-4 ч.3): единственный владелец выбранного голоса {requested, applied, provider}; итог запроса
+        # смены - SpeechEvent voice_changed, выбор переживает рестарт (файл рядом с tts_provider_state.json).
+        self._voice_owner = attach_voice_owner(self)
 
         # Публикуем начальное состояние
         self.publish_state("ready")
@@ -2212,8 +2218,9 @@ class TTSNode(Node):
             # (юзер слышал «что-то на хинди», а в логе был только
             # speech_id). Логируем WARNING с ПОЛНЫМ текстом и публикуем
             # finished(success=False), чтобы speak_text не висел в ожидании.
-            if _tts_guard_should_skip(text):
-                _report = _tts_guard_analyze(text)
+            # #3728: решает возможность ВЫБРАННОГО провайдера (MiniMax читает CJK, Yandex/Silero нет).
+            if _tts_guard_should_skip(text, provider=self._effective_provider()):
+                _report = _tts_guard_analyze(text, self._effective_provider())
                 self.get_logger().warn(
                     "🚫 [issue 1709] TTS пропущен — неподдерживаемая "
                     f"письменность: {_tts_guard_describe(_report)}, "
@@ -2536,8 +2543,8 @@ class TTSNode(Node):
             return
 
         # Unicode-script guard (issue 1709) — общий с dialogue_callback.
-        if _tts_guard_should_skip(chunk_data.get("ssml", "")):
-            _report = _tts_guard_analyze(chunk_data.get("ssml", ""))
+        if _tts_guard_should_skip(chunk_data.get("ssml", ""), provider=self._effective_provider()):
+            _report = _tts_guard_analyze(chunk_data.get("ssml", ""), self._effective_provider())
             self.get_logger().warn(
                 f"🚫 [ADR-0055] avatar TTS пропущен — неподдерж. письменность: "
                 f"{_tts_guard_describe(_report)}, request_id="
@@ -4495,6 +4502,8 @@ class TTSNode(Node):
         # действительно был суммарным, а не «per-provider».
         cloud_budget_s = getattr(self, "cloud_tts_budget_s", 8.0)
         cloud_deadline = time.monotonic() + cloud_budget_s
+        # #3728: фолбек не читает то, что отказался бы читать гард (иероглифы Yandex/Silero бормочут).
+        provider_chain = _tts_guard_readable_chain(provider_chain, text)
         for provider_name in provider_chain:
             # Кэш «мёртвых» (issue #1083): не долбим провайдера, который
             # недавно упал (квота/сеть/таймаут) — пропускаем до TTL.
@@ -4800,6 +4809,7 @@ class TTSNode(Node):
         #   silero_model is None ниже и делаем skip с warn
         # * warm-load ещё не запущен (тест / нестандартный init)
         #   → событие не set → timeout → skip chunk
+        _tts_guard_ensure_readable(text, "silero")  # #3728: не читает письменность - честный unsupported_script
         _warm_wait_s = 1.5
         # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
         # не проходят через __init__ и не несут атрибут — считаем

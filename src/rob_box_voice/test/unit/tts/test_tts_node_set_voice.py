@@ -196,9 +196,10 @@ def test_set_voice_topic_subscribed():
             "voice-vr 21: TTSNode должен подписываться на "
             "/voice/tts/set_voice (ADR-0080 §2.7)"
         )
-        # Заодно проверим что set_provider подписка тоже на месте
-        # (не регрессировали ли):
-        assert "/voice/tts/set_provider" in subs
+        # PR-4 ч.3: смену голоса/провайдера просит тул через /voice/tts/voice_request (VoiceOwner);
+        # прямой /voice/tts/set_provider без писателей снят.
+        assert "/voice/tts/voice_request" in subs
+        assert "/voice/tts/set_provider" not in subs
     finally:
         try:
             n.destroy_node()

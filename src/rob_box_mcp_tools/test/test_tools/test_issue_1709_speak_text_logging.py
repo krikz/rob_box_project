@@ -174,6 +174,17 @@ class TestFullTextLogging:
 
 @pytest.mark.unit
 class TestUnicodeScriptGuard:
+    @pytest.fixture(autouse=True)
+    def _yandex_selected(self, mock_node):
+        """#3728: гард решает по выбранному провайдеру; Yandex иероглифы не читает (MiniMax читает - тест ниже)."""
+        mock_node.actual_tts_provider = "yandex"
+
+    @requires_guard
+    def test_minimax_selected_speaks_hieroglyphs(self, mock_node):
+        mock_node.actual_tts_provider = "minimax"
+        result = SpeakTextTool(mock_node).execute(text="你好世界，加油加油", animation="happy")
+        assert result.error != "unsupported_script"
+
     @requires_guard
     def test_hieroglyph_only_text_is_not_spoken(self, mock_node):
         """Чанк из иероглифов не уходит в TTS вообще."""

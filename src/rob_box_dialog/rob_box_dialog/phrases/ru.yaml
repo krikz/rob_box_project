@@ -16,6 +16,10 @@ provider.exhausted.timeout: ["{provider} не отвечает. {next}"]
 provider.exhausted.auth: ["{provider} меня не пускает — ключ не подходит. {next}"]
 provider.exhausted.error: ["У {provider} ошибка. {next}"]
 provider.switched: ["Переключаюсь на {provider}."]
+voice.applied: ["Говорю голосом {voice}."]
+voice.unavailable: ["Голос {requested} недоступен, остаюсь на {applied}."]
+voice.rejected: ["Не получилось сменить голос: провайдер {provider} не подходит."]
+voice.timeout: ["Не дождался подтверждения смены голоса, не знаю, какой сейчас."]
 provider.no_fallback: ["Запасного нет — потерпи, пока вернётся."]
 
 # --- классы действий (§5.1) ----------------------------------------------------------------------------------

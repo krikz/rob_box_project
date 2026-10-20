@@ -6,16 +6,12 @@ Covers:
   provider's voice list, includes ``voice_used`` + ``provider`` in the
   result, and publishes ``voice`` in the SpeechRequest (/voice/speech/request);
 * unknown voice → provider default + voice_fell_back=True (Q6);
-* VoiceStateStore: set_voice persists current_voice; next speak_text
-  without voice= uses it (Q7);
-* SetVoiceTool: validates against the provider list, stores voice,
-  publishes /voice/tts/current_voice, returns {status, voice_set,
-  default_voice}.
+* PR-4 ч.3: голос хранит tts_node (VoiceOwner); speak_text без voice= не несёт голос (говорит текущим);
+* SetVoiceTool: просит владельца голоса и озвучивает исход по событию voice_changed.
 
 Mocked ROS2: see conftest.py MockNode.
 """
 
-import json
 import sys
 from unittest.mock import Mock
 
@@ -37,7 +33,7 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
     SetVoiceTool,
     SpeakTextTool,
 )
-from rob_box_mcp_tools.voice_state import VoiceStateStore  # noqa: E402
+from rob_box_mcp_tools.voice_request import VoiceOutcome, resolve_speak_voice  # noqa: E402
 
 
 def _published_tts_payloads(tool) -> list:
@@ -89,25 +85,14 @@ class TestSpeakTextVoiceParam:
         payloads = _published_tts_payloads(tool)
         assert all(p.get("voice") == "male-qn-qingse" for p in payloads)
 
-    def test_no_voice_uses_store_current_voice(self, mock_node):
-        """set_voice(zahar) → следующий speak_text без voice= использует store.
-
-        VoiceStateStore.resolve() возвращает fell_back=False для голоса из
-        store (line 93) — fallback на дефолт провайдера при несовпадении
-        провайдера НЕ считается ошибкой явного запроса.
-        """
-        store = VoiceStateStore()
-        tool = SpeakTextTool(mock_node, voice_store=store)
-        store.set_voice("female-shaonv")
-        result = tool.execute(text="Привет")
-        assert result.data["voice_used"] == "female-shaonv"
-        assert result.data["voice_fell_back"] is False
-
-    def test_no_voice_and_no_store_uses_provider_default(self, mock_node):
+    def test_no_voice_means_current_voice_of_tts_node(self, mock_node):
+        """Без voice= реплика не несёт голос: звучит текущим голосом tts_node (его хранит VoiceOwner)."""
         tool = SpeakTextTool(mock_node)
         result = tool.execute(text="Привет")
-        assert result.data["voice_used"] == "male-qn-qingse"
+        assert result.data["voice_used"] == ""
         assert result.data["provider"] == "minimax"
+        assert all(not p.get("voice") for p in _published_tts_payloads(tool))
+        assert resolve_speak_voice("minimax", None) == ("", False)
 
     def test_provider_from_node_param(self, mock_node):
         """Если mcp_server задал tts_provider=yandex — валидация по Yandex."""
@@ -151,145 +136,38 @@ class TestSpeakTextVoiceParam:
         assert result2.data["voice_used"] == "zahar"
         assert result2.data["voice_fell_back"] is False
 
-    def test_actual_provider_used_without_explicit_voice(self, mock_node):
-        """Issue #1229 — current_voice из store резолвится по фактическому провайдеру."""
-        store = VoiceStateStore()
-        store.set_voice("male-chengshu")  # minimax-голос, установленный ранее
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.actual_tts_provider = "yandex"
-
-        def _get_parameter(name):
-            return type("P", (), {"value": mock_node._declared_params.get(name, "minimax")})()
-
-        mock_node.get_parameter = _get_parameter
-        tool = SpeakTextTool(mock_node, voice_store=store)
-        result = tool.execute(text="Привет")
-        # minimax-голос в store недоступен у фактического yandex → anton.
-        assert result.data["voice_used"] == "anton"
-        assert result.data["provider"] == "yandex"
-
-
 @pytest.mark.unit
 class TestSetVoiceTool:
-    """Phase 3 — set_voice инструмент."""
+    """set_voice: просит владельца голоса (tts_node) и говорит исход по событию (PR-4 ч.3)."""
 
-    def test_set_voice_ok(self, mock_node):
-        tool = SetVoiceTool(mock_node)
-        # female-shaonv — голос MiniMax (активный провайдер по умолчанию).
-        result = tool.execute(voice="female-shaonv")
+    @pytest.fixture(autouse=True)
+    def _owner(self, monkeypatch):
+        self.calls = []
+        self.outcome = None
+
+        class _Fake:
+            def request(inner, voice, provider="", wait_s=0.0):
+                self.calls.append((voice, provider))
+                return self.outcome or VoiceOutcome("applied", voice, voice, provider or "minimax")
+
+        monkeypatch.setattr("rob_box_mcp_tools.tools.dialogue.voice_requests", lambda node: _Fake())
+
+    def test_set_voice_ok_phrase_comes_from_event(self, mock_node):
+        result = SetVoiceTool(mock_node).execute(voice="female-shaonv")
+        assert self.calls == [("female-shaonv", "")]
         assert result.success is True
-        assert result.data["status"] == "ok"
-        assert result.data["voice_set"] == "female-shaonv"
-        assert result.data["default_voice"] == "male-qn-qingse"
-        # опубликовано в /voice/tts/current_voice для dialogue_node
-        pub = mock_node.get_publisher("/voice/tts/current_voice")
-        assert pub is not None and len(pub.published_messages) == 1
-        payload = json.loads(pub.published_messages[0].data)
-        assert payload["voice"] == "female-shaonv"
+        assert result.data["voice_applied"] == "female-shaonv"
+        assert "Говорю голосом female-shaonv" in result.message
 
-    def test_set_voice_invalid_rejected(self, mock_node):
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="terminator_3000")
+    def test_set_voice_unknown_voice_is_owner_decision(self, mock_node):
+        self.outcome = VoiceOutcome("fallback", "terminator_3000", "male-qn-qingse", "minimax", "voice_unavailable")
+        result = SetVoiceTool(mock_node).execute(voice="terminator_3000")
         assert result.success is False
-        assert result.data["error"] == "voice_unavailable"
-        # ничего не сохранено и не опубликовано
-        pub = mock_node.get_publisher("/voice/tts/current_voice")
-        assert pub.published_messages == []
+        assert result.data["voice_applied"] == "male-qn-qingse"
+        assert "terminator_3000 недоступен, остаюсь на male-qn-qingse" in result.message
 
     def test_set_voice_empty_rejected(self, mock_node):
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="  ")
+        result = SetVoiceTool(mock_node).execute(voice="  ")
         assert result.success is False
-        assert result.data is None or result.data.get("error") == "voice_empty"
-
-    def test_set_voice_then_speak_text_uses_it(self, mock_node):
-        """set_voice(голос провайдера) → speak_text без voice= говорит им."""
-        store = VoiceStateStore()
-        set_tool = SetVoiceTool(mock_node, voice_store=store)
-        speak_tool = SpeakTextTool(mock_node, voice_store=store)
-        set_tool.execute(voice="female-shaonv")  # minimax voice
-        result = speak_tool.execute(text="Привет")
-        assert result.data["voice_used"] == "female-shaonv"
-        assert result.data["voice_fell_back"] is False
-
-    def test_set_voice_actual_provider_validation(self, mock_node):
-        """Issue #1229 — set_voice валидирует по ФАКТИЧЕСКОМУ провайдеру.
-
-        После фолбека minimax→yandex (actual_tts_provider=yandex) голос
-        minimax (male-chengshu) должен быть ОТКЛОНЁН, а не молча принят —
-        иначе LLM думает, что голос установлен, а робот говорит anton.
-        """
-        mock_node._declared_params = {"tts_provider": "minimax"}
-        mock_node.actual_tts_provider = "yandex"
-
-        def _get_parameter(name):
-            return type("P", (), {"value": mock_node._declared_params.get(name, "minimax")})()
-
-        mock_node.get_parameter = _get_parameter
-        tool = SetVoiceTool(mock_node)
-        result = tool.execute(voice="male-chengshu")
-        assert result.success is False
-        assert result.data["error"] == "voice_unavailable"
-        assert result.data["provider"] == "yandex"
-        assert "zahar" in result.data["available"]
-        # yandex-голос принимается у фактического провайдера.
-        result2 = tool.execute(voice="zahar")
-        assert result2.success is True
-        assert result2.data["voice_set"] == "zahar"
-        assert result2.data["provider"] == "yandex"
-
-
-@pytest.mark.unit
-class TestVoiceStateStore:
-    """Phase 3 — in-memory хранилище current_voice."""
-
-    def test_set_and_get(self):
-        store = VoiceStateStore()
-        assert store.get_voice() is None
-        store.set_voice("zahar")
-        assert store.get_voice() == "zahar"
-
-    def test_speaker_binding(self):
-        store = VoiceStateStore()
-        store.set_voice("zahar", speaker_id="speaker-1")
-        assert store.get_voice("speaker-1") == "zahar"
-        assert store.get_voice() is None  # default не тронут
-
-    def test_resolve_requested_wins(self):
-        store = VoiceStateStore()
-        store.set_voice("zahar")
-        voice, fell = store.resolve("minimax", requested="female-shaonv")
-        assert voice == "female-shaonv"
-        assert fell is False
-
-    def test_resolve_current_voice(self):
-        store = VoiceStateStore()
-        store.set_voice("female-shaonv")
-        voice, fell = store.resolve("minimax")
-        assert voice == "female-shaonv"
-        assert fell is False
-
-    def test_resolve_default_when_nothing_set(self):
-        store = VoiceStateStore()
-        voice, fell = store.resolve("minimax")
-        assert voice == "male-qn-qingse"
-        assert fell is True
-
-    def test_resolve_cross_provider_falls_back(self):
-        """Голос Yandex (zahar) установлен, но провайдер minimax → дефолт.
-
-        По контракту voice_state.py (line 93) fell_back=False: голос пришёл
-        из store (не явный запрос), fallback на дефолт провайдера — штатное
-        поведение, а не ошибка явного запроса.
-        """
-        store = VoiceStateStore()
-        store.set_voice("zahar")
-        voice, fell = store.resolve("minimax")
-        assert voice == "male-qn-qingse"
-        assert fell is False
-
-    def test_clear(self):
-        store = VoiceStateStore()
-        store.set_voice("zahar")
-        store.clear()
-        assert store.get_voice() is None
+        assert result.error == "voice_empty"
+        assert self.calls == []
