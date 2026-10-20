@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-20",
-  "base_sha": "b059f62dca2c936ed0e2f2745ea8ef42133131b1",
+  "base_sha": "8a613345587c44ad09c4265204e13bf4ef43a687",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -63,10 +63,6 @@
       "wmc": 133,
       "methods": 31
     },
-    "src/rob_box_telegram/rob_box_telegram/telegram_node.py:TelegramNode": {
-      "wmc": 81,
-      "methods": 20
-    },
     "src/rob_box_voice/rob_box_voice/audio_node.py:AudioNode": {
       "wmc": 131,
       "methods": 24
@@ -80,8 +76,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 881,
-      "methods": 173
+      "wmc": 875,
+      "methods": 172
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,

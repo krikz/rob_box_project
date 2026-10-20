@@ -129,6 +129,13 @@ def _install_fake_rclpy() -> None:
             value = self._declared_parameters.get(name)
             return types.SimpleNamespace(value=value)
 
+        def get_clock(self):
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки msgs, что под рукой.
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
         def create_publisher(self, msg_type, topic, qos_profile=None, **_):
             pub = MagicMock(name=f"Pub[{topic}]")
             pub.topic = topic
@@ -497,6 +504,21 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(published.text, "продолжай")
         self.assertEqual(published.source, Utterance.SOURCE_TELEGRAM)
         self.assertEqual(published.chat_id, -5269346516)
+
+    def test_publish_tts_goes_through_speech_client_as_telegram(self) -> None:
+        """ADR-0150 PR-3: реплика из Telegram - один SpeechRequest (агент telegram),
+        а не JSON в /voice/dialogue/response или /voice/tts/request."""
+        topics = [p.topic for p in self.node._created_publishers]
+        self.assertNotIn("/voice/tts/request", topics)
+        self.assertNotIn("/voice/dialogue/response", topics)
+        pub = self._publisher_for("/voice/speech/request")
+
+        speech_id = self.node.publish_tts("Всем привет & пока")
+
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.speech_id, speech_id)
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "<speak>Всем привет &amp; пока</speak>")
 
     def test_set_active_chat_records_chat(self) -> None:
         """``set_active_chat`` must store the chat for echo routing."""

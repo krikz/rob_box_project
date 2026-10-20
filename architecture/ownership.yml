@@ -85,8 +85,10 @@ nodes:
     owner: voice
     package: rob_box_core
     # PR-3 (#3688): единственный клиент речи (say/cancel), один публикатор на ноду.
-    # Через него пишут: dialogue_node, stt_node, quest_node (cancel); писатели
-    # /voice/tts/request переводятся на say() по частям PR-3.
+    # say: mcp_server (speak_text, say), stt_node («не расслышал»), telegram_node,
+    # supervisor_node (грип); cancel: dialogue_node, stt_node, quest_node.
+    # Ещё на старом JSON /voice/tts/request (адаптер speech_compat): джойстик
+    # rob_box_teleop - в образе teleop нет rob_box_dialog_msgs.
     source: [src/rob_box_core/rob_box_core/speech_client.py]
   face_node:
     owner: dialog-v2
@@ -197,7 +199,7 @@ topics:
     type: rob_box_dialog_msgs/SpeechEvent
     status: live
     writers_allowed: [tts_node]
-    readers: [stt_node]
+    readers: [stt_node, mcp_server]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope

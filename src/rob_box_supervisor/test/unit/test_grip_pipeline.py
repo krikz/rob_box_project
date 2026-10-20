@@ -57,10 +57,18 @@ def _pipeline_config_msg(
     )
 
 
+def _speech_payload(req) -> dict:
+    """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
+    out = {"ssml": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
+    if req.language:
+        out["language"] = req.language
+    return out
+
+
 def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
     """Для тестов: грип шлёт в ``/voice/tts/request`` (динамики робота, §7.5)."""
-    pub = node._tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    pub = node._speech_client_pubs["request"]
+    return [_speech_payload(m) for m in pub.published]
 
 
 def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
@@ -125,7 +133,7 @@ class TestGripPipelineTopology(unittest.TestCase):
     def test_tts_request_publisher_declared(self) -> None:
         """Грип публикует в /voice/tts/request — тот же канал, что say (§7.5)."""
         self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/tts/request")
+        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/speech/request")
 
     def test_default_config_is_no_style(self) -> None:
         """До первого /avatar/voice_pipeline грип «без стиля»: LLM выкл."""

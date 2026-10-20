@@ -14,7 +14,10 @@ Acceptance issue #1709, покрытый здесь:
 1. TTS логирует ПОЛНЫЙ текст failed/прерванного чанка;
 2. логи содержат ``voice=`` + ``text=`` для КАЖДОГО чанка;
 3. чанк с >10% символов чужих письменностей НЕ произносится
-   (warning + ``unsupported_script``, ни одного ``/voice/tts/request``).
+   (warning + ``unsupported_script``, ни одного ``SpeechRequest``).
+
+ADR-0150 PR-3 (#3688): исход чанка приходит событием владельца речи
+``SpeechEvent`` (``/voice/speech/event``), а не JSON ``/voice/tts/finished``.
 
 Prompt-половина фикса пиннится в
 ``src/rob_box_voice/test/unit/test_issue_1709_prompt_unicode_speech.py``,
@@ -24,14 +27,13 @@ Prompt-половина фикса пиннится в
 Mocked ROS2: см. conftest.py MockNode.
 """
 
-import json
 import sys
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-# Mock std_msgs перед импортом SpeakTextTool — локальный паттерн
-# test_tools/ (см. test_dialogue_speak_text_batch.py).
+# Mock std_msgs перед импортом SpeakTextTool — локальный паттерн test_tools/.
 sys.modules['std_msgs'] = Mock()
 sys.modules['std_msgs.msg'] = Mock()
 
@@ -67,12 +69,8 @@ requires_guard = pytest.mark.skipif(
 
 
 def _make_finished_msg(speech_id: str, success: bool = True, error=None):
-    payload = {"speech_id": speech_id, "success": success}
-    if error is not None:
-        payload["error"] = error
-    msg = Mock()
-    msg.data = json.dumps(payload)
-    return msg
+    """``SpeechEvent`` финала: finished (4) или cancelled (5) с причиной."""
+    return SimpleNamespace(kind=4 if success else 5, speech_id=speech_id, reason=error or "")
 
 
 def _joined(messages) -> str:
@@ -109,7 +107,7 @@ class TestFullTextLogging:
         voice_used = result.data["voice_used"]
         mock_node.get_logger().info_messages.clear()
 
-        tool._on_tts_finished(_make_finished_msg(speech_id, success=True))
+        tool._on_speech_event(_make_finished_msg(speech_id, success=True))
 
         logs = _joined(mock_node.get_logger().info_messages)
         assert "TTS finished" in logs
@@ -127,14 +125,14 @@ class TestFullTextLogging:
         result = tool.execute(text=text, animation="happy")
         speech_id = result.data["speech_ids"][0]
 
-        tool._on_tts_finished(
+        tool._on_speech_event(
             _make_finished_msg(speech_id, success=False, error="stopped")
         )
 
         warnings = _joined(mock_node.get_logger().warning_messages)
         assert "НЕ произнесён" in warnings
         assert text in warnings
-        assert "error='stopped'" in warnings
+        assert "error='cancelled:stopped'" in warnings
 
     def test_interrupted_chunk_of_batch_logs_its_own_text(self, mock_node):
         """Прерванный чанк МНОГОЧАНКОВОГО батча логирует ИМЕННО свой текст.
@@ -155,7 +153,7 @@ class TestFullTextLogging:
         assert len(speech_ids) >= 2, "precondition: нужен многочанковый батч"
 
         # Падает ПОСЛЕДНИЙ чанк — логируется его собственный текст.
-        tool._on_tts_finished(
+        tool._on_speech_event(
             _make_finished_msg(speech_ids[-1], success=False, error="stopped")
         )
         warnings = _joined(mock_node.get_logger().warning_messages)
@@ -164,18 +162,11 @@ class TestFullTextLogging:
         assert "закончилось" in warnings
 
     def test_unknown_speech_finished_stays_debug_not_warning(self, mock_node):
-        """Чужой finished (общий топик, issue #776) не должен стать warning.
-
-        Регрессия на issue #776: /voice/tts/finished общий для всех
-        отправителей; наш новый логгер не должен превращать штатное
-        событие в warning.
-        """
+        """Чужое событие (общий топик, issue #776) не должно стать warning."""
         tool = SpeakTextTool(mock_node)
-        tool._on_tts_finished(_make_finished_msg("ghost-speech-id"))
+        tool._on_speech_event(_make_finished_msg("ghost-speech-id", success=False, error="stopped"))
 
         assert mock_node.get_logger().warning_messages == []
-        debug = _joined(mock_node.get_logger().debug_messages)
-        assert "не наш чанк" in debug
 
 
 # ── AC2/AC3: Unicode guard ────────────────────────────────────────────
@@ -191,9 +182,9 @@ class TestUnicodeScriptGuard:
 
         assert result.success is False
         assert result.error == "unsupported_script"
-        tts_pub = mock_node.get_publisher("/voice/tts/request")
+        tts_pub = mock_node.get_publisher("/voice/speech/request")
         assert tts_pub.published_messages == [], (
-            "текст с иероглифами не должен попадать в /voice/tts/request"
+            "текст с иероглифами не должен попадать в /voice/speech/request"
         )
 
     @requires_guard
@@ -204,7 +195,7 @@ class TestUnicodeScriptGuard:
 
         assert result.success is False
         assert result.error == "unsupported_script"
-        assert mock_node.get_publisher("/voice/tts/request").published_messages == []
+        assert mock_node.get_publisher("/voice/speech/request").published_messages == []
 
     @requires_guard
     def test_rejected_text_is_logged_in_full_with_diagnostics(self, mock_node):
@@ -245,7 +236,7 @@ class TestUnicodeScriptGuard:
         result = tool.execute(text=text, animation="idle")
 
         assert result.success is True
-        assert mock_node.get_publisher("/voice/tts/request").published_messages
+        assert mock_node.get_publisher("/voice/speech/request").published_messages
 
     def test_plain_russian_text_is_unaffected(self, mock_node):
         """Guard не должен трогать нормальную русскую речь (back-compat)."""
@@ -256,7 +247,7 @@ class TestUnicodeScriptGuard:
         assert result.success is True
         assert result.error is None
         assert len(
-            mock_node.get_publisher("/voice/tts/request").published_messages
+            mock_node.get_publisher("/voice/speech/request").published_messages
         ) == result.data["chunks"]
 
     def test_emoji_and_digits_do_not_trip_the_guard(self, mock_node):

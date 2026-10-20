@@ -99,8 +99,13 @@ def build_request(
     at: float = 0.0,
     boundary: str = "none",
     commit: bool = True,
+    ssml: Optional[str] = None,
 ) -> Any:
-    """``SpeechRequest`` из реплики; ``speech_id`` - из реплики или новый uuid4."""
+    """``SpeechRequest`` из реплики; ``speech_id`` - из реплики или новый uuid4.
+
+    ``ssml`` - готовый SSML вместо ``utterance.ssml`` (prosody эмоции у
+    ``speak_text``); экранирует его тот, кто собрал.
+    """
     _check_agent(agent)
     if boundary not in BOUNDARIES:
         raise ValueError(f"boundary {boundary!r} не из {sorted(BOUNDARIES)}")
@@ -112,7 +117,7 @@ def build_request(
     req.sink = utterance.sink.value
     req.priority = PRIORITY_OPERATOR_U8 if utterance.priority == PRIORITY_OPERATOR else PRIORITY_NORMAL
     req.interruptible = bool(interruptible)
-    req.text = utterance.ssml
+    req.text = ssml or utterance.ssml
     req.voice = utterance.voice or ""
     req.language = utterance.language or ""
     req.emotion = utterance.emotion or ""

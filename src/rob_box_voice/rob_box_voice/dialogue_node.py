@@ -980,17 +980,6 @@ class DialogueNode(Node):
             String, "/voice/tts/batch_complete",
             self._on_tts_batch_complete, 10,
             callback_group=cbg)
-        # Issue #992 — SpeakTextTool publishes this prelude BEFORE the first
-        # TTS request of each ``speak_text`` call so we can pre-register the
-        # ``batch_id``. Without it we only learn about a batch from the
-        # first ``tts_finished`` for that batch — which works for a single
-        # ``speak_text`` call but fails when the LLM fires two in a row:
-        # batch #1's ``batch_complete`` would fire cleanup while batch #2 is
-        # still pending. Payload: ``{"batch_id": str, "chunks_total": int}``.
-        self.create_subscription(
-            String, "/voice/tts/batch_registered",
-            self._on_tts_batch_registered, 10,
-            callback_group=cbg)
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
@@ -3109,36 +3098,6 @@ class DialogueNode(Node):
                 "watchdog/внешний стоп)"
             )
 
-
-    def _on_tts_batch_registered(self, msg: String) -> None:
-        """Pre-register an in-flight TTS batch (issue #992).
-
-        SpeakTextTool publishes this BEFORE the first ``/voice/tts/request``
-        of each ``speak_text`` call so we can lock the batch_id into
-        ``_active_batches`` up front. This is what makes multi-speak_text
-        cycles work: each ``speak_text`` registers its own batch, the last
-        ``batch_complete`` unregisters the last one, and only then do we
-        fire ``/mcp/music_cleanup``.
-
-        The registry is also updated by ``_on_tts_finished`` as a
-        fallback — this prelude just makes registration *eager* so
-        cleanup is correctly held across multiple batches.
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        batch_id = payload.get("batch_id")
-        chunks_total = payload.get("chunks_total")
-        if batch_id is None or chunks_total is None:
-            return
-        try:
-            self._register_active_batch(str(batch_id), int(chunks_total))
-        except (TypeError, ValueError):
-            self.get_logger().debug(
-                f"⚠️ [issue 992] Skipping batch_registered: "
-                f"batch_id={batch_id!r}, chunks_total={chunks_total!r}"
-            )
 
     def _register_active_batch(self, batch_id: str, chunks_total: int) -> None:
         """Track an in-flight TTS batch for music-cleanup gating (issue #992).

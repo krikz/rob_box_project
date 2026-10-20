@@ -58,6 +58,7 @@ from rob_box_voice.tts_voice_registry import voices_for as _voices_for
 # AVATAR_COMMAND_TOPIC/AVATAR_COMMAND_RESULT_TOPIC) — это и было причиной
 # регрессии: rob_box_core.avatar_command содержит актуальные значения
 # контракта, а supervisor импортирует старые. Теперь импортируем SoT.
+from rob_box_core import speech_client
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
@@ -393,8 +394,9 @@ AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 # Никакого AgentCore / ToolProvider / памяти на этом пути (инвариант 6c).
 GRIP_PTT_RESULT_TOPIC: str = "/avatar/ptt/result"
 GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
-# Выход пайплайна — динамики робота (тот же топик, что у инструмента say).
-GRIP_TTS_REQUEST_TOPIC: str = "/voice/tts/request"
+# Выход пайплайна — динамики робота: SpeechRequest клиентом речи (ADR-0150
+# PR-3), агент ``operator`` — как у инструмента say.
+GRIP_TTS_REQUEST_TOPIC: str = "/voice/speech/request"
 # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Старый grip pipeline
 # публиковал в /voice/tts/request (этот топик оставлен ТОЛЬКО для инструмента
 # ``say``, см. ADR-0055 §Чего не делаем). Все собственные реплики
@@ -657,9 +659,7 @@ class AvatarSupervisor(Node):
         # LLM грипа — лениво, отдельно от агента (см. _grip_transform_once).
         # Грип НЕ строит AgentCore / ToolProvider / Memory.
         self._grip_llm: Any = None
-        self._tts_request_pub = self.create_publisher(
-            RosString, GRIP_TTS_REQUEST_TOPIC, 10
-        )
+        speech_client.prepare(self, "request")
         # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
         # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
         # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
@@ -2845,12 +2845,8 @@ class AvatarSupervisor(Node):
             priority=GRIP_TTS_SOURCE,  # "operator" — REPLACE-priority
             language=language,
         )
-        payload = utterance.to_request()
-        payload.pop("sink", None)
         try:
-            msg = RosString()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._tts_request_pub.publish(msg)
+            speech_client.say(self, utterance, agent="operator")
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"GripPipeline: voice_tts_request publish failed: {exc}")
 
