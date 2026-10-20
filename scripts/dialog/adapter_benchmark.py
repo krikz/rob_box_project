@@ -9,8 +9,8 @@
 и печатает markdown: ``delivered / invalid / latency_p50 / latency_p95`` по адаптеру.
 
 Метрики (сырые, без оценки смысла):
-* ``delivered`` — ответ разобран парсером в команду, где есть хоть одно из speech / actions / ask / passed;
-* ``invalid``   — парсер отказал (нет JSON, неверная форма), вызов упал или команда пустая;
+* ``delivered`` — ``rob_box_dialog.command.parse`` дал команду, где есть хоть одно из speech / actions / ask / passed;
+* ``invalid``   — парсер вернул ``Invalid`` (нет JSON, неверная форма), вызов упал или команда пустая;
   ``delivered + invalid = вызовов``.
 Промпт здесь минимальный и НЕ боевой: замер проверяет форму ответа в режиме, а не качество диалога.
 Ключи не печатаются. Адаптер без ключа выводится строкой «не прогнано: нет ключа» — не пропускается молча.
@@ -29,13 +29,14 @@ from typing import Any, Mapping, Sequence
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-for _p in (REPO, REPO / "src" / "rob_box_dialog", REPO / "src" / "rob_box_llm"):
+for _p in (REPO, REPO / "src" / "rob_box_dialog", REPO / "src" / "rob_box_llm", REPO / "src" / "rob_box_core"):
     sys.path.insert(0, str(_p))
 
+from rob_box_dialog.command import Command  # noqa: E402
+from rob_box_dialog.command import parse as command_parse  # noqa: E402
 from rob_box_dialog.degrade import MODE_ORDER, select_mode  # noqa: E402
 from rob_box_dialog.speech_channel import ModeReply, FieldChannel  # noqa: E402
 from rob_box_llm.provider import LLMMessage, LLMProvider, LLMSettings  # noqa: E402
-from scripts.dialog.stub_parse import pick_parser  # noqa: E402
 from scripts.dialog.turn_metrics import percentile  # noqa: E402
 
 KEY_ENV = {"deepseek": "DEEPSEEK_API_KEY", "minimax": "MINIMAX_API_KEY", "mimo": "MIMO_API_KEY"}
@@ -51,7 +52,6 @@ SYSTEM = (
     "Ты голос робота Робби. Ответь одной командой: поле speech — реплика (до 280 символов), actions — действия "
     "[{tool, args}], passed — если фраза не тебе. Если тебе не говорили — passed=not_addressed."
 )
-_DELIVERY_KEYS = ("speech", "actions", "ask", "passed")
 
 
 def load_env(path: Path | None) -> None:
@@ -83,11 +83,11 @@ def load_phrases(limit: int) -> list[str]:
 
 
 def is_delivered(parsed: Any) -> bool:
-    return isinstance(parsed, dict) and any(parsed.get(k) for k in _DELIVERY_KEYS)
+    return isinstance(parsed, Command) and any((parsed.speech, parsed.actions, parsed.ask, parsed.passed))
 
 
 async def run_adapter(
-    provider: LLMProvider, mode: str, phrases: Sequence[str], runs: int, parse: Any
+    provider: LLMProvider, mode: str, phrases: Sequence[str], runs: int, parse: Any = command_parse
 ) -> dict[str, Any]:
     channel = FieldChannel(SCHEMA)
     req = channel.build_request(mode)  # type: ignore[arg-type]
@@ -142,7 +142,6 @@ def render(rows: Sequence[tuple[str, str, dict[str, Any] | None]], parser_kind: 
 async def main_async(args: argparse.Namespace) -> str:
     load_env(Path(args.env) if args.env else None)
     phrases = load_phrases(args.limit)
-    parser_kind, parse = pick_parser()
     rows: list[tuple[str, str, dict[str, Any] | None]] = []
     for name in [n.strip() for n in args.providers.split(",") if n.strip()]:
         provider = build_provider(name)
@@ -150,8 +149,8 @@ async def main_async(args: argparse.Namespace) -> str:
             rows.append((name, args.mode, None))
             continue
         mode = select_mode(provider.capabilities) if args.mode == "auto" else args.mode
-        rows.append((name, mode, await run_adapter(provider, mode, phrases, args.runs, parse)))
-    return render(rows, parser_kind, len(phrases))
+        rows.append((name, mode, await run_adapter(provider, mode, phrases, args.runs)))
+    return render(rows, "rob_box_dialog.command.parse", len(phrases))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
