@@ -3,7 +3,7 @@
 # Issue #1234, этап 2 — OpenTelemetry traces.
 #
 # Топология (все сервисы мониторинг-стека на host-сети, как в docker-compose):
-#   voice-ноды (10.1.1.11) --OTLP gRPC/HTTP--> otel-collector (10.1.1.249:4317/4318)
+#   voice-ноды (Sound Pi, 10.1.1.12; до ADR-0159 — Vision Pi 10.1.1.11) --OTLP gRPC/HTTP--> otel-collector (10.1.1.249:4317/4318)
 #       --> Tempo (localhost:4321 OTLP gRPC)
 #
 # НЕ включаем contrib-компоненты (spanmetrics и т.п.) — минимальный набор

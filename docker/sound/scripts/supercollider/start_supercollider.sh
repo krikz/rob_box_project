@@ -52,7 +52,7 @@ rm -rf /dev/shm/jack_db-* 2>/dev/null || true
 
 # ── Prometheus metrics endpoint (issue #1160) ────────────────────────────────
 # Лёгкий stdlib HTTP-сервер на 9102 (см. metrics_server.py и
-# docker/monitoring/config/prometheus.yml target 10.1.1.11:9102).
+# docker/monitoring/config/prometheus.yml target 10.1.1.12:9102).
 # Не блокирует запуск JACK/scsynth: если python3 отсутствует — просто
 # логируем предупреждение и продолжаем.
 echo "[SuperCollider] Starting metrics server on :9102/metrics..."
