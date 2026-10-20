@@ -100,7 +100,9 @@ from .utils.stderr_silence import ignore_stderr
 from .core.speak_helpers import (
     strip_bracket_asides, strip_markdown, unsupported_language_notice,
 )
+from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
+from .core.provider_health import record_tts_death, tts_provider_states
 
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
 # огибающая; старые JSON-входы — один адаптер speech_compat.
@@ -1370,6 +1372,8 @@ class TTSNode(Node):
         self.provider_state_pub = self.create_publisher(
             String, "/voice/tts/provider_state", 10
         )
+        # ADR-0150 §8 (PR-4 ч.2): состояния провайдеров TTS (kind=tts) - переиздание раз в 2 с.
+        self._providers_publisher = ProviderStatePublisher(self, lambda: tts_provider_states(self))
         # AV-27 / issue #1919 — latched-каталог голосов для wire-payload
         # ``voice_list`` (см. design t_5b9d5d0c §128-150). Публикуется на
         # startup + каждый раз после ``_publish_provider_state``. TRANSIENT_LOCAL
@@ -3925,6 +3929,7 @@ class TTSNode(Node):
             reasons = {}
             self._provider_dead_reason = reasons
         reasons[provider_name] = str(error)[:300]
+        record_tts_death(self, provider_name, error, permanent)
         self.get_logger().warn(
             f"💀 {provider_name} помечен мёртвым на {ttl_s:.0f}s "
             f"({type(error).__name__}: {error})"

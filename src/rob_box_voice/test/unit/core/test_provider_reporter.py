@@ -21,12 +21,12 @@ def _make(now):
     return llm, rep, published, spoken
 
 
-def test_healthy_chain_publishes_once_and_stays_silent():
+def test_healthy_chain_republishes_every_tick_and_stays_silent():
     now = [0.0]
     _, rep, published, spoken = _make(now)
     rep.tick()
     rep.tick()
-    assert len(published) == 1 and spoken == []
+    assert len(published) == 2 and spoken == []  # переиздание каждый тик (ч.2): подписчик гасит устаревшее
 
 
 def test_quota_is_published_and_spoken_once():

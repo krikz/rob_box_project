@@ -67,6 +67,8 @@ from typing import Any, Mapping, Optional
 
 import httpx
 
+from ..stt_fallback import STTAuthError, STTQuotaError
+
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
@@ -192,6 +194,10 @@ class MiniMaxSTTUnavailableError(MiniMaxSTTError):
 
 class MiniMaxSTTAuthError(MiniMaxSTTError):
     """HTTP 401/403 from MiniMax. Caller should NOT retry."""
+
+
+class MiniMaxSTTQuotaError(MiniMaxSTTError):
+    """Кончилась квота/баланс/план MiniMax (``QUOTA_HINTS`` в теле или статусе): класс отказа, не подстрока."""
 
 
 class MiniMaxSTTRateLimitError(MiniMaxSTTError):
@@ -447,10 +453,13 @@ class MiniMaxSTTProvider:
         try:
             response = self.transcribe(audio_bytes)
         except MiniMaxSTTAuthError as exc:
-            # Auth errors are not retryable — caller should treat as "error"
-            # and move on (Yandex/Vosk still available).
+            # Auth errors are not retryable: тип уходит в цепочку - провайдер мёртв надолго (класс auth).
             _log.warning("minimax STT: auth error (%s) — skipping", exc)
-            return None
+            raise STTAuthError(str(exc)) from exc
+        except MiniMaxSTTQuotaError as exc:
+            # Квота/план: цепочка метит провайдера мёртвым на длинный TTL (класс quota), а не «empty» каждую фразу.
+            _log.warning("minimax STT: quota (%s) — long dead TTL", exc)
+            raise STTQuotaError(str(exc)) from exc
         except MiniMaxSTTRateLimitError as exc:
             _log.warning("minimax STT: rate-limited (%s) — falling back", exc)
             return None
@@ -656,7 +665,7 @@ def _raise_for_http_status(resp: httpx.Response) -> None:
     body_error = _body_error_message(resp)
     if body_error is not None and looks_like_quota_problem(body_error):
         # Не ретраим и помечаем мёртвым надолго: план не изменится за 30с.
-        raise MiniMaxSTTRateLimitError(f"minimax STT: {body_error}")
+        raise MiniMaxSTTQuotaError(f"minimax STT: {body_error}")
 
     status = resp.status_code
     if status in (401, 403):
@@ -693,6 +702,7 @@ __all__ = [
     "MiniMaxSTTError",
     "MiniMaxSTTUnavailableError",
     "MiniMaxSTTAuthError",
+    "MiniMaxSTTQuotaError",
     "MiniMaxSTTRateLimitError",
     "MiniMaxSTTInvalidResponseError",
     "MiniMaxSTTRedactedLogFilter",

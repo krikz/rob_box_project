@@ -181,6 +181,17 @@ class STTQuotaError(Exception):
     """
 
 
+def failure_class(error: Optional[str], exc: Optional[BaseException]) -> str:
+    """Класс здоровья отказа для ``ProviderState`` (ADR-0150 §8): quota / auth / timeout / down."""
+    if isinstance(exc, STTQuotaError):
+        return "quota"
+    if isinstance(exc, STTAuthError):
+        return "auth"
+    if isinstance(exc, STTTimeoutError) or (error or "").startswith("timeout"):
+        return "timeout"
+    return "down"
+
+
 def is_permanent_failure(exc: Optional[BaseException]) -> bool:
     """True, если отказ не «рассосётся» сам (квота/ключ) — длинный TTL."""
     return isinstance(exc, (STTAuthError, STTQuotaError))
@@ -241,6 +252,7 @@ class ProviderDeadCache:
         self._lock = threading.Lock()
         self._dead_until: dict[str, float] = {}
         self._reason: dict[str, str] = {}
+        self._health_class: dict[str, str] = {}
         # Issue #2767 — счётчик подряд-идущих PERMANENT-отказов (auth/quota)
         # на провайдера, для лестницы эскалации TTL.
         self._permanent_streak: dict[str, int] = {}
@@ -265,6 +277,13 @@ class ProviderDeadCache:
         with self._lock:
             return self._reason.get(provider)
 
+    def health_class(self, provider: str) -> str:
+        """Класс отказа (quota/auth/timeout/down) для ``ProviderState``; ``ok``, пока провайдер не мёртв."""
+        with self._lock:
+            if self._clock() >= self._dead_until.get(provider, 0.0):
+                return "ok"
+            return self._health_class.get(provider, "down")
+
     # -- мутации ---------------------------------------------------------
 
     def mark_alive(self, provider: str) -> None:
@@ -272,6 +291,7 @@ class ProviderDeadCache:
         with self._lock:
             self._dead_until.pop(provider, None)
             self._reason.pop(provider, None)
+            self._health_class.pop(provider, None)
             self._permanent_streak.pop(provider, None)
             self._transient_streak.pop(provider, None)
 
@@ -316,6 +336,7 @@ class ProviderDeadCache:
         *,
         transient: bool = True,
         ttl_s: Optional[float] = None,
+        health_class: str = "down",
     ) -> float:
         """Пометить провайдера мёртвым. Возвращает применённый TTL.
 
@@ -339,6 +360,7 @@ class ProviderDeadCache:
                     ttl_s = self._permanent_ttl_for_streak(provider)
             self._dead_until[provider] = self._clock() + float(ttl_s)
             self._reason[provider] = str(reason)[:300]
+            self._health_class[provider] = health_class
         return float(ttl_s)
 
     # -- персистентность (wall-clock, как в tts_node) ---------------------
@@ -656,6 +678,7 @@ def _mark_failed(
             provider_name,
             error,
             transient=not is_permanent_failure(exc),
+            health_class=failure_class(error, exc),
         )
 
 

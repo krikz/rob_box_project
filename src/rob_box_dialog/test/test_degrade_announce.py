@@ -65,3 +65,11 @@ def test_kinds_do_not_mix():
     states = [ProviderState("minimax", "tts", "quota"), ProviderState("deepseek", "llm", "ok")]
     out = ProviderAnnouncer().observe(states, ["minimax", "yandex"], now=0.0)
     assert len(out) == 1 and "yandex" in out[0]
+
+
+def test_same_provider_same_reason_on_two_kinds_is_one_phrase():
+    """Тариф MiniMax общий для LLM и TTS: оба вида упали по квоте - человек слышит одну фразу."""
+    states = [ProviderState("minimax", "llm", "quota"), ProviderState("deepseek", "llm", "ok"),
+              ProviderState("minimax", "tts", "quota"), ProviderState("yandex", "tts", "ok")]
+    out = ProviderAnnouncer().observe(states, ["minimax", "deepseek", "yandex"], now=0.0)
+    assert len(out) == 1
