@@ -35,7 +35,7 @@ import pytest
 # local_test/ -> repo root
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CADDYFILE = _REPO_ROOT / "docker" / "sound" / "quest" / "Caddyfile"
-_COMPOSE = _REPO_ROOT / "docker" / "vision" / "docker-compose.yaml"
+_COMPOSE = _REPO_ROOT / "docker" / "sound" / "docker-compose.yaml"  # quest — Sound Pi с ADR-0159 PR-7
 
 # Порт voice-action-server. Для quest-апстрима он ЗАПРЕЩЁН: сервис чужой,
 # отвечает 200 на /healthz и тем самым делает smoke-проверку бессмысленной.
@@ -128,7 +128,7 @@ class TestComposeWsPortContract:
     def test_compose_declares_ws_port(self):
         assert _COMPOSE.is_file(), f"compose не найден: {_COMPOSE}"
         assert re.search(r"WS_PORT=\$\{QUEST_WS_PORT:-(\d+)\}", _COMPOSE.read_text(encoding="utf-8")), (
-            "В docker/vision/docker-compose.yaml нет `WS_PORT=${QUEST_WS_PORT:-...}` "
+            "В docker/sound/docker-compose.yaml нет `WS_PORT=${QUEST_WS_PORT:-...}` "
             "для сервиса quest. Без него quest_node возьмёт default 8765 из "
             "quest_node.py и упадёт с EADDRINUSE против voice-action-server."
         )
