@@ -28,7 +28,7 @@ def test_no_forbidden_imports_in_sources():
 
 def test_import_pulls_no_forbidden_modules_at_runtime():
     code = (
-        "import sys, rob_box_dialog.knowledge, rob_box_dialog.words\n"
+        "import sys, rob_box_dialog.knowledge, rob_box_dialog.words, rob_box_dialog.command\n"
         f"bad = sorted(m for m in sys.modules if m.split('.')[0] in {sorted(FORBIDDEN)!r})\n"
         "print(bad); sys.exit(1 if bad else 0)\n"
     )

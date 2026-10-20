@@ -1,8 +1,9 @@
 """Одна таблица знания диалога v2 (ADR-0150 §2.2, §2.1 п.10; ADR-0148).
 
-Вейк-слова, слова тишины и её снятия, Tier-1 слова политики планировщика, слова и каналы громкости. Остальные
-модули — и старый путь v1 — только импортируют отсюда; копий нет. Таблицы команды LLM, классов действий,
-экспрессии, рефлексов, сцен и одновременности добавляются следующими частями PR-1 (ADR-0150 §11).
+Вейк-слова, слова тишины и её снятия, Tier-1 слова политики планировщика, слова и каналы громкости, классы
+действий с таймаутами и прерываемостью, словарь экспрессии (эмоции, жесты, earcon'ы, слоты сцены лица) и пределы
+команды LLM. Остальные модули — и старый путь v1 — только импортируют отсюда; копий
+нет. Из таблиц генерируются фрагмент промпта (:func:`prompt_fragment`) и JSON-схема команды (:func:`command_schema`).
 
 Сверка текста со словами (границы слов) — :mod:`rob_box_dialog.words`.
 """
@@ -12,7 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------------------------------------------
 # Адресация (§4.2, решение В2: только по вейк-слову)
@@ -117,6 +118,229 @@ VOLUME_CHANNELS: Mapping[str, VolumeChannel] = MappingProxyType({
     "music": VolumeChannel(owner="PlayerOwner", tool="set_music_volume"),
     "sfx": VolumeChannel(owner="sound_node", tool=None),
 })
+
+# ---------------------------------------------------------------------------------------------------------------
+# Классы действий (§5.1) и тулы по классам
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Агенты на общем движке (§9): личность, оператор (ТАРС), телеграм.
+AGENTS: Tuple[str, ...] = ("personality", "operator", "telegram")
+#: Статусы результата исполнителя (§5.2, ``ActionResult.status``).
+ACTION_STATUSES: Tuple[str, ...] = ("done", "rejected", "timeout", "cancelled", "pending")
+
+
+@dataclass(frozen=True)
+class ActionClass:
+    """Класс действия: дедлайн события, прерываемость, источник события и ключи фраз по статусам.
+
+    ``timeout_s=None`` — дедлайн задаёт не класс, а владелец (длина речи, план выступления). ``phrases`` —
+    статус → ключ ``phrases/ru.yaml``; статуса нет в словаре — фразу о нём строит не шаблон (у ``query`` —
+    LLM по данным). ``agents`` — кому класс доступен.
+    """
+
+    timeout_s: Optional[float]
+    interruptible: bool
+    event: str
+    phrases: Mapping[str, str]
+    agents: Tuple[str, ...] = AGENTS
+
+
+def _keys(prefix: str, *statuses: str, **renamed: str) -> Mapping[str, str]:
+    keys = {s: f"{prefix}.{s}" for s in statuses}
+    keys.update({s: f"{prefix}.{name}" for s, name in renamed.items()})
+    return MappingProxyType(keys)
+
+
+ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
+    # данные → обратно LLM (≤ LLM_QUERY_ITERATIONS_MAX итераций), фраза — речь LLM; поиск 15 с, прерываемо
+    "query": ActionClass(15.0, True, "tool_result", _keys("query", "rejected", "timeout")),
+    # remember, set_volume, set_voice: событие владельца ≤ 3 с, мгновенно — не прерывается
+    "action.local": ActionClass(3.0, False, "owner_event", _keys("local", "done", "rejected", "timeout")),
+    # request_music, dj_set, play_sound: /voice/music/event started|rejected ≤ 6 с; старт не прерывается
+    "action.media": ActionClass(6.0, False, "/voice/music/event", _keys("media", "done", "rejected", "timeout")),
+    # Nav2 до 120 с, непрерываемо (кроме Tier-1 «стой»); «Еду к…» — обещание по pending
+    "action.motion": ActionClass(
+        120.0, False, "nav2_result",
+        _keys("motion", "done", "rejected", "timeout", "cancelled", pending="started"),
+    ),
+    # событие speaker_id_node (registered); дедлайн в §5.1 не задан — взят как у action.local
+    "action.identity": ActionClass(3.0, False, "speaker_id_node", _keys("identity", "done", "rejected", "timeout")),
+    # say_aloud — только агенты оператора и телеграма; подтверждение — SpeechEvent finished
+    "action.speak_aloud": ActionClass(
+        None, True, "/voice/speech/event", _keys("speak_aloud", "done", "rejected", "cancelled"),
+        agents=("operator", "telegram"),
+    ),
+    # выступление (§5.6.3): PlanEvent block_end; подложка started/rejected; прерывается на границе сегмента
+    "action.perform": ActionClass(
+        None, True, "/dialog/plan_event",
+        _keys("perform", pending="backing_started", done="finished", rejected="no_backing"),
+    ),
+})
+
+#: Тул каталога ``rob_box_core.tool_catalog`` → класс действия. Тул вне таблицы командой не исполняется
+#: (валидатор отвергает); полноту против каталога держит тест.
+TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
+    **{t: "query" for t in (
+        "container_status", "estimate_tts_duration", "faq_search", "get_battery_level", "get_current_pose",
+        "get_current_time", "get_music_state", "get_perception_context", "get_robot_status", "get_sound_info",
+        "list_tts_voices", "list_waypoints", "listen_for_response", "lookup_melody", "memory_context",
+        "memory_search", "read_logs", "ros2_node_status", "search_melody", "search_web", "show_metrics",
+    )},
+    **{t: "action.local" for t in (
+        "add_music_material", "clear_waypoints", "delete_waypoint", "memory_save", "play_animation",
+        "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
+        "set_volume", "task_delta",
+    )},
+    **{t: "action.media" for t in (
+        "dj_set", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
+    )},
+    # долгие операции навигационного стека (Nav2/картирование): тот же дедлайн 120 с и непрерываемость
+    **{t: "action.motion" for t in (
+        "continue_mapping", "finish_mapping", "load_map", "move_direction", "navigate_to_coordinates",
+        "navigate_to_waypoint", "optimize_map", "start_mapping", "stop_navigation",
+    )},
+    "register_speaker": "action.identity",
+    "say": "action.speak_aloud",
+})
+#: Тулы-транспорт речи, а не действия: канал речи выбирает бейк-офф (§4.4), командой как действие не идут.
+SPEECH_CHANNEL_TOOLS: Tuple[str, ...] = ("speak_text",)
+#: Классы, действий которых в одной команде не больше одного (каждого): один трек и одна цель движения за ход.
+SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
+
+# ---------------------------------------------------------------------------------------------------------------
+# Экспрессия (§5.5): эмоция → сцена лица, жесты, earcon'ы, слоты сцены для LLM
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Анимации с манифестом, которые умеет сегодняшний плеер (``rob_box_mcp_tools.animations.KNOWN_ANIMATIONS``),
+#: плюс сцены лаборатории ``tools/led_face_lab`` (§5.5.2): ими именуются сцены лица в v1 и v2.
+LAB_SCENES: Tuple[str, ...] = (
+    "idle_stare", "idle_bored", "listening", "thinking_teeth", "thinking_orbit", "wink",
+    "music_groove", "music_shades", "music_vibe", "new_year_eve",
+)
+#: Эмоция команды → сцена лица. Ключи — enum для LLM; ``neutral`` — покой.
+EMOTIONS: Mapping[str, str] = MappingProxyType({
+    "neutral": "idle",
+    "happy": "happy",
+    "sad": "sad",
+    "angry": "angry",
+    "surprised": "surprised",
+    "thinking": "thinking",
+    "victory": "victory",
+    "sleepy": "sleep",
+})
+#: Короткие однократные жесты лица поверх эмоции.
+GESTURES: Tuple[str, ...] = ("wink", "wakeup", "victory", "surprised")
+#: Earcon'ы рефлексов: «услышал» (сегодняшний ранний клик ``boop → button_click``), «готово», «не вышло».
+EARCONS: Tuple[str, ...] = ("heard", "done", "fail")
+
+#: DSL сцены лица для LLM (§5.5.9): только enum-слоты, без цветов, форм и кода. ``speaker`` — взгляд по DOA,
+#: ``talk`` — рот по огибающей TTS.
+FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "eyes": ("open", "half", "squint", "wide", "closed", "shades", "x"),
+    "gaze": ("speaker", "left", "right", "up", "down", "wander"),
+    "blink": ("normal", "rapid", "none", "wink_left", "wink_right"),
+    "mouth": ("grin", "frown", "flat", "o", "teeth", "eq", "talk"),
+    "tint": ("warm", "cold", "red", "green", "blue", "purple", "rainbow"),
+    "tempo": ("slow", "normal", "fast"),
+    "rear": ("off", "markers", "hazard", "party", "new_year", "halloween", "heart", "rocket"),
+})
+FACE_SCENE_DEFAULT_S = 5.0
+FACE_SCENE_MAX_S = 30.0
+
+# ---------------------------------------------------------------------------------------------------------------
+# Команда LLM (§4.1): пределы и перечисления; схема и промпт генерируются ниже
+# ---------------------------------------------------------------------------------------------------------------
+
+SPEECH_MAX_CHARS = 280
+ACTIONS_MAX = 3
+PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
+PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
+SEGMENTS_MIN = 2
+SEGMENTS_MAX = 12
+SEGMENT_MAX_CHARS = 400
+WHEN: Tuple[str, ...] = ("after_current", "now")
+ASK_EXPECTS: Tuple[str, ...] = ("yes_no", "name", "free")
+PASSED: Tuple[str, ...] = ("not_addressed", "nothing_to_say", "unclear")
+#: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
+#: structured_output/JSON-режима и для JSON в тексте.
+COMMAND_MODES: Tuple[str, ...] = ("tool", "json")
+COMMAND_TOOL = "command"
+
+
+def _enum(values: Sequence[str]) -> Dict[str, Any]:
+    return {"type": "string", "enum": list(values)}
+
+
+def _object(props: Mapping[str, Any], required: Sequence[str] = ()) -> Dict[str, Any]:
+    return {"type": "object", "properties": dict(props), "required": list(required), "additionalProperties": False}
+
+
+def _expression_schema() -> Dict[str, Any]:
+    face = {slot: _enum(values) for slot, values in FACE_SCENE_SLOTS.items()}
+    face["duration_s"] = {"type": "number", "minimum": 0, "maximum": FACE_SCENE_MAX_S}
+    return _object({
+        "emotion": _enum(EMOTIONS), "gesture": _enum(GESTURES), "earcon": _enum(EARCONS), "face": _object(face),
+    })
+
+
+def command_schema(mode: str = "json") -> Dict[str, Any]:
+    """JSON-схема команды LLM из таблиц этого модуля: ``json`` — сама схема, ``tool`` — тул ``command``.
+
+    :raises ValueError: незнакомый режим.
+    """
+    if mode not in COMMAND_MODES:
+        raise ValueError(f"command_schema: mode must be one of {COMMAND_MODES}, got {mode!r}")
+    expression = _expression_schema()
+    schema = _object({
+        "speech": {"type": "string", "maxLength": SPEECH_MAX_CHARS},
+        "ask": _object({"expects": _enum(ASK_EXPECTS), "text": {"type": "string", "maxLength": SPEECH_MAX_CHARS}},
+                       required=("expects", "text")),
+        "actions": {"type": "array", "maxItems": ACTIONS_MAX,
+                    "items": _object({"tool": {"type": "string"}, "args": {"type": "object"}}, required=("tool",))},
+        "perform": _object({
+            "kind": _enum(PERFORM_KINDS),
+            "segments": {"type": "array", "minItems": SEGMENTS_MIN, "maxItems": SEGMENTS_MAX,
+                         "items": {"type": "string", "maxLength": SEGMENT_MAX_CHARS}},
+            "backing": _enum(PERFORM_BACKINGS),
+            "expression_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX, "items": expression},
+            "from_segment": {"type": "integer", "minimum": 0},
+        }, required=("kind", "segments")),
+        "when": _enum(WHEN),
+        "edit_pending": {"type": "boolean"},
+        "expression": expression,
+        "passed": _enum(PASSED),
+    })
+    if mode == "json":
+        return schema
+    return {"type": "function", "function": {
+        "name": COMMAND_TOOL, "description": "Одна команда хода: речь, вопрос, действия, экспрессия.",
+        "parameters": schema,
+    }}
+
+
+def prompt_fragment() -> str:
+    """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную)."""
+    def _set(values: Sequence[str]) -> str:
+        return "{" + ", ".join(values) + "}"
+
+    face = "; ".join(f"{slot} ∈ {_set(v)}" for slot, v in FACE_SCENE_SLOTS.items())
+    lines: List[str] = [
+        "Ответ — одна команда (JSON-объект) с полями:",
+        f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. Если есть actions, speech не озвучивается:"
+        " о результате скажет код по событию исполнителя.",
+        f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}.",
+        f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
+        f" {' и '.join(SINGLE_ACTION_CLASSES)}.",
+        f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
+        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech.",
+        f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",
+        "- edit_pending: true — заменить ещё не начатые сегменты текущего выступления, начиная с from_segment.",
+        f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈ {_set(EARCONS)};"
+        f" face: {face}; duration_s ≤ {FACE_SCENE_MAX_S:g}.",
+        f"- passed ∈ {_set(PASSED)} — честно промолчать.",
+    ]
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------------------------------------------
 # Загрузка вейк-слов из YAML (прод: /config/wake_words.yaml)
