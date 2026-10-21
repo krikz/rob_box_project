@@ -4,7 +4,6 @@ test_pure_methods.py — Unit-тесты «лёгких» методов Dialogu
 Покрывает:
   - _map_emotion_to_animation    (чистый dict lookup)
   - _generate_fallback_response  (чистый string matching)
-  - _detect_volume_intent        (regex, без ROS)
   - _detect_pitch_intent         (regex, без ROS)
   - _trigger_sound               (publish)
   - _on_mcp_tools_update         (JSON parse → attributes)
