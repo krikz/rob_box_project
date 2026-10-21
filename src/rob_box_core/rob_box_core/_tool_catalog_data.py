@@ -1193,7 +1193,23 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'списков, '
                                                                        'свободных '
                                                                        'цветов и форм '
-                                                                       'нет.',
+                                                                       'нет. bg - фон '
+                                                                       'под глазами и '
+                                                                       'ртом; fx - '
+                                                                       'разовый '
+                                                                       'импульс в '
+                                                                       'начале сцены '
+                                                                       '(slash - удар '
+                                                                       'катаной, '
+                                                                       'glitch - сбой, '
+                                                                       'boot - '
+                                                                       'включение, '
+                                                                       'power_down - '
+                                                                       'выключение); '
+                                                                       'feat=loading_eyes '
+                                                                       '- спиннеры '
+                                                                       'вместо глаз '
+                                                                       '(жду, думаю).',
                                                         'properties': {   'eyes': {   'type': 'string',
                                                                                       'description': 'Слот '
                                                                                                      'лица '
@@ -1265,6 +1281,27 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                                                   'halloween',
                                                                                                   'heart',
                                                                                                   'rocket']},
+                                                                          'bg': {   'type': 'string',
+                                                                                    'description': 'Слот '
+                                                                                                   'лица '
+                                                                                                   '«bg»',
+                                                                                    'enum': [   'none',
+                                                                                                'rainbow',
+                                                                                                'fire',
+                                                                                                'matrix']},
+                                                                          'fx': {   'type': 'string',
+                                                                                    'description': 'Слот '
+                                                                                                   'лица '
+                                                                                                   '«fx»',
+                                                                                    'enum': [   'slash',
+                                                                                                'glitch',
+                                                                                                'boot',
+                                                                                                'power_down']},
+                                                                          'feat': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«feat»',
+                                                                                      'enum': [   'loading_eyes']},
                                                                           'duration_s': {   'type': 'number',
                                                                                             'description': 'Сколько '
                                                                                                            'держать '

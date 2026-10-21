@@ -29,6 +29,11 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
   сцены ≤ 1 А по модели драйвера (20 мА на канал при 255, тест); пик с
   покоем ленты 381 мА — до ~1,25 А при ограничителе 4,5 А. `face_node` пишет
   `face.peak_ma` в лог раз в 10 с.
+- **Эффекты полотна (#3780):** слоты сцены LLM `bg` (фон сквозь всё полотно:
+  `rainbow`, `fire`, `matrix`; ≤ 6 уровней, черты светят своим уровнем),
+  `fx` (импульс в начале сцены: `slash`, `glitch`, `boot`, `power_down`) и
+  `feat` (`loading_eyes`). Полотно — одна таблица `face/face.py:CANVAS_AT`
+  рядом с `GROUP_OF`, рендер — `face/effects.py`.
 - **Какая сцена когда:** речь — `talk_<mouth_design>` (рот по голосу, В13:
   `jaw`), запрос `play_animation`/`ExpressionRequest` — сцена на время,
   музыка — по темпу (`< 100` кайф, `100–125` грув, `≥ 125` очки), покой —

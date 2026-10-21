@@ -456,7 +456,8 @@ GESTURES: Tuple[str, ...] = ("wink", "wakeup", "victory", "surprised")
 EARCONS: Tuple[str, ...] = ("heard", "done", "fail")
 
 #: DSL сцены лица для LLM (§5.5.9): только enum-слоты, без цветов, форм и кода. ``speaker`` — взгляд по DOA,
-#: ``talk`` — рот по огибающей TTS.
+#: ``talk`` — рот по огибающей TTS. ``bg`` — фон под глазами и ртом, ``fx`` — разовый импульс в начале сцены, ``feat`` —
+#: замена самих черт (#3780; рендер — ``rob_box_animations/face/effects.py``).
 FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "eyes": ("open", "half", "squint", "wide", "closed", "shades", "x"),
     "gaze": ("speaker", "left", "right", "up", "down", "wander"),
@@ -465,12 +466,17 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "tint": ("warm", "cold", "red", "green", "blue", "purple", "rainbow"),
     "tempo": ("slow", "normal", "fast"),
     "rear": ("off", "markers", "hazard", "party", "new_year", "halloween", "heart", "rocket"),
+    "bg": ("none", "rainbow", "fire", "matrix"),
+    "fx": ("slash", "glitch", "boot", "power_down"),
+    "feat": ("loading_eyes",),
 })
 FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
 FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
-                   " напротив робота. Только значения из списков, свободных цветов и форм нет.")
+                   " напротив робота. Только значения из списков, свободных цветов и форм нет. bg - фон под глазами"
+                   " и ртом; fx - разовый импульс в начале сцены (slash - удар катаной, glitch - сбой, boot -"
+                   " включение, power_down - выключение); feat=loading_eyes - спиннеры вместо глаз (жду, думаю).")
 #: Стадии хода, чьи сцены лица снимают сцену LLM (``failed``/``silenced``: «радостно» о провале не бывает).
 FACE_SCENE_CANCEL_STAGES: Tuple[str, ...] = ("failed", "silenced")
 
