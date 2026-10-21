@@ -16,11 +16,12 @@ from typing import Any, Collection, Dict, FrozenSet, Iterator, List, Mapping, Op
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.face_scene import FaceScene, problem as face_problem
+from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
 
 INVALID_ASK_KEY = "understand.invalid"
-#: Поля команды — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
+#: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
+_EXPRESSION_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"]["expression"]["properties"])
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,9 @@ class Performance:
 
 @dataclass(frozen=True)
 class Command:
-    """Одна команда хода. ``dropped`` — поля, которые валидатор отбросил, не отвергая команду (сцена лица).
+    """Одна команда хода. ``dropped`` — поля, которые разбор или валидатор отбросили, не отвергая команду (сцена
+    лица, лишние поля экспрессии); ``moved`` — слоты лица, которые разбор переложил из ``expression`` в
+    ``expression.face`` (§5.5.9, #3698: DeepSeek кладёт их на уровень выше).
 
     ``voice`` — голос реплики ``speech``/``ask`` (не голос робота: его меняет ``set_voice``)."""
 
@@ -83,6 +86,7 @@ class Command:
     expression: Expression = Expression()
     passed: Optional[str] = None
     dropped: Tuple[str, ...] = ()
+    moved: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,14 @@ class Busy:
 
 
 Result = Union[Command, Invalid]
+
+
+@dataclass
+class _Repairs:
+    """Что разбор поправил, не отвергая команду: переложенные слоты лица и отброшенные поля экспрессии."""
+
+    moved: List[str] = field(default_factory=list)
+    dropped: List[str] = field(default_factory=list)
 
 
 class _Bad(Exception):
@@ -201,20 +213,38 @@ def _text(data: Mapping[str, Any], key: str) -> Optional[str]:
     return value.strip() or None if value is not None else None
 
 
-def _expression(data: Any) -> Expression:
+def _expression(data: Any, where: str, fix: _Repairs) -> Expression:
     if data is None:
         return Expression()
     if not isinstance(data, Mapping):
-        raise _Bad("bad_type", "expression")
-    _only(data, ("emotion", "gesture", "earcon", "face"), "expression")
+        raise _Bad("bad_type", where)
+    data = _lift_face(data, where, fix)
     face = data.get("face")
     return Expression(emotion=_get(data, "emotion", str, "neutral") or "neutral", gesture=_get(data, "gesture", str),
                       earcon=_get(data, "earcon", str), face=None if face is None else _face(face))
 
 
+def _lift_face(data: Mapping[str, Any], where: str, fix: _Repairs) -> Mapping[str, Any]:
+    """Лишние поля экспрессии не валят команду (§5.5.9, решение Шифу 21.10 по #3698): слоты лица и ``duration_s``
+    на уровне ``expression`` переезжают в ``expression.face``, если ``face`` не задан и среди них есть хоть один слот;
+    иначе они, как и прочие незнакомые поля, уходят в ``dropped``."""
+    stray = [k for k in data if k not in _EXPRESSION_FIELDS]
+    if not stray:
+        return data
+    kept = {k: v for k, v in data.items() if k in _EXPRESSION_FIELDS}
+    lifted = [k for k in stray if k in FACE_FIELDS]
+    if data.get("face") is None and any(k in kn.FACE_SCENE_SLOTS for k in lifted):
+        kept["face"] = {k: data[k] for k in lifted}
+        fix.moved.extend(f"{where}.{k}" for k in lifted)
+    else:
+        lifted = []
+    fix.dropped.extend(f"{where}.{k}" for k in stray if k not in lifted)
+    return kept
+
+
 def _face(data: Any) -> Any:
     """Сцена лица как есть, без проверки enum (её делает :func:`validate`); не объект — вернётся как маркер ошибки."""
-    if not isinstance(data, Mapping) or set(data) - {*kn.FACE_SCENE_SLOTS, "duration_s"}:
+    if not isinstance(data, Mapping) or set(data) - set(FACE_FIELDS):
         return data
     slots = {k: data[k] for k in kn.FACE_SCENE_SLOTS if k in data}
     duration = data.get("duration_s", kn.FACE_SCENE_DEFAULT_S)
@@ -272,7 +302,7 @@ def _passed(value: Any) -> Optional[str]:
     return value
 
 
-def _perform(data: Any) -> Optional[Performance]:
+def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
     if data is None:
         return None
     if not isinstance(data, Mapping):
@@ -286,7 +316,8 @@ def _perform(data: Any) -> Optional[Performance]:
     return Performance(
         kind=_get(data, "kind", str, "") or "", segments=tuple(s.strip() for s in segments),
         backing=_get(data, "backing", str, "none") or "none",
-        expression_per_segment=None if per is None else tuple(_expression(e) for e in per),
+        expression_per_segment=None if per is None else tuple(
+            _expression(e, f"perform.expression_per_segment[{i}]", fix) for i, e in enumerate(per)),
         from_segment=_get(data, "from_segment", int, 0) or 0,
         voice_per_segment=_voices(data),
     )
@@ -304,13 +335,15 @@ def _voices(data: Mapping[str, Any]) -> Optional[Tuple[str, ...]]:
 
 def _command(data: Mapping[str, Any]) -> Command:
     _only(data, _COMMAND_FIELDS, "command")
-    return Command(
+    fix = _Repairs()
+    cmd = Command(
         speech=_text(data, "speech"), voice=_text(data, "voice"), ask=_ask(data.get("ask")),
         actions=_actions(data.get("actions")),
-        perform=_perform(data.get("perform")), when=_get(data, "when", str, "after_current") or "after_current",
-        edit_pending=bool(_get(data, "edit_pending", bool, False)), expression=_expression(data.get("expression")),
-        passed=_passed(data.get("passed")),
+        perform=_perform(data.get("perform"), fix), when=_get(data, "when", str, "after_current") or "after_current",
+        edit_pending=bool(_get(data, "edit_pending", bool, False)),
+        expression=_expression(data.get("expression"), "expression", fix), passed=_passed(data.get("passed")),
     )
+    return replace(cmd, moved=tuple(fix.moved), dropped=tuple(fix.dropped))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -477,7 +510,8 @@ def _drop_bad_faces(cmd: Command) -> Command:
 
 
 def to_args(cmd: Command) -> Dict[str, Any]:
-    """Поля схемы команды; ``parse(to_args(c)) == c`` для разобранной команды (``dropped`` не переносится)."""
+    """Поля схемы команды; ``parse(to_args(c)) == c`` для разобранной команды (``dropped``/``moved`` не переносятся:
+    переложенные слоты уже в ``expression.face``, отброшенных полей в аргументах нет)."""
     out: Dict[str, Any] = {k: v for k, v in (("speech", cmd.speech), ("voice", cmd.voice), ("passed", cmd.passed))
                            if v is not None}
     if cmd.ask is not None:

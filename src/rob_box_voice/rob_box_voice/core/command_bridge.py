@@ -140,14 +140,17 @@ def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
 
 
 def log_line(provider: str, mode: CommandMode, result: Result, verdict: str) -> str:
-    """Строка лога ответа: провайдер, режим, исход, действия команды и речь, которая не прозвучит (при действиях
-    ``speech`` не озвучивается, §4.1: она остаётся только здесь — текстового канала мимо TTS у v1 нет)."""
+    """Строка лога ответа: провайдер, режим, исход, действия команды, поправки разбора (слоты лица переложены в
+    ``expression.face``, лишние поля отброшены — #3698) и речь, которая не прозвучит (при действиях ``speech`` не
+    озвучивается, §4.1: она остаётся только здесь — текстового канала мимо TTS у v1 нет)."""
     cmd = result if isinstance(result, Command) else None
     actions = [a.tool for a in cmd.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS] if cmd is not None else []
     dropped = cmd.speech if actions and cmd is not None and cmd.speech else ""
     detail = getattr(result, "detail", "") if isinstance(result, Invalid) else ""
+    fixes = (("fields_moved", cmd.moved), ("fields_dropped", cmd.dropped)) if cmd is not None else ()
+    fixed = "".join(f" {name}={list(fields)}" for name, fields in fixes if fields)
     return (f"{COMMAND_LOG_MARK} provider={provider} mode={mode} verdict={verdict} "
-            f"actions={actions} speech_dropped={int(bool(dropped))}"
+            f"actions={actions} speech_dropped={int(bool(dropped))}" + fixed
             + (f" speech={dropped[:120]!r}" if dropped else "") + (f" detail={detail[:120]!r}" if detail else ""))
 
 

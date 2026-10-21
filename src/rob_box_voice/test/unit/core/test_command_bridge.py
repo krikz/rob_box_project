@@ -174,6 +174,20 @@ def test_actions_go_as_one_command_call_and_speech_is_only_logged() -> None:
                    "actions=['memory_save', 'get_current_time'] speech_dropped=1 speech='Запомнил!'"]
 
 
+def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None:
+    """Живой прогон 7c (#3698): DeepSeek кладёт слоты лица в ``expression`` — команда исполняется, поправка в логе."""
+    log: list = []
+    reply = LLMResponse(tool_calls=(_command_call(
+        actions=[{"tool": "memory_save", "args": {"content": "чай"}}],
+        expression={"emotion": "happy", "eyes": "wide", "rear": "party", "mood": "весело"}),))
+    out = _convert(DEEPSEEK_CAPS, reply, log)
+    assert out.tool_calls[0].arguments["expression"] == {
+        "emotion": "happy", "face": {"eyes": "wide", "rear": "party", "duration_s": 5.0}}
+    assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
+                   "actions=['memory_save'] speech_dropped=0 fields_moved=['expression.eyes', 'expression.rear'] "
+                   "fields_dropped=['expression.mood']"]
+
+
 def test_json_in_text_after_reasoning_is_parsed() -> None:
     reply = LLMResponse(content='<think>{"черновик": 1}</think>\n{"speech": "Сейчас полдень."}')
     out = _convert(MINIMAX_CAPS, reply)
