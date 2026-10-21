@@ -881,7 +881,8 @@ def prompt_fragment() -> str:
         f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
         f" {' и '.join(SINGLE_ACTION_CLASSES)}.",
         f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech. Звучит и при"
+        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech (speech при нём не"
+        " пиши, даже с actions). Звучит и при"
         " actions: ответ по сути (сказка, стих, анекдот), не отчёт о действиях. voice_per_segment — голос на"
         " сегмент (сказка разными голосами); set_voice меняет голос робота насовсем — только когда об этом просят.",
         f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",

@@ -403,7 +403,7 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         if cmd.edit_pending:
             raise _Bad("edit_without_perform", "edit_pending без perform")
         return
-    if cmd.speech and not cmd.actions:  # при действиях speech не звучит (§4.1) — двух голосов хода нет
+    if cmd.speech:
         raise _Bad("perform_with_speech", "perform взаимоисключает speech")
     if perf.kind not in kn.PERFORM_KINDS or perf.backing not in kn.PERFORM_BACKINGS:
         raise _Bad("bad_enum", f"perform.kind={perf.kind} backing={perf.backing}")

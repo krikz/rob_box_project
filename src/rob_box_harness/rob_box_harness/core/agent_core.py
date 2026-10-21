@@ -46,6 +46,11 @@ from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-expor
     _ToolLoopOutcome,
 )
 from rob_box_harness.core.tool_loop.command_turn import CommandTurn
+from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
+    ContentSpeech,
+    speak_closing_content,
+    speak_content_beside_set_voice,
+)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -1448,6 +1453,12 @@ class AgentCore:
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
         spoken_texts: list[str] = []
+        # Issue #3269 — реплики, которые модель пишет в content рядом с
+        # set_voice (сказка разными голосами), озвучиваются как speak_text.
+        # Удаляется вместе с v1-путём speak_text, когда режим команд включён
+        # и проверен вживую (ADR-0150 PR-7 ч.7d / PR-15), не раньше: иначе
+        # запасной MiniMax снова молчит на сказке (#3698, решение координатора).
+        content_speech = ContentSpeech()
         # ADR-0150 PR-7 ч.7c — команда LLM (вызов ``command`` от моста режима команд) исполняется кодом:
         # действия → событие владельца → фраза кода, ход терминален; query — данные обратно LLM (≤ 2 раз).
         commands = CommandTurn(self._tools, openai_tools)
@@ -1535,6 +1546,13 @@ class AgentCore:
                 self._record_succeeded_tools(step.calls, step.results, succeeded_tools)
                 response = step.response
                 continue
+            # Issue #3269 — content рядом с set_voice-пачкой — реплика,
+            # а не служебный текст: первым вызовом пачки становится
+            # speak_text(content, voice=голос до этой пачки). См.
+            # :mod:`.tool_loop.content_speech`.
+            response = speak_content_beside_set_voice(
+                response, content_speech, openai_tools
+            )
             if not response.tool_calls:
                 break
 
@@ -1693,6 +1711,15 @@ class AgentCore:
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
+
+        # Issue #3269 — финал сказки, чьи реплики шли из content: цикл его
+        # не исполняет, а dialogue_node после speak_text пропустит его как
+        # дубль (#988) — озвучиваем здесь, тем же голосом.
+        closing = await speak_closing_content(
+            response, content_speech, self._tools, spoken_texts
+        )
+        speak_text_count += closing
+        speak_text_real_count += closing
 
         # Issue #1253 — babble filter on tool error. A tool failed
         # (is_error=True) and the LLM answered with ONLY words: no retry

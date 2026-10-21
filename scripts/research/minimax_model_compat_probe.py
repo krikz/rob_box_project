@@ -16,7 +16,7 @@
   c2  stream + те же тулы;
   c3  tool_choice: auto / required (DJ-путь шлёт ``required``, ADR-0143);
   d   картинка на вход (``image_input``);
-  e   рассуждение не попадает в речь (strip/markup_recovery/text_classify);
+  e   рассуждение не попадает в речь (strip/markup_recovery/content_speech);
   r   повторы (PROBE_REPS, по умолчанию 5 реплик): разброс задержек, доля
       настоящих tool_calls, срабатывания first-chunk-гуарда, ``finish_reason=length``.
 
@@ -256,15 +256,6 @@ def prod_settings(**extra: Any) -> Any:
     return LLMSettings(temperature=PROD_TEMPERATURE, max_tokens=PROD_MAX_TOKENS, **extra)
 
 
-def _speakable(text: str) -> str:
-    """Текст для слушателя или ``""`` (маркер конца хода, псевдовызов, разметка); прежний ``_speakable`` озвучки content
-    удалён в ADR-0150 PR-7 ч.7c — проба считает то же по ``text_classify``."""
-    from rob_box_harness.core.tool_loop.text_classify import is_pseudo_tool_call, is_silent_text, is_tool_call_markup
-
-    text = (text or "").strip()
-    return "" if is_silent_text(text) or is_pseudo_tool_call(text) or is_tool_call_markup(text) else text
-
-
 def describe_response(resp: Any) -> dict[str, Any]:
     from rob_box_harness.providers.reasoning import without_reasoning
 
@@ -274,6 +265,7 @@ def describe_response(resp: Any) -> dict[str, Any]:
     reasoning = extra.get("reasoning_content")
     reasoning = reasoning if isinstance(reasoning, str) else ""
     raw_usage = raw.usage.model_dump() if raw is not None and getattr(raw, "usage", None) else {}
+    from rob_box_harness.core.tool_loop.content_speech import _speakable
     from rob_box_harness.core.tool_loop.text_classify import is_tool_call_markup
 
     cleaned = without_reasoning(resp).content
@@ -596,6 +588,7 @@ async def case_r2(model: str, system: str) -> None:
 
 def case_e() -> None:
     """Рассуждение не речь: вырезание, разбор разметки вызова, озвучка content."""
+    from rob_box_harness.core.tool_loop.content_speech import _speakable
     from rob_box_harness.core.tool_loop.markup_recovery import parse_tool_call_markup
     from rob_box_harness.providers.reasoning import strip_reasoning
 

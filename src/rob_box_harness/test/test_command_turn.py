@@ -155,7 +155,7 @@ def test_sound_and_a_joke_the_joke_is_kept_the_sound_report_is_not() -> None:
     """«Включи звук и расскажи шутку»: шутка — ``perform`` (ответ по сути), она звучит; о звуке — ни слова."""
     tools = _Tools({"play_sound": _sound("done")})
     joke = ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]
-    result, _ = _turn(tools, _command(speech="Включаю звук!", actions=[{"tool": "play_sound", "args": HAPPY}],
+    result, _ = _turn(tools, _command(actions=[{"tool": "play_sound", "args": HAPPY}],
                                       perform={"kind": "tale", "segments": joke}))
     assert tools.acted() == ["play_sound"]
     assert tools.said() == [(joke[0], None), (joke[1], None)]

@@ -187,11 +187,12 @@ def test_perform_shape():
     bad({"perform": _perform(2, expression_per_segment=[{"emotion": "happy"}])}, "bad_segments")
 
 
-def test_perform_beside_actions_may_carry_unvoiced_speech():
-    """При действиях ``speech`` не звучит (§4.1), поэтому рядом с ``perform`` (ответ по сути) он не второй голос."""
-    cmd = ok({"speech": "Включаю звук!", "actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}],
-              "perform": _perform()})
-    assert cmd.speech == "Включаю звук!" and cmd.perform is not None
+def test_perform_beside_actions_follows_adr_and_excludes_speech():
+    """ADR §4.1: ``perform`` взаимоисключает ``speech`` и при действиях; ответ по сути рядом с действием — только
+    ``perform`` (правку правила, чтобы невозвучиваемый ``speech`` не валил команду, решает Шифу, #3698 ч.7c)."""
+    sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+    assert ok({"actions": sound, "perform": _perform()}).perform is not None
+    bad({"speech": "Включаю звук!", "actions": sound, "perform": _perform()}, "perform_with_speech")
 
 
 def test_voice_of_a_line_and_voices_of_segments():
@@ -206,7 +207,7 @@ def test_voice_of_a_line_and_voices_of_segments():
 
 
 def test_to_args_round_trips_through_parse():
-    raw = {"speech": "Сейчас", "voice": "zahar", "ask": {"expects": "name", "text": "Как зовут?"},
+    raw = {"voice": "zahar", "ask": {"expects": "name", "text": "Как зовут?"},
            "actions": [{"tool": "memory_save", "args": {"fact": "чай"}}],
            "perform": _perform(2, voice_per_segment=["", "alena"], expression_per_segment=[{"emotion": "happy"}] * 2),
            "expression": {"emotion": "happy", "gesture": "wink", "face": {"eyes": "wide"}}}
@@ -391,7 +392,7 @@ def test_thousands_of_random_commands_never_raise():
             assert res.speech is None or len(res.speech) <= kn.SPEECH_MAX_CHARS
             assert len(res.actions) <= kn.ACTIONS_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
-            assert not (res.perform and res.speech and not res.actions)
+            assert not (res.perform and res.speech)
             assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=())  # мост → исполнитель команды
             assert res.expression.emotion in kn.EMOTIONS
             assert res.expression.face is None or isinstance(res.expression.face, FaceScene)
