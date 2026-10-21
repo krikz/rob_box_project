@@ -365,6 +365,8 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "people": ToolGroup(("зовут", "помни", "запомни", "знаком", "обо мне", "кто я", "моё имя", "мое имя"),
                         ("memory_context", "register_speaker")),
     "sound": ToolGroup(("звук",), ("play_sound", "get_sound_info")),
+    # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
+    "animation": ToolGroup(("анимац", "изобрази"), ("play_animation",)),
     "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
     "tasks": ToolGroup(("отмени", "продли", "сократи", "задач"), ("task_delta",)),
     "status": ToolGroup(
