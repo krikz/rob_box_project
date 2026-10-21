@@ -9,7 +9,7 @@ Owns several families of helpers:
 * :func:`map_emotion_to_animation` — emotion label → LED animation key.
 * :func:`generate_fallback_response` — static offline replies when the
   LLM is unavailable.
-* :func:`detect_volume_intent` / :func:`detect_pitch_intent` — keyword
+* :func:`detect_pitch_intent` — keyword
   intent detection for volume/pitch adjustment commands.
 * :func:`sanitize_speaker_name` — guard against junk speaker names
   (issue #1077 / #1101: resemblyzer may store "Null"/"null"/"None").
@@ -25,7 +25,6 @@ from typing import Mapping, Optional
 # (раньше здесь была своя, разошедшаяся копия). Имя оставлено как
 # re-export для существующих импортов.
 from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES  # noqa: F401
-from rob_box_dialog.knowledge import VOLUME_WORDS
 
 EMOTION_TO_ANIMATION: dict = {
     "happy": "happy",
@@ -75,17 +74,6 @@ def generate_fallback_response(text: str) -> str:
     if any(w in low for w in farewells):
         return "До свидания!"
     return "Интернет сейчас недоступен, я не могу ответить на этот вопрос."
-
-
-def detect_volume_intent(text: str):
-    """Detect volume adjustment intent from user text (фразы — ``rob_box_dialog.knowledge.VOLUME_WORDS``)."""
-    if not text:
-        return None
-    low = text.lower()
-    for intent, phrases in VOLUME_WORDS:
-        if any(w in low for w in phrases):
-            return intent
-    return None
 
 
 def detect_pitch_intent(text: str):

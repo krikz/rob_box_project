@@ -6,7 +6,7 @@
 ``dialogue_node`` (:class:`InterruptGate`): ясная стоп-команда (:func:`rob_box_dialog.words.stop_verdict`) —
 ``SpeechCancel`` по эпохе за доли миллисекунды кода; иначе речь продолжается, новая реплика встаёт после
 текущей (APPEND у tts_node; ``compose()`` — PR-7b). Спорный случай («спой песню про стоп») речь не рвёт —
-его решает Chooser в PR-6.
+его решает Chooser по итоговой фразе в приёме (``Tier1Step`` → ``core.stop_chooser``, PR-6 #3696).
 
 Без ROS: сообщение, публикация, отмена и часы приходят снаружи.
 """
@@ -93,5 +93,5 @@ class InterruptGate:
             ms = (self._clock() - started) * 1000.0
             self._log(f"🛑 [interrupt] ясный стоп {text[:60]!r} → SpeechCancel за {ms:.1f} мс utterance={uid or '-'}")
         elif verdict == STOP_DISPUTED:
-            self._log(f"🤔 [interrupt] спорный стоп {text[:60]!r} — речь не рвём (решение — Chooser, PR-6)")
+            self._log(f"🤔 [interrupt] спорный стоп {text[:60]!r} — речь не рвём (решит Chooser по итоговой фразе)")
         return verdict

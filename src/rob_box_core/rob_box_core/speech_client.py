@@ -22,8 +22,9 @@ JSON-тело ``/voice/tts/request`` вызывающие больше не со
 
 from __future__ import annotations
 
+import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from rob_box_core.utterance import PRIORITY_OPERATOR, Utterance
 
@@ -180,6 +181,41 @@ class EpochWatch:
             self.epoch = max(self.epoch, int(getattr(event, "epoch", 0) or 0))
 
 
+#: ``SpeechEvent.kind`` (``rob_box_dialog_msgs/msg/SpeechEvent.msg``): началось звучание / реплика закончилась.
+_KIND_STARTED = 2
+_KIND_ENDED = (4, 5, 7)  # finished, cancelled, rejected
+#: Реплика без события конца дольше этого срока считается отзвучавшей (событие потерялось).
+SPEAKING_STALE_S = 120.0
+
+
+class SpeakingWatch:
+    """Звучит ли сейчас речь агента — по ``/voice/speech/event``: ``started`` без ``finished/cancelled/rejected``.
+
+    Канал громкости «громче» (ADR-0150 §4.2): звучит речь — голос робота, а не музыка.
+    """
+
+    def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic) -> None:
+        _check_agent(agent)
+        self.agent = agent
+        self._clock = clock
+        self._live: Dict[str, float] = {}
+
+    def on_event(self, event: Any) -> None:
+        if getattr(event, "agent", "") != self.agent:
+            return
+        kind, sid = int(getattr(event, "kind", -1)), str(getattr(event, "speech_id", "") or "")
+        if kind == _KIND_STARTED:
+            self._live[sid] = self._clock()
+        elif kind in _KIND_ENDED:
+            self._live.pop(sid, None)
+
+    @property
+    def speaking(self) -> bool:
+        now = self._clock()
+        self._live = {sid: at for sid, at in self._live.items() if now - at <= SPEAKING_STALE_S}
+        return bool(self._live)
+
+
 __all__ = [
     "ANY_AGENT",
     "BOUNDARIES",
@@ -192,6 +228,8 @@ __all__ = [
     "SPEECH_ENVELOPE_TOPIC",
     "SPEECH_EVENT_TOPIC",
     "SPEECH_REQUEST_TOPIC",
+    "SPEAKING_STALE_S",
+    "SpeakingWatch",
     "build_request",
     "cancel",
     "prepare",

@@ -196,3 +196,62 @@ phrases:
   - {id: r64, text: "Робот, сгенерируй трек, когда облако музыки недоступно", source: marathon, expected: {speech_only: true},
      must_not: ["silent_fallback", "claim_without_tool"],
      notes: "A11 честная деградация: одна фраза о смене провайдера из ProviderState (код), без выдуманного успеха. Требует стенда с недоступным провайдером"}
+
+  # ---- В19 (#3696, требование и решение Шифу 20.10): стоп-слово ВНУТРИ другой команды — робот исполняет
+  # команду и не замолкает; ясные — код (0 LLM). Те же фразы — корпус src/rob_box_dialog/test/test_grammar.py
+  # (V19_PAIRS). Спорные решает Chooser {stop, part_of_command}, таймаут ≈ 1 с → part_of_command. ----
+  - {id: r65, text: "Робот, покажи анимацию стоп", source: issue, expected: {actions: [play_animation]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r66, text: "Робот, спой песню про хватит", source: issue, expected: {actions: [generate_music]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r67, text: "Робот, расскажи сказку про то, как ёж сказал хватит", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r68, text: "Робот, найди песню замолчи", source: issue, expected: {actions: [music_library]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r69, text: "Робот, включи песню стой", source: issue, expected: {actions: [music_library]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r70, text: "Робот, спой другую и хватит", source: issue, expected: {actions: [generate_music]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r71, text: "Робот, спой песню про стоп", source: issue, expected: {actions: [generate_music]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r72, text: "Робот, как будет по-английски хватит", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r73, text: "Робот, напиши стих со словом помолчи", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r74, text: "Робот, покажи анимацию «стой»", source: issue, expected: {actions: [play_animation]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r75, text: "Робот, сыграй трек стоп", source: issue, expected: {actions: [music_library]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r76, text: "Робот, расскажи анекдот про стоп-стоп", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r77, text: "Робот, спой песенку стой где стоишь", source: issue, expected: {actions: [generate_music]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r78, text: "Робот, переведи замолчите на немецкий", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r79, text: "Робот, хватит ли нам сил", source: issue, expected: {speech_only: true},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r80, text: "Робот, включи музыку и стоп", source: issue, expected: {actions: [request_music]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r81, text: "Робот, поставь песню хватит это терпеть", source: issue, expected: {actions: [music_library]},
+     must_not: ["speech_cancelled_by_stop_word", "silenced", "stop_motion"],
+     notes: "#3696 В19: стоп-слово — часть команды (disputed → Chooser part_of_command)"}
+  - {id: r82, text: "Робот, всё, хватит, спой другую", source: issue, expected: {tier1: stop_all},
+     must_not: ["llm_call_for_stop", "silenced_for_10min"], notes: "#3696 В19: ясный стоп + новая команда: речь рвётся ≤ 300 мс, «спой другую» — дальше по приёму"}
+  - {id: r83, text: "Робот, стоп. Включи музыку", source: issue, expected: {tier1: stop_all},
+     must_not: ["llm_call_for_stop", "silenced_for_10min"], notes: "#3696 В19: ясный стоп + новая команда"}

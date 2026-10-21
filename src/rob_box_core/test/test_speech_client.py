@@ -111,6 +111,26 @@ def test_epoch_watch_tracks_max_epoch_of_its_agent_only():
     assert watch.epoch == 5
 
 
+def test_speaking_watch_follows_started_and_end_events():
+    """ADR-0150 PR-6: «громче» во время речи — канал голоса; звучит = started без finished/cancelled/rejected."""
+    now = [0.0]
+    watch = speech_client.SpeakingWatch("personality", clock=lambda: now[0])
+    ev = lambda kind, sid, agent="personality": types.SimpleNamespace(kind=kind, speech_id=sid, agent=agent)  # noqa: E731
+    assert not watch.speaking
+    watch.on_event(ev(2, "a"))
+    watch.on_event(ev(2, "x", agent="operator"))
+    assert watch.speaking
+    watch.on_event(ev(4, "a"))
+    assert not watch.speaking
+    for end in (5, 7):
+        watch.on_event(ev(2, "b"))
+        watch.on_event(ev(end, "b"))
+        assert not watch.speaking
+    watch.on_event(ev(2, "lost"))
+    now[0] = speech_client.SPEAKING_STALE_S + 1.0
+    assert not watch.speaking  # событие конца потерялось — не звучит вечно
+
+
 def test_speech_agents_cover_dialog_engine_agents():
     """Агенты движка (knowledge.AGENTS) - подмножество авторов речи."""
     knowledge = pytest.importorskip("rob_box_dialog.knowledge")

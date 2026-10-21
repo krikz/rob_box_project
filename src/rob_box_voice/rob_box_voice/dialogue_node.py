@@ -48,6 +48,7 @@ from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
 from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 
 from rob_box_core.avatar_command import (
@@ -120,6 +121,7 @@ from rob_box_voice.core.music_player_state import (
 from rob_box_voice.core.interrupt_request import InterruptGate
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
+from rob_box_voice.core.stop_chooser import stop_chooser_from_env
 from rob_box_voice.core.stt_admission import (
     DefaultSttAdmission,
     MediaCommandStep,
@@ -170,7 +172,6 @@ from rob_box_voice.core.dialogue_guards import (
 from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
     detect_pitch_intent,
-    detect_volume_intent,
     format_llm_skipped_summary,
     generate_fallback_response,
     map_emotion_to_animation,
@@ -557,17 +558,10 @@ class DialogueNode(Node):
                 f"🧭 Пред-роутер скиллов включён: "
                 f"{', '.join(sorted(self._skill_prompts))}"
             )
-        # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
-        # сброс всего контекста текущего диалога. Фразы читаем из YAML,
-        # дефолт — _DEFAULT_NEW_SESSION_PHRASES.
+        # «новая сессия» / «сбрось всё» / Telegram «/clear» — Tier-1 (ADR-0150 PR-6): фразы —
+        # ``rob_box_dialog.knowledge.NEW_SESSION_PHRASES``, разбор — ``grammar.match``.
         self._new_session_enabled: bool = bool(
             self.get_parameter("new_session_enabled").value
-        )
-        raw_phrases = self.get_parameter("new_session_phrases").value
-        self._new_session_phrases: tuple[str, ...] = tuple(
-            str(p).strip().lower()
-            for p in (raw_phrases or self._DEFAULT_NEW_SESSION_PHRASES)
-            if str(p).strip()
         )
         # Issue #2628 / ADR-0021 R1 — STT admission pipeline (refactor
         # of the inline 12-branch barrier chain inside ``_on_stt``).
@@ -811,6 +805,11 @@ class DialogueNode(Node):
             lambda: self._wake_words, self.get_logger().info)
         self.create_subscription(InterruptRequest, "/dialog/interrupt_request", self._interrupt_gate.on_request,
                                  qos_r, callback_group=cbg)
+        # ADR-0150 PR-6 (#3696) — Tier-1 грамматика: звучит ли речь (канал «громче»), спорный стоп (В19) — Chooser.
+        self._speaking_watch = speech_client.SpeakingWatch("personality")
+        self.create_subscription(SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, self._speaking_watch.on_event,
+                                 qos_r, callback_group=cbg)
+        self._stop_chooser = stop_chooser_from_env(log=self.get_logger)
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
@@ -1230,10 +1229,6 @@ class DialogueNode(Node):
         # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
         # детерминированный сброс текущего диалога без вызова LLM.
         self.declare_parameter("new_session_enabled", True)
-        self.declare_parameter(
-            "new_session_phrases",
-            list(self._DEFAULT_NEW_SESSION_PHRASES),
-        )
         # Issue #2890 — E2E-харнесс сбрасывает сессию диалога в начале
         # каждого акта: ``ros2 param set /dialogue_node
         # e2e_session_reset_token <уникальный токен>`` (тот же приём
@@ -2748,6 +2743,10 @@ class DialogueNode(Node):
         host.media_miss = functools.partial(
             self._resume_stt_after_media, ctx, host, dispatch
         )
+        # ADR-0150 PR-6 (В19) — спорный стоп оказался частью команды: приём с шага после Tier-1.
+        host.tier1_resume = functools.partial(
+            self._resume_stt_after_media, ctx, host, dispatch, step="tier1"
+        )
         outcome = self._stt_admission.evaluate(ctx, host)
         self._finish_stt_admission(outcome, text, dispatch)
 
@@ -2769,19 +2768,21 @@ class DialogueNode(Node):
         host: "_DialogueSttHost",
         dispatch: Dict[str, Any],
         clean: str,
+        step: str = MediaCommandStep.name,
     ) -> None:
         """Issue #3176 — заказ по имени не нашёлся: реплика идёт в LLM.
 
-        Досчитывает шаги приёма после :class:`MediaCommandStep` (backlog,
-        barge-in, FSM + «думаю»-SFX) и отдаёт реплику ходу LLM так же, как
+        Досчитывает шаги приёма после ``step`` (по умолчанию :class:`MediaCommandStep`:
+        backlog, barge-in, FSM + «думаю»-SFX) и отдаёт реплику ходу LLM так же, как
         это сделал бы ``_on_stt`` без роутера. Зовётся из loop'а плана
         роутера — как и синтетические ретраи гуардов (``_dispatch_turn``).
+        ADR-0150 PR-6 (В19): ``step="tier1"`` — спорный стоп оказался частью команды.
         """
         self.get_logger().info(
-            f"🎛️ [media-router] play_named: мимо базы — реплика в LLM: {clean[:60]!r}"
+            f"🎛️ [stt-admission] после {step}: реплика продолжает приём: {clean[:60]!r}"
         )
         outcome = self._stt_admission.resume_after(
-            MediaCommandStep.name, ctx.with_text(clean), host
+            step, ctx.with_text(clean), host
         )
         self._finish_stt_admission(outcome, clean, dispatch)
 
@@ -4478,61 +4479,6 @@ tentative_plan(question, kind, name)
         """
         self._pending_music_cleanup = False
         self._publish_music_cleanup(reason="new_session")
-
-    # Issue #XXXX — «новая сессия» / «сбрось всё» / Telegram «/clear»:
-    # голосовые фразы, после которых робот сбрасывает весь контекст
-    # текущего диалога (историю, DSM, speaker-состояние, бэклог) и
-    # начинает с чистого листа. Матч — по подстроке в lowercased-тексте
-    # ПОСЛЕ снятия wake-слова. Список можно переопределить через YAML
-    # параметр ``new_session_phrases``.
-    _DEFAULT_NEW_SESSION_PHRASES: tuple[str, ...] = (
-        "новая сессия",
-        "новую сессию",
-        "новый диалог",
-        "новый разговор",
-        "начать заново",
-        "начни заново",
-        "начнём заново",
-        "начнем заново",
-        "начать сначала",
-        "начни сначала",
-        "сбрось всё",
-        "сбрось все",
-        "сбросить всё",
-        "сброс сессии",
-        "сброс диалога",
-        "сбросить диалог",
-        "забудь всё",
-        "забудь все",
-        "забудь что было",
-        "очисти историю",
-        "очистить историю",
-        "сотри историю",
-        "стереть историю",
-    )
-
-    def _is_new_session_command(
-        self,
-        clean: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        """Issue #XXXX — пользователь просит начать новую сессию?
-
-        Матчит голосовые фразы (см. ``_DEFAULT_NEW_SESSION_PHRASES`` /
-        параметр ``new_session_phrases``) и Telegram-команду ``/clear``.
-        Чистая функция от входных строк — без I/O, тестируется без ROS2.
-        """
-        if not getattr(self, "_new_session_enabled", True):
-            return False
-        if tg_chat_id is not None and (clean or "").strip().lower() == "/clear":
-            return True
-        target = (clean or text_lower or "").lower()
-        phrases = getattr(self, "_new_session_phrases", None) or (
-            self._DEFAULT_NEW_SESSION_PHRASES
-        )
-        return any(phrase in target for phrase in phrases)
-
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
 
@@ -7087,15 +7033,6 @@ tentative_plan(question, kind, name)
         (TD-1 decomposition).
         """
         return generate_fallback_response(text)
-
-    def _detect_volume_intent(self, text: str):
-        """Detect volume adjustment intent from user text.
-
-        Delegates to
-        :func:`rob_box_voice.core.dialogue_helpers.detect_volume_intent`
-        (TD-1 decomposition).
-        """
-        return detect_volume_intent(text)
 
     def _detect_pitch_intent(self, text: str):
         """Detect pitch adjustment intent from user text.

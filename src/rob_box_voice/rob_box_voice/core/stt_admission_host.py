@@ -21,18 +21,22 @@ from std_msgs.msg import String
 
 from rob_box_dialog.address import Addressed
 from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.grammar import Tier1Command
 from rob_box_dialog.knowledge import ADDRESS_WAIT_S
+from rob_box_dialog.words import STOP_NONE, stop_verdict
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
-from rob_box_voice.core.dialogue_text import is_unsilence_command
 from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
+from rob_box_voice.core.tier1_host import Tier1Runner
 
 if TYPE_CHECKING:  # pragma: no cover -- avoids a circular import at runtime
+    from rob_box_voice.core.stt_admission import SttContext
     from rob_box_voice.dialogue_node import DialogueNode
+
 
 class _NoIntake:
     """Заглушка для нод/харнессов без ``_material_intake``."""
@@ -69,7 +73,7 @@ class _DialogueSttHost:
     for the migration checklist.
     """
 
-    __slots__ = ("_node", "media_miss")
+    __slots__ = ("_node", "media_miss", "tier1_resume")
 
     def __init__(self, node: "DialogueNode") -> None:
         self._node = node
@@ -77,6 +81,9 @@ class _DialogueSttHost:
         # после MediaCommandStep (заказ по имени мимо базы мелодий).
         # ``None`` — возвращать некуда (тестовые харнессы без ``_on_stt``).
         self.media_miss = None
+        # ADR-0150 PR-6 (В19) — то же для спорного стопа: Chooser сказал
+        # «часть команды», реплика продолжает приём после Tier1Step.
+        self.tier1_resume = None
 
     # -- helpers --------------------------------------------------------
 
@@ -89,14 +96,6 @@ class _DialogueSttHost:
         self._node.get_logger().info(msg)
 
     # -- SttAdmissionHost callbacks -------------------------------------
-
-    def unsilence(self, text_lower: str) -> bool:
-        node = self._node
-        if not is_unsilence_command(text_lower):
-            return False
-        node._dsm.on_event(DialogueEvent.UNSILENCE)
-        node._publish_state()
-        return True
 
     def backlog(self) -> Optional[Backlog]:
         node = self._node
@@ -149,13 +148,21 @@ class _DialogueSttHost:
             node._dsm.reset(DialogueStateKind.IDLE)
             node._publish_state()
 
-    def handle_silence_command(self) -> bool:
+    def _tier1(self) -> Tier1Runner:
         node = self._node
-        # Legacy L2304-2296 — only true silence phrases reach here
-        # (music-stop override handled by SilenceCommandStep itself).
-        node._llm_skipped_counter["silence_command"] += 1
-        node._handle_silence()
-        return True
+        runner = getattr(node, "_tier1", None)
+        if runner is None:
+            runner = node._tier1 = Tier1Runner(node)
+        return runner
+
+    def tier1_match(self, ctx: "SttContext") -> Optional[Tier1Command]:
+        return self._tier1().match(ctx)
+
+    def run_tier1(self, command: Tier1Command, text: str) -> None:
+        self._tier1().run(command, text)
+
+    def dispute_stop(self, command: Tier1Command, ctx: "SttContext") -> None:
+        self._tier1().dispute(command, ctx, self.tier1_resume)
 
     def is_music_stop_command(self, text_lower: str) -> bool:
         # Issue #1279 — «хватит диджеить» is music-stop, not silence.
@@ -182,6 +189,10 @@ class _DialogueSttHost:
             or command.confidence < node._command_intent_gate_confidence
         ):
             return False
+        # ADR-0150 PR-6 (В19): «стоп/хватит/стой» решает Tier1Step — ясный стоп уже исполнен там, а сюда доходит
+        # только стоп-слово внутри другой команды, которое Chooser счёл её частью («покажи анимацию стоп»).
+        if command.intent == IntentType.STOP and stop_verdict(text) != STOP_NONE:
+            return False
         node._llm_skipped_counter["command_intent"] += 1
         node._cancel_run("command intent (issue 1279)", stop_tts=True)
         # ADR-0150 PR-5 (#3694) — исполнитель получает решённое намерение по
@@ -203,27 +214,6 @@ class _DialogueSttHost:
         # кодом (реплика при этом идёт дальше — LLM ответит человеку).
         getattr(self._node, "_material_intake", _NO_INTAKE).on_text(text)
         return self._node._route_media_command(text, on_miss=self.media_miss)
-
-    def reset_session(
-        self,
-        text: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        node = self._node
-        # Legacy uses ``clean``; ``StripWakeWordStep`` may have rewritten
-        # ``ctx.text``. We read ``text_lower`` as the orchestrator's
-        # ``text_lower`` is the cleaned lowercased snapshot — matches
-        # the legacy ``text_lower`` arg at L2342.
-        if not node._is_new_session_command(text, text_lower, tg_chat_id):
-            return False
-        node._llm_skipped_counter["new_session"] += 1
-        node._reset_dialogue_session()
-        node.get_logger().info(
-            f"🧹 [new-session] session reset: text={text[:60]!r} "
-            f"tg={bool(tg_chat_id)}"
-        )
-        return True
 
     def take_turn(self) -> None:
         # Issue #2939 — за отменой всегда идёт DispatchTriggerStep: сессию

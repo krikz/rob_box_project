@@ -99,3 +99,25 @@ def test_retry_turn_inherits_stt_anchor(tmp_path):
     assert not first.retry and retry.retry
     assert first.stt_to_first_tts_ms is None
     assert retry.stt_to_first_tts_ms == pytest.approx(3000.0)
+
+
+def test_tier1_and_disputed_stop_share(tmp_path):
+    """#3696: доля спорных стопов (В19) и исход Chooser — из маркеров лога, без рантайма робота."""
+    log = tmp_path / "tier1.log"
+    log.write_text(
+        "\n".join(
+            [
+                "[dialogue_node-4] [INFO] [1.0] [dialogue_node]: 🧩 [tier1] kind=stop_all disputed=False args={} rest='' "
+                "silenced=False text='стоп'",
+                "[dialogue_node-4] [INFO] [2.0] [dialogue_node]: 🧩 [tier1] kind=stop_all disputed=True args={} rest='' "
+                "silenced=False text='спой песню про стоп'",
+                "[dialogue_node-4] [INFO] [3.0] [dialogue_node]: 🤔 [stop-chooser] verdict=part_of_command stage=model "
+                "ms=640 text='спой песню про стоп'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    line = turn_metrics._tier1_line(logparse.read_lines(log))
+    assert "команды кодом, 0 LLM): 2" in line and "спорных стопов (В19): 1 (50 %)" in line
+    assert "part_of_command 1" in line and "stop 0" in line

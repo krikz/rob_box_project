@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import re
+from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, STOP_LEAD_WORDS, STOP_QUESTION_PARTICLES, STOP_WORDS
@@ -51,27 +52,57 @@ def has_word(text: str, stems: Sequence[str]) -> bool:
     return bool(_pattern(tuple(stems), r"[\w-]*").search(text or ""))
 
 
+@dataclass(frozen=True)
+class StopCall:
+    """Разбор стоп-команды (В19): вердикт, стоп-слово и текст ПОСЛЕ него («хватит, спой другую» → «спой другую»).
+
+    ``word``/``rest`` заполнены только у ясного вердикта; у спорного ``word`` — первое стоп-слово фразы.
+    """
+
+    verdict: str
+    word: str = ""
+    rest: str = ""
+
+
 def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
     """Стоп-команда ли фраза (В19, Шифу 20.10): :data:`STOP_CLEAR`, :data:`STOP_DISPUTED` или :data:`STOP_NONE`.
 
     Ясная — первое слово после вейка (ведущие «всё/ну/да…» из ``STOP_LEAD_WORDS`` и сами вейки не в счёт) —
     стоп-слово: «робот, стоп», «всё, хватит, спой другую». Спорная — стоп-слово дальше по фразе: «спой песню про
-    стоп», «покажи анимацию стоп»; её решает Chooser (PR-6), речь до решения не рвётся. Одна функция на перебивание
-    речи (stt_node → ``/dialog/interrupt_request``) и на Tier-1 грамматику.
+    стоп», «покажи анимацию стоп»; её решает Chooser (``grammar`` → хост, PR-6), речь до решения не рвётся. Одна
+    функция на перебивание речи (stt_node → ``/dialog/interrupt_request``) и на Tier-1 грамматику.
 
     Команда — то, что ПОСЛЕ вейка: слова перед ним — хвост речи самого робота, который микрофон склеил с фразой
     человека (живой лог 21.10: «старой робот хватит» на сказке «…у корней старой сосны»). Вейк в конце фразы
     («хватит, робот») — команда перед ним.
     """
+    return stop_command(text, wake_words).verdict
+
+
+def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopCall:
+    """То же, что :func:`stop_verdict`, плюс стоп-слово и остаток команды после него (одна реализация разбора)."""
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
-    tokens = _TOKEN.findall(_command_part(text, words).lower())
-    stops = [_is_stop(t) for t in tokens]
+    part = _command_part(text, words)
+    spans = [(m.group(0).lower(), m.end()) for m in _TOKEN.finditer(part)]
+    tokens = [t for t, _ in spans]
     skip = set(STOP_LEAD_WORDS) | {w.lower() for w in words}
     lead = next((i for i, t in enumerate(tokens) if t not in skip), None)
-    after = tokens[lead + 1] if lead is not None and lead + 1 < len(tokens) else ""
-    if lead is not None and stops[lead] and after not in STOP_QUESTION_PARTICLES:
-        return STOP_CLEAR
-    return STOP_DISPUTED if any(stops) else STOP_NONE
+    if lead is not None and _clear_at(tokens, lead):
+        return StopCall(STOP_CLEAR, tokens[lead], _rest(part, spans, lead, skip))
+    first = next((t for t in tokens if _is_stop(t)), "")
+    return StopCall(STOP_DISPUTED, first) if first else StopCall(STOP_NONE)
+
+
+def _rest(part: str, spans: Sequence[Tuple[str, int]], lead: int, skip: set) -> str:
+    """Текст после ясного стопа без повторных стоп-слов и вводных («стоп, стоп, ну давай …» → «давай …»)."""
+    tail = next((i for i in range(lead + 1, len(spans)) if not (_is_stop(spans[i][0]) or spans[i][0] in skip)), None)
+    return part[spans[tail - 1][1]:].strip(" ,.!?;:-–—") if tail is not None else ""
+
+
+def _clear_at(tokens: Sequence[str], lead: int) -> bool:
+    """Ведущее слово — стоп-слово, и за ним не вопросительная частица («хватит ли …»)."""
+    after = tokens[lead + 1] if lead + 1 < len(tokens) else ""
+    return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES
 
 
 def _command_part(text: str, words: Tuple[str, ...]) -> str:

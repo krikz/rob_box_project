@@ -33,6 +33,10 @@ class LLMSkipReason(str, Enum):
     UNSILENCE = "unsilence"
     #: Issue #3134 — медиакоманду исполнил роутер кодом, LLM не нужна.
     MEDIA_COMMAND = "media_command"
+    #: ADR-0150 PR-6 — Tier-1 команда (стоп, громкость, голос) исполнена кодом, 0 вызовов LLM.
+    TIER1 = "tier1"
+    #: ADR-0150 PR-6 (В19) — стоп-слово внутри другой команды: решает Chooser, не LLM хода.
+    STOP_DISPUTED = "stop_disputed"
 
 
 def new_llm_skip_counter() -> dict[str, int]:

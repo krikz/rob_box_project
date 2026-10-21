@@ -88,11 +88,12 @@ def test_spoken_theme_set_accepts_one_set_order_with_theme_words():
     assert parse_media_command(LIVE_1908).closed is True
 
 
-def test_volume_command_keeps_the_llm_turn_context():
-    """Громкость идёт поверх хода LLM (без отмены) — его скрытый контекст не трогаем."""
-    plan = _route("громче", MediaState(music_playing=True))
+def test_command_over_the_llm_turn_keeps_its_context():
+    """Ответ поверх хода LLM (без отмены: «что играет») — его скрытый контекст не трогаем. Громкость, которая была
+    таким примером, теперь Tier-1 ``rob_box_dialog.grammar`` (ADR-0150 PR-6) и плана роутера не имеет."""
+    plan = _route("что сейчас играет", MediaState(music_playing=True, track_name="Still Dre"))
     assert plan is not None and not plan.cancel_inflight
-    assert command_turn_context(plan, "громче") == {}
+    assert command_turn_context(plan, "что сейчас играет") == {}
 
 
 # ── 07.10: тема «у нас сегодня …» — не грамматикой, фраза запуска — из темы результата dj_set ────────────────

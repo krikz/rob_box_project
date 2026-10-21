@@ -16,9 +16,8 @@ Pure-Python — no ROS2, no rclpy. Covers:
   - :class:`SilencedStateStep` allows unsilence, drops everything else.
   - :class:`AddressStep` — адресация кодом (ADR-0150 PR-5): вейк, TG,
     координатор, бэклог (В12); :class:`BareWakeStep` — голое «робот».
-  - :class:`SilenceCommandStep` — silence + music-stop override.
+  - :class:`Tier1Step` — закрытая грамматика (ADR-0150 PR-6): стоп/тишина, спорный стоп (В19), остаток.
   - :class:`CommandIntentGateStep` — TG bypass, command_parser path.
-  - :class:`NewSessionStep` — host ``reset_session`` path.
   - :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет (ADR-0150 PR-5).
   - :class:`DispatchTriggerStep` — FSM + sfx chain.
 * ``default_steps()`` order matches legacy inline branches.
@@ -33,6 +32,8 @@ from typing import Dict, List, Optional, Tuple
 import pytest
 
 from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.grammar import match as tier1_match
+from rob_box_dialog.session import SceneFrame, SessionSnapshot
 
 from rob_box_voice.core.stt_admission import (
     AddressStep,
@@ -41,15 +42,14 @@ from rob_box_voice.core.stt_admission import (
     DispatchTriggerStep,
     EmptyTextStep,
     MediaCommandStep,
-    NewSessionStep,
     PASS,
     RejectedMarkerStep,
-    SilenceCommandStep,
     SilencedStateStep,
     SttAdmission,
     SttContext,
     SttOutcomeKind,
     TakeTurnStep,
+    Tier1Step,
     default_steps,
     drop,
     handled,
@@ -200,11 +200,8 @@ class _RecordingHost:
     def __init__(
         self,
         *,
-        unsilence_ok: bool = False,
         is_music_stop: bool = False,
-        handle_silence: bool = True,
         handle_command_intent_match: bool = False,
-        reset_session_match: bool = False,
         accumulate: bool = True,
         backlog: Optional[Backlog] = None,
         state_idle: bool = True,
@@ -213,11 +210,10 @@ class _RecordingHost:
         media_command: bool = False,
     ) -> None:
         self.calls: List[str] = []
-        self._unsilence_ok = unsilence_ok
         self._is_music_stop = is_music_stop
-        self._handle_silence = handle_silence
         self._handle_command_intent_match = handle_command_intent_match
-        self._reset_session_match = reset_session_match
+        self.tier1_runs: List[Tuple[str, str]] = []
+        self.disputed: List[str] = []
         self._accumulate = accumulate
         self._backlog = backlog
         self.addressed_calls: List[object] = []
@@ -229,10 +225,6 @@ class _RecordingHost:
         self.take_turn_count = 0
         self.publish_state_count = 0
         self.thinking_sfx_count = 0
-
-    def unsilence(self, text_lower: str) -> bool:
-        self.calls.append(f"unsilence({text_lower!r})")
-        return self._unsilence_ok
 
     def backlog(self) -> Optional[Backlog]:
         return self._backlog
@@ -249,9 +241,18 @@ class _RecordingHost:
     def bare_wake(self) -> None:
         self.calls.append("bare_wake")
 
-    def handle_silence_command(self) -> bool:
-        self.calls.append("handle_silence")
-        return self._handle_silence
+    def tier1_match(self, ctx: SttContext):
+        scenes = (SceneFrame("Silence", "user"),) if ctx.is_silenced else ()
+        snap = SessionSnapshot(agent="personality", session_id="t", epoch=0, started_at=0.0, scenes=scenes)
+        return tier1_match(ctx.text, snap)
+
+    def run_tier1(self, command, text: str) -> None:
+        self.calls.append(f"run_tier1({command.kind},{text!r})")
+        self.tier1_runs.append((command.kind, text))
+
+    def dispute_stop(self, command, ctx: SttContext) -> None:
+        self.calls.append(f"dispute_stop({ctx.text!r})")
+        self.disputed.append(ctx.text)
 
     def is_music_stop_command(self, text_lower: str) -> bool:
         self.calls.append(f"is_music_stop({text_lower!r})")
@@ -260,15 +261,6 @@ class _RecordingHost:
     def handle_command_intent(self, text: str, text_lower: str) -> bool:
         self.calls.append(f"handle_command_intent({text!r},{text_lower!r})")
         return self._handle_command_intent_match
-
-    def reset_session(
-        self,
-        text: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        self.calls.append(f"reset_session({text!r},{tg_chat_id!r})")
-        return self._reset_session_match
 
     def handle_media_command(self, text: str) -> bool:
         self.calls.append(f"handle_media_command({text!r})")
@@ -368,20 +360,14 @@ class TestSilencedStateStep:
         )
         assert out.kind is SttOutcomeKind.DROP
         assert out.reason == "silenced"
-        # host.unsilence must be called only when text matches the
-        # unsilence phrase; here it must NOT have been called.
-        assert all("unsilence" not in c for c in host.calls)
 
-    def test_handles_unsilence(self) -> None:
-        host = _RecordingHost(unsilence_ok=True)
-        out = SilencedStateStep().apply(
-            _ctx(is_silenced=True, text="отвечай мне",
-                 text_lower="отвечай мне"),
-            host,
-        )
-        assert out.kind is SttOutcomeKind.HANDLED
-        assert out.reason == "unsilence"
-        assert any("unsilence" in c for c in host.calls)
+    def test_unsilence_is_tier1_now(self) -> None:
+        # ADR-0150 PR-6: снятие тишины решает Tier1Step (раньше этого шага), сам шаг только отбрасывает.
+        host = _RecordingHost()
+        ctx = _ctx(is_silenced=True, text="отвечай мне", text_lower="отвечай мне")
+        out = Tier1Step().apply(ctx, host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "unsilence"
+        assert SilencedStateStep().apply(ctx, host).kind is SttOutcomeKind.DROP
 
 
 class TestAddressStep:
@@ -444,29 +430,56 @@ class TestBareWakeStep:
         assert "bare_wake" not in host.calls
 
 
-class TestSilenceCommandStep:
+class TestTier1Step:
     def test_passes_normal_text(self) -> None:
-        out = SilenceCommandStep().apply(_ctx(), _RecordingHost())
-        assert out.kind is SttOutcomeKind.PASS
+        host = _RecordingHost()
+        assert Tier1Step().apply(_ctx(text="расскажи анекдот", text_lower="расскажи анекдот"), host) is PASS
+        assert host.tier1_runs == []
 
     def test_handles_silence(self) -> None:
-        host = _RecordingHost(handle_silence=True)
-        out = SilenceCommandStep().apply(
-            _ctx(text="замолчи", text_lower="замолчи"), host
-        )
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="замолчи", text_lower="замолчи"), host)
         assert out.kind is SttOutcomeKind.HANDLED
-        assert out.reason == "silence_command"
+        assert out.reason == "silence"
+        assert host.tier1_runs == [("silence", "замолчи")]
 
     def test_music_stop_falls_through(self) -> None:
-        # Issue #1279 — «хватит диджеить» is music-stop, must reach LLM.
+        # Issue #1279 — «хватит диджеить» is music-stop: медиароутер, не Tier-1 тишина.
         host = _RecordingHost(is_music_stop=True)
-        out = SilenceCommandStep().apply(
-            _ctx(text="хватит диджеить",
-                 text_lower="хватит диджеить"),
-            host,
-        )
+        out = Tier1Step().apply(_ctx(text="хватит диджеить", text_lower="хватит диджеить"), host)
         assert out.kind is SttOutcomeKind.PASS
         assert any("is_music_stop" in c for c in host.calls)
+        assert host.tier1_runs == []
+
+    def test_disputed_stop_goes_to_chooser_and_closes_the_phrase(self) -> None:
+        # В19: «спой песню про стоп» — речь не рвём, решает Chooser; продолжит приём хост (resume_after).
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="спой песню про стоп", text_lower="спой песню про стоп"), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "stop_disputed"
+        assert host.disputed == ["спой песню про стоп"] and host.tier1_runs == []
+
+    def test_clear_stop_with_rest_continues_with_the_rest(self) -> None:
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="хватит, спой другую", text_lower="хватит, спой другую"), host)
+        assert out.kind is SttOutcomeKind.PASS
+        assert out.new_context.text == "спой другую"
+        assert host.tier1_runs == [("stop_all", "хватит, спой другую")]
+
+    def test_rest_that_is_tier1_too(self) -> None:
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="стоп, забудь всё", text_lower="стоп, забудь всё"), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "new_session"
+        assert [k for k, _ in host.tier1_runs] == ["stop_all", "new_session"]
+
+    def test_works_when_silenced(self) -> None:
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="хватит", text_lower="хватит", is_silenced=True), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "silence"
+
+    def test_new_session(self) -> None:
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="новая сессия", text_lower="новая сессия"), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "new_session"
 
 
 class TestCommandIntentGateStep:
@@ -497,22 +510,6 @@ class TestCommandIntentGateStep:
         assert out.kind is SttOutcomeKind.PASS
 
 
-class TestNewSessionStep:
-    def test_handles_session_reset(self) -> None:
-        host = _RecordingHost(reset_session_match=True)
-        out = NewSessionStep().apply(
-            _ctx(text="новая сессия", text_lower="новая сессия"),
-            host,
-        )
-        assert out.kind is SttOutcomeKind.HANDLED
-        assert out.reason == "new_session"
-
-    def test_passes_no_match(self) -> None:
-        host = _RecordingHost(reset_session_match=False)
-        out = NewSessionStep().apply(_ctx(), host)
-        assert out.kind is SttOutcomeKind.PASS
-
-
 class TestMediaCommandStep:
     """Issue #3134 — роутер медиакоманд до LLM."""
 
@@ -533,14 +530,14 @@ class TestMediaCommandStep:
     def test_pipeline_media_command_skips_llm_dispatch_and_barge_in(self) -> None:
         # Реплика закрыта роутером: ни cancel барж-ина, ни FSM/SFX-диспатча.
         ctx = _ctx(
-            text="робот играй громче", text_lower="робот играй громче",
+            text="робот включи диджей сет", text_lower="робот включи диджей сет",
             skip_counter={},
         )
         host = _RecordingHost(media_command=True)
         out = _admission().evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.HANDLED
         assert out.step_name == "media_command"
-        assert "handle_media_command('играй громче')" in host.calls
+        assert "handle_media_command('включи диджей сет')" in host.calls
         assert "transition_stt_result" not in host.calls
         assert host.take_turn_count == 0
 
@@ -613,7 +610,7 @@ class TestOrchestrator:
             SilencedStateStep(),
         ]
         ctx = _ctx(text="", text_lower="", is_silenced=True)
-        host = _RecordingHost(unsilence_ok=True)
+        host = _RecordingHost()
         out = _admission(steps).evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.DROP
         assert out.step_name == "empty_text"
@@ -630,10 +627,10 @@ class TestOrchestrator:
 
     def test_skip_counter_not_incremented_on_handled(self) -> None:
         ctx = _ctx(
-            text="хватит диджеить", text_lower="хватит диджеить",
+            text="замолчи", text_lower="замолчи",
             skip_counter={},
         )
-        host = _RecordingHost(is_music_stop=False, handle_silence=True)
+        host = _RecordingHost(is_music_stop=False)
         out = _admission().evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.HANDLED
         # HANDLED does not auto-increment.
@@ -645,7 +642,7 @@ class TestOrchestrator:
         ctx = _ctx(
             text="замолчи", text_lower="замолчи", skip_counter={},
         )
-        host = _RecordingHost(handle_silence=True)
+        host = _RecordingHost()
         out = _admission(logger=None).evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.HANDLED
 
@@ -666,10 +663,10 @@ class TestOrchestrator:
                 raw="робот замолчи",
                 skip_counter={},
             )
-            host = _RecordingHost(handle_silence=True)
+            host = _RecordingHost()
             out = _admission(logger=logger).evaluate(ctx, host)
             assert out.kind is SttOutcomeKind.HANDLED
-            assert any("silence_command" in m for m in captured)
+            assert any("tier1 (silence)" in m for m in captured)
         finally:
             logger.removeHandler(cap)
 
@@ -679,21 +676,20 @@ class TestOrchestrator:
         # command-intent steps see the **stripped** text.
         steps = [
             AddressStep(),
-            SilenceCommandStep(),
+            Tier1Step(),
         ]
         ctx = _ctx(
             text="робот замолчи",
                  text_lower="робот замолчи",
                  skip_counter={},
         )
-        host = _RecordingHost(handle_silence=True)
+        host = _RecordingHost()
         out = _admission(steps).evaluate(ctx, host)
-        # After strip: text="замолчи" → silence step fires HANDLED.
+        # After strip: text="замолчи" → Tier-1 fires HANDLED.
         assert out.kind is SttOutcomeKind.HANDLED
-        assert out.step_name == "silence_command"
-        # Verify the host was called with the *stripped* lowercased.
-        silence_calls = [c for c in host.calls if c.startswith("handle_silence")]
-        assert silence_calls  # present, regardless of args
+        assert out.step_name == "tier1"
+        # Verify the host was called with the *stripped* text.
+        assert host.tier1_runs == [("silence", "замолчи")]
 
     def test_empty_steps_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):
@@ -709,11 +705,10 @@ class TestOrchestrator:
             "EmptyTextStep",
             "RejectedMarkerStep",
             "AddressStep",
+            "Tier1Step",
             "SilencedStateStep",
             "BareWakeStep",
-            "SilenceCommandStep",
             "CommandIntentGateStep",
-            "NewSessionStep",
             "MediaCommandStep",
             "TakeTurnStep",
             "DispatchTriggerStep",
@@ -864,7 +859,7 @@ class TestIssue2713LoggerSeverityCallSite:
             text="робот замолчи", text_lower="робот замолчи",
             raw="робот замолчи", skip_counter={},
         )
-        out1 = admission.evaluate(handled_ctx, _RecordingHost(handle_silence=True))
+        out1 = admission.evaluate(handled_ctx, _RecordingHost())
         assert out1.kind is SttOutcomeKind.HANDLED
 
         drop_ctx = _ctx(text="", text_lower="", skip_counter={})
@@ -886,7 +881,7 @@ class TestIssue2713LoggerSeverityCallSite:
             text="робот замолчи", text_lower="робот замолчи",
             raw="робот замолчи", skip_counter={},
         )
-        out2 = admission.evaluate(handled_ctx, _RecordingHost(handle_silence=True))
+        out2 = admission.evaluate(handled_ctx, _RecordingHost())
         assert out2.kind is SttOutcomeKind.HANDLED
 
         assert [sev for sev, _ in logger.records] == ["INFO", "WARNING"]
