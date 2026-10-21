@@ -58,7 +58,10 @@ motion.timeout: ["Не доехал — время вышло."]
 motion.cancelled: ["Остановился."]
 
 identity.done: ["Запомнил тебя, {name}."]
+# #3793: исход register_speaker по SpeakerResult владельца — причина в ключе, нет ключа — общая фраза.
+identity.done.already_known: ["Я тебя и так знаю, {name}."]
 identity.rejected: ["Не смог запомнить голос."]
+identity.rejected.too_short: ["Голос не запомнил: фраза слишком короткая."]
 identity.timeout: ["Не дождался, пока голос запишется."]
 identity.ask_name: ["Как тебя зовут?"]
 identity.confirm: ["{name}, это ты?"]
