@@ -27,9 +27,8 @@ scenarios:
   #
   # Раньше это был ОДИН сценарий, утверждавший «робот должен остановиться» —
   # ровно то поведение, которое спек (SCHEDULER_DESIGN.md §2.3/§4) отменяет
-  # для НЕ-императивных перебиваний под barge_in_policy=classify (этот
-  # конфиг теперь включён в voice_assistant_test.yaml). Разделён на два по
-  # вердикту quick_decide (scheduler/quick_decide.py):
+  # для НЕ-императивных перебиваний (с ADR-0150 PR-5 это единственная
+  # политика: речь рвёт только ясная стоп-команда). Разделён на два:
   #   - barge_in_replace — явный императив («стоп») → REPLACE → останавливается.
   #   - barge_in_merge    — топик-вопрос (не императив) → PENDING_LLM → НЕ
   #                          останавливается, куплет/фраза доигрывает.
@@ -43,8 +42,8 @@ scenarios:
       РАНЬШЕ отдельным is_silence_command-гейтом (dialogue_text.py,
       DEFAULT_SILENCE_COMMANDS) и не доходят даже до LLM — тестировали бы
       не ту ветку. "стоп" — единственный из
-      quick_decide._REPLACE_IMPERATIVES, который туда не попадает (см.
-      test_barge_in_policy.py::test_replace_verdict_stops_tts_and_dispatches).
+      стоп-слов rob_box_dialog.knowledge.STOP_WORDS, который туда не попадает
+      (см. test_interrupt_request.py).
     steps:
       # Запускаем первый диалог — НЕ ждём ответа, нода уходит в DIALOGUE
       # Минимум 3 слова: dialogue_node фильтрует фразы < 3 слов (word_count < 3)
@@ -71,8 +70,8 @@ scenarios:
     timeout_s: 90
     description: >
       Топик-вопрос («о чём мы говорили») во время ответа — НЕ императив,
-      quick_decide отдаёт PENDING_LLM. Под barge_in_policy=classify это
-      значит: текущий сегмент НЕ глушится (assert_tts_not_stopped), LLM
+      stop_verdict отдаёт none. Это значит: текущий сегмент НЕ глушится
+      (assert_tts_not_stopped), LLM
       получает [ACTIVE TASKS]/[SEGMENT PLAN] и отвечает сама. Это ровно тот
       случай, который раньше ошибочно ожидал «робот должен остановиться».
     steps:
@@ -95,7 +94,7 @@ scenarios:
 
   # ──────────────────────────────────────────────────────────────────────────
   # Сценарии B и C НЕ входили в Task 8.2 (план трогает только сценарий A) —
-  # оставлены как есть. Не проверялись под barge_in_policy=classify, но их
+  # оставлены как есть. Не проверялись под одной политикой PR-5, но их
   # единственный assert (assert_response_not_empty, без assert_no_stop) не
   # зависит от того, был ли STOP — должны остаться зелёными в любом случае.
   # ──────────────────────────────────────────────────────────────────────────
