@@ -17,6 +17,7 @@ class Caps:
     tool_choice: bool = False
     json_mode: bool = False
     structured_output: bool = False
+    thinking: bool = False
 
 
 @pytest.mark.parametrize(
@@ -25,6 +26,9 @@ class Caps:
         (Caps(structured_output=True, tool_choice=True, tools=True, json_mode=True), "structured_output"),
         (Caps(tool_choice=True, tools=True, json_mode=True), "tool_choice"),
         (Caps(tool_choice=True, tools=False, json_mode=True), "json_mode"),  # tool_choice без tools — не режим
+        # #3798: модель в режиме размышлений отвечает 400 на tool_choice="required" — команда JSON-ом
+        (Caps(tool_choice=True, tools=True, json_mode=True, thinking=True), "json_mode"),
+        (Caps(tool_choice=True, tools=True, thinking=True), "json_in_text"),
         (Caps(json_mode=True, tools=True), "json_mode"),
         (Caps(tools=True), "json_in_text"),
         (Caps(), "json_in_text"),

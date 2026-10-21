@@ -4855,6 +4855,7 @@ class DialogueNode(DialogueStageMixin, Node):
             f"🎛️ [media-router] intent=play_named name={plan.play_name!r} "
             f"provider={self._media_router.provider_name} text={text[:60]!r}"
         )
+        self._turn_stages().hold()  # #3794: промах поиска вернёт фразу в LLM - ход до тех пор не закрывать
         asyncio.run_coroutine_threadsafe(
             self._execute_play_named(plan, executor, text, on_miss), self._loop
         )
@@ -4893,8 +4894,10 @@ class DialogueNode(DialogueStageMixin, Node):
             # Issue #3400: мимо базы посреди сета — это тема сета, решает код.
             switch = dj_theme_switch_plan(plan, self._media_state())
             if switch is None:
+                self._turn_stages().hold(reopen=True)  # #3794: промах поиска - не провал хода
                 on_miss(text)
                 return
+            self._turn_stages().hold(reopen=False)
             self._apply_media_plan_side_effects(switch)
             await self._execute_media_plan(switch, executor, text)
             return
@@ -4908,6 +4911,7 @@ class DialogueNode(DialogueStageMixin, Node):
         phrase = outcome_text(outcome, title)
         self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
         self._speak_direct(phrase)
+        self._turn_stages().hold(reopen=False)
 
     def _note_router_track_started(self) -> None:
         """Issue #3176 — трек запустил роутер, а не ход LLM: учесть так же.
