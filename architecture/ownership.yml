@@ -103,6 +103,22 @@ nodes:
     source:
       - src/rob_box_animations/rob_box_animations/face_node.py
       - src/rob_box_animations/rob_box_animations/face_director.py
+  led_node:
+    owner: voice
+    package: rob_box_voice
+    # PR-3b (#3690): кольцо LED ReSpeaker - исполнитель рефлексов хода (core/ring_reflex.py), Sound Pi.
+    source: [src/rob_box_voice/rob_box_voice/led_node.py]
+  sound_node:
+    owner: voice
+    package: rob_box_voice
+    # PR-3b (#3690): earcon'ы рефлексов и play_sound; на каждый запрос - SoundEvent (вместо молчаливого return).
+    source: [src/rob_box_voice/rob_box_voice/sound_node.py]
+  expression_client:
+    owner: dialog-v2
+    package: rob_box_core
+    # PR-3b (#3690): единственный писатель ExpressionRequest и TurnEvent (один публикатор каждого вида на ноду);
+    # звать его будут dialogue_node v1 и dialog_node v2.
+    source: [src/rob_box_core/rob_box_core/expression_client.py]
 
 topics:
   # -- Вход речи и собеседник (PR-2: оба топика типизированы) ------------------
@@ -218,17 +234,19 @@ topics:
   /voice/expression/request:
     owner: dialog_node
     type: rob_box_dialog_msgs/ExpressionRequest
-    status: planned
-    introduced_by: "PR-3a (#3689)"
-    writers_allowed: [dialog_node, dialogue_node]
-    readers: [face_node]
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # писатель один - клиент expression_client; решение об экспрессии принимает агент-владелец хода (expression.py)
+    writers_allowed: [expression_client]
+    readers: [face_node, sound_node]
   /voice/expression/event:
-    owner: face_node
+    owner: dialog_node
     type: rob_box_dialog_msgs/ExpressionEvent
-    status: planned
-    introduced_by: "PR-3a (#3689)"
-    writers_allowed: [face_node]
-    readers: [dialog_node, dialogue_node]
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # три исполнителя by-design (ADR-0150 §5.5.2): каждый отвечает событием со своим executor (face|ring|sound)
+    writers_allowed: [face_node, led_node, sound_node]
+    readers: [expression_client]
   /voice/providers/state:
     owner: tts_node
     type: rob_box_dialog_msgs/ProviderStateArray
@@ -250,10 +268,11 @@ topics:
   /dialog/turn_event:
     owner: dialog_node
     type: rob_box_dialog_msgs/TurnEvent
-    status: planned
-    introduced_by: "PR-7 (#3698)"
-    writers_allowed: [dialog_node]
-    readers: [face_node]
+    status: live
+    introduced_by: "PR-3b (#3690)"
+    # стадии хода addressed|thinking|executing|speaking|done|failed|timeout; в v1 пишет dialogue_node через клиент
+    writers_allowed: [expression_client]
+    readers: [led_node]
   /dialog/plan_event:
     owner: dialog_node
     type: rob_box_dialog_msgs/PlanEvent

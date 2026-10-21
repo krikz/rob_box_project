@@ -9,7 +9,7 @@ Inputs: ``/voice/speech/envelope`` + ``/voice/speech/event`` (mouth by the real
 voice), ``/voice/tts/state`` (transitional «speaking»), ``/audio/direction`` +
 ``/audio/vad`` (look at the speaker), ``/voice/music/state`` (music scenes by
 tempo), ``/voice/animation/request`` (v1 ``play_animation``, until PR-3b),
-``/voice/expression/request`` (``ExpressionRequest``; writers come in PR-3b),
+``/voice/expression/request`` (``ExpressionRequest``; answered with ``ExpressionEvent{executor=face}``),
 ``/cmd_vel`` (turn signals / brake light; topic = parameter ``cmd_vel_topic``), ``/battery_state``
 (low battery / charging), ``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
 ``voice_timeout_s`` (no messages, no voice publishers in
@@ -23,7 +23,7 @@ from typing import Optional
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import ExpressionRequest, SpeechEnvelope, SpeechEvent
+from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SpeechEnvelope, SpeechEvent
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
@@ -88,6 +88,7 @@ class FaceNode(Node):
             gaze=GazeTrack(front_deg=g['doa_front_deg'], ccw=g['doa_ccw']), tz_offset_h=g['tz_offset_h'])
         self._battery_scale = g['battery_percent_scale']
         self.panels = PanelPublisher(self)
+        self._event_pub = self.create_publisher(ExpressionEvent, '/voice/expression/event', 10)
         self._graph_present: Optional[bool] = None
         self._subscribe(g['cmd_vel_topic'], g['battery_topic'])
         self._metrics_period = g['metrics_period_s']
@@ -151,19 +152,28 @@ class FaceNode(Node):
         self._show(name, seconds)
 
     def _on_expression(self, msg) -> None:
+        """ExpressionRequest -> scene; the answer is an ``ExpressionEvent`` (started | skipped{reason})."""
         if msg.face_json:
             self.get_logger().warn('ExpressionRequest.face_json пока не исполняется (DSL сцены — PR-3c)')
-        for name in (msg.gesture, msg.emotion):
-            if name:
-                self._show(name, msg.ttl_ms / 1000.0 if msg.ttl_ms else None)
-                return
+        name = msg.gesture or msg.emotion
+        if not name:
+            return      # an earcon-only request: nothing for the face to answer
+        scene = self._show(name, msg.ttl_ms / 1000.0 if msg.ttl_ms else None)
+        self._answer(msg.turn_id, scene is not None, '' if scene else 'unknown_scene')
 
-    def _show(self, name: str, seconds) -> None:
+    def _answer(self, turn_id: str, started: bool, reason: str) -> None:
+        ev = ExpressionEvent()
+        ev.executor, ev.turn_id, ev.reason = 'face', turn_id, reason
+        ev.kind = ExpressionEvent.KIND_STARTED if started else ExpressionEvent.KIND_SKIPPED
+        self._event_pub.publish(ev)
+
+    def _show(self, name: str, seconds) -> Optional[str]:
         scene = self.director.request(name, seconds, time.time())
         if scene is None:
             self.get_logger().warn(f'сцены «{name}» нет — запрос не исполнен')
         else:
             self.get_logger().info(f'сцена по запросу: {name} -> {scene} ({seconds or "по умолчанию"} с)')
+        return scene
 
     def _check_voice_owner(self) -> None:
         counts = {t: self.count_publishers(t) for t in VOICE_PRESENCE_TOPICS}
