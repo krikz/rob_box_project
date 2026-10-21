@@ -177,7 +177,7 @@ class TestTelegram:
 
 
 class TestAnswerToNameQuestionV17b:
-    """В17(б), #3695: робот спросил имя — ответ принимается и без вейка, ≤ 15 с и с той же стороны (DOA ±30°)."""
+    """В17(б), #3695: робот спросил имя — ответ принимается и без вейка, ≤ 15 с, если фраза похожа на ответ по грамматике (DOA не условие)."""
 
     @staticmethod
     def _ask(node, azimuth=90.0, asked_ago_s=1.0):
@@ -200,11 +200,28 @@ class TestAnswerToNameQuestionV17b:
         assert node._session.snapshot.top("Identity") is None, "первая фраза снимает кадр"
         assert node._identity_answer["kind"] == "unknown"
 
-    def test_answer_from_the_other_side_is_not_addressed(self, node):
+    def test_refusal_from_another_angle_is_a_turn_and_closes_the_frame(self, node):
         self._ask(node, azimuth=90.0)
-        _say(node, "меня зовут Гриша", doa=200.0)
+        _say(node, "не скажу", doa=157.0)  # DOA через 67° — не условие
+        assert _turn_texts(node) == ["не скажу"]
+        assert _logged(node, "kind=refusal")
+        assert node._session.snapshot.top("Identity") is None
+        assert node._identity_answer["reply"] == "refusal"
+
+    def test_bare_name_with_jumping_doa_is_a_name(self, node):
+        self._ask(node, azimuth=50.0)
+        _say(node, "Гриша", doa=343.0)
+        assert _turn_texts(node) == ["Гриша"]
+        assert _logged(node, "kind=name")
+
+    @pytest.mark.parametrize("text", ["поселения происходили давайте я устрою наше время", "только что основали"])
+    def test_foreign_talk_in_the_window_goes_to_backlog(self, node, text):
+        self._ask(node, azimuth=90.0)
+        _say(node, text, doa=90.0)
         node._dispatch_turn.assert_not_called()
         assert _logged(node, "[backlog] accumulated")
+        assert _logged(node, "не ответ (грамматика) → бэклог")
+        assert node._session.snapshot.top("Identity") is not None, "чужая фраза окно не снимает"
 
     def test_answer_later_than_fifteen_seconds_is_not_addressed(self, node):
         self._ask(node, azimuth=90.0, asked_ago_s=20.0)

@@ -1,8 +1,8 @@
 """Кадр ``Identity(ask)`` и ``/dialog/session`` в ``dialogue_node`` v1 (ADR-0150 §7.1, §7.2, §7.5 п.2; #3695).
 
 Вопрос об имени — кадр стека сессии (:class:`rob_box_dialog.session.Session`): код кладёт его, когда вопрос ушёл в речь (до конца вопроса он ждёт),
-окно ответа ``IDENTITY_TTL_S`` (15 с) открывается, когда вопрос договорён (``SpeechEvent finished``), и снимается первой адресованной фразой. Пока кадр жив, фраза без вейка с той же
-стороны — ответ на него (В17(б), правило — ``speaker_adapter.answers_question``). Ответ «меня зовут X» регистрирует
+окно ответа ``IDENTITY_TTL_S`` (15 с) открывается, когда вопрос договорён (``SpeechEvent finished``), и снимается первой адресованной фразой. Пока кадр жив, фраза без вейка
+— ответ на него, если похожа на ответ по грамматике (В17(б), правило — ``speaker_adapter.answer_to_question``). Ответ «меня зовут X» регистрирует
 голос кодом (#2925, ``_register_self_intro``), голое имя на «Как тебя зовут?» — тоже (:func:`answer_name`).
 
 Каждое изменение сессии (собеседник, кадр) уходит latched ``SessionState`` в ``/dialog/session``: собеседник с
@@ -19,6 +19,7 @@ import time
 from typing import Any, Optional
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.reply_grammar import NAME, classify_reply
 from rob_box_dialog.session import Session, SessionChanged, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import AskCandidate, question_frame, question_open
 from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_name
@@ -26,7 +27,7 @@ from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_
 #: Топик снимка сессии (``architecture/ownership.yml``).
 SESSION_TOPIC = "/dialog/session"
 #: ``Identity.kind`` кадров, где ответ — имя: голое имя («Гриша») — представление.
-ASKS_NAME = ("unknown", "contested")
+ASKS_NAME = kn.IDENTITY_ASKS_NAME
 #: ``SpeechEvent.kind``: finished / cancelled / rejected.
 _FINISHED, _CANCELLED, _REJECTED = 4, 5, 7
 
@@ -97,27 +98,28 @@ def take_answer(node: Any, source: str, heard: Any) -> None:
     if frame is None or (getattr(heard, "source", "") or "respeaker") != "respeaker":
         return
     session(node).pop_scene("Identity")
-    node._identity_answer = dict(frame.payload)
+    reply = classify_reply(str(getattr(heard, "text", "") or ""), asks_name=frame.payload.get("kind") in ASKS_NAME)
+    node._identity_answer = dict(frame.payload, reply=reply.kind if reply else "other")
     doa = getattr(heard, "doa_deg", None)
     azimuth = frame.payload.get("azimuth_deg")
     node.get_logger().info(
-        f"❓ [Identity #3695] ответ на вопрос: source={source} doa={'-' if doa is None else f'{doa:.0f}'} "
+        f"❓ [Identity #3695] ответ на вопрос: kind={reply.kind if reply else 'other'} source={source} doa={'-' if doa is None else f'{doa:.0f}'} "
         f"azimuth={'-' if azimuth is None else f'{azimuth:.0f}'} "
         f"age={float(getattr(heard, 't', 0.0) or 0.0) - float(frame.payload.get('asked_at') or 0.0):.1f}s"
     )
 
 
 def answer_name(node: Any, text: str) -> Optional[str]:
-    """Голое имя («Гриша», «Гриша.») в ответ на «Как тебя зовут?» — представление; иначе ``None``.
+    """Имя из ответа на «Как тебя зовут?» («Гриша», «зови меня Гриша») — представление; иначе ``None``.
 
     Только имя из словаря ``self_intro.KNOWN_FIRST_NAMES`` (точность, а не полнота — как короткое «я X», #2925).
     """
     asked = getattr(node, "_identity_answer", None)
-    words = [w.strip(".,!?…").lower().replace("ё", "е") for w in (text or "").split()]
-    words = [w for w in words if w]
-    if not asked or asked.get("kind") not in ASKS_NAME or len(words) != 1 or words[0] not in KNOWN_FIRST_NAMES:
+    if not asked or asked.get("kind") not in ASKS_NAME:
         return None
-    return words[0].capitalize()
+    reply = classify_reply(text)
+    known = reply is not None and reply.kind == NAME and reply.name.lower().replace("ё", "е") in KNOWN_FIRST_NAMES
+    return reply.name if known else None
 
 
 def introduced_name(node: Any, text: str) -> Optional[str]:

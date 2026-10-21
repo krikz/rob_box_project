@@ -6,7 +6,8 @@
 (и куски того же рассказа) как текст хода (``pickup``, #3767 — от кого бы они ни были, кто сказал — метка каждой
 фразы); бэклог пуст — только рефлекс «слушаю», 0 вызовов LLM. Окна
 адресации без вейка нет (§17 Ж); единственная фраза без вейка, которую робот берёт, — ответ на его собственный
-вопрос об имени ≤ 15 с с той же стороны (В17(б), ``speaker_adapter.answers_question``).
+вопрос об имени ≤ 15 с, если она по грамматике похожа на ответ — имя, да/нет, отказ (В17(б), решение Шифу 21.10,
+``speaker_adapter.answer_to_question``; DOA не условие).
 
 Чистый модуль: сообщения ROS читаются утиной типизацией (:func:`heard_from`).
 """
@@ -19,7 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.session import SceneFrame
-from rob_box_dialog.speaker_adapter import answers_question
+from rob_box_dialog.speaker_adapter import answer_to_question
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
@@ -82,7 +83,7 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
         rest = strip_wake_word(text, wake_words)
         return Addressed(rest, heard.source) if rest else NotAddressed(EMPTY)
     if not has_wake_word(text, wake_words):
-        return Addressed(text, IDENTITY_ANSWER) if text and answers_question(question, heard) else NotAddressed(NO_WAKE)
+        return Addressed(text, IDENTITY_ANSWER) if text and answer_to_question(question, heard) is not None else NotAddressed(NO_WAKE)
     rest = strip_wake_word(text, wake_words)
     if not is_bare(rest):
         return Addressed(rest, VOICE)

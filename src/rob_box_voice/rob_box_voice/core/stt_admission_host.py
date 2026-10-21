@@ -107,6 +107,9 @@ class _DialogueSttHost:
         return getattr(node, "_backlog", None)
 
     def remember_unaddressed(self, heard: Heard) -> bool:
+        if self.identity_question() is not None:  # окно ответа открыто, а фраза не похожа на ответ (#3695)
+            self._node.get_logger().info(
+                f"❓ [Identity #3695] не ответ (грамматика) → бэклог: doa={heard.doa_deg!r} text={heard.text[:60]!r}")
         backlog = self.backlog()
         if backlog is None:
             return False
