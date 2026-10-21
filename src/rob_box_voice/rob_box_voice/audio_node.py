@@ -16,6 +16,7 @@ import time
 from typing import Optional
 
 from .core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+from .core.speech_split import publish_speech_chunks
 from .utils.audio_utils import find_respeaker_device, list_audio_devices, calculate_rms, calculate_db
 from .utils.respeaker_interface import ReSpeakerInterface
 from .utils.stderr_silence import ignore_stderr
@@ -1062,7 +1063,7 @@ class AudioNode(Node):
                 # Вычисляем длительность
                 duration = len(buf) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-                if self.speech_min_duration <= duration <= self.speech_max_duration:
+                if duration >= self.speech_min_duration:
                     self.get_logger().info(f'✅ Речь распознана: {duration:.2f}с')
                     # Issue 1076 (телеметрия): честный «замолчал → фраза готова»
                     # = time_since_stop (>= speech_continuation), а НЕ 0. Раньше
@@ -1073,10 +1074,11 @@ class AudioNode(Node):
                         f"📊 [telemetry] silence_to_phrase_s={time_since_stop:.2f} "
                         f"(speech_continuation={self.speech_continuation})"
                     )
-                    # Публикуем speech_audio
-                    msg = AudioData()
-                    msg.data = list(buf)
-                    self.speech_audio_pub.publish(msg)
+                    # Публикуем speech_audio; речь длиннее speech_max_duration
+                    # режется на куски, а не выбрасывается (issue #3762).
+                    publish_speech_chunks(
+                        buf, self.speech_audio_pub, AudioData, self.get_logger(),
+                        self.sample_rate, self.speech_max_duration, self.speech_min_duration)
                     # Issue #2701: первая успешная фраза сбрасывает счётчик
                     # empty-speech детектора — захват точно живой. Вынесено
                     # в отдельный метод (ADR-0021 R1 CC-budget guard, см.
