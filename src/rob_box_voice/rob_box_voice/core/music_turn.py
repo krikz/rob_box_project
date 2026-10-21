@@ -5,7 +5,7 @@
 ``dj_set`` вернул ``not_started``, а модель сказала «Сет собрался и стартовал».
 
 :class:`MusicTurn` — запись запусков музыки за один ход (``dj_set(start)`` / ``request_music``) с их
-итогом. Её ведёт ``SchedulerToolExecutor`` — единственная точка, через которую идут тулы хода:
+итогом. Её ведёт ``PlanToolExecutor`` — единственная точка, через которую идут тулы хода:
 
 * :meth:`MusicTurn.speech_allowed` — пока ПОСЛЕДНИЙ запуск хода не удался, ``speak_text`` модели не
   исполняется (заявить «запустил» нечем). Успешный запуск речь не запрещает: «рэп под бит» —
@@ -245,7 +245,7 @@ def executor_turn_reply(
     voiced: int,
     tools_called: Sequence[str] = (),
 ) -> Optional[str]:
-    """:func:`turn_reply` по ``MusicTurn`` исполнителя тулов (``SchedulerToolExecutor.music_turn``); исполнителя
+    """:func:`turn_reply` по ``MusicTurn`` исполнителя тулов (``PlanToolExecutor.music_turn``); исполнителя
     нет — ``None``. ``user_texts`` — слова человека по приоритету (сырая команда ретрая, затем реплика хода);
     ``tools_called`` — тулы хода: музыку мог запустить не v2-тул (``music_library`` и др.)."""
     turn = getattr(executor, "music_turn", None)

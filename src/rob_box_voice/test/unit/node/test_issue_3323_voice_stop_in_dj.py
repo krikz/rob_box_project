@@ -29,7 +29,6 @@ def test_media_tool_succeeded_sees_success_false_body() -> None:
     assert media_tool_succeeded(True, "{}") is False
     assert media_tool_succeeded(False, json.dumps({"success": True})) is True
     assert media_tool_succeeded(False, "Музыка остановлена") is True
-    assert media_tool_succeeded(False, json.dumps({"status": "queued"})) is True
 
 
 def test_router_logs_ok_false_and_says_fail_on_success_false_result(run_plans):  # noqa: F811
@@ -42,7 +41,7 @@ def test_router_logs_ok_false_and_says_fail_on_success_false_result(run_plans): 
             )
 
     n = _make_node(playing=True, track="Still Dre", state_name="DIALOGUE")
-    n._scheduler_executor = _Refusing()
+    n._tool_executor = _Refusing()
     _stt(n, "Робот стоп музыка")
     run_plans()
     logged = [c.args[0] for c in n.get_logger().info.call_args_list]

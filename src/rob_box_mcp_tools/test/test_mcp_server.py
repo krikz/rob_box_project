@@ -197,7 +197,7 @@ def _install_fake_mcp_server_dependencies(monkeypatch):
 
     def _tools_module_fallback(name):
         """Issue #1812: ``mcp_server.py`` has grown far more tool imports
-        (compose_music, generate_music, set_tts_provider, task_delta, ...)
+        (compose_music, generate_music, set_tts_provider, ...)
         than this fixture's hand-curated ``tool_names`` map tracks, so the
         whole module failed to import — one missing name at a time — every
         time a new tool was added upstream. PEP 562 module ``__getattr__``:

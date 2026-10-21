@@ -65,7 +65,7 @@ async def run_media_plan(
 ) -> Tuple[bool, str, List[str]]:
     """Тулы плана по порядку → ``(успех, фраза, исполненные тулы)``.
 
-    ``begin_turn`` — граница хода исполнителя тулов (``SchedulerToolExecutor.begin_turn``: ``MusicTurn`` и лимит
+    ``begin_turn`` — граница хода исполнителя тулов (``PlanToolExecutor.begin_turn``: ``MusicTurn`` и лимит
     трека): зовётся, только если команда заменила ход LLM (:func:`command_turn_context`).
     """
     if plan.cancel_inflight and callable(begin_turn):

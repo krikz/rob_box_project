@@ -14,6 +14,7 @@ from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent, SpeechEvent
 
 from .greeting_window import on_speech_event as on_greeting_speech
 from .identity_question import on_speech_event as on_identity_speech
+from . import plan_host
 from .llm_skip_reasons import LLMSkipReason
 from .stt_admission import SttOutcome, SttOutcomeKind
 from .turn_stages import TurnStages
@@ -49,7 +50,7 @@ class DialogueStageMixin:
         self._turn_stages().finish(self._turn_id, ok=not error, reason=error, cancelled=cancelled)
 
     def _on_tool_stage(self, name: str, args: Any, result: Any) -> None:
-        """Тул хода (``SchedulerToolExecutor``): до вызова - стадия ``executing{cls}``, после - его исход."""
+        """Тул хода (``PlanToolExecutor``): до вызова - стадия ``executing{cls}``, после - его исход."""
         if result is None:
             self._turn_stages().tool_call(name, dict(args or {}))
             if name == "speak_text":  # #3765: что LLM сказала в ходе — для Chooser повторного вопроса личности
@@ -60,6 +61,7 @@ class DialogueStageMixin:
 
     def _on_speech_event(self, msg: SpeechEvent) -> None:
         self._turn_stages().on_speech(int(msg.kind), msg.agent, msg.reason, msg.speech_id)
+        plan_host.on_speech(self, msg)  # PR-7b (#3699): занятость голоса для планировщика ресурсов
         watch = getattr(self, "_speaking_watch", None)  # ADR-0150 PR-6: канал «громче» по звучащей речи
         if watch is not None:
             watch.on_event(msg)  # до окна вопроса: «речь хода кончилась» читается по уже обновлённому watch (#3765)
@@ -72,6 +74,7 @@ class DialogueStageMixin:
 
     def _on_sound_event(self, msg: SoundEvent) -> None:
         """Пропуск звука виден в логе диалога (A23: молчаливых пропусков нет), остальное - ``ros2 topic echo``."""
+        plan_host.on_sound(self, msg)  # PR-7b (#3699): занятость SFX для планировщика ресурсов
         if msg.kind == SoundEvent.KIND_SKIPPED:
             self.get_logger().info(f"🔇 [sound] {msg.sound or '-'} пропущен: {msg.reason} request={msg.request_id[:8]}")
 

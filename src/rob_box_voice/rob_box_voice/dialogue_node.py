@@ -120,6 +120,9 @@ from rob_box_voice.core.turn_context import context_sections
 from rob_box_voice.core.identity_dedup import identity_dedup_from_env
 from rob_box_voice.core.stop_chooser import stop_chooser_from_env
 from rob_box_voice.core.tools_view_host import apply_tools_view
+from rob_box_voice.core.plan_host import begin_turn as plan_begin_turn
+from rob_box_voice.core.plan_host import make_tool_executor
+from rob_box_voice.core.plan_host import on_music as plan_on_music
 from rob_box_voice.core.stt_admission import (
     DefaultSttAdmission,
     MediaCommandStep,
@@ -277,7 +280,6 @@ from rob_box_voice.observability import (
     is_metrics_enabled,
     record_barge_in,
     record_session_duration,
-    record_task_updated,
     record_llm_prompt_tokens,
     record_voice_llm_request,
     start_metrics_server,
@@ -630,17 +632,9 @@ class DialogueNode(DialogueStageMixin, Node):
         # build_provider() и не словить расхождение env-ключей.
         personality_spec = self._build_personality_spec()
         self._llm = build_llm_chain(personality_spec)
-        # W7c (issue #968): /harness/task_events publisher — scheduler
-        # lifecycle events (task.created/started/completed/...) for
-        # monitoring. Created BEFORE _build_tool_provider so the W7b
-        # scheduler's on_event callback can publish immediately.
-        self._task_events_pub = self.create_publisher(
-            String, "/harness/task_events", 10)
-        # W7b: the SchedulerToolExecutor wrapping the tool provider
-        # (created inside _build_tool_provider). Kept as an attribute so
-        # _build_dynamic_system_context can render the [ACTIVE TASKS]
-        # block for the LLM. None when scheduler is disabled/failed.
-        self._scheduler_executor: Any = None
+        # ADR-0150 PR-7b (#3699): исполнитель тулов под планировщиком ресурсов (``core.plan_host``), создаётся в
+        # _build_tool_provider; None — тулов MCP нет.
+        self._tool_executor: Any = None
         # ADR-0083 §2.3 — системный промпт читает ``load_system_prompt`` (harness) и передаёт в ``build_agent``.
         self._system_prompt = load_system_prompt(personality_spec)
         # ADR-0083 §2.3 — единственная точка сборки ``AgentCore`` в проде.
@@ -1436,7 +1430,6 @@ class DialogueNode(DialogueStageMixin, Node):
                 or "master_prompt_compact.txt"
             ),
             memory_namespace="personality",
-            use_scheduler=True,
             on_prompt=self._on_prompt_stats,
             provider_chain=chain,
             settings=spec_settings,
@@ -1679,75 +1672,12 @@ class DialogueNode(DialogueStageMixin, Node):
         # contract; adapt the core provider so the harness's
         # orchestration layer stays unchanged.
         provider_adapter = adapt_tool_provider(provider)
-        # W7b (issue #968): route channel tools (speak_text / music /
-        # anim) through the TaskScheduler. stop_music is deferred until
-        # the VOICE channel drains, so it can no longer outrun the TTS
-        # chunk (e2e v36).
-        #
-        # C3 (#1995, operator-agent 07): fail-LOUD, not fail-open. If
-        # the scheduler cannot be wired at startup, raising here turns
-        # a silent "tools work but skip the queue" regression into an
-        # immediate, visible failure — the dialogue node won't start,
-        # the operator notices, and the missing wiring gets fixed
-        # instead of silently degrading voice quality. Previously the
-        # bare ``except Exception`` returned ``provider_adapter`` and
-        # logged a warning, which let a broken scheduler ride along
-        # unnoticed (see §8а.1 honest status: «живая часть падает
-        # молча»).
-        scheduler_executor = self._make_scheduler_executor(provider_adapter)
-        self._scheduler_executor = scheduler_executor
-        self.get_logger().info(
-            "✅ W7b: tool calls routed through TaskScheduler "
-            "(voice/music/anim channels; stop_music deferred)."
-        )
-        return scheduler_executor
+        # ADR-0150 PR-7b (#3699): каждый тул хода проходит допуск планировщика ресурсов (knowledge.COMPOSITION):
+        # совместимое — сразу, «потом» — после события конца занятого блока, исход — событие владельца.
+        self._tool_executor = make_tool_executor(self, provider_adapter, self._on_tool_stage)
+        self.get_logger().info("✅ PR-7b: тулы хода — через планировщик ресурсов (/dialog/plan_event)")
+        return self._tool_executor
 
-    def _make_scheduler_executor(self, provider_adapter: Any) -> Any:
-        """W7b-обёртка над провайдером тулов. Issue #2913 -- с гейтом речи
-        хода: speak_text не обгоняет исход register_speaker."""
-        from rob_box_voice.scheduler.tool_executor import (
-            SchedulerToolExecutor,
-        )
-
-        return SchedulerToolExecutor(
-            provider_adapter,
-            on_event=self._on_task_event,
-            on_tool=self._on_tool_stage,
-        )
-
-    def _on_task_event(self, event: str, payload: dict) -> None:
-        """W7c: publish scheduler lifecycle events to /harness/task_events.
-
-        Payload format follows the issue #968 contract:
-        ``{"event": "task.created", "task_id": ..., "tool": ..., ...}``.
-        Publishing failures are debug-level only — the event bus must
-        never break the scheduler or the dialogue loop.
-        """
-        try:
-            pub = getattr(self, "_task_events_pub", None)
-            if pub is not None:
-                msg = String(
-                    data=json.dumps(
-                        {"event": event, **payload}, ensure_ascii=False
-                    )
-                )
-                pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — observer must not break
-            self.get_logger().debug(f"⚠️ task_events publish failed: {exc}")
-        # W2-6 (issue #968) — второй наблюдатель того же события:
-        # "task.updated" уже эмитится TaskScheduler._Channel.replace_args
-        # (S3.2, применённый rewrite/replace MERGE-op на ещё не
-        # стартовавшем сегменте). Планировщик не импортирует
-        # observability напрямую — метрику считаем здесь, на стороне
-        # вызывающего слоя. Отдельный try/except — не должен ронять
-        # публикацию на /harness/task_events выше и наоборот.
-        if event == "task.updated" and is_metrics_enabled():
-            try:
-                record_task_updated()
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().debug(
-                    f"⚠️ [metrics] record_task_updated failed: {exc}"
-                )
     def _on_vad(self, msg: Bool) -> None:
         # Use the public attribute name (no underscore) since the pure-method
         # unit tests assert against ``vad_speech_detected``. The legacy
@@ -2490,6 +2420,7 @@ class DialogueNode(DialogueStageMixin, Node):
             return
         self._music_player_state = snapshot
         self._music_state_mem().observe_state(snapshot)
+        plan_on_music(self, snapshot)
         if snapshot.state == "idle" and self._track_mode_music_active:
             self._track_mode_music_active = False
             self.get_logger().info(
@@ -3317,31 +3248,6 @@ class DialogueNode(DialogueStageMixin, Node):
         # #3695: кто сказал реплику — структурой (имя только при confirmed), а не префиксом в её тексте.
         speaker = speaker_section(self) if tg_chat_id is None else None
         lines = [build_context(context_sections(self, "\n".join(profile), recent, speaker))]
-        # W7c (issue #968): активные задачи планировщика (voice/music/anim
-        # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
-        # и НЕ добавляет пост-амбл «Готово!» поверх играющего трека
-        # (INSIGHT #8 из W7_INTEGRATION_PLAN.md).
-        executor = getattr(self, "_scheduler_executor", None)
-        if executor is not None:
-            try:
-                block = executor.active_tasks_block()
-                if block:
-                    lines.append(block)
-            except Exception as exc:  # noqa: BLE001 — контекст не должен падать
-                self.get_logger().debug(
-                    f"⚠️ active_tasks_block failed: {exc}"
-                )
-            # S5.2 (scheduler-segments-merge) — [SEGMENT PLAN]: LLM видит
-            # ACTIVE/PENDING сегменты текущей группы и что можно
-            # переписать через task_delta (S6), не начиная песню заново.
-            try:
-                segment_block = executor.segment_plan_block()
-                if segment_block:
-                    lines.append(segment_block)
-            except Exception as exc:  # noqa: BLE001 — контекст не должен падать
-                self.get_logger().debug(
-                    f"⚠️ segment_plan_block failed: {exc}"
-                )
         return "\n".join(lines)
 
     async def _handle_speaker_turn(
@@ -4688,6 +4594,7 @@ class DialogueNode(DialogueStageMixin, Node):
                 },
             ) as llm_span:
                 apply_tools_view(self, user_input)
+                plan_begin_turn(self, user_input)
                 result = await self._core.process_input(
                     user_input,
                     is_synthetic=is_synthetic,
@@ -4707,6 +4614,7 @@ class DialogueNode(DialogueStageMixin, Node):
                 )
                 return result
         finally:
+            plan_begin_turn(self, "")  # Tier-1 плана живёт один ход LLM: роутер и следующий ход его не видят
             if is_metrics_enabled():
                 _duration = time.monotonic() - metric_start
                 try:
@@ -4805,7 +4713,7 @@ class DialogueNode(DialogueStageMixin, Node):
         """Медиакоманду исполняет код, до LLM. ``True`` — в LLM не идёт.
 
         MCP-тулы вызываются тем же исполнителем, что и у LLM-хода
-        (``SchedulerToolExecutor`` → ``ROSMCPToolProvider`` →
+        (``PlanToolExecutor`` → ``ROSMCPToolProvider`` →
         ``LLMToolCallAdapter`` → подписанный ``/mcp/execute``).
 
         ``on_miss`` — issue #3176: куда вернуть реплику, если заказ по имени
@@ -4818,7 +4726,7 @@ class DialogueNode(DialogueStageMixin, Node):
         plan = router.route(text, self._media_state())
         if plan is None:
             return False
-        executor = getattr(self, "_scheduler_executor", None)
+        executor = getattr(self, "_tool_executor", None)
         if plan.play_name:
             return self._start_play_named(plan, executor, text, on_miss)
         if plan.needs_tools and executor is None:
@@ -5310,7 +5218,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # исполнителя тулов) и по словам человека, а не текст модели;
         # ответ модели отзывается из истории.
         music_phrase = executor_turn_reply(
-            getattr(self, "_scheduler_executor", None),
+            getattr(self, "_tool_executor", None),
             (raw_user_command, user_input),
             getattr(self, "_turn_set_tracks", None),
             speak_text_real,

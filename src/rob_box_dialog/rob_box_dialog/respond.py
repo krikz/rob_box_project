@@ -41,6 +41,8 @@ def phrase_key(result: ActionResult) -> Optional[str]:
     успех молчаливого действия ``knowledge.SILENT_DONE_TOOLS`` — звук сам себе доказательство)."""
     if result.status == "done" and result.tool in kn.SILENT_DONE_TOOLS:
         return None
+    if result.reason == kn.PLAN_WAIT_REASON:  # не дождался очереди плана: исход не у владельца — фраза плана
+        return "plan.timeout"
     base = kn.TOOL_PHRASES.get(result.tool, {}).get(result.status) \
         or kn.ACTION_CLASSES[result.cls].phrases.get(result.status)
     if base is None:

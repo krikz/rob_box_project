@@ -79,7 +79,7 @@ class Tier1Runner:
             return None
         if command.kind == "new_session" and not getattr(node, "_new_session_enabled", True):
             return None
-        if command.kind in _NEEDS_TOOLS and getattr(node, "_scheduler_executor", None) is None:
+        if command.kind in _NEEDS_TOOLS and getattr(node, "_tool_executor", None) is None:
             return None
         node.get_logger().info(
             f"🧩 [tier1] kind={command.kind} disputed={command.disputed} args={dict(command.args)} "
@@ -115,7 +115,7 @@ class Tier1Runner:
 
     def stop_music(self) -> bool:
         """Стоп деки/сета и mp3 без фразы (стоп всего; «выключи музыку» в SILENCED, #3696). Нет исполнителя — ``False``."""
-        if getattr(self._node, "_scheduler_executor", None) is None:
+        if getattr(self._node, "_tool_executor", None) is None:
             return False
         self._node.get_logger().info("🔇 [tier1] стоп музыки без фразы: dj_set(stop) + stop_music")
         self._spawn(self._tools((MediaToolCall(DJ_SET_TOOL, {"action": "stop"}), MediaToolCall("stop_music", {}))))
@@ -160,7 +160,7 @@ class Tier1Runner:
 
     async def _tools(self, calls: tuple) -> bool:
         node = self._node
-        executor = getattr(node, "_scheduler_executor", None)
+        executor = getattr(node, "_tool_executor", None)
         ok = executor is not None
         for call in calls if ok else ():
             call_ok, _content = await node._execute_media_tool_result(executor, call)

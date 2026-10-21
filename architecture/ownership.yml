@@ -34,7 +34,8 @@ nodes:
   dialogue_node:
     owner: voice
     package: rob_box_voice
-    source: [src/rob_box_voice/rob_box_voice/dialogue_node.py]
+    # core/plan_host.py — планировщик ресурсов v1 (ADR-0150 PR-7b #3699): публикует /dialog/plan_event из ноды
+    source: [src/rob_box_voice/rob_box_voice/dialogue_node.py, src/rob_box_voice/rob_box_voice/core/plan_host.py]
   command_node:
     owner: voice
     package: rob_box_voice
@@ -279,9 +280,11 @@ topics:
   /dialog/plan_event:
     owner: dialog_node
     type: rob_box_dialog_msgs/PlanEvent
-    status: planned
-    introduced_by: "PR-7 (#3698)"
-    writers_allowed: [dialog_node]
+    status: live
+    introduced_by: "PR-7b (#3699)"
+    # queued{after, eta}/rejected/block_start планировщика ресурсов; в v1 пишет dialogue_node (core/plan_host.py),
+    # читатель — агент v2 (PR-8); до него наблюдатель — лог «🗓️ [plan] PlanEvent» и ros2 topic echo
+    writers_allowed: [dialog_node, dialogue_node]
     readers: []
   /dialog/interrupt_request:
     owner: stt_node

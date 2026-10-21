@@ -8,7 +8,7 @@
 
 * чистый :class:`TrackStartGuard` (успех → лимит, провал → повтор разрешён,
   ``reset`` → новый ход);
-* :class:`SchedulerToolExecutor` — отказ не доходит до провайдера;
+* :class:`PlanToolExecutor` — отказ не доходит до провайдера;
 * сквозной сценарий через настоящий ``AgentCore`` со скриптованной LLM:
   8 запусков в одном ходе → выполнен ровно 1, 7 отказов с текстом.
 """
@@ -34,7 +34,7 @@ from rob_box_voice.core.track_start_guard import (
     TRACK_STARTING_TOOLS,
     TrackStartGuard,
 )
-from rob_box_voice.scheduler.tool_executor import SchedulerToolExecutor
+from rob_box_voice.core.plan_tools import PlanToolExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ def _dj_batch(i: int) -> LLMResponse:
     )
 
 
-def _core(llm: _ScriptedLLM, executor: SchedulerToolExecutor) -> AgentCore:
+def _core(llm: _ScriptedLLM, executor: PlanToolExecutor) -> AgentCore:
     dsm = DialogueStateMachine()
     core = AgentCore(llm=llm, tools=executor, memory=_NullMemory(), dsm=dsm)
     dsm.on_event(DialogueEvent.WAKE_WORD)
@@ -192,13 +192,13 @@ def test_guard_reset_opens_next_turn() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SchedulerToolExecutor wiring
+# PlanToolExecutor wiring
 # ---------------------------------------------------------------------------
 
 
 def test_executor_refuses_second_start_without_calling_provider() -> None:
     underlying = _FakeUnderlying()
-    executor = SchedulerToolExecutor(underlying)
+    executor = PlanToolExecutor(underlying)
 
     async def _go() -> tuple[ToolResult, ToolResult]:
         executor.begin_turn()
@@ -228,7 +228,7 @@ def test_executor_refuses_second_start_without_calling_provider() -> None:
 def test_eight_compose_calls_in_one_turn_execute_exactly_one() -> None:
     """Живой ход #23: 8 × (generate_music + set_dj_mode) → 1 трек."""
     underlying = _FakeUnderlying()
-    executor = SchedulerToolExecutor(underlying)
+    executor = PlanToolExecutor(underlying)
     llm = _ScriptedLLM([_dj_batch(i) for i in range(8)])
     core = _core(llm, executor)
 
@@ -246,7 +246,7 @@ def test_eight_compose_calls_in_one_turn_execute_exactly_one() -> None:
 
 def test_failed_start_then_retry_executes_both() -> None:
     underlying = _FakeUnderlying(fail_first=1)
-    executor = SchedulerToolExecutor(underlying)
+    executor = PlanToolExecutor(underlying)
     llm = _ScriptedLLM([_dj_batch(i) for i in range(3)])
     core = _core(llm, executor)
 
@@ -259,7 +259,7 @@ def test_failed_start_then_retry_executes_both() -> None:
 
 def test_next_turn_allows_new_track() -> None:
     underlying = _FakeUnderlying()
-    executor = SchedulerToolExecutor(underlying)
+    executor = PlanToolExecutor(underlying)
     llm = _ScriptedLLM([_dj_batch(0), _dj_batch(1)])
     core = _core(llm, executor)
 
@@ -277,7 +277,7 @@ def test_next_turn_allows_new_track() -> None:
 @pytest.mark.parametrize("tool", sorted(TRACK_STARTING_TOOLS))
 def test_every_track_starter_is_limited(tool: str) -> None:
     underlying = _FakeUnderlying()
-    executor = SchedulerToolExecutor(underlying)
+    executor = PlanToolExecutor(underlying)
 
     async def _go() -> None:
         executor.begin_turn()

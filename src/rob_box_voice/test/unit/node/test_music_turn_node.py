@@ -1,6 +1,6 @@
 """ADR-0148 на уровне ноды: ``DialogueNode._handle_result`` говорит о музыке фразу КОДА по итогу хода.
 
-Итог хода — ``MusicTurn`` исполнителя тулов (как его заполняет ``SchedulerToolExecutor``), просьба о запуске —
+Итог хода — ``MusicTurn`` исполнителя тулов (как его заполняет ``PlanToolExecutor``), просьба о запуске —
 грамматика по словам человека. Живые случаи 06.10: 14:50 set98207, 14:38 set97492, 15:30 UTC (``tools=[]``).
 """
 
@@ -49,7 +49,7 @@ def _make_node(turn: MusicTurn, set_tracks=None) -> DialogueNode:
     n._check_babble_and_retry = MagicMock(return_value=False)
     n._music_player_state = MusicPlayerState(state="playing", track_id="t1", dj=True)
     n._llm_skipped_counter = new_llm_skip_counter()
-    n._scheduler_executor = SimpleNamespace(music_turn=turn)
+    n._tool_executor = SimpleNamespace(music_turn=turn)
     n._turn_set_tracks = set_tracks
     return n
 

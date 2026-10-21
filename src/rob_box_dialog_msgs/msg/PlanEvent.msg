@@ -1,4 +1,4 @@
-# Событие плана хода (ADR-0150 §10.1). Заменяет /harness/task_events.
+# Событие плана хода (ADR-0150 §10.1, §5.6.1): планировщик ресурсов rob_box_dialog.plan (PR-7b).
 
 uint8 KIND_BLOCK_START=0
 uint8 KIND_BLOCK_END=1

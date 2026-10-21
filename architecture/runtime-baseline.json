@@ -140,7 +140,7 @@
       "scope": "repo"
     },
     {
-      "key": "dead_output|/harness/task_events|",
+      "key": "dead_output|/dialog/plan_event|",
       "scope": "repo"
     },
     {

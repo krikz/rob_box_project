@@ -39,9 +39,10 @@ def test_owner_event_takes_status_and_reason_from_result_data() -> None:
     assert event.data["sound"] == "robot_happy"  # аргумент вызова — слот фразы
 
 
-def test_queued_is_a_promise_and_missing_status_follows_is_error() -> None:
-    queued = ToolResult("c", "{}", data={"status": "queued", "channel": "anim"})
-    assert owner_event(_request("play_animation"), queued).status == "pending"
+def test_plan_outcome_and_missing_status_follows_is_error() -> None:
+    waited = ToolResult("c", "{}", is_error=True, data={"status": "timeout", "reason": "plan_wait"})
+    assert (owner_event(_request("request_music"), waited).status,
+            owner_event(_request("request_music"), waited).reason) == ("timeout", "plan_wait")
     assert owner_event(_request("memory_save"), ToolResult("c", "ok")).status == "done"
     assert owner_event(_request("memory_save"), ToolResult("c", "нет", is_error=True)).status == "rejected"
     applied = ToolResult("c", "ok", data={"status": "applied"})  # не статус исполнителя — решает is_error
@@ -233,3 +234,48 @@ def test_handles_only_a_single_command_call() -> None:
     assert CommandTurn.handles(_command(speech="x"))
     assert not CommandTurn.handles(LLMResponse(tool_calls=(ToolCall(id="1", name="play_sound", arguments=HAPPY),)))
     assert not CommandTurn.handles(LLMResponse(content="привет"))
+
+
+# ── планировщик ресурсов (PR-7b #3699): «а потом» — действие после речи команды ──────────────────────────────
+
+
+class _PlannedTools(_Tools):
+    """Исполнитель тулов с планировщиком, как ``PlanToolExecutor``: Tier-1 хода — по словам человека."""
+
+    def __init__(self, utterance: str, **kwargs: Any) -> None:
+        from rob_box_dialog.plan.runner import PlanRunner
+
+        super().__init__(**kwargs)
+        self.planner = PlanRunner(log=lambda _: None)
+        self.planner.begin_turn(utterance)
+
+
+def test_then_music_code_says_it_will_play_after_the_joke_and_the_joke_goes_first() -> None:
+    """(б) «Робот, расскажи анекдот, а потом включи что-нибудь»: фраза кода «Поставлю после…», анекдот, потом музыка."""
+    tools = _PlannedTools("Робот, расскажи анекдот, а потом включи что-нибудь",
+                          offered=("speak_text", "request_music"))
+    joke = ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]
+    _turn(tools, _command(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "включи что-нибудь"}}],
+                          perform={"kind": "tale", "segments": joke}))
+    said = [text for text, _ in tools.said()]
+    assert said[0].startswith("Поставлю после того, как договорю")
+    assert said[1:3] == joke
+    names = [c.name for c in tools.calls]
+    assert names.index("request_music") > max(i for i, n in enumerate(names) if n == "speak_text" and i < 3)
+
+
+def test_without_then_the_action_is_not_postponed() -> None:
+    tools = _PlannedTools("Робот, включи музыку и расскажи анекдот", offered=("speak_text", "request_music"))
+    joke = ["Заходит робот в бар.", "Конец."]
+    _turn(tools, _command(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "включи что-нибудь"}}],
+                          perform={"kind": "tale", "segments": joke}))
+    assert [c.name for c in tools.calls][0] == "request_music"
+    assert not any(t.startswith("Поставлю") for t, _ in tools.said())
+
+
+def test_plan_timeout_is_spoken_by_code_even_for_music() -> None:
+    """Живой робот 21.10 23:20Z: «а потом включи» не дождалась очереди — робот молчал (о музыке говорит music_turn,
+    а он о запросе, не дошедшем до плеера, не знает). Отказ плана говорит код."""
+    waited = _result("request_music", "timeout", kn.PLAN_WAIT_REASON)
+    assert outcome_phrase([waited]) == phrases.text("plan.timeout")
+    assert outcome_phrase([_result("request_music", "timeout")]) is None  # обычный таймаут музыки — у music_turn

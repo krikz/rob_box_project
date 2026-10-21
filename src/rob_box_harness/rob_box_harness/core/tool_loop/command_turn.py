@@ -8,8 +8,11 @@ PR-7 ч.7c (#3698). Мост ``rob_box_voice.core.command_bridge`` отдаёт 
   голосовой просьбе, #3744); невалидна (или мост уже признал её такой: ``COMMAND_INVALID_FIELD``) — речи нет, ход закрывается провалом:
   :attr:`CommandTurn.failure` → рефлекс ``failed`` (earcon fail, красное кольцо), следующий ход идёт обычно (повтор по
   нарушениям уже сделал мост ``command_bridge`` по тому же срезу, #3698; второго вызова LLM нет);
-* действия исполняет :class:`rob_box_dialog.execute.Executor`; транспорт — исполнитель тулов v1 (MCP, каналы
-  планировщика), исход — событие владельца, которое тул кладёт в данные результата (``status``/``reason``, PR-7b);
+* действия исполняет :class:`rob_box_dialog.execute.Executor` разом; транспорт — исполнитель тулов v1 (MCP под
+  планировщиком ресурсов ``PlanToolExecutor``, PR-7b #3699): ждать ли занятое — решает план, исход — событие владельца,
+  которое тул кладёт в данные результата (``status``/``reason``), или ``timeout``/``rejected`` плана;
+* «расскажи анекдот, а потом включи музыку» (Tier-1 «потом», §5.6.4): действия, которые план ставит после речи,
+  ждут её — сначала звучат фраза кода «Поставлю после …» и выступление, потом действие;
 * фразу об исходе строит код (:func:`rob_box_dialog.respond.join`); ``speech`` модели при действиях не звучит
   (строка лога) — LLM не может сказать «Вот радостный звук!», когда звук не сыграл (Шифу 21.10). После действий
   ``action.*`` ход окончен: LLM слова не получает;
@@ -17,7 +20,7 @@ PR-7 ч.7c (#3698). Мост ``rob_box_voice.core.command_bridge`` отдаёт 
   голос сегмента — ``voice_per_segment``, голос реплики — ``voice`` (голос робота они не меняют);
 * ``query`` — данные обратно LLM, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` раз за ход.
 
-Речь идёт тем же ``speak_text`` исполнителя тулов (очередь VOICE, голос на реплику): счётчики ``speak_text`` и честная
+Речь идёт тем же ``speak_text`` исполнителя тулов (порядок держит владелец речи, голос на реплику): счётчики ``speak_text`` и честная
 история хода у ``AgentCore`` прежние. Модуль временный — уходит с v1-циклом в PR-8.
 """
 
@@ -33,6 +36,8 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import Command, Invalid, parse, validate
 from rob_box_dialog.execute import ActionRequest, Executor, OwnerEvent
+from rob_box_dialog.plan.composition import compose, kind_of
+from rob_box_dialog.plan.plan_events import PlanEvent, queued_phrase
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall, ToolResult
 
@@ -41,8 +46,6 @@ _LOG = logging.getLogger(__name__)
 LOG_MARK = "🧾 [command]"
 SPEAK_TOOL = kn.SPEECH_CHANNEL_TOOLS[0]
 _QUERY = "query"
-#: Исход, который планировщик каналов v1 отдаёт сразу (анимация, стоп музыки после речи): обещание без события.
-_QUEUED = "queued"
 _FAILED = ("rejected", "timeout")
 #: Мост режима команд стоит только у личности (оператор и телеграм команду не получают); эпохи в v1 нет.
 _SNAPSHOT = SimpleNamespace(epoch=0, agent=kn.AGENTS[0])
@@ -63,10 +66,10 @@ class CommandStep:
 
 def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
     """Исход тула как событие владельца. Статус и причина — из данных результата (их кладёт тул по событию владельца:
-    ``play_sound`` — ``SoundEvent``, ``register_speaker`` — ``pending``); «в очереди» — обещание ``pending``; статуса
+    ``play_sound`` — ``SoundEvent``, ``register_speaker`` — ``pending``; план — ``timeout``/``rejected``); статуса
     нет — ошибка тула ``rejected``, иначе ``done``. Слоты фразы — аргументы вызова, данные результата поверх них."""
     data = dict(result.data or {})
-    status = "pending" if data.get("status") == _QUEUED else data.get("status")
+    status = data.get("status")
     if status not in kn.ACTION_STATUSES:
         status = "rejected" if result.is_error else "done"
     reason = data.get("reason") if isinstance(data.get("reason"), str) else None
@@ -75,8 +78,11 @@ def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     """Фраза кода об исходе действий хода. ``query`` и тулы, чей исход говорит другой код
-    (``knowledge.OUTCOME_SPOKEN_ELSEWHERE``), не входят. Слота фразы нет в данных события — общая фраза о неудаче."""
-    own = [r for r in results if r.cls != _QUERY and r.tool not in kn.OUTCOME_SPOKEN_ELSEWHERE]
+    (``knowledge.OUTCOME_SPOKEN_ELSEWHERE``), не входят — кроме отказа плана (``PLAN_WAIT_REASON``): до владельца
+    запрос не дошёл, и другой код о нём не знает (живой робот 21.10: музыка «потом» не дождалась — робот молчал).
+    Слота фразы нет в данных события — общая фраза о неудаче."""
+    own = [r for r in results if r.cls != _QUERY
+           and (r.tool not in kn.OUTCOME_SPOKEN_ELSEWHERE or r.reason == kn.PLAN_WAIT_REASON)]
     try:
         said = join(own)
     except KeyError as missing:
@@ -86,9 +92,9 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def spoken_lines(cmd: Command, results: Sequence[ActionResult]) -> List[Line]:
+def spoken_lines(cmd: Command, results: Sequence[ActionResult], content: bool = True) -> List[Line]:
     """Что прозвучит после исполнения: фраза кода об исходе, затем реплика (только без действий) и сегменты
-    выступления — ответ по сути звучит и при действиях."""
+    выступления — ответ по сути звучит и при действиях; ``content=False`` — выступление уже прозвучало до действий."""
     lines: List[Line] = []
     phrase = outcome_phrase(results)
     if phrase:
@@ -99,7 +105,7 @@ def spoken_lines(cmd: Command, results: Sequence[ActionResult]) -> List[Line]:
     elif said:
         _LOG.info(f"{LOG_MARK} речь при действиях не звучит (§4.1): {said[:120]!r}")
     perf = cmd.perform
-    if perf is not None:
+    if perf is not None and content:
         voices = perf.voice_per_segment or ("",) * len(perf.segments)
         lines.extend(zip(perf.segments, voices))
     return lines
@@ -136,6 +142,9 @@ class CommandTurn:
             # первый ответ», v1-ретрай #1217 (второй вызов LLM) не нужен.
             done.append((call, ToolResult(tool_call_id=call.id, content=self.failure, is_error=True)))
             return self._step(done, LLMResponse(content=""))
+        first = self._before_actions(cmd)
+        if first:
+            await self._say(done, first)
         results = await self._execute(self._allowed(cmd), done)
         if results and all(r.cls == _QUERY for r in results):
             self._queries += 1
@@ -143,13 +152,29 @@ class CommandTurn:
             messages.append(LLMMessage(role="assistant", content="", tool_calls=(call,)))
             messages.append(LLMMessage(role="tool", content=data.content, tool_call_id=call.id, tool_result=data))
             return self._step(done, await next_response())
-        lines = spoken_lines(cmd, results)
+        lines = spoken_lines(cmd, results, content=not first)
         if not lines and not done:  # нечего исполнить и нечего сказать (query сверх лимита): провал, а не молчаливое «ок»
             self.failure = "nothing_to_do"
         _LOG.info(f"{LOG_MARK} ход окончен: {[(r.tool, r.status, r.reason) for r in results]} "
                   f"скажу {[text[:60] for text, _ in lines]}")
         await self._say(done, lines)
         return self._step(done, LLMResponse(content=""))
+
+    def _before_actions(self, cmd: Command) -> List[Line]:
+        """Действия, которые план ставит после речи этой команды (Tier-1 «потом»): до них звучат фраза кода
+        «Поставлю после того, как договорю» и выступление; их речь план видит занятой и ждёт её конца."""
+        planner = getattr(self._tools, "planner", None)
+        if planner is None or cmd.perform is None:
+            return []
+        later = [a for a in cmd.actions if "speech" in compose(kind_of(a.tool), ["speech"], planner.hint).waits_for]
+        if not later:
+            return []
+        chars = sum(len(s) for s in cmd.perform.segments)
+        eta_ms = int(chars / planner.state.rate.chars_per_s * 1000)
+        phrase = queued_phrase(PlanEvent("queued", later[0].tool, after_resource="speech", eta_ms=eta_ms),
+                               kind_of(later[0].tool))
+        voices = cmd.perform.voice_per_segment or ("",) * len(cmd.perform.segments)
+        return [(phrase, ""), *zip(cmd.perform.segments, voices)]
 
     def _allowed(self, cmd: Command) -> Tuple[Any, ...]:
         """Действия к исполнению: ``query`` сверх ``LLM_QUERY_ITERATIONS_MAX`` итераций хода не исполняется."""

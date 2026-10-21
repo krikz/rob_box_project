@@ -102,8 +102,6 @@ from .tools import (
     # Issue #1765 — cross-provider TTS switching.
     SetTtsProviderTool,
     ListTtsVoicesTool,
-    # S6.1 — task_delta MCP tool (scheduler segments).
-    TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -1001,11 +999,6 @@ class MCPServer(Node):
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».
         self.registry.register(SayTool(self))
-        # Issue #968 (S6) — task_delta: schema-only registration so the
-        # LLM sees the tool. Real execution is intercepted in-process by
-        # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
-        # reaches mcp_server — see TaskDeltaTool's docstring.
-        self.registry.register(TaskDeltaTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))

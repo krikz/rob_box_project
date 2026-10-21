@@ -34,7 +34,7 @@ OLD_TURN_TEXT = "Робот, сыграй увертюру 1812 сет на 10 �
 
 
 class _Executor:
-    """На месте ``SchedulerToolExecutor``: ``execute``, ``begin_turn`` и ``MusicTurn``, как у настоящего.
+    """На месте ``PlanToolExecutor``: ``execute``, ``begin_turn`` и ``MusicTurn``, как у настоящего.
 
     Скрытые аргументы хода снимает с ноды в момент вызова тула — как ``LLMToolCallAdapter`` (``turn_context``).
     """
@@ -86,7 +86,7 @@ def _make_node(*, fail: bool = False) -> DialogueNode:
     n._turn_id = "old-llm-turn"
     n._turn_heard_text = OLD_TURN_TEXT
     n._turn_set_tracks = 10
-    n._scheduler_executor = _Executor(n, fail=fail)
+    n._tool_executor = _Executor(n, fail=fail)
     return n
 
 
@@ -122,7 +122,7 @@ def test_live_phrase_starts_dj_set_without_llm(run_plans):
     run_plans()
     n._dispatch_turn.assert_not_called()  # ни подгрузки скилла, ни второго раунда LLM
     assert n._llm_skipped_counter["media_command"] == 1
-    [(name, args, hidden)] = n._scheduler_executor.calls
+    [(name, args, hidden)] = n._tool_executor.calls
     assert (name, args) == ("dj_set", {"action": "start", "persona": "диджей 8битный", "style": "chiptune",
                                        "tracks": 24})  # ADR-0153 S2: «8битный» выбирает стиль
     # Скрытый контекст — этой реплики: тему (денди + классика) dj_set выделит из неё, длина 24.
@@ -139,7 +139,7 @@ def test_repeated_phrase_is_a_new_turn_and_clean_music_turn(run_plans):
     for _ in range(2):
         _stt(n, LIVE_1908)
         run_plans()
-    executor = n._scheduler_executor
+    executor = n._tool_executor
     first, second = (hidden["turn_id"] for _name, _args, hidden in executor.calls)
     assert first != second
     assert executor.turns == 2
@@ -161,7 +161,7 @@ def test_unrecognised_phrase_goes_to_llm_and_keeps_llm_turn_context(run_plans):
     _stt(n, "Робот, ты диджей вася замути сэт и поставь still dre")
     run_plans()
     n._dispatch_turn.assert_called_once()
-    assert n._scheduler_executor.calls == []
+    assert n._tool_executor.calls == []
     assert (n._turn_id, n._turn_heard_text, n._turn_set_tracks) == ("old-llm-turn", OLD_TURN_TEXT, 10)
 
 
@@ -170,6 +170,6 @@ def test_volume_over_llm_turn_does_not_touch_its_context(run_plans):
     n._music_player_state = MusicPlayerState(state="playing")
     _stt(n, "Робот, громче")
     run_plans()
-    assert [c[0] for c in n._scheduler_executor.calls] == ["set_music_volume"]
-    assert n._scheduler_executor.calls[0][2]["turn_id"] == "old-llm-turn"
-    assert n._scheduler_executor.turns == 0
+    assert [c[0] for c in n._tool_executor.calls] == ["set_music_volume"]
+    assert n._tool_executor.calls[0][2]["turn_id"] == "old-llm-turn"
+    assert n._tool_executor.turns == 0

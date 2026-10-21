@@ -14,15 +14,19 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, replace
-from typing import Callable, Dict, Mapping, Optional, Tuple
+from typing import Callable, Deque, Dict, Iterable, List, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.plan.estimate import SpeechRate, speech_total_s
+from rob_box_dialog.plan.estimate import SpeechRate, remaining_s
 
 _LOG = logging.getLogger(__name__)
 #: События ``SpeechEvent``/``SoundEvent``, после которых реплика/звук ресурс больше не занимает.
 _SPEECH_END = ("finished", "cancelled", "rejected")
+_SPEECH_LIVE = ("queued", "synthesized", "started", "progress")
+#: Сколько последних законченных реплик помнить: ``reserve`` после их конца не должен «оживить» реплику.
+_ENDED_MEMORY = 64
 _SOUND_END = ("finished", "skipped")
 #: Ресурсы, которые ведёт снимок (переиздаётся), а не пара событий start/end — потерянным не считаются.
 _SNAPSHOT_FED = ("backing", "track")
@@ -50,33 +54,52 @@ class Block:
 
 
 class ResourceState:
-    """Снимок занятости ресурсов одного агента по событиям владельцев. ``clock`` — монотонные секунды."""
+    """Снимок занятости ресурсов одного агента по событиям владельцев. ``clock`` — монотонные секунды.
+
+    Голос занят, пока у владельца речи есть живая реплика (``queued``/``started`` без конца): очередь tts_node — тоже
+    занятость (владелец принял реплику). Реплики, которые хост только что попросил (id из ответа тула), он отмечает
+    :meth:`reserve` — до ``queued`` от владельца, чтобы следующее действие хода не проскочило в эту щель."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._blocks: Dict[str, Block] = {}
-        self._speech_size: Dict[str, Tuple[int, int]] = {}  # speech_id → (text_len, duration_ms)
+        # голос: столбец → живые реплики в порядке очереди: speech_id → [text_len, duration_ms, spoken, seconds]
+        self._speech: Dict[str, Dict[str, List[float]]] = {"speech": {}, "perform": {}}
+        self._started: Dict[str, str] = {}
+        self._ended: Deque[str] = deque(maxlen=_ENDED_MEMORY)
         self.rate = SpeechRate()
 
     def on_speech(self, kind: str, speech_id: str, *, turn_id: str = "", epoch: int = 0, text_len: int = 0,
                   duration_ms: int = 0, spoken_chars: int = 0, seconds: float = 0.0, perform: bool = False) -> None:
         """``SpeechEvent`` (вид — имя ``KIND_*`` в нижнем регистре). ``perform`` — сегмент выступления (PR-7c)."""
         col = "perform" if perform else "speech"
-        if kind == "synthesized" and duration_ms > 0:
-            text, _ = self._speech_size.get(speech_id, (text_len, 0))
-            self._speech_size[speech_id] = (text, duration_ms)
-        elif kind == "started":
-            size = (text_len, duration_ms or self._speech_size.get(speech_id, (0, 0))[1])
-            self._speech_size[speech_id] = size
-            self._open(col, speech_id, speech_total_s(size[0], size[1], self.rate), turn_id, epoch)
-        elif kind == "progress":
-            self.rate.observe(spoken_chars, seconds)
-            self._progress(col, speech_id, spoken_chars, seconds)
-        elif kind in _SPEECH_END:
+        live = self._speech[col]
+        if kind in _SPEECH_END:
             if kind == "finished":
-                self.rate.observe(spoken_chars or self._speech_size.get(speech_id, (0, 0))[0], seconds)
-            self._speech_size.pop(speech_id, None)
-            self._close(col, speech_id)
+                size = live.get(speech_id)
+                self.rate.observe(spoken_chars or int(size[0] if size else 0), seconds)
+            live.pop(speech_id, None)
+            self._ended.append(speech_id)
+            if self._started.get(col) == speech_id:
+                del self._started[col]
+        elif kind in _SPEECH_LIVE and speech_id not in self._ended:
+            size = live.setdefault(speech_id, [0, 0, 0, 0.0])
+            size[0] = text_len or size[0]
+            size[1] = duration_ms or size[1]
+            if kind == "started":
+                self._started[col] = speech_id
+            elif kind == "progress":
+                self.rate.observe(spoken_chars, seconds)
+                size[2], size[3] = spoken_chars, seconds
+        self._sync_voice(col, turn_id, epoch)
+
+    def reserve(self, speech_ids: Iterable[str], perform: bool = False) -> None:
+        """Реплики, которые хост только что отдал владельцу речи (до его ``queued``)."""
+        col = "perform" if perform else "speech"
+        for speech_id in speech_ids:
+            if speech_id and speech_id not in self._ended:
+                self._speech[col].setdefault(speech_id, [0, 0, 0, 0.0])
+        self._sync_voice(col)
 
     def on_sound(self, kind: str, request_id: str) -> None:
         """``SoundEvent``: ``started`` занимает SFX, ``finished``/``skipped`` того же запроса освобождает."""
@@ -119,6 +142,8 @@ class ResourceState:
                 _LOG.warning(f"⚠️ [plan] {col} {block.block_id}: нет события конца {now - block.started_at:.0f} с —"
                              " считаю свободным")
                 del self._blocks[col]
+                self._speech.get(col, {}).clear()
+                self._started.pop(col, None)
         return dict(self._blocks)
 
     def eta_s(self, resource: str) -> Optional[float]:
@@ -130,18 +155,21 @@ class ResourceState:
         now = self._clock()
         self._blocks[col] = Block(col, block_id, now, None if total_s is None else now + total_s, turn_id, epoch)
 
-    def _progress(self, col: str, speech_id: str, spoken_chars: int, seconds: float) -> None:
-        block = self._blocks.get(col)
-        if block is None or block.block_id != speech_id:
+    def _sync_voice(self, col: str, turn_id: str = "", epoch: int = 0) -> None:
+        """Блок голоса — по живым репликам: звучащая (или первая в очереди), конец — сумма оставшегося."""
+        live = self._speech[col]
+        if not live:
+            self._blocks.pop(col, None)
             return
-        text_len, duration_ms = self._speech_size.get(speech_id, (0, 0))
-        if duration_ms > 0:
-            left = duration_ms / 1000.0 - seconds
-        elif text_len > 0:
-            left = max(0, text_len - spoken_chars) / self.rate.chars_per_s
+        head = self._started.get(col) or next(iter(live))
+        left = [remaining_s(int(s[0]), int(s[1]), int(s[2]), s[3], self.rate) for s in live.values()]
+        now = self._clock()
+        ends = None if any(x is None for x in left) else now + sum(left)
+        current = self._blocks.get(col)
+        if current is not None and current.block_id == head:
+            self._blocks[col] = replace(current, ends_at=ends)
         else:
-            return
-        self._blocks[col] = replace(block, ends_at=self._clock() + max(0.0, left))
+            self._blocks[col] = Block(col, head, now, ends, turn_id, epoch)
 
     def _close(self, col: str, block_id: str) -> None:
         block = self._blocks.get(col)

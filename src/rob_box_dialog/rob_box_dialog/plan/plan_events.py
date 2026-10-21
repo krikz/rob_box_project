@@ -1,7 +1,7 @@
 """События плана ``/dialog/plan_event`` (ADR-0150 §5.6.1, §10.1 ``PlanEvent.msg``; BML ``blockProgress``/``predictionFeedback``).
 
 Чистые данные и фразы; публикует хост (поле ``kind`` → константа ``KIND_*`` сообщения по :data:`PLAN_EVENT_KINDS`).
-Вместо ``{"status": "queued"}`` от планировщика v1 действие, которое ещё не началось, получает событие ``queued{after,
+Вместо обещания «в очереди» от планировщика v1 действие, которое ещё не началось, получает событие ``queued{after,
 eta_ms}``: из него код строит фразу «Поставлю после …» (:func:`queued_phrase`) и данные для LLM «в очереди после X,
 старт ≈ через N с» (:func:`pending_data`). Начатое и законченное — ``block_start``/``block_end`` по событию владельца.
 """
@@ -85,8 +85,8 @@ def queued_phrase(event: PlanEvent, new_kind: str) -> str:
 
 
 def pending_data(event: PlanEvent) -> Dict[str, Any]:
-    """Структурный блок для LLM о не начатом действии (BML ``predictionFeedback``) — вместо ``status: queued``."""
-    data: Dict[str, Any] = {"status": "pending", "queued_after": event.after_resource, "after_block": event.after_block}
+    """Структурный блок для LLM о не начатом действии (BML ``predictionFeedback``) — вместо обещания «в очереди»."""
+    data: Dict[str, Any] = {"status": "pending", "after": event.after_resource, "after_block": event.after_block}
     if event.eta_ms:
         data["start_in_s"] = round(event.eta_ms / 1000, 1)
     return data

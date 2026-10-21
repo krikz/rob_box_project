@@ -2256,239 +2256,79 @@ def test_orphaned_user_turn_collapsed_before_llm(
 
 
 # ---------------------------------------------------------------------------
-# W7a — batch re-ordering (_order_tool_calls)
+# ADR-0150 PR-7b (#3699) — порядок пачки решает ``order_batch`` исполнителя
+# тулов (планировщик ресурсов), а не список тулов в AgentCore.
 # ---------------------------------------------------------------------------
 
 
-def _call(cid: str, name: str) -> ToolCall:
-    return ToolCall(id=cid, name=name, arguments={})
+class _OrderingToolProvider(_FakeToolProvider):
+    """_FakeToolProvider + order_batch(), как у PlanToolExecutor: исполняет пачку задом наперёд."""
+
+    def order_batch(self, calls: Any) -> list[Any]:
+        return list(reversed(calls))
 
 
-def test_order_tool_calls_puts_stop_music_after_speak_text() -> None:
-    """[speak_text, stop_music] keeps order but flags stop as deferred."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, deferred = _order_tool_calls(
-        [_call("c1", "speak_text"), _call("c2", "stop_music")]
-    )
-    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
-    # stop_music must wait for the voice channel to drain.
-    assert deferred == {"c2"}
-
-
-def test_order_tool_calls_destructive_last_ordinary_keep_order() -> None:
-    """Ordinary tools keep their relative order; destructive tools run last (no music prelude since #3614)."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, deferred = _order_tool_calls(
-        [
-            _call("c1", "stop_music"),
-            _call("c2", "speak_text"),
-            _call("c3", "music_library"),
-        ]
-    )
-    assert [c.name for c in ordered] == [
-        "speak_text",
-        "music_library",
-        "stop_music",
-    ]
-    assert deferred == {"c1"}
-
-
-def test_order_tool_calls_register_speaker_before_speak_text() -> None:
-    """Issue #2913 — register_speaker раньше реплик пачки: речь хода ждёт
-    исхода регистрации, и ожидание должно быть взведено до того, как
-    голосовой канал возьмёт реплику."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, _deferred = _order_tool_calls(
-        [
-            _call("c1", "speak_text"),
-            _call("c2", "memory_save"),
-            _call("c3", "register_speaker"),
-        ]
-    )
-    assert [c.name for c in ordered] == [
-        "register_speaker",
-        "speak_text",
-        "memory_save",
-    ]
-
-
-def test_order_tool_calls_stop_music_alone_not_deferred() -> None:
-    """A lone stop_music has no voice to wait for — not deferred."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, deferred = _order_tool_calls([_call("c1", "stop_music")])
-    assert [c.name for c in ordered] == ["stop_music"]
-    assert deferred == set()
-
-
-def test_order_tool_calls_independent_tools_keep_relative_order() -> None:
-    """Bypass tools (memory_save etc.) keep their original relative order."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, deferred = _order_tool_calls(
-        [
-            _call("c1", "memory_save"),
-            _call("c2", "speak_text"),
-            _call("c3", "search_web"),
-        ]
-    )
-    assert [c.name for c in ordered] == [
-        "memory_save",
-        "speak_text",
-        "search_web",
-    ]
-    assert deferred == set()
-
-
-def test_order_tool_calls_stop_navigation_is_destructive_too() -> None:
-    """stop_navigation is treated like stop_music (defer to end)."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    ordered, deferred = _order_tool_calls(
-        [_call("c1", "stop_navigation"), _call("c2", "speak_text")]
-    )
-    assert [c.name for c in ordered] == ["speak_text", "stop_navigation"]
-    assert deferred == {"c1"}
-
-
-def test_run_with_tools_executes_in_safe_order_but_returns_original_order() -> None:
-    """Execution re-orders, but tool-result messages keep the LLM's order."""
-    from rob_box_harness.core.agent_core import _order_tool_calls
-
-    calls = [
-        _call("c1", "stop_music"),
-        _call("c2", "speak_text"),
-    ]
-    ordered, deferred = _order_tool_calls(calls)
-    assert [c.name for c in ordered] == ["speak_text", "stop_music"]
-    # And the original tuple is untouched (frozen dataclass semantics).
-    assert [c.name for c in calls] == ["stop_music", "speak_text"]
-
-
-# ---------------------------------------------------------------------------
-# S2.3/S2.4 (scheduler-segments-merge, issue #968) — wire
-# SchedulerToolExecutor.begin_group() into AgentCore's batch loop.
-#
-# begin_group() (rob_box_voice/scheduler/tool_executor.py, commit
-# 2585cc8e) has existed since S2.3 but nothing calls it — every
-# channel-routed task keeps group_id=None forever and [SEGMENT PLAN]
-# (S5) never appears. The docstring says it must be called "right
-# before agent_core processes one LLM batch of tool_calls (the same
-# re-ordering point W7a already hooks into)" — i.e. once per iteration
-# of the tool loop that has tool_calls, right by _order_tool_calls().
-#
-# ToolProvider (rob_box_harness.tools) does NOT declare begin_group —
-# it's a SchedulerToolExecutor-specific extra, so the call MUST be
-# optional (getattr/hasattr-guarded): a plain ToolProvider without it
-# (e.g. _FakeToolProvider itself in most fixtures) must keep working.
-# ---------------------------------------------------------------------------
-
-
-class _GroupTrackingToolProvider(_FakeToolProvider):
-    """_FakeToolProvider + begin_group(), mirroring SchedulerToolExecutor."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.begin_group_call_count = 0
-
-    def begin_group(self) -> str:
-        self.begin_group_call_count += 1
-        return f"g{self.begin_group_call_count}"
-
-
-def test_begin_group_called_once_per_tool_batch(
-    llm: _FakeLLMProvider,
-    memory: _FakeMemoryStore,
-    dsm: DialogueStateMachine,
-) -> None:
-    """Two LLM batches with tool_calls -> begin_group() called exactly twice.
-
-    Reproduces the "комар + енот" shape: first batch sings verse 1
-    (speak_text), a second batch (after the tool result) sings verse 2
-    — each batch must open its OWN group so [SEGMENT PLAN] can tell
-    them apart.
-    """
-    tools_provider = _GroupTrackingToolProvider()
+def _echo_batch(llm: _FakeLLMProvider) -> None:
     llm.responses = [
-        LLMResponse(
-            content="",
-            tool_calls=(
-                ToolCall(id="c1", name="speak_text", arguments={"text": "verse1"}),
-            ),
-        ),
-        LLMResponse(
-            content="",
-            tool_calls=(
-                ToolCall(id="c2", name="speak_text", arguments={"text": "verse2"}),
-            ),
-        ),
+        LLMResponse(content="", tool_calls=(
+            ToolCall(id="c1", name="echo", arguments={"text": "a"}),
+            ToolCall(id="c2", name="echo", arguments={"text": "b"}),
+        )),
         LLMResponse(content="done", tool_calls=()),
     ]
-    core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
-    _wake(core_obj)
-
-    asyncio.run(core_obj.process_input("спой про комара", history=[]))
-
-    assert tools_provider.begin_group_call_count == 2
 
 
-def test_begin_group_not_called_when_no_tool_calls(
+def test_batch_runs_in_executor_order_results_keep_model_order(
     llm: _FakeLLMProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """A plain-text turn (no tool_calls at all) never opens a group."""
-    tools_provider = _GroupTrackingToolProvider()
-    llm.response_text = "hello back"  # default, no tool_calls
+    async def echo(args: dict[str, object]) -> str:
+        return f"echo:{args.get('text')}"
+
+    tools_provider = _OrderingToolProvider(handler_map={"echo": echo})
+    _echo_batch(llm)
     core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     _wake(core_obj)
 
-    asyncio.run(core_obj.process_input("hi", history=[]))
+    asyncio.run(core_obj.process_input("q", history=[]))
 
-    assert tools_provider.begin_group_call_count == 0
+    assert [c.id for c in tools_provider.executed] == ["c2", "c1"]
+    tool_msgs = [m for m in llm.calls[-1][0] if m.role == "tool"]
+    assert [m.tool_call_id for m in tool_msgs] == ["c1", "c2"]  # история OpenAI — в порядке модели
 
 
-def test_process_input_works_without_begin_group_on_tool_provider(
+def test_batch_without_order_hook_runs_in_model_order(
     llm: _FakeLLMProvider,
     tools_provider: _FakeToolProvider,
     memory: _FakeMemoryStore,
     dsm: DialogueStateMachine,
 ) -> None:
-    """Regression: a ToolProvider without begin_group() (the plain port
-    contract, e.g. _FakeToolProvider) must not break the tool loop."""
-    assert not hasattr(tools_provider, "begin_group")
-    llm.responses = [
-        LLMResponse(
-            content="",
-            tool_calls=(ToolCall(id="c1", name="echo", arguments={"text": "a"}),),
-        ),
-        LLMResponse(content="done", tool_calls=()),
-    ]
-
+    """Музыку вперёд и стоп в конец больше никто не переставляет (W7a удалён)."""
     async def echo(args: dict[str, object]) -> str:
         return f"echo:{args.get('text')}"
-    tools_provider._handler_map = {"echo": echo}
 
+    assert not hasattr(tools_provider, "order_batch")
+    tools_provider._handler_map = {"echo": echo}
+    _echo_batch(llm)
     core_obj = AgentCore(llm=llm, tools=tools_provider, memory=memory, dsm=dsm)
     _wake(core_obj)
 
     result = asyncio.run(core_obj.process_input("q", history=[]))
+
     assert result.error is None
-    assert result.tools_called == ["echo"]
+    assert [c.id for c in tools_provider.executed] == ["c1", "c2"]
 
 
 # ---------------------------------------------------------------------------
 # Issue #2859 — begin_turn(): граница хода для per-turn гардов провайдера
-# (SchedulerToolExecutor: «один трек за ход»). В отличие от begin_group()
-# зовётся ОДИН раз на ход, даже если пачек tool_calls несколько.
+# (PlanToolExecutor: «один трек за ход»). Зовётся ОДИН раз на ход,
+# даже если пачек tool_calls несколько.
 # ---------------------------------------------------------------------------
 
 
 class _TurnTrackingToolProvider(_FakeToolProvider):
-    """_FakeToolProvider + begin_turn(), mirroring SchedulerToolExecutor."""
+    """_FakeToolProvider + begin_turn(), mirroring PlanToolExecutor."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

@@ -27,7 +27,7 @@ class _NoComposerExecutor(_MelodyExecutor):
 
 def test_router_says_the_code_phrase_verbatim_and_never_calls_the_llm(run_plans):  # noqa: F811
     n = _make_node()
-    n._scheduler_executor = _NoComposerExecutor()
+    n._tool_executor = _NoComposerExecutor()
     _stt(n, "Робот, поставь к элизе")
     run_plans()
     n._dispatch_turn.assert_not_called()

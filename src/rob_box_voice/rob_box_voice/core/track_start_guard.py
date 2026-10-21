@@ -21,8 +21,8 @@ ADR-0149 PR-13a: DJ-часть (лимит реплик DJ-хода #2878, за�
 #3246/#3247, ``is_dj_turn``) удалена вместе со старым путём музыки — на
 переходе сета движка v2 хода LLM нет.
 
-Подключён в ``SchedulerToolExecutor``
-(:mod:`rob_box_voice.scheduler.tool_executor`)
+Подключён в ``PlanToolExecutor``
+(:mod:`rob_box_voice.core.plan_tools`)
 — это единственная точка, через которую проходят все вызовы тулов личности.
 """
 

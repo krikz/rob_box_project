@@ -306,7 +306,7 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     **{t: "action.local" for t in (
         "add_music_material", "clear_waypoints", "delete_waypoint", "memory_save", "play_animation",
         "save_waypoint", "set_music_volume", "set_pitch", "set_speed", "set_tts_provider", "set_voice",
-        "set_volume", "task_delta",
+        "set_volume",
     )},
     **{t: "action.media" for t in (
         "dj_set", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
@@ -407,7 +407,6 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (#3779, ``MOTION_VERB_STEMS``)
     "animation": ToolGroup(("анимац", "изобрази", *GAZE_VERB_STEMS), ("play_animation",)),
     "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
-    "tasks": ToolGroup(("отмени", "продли", "сократи", "задач"), ("task_delta",)),
     "status": ToolGroup(
         ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
         ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
@@ -838,21 +837,42 @@ RESOURCE_BOUNDARY: Mapping[str, str] = MappingProxyType({
 COMPOSITION_NO_END: Tuple[str, ...] = ("face",)
 #: Непрерываемое занятое (§5.6.2): движение вытесняет только «стой» и новое движение (строка таблицы), не «хватит».
 COMPOSITION_UNINTERRUPTIBLE: Tuple[str, ...] = ("motion",)
+#: Строки, которые Tier-1 «потом» не откладывает: «потом» — про просьбу («а потом включи музыку»), а не про ответ
+#: робота — реплика, экспрессия и запрос данных хода звучат/идут сразу (реплика за репликой — очередь tts_node).
+TIER1_LATER_SKIP_ROWS: Tuple[str, ...] = ("speech", "expression", "query")
 #: Старшинство политик: итог по нескольким занятым ресурсам — самая строгая клетка.
 POLICY_ORDER: Tuple[str, ...] = ("REJECT", "APPEND", "REPLACE", "MERGE")
 #: Блок из события владельца (речь, SFX, движение) без события конца дольше этого срока считается потерянным
 #: (finished не дошёл) — ресурс свободен, план не ждёт вечно. Музыка из снимка плеера не стареет: он переиздаётся.
 RESOURCE_STALE_S = 180.0
-#: Скорость речи для ETA ``queued{eta_ms}``, пока нет замера по ``SpeechEvent progress`` (spoken_chars/seconds):
-#: ОЦЕНКА, не замер (русская речь ~12-15 симв/с).
-SPEECH_CHARS_PER_S_GUESS = 14.0
+#: Скорость речи для ETA ``queued{eta_ms}``, пока нет замера по ``SpeechEvent progress`` (spoken_chars/seconds).
+#: Живой робот 21.10 23:20Z (minimax male-qn-qingse, SpeechEvent started→finished): 55/4,7 = 11,8; 64/6,1 = 10,5;
+#: 41/4,0 = 10,2 симв/с — без времени синтеза (~2–3 с на реплику), его добавляет запас ожидания.
+SPEECH_CHARS_PER_S_GUESS = 11.0
 #: Ключи фраз плана (§5.6.4): «Поставлю после …» по ``PlanEvent queued`` — глагол по строке матрицы, «после чего» —
 #: по столбцу; их обязан содержать ``phrases/ru.yaml`` (как :data:`PHRASE_KEYS`).
 PLAN_PHRASE_KEYS: Tuple[str, ...] = (
-    "plan.queued", "plan.queued.eta",
+    "plan.queued", "plan.queued.eta", "plan.timeout",
     *(f"plan.verb.{kind}" for kind in COMPOSITION_NEW if kind != "halt"),
     *(f"plan.after.{busy}" for busy in COMPOSITION_BUSY if busy not in COMPOSITION_NO_END),
 )
+#: Очереди, которые ведёт сам владелец ресурса (строка, столбец): реплика за репликой — tts_node, короткий звук следом —
+#: sound_node (``SOUND_QUEUE_MAX_WAIT_S``, длинный — честный ``skipped{busy}``). Планировщик их не ждёт: запрос — сразу.
+OWNER_QUEUES: Tuple[Tuple[str, str], ...] = (("speech", "speech"), ("sfx", "sfx"))
+#: Потолок ожидания действия в очереди плана: оценка ETA занятого + запас, но не больше максимума; ETA неизвестна —
+#: максимум. Пока владелец сообщает о занятом ресурсе (события, свежая ETA), срок продлевается до now + ETA + запас,
+#: но не дальше максимума от начала ожидания. Не дождался — действие не исполняется, исход ``timeout`` с причиной
+#: :data:`PLAN_WAIT_REASON`, и об этом говорит код (а не тихий старт поверх и не молчание).
+PLAN_WAIT_MAX_S = 60.0
+PLAN_WAIT_SLACK_S = 5.0
+PLAN_WAIT_REASON = "plan_wait"
+
+
+def plan_wait_ceiling_s(eta_s: Optional[float]) -> float:
+    """Сколько ждать занятый ресурс при оценке ``eta_s`` (``None`` — неизвестно)."""
+    return PLAN_WAIT_MAX_S if eta_s is None else min(PLAN_WAIT_MAX_S, eta_s + PLAN_WAIT_SLACK_S)
+
+
 #: ETA короче этого во фразе не называется: «примерно через 1 с» — шум, а не информация.
 PLAN_SAY_ETA_MIN_S = 3
 

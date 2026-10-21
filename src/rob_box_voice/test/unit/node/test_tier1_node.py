@@ -68,7 +68,7 @@ def _make_node(*, playing=False, silenced=False, speaking=False, verdict="part_o
                                              dj_info={"enabled": False, "title": "Still Dre"})
     n._speaking_watch = SimpleNamespace(speaking=speaking)
     n._stop_chooser = _Chooser(verdict)
-    n._scheduler_executor = _FakeExecutor()
+    n._tool_executor = _FakeExecutor()
     n._loop = MagicMock()
     return n
 
@@ -105,7 +105,7 @@ def test_stop_stops_speech_motion_and_music_without_llm(run_plans):
     n._dispatch_turn.assert_not_called()
     assert _speech_stopped(n)
     assert n._intent_pub.publish.call_args[0][0].kind == "stop_motion"
-    assert n._scheduler_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
+    assert n._tool_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     n._speak_direct.assert_not_called()
     assert n._llm_skipped_counter["tier1"] == 1
 
@@ -134,7 +134,7 @@ def test_volume_while_speaking_is_tts_and_silent_in_silence(run_plans, silenced,
     _stt(n, "Робот, громче")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("set_volume", {"action": "louder"})]
+    assert n._tool_executor.calls == [("set_volume", {"action": "louder"})]
     assert n._speak_direct.called is spoken
 
 
@@ -142,7 +142,7 @@ def test_volume_while_music_is_music(run_plans):
     n = _make_node(playing=True, speaking=True)
     _stt(n, "Робот, громче")
     run_plans()
-    assert n._scheduler_executor.calls == [("set_music_volume", {"action": "louder"})]
+    assert n._tool_executor.calls == [("set_music_volume", {"action": "louder"})]
     n._speak_direct.assert_called_once_with("Сделал музыку громче.")
 
 
@@ -151,7 +151,7 @@ def test_voice_by_registry_without_llm(run_plans):
     _stt(n, "Робот, включи голос надёжного мужика")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("set_voice", {"voice": "Russian_ReliableMan"})]
+    assert n._tool_executor.calls == [("set_voice", {"voice": "Russian_ReliableMan"})]
 
 
 def test_disputed_stop_part_of_command_goes_on_and_speech_is_not_cut(run_plans):

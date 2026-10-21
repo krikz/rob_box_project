@@ -1428,7 +1428,7 @@ act(
         step(
             "n807_merge_addition",
             "Робот, и после каждого числа добавляй слово шаг.",
-            patterns=["task_delta|speak_text"],
+            patterns=["speak_text"],
             must_not=["ясный стоп", "SpeechEvent cancelled"],
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
             "её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся; «Cancel: new "
@@ -1477,11 +1477,9 @@ act(
         ),
     ],
     [
-        "Акт 8 — expected-partially-red: четыре хука планировщика",
-        "(set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook,",
-        "set_eta_provider) в dialogue_node ни к чему не подключены, поэтому",
-        "task_delta в n807 скорее всего не вызовется. GATE-1 держит только то,",
-        "что обязано работать: речь, музыка, остановка музыки.",
+        "Акт 8 — expected-partially-red: правки идущего выступления (MERGE в PENDING)",
+        "нет до ADR-0150 PR-7c; планировщик PR-7b ставит новую реплику после текущей.",
+        "GATE-1 держит только то, что обязано работать: речь, музыка, остановка музыки.",
         "Параметра политики перебивания нет (ADR-0150 PR-5) — ничего выставлять не нужно.",
     ],
 )

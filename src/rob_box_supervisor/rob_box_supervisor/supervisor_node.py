@@ -1895,8 +1895,6 @@ class AvatarSupervisor(Node):
           колонке ``agent`` (миграция 011_agent_namespace.sql).
         * среза тулов нет (``set_visible_tools`` не зовётся) — ТАРС видит
           все инструменты (ADR-0083 §2.2 #J).
-        * ``use_scheduler=False`` — W7b планировщик живёт только на
-          стороне личности (ADR-0083 §2.2 #F).
         * ``health_cache_persist_path`` — общий ``~/.rob_box/llm_health.json``
           (ADR-0083 §1.3 #1). Если dialogue_node уже туда пишет —
           supervisor и личность делят один HealthCache.
@@ -1940,7 +1938,6 @@ class AvatarSupervisor(Node):
                 name="operator",
                 prompt_dir=self._resolve_prompts_dir() or Path(""),
                 system_prompt_file=self._system_prompt_file,
-                use_scheduler=False,
                 memory_namespace="operator",
                 on_prompt=self._record_supervisor_prompt_stats,
                 provider_chain=provider_chain,

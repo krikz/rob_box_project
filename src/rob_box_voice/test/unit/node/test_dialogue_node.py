@@ -296,42 +296,12 @@ class TestBuildDynamicSystemContext:
         # #3696: провайдер — в разделе tts_context (данные), отдельного <hardware><tts_provider> нет.
         assert "<tts_context>[TTS] provider: minimax |" in ctx and "<hardware>" not in ctx
 
-    # --- S5.2: [SEGMENT PLAN] block --------------------------------------
-
-    def test_no_segment_plan_block_when_idle(self):
-        """No scheduler executor at all → idle, no [SEGMENT PLAN]."""
+    def test_context_has_no_scheduler_blocks(self):
+        """PR-7b (#3699): блоков очереди планировщика v1 в снимке хода нет — статус действия приходит событием."""
         n = _make_node({"provider": "yandex"})
+        n._tool_executor = MagicMock()
         ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" not in ctx
-
-    def test_no_segment_plan_block_when_executor_reports_empty(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.return_value = ""
-        ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" not in ctx
-
-    def test_segment_plan_block_included_when_active_group(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.return_value = (
-            "[SEGMENT PLAN]\n- ACTIVE: seg_0 voice 'куплет' (remaining=?)\n"
-            "- REWRITEABLE_SEGMENTS: []\n- AT_RISK_ON_REPLACE: []"
-        )
-        ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" in ctx
-        assert "seg_0" in ctx
-
-    def test_segment_plan_block_render_error_does_not_crash_context(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.side_effect = RuntimeError("boom")
-        ctx = n._build_dynamic_system_context()  # must not raise
-        assert "<system_context>" in ctx
-        assert "[SEGMENT PLAN]" not in ctx
+        assert "<system_context>" in ctx and "eta=?" not in ctx and "channel=" not in ctx
 
 
 # ─────────────────────────────────────────────────────────────────────────────

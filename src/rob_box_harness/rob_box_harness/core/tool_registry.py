@@ -16,7 +16,7 @@ declarations of the same contract drifted, badly and silently:
 * ``move_direction`` advertised ``duration`` against a ``distance``
   parameter — ``TypeError`` on every call that used it.
 * 13 tools registered by ``mcp_server`` were missing here entirely, so the
-  LLM could not call them at all (``task_delta``, ``stop_navigation``, the
+  LLM could not call them at all (``stop_navigation``, the
   whole mapping FSM, ``set_volume``/``set_pitch``/``set_speed``, …).
 * 29 of 38 shared descriptions had decayed into one-line stubs
   (``play_sound``: 782 characters of guidance reduced to 40).

@@ -100,11 +100,6 @@ class AgentSpec:
     system_prompt_file: str
     """Имя ``.txt`` внутри ``prompt_dir`` (system_prompt)."""
 
-    use_scheduler: bool = False
-    """Пока W7b планировщик (issue #968) живёт только на стороне
-    личности. Supervisor собирает агента ``use_scheduler=False`` —
-    явное значение через спек, а не хардкод в supervisor'е."""
-
     memory_namespace: str = "personality"
     """Значение колонки ``agent`` в ``facts`` (ADR-0083 §2.4)."""
 
@@ -434,13 +429,11 @@ def build_agent(
     )
     _logger.info(
         "[assembly] built AgentCore for %s "
-        "(providers=%s, prompt=%d chars, memory_namespace=%s, "
-        "scheduler=%s)",
+        "(providers=%s, prompt=%d chars, memory_namespace=%s)",
         spec.name,
         list(spec.provider_chain),
         len(system_prompt),
         spec.memory_namespace,
-        spec.use_scheduler,
     )
     return core
 
