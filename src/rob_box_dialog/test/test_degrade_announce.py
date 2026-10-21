@@ -73,3 +73,31 @@ def test_same_provider_same_reason_on_two_kinds_is_one_phrase():
               ProviderState("minimax", "tts", "quota"), ProviderState("yandex", "tts", "ok")]
     out = ProviderAnnouncer().observe(states, ["minimax", "deepseek", "yandex"], now=0.0)
     assert len(out) == 1
+
+
+def test_stt_failure_names_the_kind_and_takes_fallback_of_same_kind():
+    """#3755: отказ распознавания - про распознавание и с запасным STT, а не «переключаюсь на deepseek»."""
+    states = [ProviderState("deepseek", "llm", "ok"), ProviderState("minimax", "stt", "timeout"),
+              ProviderState("vosk", "stt", "ok")]
+    out = ProviderAnnouncer().observe(states, {"llm": ["deepseek"], "stt": ["minimax", "vosk"]}, now=0.0)
+    assert len(out) == 1 and "распознавани" in out[0] and "vosk" in out[0] and "deepseek" not in out[0]
+
+
+def test_only_active_provider_of_the_kind_is_announced():
+    """Сбой запасного при живом основном человеку не мешает: фразы нет."""
+    prio = {"llm": ["deepseek", "minimax"]}
+    states = [ProviderState("deepseek", "llm", "ok"), ProviderState("minimax", "llm", "quota")]
+    assert ProviderAnnouncer().observe(states, prio, now=0.0) == []
+    states = [ProviderState("deepseek", "llm", "quota"), ProviderState("minimax", "llm", "ok")]
+    out = ProviderAnnouncer().observe(states, prio, now=0.0)
+    assert len(out) == 1 and "переключаюсь на minimax" in out[0].lower()
+
+
+def test_second_provider_becomes_active_after_first_is_dead():
+    a = ProviderAnnouncer()
+    prio = {"stt": ["yandex", "minimax", "vosk"]}
+    s = [ProviderState("yandex", "stt", "quota"), ProviderState("minimax", "stt", "ok"), ProviderState("vosk", "stt", "ok")]
+    assert len(a.observe(s, prio, now=0.0)) == 1
+    s[1] = ProviderState("minimax", "stt", "timeout")
+    out = a.observe(s, prio, now=1.0)
+    assert len(out) == 1 and "minimax" in out[0] and "vosk" in out[0]
