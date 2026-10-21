@@ -36,7 +36,6 @@ from rob_box_llm.provider import ToolCall, ToolResult
 
 from rob_box_voice.core.music_turn import MusicTurn, speech_refusal_content
 from rob_box_voice.core.track_start_guard import TrackStartGuard, refusal_content
-from rob_box_voice.core.turn_speech_gate import REGISTER_TOOL, SPEAK_TOOL, TurnSpeechGate
 from rob_box_voice.scheduler.delta import DeltaOp, DeltaOpKind, TaskDelta
 from rob_box_voice.scheduler.task_scheduler import (
     ChannelKind,
@@ -48,6 +47,8 @@ from rob_box_voice.scheduler.task_scheduler import (
 )
 
 _LOG = logging.getLogger(__name__)
+#: Тул реплики хода.
+SPEAK_TOOL = "speak_text"
 
 #: Max length of the payload snippet shown per segment in
 #: ``[SEGMENT PLAN]`` (S5.1) — keeps the block short even for a long
@@ -114,14 +115,6 @@ def _parse_delta_op(raw: Any) -> DeltaOp:
     return DeltaOp(kind=kind, seg_idx=raw.get("seg_idx"), args=raw.get("args"))
 
 
-def _registration_pending(result: ToolResult) -> bool:
-    """Issue #2913 — ``register_speaker`` действительно отправил запрос в
-    speaker_id_node (тул вернул ``speaker_id: 'pending'``), значит исход
-    придёт ack'ом. Остальные ответы тула (спросить имя, шумовое имя,
-    ошибка) ack не порождают."""
-    return not result.is_error and "pending" in str(result.content or "")
-
-
 def channel_for_tool(tool: str) -> Optional[ChannelKind]:
     """Return the scheduler channel for *tool*, or ``None`` for bypass.
 
@@ -156,17 +149,12 @@ class SchedulerToolExecutor:
         scheduler: Optional[TaskScheduler] = None,
         *,
         on_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
-        speech_gate: Optional[TurnSpeechGate] = None,
         on_tool: Optional[Callable[[str, dict[str, Any], Optional[ToolResult]], None]] = None,
     ) -> None:
         self._underlying = underlying
         # ADR-0150 PR-3b (#3690) — стадия хода «executing»: ``on_tool(имя, аргументы, None)`` перед вызовом тула и
         # ``on_tool(имя, аргументы, результат)`` после; ошибка наблюдателя ход не ломает.
         self._on_tool = on_tool
-        # Issue #2913 — speak_text хода не обгоняет исход register_speaker
-        # и не звучит, если ход отвечает вопросом о личности. None — без
-        # гейта (как до #2913).
-        self._speech_gate = speech_gate
         self._scheduler = scheduler
         self._on_event = on_event
         self._scheduler_attempted = False
@@ -343,17 +331,7 @@ class SchedulerToolExecutor:
                 content=refusal_content(call.name, guard.started_tool),
                 is_error=False,
             )
-        gate = self._speech_gate
-        registering = gate is not None and call.name == REGISTER_TOOL
-        if registering:
-            # Issue #2913 — взвести ДО публикации: ack может прийти раньше,
-            # чем вернётся тул.
-            gate.registration_sent()
         result = await self._underlying.execute(call)
-        if registering and not _registration_pending(result):
-            # Запрос не ушёл (name=None → «спроси имя», шумовое имя,
-            # ошибка) — ack не будет, речь хода ждать нечего.
-            gate.registration_settled()
         guard.record(call.name, is_error=bool(result.is_error))
         self.music_turn.record(
             call.name, call.arguments,
@@ -516,22 +494,7 @@ class SchedulerToolExecutor:
     ) -> Callable[[SchedulerTask], Any]:
         """Build the per-channel executor for *call*."""
 
-        gate = self._speech_gate if call.name == SPEAK_TOOL else None
-        ticket = gate.ticket() if gate is not None else None
-
         async def _run(_task: SchedulerTask) -> Any:
-            if gate is not None and not await gate.admit(
-                ticket, str(call.arguments.get("text") or "")
-            ):
-                # Issue #2913 — ход отвечает придержанным вопросом о
-                # личности / просьбой повторить (_deliver_turn_result).
-                return ToolResult(
-                    tool_call_id=call.id,
-                    content=json.dumps(
-                        {"status": "suppressed", "reason": "identity_question"}
-                    ),
-                    is_error=False,
-                )
             if deferred:
                 # stop_music must not fire while speech is still queued
                 # or playing (issue #968). Wait for the voice channel to

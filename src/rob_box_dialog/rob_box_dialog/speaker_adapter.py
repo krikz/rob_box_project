@@ -14,6 +14,9 @@
 * :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (#3767, Шифу 21.10): узнан уверенно
   (имя биометрии или гипотеза голоса, подтверждённая лицом с тем же именем) — конкретный спикер с id, каналами и
   score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя.
+* :func:`merge_plan` / :func:`merge_answer` / :func:`merge_phrase` — вопрос «вы разные люди или это ты?» после
+  регистрации (#2828, ADR-0127; #3765): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил, #2829), что
+  робот говорит об исходе — кодом, без подсказки LLM (ADR-0148).
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -32,7 +35,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.greeting_reply import is_greeting_reply
-from rob_box_dialog.reply_grammar import Reply, classify_reply
+from rob_box_dialog.reply_grammar import NO, YES, Reply, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
 
@@ -191,7 +194,48 @@ def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Repl
     age = float(getattr(heard, "t", 0.0) or 0.0) - float(frame.payload["asked_at"])
     if not 0.0 <= age <= kn.IDENTITY_TTL_S:
         return None
-    return classify_reply(str(getattr(heard, "text", "") or ""), asks_name=frame.payload.get("kind") in kn.IDENTITY_ASKS_NAME)
+    return question_reply(str(frame.payload.get("kind") or ""), str(getattr(heard, "text", "") or ""))
+
+
+def question_reply(kind: str, text: str) -> Optional[Reply]:
+    """Похожа ли фраза на ответ на вопрос вида ``kind`` (кадр ``Identity``): на вопрос склейки (``IDENTITY_MERGE_KINDS``)
+    — «это я»/«мы разные» (``YES``/``NO``) или да/нет; на вопрос об имени — имя/да/нет/отказ."""
+    if kind in kn.IDENTITY_MERGE_KINDS:
+        same = classify_same(text)
+        if same is not None:
+            return Reply(YES if same else NO)
+    return classify_reply(text, asks_name=kind in kn.IDENTITY_ASKS_NAME)
+
+
+def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
+    """Данные вопроса склейки из ack регистрации (#2828): ``new_id`` — профиль этой регистрации, ``known_id`` — с кем его
+    можно спутать (тёзка или похожий голос). Склейка при «это я» — ``new_id`` → ``known_id``: у старого профиля больше
+    эмбеддингов и история, его имя и остаётся (``speaker_id_node._on_merge_request``)."""
+    other = ack.get("name_twin") or ack.get("voice_conflict") or {}
+    return {"kind": "twin" if ack.get("name_twin") else "conflict", "question": question,
+            "new_id": str(ack.get("speaker_id") or ""), "new_name": str(ack.get("name") or ""),
+            "known_id": str(other.get("speaker_id") or ""), "known_name": str(other.get("name") or "")}
+
+
+def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> Tuple[Optional[bool], bool]:
+    """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
+    ``None`` — не понять. Голое да/нет — ответ только на ``twin`` («Ты тот самый X?»); на ``conflict`` вопрос двойной.
+    «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
+    #2829): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
+    same = classify_same(text, max_words=None)
+    if same is None and plan.get("kind") == "twin":
+        reply = classify_reply(text, asks_name=False)
+        same = {YES: True, NO: False}.get(reply.kind) if reply is not None else None
+    current = str(speaker.get("speaker_id") or "") if speaker.get("is_known") else ""
+    speaker_ok = bool(current) and current in (plan.get("new_id"), plan.get("known_id"))
+    return (None if same and not speaker_ok else same), speaker_ok
+
+
+def merge_phrase(plan: Mapping[str, Any], same: Optional[bool]) -> str:
+    """Что робот говорит об исходе (ADR-0148: фразу строит код, а не подсказка LLM)."""
+    if same is True:
+        return phrases.text("identity.merged", name=plan.get("known_name") or plan.get("new_name"))
+    return phrases.text("identity.kept_apart" if same is False else "identity.merge_unclear")
 
 
 def greeting_frame(person_ref: str, name: str, speech_id: str) -> Dict[str, Any]:
