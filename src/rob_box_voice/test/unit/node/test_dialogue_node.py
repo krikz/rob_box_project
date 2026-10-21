@@ -293,7 +293,8 @@ class TestBuildDynamicSystemContext:
     def test_tts_provider_read_from_parameter(self):
         n = _make_node({"provider": "minimax"})
         ctx = n._build_dynamic_system_context()
-        assert "<tts_provider>minimax</tts_provider>" in ctx
+        # #3696: провайдер — в разделе tts_context (данные), отдельного <hardware><tts_provider> нет.
+        assert "<tts_context>[TTS] provider: minimax |" in ctx and "<hardware>" not in ctx
 
     # --- S5.2: [SEGMENT PLAN] block --------------------------------------
 

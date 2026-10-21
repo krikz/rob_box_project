@@ -14,7 +14,7 @@ test_dialogue_node_imports.py — регресс-тест для #1413 (lazy-imp
      /``rob_box_harness.health``/``rob_box_harness.core.dialogue_state_machine``
      НЕ должны встречаться как lazy imports внутри функций.
   4. Smoke: top-of-file содержит обязательные модули (yaml, traceback, uuid,
-     concurrent.futures, tts_voice_registry, rob_box_harness.health).
+     concurrent.futures, rob_box_harness.health).
 
 Не требует ROS2/harness в dev (статический анализ).
 """
@@ -65,8 +65,8 @@ TOP_OF_FILE_MUST_CONTAIN = frozenset({
     "traceback",                           # stdlib
     "concurrent.futures",                  # stdlib
     "uuid",                                # stdlib
-    "rob_box_voice.tts_voice_registry",    # same package
     "rob_box_harness.health",              # declared <exec_depend>
+    # tts_voice_registry ушёл из ноды в core/turn_context.py (#3696): lazy-импорт его в ноде по-прежнему запрещён.
 })
 
 
@@ -134,8 +134,8 @@ def test_dialogue_node_parses():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_top_of_file_has_required_imports():
-    """yaml, traceback, uuid, concurrent.futures, tts_voice_registry,
-    rob_box_harness.health — обязаны быть top-of-file (depth=0)."""
+    """yaml, traceback, uuid, concurrent.futures, rob_box_harness.health —
+    обязаны быть top-of-file (depth=0)."""
     tree, src_lines = _load_ast()
 
     top_level_modules = set()

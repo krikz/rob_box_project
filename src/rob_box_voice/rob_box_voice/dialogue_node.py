@@ -101,7 +101,7 @@ from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
-from rob_box_voice.core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
+from rob_box_voice.core.provider_reporter import ProviderStateReporter, on_provider_states
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
@@ -112,7 +112,9 @@ from rob_box_voice.core.interrupt_request import InterruptGate
 from rob_box_voice.core.dialogue_stage_mixin import DialogueStageMixin
 from rob_box_voice.core.turn_stages import TurnStages, scene_for_animation
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
-from rob_box_voice.core.music_state_prompt import MusicStateMemory
+from rob_box_dialog.context import build_context
+from rob_box_dialog.music_state import MusicStateMemory
+from rob_box_voice.core.turn_context import context_sections
 from rob_box_voice.core.stop_chooser import stop_chooser_from_env
 from rob_box_voice.core.tools_view_host import apply_tools_view
 from rob_box_voice.core.stt_admission import (
@@ -244,10 +246,6 @@ from rob_box_voice.speaker_profiles import (
     extract_speaker_name,
     format_speaker_context,
 )
-from rob_box_voice.tts_voice_registry import (
-    default_voice_for,
-    format_tts_context,
-)
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
@@ -276,23 +274,6 @@ from rob_box_voice.observability import (
     start_metrics_server,
     start_span,
 )
-
-
-def _resolve_tts_voice_tag(
-    current_voice: str | None, tts_provider: str
-) -> str:
-    """Issue #2817 -- factual ``<tts_voice>`` value for the LLM context.
-
-    Was previously a hardcoded ``"Yandex_Maxim"`` regardless of which
-    provider/voice was actually speaking (live log 23.09: MiniMax
-    `male-qn-qingse` was active, the tag still said Yandex). ``current_voice``
-    already tracks the ACTUAL voice after a fallback (issue #1229) -- use
-    it, and fall back to the ACTIVE provider's default, never Yandex's.
-
-    Extracted from :meth:`DialogueNode._build_dynamic_system_context` so
-    the branch lives here, not in that method (ADR-0021 R1 -- cc_budget).
-    """
-    return current_voice or default_voice_for(tts_provider)
 
 
 # ADR-0145 §4 (P1 step 1) -- this constant must stay defined HERE (not
@@ -669,18 +650,6 @@ class DialogueNode(DialogueStageMixin, Node):
         self._scheduler_executor: Any = None
         # ADR-0083 §2.3 — системный промпт читает ``load_system_prompt`` (harness) и передаёт в ``build_agent``.
         self._system_prompt = load_system_prompt(personality_spec)
-        # Issue #1219 — regression guard для voice-change feature:
-        # промпт ОБЯЗАН содержать ``RULE #VOICE`` (иначе MiniMax-M3 live
-        # молча игнорирует запрос и оставляет голос по умолчанию). Раньше
-        # проверка жила inline в ``_load_system_prompt``; теперь
-        # файл читает harness, а guard вызываем здесь, в ноде.
-        if self._system_prompt and "RULE #VOICE" not in self._system_prompt:
-            self.get_logger().warning(
-                "⚠️ [issue 1219] System prompt does not contain "
-                "'RULE #VOICE' — LLM may ignore voice-change "
-                "requests and skip the set_voice tool. See "
-                "master_prompt_compact.txt for the canonical block."
-            )
         # ADR-0083 §2.3 — единственная точка сборки ``AgentCore`` в проде.
         # ``tools`` и ``memory`` приносит нода (ROS/asyncio-loop
         # ownership, ADR-0083 §2.3 trade-off); ``llm`` собран выше и
@@ -1506,12 +1475,12 @@ class DialogueNode(DialogueStageMixin, Node):
                 skill=stats.skill,
                 estimated=stats.estimated,
             )
-            if self._verbose_llm:
-                self.get_logger().debug(
-                    f"[prompt] tokens={stats.prompt_tokens} "
-                    f"provider={stats.provider} skill={stats.skill} "
-                    f"estimated={stats.estimated}"
-                )
+            # ADR-0150 A5 (#3696): строка на КАЖДЫЙ вызов LLM — p50 токенов считает scripts/dialog/turn_metrics.py.
+            blocks = getattr(stats, "blocks", None)
+            if blocks is not None:
+                self.get_logger().info(blocks.log_line(
+                    prompt_tokens=stats.prompt_tokens, estimated=stats.estimated,
+                    provider=stats.provider, view=stats.skill))
         except Exception as exc:  # noqa: BLE001 — метрика не роняет ход
             self.get_logger().debug(f"⚠️ [metrics] prompt stats failed: {exc}")
 
@@ -3566,20 +3535,8 @@ class DialogueNode(DialogueStageMixin, Node):
 
     # ── Music state snapshot ───────────────────────────────────────────
     #
-    # Issue #1544 — LLM нужен честный обзор того, ЧТО играет прямо сейчас,
-    # чтобы решать «стоп музыку» / «давай трек» / «хватит диджеить».
-    #
-    # Issue #3161 (ADR-0141) — тег строится ТОЛЬКО из того, что публикует
-    # плеер: снимок ``/voice/music/state`` (имя трека — ``dj.title`` снимка
-    # движка v2, см. ``core/music_state_prompt.py``). Прежняя
-    # эвристика ``beat`` («играет», если взведён cleanup или живы
-    # TTS-батчи) врала после стопа: живой прогон 28.09 22:32 — через 10 с
-    # после «выключи музыку» модель прочла «играет» и так и сказала.
-    #
-    #   <music_state playing="yes" track="клубный трек" repeat="once"
-    #                ends_in_s="42" dj="off" />
-    #   <music_state playing="no" dj="off" last_track="клубный трек"
-    #                last_ended="stopped" last_ended_ago_s="13" />
+    # Issue #1544/#3161 (ADR-0141) — раздел ``music_state`` снимка хода строится ТОЛЬКО из того, что публикует
+    # плеер (``/voice/music/state`` + имя из ``/voice/music/form``): ``rob_box_dialog.music_state`` (#3696).
 
     def _music_state_mem(self) -> MusicStateMemory:
         """Память о снимках плеера (лениво — для стабов из ``__new__``)."""
@@ -3587,11 +3544,6 @@ class DialogueNode(DialogueStageMixin, Node):
         if memory is None:
             memory = self._music_state_memory = MusicStateMemory()
         return memory
-
-    def _build_music_state_snapshot(self) -> str:
-        """Единый ``<music_state>`` для LLM (issue #1544, #3161): всё, что играет, — на деке владельца плеера v2,
-        трек библиотеки генераций тоже (ADR-0158 PR-2, бывший ``ai=`` из ``/voice/generated_music/state``)."""
-        return self._music_state_mem().render()
 
     def _pending_identity_hint_lines(self) -> list:
         """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
@@ -3636,154 +3588,31 @@ class DialogueNode(DialogueStageMixin, Node):
     def _build_dynamic_system_context(
         self, tg_chat_id: Optional[int] = None
     ) -> str:
-        """Two-system-prompt pattern: собрать <system_context> snapshot.
+        """Снимок хода ``<system_context>`` (two-system-prompt pattern), собирается заново на каждый ход.
 
-        ``tg_chat_id`` (issue #3598) — ход пришёл из Telegram: личность в
-        ``<user_profile>`` — по chat_id (:mod:`core.turn_identity`), голос
-        комнаты к нему не применяется. ``None`` — голосовой ход.
-
-        Возвращает XML-строку для второго system-message в messages[].
-        Содержит runtime info: текущий спикер (resemblyzer), TTS provider
-        + voice (для gender alignment в ответах LLM), session lock state,
-        hardware (battery, motion).
-
-        Каждый turn собирается заново — fresh snapshot. LLM читает данные
-        ТОЛЬКО из этого тега, никогда не выводит пользователю (защита от
-        prompt injection — пользователь не может подделать tts_voice или
-        speaker_name фразами в user_input).
+        ADR-0150 §7.3 (#3696): разделы — данные (:func:`core.turn_context.context_sections`), текст строит
+        :func:`rob_box_dialog.context.build_context`; правил в снимке нет. ``tg_chat_id`` (issue #3598) — ход из
+        Telegram: личность в ``<user_profile>`` — по chat_id (:mod:`core.turn_identity`), голос комнаты не
+        применяется. LLM читает данные только отсюда; фразами в реплике их не подделать (prompt injection).
+        Ниже снимка — блоки планировщика (активные задачи, план сегментов).
         """
-        # user_profile
         with self._speaker_lock:
             sp = dict(self._current_speaker)
-        sp_name = sp.get("name") or ""
-        # 🔴 FIX (live 12.08): защита от мусорных имён ("Null", "null", etc.)
-        sp_name = sanitize_speaker_name(sp_name)
-
-        # tts provider (читаем из yaml параметра)
-        try:
-            tts_provider = str(self.get_parameter("tts_provider").value or "minimax")
-        except Exception:
-            tts_provider = "minimax"
-        # Issue #1229 — фактический провайдер (после фолбека) имеет приоритет
-        # над номинальным из параметра. tts_node публикует его в
-        # /voice/tts/provider_state после старта/фолбека/синтеза.
-        actual_provider = getattr(self, "_actual_tts_provider", None)
-        if actual_provider:
-            tts_provider = actual_provider
-        # Issue #1219 — LLM voice selection: строка [TTS] для LLM (Q8).
-        # current_voice — установленный set_voice (None → дефолт провайдера).
-        # Issue #1229 — если tts_node сообщил фактический голос (например,
-        # при фолбеке minimax→yandex реально звучал anton), показываем его:
-        # LLM видит, ЧТО реально прозвучало, а не что было запрошено.
-        actual_voice = getattr(self, "_actual_tts_voice", None)
-        current_voice = actual_voice
-        try:
-            tts_context_line = format_tts_context(
-                tts_provider,
-                current_voice=current_voice,
-            )
-        except Exception:  # noqa: BLE001 — registry сбойнул, не валим диалог
-            tts_context_line = f"[TTS] provider: {tts_provider}"
-        # ФАКТИЧЕСКИЙ голос (issue #2817): раньше здесь был
-        # захардкожен "Yandex_Maxim" безотносительно того,
-        # какой провайдер реально активен — живой лог 23.09 поймал
-        # MiniMax `male-qn-qingse`, а <tts_voice> всё равно показывал
-        # Yandex-имя. `current_voice` выше уже учитывает
-        # фактический голос после фолбэка (issue #1229) — берём
-        # его, а не статику, и при его отсутствии — дефолт
-        # АКТИВНОГО провайдера, а не Yandex.
-        tts_voice = _resolve_tts_voice_tag(current_voice, tts_provider)
-
-        # hardware (если есть доступ к батарее через /robot_status tool,
-        # модель сама вызовет — но snapshot даёт baseline)
-        battery = "unknown"
-
-        # строим XML
-        lines = ["<system_context>"]
-        lines.append("  <user_profile>")
-        # Issue #3598 — TG-ход: личность по chat_id; голос, privacy_note и
-        # кличка голоса комнаты — только голосовому ходу (turn_identity).
-        lines.extend(user_profile_lines(sp_name, sp, tg_chat_id))
+        sp_name = sanitize_speaker_name(sp.get("name") or "")  # live 12.08: мусорные имена ("Null") не пускаем
+        profile = list(user_profile_lines(sp_name, sp, tg_chat_id))
         if tg_chat_id is None:
-            # Issue #2809 (продолжение) -- разовая подсказка-гипотеза про
-            # tentative-личность (см. _handle_tentative_speaker и
-            # _pending_identity_hint_lines). Issue #2828 -- вопрос и исход
-            # переспроса по ack регистрации. Обе -- про ГОЛОС в комнате:
-            # TG-ход их не тратит, они дождутся следующей голосовой реплики.
-            lines.extend(self._pending_identity_hint_lines())
-            lines.extend(self._identity_ack_state().pop_hint_lines())
-        lines.append("  </user_profile>")
-        lines.append("  <hardware>")
-        lines.append(f"    <battery>{battery}</battery>")
-        lines.append(f"    <tts_voice>{tts_voice}</tts_voice>")
-        lines.append(f"    <tts_provider>{tts_provider}</tts_provider>")
-        lines.append("  </hardware>")
-        # Позиция робота из /odom — LLM знает, где робот (ответы «где ты?»).
-        pose = getattr(self, "_pose_snapshot", None)
-        if pose:
-            lines.append(
-                f"  <position>x={pose['x']:.2f}, y={pose['y']:.2f}, "
-                f"theta={pose['theta']:.3f} (odom frame)</position>"
-            )
-        else:
-            lines.append("  <position>unknown</position>")
-        # Issue #1219 — LLM voice selection (Q8): единая строка с голосами.
-        lines.append(f"  <tts_context>{tts_context_line}</tts_context>")
-        lines.extend(reporter_context(getattr(self, "_provider_reporter", None)))
-        # Issue #1544 — единый <music_state> снимок: объединяет все
-        # источники истины (DJ-режим + AI-генерация + активный Renardo бит +
-        # cleanup-флаг). Без этого LLM не знал, играет музыка или нет, и
-        # на «стоп музыку» отвечал verbal-only (без вызова stop_music tool),
-        # когда DJ-бит ещё играл.
-        # Issue #1392 follow-up (legacy): раньше был только <generated_music>
-        # для AI-генерации; DJ/Renardo бит туда не попадал → баг #1544.
-        lines.append(self._build_music_state_snapshot())
-        # ADR-0149 PR-13a (§5.2): музыкальные reminder'ы («стоп музыку →
-        # stop_music», «состояние музыки → get_music_state») удалены — стоп
-        # исполняет роутер медиакоманд до LLM, состояние уже в <music_state>.
-        # Issue #2406 (n201/n204 intro — register_speaker на discovery-шаге) —
-        # SYSTEM REMINDER: на intro-сценарии («давай знакомиться, меня зовут
-        # Саша») LLM по умолчанию отвечает verbal-only «Приятно познакомиться!»
-        # на основе <name>unknown</name> тега и пропускает register_speaker tool.
-        # e2e-гейт n201_sasha_intro_long / n204_boris_intro_long требует
-        # tool call в трейсе. reminders[-1] остаётся time-reminder
-        # (test_issue_1777_time_format), этот — reminders[0].
-        lines.append(
-            "  <reminder>Если юзер представляется («давай знакомиться», "
-            "«я …», «зовут меня …», «привет, я …», «запомни меня как …», "
-            "«меня зовут …») — ОБЯЗАТЕЛЬНО вызови register_speaker tool ПЕРЕД "
-            "verbal-ответом, передав имя из реплики как name=. Имя бери "
-            "ИЗ user_input (например «давай знакомиться, меня зовут Саша» → "
-            "register_speaker(name=\"Саша\")), НЕ из <name>unknown</name> "
-            "тега — он stale для нового юзера (profile ещё не создан, "
-            "warm-up не догрелся). Tool call обязателен даже если кажется, "
-            "что ответ и так очевиден — e2e ловит verbal-only как fail.</reminder>"
-        )
-        # Issue #1777 — SYSTEM REMINDER: русский формат времени. Tool
-        # ``get_current_time`` уже возвращает ``formatted_time`` русской
-        # прописью; LLM ДОЛЖЕН озвучивать его дословно через speak_text,
-        # не склеивать «22:37 вечера» сам. Если LLM игнорирует tool и
-        # отвечает разговорным пересказом («тридцать семь минут
-        # одиннадцатого») — это регрессия #1777, см. RULE #TIME-FORMAT.
-        lines.append(
-            "  <reminder>Если юзер спрашивает «который час», «сколько "
-            "времени», «время в Москве», «time?», «date today» — "
-            "ОБЯЗАТЕЛЬНО вызови get_current_time tool, прочитай поле "
-            "formatted_time дословно и озвучь его через speak_text. "
-            "НЕ выдумывай время сам.</reminder>"
-        )
-        # ADR-0150 §7.3 (В12): ≤ 1 свежая неадресованная фраза того же
-        # направления/человека — структурой, без инструкции; остальной бэклог
-        # (ТВ, чужие разговоры) — только счётчик фоновой речи.
+            # Issue #2809/#2828 -- разовые подсказки про ГОЛОС в комнате: TG-ход их не тратит.
+            profile.extend(self._pending_identity_hint_lines())
+            profile.extend(self._identity_ack_state().pop_hint_lines())
+        # ADR-0150 §7.3 (В12): ≤ 1 свежая неадресованная фраза того же направления/человека — структурой;
+        # остальной бэклог (ТВ, чужие разговоры) — только счётчик фоновой речи.
         recent, self._pending_unaddressed = getattr(self, "_pending_unaddressed", None), None
-        if recent:
-            lines.append(f"  <recent_unaddressed>{json.dumps(recent, ensure_ascii=False)}</recent_unaddressed>")
         backlog = getattr(self, "_backlog", None)
         self.get_logger().info(
             f"🗒️ [backlog] recent_unaddressed entries={int(bool(recent))} "
             f"background_phrases={backlog.background_phrases(time.time()) if backlog else 0}"
         )
-        lines.append("</system_context>")
+        lines = [build_context(context_sections(self, "\n".join(profile), recent))]
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
         # и НЕ добавляет пост-амбл «Готово!» поверх играющего трека

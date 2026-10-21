@@ -13,7 +13,7 @@ from rob_box_voice.core.media_router import (
     media_state_from_snapshot,
 )
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state
-from rob_box_voice.core.music_state_prompt import MusicStateMemory
+from rob_box_dialog.music_state import MusicStateMemory
 
 FACTS = {"enabled": True, "theme": "Марио, Тетрис, Аладдин", "track_no": 2, "tracks": 4, "melody": "Тетрис",
          "next_melodies": ["Аладдин"], "not_found": ["Марио"], "title": "«Тетрис» · трек 2 из 4"}
@@ -79,9 +79,9 @@ def test_nothing_playing():
 def test_music_state_shows_melody_facts_to_llm():
     memory = MusicStateMemory()
     memory.observe_state(_snap())
-    tag = memory.render(now=100.0)
-    assert 'melody="Тетрис"' in tag and 'next_melodies="Аладдин"' in tag and 'not_found="Марио"' in tag
-    assert 'track="«Тетрис» · трек 2 из 4"' in tag and 'set_tracks="4"' in tag
+    tag = memory.section(now=100.0)
+    assert tag["melody"] == "Тетрис" and tag["next_melodies"] == "Аладдин" and tag["not_found"] == "Марио"
+    assert tag["track"] == "«Тетрис» · трек 2 из 4" and tag["set_tracks"] == "4"
 
 
 LAST = {"enabled": True, "theme": "Марио, Тетрис", "track_no": 2, "tracks": 2, "melody": "Super Mario World",
@@ -100,7 +100,7 @@ def test_live_0610_last_track_answers():
 def test_played_melodies_reach_music_state():
     memory = MusicStateMemory()
     memory.observe_state(_snap(LAST))
-    assert 'played="1: Тетрис"' in memory.render(now=100.0)
+    assert memory.section(now=100.0)["played"] == "1: Тетрис"
 
 
 # ── #3613: одиночный трек и пьеса деки v2 — «что играет» отвечает код по фактам владельца плеера ──────────────────
@@ -141,10 +141,10 @@ def test_music_state_tag_tells_llm_the_piece_ends_and_its_source():
     """``<music_state>`` для хода LLM: пьеса — один проход (``repeat=once``, сколько осталось), источник — из снимка."""
     memory = MusicStateMemory()
     memory.observe_state(_snap(PIECE))
-    tag = memory.render(now=100.0)
-    assert 'repeat="once"' in tag and 'ends_in_s="90"' in tag and 'source="piece"' in tag
+    tag = memory.section(now=100.0)
+    assert tag["repeat"] == "once" and tag["ends_in_s"] == "90" and tag["source"] == "piece"
     memory.observe_state(_snap(CLUB))
-    assert 'repeat="loop"' in memory.render(now=100.0)
+    assert memory.section(now=100.0)["repeat"] == "loop"
 
 
 def test_old_snapshot_without_facts_still_names_the_title():

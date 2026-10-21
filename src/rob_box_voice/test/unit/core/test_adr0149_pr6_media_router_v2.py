@@ -31,7 +31,7 @@ from rob_box_voice.core.music_player_state import (
     parse_music_event,
     parse_music_state,
 )
-from rob_box_voice.core.music_state_prompt import MusicStateMemory
+from rob_box_dialog.music_state import MusicStateMemory
 
 V2 = MediaRouter()
 
@@ -184,17 +184,17 @@ def test_music_state_tag_is_built_from_the_v2_snapshot():
     snap = parse_music_state(build_music_state_payload(playing=True, track_id="set42:03:A:9f", dj=dj, ts=100.0))
     memory = MusicStateMemory()
     memory.observe_state(snap, now=100.0)
-    tag = memory.render(now=101.0)
-    assert 'playing="yes"' in tag and 'track="космос · трек 3"' in tag and 'dj="on"' in tag
-    assert 'set_theme="космос"' in tag and 'set_track_no="3"' in tag and 'bpm="132"' in tag
+    tag = memory.section(now=101.0)
+    assert tag["playing"] == "yes" and tag["track"] == "космос · трек 3" and tag["dj"] == "on"
+    assert tag["set_theme"] == "космос" and tag["set_track_no"] == "3" and tag["bpm"] == "132"
 
 
 def test_music_state_tag_without_set_fields():
     snap = parse_music_state(build_music_state_payload(playing=True, track_id="t1", dj=False, ts=100.0))
     memory = MusicStateMemory()
     memory.observe_state(snap, now=100.0)
-    tag = memory.render(now=101.0)
-    assert 'track="без названия"' in tag and "set_theme" not in tag and "bpm=" not in tag
+    tag = memory.section(now=101.0)
+    assert tag["track"] == "без названия" and "set_theme" not in tag and "bpm" not in tag
 
 
 @pytest.mark.parametrize("text,mood", [

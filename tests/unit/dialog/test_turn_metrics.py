@@ -74,7 +74,8 @@ def test_percentile_linear_interpolation():
 def test_render_contains_a1_a2_a5_rows(turns):
     lines = logparse.read_lines(FIXTURE)
     text = turn_metrics.render(turns, lines)
-    assert "A1 `llm_calls`" in text and "A2 `stt_to_first_tts_ms`" in text and "A5-прокси" in text
+    assert "A1 `llm_calls`" in text and "A2 `stt_to_first_tts_ms`" in text and "A5 `prompt_tokens`" in text
+    assert "A5 `tools_visible`" in text
     assert "`identity_questions`" in text and "`backlog_entries`" in text
 
 
@@ -121,3 +122,44 @@ def test_tier1_and_disputed_stop_share(tmp_path):
     line = turn_metrics._tier1_line(logparse.read_lines(log))
     assert "команды кодом, 0 LLM): 2" in line and "спорных стопов (В19): 1 (50 %)" in line
     assert "part_of_command 1" in line and "stop 0" in line
+
+
+def _prompt_line(ts, tokens, over):
+    return (f"[dialogue_node-4] [INFO] [{ts}] [dialogue_node]: 🧮 [prompt] tokens={tokens} estimated=False "
+            f"provider=deepseek view=status system=3100 facts=0 window=400 snapshot=300 turn=20 tools=3500 over={over}")
+
+
+def test_prompt_tokens_per_llm_call_a5(tmp_path):
+    """#3696: A5 — токены каждого вызова LLM хода из строки ``🧮 [prompt]`` и блоки сверх бюджета."""
+    log = tmp_path / "a5.log"
+    log.write_text(
+        "\n".join(
+            [
+                "[command_node-8] [INFO] [100.0] [command_node]: 🎤 STT: робот который час",
+                "[dialogue_node-4] [INFO] [100.1] [dialogue_node]: 🚀 [turn] calling process_input: user_input='a'",
+                _prompt_line(100.2, 9000, "-"),
+                _prompt_line(101.0, 13000, "system,tools"),
+                "[dialogue_node-4] [INFO] [102.0] [dialogue_node]: ✅ [turn] process_input returned: tools=[]",
+                "[command_node-8] [INFO] [110.0] [command_node]: 🎤 STT: робот привет",
+                "[dialogue_node-4] [INFO] [110.1] [dialogue_node]: 🚀 [turn] calling process_input: user_input='b'",
+                _prompt_line(110.2, 11000, "tools"),
+                "[dialogue_node-4] [INFO] [111.0] [dialogue_node]: ✅ [turn] process_input returned: tools=[]",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    lines = logparse.read_lines(log)
+    turns = logparse.split_turns(lines)
+    assert [t.prompt_tokens for t in turns] == [[9000, 13000], [11000]]
+    assert [t.prompt_over for t in turns] == [["system", "tools"], ["tools"]]
+    text = turn_metrics.render(turns, lines)
+    assert "| A5 `prompt_tokens` на вызов LLM (порог p50 ≤ 12000, max ≤ 20000) | 3 | 11000 | 12800 | 13000 |" in text
+    assert "блоки сверх бюджета (`over=`, вызовов): system 1, tools 2." in text
+    assert "9000,13000" in turn_metrics.render_per_turn(turns)
+
+
+def test_prompt_mark_is_the_runtime_mark():
+    """Маркер в скрипте — тот же, что пишет рантайм (``rob_box_dialog.context``): две копии строки сверены."""
+    context = pytest.importorskip("rob_box_dialog.context")
+    assert logparse.PROMPT_TOKENS_MARK == context.PROMPT_TOKENS_MARK

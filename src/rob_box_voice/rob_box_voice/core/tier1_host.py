@@ -25,6 +25,7 @@ from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import Command, IntentType
 from rob_box_voice.core.media_router import DJ_SET_TOOL, MediaToolCall
 from rob_box_voice.core.stop_chooser import STOP
+from rob_box_voice.core.turn_context import tts_state
 from rob_box_voice.tts_voice_registry import VOICE_METADATA, voices_for
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -63,13 +64,7 @@ class Tier1Runner:
             speaking=bool(watch is not None and watch.speaking), volume_channel=self.volume_channel)
 
     def voices(self) -> list:
-        node = self._node
-        provider = getattr(node, "_actual_tts_provider", None)
-        if not provider:
-            try:
-                provider = str(node.get_parameter("tts_provider").value or "minimax")
-            except Exception:  # noqa: BLE001 — тестовая нода без параметров
-                provider = "minimax"
+        provider, _ = tts_state(self._node)
         return [(vid, VOICE_METADATA.get(f"{provider}:{vid}", {}).get("display_name", vid))
                 for vid in voices_for(provider)]
 

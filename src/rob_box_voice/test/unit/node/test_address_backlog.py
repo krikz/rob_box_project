@@ -144,8 +144,8 @@ class TestRecentUnaddressedSnapshot:
         _say(node, "я хочу послушать джаз", doa=80.0)
         _say(node, "робот что посоветуешь", doa=85.0)
         ctx = node._build_dynamic_system_context()
-        assert '<recent_unaddressed>{"text": "я хочу послушать джаз"' in ctx
-        assert '"same_direction": true' in ctx
+        assert '<recent_unaddressed>{"text":"я хочу послушать джаз"' in ctx  # данные JSON (#3696)
+        assert '"same_direction":true' in ctx
         assert "recent_unaddressed" not in node._build_dynamic_system_context(), "снимок — на один ход"
 
 

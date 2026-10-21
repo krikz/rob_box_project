@@ -62,7 +62,8 @@ def test_reporter_announces_tts_failure_from_board_once_and_adds_context():
     rep.tick()
     rep.tick()
     assert published == [] and len(spoken) == 1 and "minimax" in spoken[0] and "yandex" in spoken[0]
-    assert reporter_context(rep) == providers_context(rep.all_states()) and "tts:minimax=quota" in rep.context_lines()[0]
+    assert reporter_context(rep) == providers_context(rep.all_states()) == [
+        {"kind": "tts", "name": "minimax", "health": "quota"}]
     assert reporter_context(None) == []
 
 
