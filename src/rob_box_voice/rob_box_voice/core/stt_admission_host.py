@@ -28,6 +28,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
+from rob_box_voice.core.greeting_window import not_a_reply, take_reply, window
 from rob_box_voice.core.identity_question import question, take_answer
 from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
@@ -107,6 +108,7 @@ class _DialogueSttHost:
         return getattr(node, "_backlog", None)
 
     def remember_unaddressed(self, heard: Heard) -> bool:
+        not_a_reply(self._node, heard)  # окно после приветствия открыто, а фраза не ответ (#3776)
         backlog = self.backlog()
         if backlog is None:
             return False
@@ -123,6 +125,7 @@ class _DialogueSttHost:
         # «кто сказал» структурой — их вставит _build_dynamic_system_context.
         self._node._pending_unaddressed = recent
         self._node._last_heard = heard  # азимут фразы — собеседнику хода (SpeakerRef.azimuth_deg)
+        take_reply(self._node, decision.source, heard)  # окно после приветствия снимает первая адресованная фраза (#3776)
         take_answer(self._node, decision.source, heard)  # кадр Identity снимает первая адресованная фраза (#3695)
         # PR-3b: рефлекс addressed (лицо «слушает», earcon, кольцо) - до LLM; ход этой фразы уже мог открыть ранний сигнал.
         self._node._turn_stages().addressed(self.utterance_id, heard.source or "respeaker")
@@ -139,6 +142,9 @@ class _DialogueSttHost:
 
     def identity_question(self) -> Optional[Any]:
         return question(self._node)
+
+    def greeting_window(self) -> Optional[Any]:
+        return window(self._node)
 
     def bare_wake(self) -> None:
         # В12: «робот» без фразы и без свежей просьбы того же направления —

@@ -240,6 +240,9 @@ class _RecordingHost:
     def identity_question(self):
         return getattr(self, "question", None)
 
+    def greeting_window(self):
+        return getattr(self, "greeting", None)
+
     def bare_wake(self) -> None:
         self.calls.append("bare_wake")
 
