@@ -28,6 +28,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
+from rob_box_voice.core.identity_question import question, take_answer
 from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
 from rob_box_voice.core.tier1_host import Tier1Runner
@@ -121,6 +122,8 @@ class _DialogueSttHost:
         # ADR-0150 §7.3 (В12): снимок LLM получает ≤ 1 свежую фразу того же
         # источника структурой — её вставит _build_dynamic_system_context.
         self._node._pending_unaddressed = recent
+        self._node._last_heard = heard  # азимут фразы — собеседнику хода (SpeakerRef.azimuth_deg)
+        take_answer(self._node, decision.source, heard)  # кадр Identity снимает первая адресованная фраза (#3695)
         # PR-3b: рефлекс addressed (лицо «слушает», earcon, кольцо) - до LLM; ход этой фразы уже мог открыть ранний сигнал.
         self._node._turn_stages().addressed(self.utterance_id, heard.source or "respeaker")
         doa = "-" if heard.doa_deg is None else f"{heard.doa_deg:.0f}"
@@ -133,6 +136,9 @@ class _DialogueSttHost:
                 f"🗒️ [backlog] pickup source=backlog_pickup channels={','.join(decision.channels)} "
                 f"text={decision.text[:80]!r} — голое «робот», текст хода взят из бэклога кодом"
             )
+
+    def identity_question(self) -> Optional[Any]:
+        return question(self._node)
 
     def bare_wake(self) -> None:
         # В12: «робот» без фразы и без свежей просьбы того же направления —

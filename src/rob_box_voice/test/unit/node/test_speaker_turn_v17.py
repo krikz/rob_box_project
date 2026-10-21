@@ -235,3 +235,19 @@ def test_meeting_marker_no_longer_makes_the_robot_speak_first():
                                              embedding_id="p1", display_name="Денис"))
     n._publish_response.assert_not_called()
     assert not hasattr(DialogueNode, "_handle_meeting")
+
+
+def test_question_opens_identity_frame_facing_the_speaker():
+    """#3695 ч.2c: прозвучавший вопрос — кадр Identity с азимутом фразы собеседника (ответ ждётся оттуда ≤ 15 с)."""
+    from rob_box_dialog.backlog import Heard
+
+    n = _node()
+    for i in range(3):
+        utterance_id = f"utt-face-{i}"
+        n._last_heard = Heard(text="x", t=0.0, doa_deg=75.0, utterance_id=utterance_id)
+        n.reply = _Result("Ок.")
+        asyncio.run(n._run_turn(f"фраза {i}", utterance_id=utterance_id))
+    assert n.tts[-1] == ASK_NAME
+    frame = n._session.snapshot.top("Identity")
+    assert (frame.payload["kind"], frame.payload["azimuth_deg"]) == ("unknown", 75.0)
+    assert n._session.snapshot.speaker.azimuth_deg == 75.0

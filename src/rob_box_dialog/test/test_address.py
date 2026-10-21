@@ -168,3 +168,45 @@ def test_sources_match_utterance_msg():
     utt = build_dialog_msgs_module().Utterance
     assert (utt.SOURCE_RESPEAKER, utt.SOURCE_TELEGRAM, utt.SOURCE_OPERATOR) == (
         address.SOURCE_RESPEAKER, address.SOURCE_TELEGRAM, address.SOURCE_OPERATOR)
+
+
+# -- В17(б): ответ на вопрос робота без вейка (#3695) ---------------------------------------------------------
+
+
+def _question(azimuth=90.0, asked_at=95.0, person="p1", kind="unknown"):
+    from rob_box_dialog.session import SceneFrame
+    from rob_box_dialog.speaker_adapter import question_frame
+
+    return SceneFrame("Identity", "code", payload=question_frame(person, kind, None, azimuth, asked_at))
+
+
+@pytest.mark.parametrize("heard, question, addressed", [
+    (dict(t=100.0, doa=110.0), dict(), True),                       # 5 с, та же сторона (20° ≤ 30°)
+    (dict(t=100.0, doa=200.0), dict(), False),                      # другая сторона
+    (dict(t=111.0, doa=90.0), dict(), False),                       # 16 с — кадр уже не ждёт
+    (dict(t=94.0, doa=90.0), dict(), False),                        # фраза раньше вопроса
+    (dict(t=100.0, doa=None), dict(), False),                       # направление фразы неизвестно
+    (dict(t=100.0, doa=None, person="p1", voice_s=2.5), dict(), True),   # тот же узнанный длинный голос
+    (dict(t=100.0, doa=None, person="p1", voice_s=1.0), dict(), False),  # короткому голосу не верим
+    (dict(t=100.0, doa=95.0), dict(azimuth=None), False),           # азимут вопроса неизвестен
+])
+def test_answer_to_own_question_without_wake(heard, question, addressed):
+    decision = decide(_heard("меня зовут Гриша", **heard), None, DEFAULT_WAKE_WORDS, _question(**question))
+    if addressed:
+        assert decision == Addressed("меня зовут Гриша", address.IDENTITY_ANSWER)
+    else:
+        assert decision == NotAddressed(address.NO_WAKE)
+
+
+def test_no_question_no_wake_is_not_addressed_and_wake_still_works():
+    assert decide(_heard("меня зовут Гриша", doa=90.0), None, DEFAULT_WAKE_WORDS, None) == NotAddressed(address.NO_WAKE)
+    with_wake = decide(_heard("робот меня зовут Гриша", doa=250.0), None, DEFAULT_WAKE_WORDS, _question())
+    assert with_wake == Addressed("меня зовут Гриша", address.VOICE)
+
+
+def test_flag_in_knowledge_turns_the_wakeless_answer_off(monkeypatch):
+    from rob_box_dialog import knowledge as kn
+
+    monkeypatch.setattr(kn, "IDENTITY_ANSWER_WITHOUT_WAKE", False)
+    decision = decide(_heard("меня зовут Гриша", t=100.0, doa=90.0), None, DEFAULT_WAKE_WORDS, _question())
+    assert decision == NotAddressed(address.NO_WAKE)
