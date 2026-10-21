@@ -1,7 +1,8 @@
 """Контрактный тест адаптера (ADR-0150 §4.5, A14; #3686).
 
 FakeLLMProvider в каждом из 4 режимов отвечает на эталонный набор так, как отвечал бы честный провайдер этого режима;
-оба канала речи (FieldChannel/ToolChannel) строят запрос, разбирают ответ, и парсер даёт валидную команду в 100 %.
+канал речи FieldChannel (решение О4; ToolChannel удалён в PR-7) строит запрос, разбирает ответ, и парсер даёт валидную
+команду в 100 %.
 Тест проверяет водопровод (запрос -> ответ -> один парсер), а не качество живой модели: живые адаптеры меряет
 ``scripts/dialog/adapter_benchmark.py``.
 
@@ -21,10 +22,8 @@ import yaml
 from rob_box_dialog.degrade import MODE_ORDER, select_mode
 from rob_box_dialog.speech_channel import (
     COMMAND_TOOL,
-    SPEAK_TOOL,
     ModeReply,
     FieldChannel,
-    ToolChannel,
 )
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.fake import FakeLLMProvider
@@ -33,6 +32,8 @@ from rob_box_dialog.command import parse as PARSE
 
 REFERENCE_SET = Path(__file__).resolve().parents[2] / "scripts" / "dialog" / "reference_set.yaml"
 SCHEMA = {"type": "object", "properties": {"speech": {"type": "string", "maxLength": 280}}}
+#: В эталонном наборе речь хода с действиями помечена тулом v1 ``speak_text``; в команде это поле ``speech``.
+SPEAK_TOOL = "speak_text"
 
 
 def _as_dict(cmd: Command) -> dict[str, Any]:
@@ -104,12 +105,6 @@ def _honest_fake(canonical: dict[str, Any], mode: str) -> FakeLLMProvider:
         names = [t["function"]["name"] for t in tools]
         if COMMAND_TOOL in names:
             return LLMResponse(tool_calls=(ToolCall("c1", COMMAND_TOOL, canonical),), finish_reason="tool_calls")
-        if SPEAK_TOOL in names:
-            calls = [ToolCall(f"a{i}", a["tool"], a["args"]) for i, a in enumerate(canonical.get("actions", []))]
-            if "speech" in canonical:
-                calls.append(ToolCall("s1", SPEAK_TOOL, {"text": canonical["speech"]}))
-            # content с мусором: ToolChannel обязан его игнорировать
-            return LLMResponse(content='{"speech": "УТЕЧКА"}', tool_calls=tuple(calls), finish_reason="tool_calls")
         body = json.dumps(canonical, ensure_ascii=False)
         if settings is not None and settings.extra.get("response_format"):
             return LLMResponse(content=body, finish_reason="stop")
@@ -150,36 +145,12 @@ def test_field_channel_parses_every_reference_phrase(mode):
 
 
 @pytest.mark.parametrize("mode", MODE_ORDER)
-def test_tool_channel_parses_speech_and_action_phrases_and_ignores_content(mode):
-    """ToolChannel (вариант B) выражает только speech и actions; ask/passed в нём нет — это факт для бейк-оффа PR-1c."""
-    channel = ToolChannel()
-    checked = 0
-    for pid, canonical in CASES:
-        if not ({"speech", "actions"} & set(canonical)):
-            continue
-        provider = _honest_fake(canonical, mode)
-        parsed = channel.parse(_ask(provider, channel, mode), mode, PARSE)
-        assert isinstance(parsed, Command), (pid, parsed)
-        got = _as_dict(parsed)
-        assert got.get("speech") == canonical.get("speech"), pid  # «УТЕЧКА» из content не просочилась
-        assert got.get("actions", []) == canonical.get("actions", []), pid
-        checked += 1
-    assert checked >= 20
-
-
-@pytest.mark.parametrize("mode", MODE_ORDER)
 def test_request_shape_matches_mode(mode):
     req = FieldChannel(SCHEMA).build_request(mode)
     assert req.mode == mode
     assert (req.response_format is not None) == (mode in ("structured_output", "json_mode"))
     assert bool(req.tools) == (mode == "tool_choice")
     assert req.tool_choice == ("required" if mode == "tool_choice" else None)
-
-
-def test_tool_channel_requires_tool_only_where_adapter_enforces_it():
-    ch = ToolChannel()
-    assert ch.build_request("tool_choice").tool_choice == "required"
-    assert ch.build_request("json_in_text").tool_choice == "auto"
 
 
 def test_field_channel_tool_mode_without_command_call_is_unparseable_not_silently_empty():
