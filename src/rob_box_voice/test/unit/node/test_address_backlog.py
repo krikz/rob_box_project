@@ -70,11 +70,11 @@ def node():
     return n
 
 
-def _say(node, text, doa=None, **kw):
-    """Реплика ReSpeaker, звучавшая только что, с направлением ``doa``."""
+def _say(node, text, doa=None, ago=0.0, dur=2, **kw):
+    """Реплика ReSpeaker, кончившаяся ``ago`` с назад и звучавшая ``dur`` с, с направлением ``doa``."""
     msg = make_utterance(text, **kw)
-    now = time.time()
-    msg.started_at.sec, msg.ended_at.sec = int(now) - 2, int(now)
+    now = time.time() - ago
+    msg.started_at.sec, msg.ended_at.sec = int(now) - dur, int(now)
     node._doa.deg = doa
     node._on_stt(msg)
 
@@ -107,19 +107,30 @@ class TestBareWakeV12:
         _say(node, "покажи анимацию ускорения", doa=90.0)
         _say(node, "Робот", doa=100.0)
         assert _turn_texts(node) == ["покажи анимацию ускорения"]
-        assert _logged(node, "source=backlog_pickup")
+        assert _logged(node, "[backlog] pickup n=1 speaker=неопознанный channels=- span=")
 
-    def test_nobody_in_frame_direction_alone_does_not_pick_up(self, node):
-        """Шифу 21.10: «в кадре никого → только голос» — DOA один подхват не даёт."""
+    def test_nobody_in_frame_and_no_voice_still_picks_up_labelled_unknown(self, node):
+        """#3767 (Шифу 21.10): «бэклог должен уходить по любому всегда» — без лица, голоса и с другой стороны."""
         node._faces.ids = frozenset()
         _say(node, "покажи анимацию ускорения", doa=90.0)
-        _say(node, "Робот", doa=100.0)
-        node._dispatch_turn.assert_not_called()
-        assert _logged(node, "голое «робот»")
+        _say(node, "Робот", doa=270.0)
+        assert _turn_texts(node) == ["покажи анимацию ускорения"]
+        ctx = node._build_dynamic_system_context()
+        assert '"speaker":{"identified":false,"label":"неопознанный","bio":"none"}' in ctx
+
+    def test_long_story_in_two_chunks_goes_whole_in_order(self, node):
+        """Живой лог #3762: 24.5 с речи → 2 куска, лиц нет, голос не узнан; «робот» через 4 с — весь рассказ."""
+        node._faces.ids = frozenset()
+        _say(node, "слушай я вот что хотела рассказать", doa=58.0, ago=7, dur=15)
+        _say(node, "как лучше собрать новую полку", doa=54.0, ago=5, dur=10)
+        _say(node, "робот", doa=299.0, dur=1)
+        assert _turn_texts(node) == ["слушай я вот что хотела рассказать как лучше собрать новую полку"]
+        assert _logged(node, "[backlog] pickup n=2 speaker=неопознанный,неопознанный channels=- span=")
+        assert _logged(node, "recent_unaddressed=2")
 
     def test_bare_wake_without_fresh_phrase_is_reflex_only_zero_llm(self, node):
-        """Сценарий (а), вторая половина: «Робот» без свежей фразы — рефлекс, 0 ходов LLM."""
-        _say(node, "девяносто пять градусов", doa=250.0)  # телевизор с другой стороны
+        """Сценарий (а), вторая половина: «Робот», а ТВ говорило 40 с назад (старше окна) — рефлекс, 0 ходов LLM."""
+        _say(node, "девяносто пять градусов", doa=250.0, ago=40)
         _say(node, "робот", doa=90.0)
         node._dispatch_turn.assert_not_called()
         assert _logged(node, "голое «робот»")
@@ -147,7 +158,7 @@ class TestRecentUnaddressedSnapshot:
         _say(node, "я хочу послушать джаз", doa=80.0)
         _say(node, "робот что посоветуешь", doa=85.0)
         ctx = node._build_dynamic_system_context()
-        assert '<recent_unaddressed>{"text":"я хочу послушать джаз"' in ctx  # данные JSON (#3696)
+        assert '<recent_unaddressed>[{"text":"я хочу послушать джаз"' in ctx  # данные JSON (#3696)
         assert '"same_direction":true' in ctx
         assert "recent_unaddressed" not in node._build_dynamic_system_context(), "снимок — на один ход"
 

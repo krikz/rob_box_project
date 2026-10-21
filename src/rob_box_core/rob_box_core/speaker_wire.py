@@ -37,7 +37,7 @@ _EVENT_CODES = {name: code for code, name in _EVENT_NAMES.items()}
 _STR_KEYS = (
     "speaker_id", "name", "epithet", "source", "reason", "error",
     "tentative_name", "tentative_kind", "src_speaker_id", "dst_speaker_id",
-    "new_name",
+    "new_name", "candidate_name",
 )
 
 
@@ -65,6 +65,9 @@ def _match_payload(msg: Any) -> Dict[str, Any]:
                 payload["tentative_name"] = msg.tentative_name
     else:
         payload = {"is_known": False}
+    if not msg.is_known and msg.candidate_name:  # гипотеза неузнанного голоса (#3767), не имя
+        payload["candidate_name"] = msg.candidate_name
+        payload["candidate_score"] = _clean_float(msg.candidate_score)
     if msg.utterance_id:
         payload["utterance_id"] = msg.utterance_id
     return payload
@@ -166,7 +169,8 @@ def fill_speaker_result(msg: Any, payload: Mapping[str, Any]) -> Any:
     msg.reused_profile = bool(payload.get("reused_profile", False))
     msg.already_known = bool(payload.get("already_known", False))
     for key, field in (("confidence", "confidence"), ("tentative_conf", "tentative_conf"),
-                       ("duration_s", "duration_s"), ("min_required_s", "min_required_s")):
+                       ("duration_s", "duration_s"), ("min_required_s", "min_required_s"),
+                       ("candidate_score", "candidate_score")):
         if payload.get(key) is not None:
             setattr(msg, field, float(payload[key]))
     for key in ("embeddings_moved", "facts_moved"):

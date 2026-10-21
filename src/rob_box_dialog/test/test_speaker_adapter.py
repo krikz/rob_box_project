@@ -14,10 +14,13 @@ from rob_box_dialog.speaker_adapter import (
     AskCandidate,
     AskPolicy,
     FaceSightings,
+    VoiceTag,
     ask_after_turn,
+    phrase_speaker,
     same_interlocutor,
     speaker_block,
     speaker_ref,
+    voice_tag,
 )
 from rob_box_dialog.session import SpeakerRef
 
@@ -132,6 +135,48 @@ def test_doa_is_weak_sixty_degrees_and_needs_someone_in_frame(entry_doa, wake_do
 def test_channels_follow_the_knowledge_table(monkeypatch):
     monkeypatch.setattr(kn, "PICKUP_CHANNELS", ("voice", "face"))
     assert same_interlocutor(_h(doa=90.0), _h(doa=90.0, faces={"#f1"})) == ()
+
+
+# -- кто сказал фразу бэклога (#3767): конкретный спикер или «неопознанный» + что есть по голосу -----------
+
+
+def test_voice_tag_from_biometry_results():
+    assert voice_tag({"is_known": True, "speaker_id": "p1", "name": "Борис", "confidence": 0.8612,
+                      "epithet": "Кулибин"}) == VoiceTag("known", "p1", name="Борис", score=0.861, epithet="Кулибин")
+    assert voice_tag({"is_known": True, "speaker_id": "p2", "name": None, "confidence": 0.7,
+                      "tentative_name": "Саша", "tentative_kind": "single"}) == VoiceTag(
+        "known", "p2", tentative="Саша", score=0.7)
+    assert voice_tag({"is_known": False, "candidate_name": "Борис", "candidate_score": 0.4123}) == VoiceTag(
+        "unknown_voice", candidate="Борис", candidate_score=0.412)
+    assert voice_tag({"is_known": False, "inconclusive": True, "reason": "too_short"}) == VoiceTag("inconclusive")
+
+
+def test_confirmed_voice_names_the_speaker():
+    out = phrase_speaker(VoiceTag("known", "p1", name="Борис", score=0.86))
+    assert out == {"identified": True, "name": "Борис", "person_ref": "p1", "channels": ["voice"], "score": 0.86}
+
+
+def test_tentative_voice_confirmed_by_the_same_face_names_the_speaker():
+    out = phrase_speaker(VoiceTag("known", "p2", tentative="Саша", score=0.7), faces={"саша"})
+    assert out["identified"] and out["name"] == "Саша" and out["channels"] == ["voice", "face"]
+
+
+def test_tentative_voice_alone_is_a_candidate_not_a_name():
+    """A30: по гипотезе не называем — она идёт кандидатом со score."""
+    out = phrase_speaker(VoiceTag("known", "p2", tentative="Саша", score=0.7), faces={"литвин"})
+    assert out == {"identified": False, "label": "неопознанный", "bio": "known", "candidate": "Саша",
+                   "candidate_score": 0.7}
+
+
+def test_face_in_frame_alone_does_not_sign_the_phrase():
+    """Перед роботом сидят и под телевизор (Шифу 21.10): одно лицо в кадре — не автор фразы."""
+    assert phrase_speaker(None, faces={"литвин"}) == {"identified": False, "label": "неопознанный", "bio": "none"}
+
+
+def test_inconclusive_voice_keeps_its_best_candidate():
+    out = phrase_speaker(VoiceTag("inconclusive", candidate="Дэнчик", candidate_score=0.33))
+    assert out == {"identified": False, "label": "неопознанный", "bio": "inconclusive", "candidate": "Дэнчик",
+                   "candidate_score": 0.33}
 
 
 # -- В17: когда спрашивать имя ------------------------------------------------------------------------------

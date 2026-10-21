@@ -2,8 +2,9 @@
 
 :func:`decide` — единственное место этого решения: вейк по границам слов из таблицы ``knowledge`` (рискованные
 вейки В18 выключены по умолчанию), Telegram и оператор адресованы всегда, кроме обращения к координатору
-(«Клод …» из Telegram, #3518). Голое «робот» после неуслышанной просьбы (В12) берёт свежую фразу бэклога того же
-направления/человека как текст хода (``pickup``); без неё — только рефлекс «слушаю», 0 вызовов LLM. Окна
+(«Клод …» из Telegram, #3518). Голое «робот» после неуслышанной просьбы (В12) берёт все свежие фразы бэклога
+(и куски того же рассказа) как текст хода (``pickup``, #3767 — от кого бы они ни были, кто сказал — метка каждой
+фразы); бэклог пуст — только рефлекс «слушаю», 0 вызовов LLM. Окна
 адресации без вейка нет (§17 Ж); единственная фраза без вейка, которую робот берёт, — ответ на его собственный
 вопрос об имени ≤ 15 с с той же стороны (В17(б), ``speaker_adapter.answers_question``).
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.session import SceneFrame
@@ -43,13 +44,13 @@ _WORD = re.compile(r"[\w-]+")
 
 @dataclass(frozen=True)
 class Addressed:
-    """Реплика адресована: ``text`` — текст хода; ``pickup`` — он взят из бэклога (В12), ``channels`` — почему
-    это тот же собеседник (``speaker_adapter.same_interlocutor``)."""
+    """Реплика адресована: ``text`` — текст хода; ``pickup`` — он взят из бэклога (В12), ``picked`` — подхваченные
+    фразы с метками (``Backlog.label``: кто сказал, когда, откуда) по порядку."""
 
     text: str
     source: str
     pickup: bool = False
-    channels: Tuple[str, ...] = ()
+    picked: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,8 +86,11 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     rest = strip_wake_word(text, wake_words)
     if not is_bare(rest):
         return Addressed(rest, VOICE)
-    entry, channels = backlog.pickup(heard) if backlog is not None else (None, ())
-    return Addressed(entry.text, BACKLOG_PICKUP, True, channels) if entry else Addressed("", BARE_WAKE)
+    taken = backlog.pickup(heard) if backlog is not None else []
+    if not taken:
+        return Addressed("", BARE_WAKE)
+    return Addressed(" ".join(e.text for e in taken), BACKLOG_PICKUP, True,
+                     tuple(Backlog.label(e, heard) for e in taken))
 
 
 def _seconds(stamp: Any) -> float:

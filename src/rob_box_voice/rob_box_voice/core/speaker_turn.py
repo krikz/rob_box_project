@@ -24,8 +24,10 @@ from rob_box_dialog.speaker_adapter import (
     ask_after_turn,
     speaker_block,
     speaker_ref,
+    voice_tag,
 )
 from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
+from rob_box_voice.core.epithets import is_stranger_epithet
 from rob_box_voice.core.identity_question import open_question, set_speaker
 
 
@@ -54,11 +56,14 @@ def note_face(node: Any, msg: Any) -> None:
 
 
 def note_backlog_voice(node: Any, utterance_id: str, data: Mapping[str, Any]) -> None:
-    """Биометрия приходит после STT: узнанный голос (id и имя) дописывается фразе в бэклоге."""
+    """Биометрия приходит после STT: что она сказала о фразе (узнан/гипотеза/лучший кандидат, кличка) дописывается
+    фразе в бэклоге — метка «кто сказал» (#3767). Кличка-плейсхолдер «незнакомца» (#2864) тёзок не различает."""
     backlog = getattr(node, "_backlog", None)
-    if backlog is not None and data.get("is_known"):
-        backlog.note_voice(utterance_id, str(data.get("speaker_id") or ""),
-                           str(data.get("name") or data.get("tentative_name") or ""))
+    if backlog is None:
+        return
+    if is_stranger_epithet(data.get("epithet")):
+        data = {**data, "epithet": None}
+    backlog.note_voice(utterance_id, voice_tag(data))
 
 
 def note_interlocutor(node: Any, sp: Mapping[str, Any], utterance_id: Optional[str], request: str = "") -> None:

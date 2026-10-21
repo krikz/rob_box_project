@@ -290,9 +290,9 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]], heard: Heard) -> None:
+    def addressed(self, decision: Addressed, recent: Optional[List[Dict[str, Any]]], heard: Heard) -> None:
         """Реплика адресована: запомнить для снимка LLM ``recent_unaddressed``
-        (≤ 1 запись того же источника) и залогировать подхват из бэклога (В12).
+        (фразы с метками, кто их сказал) и залогировать подхват из бэклога (В12, #3767).
         """
         ...
 
@@ -605,10 +605,18 @@ class AddressStep:
             if decision.reason == COORDINATOR:
                 return handled(self.name, "NotAddressed(coordinator)")
             return drop(self.name, "empty_after_strip")
-        recent = backlog.recent_unaddressed(heard) if backlog is not None and not decision.pickup else None
-        host.addressed(decision, recent, heard)
+        host.addressed(decision, _recent_phrases(decision, backlog, heard), heard)
         bare = decision.source == BARE_WAKE
         return SttOutcome(kind=SttOutcomeKind.PASS, new_context=replace(ctx.with_text(decision.text), bare=bare))
+
+
+def _recent_phrases(decision: Addressed, backlog: Optional[Backlog], heard: Heard) -> Optional[List[Dict[str, Any]]]:
+    """Раздел ``recent_unaddressed`` снимка: подхваченные голым «робот» фразы с метками (#3767) или ≤ 1 свежая
+    фраза того же собеседника к адресованной реплике; ``None`` — нечего."""
+    if decision.pickup:
+        return list(decision.picked)
+    recent = backlog.recent_unaddressed(heard) if backlog is not None else None
+    return [recent] if recent else None
 
 
 @dataclass(frozen=True)

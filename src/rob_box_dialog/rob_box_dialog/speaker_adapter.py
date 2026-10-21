@@ -10,6 +10,10 @@
   ``knowledge.PICKUP_CHANNELS`` — голос длинной фразы узнан; человек, чей голос узнан в фразе бэклога, виден в кадре
   (по имени — у лица и голоса разные id); (слабо) DOA ±60° при ком-то в кадре. Короткому «робот» по голосу не верим,
   а просто «кто-то в кадре» — не признак того же человека (перед роботом сидят и под телевизор; Шифу 21.10).
+  С #3767 — не фильтр подхвата, а поле ``same_as_caller`` метки фразы.
+* :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (#3767, Шифу 21.10): узнан уверенно
+  (имя биометрии или гипотеза голоса, подтверждённая лицом с тем же именем) — конкретный спикер с id, каналами и
+  score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя.
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -22,7 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, FrozenSet, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
@@ -90,6 +94,66 @@ def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str]]:
     if result.get("tentative_name"):
         return "tentative", str(result["tentative_name"])
     return "unknown", None
+
+
+@dataclass(frozen=True)
+class VoiceTag:
+    """Что биометрия сказала о фразе: ``bio`` — ``known`` | ``unknown_voice`` | ``inconclusive``; ``name`` — только
+    уверенное имя; ``tentative`` — гипотеза при ``known``; ``candidate`` — лучший кандидат без порога у незнакомого."""
+
+    bio: str
+    person_ref: str = ""
+    name: str = ""
+    tentative: str = ""
+    score: Optional[float] = None
+    candidate: str = ""
+    candidate_score: Optional[float] = None
+    #: Внутренняя кличка узнанного профиля (#1787) — различает тёзок; плейсхолдер «незнакомца» сюда не кладут.
+    epithet: str = ""
+
+
+def _score(value: Any) -> Optional[float]:
+    return None if value is None else round(float(value), 3)
+
+
+def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
+    """Результат биометрии фразы (словарь ``rob_box_core.speaker_wire``) → :class:`VoiceTag`."""
+    candidate = str(result.get("candidate_name") or "")
+    cand_score = _score(result.get("candidate_score")) if candidate else None
+    if result.get("inconclusive"):
+        return VoiceTag("inconclusive", candidate=candidate, candidate_score=cand_score)
+    if not result.get("is_known"):
+        return VoiceTag("unknown_voice", candidate=candidate, candidate_score=cand_score)
+    state, name = _name_state(result)
+    return VoiceTag("known", person_ref=str(result.get("speaker_id") or ""),
+                    name=name if state == "confirmed" else "", tentative=name if state == "tentative" else "",
+                    score=_score(result.get("confidence")), epithet=str(result.get("epithet") or ""))
+
+
+def phrase_speaker(voice: Optional[VoiceTag], faces: Iterable[str] = ()) -> Dict[str, Any]:
+    """Кто сказал фразу (#3767): узнан — ``{identified, name, person_ref, channels, score}``; нет —
+    ``{identified: false, label: неопознанный, bio, candidate?, candidate_score?}``. ``faces`` — кто был в кадре во
+    время фразы (имена в нижнем регистре): одно лицо в кадре фразу не подписывает, только подтверждает гипотезу
+    голоса."""
+    in_frame = {f for f in faces if f and not f.startswith("#")}
+    if voice is not None and voice.name:
+        return _identified(voice, voice.name, ["voice"])
+    if voice is not None and voice.tentative and voice.tentative.lower() in in_frame:
+        return _identified(voice, voice.tentative, ["voice", "face"])
+    out: Dict[str, Any] = {"identified": False, "label": kn.UNIDENTIFIED_SPEAKER,
+                           "bio": voice.bio if voice is not None else "none"}
+    if voice is not None and (voice.tentative or voice.candidate):
+        out["candidate"] = voice.tentative or voice.candidate
+        out["candidate_score"] = voice.score if voice.tentative else voice.candidate_score
+    return out
+
+
+def _identified(voice: VoiceTag, name: str, channels: List[str]) -> Dict[str, Any]:
+    out = {"identified": True, "name": name, "person_ref": voice.person_ref, "channels": channels,
+           "score": voice.score}
+    if voice.epithet:
+        out["epithet"] = voice.epithet  # тёзки: два профиля «Дэнчик» (#1787); вслух не произносится
+    return out
 
 
 def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:

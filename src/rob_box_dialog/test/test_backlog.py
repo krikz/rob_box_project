@@ -1,7 +1,8 @@
-"""Бэклог неадресованных фраз (ADR-0150 §7.3 В12; приёмка A31: 0 чужих фраз в LLM)."""
+"""Бэклог неадресованных фраз (ADR-0150 §7.3 В12, #3767; приёмка A31: 0 чужих фраз в снимке адресованного хода)."""
 
-from rob_box_dialog.backlog import Backlog, Heard, same_direction
-from rob_box_dialog.knowledge import BACKLOG_MAX_ENTRIES, BACKLOG_TTL_S
+from rob_box_dialog.backlog import Backlog, Heard, pickup_summary, same_direction
+from rob_box_dialog.knowledge import BACKLOG_MAX_ENTRIES, BACKLOG_PICKUP_MAX, BACKLOG_TTL_S
+from rob_box_dialog.speaker_adapter import VoiceTag
 
 
 def _h(text, t, doa=None, person="", voice_s=0.0, faces=("f1",)):
@@ -18,13 +19,14 @@ def test_tv_noise_never_reaches_the_llm_snapshot():
     assert backlog.background_phrases(100.0) == 5
 
 
-def test_snapshot_gives_at_most_one_fresh_phrase_of_the_same_direction_as_structure():
+def test_snapshot_gives_at_most_one_fresh_phrase_of_the_same_interlocutor_with_its_label():
     backlog = Backlog()
     backlog.add(_h("старая", t=60.0, doa=80.0))
-    backlog.add(_h("покажи анимацию", t=95.0, doa=85.0))
+    backlog.add(_h("покажи анимацию", t=95.0, doa=85.0, voice_s=2.0))
     backlog.add(_h("телевизор", t=96.0, doa=250.0))
     assert backlog.recent_unaddressed(_h("робот", t=100.0, doa=80.0)) == {
-        "text": "покажи анимацию", "age_s": 5.0, "same_direction": True}
+        "text": "покажи анимацию", "age_s": 5.0, "duration_s": 2.0, "doa_deg": 85, "same_direction": True,
+        "speaker": {"identified": False, "label": "неопознанный", "bio": "none"}, "same_as_caller": True}
 
 
 def test_snapshot_by_person_is_not_same_direction():
@@ -42,13 +44,53 @@ def test_ttl_and_size_limit():
     assert backlog.background_phrases(1000.0 + BACKLOG_MAX_ENTRIES + 5) == BACKLOG_MAX_ENTRIES
 
 
-def test_pickup_takes_the_newest_matching_and_removes_it():
+def test_pickup_takes_every_fresh_phrase_in_order_and_removes_them():
     backlog = Backlog()
     backlog.add(_h("первая", t=90.0, doa=80.0))
-    backlog.add(_h("вторая", t=95.0, doa=80.0))
-    assert backlog.pickup(_h("робот", t=100.0, doa=80.0))[0].text == "вторая"
-    assert backlog.pickup(_h("робот", t=100.0, doa=80.0))[0].text == "первая"
-    assert backlog.pickup(_h("робот", t=100.0, doa=80.0)) == (None, ())
+    backlog.add(_h("вторая", t=95.0, doa=200.0))
+    assert [e.text for e in backlog.pickup(_h("робот", t=100.0, doa=80.0, faces=()))] == ["первая", "вторая"]
+    assert backlog.pickup(_h("робот", t=100.0, doa=80.0)) == []
+
+
+def test_long_story_24s_in_two_chunks_nobody_known_goes_whole_and_labelled_unknown():
+    """#3767, живой лог #3762: 24.5 с речи → 2 куска (14.8 + 9.8 с), лиц нет, голос не узнан, «робот» через 4 с."""
+    backlog = Backlog()
+    backlog.add(Heard(text="слушай я вот что хотела рассказать", t=491.3, doa_deg=58.3, voice_s=14.8,
+                      utterance_id="u1"))
+    backlog.add(Heard(text="как лучше собрать новую полку", t=493.9, doa_deg=54.4, voice_s=9.8, utterance_id="u2"))
+    backlog.note_voice("u1", VoiceTag("unknown_voice", candidate="Борис", candidate_score=0.41))
+    heard = Heard(text="робот", t=498.6, doa_deg=299.0, voice_s=1.4)
+    taken = backlog.pickup(heard)
+    assert [e.text for e in taken] == ["слушай я вот что хотела рассказать", "как лучше собрать новую полку"]
+    labels = [Backlog.label(e, heard) for e in taken]
+    assert labels[0]["speaker"] == {"identified": False, "label": "неопознанный", "bio": "unknown_voice",
+                                    "candidate": "Борис", "candidate_score": 0.41}
+    assert labels[1]["speaker"]["label"] == "неопознанный" and labels[1]["speaker"]["bio"] == "none"
+    assert pickup_summary(labels) == "n=2 speaker=неопознанный,неопознанный channels=- span=17.4s"
+
+
+def test_earlier_chunk_of_the_same_story_older_than_the_window_still_goes():
+    """Окно — от последнего куска: первый кусок кончился 25 с назад, но рассказ непрерывен."""
+    backlog = Backlog()
+    backlog.add(Heard(text="кусок 1", t=75.0, voice_s=15.0))
+    backlog.add(Heard(text="кусок 2", t=89.9, voice_s=14.9))
+    assert [e.text for e in backlog.pickup(Heard(text="робот", t=100.0))] == ["кусок 1", "кусок 2"]
+
+
+def test_tv_phrase_older_than_the_window_does_not_go():
+    backlog = Backlog()
+    backlog.add(Heard(text="в эфире новости", t=60.0, voice_s=3.0, doa_deg=250.0))
+    backlog.add(Heard(text="покажи анимацию", t=95.0, voice_s=2.0, doa_deg=90.0))
+    assert [e.text for e in backlog.pickup(Heard(text="робот", t=100.0))] == ["покажи анимацию"]
+    assert backlog.background_phrases(100.0) == 1, "ТВ остаётся в бэклоге до TTL"
+
+
+def test_pickup_is_capped():
+    backlog = Backlog()
+    for i in range(BACKLOG_PICKUP_MAX + 3):
+        backlog.add(Heard(text=f"ф{i}", t=90.0 + i))
+    taken = backlog.pickup(Heard(text="робот", t=100.0))
+    assert len(taken) == BACKLOG_PICKUP_MAX and taken[-1].text == f"ф{BACKLOG_PICKUP_MAX + 2}"
 
 
 def test_empty_text_is_not_stored_and_clear_empties():
@@ -64,11 +106,14 @@ def test_same_direction_sector():
     assert not same_direction(0.0, 61.0) and not same_direction(None, 0.0)
 
 
-def test_note_voice_marks_entry_by_utterance_id_for_later_pickup():
-    """Биометрия приходит после STT: голос дописывается записи по utterance_id и даёт подхват без кадра и DOA."""
+def test_note_voice_labels_the_phrase_with_the_identified_speaker():
+    """Биометрия приходит после STT: голос дописывается записи по utterance_id — фраза подписана спикером."""
     backlog = Backlog()
     backlog.add(Heard(text="покажи анимацию сон", t=95.0, voice_s=2.4, utterance_id="u1"))
-    assert backlog.pickup(_h("робот", t=100.0, faces=())) == (None, ())
-    backlog.note_voice("u1", "p1")
-    entry, channels = backlog.pickup(_h("робот", t=100.0, faces=()))
-    assert entry.text == "покажи анимацию сон" and channels == ("voice",)
+    backlog.note_voice("u1", VoiceTag("known", person_ref="p1", name="Борис", score=0.86, epithet="Кулибин"))
+    heard = _h("робот", t=100.0, faces=())
+    (entry,) = backlog.pickup(heard)
+    assert Backlog.label(entry, heard)["speaker"] == {
+        "identified": True, "name": "Борис", "person_ref": "p1", "channels": ["voice"], "score": 0.86,
+        "epithet": "Кулибин"}
+    assert Backlog.label(entry, heard)["same_as_caller"] is True

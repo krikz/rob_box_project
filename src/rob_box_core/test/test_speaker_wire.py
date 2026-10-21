@@ -54,6 +54,15 @@ def test_match_unknown_and_inconclusive():
     assert _roundtrip(inc) == inc
 
 
+def test_unknown_voice_carries_its_best_candidate_as_a_hypothesis():
+    """#3767: лучший кандидат неузнанной фразы — гипотеза для метки бэклога, у узнанной не передаётся."""
+    unknown = {"is_known": False, "candidate_name": "Борис", "candidate_score": 0.4123, "utterance_id": "u"}
+    assert _roundtrip(unknown) == unknown
+    inc = {"is_known": False, "inconclusive": True, "reason": "too_short", "candidate_name": "Саша",
+           "candidate_score": 0.3}
+    assert _roundtrip(inc) == inc
+
+
 def test_registered_with_conflict_and_twin():
     payload = {
         "event": "registered", "name": "Борис", "speaker_id": "s", "reused_profile": False,
