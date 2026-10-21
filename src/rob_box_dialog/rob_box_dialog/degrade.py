@@ -38,6 +38,7 @@ class Capabilities(Protocol):
     tool_choice: bool
     json_mode: bool
     structured_output: bool
+    thinking: bool  # модель думает (reasoning) — обязательный тул в этом режиме не принимается (#3798)
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,9 @@ def select_mode(caps: Capabilities) -> CommandMode:
     """Выбрать форму ответа по возможностям адаптера (ADR §4.5)."""
     if caps.structured_output:
         return "structured_output"
-    if caps.tool_choice and caps.tools:
+    # Модель в режиме размышлений не принимает обязательный тул: DeepSeek V4 отвечает 400 «Thinking mode does not
+    # support this tool_choice» (замер 21.10, #3798) — тогда команда идёт JSON-ом.
+    if caps.tool_choice and caps.tools and not caps.thinking:
         return "tool_choice"
     if caps.json_mode:
         return "json_mode"
