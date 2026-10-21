@@ -14,6 +14,8 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# rob_box_dialog (pure Python): CALENDAR table lives there; colcon puts it on the path in CI / the image
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rob_box_dialog'))
 
 
 class _Msg:
@@ -86,6 +88,9 @@ def _install_ros_stand_ins() -> None:
     qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL=1)
     sensor = types.ModuleType('sensor_msgs.msg')
     sensor.Image = _Image
+    sensor.BatteryState = _Msg
+    geometry = types.ModuleType('geometry_msgs.msg')
+    geometry.Twist = _Msg
     std = types.ModuleType('std_msgs.msg')
     std.Bool = std.Int32 = std.String = _Msg
     dialog = types.ModuleType('rob_box_dialog_msgs.msg')
@@ -94,6 +99,7 @@ def _install_ros_stand_ins() -> None:
     for name, mod in {
         'rclpy': rclpy, 'rclpy.node': node, 'rclpy.qos': qos,
         'sensor_msgs': types.ModuleType('sensor_msgs'), 'sensor_msgs.msg': sensor,
+        'geometry_msgs': types.ModuleType('geometry_msgs'), 'geometry_msgs.msg': geometry,
         'std_msgs': types.ModuleType('std_msgs'), 'std_msgs.msg': std,
         'rob_box_dialog_msgs': types.ModuleType('rob_box_dialog_msgs'), 'rob_box_dialog_msgs.msg': dialog,
     }.items():

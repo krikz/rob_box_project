@@ -22,3 +22,10 @@ face_node:
     # Задние фары в сценах, которые их не рисуют: default | new_year | halloween | valentine | ...
     rear_theme: default
     metrics_period_s: 10.0
+    # Поворотники/стоп-сигнал: топик скорости (для проверки без движения — подменить на тестовый).
+    cmd_vel_topic: /cmd_vel
+    battery_topic: /battery_state
+    # BatteryState.percentage * scale = проценты (ROS: 0..1 -> 100; шкалу робота сверить `ros2 topic echo`).
+    battery_percent_scale: 100.0
+    # Часовой пояс для календаря праздничных тем (МСК).
+    tz_offset_h: 3.0
