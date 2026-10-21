@@ -67,7 +67,7 @@ def test_trigger_carries_sound_and_request_id_and_started_is_success(monkeypatch
     ((topic, body),) = node.sent
     assert topic == sound_module.TRIGGER_TOPIC and body["sound"] == "robot_happy" and body["request_id"]
     assert out.success and out.data["status"] == "done" and out.data["request_id"] == body["request_id"]
-    assert out.message == "Звук robot_happy заиграл."
+    assert out.message is None and out.error is None  # успех молчит: звук сам себе доказательство (§4.1)
 
 
 def test_busy_channel_is_an_honest_refusal_with_reason(monkeypatch):

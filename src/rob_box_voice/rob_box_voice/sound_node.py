@@ -123,6 +123,9 @@ class SoundNode(SoundRequestsMixin, Node):
         self.current_sound: Optional[str] = None
         self.play_thread: Optional[threading.Thread] = None
         self._play_lock = threading.Lock()
+        # Очередь play_sound из одного места и конец текущего звука (core/sound_requests.py, #3698).
+        self._queued = None
+        self._busy_until: Optional[float] = None
 
         # Инициализация
         self.get_logger().info("SoundNode инициализирован")
@@ -218,7 +221,7 @@ class SoundNode(SoundRequestsMixin, Node):
         """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
         trigger, request_id = parse_trigger(msg.data)
         self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
-        self.start_sound(trigger, request_id)
+        self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
         """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""
@@ -396,9 +399,8 @@ class SoundNode(SoundRequestsMixin, Node):
 
         finally:
             self.publish_sound_event(request_id, outcome, sound_name, reason)
-            self.is_playing = False
-            self.current_sound = None
             self.publish_state("ready")
+            self.release_channel()
 
     def cleanup_playback_noise(self):
         """

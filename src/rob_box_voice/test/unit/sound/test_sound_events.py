@@ -1,5 +1,6 @@
 """ADR-0150 PR-3b (#3690): звук отвечает событием на каждый запрос - молчаливого пропуска нет (V33, A23)."""
 
+import json
 import types
 from unittest.mock import MagicMock
 
@@ -37,8 +38,78 @@ def node(monkeypatch):
     return node
 
 
-def _segment():
-    return types.SimpleNamespace(frame_rate=16000, channels=1, get_array_of_samples=lambda: [0, 1, 2])
+def _segment(seconds=None):
+    seg = types.SimpleNamespace(frame_rate=16000, channels=1, get_array_of_samples=lambda: [0, 1, 2])
+    if seconds is not None:
+        seg.duration_seconds = seconds
+    return seg
+
+
+def _trigger(node, sound, rid):
+    node.trigger_callback(types.SimpleNamespace(data=json.dumps({"sound": sound, "request_id": rid})))
+
+
+# ── очередь play_sound при коротком текущем звуке (#3698, просьба Шифу 21.10) ─────────────────
+
+
+def test_play_sound_waits_out_a_short_earcon_and_plays_right_after(node):
+    """Живой прогон 21.10 16:25Z: earcon «error» (~1 с) занял канал, play_sound получил busy, а на слух звук
+    будто прозвучал. Теперь запрос ждёт короткий текущий звук и играет следом с тем же request_id."""
+    node.sounds.update(error=_segment(1.0), robot_happy=_segment(2.2))
+    node.expression_callback(_request("fail"))
+    _trigger(node, "robot_happy", "rq-happy")
+    assert [t.args[0] for t in _Thread.started] == ["error"]
+    assert _sound_events(node) == []  # не skipped: ждёт
+    node.play_sound_thread(*_Thread.started[0].args)  # earcon доиграл → следующий из очереди
+    assert _Thread.started[-1].args == ("robot_happy", "robot_happy", "rq-happy")
+    node.play_sound_thread(*_Thread.started[-1].args)
+    kinds = [(e.request_id, e.kind) for e in _sound_events(node)]
+    assert ("rq-happy", SoundEvent.KIND_STARTED) in kinds and ("rq-happy", SoundEvent.KIND_FINISHED) in kinds
+    assert node.is_playing is False
+
+
+def test_long_current_sound_is_an_honest_busy(node):
+    node.sounds.update(robot_stinger=_segment(12.4), robot_happy=_segment(2.2))
+    _trigger(node, "robot_stinger", "rq-stinger")
+    _trigger(node, "robot_happy", "rq-happy")
+    (skipped,) = _sound_events(node)
+    assert (skipped.request_id, skipped.kind, skipped.reason) == ("rq-happy", SoundEvent.KIND_SKIPPED, "busy")
+    assert kn.SOUND_QUEUE_MAX_WAIT_S < 12.4
+
+
+def test_newer_request_supersedes_the_waiting_one(node):
+    node.sounds.update(error=_segment(1.0), robot_happy=_segment(2.2), ui_confirm=_segment(0.7))
+    node.expression_callback(_request("fail"))
+    _trigger(node, "robot_happy", "rq-1")
+    _trigger(node, "ui_confirm", "rq-2")
+    (skipped,) = _sound_events(node)
+    assert (skipped.request_id, skipped.reason) == ("rq-1", "superseded")
+    node.play_sound_thread(*_Thread.started[0].args)
+    assert _Thread.started[-1].args == ("ui_confirm", "ui_confirm", "rq-2")
+
+
+def test_earcon_does_not_queue(node):
+    node.sounds.update(button_click=_segment(0.4), ui_confirm=_segment(0.7))
+    node.expression_callback(_request("heard", "t1"))
+    node.expression_callback(_request("done", "t2"))
+    (skipped,) = _sound_events(node)
+    assert (skipped.request_id, skipped.reason) == ("t2", "busy")
+
+
+def test_queued_request_yields_to_the_operator_voice(node):
+    node.sounds.update(error=_segment(1.0), robot_happy=_segment(2.2))
+    node.expression_callback(_request("fail"))
+    _trigger(node, "robot_happy", "rq-happy")
+    node._voice_stream = object()
+    node.play_sound_thread(*_Thread.started[0].args)
+    assert len(_Thread.started) == 1
+    last = _sound_events(node)[-1]
+    assert (last.request_id, last.reason) == ("rq-happy", "voice_stream")
+    assert node.is_playing is False
+
+
+def test_queue_limit_is_below_the_play_sound_deadline():
+    assert 0 < kn.SOUND_QUEUE_MAX_WAIT_S < kn.ACTION_CLASSES[kn.TOOL_CLASSES["play_sound"]].timeout_s
 
 
 def _request(earcon, turn_id="turn-1"):

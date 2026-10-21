@@ -157,7 +157,8 @@ class PlaySoundTool(MCPTool):
         data = {"sound": sound, "request_id": request_id, "status": status, "reason": reason,
                 "duration": self._duration_map.get(sound, 1.5)}
         phrase = sound_phrase(status, reason, sound)
-        # При отказе модель видит только ``error`` (живой прогон 21.10: голое «busy»): туда же - фраза кода.
+        # При отказе модель видит только ``error`` (живой прогон 21.10: голое «busy»): туда же - фраза кода. Успех -
+        # без фразы: в результате только данные исхода, нечего пересказывать.
         return MCPToolResult(success=status == "done", data=data, error=None if status == "done" else phrase,
                              message=phrase)
 
@@ -184,15 +185,17 @@ def sound_outcome(event: Optional[Any]) -> tuple:
     return "done", None
 
 
-def sound_phrase(status: str, reason: Optional[str], sound: str) -> str:
-    """Фраза исхода - каталог ``phrases/ru.yaml`` тем же ключом, что строит ``respond`` (код, не LLM)."""
+def sound_phrase(status: str, reason: Optional[str], sound: str) -> Optional[str]:
+    """Фраза исхода - каталог ``phrases/ru.yaml`` тем же ключом, что строит ``respond`` (код, не LLM); успех -
+    ``None``: звук сам себе доказательство (``knowledge.SILENT_DONE_TOOLS``)."""
     from rob_box_dialog import phrases
     from rob_box_dialog.respond import ActionResult, phrase_key
     from rob_box_dialog import knowledge as kn
 
     result = ActionResult(turn_id="", epoch=0, agent="personality", tool="play_sound",
                           cls=kn.TOOL_CLASSES["play_sound"], status=status, reason=reason)
-    return phrases.text(phrase_key(result), sound=sound)
+    key = phrase_key(result)
+    return None if key is None else phrases.text(key, sound=sound)
 
 
 class GetSoundInfoTool(MCPTool):
