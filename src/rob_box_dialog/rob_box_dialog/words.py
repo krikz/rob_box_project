@@ -11,7 +11,13 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, STOP_LEAD_WORDS, STOP_QUESTION_PARTICLES, STOP_WORDS
+from rob_box_dialog.knowledge import (
+    DEFAULT_WAKE_WORDS,
+    STOP_LEAD_WORDS,
+    STOP_QUESTION_PARTICLES,
+    STOP_WORDS,
+    TIER1_POLICY,
+)
 
 _LEFT = r"(?<![\w-])"
 _RIGHT = r"(?![\w-])"
@@ -91,6 +97,29 @@ def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopC
         return StopCall(STOP_CLEAR, tokens[lead], _rest(part, spans, lead, skip))
     first = next((t for t in tokens if _is_stop(t)), "")
     return StopCall(STOP_DISPUTED, first) if first else StopCall(STOP_NONE)
+
+
+def policy_word(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
+    """Tier-1 переопределение политики планировщика (§5.6.4): ключ ``TIER1_POLICY`` или ``None``.
+
+    Ясный стоп (:func:`stop_command`) — ``halt`` для форм «стой», иначе ``stop``; дальше «потом/после/когда
+    закончишь» (``later``) и «прямо сейчас»/«сейчас» первым словом команды (``now``) — точными формами по границам
+    слов: «последний» — не «после»."""
+    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    stop = stop_command(text, words)
+    if stop.verdict == STOP_CLEAR:
+        halt = TIER1_POLICY["halt"].words
+        return "halt" if all(part in halt for part in stop.word.split("-")) else "stop"
+    part = _command_part(text, words)
+    tokens = [t.lower() for t in _TOKEN.findall(part)]
+    skip = set(STOP_LEAD_WORDS) | {w.lower() for w in words}
+    lead = next((t for t in tokens if t not in skip), "")
+    for key in ("later", "now"):
+        group = TIER1_POLICY[key]
+        anywhere = tuple(w for w in group.words if w not in group.lead_only)
+        if (anywhere and _pattern(anywhere, _RIGHT).search(part)) or lead in group.lead_only:
+            return key
+    return None
 
 
 def _rest(part: str, spans: Sequence[Tuple[str, int]], lead: int, skip: set) -> str:

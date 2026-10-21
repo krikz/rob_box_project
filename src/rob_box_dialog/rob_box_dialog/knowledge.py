@@ -107,20 +107,24 @@ BOUNDARIES: Tuple[str, ...] = ("now", "sentence", "segment", "bar", "phrase", "b
 
 @dataclass(frozen=True)
 class PolicyWords:
-    """Tier-1 переопределение политики планировщика (§5.6.4): закрытый список слов → политика и граница."""
+    """Tier-1 переопределение политики планировщика (§5.6.4): закрытый список слов → политика и граница.
+
+    ``lead_only`` — формы, которые считаются только ПЕРВЫМ словом команды (после вейка и ``STOP_LEAD_WORDS``)."""
 
     words: Tuple[str, ...]
     policy: str
     boundary: str
+    lead_only: Tuple[str, ...] = ()
 
 
 #: «стоп/хватит/замолчи» — заменить на границе предложения, «стой» — сразу, «потом» — после блока, «сейчас» —
-#: на границе. Правила планировщика берут политику отсюда, а не из текста ответа LLM.
+#: на границе. Правила планировщика берут политику отсюда, а не из текста ответа LLM (``words.policy_word``).
+#: Голое «сейчас» — частое слово вопросов («который сейчас час»): только первым словом команды («сейчас спой»).
 TIER1_POLICY: Mapping[str, PolicyWords] = MappingProxyType({
     "stop": PolicyWords(("хватит", "стоп", "замолчи", "отставить"), "REPLACE", "sentence"),
-    "halt": PolicyWords(("стой",), "REPLACE", "now"),
+    "halt": PolicyWords(("стой", "стойте"), "REPLACE", "now"),
     "later": PolicyWords(("потом", "после", "когда закончишь"), "APPEND", "block"),
-    "now": PolicyWords(("сейчас", "прямо сейчас"), "REPLACE", "sentence"),
+    "now": PolicyWords(("сейчас", "прямо сейчас"), "REPLACE", "sentence", lead_only=("сейчас",)),
 })
 
 #: Стоп-слова Tier-1 (§6.2, В19) — ТОЧНЫЕ формы, сверка по границам слов (``words.stop_verdict``): «стопка» и
@@ -754,7 +758,7 @@ LLM_QUERY_ITERATIONS_MAX = 2
 COMMAND_RETRIES_MAX = 1
 
 # ---------------------------------------------------------------------------------------------------------------
-# Матрица одновременности (§5.6.2) — данные; compose() читает её в PR-7b
+# Матрица одновременности (§5.6.2) — данные; читает ``plan.composition.compose``
 # ---------------------------------------------------------------------------------------------------------------
 
 #: Что приходит (строка матрицы): реплика, выступление, экспрессия, SFX, старт музыки, движение, «стой», query.
@@ -801,6 +805,48 @@ _ROWS: Dict[str, Dict[str, Rule]] = {
 COMPOSITION: Mapping[Tuple[str, str], Rule] = MappingProxyType({
     (new, busy): rule for new, row in _ROWS.items() for busy, rule in row.items()
 })
+#: Строка матрицы по классу действия (§5.1 → §5.6.2). Память, громкость, голос, знакомство ресурсов не занимают —
+#: параллельно со всем, как ``query``; ``action.media`` — старт/смена музыки.
+COMPOSITION_KIND_BY_CLASS: Mapping[str, str] = MappingProxyType({
+    "query": "query", "action.local": "query", "action.identity": "query", "action.media": "music",
+    "action.motion": "motion", "action.speak_aloud": "speech", "action.perform": "perform",
+})
+#: Тулы, чья строка не следует из класса: звук — SFX, анимация — экспрессия, тул речи — реплика.
+COMPOSITION_KIND_BY_TOOL: Mapping[str, str] = MappingProxyType({
+    "play_sound": "sfx", "play_animation": "expression", "speak_text": "speech",
+})
+#: Какой ресурс (столбец) занимает начатый блок строки; ``halt`` и ``query`` ничего не занимают. Подложку
+#: выступления (``backing``) запускает выступление (PR-7c), а не строка ``music``.
+COMPOSITION_OCCUPIES: Mapping[str, str] = MappingProxyType({
+    "speech": "speech", "perform": "perform", "expression": "face", "sfx": "sfx", "music": "track", "motion": "motion",
+})
+#: Граница, на которой занятый ресурс можно сменить (§5.6.1, §5.6.4): реплика — конец предложения, выступление —
+#: сегмента, подложка — такт, трек/сет — фраза (ADR-0149), остальное — сразу.
+RESOURCE_BOUNDARY: Mapping[str, str] = MappingProxyType({
+    "speech": "sentence", "perform": "segment", "face": "now", "sfx": "now", "backing": "bar", "track": "phrase",
+    "motion": "now",
+})
+#: Столбцы без события конца (у ``ExpressionEvent`` только started/skipped): ждать их нечего, Tier-1 их не трогает.
+COMPOSITION_NO_END: Tuple[str, ...] = ("face",)
+#: Непрерываемое занятое (§5.6.2): движение вытесняет только «стой» и новое движение (строка таблицы), не «хватит».
+COMPOSITION_UNINTERRUPTIBLE: Tuple[str, ...] = ("motion",)
+#: Старшинство политик: итог по нескольким занятым ресурсам — самая строгая клетка.
+POLICY_ORDER: Tuple[str, ...] = ("REJECT", "APPEND", "REPLACE", "MERGE")
+#: Блок из события владельца (речь, SFX, движение) без события конца дольше этого срока считается потерянным
+#: (finished не дошёл) — ресурс свободен, план не ждёт вечно. Музыка из снимка плеера не стареет: он переиздаётся.
+RESOURCE_STALE_S = 180.0
+#: Скорость речи для ETA ``queued{eta_ms}``, пока нет замера по ``SpeechEvent progress`` (spoken_chars/seconds):
+#: ОЦЕНКА, не замер (русская речь ~12-15 симв/с).
+SPEECH_CHARS_PER_S_GUESS = 14.0
+#: Ключи фраз плана (§5.6.4): «Поставлю после …» по ``PlanEvent queued`` — глагол по строке матрицы, «после чего» —
+#: по столбцу; их обязан содержать ``phrases/ru.yaml`` (как :data:`PHRASE_KEYS`).
+PLAN_PHRASE_KEYS: Tuple[str, ...] = (
+    "plan.queued", "plan.queued.eta",
+    *(f"plan.verb.{kind}" for kind in COMPOSITION_NEW if kind != "halt"),
+    *(f"plan.after.{busy}" for busy in COMPOSITION_BUSY if busy not in COMPOSITION_NO_END),
+)
+#: ETA короче этого во фразе не называется: «примерно через 1 с» — шум, а не информация.
+PLAN_SAY_ETA_MIN_S = 3
 
 # ---------------------------------------------------------------------------------------------------------------
 # Команда LLM (§4.1): пределы и перечисления; схема и промпт генерируются ниже
