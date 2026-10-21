@@ -99,7 +99,7 @@ def classify_same(text: str, *, max_words: Optional[int] = kn.REPLY_SAME_MAX_WOR
         return None
     padded = f" {' '.join(words)} "
     different = bool(set(words) & kn.REPLY_DIFFERENT_WORDS) or any(f" {p} " in padded for p in kn.REPLY_DIFFERENT_PHRASES)
-    same = any(f" {p} " in padded for p in kn.REPLY_SAME_PHRASES)
+    same = " ".join(words) in kn.REPLY_SAME_WHOLE or any(f" {p} " in padded for p in kn.REPLY_SAME_PHRASES)
     return same if different != same else None
 
 

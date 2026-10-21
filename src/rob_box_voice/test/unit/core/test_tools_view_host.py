@@ -62,3 +62,13 @@ def test_provider_without_tools_gets_an_empty_view():
 
 def test_no_core_is_a_no_op():
     apply_tools_view(SimpleNamespace(_core=None), "спой")
+
+
+def test_identity_turn_hides_register_speaker():
+    """#3765: голос похож на другого — личность выясняет робот, LLM этого хода register_speaker не видит."""
+    node = _node()
+    apply_tools_view(node, "привет меня зовут Матвей")
+    assert "register_speaker" in _view(node)[0]
+    node._turn_hidden_tools = ("register_speaker",)
+    apply_tools_view(node, "привет меня зовут Матвей")
+    assert "register_speaker" not in _view(node)[0]

@@ -52,3 +52,13 @@ def test_bare_name_is_not_an_answer_to_yes_no_question():
 ])
 def test_classify_same(text, expected):
     assert classify_same(text) is expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("это я", True), ("да это я", True), ("да, я", True), ("Робот, да, это я", True), ("я", True),
+    ("да я не знаю", None),  # «да я» внутри другой фразы — не ответ
+])
+def test_classify_same_it_is_me_corpus(text, expected):
+    """Живой робот 21.10 (координатор): на «Вы разные люди или это ты?» ответы «это я / да это я / да, я» — один
+    человек."""
+    assert classify_same(text) is expected

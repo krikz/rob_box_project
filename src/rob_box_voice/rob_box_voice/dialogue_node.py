@@ -116,6 +116,7 @@ from rob_box_voice.core.media_plan_run import command_turn_context, run_media_pl
 from rob_box_dialog.context import build_context
 from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_voice.core.turn_context import context_sections
+from rob_box_voice.core.identity_dedup import identity_dedup_from_env
 from rob_box_voice.core.stop_chooser import stop_chooser_from_env
 from rob_box_voice.core.tools_view_host import apply_tools_view
 from rob_box_voice.core.stt_admission import (
@@ -244,7 +245,15 @@ from rob_box_voice.speaker_profiles import (
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
-from rob_box_voice.core.identity_question import SESSION_TOPIC, introduced_name, merge_reply, open_merge_question
+from rob_box_voice.core.identity_question import (
+    SESSION_TOPIC,
+    ask_after_turn,
+    deliver_turn_result,
+    introduced_name,
+    merge_reply,
+    open_merge_question,
+    settle_identity,
+)
 from rob_box_voice.core.speaker_turn import (
     ask_planned,
     note_backlog_voice,
@@ -712,6 +721,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # ADR-0150 PR-6 (#3696) — Tier-1 грамматика: спорный стоп (В19) решает Chooser; «звучит ли речь» (канал
         # «громче») — SpeakingWatch, его кормит та же подписка /voice/speech/event, что стадии хода (_on_speech_event).
         self._stop_chooser = stop_chooser_from_env(log=self.get_logger)
+        self._identity_dedup = identity_dedup_from_env(log=self.get_logger)
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
@@ -2005,6 +2015,8 @@ class DialogueNode(DialogueStageMixin, Node):
         data = speaker_result_to_payload(msg)
         if data.get("event") in ("registered", "register_error"):
             self._on_register_outcome(data)
+            # #3765: исход известен (вопрос, если нужен, уже отложен) — его ждёт settle_identity до вызова LLM.
+            self._turn_register_outcome = data
             return
         # Issue #2863 — любой другой служебный ack (ack склейки,
         # переименования) — не результат биометрии и не должен затирать
@@ -3110,7 +3122,8 @@ class DialogueNode(DialogueStageMixin, Node):
         получает ``intro_registered`` и второй запрос не шлёт
         (``register_speaker_gate``). Не шлём, если реплика уверенно узнана
         под этим же именем (или только что подтверждена, #2809): нечего
-        регистрировать. Речь хода ждёт ack так же, как после тула (#2913).
+        регистрировать. Исход (ack) ход ждёт до вызова LLM (#3765,
+        ``identity_question.settle_identity``).
         """
         intro = getattr(self, "_turn_self_intro", None)
         pub = getattr(self, "_speaker_register_pub", None)
@@ -3449,6 +3462,9 @@ class DialogueNode(DialogueStageMixin, Node):
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None
         self._turn_intro_registered = False
+        self._turn_register_outcome = None
+        self._turn_hidden_tools = ()
+        self._turn_llm_said = []
         self._turn_set_tracks = None
         self._run_cancelled = False
         # Issue #992 Bug D — reset the babble-retry budget only at the
@@ -3571,11 +3587,7 @@ class DialogueNode(DialogueStageMixin, Node):
             # Issue #2874 -- свободный текст хода придерживается до решения
             # post-turn гуардов в ``finally`` (_release_turn_speech).
             speech_hold = self._turn_speech_hold = TurnSpeechHold()
-            self._handle_result(
-                result,
-                user_input=user_input,
-                raw_user_command=raw_user_command,
-            )
+            deliver_turn_result(self, result, coded_reply, user_input=user_input, raw_user_command=raw_user_command)
             guard_retry_pending = bool(self._retry_dispatched_in_turn)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
@@ -3662,7 +3674,7 @@ class DialogueNode(DialogueStageMixin, Node):
             self._release_turn_speech(
                 speech_hold, retry_dispatched=tool_retry_dispatched,
             )
-            self._speak_identity_question(leftover_identity_question)
+            await ask_after_turn(self, leftover_identity_question, result)
             ask_planned(self, identity_ask)
             # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM; ретрай
             # гуарда продолжает тот же ход.
@@ -4749,6 +4761,8 @@ class DialogueNode(DialogueStageMixin, Node):
                 user_input, speaker_context, utterance_id
             )
             self._register_self_intro(utterance_id)
+            # #3765: личность под вопросом (голос похож на другого) — выясняет робот, ход LLM её не решает.
+            await settle_identity(self)
         return user_input, self._build_dynamic_system_context(tg_chat_id)
 
 

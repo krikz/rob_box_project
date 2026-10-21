@@ -203,6 +203,17 @@ class TestAnswerDecidedByCode:
         assert n.tts[-1] == phrases.text("identity.merged", name="Саша")
         assert n.llm_calls == [INTRO], "на ответ LLM не зовётся"
 
+    def test_code_phrase_bypasses_llm_text_guards(self):
+        """Живой прогон 21.10 15:18: фраза «…Запомню обоих.» шла через _handle_result, гард #2549 счёл «Запомню» без
+        тула галлюцинацией и отправил CRITICAL-ретрай в LLM. Фраза кода — мимо гардов LLM-текста."""
+        n = _asked()
+        handled = n._handle_result.call_count
+
+        _answer(n, "мы разные")
+
+        assert n._handle_result.call_count == handled
+        assert n._speak_direct.call_args_list[-1].args[0] == phrases.text("identity.kept_apart")
+
     def test_different_people_keeps_profiles(self):
         n = _asked()
 

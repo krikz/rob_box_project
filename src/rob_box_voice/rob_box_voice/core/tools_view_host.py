@@ -22,7 +22,8 @@ def apply_tools_view(node: Any, text: str) -> None:
     snapshot = runner.snapshot()
     caps = getattr(getattr(node, "_llm", None), "capabilities", None)
     carry = getattr(node, "_tools_view_groups", ())  # группы прошлого хода: «я же просил про стрижей» — продолжение
-    names = [t.name for t in available_tools(snapshot, caps, "personality", text, carry)]
+    hidden = getattr(node, "_turn_hidden_tools", ()) or ()  # #3765: личность выясняет робот — без register_speaker
+    names = [t.name for t in available_tools(snapshot, caps, "personality", text, carry) if t.name not in hidden]
     groups = groups_for(snapshot, text, carry)
     node._tools_view_groups = groups
     label = "+".join(groups)

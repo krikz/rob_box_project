@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import time
@@ -39,6 +40,8 @@ from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_
 SESSION_TOPIC = "/dialog/session"
 #: ``Identity.kind`` кадров, где ответ — имя: голое имя («Гриша») — представление.
 ASKS_NAME = kn.IDENTITY_ASKS_NAME
+#: Кадр вопроса, который задала сама LLM (#3765): окно открывает конец речи хода, а не конкретный ``speech_id``.
+ANY_SPEECH = "*"
 #: ``SpeechEvent.kind``: finished / cancelled / rejected.
 _FINISHED, _CANCELLED, _REJECTED = 4, 5, 7
 
@@ -92,13 +95,27 @@ def on_speech_event(node: Any, kind: int, speech_id: str, agent: str) -> None:
         return
     current = session(node)
     frame = current.snapshot.top("Identity")
-    if frame is None or frame.payload.get("speech_id") != speech_id or question_open(frame):
+    if frame is None or frame.payload.get("speech_id") not in (speech_id, ANY_SPEECH) or question_open(frame):
+        return
+    if frame.payload.get("speech_id") == ANY_SPEECH:
+        if kind == _FINISHED and not _speaking(node):
+            _arm(node, frame)  # вопрос задала LLM (#3765): окно — от конца речи хода
         return
     if kind != _FINISHED:
         current.pop_scene("Identity")
         node.get_logger().info(
             f"❓ [Identity #3695] кадр снят: вопрос не прозвучал (SpeechEvent kind={kind} speech_id={speech_id[:8]})")
         return
+    _arm(node, frame)
+
+
+def _speaking(node: Any) -> bool:
+    watch = getattr(node, "_speaking_watch", None)
+    return bool(watch is not None and watch.speaking())
+
+
+def _arm(node: Any, frame: Any) -> None:
+    current = session(node)
     ttl = float(kn.IDENTITY_MIC_GRACE_S + kn.IDENTITY_TTL_S)
     current.arm_scene("Identity", ttl, {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S})
     node.get_logger().info(
@@ -178,6 +195,15 @@ def merge_reply(node: Any) -> Optional[str]:
     return merge_phrase(asked, same)
 
 
+def deliver_turn_result(node: Any, result: Any, coded_reply: Optional[str], **kwargs: Any) -> None:
+    """Выдать ответ хода. Фраза кода (:func:`merge_reply`) — терминальная: звучит как есть, мимо гардов LLM-текста
+    (живой робот 21.10: гард #2549 счёл «Запомню обоих» галлюцинацией и отправил CRITICAL-ретрай в LLM)."""
+    if coded_reply:
+        node._speak_direct(coded_reply)
+    else:
+        node._handle_result(result, **kwargs)
+
+
 def _merge(node: Any, plan: Mapping[str, Any]) -> None:
     """«Это я» — склеить ``new_id`` в ``known_id`` и поправить собеседника хода."""
     pub = getattr(node, "_speaker_merge_pub", None)
@@ -193,6 +219,47 @@ def _merge(node: Any, plan: Mapping[str, Any]) -> None:
         if node._current_speaker.get("speaker_id") == plan["new_id"]:
             node._current_speaker["speaker_id"] = plan["known_id"]
             node._current_speaker["name"] = plan["known_name"]
+
+
+async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT_S) -> None:
+    """До вызова LLM: ход отправил регистрацию по представлению (#2925) — дождаться исхода. Голос похож на другого
+    (ack с voice_conflict/name_twin, вопрос склейки отложен до конца хода) — личность выясняет робот: в снимке хода
+    собеседник неизвестен (ни имени, ни сведений о совпадении голоса), ``register_speaker`` LLM не видит (#3765;
+    живой робот 21.10: LLM сама обсуждала совпадение голоса и переименовывала профиль, а потом звучал вопрос кода)."""
+    if not getattr(node, "_turn_intro_registered", False):
+        return
+    deadline = time.monotonic() + timeout_s
+    while getattr(node, "_turn_register_outcome", None) is None and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    plan = getattr(node, "_after_turn_question", None)
+    if not plan or plan.get("kind") not in kn.IDENTITY_MERGE_KINDS:
+        return
+    with node._speaker_lock:
+        node._current_speaker = {"is_known": False}
+    node._turn_hidden_tools = ("register_speaker",)
+    node.get_logger().info(
+        f"👥 [#3765] личность выясняет робот (kind={plan['kind']}): ход LLM без register_speaker и без сведений о голосе")
+
+
+async def ask_after_turn(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
+    """Вопрос личности после ответа хода (#2828/#2908). Если LLM в этом ходе уже спросила о том же (Chooser
+    :mod:`.identity_dedup`), фраза кода не звучит, а кадр ``Identity`` всё равно открывается — от конца речи хода."""
+    if plan is None:
+        return
+    said = list(getattr(node, "_turn_llm_said", None) or ())
+    spoken = str(getattr(result, "spoken_text", "") or "").strip()
+    if spoken and spoken.lower() not in ("done", "готово"):
+        said.append(spoken)
+    dedup = getattr(node, "_identity_dedup", None)
+    verdict = (await asyncio.to_thread(dedup.decide, said, plan["question"]))[0] if dedup is not None else ""
+    if verdict != "already_said":
+        node._speak_identity_question(plan)
+        return
+    node._identity_question_asked_in_turn = True
+    if plan.get("kind") in kn.IDENTITY_MERGE_KINDS:
+        open_merge_question(node, plan, ANY_SPEECH)
+        if not _speaking(node):
+            _arm(node, session(node).snapshot.top("Identity"))
 
 
 def introduced_name(node: Any, text: str) -> Optional[str]:
@@ -240,4 +307,5 @@ def _time(msg: Any, t: float) -> Any:
 
 
 __all__ = ["SESSION_TOPIC", "answer_name", "introduced_name", "merge_reply", "on_speech_event", "open_merge_question",
-           "open_question", "question", "session", "session_state", "set_speaker", "take_answer"]
+           "open_question", "question", "session", "session_state", "set_speaker", "settle_identity", "take_answer",
+           "ask_after_turn", "deliver_turn_result", "ANY_SPEECH"]
