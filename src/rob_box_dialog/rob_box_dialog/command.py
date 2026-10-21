@@ -3,7 +3,7 @@
 LLM на каждом ходе отдаёт ОДНУ команду: речь, вопрос, до трёх действий, выступление, экспрессия. :func:`parse`
 собирает её из ``tool_calls``, JSON или свободного текста с JSON-объектом; :func:`validate` проверяет по таблицам
 :mod:`.knowledge` и JSON-схемам каталога тулов. Невалидно — :class:`Invalid` со списком нарушений (:class:`Violation`)
-и вопросом ``understand.invalid``. :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
+без вопроса человеку: ход закрывает провал (рефлекс ``failed``). :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
 tool-результатом, один раз на ответ (мост, решение Шифу 21.10 по #3698; ADR-0148 п.2).
 """
 
@@ -19,7 +19,6 @@ from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
 
-INVALID_ASK_KEY = "understand.invalid"
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
 _EXPRESSION_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"]["expression"]["properties"])
@@ -101,12 +100,11 @@ class Violation:
 
 @dataclass(frozen=True)
 class Invalid:
-    """Невалидный ответ LLM: машинная причина (первого нарушения), подробность для лога, вопрос-шаблон человеку и
-    все найденные нарушения (пусто — одно, ``reason``/``detail``)."""
+    """Невалидный ответ LLM: машинная причина (первого нарушения), подробность для лога и все найденные нарушения
+    (пусто — одно, ``reason``/``detail``). Человеку ничего не говорится: ход закрывается как ``failed``."""
 
     reason: str
     detail: str = ""
-    ask: Ask = Ask(expects="free", key=INVALID_ASK_KEY)
     violations: Tuple[Violation, ...] = ()
 
     @property

@@ -169,4 +169,3 @@ def test_field_channel_tool_mode_without_command_call_is_unparseable_not_silentl
     """Модель не позвала тул `command`: текст пуст -> парсер обязан отказать (потеря видна, а не молчаливая)."""
     parsed = FieldChannel(SCHEMA).parse(ModeReply(content="просто текст"), "tool_choice", PARSE)
     assert isinstance(parsed, Invalid) and parsed.reason == "no_command"
-    assert parsed.ask.key == "understand.invalid"

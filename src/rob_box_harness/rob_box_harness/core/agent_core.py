@@ -633,6 +633,8 @@ class DialogResult:
     # validation, the retry in the same turn succeeded» looked exactly
     # like a failure to dialogue_node's music guard (#2966 rule).
     succeeded_tools: list[str] = field(default_factory=list)
+    # ADR-0150 PR-7 (#3698) — режим команд: невалидная команда после повтора. Речи нет, стадия хода ``failed``.
+    turn_failure: str = ""
     # Issue #3598 — финальный текст хода цитирует служебное из контекста
     # хода (``"<music_state>"``) или имя тула (``"speak_text"``): это
     # рассуждение модели, а не реплика человеку. ``None`` — текст чистый.
@@ -1076,6 +1078,7 @@ class AgentCore:
                 result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
                 result.succeeded_tools = list(outcome.succeeded_tools)
+                result.turn_failure = outcome.turn_failure
                 # Issue #3598 — рассуждение с тегами контекста/именами тулов
                 # не реплика: в историю не ложится (иначе задаёт тон
                 # следующим ходам — живой лог 13.10, ``[3] assistant``).
@@ -1739,7 +1742,7 @@ class AgentCore:
             track_name=track_name,
             music_call_args=music_call_args,
         )
-        return replace(outcome, succeeded_tools=tuple(succeeded_tools))
+        return replace(outcome, succeeded_tools=tuple(succeeded_tools), turn_failure=commands.failure)
 
     def _record_tool_calls(
         self,

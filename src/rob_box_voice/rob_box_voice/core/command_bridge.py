@@ -13,8 +13,9 @@
 * **невалидная команда** (разбор + ``command.validate`` по срезу тулов запроса) возвращается модели в том же запросе:
   её вызов ``command`` + tool-результат с нарушениями (``command.explain``; в JSON-режимах — реплика пользователя),
   не больше ``knowledge.COMMAND_RETRIES_MAX`` раз на ответ (решение Шифу 21.10 по #3698, как deepseek-harness:
-  ``invalid arguments`` с перечнем допустимого). Снова невалидна — вопрос-шаблон ``understand.invalid``. Пока идёт
-  повтор, робот молчит: ответ ноде уходит один, после повтора.
+  ``invalid arguments`` с перечнем допустимого). Снова невалидна — исполнителю хода уходит вызов ``command`` с полем
+  ``knowledge.COMMAND_INVALID_FIELD``: ход закрывается как провал без речи (рефлекс ``failed``). Пока идёт повтор,
+  робот молчит: ответ ноде уходит один, после повтора.
 
 Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
 остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
@@ -30,8 +31,7 @@ from dataclasses import replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog import phrases
-from rob_box_dialog.command import INVALID_ASK_KEY, NOT_RUN, Command, Invalid, Result, explain, parse, to_args, validate
+from rob_box_dialog.command import NOT_RUN, Command, Invalid, Result, explain, parse, to_args, validate
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -159,9 +159,12 @@ def _without_speech_tool(cmd: Command) -> Command:
 
 def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
     """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
-    команда с действиями, выступлением или голосом реплики — одним вызовом ``command`` исполнителю команды."""
+    команда с действиями, выступлением или голосом реплики — одним вызовом ``command`` исполнителю команды.
+    Невалидная — тоже вызов ``command``, но с причиной в ``COMMAND_INVALID_FIELD``: речи нет, ход закроет провал."""
     if isinstance(result, Invalid):
-        return phrases.text(result.ask.key or INVALID_ASK_KEY), (), f"invalid:{result.reason}"
+        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
+                        arguments={kn.COMMAND_INVALID_FIELD: result.reason})
+        return "", (call,), f"invalid:{result.reason}"
     if result.passed:
         return "", (), f"passed:{result.passed}"
     cmd = _without_speech_tool(result)
