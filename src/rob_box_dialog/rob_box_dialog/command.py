@@ -12,7 +12,7 @@ import json
 import unicodedata
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Collection, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
@@ -54,20 +54,27 @@ class Ask:
 
 @dataclass(frozen=True)
 class Performance:
-    """Выступление (§5.6.3): сегменты — содержимое, а не отчёт; ``from_segment`` — с какого править (edit_pending)."""
+    """Выступление (§5.6.3): сегменты — содержимое, а не отчёт; ``from_segment`` — с какого править (edit_pending).
+
+    ``voice_per_segment`` — голос каждого сегмента (сказка разными голосами, #3269); ``""`` — текущий голос робота.
+    Голос робота он не меняет: это ``set_voice`` (только по явной просьбе, #3744)."""
 
     kind: str
     segments: Tuple[str, ...]
     backing: str = "none"
     expression_per_segment: Optional[Tuple[Expression, ...]] = None
     from_segment: int = 0
+    voice_per_segment: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
 class Command:
-    """Одна команда хода. ``dropped`` — поля, которые валидатор отбросил, не отвергая команду (сцена лица)."""
+    """Одна команда хода. ``dropped`` — поля, которые валидатор отбросил, не отвергая команду (сцена лица).
+
+    ``voice`` — голос реплики ``speech``/``ask`` (не голос робота: его меняет ``set_voice``)."""
 
     speech: Optional[str] = None
+    voice: Optional[str] = None
     ask: Optional[Ask] = None
     actions: Tuple[ToolCall, ...] = ()
     perform: Optional[Performance] = None
@@ -270,7 +277,8 @@ def _perform(data: Any) -> Optional[Performance]:
         return None
     if not isinstance(data, Mapping):
         raise _Bad("bad_type", "perform")
-    _only(data, ("kind", "segments", "backing", "expression_per_segment", "from_segment"), "perform")
+    _only(data, ("kind", "segments", "backing", "expression_per_segment", "from_segment", "voice_per_segment"),
+          "perform")
     segments = _get(data, "segments", list, []) or []
     if not all(isinstance(s, str) for s in segments):
         raise _Bad("bad_type", "perform.segments")
@@ -280,13 +288,25 @@ def _perform(data: Any) -> Optional[Performance]:
         backing=_get(data, "backing", str, "none") or "none",
         expression_per_segment=None if per is None else tuple(_expression(e) for e in per),
         from_segment=_get(data, "from_segment", int, 0) or 0,
+        voice_per_segment=_voices(data),
     )
+
+
+def _voices(data: Mapping[str, Any]) -> Optional[Tuple[str, ...]]:
+    """Голоса сегментов; ``null`` в списке — текущий голос робота (как ``""``)."""
+    voices = _get(data, "voice_per_segment", list)
+    if voices is None:
+        return None
+    if not all(v is None or isinstance(v, str) for v in voices):
+        raise _Bad("bad_type", "perform.voice_per_segment")
+    return tuple((v or "").strip() for v in voices)
 
 
 def _command(data: Mapping[str, Any]) -> Command:
     _only(data, _COMMAND_FIELDS, "command")
     return Command(
-        speech=_text(data, "speech"), ask=_ask(data.get("ask")), actions=_actions(data.get("actions")),
+        speech=_text(data, "speech"), voice=_text(data, "voice"), ask=_ask(data.get("ask")),
+        actions=_actions(data.get("actions")),
         perform=_perform(data.get("perform")), when=_get(data, "when", str, "after_current") or "after_current",
         edit_pending=bool(_get(data, "edit_pending", bool, False)), expression=_expression(data.get("expression")),
         passed=_passed(data.get("passed")),
@@ -311,6 +331,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         agent = getattr(session, "agent", None) or kn.AGENTS[0]
         _check_passed(cmd)
         _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech")
+        _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice")
         _check_ask(cmd.ask)
         _check_actions(cmd.actions, set(available_tools), agent)
         _check_perform(cmd, busy)
@@ -382,7 +403,7 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         if cmd.edit_pending:
             raise _Bad("edit_without_perform", "edit_pending без perform")
         return
-    if cmd.speech:
+    if cmd.speech and not cmd.actions:  # при действиях speech не звучит (§4.1) — двух голосов хода нет
         raise _Bad("perform_with_speech", "perform взаимоисключает speech")
     if perf.kind not in kn.PERFORM_KINDS or perf.backing not in kn.PERFORM_BACKINGS:
         raise _Bad("bad_enum", f"perform.kind={perf.kind} backing={perf.backing}")
@@ -390,9 +411,12 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         raise _Bad("bad_segments", f"{len(perf.segments)} сегментов")
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
-    per = perf.expression_per_segment
-    if per is not None and len(per) != len(perf.segments):
-        raise _Bad("bad_segments", "expression_per_segment не по числу сегментов")
+    for name, per in (("expression_per_segment", perf.expression_per_segment),
+                      ("voice_per_segment", perf.voice_per_segment)):
+        if per is not None and len(per) != len(perf.segments):
+            raise _Bad("bad_segments", f"{name} не по числу сегментов")
+    for i, voice in enumerate(perf.voice_per_segment or ()):
+        _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
     _check_edit(cmd.edit_pending, perf.from_segment, busy)
 
 
@@ -445,6 +469,48 @@ def _drop_bad_faces(cmd: Command) -> Command:
         notes += [f"perform.expression_per_segment[{i}].face" for i, (_, d) in enumerate(checked) if d]
         perf = replace(perf, expression_per_segment=tuple(e for e, _ in checked))
     return replace(cmd, expression=expression, perform=perf, dropped=cmd.dropped + tuple(notes))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# to_args — команда обратно в поля схемы (мост v1 передаёт её циклу тулов одним вызовом ``command``)
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def to_args(cmd: Command) -> Dict[str, Any]:
+    """Поля схемы команды; ``parse(to_args(c)) == c`` для разобранной команды (``dropped`` не переносится)."""
+    out: Dict[str, Any] = {k: v for k, v in (("speech", cmd.speech), ("voice", cmd.voice), ("passed", cmd.passed))
+                           if v is not None}
+    if cmd.ask is not None:
+        out["ask"] = {"expects": cmd.ask.expects, "text": cmd.ask.text}
+    if cmd.actions:
+        out["actions"] = [{"tool": a.tool, "args": dict(a.args)} for a in cmd.actions]
+    if cmd.perform is not None:
+        out["perform"] = _perform_args(cmd.perform)
+    if cmd.when != "after_current":
+        out["when"] = cmd.when
+    if cmd.edit_pending:
+        out["edit_pending"] = True
+    out["expression"] = _expression_args(cmd.expression)
+    return out
+
+
+def _expression_args(expr: Expression) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"emotion": expr.emotion}
+    out.update({k: v for k, v in (("gesture", expr.gesture), ("earcon", expr.earcon)) if v is not None})
+    if expr.face is not None:
+        out["face"] = expr.face.to_dict() if isinstance(expr.face, FaceScene) else expr.face
+    return out
+
+
+def _perform_args(perf: Performance) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"kind": perf.kind, "segments": list(perf.segments), "backing": perf.backing}
+    if perf.expression_per_segment is not None:
+        out["expression_per_segment"] = [_expression_args(e) for e in perf.expression_per_segment]
+    if perf.voice_per_segment is not None:
+        out["voice_per_segment"] = list(perf.voice_per_segment)
+    if perf.from_segment:
+        out["from_segment"] = perf.from_segment
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------

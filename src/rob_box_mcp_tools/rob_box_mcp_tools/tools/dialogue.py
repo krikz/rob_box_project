@@ -820,7 +820,8 @@ class RegisterSpeakerTool(MCPTool):
         self.log_info(f"[register_speaker] published name={name_clean!r}")
         return MCPToolResult(
             success=True,
-            data={"registered_name": name_clean, "speaker_id": "pending"},
+            # status pending: исход регистрации - событие speaker_id_node позже, не этот ответ (ADR-0150 PR-7 ч.7c)
+            data={"registered_name": name_clean, "speaker_id": "pending", "status": "pending"},
             # Issue #2863 — честно: тул только ОТПРАВЛЯЕТ запрос, исход решает
             # speaker_id_node позже (эталон / «уже знаю» / отказ). Прежнее
             # «Голос зарегистрирован» заявляло результат, которого тул не знает.

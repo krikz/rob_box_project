@@ -145,6 +145,15 @@ def test_prompt_fragment_names_every_enum_value():
               *(v for vs in kn.FACE_SCENE_SLOTS.values() for v in vs)]
     assert [v for v in values if v not in text] == []
     assert str(kn.SPEECH_MAX_CHARS) in text and str(kn.ACTIONS_MAX) in text
+    # PR-7 ч.7c: об итоге действий говорит код; ответ по сути при действиях — perform; голос реплики и сегментов
+    assert "скажет код" in text and "voice_per_segment" in text and "- voice:" in text
+
+
+def test_outcome_tables_name_action_tools_of_the_catalog():
+    """Фразу об исходе этих тулов говорит не исполнитель (PR-7 ч.7c): тулы — действия из таблицы классов."""
+    for tool in (*kn.OUTCOME_SPOKEN_ELSEWHERE, *kn.SILENT_DONE_TOOLS, *kn.TOOL_PHRASES):
+        assert kn.TOOL_CLASSES[tool].startswith("action."), tool
+    assert set(kn.OUTCOME_SPOKEN_ELSEWHERE.values()) <= {"tool", "music_turn"}
 
 
 def test_session_budgets():

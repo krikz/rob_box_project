@@ -414,10 +414,19 @@ TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
     "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
+    # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media
+    "stop_music": MappingProxyType({"done": "music.stop_ok", "rejected": "music.stop_fail"}),
 })
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода.
-SILENT_DONE_TOOLS: Tuple[str, ...] = ("play_sound",)
+SILENT_DONE_TOOLS: Tuple[str, ...] = ("play_sound", "play_animation")
+#: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: голос -
+#: сам тул (``voice_request``, SpeechEvent ``voice_changed``), запуск музыки и библиотека - музыкальный ход ноды
+#: (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует; в v2 (PR-8) - фраза респонда.
+OUTCOME_SPOKEN_ELSEWHERE: Mapping[str, str] = MappingProxyType({
+    "set_voice": "tool", "set_tts_provider": "tool",
+    "dj_set": "music_turn", "request_music": "music_turn", "generate_music": "music_turn", "music_library": "music_turn",
+})
 #: play_sound при занятом канале (#3698, просьба Шифу 21.10): короткий текущий звук (earcon ~1 с) - запрос ждёт в
 #: очереди владельца звука и играет следом; ждать не дольше дедлайна события play_sound минус запас на запуск и
 #: доставку события. Текущий звук длиннее (стингер 12 с) - честный skipped{busy}.
@@ -742,6 +751,8 @@ COMPOSITION: Mapping[Tuple[str, str], Rule] = MappingProxyType({
 # ---------------------------------------------------------------------------------------------------------------
 
 SPEECH_MAX_CHARS = 280
+#: Имя голоса реплики/сегмента (``Command.voice``, ``Performance.voice_per_segment``) - как ``speak_text.voice``.
+VOICE_MAX_CHARS = 64
 ACTIONS_MAX = 3
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
@@ -790,6 +801,7 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
     expression = _expression_schema()
     schema = _object({
         "speech": {"type": "string", "maxLength": SPEECH_MAX_CHARS},
+        "voice": {"type": "string", "maxLength": VOICE_MAX_CHARS},
         "ask": _object({"expects": _enum(ASK_EXPECTS), "text": {"type": "string", "maxLength": SPEECH_MAX_CHARS}},
                        required=("expects", "text")),
         "actions": {"type": "array", "maxItems": ACTIONS_MAX,
@@ -801,6 +813,8 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
             "backing": _enum(PERFORM_BACKINGS),
             "expression_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX, "items": expression},
             "from_segment": {"type": "integer", "minimum": 0},
+            "voice_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX,
+                                  "items": {"type": "string", "maxLength": VOICE_MAX_CHARS}},
         }, required=("kind", "segments")),
         "when": _enum(WHEN),
         "edit_pending": {"type": "boolean"},
@@ -815,21 +829,12 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
     }}
 
 
-#: Кто говорит об итоге действий (§4.1): ``event`` — код по событию исполнителя (v2); ``reply`` — сама LLM следующей
-#: командой по результатам тулов (мост v1 ``core/command_bridge.py`` до PR-7/PR-8, где фраз по событиям ещё нет).
-AFTER_ACTIONS: Mapping[str, str] = MappingProxyType({
-    "event": "о результате скажет код по событию исполнителя.",
-    "reply": "результаты действий придут тебе следующим сообщением — тогда скажи человеку итог в speech.",
-})
-
-
-def prompt_fragment(after_actions: str = "event") -> str:
+def prompt_fragment() -> str:
     """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную).
 
-    :raises ValueError: ``after_actions`` не из :data:`AFTER_ACTIONS`.
+    Об итоге действий говорит код по событию исполнителя (§4.1, PR-7): ``speech`` при действиях не звучит, ответ по
+    сути рядом с действиями («включи звук и расскажи шутку») — ``perform``, он звучит всегда.
     """
-    if after_actions not in AFTER_ACTIONS:
-        raise ValueError(f"prompt_fragment: after_actions must be one of {tuple(AFTER_ACTIONS)}, got {after_actions!r}")
 
     def _set(values: Sequence[str]) -> str:
         return "{" + ", ".join(values) + "}"
@@ -838,12 +843,15 @@ def prompt_fragment(after_actions: str = "event") -> str:
     lines: List[str] = [
         "Ответ — одна команда (JSON-объект) с полями:",
         f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. Если есть actions, speech не озвучивается:"
-        f" {AFTER_ACTIONS[after_actions]}",
+        " о результате действий скажет код по событию исполнителя, сам о них не говори.",
+        "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет.",
         f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}.",
         f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
         f" {' и '.join(SINGLE_ACTION_CLASSES)}.",
         f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech.",
+        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech. Звучит и при"
+        " actions: ответ по сути (сказка, стих, анекдот), не отчёт о действиях. voice_per_segment — голос на"
+        " сегмент (сказка разными голосами); set_voice меняет голос робота насовсем — только когда об этом просят.",
         f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",
         "- edit_pending: true — заменить ещё не начатые сегменты текущего выступления, начиная с from_segment.",
         f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈ {_set(EARCONS)};"

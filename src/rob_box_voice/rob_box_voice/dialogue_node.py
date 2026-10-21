@@ -70,6 +70,7 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueStateKind,
     DialogueStateMachine,
 )
+from rob_box_harness.core.tool_loop.text_classify import is_done_marker
 from rob_box_harness.core.tool_registry import ToolRegistry
 from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider
 from rob_box_harness.health import (
@@ -5415,8 +5416,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # чек ниже остаётся единственным местом, где решается «пропустить
         # auto-TTS».
         spoken = strip_done_marker(spoken)
-        _done_marker = spoken.strip().lower()
-        if _done_marker in ("done", "task complete", "task_complete", "готово", "всё", "выполнено"):
+        if is_done_marker(spoken):  # одна таблица маркеров с ядром (text_classify.DONE_MARKERS)
             self.get_logger().info(
                 f"🔇 LLM completion marker — skip auto-TTS: {spoken[:60]!r}"
             )

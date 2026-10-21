@@ -1,14 +1,14 @@
 {
   "version": 1,
   "created": "2026-10-21",
-  "base_sha": "7dddaf68deaee84130e01b9a9f688611c8deadea",
+  "base_sha": "a48cf46e8f7f4ee4dbb60c17bd518ec554c43357",
   "limits": {
     "wmc": 80,
     "methods": 40
   },
   "classes": {
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 155,
+      "wmc": 152,
       "methods": 24
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {

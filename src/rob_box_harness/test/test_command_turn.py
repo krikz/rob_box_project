@@ -1,0 +1,224 @@
+"""Режим команд в v1 терминален (ADR-0150 §4.1, §5.2–5.4; PR-7 ч.7c #3698): действия — через Executor по событию
+владельца, об исходе говорит код, ``speech`` при действиях не звучит, ответ по сути (``perform``) не теряется."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+from rob_box_core.tool_catalog import get_tool
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
+from rob_box_dialog.execute import ActionRequest
+from rob_box_dialog.respond import ActionResult
+from rob_box_harness.core.agent_core import AgentCore
+from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateMachine
+from rob_box_harness.core.tool_loop.command_turn import CommandTurn, outcome_phrase, owner_event
+from rob_box_harness.memory.base import InMemoryStore
+from rob_box_harness.tools import ToolSpec
+from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
+
+INVALID = phrases.text("understand.invalid")
+HAPPY = {"sound": "robot_happy"}
+
+
+def _request(tool: str, args: Optional[Mapping[str, Any]] = None) -> ActionRequest:
+    return ActionRequest("t/0", 0, "personality", tool, dict(args or {}), kn.TOOL_CLASSES[tool], 3.0)
+
+
+def _result(tool: str, status: str, reason: Optional[str] = None, **data: Any) -> ActionResult:
+    return ActionResult("t/0", 0, "personality", tool, kn.TOOL_CLASSES[tool], status, reason, data)
+
+
+# ── исход тула → событие владельца ─────────────────────────────────────────────────────────────────────────
+
+
+def test_owner_event_takes_status_and_reason_from_result_data() -> None:
+    busy = ToolResult("c", "Звук не сыграл", is_error=True, data={"status": "rejected", "reason": "busy"})
+    event = owner_event(_request("play_sound", HAPPY), busy)
+    assert (event.ref, event.status, event.reason) == ("t/0", "rejected", "busy")
+    assert event.data["sound"] == "robot_happy"  # аргумент вызова — слот фразы
+
+
+def test_queued_is_a_promise_and_missing_status_follows_is_error() -> None:
+    queued = ToolResult("c", "{}", data={"status": "queued", "channel": "anim"})
+    assert owner_event(_request("play_animation"), queued).status == "pending"
+    assert owner_event(_request("memory_save"), ToolResult("c", "ok")).status == "done"
+    assert owner_event(_request("memory_save"), ToolResult("c", "нет", is_error=True)).status == "rejected"
+    applied = ToolResult("c", "ok", data={"status": "applied"})  # не статус исполнителя — решает is_error
+    assert owner_event(_request("set_voice", {"voice": "alena"}), applied).status == "done"
+
+
+# ── фраза кода об исходе ───────────────────────────────────────────────────────────────────────────────────
+
+
+def test_outcome_phrase_is_built_by_code_from_the_event() -> None:
+    assert outcome_phrase([_result("memory_save", "done", fact="Саша любит чай")]) == "Запомнил: Саша любит чай."
+    assert outcome_phrase([_result("play_sound", "done", **HAPPY)]) is None  # успех звука молчит
+    busy = outcome_phrase([_result("play_sound", "rejected", "busy", **HAPPY)])
+    assert busy == phrases.text("sound.skipped.busy", sound="robot_happy")
+
+
+def test_outcome_phrase_skips_queries_and_outcomes_spoken_elsewhere() -> None:
+    assert outcome_phrase([_result("get_current_time", "done")]) is None
+    assert outcome_phrase([_result("set_voice", "done"), _result("request_music", "done")]) is None
+
+
+def test_missing_slot_falls_back_to_a_generic_failure_not_a_crash() -> None:
+    assert outcome_phrase([_result("play_sound", "rejected", "busy")]) == phrases.text("local.rejected")
+    assert outcome_phrase([_result("navigate_to_waypoint", "pending")]) is None
+
+
+# ── ход v1-цикла с командой ────────────────────────────────────────────────────────────────────────────────
+
+
+class _Tools:
+    """Исполнитель тулов v1-двойник: ответы по имени тула, журнал вызовов."""
+
+    def __init__(self, results: Optional[Dict[str, ToolResult]] = None, offered: Iterable[str] = ()) -> None:
+        self._results = dict(results or {})
+        self._offered = tuple(offered) or ("speak_text", "play_sound", "memory_save", "get_current_time")
+        self.calls: List[ToolCall] = []
+
+    async def discover(self) -> tuple:
+        return tuple(ToolSpec(name=n, description=n, parameters=dict(get_tool(n).parameters)) for n in self._offered)
+
+    async def execute(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        canned = self._results.get(call.name, ToolResult(call.id, "ok"))
+        return ToolResult(call.id, canned.content, canned.is_error, canned.data)
+
+    def said(self) -> List[tuple]:
+        return [(c.arguments["text"], c.arguments.get("voice")) for c in self.calls if c.name == "speak_text"]
+
+    def acted(self) -> List[str]:
+        return [c.name for c in self.calls if c.name != "speak_text"]
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _LLM:
+    """LLM-двойник: команды моста по очереди, запросы запоминаются."""
+
+    name = "deepseek"
+
+    def __init__(self, replies: List[LLMResponse]) -> None:
+        self._replies = list(replies)
+        self.requests: List[List[LLMMessage]] = []
+
+    async def complete(self, messages: Iterable[LLMMessage], *, tools: Iterable[Any] = (),
+                       settings: Optional[LLMSettings] = None) -> LLMResponse:
+        self.requests.append(list(messages))
+        return self._replies.pop(0)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _command(**fields: Any) -> LLMResponse:
+    return LLMResponse(tool_calls=(ToolCall(id="cmd-1", name=kn.COMMAND_TOOL, arguments=fields),))
+
+
+def _turn(tools: _Tools, *replies: LLMResponse) -> tuple:
+    dsm = DialogueStateMachine()
+    dsm.on_event(DialogueEvent.WAKE_WORD)
+    dsm.on_event(DialogueEvent.STT_RESULT)
+    llm = _LLM(list(replies))
+    core = AgentCore(llm=llm, tools=tools, memory=InMemoryStore(), dsm=dsm, system_prompt="ты РОББОКС")
+    result = asyncio.run(core.process_input("робот, сделай", preclassified_event=DialogueEvent.STT_RESULT))
+    assert result.error is None
+    return result, llm
+
+
+def _sound(status: str, reason: Optional[str] = None) -> ToolResult:
+    return ToolResult("x", "звук", is_error=status != "done", data={**HAPPY, "status": status, "reason": reason})
+
+
+def test_sound_done_robot_says_nothing_about_it_and_llm_gets_no_second_word() -> None:
+    """«Включи звук радостный»: модель в той же команде говорит «Вот радостный звук!» — это не звучит."""
+    tools = _Tools({"play_sound": _sound("done")})
+    result, llm = _turn(tools, _command(speech="Вот радостный звук!", actions=[{"tool": "play_sound", "args": HAPPY}]))
+    assert tools.acted() == ["play_sound"] and tools.said() == []
+    assert result.spoken_text == "" and len(llm.requests) == 1  # ход терминален
+    assert list(result.tools_called) == ["play_sound"]
+
+
+def test_sound_rejected_is_told_by_code_not_by_the_model() -> None:
+    tools = _Tools({"play_sound": _sound("rejected", "busy")})
+    result, llm = _turn(tools, _command(speech="Вот радостный звук!", actions=[{"tool": "play_sound", "args": HAPPY}]))
+    assert tools.said() == [(phrases.text("sound.skipped.busy", sound="robot_happy"), None)]
+    assert len(llm.requests) == 1 and result.tool_error_occurred
+
+
+def test_sound_and_a_joke_the_joke_is_kept_the_sound_report_is_not() -> None:
+    """«Включи звук и расскажи шутку»: шутка — ``perform`` (ответ по сути), она звучит; о звуке — ни слова."""
+    tools = _Tools({"play_sound": _sound("done")})
+    joke = ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]
+    result, _ = _turn(tools, _command(speech="Включаю звук!", actions=[{"tool": "play_sound", "args": HAPPY}],
+                                      perform={"kind": "tale", "segments": joke}))
+    assert tools.acted() == ["play_sound"]
+    assert tools.said() == [(joke[0], None), (joke[1], None)]
+    assert result.speak_text_real_count == 2
+
+
+def test_memory_phrase_comes_after_saved_from_code() -> None:
+    tools = _Tools({"memory_save": ToolResult("x", "Факт сохранён", data={"fact_id": 7, "fact": "Саша любит чай"})})
+    result, llm = _turn(tools, _command(speech="Запомнила!", actions=[
+        {"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]))
+    assert tools.acted() == ["memory_save"]
+    assert tools.said() == [("Запомнил: Саша любит чай.", None)]
+    assert len(llm.requests) == 1 and result.spoken_text == ""
+
+
+def test_tale_in_different_voices_keeps_voices_without_set_voice() -> None:
+    tools = _Tools()
+    tale = {"kind": "tale", "segments": ["Жила-была девочка.", "Куда идёшь?", "К бабушке."],
+            "voice_per_segment": ["", "zahar", "alena"]}
+    _turn(tools, _command(perform=tale))
+    assert tools.said() == [("Жила-была девочка.", None), ("Куда идёшь?", "zahar"), ("К бабушке.", "alena")]
+    assert tools.acted() == []
+
+
+def test_speech_voice_is_the_voice_of_this_line_only() -> None:
+    tools = _Tools()
+    _turn(tools, _command(speech="Привет!", voice="zahar"))
+    assert tools.said() == [("Привет!", "zahar")] and tools.acted() == []
+
+
+def test_set_voice_out_of_the_turn_slice_is_not_executed() -> None:
+    """#3744: ``set_voice`` в срезе хода только по явной голосовой просьбе; вне среза команда невалидна."""
+    tools = _Tools()
+    _turn(tools, _command(speech="Сменю голос", actions=[{"tool": "set_voice", "args": {"voice": "zahar"}}]))
+    assert tools.acted() == [] and tools.said() == [(INVALID, None)]
+
+
+def test_query_data_go_back_to_llm_then_its_speech_is_spoken() -> None:
+    tools = _Tools({"get_current_time": ToolResult("x", "12:00")})
+    result, llm = _turn(tools, _command(speech="Сейчас гляну", actions=[{"tool": "get_current_time", "args": {}}]),
+                        LLMResponse(content="Сейчас полдень."))
+    assert len(llm.requests) == 2 and result.spoken_text == "Сейчас полдень."
+    tool_msgs = [m for m in llm.requests[1] if m.role == "tool"]
+    assert len(tool_msgs) == 1 and "get_current_time: 12:00" in tool_msgs[0].content
+    assert tools.said() == []
+
+
+def test_queries_beyond_two_iterations_are_refused() -> None:
+    ask = _command(actions=[{"tool": "get_current_time", "args": {}}])
+    tools = _Tools({"get_current_time": ToolResult("x", "12:00")})
+    _, llm = _turn(tools, ask, ask, ask)
+    assert len(llm.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 1
+    assert tools.acted() == ["get_current_time"] * kn.LLM_QUERY_ITERATIONS_MAX
+    assert tools.said() == [(INVALID, None)]
+
+
+def test_invalid_command_asks_to_repeat_and_executes_nothing() -> None:
+    tools = _Tools()
+    _turn(tools, _command(actions=[{"tool": "play_sound", "args": {"sound": "nope"}}]))
+    assert tools.acted() == [] and tools.said() == [(INVALID, None)]
+
+
+def test_handles_only_a_single_command_call() -> None:
+    assert CommandTurn.handles(_command(speech="x"))
+    assert not CommandTurn.handles(LLMResponse(tool_calls=(ToolCall(id="1", name="play_sound", arguments=HAPPY),)))
+    assert not CommandTurn.handles(LLMResponse(content="привет"))
