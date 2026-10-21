@@ -35,6 +35,9 @@ class _Faces:
     def during(self, start, end):
         return self.ids
 
+    def names_during(self, start, end):  # лицо без имени: собеседника не называет (#3695, раздел speaker)
+        return frozenset()
+
 
 @pytest.fixture
 def node():

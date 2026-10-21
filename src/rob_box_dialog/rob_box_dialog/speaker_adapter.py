@@ -92,6 +92,14 @@ def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str]]:
     return "unknown", None
 
 
+def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
+    """Раздел ``speaker`` снимка хода (§7.3, §7.5): ``{name, name_state}``. Имя — только при ``confirmed``:
+    по гипотезе обращаться нельзя (эпизод Б 20.10 — «Литвин» к Дэнчику; A30). Вместо префиксов в тексте реплики."""
+    if ref is None:
+        return {"name": None, "name_state": "unknown"}
+    return {"name": ref.name if ref.name_state == "confirmed" else None, "name_state": ref.name_state}
+
+
 def trusted_voice(heard: Any) -> str:
     """``person_ref`` фразы, если она достаточно длинная, чтобы верить голосу; иначе ``""``."""
     long_enough = float(getattr(heard, "voice_s", 0.0) or 0.0) >= kn.VOICE_MIN_PHRASE_S

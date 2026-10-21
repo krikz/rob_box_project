@@ -81,6 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerMatch  # noqa: E402
 from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 
@@ -401,10 +402,12 @@ class TestApplySpeakerIdentityTentative:
                 speaker_context=None,
             )
         )
+        result_sp = speaker_section(node)
 
         assert "Boris" not in result
-        assert "[Spkr:" not in result
-        assert "[Speaker:tentative]" in result
+        # голос узнан, имени нет и гипотезы имени нет — в снимке ни имени, ни «tentative»
+        assert result_sp == {"name": None, "name_state": "unknown"}
+        assert result == "ya mimo shel. imya svoe ya tebe nazyvat ne budu."  # текст человека — без префиксов
         node._publish_speaker_observation.assert_called_once()
 
     def test_confident_known_speaker_still_gets_name_tag(self, node):
@@ -418,8 +421,10 @@ class TestApplySpeakerIdentityTentative:
         result = _run(
             node._apply_speaker_identity("privet", speaker_context=None)
         )
+        assert result == "privet"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
 
-        assert "[Spkr:Anton]" in result
+        assert result_sp["name"] == "Anton"
 
     def test_unknown_speaker_still_gets_unknown_tag(self, node):
         node._current_speaker = {"is_known": False}
@@ -427,5 +432,7 @@ class TestApplySpeakerIdentityTentative:
         result = _run(
             node._apply_speaker_identity("privet", speaker_context=None)
         )
+        assert result == "privet"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
 
-        assert "[Speaker:unknown]" in result
+        assert result_sp["name_state"] == "unknown"

@@ -11,11 +11,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 _audio_common = types.ModuleType("audio_common_msgs")
 _audio_common_msg = types.ModuleType("audio_common_msgs.msg")
@@ -28,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_dialog.speaker_adapter import FaceSightings  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
 
 ASK_NAME = "Как тебя зовут?"
 
@@ -69,6 +73,7 @@ def _node():
     n._identity_answer_window_sec = 180.0
     n._faces = FaceSightings()
     n.tts = []
+    n.llm_inputs = []
     n.reply = _Result("Хорошо.")
     n._speak_direct = MagicMock(side_effect=lambda text, language=None: n.tts.append(text))
     n._handle_result = MagicMock(side_effect=lambda result, **_kw: n.tts.append(result.spoken_text))
@@ -77,7 +82,8 @@ def _node():
         user_input = await n._apply_speaker_identity(kw["user_input"], None, kw.get("utterance_id"))
         return user_input, "\n".join(n._pending_identity_hint_lines())
 
-    async def invoke_llm(**_kw):
+    async def invoke_llm(**kw):
+        n.llm_inputs.append(kw.get("user_input"))
         return n.reply
 
     n._prepare_user_input_context = prepare
@@ -177,3 +183,55 @@ def test_command_first_then_repeat_never_asks():
         _turn(n, "робот покажи анимацию сон", _Result("Показываю.", ["play_animation", "speak_text"]))
     assert ASK_NAME not in n.tts
     assert all("command command_by=animation" in v for v in _verdicts(n))
+
+
+# -- кто говорит: структурой, а не префиксом в тексте (ADR-0150 §7.3, A30; #3695 ч.2b) ---------------------
+
+
+def test_llm_gets_the_words_of_the_person_without_speaker_prefixes():
+    n = _node()
+    _turn(n, "робот как дела")
+    n._utterance_speaker.result = {"is_known": True, "speaker_id": "sid-a", "name": "Антон", "confidence": 0.93}
+    _turn(n, "а ты меня помнишь")
+    n._utterance_speaker.result = {"is_known": True, "speaker_id": "sid-l", "name": None,
+                                   "tentative_name": "Литвин", "tentative_kind": "single", "confidence": 0.75}
+    _turn(n, "привет ещё раз")
+    assert n.llm_inputs == ["робот как дела", "а ты меня помнишь", "привет ещё раз"]
+
+
+@pytest.mark.parametrize("speaker, block", [
+    ({"is_known": False}, {"name": None, "name_state": "unknown"}),
+    ({"is_known": True, "speaker_id": "s", "name": "Саша", "confidence": 0.9},
+     {"name": "Саша", "name_state": "confirmed"}),
+    ({"is_known": True, "speaker_id": "s", "name": None, "tentative_name": "Литвин", "tentative_kind": "single"},
+     {"name": None, "name_state": "tentative"}),
+    ({"is_known": True, "speaker_id": "s", "name": "Null", "confidence": 0.9}, {"name": None, "name_state": "unknown"}),
+])
+def test_snapshot_speaker_section_names_only_confirmed(speaker, block):
+    """Эпизод Б 20.10: гипотеза «Литвин» к Дэнчику — имени в снимке нет, пока оно не подтверждено (A30)."""
+    n = _node()
+    n._current_speaker = speaker
+    assert speaker_section(n) == block
+
+
+def test_verbal_yes_makes_the_name_confirmed_in_the_snapshot():
+    n = _node()
+    n._current_speaker = {"is_known": True, "speaker_id": "sid-sasha", "name": None, "tentative_name": "Саша",
+                          "tentative_kind": "single", "confidence": 0.75}
+    n._identity_confirmations["sid-sasha"] = {"asked": True, "confirmed": None, "name": None,
+                                              "growth_registered": False}
+    n._confirm_tentative_speaker("sid-sasha", "Саша", "да, это я", "utt-x")
+    assert speaker_section(n) == {"name": "Саша", "name_state": "confirmed"}
+
+
+def test_meeting_marker_no_longer_makes_the_robot_speak_first():
+    """В12′ (Шифу 21.10): робот сам в разговор не вступает — приветствие Встречи лицом удалено."""
+    n = _node()
+    n._face_voice_hint_enabled = False
+    n._publish_response = MagicMock()
+    marker = json.dumps({"encounter": "start", "person_id": "p1", "name": "Денис", "is_new": False,
+                         "similarity": 0.9, "encounter_count": 2}, ensure_ascii=False)
+    n._on_vision_event(types.SimpleNamespace(event_type="face", attributes_json=marker, source_camera="main_camera",
+                                             embedding_id="p1", display_name="Денис"))
+    n._publish_response.assert_not_called()
+    assert not hasattr(DialogueNode, "_handle_meeting")

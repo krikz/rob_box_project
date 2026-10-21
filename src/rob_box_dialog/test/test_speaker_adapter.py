@@ -16,8 +16,10 @@ from rob_box_dialog.speaker_adapter import (
     FaceSightings,
     ask_after_turn,
     same_interlocutor,
+    speaker_block,
     speaker_ref,
 )
+from rob_box_dialog.session import SpeakerRef
 
 
 def _h(t=100.0, doa=None, person="", voice_s=0.0, faces=(), name=""):
@@ -245,3 +247,17 @@ def test_question_texts_come_from_phrases():
     assert AskCandidate("p1", "single", "Саша").question() == "Саша, это ты?"
     assert AskCandidate("p1", "contested").question() == "Как тебя зовут?"
     assert AskCandidate(STRANGER, "unknown").question() == "Как тебя зовут?"
+
+
+# -- раздел speaker снимка хода (§7.3, A30) ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ref, block", [
+    (None, {"name": None, "name_state": "unknown"}),
+    (SpeakerRef(person_ref="p1", name="Саша", name_state="confirmed"), {"name": "Саша", "name_state": "confirmed"}),
+    (SpeakerRef(person_ref="p1", name="Литвин", name_state="tentative"), {"name": None, "name_state": "tentative"}),
+    (SpeakerRef(), {"name": None, "name_state": "unknown"}),
+])
+def test_speaker_block_names_only_confirmed(ref, block):
+    """Эпизод Б 20.10: гипотеза «Литвин» в снимок не попадает — обращаться по ней нельзя."""
+    assert speaker_block(ref) == block

@@ -315,8 +315,9 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 })
 #: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
 #: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
+#: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
 CONTEXT_SECTIONS: Tuple[str, ...] = (
-    "user_profile", "tts_context", "speech_gender", "position", "providers", "music_state", "recent_unaddressed",
+    "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "recent_unaddressed",
 )
 
 

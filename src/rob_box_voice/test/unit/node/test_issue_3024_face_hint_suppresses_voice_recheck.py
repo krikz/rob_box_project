@@ -106,7 +106,6 @@ def _make_node(identity: MemoryIdentitySeam) -> DialogueNode:
     n._confirm_tentative_speaker = MagicMock(
         return_value="[Speaker:confirmed]"  # условный tag
     )
-    n._tag_tentative = MagicMock(return_value="[Speaker:tentative]")
     # ADR-0139 параметры (дефолты карточки).
     n._face_voice_hint_enabled = True
     n._face_voice_hint_window_sec = 30.0
@@ -304,9 +303,7 @@ def test_face_hint_suppresses_tentative_question_in_window():
     assert state["name"] == "Дэнчик"
     assert getattr(node, "_identity_ask_candidate", None) is None  # вопроса не будет
     node._confirm_tentative_speaker.assert_called_once()
-    # tag от confirmation path, не от _tag_tentative.
-    assert result == "[Speaker:confirmed]"
-    node._tag_tentative.assert_not_called()
+    assert result == "[Speaker:confirmed]"  # результат confirmation path (мок), текст не тронут
 
 
 def test_face_hint_outside_window_still_asks():
