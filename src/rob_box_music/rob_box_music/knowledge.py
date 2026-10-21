@@ -971,6 +971,11 @@ DJ_LEVELER: Mapping[str, float] = {"lvlRatio": 1.5, "lvlUp": 8.0}
 SET_LEVELER: Mapping[str, float] = {}
 #: ``trimLag`` при старте трека встык, с; в блэнде громкость переезжает за длину блэнда.
 TRIM_LAG_S = 0.5
+#: Приглушение музыки под речь робота (ADR-0150 О8 (а), В16, PR-7d #3701): ручки ``duck*`` мастер-шины — ровно дефолты
+#: SynthDef (сверяет ``test_speech_duck.py``). −9 дБ, атака 80 мс, отпуск 400 мс — стартовые, утверждаются на слух
+#: Шифу по замеру A24; ROS-параметры ``music_duck_*`` ``mcp_server`` их перекрывают. Ручку ``duck`` 0/1 держит
+#: только ``engine.speech_duck.SpeechDuck``: в :data:`MASTER_DEFAULTS` её нет — старт трека не снимает приглушение.
+SPEECH_DUCK: Mapping[str, float] = {"duckDb": -9.0, "duckAttack": 0.08, "duckRelease": 0.4}
 #: Дуга громкости трека: секция → (смещение ``trim`` относительно ``trim`` трека, дБ; подъём на всю секцию?).
 #: Приёмка 02.10: брейк без бочки и баса был лишь на 1.8 дБ тише дропа — выравниватель мастер-шины (``lvlRatio 3``)
 #: поднимал его, и трек звучал ровной полкой (отзыв эксперта 05.10: «нет восхождения, кульминации»). ``trim`` стоит
@@ -1310,7 +1315,7 @@ __all__ += [
     "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS", "kick_of",
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "HPF_IN_HZ", "HPF_OPEN",
-    "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
+    "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "SPEECH_DUCK", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "SYNTH_STEREO",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "BASS_ROBOT_DB", "BASS_ROBOT_LOW", "BASS_MIN_LOW", "bass_low_on_robot",

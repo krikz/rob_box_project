@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
+from rob_box_music import knowledge as music_kn
 from rob_box_music.diversity import MusicHistory
 
 from rob_box_voice.core.music_player_state import (
@@ -63,6 +64,7 @@ from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
+from .engine.speech_duck import SpeechDuck, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
@@ -354,6 +356,30 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     return owner
 
 
+def _attach_speech_duck(node: Any, runtime: Any) -> Optional[SpeechDuck]:
+    """ADR-0150 О8 (а), PR-7d — музыка приглушается, пока робот говорит в динамики.
+
+    ``/voice/speech/event`` (владелец речи ``tts_node``) → :class:`SpeechDuck` → ``/n_set 999 duck 0|1``; таймер
+    снимает реплики с потерянным финалом. Без звукового сервера — нечего приглушать, подписки нет.
+    """
+    if runtime is None:
+        return None
+    from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: PLC0415 — как voice_request.VoiceRequests
+
+    controls = duck_controls(*(float(node.get_parameter(name).value) for name in (
+        "music_duck_db", "music_duck_attack_ms", "music_duck_release_ms")))
+    duck = SpeechDuck(runtime.send_osc, controls, logger=node.get_logger())
+    kinds = {getattr(SpeechEvent, f"KIND_{name.upper()}"): name for name in ("started", "finished", "cancelled",
+                                                                             "rejected")}
+    node.create_subscription(SpeechEvent, "/voice/speech/event",
+                             lambda msg: duck.on_event(kinds.get(int(msg.kind), ""), msg.speech_id,
+                                                       int(msg.duration_ms)), 20)
+    node.create_timer(1.0, duck.tick)
+    node.get_logger().info("🔉 приглушение музыки под речь: /voice/speech/event → /n_set 999 duck "
+                           + " ".join(f"{k}={v:g}" for k, v in controls.items()))
+    return duck
+
+
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """``/voice/speaker/result`` → ``(меняет ли «кто сейчас», новый speaker_id)``.
 
@@ -392,6 +418,11 @@ class MCPServer(Node):
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
         self.declare_parameter("music_master_gain", 0.5)
+        # ADR-0150 О8 (а), В16 (PR-7d): приглушение музыки под речь — отдельный множитель после
+        # лимитера, gain и trim (masterfilter.scd duck*); числа — rob_box_music.knowledge.SPEECH_DUCK.
+        self.declare_parameter("music_duck_db", music_kn.SPEECH_DUCK["duckDb"])
+        self.declare_parameter("music_duck_attack_ms", music_kn.SPEECH_DUCK["duckAttack"] * 1000.0)
+        self.declare_parameter("music_duck_release_ms", music_kn.SPEECH_DUCK["duckRelease"] * 1000.0)
         # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
@@ -514,6 +545,7 @@ class MCPServer(Node):
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
         self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
+        self._speech_duck = _attach_speech_duck(self, getattr(self, "_renardo_runtime", None))
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
