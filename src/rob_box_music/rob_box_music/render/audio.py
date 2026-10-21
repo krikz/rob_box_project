@@ -113,7 +113,9 @@ def render_audio(track: AudioTrack, deck: str, *, xfade_s: float = 0.0, once: bo
         period = float(math.ceil(sus / BEATS_PER_BAR) * BEATS_PER_BAR)
         atk, rel = kn.AUDIO_EDGE_S
         dur, cycle = period, 2 * period
-    amp = f"var([1, 0], [{_num(dur)}, {_num(cycle - dur)}], start={FORM_START})" if (once or xfade_s) and cycle > dur else "1"
+    level = _num(track.gain)
+    amp = (f"var([{level}, 0], [{_num(dur)}, {_num(cycle - dur)}], start={FORM_START})"
+           if (once or xfade_s) and cycle > dur else level)
     delay = f"delay={_num(round(lead, 3))}, " if lead else ""
     code = (f"# {track.track_id} {track.source} {track.duration_s:.1f} s deck {deck}\n"
             f"{slot} >> loop({track.path!r}, dur={_num(dur)}, sus={_num(sus)}, {delay}atk={_num(atk)}, "

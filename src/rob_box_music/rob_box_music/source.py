@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Set, Tuple
 
 from . import knowledge as kn
 from .choice import Choice, ChoiceQuestion, Chooser, Option
@@ -61,6 +61,7 @@ REASON_WORDS = {
     "rejected": "сервис генерации отклонил заказ",
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
+    "theme_cache": "под тему хватает сочинённого раньше",
 }
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
                 "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
@@ -274,10 +275,57 @@ def set_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str = "") -> List[
     return sorted(usable, key=order)
 
 
+def _theme_stems(text: str) -> Set[str]:
+    return {w[:kn.THEME_STEM_LEN] for w in _words(text)
+            if len(w) >= kn.THEME_WORD_MIN and not w.startswith(kn.THEME_FIT_STOP)}
+
+
+def theme_fit(theme_tags: str, track: CacheTrack) -> float:
+    """Насколько трек кэша по теме сета (#3775, решение Шифу 21.10 «подогнать под тему что есть»): метка темы целиком
+    в ``prompt`` — 1; иначе доля основ слов темы (``theme_tags``), которые есть в ``prompt``, названии и имени стиля
+    трека. Темы нет — 0. По теме — от ``THEME_FIT_MIN``."""
+    if not theme_tags:
+        return 0.0
+    if theme_tags in track.prompt:
+        return 1.0
+    want = _theme_stems(theme_tags)
+    style = kn.GEN_STYLES.get(track.style_key)
+    have = _theme_stems(" ".join((track.prompt, track.title, style.name if style else "")))
+    return len(want & have) / len(want) if want else 0.0
+
+
+def theme_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str) -> List[CacheTrack]:
+    """Треки кэша сета (:func:`set_cache` без фильтра темы) по теме (:func:`theme_fit` ≥ ``THEME_FIT_MIN``): ближе к
+    теме — раньше, при равных — порядок :func:`set_cache`."""
+    fits = [(theme_fit(theme_tags, t), t) for t in set_cache(ask, ctx)]
+    ranked = sorted(((f, i, t) for i, (f, t) in enumerate(fits) if f >= kn.THEME_FIT_MIN), key=lambda x: (-x[0], x[1]))
+    return [t for _f, _i, t in ranked]
+
+
+def _clip(text: str) -> str:
+    """Слова ``text`` через пробел, не длиннее ``GEN_THEME_MAX_CHARS`` (режется по слову)."""
+    out = ""
+    for word in text.split():
+        if len(out) + len(word) + (1 if out else 0) > kn.GEN_THEME_MAX_CHARS:
+            break
+        out = f"{out} {word}" if out else word
+    return out
+
+
 def theme_tags(theme: str) -> str:
-    """EN-теги генерации темы сета (``GEN_THEME_TAGS``: «патриотический» → patriotic, anthemic…); нет строки — «»."""
+    """Тема в тегах заказа Suno и её метка в кэше (``CacheTrack.prompt``, фильтр :func:`set_cache`): EN-теги строки
+    ``GEN_THEME_TAGS`` («патриотический» → patriotic, anthemic…); строки нет — слова темы как есть («пленников
+    прибывших эскобар», #3775: без них сет на свою тему брал любой кэш стиля, а заказ уходил без темы).
+    Темы нет — «»."""
     words = _words(theme)
-    return next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    found = next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    return found or _clip(" ".join(words))
+
+
+def theme_title(theme: str) -> str:
+    """Название заказа по теме человека («Пленников прибывших эскобар»); темы нет — «» (название решает заказ)."""
+    text = _clip(" ".join(re.findall(r"[^\W_]+", theme or "")))
+    return text[:1].upper() + text[1:]
 
 
 def _slot_genre(token: str, mark: Optional[str]) -> str:
@@ -571,4 +619,5 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
            "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
-           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags"]
+           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
+           "theme_cache", "theme_fit", "theme_title"]
