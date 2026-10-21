@@ -73,6 +73,7 @@ from rob_box_voice.dialogue_node import (  # noqa: E402
     DialogueNode,
     classify_identity_confirmation,
 )
+from identity_v17_legacy import finish_turn_after_identity  # noqa: E402
 
 SPEAKER_ID = "1ae4b0ac-0000-0000-0000-000000000000"
 BORIS_ID = "boris-id-0000-0000-0000-000000000000"
@@ -98,6 +99,7 @@ def node():
     # Прод-значения из config/dialogue_node.yaml.
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
+    finish_turn_after_identity(n)
     return n
 
 
@@ -293,7 +295,9 @@ class TestSingleHypothesis:
         assert "[Speaker:tentative]" in result2
         assert node._pending_identity_hint is None
 
-    def test_new_session_after_gap_allows_asking_again(self, node):
+    def test_after_gap_hint_again_but_question_once_per_speaker(self, node):
+        """В17 (#3695): после паузы состояние #2809 новое (подсказка LLM снова есть), но вопрос вслух —
+        не больше одного раза на собеседника за сессию процесса."""
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
         state = node._identity_confirmations[SPEAKER_ID]
@@ -306,9 +310,10 @@ class TestSingleHypothesis:
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet snova", speaker_context=None))
         new_state = node._identity_confirmations[SPEAKER_ID]
-        assert new_state["asked"] is True
+        assert new_state["asked"] is False  # второй раз не спросили
         assert new_state["confirmed"] is None  # новая сессия -- решения ещё нет
-        assert node._pending_identity_hint is not None  # спросили заново
+        assert node._pending_identity_hint is not None
+        assert "asked_already" in _logged(node)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import rob_box_voice.dialogue_node as dialogue_node_module  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from identity_v17_legacy import no_accumulation  # noqa: E402
 
 SASHA_ID = "3450f4fb-0000-0000-0000-000000000000"
 # Дословно из run 35923951507.
@@ -164,6 +165,7 @@ def _node():
     n._finalize_music_cleanup_policy = MagicMock()
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
+    no_accumulation(n)
     return n
 
 
@@ -199,6 +201,8 @@ def _second_question_asked(n, clock):
     _turn(n, "что ты обо мне запомнил", utterance_id="utt-704")
 
     clock.now += 150.0 + 60.0
+    # В17 (#3695): один вопрос на собеседника за сессию — повторный вопрос только в новой сессии (рестарт).
+    no_accumulation(n)
     n.llm_reply = N705_LLM
     _turn(n, N705_TEXT, utterance_id="utt-705")
     assert n.tts[-1] == QUESTION, n.tts

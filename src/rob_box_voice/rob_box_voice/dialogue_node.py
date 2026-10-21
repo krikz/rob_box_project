@@ -179,12 +179,12 @@ from rob_box_voice.core.turn import (
 )
 from rob_box_dialog.address import heard_from, log_label, person_ref_from
 from rob_box_dialog.backlog import Backlog
+from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings
 from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.identity_ack import (
     IdentityAckQuestion,
     hold_question,
     identity_ack_plan,
-    tentative_plan,
 )
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
@@ -251,6 +251,13 @@ from rob_box_voice.tts_voice_registry import (
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
+from rob_box_voice.core.speaker_turn import (
+    ask_planned,
+    note_backlog_voice,
+    note_face,
+    note_interlocutor,
+    plan_identity_question,
+)
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
 # type-аннотации под ``from __future__ import annotations``, runtime не нужна).
@@ -397,24 +404,6 @@ def identity_question(ack: dict) -> Optional[str]:
             f"Твой голос очень похож на голос, который я запомнил как "
             f"{other}. Вы разные люди или это ты под другим именем?"
         )
-    return None
-
-
-def tentative_identity_question(
-    kind: str, name: Optional[str]
-) -> Optional[str]:
-    """Issue #2888 -- вопрос о tentative-личности, который робот задаёт САМ.
-
-    Раньше вопрос отдавался на усмотрение LLM («Если уместно, ОДИН раз
-    уточни…»), и на роботе она не спросила ни разу из двух, а имя-гипотезу
-    назвала как факт (run 35903232434, акт 2b n702/n705). ``single`` --
-    вопрос с именем единственного кандидата; ``contested`` -- нейтральный,
-    БЕЗ единого имени (n210/n709: имена кандидатов запрещены must_not_say).
-    """
-    if kind == "single" and name:
-        return f"{name}, это ты?"
-    if kind == "contested":
-        return "Как тебя зовут?"
     return None
 
 
@@ -639,6 +628,10 @@ class DialogueNode(DialogueStageMixin, Node):
         self._pending_unaddressed: Optional[Dict[str, Any]] = None
         # Направление на говорящего по фразе: DOA ReSpeaker во время речи (VAD).
         self._doa = DoaTrack()
+        # ADR-0150 §7.5 (#3695): лица из кадра — для сверки «тот же собеседник» и вопроса об имени (В17);
+        # кандидат на вопрос копится репликами, решение — после хода (core/speaker_turn.py).
+        self._faces = FaceSightings()
+        self._identity_ask_candidate: Optional[AskCandidate] = None
         # Issue #1195 — последний chat_id из Telegram (поле chat_id у
         # Utterance с source=telegram). Используется для
         # маршрутизации ответа: dialogue_node кладёт tg_chat_id в
@@ -2313,6 +2306,7 @@ class DialogueNode(DialogueStageMixin, Node):
         utterance_id = data.get("utterance_id")
         if utterance_id:
             self._utterance_speaker.submit(str(utterance_id), data)
+            note_backlog_voice(self, str(utterance_id), data)  # #3695: голос фразы бэклога
         # Issue #2863 — фраза, которую биометрия не оценила (мало речи /
         # нет эмбеддинга; частый случай — шум, который STT потом отбросит
         # как пустой), не сбрасывает последнего узнанного. Для СВОЕЙ фразы
@@ -2517,7 +2511,8 @@ class DialogueNode(DialogueStageMixin, Node):
             is_silenced=(state == DialogueStateKind.SILENCED),
             wake_words=tuple(self._wake_words),
             heard=heard_from(msg, now=time.time(), doa=getattr(self, "_doa", None),
-                             person_ref=person_ref_from(getattr(self, "_utterance_speaker", None), utterance_id)),
+                             person_ref=person_ref_from(getattr(self, "_utterance_speaker", None), utterance_id),
+                             faces=getattr(self, "_faces", None)),
             skip_counter=self._llm_skipped_counter,
         )
         host = _DialogueSttHost(self, utterance_id)
@@ -2966,6 +2961,7 @@ class DialogueNode(DialogueStageMixin, Node):
             pass
         with self._speaker_lock:
             sp = dict(self._current_speaker)
+        note_interlocutor(self, sp, utterance_id)
         if sp.get("is_known"):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
@@ -3304,8 +3300,9 @@ class DialogueNode(DialogueStageMixin, Node):
         if state.get("confirmed") is False:
             return self._tag_tentative(user_input)
         if not state["asked"]:
-            state["asked"] = True
-            state["asked_utterance_id"] = utterance_id
+            # ADR-0150 В17 (#3695): не спрашивать сейчас — кандидат; вопрос решается после хода
+            # (core/speaker_turn.plan_identity_question): не на команду, не раньше N-й фразы, один раз.
+            self._identity_ask_candidate = AskCandidate(full_sid, tentative_kind, tentative_name, utterance_id)
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,
@@ -3317,7 +3314,6 @@ class DialogueNode(DialogueStageMixin, Node):
                 f"👤 [issue 2809] identity question hint set: "
                 f"kind={tentative_kind} (id={full_sid[:8]})"
             )
-            self._ask_tentative_identity(tentative_kind, tentative_name)
         return self._tag_tentative(user_input)
 
     def _handle_tentative_speaker(
@@ -3440,27 +3436,6 @@ class DialogueNode(DialogueStageMixin, Node):
             f"📝 [issue #2925] регистрация по самопредставлению: "
             f"name={intro!r} utterance_id={utterance_id} "
             f"(узнан по голосу как: {known!r})"
-        )
-
-    def _ask_tentative_identity(
-        self, kind: str, name: Optional[str]
-    ) -> None:
-        """Issue #2888 -- вопрос «<Имя>, это ты?» / «Как тебя зовут?»
-        задаёт робот, а не LLM: тем же механизмом #2828, что переспрос по
-        ack регистрации. Ход ещё идёт (мы внутри
-        ``_prepare_user_input_context``), поэтому вопрос придерживается и
-        ЗАМЕНЯЕТ ответ хода -- имя-гипотеза не может прозвучать как факт
-        («С возвращением, Саша. Узнал»), а сам вопрос звучит всегда.
-        Ответ читает #2809 (``_resolve_pending_tentative_answer``)."""
-        question = tentative_identity_question(kind, name)
-        if not question:
-            return
-        held = self._queue_identity_question(
-tentative_plan(question, kind, name)
-        )
-        self.get_logger().info(
-            f"👤 [issue #2888] identity question by robot: kind={kind} "
-            f"held_until_turn_end={held}"
         )
 
     # Issue #1787 — сколько ждём LLM на выдумывание клички. Это фоновая
@@ -4149,6 +4124,10 @@ tentative_plan(question, kind, name)
             # ``result=None`` → ``tools_called=()``, и Bug C принимал это за
             # «музыку просили, тула не вызвали» → [CRITICAL]-ретрай после
             # сброса (живой лог 23.09 14:18:08).
+            # ADR-0150 §7.5 В17 (#3695): вопрос об имени решается после хода (не на команду, не раньше N-й
+            # фразы собеседника) и звучит последней репликой.
+            identity_ask = plan_identity_question(
+                self, result, other_question=leftover_identity_question is not None)
             tool_retry_dispatched = (
                 self._apply_post_turn_retry_guards(
                     result=result,
@@ -4157,7 +4136,8 @@ tentative_plan(question, kind, name)
                         turn_epoch=session_epoch, cancelled=turn_cancelled
                     ),
                     # Issue #2914 -- вопрос о личности прозвучал вместо
-                    # ответа хода или прозвучит после него (leftover).
+                    # ответа хода или прозвучит после него (leftover; В17 —
+                    # plan_identity_question ставит _identity_question_asked_in_turn).
                     identity_question_asked=(
                         leftover_identity_question is not None
                         or self._identity_question_asked_in_turn
@@ -4173,6 +4153,7 @@ tentative_plan(question, kind, name)
             self._speak_identity_question(
                 leftover_identity_question, after_answer=True
             )
+            ask_planned(self, identity_ask)
             # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM; ретрай
             # гуарда продолжает тот же ход.
             self._stage_finish(result, turn_cancelled, turn_failure, tool_retry_dispatched)
@@ -6322,7 +6303,10 @@ tentative_plan(question, kind, name)
         ``_handle_tentative_speaker`` мог снять переспрос #2809 при
         свежем face-hint с тем же именем (issue #3024). Колбэк дешёвый
         — операция in-memory, без сети/БД.
+
+        #3695: каждое лицо из кадра ложится в ``_faces`` — «тот же собеседник» для бэклога и вопроса об имени.
         """
+        note_face(self, msg)
         marker = parse_meeting_marker(
             event_type=getattr(msg, "event_type", "") or "",
             attributes_json=getattr(msg, "attributes_json", "") or "",

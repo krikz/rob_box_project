@@ -33,8 +33,9 @@ CORPUS_FALSE = [
 ]
 
 
-def _heard(text, t=100.0, source="respeaker", doa=None, person=""):
-    return Heard(text=text, t=t, source=source, doa_deg=doa, person_ref=person)
+def _heard(text, t=100.0, source="respeaker", doa=None, person="", voice_s=0.0, faces=()):
+    return Heard(text=text, t=t, source=source, doa_deg=doa, person_ref=person, voice_s=voice_s,
+                 faces=frozenset(faces))
 
 
 @pytest.mark.parametrize("text", CORPUS_WAKE)
@@ -85,22 +86,24 @@ def test_bare_means_no_words_but_fillers(rest, bare):
 # -- В12: голое «робот» после неуслышанной просьбы ------------------------------------------------------------
 
 
-def _backlog_with(text, t, doa=None, person=""):
+def _backlog_with(text, t, doa=None, person="", voice_s=0.0, faces=()):
     backlog = Backlog()
-    backlog.add(_heard(text, t=t, doa=doa, person=person))
+    backlog.add(_heard(text, t=t, doa=doa, person=person, voice_s=voice_s, faces=faces))
     return backlog
 
 
-def test_bare_wake_picks_up_fresh_phrase_from_the_same_direction():
+def test_bare_wake_picks_up_fresh_phrase_from_the_same_direction_when_someone_is_in_frame():
     backlog = _backlog_with("покажи анимацию ускорения", t=95.0, doa=90.0)
-    out = decide(_heard("Робот", t=100.0, doa=110.0), backlog, WAKES)
-    assert out == Addressed("покажи анимацию ускорения", BACKLOG_PICKUP, pickup=True)
+    out = decide(_heard("Робот", t=100.0, doa=140.0, faces={"f1"}), backlog, WAKES)
+    assert out == Addressed("покажи анимацию ускорения", BACKLOG_PICKUP, True, ("doa",))
     assert backlog.background_phrases(100.0) == 0, "подхваченная фраза уходит из бэклога"
 
 
-def test_bare_wake_picks_up_by_same_person_even_from_another_direction():
-    backlog = _backlog_with("включи музыку", t=90.0, doa=270.0, person="p1")
-    assert decide(_heard("робот", t=100.0, doa=90.0, person="p1"), backlog, WAKES).pickup
+def test_bare_wake_picks_up_by_recognised_long_phrase_voice_from_another_direction():
+    """Голос длинной фразы бэклога узнан — подхват, хоть в кадре никого и DOA с другой стороны (Шифу 21.10)."""
+    backlog = _backlog_with("включи музыку погромче", t=90.0, doa=270.0, person="p1", voice_s=2.5)
+    out = decide(_heard("робот", t=100.0, doa=90.0), backlog, WAKES)
+    assert out.pickup and out.channels == ("voice",)
 
 
 @pytest.mark.parametrize("entry_t, entry_doa, entry_person, why", [

@@ -4,8 +4,9 @@
 :data:`~rob_box_dialog.knowledge.BACKLOG_TTL_S`. Наружу она выходит только двумя путями, оба — решение кода:
 
 * :meth:`Backlog.pickup` — голое «робот» сразу после неуслышанной просьбы: самая свежая запись не старше
-  :data:`~rob_box_dialog.knowledge.BACKLOG_PICKUP_S` из того же сектора DOA (±``DOA_SECTOR_DEG``) или от того же
-  ``person_ref`` становится текстом хода и из бэклога уходит;
+  :data:`~rob_box_dialog.knowledge.BACKLOG_PICKUP_S` от того же собеседника
+  (:func:`~rob_box_dialog.speaker_adapter.same_interlocutor`: голос длинной фразы, лицо в кадре или DOA)
+  становится текстом хода и из бэклога уходит;
 * :meth:`Backlog.recent_unaddressed` — в снимок LLM не больше одной такой записи, структурой
   ``{text, age_s, same_direction}``, без инструкции.
 
@@ -16,34 +17,35 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, replace
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from rob_box_dialog.doa import angle_diff_deg
-from rob_box_dialog.knowledge import BACKLOG_MAX_ENTRIES, BACKLOG_PICKUP_S, BACKLOG_TTL_S, DOA_SECTOR_DEG
+from rob_box_dialog.knowledge import BACKLOG_MAX_ENTRIES, BACKLOG_PICKUP_S, BACKLOG_TTL_S, PICKUP_DOA_SECTOR_DEG
+from rob_box_dialog.speaker_adapter import same_interlocutor
 
 
 @dataclass(frozen=True)
 class Heard:
-    """Реплика в момент приёма: текст, источник, когда прозвучала, откуда и от кого (если известно)."""
+    """Реплика в момент приёма: текст, источник, когда прозвучала, откуда, от кого и кто был в кадре."""
 
     text: str
     t: float
     source: str = "respeaker"
     doa_deg: Optional[float] = None
     person_ref: str = ""
+    #: Длительность фразы, с: голосу короткой фразы не верим (``knowledge.VOICE_MIN_PHRASE_S``).
+    voice_s: float = 0.0
+    #: Кто был в кадре, пока звучала фраза (``FaceSightings.during``: имя или ``#id``).
+    faces: FrozenSet[str] = frozenset()
+    utterance_id: str = ""
+    #: Имя узнанного голоса фразы (биометрия, :meth:`Backlog.note_voice`) — для сверки с лицом в кадре.
+    speaker_name: str = ""
 
 
 def same_direction(a: Optional[float], b: Optional[float]) -> bool:
-    """Оба направления известны и лежат в одном секторе ±``DOA_SECTOR_DEG``."""
-    return a is not None and b is not None and angle_diff_deg(a, b) <= DOA_SECTOR_DEG
-
-
-def same_source(entry: Heard, heard: Heard) -> bool:
-    """Тот же человек (оба ``person_ref`` известны и равны) или то же направление."""
-    if entry.person_ref and heard.person_ref:
-        return entry.person_ref == heard.person_ref
-    return same_direction(entry.doa_deg, heard.doa_deg)
+    """Оба направления известны и лежат в одном секторе ±``PICKUP_DOA_SECTOR_DEG``."""
+    return a is not None and b is not None and angle_diff_deg(a, b) <= PICKUP_DOA_SECTOR_DEG
 
 
 class Backlog:
@@ -68,23 +70,31 @@ class Backlog:
         self._prune(now)
         return len(self._entries)
 
-    def _fresh(self, heard: Heard) -> Optional[Heard]:
+    def note_voice(self, utterance_id: str, person_ref: str, name: str = "") -> None:
+        """Биометрия фразы пришла позже STT: дописать узнанный голос (и имя) записи с этим ``utterance_id``."""
+        for i, entry in enumerate(self._entries):
+            if utterance_id and entry.utterance_id == utterance_id:
+                self._entries[i] = replace(entry, person_ref=person_ref, speaker_name=name or "")
+
+    def match(self, heard: Heard) -> Tuple[Optional[Heard], Tuple[str, ...]]:
+        """Самая свежая запись ≤ ``BACKLOG_PICKUP_S`` того же собеседника и каналы, по которым он тот же."""
         self._prune(heard.t)
         for entry in reversed(self._entries):
-            if heard.t - entry.t <= BACKLOG_PICKUP_S and same_source(entry, heard):
-                return entry
-        return None
+            channels = same_interlocutor(entry, heard) if heard.t - entry.t <= BACKLOG_PICKUP_S else ()
+            if channels:
+                return entry, channels
+        return None, ()
 
-    def pickup(self, heard: Heard) -> Optional[Heard]:
-        """Забрать свежую фразу того же источника как текст хода (В12); нет такой — ``None``."""
-        entry = self._fresh(heard)
+    def pickup(self, heard: Heard) -> Tuple[Optional[Heard], Tuple[str, ...]]:
+        """Забрать свежую фразу того же собеседника как текст хода (В12) и каналы; нет такой — ``(None, ())``."""
+        entry, channels = self.match(heard)
         if entry is not None:
             self._entries.remove(entry)
-        return entry
+        return entry, channels
 
     def recent_unaddressed(self, heard: Heard) -> Optional[Dict[str, object]]:
         """Не больше одной записи для снимка LLM: ``{text, age_s, same_direction}``; чужого не отдаёт."""
-        entry = self._fresh(heard)
+        entry, _ = self.match(heard)
         if entry is None:
             return None
         return {"text": entry.text, "age_s": round(heard.t - entry.t, 1),
