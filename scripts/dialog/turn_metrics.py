@@ -4,11 +4,12 @@
     python scripts/dialog/turn_metrics.py <log> [--per-turn]
 
 Считает на каждый адресованный ход (``🚀 [turn]``): вызовы LLM, STT -> первая реплика TTS (мс), число схем тулов
-в вызове (``tools(N)``), вопросы о личности в речи, записи бэклога (``entries=N`` у ``[backlog] flushed`` / ``[backlog] recent_unaddressed``).
+в вызове (``tools(N)``), токены на вызов LLM (``🧮 [prompt] tokens=N``, #3696), вопросы о личности в речи, записи
+бэклога (``entries=N`` у ``[backlog] flushed`` / ``[backlog] recent_unaddressed``).
 Печатает p50/p95/max и markdown-таблицу A1/A2/A5. Рантайм робота скрипт не трогает и не импортирует.
 
-Чего в логе НЕТ: число токенов (дамп ``🔎 LLM REQUEST`` усечён), поэтому A5 даётся прокси ``tools_visible``
-и честной пометкой «не измеримо по логу».
+A5 (ADR-0150 §14): токенов на вызов p50 ≤ 12k, max ≤ 20k. ``tokens`` — от провайдера, если он прислал ``usage``
+(``estimated=False``), иначе оценка ``rob_box_core.token_estimate``; лог до #3696 строки ``🧮`` не содержит — n/a.
 """
 
 from __future__ import annotations
@@ -70,6 +71,8 @@ def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) ->
     llm = [float(t.llm_calls) for t in turns]
     lat = [t.stt_to_first_tts_ms for t in turns if t.stt_to_first_tts_ms is not None]
     vis = [float(t.tools_visible) for t in turns if t.tools_visible is not None]
+    tokens = [float(n) for t in turns for n in t.prompt_tokens]
+    over = [b for t in turns for b in t.prompt_over]
     idq = [ln for t in turns for ln in identity_questions(t)]
     flushed = sum(t.backlog_entries for t in turns)
     acc = logparse.count_marks(lines, logparse.BACKLOG_ACC_MARK)
@@ -81,8 +84,11 @@ def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) ->
         "|---|---|---|---|---|",
         _stat_row("A1 `llm_calls` на ход (вызовов LLM)", llm),
         _stat_row("A2 `stt_to_first_tts_ms` (мс, ходы с озвучкой)", lat),
-        _stat_row("A5-прокси `tools_visible` (схем тулов в вызове; токены в логе не пишутся)", vis),
+        _stat_row("A5 `prompt_tokens` на вызов LLM (порог p50 ≤ 12000, max ≤ 20000)", tokens),
+        _stat_row("A5 `tools_visible` (схем тулов в вызове, ≤ 12)", vis),
         "",
+        f"- блоки сверх бюджета (`over=`, вызовов): "
+        f"{', '.join(f'{b} {over.count(b)}' for b in dict.fromkeys(over)) or '-'}.",
         f"- `identity_questions` («Как тебя зовут?»/«это ты?» в `🔊 TTS`): {len(idq)} (строки лога: "
         f"{', '.join(map(str, idq)) or '-'}).",
         f"- `backlog_entries`: отдано LLM {flushed} (`[backlog] flushed|recent_unaddressed … entries=N`), накоплено без вейка {acc} "
@@ -94,15 +100,16 @@ def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) ->
 
 def render_per_turn(turns: Sequence[logparse.Turn]) -> str:
     out = [
-        "| # | STT-строка | 🚀-строка | вход | llm_calls | stt→TTS мс | tools_visible | тулы хода | вопр. личности | бэклог |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| # | STT-строка | 🚀-строка | вход | llm_calls | stt→TTS мс | tools_visible | токены вызовов | тулы хода "
+        "| вопр. личности | бэклог |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for t in turns:
         text = ("(ретрай) " if t.retry else "") + (t.stt_text or "-").replace("|", "/")[:40]
         out.append(
             f"| {t.index} | {t.anchor_line} | {t.start_line} | {text} | {t.llm_calls} | "
             f"{_fmt(t.stt_to_first_tts_ms)} | {t.tools_visible if t.tools_visible is not None else 'n/a'} | "
-            f"{', '.join(t.tools_requested) or '-'} | {len(identity_questions(t))} | {t.backlog_entries} |"
+            f"{','.join(map(str, t.prompt_tokens)) or '-'} | {', '.join(t.tools_requested) or '-'} | {len(identity_questions(t))} | {t.backlog_entries} |"
         )
     return "\n".join(out)
 

@@ -20,10 +20,10 @@ with:
   gender-based mapping, do NOT invent names, return to default at end)
 - ✅/❌ examples anchored to e2e #1532 mv03
 
-These tests pin the *wording* so future prompt refactors (e.g. issue
-#1219 next iteration) cannot silently drop the multi-voice block again.
-Same lesson as ``test_issue_1219_set_voice_rule.py``: the prompt wording
-is the source of truth.
+#3696 (ADR-0148, ADR-0150 A5): the prompt-wording tests were removed with the
+hand-written RULE #VOICE-MULTI block; per-reply voices are the ``voice``
+parameter of ``speak_text`` (its schema) and one line of RULE #PERFORM.
+What stays here is the e2e scenario contract (mv03) and the voice command file.
 
 Run with::
 
@@ -33,169 +33,8 @@ Run with::
 from __future__ import annotations
 
 from pathlib import Path
-import re
 
 import pytest
-
-MASTER_PROMPT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "master_prompt_compact.txt"
-)
-
-
-def _read(prompt_path: Path) -> str:
-    return prompt_path.read_text(encoding="utf-8")
-
-
-def _multi_block(content: str) -> str:
-    """Extract the RULE #VOICE-MULTI block (anchor up to next 🚨 RULE or end)."""
-    match = re.search(
-        r"RULE #VOICE-MULTI.*?(?=🚨 \*\*RULE #|\Z)",
-        content,
-        re.DOTALL,
-    )
-    assert match, (
-        "RULE #VOICE-MULTI block not delimited properly in "
-        "master_prompt_compact.txt"
-    )
-    return match.group(0)
-
-
-# ── master_prompt_compact.txt ─────────────────────────────────────────
-
-
-def test_master_prompt_contains_voice_multi_rule() -> None:
-    """The RULE #VOICE-MULTI anchor must be present (regression guard)."""
-    content = _read(MASTER_PROMPT)
-    assert "RULE #VOICE-MULTI" in content, (
-        "master_prompt_compact.txt lost RULE #VOICE-MULTI — LLM will not "
-        "switch voices between skazka characters on MiniMax-M3 (live "
-        "18.08.2026 / e2e #1532 mv03). Without this block, LLM answers "
-        "with tools=[] and the user hears one voice for all characters."
-    )
-
-
-def test_voice_multi_rule_uses_per_reply_voice_not_set_voice() -> None:
-    """Голоса персонажей — параметр ``voice`` у каждого ``speak_text``, а не ``set_voice`` (#3744).
-
-    Live 22.08.2026: без смены голоса между фрагментами все персонажи звучали одинаково. Live 21.10 (#3744):
-    LLM в сказке звала ``set_voice`` — а голос персистентный (PR-4), робот оставался «бабушкой». Правило: голос
-    реплики — ``speak_text(..., voice=...)``; ``set_voice`` — только по просьбе человека сменить голос.
-    """
-    block = _multi_block(_read(MASTER_PROMPT))
-    assert "speak_text" in block and re.search(r"voice=\"", block), block
-    assert "НЕ `set_voice`" in block or "не `set_voice`" in block.lower(), block
-
-
-def test_voice_multi_rule_requires_min_two_voices() -> None:
-    """The rule must require MINIMUM 2 different voices for multi-voice.
-
-    Live 22.08.2026: «разными голосами» — юзер ожидает минимум 2 разных
-    голоса. Если правило разрешит один голос — фича сломана.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Russian pattern: «Минимум 2» или «минимум 2-х»
-    assert re.search(r"[Мм]инимум\s*2", block), (
-        "RULE #VOICE-MULTI must require minimum 2 different voices — "
-        "the user's request 'разными голосами' literally means "
-        "'different voices' (plural)."
-    )
-    # Must mention the Голоса plural — not just singular voice.
-    assert re.search(r"голос\w*", block, re.IGNORECASE), (
-        "RULE #VOICE-MULTI must reference 'голоса' / 'голос' to anchor "
-        "the concept of multiple distinct voices."
-    )
-
-
-def test_voice_multi_rule_prohibits_inventing_voice_names() -> None:
-    """The rule must say: voice names only from [TTS] voices: list.
-
-    Live 20.08.2026: LLM говорит «татьяна» для MiniMax (нет в каталоге).
-    Без запрета LLM будет hallucinate имена.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert "[TTS] voices" in block, (
-        "RULE #VOICE-MULTI must anchor voice names to '[TTS] voices:' "
-        "context — otherwise LLM invents names like 'татьяна' or "
-        "'алена' that don't exist in the active provider."
-    )
-    assert re.search(r"НЕ\s*выдумывай|не выдумывай|NEVER invent", block), (
-        "RULE #VOICE-MULTI must forbid inventing voice names from "
-        "memory (same lesson as RULE #VOICE for issue #1219)."
-    )
-
-
-def test_voice_multi_rule_documents_gender_mapping() -> None:
-    """The rule must map character genders to specific voice ids.
-
-    Without explicit gender hints LLM defaults to one voice for everyone.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Must mention at least one current minimax female voice id.
-    assert "Russian_BrightHeroine" in block, (
-        "RULE #VOICE-MULTI must list at least one current minimax "
-        "female voice id (e.g. Russian_BrightHeroine) so LLM picks a "
-        "valid name for Красная Шапочка / бабушка."
-    )
-    # Must mention at least one current minimax male voice id.
-    assert "Russian_ReliableMan" in block, (
-        "RULE #VOICE-MULTI must list at least one current minimax male "
-        "voice id (e.g. Russian_ReliableMan) so LLM picks a valid name "
-        "for дед / волк / охотник."
-    )
-
-
-def test_voice_multi_rule_anchors_to_krasnaya_shapochka() -> None:
-    """The rule must explicitly mention 'Красная Шапочка' (the failing case).
-
-    Без явного примера с этой сказкой LLM не догадается, что нужно
-    выбирать разные голоса для разных персонажей.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert "Красная Шапочка" in block or "Красную Шапочку" in block, (
-        "RULE #VOICE-MULTI must explicitly mention Красная Шапочка "
-        "(the e2e #1532 mv03 failing case) — otherwise the rule is too "
-        "abstract and LLM won't connect 'разными голосами' to "
-        "switching voices between her and the wolf."
-    )
-
-
-def test_voice_multi_rule_voice_ids_exist_in_registry() -> None:
-    """All voice ids mentioned in RULE #VOICE-MULTI must exist in registry.
-
-    Same lesson as test_issue_1219_set_voice_rule.py — stale voice id in
-    prompt → LLM tries it → voice_unavailable → falls back to default.
-    """
-    from rob_box_voice.tts_voice_registry import voices_for
-
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-
-    mentioned = set(
-        re.findall(
-            # Legacy: female-shaonv / male-qn-qingse (compound slug).
-            # Современные: Russian_ReliableMan / Russian_BrightHeroine.
-            # НЕ ловим «female-voice» / «male-voice» — это категории, а не id.
-            r"\b(?:female|male)-(?:\w+-){1,}\w+\b|\bRussian_[A-Za-z]+(?:-[A-Za-z]+)*\b",
-            block,
-        )
-    )
-
-    registry_voices = set(voices_for("minimax"))
-    missing_in_registry = mentioned - registry_voices
-    assert not missing_in_registry, (
-        f"RULE #VOICE-MULTI lists voice ids not in "
-        f"tts_voice_registry.PROVIDER_VOICES['minimax']: "
-        f"{sorted(missing_in_registry)}. Either add them to the registry "
-        f"or remove from the prompt. Current registry voices: "
-        f"{sorted(registry_voices)}."
-    )
-
 
 # ── scenario.json: voice_core_suite_v1.json mv03 step ────────────────
 

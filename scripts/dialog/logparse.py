@@ -37,12 +37,15 @@ BACKLOG_ACC_MARK = "[backlog] accumulated"
 TIER1_MARK = "🧩 [tier1] kind="
 TIER1_DISPUTED_MARK = "disputed=True"
 STOP_CHOOSER_MARK = "🤔 [stop-chooser] verdict="
+#: ADR-0150 A5 (#3696): строка на каждый вызов LLM — ``rob_box_dialog.context.PROMPT_TOKENS_MARK``.
+PROMPT_TOKENS_MARK = "🧮 [prompt] tokens="
 
 _TOOLS_VISIBLE = re.compile(r"tools\((\d+)\):")
 _TOOL_DONE = re.compile(r"Инструмент (\w+) выполнен успешно")
 _TOOL_FAILED = re.compile(r"Инструмент (\w+) завершился с ошибкой")
 _TURN_TOOLS = re.compile(r"tools=(\[[^\]]*\])")
 _BACKLOG_ENTRIES = re.compile(r"entries=(\d+)")
+_PROMPT_OVER = re.compile(r" over=(\S+)")
 _TTS_TEXT = re.compile(r"text='(?P<text>.*)$")
 _QUOTED_TAIL = re.compile(r"'(?P<text>.*)$")
 
@@ -75,6 +78,8 @@ class Turn:
     stt_text: str = ""
     llm_calls: int = 0
     tools_visible: Optional[int] = None
+    prompt_tokens: List[int] = field(default_factory=list)  # 🧮 [prompt] tokens=N — по вызову LLM (A5)
+    prompt_over: List[str] = field(default_factory=list)  # блоки сверх бюджета (over=system,tools) по всем вызовам
     tools_requested: List[str] = field(default_factory=list)  # из ✅ [turn] ... tools=[...]
     tools_executed: List[str] = field(default_factory=list)  # «Инструмент X выполнен успешно» в окне
     tools_failed: List[str] = field(default_factory=list)
@@ -156,6 +161,8 @@ def _fill_window(turn: Turn, window: Sequence[LogLine]) -> None:
             m = _TOOLS_VISIBLE.search(msg)
             if m:
                 turn.tools_visible = max(turn.tools_visible or 0, int(m[1]))
+            if PROMPT_TOKENS_MARK in msg:
+                _note_prompt(turn, msg)
         if TURN_END_MARK in msg:
             in_turn = False  # запросы к LLM после «returned» — уже следующий ход (ретрай), не этот
             m = _TURN_TOOLS.search(msg)
@@ -178,6 +185,14 @@ def _fill_window(turn: Turn, window: Sequence[LogLine]) -> None:
                 if turn.first_tts_ts is None and line.ts is not None:
                     turn.first_tts_ts, turn.first_tts_line = line.ts, line.lineno
     turn.speeches = _group_speeches(speech_items)
+
+
+def _note_prompt(turn: Turn, msg: str) -> None:
+    """``🧮 [prompt] tokens=N … over=a,b`` — токены вызова и блоки сверх бюджета (``-`` — нет)."""
+    turn.prompt_tokens.append(int(msg.split(PROMPT_TOKENS_MARK, 1)[1].split()[0]))
+    m = _PROMPT_OVER.search(msg)
+    if m and m[1] != "-":
+        turn.prompt_over.extend(m[1].split(","))
 
 
 def split_turns(lines: Sequence[LogLine]) -> List[Turn]:

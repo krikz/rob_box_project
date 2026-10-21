@@ -1,4 +1,4 @@
-"""Issue #3161 — ``<music_state>`` в промпте строится из снимка плеера.
+"""Issue #3161 — раздел ``music_state`` снимка хода строится из снимка плеера (с #3696 — данные, ``rob_box_dialog``).
 
 Живой прогон 28.09 22:32 (деплой develop 8888d6f02)::
 
@@ -19,7 +19,7 @@ from rob_box_voice.core.music_player_state import (
     parse_music_state,
     build_music_state_payload,
 )
-from rob_box_voice.core.music_state_prompt import (
+from rob_box_dialog.music_state import (
     ENDED_FINISHED,
     ENDED_REPLACED,
     ENDED_STOPPED,
@@ -42,53 +42,53 @@ def _playing(memory: MusicStateMemory, track_id="club-1", name="клубный �
 
 class TestNoSnapshot:
     def test_unknown_before_player_reported(self):
-        tag = MusicStateMemory().render(now=T0)
-        assert 'playing="unknown"' in tag
+        tag = MusicStateMemory().section(now=T0)
+        assert tag["playing"] == "unknown"
         assert "last_track" not in tag
-        assert tag.count("<music_state") == 1 and tag.endswith("/>")
+        assert tag == {"playing": "unknown", "dj": "unknown"}
 
 
 class TestPlaying:
     def test_looping_track_with_name(self):
         memory = MusicStateMemory()
         _playing(memory)
-        tag = memory.render(now=T0 + 5)
-        assert 'playing="yes"' in tag
-        assert 'track="клубный трек"' in tag
-        assert 'repeat="loop"' in tag
+        tag = memory.section(now=T0 + 5)
+        assert tag["playing"] == "yes"
+        assert tag["track"] == "клубный трек"
+        assert tag["repeat"] == "loop"
         assert "ends_in_s" not in tag
-        assert 'dj="off"' in tag
+        assert tag["dj"] == "off"
 
     def test_finite_track_reports_seconds_left(self):
         memory = MusicStateMemory()
         _playing(memory, stops_at=T0 + 60)
-        tag = memory.render(now=T0 + 18)
-        assert 'repeat="once"' in tag
-        assert 'ends_in_s="42"' in tag
+        tag = memory.section(now=T0 + 18)
+        assert tag["repeat"] == "once"
+        assert tag["ends_in_s"] == "42"
 
     def test_dj_flag_comes_from_snapshot(self):
         memory = MusicStateMemory()
         _playing(memory, dj=True)
-        assert 'dj="on"' in memory.render(now=T0 + 1)
+        assert memory.section(now=T0 + 1)["dj"] == "on"
 
     def test_track_without_name_is_labelled_unnamed(self):
         memory = MusicStateMemory()
         memory.observe_state(_snap(playing=True, track_id="x", ts=T0))
-        assert 'track="без названия"' in memory.render(now=T0 + 1)
+        assert memory.section(now=T0 + 1)["track"] == "без названия"
 
     def test_no_separate_generated_attribute(self):
         """ADR-0158 PR-2: трек библиотеки генераций играет на деке — отдельного ``ai=`` (mp3 мимо деки) нет."""
         memory = MusicStateMemory()
         memory.observe_state(_snap(playing=False, ts=T0))
-        tag = memory.render(now=T0 + 1)
-        assert "ai=" not in tag
-        assert 'playing="no"' in tag
+        tag = memory.section(now=T0 + 1)
+        assert "ai" not in tag
+        assert tag["playing"] == "no"
 
-    def test_name_is_xml_escaped(self):
+    def test_name_is_kept_as_data(self):
+        """#3696: раздел — данные; экранирование — дело ``context.build_context`` (JSON), не памяти."""
         memory = MusicStateMemory()
         _playing(memory, name='Techno "rave" & <more>')
-        tag = memory.render(now=T0 + 1)
-        assert 'track="Techno &quot;rave&quot; &amp; &lt;more&gt;"' in tag
+        assert memory.section(now=T0 + 1)["track"] == 'Techno "rave" & <more>'
 
 
 class TestLiveStopThenQuestion:
@@ -100,20 +100,18 @@ class TestLiveStopThenQuestion:
         # 22:32:07 роутер: stop_music → плеер публикует idle (без finished).
         memory.observe_state(_snap(playing=False, ts=T0 + 100))
         memory.observe_track_name(None)  # form после idle: track=None
-        tag = memory.render(now=T0 + 113)
-        assert 'playing="no"' in tag
-        assert 'playing="yes"' not in tag
-        assert 'last_track="клубный трек"' in tag
-        assert f'last_ended="{ENDED_STOPPED}"' in tag
-        assert 'last_ended_ago_s="13"' in tag
+        tag = memory.section(now=T0 + 113)
+        assert tag["playing"] == "no"
+        assert tag["last_track"] == "клубный трек"
+        assert tag["last_ended"] == ENDED_STOPPED
+        assert tag["last_ended_ago_s"] == "13"
 
     def test_heuristic_inputs_do_not_matter(self):
         """Нет больше ``beat``/``cleanup`` — только снимок."""
         memory = MusicStateMemory()
         memory.observe_state(_snap(playing=False, ts=T0))
-        tag = memory.render(now=T0 + 1)
-        assert "beat=" not in tag
-        assert "cleanup=" not in tag
+        tag = memory.section(now=T0 + 1)
+        assert tag == {"playing": "no", "dj": "off"}
 
 
 class TestEndings:
@@ -123,9 +121,9 @@ class TestEndings:
         memory.observe_state(
             _snap(playing=False, finished_track_id="club-1", ts=T0 + 30.3)
         )
-        tag = memory.render(now=T0 + 40)
-        assert f'last_ended="{ENDED_FINISHED}"' in tag
-        assert 'last_ended_ago_s="10"' in tag
+        tag = memory.section(now=T0 + 40)
+        assert tag["last_ended"] == ENDED_FINISHED
+        assert tag["last_ended_ago_s"] == "10"
 
     def test_stale_finished_id_of_other_track_means_stopped(self):
         memory = MusicStateMemory()
@@ -133,34 +131,34 @@ class TestEndings:
         memory.observe_state(
             _snap(playing=False, finished_track_id="a-1", ts=T0 + 5)
         )
-        assert f'last_ended="{ENDED_STOPPED}"' in memory.render(now=T0 + 6)
+        assert memory.section(now=T0 + 6)["last_ended"] == ENDED_STOPPED
 
     def test_replaced_by_another_track(self):
         memory = MusicStateMemory()
         _playing(memory, track_id="a-1", name="Марио")
         memory.observe_state(_snap(playing=True, track_id="b-2", ts=T0 + 20))
-        tag = memory.render(now=T0 + 21)
+        tag = memory.section(now=T0 + 21)
         # Имя нового ещё не пришло из form — не выдаём старое за новое.
-        assert 'track="без названия"' in tag
-        assert 'last_track="Марио"' in tag
-        assert f'last_ended="{ENDED_REPLACED}"' in tag
+        assert tag["track"] == "без названия"
+        assert tag["last_track"] == "Марио"
+        assert tag["last_ended"] == ENDED_REPLACED
         memory.observe_track_name("клубный трек")
-        assert 'track="клубный трек"' in memory.render(now=T0 + 22)
+        assert memory.section(now=T0 + 22)["track"] == "клубный трек"
 
     def test_finite_track_past_stops_at_without_idle(self):
         """idle потерялся — после stops_at + grace трек уже «доиграл»."""
         memory = MusicStateMemory()
         _playing(memory, stops_at=T0 + 30)
-        tag = memory.render(now=T0 + 30 + STOPS_AT_GRACE_S + 5)
-        assert 'playing="no"' in tag
-        assert 'last_track="клубный трек"' in tag
-        assert f'last_ended="{ENDED_FINISHED}"' in tag
+        tag = memory.section(now=T0 + 30 + STOPS_AT_GRACE_S + 5)
+        assert tag["playing"] == "no"
+        assert tag["last_track"] == "клубный трек"
+        assert tag["last_ended"] == ENDED_FINISHED
 
     def test_old_ending_is_forgotten(self):
         memory = MusicStateMemory()
         _playing(memory)
         memory.observe_state(_snap(playing=False, ts=T0 + 1))
-        tag = memory.render(now=T0 + 1 + RECENT_END_WINDOW_S + 1)
+        tag = memory.section(now=T0 + 1 + RECENT_END_WINDOW_S + 1)
         assert "last_track" not in tag
 
     def test_repeated_idle_does_not_overwrite_ending(self):
@@ -170,11 +168,11 @@ class TestEndings:
         memory.observe_state(_snap(playing=False, ts=T0 + 10))
         memory.observe_state(_snap(playing=False, ts=T0 + 15))
         memory.observe_state(_snap(playing=False, ts=T0 + 20))
-        assert 'last_ended_ago_s="20"' in memory.render(now=T0 + 30)
+        assert memory.section(now=T0 + 30)["last_ended_ago_s"] == "20"
 
     def test_name_from_form_ignored_while_idle(self):
         memory = MusicStateMemory()
         memory.observe_state(_snap(playing=False, ts=T0))
         memory.observe_track_name("призрак")
         assert memory.track_name is None
-        assert "призрак" not in memory.render(now=T0 + 1)
+        assert "призрак" not in memory.section(now=T0 + 1).values()

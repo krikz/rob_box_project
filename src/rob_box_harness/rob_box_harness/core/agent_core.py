@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
+from rob_box_dialog.context import ContextBlocks, measure
 from rob_box_harness.core.tool_loop import (
     apply_babble_filter,
     build_awaiting_confirmation_result,
@@ -105,6 +106,8 @@ class PromptStats:
     provider: str
     #: Срез тулов хода (группы ``rob_box_dialog.tools_view``, ADR-0150 PR-6); ``"all"`` — срез не задан.
     skill: str = "all"
+    #: Тот же вызов по блокам контекста (``rob_box_dialog.context.measure``, оценка) — A5 по блокам (#3696).
+    blocks: ContextBlocks | None = None
 
 
 #: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
@@ -791,6 +794,8 @@ class AgentCore:
         #: подпись среза для метрики; ``None`` — срез не задан (оператор, тесты): весь каталог провайдера.
         self._visible_tools: frozenset[str] | None = None
         self._view_label: str = "all"
+        #: Снимок хода (``<system_context>``) текущего вызова — блок ``snapshot`` в учёте токенов (#3696).
+        self._turn_snapshot: str | None = None
         # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
         # thinking-policy merge). Forwarded as ``settings=`` to every
         # ``complete()`` / ``stream()`` so YAML-driven configuration
@@ -1004,6 +1009,7 @@ class AgentCore:
                 llm_user_content = _compose_current_turn_message(
                     dynamic_system, text
                 )
+                self._turn_snapshot = dynamic_system
                 messages.append(
                     LLMMessage(role="user", content=llm_user_content)
                 )
@@ -2179,21 +2185,14 @@ class AgentCore:
             reported = 0
             if usage:
                 reported = int(usage.get("prompt_tokens", 0) or 0)
-            if reported > 0:
-                stats = PromptStats(
-                    prompt_tokens=reported,
-                    estimated=False,
-                    provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._view_label,
-                )
-            else:
-                stats = PromptStats(
-                    prompt_tokens=estimate_prompt_tokens(messages, tools),
-                    estimated=True,
-                    provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._view_label,
-                )
-            observer(stats)
+            messages, tools = list(messages), list(tools)
+            observer(PromptStats(
+                prompt_tokens=reported if reported > 0 else estimate_prompt_tokens(messages, tools),
+                estimated=reported <= 0,
+                provider=getattr(self._llm, "name", "unknown"),
+                skill=self._view_label,
+                blocks=measure(messages, tools, self._turn_snapshot),
+            ))
         except Exception:  # noqa: BLE001 — телеметрия не роняет ход
             logging.getLogger(__name__).debug(
                 "AgentCore: prompt observer failed", exc_info=True

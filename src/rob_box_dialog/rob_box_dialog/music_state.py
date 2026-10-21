@@ -1,4 +1,4 @@
-"""``<music_state>`` для LLM — из снимка плеера (issue #3161, ADR-0141).
+"""Раздел ``music_state`` снимка хода для LLM — из снимка плеера (issue #3161, ADR-0141; ADR-0150 §7.3, #3696).
 
 До #3161 тег собирался эвристикой ``beat``: «играет», если взведён
 cleanup-флаг или живы TTS-батчи. Живой прогон 28.09 22:32: через 10 с
@@ -17,18 +17,21 @@ cleanup-флаг или живы TTS-батчи. Живой прогон 28.09 2
 перестал звучать: как (доиграл / остановлен / сменён другим) и когда.
 Это не эвристика — переход «играл → не играет» виден в самих снимках.
 
-Модуль без ROS-импортов: юнит-тесты гоняют его без rclpy.
+Раздел — данные (словарь), текст из него строит ``context.build_context``; снимок плеера — любой объект с полями
+``MusicPlayerState`` (``rob_box_voice.core.music_player_state``): пакет чистый и rob_box_voice не импортирует.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from rob_box_voice.core.music_player_state import MusicPlayerState
+#: Снимок ``/voice/music/state`` (``MusicPlayerState``): ``ts``, ``track_id``, ``stops_at``, ``finished_track_id``,
+#: ``dj``, ``dj_info``, ``is_playing(now)``.
+MusicPlayerState = Any
 
-#: Сколько секунд после конца трека тег ещё показывает «недавно играл».
+#: Сколько секунд после конца трека раздел ещё показывает «недавно играл».
 #: Дольше получаса «что ты включал?» — уже история разговора, не состояние.
 RECENT_END_WINDOW_S = 1800.0
 
@@ -38,16 +41,6 @@ ENDED_STOPPED = "stopped"    # остановлен (стоп, watchdog, idle-TT
 ENDED_REPLACED = "replaced"  # вместо него запущен другой трек
 
 UNNAMED_TRACK = "без названия"
-
-
-def _xml_attr(value: str) -> str:
-    """Экранировать значение для XML-атрибута в двойных кавычках."""
-    return (
-        value.replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 @dataclass(frozen=True)
@@ -123,16 +116,13 @@ class MusicStateMemory:
             return ENDED_FINISHED
         return ENDED_STOPPED
 
-    def render(self, *, now: Optional[float] = None) -> str:
-        """Строка ``<music_state …/>`` для ``<system_context>``: снимок владельца плеера — единственный источник
-        (трек библиотеки генераций тоже на деке, ADR-0158 PR-2)."""
+    def section(self, *, now: Optional[float] = None) -> Dict[str, str]:
+        """Раздел ``music_state`` снимка хода: снимок владельца плеера — единственный источник (трек библиотеки
+        генераций тоже на деке, ADR-0158 PR-2)."""
         current = _now(now)
-        attrs = self._playback_attrs(current)
-        attrs.extend(self._last_ended_attrs(current))
-        body = " ".join(f'{key}="{_xml_attr(value)}"' for key, value in attrs)
-        return f"  <music_state {body} />"
+        return dict(self._playback_attrs(current) + self._last_ended_attrs(current))
 
-    def _playback_attrs(self, now: float) -> list:
+    def _playback_attrs(self, now: float) -> List[Tuple[str, str]]:
         snap = self._snapshot
         if snap is None:
             # Плеер ещё ничего не сообщил — честно «не знаю».
@@ -178,7 +168,7 @@ class MusicStateMemory:
             )
         return self._last_ended
 
-    def _last_ended_attrs(self, now: float) -> list:
+    def _last_ended_attrs(self, now: float) -> List[Tuple[str, str]]:
         ended = self._effective_last_ended(now)
         if ended is None or now - ended.at > RECENT_END_WINDOW_S:
             return []
@@ -189,14 +179,14 @@ class MusicStateMemory:
         ]
 
 
-#: Поля сета v2 из снимка (``dj`` владельца плеера, ADR-0149 §2.3) → атрибуты тега: имя в теге ← ключ снимка.
+#: Поля сета v2 из снимка (``dj`` владельца плеера, ADR-0149 §2.3) → ключи раздела: имя в разделе ← ключ снимка.
 #: Факты играющего трека (``engine.dj_lines``): мелодия, следующие по плану, части темы без мелодий в библиотеке.
 SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks", "tracks"), ("melody", "melody"),
              ("played", "played"), ("next_melodies", "next_melodies"), ("not_found", "not_found"), ("bpm", "bpm"),
              ("persona", "persona"), ("source", "source"))
 
 
-def _set_attrs(snap: MusicPlayerState) -> list:
+def _set_attrs(snap: MusicPlayerState) -> List[Tuple[str, str]]:
     """Сет v2 — из latched-снимка, не из догадки (ADR-0149 §5.2); у v1 этих полей в снимке нет."""
     info = snap.dj_info
     return [(attr, _attr_value(info[key])) for attr, key in SET_ATTRS if info.get(key) not in (None, "", [])]

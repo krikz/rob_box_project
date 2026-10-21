@@ -72,18 +72,14 @@ class ProviderStateReporter:
         for text in self._announcer.observe(states, priority, self._clock()):
             self._speak(text)
 
-    def context_lines(self) -> List[str]:
-        """Строка ``<providers>`` для системного контекста LLM: только то, что сломано (факт, а не догадка)."""
+    def context_section(self) -> List[Dict[str, str]]:
+        """Раздел ``providers`` снимка хода: только то, что сломано (факт, а не догадка)."""
         return providers_context(self.all_states())
 
 
-def providers_context(states: Sequence[ProviderState]) -> List[str]:
-    """``<providers>`` из недоступных провайдеров; пусто, пока всё в порядке (контекст не раздуваем)."""
-    broken = [f"{s.kind}:{s.name}={s.health}" for s in states if s.health in _FACT_HEALTH]
-    if not broken:
-        return []
-    return ["  <providers>" + ", ".join(broken) + " - это факт из здоровья провайдеров; других отказов облака не выдумывай"
-            "</providers>"]
+def providers_context(states: Sequence[ProviderState]) -> List[Dict[str, str]]:
+    """Недоступные провайдеры ``{kind, name, health}``; пусто, пока всё в порядке (контекст не раздуваем)."""
+    return [{"kind": s.kind, "name": s.name, "health": s.health} for s in states if s.health in _FACT_HEALTH]
 
 
 def on_provider_states(board: ProviderBoard, clock: Callable[[], float], msg: Any) -> None:
@@ -95,6 +91,6 @@ def on_provider_states(board: ProviderBoard, clock: Callable[[], float], msg: An
     )
 
 
-def reporter_context(reporter: Optional[ProviderStateReporter]) -> List[str]:
-    """Строки ``<providers>`` для контекста; нет репортёра (стаб теста) - пусто."""
-    return reporter.context_lines() if reporter is not None else []
+def reporter_context(reporter: Optional[ProviderStateReporter]) -> List[Dict[str, str]]:
+    """Раздел ``providers`` снимка хода; нет репортёра (стаб теста) - пусто."""
+    return reporter.context_section() if reporter is not None else []

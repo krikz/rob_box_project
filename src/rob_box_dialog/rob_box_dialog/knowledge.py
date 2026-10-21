@@ -306,6 +306,18 @@ TOOLS_VISIBLE_MAX = 12
 TOOLS_ALWAYS: Tuple[str, ...] = (
     "speak_text", "memory_save", "memory_search", "get_current_time", "search_web", "play_animation",
 )
+#: Блоки одного вызова LLM (§7.3, §14 A5; ``context.measure``): персона, факты собеседника и сделанное в прошлых ходах,
+#: окно прошлых ходов, снимок хода, реплика с тул-циклом хода, схемы тулов.
+CONTEXT_BLOCKS: Tuple[str, ...] = ("system", "facts", "window", "snapshot", "turn", "tools")
+#: Бюджет блоков в токенах (оценка ``rob_box_core.token_estimate``); ``facts`` и ``turn`` меряются без бюджета.
+CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
+    "system": 4000, "snapshot": 1000, "tools": 4000, "window": 3000,
+})
+#: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
+#: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
+CONTEXT_SECTIONS: Tuple[str, ...] = (
+    "user_profile", "tts_context", "speech_gender", "position", "providers", "music_state", "recent_unaddressed",
+)
 
 
 @dataclass(frozen=True)
