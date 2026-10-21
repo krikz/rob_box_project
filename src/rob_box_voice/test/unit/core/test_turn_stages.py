@@ -365,3 +365,19 @@ def test_end_event_of_an_unknown_speech_does_not_cancel_a_queued_one(rig):
     assert rig.stage_names()[-1] == ("addressed", "started")
     rig.speech(ts.SPEECH_FINISHED, sid="a")
     assert rig.stage_names()[-1] == ("done", "finished")
+
+
+def test_phrase_without_id_gets_the_turn_opened_for_it_but_a_retry_does_not(rig):
+    """Telegram / оператор / инъекция без utterance_id: ход LLM берёт id рефлексов, иначе finish() не найдёт ход."""
+    rig.stages.addressed(None, "telegram")
+    tid = rig.events[0]["turn_id"]
+    assert rig.stages.turn_id_for(None) == tid
+    rig.stages.thinking()
+    assert rig.stages.turn_id_for(None) is None            # синтетический ретрай продолжает ход, нового id не берёт
+    rig.stages.finish(tid)
+    assert rig.stage_names()[-1] == ("done", "finished")
+
+
+def test_phrase_with_id_never_takes_a_turn_of_another_phrase(rig):
+    rig.stages.addressed("u1")
+    assert rig.stages.turn_id_for("u2") is None and rig.stages.turn_id_for(None) is None

@@ -103,10 +103,14 @@ class TurnStages:
 
     # -- открытие и закрытие хода ---------------------------------------------------------------------------------
     def turn_id_for(self, uid: Optional[str]) -> Optional[str]:
-        """``turn_id`` открытого хода этой фразы (или ``None``): ход LLM берёт тот же id, что у ``addressed``."""
+        """``turn_id`` открытого хода этой фразы (или ``None``): ход LLM берёт тот же id, что у ``addressed``.
+
+        Фраза без id (Telegram, оператор, инъекция): её ход - открытый ``addressed`` тоже без id; ретрай гуарда
+        (стадия уже дальше) своего id не получает - он продолжает ход.
+        """
         with self._lock:
             turn = self._live()
-            return turn.turn_id if (turn is not None and uid and turn.uid == uid) else None
+            return turn.turn_id if (turn is not None and turn.takes_phrase(uid)) else None
 
     def addressed(self, uid: Optional[str], source: str = "respeaker") -> bool:
         """Фраза адресована роботу: открыть ход и дать рефлекс ``addressed``; ``False`` - ход этой фразы уже открыт.

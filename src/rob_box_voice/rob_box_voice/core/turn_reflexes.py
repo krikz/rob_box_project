@@ -41,6 +41,10 @@ class Turn:
     failure: str = ""
     errors: Dict[str, str] = field(default_factory=dict)
 
+    def takes_phrase(self, uid: Optional[str]) -> bool:
+        """Ход LLM этой фразы: тот же id; фраза без id берёт открытый ``addressed`` без id (ретрай - нет)."""
+        return bool(uid and self.uid == uid) or (not uid and self.uid is None and self.stage == "addressed")
+
     def same_phrase(self, uid: Optional[str], source: str, now: float) -> bool:
         """Тот же ли это фраза: по id; без id - тот же источник, пока ход не ушёл дальше ``addressed`` (``SAME_PHRASE_S``)."""
         if uid and self.uid:
