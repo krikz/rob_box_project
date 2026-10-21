@@ -2,8 +2,9 @@
 
 LLM на каждом ходе отдаёт ОДНУ команду: речь, вопрос, до трёх действий, выступление, экспрессия. :func:`parse`
 собирает её из ``tool_calls``, JSON или свободного текста с JSON-объектом; :func:`validate` проверяет по таблицам
-:mod:`.knowledge` и JSON-схемам каталога тулов. Невалидно — :class:`Invalid` с вопросом ``understand.invalid``:
-повторного вызова LLM нет, ретраев нет.
+:mod:`.knowledge` и JSON-схемам каталога тулов. Невалидно — :class:`Invalid` со списком нарушений (:class:`Violation`)
+и вопросом ``understand.invalid``. :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
+tool-результатом, один раз на ответ (мост, решение Шифу 21.10 по #3698; ADR-0148 п.2).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 import unicodedata
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
@@ -90,12 +91,27 @@ class Command:
 
 
 @dataclass(frozen=True)
+class Violation:
+    """Одно нарушение: машинная причина, где именно, и что допустимо (перечень из :mod:`.knowledge` или схемы)."""
+
+    reason: str
+    detail: str = ""
+    allowed: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Invalid:
-    """Невалидный ответ LLM: машинная причина, подробность для лога и вопрос-шаблон человеку."""
+    """Невалидный ответ LLM: машинная причина (первого нарушения), подробность для лога, вопрос-шаблон человеку и
+    все найденные нарушения (пусто — одно, ``reason``/``detail``)."""
 
     reason: str
     detail: str = ""
     ask: Ask = Ask(expects="free", key=INVALID_ASK_KEY)
+    violations: Tuple[Violation, ...] = ()
+
+    @property
+    def all(self) -> Tuple[Violation, ...]:
+        return self.violations or (Violation(self.reason, self.detail),)
 
 
 @dataclass(frozen=True)
@@ -120,10 +136,17 @@ class _Repairs:
 class _Bad(Exception):
     """Внутренний сигнал разбора/проверки: наружу не выходит — превращается в :class:`Invalid`."""
 
-    def __init__(self, reason: str, detail: str = "") -> None:
+    def __init__(self, reason: str, detail: str = "", allowed: Collection[str] = ()) -> None:
         super().__init__(reason)
         self.reason = reason
         self.detail = detail
+        self.allowed = tuple(allowed)
+
+    def violation(self) -> Violation:
+        return Violation(self.reason, self.detail, self.allowed)
+
+    def invalid(self) -> Invalid:
+        return Invalid(self.reason, self.detail, violations=(self.violation(),))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -143,7 +166,7 @@ def parse(raw: Any) -> Result:
             return _from_tool_calls(raw)
         raise _Bad("bad_type", type(raw).__name__)
     except _Bad as bad:
-        return Invalid(bad.reason, bad.detail)
+        return bad.invalid()
 
 
 def _first_object(text: str) -> Mapping[str, Any]:
@@ -205,7 +228,7 @@ def _get(data: Mapping[str, Any], key: str, kind: Union[type, Tuple[type, ...]],
 def _only(data: Mapping[str, Any], allowed: Collection[str], where: str) -> None:
     unknown = sorted(set(data) - set(allowed))
     if unknown:
-        raise _Bad("unknown_field", f"{where}: {', '.join(map(str, unknown))}")
+        raise _Bad("unknown_field", f"{where}: {', '.join(map(str, unknown))}", allowed)
 
 
 def _text(data: Mapping[str, Any], key: str) -> Optional[str]:
@@ -360,25 +383,37 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     """
     if isinstance(cmd, Invalid):
         return cmd
+    agent = getattr(session, "agent", None) or kn.AGENTS[0]
+    checks: Tuple[Callable[[], Any], ...] = (
+        lambda: _check_passed(cmd),
+        lambda: _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech"),
+        lambda: _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice"),
+        lambda: _check_ask(cmd.ask),
+        lambda: _check_actions(cmd.actions, set(available_tools), agent),
+        lambda: _check_perform(cmd, busy),
+        lambda: _check_when(cmd.when, busy),
+        lambda: _drop_bad_faces(cmd),
+    )
+    outcomes = [_outcome(check) for check in checks]
+    found = tuple(v for v in outcomes if isinstance(v, Violation))
+    if found:
+        return Invalid(found[0].reason, found[0].detail, violations=found)
+    return outcomes[-1]
+
+
+def _outcome(check: Callable[[], Any]) -> Any:
+    """Итог одной проверки: её значение или :class:`Violation` — проверки независимы, модель видит все нарушения."""
     try:
-        agent = getattr(session, "agent", None) or kn.AGENTS[0]
-        _check_passed(cmd)
-        _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech")
-        _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice")
-        _check_ask(cmd.ask)
-        _check_actions(cmd.actions, set(available_tools), agent)
-        _check_perform(cmd, busy)
-        _check_when(cmd.when, busy)
-        return _drop_bad_faces(cmd)
+        return check()
     except _Bad as bad:
-        return Invalid(bad.reason, bad.detail)
+        return bad.violation()
 
 
 def _check_passed(cmd: Command) -> None:
     if cmd.passed is None:
         return
     if cmd.passed not in kn.PASSED:
-        raise _Bad("bad_enum", f"passed={cmd.passed}")
+        raise _Bad("bad_enum", f"passed={cmd.passed}", kn.PASSED)
     if cmd.speech or cmd.ask or cmd.actions or cmd.perform:
         raise _Bad("passed_with_content", "молчание вместе с речью или действиями")
 
@@ -396,7 +431,7 @@ def _check_ask(ask: Optional[Ask]) -> None:
     if ask is None:
         return
     if ask.expects not in kn.ASK_EXPECTS:
-        raise _Bad("bad_enum", f"ask.expects={ask.expects}")
+        raise _Bad("bad_enum", f"ask.expects={ask.expects}", kn.ASK_EXPECTS)
     if (ask.text is None) == (ask.key is None):
         raise _Bad("bad_ask", "у вопроса ровно одно из text/key")
     _check_speech(ask.text, kn.SPEECH_MAX_CHARS, "ask.text")
@@ -418,13 +453,14 @@ def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], ag
 
 
 def _action_class(tool: str, available: Collection[str], agent: str) -> str:
+    actionable = sorted(t for t in available if t in kn.TOOL_CLASSES and t not in kn.SPEECH_CHANNEL_TOOLS)
     if tool in kn.SPEECH_CHANNEL_TOOLS:
         raise _Bad("speech_channel_tool", tool)
     if tool not in available:
-        raise _Bad("tool_not_available", tool)
+        raise _Bad("tool_not_available", tool, actionable)
     cls = kn.TOOL_CLASSES.get(tool)
     if cls is None:
-        raise _Bad("unknown_tool", tool)
+        raise _Bad("unknown_tool", tool, actionable)
     if agent not in kn.ACTION_CLASSES[cls].agents:
         raise _Bad("class_not_for_agent", f"{tool}: {cls} — не для {agent}")
     return cls
@@ -438,8 +474,10 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         return
     if cmd.speech:
         raise _Bad("perform_with_speech", "perform взаимоисключает speech")
-    if perf.kind not in kn.PERFORM_KINDS or perf.backing not in kn.PERFORM_BACKINGS:
-        raise _Bad("bad_enum", f"perform.kind={perf.kind} backing={perf.backing}")
+    if perf.kind not in kn.PERFORM_KINDS:
+        raise _Bad("bad_enum", f"perform.kind={perf.kind}", kn.PERFORM_KINDS)
+    if perf.backing not in kn.PERFORM_BACKINGS:
+        raise _Bad("bad_enum", f"perform.backing={perf.backing}", kn.PERFORM_BACKINGS)
     if not kn.SEGMENTS_MIN <= len(perf.segments) <= kn.SEGMENTS_MAX or not all(perf.segments):
         raise _Bad("bad_segments", f"{len(perf.segments)} сегментов")
     for i, segment in enumerate(perf.segments):
@@ -468,7 +506,7 @@ def _check_edit(edit_pending: bool, from_segment: int, busy: Busy) -> None:
 
 def _check_when(when: str, busy: Busy) -> None:
     if when not in kn.WHEN:
-        raise _Bad("bad_enum", f"when={when}")
+        raise _Bad("bad_enum", f"when={when}", kn.WHEN)
     if when == "now":
         hard = sorted(c for c in busy.classes if c in kn.ACTION_CLASSES and not kn.ACTION_CLASSES[c].interruptible)
         if hard:
@@ -478,11 +516,11 @@ def _check_when(when: str, busy: Busy) -> None:
 def _expression_ok(expr: Expression) -> Tuple[Expression, bool]:
     """Проверенная экспрессия и флаг «сцена лица отброшена». Чужая эмоция/жест/earcon — команда невалидна."""
     if expr.emotion not in kn.EMOTIONS:
-        raise _Bad("bad_enum", f"emotion={expr.emotion}")
+        raise _Bad("bad_enum", f"emotion={expr.emotion}", tuple(kn.EMOTIONS))
     if expr.gesture is not None and expr.gesture not in kn.GESTURES:
-        raise _Bad("bad_enum", f"gesture={expr.gesture}")
+        raise _Bad("bad_enum", f"gesture={expr.gesture}", kn.GESTURES)
     if expr.earcon is not None and expr.earcon not in kn.EARCONS:
-        raise _Bad("bad_enum", f"earcon={expr.earcon}")
+        raise _Bad("bad_enum", f"earcon={expr.earcon}", kn.EARCONS)
     if expr.face is None or _face_ok(expr.face):
         return expr, False
     return replace(expr, face=None), True
@@ -505,7 +543,57 @@ def _drop_bad_faces(cmd: Command) -> Command:
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# to_args — команда обратно в поля схемы (мост v1 передаёт её циклу тулов одним вызовом ``command``)
+# explain — нарушения словами для модели (повтор команды, #3698; по образцу deepseek-harness: invalid arguments)
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Первая строка tool-результата невалидной команде.
+INVALID_HEAD = "invalid arguments: команда не исполнена, ничего не сделано. Исправь нарушения и пришли команду заново."
+#: Tool-результат прочим вызовам того же ответа: команда отклонена целиком.
+NOT_RUN = "не исполнено: команда этого ответа невалидна, пришли всё заново одной командой."
+#: Правило словами по причине нарушения; подробность и перечень допустимого — из :class:`Violation`.
+HINTS: Mapping[str, str] = MappingProxyType({
+    "unknown_field": "такого поля нет в схеме",
+    "bad_enum": "значение не из перечня",
+    "bad_type": "не тот тип значения",
+    "bad_json": "аргументы command не разобраны как JSON-объект",
+    "truncated": "JSON аргументов оборван — ответь короче",
+    "no_command": "нет команды: ответ — один JSON-объект команды",
+    "several_commands": "команда в ответе одна",
+    "perform_with_speech": "при perform поле speech не пиши — весь текст клади в perform.segments",
+    "single_action_class": "в этом классе действий — одно действие за ход",
+    "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
+    "bad_args": "аргументы действия не по схеме тула",
+    "tool_not_available": "этого тула сейчас нет",
+    "unknown_tool": "такого тула нет",
+    "speech_channel_tool": "речь — поле speech, а не тул в actions",
+    "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
+                    "списки *_per_segment — по числу сегментов",
+    "too_long": "слишком длинно",
+    "control_chars": "управляющие символы в тексте",
+    "passed_with_content": "passed — только без речи и действий",
+    "bad_ask": "у ask нужен text",
+    "bad_tool_call": "вызов — объект с name и arguments",
+    "class_not_for_agent": "этот класс действий тебе недоступен",
+    "edit_without_perform": "edit_pending — только вместе с perform",
+    "from_segment_without_edit": "from_segment — только при edit_pending",
+    "edit_without_active_perform": "править нечего: выступление не идёт, убери edit_pending",
+    "edit_started_segment": "from_segment — после звучащего сегмента",
+    "now_vs_uninterruptible": "when=now нельзя: занятое действие не прерывается, нужен after_current",
+})
+
+
+def explain(invalid: Invalid) -> str:
+    """Нарушения невалидной команды словами для модели: причина, правило, где, что допустимо."""
+    lines = [INVALID_HEAD]
+    for v in invalid.all:
+        line = f"- {v.reason}: {HINTS.get(v.reason, 'нарушено правило команды')}"
+        line += f" ({v.detail})" if v.detail else ""
+        lines.append(line + (f". Допустимо: {', '.join(v.allowed)}" if v.allowed else ""))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# to_args —команда обратно в поля схемы (мост v1 передаёт её циклу тулов одним вызовом ``command``)
 # ---------------------------------------------------------------------------------------------------------------
 
 

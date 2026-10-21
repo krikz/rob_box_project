@@ -5,6 +5,7 @@ import inspect
 import json
 import pathlib
 import random
+import re
 
 import pytest
 
@@ -284,7 +285,7 @@ def test_schema_fields_match_the_dataclasses():
 
 
 def test_validator_has_no_llm_hook_and_no_retry():
-    """0 ретраев: проверка — чистая функция; невалидно — один вопрос-шаблон, второго вызова LLM нет."""
+    """Проверка — чистая функция без LLM: повтор по нарушениям делает мост режима команд, не валидатор (#3698)."""
     assert list(inspect.signature(validate).parameters) == ["cmd", "available_tools", "session", "busy"]
     assert "retry" not in pathlib.Path(cm.__file__).read_text(encoding="utf-8").lower()
     invalid = Invalid("x")
@@ -401,3 +402,30 @@ def test_thousands_of_random_commands_never_raise():
         else:
             assert res.ask.key == "understand.invalid"
     assert seen[Command] >= 300 and seen[Invalid] >= 300, seen
+
+
+# --- нарушения словами для модели (повтор команды, #3698) ---------------------------------------------------
+
+
+def test_validator_reports_every_violation_first_one_is_the_reason():
+    res = bad({"speech": "x", "perform": _perform(), "when": "later", "expression": {"earcon": "beep"}},
+              "perform_with_speech")
+    assert [v.reason for v in res.all] == ["perform_with_speech", "bad_enum", "bad_enum"]
+    assert [v.allowed for v in res.all][1:] == [kn.WHEN, kn.EARCONS]
+
+
+def test_explain_says_what_is_wrong_and_what_is_allowed():
+    note = cm.explain(bad({"speech": "x", "expression": {"emotion": "ecstatic"}}, "bad_enum"))
+    assert note.splitlines()[0] == cm.INVALID_HEAD
+    assert note.splitlines()[1] == (f"- bad_enum: значение не из перечня (emotion=ecstatic). "
+                                    f"Допустимо: {', '.join(kn.EMOTIONS)}")
+    unknown = cm.explain(bad({"speech": "x", "mood": 1}, "unknown_field"))
+    assert "(command: mood)" in unknown and ", ".join(cm._COMMAND_FIELDS) in unknown
+    missing = cm.explain(bad({"actions": [{"tool": "drive", "args": {}}]}, "tool_not_available", tools=["memory_save"]))
+    assert "Допустимо: memory_save" in missing
+
+
+def test_every_reason_the_validator_raises_has_words_for_the_model():
+    source = pathlib.Path(cm.__file__).read_text(encoding="utf-8")
+    raised = set(re.findall(r'_Bad\("([a-z_]+)"', source))
+    assert raised and raised <= set(cm.HINTS)

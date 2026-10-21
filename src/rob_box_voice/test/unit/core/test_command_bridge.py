@@ -138,10 +138,14 @@ def test_note_becomes_first_system_message_when_there_is_none() -> None:
 # ── разбор ответа и перевод в форму v1 ─────────────────────────────────────────────────────────────────────
 
 
+#: Срез тулов запроса: команда проверяется по нему (``command.validate``), аргументы — по схеме каталога.
+TOOLS = [_tool(n) for n in ("memory_save", "get_current_time", "search_web", "get_battery_level", "play_sound")]
+
+
 def _convert(caps: ProviderCapabilities, reply: LLMResponse, log: Optional[list] = None) -> LLMResponse:
     lines: list = [] if log is None else log
     bridge = cb.CommandModeLLM(_Inner(caps, [reply]), lines.append)
-    return _run(bridge.complete(_messages(), tools=[_tool("memory_save")]))
+    return _run(bridge.complete(_messages(), tools=TOOLS))
 
 
 def test_speech_only_command_becomes_spoken_text_and_ends_turn() -> None:
@@ -163,12 +167,12 @@ def _actions(out: LLMResponse) -> list:
 def test_actions_go_as_one_command_call_and_speech_is_only_logged() -> None:
     log: list = []
     reply = LLMResponse(tool_calls=(
-        _command_call(speech="Запомнил!", actions=[{"tool": "memory_save", "args": {"content": "чай"}}]),
+        _command_call(speech="Запомнил!", actions=[{"tool": "memory_save", "args": {"fact": "чай"}}]),
         ToolCall(id="n1", name="get_current_time", arguments={}),
     ))
     out = _convert(DEEPSEEK_CAPS, reply, log)
     assert out.finish_reason == "tool_calls" and out.tool_calls[0].id.startswith(cb.CALL_ID_PREFIX)
-    assert _actions(out) == [("memory_save", {"content": "чай"}), ("get_current_time", {})]
+    assert _actions(out) == [("memory_save", {"fact": "чай"}), ("get_current_time", {})]
     assert out.tool_calls[0].arguments["speech"] == "Запомнил!"  # не звучит: исполнитель команды его не озвучит
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
                    "actions=['memory_save', 'get_current_time'] speech_dropped=1 speech='Запомнил!'"]
@@ -178,7 +182,7 @@ def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None
     """Живой прогон 7c (#3698): DeepSeek кладёт слоты лица в ``expression`` — команда исполняется, поправка в логе."""
     log: list = []
     reply = LLMResponse(tool_calls=(_command_call(
-        actions=[{"tool": "memory_save", "args": {"content": "чай"}}],
+        actions=[{"tool": "memory_save", "args": {"fact": "чай"}}],
         expression={"emotion": "happy", "eyes": "wide", "rear": "party", "mood": "весело"}),))
     out = _convert(DEEPSEEK_CAPS, reply, log)
     assert out.tool_calls[0].arguments["expression"] == {
@@ -223,11 +227,14 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     (LLMResponse(content='{"speech": "Привет", "mood": "весело"}'), "unknown_field"),
     (LLMResponse(tool_calls=(_command_call(speech="обре"),), truncated_tool_args=True), "truncated"),
 ])
-def test_invalid_command_asks_to_repeat_without_second_call(reply: LLMResponse, reason: str) -> None:
+def test_invalid_twice_asks_to_repeat_after_one_retry(reply: LLMResponse, reason: str) -> None:
+    """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — «Не понял, повтори»."""
     log: list = []
-    out = _convert(MINIMAX_CAPS, reply, log)
-    assert (out.content, out.tool_calls) == (INVALID_TEXT, ())
-    assert f"verdict=invalid:{reason}" in log[0]
+    inner = _Inner(MINIMAX_CAPS, [reply, reply], name="minimax")
+    out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=TOOLS))
+    assert (out.content, out.tool_calls) == (INVALID_TEXT, ()) and len(inner.requests) == 2
+    assert f"verdict=invalid:{reason}" in log[0] and f"verdict=invalid:{reason}" in log[1]
+    assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['{reason}'] → verdict=invalid:{reason} (")
 
 
 def test_passed_is_honest_silence() -> None:
@@ -256,14 +263,14 @@ def test_speak_text_in_actions_is_speech_not_action() -> None:
 
 @pytest.mark.parametrize("reply, content, calls", [
     (LLMResponse(tool_calls=(_command_call(speech="Привет!"),), usage={"prompt_tokens": 5}), "Привет!", []),
-    (LLMResponse(content='{"actions": [{"tool": "memory_save", "args": {}}]}'), "", [kn.COMMAND_TOOL]),
+    (LLMResponse(content='{"actions": [{"tool": "memory_save", "args": {"fact": "чай"}}]}'), "", [kn.COMMAND_TOOL]),
 ])
 def test_stream_is_collected_then_replayed_in_v1_shape(reply: LLMResponse, content: str, calls: list) -> None:
     inner = _Inner(DEEPSEEK_CAPS, [reply])
     bridge = cb.CommandModeLLM(inner)
 
     async def _drain() -> list:
-        return [chunk async for chunk in bridge.stream(_messages(), tools=[])]
+        return [chunk async for chunk in bridge.stream(_messages(), tools=TOOLS)]
 
     chunks = _run(_drain())
     assert "".join(c.content_delta for c in chunks) == content
@@ -352,3 +359,107 @@ def test_agent_core_query_returns_data_to_llm_then_speech_is_final(streaming: bo
     second = inner.requests[1]
     assert second["settings"].tool_choice == "required"
     assert any(m.role == "tool" and "12:00" in str(m.content) for m in second["messages"])
+
+
+# ── повтор невалидной команды с перечнем нарушений (решение Шифу 21.10, #3698) ─────────────────────────────────
+
+
+def _answer(caps: ProviderCapabilities, replies: List[LLMResponse], name: str = "deepseek") -> tuple:
+    log: list = []
+    inner = _Inner(caps, replies, name=name)
+    out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=TOOLS))
+    return out, inner, log
+
+
+SOUND = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+
+
+def test_invalid_command_goes_back_as_tool_result_and_the_fixed_one_is_executed() -> None:
+    """Живой прогон 7c: ``speech`` рядом с ``perform`` — модель получает нарушение на свой вызов и исправляется."""
+    tale = {"kind": "tale", "segments": ["Жил-был ёж.", "И жил он долго."]}
+    bad = LLMResponse(tool_calls=(_command_call(speech="Слушай!", perform=tale, actions=SOUND),))
+    fixed = {"perform": tale, "actions": SOUND}
+    good = LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL, arguments=fixed),))
+    out, inner, log = _answer(DEEPSEEK_CAPS, [bad, good])
+
+    assert _actions(out) == [("play_sound", {"sound": "robot_happy"})]
+    assert len(inner.requests) == 2
+    first, second = inner.requests[0]["messages"], inner.requests[1]["messages"]
+    assert second[:len(first)] == first  # тот же запрос, не новый ход и не новый промпт
+    said, result = second[len(first):]
+    assert said.role == "assistant" and said.tool_calls == bad.tool_calls
+    assert result.role == "tool" and result.tool_call_id == "c1" and result.tool_result.is_error
+    assert result.content.startswith("invalid arguments") and "при perform поле speech не пиши" in result.content
+    assert inner.requests[1]["settings"].tool_choice == "required"
+    assert "verdict=invalid:perform_with_speech" in log[0] and "verdict=command" in log[1]
+    assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['perform_with_speech'] → verdict=command (")
+
+
+def test_enum_violation_lists_the_allowed_values_from_knowledge() -> None:
+    bad = LLMResponse(tool_calls=(_command_call(speech="Привет", expression={"emotion": "ecstatic"}),))
+    out, inner, _ = _answer(DEEPSEEK_CAPS, [bad, LLMResponse(tool_calls=(_command_call(speech="Привет"),))])
+    assert out.content == "Привет"
+    note = inner.requests[1]["messages"][-1].content
+    assert "emotion=ecstatic" in note and f"Допустимо: {', '.join(kn.EMOTIONS)}" in note
+
+
+def test_bad_json_arguments_get_one_retry() -> None:
+    """Адаптер отдаёт ``{}``, когда JSON аргументов не разобрался: это ``bad_json``, а не пустая команда."""
+    broken = LLMResponse(tool_calls=(_command_call(),))
+    out, inner, log = _answer(DEEPSEEK_CAPS, [broken, LLMResponse(tool_calls=(_command_call(speech="Сейчас."),))])
+    assert out.content == "Сейчас." and len(inner.requests) == 2
+    assert "verdict=invalid:bad_json" in log[0]
+    assert "аргументы command не разобраны" in inner.requests[1]["messages"][-1].content
+
+
+def test_json_in_text_retry_goes_as_user_message() -> None:
+    """MiniMax (запасной, JSON в тексте): вызова нет — нарушения идут репликой пользователя после ответа модели."""
+    bad = LLMResponse(content='{"speech": "Привет", "mood": "весело"}')
+    out, inner, _ = _answer(MINIMAX_CAPS, [bad, LLMResponse(content='{"speech": "Привет"}')], name="minimax")
+    assert out.content == "Привет"
+    said, note = inner.requests[1]["messages"][-2:]
+    assert (said.role, said.content) == ("assistant", bad.content)
+    assert note.role == "user" and "unknown_field" in note.content and "Допустимо: speech" in note.content
+
+
+def test_other_calls_of_an_invalid_answer_get_not_run_results() -> None:
+    bad = LLMResponse(tool_calls=(_command_call(speech="x", when="later"),
+                                  ToolCall(id="n1", name="get_current_time", arguments={})))
+    _, inner, _ = _answer(DEEPSEEK_CAPS, [bad, LLMResponse(tool_calls=(_command_call(speech="Полдень."),))])
+    results = [m for m in inner.requests[1]["messages"] if m.role == "tool"]
+    assert [m.tool_call_id for m in results] == ["c1", "n1"]
+    assert "when=later" in results[0].content and results[1].content == cb.NOT_RUN
+
+
+def test_layer_one_repair_needs_no_retry() -> None:
+    reply = LLMResponse(tool_calls=(_command_call(actions=SOUND, expression={"emotion": "happy", "eyes": "wide"}),))
+    out, inner, log = _answer(DEEPSEEK_CAPS, [reply])
+    assert _actions(out) == [("play_sound", {"sound": "robot_happy"})] and len(inner.requests) == 1
+    assert not any("retry=" in line for line in log)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_invalid_then_fixed_command_executes_the_action(streaming: bool) -> None:
+    """Сквозной ход: невалидная команда → повтор внутри моста → действие исполнено, фраза кода; «Не понял» не звучит,
+    ход один."""
+    bad = [{"tool": "memory_save", "args": {"fact": "Саша любит чай", "category": "food"}}]
+    good = [{"tool": "memory_save", "args": {"fact": "Саша любит чай", "category": "preference"}}]
+    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(actions=bad),)),
+                                   LLMResponse(tool_calls=(_command_call(actions=good),))])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and len(inner.requests) == 2
+    assert "bad_args" in inner.requests[1]["messages"][-1].content
+    assert spoken.said == ["Запомнил: Саша любит чай."] and INVALID_TEXT not in spoken.said
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_invalid_twice_says_not_understood(streaming: bool) -> None:
+    bad = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "memory_save", "args": {}}]),))
+    inner = _Inner(DEEPSEEK_CAPS, [bad, bad])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "запомни", preclassified_event=DialogueEvent.STT_RESULT))
+    assert len(inner.requests) == 2 and result.spoken_text == INVALID_TEXT and spoken.said == []

@@ -9,8 +9,12 @@
 * **ответ разбирает один парсер** ``rob_box_dialog.command.parse``: голая реплика (без действий, выступления и голоса)
   → текст речи (терминальный ход, авто-TTS ``dialogue_node``); остальное → один вызов ``command``, который v1-цикл
   отдаёт исполнителю команды ``rob_box_harness.core.tool_loop.command_turn`` (PR-7 ч.7c: действия по событию
-  владельца, фраза кода, ``speech`` при действиях не звучит, ход терминален); ``passed`` → пустой ответ; невалидная
-  команда → вопрос-шаблон ``understand.invalid`` (повторного вызова нет).
+  владельца, фраза кода, ``speech`` при действиях не звучит, ход терминален); ``passed`` → пустой ответ;
+* **невалидная команда** (разбор + ``command.validate`` по срезу тулов запроса) возвращается модели в том же запросе:
+  её вызов ``command`` + tool-результат с нарушениями (``command.explain``; в JSON-режимах — реплика пользователя),
+  не больше ``knowledge.COMMAND_RETRIES_MAX`` раз на ответ (решение Шифу 21.10 по #3698, как deepseek-harness:
+  ``invalid arguments`` с перечнем допустимого). Снова невалидна — вопрос-шаблон ``understand.invalid``. Пока идёт
+  повтор, робот молчит: ответ ноде уходит один, после повтора.
 
 Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
 остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
@@ -20,13 +24,14 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.command import INVALID_ASK_KEY, Command, Invalid, Result, parse, to_args
+from rob_box_dialog.command import INVALID_ASK_KEY, NOT_RUN, Command, Invalid, Result, explain, parse, to_args, validate
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -39,6 +44,7 @@ from rob_box_llm.provider import (
     LLMSettings,
     ProviderCapabilities,
     ToolCall,
+    ToolResult,
 )
 
 #: Маркер строки лога о каждом ответе в режиме команд (читает ``scripts/dialog`` для A14).
@@ -55,6 +61,7 @@ V1_TRANSPORT_NOTE = (
 )
 
 Log = Callable[[str], None]
+Ask = Callable[[List[LLMMessage]], Awaitable[LLMResponse]]
 
 
 def _no_log(_: str) -> None:
@@ -97,6 +104,32 @@ def reply_command(content: str, calls: Iterable[ToolCall]) -> Result:
     if extras and from_text.reason == "no_command":
         return Command(actions=extras)
     return from_text
+
+
+def judge(response: LLMResponse, available: Iterable[str]) -> Result:
+    """Команда ответа провайдера, проверенная по срезу тулов запроса. Оборванный JSON аргументов — ``truncated``;
+    вызов ``command`` с пустыми аргументами — ``bad_json`` (адаптер отдаёт ``{}``, когда JSON не разобрался)."""
+    if response.truncated_tool_args:
+        return Invalid("truncated", "аргументы обрезаны по max_tokens")
+    if any(c.name == kn.COMMAND_TOOL and not c.arguments for c in response.tool_calls):
+        return Invalid("bad_json", "аргументы command пусты или не JSON")
+    result = reply_command(response.content, response.tool_calls)
+    return validate(_without_speech_tool(result), available) if isinstance(result, Command) else result
+
+
+def retry_messages(response: LLMResponse, invalid: Invalid) -> List[LLMMessage]:
+    """Продолжение запроса после невалидной команды: ответ модели как был и нарушения словами — tool-результатом на
+    её вызовы (``command`` — нарушения, прочие — «не исполнено»), без вызовов — репликой пользователя."""
+    note = explain(invalid)
+    said = LLMMessage(role="assistant", content=response.content or "", tool_calls=tuple(response.tool_calls))
+    if not response.tool_calls:
+        return [said, LLMMessage(role="user", content=note)]
+    out = [said]
+    for call in response.tool_calls:
+        text = note if call.name == kn.COMMAND_TOOL else NOT_RUN
+        out.append(LLMMessage(role="tool", content=text, tool_call_id=call.id,
+                              tool_result=ToolResult(tool_call_id=call.id, content=text, is_error=True)))
+    return out
 
 
 def _spoken(cmd: Command) -> str:
@@ -213,27 +246,40 @@ class CommandModeLLM(LLMProvider):
         shaped = replace(base, tool_choice=request.tool_choice or base.tool_choice, extra=extra)
         return _with_note(list(messages), mode_note(self.mode, request)), [*request.tools, *native], shaped
 
-    def convert(self, response: LLMResponse) -> LLMResponse:
-        """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов), с той же ``usage``."""
-        response = without_reasoning(response)
-        if response.truncated_tool_args:
-            result: Result = Invalid("truncated", "аргументы обрезаны по max_tokens")
-        else:
-            result = reply_command(response.content, response.tool_calls)
-        text, calls, verdict = to_legacy(result)
-        self._log(log_line(self.name, self.mode, result, verdict))
+    async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]]) -> LLMResponse:
+        """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же
+        запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; строка лога на каждый ответ и на повтор."""
+        available = frozenset(_tool_name(t) for t in offered)
+        response = without_reasoning(await ask(msgs))
+        result = self._judged(response, available)
+        for attempt in range(1, kn.COMMAND_RETRIES_MAX + 1):
+            if not isinstance(result, Invalid):
+                break
+            started = time.monotonic()
+            retry = without_reasoning(await ask([*msgs, *retry_messages(response, result)]))
+            fixed = self._judged(retry, available)
+            self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in result.all]} "
+                      f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
+            response, result = retry, fixed
+        text, calls, _ = to_legacy(result)
         return LLMResponse(content=text, tool_calls=calls, finish_reason="tool_calls" if calls else "stop",
                            usage=response.usage, raw=response.raw)
+
+    def _judged(self, response: LLMResponse, available: Iterable[str]) -> Result:
+        result = judge(response, available)
+        self._log(log_line(self.name, self.mode, result, to_legacy(result)[2]))
+        return result
 
     async def complete(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
                        settings: LLMSettings | None = None) -> LLMResponse:
         msgs, offered, shaped = self.shape(messages, tools, settings)
-        return self.convert(await self._inner.complete(msgs, tools=offered, settings=shaped))
+        return await self.answer(lambda m: self._inner.complete(m, tools=offered, settings=shaped), msgs, offered)
 
     async def stream(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
                      settings: LLMSettings | None = None) -> AsyncIterator[LLMChunk]:
         msgs, offered, shaped = self.shape(messages, tools, settings)
-        out = self.convert(await _collect(self._inner.stream(msgs, tools=offered, settings=shaped)))
+        out = await self.answer(lambda m: _collect(self._inner.stream(m, tools=offered, settings=shaped)),
+                                msgs, offered)
         if out.content:
             yield LLMChunk(content_delta=out.content)
         for call in out.tool_calls:
@@ -265,6 +311,6 @@ def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log) -> C
 
 
 __all__ = [
-    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE", "command_providers", "log_line",
-    "mode_note", "reply_command", "to_legacy", "wrapper_for",
+    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE", "command_providers", "judge",
+    "log_line", "mode_note", "reply_command", "retry_messages", "to_legacy", "wrapper_for",
 ]
