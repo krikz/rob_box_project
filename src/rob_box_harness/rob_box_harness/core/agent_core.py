@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
 from rob_box_dialog.context import ContextBlocks, measure
+from rob_box_dialog.tools_view import motion_refusal
 from rob_box_harness.core.tool_loop import (
     apply_babble_filter,
     build_awaiting_confirmation_result,
@@ -2003,7 +2004,7 @@ class AgentCore:
         3. ``await self._tools.execute(call)`` — иначе.
         """
         suppressed_texts: list[str] = []
-        for call in execution_order:
+        for call in _refuse_unasked_motion(execution_order, current_user_input, results_by_call_id):
             if self._acceptance_gate is not None:
                 segment, decision = self._acceptance_gate.submit(
                     tool=call.name,
@@ -2358,6 +2359,26 @@ def _is_hallucinated_speak_text(
     if not text:
         return False  # empty speak_text — issue #1343 path, not us
     return len(text) > _ACCEPT_PHRASE_MAX_CHARS
+
+
+def _refuse_unasked_motion(
+    calls: list[ToolCall], user_input: str, results_by_call_id: dict[str, ToolResult]
+) -> list[ToolCall]:
+    """#3779 — тул движения без глагола движения в реплике не исполняется: отказ честной фразой кода.
+
+    Отказанным вызовам кладёт результат-ошибку с фразой каталога, возвращает остальные."""
+    allowed: list[ToolCall] = []
+    for call in calls:
+        phrase = motion_refusal(call.name, user_input)
+        if phrase is None:
+            allowed.append(call)
+            continue
+        logging.getLogger(__name__).warning(
+            "🚫 [move-guard] %s(%s) отклонён: человек не называл движение, реплика=%r",
+            call.name, dict(call.arguments or {}), user_input[:80],
+        )
+        results_by_call_id[call.id] = ToolResult(tool_call_id=call.id, content=phrase, is_error=True)
+    return allowed
 
 
 def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:

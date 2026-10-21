@@ -93,8 +93,9 @@ class MediaCommand:
             (ADR-0157 §3.1) или ``""``. Слово инструмента в ``name`` не попадает.
         more: для ``PLAY_NAMED`` — «продолжай играть Вагнера», «ещё Баха» (#3599): не эта же пьеса, а следующая того же
             автора; сыгранное недавно не повторяется (``request_music`` читает флаг из реплики хода).
-        kind: для ``GENERATE`` — ``robot_song`` (петь: «спой», «песню», «своим голосом») или ``instrumental``; для
-            ``LIBRARY`` — ``play`` или ``list``. Тема генерации и запрос к библиотеке — в ``name``.
+        kind: для ``GENERATE`` — ``robot_song`` (петь: «спой», «песню», «своим голосом»), ``set`` (не петь, много:
+            «сочини новые треки / сет под тему X», #3775) или ``instrumental``; для ``LIBRARY`` — ``play`` или
+            ``list``. Тема генерации и запрос к библиотеке — в ``name``.
     """
 
     intent: MediaIntent
@@ -1020,6 +1021,10 @@ _ROBOT_VOICE_WORDS: FrozenSet[str] = frozenset({"своим", "твоим", "г�
 #: Голова «спой …» без слова музыки: родовые, служебные, «своим голосом», вторая просьба петь/сыграть.
 _SING_HEAD: FrozenSet[str] = _GENERIC_WORDS | _PLAY_NAMED_FILLER | _COMMON_FILLER | _ROBOT_VOICE_WORDS | frozenset({
     "сыграй", "сыграть", "что", "нибудь", "мне", "нам"})
+#: Много треков в голове просьбы сочинить («сочини новые треки / сет под тему X») — сет генерации, не один трек (#3775).
+_GEN_SET_WORDS: FrozenSet[str] = frozenset({
+    "треки", "треков", "сет", "сэт", "сета", "сэта", "мелодии", "мелодий", "композиции", "композиций", "инструменталы",
+    "инструменталов"})
 #: Тема со ссылкой на контекст («спой об этом») — не тема, решает LLM.
 _GEN_CONTEXT_REFS: FrozenSet[str] = frozenset({"это", "этом", "этого", "том", "нем", "нём", "ней", "них", "него"})
 _GEN_MAX_HEAD = 6
@@ -1033,7 +1038,8 @@ def _sing_command(words: Sequence[str]) -> Optional[MediaCommand]:
     Глагол — основы ``knowledge.SOURCE_ASK_STEMS`` (``vocal``, ``own``, ``generated``) первым словом после вступления.
     «Сочини/придумай» — только со словом музыки; «спой» без слова музыки — голова из :data:`_SING_HEAD` («спой
     калинку», «спой со мной» — ``None``, решает LLM). «Сгенерируй …» — как раньше (ADR-0158 PR-3), любая голова.
-    ``kind``: петь (глагол «спой», слово «песня», «своим голосом») — ``robot_song``, иначе ``instrumental``;
+    ``kind``: петь (глагол «спой», слово «песня», «своим голосом») — ``robot_song``, много треков
+    (:data:`_GEN_SET_WORDS`) — ``set``, иначе ``instrumental``;
     тема — слова после :data:`_GEN_THEME_LEADS`. Путь (кэш, генерация, синтез, отказ) решает ``generate_music``."""
     body = list(itertools.dropwhile(lambda w: w in _PLAY_NAMED_LEAD_IN, words))  # «давай спой»
     verb = _gen_verb(body[0]) if body else ""
@@ -1043,8 +1049,8 @@ def _sing_command(words: Sequence[str]) -> Optional[MediaCommand]:
     if theme is None or not _gen_head_ok(verb, head):
         return None
     vocal = verb == "vocal" or _ROBOT_VOICE_WORDS.intersection(head) or any(w.startswith(kn.SONG_STEMS) for w in head)
-    return MediaCommand(intent=MediaIntent.GENERATE, closed=True, kind="robot_song" if vocal else "instrumental",
-                        name=" ".join(theme))
+    kind = "robot_song" if vocal else "set" if _GEN_SET_WORDS.intersection(head) else "instrumental"
+    return MediaCommand(intent=MediaIntent.GENERATE, closed=True, kind=kind, name=" ".join(theme))
 
 
 def _gen_verb(word: str) -> str:
@@ -1068,7 +1074,7 @@ def _gen_head_ok(verb: str, head: Sequence[str]) -> bool:
     """Голова просьбы: «сгенерируй» — любая; со словом музыки — любая; «спой» — из :data:`_SING_HEAD`."""
     if len(head) > _GEN_MAX_HEAD:
         return False
-    if verb == "generated" or any(w.startswith(_GEN_MUSIC_STEMS) for w in head):
+    if verb == "generated" or any(w.startswith(_GEN_MUSIC_STEMS) or w in _GEN_SET_WORDS for w in head):
         return True
     return verb == "vocal" and set(head) <= _SING_HEAD
 

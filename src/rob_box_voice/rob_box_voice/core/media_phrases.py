@@ -35,9 +35,14 @@ from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
 
 
+def theme_text(theme: str) -> str:
+    """«Тема — X.»: падеж слов человека не ломается; темы нет — «»."""
+    return _phrase("music.theme", theme=theme) if theme else ""
+
+
 def dj_started_text(persona: str, theme: str) -> str:
     """Фраза после ``started`` трека 1 сета (шаблон кода, I5)."""
-    about = " " + _phrase("music.theme", theme=theme) if theme else ""  # «тема — X»: падеж слов человека не ломается
+    about = " " + theme_text(theme) if theme else ""
     head = _phrase("music.dj_started_persona", persona=persona) if persona else _phrase("music.dj_started")
     return head + about
 
@@ -368,6 +373,7 @@ __all__ = [
     "composer_missing_phrase",
     "composer_missing_text",
     "dj_started_text",
+    "theme_text",
     "honest_launch_reply",
     "instrument_text",
     "launch_claim",

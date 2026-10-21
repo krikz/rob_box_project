@@ -422,9 +422,31 @@ def _request_plan(command: MediaCommand, text: str) -> MediaPlan:
     )
 
 
+def _generate_set_plan(command: MediaCommand) -> MediaPlan:
+    """«сочини новые треки / сет под тему X» → сет генерации ``dj_set(start, theme=X)`` (#3775), а не один трек:
+    путь каждого трека (кэш темы → генерация с темой в заказе → синтез) решает ``dj_set``, фразу — его результат."""
+    from rob_box_mcp_tools.engine.theme_grounding import heard_theme  # одна функция темы с dj_set (07.10)
+
+    theme = heard_theme(command.name) or command.name
+    args: Dict[str, Any] = {"action": "start"}
+    if theme:
+        args["theme"] = theme
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall(DJ_SET_TOOL, args),),
+        say_ok=dj_started_text("", theme),
+        say_fail=DJ_FAIL_TEXT,
+        cancel_inflight=True,
+        confirm_started=True,
+    )
+
+
 def _generate_plan(command: MediaCommand) -> MediaPlan:
     """«спой песенку про X» → ``generate_music(kind, theme)`` кодом (ADR-0150 §9.1, #3696). Песня пишется десятки
-    секунд: фраза — ``source_message`` результата (ожидание/мост/отказ кода), об успехе — по ``started`` моста."""
+    секунд: фраза — ``source_message`` результата (ожидание/мост/отказ кода), об успехе — по ``started`` моста.
+    Много треков (``kind=set``) — сет генерации (:func:`_generate_set_plan`)."""
+    if command.kind == "set":
+        return _generate_set_plan(command)
     args: Dict[str, Any] = {"kind": command.kind}
     if command.name:
         args["theme"] = command.name
