@@ -62,6 +62,10 @@ identity.rejected: ["Не смог запомнить голос."]
 identity.timeout: ["Не дождался, пока голос запишется."]
 identity.ask_name: ["Как тебя зовут?"]
 identity.confirm: ["{name}, это ты?"]
+identity.merged: ["Понял, это ты. Объединил записи — в памяти ты {name}."]
+identity.kept_apart: ["Понял, вы разные люди. Запомню обоих."]
+identity.merge_unclear: ["Не понял ответ — пока оставлю записи раздельно."]
+identity.retry_voice: ["Только голос твой я запомнить не успел — скажи, пожалуйста, ещё пару слов."]
 
 memory.saved: ["Запомнил: {fact}."]
 

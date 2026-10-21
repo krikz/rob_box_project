@@ -184,12 +184,6 @@ class TestCase1IntroRegistersWithoutTool:
         assert ctx["self_intro_name"] == "Борис"
         assert ctx["intro_registered"] is True
 
-    def test_speech_gate_waits_for_ack_of_robot_registration(self):
-        """#2913: речь хода ждёт исход и авто-регистрации тоже."""
-        n = _node()  # ack не приходит
-        _turn(n, N708_TEXT, _unknown(), "utt-708a")
-        assert n._turn_speech_gate().ticket().pending == 1
-
     def test_already_known_under_same_name_is_not_reregistered(self):
         """#2863: «я Борис» от уверенно узнанного Бориса — не регистрация."""
         n = _node()
@@ -229,7 +223,7 @@ class TestCase2NoHypothesisQuestionOnOtherName:
 
     def test_similar_voice_goes_to_2828_conflict_question(self):
         """Голос выше порога слияния — ADR-0127 заводит отдельный профиль,
-        ack с voice_conflict → вопрос #2828 заменяет ответ хода."""
+        ack с voice_conflict → вопрос #2828 звучит ПОСЛЕ ответа хода (#3765)."""
         n = _node()
         n.ack = {"event": "registered", "speaker_id": NEW_ID,
                  "reused_profile": False,
@@ -238,10 +232,10 @@ class TestCase2NoHypothesisQuestionOnOtherName:
 
         _turn(n, N708_TEXT, _tentative_sasha(), "utt-708b")
 
-        assert len(n.tts) == 1, n.tts
+        assert len(n.tts) == 2, n.tts
         assert "Саша, это ты?" not in n.tts
-        assert "Вы разные люди" in n.tts[0]
-        assert N708_LLM not in n.tts
+        assert n.tts[0] == N708_LLM
+        assert "Вы разные люди" in n.tts[1]
 
     def test_same_name_intro_confirms_hypothesis_without_question(self):
         """«я Саша» при гипотезе «Саша» — подтверждение (#2809), вопрос

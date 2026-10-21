@@ -116,6 +116,7 @@ from rob_box_voice.core.media_plan_run import command_turn_context, run_media_pl
 from rob_box_dialog.context import build_context
 from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_voice.core.turn_context import context_sections
+from rob_box_voice.core.identity_dedup import identity_dedup_from_env
 from rob_box_voice.core.stop_chooser import stop_chooser_from_env
 from rob_box_voice.core.tools_view_host import apply_tools_view
 from rob_box_voice.core.stt_admission import (
@@ -182,13 +183,10 @@ from rob_box_voice.core.turn import (
 )
 from rob_box_dialog.address import heard_from, log_label, person_ref_from
 from rob_box_dialog.backlog import Backlog, phrase_count
-from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings
+from rob_box_dialog import phrases
+from rob_box_dialog.knowledge import IDENTITY_MERGE_KINDS
+from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings, merge_plan
 from rob_box_dialog.doa import DoaTrack
-from rob_box_voice.core.identity_ack import (
-    IdentityAckQuestion,
-    hold_question,
-    identity_ack_plan,
-)
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
     # behaviour change); re-exported so ``from rob_box_voice.dialogue_node
@@ -218,7 +216,6 @@ from rob_box_voice.core.turn_speech import (
     TurnSpeechHold, decide_turn_speech, final_text_for_speech,
     final_text_skipped_log, wants_lyrics,
 )
-from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
 from rob_box_voice.core.turn_identity import user_profile_lines
 from rob_box_voice.core.self_intro import same_person_name
 from rob_box_voice.core.set_length_words import heard_set_length
@@ -248,7 +245,15 @@ from rob_box_voice.speaker_profiles import (
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
-from rob_box_voice.core.identity_question import SESSION_TOPIC, introduced_name
+from rob_box_voice.core.identity_question import (
+    SESSION_TOPIC,
+    deliver_turn_result,
+    introduced_name,
+    merge_reply,
+    open_merge_question,
+    settle_identity,
+    start_after_turn_question,
+)
 from rob_box_voice.core.speaker_turn import (
     ask_planned,
     note_backlog_voice,
@@ -580,13 +585,8 @@ class DialogueNode(DialogueStageMixin, Node):
         # helper, чтобы __init__ оставался в CC-budget ADR-0021.
         self._configure_face_voice_hint()
         # Гипотеза имени по собеседнику (#2809) — speaker_turn.tentative_states (ADR-0150 §7.5, #3695).
-        # Issue #2828 -- переспрос по ack регистрации (voice_conflict /
-        # name_twin): придержать до выдачи ответа хода, затем прочитать
-        # ответ человека. См. rob_box_voice.core.identity_ack.
-        self._identity_ack = IdentityAckQuestion()
-        # Issue #2913 -- speak_text хода не обгоняет исход register_speaker
-        # и заменяется придержанным вопросом так же, как итоговый ответ.
-        self._speech_gate = self._turn_speech_gate()
+        # Issue #2828/#2908 -- вопрос по ack регистрации, пришедший посреди хода, ждёт конца хода (#3765).
+        self._after_turn_question: Optional[dict] = None
         self._identity_question_session_gap_sec: float = float(
             self.get_parameter("identity_question_session_gap_sec").value
         )
@@ -721,6 +721,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # ADR-0150 PR-6 (#3696) — Tier-1 грамматика: спорный стоп (В19) решает Chooser; «звучит ли речь» (канал
         # «громче») — SpeakingWatch, его кормит та же подписка /voice/speech/event, что стадии хода (_on_speech_event).
         self._stop_chooser = stop_chooser_from_env(log=self.get_logger)
+        self._identity_dedup = identity_dedup_from_env(log=self.get_logger)
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
@@ -1704,7 +1705,6 @@ class DialogueNode(DialogueStageMixin, Node):
         return SchedulerToolExecutor(
             provider_adapter,
             on_event=self._on_task_event,
-            speech_gate=self._turn_speech_gate(),
             on_tool=self._on_tool_stage,
         )
 
@@ -1949,19 +1949,16 @@ class DialogueNode(DialogueStageMixin, Node):
         довод, что у отказа ``register_error`` выше), и к следующей
         реплике повод переспросить уже протухнет.
 
-        Issue #2828: но ack приходит, пока ход ещё идёт — LLM после
-        ``register_speaker`` дописывает приветствие. Сказанный сразу
-        вопрос тут же перебивался «Привет, Борис!»: робот спрашивал и сам
-        отвечал. Поэтому посреди хода вопрос ПРИДЕРЖИВАЕТСЯ и звучит
-        вместо ответа хода (:meth:`_deliver_turn_result`) либо, если
-        ответ уже ушёл, сразу после него — последней репликой. Ответ
-        человека читает :meth:`_resolve_identity_ack_answer`.
+        Issue #2828: ack приходит, пока ход ещё идёт — LLM после
+        ``register_speaker`` дописывает приветствие. Вопрос звучит ПОСЛЕ
+        ответа хода, последней репликой (#3765, как вопрос об имени по
+        В17), а не вместо него. Ответ человека — кадр ``Identity``
+        (``core.identity_question.merge_reply``).
         """
         question = identity_question(ack)
         if not question:
             return
-        plan = identity_ack_plan(ack, question)
-        held = self._queue_identity_question(plan)
+        held = self._queue_identity_question(merge_plan(ack, question))
         self.get_logger().info(
             f"👥 [issue #2747] переспрашиваю про личность: "
             f"twin={bool(ack.get('name_twin'))} "
@@ -1970,83 +1967,29 @@ class DialogueNode(DialogueStageMixin, Node):
         )
 
     def _queue_identity_question(self, plan: dict) -> bool:
-        """Посреди хода -- придержать вопрос до выдачи ответа хода (он
-        ЗАМЕНИТ ответ, :meth:`_deliver_turn_result`), вне хода -- сказать
-        сразу. Общая точка для #2828 (ack регистрации) и #2888
-        (tentative-личность). Возвращает ``True``, если придержан."""
+        """Посреди хода -- отложить вопрос до конца хода (прозвучит после его
+        ответа, ``_run_turn`` finally), вне хода -- сказать сразу. Общая
+        точка для #2828 (ack регистрации) и #2908 (отказ регистрации).
+        Возвращает ``True``, если отложен."""
         with self._task_lock:
             held = self._run_task is not None
             if held:
-                # Issue #2913 -- заменяющий вопрос глушит и реплики
-                # speak_text этого хода (см. hold_question).
-                hold_question(
-                    self._identity_ack_state(),
-                    self._turn_speech_gate(),
-                    plan,
-                )
+                self._after_turn_question = plan
         if not held:
-            # Хода нет — его ответ (если был) уже прозвучал.
-            self._speak_identity_question(plan, after_answer=True)
+            self._speak_identity_question(plan)
         return held
 
-    # Issue #2765 — мужской род: у робота мужской голос, а эти реплики
-    # захардкожены и промпт их не правит.
-    _REGISTER_RETRY_TEXT = (
-        "Не расслышал — скажи, пожалуйста, ещё пару слов, "
-        "чтобы я запомнил твой голос."
-    )
-    # Issue #2908 — ответ хода (например, приветствие по имени) уже
-    # прозвучал: «не расслышал» ему противоречило бы. Имя услышано, не
-    # сохранён только голос — так и говорим.
-    _REGISTER_RETRY_AFTER_ANSWER_TEXT = (
-        "Только голос твой я запомнить не успел — скажи, пожалуйста, "
-        "ещё пару слов."
-    )
+    def _speak_identity_question(self, plan: Optional[dict]) -> str:
+        """Задать вопрос после ответа хода. ``None`` — спрашивать нечего.
 
-    def _register_retry_plan(self, ack: dict) -> dict:
-        """Issue #2908 — просьба повторить после отказа регистрации в форме
-        плана переспроса (#2828): ``question`` заменяет ответ хода,
-        ``after_answer`` — если ответ хода уже выдан."""
-        return {
-            "kind": "register_retry",
-            "question": self._REGISTER_RETRY_TEXT,
-            "after_answer": self._REGISTER_RETRY_AFTER_ANSWER_TEXT,
-            "name": ack.get("name"),
-            "error": ack.get("error"),
-        }
-
-    def _turn_speech_gate(self) -> TurnSpeechGate:
-        """Гейт речи speak_text хода (issue #2913); лениво -- для нод из
-        тестов, собранных через ``object.__new__`` без ``__init__``."""
-        gate = getattr(self, "_speech_gate", None)
-        if gate is None:
-            gate = self._speech_gate = TurnSpeechGate(
-                log=lambda line: self.get_logger().info(line)
-            )
-        return gate
-
-    def _identity_ack_state(self) -> IdentityAckQuestion:
-        """Состояние переспроса (issue #2828); лениво — для нод из тестов,
-        собранных через ``object.__new__`` без ``__init__``."""
-        state = getattr(self, "_identity_ack", None)
-        if state is None:
-            state = self._identity_ack = IdentityAckQuestion()
-        return state
-
-    def _speak_identity_question(
-        self, plan: Optional[dict], after_answer: bool = False
-    ) -> str:
-        """Задать переспрос и ждать ответ. ``None`` — спрашивать нечего.
-
-        ``after_answer`` — ответ хода уже прозвучал: план может нести для
-        этого случая свою формулировку (``after_answer``, issue #2908).
-        Возвращает ``speech_id`` вопроса (``""`` — не озвучен, #3771).
+        Вопрос склейки (#2828) открывает кадр ``Identity`` (ответ — без
+        вейка в окне ``REPLY_WINDOW_S``, #3765); просьба повторить (#2908)
+        кадра не открывает. Возвращает ``speech_id`` (``""`` — не озвучен).
         """
         if plan is None:
             return ""
-        text = (after_answer and plan.get("after_answer")) or plan["question"]
         try:
-            speech_id = self._speak_direct(text)
+            speech_id = self._speak_direct(plan["question"])
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"не смог озвучить переспрос ({plan.get('kind')}): {exc!r}"
@@ -2055,127 +1998,9 @@ class DialogueNode(DialogueStageMixin, Node):
         # Issue #2914 -- ретраи гардов этого хода говорить поверх вопроса
         # не должны (см. _apply_post_turn_retry_guards).
         self._identity_question_asked_in_turn = True
-        # Issue #2888 -- ответ на tentative-вопрос читает свой путь #2809
-        # (_resolve_pending_tentative_answer), склеивать там нечего.
-        # Issue #2908 -- просьба повторить после отказа регистрации --
-        # тоже не вопрос о склейке.
-        if plan.get("kind") not in ("tentative", "register_retry"):
-            self._identity_ack_state().arm(plan)
+        if speech_id and plan.get("kind") in IDENTITY_MERGE_KINDS:
+            open_merge_question(self, plan, speech_id)
         return speech_id
-
-    def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
-        """Выдать ответ хода — или заменить его переспросом (issue #2828).
-
-        Если посреди хода пришёл ack с ``voice_conflict``/``name_twin``,
-        ответ LLM того же хода («Привет, Борис! Запомнил») писался без
-        знания о конфликте и прямо противоречит вопросу. Звучит ровно
-        одно из двух — вопрос, и робот ждёт ответа человека.
-        """
-        with self._task_lock:
-            # Вопрос про личность «после ответа» ответ не съедает
-            # («какой сегодня праздник» -- «это ты?»): план остаётся
-            # придержанным и прозвучит последней репликой хода.
-            plan = self._identity_ack_state().take_held_to_replace(
-                getattr(result, "spoken_text", None)
-            )
-        if plan is None:
-            self._handle_result(result, **kwargs)
-            return
-        replaced =str(getattr(result, "spoken_text", "") or "")[:80]
-        if plan.get("kind") == "register_retry":
-            # Issue #2908 -- своя строка: харнесс (e2e_tool_match) по
-            # строке #2828 решает «робот задал вопрос о личности, ретрай
-            # шага запрещён», а после отказа регистрации ретрай полезен.
-            self.get_logger().info(
-                "🔁 [issue #2908] ответ хода заменён просьбой повторить "
-                f"(регистрация '{plan.get('name')}' отклонена: "
-                f"{plan.get('error')}): {replaced!r}"
-            )
-        else:
-            self.get_logger().info(
-                "👥 [issue #2828] ответ хода заменён переспросом про личность: "
-                f"{replaced!r}"
-            )
-        self._speak_identity_question(plan)
-
-    def _resolve_identity_ack_answer(self, user_input: str) -> None:
-        """Прочитать реплику как ответ на переспрос (issue #2828).
-
-        «Это я» — склеить новый профиль в известный через
-        ``/voice/speaker/merge``; «мы разные» — оставить как есть
-        (профили и так раздельные, инвариант ADR-0127); непонятно — тоже
-        ничего не склеивать. Во всех трёх случаях LLM получает разовую
-        подсказку с вопросом и исходом (``_build_dynamic_system_context``).
-
-        Issue #2829 (ADR-0131) — вызывающий код (``_prepare_user_input_
-        context``) теперь резолвит ``_current_speaker`` для ЭТОЙ реплики
-        (по ``utterance_id``) ДО этого вызова, поэтому здесь уже видно,
-        КТО именно сейчас ответил. «Да» засчитывается ТОЛЬКО если диктор
-        этой реплики — один из двух профилей, о которых был вопрос
-        (``new_id``/``known_id``); неизвестный или посторонний третий
-        голос не может подтвердить чужую склейку (см.
-        ``_reply_speaker_matches_identity_plan``).
-        """
-        outcome = self._identity_ack_state().consume(
-            user_input, classify_identity_confirmation(user_input)
-        )
-        if outcome is None:
-            return
-        plan, same = outcome
-        gate_ok = self._reply_speaker_matches_identity_plan(plan)
-        if same is True and not gate_ok:
-            with self._speaker_lock:
-                cur = self._current_speaker.get("speaker_id") or ""
-            cur_id = str(cur)
-            self.get_logger().warning(
-                "👥 [issue #2829] ответ 'да' на переспрос #2828 "
-                "ПРОИГНОРИРОВАН — диктор реплики "
-                f"({cur_id[:8] or 'unknown'}) не совпадает ни с "
-                f"new={plan['new_id'][:8]}, ни с "
-                f"known={plan['known_id'][:8]}"
-            )
-            same = None
-        self.get_logger().info(
-            f"👥 [issue #2828] ответ на переспрос: same={same} "
-            f"kind={plan['kind']} new={plan['new_id'][:8]} "
-            f"known={plan['known_id'][:8]}"
-        )
-        if same is True:
-            self._merge_identity_profiles(plan)
-
-    def _reply_speaker_matches_identity_plan(self, plan: dict) -> bool:
-        """Issue #2829 — диктор ТЕКУЩЕЙ (уже резолвнутой) реплики совпадает
-        с одним из двух профилей переспроса #2828. Неизвестный диктор
-        никогда не совпадает — честный отказ, а не оптимистичное «да».
-        """
-        with self._speaker_lock:
-            sp = dict(self._current_speaker)
-        if not sp.get("is_known"):
-            return False
-        current_id = str(sp.get("speaker_id") or "")
-        if not current_id:
-            return False
-        return current_id in (plan.get("new_id"), plan.get("known_id"))
-
-    def _merge_identity_profiles(self, plan: dict) -> None:
-        """«Это я» — склеить ``new_id`` в ``known_id`` и поправить снимок."""
-        pub = getattr(self, "_speaker_merge_pub", None)
-        if pub is None or not (plan["new_id"] and plan["known_id"]):
-            self.get_logger().warning(
-                "👥 [issue #2828] склеить нечем: нет merge-паблишера или id"
-            )
-            return
-        msg = String()
-        msg.data = json.dumps(
-            {"src_speaker_id": plan["new_id"],
-             "dst_speaker_id": plan["known_id"]},
-            ensure_ascii=False,
-        )
-        pub.publish(msg)
-        with self._speaker_lock:
-            if self._current_speaker.get("speaker_id") == plan["new_id"]:
-                self._current_speaker["speaker_id"] = plan["known_id"]
-                self._current_speaker["name"] = plan["known_name"]
 
     def _on_speaker_result(self, msg: SpeakerResult) -> None:
         """Issue #1077 — результат голосовой биометрии (speaker_id_node).
@@ -2189,13 +2014,9 @@ class DialogueNode(DialogueStageMixin, Node):
         """
         data = speaker_result_to_payload(msg)
         if data.get("event") in ("registered", "register_error"):
-            try:
-                self._on_register_outcome(data)
-            finally:
-                # Issue #2913 -- исход регистрации известен (вопрос/отказ,
-                # если нужен, уже придержан): speak_text хода, ждущая его
-                # в TurnSpeechGate, решается по нему.
-                self._turn_speech_gate().registration_settled()
+            self._on_register_outcome(data)
+            # #3765: исход известен (вопрос, если нужен, уже отложен) — его ждёт settle_identity до вызова LLM.
+            self._turn_register_outcome = data
             return
         # Issue #2863 — любой другой служебный ack (ack склейки,
         # переименования) — не результат биометрии и не должен затирать
@@ -2248,15 +2069,17 @@ class DialogueNode(DialogueStageMixin, Node):
                     f"⚠️ [issue #2829] Регистрация '{name}' отклонена: "
                     f"{error} (utterance_id={data.get('utterance_id')})"
                 )
-            # Issue #2908 — отказ приходит, пока ход ещё идёт: тул
-            # register_speaker уже вернул LLM speaker_id='pending', и она
-            # дописывает «Рад знакомству, Борис!». Сказанное сразу «Не
-            # расслышал» и приветствие звучали подряд. Тот же механизм, что
-            # у переспроса #2828/#2888: посреди хода просьба придерживается
-            # и ЗАМЕНЯЕТ ответ хода (_deliver_turn_result); если ответ уже
-            # выдан — звучит после него в согласованной форме (без «не
-            # расслышал» поверх приветствия по имени).
-            self._queue_identity_question(self._register_retry_plan(data))
+            # Issue #2908 — отказ приходит, пока ход ещё идёт: LLM дописывает
+            # «Рад знакомству, Борис!». Просьба звучит ПОСЛЕ ответа хода
+            # (#3765) в согласованной форме — имя услышано, не сохранён голос.
+            self.get_logger().info(
+                f"🔁 [issue #2908] просьба повторить после ответа хода "
+                f"(регистрация '{name}' отклонена: {error})"
+            )
+            self._queue_identity_question({
+                "kind": "register_retry",
+                "question": phrases.text("identity.retry_voice"),
+            })
         # register_error с неозвучиваемым кодом — молча.
 
     def _on_speaker_match(self, data: dict) -> None:
@@ -2852,7 +2675,7 @@ class DialogueNode(DialogueStageMixin, Node):
         ОДНОЙ конкретной фразы и запомнить, что она уже резолвнута.
 
         Идемпотентность (``_last_resolved_utterance_id``) существует
-        ради #2828 (``_resolve_identity_ack_answer``): та функция должна
+        ради #2828 (``identity_question.merge_reply``): та функция должна
         видеть резолвнутого текущего диктора ДО того, как
         ``_apply_speaker_identity`` вызывается штатно из
         ``_prepare_user_input_context`` -- без кеша второй вызов ждал бы
@@ -3299,7 +3122,8 @@ class DialogueNode(DialogueStageMixin, Node):
         получает ``intro_registered`` и второй запрос не шлёт
         (``register_speaker_gate``). Не шлём, если реплика уверенно узнана
         под этим же именем (или только что подтверждена, #2809): нечего
-        регистрировать. Речь хода ждёт ack так же, как после тула (#2913).
+        регистрировать. Исход (ack) ход ждёт до вызова LLM (#3765,
+        ``identity_question.settle_identity``).
         """
         intro = getattr(self, "_turn_self_intro", None)
         pub = getattr(self, "_speaker_register_pub", None)
@@ -3316,7 +3140,6 @@ class DialogueNode(DialogueStageMixin, Node):
         msg.data = json.dumps(
             {"name": intro, "utterance_id": utterance_id}, ensure_ascii=False
         )
-        self._turn_speech_gate().registration_sent()
         pub.publish(msg)
         self._turn_intro_registered = True
         self.get_logger().info(
@@ -3478,9 +3301,6 @@ class DialogueNode(DialogueStageMixin, Node):
             sp = dict(self._current_speaker)
         sp_name = sanitize_speaker_name(sp.get("name") or "")  # live 12.08: мусорные имена ("Null") не пускаем
         profile = list(user_profile_lines(sp_name, sp, tg_chat_id))
-        if tg_chat_id is None:
-            # Issue #2809/#2828 -- разовые подсказки про ГОЛОС в комнате: TG-ход их не тратит.
-            profile.extend(self._identity_ack_state().pop_hint_lines())
         # ADR-0150 §7.3 (В12, #3767): подхваченные голым «робот» фразы или ≤ 1 свежая фраза того же собеседника —
         # структурой, с меткой «кто сказал»; остальной бэклог (ТВ, чужие разговоры) — только счётчик фоновой речи.
         recent, self._pending_unaddressed = getattr(self, "_pending_unaddressed", None), None
@@ -3624,8 +3444,6 @@ class DialogueNode(DialogueStageMixin, Node):
         epoch_token = TURN_EPOCH.set(session_epoch)
         with self._task_lock:
             self._run_task = asyncio.current_task()
-        # Issue #2913 -- решения о речи speak_text -- по этому ходу.
-        self._turn_speech_gate().begin_turn()
         # Issue #2829 (ADR-0131 PR-2) — the CURRENT turn's utterance_id,
         # so speaker_id_node registers the phrase the person actually
         # introduced themselves in, not "whoever speaks next". Issue
@@ -3644,6 +3462,9 @@ class DialogueNode(DialogueStageMixin, Node):
         # _prepare_user_input_context (_note_self_intro).
         self._turn_self_intro = None
         self._turn_intro_registered = False
+        self._turn_register_outcome = None
+        self._turn_hidden_tools = ()
+        self._turn_llm_said = []
         self._turn_set_tracks = None
         self._run_cancelled = False
         # Issue #992 Bug D — reset the babble-retry budget only at the
@@ -3737,8 +3558,10 @@ class DialogueNode(DialogueStageMixin, Node):
             # ADR-0150 PR-3b: рефлекс thinking (лицо, кольцо) - код, до вызова LLM.
             self._turn_stages().thinking(_llm_provider_name)
             # Issue #2631 (ADR-0021 R1) — OTel-span + LLM-метрика (CC=10
-            # ветка) вынесены в helper.
-            result = await self._invoke_llm_with_telemetry(
+            # ветка) вынесены в helper. #3765: ответ на вопрос склейки после
+            # регистрации решает код, фраза — из phrases, LLM не зовётся.
+            coded_reply = merge_reply(self)
+            result = DialogResult(spoken_text=coded_reply) if coded_reply else await self._invoke_llm_with_telemetry(
                 user_input=user_input,
                 is_synthetic=is_synthetic,
                 speaker_tag=speaker_tag,
@@ -3761,16 +3584,10 @@ class DialogueNode(DialogueStageMixin, Node):
                 f"truncated_tool_args={getattr(result, 'truncated_tool_args', None)!r} "
                 f"error={result.error!r}"
             )
-            # Issue #2828 -- переспрос про личность, пришедший посреди
-            # хода, звучит вместо ответа хода (см. _deliver_turn_result).
             # Issue #2874 -- свободный текст хода придерживается до решения
             # post-turn гуардов в ``finally`` (_release_turn_speech).
             speech_hold = self._turn_speech_hold = TurnSpeechHold()
-            self._deliver_turn_result(
-                result,
-                user_input=user_input,
-                raw_user_command=raw_user_command,
-            )
+            deliver_turn_result(self, result, coded_reply, user_input=user_input, raw_user_command=raw_user_command)
             guard_retry_pending = bool(self._retry_dispatched_in_turn)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
@@ -3794,16 +3611,15 @@ class DialogueNode(DialogueStageMixin, Node):
             # not wipe that reference here or the test driver (and any
             # hook that watches ``self._run_task``) would lose the retry.
             # Only clear the slot when no replacement was scheduled.
-            # Issue #2828 -- ack с переспросом, пришедший уже ПОСЛЕ выдачи
-            # ответа хода, забираем под тем же локом, что освобождает слот:
+            # Issue #2828/#3765 -- вопрос по ack регистрации, отложенный до
+            # конца хода, забираем под тем же локом, что освобождает слот:
             # иначе он проскочил бы между «ход идёт» и «хода нет» и потерялся.
             leftover_identity_question = None
             with self._task_lock:
                 if self._run_task is asyncio.current_task():
                     self._run_task = None
-                    leftover_identity_question = (
-                        self._identity_ack_state().take_held()
-                    )
+                    leftover_identity_question = getattr(self, "_after_turn_question", None)
+                    self._after_turn_question = None
             # Issue #935 v3: if LLM called stop_music(), defer cleanup until
             # TTS finishes.  Otherwise keep music playing until next dialogue.
             # Issue #992: a second stop_music() call from a follow-up LLM
@@ -3843,9 +3659,9 @@ class DialogueNode(DialogueStageMixin, Node):
                     retries_allowed=self._session_epoch_gate().retries_allowed(
                         turn_epoch=session_epoch, cancelled=turn_cancelled
                     ),
-                    # Issue #2914 -- вопрос о личности прозвучал вместо
-                    # ответа хода или прозвучит после него (leftover; В17 —
-                    # plan_identity_question ставит _identity_question_asked_in_turn).
+                    # Issue #2914 -- вопрос о личности прозвучит после ответа
+                    # хода (leftover; В17 — plan_identity_question ставит
+                    # _identity_question_asked_in_turn).
                     identity_question_asked=(
                         leftover_identity_question is not None
                         or self._identity_question_asked_in_turn
@@ -3858,9 +3674,7 @@ class DialogueNode(DialogueStageMixin, Node):
             self._release_turn_speech(
                 speech_hold, retry_dispatched=tool_retry_dispatched,
             )
-            self._speak_identity_question(
-                leftover_identity_question, after_answer=True
-            )
+            start_after_turn_question(self, leftover_identity_question, result)
             ask_planned(self, identity_ask)
             # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM; ретрай
             # гуарда продолжает тот же ход.
@@ -4937,14 +4751,9 @@ class DialogueNode(DialogueStageMixin, Node):
             tg_chat_id = self._active_tg_chat_id
         elif self._speaker_id_enabled:
             # Issue #2829 (ADR-0131) -- резолвим _current_speaker ПО ЭТОЙ
-            # фразе ДО проверки ответа на переспрос #2828: та сверяет
-            # диктора реплики с профилями из вопроса
-            # (_reply_speaker_matches_identity_plan) и должна видеть
-            # текущего, а не предыдущего собеседника.
+            # фразе: ответ на вопрос склейки #2828 (merge_reply, после этой
+            # прелюдии) сверяет диктора реплики с профилями из вопроса.
             await self._resolve_speaker_for_utterance(utterance_id)
-            # Issue #2828 -- ответ на переспрос по ack регистрации читаем
-            # по сырой реплике человека.
-            self._resolve_identity_ack_answer(user_input)
             # Issue #2925 -- представление в реплике читаем ДО решения о
             # tentative-вопросе (#2888), регистрируем ПОСЛЕ него.
             self._note_self_intro(user_input, utterance_id)
@@ -4952,6 +4761,8 @@ class DialogueNode(DialogueStageMixin, Node):
                 user_input, speaker_context, utterance_id
             )
             self._register_self_intro(utterance_id)
+            # #3765: личность под вопросом (голос похож на другого) — выясняет робот, ход LLM её не решает.
+            await settle_identity(self)
         return user_input, self._build_dynamic_system_context(tg_chat_id)
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from rob_box_dialog.reply_grammar import NAME, NO, REFUSAL, YES, Reply, classify_reply
+from rob_box_dialog.reply_grammar import NAME, NO, REFUSAL, YES, Reply, classify_reply, classify_same
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -33,3 +33,32 @@ def test_not_an_answer(text):
 def test_bare_name_is_not_an_answer_to_yes_no_question():
     assert classify_reply("Гриша", asks_name=False) is None
     assert classify_reply("да", asks_name=False) == Reply(YES)
+
+
+# ── #2828/#3765: ответ на вопрос склейки после регистрации ───────────────────────────────────────────────────────────
+@pytest.mark.parametrize("text, expected", [
+    ("мы разные люди", False),
+    ("нет, я другой человек", False),
+    ("ты обознался", False),
+    ("это не я", False),
+    ("да, это я под другим именем", True),
+    ("я тот самый Дэнчик", True),
+    ("Робот, один человек", True),
+    ("не тот самый", None),          # оба сигнала — не понять
+    ("да", None),                    # голое да/нет — не про «один или двое»
+    ("это японец", None),            # «это я» — по границам слов
+    ("это я вчера включал тебе эту музыку", None),  # длинная фраза — не ответ
+    ("пицца будет в пятницу", None),
+])
+def test_classify_same(text, expected):
+    assert classify_same(text) is expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("это я", True), ("да это я", True), ("да, я", True), ("Робот, да, это я", True), ("я", True),
+    ("да я не знаю", None),  # «да я» внутри другой фразы — не ответ
+])
+def test_classify_same_it_is_me_corpus(text, expected):
+    """Живой робот 21.10 (координатор): на «Вы разные люди или это ты?» ответы «это я / да это я / да, я» — один
+    человек."""
+    assert classify_same(text) is expected

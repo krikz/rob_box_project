@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping, Optional
 
-from rob_box_dialog.knowledge import IDENTITY_FACE_RECENT_S
+from rob_box_dialog.knowledge import IDENTITY_FACE_RECENT_S, NAME_STATE_INTRODUCED
 from rob_box_dialog.speaker_adapter import (
     ASK,
     STRANGER,
@@ -116,6 +116,8 @@ def speaker_section(node: Any) -> dict:
     ``_current_speaker`` — оно здесь и становится подтверждённым."""
     with node._speaker_lock:
         sp = dict(getattr(node, "_current_speaker", None) or {})
+    if sp.get("introduced_name"):  # #3765: личность выясняет робот — только имя из представления
+        return {"name": sp["introduced_name"], "name_state": NAME_STATE_INTRODUCED}
     sp["name"] = sanitize_speaker_name(sp.get("name")) or None  # live 12.08: «Null»/«None» в БД — не имя
     now = time.time()
     faces = getattr(node, "_faces", None)
@@ -150,6 +152,6 @@ def ask_planned(node: Any, cand: Optional[AskCandidate]) -> None:
     """Задать вопрос, решённый :func:`plan_identity_question`, последней репликой хода."""
     if cand is not None:
         speech_id = node._speak_identity_question(
-            {"kind": "tentative", "question": cand.question(), "name": cand.name}, after_answer=True)
+            {"kind": "tentative", "question": cand.question(), "name": cand.name})
         if speech_id:  # не ушёл в речь — ждать нечего, кадра нет
             open_question(node, cand, speech_id)

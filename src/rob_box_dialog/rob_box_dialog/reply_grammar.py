@@ -2,7 +2,8 @@
 
 :func:`classify_reply` — единственное место решения «фраза без вейка в открытом окне ответа — ответ или чужой
 разговор». Виды: ``name`` («меня зовут X», «я X», «зови меня X», голое имя из 1–2 слов), ``yes`` / ``no`` («да», «это
-я», «не я»), ``refusal`` («не скажу», «секрет», «потом»). Похоже на ответ — фраза берётся как ход; нет — бэклог.
+я», «не я»), ``refusal`` («не скажу», «секрет», «потом»). :func:`classify_same` — ответ на вопрос склейки после
+регистрации («это я» / «мы разные», #2828). Похоже на ответ — фраза берётся как ход; нет — бэклог.
 Слова — из :mod:`.knowledge`; DOA и голос здесь не участвуют (DOA в комнате прыгает, решение Шифу).
 """
 
@@ -89,4 +90,17 @@ def classify_reply(text: str, *, asks_name: bool = True) -> Optional[Reply]:
     return Reply(NAME, _display(named)) if named else None
 
 
-__all__ = ["NAME", "NO", "REFUSAL", "Reply", "YES", "classify_reply"]
+def classify_same(text: str, *, max_words: Optional[int] = kn.REPLY_SAME_MAX_WORDS) -> Optional[bool]:
+    """Ответ на «вы разные люди или это ты?» (#2828): ``True`` — один человек, ``False`` — разные, ``None`` — не понять
+    (оба сигнала сразу — «не тот самый» — тоже ``None``: склеить потом можно, разлепить нечем). Фраза длиннее
+    ``max_words`` — не ответ (без вейка чужой разговор с «это я» внутри); ``None`` — без предела (фраза адресована)."""
+    words = _words(strip_wake_word(text or ""))
+    if not words or (max_words is not None and len(words) > max_words):
+        return None
+    padded = f" {' '.join(words)} "
+    different = bool(set(words) & kn.REPLY_DIFFERENT_WORDS) or any(f" {p} " in padded for p in kn.REPLY_DIFFERENT_PHRASES)
+    same = " ".join(words) in kn.REPLY_SAME_WHOLE or any(f" {p} " in padded for p in kn.REPLY_SAME_PHRASES)
+    return same if different != same else None
+
+
+__all__ = ["NAME", "NO", "REFUSAL", "Reply", "YES", "classify_reply", "classify_same"]

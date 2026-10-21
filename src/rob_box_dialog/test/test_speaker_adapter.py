@@ -3,6 +3,7 @@
 import pytest
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_dialog.backlog import Heard
 from rob_box_dialog.speaker_adapter import (
     ACCUMULATING,
@@ -16,7 +17,11 @@ from rob_box_dialog.speaker_adapter import (
     FaceSightings,
     VoiceTag,
     ask_after_turn,
+    merge_answer,
+    merge_phrase,
+    merge_plan,
     phrase_speaker,
+    question_reply,
     same_interlocutor,
     speaker_block,
     speaker_ref,
@@ -324,3 +329,51 @@ def test_tentative_state_survives_answer_window_while_waiting_then_session_gap()
     assert fresh is not state and fresh == {"asked": False, "confirmed": None, "name": None,
                                             "growth_registered": False, "last_seen_at": 410.0}
     assert states.get("p1") is fresh and states.get("p2") is None
+
+
+# -- вопрос склейки после регистрации (#2828, #2829; #3765) ----------------------------------------------------
+
+
+_CONFLICT = {"event": "registered", "name": "Борис", "speaker_id": "new",
+             "voice_conflict": {"name": "Саша", "speaker_id": "old", "score": 0.9}}
+_TWIN = {"event": "registered", "name": "Дэнчик", "speaker_id": "new",
+         "name_twin": {"name": "Дэнчик", "speaker_id": "old"}}
+
+
+def test_merge_plan_from_registration_ack():
+    assert merge_plan(_CONFLICT, "?") == {"kind": "conflict", "question": "?", "new_id": "new", "new_name": "Борис",
+                                          "known_id": "old", "known_name": "Саша"}
+    assert merge_plan(_TWIN, "?")["kind"] == "twin"
+
+
+@pytest.mark.parametrize("kind, text, same", [
+    ("conflict", "это я", True),
+    ("conflict", "мы разные", False),
+    ("conflict", "да", None),       # двойной вопрос — голое «да» не ответ про склейку
+    ("conflict", "нет", None),
+    ("twin", "да", True),            # «Ты тот самый Дэнчик?» — «да» значит тот самый
+    ("twin", "нет", False),
+    ("twin", "не тот самый", None),
+])
+def test_merge_answer_by_question_kind(kind, text, same):
+    plan = {"kind": kind, "new_id": "new", "known_id": "old"}
+    assert merge_answer(plan, text, {"is_known": True, "speaker_id": "new"})[0] is same
+
+
+@pytest.mark.parametrize("same, key", [(True, "identity.merged"), (False, "identity.kept_apart"),
+                                       (None, "identity.merge_unclear")])
+def test_merge_phrase_is_built_by_code_from_phrases(same, key):
+    plan = merge_plan(_CONFLICT, "?")
+    assert merge_phrase(plan, same) == phrases.text(key, name="Саша")
+    assert "Саша" in merge_phrase(plan, True)
+
+
+@pytest.mark.parametrize("kind, text, reply", [
+    ("conflict", "мы разные", "no"),
+    ("twin", "это я", "yes"),
+    ("unknown", "Гриша", "name"),
+    ("conflict", "Гриша", None),
+])
+def test_question_reply_grammar_depends_on_question_kind(kind, text, reply):
+    got = question_reply(kind, text)
+    assert (got.kind if got else None) == reply
