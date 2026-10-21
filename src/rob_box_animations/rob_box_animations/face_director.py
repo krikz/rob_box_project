@@ -7,7 +7,9 @@ clocks are kept in sync by chrony).
 
 Priority, highest first: side test frame > ``sleep`` (no voice owner for
 ``voice_timeout_s``) > ``wakeup`` (start / voice is back) > talking (TTS) >
-requested scene (``play_animation`` / ``ExpressionRequest``) > music > idle.
+requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
+``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > music > idle. Rear lights outside the scenes
+that draw their own: manual ``set_rear`` (for ``duration_s``) > ``rear_theme`` parameter > holiday calendar.
 """
 from __future__ import annotations
 
@@ -17,10 +19,12 @@ from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 
+from .face import rear as R
 from .face.face import Frame
 from .face.scene import FaceContext, Scene
 from .face.sides import sides_frame
 from .face.states import SCENES, resolve
+from .outside import BatteryWatch, DriveTracker, calendar_rear, calendar_scene
 
 #: Scene by the tempo of the playing track (§5.5.5); thresholds by ear, Шифу.
 MUSIC_BY_BPM = ((100.0, 'music_vibe'), (125.0, 'music_groove'), (math.inf, 'music_shades'))
@@ -166,12 +170,14 @@ class FaceDirector:
     def __init__(self, now: float, *, mouth_design: str = 'jaw', thinking_design: str = 'thinking_teeth',
                  idle_bored_every_s: float = 60.0, voice_timeout_s: float = 10.0, crossfade_s: float = 0.12,
                  speaking_hang_s: float = 0.6, rear_theme: str = 'default', test_pattern: bool = False,
-                 gaze: Optional[GazeTrack] = None) -> None:
+                 gaze: Optional[GazeTrack] = None, tz_offset_h: float = 3.0) -> None:
         self.mouth_design, self.thinking_design = mouth_design, thinking_design
         self.idle_bored_every_s, self.voice_timeout_s = idle_bored_every_s, voice_timeout_s
         self.crossfade_s, self.speaking_hang_s = crossfade_s, speaking_hang_s
         self.rear_theme, self.test_pattern = rear_theme, test_pattern
         self.mouth, self.music, self.gaze = MouthTrack(), MusicTrack(), gaze or GazeTrack()
+        self.drive, self.battery, self.tz_offset_h = DriveTracker(), BatteryWatch(), tz_offset_h
+        self._rear: Optional[Tuple[str, float]] = None
         self._tts_until = -math.inf
         self._voice_seen = now          # grace: the voice owner has voice_timeout_s to show up
         self._asleep = False
@@ -213,6 +219,26 @@ class FaceDirector:
     def on_music_state(self, raw: str, now: float) -> bool:
         return self.music.on_state(raw)
 
+    def on_cmd_vel(self, linear_x: float, angular_z: float, now: float) -> None:
+        self.drive.on_cmd(linear_x, angular_z, now)
+
+    def on_battery(self, percent: Optional[float], status: int, now: float) -> None:
+        self.battery.on_battery(percent, status, now)
+
+    def set_rear(self, theme: str, seconds: float, now: float) -> bool:
+        """Manual rear-light theme for ``seconds`` (FaceScene.rear, PR-3c); beats the calendar."""
+        if theme not in R.THEMES:
+            return False
+        self._rear = (theme, now + min(max(seconds, 0.0), REQUEST_MAX_S))
+        return True
+
+    def rear_theme_at(self, now: float) -> str:
+        if self._rear and now < self._rear[1]:
+            return self._rear[0]
+        if self.rear_theme != 'default':
+            return self.rear_theme
+        return calendar_rear(now, self.tz_offset_h) or 'default'
+
     def request(self, name: str, seconds: Optional[float], now: float) -> Optional[str]:
         """Show scene ``name`` (scene or v1 animation name) for ``seconds``; None if unknown."""
         scene = resolve(name, self.mouth_design, self.thinking_design)
@@ -234,7 +260,8 @@ class FaceDirector:
         return alive
 
     def choose(self, now: float) -> Tuple[str, FaceContext]:
-        base = FaceContext(rear_theme=self.rear_theme)
+        rear = self.rear_theme_at(now)
+        base = FaceContext(rear_theme=rear)
         if not self._voice_alive(now):
             return 'sleep', base
         if now < self._wake_until:
@@ -244,14 +271,17 @@ class FaceDirector:
         if self.speaking(now):
             level, vowel = self.mouth.level(now)
             return f'talk_{self.mouth_design}', FaceContext(
-                gaze_deg=gaze, mouth_level=level, vowel=vowel, mood=MOOD_OF.get(req, 'neutral'), rear_theme=self.rear_theme)
+                gaze_deg=gaze, mouth_level=level, vowel=vowel, mood=MOOD_OF.get(req, 'neutral'), rear_theme=rear)
         if req:
-            return req, FaceContext(gaze_deg=gaze, rear_theme=self.rear_theme)
+            return req, FaceContext(gaze_deg=gaze, rear_theme=rear)
+        outside = self.drive.scene(now) or calendar_scene(now, self.tz_offset_h) or self.battery.scene(now)
+        if outside:
+            return outside, base
         music = self.music.scene(now)
         if music:
             name, bpm, beats = music
-            return name, FaceContext(bpm=bpm, beat_phase=beats, rear_theme=self.rear_theme)
-        return self._idle(now), FaceContext(gaze_deg=gaze, rear_theme=self.rear_theme)
+            return name, FaceContext(bpm=bpm, beat_phase=beats, rear_theme=rear)
+        return self._idle(now), FaceContext(gaze_deg=gaze, rear_theme=rear)
 
     def _idle(self, now: float) -> str:
         if not self.key.startswith('idle_'):
