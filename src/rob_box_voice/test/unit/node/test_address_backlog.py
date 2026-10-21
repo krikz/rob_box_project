@@ -26,6 +26,16 @@ class _Doa:
         return self.deg
 
 
+class _Faces:
+    """Кто в кадре во время фразы: тест держит перед роботом одно лицо (DOA засчитывается только при ком-то в кадре)."""
+
+    def __init__(self):
+        self.ids = frozenset({"face-1"})
+
+    def during(self, start, end):
+        return self.ids
+
+
 @pytest.fixture
 def node():
     n = object.__new__(DialogueNode)
@@ -51,6 +61,7 @@ def node():
     n._accumulate_no_wake_enabled = True
     n._pending_unaddressed = None
     n._doa = _Doa()
+    n._faces = _Faces()
     n._loop = None
     n.get_parameter = MagicMock(return_value=MagicMock(value="minimax"))
     return n
@@ -94,6 +105,14 @@ class TestBareWakeV12:
         _say(node, "Робот", doa=100.0)
         assert _turn_texts(node) == ["покажи анимацию ускорения"]
         assert _logged(node, "source=backlog_pickup")
+
+    def test_nobody_in_frame_direction_alone_does_not_pick_up(self, node):
+        """Шифу 21.10: «в кадре никого → только голос» — DOA один подхват не даёт."""
+        node._faces.ids = frozenset()
+        _say(node, "покажи анимацию ускорения", doa=90.0)
+        _say(node, "Робот", doa=100.0)
+        node._dispatch_turn.assert_not_called()
+        assert _logged(node, "голое «робот»")
 
     def test_bare_wake_without_fresh_phrase_is_reflex_only_zero_llm(self, node):
         """Сценарий (а), вторая половина: «Робот» без свежей фразы — рефлекс, 0 ходов LLM."""

@@ -401,7 +401,7 @@ class TestAddressStep:
     def test_bare_wake_with_fresh_backlog_picks_it_up(self) -> None:
         backlog = Backlog()
         backlog.add(Heard(text="покажи анимацию", t=95.0, doa_deg=90.0))
-        heard = Heard(text="робот", t=100.0, doa_deg=95.0)
+        heard = Heard(text="робот", t=100.0, doa_deg=95.0, faces=frozenset({"f1"}))  # кто-то в кадре
         out = AddressStep().apply(_ctx(text="робот", text_lower="робот", heard=heard), _RecordingHost(backlog=backlog))
         assert out.kind is SttOutcomeKind.PASS
         assert out.new_context.text == "покажи анимацию" and out.new_context.bare is False

@@ -261,11 +261,12 @@ class TestCase2NoHypothesisQuestionOnOtherName:
                                  "utterance_id": "utt-3"}]
 
     def test_no_intro_still_asks_2888(self):
-        """#2888 не сломан: без представления вопрос звучит."""
+        """#2888 не сломан: без представления вопрос звучит — третьей фразой (В17 #3695), после ответа хода."""
         n = _node()
-        _turn(n, "робот ты меня узнал", _tentative_sasha(), "utt-4")
+        for i in range(3):
+            _turn(n, "робот ты меня узнал", _tentative_sasha(), f"utt-4{i}")
         assert n.tts[-1] == "Саша, это ты?"
-        assert len(n.tts) == 2, n.tts
+        assert n.tts.count("Саша, это ты?") == 1 and len(n.tts) == 4, n.tts
         assert n.registered == []
 
 

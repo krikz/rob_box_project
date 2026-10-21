@@ -60,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from identity_v17_legacy import finish_turn_after_identity  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
 from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 from ros_stubs import make_speaker_result  # noqa: E402
@@ -153,6 +154,7 @@ def dialogue_node():
         return None
 
     n._resolve_speaker_for_utterance = _no_resolve
+    finish_turn_after_identity(n)
     return n
 
 
@@ -238,7 +240,7 @@ def test_short_yes_is_silent_and_creates_no_anchor(speaker_node, dialogue_node):
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
     assert NOT_HEARD not in _spoken(dialogue_node)
-    dialogue_node._speak_direct.assert_not_called()
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert not any(a.get("event") == "register_error" for a in acks), acks
     assert len(speaker_node._db.list_speakers()) == 1
     assert speaker_node._db.gallery_size(sid) == 1, "короткую фразу не пишем"
@@ -253,7 +255,7 @@ def test_long_yes_grows_owner_gallery_by_owner_rules(speaker_node, dialogue_node
     payload = _confirm_yes(dialogue_node, sid, "Саша")
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
-    dialogue_node._speak_direct.assert_not_called()
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert acks == [], "служебный рост не публикует ack регистрации"
     assert len(speaker_node._db.list_speakers()) == 1
     assert speaker_node._db.gallery_size(sid) == 2
@@ -269,7 +271,7 @@ def test_long_yes_below_owner_floor_is_not_added(speaker_node, dialogue_node):
     payload = _confirm_yes(dialogue_node, sid, "Саша")
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
-    dialogue_node._speak_direct.assert_not_called()
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert acks == []
     assert speaker_node._db.gallery_size(sid) == 1
     assert len(speaker_node._db.list_speakers()) == 1

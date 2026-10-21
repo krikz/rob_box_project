@@ -112,7 +112,8 @@ class _DialogueSttHost:
         backlog.add(heard)
         self._node.get_logger().info(
             f"🗒️ [backlog] accumulated (no_wake_word) doa={heard.doa_deg!r} "
-            f"person={heard.person_ref or '-'} text={heard.text[:60]!r}"
+            f"person={heard.person_ref or '-'} faces={len(heard.faces)} voice_s={heard.voice_s:.1f} "
+            f"text={heard.text[:60]!r}"
         )
         return True
 
@@ -125,12 +126,12 @@ class _DialogueSttHost:
         doa = "-" if heard.doa_deg is None else f"{heard.doa_deg:.0f}"
         self._node.get_logger().info(
             f"📮 [address] Addressed source={decision.source} doa={doa} person={heard.person_ref or '-'} "
-            f"recent_unaddressed={int(bool(recent))}"
+            f"faces={len(heard.faces)} recent_unaddressed={int(bool(recent))}"
         )
         if decision.pickup:
             self._node.get_logger().info(
-                f"🗒️ [backlog] pickup source=backlog_pickup text={decision.text[:80]!r} "
-                "— голое «робот», текст хода взят из бэклога кодом"
+                f"🗒️ [backlog] pickup source=backlog_pickup channels={','.join(decision.channels)} "
+                f"text={decision.text[:80]!r} — голое «робот», текст хода взят из бэклога кодом"
             )
 
     def bare_wake(self) -> None:

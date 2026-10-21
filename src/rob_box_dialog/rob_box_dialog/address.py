@@ -40,11 +40,13 @@ _WORD = re.compile(r"[\w-]+")
 
 @dataclass(frozen=True)
 class Addressed:
-    """Реплика адресована: ``text`` — текст хода; ``pickup`` — он взят из бэклога (В12)."""
+    """Реплика адресована: ``text`` — текст хода; ``pickup`` — он взят из бэклога (В12), ``channels`` — почему
+    это тот же собеседник (``speaker_adapter.same_interlocutor``)."""
 
     text: str
     source: str
     pickup: bool = False
+    channels: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,21 +80,24 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str]) 
     rest = strip_wake_word(text, wake_words)
     if not is_bare(rest):
         return Addressed(rest, VOICE)
-    entry = backlog.pickup(heard) if backlog is not None else None
-    return Addressed(entry.text, BACKLOG_PICKUP, pickup=True) if entry else Addressed("", BARE_WAKE)
+    entry, channels = backlog.pickup(heard) if backlog is not None else (None, ())
+    return Addressed(entry.text, BACKLOG_PICKUP, True, channels) if entry else Addressed("", BARE_WAKE)
 
 
 def _seconds(stamp: Any) -> float:
     return float(getattr(stamp, "sec", 0) or 0) + float(getattr(stamp, "nanosec", 0) or 0) / 1e9
 
 
-def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "") -> Heard:
-    """``Utterance`` → :class:`Heard`: время — конец фразы, направление — DOA по окну её звучания."""
+def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", faces: Any = None) -> Heard:
+    """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания."""
     started, ended = _seconds(getattr(msg, "started_at", None)), _seconds(getattr(msg, "ended_at", None))
     t = ended or now
-    doa_deg = doa.during(started - VAD_TAIL_S, t) if (doa is not None and started) else None
+    window = (started - VAD_TAIL_S, t)
+    doa_deg = doa.during(*window) if (doa is not None and started) else None
+    seen = faces.during(*window) if (faces is not None and started) else frozenset()
     return Heard(text=(getattr(msg, "text", "") or "").strip(), t=t, source=getattr(msg, "source", "") or "",
-                 doa_deg=doa_deg, person_ref=person_ref or "")
+                 doa_deg=doa_deg, person_ref=person_ref or "", voice_s=max(0.0, ended - started) if started else 0.0,
+                 faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""))
 
 
 def person_ref_from(registry: Any, utterance_id: Optional[str]) -> str:

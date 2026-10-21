@@ -106,7 +106,6 @@ def _make_node(identity: MemoryIdentitySeam) -> DialogueNode:
     n._confirm_tentative_speaker = MagicMock(
         return_value="[Speaker:confirmed]"  # условный tag
     )
-    n._ask_tentative_identity = MagicMock()
     n._tag_tentative = MagicMock(return_value="[Speaker:tentative]")
     # ADR-0139 параметры (дефолты карточки).
     n._face_voice_hint_enabled = True
@@ -303,7 +302,7 @@ def test_face_hint_suppresses_tentative_question_in_window():
     )
     assert state["confirmed"] is True
     assert state["name"] == "Дэнчик"
-    node._ask_tentative_identity.assert_not_called()
+    assert getattr(node, "_identity_ask_candidate", None) is None  # вопроса не будет
     node._confirm_tentative_speaker.assert_called_once()
     # tag от confirmation path, не от _tag_tentative.
     assert result == "[Speaker:confirmed]"
@@ -380,9 +379,10 @@ def test_face_hint_disabled_flag_falls_back_to_old_behavior():
     # Переспрос задан (asked=True), confirmation НЕ вызван.
     # ``confirmed`` остаётся ``None`` до явного «да»/«нет» от человека
     # (resolve_pending выставляет True/False), поэтому здесь ждём None.
-    assert state["asked"] is True
+    # В17 (#3695): вопрос не задан сейчас — собеседник стал кандидатом, решение после хода.
+    assert state["asked"] is False
     assert state["confirmed"] is None
-    node._ask_tentative_identity.assert_called_once()
+    assert node._identity_ask_candidate.key == "c9e981cb"
     node._confirm_tentative_speaker.assert_not_called()
 
 
@@ -410,9 +410,10 @@ def test_face_hint_low_similarity_does_not_suppress_question():
 
     state = node._tentative_states["c9e981cb"]
     # band == "low" → hint игнорируется → переспрос задан.
-    assert state["asked"] is True
+    # В17 (#3695): вопрос не задан сейчас — собеседник стал кандидатом, решение после хода.
+    assert state["asked"] is False
     assert state["confirmed"] is None
-    node._ask_tentative_identity.assert_called_once()
+    assert node._identity_ask_candidate.key == "c9e981cb"
     node._confirm_tentative_speaker.assert_not_called()
 
 
@@ -442,7 +443,8 @@ def test_face_hint_name_mismatch_does_not_suppress_question():
     node._handle_tentative_speaker(sp, "привет", "utt-4")
 
     state = node._tentative_states["c9e981cb"]
-    assert state["asked"] is True
+    # В17 (#3695): вопрос не задан сейчас — собеседник стал кандидатом, решение после хода.
+    assert state["asked"] is False
     assert state["confirmed"] is None
-    node._ask_tentative_identity.assert_called_once()
+    assert node._identity_ask_candidate.key == "c9e981cb"
     node._confirm_tentative_speaker.assert_not_called()
