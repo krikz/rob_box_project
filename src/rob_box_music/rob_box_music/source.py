@@ -274,10 +274,30 @@ def set_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str = "") -> List[
     return sorted(usable, key=order)
 
 
+def _clip(text: str) -> str:
+    """Слова ``text`` через пробел, не длиннее ``GEN_THEME_MAX_CHARS`` (режется по слову)."""
+    out = ""
+    for word in text.split():
+        if len(out) + len(word) + (1 if out else 0) > kn.GEN_THEME_MAX_CHARS:
+            break
+        out = f"{out} {word}" if out else word
+    return out
+
+
 def theme_tags(theme: str) -> str:
-    """EN-теги генерации темы сета (``GEN_THEME_TAGS``: «патриотический» → patriotic, anthemic…); нет строки — «»."""
+    """Тема в тегах заказа Suno и её метка в кэше (``CacheTrack.prompt``, фильтр :func:`set_cache`): EN-теги строки
+    ``GEN_THEME_TAGS`` («патриотический» → patriotic, anthemic…); строки нет — слова темы как есть («пленников
+    прибывших эскобар», #3775: без них сет на свою тему брал любой кэш стиля, а заказ уходил без темы).
+    Темы нет — «»."""
     words = _words(theme)
-    return next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    found = next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    return found or _clip(" ".join(words))
+
+
+def theme_title(theme: str) -> str:
+    """Название заказа по теме человека («Пленников прибывших эскобар»); темы нет — «» (название решает заказ)."""
+    text = _clip(" ".join(re.findall(r"[^\W_]+", theme or "")))
+    return text[:1].upper() + text[1:]
 
 
 def _slot_genre(token: str, mark: Optional[str]) -> str:
@@ -571,4 +591,5 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
            "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
-           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags"]
+           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
+           "theme_title"]

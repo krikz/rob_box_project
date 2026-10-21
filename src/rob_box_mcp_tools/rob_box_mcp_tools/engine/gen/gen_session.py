@@ -39,7 +39,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.render.audio import xfade_beats
 from rob_box_music.source import (CACHE, COVER_SLOT, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk,
-                                  cover_rejected_text, cover_slot, gen_kind, slot_style)
+                                  cover_rejected_text, cover_slot, gen_kind, slot_style, theme_title)
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -428,7 +428,7 @@ class GenSet:
 
     def _job(self, model: str, genre: str) -> GenJob:
         tags = ", ".join(t for t in (kn.GEN_STYLES[genre].tags, self._tags) if t)
-        return GenJob(kind="instrumental", style_key=genre, title=f"RoBBox {genre} set",
+        return GenJob(kind="instrumental", style_key=genre, title=theme_title(self._theme) or f"RoBBox {genre} set",
                       style_tags=tags, duration_s=kn.GEN_SET_DURATION_S, model=model)
 
     def _task(self, model: str, genre: str) -> Tuple[List[SetItem], str, float]:
@@ -671,7 +671,7 @@ class GenSetMaker:
         tags = theme_tags(theme)
         routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres))
         slots, asks = slots[:len(routes)], asks[:len(routes)]
-        self._log().info(f"🎛️ [gen set] слоты: стили={list(genres)} треков={len(slots)} "
+        self._log().info(f"🎛️ [gen set] слоты: тема={theme or '—'!r} стили={list(genres)} треков={len(slots)} "
                          f"время={f'{seconds:.0f} с' if seconds else '—'} тема-теги={tags or '—'} "
                          f"непонято={list(unknown)} каверы={[w.material for w, _t in covers]}")
         return SetRoutes(slots, tuple(routes), unknown, tags, tuple(covers))

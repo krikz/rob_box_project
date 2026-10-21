@@ -25,8 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
 from rob_box_music.source import (CACHE, GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
-                                  choose_route, choose_with_fallback, cover_slot, gen_kind, route_seconds, set_cache,
-                                  set_candidates, source_candidates)
+                                  choose_route, choose_with_fallback, cover_slot, gen_block, gen_kind, route_seconds,
+                                  set_cache, set_candidates, source_candidates)
 
 _LOG = logging.getLogger(__name__)
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
@@ -222,15 +222,19 @@ class SetLedger:
 
     def context(self, ask: SourceAsk, work: Optional[CoverWork] = None) -> Tuple[SourceContext, bool]:
         """Контекст трека: кэш стиля и темы без взятых (и каверы, если у темы есть материал), лимиты за вычетом
-        потраченного; ``True`` — есть запасной вариант задачи стиля или кавера ``work`` (генерация бесплатна)."""
+        потраченного; ``True`` — есть запасной вариант задачи стиля или кавера ``work`` (генерация бесплатна).
+        Кэша темы нет и заказать нельзя (деньги, лимит, провайдер) — кэш стиля без темы: он лучше синтеза (В13)."""
         base = self._base
         free = self._spare.get(ask.genre, 0) > 0 or (work is not None and self._spare.get(self._key(ask, work), 0) > 0)
         back = self._cost if free else 0.0
         pool = replace(base, cache=tuple(t for t in base.cache if t.id not in self._used))
         covers = tuple(t for t in pool.cache if t.kind == "cover") if self._works else ()
         left = None if base.set_left is None else base.set_left - self.spent + back
-        return replace(pool, cache=tuple(set_cache(ask, pool, self._tags)) + covers,
-                       day_left=base.day_left - self.spent + back, set_left=left), free
+        ctx = replace(pool, day_left=base.day_left - self.spent + back, set_left=left)
+        cache = set_cache(ask, pool, self._tags)
+        if not cache and self._tags and not free and gen_block(ctx, self._cost):
+            cache = set_cache(ask, pool)
+        return replace(ctx, cache=tuple(cache) + covers), free
 
     def take(self, ask: SourceAsk, route: Route, free: bool) -> None:
         cover = gen_kind(route.id) == "cover" or (route.kind == CACHE and getattr(route.track, "kind", "") == "cover")

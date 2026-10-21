@@ -2714,7 +2714,8 @@ SET_STYLE_LIST_STOP: Tuple[str, ...] = ("хочу", "хотим", "на", "пр�
                                         "минуты", "трек", "трека", "треков", "чтобы", "давай", "пожалуйста", "сет",
                                         "сэт", "музык")
 #: Тема сета → EN-теги генерации (решение Шифу 14.10: тема при Suno — в теги трека). Ключ — основы слов темы; тема
-#: без строки — теги только стиля. Правит Шифу; на слух теги тем не проверены.
+#: без строки — её слова как есть, не длиннее ``GEN_THEME_MAX_CHARS`` (#3775: «сет для пленников, прибывших в Эскобар»
+#: уходил в Suno обычным «club house»). Правит Шифу; на слух теги тем не проверены.
 GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
     ("патриот", "родин", "отечеств", "гимн", "побед"): "patriotic, anthemic, heroic, marching snare",
     ("косм", "звезд", "галакт", "планет"): "cosmic, spacey, wide pads",
@@ -2723,6 +2724,8 @@ GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
     ("детск", "дети", "мульт"): "playful, cheerful, cartoon",
     ("праздн", "рожден", "вечеринк"): "festive, celebratory, party",
 }
+#: Потолок темы в заказе Suno (style/title) — как у ``generate_music(theme ≤ 60)`` (ADR-0158 §3.3).
+GEN_THEME_MAX_CHARS = 60
 #: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
 GEN_STYLES: Mapping[str, GenStyle] = {
     "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
@@ -2828,6 +2831,7 @@ __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_
             "GEN_XFADE_S"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
+__all__ += ["GEN_THEME_MAX_CHARS"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",

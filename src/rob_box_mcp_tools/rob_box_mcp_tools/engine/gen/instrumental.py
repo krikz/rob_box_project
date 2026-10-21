@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from rob_box_music import knowledge as kn
-from rob_box_music.source import REASON_WORDS
+from rob_box_music.source import REASON_WORDS, theme_tags, theme_title
 
 from .budget import Budget
 from .pipeline import generate_into_cache
@@ -39,9 +39,12 @@ def genre_key(genre: str) -> str:
     return genre if genre in kn.GEN_STYLES else kn.DEFAULT_STYLE
 
 
-def instrumental_job(genre: str, model: str) -> GenJob:
+def instrumental_job(genre: str, model: str, theme: str = "") -> GenJob:
+    """Заказ: теги стиля из ``GEN_STYLES`` и тема человека (``source.theme_tags``) в ``style``, тема — в названии
+    (#3775: тема доходила только до ключа кэша, Suno получал обычный «RoBBox club»)."""
     key = genre_key(genre)
-    return GenJob(kind="instrumental", style_key=key, title=f"RoBBox {key}", style_tags=kn.GEN_STYLES[key].tags,
+    tags = ", ".join(t for t in (kn.GEN_STYLES[key].tags, theme_tags(theme)) if t)
+    return GenJob(kind="instrumental", style_key=key, title=theme_title(theme) or f"RoBBox {key}", style_tags=tags,
                   model=model)
 
 
@@ -55,19 +58,27 @@ class InstrumentalResult:
     task_id: str = ""
     credits: float = 0.0
     reason: str = ""
+    theme: str = ""
 
 
-def wait_text(genre: str, model: str, bridge: str) -> str:
-    """Фраза моста (В4): что пишется и сколько ждать — от кода; ``bridge`` — что играет сейчас («» — ничего)."""
+def _about(theme: str) -> str:
+    return f" на тему «{theme}»" if theme else ""
+
+
+def wait_text(genre: str, model: str, bridge: str, theme: str = "") -> str:
+    """Фраза моста (В4): что пишется (и на какую тему) и сколько ждать — от кода; ``bridge`` — что играет сейчас
+    («» — ничего)."""
     eta = int(round(kn.GEN_MODELS[model].typical_s / 10.0) * 10)
     tail = f" Пока играет {bridge}." if bridge else ""
-    return f"Сочиняю новый трек, {kn.GEN_STYLES[genre_key(genre)].name} — секунд {eta}.{tail}"
+    return f"Сочиняю новый трек{_about(theme)}, {kn.GEN_STYLES[genre_key(genre)].name} — секунд {eta}.{tail}"
 
 
 def ready_text(result: InstrumentalResult, genre: str) -> str:
+    """Фраза готовности — из фактов результата: название, тема заказа (если её нет в названии), стиль, длина."""
     from rob_box_voice.core.media_phrases import duration_text
 
-    return (f"А вот новый трек «{result.title}», {kn.GEN_STYLES[genre_key(genre)].name}, "
+    theme = result.theme if result.theme.lower() not in result.title.lower() else ""
+    return (f"А вот новый трек «{result.title}»{_about(theme)}, {kn.GEN_STYLES[genre_key(genre)].name}, "
             f"{duration_text(result.duration_s)}.")
 
 
@@ -112,23 +123,23 @@ class InstrumentalMaker:
         """Заказ → ожидание → кэш (оба варианта); играет первый. Ошибка — ``reason``, звука нет."""
         started, library = self._clock(), self._library()
         try:
-            made = generate_into_cache(self._provider, library, Budget(library), instrumental_job(genre, model),
+            made = generate_into_cache(self._provider, library, Budget(library), instrumental_job(genre, model, theme),
                                        theme=theme, early=True, log=self._log)
         except GenUnavailable as exc:
             if exc.reason == "provider_down":
                 self._dead_until = self._clock() + DEAD_FOR_S
             self._log().warning(f"⚠️ [gen instr] {genre_key(genre)} {model} не сгенерирован: {exc}")
-            return InstrumentalResult(reason=exc.reason)
+            return InstrumentalResult(reason=exc.reason, theme=theme)
         saved = next((s for s in made.saved if s.get("success")), None)
         seconds = self._clock() - started
-        self._log().info(f"🎛️ [gen instr] {genre_key(genre)} {model} task_id={made.task_id} кредиты={made.credits:g} "
-                         f"track={saved['id'] if saved else '—'} за {seconds:.0f} с")
+        self._log().info(f"🎛️ [gen instr] {genre_key(genre)} {model} тема={theme or '—'!r} task_id={made.task_id} "
+                         f"кредиты={made.credits:g} track={saved['id'] if saved else '—'} за {seconds:.0f} с")
         if saved is None:
-            return InstrumentalResult(task_id=made.task_id, credits=made.credits, reason="no_track")
+            return InstrumentalResult(task_id=made.task_id, credits=made.credits, reason="no_track", theme=theme)
         info = library.get_track_info(str(saved["id"]))
         title = str(info.get("title") or saved.get("title") or "")
         return InstrumentalResult(str(saved["id"]), title, float(info.get("duration_ms") or 0) / 1000.0,
-                                  made.task_id, made.credits)
+                                  made.task_id, made.credits, theme=theme)
 
     def launch(self, genre: str, model: str, theme: str, turn: Optional[str],
                done: Callable[[InstrumentalResult], None]) -> bool:
