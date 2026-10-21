@@ -24,6 +24,7 @@ from rob_box_dialog.speaker_adapter import (
     ask_after_turn,
     speaker_block,
     speaker_ref,
+    voice_registration,
     voice_tag,
 )
 from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
@@ -113,7 +114,8 @@ def _biometry(sp: Mapping[str, Any], utterance_id: str) -> str:
 def speaker_section(node: Any) -> dict:
     """Раздел ``speaker`` снимка хода (ADR-0150 §7.3, #3695): собеседник по текущему результату биометрии и лицам
     в кадре через адаптер; имя — только при ``confirmed``. Словесное «да, это я» (#2809) уже записало имя в
-    ``_current_speaker`` — оно здесь и становится подтверждённым."""
+    ``_current_speaker`` — оно здесь и становится подтверждённым. Ход с регистрацией по представлению — ещё
+    ``voice_registration`` (#3793); в ходе, где личность выясняет робот (#3765), сведений о голосе нет."""
     with node._speaker_lock:
         sp = dict(getattr(node, "_current_speaker", None) or {})
     if sp.get("introduced_name"):  # #3765: личность выясняет робот — только имя из представления
@@ -122,7 +124,13 @@ def speaker_section(node: Any) -> dict:
     now = time.time()
     faces = getattr(node, "_faces", None)
     names = faces.names_during(now - IDENTITY_FACE_RECENT_S, now) if faces is not None else frozenset()
-    return speaker_block(speaker_ref(sp, now=now, face_names=names, prev=getattr(node, "_speaker_ref", None)))
+    block = speaker_block(speaker_ref(sp, now=now, face_names=names, prev=getattr(node, "_speaker_ref", None)))
+    # #3793: регистрацию по представлению сделал код до LLM — исход (записан/отказ/неизвестно) структурой
+    registration = voice_registration(bool(getattr(node, "_turn_intro_registered", False)),
+                                      getattr(node, "_turn_register_outcome", None))
+    if registration is not None:
+        block["voice_registration"] = registration
+    return block
 
 
 def plan_identity_question(node: Any, result: Any, *, other_question: bool) -> Optional[AskCandidate]:
