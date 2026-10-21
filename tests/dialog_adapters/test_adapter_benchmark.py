@@ -35,5 +35,7 @@ def test_missing_key_is_reported_not_skipped(monkeypatch):
 
 
 def test_phrases_exclude_tier1_and_respect_limit():
-    assert len(ab.load_phrases(0)) == 58
+    data = ab.yaml.safe_load((ab.REPO / "scripts" / "dialog" / "reference_set.yaml").read_text(encoding="utf-8"))
+    not_tier1 = [p["text"] for p in data["phrases"] if "tier1" not in p["expected"]]
+    assert ab.load_phrases(0) == not_tier1 and len(not_tier1) < len(data["phrases"])
     assert len(ab.load_phrases(20)) == 20

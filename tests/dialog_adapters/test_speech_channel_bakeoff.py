@@ -93,7 +93,9 @@ def test_provider_failure_on_every_call_is_not_run_not_zero_percent():
 
 def test_phrases_exclude_tier1_and_cover_all_kinds():
     phrases = bo.load_phrases()
-    assert len(phrases) == 58 and {p.kind for p in phrases} == {"actions", "ask", "silence", "speech_only"}
+    data = ab.yaml.safe_load((ab.REPO / "scripts" / "dialog" / "reference_set.yaml").read_text(encoding="utf-8"))
+    assert [p.id for p in phrases] == [p["id"] for p in data["phrases"] if "tier1" not in p["expected"]]
+    assert {p.kind for p in phrases} == {"actions", "ask", "silence", "speech_only"}
     assert "speak_text" not in bo.action_tool_names(phrases)
 
 
@@ -116,5 +118,6 @@ def test_rescore_rebuilds_table_from_raw_and_keeps_not_run(tmp_path):
     raw, summary = tmp_path / "raw.jsonl", tmp_path / "s.json"
     raw.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
     summary.write_text(json.dumps([["mimo", "field", "json_in_text", {"calls": 3, "not_run": "402"}]]), encoding="utf-8")
-    table = bo.render(bo.rescore(raw, summary), 58, 3)
+    table = bo.render(bo.rescore(raw, summary), bo.raw_phrase_count(raw), 3)
+    assert "(1 фраз × 3 прогона" in table  # число фраз — из прогона, а не из выросшего набора (#3696)
     assert "deepseek-flash" in table and "1/1 (100 %)" in table and "не прогнан: 402" in table
