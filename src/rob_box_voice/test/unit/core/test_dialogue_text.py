@@ -251,7 +251,7 @@ def test_wake_words_yaml_matches_code_list() -> None:
     cfg = repo_root / "docker" / "sound" / "config" / "wake_words.yaml"
     assert cfg.exists(), f"конфиг вейк-слов не найден: {cfg}"
 
-    personality = yaml.safe_load(cfg.read_text(encoding="utf-8"))["personality"]
+    personality = [w for w in yaml.safe_load(cfg.read_text(encoding="utf-8"))["personality"] if isinstance(w, str)]
     assert list(personality) == list(DEFAULT_WAKE_WORDS), (
         "personality из wake_words.yaml разошёлся с DEFAULT_WAKE_WORDS — "
         "правь ОБА места в одном коммите: на роботе действует YAML, "

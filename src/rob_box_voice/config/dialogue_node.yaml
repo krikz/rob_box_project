@@ -119,7 +119,6 @@ dialogue_node:
     speaker_resolve_timeout_sec: 2.5
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
-    accumulate_window_sec: 180.0
     # ADR-0139 §2.6 / issue #3024 — face→voice hint: свежее наблюдение
     # лица в шов «Знакомый» отменяет голосовой переспрос #2809, если
     # имя лица и имя голосового кандидата совпадают и hint в окне.

@@ -26,6 +26,10 @@ class LLMSkipReason(str, Enum):
     COMMAND_INTENT = "command_intent"
     NEW_SESSION = "new_session"
     BACKLOG_ACCUMULATED = "backlog_accumulated"
+    #: ADR-0150 PR-5 (В12): голое «робот» без свежей фразы — рефлекс, LLM не нужна.
+    BARE_WAKE = "bare_wake"
+    #: ADR-0150 PR-5 (#3518): «Клод …» из Telegram — координатору, не роботу.
+    COORDINATOR = "NotAddressed(coordinator)"
     UNSILENCE = "unsilence"
     #: Issue #3134 — медиакоманду исполнил роутер кодом, LLM не нужна.
     MEDIA_COMMAND = "media_command"

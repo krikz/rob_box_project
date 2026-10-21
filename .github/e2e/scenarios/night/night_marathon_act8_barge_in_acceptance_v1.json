@@ -7,7 +7,7 @@
     "set_eta_provider) в dialogue_node ни к чему не подключены, поэтому",
     "task_delta в n807 скорее всего не вызовется. GATE-1 держит только то,",
     "что обязано работать: речь, музыка, остановка музыки.",
-    "ВАЖНО: перед прогоном ros2 param set /dialogue_node barge_in_policy classify."
+    "Параметра политики перебивания нет (ADR-0150 PR-5) — ничего выставлять не нужно."
   ],
   "expected_tool_calls": [
     "speak_text",

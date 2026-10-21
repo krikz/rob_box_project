@@ -52,10 +52,24 @@ DEFAULT_WAKE_WORDS = (
     "рыбок",
     "робик",
     "робо",
-    "рома",
-    "бот",
-    "роб",
 )
+#: Рискованные вейки (решение В18): «рома» — обычное имя в разговоре (живой лог 20.10 «рома епта…» разбудил
+#: робота), «бот»/«роб» — короткие и звучат внутри чужих фраз. В ``wake_words.yaml`` — записи ``risky: true``,
+#: по умолчанию выключены (``risky_enabled: false``); включаются одной строкой. Стоят в конце: «роб» не должен
+#: съесть «роб бокс».
+RISKY_WAKE_WORDS: Tuple[str, ...] = ("рома", "бот", "роб")
+#: Голое «робот» (В12): после вейка нет слов, кроме этих, — фразы нет, это обращение «слушай».
+ADDRESS_FILLER_WORDS: Tuple[str, ...] = ("ну", "а", "эй", "слушай", "так", "вот", "это", "ой", "да", "давай")
+#: Бэклог неадресованных фраз (§7.3): живёт TTL, в ход/снимок LLM — только свежее того же направления/человека.
+BACKLOG_TTL_S = 120.0
+BACKLOG_PICKUP_S = 20.0
+BACKLOG_MAX_ENTRIES = 30
+#: Сектор «то же направление» по DOA ReSpeaker (±градусы; допуск ADR-0130 Q17 15° с запасом).
+DOA_SECTOR_DEG = 30.0
+#: Голое «робот» без свежей фразы в бэклоге: кадр ожидания (лицо «слушаю»), потом снимается молча.
+ADDRESS_WAIT_S = 8.0
+#: Префикс обращения к координатору (Claude Code) в Telegram: такая реплика роботу не адресована (#3518).
+COORDINATOR_NAMES: Tuple[str, ...] = ("клод", "claude")
 #: Вейк агента оператора: слышит только микрофон шлема (namespace привязан к источнику аудио).
 DEFAULT_OPERATOR_WAKE_WORDS: Tuple[str, ...] = ("тарс", "tars")
 WAKE_NAMESPACES: Tuple[str, ...] = ("personality", "operator")
@@ -524,9 +538,19 @@ def prompt_fragment() -> str:
 # ---------------------------------------------------------------------------------------------------------------
 
 
+def _wake_entry(item: Any, risky_enabled: bool) -> str:
+    """Строка — вейк; ``{word, risky: true}`` — рискованный вейк (В18), берётся только при ``risky_enabled``."""
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict) and isinstance(item.get("word"), str):
+        return item["word"].strip() if (risky_enabled or not item.get("risky")) else ""
+    return ""
+
+
 def load_wake_word_namespaces(path: "str | os.PathLike[str] | None") -> Dict[str, List[str]]:
     """Прочитать ``wake_words.yaml`` в ``{namespace: [words]}``, порядок — как в файле.
 
+    Записи ``{word: …, risky: true}`` входят, только если в файле ``risky_enabled: true`` (В18).
     Пустой путь, нет файла, битый YAML, чужая структура — ``{}`` (не падает): вызывающий берёт дефолты кода.
     """
     if not path:
@@ -541,10 +565,11 @@ def load_wake_word_namespaces(path: "str | os.PathLike[str] | None") -> Dict[str
     if not isinstance(data, dict):
         return {}
     out: Dict[str, List[str]] = {}
+    risky_enabled = data.get("risky_enabled") is True
     for namespace in WAKE_NAMESPACES:
         words = data.get(namespace)
         if isinstance(words, list):
-            cleaned = [w for w in words if isinstance(w, str) and w.strip()]
+            cleaned = [w for w in (_wake_entry(item, risky_enabled) for item in words) if w]
             if cleaned:
                 out[namespace] = cleaned
     return out

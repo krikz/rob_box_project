@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-21",
-  "base_sha": "391b5cf7e48628cbb979b5395cc0d7da2c814425",
+  "base_sha": "1176dae61f2cf988501cfb8c982c8ae168619bc3",
   "limits": {
     "method": 15,
     "init": 20
@@ -14,7 +14,7 @@
       "classify_sclang_log": 19
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
-      "DialogueNode._build_dynamic_system_context": 17,
+      "DialogueNode._build_dynamic_system_context": 16,
       "DialogueNode._handle_result": 58
     },
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
@@ -142,7 +142,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
       "method": "DialogueNode._build_dynamic_system_context",
-      "cc": 17,
+      "cc": 16,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

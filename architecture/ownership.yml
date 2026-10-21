@@ -113,8 +113,8 @@ topics:
     # telegram_node пишет сообщения чата и кнопки меню (source=telegram|operator);
     # различает писателей поле Utterance.source, не имя топика.
     writers_allowed: [stt_node, telegram_node]
-    readers: [dialogue_node, command_node, context_aggregator_node]
-    debt: "command_node читает прямо (разбор команд до LLM): снимает PR-5 (#3694), команда идёт через /dialog/intent; context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором"
+    readers: [dialogue_node, context_aggregator_node]
+    debt: "context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором (command_node с PR-5 #3694 получает /dialog/intent)"
   /voice/stt/speaker:
     owner: stt_node
     type: std_msgs/String
@@ -272,8 +272,9 @@ topics:
   /dialog/intent:
     owner: dialog_node
     type: rob_box_dialog_msgs/Intent
-    status: planned
+    status: live
     introduced_by: "PR-5 (#3694)"
+    # до v2 пишет dialogue_node (CommandIntentGateStep после допуска реплики)
     writers_allowed: [dialog_node, dialogue_node]
     readers: [command_node]
   /telegram/session:

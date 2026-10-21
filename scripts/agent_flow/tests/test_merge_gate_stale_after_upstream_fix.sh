@@ -184,7 +184,7 @@ test_D1_upstream_fix_via_signature() {
     local cid="t_diag_d1" pr=1740 sha="f924ad6c47bcf7deb66d2080dcee067c66cf5792"
     fixture_diag_card "$cid" "ready" "$pr" "$sha" "develop" \
         "_track_mode_music_active" \
-        "src/rob_box_voice/test/unit/node/test_barge_in_policy.py" \
+        "src/rob_box_voice/test/unit/node/test_interrupt_policy.py" \
         "unit_lint" "1756598400"
     # Strategy B: git log -S _track_mode_music_active → hit at upstream sha.
     local upstream_sha="06b83b01b6a8c1de76c32bf90d809f0cfa809ffc"
@@ -287,12 +287,12 @@ test_D4_fix_in_same_pr_via_strat_c() {
     local cid="t_diag_d4" pr=1743 sha="cccc3333cccc3333cccc3333cccc3333cccc3333"
     fixture_diag_card "$cid" "ready" "$pr" "$sha" "develop" \
         "_barge_in_attr" \
-        "src/rob_box_voice/test/unit/node/test_barge_in_policy.py,src/rob_box_voice/test/unit/node/test_issue_1195_tg_source.py" \
+        "src/rob_box_voice/test/unit/node/test_interrupt_policy.py,src/rob_box_voice/test/unit/node/test_issue_1195_tg_source.py" \
         "unit_lint" "1756598400"
     # No git history hits (strat A/B fail).
     # But: failing-test files all in PR diff + CI SUCCESS → strat C fires.
     fixture_pr_files "$pr" \
-        "src/rob_box_voice/test/unit/node/test_barge_in_policy.py,src/rob_box_voice/test/unit/node/test_issue_1195_tg_source.py,src/foo.py"
+        "src/rob_box_voice/test/unit/node/test_interrupt_policy.py,src/rob_box_voice/test/unit/node/test_issue_1195_tg_source.py,src/foo.py"
 
     run_merge_gate
     local journal
@@ -520,7 +520,7 @@ test_D11_legacy_title_covered_by_scan() {
     # Legacy title (`🐛 CI UNSTABLE: ...`) — ДОЛЖЕН проходить расширенный фильтр.
     fixture_legacy_diag_card "$cid" "ready" "$pr" "$sha" "develop" \
         "_track_mode_music_active" \
-        "src/rob_box_voice/test/unit/node/test_barge_in_policy.py" \
+        "src/rob_box_voice/test/unit/node/test_interrupt_policy.py" \
         "unit_lint" "1756598400"
     local upstream_sha="06b83b01b6a8c1de76c32bf90d809f0cfa809ffc"
     fixture_git_log_hit_attr "_track_mode_music_active" "$upstream_sha"

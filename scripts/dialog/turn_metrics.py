@@ -4,7 +4,7 @@
     python scripts/dialog/turn_metrics.py <log> [--per-turn]
 
 Считает на каждый адресованный ход (``🚀 [turn]``): вызовы LLM, STT -> первая реплика TTS (мс), число схем тулов
-в вызове (``tools(N)``), вопросы о личности в речи, записи бэклога (``entries=N`` у ``[backlog] flushed``).
+в вызове (``tools(N)``), вопросы о личности в речи, записи бэклога (``entries=N`` у ``[backlog] flushed`` / ``[backlog] recent_unaddressed``).
 Печатает p50/p95/max и markdown-таблицу A1/A2/A5. Рантайм робота скрипт не трогает и не импортирует.
 
 Чего в логе НЕТ: число токенов (дамп ``🔎 LLM REQUEST`` усечён), поэтому A5 даётся прокси ``tools_visible``
@@ -74,7 +74,7 @@ def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) ->
         "",
         f"- `identity_questions` («Как тебя зовут?»/«это ты?» в `🔊 TTS`): {len(idq)} (строки лога: "
         f"{', '.join(map(str, idq)) or '-'}).",
-        f"- `backlog_entries`: сброшено в LLM {flushed} (`[backlog] flushed … entries=N`), накоплено без вейка {acc} "
+        f"- `backlog_entries`: отдано LLM {flushed} (`[backlog] flushed|recent_unaddressed … entries=N`), накоплено без вейка {acc} "
         f"(`[backlog] accumulated`).",
     ]
     return "\n".join(out)

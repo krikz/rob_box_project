@@ -29,13 +29,13 @@
 #              красный: без wake-word и без профилей голосов остальные акты
 #              не диагностичны, они просто утонут в no_accept.
 #
-# ПЕРЕД ПРОГОНОМ (иначе акт 8 не диагностичен):
-#   ROS_ENV='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash;'
-#   ssh <robot> "docker exec voice-assistant bash -lc '$ROS_ENV ros2 param set /dialogue_node barge_in_policy classify --no-daemon'"
-#   ⚠️ именно через docker exec: на ХОСТЕ Vision Pi ros2 нет вообще
-#   (ls /opt/ros → No such file or directory). Форма `ssh <robot> 'ros2 ...'`
-#   молча возвращает rc=127 — из-за этого изоляция БД дикторов из #2759
-#   не срабатывала ни разу с момента мержа, см. issue #2763.
+# ПЕРЕД ПРОГОНОМ для акта 8 ничего выставлять не нужно: политика перебивания
+# одна, параметра нет (ADR-0150 PR-5 #3694).
+#   ⚠️ если нужен ros2 param set — только через docker exec в контейнере
+#   (ROS_ENV='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash;'):
+#   на ХОСТЕ Pi ros2 нет вообще. Форма `ssh <robot> 'ros2 ...'` молча
+#   возвращает rc=127 — из-за этого изоляция БД дикторов из #2759 не
+#   срабатывала ни разу с момента мержа, см. issue #2763.
 # =============================================================================
 set -u
 

@@ -30,7 +30,8 @@ LLM_REQUEST_MARK = "🔎 LLM REQUEST START"
 TTS_MARK = "🔊 TTS: speech_id="
 LLM_OUTPUT_MARK = "📤 LLM OUTPUT:"
 CODE_PHRASE_MARK = "фраза кода вместо ответа модели:"
-BACKLOG_FLUSH_MARK = "[backlog] flushed"
+#: Записи бэклога, отданные LLM в ход: до ADR-0150 PR-5 — блок «flushed», после — снимок ``recent_unaddressed`` (≤ 1).
+BACKLOG_FLUSH_MARKS = ("[backlog] flushed", "[backlog] recent_unaddressed")
 BACKLOG_ACC_MARK = "[backlog] accumulated"
 
 _TOOLS_VISIBLE = re.compile(r"tools\((\d+)\):")
@@ -162,7 +163,7 @@ def _fill_window(turn: Turn, window: Sequence[LogLine]) -> None:
         m = _TOOL_FAILED.search(msg)
         if m:
             turn.tools_failed.append(m[1])
-        if BACKLOG_FLUSH_MARK in msg:
+        if any(mark in msg for mark in BACKLOG_FLUSH_MARKS):
             m = _BACKLOG_ENTRIES.search(msg)
             turn.backlog_entries += int(m[1]) if m else 0
         speech = _speech_text(line)

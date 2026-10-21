@@ -37,12 +37,14 @@ def _load_ssot() -> dict:
 
 class TestWakeWordsSSoT:
     def test_ssot_has_exactly_two_namespaces(self):
-        assert set(_load_ssot()) == {"personality", "operator"}
+        # + переключатель рискованных вейков В18 (ADR-0150 PR-5)
+        assert set(_load_ssot()) == {"personality", "operator", "risky_enabled"}
 
     def test_personality_matches_code_defaults_byte_for_byte(self):
         """Порядок важен для strip_wake_word (regex leftmost-first)."""
         data = _load_ssot()
-        assert data["personality"] == list(DEFAULT_WAKE_WORDS), (
+        plain = [w for w in data["personality"] if isinstance(w, str)]  # risky: true (В18) — отдельно
+        assert plain == list(DEFAULT_WAKE_WORDS), (
             "docker/sound/config/wake_words.yaml personality разошёлся с "
             "DEFAULT_WAKE_WORDS — это ровно класс ошибки #1252. Правь оба "
             "места в одном коммите."

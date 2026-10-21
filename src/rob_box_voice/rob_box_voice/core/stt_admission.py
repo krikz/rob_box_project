@@ -46,11 +46,12 @@ from typing import (
     runtime_checkable,
 )
 
+from rob_box_dialog.address import BARE_WAKE, COORDINATOR, NO_WAKE, Addressed, NotAddressed, decide
+from rob_box_dialog.backlog import Backlog, Heard
+
 from rob_box_voice.core.dialogue_text import (
-    has_wake_word,
     is_silence_command,
     is_unsilence_command,
-    strip_wake_word,
 )
 
 
@@ -169,13 +170,10 @@ class SttContext:
             avoid leaking the FSM enum into ``core/``.
         is_silenced: Convenience flag — ``True`` when state==SILENCED.
         wake_words: Frozen tuple of wake-word strings (snapshot).
-        backlog_pending: ``True`` when the no-wake-word backlog
-            accumulator has buffered phrases to inject as a hint.
-            Computed **once** before admission (the caller owns the
-            accumulator); :class:`BacklogFlushStep` sets the matching
-            flag on the host, :class:`StripWakeWordStep` reads the
-            snapshot to decide whether a bare wake-word preserves the
-            original text instead of dropping with ``empty_after_strip``.
+        heard: Реплика для адресации (источник, время, DOA, ``person_ref``) —
+            ADR-0150 PR-5; ``None`` — собрать из ``text``/``tg_chat_id``.
+        bare: Голое «робот» без свежей фразы в бэклоге (В12) — ставит
+            :class:`AddressStep`, исполняет :class:`BareWakeStep`.
         skip_counter: Mutable dict of skip-reason counters (e.g.
             ``{"no_wake_word": 3}``). Steps increment the counter that
             matches the reason they drop on; orchestrator does not
@@ -191,7 +189,8 @@ class SttContext:
     state_name: str = "IDLE"
     is_silenced: bool = False
     wake_words: Tuple[str, ...] = ()
-    backlog_pending: bool = False
+    heard: Optional[Heard] = None
+    bare: bool = False
     skip_counter: Dict[str, int] = field(default_factory=dict)
 
     def with_text(self, new_text: str) -> "SttContext":
@@ -293,15 +292,25 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def accumulate_without_wake(
-        self,
-        speaker_tag: Optional[str],
-        text: str,
-    ) -> bool:
-        """Push the text into the no-wake backlog accumulator. Returns
-        ``True`` when the accumulator accepted the text (i.e. backlog
-        is enabled and the feature is configured), ``False`` when the
-        feature is off — the caller drops with ``no_wake_word`` reason.
+    def backlog(self) -> Optional[Backlog]:
+        """Бэклог неадресованных фраз (ADR-0150 §7.3); ``None`` — выключен."""
+        ...
+
+    def remember_unaddressed(self, heard: Heard) -> bool:
+        """Положить фразу без вейка в бэклог. ``False`` — бэклог выключен,
+        реплика отбрасывается с причиной ``no_wake_word``.
+        """
+        ...
+
+    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]], heard: Heard) -> None:
+        """Реплика адресована: запомнить для снимка LLM ``recent_unaddressed``
+        (≤ 1 запись того же источника) и залогировать подхват из бэклога (В12).
+        """
+        ...
+
+    def bare_wake(self) -> None:
+        """Голое «робот» без свежей фразы (В12): только рефлекс «слушаю» и
+        кадр ожидания, 0 вызовов LLM.
         """
         ...
 
@@ -357,12 +366,6 @@ class SttAdmissionHost(Protocol):
         закрыта, в LLM не идёт; ``False`` — не медиакоманда или DJ-запрос
         с содержимым вне грамматики (``set_dj_mode`` уже выполнен, дальше
         решает LLM).
-        """
-        ...
-
-    def flush_pending_backlog(self) -> None:
-        """Set ``_pending_backlog_flush = True`` so the next dispatch
-        prepends the backlog hint. No-op when the backlog is empty.
         """
         ...
 
@@ -598,62 +601,48 @@ class SilencedStateStep:
 
 
 @dataclass(frozen=True)
-class WakeWordStep:
-    """Step 6 — wake-word gate (mic path only; TG bypasses).
+class AddressStep:
+    """Адресовано ли роботу — :func:`rob_box_dialog.address.decide` (ADR-0150 §4.2, В12).
 
-    ADR-0066 §6.3 — Telegram input (``tg_chat_id is not None``)
-    bypasses the gate: the user is already in a chat, no wake word
-    needed. Mic input without a wake word either accumulates into the
-    backlog (``host.accumulate_without_wake`` returns True) or is
-    dropped with ``no_wake_word``.
+    Без вейка — в бэклог (или отброс); «Клод …» из Telegram — координатору;
+    адресованная — дальше с текстом хода без вейка (из бэклога — при голом
+    «робот» и свежей фразе того же направления/человека). Голое «робот» без
+    такой фразы помечается ``bare`` — рефлекс решает :class:`BareWakeStep`
+    уже после проверки тишины.
     """
 
-    name: str = "wake_word"
+    name: str = "address"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if ctx.tg_chat_id is not None:
-            return PASS
-        if has_wake_word(ctx.text_lower, list(ctx.wake_words)):
-            return PASS
-        if host.accumulate_without_wake(ctx.speaker_tag, ctx.text):
-            return handled(self.name, "backlog_accumulated")
-        return drop(self.name, "no_wake_word")
+        source = "telegram" if ctx.tg_chat_id is not None else "respeaker"
+        heard = replace(ctx.heard or Heard(text=ctx.text, t=0.0, source=source), text=ctx.text)
+        backlog = host.backlog()
+        decision = decide(heard, backlog, ctx.wake_words)
+        if isinstance(decision, NotAddressed):
+            if decision.reason == NO_WAKE:
+                if host.remember_unaddressed(heard):
+                    return handled(self.name, "backlog_accumulated")
+                return drop(self.name, "no_wake_word")
+            if decision.reason == COORDINATOR:
+                return handled(self.name, "NotAddressed(coordinator)")
+            return drop(self.name, "empty_after_strip")
+        recent = backlog.recent_unaddressed(heard) if backlog is not None and not decision.pickup else None
+        host.addressed(decision, recent, heard)
+        bare = decision.source == BARE_WAKE
+        return SttOutcome(kind=SttOutcomeKind.PASS, new_context=replace(ctx.with_text(decision.text), bare=bare))
 
 
 @dataclass(frozen=True)
-class StripWakeWordStep:
-    """Step 7 — strip the wake word from the text.
+class BareWakeStep:
+    """Голое «робот» без свежей фразы (В12): рефлекс «слушаю», в LLM не идёт."""
 
-    Issue #989 fix + #2346 — the LLM input must not include the wake
-    word itself; the bare wake word with no follow-up drops with
-    ``empty_after_strip`` **unless** a backlog hint is pending (in
-    which case the bare wake word is preserved as a signal — the
-    original ``_on_stt`` behaviour: ``clean = text`` when
-    ``backlog_pending``).
-    """
-
-    name: str = "strip_wake_word"
+    name: str = "bare_wake"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # Issue #2628 fixture evidence — TG path also strips the wake
-        # word (e.g. ``[TG:42] робот привет`` → ``"привет"``). Legacy
-        # ``_on_stt`` ran ``clean = strip_wake_word(text)`` unconditionally
-        # after parse_tg_prefix; the TG-bypass was a refactor regression.
-        clean = strip_wake_word(ctx.text, list(ctx.wake_words))
-        if not clean:
-            # Bare wake-word OR no input: drop unless backlog is
-            # pending. The caller-owned snapshot on ``ctx.backlog_pending``
-            # preserves the legacy byte-for-byte fallback.
-            if ctx.backlog_pending:
-                return SttOutcome(
-                    kind=SttOutcomeKind.PASS,
-                    new_context=ctx.with_text(ctx.raw),
-                )
-            return drop(self.name, "empty_after_strip")
-        return SttOutcome(
-            kind=SttOutcomeKind.PASS,
-            new_context=ctx.with_text(clean),
-        )
+        if not ctx.bare:
+            return PASS
+        host.bare_wake()
+        return handled(self.name, "bare_wake")
 
 
 @dataclass(frozen=True)
@@ -744,31 +733,6 @@ class MediaCommandStep:
 
 
 @dataclass(frozen=True)
-class BacklogFlushStep:
-    """Step 11 — backlog hint injection.
-
-    When the backlog accumulator has buffered phrases (snapshot on
-    ``ctx.backlog_pending`` is True), the next user-initiated turn
-    prepends them as a hint. ``host.flush_pending_backlog`` sets the
-    ``_pending_backlog_flush`` flag; the dialogue node adapter reads
-    it inside ``_dispatch_turn``. When ``backlog_pending`` is False
-    the step is a no-op — matches legacy L2350-2351 (``if
-    backlog_pending: self._pending_backlog_flush = True``).
-    """
-
-    name: str = "backlog_flush"
-
-    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # Issue #1766 — only set the flush flag when the caller-owned
-        # snapshot on ``ctx.backlog_pending`` is True. Mirrors the
-        # legacy ``if backlog_pending: self._pending_backlog_flush = True``
-        # at L2350-2351.
-        if ctx.backlog_pending:
-            host.flush_pending_backlog()
-        return PASS
-
-
-@dataclass(frozen=True)
 class TakeTurnStep:
     """Step 12 — новая фраза принимает ход (ADR-0150 §6.2, PR-5 #3694).
 
@@ -819,40 +783,37 @@ def default_steps() -> List[Any]:
     ``dialogue_node.py:2159-2445`` (issue #2628 refactor):
 
     1. :class:`EmptyTextStep` — short-circuit empty payload.
-    2. TG prefix parsing — handled **before** admission by the caller
-       (``parse_tg_prefix`` is a pure helper, not a step). Skipped here.
-    3. speaker event parsing — same: handled by the caller via
-       :func:`parse_speaker_event` before admission. Skipped here.
-    4. :class:`RejectedMarkerStep` — STT echoed a rejected marker.
-    5. :class:`SilencedStateStep` — DSM in SILENCED.
-    6. :class:`WakeWordStep` — wake-word gate (mic path).
-    7. :class:`StripWakeWordStep` — strip the wake word.
-    8. :class:`SilenceCommandStep` — «замолчи».
-    9. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
-    10. :class:`NewSessionStep` — «новая сессия» / «/clear».
-    11. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
-    12. :class:`BacklogFlushStep` — backlog hint injection.
-    13. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
-    14. :class:`DispatchTriggerStep` — FSM transition + dispatch.
+    2. :class:`RejectedMarkerStep` — STT echoed a rejected marker.
+    3. :class:`AddressStep` — адресация кодом (ADR-0150 PR-5): вейк,
+       Telegram/оператор, координатор, бэклог (В12). Раньше тишины: в
+       SILENCED «говори» тоже нужно с вейком (§6.3).
+    4. :class:`SilencedStateStep` — DSM in SILENCED.
+    5. :class:`BareWakeStep` — голое «робот»: рефлекс, 0 LLM.
+    6. :class:`SilenceCommandStep` — «замолчи».
+    7. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
+    8. :class:`NewSessionStep` — «новая сессия» / «/clear».
+    9. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
+    10. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
+    11. :class:`DispatchTriggerStep` — FSM transition + dispatch.
     """
     return [
         EmptyTextStep(),
         RejectedMarkerStep(),
+        AddressStep(),
         SilencedStateStep(),
-        WakeWordStep(),
-        StripWakeWordStep(),
+        BareWakeStep(),
         SilenceCommandStep(),
         CommandIntentGateStep(),
         NewSessionStep(),
         MediaCommandStep(),
-        BacklogFlushStep(),
         TakeTurnStep(),
         DispatchTriggerStep(),
     ]
 
 
 __all__ = [
-    "BacklogFlushStep",
+    "AddressStep",
+    "BareWakeStep",
     "CommandIntentGateStep",
     "DefaultSttAdmission",
     "DispatchTriggerStep",
@@ -869,9 +830,7 @@ __all__ = [
     "SttOutcome",
     "SttOutcomeKind",
     "SttStep",
-    "StripWakeWordStep",
     "TakeTurnStep",
-    "WakeWordStep",
     "default_steps",
     "drop",
     "handled",

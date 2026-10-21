@@ -220,17 +220,10 @@ from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
 _SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/utterance (личность)
 _SRC_PTT = "ptt"  # /audio/quest_in (левый грип) → /avatar/ptt/result (пайплайн грипа)
 _SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оператора)
-#: Запас окна фразы на хвост VAD (speech_continuation audio_node) — для направления DOA.
-_VAD_TAIL_S = 1.5
 
-# Вейк-слова — одна таблица rob_box_dialog.knowledge (ADR-0150 PR-1); запасной копии на случай ImportError нет.
-from rob_box_voice.core.dialogue_text import (  # noqa: E402 — как соседние импорты после констант
-    DEFAULT_OPERATOR_WAKE_WORDS,
-    DEFAULT_WAKE_WORDS,
-    has_wake_word,
-    resolve_wake_word_namespaces,
-    strip_wake_word,
-)
+# Вейк-слова — одна таблица rob_box_dialog (ADR-0150 PR-1/PR-5): адресация решает address, своих копий нет.
+from rob_box_dialog import address  # noqa: E402 — как соседние импорты после констант
+from rob_box_voice.core.dialogue_text import has_wake_word, strip_wake_word  # noqa: E402
 
 from rob_box_core.utterance import Utterance as SpokenUtterance
 
@@ -296,7 +289,7 @@ class STTNode(Node):
         # dialogue_node.py лежало 13 вариантов, в четырёх YAML — 21, в
         # e2e-конфиге — те же 13. Тот самый класс ошибки, из-за которого
         # завели #1252 и заплатили #1734.
-        self.declare_parameter("wake_words", list(DEFAULT_WAKE_WORDS))
+        self.declare_parameter("wake_words", address.wake_words()[0])
         # #1990 (оператор-agent 05) — SSoT wake-слов: config/wake_words.yaml
         # (docker, монтируется в /config). Ключ wake_words остаётся фолбеком
         # для dev-env/юнит-тестов без файла; wake_words_file при наличии
@@ -399,11 +392,7 @@ class STTNode(Node):
         # и operator (wake-поток шлема, /avatar/stt/result). Источник — файл
         # wake_words_file (SSoT); без файла — кодовые фолбеки (тот же список).
         _wake_file = str(self.get_parameter("wake_words_file").value or "")
-        self.wake_words, self.operator_wake_words = resolve_wake_word_namespaces(
-            _wake_file,
-            personality_fallback=self.wake_words or list(DEFAULT_WAKE_WORDS),
-            operator_fallback=DEFAULT_OPERATOR_WAKE_WORDS,
-        )
+        self.wake_words, self.operator_wake_words = address.wake_words(_wake_file, self.wake_words)
         self.wake_words = list(self.wake_words)
         self.operator_wake_words = list(self.operator_wake_words)
         # #1990 — источник текущей обрабатываемой фразы (для boop/barge-гейтов).
@@ -843,7 +832,7 @@ class STTNode(Node):
         # ADR-0150 PR-5: id фразы (хеш PCM) и окно её звучания известны до STT — partial с вейком уже
         # несёт их в /dialog/interrupt_request. Окно с запасом на хвост VAD audio_node.
         self._active_utterance_id = compute_utterance_id(audio_bytes)
-        self._phrase_window = (time.time() - duration - _VAD_TAIL_S, time.time())
+        self._phrase_window = (time.time() - duration - address.VAD_TAIL_S, time.time())
         # wake-поток — фоновый слушатель: стейт /voice/stt/state не дёргаем
         # (иначе спамили бы recognizing/ready на каждый VAD-сегмент).
         if source != _SRC_WAKE:

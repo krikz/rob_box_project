@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 CommandNode - распознавание голосовых команд для управления роботом
-Подписывается: /voice/stt/utterance (rob_box_dialog_msgs/Utterance)
+Подписывается: /dialog/intent (rob_box_dialog_msgs/Intent) — решённое диалогом намерение (ADR-0150 PR-5)
 Публикует: /voice/command/intent (String), /voice/command/feedback (String)
 Action Clients: NavigateToPose, FollowPath
 
-REFACTORED: Now uses CommandParser from core module for intent classification
+Реплики сам не читает и не разбирает (ADR-0150 PR-5 #3694): адресацию, тишину и Tier-1 решает
+dialogue_node, сюда приходит только команда движения/статуса после допуска (``stop_motion``, ``move``…).
 
 The in-process cancel bridge that used to live here was removed by
 ADR-0086 (2026-09-09). ``handle_stop()`` cancels Nav2 goals via
@@ -18,14 +19,13 @@ from typing import Optional, Dict, List
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from rob_box_dialog_msgs.msg import Utterance
+from rob_box_dialog_msgs.msg import Intent
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 
-# Import from core module
-from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
-from rob_box_voice.core.coordinator_address import stt_log_label
+from rob_box_voice.core.command_intent import command_from_intent
+from rob_box_voice.core.command_parser import Command, IntentType
 
 
 class CommandNode(Node):
@@ -45,13 +45,8 @@ class CommandNode(Node):
         self.enable_follow = self.get_parameter('enable_follow').value
         self.enable_vision = self.get_parameter('enable_vision').value
 
-        # Subscribers
-        self.stt_sub = self.create_subscription(
-            Utterance,
-            '/voice/stt/utterance',
-            self.stt_callback,
-            10
-        )
+        # Subscribers: только решённые диалогом намерения (ADR-0150 PR-5)
+        self.intent_sub = self.create_subscription(Intent, '/dialog/intent', self.intent_callback, 10)
 
         # Subscribe to dialogue state (чтобы не мешать диалогу)
         self.dialogue_state_sub = self.create_subscription(
@@ -78,10 +73,6 @@ class CommandNode(Node):
             self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.current_goal_handle = None  # Для отмены текущего goal
 
-        # CommandParser from core module (replaces _build_command_patterns);
-        # вейк-слова — по умолчанию из одной таблицы rob_box_dialog.knowledge.
-        self.command_parser = CommandParser(confidence_base=0.8)
-
         # Waypoints — deprecated: dynamic waypoints are now managed via MCP tools
         # (save_waypoint, list_waypoints, etc.) and stored in SQLite DB.
         # CommandNode regex-based navigation is a fallback; the LLM agent path
@@ -97,34 +88,15 @@ class CommandNode(Node):
         self.dialogue_state = msg.data
         self.get_logger().debug(f'📊 Dialogue state: {self.dialogue_state}')
 
-    def stt_callback(self, msg: Utterance):
-        """Обработка распознанной речи (``Utterance``, ADR-0150 PR-2)."""
-        text = stt_log_label(msg)
-        if not text:
+    def intent_callback(self, msg: Intent):
+        """Намерение после допуска диалогом (``/dialog/intent``): исполнить."""
+        command = command_from_intent(msg)
+        if command is None:
+            self.get_logger().warn(f'⚠️ Неизвестное намерение: kind={msg.kind!r}')
             return
-
-        self.get_logger().info(f'🎤 STT: {text}')
-
-        # Use CommandParser to parse command (includes wake word removal)
-        command = self.command_parser.parse(text)
-
-        # Всегда публиковать intent (даже UNKNOWN) для dialogue_node
+        self.get_logger().info(
+            f'🎯 Intent: {msg.kind} epoch={msg.epoch} entities={command.entities} text={command.text[:60]!r}')
         self.publish_intent(command)
-
-        if command.intent == IntentType.UNKNOWN:
-            self.get_logger().debug(f'🤷 Неизвестная команда - передаю dialogue_node: {text}')
-            # Не выполняем команду, но публикуем intent=UNKNOWN для dialogue
-            return
-
-        if command.confidence < self.confidence_threshold:
-            self.get_logger().warn(f'⚠️ Низкая уверенность: {command.confidence:.2f}')
-            self.publish_feedback('Я не уверен, что правильно понял')
-            return
-
-        self.get_logger().info(f'🎯 Intent: {command.intent.value} ({command.confidence:.2f})')
-        self.get_logger().info(f'📦 Entities: {command.entities}')
-
-        # Выполнить команду
         self.execute_command(command)
 
     def execute_command(self, command: Command):

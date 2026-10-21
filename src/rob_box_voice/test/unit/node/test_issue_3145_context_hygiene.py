@@ -207,7 +207,6 @@ class TestUserWordsVerbatimInHistory:
         node._dispatch_cleaned(
             clean="горный король погромче", was_idle=False,
             speaker_tag=None, speaker_duration_s=0.0, from_tg=False,
-            backlog_pending=False,
         )
         args, _kwargs = node._dispatch_turn.call_args
         assert args[0] == "горный король погромче"
