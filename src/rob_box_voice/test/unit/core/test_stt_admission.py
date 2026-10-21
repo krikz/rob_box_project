@@ -22,7 +22,7 @@ Pure-Python — no ROS2, no rclpy. Covers:
   - :class:`CommandIntentGateStep` — TG bypass, command_parser path.
   - :class:`NewSessionStep` — host ``reset_session`` path.
   - :class:`BacklogFlushStep` — host flag set + always PASS.
-  - :class:`BargeInClassifyStep` — REPLACE/OFF vs ``classify`` policy.
+  - :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет (ADR-0150 PR-5).
   - :class:`DispatchTriggerStep` — FSM + sfx chain.
 * ``default_steps()`` order matches legacy inline branches.
 * ``SttContext.backlog_pending`` snapshot semantics.
@@ -37,9 +37,7 @@ from typing import Dict, List, Optional, Tuple
 import pytest
 
 from rob_box_voice.core.stt_admission import (
-    DEFAULT_BARGE_IN_POLICY,
     BacklogFlushStep,
-    BargeInClassifyStep,
     CommandIntentGateStep,
     DispatchTriggerStep,
     EmptyTextStep,
@@ -53,6 +51,7 @@ from rob_box_voice.core.stt_admission import (
     SttContext,
     SttOutcomeKind,
     StripWakeWordStep,
+    TakeTurnStep,
     WakeWordStep,
     default_steps,
     drop,
@@ -210,8 +209,6 @@ class _RecordingHost:
         handle_command_intent_match: bool = False,
         reset_session_match: bool = False,
         accumulate: bool = True,
-        quick_decide: Tuple[str, bool, bool] = ("replace", False, False),
-        live_task_alive: bool = False,
         state_idle: bool = True,
         music_stop_overrides: Tuple[str, ...] = (),
         silence_phrases: Tuple[str, ...] = ("замолчи",),
@@ -224,14 +221,11 @@ class _RecordingHost:
         self._handle_command_intent_match = handle_command_intent_match
         self._reset_session_match = reset_session_match
         self._accumulate = accumulate
-        self._quick_decide = quick_decide
-        self._live_task_alive = live_task_alive
         self._state_idle = state_idle
         self._music_stop_overrides = music_stop_overrides
         self._silence_phrases = silence_phrases
         self._media_command = media_command
-        self.enqueued: List[str] = []
-        self.cancel_calls: List[bool] = []
+        self.take_turn_count = 0
         self.publish_state_count = 0
         self.thinking_sfx_count = 0
 
@@ -273,22 +267,9 @@ class _RecordingHost:
     def flush_pending_backlog(self) -> None:
         self.calls.append("flush_pending_backlog")
 
-    def quick_decide_verdict(
-        self, clean: str
-    ) -> Tuple[str, bool, bool]:
-        self.calls.append(f"quick_decide({clean!r})")
-        return self._quick_decide
-
-    def enqueue_pending(self, clean: str) -> bool:
-        self.calls.append(f"enqueue_pending({clean!r})")
-        if not self._live_task_alive:
-            return False
-        self.enqueued.append(clean)
-        return True
-
-    def cancel_inflight(self, stop_tts: bool) -> None:
-        self.calls.append(f"cancel_inflight(stop_tts={stop_tts})")
-        self.cancel_calls.append(stop_tts)
+    def take_turn(self) -> None:
+        self.calls.append("take_turn")
+        self.take_turn_count += 1
 
     def transition_idle_to_wake(self) -> bool:
         self.calls.append("transition_idle_to_wake")
@@ -562,8 +543,7 @@ class TestMediaCommandStep:
         assert out.step_name == "media_command"
         assert "handle_media_command('играй громче')" in host.calls
         assert "transition_stt_result" not in host.calls
-        assert "quick_decide('играй громче')" not in host.calls
-        assert host.cancel_calls == []
+        assert host.take_turn_count == 0
 
     def test_pipeline_tg_reaches_router(self) -> None:
         ctx = _ctx(
@@ -575,21 +555,16 @@ class TestMediaCommandStep:
         assert out.kind is SttOutcomeKind.HANDLED
         assert out.step_name == "media_command"
 
-    def test_router_runs_before_classify_queue(self) -> None:
-        # HA core#139415: при barge_in_policy=classify команда во время хода
-        # не должна уйти в очередь PENDING_LLM — роутер стоит раньше.
+    def test_router_runs_before_take_turn(self) -> None:
+        # HA core#139415: медиакоманду закрывает роутер, ход в полёте она
+        # не отменяет (громкость не рвёт идущий ответ).
         ctx = _ctx(
             text="робот потише", text_lower="робот потише", skip_counter={},
         )
-        host = _RecordingHost(
-            media_command=True,
-            quick_decide=("pending_llm", False, True),
-            live_task_alive=True,
-        )
-        steps = default_steps(barge_in_policy="classify")
-        out = SttAdmission(steps=steps).evaluate(ctx, host)  # type: ignore[arg-type]
+        host = _RecordingHost(media_command=True)
+        out = SttAdmission(steps=default_steps()).evaluate(ctx, host)  # type: ignore[arg-type]
         assert out.kind is SttOutcomeKind.HANDLED
-        assert host.enqueued == []
+        assert host.take_turn_count == 0
 
 
 class TestBacklogFlushStep:
@@ -613,60 +588,14 @@ class TestBacklogFlushStep:
         assert "flush_pending_backlog" not in host.calls
 
 
-class TestBargeInClassifyStep:
-    def test_replace_cancels_tts(self) -> None:
-        # ``barge_in_policy != "classify"`` (default REPLACE) — cancel
-        # in-flight turn with stop_tts=True unconditionally.
+class TestTakeTurnStep:
+    def test_takes_turn_and_passes(self) -> None:
+        # ADR-0150 §6.2 (PR-5): одна политика — ход в полёте отменяется,
+        # речь не трогается (рвёт её только ясная стоп-команда).
         host = _RecordingHost()
-        out = BargeInClassifyStep().apply(_ctx(), host)
+        out = TakeTurnStep().apply(_ctx(), host)
         assert out.kind is SttOutcomeKind.PASS
-        assert host.cancel_calls == [True]
-
-    def test_off_cancels_tts(self) -> None:
-        host = _RecordingHost()
-        out = BargeInClassifyStep(policy="off").apply(_ctx(), host)
-        assert out.kind is SttOutcomeKind.PASS
-        assert host.cancel_calls == [True]
-
-    def test_classify_ignore_drops(self) -> None:
-        host = _RecordingHost(quick_decide=("ignore", True, False))
-        out = BargeInClassifyStep(policy="classify").apply(
-            _ctx(text="фон", text_lower="фон"), host
-        )
-        assert out.kind is SttOutcomeKind.DROP
-        assert out.reason == "quick_decide_ignore"
-
-    def test_classify_pending_llm_enqueues(self) -> None:
-        host = _RecordingHost(
-            quick_decide=("pending_llm", False, True),
-            live_task_alive=True,
-        )
-        out = BargeInClassifyStep(policy="classify").apply(
-            _ctx(text="а ещё", text_lower="а ещё"), host
-        )
-        assert out.kind is SttOutcomeKind.HANDLED
-        assert out.reason == "pending_llm"
-        assert host.enqueued == ["а ещё"]
-
-    def test_classify_pending_llm_no_live_task_cancels_no_tts(self) -> None:
-        # No live task → orchestrator falls through to REPLACE-style
-        # cancel; for PENDING_LLM stop_tts=False (do not cut a
-        # playing segment). See legacy L2396-2398.
-        host = _RecordingHost(
-            quick_decide=("pending_llm", False, True),
-            live_task_alive=False,
-        )
-        out = BargeInClassifyStep(policy="classify").apply(
-            _ctx(text="а ещё", text_lower="а ещё"), host
-        )
-        assert out.kind is SttOutcomeKind.PASS
-        assert host.cancel_calls == [False]
-
-    def test_classify_replace_cancels_tts(self) -> None:
-        host = _RecordingHost(quick_decide=("replace", False, False))
-        out = BargeInClassifyStep(policy="classify").apply(_ctx(), host)
-        assert out.kind is SttOutcomeKind.PASS
-        assert host.cancel_calls == [True]
+        assert host.take_turn_count == 1
 
 
 class TestDispatchTriggerStep:
@@ -812,7 +741,7 @@ class TestOrchestrator:
             "NewSessionStep",
             "MediaCommandStep",
             "BacklogFlushStep",
-            "BargeInClassifyStep",
+            "TakeTurnStep",
             "DispatchTriggerStep",
         ]
 
@@ -842,8 +771,8 @@ class TestEndToEnd:
         assert "transition_idle_to_wake" in host.calls
         assert "transition_stt_result" in host.calls
         assert "trigger_thinking_sfx" in host.calls
-        # Cancel fired (BargeInClassifyStep with REPLACE).
-        assert host.cancel_calls == [True]
+        # Ход принят (TakeTurnStep): отмена хода в полёте, речь не рвётся.
+        assert host.take_turn_count == 1
 
     def test_full_pipeline_silenced_no_unsilence_drops(self) -> None:
         ctx = _ctx(
@@ -897,17 +826,6 @@ class TestEndToEnd:
         assert out.reason == "no_wake_word"
         # Counter incremented.
         assert ctx.skip_counter.get("no_wake_word") == 1
-
-
-# ---------------------------------------------------------------------------
-# DEFAULT_BARGE_IN_POLICY smoke
-# ---------------------------------------------------------------------------
-
-
-def test_default_barge_in_policy_is_replace() -> None:
-    # Mirrors the legacy ``getattr(self, "_barge_in_policy", "replace")``
-    # default. A change here is a regression.
-    assert DEFAULT_BARGE_IN_POLICY == "replace"
 
 
 # ---------------------------------------------------------------------------

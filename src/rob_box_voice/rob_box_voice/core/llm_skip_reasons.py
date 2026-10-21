@@ -25,8 +25,6 @@ class LLMSkipReason(str, Enum):
     MUSIC_STOP = "music_stop"
     COMMAND_INTENT = "command_intent"
     NEW_SESSION = "new_session"
-    QUICK_DECIDE_IGNORE = "quick_decide_ignore"
-    PENDING_LLM = "pending_llm"
     BACKLOG_ACCUMULATED = "backlog_accumulated"
     UNSILENCE = "unsilence"
     #: Issue #3134 — медиакоманду исполнил роутер кодом, LLM не нужна.

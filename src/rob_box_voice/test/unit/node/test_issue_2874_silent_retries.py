@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
@@ -65,7 +64,6 @@ def _make_node(replies):
     n._core.process_input = AsyncMock(side_effect=list(replies))
     n._dispatch_turn = MagicMock()
     n._reopen_dialogue_for_retry = MagicMock()
-    n._pending_user_messages = deque()
     n._loop = MagicMock()
     # Всё, что звучит: авто-TTS ответа хода + прямые фразы гуардов.
     n._tts = MagicMock()

@@ -59,7 +59,7 @@ speaker_id_node:
     # Issue #2750 — переключатель боевая/E2E БД (см. e2e_db_path выше).
     # false — дефолт мастерской. Меняется на роботе ТОЛЬКО E2E-харнессом:
     # ros2 param set /speaker_id_node e2e_mode true|false (тот же приём,
-    # что barge_in_policy у dialogue_node). Ручной ssh cp+DELETE FROM по
+    # что e2e_session_reset_token у dialogue_node). Ручной ssh cp+DELETE FROM по
     # боевой speakers.db, который этот параметр заменяет, — issue #2750.
     e2e_mode: false
     # Issue #2885 — прогрев resemblyzer в фоне сразу после старта ноды.

@@ -44,6 +44,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
+from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
@@ -116,10 +117,10 @@ from rob_box_voice.core.music_player_state import (
     parse_music_state,
 )
 from rob_box_voice.core.coordinator_address import skip_coordinator_tg
+from rob_box_voice.core.interrupt_request import InterruptGate
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
-    DEFAULT_BARGE_IN_POLICY,
     DefaultSttAdmission,
     MediaCommandStep,
     SttAdmission,
@@ -141,16 +142,6 @@ from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
     new_llm_skip_counter,
 )
-# ADR-0145 §4 (P1 step 1) -- ``quick_decide``/``QuickVerdict`` are no
-# longer imported here: the only call site
-# (``_DialogueSttHost.quick_decide_verdict``) moved to
-# :mod:`rob_box_voice.core.stt_admission_host`, which does its own
-# import. PR #3198 review caught that a stale re-export here would make
-# ``monkeypatch.setattr(dialogue_node, "quick_decide", ...)`` silently
-# stop intercepting the real call (vacuous test) -- see
-# ``test_barge_in_policy.py::test_replace_policy_never_calls_
-# quick_decide``, which now patches
-# ``rob_box_voice.core.stt_admission_host.quick_decide`` instead.
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
@@ -203,11 +194,7 @@ from rob_box_voice.core.stt_admission_host import (  # noqa: F401
     # ADR-0145 §4 (P1 step 1) -- moved out of this module (pure move, no
     # behaviour change); re-exported so ``from rob_box_voice.dialogue_node
     # import <name>`` keeps working for existing callers/tests.
-    # (``_PENDING_USER_MESSAGES_MAX`` has no other reference left in this
-    # module -- the queueing logic that used it now lives entirely in
-    # ``_DialogueSttHost.enqueue_pending`` -- hence the blanket noqa above.)
     _DialogueSttHost as _DialogueSttHost,
-    _PENDING_USER_MESSAGES_MAX as _PENDING_USER_MESSAGES_MAX,
 )
 from rob_box_voice.core.tars_status_feed import start_status_feeds
 from rob_box_voice.core.media_router import (
@@ -283,7 +270,6 @@ from rob_box_voice.observability import (
     init_tracing,
     is_metrics_enabled,
     record_barge_in,
-    record_pending_queue_latency,
     record_session_duration,
     record_task_updated,
     record_llm_prompt_tokens,
@@ -320,11 +306,6 @@ def _resolve_tts_voice_tag(
 ASYNCIO_LOOP_DRIVER_MAX_WORKERS: int = 1
 ASYNCIO_LOOP_DRIVER_NAME_PREFIX: str = "dialogue-async-loop"
 ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
-
-# ADR-0145 §4 (P1 step 1) -- ``_PENDING_USER_MESSAGES_MAX`` moved to
-# :mod:`rob_box_voice.core.stt_admission_host` together with
-# ``_DialogueSttHost`` (pure move, no behaviour change) and is
-# re-exported via the import above.
 
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
@@ -511,7 +492,7 @@ class DialogueNode(Node):
         init_tracing("dialogue_node")
         self._declare_params()
         # ADR-0066 §6.3 — ``voice_input_mode`` УДАЛЁН. Runtime-параметры
-        # (barge_in_policy, voice_preset, voice_output_language) логируются
+        # (voice_preset, voice_output_language) логируются
         # в parameters_callback без рестарта ноды.
         self.add_on_set_parameters_callback(self.parameters_callback)
         # ADR-0083 §2.3 — wiring ``dialogue_node`` через
@@ -586,12 +567,10 @@ class DialogueNode(Node):
             for p in (raw_phrases or self._DEFAULT_NEW_SESSION_PHRASES)
             if str(p).strip()
         )
-        self._barge_in_policy: str = self._resolve_barge_in_policy()
         # Issue #2628 / ADR-0021 R1 — STT admission pipeline (refactor
         # of the inline 12-branch barrier chain inside ``_on_stt``).
         # Built once at init, re-used on every ``/voice/stt/utterance``.
         self._stt_admission: SttAdmission = DefaultSttAdmission(
-            barge_in_policy=self._barge_in_policy,
             logger=self.get_logger(),
         )
 
@@ -609,14 +588,6 @@ class DialogueNode(Node):
         # Issue #2939 — ход, отменённый новой фразой: сессию у него уже
         # принял следующий ход, закрывать её (DIALOGUE_END) ему нельзя.
         self._handed_over_task: Optional[asyncio.Task] = None
-        # S7 (scheduler-segments-merge, issue #968) — phrases that arrive
-        # while a turn's LLM cycle is still in flight (barge_in_policy=
-        # "classify", quick_decide=PENDING_LLM) are queued here instead of
-        # starting a second concurrent turn. Drained as ONE follow-up turn
-        # from _run_turn's ``finally`` once the turn slot frees up again —
-        # see _on_stt / _drain_pending_user_messages. Each entry is
-        # (text, enqueued_at) so the drain can log queue latency.
-        self._pending_user_messages: "deque[tuple[str, float]]" = deque()
         self._vad_speech_detected: bool = False
         self._effects = EffectAwaiterRegistry(
             release_tts=lambda ev: self._loop.call_soon_threadsafe(ev.set),
@@ -829,26 +800,15 @@ class DialogueNode(Node):
             QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(2.0, self._provider_reporter.tick)
-        # Issue #1734 — единственный источник истины для barge_in_policy:
-        # latched (TRANSIENT_LOCAL) топик вместо ВТОРОГО параметра в
-        # stt_node.yaml. Дублирование параметра — ровно тот класс ошибки,
-        # который уже случился с wake_words (issue #1252, два YAML,
-        # разъехались) и который и породил issue #1734 (stt_node не знал
-        # про classify). TRANSIENT_LOCAL закрывает и «порядок старта нод»
-        # (поздний subscriber всё равно получает последний семпл), и
-        # «потерю отдельного сообщения» (durability держит семпл, пока
-        # жив этот publisher — а не полагается на «долетело/не долетело»
-        # одного datagram'а).
-        self._barge_in_policy_pub = self.create_publisher(
-            String,
-            "/voice/dialogue/barge_in_policy",
-            QoSProfile(
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                depth=1,
-            ),
-        )
-        self._publish_barge_in_policy()
+        # ADR-0150 §6.2 (PR-5 #3694) — перебивание речи решает диалог: stt_node на сегмент с вейком шлёт
+        # /dialog/interrupt_request, ясная стоп-команда рвёт речь личности текущей эпохи, остальное — нет
+        # (новая реплика встаёт после текущей). Политика перебивания одна, табличная, без параметра.
+        self._interrupt_gate = InterruptGate(
+            lambda reason: speech_client.cancel(
+                self, agent="personality", epoch=self._session_epoch_gate().current, reason=reason),
+            lambda: self._wake_words, self.get_logger().info)
+        self.create_subscription(InterruptRequest, "/dialog/interrupt_request", self._interrupt_gate.on_request,
+                                 qos_r, callback_group=cbg)
         # Music safety-net hook (issue #935): when the dialog ends and the
         # LLM forgot to call stop_music(), we still want playback to stop.
         # We publish a JSON payload on /mcp/music_cleanup so the MCP server
@@ -1238,11 +1198,6 @@ class DialogueNode(Node):
         self.declare_parameter("skill_tool_narrowing", False)
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
-        # Scheduler segments/MERGE plan (S1) — "replace" = today's behaviour
-        # (barge-in stops TTS unconditionally); "classify" = quick_decide
-        # routes the verdict (S4). Garbage value → warn + fall back to
-        # "replace" in _resolve_barge_in_policy().
-        self.declare_parameter("barge_in_policy", "replace")
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -1297,8 +1252,8 @@ class DialogueNode(Node):
         # gallery_growth_session_gap_sec у speaker_id_node (PR #2757) --
         # намеренно зеркалим значение, а не импортируем его: узлы это
         # разные процессы, общего источника правды для рантайм-параметра
-        # между ними в этом репо нет (см. семейство barge_in_policy/
-        # e2e_mode -- тот же паттерн: параметр каждого узла независим).
+        # между ними в этом репо нет (см. e2e_mode -- тот же паттерн:
+        # параметр каждого узла независим).
         #
         # Issue #2809 (живой прогон 35857257981): значение поднято с 30s до
         # 120s. 30s зеркалили gallery_growth_session_gap_sec, но паузы между
@@ -1421,16 +1376,8 @@ class DialogueNode(Node):
         оператора — ``/dialogue/control``.
 
         voice-vr 21 / ADR-0080 §2.7 — ``voice_preset`` /
-        ``voice_output_language`` УДАЛЕНЫ из dialogue_node; всё ещё
-        работает только ``barge_in_policy`` (issue #1734):
-        обновляет ``self._barge_in_policy`` и тут же перепубликует
-        его на latched-топик ``/voice/dialogue/barge_in_policy``
-        (``_publish_barge_in_policy``), чтобы stt_node узнал новое
-        значение немедленно, без рестарта — именно так этот параметр
-        меняли на роботе при воспроизведении бага #1734 (``ros2 param
-        set /dialogue_node barge_in_policy classify``). Невалидное
-        значение игнорируем и остаёмся на текущем — та же логика,
-        что в ``_resolve_barge_in_policy``.
+        ``voice_output_language`` УДАЛЕНЫ из dialogue_node; политика
+        перебивания — одна (ADR-0150 §6.2, PR-5), параметра у неё нет.
         """
         for param in params:
             if param.name == "e2e_session_reset_token":
@@ -1439,20 +1386,6 @@ class DialogueNode(Node):
                         successful=False,
                         reason="issue 2890: e2e session reset failed",
                     )
-            elif param.name == "barge_in_policy":
-                raw = str(param.value or "replace").strip().lower()
-                if raw not in self._BARGE_IN_POLICIES:
-                    self.get_logger().warning(
-                        f"⚠️ [issue 1734] barge_in_policy={raw!r} — unknown, "
-                        f"ignoring runtime change (valid: {self._BARGE_IN_POLICIES})"
-                    )
-                    continue
-                self._barge_in_policy = raw
-                self._publish_barge_in_policy()
-                self.get_logger().info(
-                    f"🔄 [issue 1734] barge_in_policy changed to {raw!r} "
-                    f"(republished to stt_node)"
-                )
             else:
                 # voice-vr 21: ``voice_preset`` / ``voice_output_language``
                 # удалены из declare_parameters; их SetParameters не должен
@@ -1820,52 +1753,9 @@ class DialogueNode(Node):
             except Exception:
                 pass
             return store
-    _BARGE_IN_POLICIES = ("replace", "classify")
 
     # ADR-0066 §6.3 — ``_DEFAULT_VOICE_PRESETS_FILE`` УДАЛЁН вместе с
     # AV-28 (формализация пресета переехала в grip_pipeline супервизора).
-
-    def _resolve_barge_in_policy(self) -> str:
-        """Resolve ``barge_in_policy`` (S1, scheduler-segments-merge plan).
-
-        ``"replace"`` (default) — today's behaviour: new STT input always
-        stops TTS. ``"classify"`` — routes through ``quick_decide`` (S4).
-        Any other value is a config typo, not a valid opt-in — warn and
-        fall back to ``"replace"`` rather than silently misbehave.
-        """
-        raw = str(self.get_parameter("barge_in_policy").value or "replace").strip().lower()
-        if raw not in self._BARGE_IN_POLICIES:
-            self.get_logger().warning(
-                f"⚠️ barge_in_policy={raw!r} — unknown, falling back to 'replace' "
-                f"(valid: {self._BARGE_IN_POLICIES})"
-            )
-            return "replace"
-        return raw
-
-    def _publish_barge_in_policy(self) -> None:
-        """Публикует действующий ``barge_in_policy`` для stt_node (issue #1734).
-
-        stt_node НЕ хранит этот параметр в своём YAML (см. комментарий у
-        ``_barge_in_policy_pub`` в ``__init__``) — единственный способ
-        узнать актуальное значение это latched-топик
-        ``/voice/dialogue/barge_in_policy``. Вызывается один раз при
-        старте (сразу после создания паблишера — TRANSIENT_LOCAL
-        сохранит семпл для подписчиков, стартовавших позже) и повторно
-        из ``parameters_callback`` на каждое runtime-изменение через
-        ``ros2 param set /dialogue_node barge_in_policy ...`` — именно
-        так баг #1734 воспроизводили на роботе, и теперь это реально
-        доходит до stt_node без рестарта.
-
-        ``getattr``-guard: тесты строят ``DialogueNode`` через
-        ``object.__new__`` (см. ``test_barge_in_policy.py``) и не всегда
-        создают паблишер — тогда просто ничего не публикуем.
-        """
-        pub = getattr(self, "_barge_in_policy_pub", None)
-        if pub is None:
-            return
-        msg = String()
-        msg.data = self._barge_in_policy
-        pub.publish(msg)
 
     def _mcp_turn_context(self) -> dict:
         """Контекст хода для скрытых аргументов MCP-тулов (issue #2842).
@@ -2824,10 +2714,7 @@ class DialogueNode(Node):
         # ``self._stt_admission = DefaultSttAdmission(...)``.
         admission = getattr(self, "_stt_admission", None)
         if admission is None:
-            admission = DefaultSttAdmission(
-                barge_in_policy=getattr(self, "_barge_in_policy", "replace"),
-                logger=self.get_logger(),
-            )
+            admission = DefaultSttAdmission(logger=self.get_logger())
             self._stt_admission = admission
         ctx = SttContext(
             raw=raw_text,
@@ -4505,14 +4392,6 @@ tentative_plan(question, kind, name)
                     leftover_identity_question = (
                         self._identity_ack_state().take_held()
                     )
-            # S7 (scheduler-segments-merge, issue #968) — drain any user
-            # phrases that arrived while THIS turn's LLM cycle was in
-            # flight (barge_in_policy=classify, quick_decide=PENDING_LLM,
-            # see _on_stt). Must run AFTER the slot is cleared above so
-            # the drained turn's own _run_turn re-entry sees a free
-            # _run_task. Multiple queued phrases are glued into ONE
-            # follow-up turn, never N.
-            pending_queue_dispatched = self._drain_pending_user_messages()
             # Issue #935 v3: if LLM called stop_music(), defer cleanup until
             # TTS finishes.  Otherwise keep music playing until next dialogue.
             # Issue #992: a second stop_music() call from a follow-up LLM
@@ -4571,15 +4450,11 @@ tentative_plan(question, kind, name)
             # LLM gate fires; otherwise the synthetic prompt is
             # classified as STT_RESULT but the state stays in IDLE
             # (no-op), and the user never hears the retry answer.
-            # S7 — same reasoning for a drained pending-queue follow-up
-            # turn: it is a continuation of the same session, not the
-            # end of it.
             # Issue #2631 (ADR-0021 R1) — DIALOGUE_END decision
             # (CC=5 ветка) вынесен в helper. Сигнатура и поведение
             # идентичны inline-блоку.
             self._finalize_turn_dsm(
                 guard_retry_pending=guard_retry_pending,
-                pending_queue_dispatched=pending_queue_dispatched,
                 tool_retry_dispatched=tool_retry_dispatched,
                 session_handed_over=self._take_session_handover(),
             )
@@ -5354,7 +5229,7 @@ tentative_plan(question, kind, name)
     # один семантический шаг pipeline'а без изменения поведения. Сигнатура
     # ``_run_turn`` (kwargs + return None) и публичные методы узла
     # остаются без изменений — тесты используют ``node._run_turn(...)``
-    # напрямую (см. ``test_dialogue_shell.py``, ``test_barge_in_policy.py``).
+    # напрямую (см. ``test_dialogue_shell.py``).
     def _reset_turn_retry_budgets(self, *, is_synthetic: bool) -> None:
         """Issue #1881 / #2266 / #2631 — сброс retry-флагов на user-turn.
 
@@ -5519,7 +5394,6 @@ tentative_plan(question, kind, name)
         self,
         *,
         guard_retry_pending: bool,
-        pending_queue_dispatched: bool,
         tool_retry_dispatched: bool,
         session_handed_over: bool = False,
     ) -> None:
@@ -5530,8 +5404,6 @@ tentative_plan(question, kind, name)
         * DSM в ``DIALOGUE`` (нет смысла «закрывать» сессию, которой нет),
         * ни один guard не запланировал синхронный/отложенный retry
           (``guard_retry_pending`` / ``tool_retry_dispatched``),
-        * очередь pending-сообщений не была слита в follow-up turn
-          (``pending_queue_dispatched``),
         * ход не отменён новой фразой (``session_handed_over``, issue
           #2939): её приём уже перевёл DSM в DIALOGUE для СЛЕДУЮЩЕГО хода.
 
@@ -5543,7 +5415,6 @@ tentative_plan(question, kind, name)
         if (
             self._dsm.current_state == DialogueStateKind.DIALOGUE
             and not guard_retry_pending
-            and not pending_queue_dispatched
             and not tool_retry_dispatched
             and not session_handed_over
         ):
@@ -7404,61 +7275,6 @@ tentative_plan(question, kind, name)
         self._publish_state()
         self._speak_direct("Хорошо, молчу.")
 
-    def _drain_pending_user_messages(self) -> bool:
-        """S7 (scheduler-segments-merge, issue #968) — dispatch queued
-        phrases as ONE follow-up turn.
-
-        Phrases accumulate in ``self._pending_user_messages`` while a
-        turn's LLM cycle was in flight (barge_in_policy=classify,
-        quick_decide=PENDING_LLM verdict — see ``_on_stt``). Called from
-        ``_run_turn``'s ``finally`` once ``self._run_task`` has been
-        cleared, so the drained turn's own ``_run_turn`` re-entry finds
-        a free slot. Multiple accumulated phrases are glued into ONE
-        turn (newline-joined), never N — dispatching N follow-up turns
-        would just recreate the concurrency problem S7 exists to avoid.
-
-        Returns True when a follow-up turn was dispatched (the caller
-        must then suppress this turn's own DIALOGUE_END — the drained
-        turn is a continuation, not the end of the session).
-
-        getattr-guarded like ``_speech_accumulator`` elsewhere in this
-        class: this is called unconditionally from every ``_run_turn``,
-        and plenty of existing unit tests build a ``DialogueNode`` via
-        ``object.__new__`` (bypassing ``__init__``) without setting
-        every optional attribute — a missing queue must mean "nothing
-        to drain", not an ``AttributeError`` that breaks the turn.
-        """
-        queue = getattr(self, "_pending_user_messages", None)
-        if not queue:
-            return False
-        queued = list(queue)
-        queue.clear()
-        texts = [text for text, _enqueued_at in queued]
-        now = time.monotonic()
-        oldest_ts = min(ts for _text, ts in queued)
-        queue_latency_ms = (now - oldest_ts) * 1000
-        combined = "\n".join(texts)
-        self.get_logger().info(
-            f"📤 [S7] draining {len(texts)} pending message(s), "
-            f"queue_latency={queue_latency_ms:.0f}ms: {combined[:120]!r}"
-        )
-        # W2-6 (issue #968) — гистограмма queue-latency: по одному
-        # наблюдению на КАЖДУЮ отложенную фразу (не только самую
-        # старую) — так распределение отражает реальный разброс, а не
-        # только worst-case первой фразы в пачке. Цель — ≤ 200мс
-        # (см. docstring record_pending_queue_latency).
-        if is_metrics_enabled():
-            try:
-                for _text, enqueued_at in queued:
-                    record_pending_queue_latency(now - enqueued_at)
-            except Exception as _metric_exc:  # noqa: BLE001
-                self.get_logger().debug(
-                    f"⚠️ [metrics] record_pending_queue_latency failed: "
-                    f"{_metric_exc!r}"
-                )
-        self._dispatch_turn(combined, raw_user_command=combined)
-        return True
-
     def _reset_dialogue_session(self, *, announce: bool = True):
         """Issue #XXXX — сброс текущей диалоговой сессии.
 
@@ -7498,14 +7314,6 @@ tentative_plan(question, kind, name)
             except Exception:  # noqa: BLE001
                 pass
         self._pending_backlog_flush = False
-        # 2a. S7 (scheduler-segments-merge) — очередь фраз, накопленных
-        # пока предыдущий турн был в полёте, тоже принадлежит старой
-        # сессии — сбрасываем вместе с бэклогом. getattr-guard — как и
-        # для _speech_accumulator выше: тестовые фикстуры на
-        # object.__new__(DialogueNode) не всегда проходят __init__.
-        pending_queue = getattr(self, "_pending_user_messages", None)
-        if pending_queue is not None:
-            pending_queue.clear()
         # 3. DSM → IDLE из любого состояния (rescue path).
         try:
             self._dsm.reset(DialogueStateKind.IDLE)
@@ -7658,10 +7466,9 @@ tentative_plan(question, kind, name)
         ``hand_over=True`` (issue #2939) — отмена ради новой фразы, которая
         сама продолжит сессию: отменённый ход не должен её закрывать.
 
-        S1.2 (scheduler-segments-merge, R1) — cancelling the turn and
-        muting TTS used to be one inseparable action. ``barge_in_policy=
-        "classify"`` (S1.3) needs to cancel the turn WITHOUT stopping
-        TTS, so a new user phrase doesn't cut off a segment mid-sentence.
+        ADR-0150 §6.2 (PR-5) — новая адресованная фраза отменяет ход
+        БЕЗ остановки речи (``stop_tts=False``): текущая реплика
+        дочитывается, ответ нового хода встаёт после неё.
         ``stop_tts=False`` must still release the TTS/sound awaiters —
         skipping that hangs ``speak_helpers._tts_events`` forever and the
         robot never speaks again.

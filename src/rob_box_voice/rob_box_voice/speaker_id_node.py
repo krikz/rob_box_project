@@ -34,8 +34,8 @@ guard" в ADR-0128):
     e2e_mode (bool) — переключить активную БД дикторов db_path ↔
         e2e_db_path. Владелец — только E2E-харнесс
         (``ros2 param set /speaker_id_node e2e_mode true|false``, по
-        образцу ``ros2 param set /dialogue_node barge_in_policy classify``
-        из ``scripts/e2e/run_night_marathon.sh``). См. ``parameters_callback``
+        образцу ``ros2 param set /dialogue_node e2e_session_reset_token …``
+        из E2E-харнесса). См. ``parameters_callback``
         / ``_apply_e2e_mode``.
 
 Parameters:
@@ -401,9 +401,9 @@ class SpeakerIdNode(Node):
         # единого прикосновения к боевому файлу.
         self.declare_parameter("e2e_db_path", "/data/speakers.e2e.db")
         # Runtime-переключатель (см. докстринг модуля). Bool, а не топик —
-        # семейный шаблон уже есть в репозитории (``barge_in_policy`` у
-        # dialogue_node, ``ros2 param set`` в докстринге
-        # run_night_marathon.sh): синхронный ответ вызывающему (успех/провал
+        # семейный шаблон уже есть в репозитории (``e2e_session_reset_token``
+        # у dialogue_node, ``ros2 param set`` из E2E-харнесса): синхронный
+        # ответ вызывающему (успех/провал
         # виден тут же в exit-коде ``ros2 param set``), не требует своего
         # ROS-типа сообщения и не всплывает в seam_without_consumer как
         # «топик без потребителя», потому что consumer — сам параметр, а не
@@ -479,7 +479,7 @@ class SpeakerIdNode(Node):
             f"gallery_warmup_size={gallery_warmup_size} "
             f"gallery_growth_session_gap_sec={self._growth_session_gap_sec}"
         )
-        # Issue #2750 — тот же шаблон, что dialogue_node (barge_in_policy)
+        # Issue #2750 — тот же шаблон, что dialogue_node (e2e_session_reset_token)
         # и tts_node (volume_db и др.): валидирующий Humble-колбэк, тело
         # которого делает синхронный побочный эффект (там — перечитать
         # громкость/скорость, здесь — переоткрыть БД). Не топик: топик с
@@ -1489,8 +1489,8 @@ class SpeakerIdNode(Node):
         колбэк, вызываемый ДО применения значения, обязан вернуть
         ``SetParametersResult``. Побочный эффект (переключение активной БД)
         прямо внутри валидатора — тот же компромисс, что уже живёт в
-        ``dialogue_node.parameters_callback`` (``barge_in_policy`` тут же
-        переоткрывает состояние ноды) и ``tts_node.parameters_callback``
+        ``dialogue_node.parameters_callback`` (``e2e_session_reset_token``
+        тут же сбрасывает сессию) и ``tts_node.parameters_callback``
         (``volume_db``/``pitch_shift``/voice-параметры применяются
         синхронно) — один и тот же ROS2-паттерн этого репозитория, не
         отдельное изобретение под эту задачу.
@@ -1504,10 +1504,8 @@ class SpeakerIdNode(Node):
         не видит), заслуженно падал как «шов без потребителя». Параметр
         сильнее и по существу: ``ros2 param set`` синхронный и возвращает
         успех/провал вызывающему в exit-коде, а ``e2e_mode`` объявлен
-        (``declare_parameter``) — тот же приём, что ``barge_in_policy`` у
-        dialogue_node (см. докстринг ``run_night_marathon.sh``:
-        ``ssh <robot> 'ros2 param set /dialogue_node barge_in_policy
-        classify'``).
+        (``declare_parameter``) — тот же приём, что ``e2e_session_reset_token``
+        у dialogue_node (``ros2 param set`` из E2E-харнесса).
 
         Только ``e2e_mode``, ``name_confidence_band_high`` и
         ``name_confidence_min_gap`` имеют побочный эффект; остальные

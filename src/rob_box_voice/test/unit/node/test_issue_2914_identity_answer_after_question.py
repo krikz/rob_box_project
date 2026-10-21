@@ -13,8 +13,8 @@ Issue #2914 — повторный вопрос «<Имя>, это ты?» «о�
 ``_resolve_pending_tentative_answer`` из ``_handle_tentative_speaker``,
 то есть на ЛЮБОМ ходе, прошедшем через ``_apply_speaker_identity``.
 Сразу после выдачи вопроса ``_run_turn`` в ``finally`` запускает
-следующий ход без новой реплики человека — дренаж очереди фраз,
-пришедших ПОКА шёл ход (S7, ``_drain_pending_user_messages``), или
+следующий ход без новой реплики человека — тогда это был дренаж очереди
+фраз, пришедших ПОКА шёл ход (S7; удалён в ADR-0150 PR-5), или
 синтетический ретрай гарда. У такого хода ``utterance_id=None``, снимок
 диктора — всё тот же tentative «Саша», и его текст (фраза, сказанная ДО
 вопроса, или служебный промпт ретрая) читался как ответ и закрывал
@@ -156,8 +156,7 @@ def _node():
     n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
     n._retry_dispatched_in_turn = False
-    # S7 — настоящий дренаж очереди; следующий ход ловим, а не пускаем.
-    n._pending_user_messages = []
+    # Следующий ход (ретрай гарда) ловим, а не пускаем.
     n.dispatched = []
     n._dispatch_turn = MagicMock(
         side_effect=lambda text, **kw: n.dispatched.append((text, kw))
@@ -209,45 +208,6 @@ def _second_question_asked(n, clock):
 
 
 class TestAnswerOnlyFromReplyAfterQuestion:
-    def test_drained_phrase_from_asking_turn_is_not_the_answer(self, clock):
-        """Регресс n705/n706: фраза, пришедшая пока шёл ход n705 (S7),
-        дренируется сразу после вопроса — это не ответ на него."""
-        n = _node()
-        n.llm_reply = "С возвращением!"
-        _turn(n, "робот ты меня узнаешь", utterance_id="utt-702")
-        clock.now += 57.0
-        _turn(n, "да это я", utterance_id="utt-703")
-        clock.now += 66.5
-        _turn(n, "что ты обо мне запомнил", utterance_id="utt-704")
-        clock.now += 210.0
-        # Во время хода n705 STT прислал ещё одну фразу — она в очереди S7.
-        n._pending_user_messages.append((N705_TEXT, clock.now))
-        n.llm_reply = N705_LLM
-        _turn(n, N705_TEXT, utterance_id="utt-705")
-        assert n.tts[-1] == QUESTION
-        # Дренаж сразу после вопроса — ход без utterance_id.
-        assert len(n.dispatched) == 1
-        text, kw = n.dispatched[0]
-        assert kw.get("utterance_id") is None
-
-        clock.now += 0.024
-        n.llm_reply = "Я тут."
-        _turn(n, text, **kw)
-
-        assert len(_answer_lines(n)) == 1, _answer_lines(n)
-        assert _state(n)["confirmed"] is None
-
-        # Настоящий ответ n706 — следующая реплика человека.
-        clock.now += 62.5
-        n.llm_reply = "Понял, извини."
-        _turn(n, N706_TEXT, utterance_id="utt-706")
-
-        lines = _answer_lines(n)
-        assert len(lines) == 2, lines
-        assert "answer=False -> confirmed=False" in lines[-1]
-        assert _state(n)["confirmed"] is False
-        assert n._current_speaker.get("name") is None
-
     def test_synthetic_retry_after_question_is_not_the_answer(self, clock):
         """Синтетический ретрай гарда после вопроса (без новой реплики)."""
         n = _node()
