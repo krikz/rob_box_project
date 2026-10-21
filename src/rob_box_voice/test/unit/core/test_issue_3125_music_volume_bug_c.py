@@ -12,11 +12,10 @@
     повтор в том же ходе успешен, но правило #2966 (``tool_error_occurred``)
     сочло ход провалом → Bug C.
 
-Issue #3134: (a) и (b) больше не доходят до LLM и до ``MusicGuard`` —
-реплику закрывает роутер медиакоманд (``core/media_router.py``), поэтому
-исключение Bug C для громкости (``_music_volume_skip_reason``) удалено, а
-детектор переехал в ``core/media_command_grammar.py``. Здесь — что эти
-живые строки действительно закрываются роутером. (c) #3004 жил в
+Issue #3134: (a) и (b) больше не доходят до LLM и до ``MusicGuard``.
+ADR-0150 PR-6 (#3696): громкость и её канал по снимку решает Tier-1
+``rob_box_dialog.grammar`` (раньше — медиа-грамматика роутера). Здесь — что
+эти живые строки действительно закрываются Tier-1 на канал музыки. (c) #3004 жил в
 ``MusicGuard`` и удалён вместе с ним (ADR-0149 PR-13a).
 """
 
@@ -24,12 +23,10 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.media_command_grammar import (
-    MediaIntent,
-    extract_user_utterance,
-    parse_media_command,
-)
-from rob_box_voice.core.media_router import MediaRouter, MediaState
+from rob_box_dialog.grammar import match
+from rob_box_dialog.session import MusicStateRef, SessionSnapshot
+
+from rob_box_voice.core.media_command_grammar import extract_user_utterance
 
 # --- дословные строки из живого лога ---------------------------------------
 
@@ -66,9 +63,15 @@ LIVE_B_SPOKEN = (
 LIVE_C_USER_INPUT = _DJ_WRAPPER + "сыграй в пещере гороного короля погромче"
 
 
-# --- детектор просьбы о громкости (теперь грамматика роутера) --------------
+# --- детектор просьбы о громкости (теперь Tier-1 rob_box_dialog.grammar) ----
 
-_PLAYING = MediaState(music_playing=True, track_name="Still Dre")
+_PLAYING = SessionSnapshot(agent="personality", session_id="t", epoch=0, started_at=0.0,
+                           music=MusicStateRef("playing", title="Still Dre"))
+
+
+def _volume(text: str):
+    command = match(extract_user_utterance(text), _PLAYING)
+    return command if command is not None and command.kind == "volume" else None
 
 
 class TestVolumeRequestDetector:
@@ -86,9 +89,9 @@ class TestVolumeRequestDetector:
         ],
     )
     def test_pure_volume_requests(self, text: str) -> None:
-        cmd = parse_media_command(text)
-        assert cmd.intent in (MediaIntent.VOLUME_UP, MediaIntent.VOLUME_DOWN)
-        assert cmd.closed
+        cmd = _volume(text)
+        assert cmd is not None and cmd.args["action"] in ("louder", "quieter")
+        assert cmd.args["channel"] == "music"
 
     @pytest.mark.parametrize(
         "text",
@@ -103,9 +106,7 @@ class TestVolumeRequestDetector:
     def test_not_volume_requests(self, text: str) -> None:
         # Issue #3176: «сыграй бетховена» теперь заказ по имени
         # (PLAY_NAMED, решает база мелодий), но по-прежнему НЕ громкость.
-        assert parse_media_command(text).intent not in (
-            MediaIntent.VOLUME_UP, MediaIntent.VOLUME_DOWN, MediaIntent.VOLUME_MAX
-        )
+        assert _volume(text) is None
 
     def test_extract_strips_tags_and_trailing_blocks(self) -> None:
         assert extract_user_utterance(LIVE_A_USER_INPUT) == "играй громче"
@@ -115,22 +116,19 @@ class TestVolumeRequestDetector:
         )
 
 
-class TestLiveAB_ClosedByRouter:
-    """(a)/(b) — до LLM не доходят: set_music_volume вызывает код."""
+class TestLiveAB_ClosedByTier1:
+    """(a)/(b) — до LLM не доходят: set_music_volume вызывает код (Tier-1, канал музыки)."""
 
     @pytest.mark.parametrize(
         "text", ["[TG] играй громче", "[TG] играй трей кромче а не говори громче"]
     )
-    def test_router_calls_set_music_volume(self, text: str) -> None:
-        plan = MediaRouter().route(text, _PLAYING)
-        assert plan is not None
-        assert [(c.name, c.arguments) for c in plan.tool_calls] == [
-            ("set_music_volume", {"action": "louder"})
-        ]
+    def test_tier1_picks_music_channel(self, text: str) -> None:
+        cmd = _volume(text)
+        assert cmd is not None and dict(cmd.args) == {"action": "louder", "channel": "music"}
 
     def test_named_track_order_still_goes_to_llm(self) -> None:
-        # «сыграй X погромче» — заказ трека, не громкость: роутер его не берёт.
-        assert MediaRouter().route("сыграй в пещере гороного короля погромче", _PLAYING) is None
+        # «сыграй X погромче» — заказ трека, не громкость: Tier-1 его не берёт.
+        assert _volume("сыграй в пещере гороного короля погромче") is None
 
 
 # --- (c) #3004: ошибка валидации, затем успех в том же ходе -----------------

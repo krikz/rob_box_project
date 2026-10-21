@@ -55,6 +55,9 @@ class DialogueStageMixin:
 
     def _on_speech_event(self, msg: SpeechEvent) -> None:
         self._turn_stages().on_speech(int(msg.kind), msg.agent, msg.reason, msg.speech_id)
+        watch = getattr(self, "_speaking_watch", None)  # ADR-0150 PR-6: канал «громче» по звучащей речи
+        if watch is not None:
+            watch.on_event(msg)
 
     def _on_expression_event(self, msg: ExpressionEvent) -> None:
         self._turn_stages().on_expression_event(

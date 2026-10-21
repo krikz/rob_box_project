@@ -106,8 +106,10 @@ def points_text(option: Option, weights: Mapping[str, float] = CHOOSER_WEIGHTS) 
 
 
 def describe(option: Option, weights: Mapping[str, float] = CHOOSER_WEIGHTS) -> str:
-    """Подпись кандидата для модели: «название - композитор; очки кода: …; итого N; сыгранное»."""
-    return "; ".join(p for p in (option.label, points_text(option, weights), played_text(option)) if p)
+    """Подпись кандидата для модели: «название - композитор; очки кода: …; итого N; сыгранное». Вопрос без весов
+    (не выбор пьесы: спорный стоп диалога, В19) — только подпись."""
+    scored = points_text(option, weights) if weights else ""
+    return "; ".join(p for p in (option.label, scored, played_text(option)) if p)
 
 
 def session_text(question: ChoiceQuestion) -> str:
@@ -160,9 +162,13 @@ class ModelChooser:
     """``Chooser`` над провайдером decision layer: дедлайн, circuit breaker и метрики — оркестратора."""
 
     def __init__(self, provider: DecisionProvider, *, deadline_ms: int = CHOOSER_DEADLINE_MS,
-                 orchestrator: Optional[DecisionOrchestrator] = None) -> None:
+                 orchestrator: Optional[DecisionOrchestrator] = None,
+                 state: Callable[[ChoiceQuestion], str] = to_model_state) -> None:
+        """``state`` — текст состояния для модели: по умолчанию заказ и сыгранное (выбор пьесы); у вопроса не о
+        музыке (спорный стоп диалога, В19) — свой."""
         self.name = provider.name
         self._deadline_ms = deadline_ms
+        self._state = state
         self.orchestrator = orchestrator or DecisionOrchestrator({provider.name: provider},
                                                                  routing=self._routing(deadline_ms))
 
@@ -177,7 +183,7 @@ class ModelChooser:
             self.orchestrator.set_routing(self._routing(deadline_ms))
         ids = question.ids()
         decision = run_sync(self.orchestrator.decide(
-            DecisionClass.QUALITY_CRITICAL, to_model_state(question), {QUESTION_ID: asked},
+            DecisionClass.QUALITY_CRITICAL, self._state(question), {QUESTION_ID: asked},
             fallback=lambda: {QUESTION_ID: ChoiceAnswer(ids[0], {ids[0]: 1.0}, 0.0)}))
         if decision.fallback_used:
             raise ModelUnavailable(decision.fallback_reason or "fallback")

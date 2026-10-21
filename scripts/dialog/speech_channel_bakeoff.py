@@ -344,6 +344,11 @@ def rescore(raw_path: Path, summary_path: Path | None) -> list[Any]:
     return sorted(rows, key=lambda r: (order.index(r[0]) if r[0] in order else 99, r[1] != "field", r[2]))
 
 
+def raw_phrase_count(raw_path: Path) -> int:
+    """Сколько фраз было в прогоне (по сырому JSONL), а не в нынешнем наборе: набор растёт (#3696 добавил В19)."""
+    return len({json.loads(line)["id"] for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()})
+
+
 def plan(provider: LLMProvider, field_modes: Sequence[str]) -> list[tuple[str, str]]:
     """(канал, режим) для адаптера: field в режиме по ``select_mode`` и принудительных, tool — по умолчанию адаптера."""
     auto = select_mode(provider.capabilities)
@@ -395,7 +400,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.rescore:
         rows = rescore(Path(args.rescore), Path(args.summary) if args.summary else None)
-        report = render(rows, len(load_phrases(args.limit)), args.runs)
+        report = render(rows, raw_phrase_count(Path(args.rescore)), args.runs)
     else:
         report, rows = asyncio.run(main_async(args))
     print(report)

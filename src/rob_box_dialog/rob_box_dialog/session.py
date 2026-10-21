@@ -59,6 +59,7 @@ class MusicStateRef:
     state: str = "idle"
     track_id: Optional[str] = None
     bpm: Optional[float] = None
+    title: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,10 @@ class SessionSnapshot:
     pending_ask: Optional[Ask] = None
     music: MusicStateRef = MusicStateRef()
     providers: Mapping[str, ProviderHealth] = field(default_factory=lambda: MappingProxyType({}))
+    #: Звучит ли речь агента сейчас (``SpeechEvent started`` без ``finished/cancelled``) — канал громкости (§4.2).
+    speaking: bool = False
+    #: Последний канал громкости, который трогали (``knowledge.VOLUME_CHANNELS``): «громче» в тишине — он.
+    volume_channel: str = "tts"
 
     def top(self, kind: str) -> Optional[SceneFrame]:
         """Верхний кадр этого вида или ``None``."""

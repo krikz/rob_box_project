@@ -3,8 +3,7 @@
 Одна грамматика для команд, которые исполняет КОД, а не LLM
 (``docs/design/2026-09-28-music-dj-systemic-analysis.md`` §6 Ш2):
 
-* громкость музыки — «громче / тише / потише / погромче / на максимум»,
-  в том числе с названием играющего трека («горный король погромче»);
+* громкость — НЕ здесь: канал (музыка/голос) решает ``rob_box_dialog.grammar`` по снимку (ADR-0150 PR-6);
 * стоп — «выключи музыку», «стоп диджей», «хватит диджеить»;
 * DJ — «ты диджей X», «запусти диджей-сет»; длина сета — «сет на 3 трека», «на полчаса» (``tracks``, разбор —
   :mod:`.set_length_words`), тема-перечисление после двоеточия — «сет на 3 трека: Марио, Тетрис, Зельда»;
@@ -32,6 +31,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_dialog.knowledge import GRAMMAR_FILLER, VOLUME_STEMS
 from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import persona_title
 from rob_box_music.instruments import near, split_instrument
@@ -44,9 +44,6 @@ class MediaIntent(str, Enum):
     """Закрытый набор интентов роутера (варианты ``ChoiceQuestion``)."""
 
     NONE = "none"
-    VOLUME_UP = "volume_up"
-    VOLUME_DOWN = "volume_down"
-    VOLUME_MAX = "volume_max"
     STOP = "stop"
     DJ = "dj"
     PLAY_NAMED = "play_named"
@@ -206,118 +203,35 @@ def is_music_stop_command(user_input: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Классы слов. Один регекс вместо ``_VOLUME_CORE_RE`` из #3125: он же
-# раскладывает стоп-глаголы и музыкальные существительные.
+# Классы слов: стоп-глаголы и музыкальные существительные.
 # ---------------------------------------------------------------------------
 
 _WORD_CLASS_RE = re.compile(
-    r"^(?:(?P<up>(?:по)?[гк]ромче|прибав\w*|подкрут\w*|выкрут\w*)"
-    r"|(?P<down>(?:по)?тише|убав\w*|приглуш\w*)"
-    r"|(?P<max>максимум\w*|максимальн\w*|полную)"
-    r"|(?P<topic>громк\w*)"
-    rf"|(?P<stop>{_MUSIC_STOP_VERBS})"
+    rf"^(?:(?P<stop>{_MUSIC_STOP_VERBS})"
     r"|(?P<noun>музык\w*|музон\w*|дидж\w*|трек\w*|трей|с[еэ]т|бит|бита|звук\w*|dj))$"
 )
 
-_DIRECTIONS: FrozenSet[str] = frozenset({"up", "down", "max"})
+
+#: Слова громкости — основы ``rob_box_dialog.knowledge.VOLUME_STEMS`` (команду громкости разбирает Tier-1
+#: ``rob_box_dialog.grammar``): здесь они только не дают слову стать названием или темой («сыграй X погромче»).
+_VOLUME_STEMS: Tuple[str, ...] = tuple(stem for stems in VOLUME_STEMS.values() for stem in stems) + ("громк",)
 
 
 def _word_class(word: str) -> Optional[str]:
+    """``stop`` / ``noun`` / ``volume`` или ``None``."""
     m = _WORD_CLASS_RE.match(word)
-    return m.lastgroup if m else None
+    if m:
+        return m.lastgroup
+    return "volume" if word.startswith(_VOLUME_STEMS) else None
 
 
-#: Служебные слова, не меняющие смысла команды.
-_COMMON_FILLER: FrozenSet[str] = frozenset({
-    "ну", "а", "и", "но", "же", "ка", "эй", "йо", "пожалуйста", "плиз",
-    "можно", "давай", "сделай", "сделайте", "это", "так", "вот", "уже",
-    "ещё", "еще", "сейчас", "там", "тут", "мне", "нам", "её", "ее", "его",
-    "эту", "этот", "всё", "все", "всю", "ты", "вы", "чуть", "чуточку",
-    "немного", "очень", "на", "в", "по", "раз", "два", "раза", "чтобы",
-    "чтоб", "режим", "режима", "совсем",
-})
+#: Служебные слова, не меняющие смысла команды — одна таблица с Tier-1 грамматикой диалога.
+_COMMON_FILLER: FrozenSet[str] = frozenset(GRAMMAR_FILLER)
 
-#: Сверх общих — слова просьбы о громкости («играй громче», #3125).
-_VOLUME_FILLER: FrozenSet[str] = _COMMON_FILLER | frozenset({
-    "играй", "сыграй", "играйте", "включи", "поставь", "сильнее", "больше",
-    "меньше", "побольше", "поменьше", "тихо", "слишком",
-})
-
-#: Глаголы заказа трека: «сыграй <название> погромче» — это заказ, не громкость.
-_PLAY_VERBS: FrozenSet[str] = frozenset({
-    "играй", "сыграй", "играйте", "включи", "поставь", "запусти", "вруби",
-    "врубай",
-})
-
-#: Просьба о ГОЛОСЕ робота («говори громче») — это ``set_volume``, решает LLM.
+#: Слова о ГОЛОСЕ робота: в тему сета/заказа не попадают.
 _VOICE_WORDS: FrozenSet[str] = frozenset({
     "говори", "говорить", "голос", "голоса", "голосом", "разговаривай",
 })
-
-#: Сколько слов может занимать название трека в «<трек> погромче».
-_MAX_TRACK_NAME_WORDS = 5
-
-
-def _drop_voice_negation(words: Sequence[str]) -> List[str]:
-    """«играй кромче а НЕ ГОВОРИ громче» (живой лог #3125): «не говори» —
-    отказ от голоса, а не просьба о нём."""
-    out: List[str] = []
-    skip = False
-    for i, word in enumerate(words):
-        if skip:
-            skip = False
-            continue
-        if word == "не" and i + 1 < len(words) and words[i + 1] in _VOICE_WORDS:
-            skip = True
-            continue
-        out.append(word)
-    return out
-
-
-def _volume_direction(classes: Sequence[Optional[str]]) -> Optional[MediaIntent]:
-    dirs = {c for c in classes if c in _DIRECTIONS}
-    if "max" in dirs and "down" not in dirs:
-        return MediaIntent.VOLUME_MAX
-    if dirs == {"up"}:
-        return MediaIntent.VOLUME_UP
-    if dirs == {"down"}:
-        return MediaIntent.VOLUME_DOWN
-    return None
-
-
-def _names_current_track(extras: Sequence[str], track_name: Optional[str]) -> bool:
-    """Лишние слова — это название играющего трека («горный король» ↔
-    «В пещере горного короля»): каждое слово совпадает по основе (первые
-    4 буквы) с каким-то словом названия."""
-    if not track_name or len(extras) > _MAX_TRACK_NAME_WORDS:
-        return False
-    title = _words(track_name)
-    return all(any(t.startswith(w[:4]) for t in title) for w in extras)
-
-
-def _volume_command(
-    words: Sequence[str], track_name: Optional[str]
-) -> MediaCommand:
-    words = _drop_voice_negation(words)
-    if "не" in words or any(w in _VOICE_WORDS for w in words):
-        return NO_COMMAND
-    classes = [_word_class(w) for w in words]
-    if "stop" in classes:
-        return NO_COMMAND
-    intent = _volume_direction(classes)
-    if intent is None:
-        return NO_COMMAND
-    extras = [
-        w for w, c in zip(words, classes) if c is None and w not in _VOLUME_FILLER
-    ]
-    if extras and (
-        any(w in _PLAY_VERBS for w in words)
-        or not _names_current_track(extras, track_name)
-    ):
-        # «сыграй в пещере горного короля погромче» — заказ трека;
-        # «расскажи анекдот погромче» — не про музыку. Решает LLM.
-        return NO_COMMAND
-    return MediaCommand(intent=intent)
 
 
 def _stop_command(words: Sequence[str]) -> MediaCommand:
@@ -869,7 +783,7 @@ _ORDER_VERBS: FrozenSet[str] = (_SET_VERBS | _PLAY_NAMED_VERBS) - {"давай",
 #: голос робота.
 _NOT_THEME: FrozenSet[str] = (_NOT_A_TITLE - _THEME_LEADS) | _VOICE_WORDS
 #: Классы слов громкости и стопа: «замути сэт погромче» — не только заказ сета.
-_NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"up", "down", "max", "topic", "stop"})
+_NOT_THEME_CLASSES: FrozenSet[str] = frozenset({"volume", "stop"})
 
 
 #: Просьба продолжить сет (#3581, живой сет 12.10: «продолжай сэт» стал темой «продолжай» → хуки «Carry On»,
@@ -988,23 +902,16 @@ def _spoken_set_command(text: str) -> Optional[MediaCommand]:
 # ---------------------------------------------------------------------------
 
 
-def parse_media_command(
-    user_input: str, *, track_name: Optional[str] = None
-) -> MediaCommand:
-    """Разобрать реплику юзера (после wake-word) в медиакоманду.
-
-    ``track_name`` — название играющего трека или ``None`` (ничего не
-    играет / название неизвестно): с ним «горный король погромче» —
-    громкость, без него — вопрос к LLM.
-    """
+def parse_media_command(user_input: str) -> MediaCommand:
+    """Разобрать реплику юзера (после wake-word) в медиакоманду."""
     text = extract_user_utterance(user_input)
     if not text:
         return NO_COMMAND
     tracks, rest = split_set_length(text)  # «сет на 3 трека»: длину решает код, грамматика видит реплику без неё
-    command = (_listed_set(rest) or _parse_text(rest, track_name)) if tracks else NO_COMMAND
+    command = (_listed_set(rest) or _parse_text(rest)) if tracks else NO_COMMAND
     if command.intent is MediaIntent.DJ:
         return replace(command, tracks=tracks)
-    return _listed_set(text) or _parse_text(text, track_name)
+    return _listed_set(text) or _parse_text(text)
 
 
 def _listed_set(text: str) -> Optional[MediaCommand]:
@@ -1014,7 +921,7 @@ def _listed_set(text: str) -> Optional[MediaCommand]:
     listed = listed.strip(" .!?…")
     if not sep or not listed or all(w in _DJ_FILLER or w in _PLAY_NAMED_FILLER for w in _words(listed)):
         return None
-    command = _parse_text(head, None)
+    command = _parse_text(head)
     if command.intent is not MediaIntent.DJ or not command.closed or command.set_theme or _THEME_RE.search(head):
         return None
     return replace(command, set_theme=listed, set_persona=command.persona)
@@ -1107,7 +1014,7 @@ def _generate_command(words: Sequence[str]) -> Optional[MediaCommand]:
     return MediaCommand(intent=MediaIntent.REQUEST_MUSIC, closed=True)
 
 
-def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
+def _parse_text(text: str) -> MediaCommand:
     """Разбор реплики без длины сета и перечисления (:func:`parse_media_command`)."""
     if is_dj_request(text):
         return _dj_command(text)
@@ -1115,9 +1022,6 @@ def _parse_text(text: str, track_name: Optional[str]) -> MediaCommand:
     stop = _stop_command(words)
     if stop.intent is not MediaIntent.NONE:
         return stop
-    volume = _volume_command(words, track_name)
-    if volume.intent is not MediaIntent.NONE:
-        return volume
     now = _now_playing_command(words)
     if now is not None:
         return now

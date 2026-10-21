@@ -1,7 +1,7 @@
 """media_router.py — детерминированный роутер медиакоманд ДО LLM (issue #3134).
 
 Шаг Ш2 из ``docs/design/2026-09-28-music-dj-systemic-analysis.md``: команды
-«громче / тише / на максимум / стоп / ты диджей X» и заказ мелодии по имени
+«стоп / ты диджей X» и заказ мелодии по имени (громкость — Tier-1 ``rob_box_dialog.grammar``, ADR-0150 PR-6)
 («поставь к элизе», issue #3176) исполняет код, модель их
 не видит (как HA Assist «Prefer handling commands locally», OVOS OCP).
 Причина — ADR-0143: MiniMax игнорирует ``tool_choice``, поэтому «заставить
@@ -132,7 +132,6 @@ class MediaPlan:
 
 
 #: Тексты — ``rob_box_dialog/phrases/ru.yaml`` (ключи ``music.*``, ADR-0150 PR-1).
-VOLUME_FAIL_TEXT = _phrase("music.volume_fail")
 STOP_OK_TEXT = _phrase("music.stop_ok")
 STOP_IDLE_TEXT = _phrase("music.stop_idle")
 STOP_FAIL_TEXT = _phrase("music.stop_fail")
@@ -145,23 +144,9 @@ REQUEST_MUSIC_TOOL = "request_music"
 #: Просьба сгенерировать (ADR-0158 PR-3): тот же чойсер пути, что у ``request_music``.
 GENERATE_MUSIC_TOOL = "generate_music"
 
-_VOLUME_ACTIONS: Mapping[MediaIntent, Tuple[str, str]] = {
-    MediaIntent.VOLUME_UP: ("louder", _phrase("music.volume.louder")),
-    MediaIntent.VOLUME_DOWN: ("quieter", _phrase("music.volume.quieter")),
-    MediaIntent.VOLUME_MAX: ("max", _phrase("music.volume.max")),
-}
-
-
 # ---------------------------------------------------------------------------
 # Классификатор за портом DecisionProvider
 # ---------------------------------------------------------------------------
-
-
-def _state_track(state: Any) -> Optional[str]:
-    if isinstance(state, Mapping):
-        track = state.get("track_name")
-        return track if isinstance(track, str) and track else None
-    return None
 
 
 def _state_utterance(state: Any) -> str:
@@ -191,9 +176,7 @@ def media_intent_rules(
     state: Any, questions: Mapping[str, Any]
 ) -> Dict[str, ChoiceAnswer]:
     """``RulesFn`` для :class:`DeterministicProvider`: интент по грамматике."""
-    intent = parse_media_command(
-        _state_utterance(state), track_name=_state_track(state)
-    ).intent.value
+    intent = parse_media_command(_state_utterance(state)).intent.value
     return {
         qid: ChoiceAnswer(answer=intent, probabilities={intent: 1.0}, confidence=1.0)
         for qid in questions
@@ -249,9 +232,8 @@ class MediaRouter:
 
     def classify(self, user_input: str, media: MediaState) -> MediaCommand:
         """Интент — от провайдера, аргументы — от грамматики."""
-        track = media.track_name if media.music_playing else None
-        state = {"utterance": user_input, "track_name": track}
-        parsed = parse_media_command(user_input, track_name=track)
+        state = {"utterance": user_input}
+        parsed = parse_media_command(user_input)
         intent = _decide_now(self._provider, state)
         if intent is None or intent == parsed.intent.value:
             return parsed
@@ -278,20 +260,6 @@ class MediaRouter:
 # ---------------------------------------------------------------------------
 # План по состоянию
 # ---------------------------------------------------------------------------
-
-
-def _volume_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
-    if not media.music_playing:
-        # Живой прогон 28.09: «играй громче» в тишине → LLM «Клубный трек
-        # на полную» без единого тула. Честно и без LLM.
-        return MediaPlan(command=command, say_ok=NOTHING_PLAYING_TEXT)
-    action, ok_text = _VOLUME_ACTIONS[command.intent]
-    return MediaPlan(
-        command=command,
-        tool_calls=(MediaToolCall("set_music_volume", {"action": action}),),
-        say_ok=ok_text,
-        say_fail=VOLUME_FAIL_TEXT,
-    )
 
 
 def _stop_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
@@ -450,8 +418,6 @@ def plan_media_command(
     command: MediaCommand, media: MediaState, text: str = ""
 ) -> Optional[MediaPlan]:
     """Тулы и фраза для команды при данном состоянии плеера; ``text`` — слова человека."""
-    if command.intent in _VOLUME_ACTIONS:
-        return _volume_plan(command, media)
     if command.intent is MediaIntent.STOP:
         return _stop_plan(command, media)
     if command.intent is MediaIntent.DJ:

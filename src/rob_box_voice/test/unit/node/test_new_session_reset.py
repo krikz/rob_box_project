@@ -18,6 +18,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
+from rob_box_voice.core.stt_admission import SttContext
+from rob_box_voice.core.tier1_host import Tier1Runner
 from rob_box_voice.dialogue_node import DialogueNode
 from ros_stubs import make_utterance  # noqa: E402
 
@@ -30,7 +32,6 @@ def _make_node(new_session_enabled: bool = True) -> DialogueNode:
     n._wake_words = ["робок", "робот", "роббокс"]
     n._command_intent_gate_enabled = False
     n._new_session_enabled = new_session_enabled
-    n._new_session_phrases = DialogueNode._DEFAULT_NEW_SESSION_PHRASES
     n._speaker_by_text = {}
     n._llm_skipped_counter = new_llm_skip_counter()
     n._maybe_log_skip_summary = MagicMock()
@@ -59,6 +60,13 @@ def _stt(node: DialogueNode, text: str) -> None:
     node._on_stt(make_utterance(text))
 
 
+def _is_reset(n: DialogueNode, clean: str, tg_chat_id) -> bool:
+    """«Новая сессия» — Tier-1 (ADR-0150 PR-6): фразы ``knowledge.NEW_SESSION_PHRASES``, Telegram «/clear»."""
+    ctx = SttContext(raw=clean, text=clean, text_lower=clean.lower(), tg_chat_id=tg_chat_id)
+    command = Tier1Runner(n).match(ctx)
+    return command is not None and command.kind == "new_session"
+
+
 class TestIsNewSessionCommand:
     """Чистая логика распознавания команды «новая сессия»."""
 
@@ -78,7 +86,7 @@ class TestIsNewSessionCommand:
     )
     def test_voice_phrases_match(self, clean):
         n = _make_node()
-        assert n._is_new_session_command(clean, clean.lower(), None) is True
+        assert _is_reset(n, clean, None) is True
 
     @pytest.mark.parametrize(
         "clean",
@@ -91,21 +99,21 @@ class TestIsNewSessionCommand:
     )
     def test_non_reset_phrases_do_not_match(self, clean):
         n = _make_node()
-        assert n._is_new_session_command(clean, clean.lower(), None) is False
+        assert _is_reset(n, clean, None) is False
 
     def test_telegram_clear_matches(self):
         n = _make_node()
-        assert n._is_new_session_command("/clear", "/clear", 42) is True
+        assert _is_reset(n, "/clear", 42) is True
 
     def test_telegram_clear_requires_tg_source(self):
         """«/clear» без TG-маркера — это не команда сброса (обычная фраза)."""
         n = _make_node()
-        assert n._is_new_session_command("/clear", "/clear", None) is False
+        assert _is_reset(n, "/clear", None) is False
 
     def test_disabled_flag_blocks_reset(self):
         n = _make_node(new_session_enabled=False)
-        assert n._is_new_session_command("новая сессия", "новая сессия", None) is False
-        assert n._is_new_session_command("/clear", "/clear", 42) is False
+        assert _is_reset(n, "новая сессия", None) is False
+        assert _is_reset(n, "/clear", 42) is False
 
 
 class TestOnSttNewSession:

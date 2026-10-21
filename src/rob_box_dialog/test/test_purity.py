@@ -30,7 +30,7 @@ def test_import_pulls_no_forbidden_modules_at_runtime():
     code = (
         "import sys, rob_box_dialog.knowledge, rob_box_dialog.words, rob_box_dialog.command, rob_box_dialog.session\n"
         "import rob_box_dialog.phrases, rob_box_dialog.respond, rob_box_dialog.agents, rob_box_dialog.doa\n"
-        "import rob_box_dialog.address, rob_box_dialog.backlog, rob_box_dialog.expression\n"
+        "import rob_box_dialog.address, rob_box_dialog.backlog, rob_box_dialog.grammar, rob_box_dialog.expression\n"
         f"bad = sorted(m for m in sys.modules if m.split('.')[0] in {sorted(FORBIDDEN)!r})\n"
         "print(bad); sys.exit(1 if bad else 0)\n"
     )

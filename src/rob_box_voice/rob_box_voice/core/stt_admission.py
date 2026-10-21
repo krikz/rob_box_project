@@ -48,11 +48,7 @@ from typing import (
 
 from rob_box_dialog.address import BARE_WAKE, COORDINATOR, NO_WAKE, Addressed, NotAddressed, decide
 from rob_box_dialog.backlog import Backlog, Heard
-
-from rob_box_voice.core.dialogue_text import (
-    is_silence_command,
-    is_unsilence_command,
-)
+from rob_box_dialog.grammar import Tier1Command
 
 
 # ---------------------------------------------------------------------------
@@ -284,14 +280,6 @@ class SttAdmissionHost(Protocol):
     the backlog accumulator is not configured).
     """
 
-    def unsilence(self, text_lower: str) -> bool:
-        """Issue #1101 — if ``text_lower`` matches an unsilence phrase,
-        transition out of SILENCED and return ``True``. Otherwise return
-        ``False`` so the step can DROP the text with the
-        ``silenced`` reason.
-        """
-        ...
-
     def backlog(self) -> Optional[Backlog]:
         """Бэклог неадресованных фраз (ADR-0150 §7.3); ``None`` — выключен."""
         ...
@@ -314,11 +302,19 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def handle_silence_command(self) -> bool:
-        """Run the «замолчи» command path. The dialogue node adapter
-        publishes the «Хорошо, молчу.» line, mutates the FSM, and
-        cancels the in-flight turn. Returns ``True`` so the step can
-        return ``HANDLED`` (not DROP — the side effect already ran).
+    def tier1_match(self, ctx: "SttContext") -> Optional[Tier1Command]:
+        """ADR-0150 PR-6 — Tier-1 команда реплики (:func:`rob_box_dialog.grammar.match` по снимку ноды) или
+        ``None``. Работает и в SILENCED (тогда — только незвучащие виды).
+        """
+        ...
+
+    def run_tier1(self, command: Tier1Command, text: str) -> None:
+        """Исполнить Tier-1 команду (стоп, тишина/её снятие, громкость по каналу, голос, новая сессия)."""
+        ...
+
+    def dispute_stop(self, command: Tier1Command, ctx: "SttContext") -> None:
+        """В19 — стоп-слово внутри другой команды: Chooser ``{stop, part_of_command}`` асинхронно; ``stop`` —
+        исполнить, иначе реплика продолжает приём со следующего шага. Речь до решения не рвётся.
         """
         ...
 
@@ -327,10 +323,9 @@ class SttAdmissionHost(Protocol):
         actually a music-stop request («хватит диджеить», «стоп
         музыку»). The adapter wraps
         :func:`rob_box_voice.core.dialogue_text.is_music_stop_command`
-        so the rule lives next to the silence matcher and the
-        :data:`MUSIC_STOP_OVERRIDES` list. ``SilenceCommandStep``
-        consults this to decide whether to drop (genuine silence)
-        or fall through to LLM (music-stop).
+        so the rule lives next to the :data:`MUSIC_STOP_OVERRIDES` list.
+        :class:`Tier1Step` consults this to leave the phrase to the media
+        router (music-stop) instead of the Tier-1 stop/silence.
         """
         ...
 
@@ -342,19 +337,6 @@ class SttAdmissionHost(Protocol):
         ``_command_parser.parse(...)`` call; ``text_lower`` is needed
         to honour :data:`MUSIC_STOP_OVERRIDES` (music-stop phrases must
         reach LLM, not the command gate).
-        """
-        ...
-
-    def reset_session(
-        self,
-        text: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        """Issue #XXXX — «новая сессия» / «сбрось всё» / TG «/clear».
-        The adapter wraps :meth:`DialogueNode._is_new_session_command`
-        (which depends on ``_new_session_phrases`` — not a core/
-        concern). Returns ``True`` when reset ran.
         """
         ...
 
@@ -575,14 +557,8 @@ class RejectedMarkerStep:
 
 @dataclass(frozen=True)
 class SilencedStateStep:
-    """Step 5 — DSM in SILENCED state.
-
-    Issue #1101 — when the operator has paused the dialogue, only an
-    explicit unsilence command may pass. Everything else is dropped
-    with ``silenced`` reason. ``host.unsilence(...)`` runs the FSM
-    transition if the text matches; we return ``HANDLED`` either way
-    so the orchestrator does not increment a counter for the «unsilence»
-    path (the FSM already logged it).
+    """DSM in SILENCED state (issue #1101): всё, что не взял :class:`Tier1Step` (стоп, громкость, снятие тишины,
+    новая сессия — ADR-0150 PR-6), отбрасывается с причиной ``silenced``.
     """
 
     name: str = "silenced_state"
@@ -590,9 +566,6 @@ class SilencedStateStep:
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
         if not ctx.is_silenced:
             return PASS
-        if is_unsilence_command(ctx.text_lower):
-            host.unsilence(ctx.text_lower)
-            return handled(self.name, "unsilence")
         return drop(self.name, "silenced")
 
 
@@ -642,28 +615,34 @@ class BareWakeStep:
 
 
 @dataclass(frozen=True)
-class SilenceCommandStep:
-    """Step 8 — «замолчи» / «хватит» command.
+class Tier1Step:
+    """Tier-1 закрытая грамматика (ADR-0150 PR-6 #3696): стоп, тишина и её снятие, громкость по каналу, голос,
+    новая сессия — кодом, 0 вызовов LLM; стоит ДО :class:`SilencedStateStep`: в SILENCED работает всё незвучащее.
 
-    Issue #1279 follow-up — «хватит диджеить» is NOT a silence, it's
-    a music-stop command that must reach LLM. This step only handles
-    the genuine silence phrase; the music-stop detection is delegated
-    to ``host.is_music_stop_command(text_lower)`` — the dialogue node
-    adapter imports ``is_music_stop_command`` from
-    :mod:`rob_box_voice.core.dialogue_text` so the rule stays in core/.
+    «хватит диджеить», «стоп музыку» — стоп музыки, его исполняет :class:`MediaCommandStep` (``PASS``). Ясный стоп
+    с продолжением («хватит, спой другую») — стоп и остаток дальше по шагам (тоже Tier-1, если он им покрыт).
+    Спорный стоп (В19, «спой песню про стоп») — ``host.dispute_stop``: Chooser решает асинхронно, реплика пока
+    закрыта (``HANDLED``), при ``part_of_command`` она продолжит приём со следующего шага.
     """
 
-    name: str = "silence_command"
+    name: str = "tier1"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if not is_silence_command(ctx.text_lower):
-            return PASS
         if host.is_music_stop_command(ctx.text_lower):
-            # Music-stop override — phrase must reach LLM.
             return PASS
-        if host.handle_silence_command():
-            return handled(self.name, "silence_command")
-        return PASS
+        command = host.tier1_match(ctx)
+        if command is None:
+            return PASS
+        if command.disputed:
+            host.dispute_stop(command, ctx)
+            return handled(self.name, "stop_disputed")
+        host.run_tier1(command, ctx.text)
+        if not command.rest:
+            return handled(self.name, command.kind)
+        rest = ctx.with_text(command.rest)
+        outcome = self.apply(rest, host)
+        return outcome if outcome.kind is not SttOutcomeKind.PASS or outcome.new_context else replace(
+            outcome, new_context=rest)
 
 
 @dataclass(frozen=True)
@@ -686,26 +665,6 @@ class CommandIntentGateStep:
             return PASS
         if host.handle_command_intent(ctx.text, ctx.text_lower):
             return handled(self.name, "command_intent")
-        return PASS
-
-
-@dataclass(frozen=True)
-class NewSessionStep:
-    """Step 10 — «новая сессия» / «сбрось всё» / TG «/clear».
-
-    Issue #XXXX — when the user asks for a fresh session, reset the
-    dialogue context and do NOT dispatch to LLM. ``host.reset_session``
-    runs ``DialogueNode._reset_dialogue_session``.
-    """
-
-    name: str = "new_session"
-
-    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # The host owns the ``_is_new_session_command(...)`` check
-        # (it depends on the ``_new_session_phrases`` parameter, which
-        # is not a core/ concern).
-        if host.reset_session(ctx.text, ctx.text_lower, ctx.tg_chat_id):
-            return handled(self.name, "new_session")
         return PASS
 
 
@@ -784,24 +743,23 @@ def default_steps() -> List[Any]:
     3. :class:`AddressStep` — адресация кодом (ADR-0150 PR-5): вейк,
        Telegram/оператор, координатор, бэклог (В12). Раньше тишины: в
        SILENCED «говори» тоже нужно с вейком (§6.3).
-    4. :class:`SilencedStateStep` — DSM in SILENCED.
-    5. :class:`BareWakeStep` — голое «робот»: рефлекс, 0 LLM.
-    6. :class:`SilenceCommandStep` — «замолчи».
+    4. :class:`Tier1Step` — закрытая грамматика (ADR-0150 PR-6): стоп,
+       тишина/её снятие, громкость, голос, новая сессия; в SILENCED тоже.
+    5. :class:`SilencedStateStep` — DSM in SILENCED: остальное отбрасывается.
+    6. :class:`BareWakeStep` — голое «робот»: рефлекс, 0 LLM.
     7. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
-    8. :class:`NewSessionStep` — «новая сессия» / «/clear».
-    9. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
-    10. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
-    11. :class:`DispatchTriggerStep` — FSM transition + dispatch.
+    8. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
+    9. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
+    10. :class:`DispatchTriggerStep` — FSM transition + dispatch.
     """
     return [
         EmptyTextStep(),
         RejectedMarkerStep(),
         AddressStep(),
+        Tier1Step(),
         SilencedStateStep(),
         BareWakeStep(),
-        SilenceCommandStep(),
         CommandIntentGateStep(),
-        NewSessionStep(),
         MediaCommandStep(),
         TakeTurnStep(),
         DispatchTriggerStep(),
@@ -816,10 +774,8 @@ __all__ = [
     "DispatchTriggerStep",
     "EmptyTextStep",
     "MediaCommandStep",
-    "NewSessionStep",
     "PASS",
     "RejectedMarkerStep",
-    "SilenceCommandStep",
     "SilencedStateStep",
     "SttAdmission",
     "SttAdmissionHost",
@@ -828,6 +784,7 @@ __all__ = [
     "SttOutcomeKind",
     "SttStep",
     "TakeTurnStep",
+    "Tier1Step",
     "default_steps",
     "drop",
     "handled",

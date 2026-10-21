@@ -92,8 +92,9 @@ class TestCommandIntentGate:
         node = _make_node(gate_enabled=True)
         _stt(node, phrase)
         node._dispatch_turn.assert_not_called()
-        # Счётчик command_intent увеличился, LLM-диспатч пропущен.
-        assert node._llm_skipped_counter["command_intent"] == 1
+        # Счётчик command_intent (стоп — Tier-1, ADR-0150 PR-6) увеличился, LLM-диспатч пропущен.
+        key = "tier1" if phrase.endswith("стоп") else "command_intent"
+        assert node._llm_skipped_counter[key] == 1
         assert node._cancel_run.called
 
     @pytest.mark.parametrize("phrase, kind", [("робот стоп", "stop_motion"), ("робот вперёд", "move")])

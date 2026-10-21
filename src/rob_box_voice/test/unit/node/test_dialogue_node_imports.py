@@ -39,8 +39,9 @@ LAZY_WHITELIST = frozenset({
     # <exec_depend> нашему пакету; оставлен lazy, чтобы dev-юниты без
     # ROS2 не падали. Используется в try/except с probe-fallback.
     "ament_index_python.packages",
-    # rob_box_mcp_tools — optional, явно сказано «no <exec_depend>» в
-    # комментариях вокруг импорта; грузится только при
+    # rob_box_mcp_tools — с ADR-0150 PR-6 (#3696) объявлен <exec_depend>
+    # (общий ModelChooser спорного стопа, core/stop_chooser.py); адаптер
+    # тулов llm_adapter по-прежнему грузится лениво, только при
     # tool_provider='ros_mcp'.
     "rob_box_mcp_tools.llm_adapter",
     # rob_box_voice.scheduler.tool_executor — W7b fail-open: если
@@ -49,7 +50,7 @@ LAZY_WHITELIST = frozenset({
     # зависели от опциональной инфраструктуры.
     "rob_box_voice.scheduler",
     # rob_box_perception_msgs.msg — лицевой повод «Встреча» (issue #2599
-    # PR-C). Того же рода optional, что rob_box_mcp_tools выше: в
+    # PR-C). Optional (как llm_adapter выше): в
     # package.xml у rob_box_voice этой зависимости НЕТ и быть не должно —
     # dialogue_node ездит и на Main Pi, где лицевой ноды нет вовсе, а
     # голосовой диалог обязан работать без лица. Импорт стоит в

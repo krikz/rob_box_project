@@ -4,7 +4,6 @@ test_pure_methods.py — Unit-тесты «лёгких» методов Dialogu
 Покрывает:
   - _map_emotion_to_animation    (чистый dict lookup)
   - _generate_fallback_response  (чистый string matching)
-  - _detect_volume_intent        (regex, без ROS)
   - _detect_pitch_intent         (regex, без ROS)
   - _trigger_sound               (publish)
   - _on_mcp_tools_update         (JSON parse → attributes)
@@ -151,38 +150,6 @@ class TestGenerateFallbackResponse:
         resp = node._generate_fallback_response("сделай что-нибудь")
         assert "интернет" in resp.lower()
         assert "недоступен" in resp.lower()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _detect_volume_intent
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestDetectVolumeIntent:
-    def test_louder(self, node):
-        assert node._detect_volume_intent("громче пожалуйста") == "louder"
-        assert node._detect_volume_intent("сделай громко") == "louder"
-
-    def test_quieter(self, node):
-        assert node._detect_volume_intent("говори тише") == "quieter"
-        assert node._detect_volume_intent("потише пожалуйста") == "quieter"
-
-    def test_volume_max(self, node):
-        # "говори громко" → специфичный паттерн max, не louder
-        assert node._detect_volume_intent("говори громко") == "max"
-        assert node._detect_volume_intent("максимальная громкость") == "max"
-
-    def test_volume_normal(self, node):
-        # max/normal проверяются до louder — "громкость" не перехватывается r"громко"
-        assert node._detect_volume_intent("нормальная громкость") == "normal"
-        assert node._detect_volume_intent("стандартная громкость") == "normal"
-        assert node._detect_volume_intent("обычная громкость") == "normal"
-
-    def test_no_match_returns_none(self, node):
-        assert node._detect_volume_intent("расскажи анекдот") is None
-        assert node._detect_volume_intent("") is None
-
-    def test_case_insensitive_via_lower(self, node):
-        assert node._detect_volume_intent("ТИШЕ") == "quieter"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

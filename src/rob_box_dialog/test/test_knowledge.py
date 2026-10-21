@@ -65,7 +65,7 @@ def test_tier1_policy_uses_known_policies():
 
 
 def test_volume_table():
-    assert {intent for intent, _ in kn.VOLUME_WORDS} == set(kn.VOLUME_INTENTS)
+    assert set(kn.VOLUME_STEMS) == set(kn.VOLUME_INTENTS)
     assert set(kn.VOLUME_CHANNELS) == {"tts", "music", "sfx"}
     catalog = {t.name for t in TOOL_CATALOG}
     assert {c.tool for c in kn.VOLUME_CHANNELS.values() if c.tool} <= catalog

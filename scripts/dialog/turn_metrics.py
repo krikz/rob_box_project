@@ -55,6 +55,17 @@ def _stat_row(label: str, values: Sequence[float], digits: int = 0) -> str:
     )
 
 
+def _tier1_line(lines: Sequence[logparse.LogLine]) -> str:
+    """A1 Tier-1 (#3696): команд кодом, из них спорных стопов (В19) и как их решил Chooser."""
+    tier1 = [ln.msg for ln in lines if logparse.TIER1_MARK in ln.msg]
+    disputed = sum(logparse.TIER1_DISPUTED_MARK in msg for msg in tier1)
+    verdicts = [ln.msg.split(logparse.STOP_CHOOSER_MARK, 1)[1].split()[0] for ln in lines
+                if logparse.STOP_CHOOSER_MARK in ln.msg]
+    share = f"{100.0 * disputed / len(tier1):.0f} %" if tier1 else "n/a"
+    return (f"- `tier1` (команды кодом, 0 LLM): {len(tier1)}; спорных стопов (В19): {disputed} ({share}); "
+            f"Chooser: stop {verdicts.count('stop')}, part_of_command {verdicts.count('part_of_command')}.")
+
+
 def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) -> str:
     llm = [float(t.llm_calls) for t in turns]
     lat = [t.stt_to_first_tts_ms for t in turns if t.stt_to_first_tts_ms is not None]
@@ -76,6 +87,7 @@ def render(turns: Sequence[logparse.Turn], lines: Sequence[logparse.LogLine]) ->
         f"{', '.join(map(str, idq)) or '-'}).",
         f"- `backlog_entries`: отдано LLM {flushed} (`[backlog] flushed|recent_unaddressed … entries=N`), накоплено без вейка {acc} "
         f"(`[backlog] accumulated`).",
+        _tier1_line(lines),
     ]
     return "\n".join(out)
 
