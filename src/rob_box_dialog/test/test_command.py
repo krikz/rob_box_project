@@ -58,12 +58,11 @@ def test_text_without_command_is_invalid():
 
 def test_tool_calls_command_plus_narrow_tools():
     calls = [
-        {"id": "1", "type": "function", "function": {"name": "command", "arguments": '{"speech": "Ок"}'}},
+        {"id": "1", "type": "function", "function": {"name": "command", "arguments": '{"expression": {"emotion": "happy"}}'}},
         {"id": "2", "type": "function", "function": {"name": "get_current_time", "arguments": ""}},
         {"name": "set_volume", "arguments": {"action": "louder"}},
     ]
     cmd = ok(calls)
-    assert cmd.speech == "Ок"
     assert [a.tool for a in cmd.actions] == ["get_current_time", "set_volume"]
 
 
@@ -193,6 +192,20 @@ def test_perform_beside_actions_follows_adr_and_excludes_speech():
     sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
     assert ok({"actions": sound, "perform": _perform()}).perform is not None
     bad({"speech": "Включаю звук!", "actions": sound, "perform": _perform()}, "perform_with_speech")
+
+
+def test_speech_beside_actions_is_a_violation_with_a_hint_for_the_model():
+    """#3698 (решение Шифу 22.10): ``speech`` при actions не звучит - ответ по сути пропал бы молча; нарушение
+    идёт модели на повтор, подсказка различает «ответ по сути - в perform» и «слова про действие - убрать»."""
+    sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+    res = bad({"speech": "Вот звук!", "actions": sound}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+    note = cm.explain(res)
+    assert "положи его в perform" in note and "убери speech" in note
+    assert ok({"speech": "Привет!"}).speech == "Привет!"  # без действий речь законна
+    assert ok({"actions": sound, "perform": _perform()}).perform is not None  # ответ по сути рядом с действием
+    assert ok({"ask": {"text": "Какой?"}, "actions": sound}).ask is not None  # вопрос - не speech
+    chat = Session("telegram").snapshot  # у телеграма speech - текст в чат (§4.1), при действиях законен
+    assert ok({"speech": "Записала", "actions": sound}, session=chat).speech == "Записала"
 
 
 def test_voice_of_a_line_and_voices_of_segments():

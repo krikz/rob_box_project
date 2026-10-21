@@ -165,18 +165,17 @@ def _actions(out: LLMResponse) -> list:
     return [(a["tool"], a["args"]) for a in out.tool_calls[0].arguments.get("actions", [])]
 
 
-def test_actions_go_as_one_command_call_and_speech_is_only_logged() -> None:
+def test_actions_go_as_one_command_call() -> None:
     log: list = []
     reply = LLMResponse(tool_calls=(
-        _command_call(speech="Запомнил!", actions=[{"tool": "memory_save", "args": {"fact": "чай"}}]),
+        _command_call(actions=[{"tool": "memory_save", "args": {"fact": "чай"}}]),
         ToolCall(id="n1", name="get_current_time", arguments={}),
     ))
     out = _convert(DEEPSEEK_CAPS, reply, log)
     assert out.finish_reason == "tool_calls" and out.tool_calls[0].id.startswith(cb.CALL_ID_PREFIX)
     assert _actions(out) == [("memory_save", {"fact": "чай"}), ("get_current_time", {})]
-    assert out.tool_calls[0].arguments["speech"] == "Запомнил!"  # не звучит: исполнитель команды его не озвучит
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
-                   "actions=['memory_save', 'get_current_time'] speech_dropped=1 speech='Запомнил!'"]
+                   "actions=['memory_save', 'get_current_time'] speech_dropped=0"]
 
 
 def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None:
@@ -201,7 +200,7 @@ def test_json_in_text_after_reasoning_is_parsed() -> None:
 
 def test_json_in_text_with_native_tool_call_merges_actions() -> None:
     search = ToolCall(id="n", name="search_web", arguments={"query": "погода"})
-    reply = LLMResponse(content='{"speech": "Смотрю"}', tool_calls=(search,))
+    reply = LLMResponse(content='{"expression": {"emotion": "happy"}}', tool_calls=(search,))
     out = _convert(MINIMAX_CAPS, reply)
     assert _actions(out) == [("search_web", {"query": "погода"})]
 
@@ -344,10 +343,9 @@ class _Node(DialogueStageMixin):
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_agent_core_turn_with_action_is_terminal_and_code_tells_the_outcome(streaming: bool) -> None:
-    """Команда с действием → исполнитель команды → фраза кода по исходу; LLM второго слова не получает,
-    её «Запомнила!» не звучит."""
+    """Команда с действием → исполнитель команды → фраза кода по исходу; LLM второго слова не получает."""
     action = [{"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]
-    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Запомнила!", actions=action),))])
+    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(actions=action),))])
     spoken = _Spoken()
     result = asyncio.run(_core(inner, streaming, spoken).process_input(
         "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
@@ -387,6 +385,9 @@ def _answer(caps: ProviderCapabilities, replies: List[LLMResponse], name: str = 
 
 
 SOUND = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+#: Действие, которое есть в стенде ``_core`` (play_sound там нет); фразу об исходе говорит код.
+SAVE = [{"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]
+SAVED = "Запомнил: Саша любит чай."
 
 
 def test_invalid_command_goes_back_as_tool_result_and_the_fixed_one_is_executed() -> None:
@@ -468,6 +469,36 @@ def test_agent_core_invalid_then_fixed_command_executes_the_action(streaming: bo
     assert result.error is None and len(inner.requests) == 2
     assert "bad_args" in inner.requests[1]["messages"][-1].content
     assert spoken.said == ["Запомнил: Саша любит чай."] and result.turn_failure == ""
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_joke_in_speech_beside_a_sound_is_retried_into_perform_and_the_sound_stays_silent(streaming: bool) -> None:
+    """Живой прогон 7c (#3698, вариант 2): шутка в ``speech`` рядом с ``play_sound`` раньше пропадала молча; теперь
+    модель получает нарушение и кладёт шутку в ``perform`` - она звучит, о звуке код молчит."""
+    joke = {"kind": "tale", "segments": ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]}
+    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук! Шутка: заходит робот в бар.", actions=SAVE),))
+    good = LLMResponse(tool_calls=(_command_call(perform=joke, actions=SAVE),))
+    inner = _Inner(DEEPSEEK_CAPS, [bad, good])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "включи звук радостный и расскажи шутку", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and len(inner.requests) == 2 and result.turn_failure == ""
+    assert "speech_with_actions" in inner.requests[1]["messages"][-1].content
+    assert spoken.said == [SAVED, *joke["segments"]]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_words_about_the_action_in_speech_are_retried_away_and_never_spoken(streaming: bool) -> None:
+    bad = LLMResponse(tool_calls=(_command_call(speech="Вот запомнил!", actions=SAVE),))
+    good = LLMResponse(tool_calls=(_command_call(actions=SAVE),))
+    inner = _Inner(DEEPSEEK_CAPS, [bad, good])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "включи звук радостный", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and len(inner.requests) == 2 and spoken.said == [SAVED]
+    assert "убери speech" in inner.requests[1]["messages"][-1].content
 
 
 @pytest.mark.parametrize("streaming", [False, True])

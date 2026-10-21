@@ -388,6 +388,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice"),
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(cmd.actions, set(available_tools), agent),
+        lambda: _check_speech_with_actions(cmd, agent),
         lambda: _check_perform(cmd, busy),
         lambda: _check_when(cmd.when, busy),
         lambda: _drop_bad_faces(cmd),
@@ -423,6 +424,13 @@ def _check_speech(text: Optional[str], limit: int, where: str) -> None:
         raise _Bad("too_long", f"{where}: {len(text)} > {limit}")
     if any(unicodedata.category(c) == "Cc" and c != "\n" for c in text):
         raise _Bad("control_chars", where)
+
+
+def _check_speech_with_actions(cmd: Command, agent: str) -> None:
+    """``speech`` рядом с действиями не звучит (§4.1): нарушение, а не молчаливая потеря ответа. Вместе с ``perform``
+    его уже ловит ``perform_with_speech``; у телеграм-агента ``speech`` - текст в чат, он законен."""
+    if cmd.speech and cmd.actions and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT:
+        raise _Bad(kn.VIOLATION_SPEECH_WITH_ACTIONS)
 
 
 def _check_ask(ask: Optional[Ask]) -> None:
@@ -558,6 +566,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "no_command": "нет команды: ответ — один JSON-объект команды",
     "several_commands": "команда в ответе одна",
     "perform_with_speech": "при perform поле speech не пиши — весь текст клади в perform.segments",
+    kn.VIOLATION_SPEECH_WITH_ACTIONS: "speech при actions не звучит: если это ответ по сути (шутка, стих, ответ на "
+                                      "вопрос) — положи его в perform.segments; если это слова про само действие "
+                                      "(«вот звук») — убери speech, о результате скажет код",
     "single_action_class": "в этом классе действий — одно действие за ход",
     "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
     "bad_args": "аргументы действия не по схеме тула",

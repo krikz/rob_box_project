@@ -135,9 +135,9 @@ def _sound(status: str, reason: Optional[str] = None) -> ToolResult:
 
 
 def test_sound_done_robot_says_nothing_about_it_and_llm_gets_no_second_word() -> None:
-    """«Включи звук радостный»: модель в той же команде говорит «Вот радостный звук!» — это не звучит."""
+    """«Включи звук радостный»: об успехе звука молчит и код, и модель (её «Вот звук» теперь нарушение, #3698)."""
     tools = _Tools({"play_sound": _sound("done")})
-    result, llm = _turn(tools, _command(speech="Вот радостный звук!", actions=[{"tool": "play_sound", "args": HAPPY}]))
+    result, llm = _turn(tools, _command(actions=[{"tool": "play_sound", "args": HAPPY}]))
     assert tools.acted() == ["play_sound"] and tools.said() == []
     assert result.spoken_text == "" and len(llm.requests) == 1  # ход терминален
     assert list(result.tools_called) == ["play_sound"]
@@ -145,7 +145,7 @@ def test_sound_done_robot_says_nothing_about_it_and_llm_gets_no_second_word() ->
 
 def test_sound_rejected_is_told_by_code_not_by_the_model() -> None:
     tools = _Tools({"play_sound": _sound("rejected", "busy")})
-    result, llm = _turn(tools, _command(speech="Вот радостный звук!", actions=[{"tool": "play_sound", "args": HAPPY}]))
+    result, llm = _turn(tools, _command(actions=[{"tool": "play_sound", "args": HAPPY}]))
     assert tools.said() == [(phrases.text("sound.skipped.busy", sound="robot_happy"), None)]
     assert len(llm.requests) == 1 and result.tool_error_occurred
 
@@ -163,7 +163,7 @@ def test_sound_and_a_joke_the_joke_is_kept_the_sound_report_is_not() -> None:
 
 def test_memory_phrase_comes_after_saved_from_code() -> None:
     tools = _Tools({"memory_save": ToolResult("x", "Факт сохранён", data={"fact_id": 7, "fact": "Саша любит чай"})})
-    result, llm = _turn(tools, _command(speech="Запомнила!", actions=[
+    result, llm = _turn(tools, _command(actions=[
         {"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]))
     assert tools.acted() == ["memory_save"]
     assert tools.said() == [("Запомнил: Саша любит чай.", None)]
@@ -188,13 +188,13 @@ def test_speech_voice_is_the_voice_of_this_line_only() -> None:
 def test_set_voice_out_of_the_turn_slice_is_not_executed() -> None:
     """#3744: ``set_voice`` в срезе хода только по явной голосовой просьбе; вне среза команда невалидна."""
     tools = _Tools()
-    result, _ = _turn(tools, _command(speech="Сменю голос", actions=[{"tool": "set_voice", "args": {"voice": "zahar"}}]))
+    result, _ = _turn(tools, _command(actions=[{"tool": "set_voice", "args": {"voice": "zahar"}}]))
     assert tools.acted() == [] and tools.said() == [] and result.turn_failure.startswith("invalid_command")
 
 
 def test_query_data_go_back_to_llm_then_its_speech_is_spoken() -> None:
     tools = _Tools({"get_current_time": ToolResult("x", "12:00")})
-    result, llm = _turn(tools, _command(speech="Сейчас гляну", actions=[{"tool": "get_current_time", "args": {}}]),
+    result, llm = _turn(tools, _command(actions=[{"tool": "get_current_time", "args": {}}]),
                         LLMResponse(content="Сейчас полдень."))
     assert len(llm.requests) == 2 and result.spoken_text == "Сейчас полдень."
     tool_msgs = [m for m in llm.requests[1] if m.role == "tool"]
