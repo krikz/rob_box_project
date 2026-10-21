@@ -77,9 +77,19 @@ def _result(text="done"):
     return types.SimpleNamespace(spoken_text=text)
 
 
+def _ask(node, plan, result=None):
+    """Конец хода: вопрос стартует, Chooser (если есть) идёт задачей в loop'е — дожидаемся её."""
+    async def go():
+        iq.start_after_turn_question(node, plan, result or _result())
+        task = getattr(node, "_after_turn_task", None)
+        if task is not None:
+            await task
+    asyncio.run(go())
+
+
 def test_already_said_skips_code_phrase_but_opens_answer_window():
     node = _node(ALREADY_SAID)
-    asyncio.run(iq.ask_after_turn(node, PLAN, _result()))
+    _ask(node, PLAN)
     node._speak_identity_question.assert_not_called()
     frame = iq.question(node)
     assert frame is not None and frame.payload["kind"] == "conflict" and frame.payload["known_id"] == "old"
@@ -88,7 +98,7 @@ def test_already_said_skips_code_phrase_but_opens_answer_window():
 
 def test_already_said_while_robot_still_speaks_opens_window_at_end_of_speech():
     node = _node(ALREADY_SAID, speaking=True)
-    asyncio.run(iq.ask_after_turn(node, PLAN, _result()))
+    _ask(node, PLAN)
     assert iq.question(node) is None  # окно ещё не открыто — речь хода звучит
     node._speaking_watch = types.SimpleNamespace(speaking=lambda: False)
     iq.on_speech_event(node, 4, "llm-chunk-2", "personality")
@@ -98,14 +108,14 @@ def test_already_said_while_robot_still_speaks_opens_window_at_end_of_speech():
 @pytest.mark.parametrize("answer", [NOT_SAID, "timeout", None])
 def test_not_said_timeout_or_no_chooser_speaks_code_phrase(answer):
     node = _node(answer)
-    asyncio.run(iq.ask_after_turn(node, PLAN, _result()))
+    _ask(node, PLAN)
     node._speak_identity_question.assert_called_once_with(PLAN)
 
 
 def test_retry_request_already_said_is_silent_and_opens_nothing():
     node = _node(ALREADY_SAID)
     plan = {"kind": "register_retry", "question": "Только голос твой я запомнить не успел — скажи ещё пару слов."}
-    asyncio.run(iq.ask_after_turn(node, plan, _result()))
+    _ask(node, plan)
     node._speak_identity_question.assert_not_called()
     assert iq.session(node).snapshot.top("Identity") is None
 
@@ -118,14 +128,15 @@ def _intro_node(plan=None, outcome=True):
     node = types.SimpleNamespace(get_logger=lambda: logger, _speaker_lock=threading.Lock(),
                                  _current_speaker={"is_known": True, "speaker_id": "old", "name": "Аркадий"},
                                  _turn_intro_registered=True, _after_turn_question=plan,
-                                 _turn_register_outcome={"event": "registered"} if outcome else None)
+                                 _turn_register_outcome={"event": "registered"} if outcome else None,
+                                 _turn_self_intro="Матвей")
     return node
 
 
 def test_conflict_hides_voice_match_and_register_speaker_from_llm_turn():
     node = _intro_node(PLAN)
     asyncio.run(iq.settle_identity(node, timeout_s=0.1))
-    assert node._current_speaker == {"is_known": False}
+    assert node._current_speaker == {"is_known": False, "introduced_name": "Матвей"}
     assert node._turn_hidden_tools == ("register_speaker",)
 
 
@@ -143,4 +154,65 @@ def test_outcome_not_arrived_in_time_turn_goes_on():
 
 
 def test_wait_constant_lives_in_knowledge():
-    assert kn.REGISTER_OUTCOME_WAIT_S == 2.5 and kn.IDENTITY_DEDUP_DEADLINE_MS == kn.STOP_CHOOSER_DEADLINE_MS
+    assert kn.REGISTER_OUTCOME_WAIT_S == 2.5 and kn.IDENTITY_DEDUP_AFTER_SPEECH_S <= 1.5
+
+
+def test_context_of_identity_turn_has_only_the_introduced_name():
+    """Живой робот 21.10: «unknown» + privacy_note → LLM говорила «голосом я тебя пока не опознал». В ходе, где личность
+    выясняет робот, в контексте только имя из представления — ни биометрии, ни слова о голосе."""
+    from rob_box_voice.core.speaker_turn import speaker_section
+    from rob_box_voice.core.turn_identity import voice_profile_lines
+
+    node = _intro_node(PLAN)
+    asyncio.run(iq.settle_identity(node, timeout_s=0.1))
+    text = "\n".join(voice_profile_lines("", node._current_speaker)) + str(speaker_section(node))
+    assert "Матвей" in text
+    for word in ("опознан", "голос", "unknown", "privacy_note", "confidence"):
+        assert word not in text.lower(), (word, text)
+
+
+# -- Chooser параллельно с речью хода (замечание координатора по живому прогону 2) --------------------------
+
+
+class _SlowModel(_Model):
+    def __init__(self, answer, delay_s):
+        super().__init__(answer)
+        self.delay_s = delay_s
+
+    def choose(self, question, *, deadline_ms):
+        import time as _t
+        _t.sleep(self.delay_s)
+        return super().choose(question, deadline_ms=deadline_ms)
+
+
+def test_slow_chooser_answer_is_used_while_turn_speech_still_plays():
+    node = _node(ALREADY_SAID)
+    node._identity_dedup = IdentityDedupChooser(_SlowModel(ALREADY_SAID, 0.3), log=node.get_logger)
+    speaking = {"on": True}
+    node._speaking_watch = types.SimpleNamespace(speaking=lambda: speaking["on"])
+
+    async def go():
+        iq.start_after_turn_question(node, PLAN, _result())
+        await asyncio.sleep(0.5)  # ответ модели (0.3 с) пришёл раньше конца речи хода
+        speaking["on"] = False
+        await node._after_turn_task
+    asyncio.run(go())
+    node._speak_identity_question.assert_not_called()
+
+
+def test_chooser_late_after_speech_end_gives_not_said(monkeypatch):
+    monkeypatch.setattr(kn, "IDENTITY_DEDUP_AFTER_SPEECH_S", 0.1)
+    node = _node(ALREADY_SAID)
+    node._identity_dedup = IdentityDedupChooser(_SlowModel(ALREADY_SAID, 1.0), log=node.get_logger)
+    _ask(node, PLAN)
+    node._speak_identity_question.assert_called_once_with(PLAN)
+    lines = [c.args[0] for c in node.get_logger().info.call_args_list]
+    assert any("итог verdict=not_said" in ln and "ждали после конца речи" in ln and "не успел" in ln for ln in lines)
+
+
+def test_nothing_said_by_llm_question_goes_at_once_without_task():
+    node = _node(ALREADY_SAID)
+    node._turn_llm_said = []
+    iq.start_after_turn_question(node, PLAN, _result("done"))
+    node._speak_identity_question.assert_called_once_with(PLAN)
+    assert getattr(node, "_after_turn_task", None) is None

@@ -107,6 +107,9 @@ def voice_profile_lines(name: str, speaker: Mapping[str, Any]) -> list:
     использует для бэклога). Issue #2440 — ``speaker_id`` полный, без
     усечения: LLM и MCP-тулы должны видеть тот же id, что в voice_memory.
     """
+    introduced = str(speaker.get("introduced_name") or "")
+    if introduced:  # #3765: назвался сам, голос похож на другого — выясняет робот; LLM — только имя, без биометрии
+        return [f"    <name>{introduced}</name>", "    <name_source>назвался сам в этой реплике</name_source>"]
     lines = [f"    <name>{name or 'unknown'}</name>"]
     if not name:
         lines.append(_UNKNOWN_VOICE_NOTE)

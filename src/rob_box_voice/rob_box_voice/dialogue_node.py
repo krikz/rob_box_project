@@ -247,12 +247,12 @@ from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
 from rob_box_voice.core.identity_question import (
     SESSION_TOPIC,
-    ask_after_turn,
     deliver_turn_result,
     introduced_name,
     merge_reply,
     open_merge_question,
     settle_identity,
+    start_after_turn_question,
 )
 from rob_box_voice.core.speaker_turn import (
     ask_planned,
@@ -3674,7 +3674,7 @@ class DialogueNode(DialogueStageMixin, Node):
             self._release_turn_speech(
                 speech_hold, retry_dispatched=tool_retry_dispatched,
             )
-            await ask_after_turn(self, leftover_identity_question, result)
+            start_after_turn_question(self, leftover_identity_question, result)
             ask_planned(self, identity_ask)
             # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM; ретрай
             # гуарда продолжает тот же ход.

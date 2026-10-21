@@ -235,24 +235,34 @@ async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT
     if not plan or plan.get("kind") not in kn.IDENTITY_MERGE_KINDS:
         return
     with node._speaker_lock:
-        node._current_speaker = {"is_known": False}
+        # собеседник — тот, кем назвался; ни статуса биометрии, ни заметки о неопознанном голосе (живой робот 21.10:
+        # «unknown» + privacy_note → LLM говорила «голосом я тебя пока не опознал» перед вопросом кода)
+        node._current_speaker = {"is_known": False, "introduced_name": getattr(node, "_turn_self_intro", None) or ""}
     node._turn_hidden_tools = ("register_speaker",)
     node.get_logger().info(
         f"👥 [#3765] личность выясняет робот (kind={plan['kind']}): ход LLM без register_speaker и без сведений о голосе")
 
 
-async def ask_after_turn(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
-    """Вопрос личности после ответа хода (#2828/#2908). Если LLM в этом ходе уже спросила о том же (Chooser
-    :mod:`.identity_dedup`), фраза кода не звучит, а кадр ``Identity`` всё равно открывается — от конца речи хода."""
+def start_after_turn_question(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
+    """Вопрос личности после ответа хода (#2828/#2908). LLM в ходе что-то сказала и есть Chooser
+    (:mod:`.identity_dedup`) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn`, задача
+    в loop'е, конец хода её не ждёт); иначе вопрос уходит в речь сразу, как без Chooser'а."""
     if plan is None:
         return
     said = list(getattr(node, "_turn_llm_said", None) or ())
     spoken = str(getattr(result, "spoken_text", "") or "").strip()
     if spoken and spoken.lower() not in ("done", "готово"):
         said.append(spoken)
-    dedup = getattr(node, "_identity_dedup", None)
-    verdict = (await asyncio.to_thread(dedup.decide, said, plan["question"]))[0] if dedup is not None else ""
-    if verdict != "already_said":
+    if getattr(node, "_identity_dedup", None) is None or not any(s.strip() for s in said):
+        node._speak_identity_question(plan)
+        return
+    node._after_turn_task = asyncio.ensure_future(ask_after_turn(node, plan, said))
+
+
+async def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
+    """Дождаться вердикта Chooser'а не дольше конца речи хода + ``IDENTITY_DEDUP_AFTER_SPEECH_S``. ``already_said`` —
+    фраза кода не звучит, кадр ``Identity`` всё равно открывается — от конца речи хода; не успел — ``not_said``."""
+    if await _dedup_verdict(node, said, plan["question"]) != "already_said":
         node._speak_identity_question(plan)
         return
     node._identity_question_asked_in_turn = True
@@ -260,6 +270,27 @@ async def ask_after_turn(node: Any, plan: Optional[Mapping[str, Any]], result: A
         open_merge_question(node, plan, ANY_SPEECH)
         if not _speaking(node):
             _arm(node, session(node).snapshot.top("Identity"))
+
+
+async def _dedup_verdict(node: Any, said: Any, phrase: str) -> str:
+    started = time.monotonic()
+    task = asyncio.ensure_future(asyncio.to_thread(node._identity_dedup.decide, list(said), phrase))
+    ended_at: Optional[float] = None
+    while not task.done():
+        now = time.monotonic()
+        if _speaking(node):
+            ended_at = None
+        elif ended_at is None:
+            ended_at = now
+        elif now - ended_at >= kn.IDENTITY_DEDUP_AFTER_SPEECH_S:
+            break
+        await asyncio.sleep(0.05)
+    waited = 0.0 if ended_at is None else (time.monotonic() - ended_at) * 1000.0
+    verdict = task.result()[0] if task.done() else "not_said"
+    node.get_logger().info(
+        f"🔁 [identity-dedup] итог verdict={verdict} ms={(time.monotonic() - started) * 1000.0:.0f} ждали после конца "
+        f"речи: {waited:.0f} мс{'' if task.done() else ' (Chooser не успел — not_said)'}")
+    return verdict
 
 
 def introduced_name(node: Any, text: str) -> Optional[str]:
@@ -308,4 +339,4 @@ def _time(msg: Any, t: float) -> Any:
 
 __all__ = ["SESSION_TOPIC", "answer_name", "introduced_name", "merge_reply", "on_speech_event", "open_merge_question",
            "open_question", "question", "session", "session_state", "set_speaker", "settle_identity", "take_answer",
-           "ask_after_turn", "deliver_turn_result", "ANY_SPEECH"]
+           "ask_after_turn", "deliver_turn_result", "start_after_turn_question", "ANY_SPEECH"]
