@@ -157,7 +157,7 @@ test_U3_strategy_B_tests_hit() {
     export REPO_DIR
 
     local pr=9003
-    local test_file="src/rob_box_voice/test/unit/node/test_barge_in_policy.py"
+    local test_file="src/rob_box_voice/test/unit/node/test_interrupt_policy.py"
     local upstream_sha="f924ad6c47bcf7deb66d2080dcee067c66cf5792"
     set_state "STALE_DIAG_ATTR_HIT_${test_file}" "$upstream_sha"
 

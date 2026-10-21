@@ -140,8 +140,8 @@
       "patterns": ["task_delta"],
       "acceptance": {
         "expected_tool_calls": [],
-        "must_not_call": ["STOP command received", "Cancel: new STT input"],
-        "_comment": "ЗОНД §2.5 спека вне песенного кейса. Требует barge_in_policy=classify на роботе. must_not_call — маркеры REPLACE-пути: если они сработали, MERGE не поехал. expected_tool_calls пуст намеренно: вызовет ли LLM task_delta — это и есть исследуемая часть. ВАЖНО: четыре хука планировщика (set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook, set_eta_provider) на момент написания сьюты НИ К ЧЕМУ НЕ ПОДКЛЮЧЕНЫ, поэтому вероятный исход — робот не обрывается, но второй вариант приходит обычным ответом, а не правкой сегментов. Это тоже валидный результат: он отделяет «STOP больше не глушит» от «MERGE реально едет»."
+        "must_not_call": ["ясный стоп", "SpeechEvent cancelled"],
+        "_comment": "ЗОНД §2.5 спека вне песенного кейса. С ADR-0150 PR-5 политика одна, параметра нет. must_not_call — маркеры обрыва речи: если они сработали, MERGE не поехал. expected_tool_calls пуст намеренно: вызовет ли LLM task_delta — это и есть исследуемая часть. ВАЖНО: четыре хука планировщика (set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook, set_eta_provider) на момент написания сьюты НИ К ЧЕМУ НЕ ПОДКЛЮЧЕНЫ, поэтому вероятный исход — робот не обрывается, но второй вариант приходит обычным ответом, а не правкой сегментов. Это тоже валидный результат: он отделяет «STOP больше не глушит» от «MERGE реально едет»."
       }
     },
     {

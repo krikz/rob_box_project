@@ -7,7 +7,8 @@
     "topic addition while the robot is mid-song must NOT stop TTS. must_not_call",
     "here is a plain log substring check (harness has no negative-tool-call",
     "concept), so we use it to assert the REPLACE-path markers never fired for",
-    "this run: no forced STOP publish, no _cancel_run('new STT input') cancel.",
+    "this run: no clear-stop interrupt, no SpeechEvent cancelled (ADR-0150 PR-5:",
+    "one interrupt policy; 'Cancel: new STT input' only cancels the LLM turn, not speech).",
     "expected_tool_calls left empty on purpose — whether the LLM actually calls",
     "task_delta to rewrite PENDING segments is the exploratory part of this",
     "live run, not a hard gate yet (S5/S6 prompt-side enforcement not proven",
@@ -15,8 +16,8 @@
   ],
   "expected_tool_calls": [],
   "must_not_call": [
-    "STOP command received",
-    "Cancel: new STT input"
+    "ясный стоп",
+    "SpeechEvent cancelled"
   ],
   "voice_provenance": {
     "voice": "anton",
