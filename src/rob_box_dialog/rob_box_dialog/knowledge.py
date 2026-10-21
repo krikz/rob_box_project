@@ -353,6 +353,9 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
 })
 #: Ни одна группа не совпала со словами — тулы статуса (как раньше «core»-скилл каталога).
 TOOL_GROUPS_DEFAULT: Tuple[str, ...] = ("status",)
+#: Группы только по явной просьбе в ЭТОЙ реплике: в следующий нейтральный ход не переносятся (#3744 — голос
+#: персистентный, «расскажи анекдот» после «какие у тебя голоса» не должен видеть set_voice; робот 21.10).
+TOOL_GROUPS_EXPLICIT: Tuple[str, ...] = ("voice",)
 #: Тулы каталога, которых нет в срезе LLM: их зовёт только код (Tier-1 «включи X» — lookup_melody медиароутера;
 #: add_music_material — служебный тул старого аранжировщика, движку v2 не нужен).
 TOOLS_CODE_ONLY: Tuple[str, ...] = ("lookup_melody", "search_melody", "add_music_material")

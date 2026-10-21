@@ -141,3 +141,12 @@ def test_continuation_keeps_the_previous_groups():
     assert "generate_music" in _names(available_tools(SNAPSHOTS["idle"], text=text, carry=("music",)))
     assert groups_for(SNAPSHOTS["idle"], "который час", carry=("music",)) == ("music",)
     assert groups_for(SNAPSHOTS["idle"], "поезжай на кухню", carry=("music",)) == ("navigation",)
+
+
+def test_voice_group_is_never_carried_over():
+    """Робот 21.10: после «какие у тебя голоса» ход «расскажи анекдот» видел set_voice — перенос группы прошлого хода.
+    Голос — только по явной просьбе в этой же реплике (#3744)."""
+    assert groups_for(SNAPSHOTS["idle"], "расскажи анекдот", carry=("voice",)) == kn.TOOL_GROUPS_DEFAULT
+    names = _names(available_tools(SNAPSHOTS["idle"], text="расскажи анекдот", carry=("voice", "music")))
+    assert "set_voice" not in names and "generate_music" in names
+    assert set(kn.TOOL_GROUPS_EXPLICIT) <= set(kn.TOOL_GROUPS)

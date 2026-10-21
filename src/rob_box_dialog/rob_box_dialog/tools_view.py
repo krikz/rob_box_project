@@ -3,8 +3,9 @@
 Функция, а не правило в промпте и не догадка LLM (подгрузка скиллов моделью удалена): всегда —
 ``knowledge.TOOLS_ALWAYS`` (речь, память, время, поиск, анимация); группы ``knowledge.TOOL_GROUPS`` — по словам
 реплики («спой», «голос», «поезжай»…) и по сценам снимка (кадр ``DJ`` и играющая музыка — музыкальные тулы); ни одна
-группа не совпала — группы прошлого хода (продолжение разговора), иначе ``TOOL_GROUPS_DEFAULT``. В SILENCED ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов —
-пусто. Голос (``set_voice``/``set_tts_provider``) виден только при явной голосовой просьбе (#3744).
+группа не совпала — группы прошлого хода (продолжение разговора), иначе ``TOOL_GROUPS_DEFAULT``. В SILENCED
+ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Голос (``set_voice`` /
+``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744).
 """
 
 from __future__ import annotations
@@ -20,13 +21,23 @@ from rob_box_dialog.words import has_word
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) -> Tuple[str, ...]:
     """Группы среза: сцены снимка и прямо названные (порядок ``TOOL_GROUPS``), затем названные только общим глаголом;
-    ни одной — ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение), иначе по умолчанию."""
+    ни одной — ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме тех, что только по явной
+    просьбе, ``TOOL_GROUPS_EXPLICIT``), иначе по умолчанию."""
     scene = {"music"} if snapshot.music.dj or snapshot.music.state == "playing" else set()
-    strong = {name for name, g in kn.TOOL_GROUPS.items() if has_word(text or "", g.stems)} | scene
-    weak = {name for name, g in kn.TOOL_GROUPS.items() if g.weak and has_word(text or "", g.weak)} - strong
+    strong = _named(text, "stems") | scene
+    weak = _named(text, "weak") - strong
     if not strong | weak:
-        strong = {g for g in carry if g in kn.TOOL_GROUPS} or set(kn.TOOL_GROUPS_DEFAULT)
-    return tuple(n for n in kn.TOOL_GROUPS if n in strong) + tuple(n for n in kn.TOOL_GROUPS if n in weak)
+        strong = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
+        strong = strong or set(kn.TOOL_GROUPS_DEFAULT)
+    return _ordered(strong) + _ordered(weak)
+
+
+def _named(text: str, field: str) -> set:
+    return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
+
+
+def _ordered(names: set) -> Tuple[str, ...]:
+    return tuple(name for name in kn.TOOL_GROUPS if name in names)
 
 
 def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent: str = "personality",
