@@ -724,7 +724,11 @@ class SpeakerDatabase:
         """
         if self.gallery_size(speaker_id) >= GALLERY_WARMUP_SIZE:
             return False
-        self.register(name, embedding, speaker_id=speaker_id)
+        # #3801: рост галереи профиль не переименовывает — имя берётся из БД, а ``name`` (снимок сессии роста,
+        # открытой до переименования) — только для профиля, которого ещё нет. Живой робот 21.10: «зови меня
+        # Денчик» → Renamed, следующая реплика дописала эмбеддинг под старым именем и вернула «Энджик».
+        row = self._conn.execute("SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)).fetchone()
+        self.register(row[0] if row else name, embedding, speaker_id=speaker_id)
         return True
 
     def register(
