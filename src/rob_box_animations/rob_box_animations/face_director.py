@@ -156,6 +156,10 @@ class GazeTrack:
         if self._vad:
             self._speaker = self._doa
 
+    def look_at(self, deg: float, now: float) -> None:
+        """Собеседник известен (азимут его фразы из ``/dialog/session``, #3695) — смотреть на него и без VAD."""
+        self._speaker = (self._relative(deg), now)
+
     def on_vad(self, active: bool, now: float) -> None:
         self._vad = bool(active)
         if self._vad and self._doa and now - self._doa[1] <= self.fresh_s:

@@ -27,7 +27,7 @@ from typing import Any, Deque, Dict, FrozenSet, Iterable, Mapping, Optional, Seq
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
-from rob_box_dialog.session import SpeakerRef
+from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
 
 #: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
@@ -98,6 +98,29 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
     if ref is None:
         return {"name": None, "name_state": "unknown"}
     return {"name": ref.name if ref.name_state == "confirmed" else None, "name_state": ref.name_state}
+
+
+def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg: Optional[float],
+                   asked_at: float) -> Dict[str, Any]:
+    """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда."""
+    return {"person_ref": person_ref, "kind": kind, "name": name, "azimuth_deg": azimuth_deg, "asked_at": asked_at}
+
+
+def answers_question(frame: Optional[SceneFrame], heard: Any) -> bool:
+    """Фраза без вейка — ответ на вопрос робота (В17(б)): кадр ``Identity`` жив (TTL — у сессии), фраза пришла
+    после вопроса и не позже ``IDENTITY_TTL_S``, и с той же стороны: DOA ±``IDENTITY_ANSWER_DOA_DEG`` от азимута
+    кадра или тот же узнанный длинный голос. Это не окно адресации (§17 Ж): ответить можно только на свой вопрос."""
+    if frame is None or frame.kind != "Identity" or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
+        return False
+    data = frame.payload
+    age = float(getattr(heard, "t", 0.0) or 0.0) - float(data.get("asked_at") or 0.0)
+    if not 0.0 <= age <= kn.IDENTITY_TTL_S:
+        return False
+    azimuth, doa = data.get("azimuth_deg"), getattr(heard, "doa_deg", None)
+    if azimuth is not None and doa is not None and angle_diff_deg(azimuth, doa) <= kn.IDENTITY_ANSWER_DOA_DEG:
+        return True
+    voice = trusted_voice(heard)
+    return bool(voice) and voice == data.get("person_ref")
 
 
 def trusted_voice(heard: Any) -> str:

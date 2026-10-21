@@ -163,3 +163,53 @@ class TestTelegram:
     def test_regular_telegram_message_is_addressed_without_wake(self, node):
         node._on_stt(make_utterance("[TG:42] включи музыку"))
         assert _turn_texts(node) == ["включи музыку"]
+
+
+class TestAnswerToNameQuestionV17b:
+    """В17(б), #3695: робот спросил имя — ответ принимается и без вейка, ≤ 15 с и с той же стороны (DOA ±30°)."""
+
+    @staticmethod
+    def _ask(node, azimuth=90.0, asked_ago_s=1.0):
+        from rob_box_dialog.speaker_adapter import AskCandidate
+        from rob_box_dialog.session import SpeakerRef
+        from rob_box_voice.core.identity_question import open_question
+
+        node._speaker_ref = SpeakerRef(azimuth_deg=azimuth)
+        open_question(node, AskCandidate("stranger", "unknown"))
+        # вопрос прозвучал asked_ago_s назад (фраза ответа в тесте кончается «сейчас»)
+        frame = node._session.pop_scene("Identity")
+        node._session.push_scene("Identity", "code", payload={**frame.payload, "asked_at": time.time() - asked_ago_s})
+
+    def test_answer_without_wake_from_the_same_side_is_a_turn(self, node):
+        self._ask(node, azimuth=90.0)
+        _say(node, "меня зовут Гриша", doa=110.0)
+        assert _turn_texts(node) == ["меня зовут Гриша"]
+        assert _logged(node, "source=identity_answer")
+        assert _logged(node, "ответ на вопрос")
+        assert node._session.snapshot.top("Identity") is None, "первая фраза снимает кадр"
+        assert node._identity_answer["kind"] == "unknown"
+
+    def test_answer_from_the_other_side_is_not_addressed(self, node):
+        self._ask(node, azimuth=90.0)
+        _say(node, "меня зовут Гриша", doa=200.0)
+        node._dispatch_turn.assert_not_called()
+        assert _logged(node, "[backlog] accumulated")
+
+    def test_answer_later_than_fifteen_seconds_is_not_addressed(self, node):
+        self._ask(node, azimuth=90.0, asked_ago_s=20.0)
+        _say(node, "меня зовут Гриша", doa=90.0)
+        node._dispatch_turn.assert_not_called()
+
+    def test_without_a_question_no_wake_is_still_backlog(self, node):
+        _say(node, "меня зовут Гриша", doa=90.0)
+        node._dispatch_turn.assert_not_called()
+
+    def test_flag_off_answer_only_with_wake(self, node, monkeypatch):
+        from rob_box_dialog import knowledge as kn
+
+        monkeypatch.setattr(kn, "IDENTITY_ANSWER_WITHOUT_WAKE", False)
+        self._ask(node, azimuth=90.0)
+        _say(node, "меня зовут Гриша", doa=90.0)
+        node._dispatch_turn.assert_not_called()
+        _say(node, "робот меня зовут Гриша", doa=90.0)
+        assert _turn_texts(node) == ["меня зовут Гриша"]

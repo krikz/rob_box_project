@@ -4,7 +4,8 @@
 вейки В18 выключены по умолчанию), Telegram и оператор адресованы всегда, кроме обращения к координатору
 («Клод …» из Telegram, #3518). Голое «робот» после неуслышанной просьбы (В12) берёт свежую фразу бэклога того же
 направления/человека как текст хода (``pickup``); без неё — только рефлекс «слушаю», 0 вызовов LLM. Окна
-адресации без вейка нет (§17 Ж).
+адресации без вейка нет (§17 Ж); единственная фраза без вейка, которую робот берёт, — ответ на его собственный
+вопрос об имени ≤ 15 с с той же стороны (В17(б), ``speaker_adapter.answers_question``).
 
 Чистый модуль: сообщения ROS читаются утиной типизацией (:func:`heard_from`).
 """
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.session import SceneFrame
+from rob_box_dialog.speaker_adapter import answers_question
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
@@ -28,7 +31,7 @@ from rob_box_dialog.words import has_wake_word, strip_wake_word
 #: Источники реплики (значения ``Utterance.SOURCE_*``; тест сверяет с ``.msg``).
 SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "operator"
 #: ``Addressed.source``: откуда текст хода.
-VOICE, BACKLOG_PICKUP, BARE_WAKE = "voice", "backlog_pickup", "bare_wake"
+VOICE, BACKLOG_PICKUP, BARE_WAKE, IDENTITY_ANSWER = "voice", "backlog_pickup", "bare_wake", "identity_answer"
 #: ``NotAddressed.reason``.
 NO_WAKE, COORDINATOR, EMPTY = "no_wake", "coordinator", "empty"
 #: Запас окна фразы на хвост VAD для направления (тот же, что у stt_node).
@@ -67,8 +70,10 @@ def is_bare(rest: str) -> bool:
     return all(w in ADDRESS_FILLER_WORDS for w in _WORD.findall((rest or "").lower()))
 
 
-def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str]) -> Decision:
-    """Адресована ли реплика роботу и какой у хода текст (§4.2, В12)."""
+def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
+           question: Optional[SceneFrame] = None) -> Decision:
+    """Адресована ли реплика роботу и какой у хода текст (§4.2, В12). ``question`` — живой кадр ``Identity``
+    (робот спросил имя): фраза без вейка с той же стороны — ответ на него (В17(б))."""
     text = (heard.text or "").strip()
     if heard.source in (SOURCE_TELEGRAM, SOURCE_OPERATOR):
         if heard.source == SOURCE_TELEGRAM and is_coordinator_call(text):
@@ -76,7 +81,7 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str]) 
         rest = strip_wake_word(text, wake_words)
         return Addressed(rest, heard.source) if rest else NotAddressed(EMPTY)
     if not has_wake_word(text, wake_words):
-        return NotAddressed(NO_WAKE)
+        return Addressed(text, IDENTITY_ANSWER) if text and answers_question(question, heard) else NotAddressed(NO_WAKE)
     rest = strip_wake_word(text, wake_words)
     if not is_bare(rest):
         return Addressed(rest, VOICE)

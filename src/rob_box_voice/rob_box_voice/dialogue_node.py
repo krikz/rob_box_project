@@ -47,7 +47,7 @@ from nav_msgs.msg import Odometry
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
-from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
+from rob_box_dialog_msgs.msg import SessionState, SpeakerResult, SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 
 from rob_box_core.avatar_command import (
@@ -219,10 +219,7 @@ from rob_box_voice.core.turn_speech import (
 )
 from rob_box_voice.core.turn_speech_gate import TurnSpeechGate
 from rob_box_voice.core.turn_identity import user_profile_lines
-from rob_box_voice.core.self_intro import (
-    extract_self_intro_name,
-    same_person_name,
-)
+from rob_box_voice.core.self_intro import same_person_name
 from rob_box_voice.core.set_length_words import heard_set_length
 from rob_box_voice.core.speak_helpers import (
     EffectAwaiterRegistry, build_ssml_payload,
@@ -247,6 +244,7 @@ from rob_box_voice.speaker_profiles import (
 # Issue #1787 — сборка промпта и валидация клички, придуманной LLM.
 from rob_box_voice.core import epithets
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
+from rob_box_voice.core.identity_question import SESSION_TOPIC, introduced_name
 from rob_box_voice.core.speaker_turn import (
     ask_planned,
     note_backlog_voice,
@@ -701,6 +699,11 @@ class DialogueNode(DialogueStageMixin, Node):
             QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(2.0, self._provider_reporter.tick)
+        # ADR-0150 §7.1/§7.5 (#3695): снимок сессии (собеседник с азимутом, кадр Identity) — latched, до PR-7 пишет v1.
+        self._session_pub = self.create_publisher(
+            SessionState, SESSION_TOPIC,
+            QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         # ADR-0150 §6.2 (PR-5 #3694) — перебивание речи решает диалог: stt_node на сегмент с вейком шлёт
         # /dialog/interrupt_request, ясная стоп-команда рвёт речь личности текущей эпохи, остальное — нет
         # (новая реплика встаёт после текущей). Политика перебивания одна, табличная, без параметра.
@@ -3262,7 +3265,8 @@ class DialogueNode(DialogueStageMixin, Node):
         """Issue #2925 -- имя, которым человек назвал себя в реплике хода
         (:func:`extract_self_intro_name`). Только для живой реплики с
         ``utterance_id``: регистрировать без неё нечего (ADR-0131)."""
-        intro = extract_self_intro_name(user_input) if utterance_id else None
+        # #3695: голое имя в ответ на «Как тебя зовут?» (кадр Identity) — тоже представление
+        intro = introduced_name(self, user_input) if utterance_id else None
         self._turn_self_intro = intro
         if intro:
             self.get_logger().info(

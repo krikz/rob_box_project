@@ -237,6 +237,9 @@ class _RecordingHost:
     def addressed(self, decision: object, recent: object, heard: object) -> None:
         self.addressed_calls.append((decision, recent))
 
+    def identity_question(self):
+        return getattr(self, "question", None)
+
     def bare_wake(self) -> None:
         self.calls.append("bare_wake")
 

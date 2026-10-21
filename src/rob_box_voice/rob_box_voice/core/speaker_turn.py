@@ -26,6 +26,7 @@ from rob_box_dialog.speaker_adapter import (
     speaker_ref,
 )
 from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
+from rob_box_voice.core.identity_question import open_question, set_speaker
 
 
 def ask_policy(node: Any) -> AskPolicy:
@@ -73,8 +74,11 @@ def note_interlocutor(node: Any, sp: Mapping[str, Any], utterance_id: Optional[s
     now = time.time()
     faces = getattr(node, "_faces", None)
     names = faces.names_during(now - IDENTITY_FACE_RECENT_S, now) if faces is not None else frozenset()
-    ref = speaker_ref(sp, now=now, face_names=names, prev=getattr(node, "_speaker_ref", None))
+    heard = getattr(node, "_last_heard", None)  # азимут ЭТОЙ фразы (DOA по окну её звучания) — для взгляда и ответа
+    azimuth = heard.doa_deg if heard is not None and heard.utterance_id == utterance_id else None
+    ref = speaker_ref(sp, now=now, face_names=names, azimuth_deg=azimuth, prev=getattr(node, "_speaker_ref", None))
     node._speaker_ref = ref
+    set_speaker(node, ref)
     count = ask_policy(node).note(ref.person_ref or STRANGER, now)
     own = sp.get("utterance_id") == utterance_id and not sp.get("inconclusive")
     if ref.person_ref is None and own and not names:
@@ -142,3 +146,4 @@ def ask_planned(node: Any, cand: Optional[AskCandidate]) -> None:
     if cand is not None:
         node._speak_identity_question({"kind": "tentative", "question": cand.question(), "name": cand.name},
                                       after_answer=True)
+        open_question(node, cand)

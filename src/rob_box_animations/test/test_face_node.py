@@ -96,3 +96,17 @@ def test_gesture_wins_over_emotion_and_earcon_only_request_gets_no_face_answer()
     assert node.director._request[0] == 'wink'
     node._on_expression(_expression(earcon='heard'))
     assert len(node._event_pub.sent) == 1
+
+
+def test_session_speaker_azimuth_holds_the_gaze_over_raw_doa():
+    """#3695: собеседник из /dialog/session (азимут его фразы) держит взгляд; сырой DOA в это время его не уводит."""
+    import math
+
+    node = _face_node()
+    assert '/dialog/session' in {t for t, _ in node.subscriptions}
+    node._on_session(types.SimpleNamespace(speaker_azimuth_deg=90.0))
+    looked = node.director.gaze._speaker
+    node._on_direction(types.SimpleNamespace(data=270))
+    assert node.director.gaze._speaker == looked
+    node._on_session(types.SimpleNamespace(speaker_azimuth_deg=math.nan))  # собеседник без азимута — взгляд не трогаем
+    assert node.director.gaze._speaker == looked

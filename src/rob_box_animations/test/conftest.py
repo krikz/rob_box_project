@@ -94,7 +94,7 @@ def _install_ros_stand_ins() -> None:
     std = types.ModuleType('std_msgs.msg')
     std.Bool = std.Int32 = std.String = _Msg
     dialog = types.ModuleType('rob_box_dialog_msgs.msg')
-    dialog.ExpressionRequest = dialog.SpeechEnvelope = _Msg
+    dialog.ExpressionRequest = dialog.SpeechEnvelope = dialog.SessionState = _Msg
     dialog.ExpressionEvent = type('ExpressionEvent', (_Msg,), {'KIND_STARTED': 0, 'KIND_SKIPPED': 1})
     dialog.SpeechEvent = type('SpeechEvent', (_Msg,), {'KIND_STARTED': 2, 'KIND_FINISHED': 4, 'KIND_CANCELLED': 5})
     for name, mod in {
