@@ -115,10 +115,15 @@ class _DialogueSttHost:
         )
         return True
 
-    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]]) -> None:
+    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]], heard: Heard) -> None:
         # ADR-0150 §7.3 (В12): снимок LLM получает ≤ 1 свежую фразу того же
         # источника структурой — её вставит _build_dynamic_system_context.
         self._node._pending_unaddressed = recent
+        doa = "-" if heard.doa_deg is None else f"{heard.doa_deg:.0f}"
+        self._node.get_logger().info(
+            f"📮 [address] Addressed source={decision.source} doa={doa} person={heard.person_ref or '-'} "
+            f"recent_unaddressed={int(bool(recent))}"
+        )
         if decision.pickup:
             self._node.get_logger().info(
                 f"🗒️ [backlog] pickup source=backlog_pickup text={decision.text[:80]!r} "

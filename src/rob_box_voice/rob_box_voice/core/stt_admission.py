@@ -302,7 +302,7 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]]) -> None:
+    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]], heard: Heard) -> None:
         """Реплика адресована: запомнить для снимка LLM ``recent_unaddressed``
         (≤ 1 запись того же источника) и залогировать подхват из бэклога (В12).
         """
@@ -627,7 +627,7 @@ class AddressStep:
                 return handled(self.name, "NotAddressed(coordinator)")
             return drop(self.name, "empty_after_strip")
         recent = backlog.recent_unaddressed(heard) if backlog is not None and not decision.pickup else None
-        host.addressed(decision, recent)
+        host.addressed(decision, recent, heard)
         bare = decision.source == BARE_WAKE
         return SttOutcome(kind=SttOutcomeKind.PASS, new_context=replace(ctx.with_text(decision.text), bare=bare))
 

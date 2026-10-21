@@ -243,7 +243,7 @@ class _RecordingHost:
             self.remembered.append(heard)
         return self._accumulate
 
-    def addressed(self, decision: object, recent: object) -> None:
+    def addressed(self, decision: object, recent: object, heard: object) -> None:
         self.addressed_calls.append((decision, recent))
 
     def bare_wake(self) -> None:
