@@ -61,11 +61,12 @@ class PlanToolExecutor:
         self._track_guard = TrackStartGuard()  # issue #2859 — один запуск трека за ход (уходит в PR-7c)
         self.music_turn = MusicTurn()  # ADR-0148 — запуски музыки хода и речь о них
 
-    def begin_turn(self, utterance: str = "") -> None:
-        """Граница хода: лимит «один трек», музыка хода и Tier-1 плана по словам человека (``AgentCore``)."""
+    def begin_turn(self) -> None:
+        """Граница хода (``AgentCore``, медиароутер): лимит «один трек» и музыка хода. Tier-1 плана сюда не входит:
+        его ставит хост по словам человека до хода (``plan_host.begin_turn``), а ``AgentCore`` зовёт этот хук уже
+        внутри хода — сброс здесь стирал «потом» (живой прогон 21.10 23:10Z: музыка пошла поверх анекдота)."""
         self._track_guard.reset()
         self.music_turn.reset()
-        self.planner.begin_turn(utterance)
 
     def order_batch(self, calls: Sequence[ToolCall]) -> List[ToolCall]:
         """Порядок исполнения пачки вызовов ``AgentCore`` по плану (результаты модели — в её порядке):

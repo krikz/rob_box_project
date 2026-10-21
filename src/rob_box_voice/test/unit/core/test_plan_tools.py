@@ -35,7 +35,7 @@ class _Underlying:
         return None
 
 
-def _executor(utterance: str = ""):
+def _executor(utterance: str = ""):  # хост ставит Tier-1 до хода, как plan_host.begin_turn
     events, lines = [], []
     under = _Underlying()
     executor = PlanToolExecutor(under, PlanRunner(publish=events.append, log=lines.append))
@@ -81,6 +81,7 @@ def test_then_music_waits_for_the_joke_to_finish():
     executor, under, events, lines = _executor(JOKE)
 
     async def run():
+        executor.begin_turn()  # AgentCore зовёт хук ВНУТРИ хода: «потом» хоста не стирается (живой прогон 21.10)
         said = await executor.execute(_call("1", "speak_text", text="Заходит робот в бар."))
         music = asyncio.ensure_future(executor.execute(_call("2", "request_music", intent="track", text="что-нибудь")))
         await asyncio.sleep(0.05)
