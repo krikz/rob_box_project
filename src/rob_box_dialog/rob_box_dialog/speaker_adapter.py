@@ -31,6 +31,7 @@ from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optiona
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
+from rob_box_dialog.reply_grammar import Reply, classify_reply
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
 
@@ -178,21 +179,18 @@ def question_open(frame: Optional[SceneFrame]) -> bool:
     return frame is not None and frame.kind == "Identity" and frame.payload.get("asked_at") is not None
 
 
-def answers_question(frame: Optional[SceneFrame], heard: Any) -> bool:
-    """Фраза без вейка — ответ на вопрос робота (В17(б)): кадр ``Identity`` жив (TTL — у сессии), фраза пришла
-    после открытия окна (``asked_at`` = конец вопроса + грейс микрофона) и не позже ``IDENTITY_TTL_S``, и с той же стороны: DOA ±``IDENTITY_ANSWER_DOA_DEG`` от азимута
-    кадра или тот же узнанный длинный голос. Это не окно адресации (§17 Ж): ответить можно только на свой вопрос."""
+def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Reply]:
+    """Фраза без вейка — ответ на вопрос робота (В17(б), решение Шифу 21.10): кадр ``Identity`` жив (TTL — у сессии),
+    фраза пришла после открытия окна (``asked_at`` = конец вопроса + грейс микрофона), не позже ``IDENTITY_TTL_S``,
+    и ПОХОЖА НА ОТВЕТ по грамматике (:func:`reply_grammar.classify_reply`: имя, да/нет, отказ). DOA и голос — не
+    условия (DOA в комнате прыгает), только признаки в логе. Не похоже — ``None`` (бэклог). Это не окно адресации
+    (§17 Ж): ответить можно только на свой вопрос."""
     if not question_open(frame) or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
-        return False
-    data = frame.payload
-    age = float(getattr(heard, "t", 0.0) or 0.0) - float(data["asked_at"])
+        return None
+    age = float(getattr(heard, "t", 0.0) or 0.0) - float(frame.payload["asked_at"])
     if not 0.0 <= age <= kn.IDENTITY_TTL_S:
-        return False
-    azimuth, doa = data.get("azimuth_deg"), getattr(heard, "doa_deg", None)
-    if azimuth is not None and doa is not None and angle_diff_deg(azimuth, doa) <= kn.IDENTITY_ANSWER_DOA_DEG:
-        return True
-    voice = trusted_voice(heard)
-    return bool(voice) and voice == data.get("person_ref")
+        return None
+    return classify_reply(str(getattr(heard, "text", "") or ""), asks_name=frame.payload.get("kind") in kn.IDENTITY_ASKS_NAME)
 
 
 def trusted_voice(heard: Any) -> str:

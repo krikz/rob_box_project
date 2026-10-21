@@ -181,14 +181,12 @@ def _question(azimuth=90.0, asked_at=95.0, person="p1", kind="unknown"):
 
 
 @pytest.mark.parametrize("heard, question, addressed", [
-    (dict(t=100.0, doa=110.0), dict(), True),                       # 5 с, та же сторона (20° ≤ 30°)
-    (dict(t=100.0, doa=200.0), dict(), False),                      # другая сторона
+    (dict(t=100.0, doa=110.0), dict(), True),                       # 5 с, та же сторона
+    (dict(t=100.0, doa=200.0), dict(), True),                       # DOA не условие: другая сторона, фраза — ответ
+    (dict(t=100.0, doa=None), dict(), True),                        # направление неизвестно — тоже
     (dict(t=111.0, doa=90.0), dict(), False),                       # 16 с — кадр уже не ждёт
     (dict(t=94.0, doa=90.0), dict(), False),                        # фраза раньше вопроса
-    (dict(t=100.0, doa=None), dict(), False),                       # направление фразы неизвестно
-    (dict(t=100.0, doa=None, person="p1", voice_s=2.5), dict(), True),   # тот же узнанный длинный голос
-    (dict(t=100.0, doa=None, person="p1", voice_s=1.0), dict(), False),  # короткому голосу не верим
-    (dict(t=100.0, doa=95.0), dict(azimuth=None), False),           # азимут вопроса неизвестен
+    (dict(t=100.0, doa=95.0), dict(azimuth=None), True),            # азимут вопроса неизвестен — не важен
 ])
 def test_answer_to_own_question_without_wake(heard, question, addressed):
     decision = decide(_heard("меня зовут Гриша", **heard), None, DEFAULT_WAKE_WORDS, _question(**question))
@@ -196,6 +194,23 @@ def test_answer_to_own_question_without_wake(heard, question, addressed):
         assert decision == Addressed("меня зовут Гриша", address.IDENTITY_ANSWER)
     else:
         assert decision == NotAddressed(address.NO_WAKE)
+
+
+@pytest.mark.parametrize("text, doa, addressed", [
+    ("не скажу", 90.0, True),                                         # отказ
+    ("не скажу", 157.0, True),                                        # DOA через 67° от азимута вопроса (90°) — принят
+    ("Гриша", 343.0, True),                                           # голое имя, DOA прыгнул 50° → 343°
+    ("меня зовут Саша", 20.0, True),
+    ("зови меня Гриша", 20.0, True),
+    ("да", 20.0, True),
+    ("это не я", 20.0, True),
+    ("поселения происходили давайте я устрою наше время", 90.0, False),   # чужой разговор — бэклог
+    ("только что основали", 90.0, False),
+    ("Гриша пришёл вчера", 90.0, False),
+])
+def test_wakeless_phrase_is_an_answer_only_when_it_looks_like_one(text, doa, addressed):
+    decision = decide(_heard(text, t=100.0, doa=doa), None, DEFAULT_WAKE_WORDS, _question())
+    assert decision == (Addressed(text, address.IDENTITY_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
 
 
 def test_no_question_no_wake_is_not_addressed_and_wake_still_works():

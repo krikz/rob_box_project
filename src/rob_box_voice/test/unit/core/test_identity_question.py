@@ -50,8 +50,8 @@ def _ask(node, cand=None):
     iq.on_speech_event(node, _FINISHED, "q1", "personality")
 
 
-def _heard(t, doa=None, source="respeaker"):
-    return types.SimpleNamespace(t=t, doa_deg=doa, source=source)
+def _heard(t, doa=None, source="respeaker", text="меня зовут Гриша"):
+    return types.SimpleNamespace(t=t, doa_deg=doa, source=source, text=text)
 
 
 def test_question_opens_identity_frame_with_azimuth_and_publishes_session():
@@ -109,12 +109,12 @@ def test_bare_name_is_an_introduction_only_as_answer_to_ask_name(kind, text, nam
 
 def _answer_accepted(clock, node, after_s, doa=95.0):
     """Фраза без вейка с той же стороны через ``after_s`` с после ТЕКУЩЕГО момента принята как ответ?"""
-    from rob_box_dialog.speaker_adapter import answers_question
+    from rob_box_dialog.speaker_adapter import answer_to_question
 
     clock.t += after_s
     iq.question(node)  # то же, что делает допуск: истёкшее снимается
     frame = node._session.snapshot.top("Identity")
-    return answers_question(frame, _heard(clock.t, doa=doa))
+    return answer_to_question(frame, _heard(clock.t, doa=doa)) is not None
 
 
 def test_long_turn_answer_does_not_eat_the_window_answer_10s_after_question_end_is_taken():
@@ -198,3 +198,21 @@ def test_bare_name_without_question_is_nothing():
     node = _node()
     node._identity_answer = None
     assert iq.answer_name(node, "Гриша") is None
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("не скажу", "refusal"), ("Гриша", "name"), ("да", "yes"), ("нет", "no"), ("спой песню про ёжика", "other"),
+])
+def test_take_answer_logs_the_grammar_kind(text, kind):
+    node = _node(azimuth=80.0)
+    _ask(node)
+    iq.take_answer(node, "identity_answer", _heard(time.time() + 3, doa=157.0, text=text))
+    assert node._identity_answer["reply"] == kind
+    assert f"kind={kind}" in node.get_logger().info.call_args.args[0]
+
+
+@pytest.mark.parametrize("text, name", [("зови меня Гриша", "Гриша"), ("не скажу", None), ("поселения происходили", None)])
+def test_answer_name_registers_dictionary_names_by_code(text, name):
+    node = _node()
+    node._identity_answer = {"kind": "unknown"}
+    assert iq.answer_name(node, text) == name
