@@ -212,7 +212,7 @@ class SttOutcomeKind(str, Enum):
       The orchestrator increments the matching counter and logs the
       step name. Use for "this text is not for us" (rejected / no wake
       word / empty after strip / silence command / backlog hold /
-      new-session reset / quick_decide IGNORE).
+      new-session reset).
     * ``HANDLED(reason)`` — pipeline stops, but the step ALREADY did
       the side effect (silence FSM transition, reset session, dispatch
       a follow-up). The orchestrator must NOT re-run the side effect.
@@ -366,29 +366,10 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def quick_decide_verdict(self, clean: str) -> Tuple[str, bool, bool]:
-        """Run ``quick_decide`` against the cleaned text and return
-        ``(verdict_value, ignored, pending_llm)``.
-
-        ``ignored=True`` means the verdict was ``IGNORE`` — drop the
-        text entirely. ``pending_llm=True`` means ``PENDING_LLM`` —
-        queue the text into ``_pending_user_messages`` and stop. The
-        orchestrator then calls back into :meth:`enqueue_pending` or
-        :meth:`cancel_inflight` depending on the verdict.
-        """
-        ...
-
-    def enqueue_pending(self, clean: str) -> bool:
-        """Append ``(clean, time.monotonic())`` to ``_pending_user_messages``,
-        dropping the oldest entry if the queue is at the limit. Returns
-        ``True`` when the text was queued (orchestrator should DROP).
-        """
-        ...
-
-    def cancel_inflight(self, stop_tts: bool) -> None:
-        """Cancel the in-flight LLM turn (and optionally stop TTS) for
-        a fresh input. Mirrors the legacy ``_cancel_run(reason, stop_tts=...)``
-        path.
+    def take_turn(self) -> None:
+        """ADR-0150 §6.2 (PR-5) — новая адресованная фраза принимает ход: отменить ход в полёте (LLM),
+        речь НЕ трогать — текущая реплика дочитывается, ответ нового хода встаёт после неё.
+        Рвёт речь только ясная стоп-команда (``/dialog/interrupt_request``).
         """
         ...
 
@@ -559,11 +540,6 @@ class SttAdmission:
 # ---------------------------------------------------------------------------
 # Default steps — one per legacy barrier
 # ---------------------------------------------------------------------------
-
-
-#: Default ``barge_in_policy`` value (matches the legacy
-#: ``getattr(self, "_barge_in_policy", "replace")`` default).
-DEFAULT_BARGE_IN_POLICY: str = "replace"
 
 
 @dataclass(frozen=True)
@@ -753,11 +729,9 @@ class MediaCommandStep:
     """Issue #3134 — медиакоманды исполняет код, до LLM.
 
     Стоит после wake-word, силенс-, command- и new-session-гейтов (фраза
-    уже адресована роботу и очищена) и ДО :class:`BargeInClassifyStep`:
-    иначе при ``barge_in_policy=classify`` команда во время хода ушла бы
-    в очередь ``PENDING_LLM`` и склеилась в следующий LLM-ход — ровно
-    регрессия HA core#139415 (роутер обязан срабатывать на КАЖДОМ ходе,
-    и в продолжении разговора, и посреди DJ-сета). Путь Telegram идёт
+    уже адресована роботу и очищена) и ДО :class:`TakeTurnStep`: роутер
+    обязан срабатывать на КАЖДОМ ходе, и в продолжении разговора, и
+    посреди DJ-сета (регрессия HA core#139415). Путь Telegram идёт
     через этот же шаг.
     """
 
@@ -795,44 +769,19 @@ class BacklogFlushStep:
 
 
 @dataclass(frozen=True)
-class BargeInClassifyStep:
-    """Step 12 — barge-in classifier (issue #968 / S4.2).
+class TakeTurnStep:
+    """Step 12 — новая фраза принимает ход (ADR-0150 §6.2, PR-5 #3694).
 
-    When ``barge_in_policy == "classify"``, route the new input through
-    :func:`quick_decide`:
-
-    * ``IGNORE`` → DROP with ``quick_decide_ignore``.
-    * ``PENDING_LLM`` + live turn → ``host.enqueue_pending(...)``
-      then DROP with ``pending_llm`` (the text reaches LLM as a
-      follow-up turn, not a fresh dispatch).
-    * otherwise (REPLACE / PENDING_LLM with no live turn) → cancel
-      the in-flight turn via ``host.cancel_inflight(stop_tts=...)``
-      and PASS.
+    Ход в полёте отменяется (``host.take_turn``), речь продолжается: одна
+    табличная политика вместо двух прежних (замена речи / классификатор).
+    Рвёт речь только ясная стоп-команда — её решает ``InterruptGate`` по
+    ``/dialog/interrupt_request`` раньше, чем сюда дойдёт реплика.
     """
 
-    name: str = "barge_in_classify"
-    policy: str = DEFAULT_BARGE_IN_POLICY
+    name: str = "take_turn"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if self.policy != "classify":
-            # REPLACE / OFF — legacy unconditional cancel. The host
-            # owns the cancel call; we just signal PASS.
-            host.cancel_inflight(stop_tts=True)
-            return PASS
-        verdict, ignored, pending_llm = host.quick_decide_verdict(ctx.text)
-        if ignored:
-            return drop(self.name, "quick_decide_ignore")
-        if pending_llm:
-            if host.enqueue_pending(ctx.text):
-                return handled(self.name, "pending_llm")
-            # No slot to queue → fall through to REPLACE-style cancel.
-        # REPLACE-style: cancel the in-flight turn (stop_tts depends
-        # on the verdict — only REPLACE stops TTS; PENDING_LLM with
-        # no queue should not cut an already-playing segment).
-        # ``quick_decide_verdict`` returns the uppercase string form
-        # (``verdict.value`` — see :class:`QuickVerdict`) — case-fold
-        # here so the comparison is unambiguous.
-        host.cancel_inflight(stop_tts=(verdict.lower() == "replace"))
+        host.take_turn()
         return PASS
 
 
@@ -863,10 +812,7 @@ class DispatchTriggerStep:
 # ---------------------------------------------------------------------------
 
 
-def default_steps(
-    *,
-    barge_in_policy: str = DEFAULT_BARGE_IN_POLICY,
-) -> List[Any]:
+def default_steps() -> List[Any]:
     """Return the canonical step order for ``DialogueNode._on_stt``.
 
     Order matches the inline if-chain at
@@ -886,7 +832,7 @@ def default_steps(
     10. :class:`NewSessionStep` — «новая сессия» / «/clear».
     11. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
     12. :class:`BacklogFlushStep` — backlog hint injection.
-    13. :class:`BargeInClassifyStep` — barge_in_policy="classify".
+    13. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
     14. :class:`DispatchTriggerStep` — FSM transition + dispatch.
     """
     return [
@@ -900,16 +846,14 @@ def default_steps(
         NewSessionStep(),
         MediaCommandStep(),
         BacklogFlushStep(),
-        BargeInClassifyStep(policy=barge_in_policy),
+        TakeTurnStep(),
         DispatchTriggerStep(),
     ]
 
 
 __all__ = [
-    "BargeInClassifyStep",
     "BacklogFlushStep",
     "CommandIntentGateStep",
-    "DEFAULT_BARGE_IN_POLICY",
     "DefaultSttAdmission",
     "DispatchTriggerStep",
     "EmptyTextStep",
@@ -926,6 +870,7 @@ __all__ = [
     "SttOutcomeKind",
     "SttStep",
     "StripWakeWordStep",
+    "TakeTurnStep",
     "WakeWordStep",
     "default_steps",
     "drop",
@@ -937,7 +882,6 @@ __all__ = [
 
 def DefaultSttAdmission(
     *,
-    barge_in_policy: str = DEFAULT_BARGE_IN_POLICY,
     logger: Optional[Any] = None,
 ) -> SttAdmission:
     """Convenience constructor: the canonical pipeline for ``_on_stt``.
@@ -948,6 +892,6 @@ def DefaultSttAdmission(
     list by hand.
     """
     return SttAdmission(
-        steps=default_steps(barge_in_policy=barge_in_policy),
+        steps=default_steps(),
         logger=logger,
     )

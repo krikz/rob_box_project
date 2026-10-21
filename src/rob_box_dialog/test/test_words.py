@@ -2,8 +2,12 @@
 
 import pytest
 
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, SILENCE_WORDS, TIER1_POLICY, UNSILENCE_WORDS
-from rob_box_dialog.words import has_wake_word, has_word, strip_wake_word
+from rob_box_dialog.knowledge import (
+    DEFAULT_WAKE_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS,
+)
+from rob_box_dialog.words import (
+    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_wake_word, has_word, stop_verdict, strip_wake_word,
+)
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
 WAKES = [
@@ -89,3 +93,65 @@ def test_every_wake_word_is_found_alone_and_in_a_phrase():
     for word in DEFAULT_WAKE_WORDS:
         assert has_wake_word(word), word
         assert has_wake_word(f"{word}, расскажи анекдот"), word
+
+
+# -- В19 (Шифу 20.10): стоп-слово как команда против стоп-слова внутри другой команды ----------------------------
+#: Пары «рвёт речь / не рвёт»: слева ясная стоп-команда, справа то же стоп-слово внутри другой команды или без него.
+STOP_PAIRS = [
+    ("Робот, стоп", "Робот, покажи анимацию стоп"),
+    ("Робот, хватит", "Робот, спой песню про хватит"),
+    ("робот стой", "робот не стой на месте"),
+    ("Робот, замолчи", "Робот, расскажи сказку про то как ёж сказал замолчи"),
+    ("Робот, всё, хватит, спой другую", "Робот, спой другую и хватит"),
+    ("робот ну хватит уже", "робот найди песню стоп"),
+    ("Роббокс, стоп-стоп", "Роббокс, включи песню хватит"),
+    ("хватит робот", "робот у меня стопка книг"),
+    ("Робот, помолчи", "Робот, это стоит дорого"),
+    ("Робби, отставить", "Робби, найди песню Stop"),
+    ("робот да хватит", "робот хватит ли нам сил"),
+    ("Робот, стоп. Включи музыку", "Робот, включи стоп-кран"),
+    ("эй робот стоп", "робот захватит флаг"),
+    ("Робот, замолчите", "Робот, покажи анимацию «стой»"),
+    ("Робот, стойте", "Робот, как будет по-английски хватит"),
+    ("РОББОКС СТОП", "робот работает"),
+    # живой лог 21.10: хвост речи робота («…у корней старой сосны») склеился с фразой человека
+    ("старой робот хватит", "спой песню про стоп робот"),
+]
+
+
+@pytest.mark.parametrize("clear, other", STOP_PAIRS)
+def test_stop_corpus_clear_command_versus_stop_word_inside_another(clear, other):
+    assert stop_verdict(clear) == STOP_CLEAR, clear
+    assert stop_verdict(other) != STOP_CLEAR, other
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, покажи анимацию стоп",
+    "Робот, спой песню про хватит",
+    "Робот, расскажи сказку про то как ёж сказал замолчи",
+    "робот не стой на месте",
+])
+def test_stop_word_after_another_word_is_disputed(text):
+    """Спорный класс — его решает Chooser (PR-6), речь до решения не рвётся."""
+    assert stop_verdict(text) == STOP_DISPUTED
+
+
+@pytest.mark.parametrize("text", ["Робот, найди песню Stop", "робот у меня стопка книг", "робот захватит флаг",
+                                  "робот", "", "робот работает"])
+def test_no_stop_word_is_none(text):
+    assert stop_verdict(text) == STOP_NONE
+
+
+def test_stop_verdict_uses_given_wake_words():
+    assert stop_verdict("тарс стоп", ["тарс"]) == STOP_CLEAR
+    assert stop_verdict("тарс стоп", ["робот"]) == STOP_DISPUTED
+
+
+def test_tier1_stop_words_are_stop_words():
+    for policy in ("stop", "halt"):
+        for word in TIER1_POLICY[policy].words:
+            assert word in STOP_WORDS, word
+    for word in STOP_WORDS:
+        assert word in TIER1_POLICY["stop"].words + TIER1_POLICY["halt"].words + ("стойте",) or has_word(
+            word, SILENCE_WORDS), word
+    assert not set(STOP_LEAD_WORDS) & set(STOP_WORDS)

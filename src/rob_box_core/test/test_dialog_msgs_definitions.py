@@ -16,12 +16,12 @@ PKG = Path(__file__).resolve().parents[2] / "rob_box_dialog_msgs"
 MSG_DIR = PKG / "msg"
 SRV_DIR = PKG / "srv"
 
-#: Набор из карточки #3687 (ADR-0150 §10.1).
+#: Набор из карточки #3687 (ADR-0150 §10.1) и InterruptRequest карточки #3694 (§6.2).
 EXPECTED_MSGS = {
     "SpeechRequest", "SpeechCancel", "SpeechEvent", "SpeechEnvelope", "ExpressionRequest",
     "ExpressionEvent", "SoundEvent", "PlanEvent", "SessionState", "SceneFrame", "TurnEvent",
     "ActionRequest", "ActionResult", "ProviderState", "ProviderStateArray", "DialogOutput",
-    "Intent", "Utterance", "SpeakerResult",
+    "Intent", "Utterance", "SpeakerResult", "InterruptRequest",
 }
 BUILTIN = {"bool", "string", "float32", "float64", "uint8", "uint16", "uint32", "uint64",
            "int8", "int16", "int32", "int64"}

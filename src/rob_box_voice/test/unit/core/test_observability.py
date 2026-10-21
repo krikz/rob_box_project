@@ -34,8 +34,6 @@ from rob_box_voice.observability import (
     is_metrics_enabled,
     record_audio_input_overflow,
     record_barge_in,
-    record_pending_queue_latency,
-    record_quick_decide_verdict,
     record_session_duration,
     record_speaker_recognize,
     record_stt_recognize,
@@ -67,10 +65,8 @@ class TestNoopBehaviour:
         record_barge_in()
         record_session_duration(12.0, result="success")
         record_telegram_message("in", message_type="text")
-        # W2-6 (issue #968) — MERGE-метрики.
-        record_quick_decide_verdict("IGNORE")
+        # W2-6 (issue #968) — MERGE-метрика.
         record_task_updated()
-        record_pending_queue_latency(0.05)
         # Issue #2554 — audio_node overflow counter.
         record_audio_input_overflow(frames_per_buffer=4096)
 
@@ -158,28 +154,11 @@ class TestMetricsWithPrometheusClient:
 
     # ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────
 
-    def test_record_quick_decide_verdict_all_labels(self):
-        for verdict in ("IGNORE", "REPLACE", "PENDING_LLM"):
-            before = _counter_value(
-                "voice_scheduler_quick_decide_total", {"verdict": verdict}
-            )
-            record_quick_decide_verdict(verdict)
-            after = _counter_value(
-                "voice_scheduler_quick_decide_total", {"verdict": verdict}
-            )
-            assert after == before + 1
-
     def test_record_task_updated_increments(self):
         before = _counter_value("voice_scheduler_task_updated_total", {})
         record_task_updated()
         after = _counter_value("voice_scheduler_task_updated_total", {})
         assert after == before + 1
-
-    def test_record_pending_queue_latency_histogram(self):
-        before = _hist_sum("voice_scheduler_pending_queue_latency_seconds", {})
-        record_pending_queue_latency(0.15)
-        after = _hist_sum("voice_scheduler_pending_queue_latency_seconds", {})
-        assert after >= before + 0.15
 
     # ── Issue #2554: audio_node paInputOverflow counter ────────────
 

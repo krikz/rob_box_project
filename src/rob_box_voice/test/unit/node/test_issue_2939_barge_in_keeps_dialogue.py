@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import deque
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -98,7 +97,6 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     )
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._pending_user_messages = deque()
     n._speech_client_pubs = {"cancel": MagicMock()}
     n._effects = MagicMock()
     n._action_claim_retry_used = False
@@ -120,7 +118,7 @@ def test_turn_after_barge_in_reaches_llm() -> None:
 
         # Реплика Бориса: то же, что делает приём STT перед диспатчем.
         host = _DialogueSttHost(node)
-        host.cancel_inflight(stop_tts=True)       # BargeInClassifyStep
+        host.take_turn()                          # TakeTurnStep
         host.transition_idle_to_wake()            # DispatchTriggerStep
         host.transition_stt_result()
         await asyncio.gather(first, return_exceptions=True)

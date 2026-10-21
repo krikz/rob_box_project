@@ -3,20 +3,18 @@
 ADR-0145 §4 (DialogueNode P1 step 1) — pure move out of
 ``dialogue_node.py`` (no behaviour change). Owns:
 
-* ``_PENDING_USER_MESSAGES_MAX`` — the cap of the STT admission queue;
 * ``_DialogueSttHost`` — the adapter that satisfies the
   :class:`rob_box_voice.core.stt_admission.SttAdmissionHost` Protocol for
   :class:`rob_box_voice.dialogue_node.DialogueNode`.
 
-``dialogue_node.py`` re-exports both names so existing imports
+``dialogue_node.py`` re-exports the name so existing imports
 (``from rob_box_voice.dialogue_node import _DialogueSttHost``) and
 monkeypatches keep working unchanged.
 """
 
 from __future__ import annotations
 
-import time
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional
 
 from std_msgs.msg import String
 
@@ -28,11 +26,6 @@ from rob_box_voice.core.dialogue_guards import is_music_stop_command
 from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
 from rob_box_voice.core.dialogue_text import is_unsilence_command
 from rob_box_voice.core.command_parser import IntentType
-from rob_box_voice.observability import (
-    is_metrics_enabled,
-    record_quick_decide_verdict,
-)
-from rob_box_voice.scheduler.quick_decide import QuickVerdict, quick_decide
 
 if TYPE_CHECKING:  # pragma: no cover -- avoids a circular import at runtime
     from rob_box_voice.dialogue_node import DialogueNode
@@ -47,13 +40,6 @@ class _NoIntake:
 
 _NO_INTAKE = _NoIntake()
 
-# S7 (scheduler-segments-merge, issue #968) — upper bound on
-# ``_pending_user_messages`` so a run of barge-ins during one very long
-# LLM turn cannot grow the queue unbounded. Appending past this cap
-# drops the OLDEST queued phrase (keep the most recent user intent) and
-# logs a warning — see ``_DialogueSttHost.enqueue_pending``.
-_PENDING_USER_MESSAGES_MAX: int = 5
-
 
 # ---------------------------------------------------------------------------
 # _DialogueSttHost — adapter from SttAdmissionHost Protocol to DialogueNode
@@ -67,12 +53,8 @@ _PENDING_USER_MESSAGES_MAX: int = 5
 #   * ``_speaker_lock``  — held only inside ``accumulate_without_wake``,
 #     wrapping the snapshot of ``_current_speaker``. Released before any
 #     logger call or accumulator mutation.
-#   * ``_task_lock``     — held only inside ``enqueue_pending``, wrapping
-#     the read of ``_run_task`` and the ``_pending_user_messages``
-#     append (S7 segment-merge queue, issue #968). Released before
-#     ``_dispatch_turn``.
 #
-# No other lock is acquired while either is held → no inversion. The
+# No other lock is acquired while it is held → no inversion. The
 # orchestrator never sees a lock; it only calls into these methods.
 # ---------------------------------------------------------------------------
 
@@ -223,60 +205,11 @@ class _DialogueSttHost:
     def flush_pending_backlog(self) -> None:
         self._node._pending_backlog_flush = True
 
-    def quick_decide_verdict(
-        self, clean: str
-    ) -> Tuple[str, bool, bool]:
-        node = self._node
-        tg_chat_id = None  # set by caller via state, but quick_decide
-        # only needs ``source="stt" | "tg"``. We use ``source="stt"``
-        # because the orchestrator only calls us on mic path; TG input
-        # bypasses barge-in by design (no wake word = no barge-in).
-        verdict = quick_decide(
-            clean, source="stt",
-            active_group=None, clock=time.monotonic,
-            previous_text=getattr(node, "_last_stt_text", None),
-            previous_ts=getattr(node, "_last_stt_ts", None),
-        )
-        node._last_stt_text = clean
-        node._last_stt_ts = time.monotonic()
-        # W2-6 (issue #968) — record the verdict for metrics.
-        if is_metrics_enabled():
-            try:
-                record_quick_decide_verdict(verdict.value)
-            except Exception as _metric_exc:  # noqa: BLE001
-                node.get_logger().debug(
-                    f"⚠️ [metrics] record_quick_decide_verdict failed: "
-                    f"{_metric_exc!r}"
-                )
-        ignored = verdict is QuickVerdict.IGNORE
-        pending_llm = verdict is QuickVerdict.PENDING_LLM
-        return (verdict.value, ignored, pending_llm)
-
-    def enqueue_pending(self, clean: str) -> bool:
-        node = self._node
-        # S7 (scheduler-segments-merge) — under _task_lock snapshot the
-        # live task; if alive, queue; if queue is full, drop oldest.
-        with node._task_lock:
-            live_task = node._run_task
-        if live_task is None or live_task.done():
-            return False
-        if len(node._pending_user_messages) >= _PENDING_USER_MESSAGES_MAX:
-            dropped, _dropped_ts = node._pending_user_messages.popleft()
-            node.get_logger().warning(
-                f"⚠️ [S7] pending_user_messages overflow "
-                f"(max={_PENDING_USER_MESSAGES_MAX}), dropping "
-                f"oldest: {dropped[:60]!r}"
-            )
-        node._pending_user_messages.append((clean, time.monotonic()))
-        node.get_logger().info(
-            f"📥 [S7] turn in flight — queued: {clean[:60]!r}"
-        )
-        return True
-
-    def cancel_inflight(self, stop_tts: bool) -> None:
-        # Issue #2939 — за отменой всегда идёт DispatchTriggerStep:
-        # сессию принимает новый ход.
-        self._node._cancel_run("new STT input", stop_tts=stop_tts, hand_over=True)
+    def take_turn(self) -> None:
+        # Issue #2939 — за отменой всегда идёт DispatchTriggerStep: сессию
+        # принимает новый ход. ADR-0150 §6.2 (PR-5) — речь не трогаем: рвёт
+        # её только ясная стоп-команда (/dialog/interrupt_request).
+        self._node._cancel_run("new STT input", stop_tts=False, hand_over=True)
 
     def transition_idle_to_wake(self) -> bool:
         node = self._node

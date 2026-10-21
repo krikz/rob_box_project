@@ -26,11 +26,13 @@ import rclpy
 from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import SpeechEvent, Utterance
+from rob_box_dialog_msgs.msg import InterruptRequest, Utterance
+from rob_box_dialog.doa import DoaTrack
 from rob_box_core import speech_client
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from .core.provider_health import stt_provider_states
-from std_msgs.msg import String
+from .core.interrupt_request import InterruptOffer
+from std_msgs.msg import Bool, Int32, String
 from vosk import KaldiRecognizer, Model
 
 # Pure-Python fallback/retry/short-phrase логика (issue #979).
@@ -218,6 +220,8 @@ from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
 _SRC_RESPEAKER = "respeaker"  # /audio/speech_audio → /voice/stt/utterance (личность)
 _SRC_PTT = "ptt"  # /audio/quest_in (левый грип) → /avatar/ptt/result (пайплайн грипа)
 _SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оператора)
+#: Запас окна фразы на хвост VAD (speech_continuation audio_node) — для направления DOA.
+_VAD_TAIL_S = 1.5
 
 # Вейк-слова — одна таблица rob_box_dialog.knowledge (ADR-0150 PR-1); запасной копии на случай ImportError нет.
 from rob_box_voice.core.dialogue_text import (  # noqa: E402 — как соседние импорты после констант
@@ -284,7 +288,7 @@ class STTNode(Node):
         # With 'hardware' mode the robot can be interrupted mid-speech.
         self.declare_parameter("aec_mode", "hardware")
 
-        # Wake words для немедленного STOP TTS (barge-in). Должны совпадать с dialogue_node!
+        # Wake words: адресация и перебивание (/dialog/interrupt_request). Должны совпадать с dialogue_node!
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
         # Он же фолбек strip_wake_word, и его порядок неслучаен (длинные
         # варианты первыми, иначе «роб» съедает «роб бокс»). Копий было
@@ -407,18 +411,6 @@ class STTNode(Node):
         # ADR-0076: последние STT-попытки (используется side-channel-сборщиком
         # wake-семплов; см. _route_wake_result / _log_wake_rejection).
         self._last_attempts: list = []
-        # Issue #1734 — barge_in_policy НЕ читаем как свой параметр (это
-        # был бы второй YAML-источник для того же значения — ровно класс
-        # ошибки, который уже случился с wake_words выше, issue #1252, и
-        # который и породил #1734: stt_node не знал про
-        # dialogue_node.barge_in_policy=classify). Единственный источник
-        # истины — dialogue_node, публикующий latched-топик
-        # /voice/dialogue/barge_in_policy (см. create_subscription ниже и
-        # barge_in_policy_callback). "replace" — fail-safe дефолт ДО
-        # первого сообщения (или если dialogue_node ещё не стартовал/не
-        # публиковал): сохраняет поведение issue #993 (немедленный STOP
-        # TTS на wake-word), а не молча его выключает.
-        self._barge_in_policy: str = "replace"
         self.yandex_timeout_s: float = float(self.get_parameter("yandex_timeout_s").value)
         self.yandex_max_retries: int = int(self.get_parameter("yandex_max_retries").value)
         self.retry_backoff_s: float = float(self.get_parameter("retry_backoff_s").value)
@@ -513,32 +505,18 @@ class STTNode(Node):
 
         # Подписка на состояние TTS (чтобы не слышать себя)
         self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
-        # ADR-0150 PR-3 (#3688) — эпоха речи личности, которая сейчас звучит:
-        # barge-in по wake-word отменяет реплики не новее неё (подтверждение
-        # новой сессии уже в новой эпохе и не задевается).
-        self._speech_epoch = speech_client.EpochWatch("personality")
-        self.speech_event_sub = self.create_subscription(
-            SpeechEvent, "/voice/speech/event", self._speech_epoch.on_event, 10
-        )
-        speech_client.prepare(self, "cancel")
-
-        # Issue #1734 — подписка на действующую barge_in_policy от
-        # dialogue_node (единый источник истины, см. self._barge_in_policy
-        # выше). TRANSIENT_LOCAL: поздний subscriber (STT стартовал позже
-        # ИЛИ раньше dialogue_node) всё равно получает последний
-        # опубликованный семпл — durability закрывает и «порядок старта
-        # нод», и «потерю сообщения» (пока жив publisher на стороне
-        # dialogue_node).
-        barge_in_policy_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            depth=1,
-        )
-        self.barge_in_policy_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/barge_in_policy",
-            self.barge_in_policy_callback,
-            barge_in_policy_qos,
+        # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
+        # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
+        # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.
+        self._doa = DoaTrack()
+        self.create_subscription(Bool, "/audio/vad", lambda m: self._doa.on_vad(m.data, time.time()), 10)
+        self.create_subscription(Int32, "/audio/direction", lambda m: self._doa.on_direction(m.data, time.time()), 10)
+        self._phrase_window = (0.0, 0.0)
+        self._active_utterance_id = ""
+        self.interrupt_pub = self.create_publisher(InterruptRequest, "/dialog/interrupt_request", 10)
+        self._interrupts = InterruptOffer(
+            self.interrupt_pub.publish, InterruptRequest, lambda: self.wake_words,
+            lambda: self._doa.during(*self._phrase_window),
         )
 
         # Publishers
@@ -810,7 +788,7 @@ class STTNode(Node):
         маршрутизации речи (целевая §7, #1990). От источника зависит:
 
           * ``respeaker`` — AEC/grace-фильтры, speaker-профиль, ранний «бульк»,
-            wake-word barge-in; результат → ``/voice/stt/utterance`` (личность).
+            запрос перебивания по вейку (/dialog/interrupt_request); результат → ``/voice/stt/utterance`` (личность).
           * ``ptt`` — фильтры/бульк/barge не нужны (оператор зажал грип, barge
             уже сделан quest-сервером); результат → ``/avatar/ptt/result``.
           * ``wake`` — фильтры не нужны; публикуем в ``/avatar/stt/result``
@@ -862,6 +840,10 @@ class STTNode(Node):
         _phrase_received_at = time.monotonic()
         # #1990 — источник активной фразы (boop/barge гейтятся по respeaker).
         self._active_source = source
+        # ADR-0150 PR-5: id фразы (хеш PCM) и окно её звучания известны до STT — partial с вейком уже
+        # несёт их в /dialog/interrupt_request. Окно с запасом на хвост VAD audio_node.
+        self._active_utterance_id = compute_utterance_id(audio_bytes)
+        self._phrase_window = (time.time() - duration - _VAD_TAIL_S, time.time())
         # wake-поток — фоновый слушатель: стейт /voice/stt/state не дёргаем
         # (иначе спамили бы recognizing/ready на каждый VAD-сегмент).
         if source != _SRC_WAKE:
@@ -957,7 +939,7 @@ class STTNode(Node):
                 # двух топиков (#2862) больше нет.
                 self.publish_result(
                     text,
-                    utterance_id=compute_utterance_id(audio_bytes),
+                    utterance_id=self._active_utterance_id,
                     duration_s=duration,
                     provider=final_provider(attempts),
                 )
@@ -1809,6 +1791,7 @@ class STTNode(Node):
                         if _pt and _pt.strip():
                             last_partial = _pt
                             self._maybe_fire_early_boop(_pt)
+                            self._offer_interrupt(_pt)
                     continue
 
                 elif event_type == "speaker_analysis":
@@ -1920,30 +1903,19 @@ class STTNode(Node):
             f"text={text[:40]!r}"
         )
 
-    def barge_in_policy_callback(self, msg: String):
-        """Приём действующей ``barge_in_policy`` от dialogue_node (issue #1734).
+    def _offer_interrupt(self, text: str) -> None:
+        """Сегмент фразы ReSpeaker с вейком → ``/dialog/interrupt_request`` (ADR-0150 §6.2, PR-5).
 
-        dialogue_node — единственный владелец этого параметра (см.
-        комментарий у ``self._barge_in_policy`` в ``__init__`` — почему
-        stt_node НЕ дублирует его в своём YAML). Публикует latched
-        (TRANSIENT_LOCAL) на ``/voice/dialogue/barge_in_policy`` при
-        старте и на каждое runtime-изменение (``ros2 param set
-        /dialogue_node barge_in_policy ...`` → ``parameters_callback`` →
-        ``_publish_barge_in_policy``).
-
-        Неизвестное/пустое значение игнорируем и остаёмся на текущем —
-        dialogue_node уже сам провалидировал ввод и залогировал warning
-        при опечатке; здесь незачем повторять эту проверку строже.
+        Зовётся на каждом partial Yandex и на финале любого провайдера; одинаковый текст фразы второй раз не
+        шлётся. Решает диалог: ясная стоп-команда рвёт речь, остальное — нет. Потоки шлема (ptt/wake) речь
+        личности не перебивают: barge грипа делает quest-сервер.
         """
-        value = str(getattr(msg, "data", "") or "").strip().lower()
-        if value not in ("replace", "classify"):
+        if self._active_source != _SRC_RESPEAKER:
             return
-        if value != self._barge_in_policy:
+        if self._interrupts.offer(text, self._active_utterance_id):
             self.get_logger().info(
-                f"🔄 [issue 1734] barge_in_policy → {value!r} "
-                f"(было {self._barge_in_policy!r})"
+                f"⚡ [interrupt] request utterance={self._active_utterance_id or '-'} text={text[:60]!r}"
             )
-        self._barge_in_policy = value
 
     def publish_result(
         self,
@@ -1954,42 +1926,11 @@ class STTNode(Node):
     ) -> None:
         """Публикация финального результата распознавания (ReSpeaker-путь).
 
-        Публикуем ``Utterance`` в ``/voice/stt/utterance`` (личность). Wake-word barge-in
-        (немедленный STOP TTS) делаем ТОЛЬКО здесь: на потоках шлема
-        (ptt/wake) barge уже выполнен quest-сервером при PTT start / его
-        решает агент оператора.
-
-        Issue #1734 — немедленный STOP на wake-word публикуется ТОЛЬКО
-        при ``barge_in_policy="replace"`` (дефолт, issue #993 — робот
-        должен реагировать на wake-word, даже пока сам говорит). При
-        ``"classify"`` STOP здесь НЕ публикуется: dialogue_node._on_stt
-        сам прогонит фразу через ``quick_decide`` и решит
-        ``_cancel_run(stop_tts=...)`` — REPLACE (явный императив) шлёт
-        STOP, MERGE/PENDING_LLM/IGNORE дают текущему сегменту доиграть
-        (§2.5 SCHEDULER_DESIGN.md, «правка на лету без замолкания»).
-        Раньше этот код публиковал STOP безусловно и обгонял решение
-        dialogue_node — см. raw evidence issue #1734 (куплет про комара
-        обрывался на «и ещё про енота», хотя quick_decide должен был
-        смёржить сегменты).
+        Публикуем ``Utterance`` в ``/voice/stt/utterance`` (личность). Речь здесь не глушим (ADR-0150 §6.2,
+        PR-5): перед репликой уходит ``/dialog/interrupt_request`` по финальному тексту, решает диалог.
         """
         pub = self.utterance_pub
-        text_lower = text.lower()
-
-        # Если фраза начинается с wake word — сработал wake-word barge-in.
-        if any(text_lower.startswith(word) for word in self.wake_words):
-            if self._barge_in_policy == "classify":
-                self.get_logger().info(
-                    f'🎯 [issue 1734] Wake word detected: "{text[:30]}" → '
-                    f"STOP TTS отложен (barge_in_policy=classify, решает "
-                    f"dialogue_node/quick_decide)"
-                )
-            else:
-                epoch = self._speech_epoch.epoch
-                self.get_logger().info(
-                    f'🎯 Wake word detected: "{text[:30]}" → SpeechCancel '
-                    f"personality epoch<={epoch}"
-                )
-                speech_client.cancel(self, agent="personality", epoch=epoch, reason="barge_in")
+        self._offer_interrupt(text)
 
         pub.publish(
             fill_respeaker_utterance(

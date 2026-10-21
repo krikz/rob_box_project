@@ -17,10 +17,6 @@ dialogue_node:
     # файла (список байт-в-байт тот же).
     wake_words_file: /config/wake_words.yaml
     dialogue_timeout: 300.0
-    # S1 (scheduler-segments-merge) — "replace" = сегодняшнее поведение
-    # (STOP на любой новый STT-ввод). "classify" включается в S8.3 после
-    # зелёного e2e; до этого — аварийный откат одной строкой.
-    barge_in_policy: "replace"
     # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
     # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
     # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],

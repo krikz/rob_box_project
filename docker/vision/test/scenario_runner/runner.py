@@ -65,8 +65,8 @@ TOPIC_DIALOGUE_STATE = "/voice/dialogue/state"
 
 # S8 (scheduler-segments-merge, issue #968) — MERGE assertions.
 # /voice/tts/control carries "STOP" when dialogue_node cuts TTS off
-# (dialogue_node.py:_cancel_run, stop_tts=True); with barge_in_policy=
-# classify a PENDING_LLM verdict must NOT publish it (S1/S7).
+# (dialogue_node.py:_cancel_run, stop_tts=True); since ADR-0150 PR-5 a
+# non-stop addressed phrase must NOT publish it (one interrupt policy).
 # /harness/task_events carries scheduler lifecycle events (W7c
 # publisher, dialogue_node.py:_on_task_event) — "task.updated" is what
 # TaskScheduler.update() emits when a MERGE delta actually rewrote a
@@ -690,8 +690,8 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
 
         # assert_tts_not_stopped — S8 (scheduler-segments-merge, issue #968).
         # No "STOP" must have reached /voice/tts/control since this step's
-        # clear_received() — with barge_in_policy=classify a PENDING_LLM
-        # verdict lets the currently-speaking segment finish (S1/S7),
+        # clear_received() — since ADR-0150 PR-5 a non-stop addressed phrase
+        # lets the currently-speaking segment finish,
         # unlike the legacy REPLACE-everywhere behaviour this replaces.
         if step.get("assert_tts_not_stopped"):
             stops = [e for e in node._tts_control_events if e == "STOP"]

@@ -25,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ProviderStateArray.msg"
   "msg/DialogOutput.msg"
   "msg/Intent.msg"
+  "msg/InterruptRequest.msg"
   "msg/Utterance.msg"
   "msg/SpeakerResult.msg"
   "srv/DialogControl.srv"

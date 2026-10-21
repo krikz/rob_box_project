@@ -12,7 +12,7 @@ ADR-0149 PR-13a: DJ-контроллер старого пути, забор н�
 ``set_dj_mode(enabled=true)`` и ``MusicGuard`` удалены — их проверки тоже.
 
 DialogueNode собирается через ``object.__new__`` (как в
-test_barge_in_policy.py / test_new_session_reset.py), rclpy замокан в conftest.
+test_interrupt_policy.py / test_new_session_reset.py), rclpy замокан в conftest.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
@@ -43,7 +42,6 @@ def _make_reset_node() -> DialogueNode:
     n._maybe_record_session_end = MagicMock()
     n._publish_state = MagicMock()
     n._publish_response = MagicMock()
-    n._pending_user_messages = deque()
     n._music_cleanup_pub = MagicMock()
     n._pending_music_cleanup = True
     n._track_mode_music_active = True
@@ -61,7 +59,7 @@ class _Result:
 
 
 def _make_turn_node() -> DialogueNode:
-    """Узел для ``_run_turn`` (форма как в test_barge_in_policy.py)."""
+    """Узел для ``_run_turn`` (форма как в test_interrupt_policy.py)."""
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
@@ -87,7 +85,6 @@ def _make_turn_node() -> DialogueNode:
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._pending_user_messages = deque()
     n._track_mode_music_active = False
     n._action_claim_retry_used = False
     return n

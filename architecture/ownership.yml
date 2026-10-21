@@ -86,7 +86,7 @@ nodes:
     package: rob_box_core
     # PR-3 (#3688): единственный клиент речи (say/cancel), один публикатор на ноду.
     # say: mcp_server (speak_text, say), stt_node («не расслышал»), telegram_node,
-    # supervisor_node (грип); cancel: dialogue_node, stt_node, quest_node.
+    # supervisor_node (грип); cancel: dialogue_node, quest_node (stt_node речь не глушит с PR-5 #3694).
     # Ещё на старом JSON /voice/tts/request (адаптер speech_compat): джойстик
     # rob_box_teleop - в образе teleop нет rob_box_dialog_msgs.
     source: [src/rob_box_core/rob_box_core/speech_client.py]
@@ -200,7 +200,7 @@ topics:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechCancel
     status: live
-    # speech_client.cancel: dialogue_node (_cancel_run), stt_node (barge-in), quest_node (PTT)
+    # speech_client.cancel: dialogue_node (_cancel_run, InterruptGate), quest_node (PTT)
     writers_allowed: [speech_client]
     readers: [tts_node]
   /voice/speech/event:
@@ -208,7 +208,7 @@ topics:
     type: rob_box_dialog_msgs/SpeechEvent
     status: live
     writers_allowed: [tts_node]
-    readers: [stt_node, mcp_server, face_node, telegram_node]
+    readers: [mcp_server, face_node, telegram_node]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope
@@ -261,6 +261,14 @@ topics:
     introduced_by: "PR-7 (#3698)"
     writers_allowed: [dialog_node]
     readers: []
+  /dialog/interrupt_request:
+    owner: stt_node
+    type: rob_box_dialog_msgs/InterruptRequest
+    status: live
+    introduced_by: "PR-5 (#3694)"
+    # сегмент фразы с вейком (partial/final); решает диалог: ясная стоп-команда - SpeechCancel по эпохе
+    writers_allowed: [stt_node]
+    readers: [dialogue_node, dialog_node]
   /dialog/intent:
     owner: dialog_node
     type: rob_box_dialog_msgs/Intent
