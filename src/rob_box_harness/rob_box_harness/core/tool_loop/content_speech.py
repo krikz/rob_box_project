@@ -83,7 +83,7 @@ SET_VOICE_TOOL = "set_voice"
 SPEAK_TOOL = "speak_text"
 
 #: Маркер конца цикла, который модель пишет ПОСЛЕ последней реплики
-#: (master prompt). Тот же набор, что ``agent_core._SILENT_DONE_MARKERS``
+#: (master prompt). Тот же набор, что ``text_classify.DONE_MARKERS``
 #: и ``rob_box_voice.core.speak_helpers.strip_done_marker``: целиком или
 #: отдельной последней строкой — не речь. «Вот и всё.» в конце сказки —
 #: речь (маркер не на своей строке), его не трогаем.

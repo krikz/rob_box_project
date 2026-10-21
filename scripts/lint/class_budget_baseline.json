@@ -8,7 +8,7 @@
   },
   "classes": {
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 155,
+      "wmc": 152,
       "methods": 24
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {

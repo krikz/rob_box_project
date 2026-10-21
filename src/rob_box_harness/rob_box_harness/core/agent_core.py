@@ -45,6 +45,7 @@ from rob_box_harness.core.tool_loop import (
 from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
     _ToolLoopOutcome,
 )
+from rob_box_harness.core.tool_loop.command_turn import CommandTurn
 from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
     ContentSpeech,
     speak_closing_content,
@@ -377,16 +378,6 @@ def _order_tool_calls(
     return ordered, deferred_call_ids
 
 
-#: Completion markers the master prompt teaches the LLM to return AFTER the
-#: last ``speak_text`` call. They are ONLY valid when the turn actually
-#: performed work (tool calls happened in an earlier iteration). When the
-#: model emits a bare marker as its FIRST response with zero tool calls it
-#: is a silent failure — the user hears nothing and nothing happened
-#: (issue #1217, deepseek-v4-flash intermittently does this).
-_SILENT_DONE_MARKERS: frozenset[str] = frozenset(
-    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
-)
-
 #: 🔴 FIX (live 01.09, vision-pi 10:17): MiniMax отдаёт ПСЕВДО-ВЫЗОВ ТЕКСТОМ.
 #: На «переходи в легкий джанго» модель вернула content
 #: ``<compose_music composition here>`` и ``tool_calls=()``. Формально это
@@ -424,6 +415,7 @@ from rob_box_harness.core.tool_loop.markup_recovery import (  # Issue #2760
 from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
+    is_silent_text,  # Issue #1217 — маркеры конца хода v1, одна таблица с нодой
     is_tool_call_markup,  # Issue #2760
     quoted_turn_context,  # Issue #3598
 )
@@ -1162,8 +1154,7 @@ class AgentCore:
         """
         if response.tool_calls:
             return False
-        content = (response.content or "").strip().lower()
-        if (not content) or content in _SILENT_DONE_MARKERS:
+        if is_silent_text(response.content):
             return True
         # live 01.09 — псевдо-вызов текстом (``<compose_music composition
         # here>``) ничего не сделал и озвучен быть не может. Ловим ЗДЕСЬ,
@@ -1186,8 +1177,7 @@ class AgentCore:
         """
         if tools_called:
             return False
-        content = (spoken or "").strip().lower()
-        if (not content) or content in _SILENT_DONE_MARKERS:
+        if is_silent_text(spoken):
             return True
         # live 01.09 — заглушка вида ``<compose_music composition here>``.
         # Юзер её не слышал (ход ничего не сделал), а в истории она работает
@@ -1465,7 +1455,13 @@ class AgentCore:
         spoken_texts: list[str] = []
         # Issue #3269 — реплики, которые модель пишет в content рядом с
         # set_voice (сказка разными голосами), озвучиваются как speak_text.
+        # Удаляется вместе с v1-путём speak_text, когда режим команд включён
+        # и проверен вживую (ADR-0150 PR-7 ч.7d / PR-15), не раньше: иначе
+        # запасной MiniMax снова молчит на сказке (#3698, решение координатора).
         content_speech = ContentSpeech()
+        # ADR-0150 PR-7 ч.7c — команда LLM (вызов ``command`` от моста режима команд) исполняется кодом:
+        # действия → событие владельца → фраза кода, ход терминален; query — данные обратно LLM (≤ 2 раз).
+        commands = CommandTurn(self._tools, openai_tools)
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -1539,6 +1535,17 @@ class AgentCore:
             # здесь, а не платим за ретрай двумя ходами позже (разбор и
             # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
             response = _recover_written_tool_calls(response, openai_tools)
+            if commands.handles(response):
+                # Речь и действия команды — вызовы тех же тулов: счётчики speak_text и честная история прежние.
+                step = await commands.run(response, messages, lambda: self._stream_response(messages, tools=openai_tools))
+                counts = self._record_tool_calls(step.calls, seen=seen, tools_called=tools_called)
+                speak_text_count += counts[0]
+                speak_text_real_count += counts[1]
+                spoken_texts.extend(counts[2])
+                tool_error_occurred = self._update_tool_error_flag(step.calls, step.results, tool_error_occurred)
+                self._record_succeeded_tools(step.calls, step.results, succeeded_tools)
+                response = step.response
+                continue
             # Issue #3269 — content рядом с set_voice-пачкой — реплика,
             # а не служебный текст: первым вызовом пачки становится
             # speak_text(content, voice=голос до этой пачки). См.

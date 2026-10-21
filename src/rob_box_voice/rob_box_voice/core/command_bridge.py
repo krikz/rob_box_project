@@ -6,10 +6,11 @@
   ``tool_choice`` (DeepSeek: тул ``command`` + ``tool_choice="required"``) | ``json_in_text`` (MiniMax: JSON в тексте) |
   ``json_mode`` / ``structured_output``; запрос строит ``speech_channel.FieldChannel`` (решение О4: речь — поле
   ``speech``), тула ``speak_text`` модель в этом режиме не видит — слот речи один;
-* **ответ разбирает один парсер** ``rob_box_dialog.command.parse`` и мост переводит команду в ответ, который v1 уже
-  умеет исполнять: команда без действий → текст речи (терминальный ход, авто-TTS ``dialogue_node``); команда с
-  действиями → вызовы тулов (``speech`` не озвучивается — итог модель скажет следующей командой по результатам);
-  ``passed`` → пустой ответ; невалидная команда → вопрос-шаблон ``understand.invalid`` (повторного вызова нет).
+* **ответ разбирает один парсер** ``rob_box_dialog.command.parse``: голая реплика (без действий, выступления и голоса)
+  → текст речи (терминальный ход, авто-TTS ``dialogue_node``); остальное → один вызов ``command``, который v1-цикл
+  отдаёт исполнителю команды ``rob_box_harness.core.tool_loop.command_turn`` (PR-7 ч.7c: действия по событию
+  владельца, фраза кода, ``speech`` при действиях не звучит, ход терминален); ``passed`` → пустой ответ; невалидная
+  команда → вопрос-шаблон ``understand.invalid`` (повторного вызова нет).
 
 Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
 остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
@@ -25,7 +26,7 @@ from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Option
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.command import INVALID_ASK_KEY, Command, Invalid, Result, parse
+from rob_box_dialog.command import INVALID_ASK_KEY, Command, Invalid, Result, parse, to_args
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -42,15 +43,15 @@ from rob_box_llm.provider import (
 
 #: Маркер строки лога о каждом ответе в режиме команд (читает ``scripts/dialog`` для A14).
 COMMAND_LOG_MARK = "🧾 [command]"
-#: Префикс id вызовов, которые собрал мост (видно в истории и логах исполнителя).
+#: Префикс id вызова ``command``, который собрал мост (видно в истории и логах исполнителя).
 CALL_ID_PREFIX = "cmd-"
 #: Режимы, где схема команды идёт текстом в промпте (в остальных её несёт тул или ``response_format``).
 _SCHEMA_IN_PROMPT: Tuple[CommandMode, ...] = ("json_mode", "json_in_text")
 #: Поправка к правилам v1-промпта о транспорте речи: мастер-промпт учит ``speak_text`` и ``done`` (до PR-8).
 V1_TRANSPORT_NOTE = (
     "Форма ответа в этом режиме важнее правил о speak_text и done выше: тула speak_text нет — всё, что человек должен "
-    "услышать, клади в поле speech; сказку, стих, рэп, анекдот — в perform.segments (куплет или абзац на сегмент); "
-    "done не пиши."
+    "услышать, клади в поле speech; сказку, стих, рэп, анекдот — в perform.segments (куплет или абзац на сегмент), "
+    "голос персонажа — в perform.voice_per_segment; о результате действий не говори — его скажет код; done не пиши."
 )
 
 Log = Callable[[str], None]
@@ -62,7 +63,7 @@ def _no_log(_: str) -> None:
 
 def mode_note(mode: CommandMode, request: ModeRequest) -> str:
     """Добавка к системному промпту: форма команды из ``knowledge`` + поправка v1 + схема для JSON-режимов."""
-    parts = [kn.prompt_fragment("reply"), V1_TRANSPORT_NOTE]
+    parts = [kn.prompt_fragment(), V1_TRANSPORT_NOTE]
     if request.instruction:
         parts.append(request.instruction)
     if mode in _SCHEMA_IN_PROMPT:
@@ -109,33 +110,45 @@ def _spoken(cmd: Command) -> str:
     return ""
 
 
-def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
-    """Команда → ``(текст речи, вызовы тулов, вердикт для лога)`` в форме, которую исполняет v1-цикл.
+def _without_speech_tool(cmd: Command) -> Command:
+    """Тул речи среди действий (модель по привычке v1 положила ``speak_text`` в ``actions``) — не действие: его текст
+    и голос становятся речью, если поля ``speech`` нет."""
+    spoken = [a for a in cmd.actions if a.tool in kn.SPEECH_CHANNEL_TOOLS]
+    if not spoken:
+        return cmd
+    args = spoken[0].args
+    actions = tuple(a for a in cmd.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS)
+    if cmd.speech:
+        return replace(cmd, actions=actions)
+    return replace(cmd, actions=actions, speech=str(args.get("text") or "").strip() or None,
+                   voice=str(args.get("voice") or "").strip() or cmd.voice)
 
-    Тул речи среди действий (модель по привычке v1 положила ``speak_text`` в ``actions``) — не действие: его текст
-    становится речью, если поля ``speech`` нет.
-    """
+
+def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
+    """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
+    команда с действиями, выступлением или голосом реплики — одним вызовом ``command`` исполнителю команды."""
     if isinstance(result, Invalid):
         return phrases.text(result.ask.key or INVALID_ASK_KEY), (), f"invalid:{result.reason}"
-    actions = [a for a in result.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS]
-    if actions:
-        calls = tuple(ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=a.tool, arguments=dict(a.args))
-                      for a in actions)
-        return "", calls, "actions"
     if result.passed:
         return "", (), f"passed:{result.passed}"
-    spoken_tool = next((str(a.args.get("text") or "") for a in result.actions if a.tool in kn.SPEECH_CHANNEL_TOOLS), "")
-    text = _spoken(result) or spoken_tool
+    cmd = _without_speech_tool(result)
+    if cmd.actions or cmd.perform is not None or (cmd.voice and _spoken(cmd)):
+        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))
+        return "", (call,), "command"
+    text = _spoken(cmd)
     return text, (), "speech" if text else "empty"
 
 
-def log_line(provider: str, mode: CommandMode, result: Result, verdict: str, calls: Sequence[ToolCall]) -> str:
-    """Строка лога ответа: провайдер, режим, исход и что не прозвучало (речь при действиях)."""
-    dropped = isinstance(result, Command) and bool(calls) and bool(result.speech)
+def log_line(provider: str, mode: CommandMode, result: Result, verdict: str) -> str:
+    """Строка лога ответа: провайдер, режим, исход, действия команды и речь, которая не прозвучит (при действиях
+    ``speech`` не озвучивается, §4.1: она остаётся только здесь — текстового канала мимо TTS у v1 нет)."""
+    cmd = result if isinstance(result, Command) else None
+    actions = [a.tool for a in cmd.actions if a.tool not in kn.SPEECH_CHANNEL_TOOLS] if cmd is not None else []
+    dropped = cmd.speech if actions and cmd is not None and cmd.speech else ""
     detail = getattr(result, "detail", "") if isinstance(result, Invalid) else ""
     return (f"{COMMAND_LOG_MARK} provider={provider} mode={mode} verdict={verdict} "
-            f"actions={[c.name for c in calls]} speech_dropped={int(dropped)}"
-            + (f" detail={detail[:120]!r}" if detail else ""))
+            f"actions={actions} speech_dropped={int(bool(dropped))}"
+            + (f" speech={dropped[:120]!r}" if dropped else "") + (f" detail={detail[:120]!r}" if detail else ""))
 
 
 async def _collect(stream: AsyncIterator[LLMChunk]) -> LLMResponse:
@@ -205,7 +218,7 @@ class CommandModeLLM(LLMProvider):
         else:
             result = reply_command(response.content, response.tool_calls)
         text, calls, verdict = to_legacy(result)
-        self._log(log_line(self.name, self.mode, result, verdict, calls))
+        self._log(log_line(self.name, self.mode, result, verdict))
         return LLMResponse(content=text, tool_calls=calls, finish_reason="tool_calls" if calls else "stop",
                            usage=response.usage, raw=response.raw)
 

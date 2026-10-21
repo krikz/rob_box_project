@@ -1,5 +1,6 @@
-"""Мост режима команд в v1 (ADR-0150 §4.1, §4.5; #3696 ч.5): форма запроса — по capabilities адаптера,
-ответ — одна команда через ``rob_box_dialog.command.parse``, исполнение — прежним v1-циклом ``AgentCore``."""
+"""Мост режима команд в v1 (ADR-0150 §4.1, §4.5; #3696 ч.5, PR-7 ч.7c): форма запроса — по capabilities адаптера,
+ответ — одна команда через ``rob_box_dialog.command.parse``; голая реплика — текстом, остальное — вызовом ``command``,
+который v1-цикл ``AgentCore`` исполняет кодом (``command_turn``: событие владельца, фраза кода, ход терминален)."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateMachine
 from rob_box_harness.health import HealthAwareFallbackLLM, HealthCache
 from rob_box_harness.memory.base import InMemoryStore
-from rob_box_harness.tools import FakeToolProvider
+from rob_box_harness.tools import FakeToolProvider, ToolSpec
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
@@ -109,7 +110,7 @@ def test_tool_choice_request_forces_command_tool_and_hides_speak_text() -> None:
     assert settings.tool_choice == "required" and settings.temperature == 0.3
     assert settings.extra == {"thinking": {"type": "disabled"}}
     assert msgs[0].content.startswith("ты РОББОКС") and cb.V1_TRANSPORT_NOTE in msgs[0].content
-    assert kn.AFTER_ACTIONS["reply"] in msgs[0].content and "JSON-схема" not in msgs[0].content
+    assert kn.prompt_fragment() in msgs[0].content and "JSON-схема" not in msgs[0].content
     assert msgs[1:] == original[1:] and original[0].content == "ты РОББОКС"  # исходный список не тронут
 
 
@@ -153,18 +154,24 @@ def test_speech_only_command_becomes_spoken_text_and_ends_turn() -> None:
                    "speech_dropped=0"]
 
 
-def test_actions_become_tool_calls_and_speech_waits_for_results() -> None:
+def _actions(out: LLMResponse) -> list:
+    """Действия единственного вызова ``command``, который мост отдал v1-циклу."""
+    assert [c.name for c in out.tool_calls] == [kn.COMMAND_TOOL] and out.content == ""
+    return [(a["tool"], a["args"]) for a in out.tool_calls[0].arguments.get("actions", [])]
+
+
+def test_actions_go_as_one_command_call_and_speech_is_only_logged() -> None:
     log: list = []
     reply = LLMResponse(tool_calls=(
         _command_call(speech="Запомнил!", actions=[{"tool": "memory_save", "args": {"content": "чай"}}]),
         ToolCall(id="n1", name="get_current_time", arguments={}),
     ))
     out = _convert(DEEPSEEK_CAPS, reply, log)
-    assert out.content == "" and out.finish_reason == "tool_calls"
-    expected = [("memory_save", {"content": "чай"}), ("get_current_time", {})]
-    assert [(c.name, dict(c.arguments)) for c in out.tool_calls] == expected
-    assert all(c.id.startswith(cb.CALL_ID_PREFIX) for c in out.tool_calls)
-    assert "verdict=actions" in log[0] and "speech_dropped=1" in log[0]
+    assert out.finish_reason == "tool_calls" and out.tool_calls[0].id.startswith(cb.CALL_ID_PREFIX)
+    assert _actions(out) == [("memory_save", {"content": "чай"}), ("get_current_time", {})]
+    assert out.tool_calls[0].arguments["speech"] == "Запомнил!"  # не звучит: исполнитель команды его не озвучит
+    assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
+                   "actions=['memory_save', 'get_current_time'] speech_dropped=1 speech='Запомнил!'"]
 
 
 def test_json_in_text_after_reasoning_is_parsed() -> None:
@@ -177,12 +184,12 @@ def test_json_in_text_with_native_tool_call_merges_actions() -> None:
     search = ToolCall(id="n", name="search_web", arguments={"query": "погода"})
     reply = LLMResponse(content='{"speech": "Смотрю"}', tool_calls=(search,))
     out = _convert(MINIMAX_CAPS, reply)
-    assert [c.name for c in out.tool_calls] == ["search_web"] and out.content == ""
+    assert _actions(out) == [("search_web", {"query": "погода"})]
 
 
 def test_native_tool_calls_without_command_are_actions() -> None:
     out = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(ToolCall(id="n", name="get_battery_level", arguments={}),)))
-    assert [c.name for c in out.tool_calls] == ["get_battery_level"]
+    assert _actions(out) == [("get_battery_level", {})]
 
 
 def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
@@ -193,7 +200,7 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     assert "verdict=speech" in log[0]
     empty_args = [{"tool": "get_current_time", "args": ""}]
     acted = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(_command_call(actions=empty_args),)))
-    assert [(c.name, dict(c.arguments)) for c in acted.tool_calls] == [("get_current_time", {})]
+    assert _actions(acted) == [("get_current_time", {})]
 
 
 @pytest.mark.parametrize("reply, reason", [
@@ -214,10 +221,12 @@ def test_passed_is_honest_silence() -> None:
     assert (out.content, out.tool_calls) == ("", ())
 
 
-def test_perform_and_ask_are_spoken_when_there_is_no_speech() -> None:
-    perform = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(
-        perform={"kind": "tale", "segments": ["Жил-был ёж.", "И жил он долго."]}),)))
-    assert perform.content == "Жил-был ёж.\nИ жил он долго."
+def test_perform_and_voice_go_to_the_command_executor_ask_is_spoken() -> None:
+    tale = {"kind": "tale", "segments": ["Жил-был ёж.", "И жил он долго."], "voice_per_segment": ["", "zahar"]}
+    perform = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(perform=tale),)))
+    assert _actions(perform) == [] and perform.tool_calls[0].arguments["perform"]["voice_per_segment"] == ["", "zahar"]
+    voiced = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(speech="Привет", voice="alena"),)))
+    assert voiced.tool_calls[0].arguments["voice"] == "alena"
     ask = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(ask={"expects": "name", "text": "Как тебя зовут?"}),)))
     assert ask.content == "Как тебя зовут?"
 
@@ -225,11 +234,15 @@ def test_perform_and_ask_are_spoken_when_there_is_no_speech() -> None:
 def test_speak_text_in_actions_is_speech_not_action() -> None:
     out = _convert(MINIMAX_CAPS, LLMResponse(content='{"actions": [{"tool": "speak_text", "args": {"text": "Привет"}}]}'))
     assert (out.content, out.tool_calls) == ("Привет", ())
+    voiced = _convert(MINIMAX_CAPS, LLMResponse(
+        content='{"actions": [{"tool": "speak_text", "args": {"text": "Привет", "voice": "zahar"}}]}'))
+    args = voiced.tool_calls[0].arguments
+    assert (args["speech"], args["voice"], args.get("actions")) == ("Привет", "zahar", None)
 
 
 @pytest.mark.parametrize("reply, content, calls", [
     (LLMResponse(tool_calls=(_command_call(speech="Привет!"),), usage={"prompt_tokens": 5}), "Привет!", []),
-    (LLMResponse(content='{"actions": [{"tool": "memory_save", "args": {}}]}'), "", ["memory_save"]),
+    (LLMResponse(content='{"actions": [{"tool": "memory_save", "args": {}}]}'), "", [kn.COMMAND_TOOL]),
 ])
 def test_stream_is_collected_then_replayed_in_v1_shape(reply: LLMResponse, content: str, calls: list) -> None:
     inner = _Inner(DEEPSEEK_CAPS, [reply])
@@ -271,26 +284,57 @@ def _dsm() -> DialogueStateMachine:
     return dsm
 
 
-@pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_turn_runs_action_then_speaks_result(streaming: bool) -> None:
-    """Команда с действием → v1 исполняет тул → вторая команда говорит итог по результату; ``speak_text`` не звался."""
-    inner = _Inner(DEEPSEEK_CAPS, [
-        LLMResponse(tool_calls=(_command_call(speech="Сейчас", actions=[{"tool": "echo", "args": {"text": "x"}}]),)),
-        LLMResponse(tool_calls=(_command_call(speech="Эхо ответило: x."),)),
-    ])
+class _Spoken:
+    """Тулы хода v1: ``memory_save``, ``get_current_time`` и ``speak_text`` с журналом реплик."""
+
+    def __init__(self) -> None:
+        self.said: List[str] = []
+        self.tools = FakeToolProvider()
+        for name, handler in (("memory_save", lambda a: {"fact_id": 1, "fact": a["fact"]}),
+                              ("get_current_time", lambda a: "12:00"), ("speak_text", self._say)):
+            self.tools.register(ToolSpec(name=name, description=name, parameters={"type": "object"}), handler)
+
+    def _say(self, args: Mapping[str, Any]) -> str:
+        self.said.append(args["text"])
+        return "ok"
+
+
+def _core(inner: _Inner, streaming: bool, spoken: _Spoken) -> AgentCore:
     chain = HealthAwareFallbackLLM([cb.wrapper_for("deepseek")(inner), _Inner(MINIMAX_CAPS, [], name="minimax")],
                                    cache=HealthCache())
-    core = AgentCore(llm=chain, tools=FakeToolProvider(), memory=InMemoryStore(), dsm=_dsm(),
+    return AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
                      system_prompt="ты РОББОКС", use_streaming=streaming)
 
-    result = asyncio.run(core.process_input("повтори x", preclassified_event=DialogueEvent.STT_RESULT))
 
-    assert result.error is None
-    assert result.spoken_text == "Эхо ответило: x."
-    assert list(result.tools_called) == ["echo"]
-    assert len(inner.requests) == 2 and chain.answered_by == "deepseek"
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_turn_with_action_is_terminal_and_code_tells_the_outcome(streaming: bool) -> None:
+    """Команда с действием → исполнитель команды → фраза кода по исходу; LLM второго слова не получает,
+    её «Запомнила!» не звучит."""
+    action = [{"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]
+    inner = _Inner(DEEPSEEK_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Запомнила!", actions=action),))])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and len(inner.requests) == 1
+    assert spoken.said == ["Запомнил: Саша любит чай."]
+    assert list(result.tools_called) == ["memory_save", "speak_text"] and result.speak_text_real_count == 1
+    assert result.spoken_text == ""
+    tools = [t["function"]["name"] for t in inner.requests[0]["tools"]]
+    assert tools[0] == kn.COMMAND_TOOL and "speak_text" not in tools
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_query_returns_data_to_llm_then_speech_is_final(streaming: bool) -> None:
+    inner = _Inner(DEEPSEEK_CAPS, [
+        LLMResponse(tool_calls=(_command_call(actions=[{"tool": "get_current_time", "args": {}}]),)),
+        LLMResponse(tool_calls=(_command_call(speech="Сейчас полдень."),)),
+    ])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "который час", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and result.spoken_text == "Сейчас полдень." and spoken.said == []
     second = inner.requests[1]
-    assert [t["function"]["name"] for t in second["tools"]][0] == kn.COMMAND_TOOL
-    assert "speak_text" not in [t["function"]["name"] for t in second["tools"]]
     assert second["settings"].tool_choice == "required"
-    assert any(m.role == "tool" for m in second["messages"])  # результат тула дошёл до модели
+    assert any(m.role == "tool" and "12:00" in str(m.content) for m in second["messages"])

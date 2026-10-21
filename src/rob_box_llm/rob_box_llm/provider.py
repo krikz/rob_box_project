@@ -132,11 +132,16 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Result of executing a tool; fed back to the model on the next turn."""
+    """Result of executing a tool; fed back to the model on the next turn.
+
+    ``data`` — структурное тело результата тула (``MCPToolResult.data``: ``status``/``reason`` события владельца), если
+    оно есть; модель видит только ``content``, ``data`` читает код (исполнитель команды, ADR-0150 PR-7 ч.7c).
+    """
 
     tool_call_id: str
     content: str
     is_error: bool = False
+    data: Mapping[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

@@ -293,19 +293,18 @@ class SchedulerToolExecutor:
             )
             return await self._underlying.execute(call)
 
+        queued = {
+            "status": "queued",
+            "task_id": task.task_id,
+            "tool": call.name,
+            "channel": channel.value,
+            "deferred_until_voice_drained": deferred,
+        }
         return ToolResult(
             tool_call_id=call.id,
-            content=json.dumps(
-                {
-                    "status": "queued",
-                    "task_id": task.task_id,
-                    "tool": call.name,
-                    "channel": channel.value,
-                    "deferred_until_voice_drained": deferred,
-                },
-                ensure_ascii=False,
-            ),
+            content=json.dumps(queued, ensure_ascii=False),
             is_error=False,
+            data=queued,  # «в очереди» — не исход: исполнитель команды читает его как обещание (PR-7 ч.7c)
         )
 
     async def _execute_direct(self, call: ToolCall) -> ToolResult:

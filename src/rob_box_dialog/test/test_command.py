@@ -187,6 +187,35 @@ def test_perform_shape():
     bad({"perform": _perform(2, expression_per_segment=[{"emotion": "happy"}])}, "bad_segments")
 
 
+def test_perform_beside_actions_follows_adr_and_excludes_speech():
+    """ADR §4.1: ``perform`` взаимоисключает ``speech`` и при действиях; ответ по сути рядом с действием — только
+    ``perform`` (правку правила, чтобы невозвучиваемый ``speech`` не валил команду, решает Шифу, #3698 ч.7c)."""
+    sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+    assert ok({"actions": sound, "perform": _perform()}).perform is not None
+    bad({"speech": "Включаю звук!", "actions": sound, "perform": _perform()}, "perform_with_speech")
+
+
+def test_voice_of_a_line_and_voices_of_segments():
+    cmd = ok({"speech": "Привет", "voice": " zahar "})
+    assert cmd.voice == "zahar"
+    tale = ok({"perform": _perform(3, voice_per_segment=["", None, "alena"])})
+    assert tale.perform.voice_per_segment == ("", "", "alena")
+    bad({"perform": _perform(3, voice_per_segment=["zahar"])}, "bad_segments")
+    bad({"perform": _perform(2, voice_per_segment=["a" * (kn.VOICE_MAX_CHARS + 1), ""])}, "too_long")
+    bad({"perform": _perform(2, voice_per_segment=[1, ""])}, "bad_type")
+    bad({"speech": "Привет", "voice": "z" * (kn.VOICE_MAX_CHARS + 1)}, "too_long")
+
+
+def test_to_args_round_trips_through_parse():
+    raw = {"voice": "zahar", "ask": {"expects": "name", "text": "Как зовут?"},
+           "actions": [{"tool": "memory_save", "args": {"fact": "чай"}}],
+           "perform": _perform(2, voice_per_segment=["", "alena"], expression_per_segment=[{"emotion": "happy"}] * 2),
+           "expression": {"emotion": "happy", "gesture": "wink", "face": {"eyes": "wide"}}}
+    cmd = ok(raw)
+    assert parse(cm.to_args(cmd)) == cmd
+    assert json.loads(json.dumps(cm.to_args(cmd), ensure_ascii=False)) == cm.to_args(cmd)
+
+
 def test_edit_pending_needs_active_perform_and_a_later_segment():
     edit = {"edit_pending": True, "perform": _perform(4, from_segment=3)}
     bad(edit, "edit_without_active_perform")
@@ -364,6 +393,7 @@ def test_thousands_of_random_commands_never_raise():
             assert len(res.actions) <= kn.ACTIONS_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
             assert not (res.perform and res.speech)
+            assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=())  # мост → исполнитель команды
             assert res.expression.emotion in kn.EMOTIONS
             assert res.expression.face is None or isinstance(res.expression.face, FaceScene)
         else:
