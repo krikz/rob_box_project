@@ -740,15 +740,15 @@ class DeepSeekProvider(_OpenAICompatibleProvider):
     """DeepSeek Chat (OpenAI-compatible).
 
     Default base URL: ``https://api.deepseek.com``.
-    Default model:    ``deepseek-chat``.
+    Default model:    ``deepseek-v4-flash`` (одно имя с llm_config.PROVIDERS и telegram_bot.yaml; API обслуживает его моделью deepseek-flash).
     """
 
     DEFAULT_BASE_URL = "https://api.deepseek.com"
-    DEFAULT_MODEL = "deepseek-chat"
+    DEFAULT_MODEL = "deepseek-v4-flash"
 
     # ADR-0150 §4.5: DeepSeek honours ``tool_choice`` and ``json_object``
     # response_format (api-docs.deepseek.com). No JSON-schema structured
-    # output, no reasoning tokens in ``deepseek-chat``; 128K context.
+    # output, no reasoning tokens in ``deepseek-flash``; 128K context.
     _CAPABILITIES = dataclasses.replace(
         _OpenAICompatibleProvider._CAPABILITIES,
         tool_choice=True,
