@@ -152,3 +152,28 @@ def test_tentative_voice_asks_confirm_after_accumulation_not_in_first_turn():
     _turn(n, "что нового", _Result("Всё по-старому."))
     assert n.tts[-1] == "Саша, это ты?"
     assert n._identity_confirmations["sid-sasha"]["asked"] is True
+
+
+def test_live_robot_21_10_chat_with_reads_and_llm_animation_asks_once_after_third_phrase():
+    """Живой FAIL 21.10 08:10Z: болтовня, где LLM сама зовёт чтение или анимацию, — не команда. Ровно один вопрос
+    после 3-й фразы; просьба «покажи анимацию сон» — команда, без вопроса; повтор — без вопроса."""
+    n = _node()
+    _turn(n, "робот как у тебя дела", _Result("Всё отлично.", ["get_robot_status", "speak_text"]))
+    _turn(n, "робот расскажи что нибудь интересное про луну", _Result("Луна уходит.", ["speak_text", "play_animation"]))
+    assert ASK_NAME not in n.tts
+    _turn(n, "робот который час", _Result("Восемь утра.", ["get_current_time", "speak_text"]))
+    assert n.tts[-2:] == ["Восемь утра.", ASK_NAME], n.tts
+    _turn(n, "робот покажи анимацию сон", _Result("Показываю.", ["play_animation", "speak_text"]))
+    _turn(n, "робот как у тебя дела", _Result("Хорошо.", ["get_robot_status", "speak_text"]))
+    assert n.tts.count(ASK_NAME) == 1
+    verdicts = [v.split(": ")[1].split(" ")[0] for v in _verdicts(n)]
+    assert verdicts == ["accumulating", "accumulating", "ask", "command", "asked_already"], verdicts
+    assert "command_by=animation" in _verdicts(n)[3]
+
+
+def test_command_first_then_repeat_never_asks():
+    n = _node()
+    for _ in range(4):
+        _turn(n, "робот покажи анимацию сон", _Result("Показываю.", ["play_animation", "speak_text"]))
+    assert ASK_NAME not in n.tts
+    assert all("command command_by=animation" in v for v in _verdicts(n))

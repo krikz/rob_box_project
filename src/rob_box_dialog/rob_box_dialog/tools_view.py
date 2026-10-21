@@ -32,6 +32,23 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) 
     return _ordered(strong) + _ordered(weak)
 
 
+def requested_groups(text: str) -> Tuple[str, ...]:
+    """Группы, названные словами человека в ЭТОЙ реплике: без сцен снимка, переноса и умолчания."""
+    return _ordered(_named(text, "stems") | _named(text, "weak"))
+
+
+def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
+    """Исполненная просьба человека: группы, названные его словами, в которых LLM вызвала тул-действие (класс
+    ``TOOL_CLASSES`` не ``query``). Пусто — ход не команда.
+
+    Решает запрос человека, тулы LLM — только подтверждение исполнения: чтение (статус, время, память, поиск,
+    восприятие) и действие, о котором человек не просил (анимация к болтовне), командой ход не делают; слово группы
+    в болтовне («узнал по голосу») без исполнения — тоже (В17, ADR-0148; живой робот 21.10).
+    """
+    actions = {t for t in called if kn.TOOL_CLASSES.get(t, "query") != "query"}
+    return tuple(g for g in requested_groups(text) if actions & set(kn.TOOL_GROUPS[g].tools))
+
+
 def _named(text: str, field: str) -> set:
     return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
 
@@ -57,4 +74,4 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "groups_for"]
+__all__ = ["available_tools", "command_groups", "groups_for", "requested_groups"]

@@ -11,7 +11,8 @@
   (по имени — у лица и голоса разные id); (слабо) DOA ±60° при ком-то в кадре. Короткому «робот» по голосу не верим,
   а просто «кто-то в кадре» — не признак того же человека (перед роботом сидят и под телевизор; Шифу 21.10).
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
-  один раз на собеседника.
+  один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
+  а не по тому, какие тулы выбрала LLM.
 
 Когда ADR-0130 этапы 2/3/5 дадут треки и реестр Знакомых, меняется только этот модуль. Чистый: время передают
 вызывающие, сообщения читаются утиной типизацией.
@@ -27,6 +28,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.session import SpeakerRef
+from rob_box_dialog.tools_view import command_groups
 
 #: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
 STRANGER = "stranger"
@@ -145,6 +147,11 @@ class AskPolicy:
             t - first >= self.min_s and count >= kn.IDENTITY_ASK_MIN_PHRASES_BY_TIME)
         return ASK if enough else ACCUMULATING
 
+    def progress(self, key: str, t: float) -> Tuple[int, float, Optional[float]]:
+        """Накоплено у ``key``: фраз, секунд с первой фразы, когда спрашивали (``None`` — не спрашивали)."""
+        first, count = self._heard.get(key, (t, 0))
+        return count, t - first, self._asked.get(key)
+
     def mark_asked(self, key: str, t: float) -> None:
         self._asked[key] = t
         self._heard.pop(key, None)
@@ -158,6 +165,8 @@ class AskCandidate:
     kind: str
     name: Optional[str] = None
     utterance_id: Optional[str] = None
+    #: реплика человека этого хода — по ней (а не по тулам LLM) решается, была ли это команда
+    request: str = ""
 
     def question(self) -> str:
         if self.kind == "single" and self.name:
@@ -165,14 +174,39 @@ class AskCandidate:
         return phrases.text("identity.ask_name")
 
 
+@dataclass(frozen=True)
+class AskVerdict:
+    """Вердикт В17 с причиной — одна строка лога объясняет, почему спросили или нет.
+
+    ``command_by`` — группы ``knowledge.TOOL_GROUPS`` с действием, названные человеком (``()`` — не команда);
+    ``phrases``/``min_phrases``, ``since_first_s`` — накопление до хода; ``asked_at`` — когда спрашивали раньше.
+    """
+
+    verdict: str
+    command_by: Tuple[str, ...]
+    phrases: int
+    min_phrases: int
+    since_first_s: float
+    asked_at: Optional[float]
+
+    def describe(self, t: float) -> str:
+        asked = "no" if self.asked_at is None else f"yes({t - self.asked_at:.0f}s ago)"
+        return (f"{self.verdict} command_by={'+'.join(self.command_by) or 'none'} "
+                f"phrases={self.phrases}/{self.min_phrases} since_first={self.since_first_s:.0f}s asked_before={asked}")
+
+
 def ask_after_turn(policy: AskPolicy, cand: AskCandidate, *, t: float, tools: Sequence[str] = (),
-                   spoken_text: Optional[str] = None) -> str:
-    """Вердикт В17 по итогам хода: действие (любой тул, кроме речи) — без вопроса; ход без речи — без вопроса
-    (пустой ответ — не повод спрашивать имя, эпизод Б 20.10). ``ASK`` сразу помечает собеседника спрошенным."""
+                   spoken_text: Optional[str] = None) -> AskVerdict:
+    """Вердикт В17 по итогам хода. Команда — исполненная просьба человека (:func:`command_groups`: группа названа
+    словами ``cand.request`` и её действие вызвано): без вопроса. Тулы, о которых человек не просил, командой ход не
+    делают (живой робот 21.10: «как у тебя дела» → ``get_robot_status``, «расскажи про луну» → LLM добавила
+    ``play_animation`` — это не команды). Ход без речи — без вопроса (пустой ответ — не повод, эпизод Б 20.10).
+    ``ASK`` сразу помечает собеседника спрошенным."""
     tools = tuple(tools or ())
-    actions = [name for name in tools if name not in kn.SPEECH_CHANNEL_TOOLS]
     spoken = bool((spoken_text or "").strip()) or any(name in kn.SPEECH_CHANNEL_TOOLS for name in tools)
-    verdict = policy.verdict(cand.key, t, has_actions=bool(actions), spoken=spoken)
+    command_by = command_groups(cand.request, tools)
+    count, since_first, asked_at = policy.progress(cand.key, t)
+    verdict = policy.verdict(cand.key, t, has_actions=bool(command_by), spoken=spoken)
     if verdict == ASK:
         policy.mark_asked(cand.key, t)
-    return verdict
+    return AskVerdict(verdict, command_by, count, policy.min_phrases, since_first, asked_at)

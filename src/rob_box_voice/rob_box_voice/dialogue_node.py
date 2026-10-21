@@ -2930,7 +2930,7 @@ class DialogueNode(DialogueStageMixin, Node):
             pass
         with self._speaker_lock:
             sp = dict(self._current_speaker)
-        note_interlocutor(self, sp, utterance_id)
+        note_interlocutor(self, sp, utterance_id, user_input)
         if sp.get("is_known"):
             name = str(sp.get("name") or "")
             conf = float(sp.get("confidence") or 0.0)
@@ -3271,7 +3271,8 @@ class DialogueNode(DialogueStageMixin, Node):
         if not state["asked"]:
             # ADR-0150 В17 (#3695): не спрашивать сейчас — кандидат; вопрос решается после хода
             # (core/speaker_turn.plan_identity_question): не на команду, не раньше N-й фразы, один раз.
-            self._identity_ask_candidate = AskCandidate(full_sid, tentative_kind, tentative_name, utterance_id)
+            self._identity_ask_candidate = AskCandidate(
+                full_sid, tentative_kind, tentative_name, utterance_id, user_input)
             self._pending_identity_hint = {
                 "kind": tentative_kind,
                 "name": tentative_name,

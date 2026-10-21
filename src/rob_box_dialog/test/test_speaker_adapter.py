@@ -139,16 +139,75 @@ def test_never_on_a_command_turn_even_when_accumulated():
     policy = AskPolicy()
     for i in range(5):
         policy.note("p1", float(i))
-    cand = AskCandidate("p1", "single", "Саша")
-    assert ask_after_turn(policy, cand, t=5.0, tools=["play_animation", "speak_text"]) == COMMAND
-    assert ask_after_turn(policy, cand, t=5.0, tools=["speak_text"]) == ASK
+    command = AskCandidate("p1", "single", "Саша", request="робот покажи анимацию сон")
+    verdict = ask_after_turn(policy, command, t=5.0, tools=["play_animation", "speak_text"])
+    assert (verdict.verdict, verdict.command_by) == (COMMAND, ("animation",))
+    chat = AskCandidate("p1", "single", "Саша", request="робот как у тебя дела")
+    assert ask_after_turn(policy, chat, t=5.0, tools=["speak_text"]).verdict == ASK
+
+
+@pytest.mark.parametrize("request_text, tools", [
+    ("робот как у тебя дела", ["get_robot_status", "speak_text"]),
+    ("робот расскажи что нибудь интересное про луну", ["speak_text", "play_animation"]),
+    ("который час и сколько заряда", ["get_current_time", "get_battery_level", "speak_text"]),
+    ("найди в интернете что такое квазар", ["search_web", "speak_text"]),
+    ("что ты видишь перед собой", ["get_perception_context", "speak_text"]),
+])
+def test_reads_and_llm_own_animation_are_not_a_command(request_text, tools):
+    """Живой робот 21.10: тулы чтения и анимация, которую LLM добавила к болтовне, командой не делают."""
+    policy = AskPolicy(min_phrases=1)
+    policy.note("p1", 0.0)
+    verdict = ask_after_turn(policy, AskCandidate("p1", "unknown", request=request_text), t=1.0, tools=tools)
+    assert (verdict.verdict, verdict.command_by) == (ASK, ())
+
+
+@pytest.mark.parametrize("request_text, tool, group", [
+    ("робот покажи анимацию сон", "play_animation", "animation"),
+    ("робот включи музыку", "request_music", "music"),
+    ("поезжай на кухню", "navigate_to_waypoint", "navigation"),
+    ("сделай погромче", "set_volume", "volume"),
+    ("меня зовут Гриша", "register_speaker", "people"),
+])
+def test_executed_request_is_a_command(request_text, tool, group):
+    policy = AskPolicy(min_phrases=1)
+    policy.note("p1", 0.0)
+    cand = AskCandidate("p1", "unknown", request=request_text)
+    verdict = ask_after_turn(policy, cand, t=1.0, tools=[tool, "speak_text"])
+    assert verdict.verdict == COMMAND and group in verdict.command_by
+
+
+@pytest.mark.parametrize("request_text, tools", [
+    ("ты меня узнал по голосу", ["speak_text"]),  # слово группы в болтовне, ничего не исполнено
+    ("что ты обо мне помнишь", ["memory_search", "speak_text"]),  # группа названа, тул — чтение
+])
+def test_group_word_without_executed_action_is_not_a_command(request_text, tools):
+    policy = AskPolicy(min_phrases=1)
+    policy.note("p1", 0.0)
+    verdict = ask_after_turn(policy, AskCandidate("p1", "unknown", request=request_text), t=1.0, tools=tools)
+    assert (verdict.verdict, verdict.command_by) == (ASK, ())
+
+
+def test_verdict_carries_its_reason():
+    policy = AskPolicy()
+    cand = AskCandidate(STRANGER, "unknown", request="расскажи анекдот")
+    policy.note(STRANGER, 0.0)
+    policy.note(STRANGER, 10.0)
+    first = ask_after_turn(policy, cand, t=10.0, spoken_text="ок")
+    assert (first.verdict, first.phrases, first.min_phrases, first.since_first_s, first.asked_at) == (
+        ACCUMULATING, 2, kn.IDENTITY_ASK_MIN_PHRASES, 10.0, None)
+    policy.note(STRANGER, 20.0)
+    assert ask_after_turn(policy, cand, t=20.0, spoken_text="ок").verdict == ASK
+    policy.note(STRANGER, 30.0)
+    again = ask_after_turn(policy, cand, t=30.0, spoken_text="ок")
+    assert (again.verdict, again.asked_at) == (ASKED, 20.0)
+    assert "command_by=none" in again.describe(30.0) and "asked_before=yes(10s ago)" in again.describe(30.0)
 
 
 def test_empty_turn_is_not_a_reason_to_ask():
     """Эпизод Б 20.10: ``spoken=''`` → «Как тебя зовут?» — больше нет."""
     policy = AskPolicy(min_phrases=1)
     policy.note(STRANGER, 0.0)
-    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=1.0, spoken_text="") == NO_SPEECH
+    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=1.0, spoken_text="").verdict == NO_SPEECH
 
 
 def test_accumulates_three_phrases_then_asks_once():
@@ -157,7 +216,7 @@ def test_accumulates_three_phrases_then_asks_once():
     verdicts = []
     for i in range(5):
         policy.note("p1", float(i))
-        verdicts.append(ask_after_turn(policy, cand, t=float(i), spoken_text="ок"))
+        verdicts.append(ask_after_turn(policy, cand, t=float(i), spoken_text="ок").verdict)
     assert verdicts == [ACCUMULATING, ACCUMULATING, ASK, ASKED, ASKED]
 
 
@@ -175,7 +234,7 @@ def test_sixty_seconds_with_two_phrases_is_enough():
 def test_stranger_again_only_after_ten_minutes():
     policy = AskPolicy(min_phrases=1)
     policy.note(STRANGER, 0.0)
-    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=0.0, spoken_text="ок") == ASK
+    assert ask_after_turn(policy, AskCandidate(STRANGER, "unknown"), t=0.0, spoken_text="ок").verdict == ASK
     policy.note(STRANGER, 10.0)
     assert policy.verdict(STRANGER, 10.0, has_actions=False, spoken=True) == ASKED
     policy.note(STRANGER, kn.IDENTITY_ASK_STRANGER_GAP_S + 1.0)
