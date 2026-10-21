@@ -2024,22 +2024,23 @@ class DialogueNode(DialogueStageMixin, Node):
 
     def _speak_identity_question(
         self, plan: Optional[dict], after_answer: bool = False
-    ) -> None:
+    ) -> str:
         """Задать переспрос и ждать ответ. ``None`` — спрашивать нечего.
 
         ``after_answer`` — ответ хода уже прозвучал: план может нести для
         этого случая свою формулировку (``after_answer``, issue #2908).
+        Возвращает ``speech_id`` вопроса (``""`` — не озвучен, #3771).
         """
         if plan is None:
-            return
+            return ""
         text = (after_answer and plan.get("after_answer")) or plan["question"]
         try:
-            self._speak_direct(text)
+            speech_id = self._speak_direct(text)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warning(
                 f"не смог озвучить переспрос ({plan.get('kind')}): {exc!r}"
             )
-            return
+            return ""
         # Issue #2914 -- ретраи гардов этого хода говорить поверх вопроса
         # не должны (см. _apply_post_turn_retry_guards).
         self._identity_question_asked_in_turn = True
@@ -2049,6 +2050,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # тоже не вопрос о склейке.
         if plan.get("kind") not in ("tentative", "register_retry"):
             self._identity_ack_state().arm(plan)
+        return speech_id
 
     def _deliver_turn_result(self, result: Any, **kwargs: Any) -> None:
         """Выдать ответ хода — или заменить его переспросом (issue #2828).
@@ -6038,8 +6040,8 @@ class DialogueNode(DialogueStageMixin, Node):
 
     def _publish_response(
         self, text: str, animation: str = "neutral", *, language: str | None = None
-    ) -> None:
-        """Single-chunk publish — kept for backwards compatibility.
+    ) -> str:
+        """Single-chunk publish — kept for backwards compatibility. Возвращает ``speech_id`` реплики (#3771).
 
         For multi-chunk turns prefer :meth:`_publish_response_batch` which
         attaches a shared ``batch_id`` so ``tts_node`` can fire
@@ -6050,6 +6052,7 @@ class DialogueNode(DialogueStageMixin, Node):
         маршрутизации эхо-ответа в правильный чат.
         """
         self._turn_stages().expect_speech()
+        speech_id = str(uuid.uuid4())
         msg = String()
         msg.data = build_ssml_payload(
             text,
@@ -6058,8 +6061,10 @@ class DialogueNode(DialogueStageMixin, Node):
             voice=None,  # текущий голос ведёт tts_node (VoiceOwner)
             language=language,
             epoch=self._session_epoch_gate().epoch_for_dispatch(),
+            speech_id=speech_id,
         )
         self._response_pub.publish(msg)
+        return speech_id
 
     def _publish_response_batch(self, chunks: List[str], animation: str = "neutral") -> int:
         """Publish ``chunks`` as a single TTS batch (issue #980).
@@ -6349,7 +6354,7 @@ class DialogueNode(DialogueStageMixin, Node):
             except Exception:
                 pass
 
-    def _speak_direct(self, text: str, language: str | None = None) -> None:
+    def _speak_direct(self, text: str, language: str | None = None) -> str:
         """Озвучить текст напрямую (без AgentCore).
 
         ``language`` (AV-28) — язык, на котором НАПИСАН ``text``. Уходит в
@@ -6357,9 +6362,13 @@ class DialogueNode(DialogueStageMixin, Node):
         на французский, а tts_node синтезировал её со статическим
         ``minimax_language="ru"``. ``None`` — обычная русская реплика
         робота, поведение прежнее.
+
+        Возвращает ``speech_id`` последнего чанка (по нему фразу узнают в ``SpeechEvent``) или ``""``.
         """
+        speech_id = ""
         for chunk in split_into_chunks(text):
-            self._publish_response(chunk, language=language)
+            speech_id = self._publish_response(chunk, language=language)
+        return speech_id
 
     # ═══════════════════════════════════════════════════════════════════════
     #  Pure helper methods (unit-test contracts for issue #968 / #980)

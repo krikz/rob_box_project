@@ -441,6 +441,7 @@ def build_ssml_payload(
     voice: Optional[str] = None,
     language: Optional[str] = None,
     epoch: Optional[int] = None,
+    speech_id: Optional[str] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
@@ -465,7 +466,7 @@ def build_ssml_payload(
         sink=Sink.SPEAKERS,
         emotion=animation or "neutral",
         extra={
-            "speech_id": str(uuid.uuid4()),
+            "speech_id": speech_id or str(uuid.uuid4()),
             "batch_id": batch_id,
             "batch_index": batch_index,
             "batch_total": batch_total,

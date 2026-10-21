@@ -12,6 +12,7 @@ from typing import Any, Optional
 from rob_box_core import expression_client
 from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent, SpeechEvent
 
+from .identity_question import on_speech_event as on_identity_speech
 from .llm_skip_reasons import LLMSkipReason
 from .stt_admission import SttOutcome, SttOutcomeKind
 from .turn_stages import TurnStages
@@ -55,6 +56,7 @@ class DialogueStageMixin:
 
     def _on_speech_event(self, msg: SpeechEvent) -> None:
         self._turn_stages().on_speech(int(msg.kind), msg.agent, msg.reason, msg.speech_id)
+        on_identity_speech(self, int(msg.kind), msg.speech_id, msg.agent)  # окно ответа на вопрос об имени (#3771)
         watch = getattr(self, "_speaking_watch", None)  # ADR-0150 PR-6: канал «громче» по звучащей речи
         if watch is not None:
             watch.on_event(msg)

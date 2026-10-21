@@ -128,6 +128,10 @@ class Session:
     def snapshot(self) -> SessionSnapshot:
         return self._snap
 
+    def now(self) -> float:
+        """Время часов сессии (то же, по которому считается TTL кадров)."""
+        return self._clock()
+
     def subscribe(self, listener: Listener) -> None:
         self._listeners.append(listener)
 
@@ -151,6 +155,18 @@ class Session:
                 frame = scenes.pop(i)
                 self._commit("pop_scene", scenes=tuple(scenes))
                 return frame
+        return None
+
+    def arm_scene(self, kind: str, ttl_s: float, payload: Optional[Mapping[str, Any]] = None) -> Optional[SceneFrame]:
+        """Верхнему кадру вида ``kind`` задать TTL от сейчас и дополнить данные (кадр ждал события, #3771).
+        Нет такого кадра — ``None``, событие не шлётся."""
+        scenes = list(self._snap.scenes)
+        for i in range(len(scenes) - 1, -1, -1):
+            if scenes[i].kind == kind:
+                merged = {**scenes[i].payload, **(payload or {})}
+                scenes[i] = replace(scenes[i], ttl_until=self._clock() + ttl_s, payload=MappingProxyType(merged))
+                self._commit("arm_scene", scenes=tuple(scenes))
+                return scenes[i]
         return None
 
     def expire(self) -> Tuple[SceneFrame, ...]:
