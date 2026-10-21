@@ -37,6 +37,8 @@ class LLMSkipReason(str, Enum):
     TIER1 = "tier1"
     #: ADR-0150 PR-6 (В19) — стоп-слово внутри другой команды: решает Chooser, не LLM хода.
     STOP_DISPUTED = "stop_disputed"
+    #: ADR-0150 PR-6 (#3696) — стоп музыки в SILENCED: исполнен Tier-1 молча, медиароутер туда не доходит.
+    MUSIC_STOP_SILENCED = "music_stop_silenced"
 
 
 def new_llm_skip_counter() -> dict[str, int]:

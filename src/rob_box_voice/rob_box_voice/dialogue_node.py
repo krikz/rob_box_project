@@ -5316,7 +5316,7 @@ tentative_plan(question, kind, name)
         executor = getattr(self, "_scheduler_executor", None)
         if plan.play_name:
             return self._start_play_named(plan, executor, text, on_miss)
-        if plan.tool_calls and executor is None:
+        if plan.needs_tools and executor is None:
             self.get_logger().warning(
                 f"🎛️ [media-router] {plan.command.intent.value}: MCP-тулов нет "
                 "(tool_provider не ros_mcp) — отдаю реплику LLM"

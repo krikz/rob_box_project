@@ -120,6 +120,8 @@ class MediaPlan:
         confirm_started: ADR-0149 PR-6 — ``say_ok`` только после события
             ``started`` с ``track_id`` из ответа первого тула; ``rejected`` →
             ``say_fail``; события нет — :data:`NOT_STARTED_TEXT` (A14).
+        library: #3696 — ``play``/``list`` из библиотеки генераций: исполняет
+            :mod:`.library_command` (поиск/список → трек выбирает код → ``play``).
     """
 
     command: MediaCommand
@@ -129,6 +131,12 @@ class MediaPlan:
     cancel_inflight: bool = False
     play_name: str = ""
     confirm_started: bool = False
+    library: str = ""
+
+    @property
+    def needs_tools(self) -> bool:
+        """Плану нужен MCP-исполнитель: тулы по порядку или поток библиотеки (#3696)."""
+        return bool(self.tool_calls or self.library)
 
 
 #: Тексты — ``rob_box_dialog/phrases/ru.yaml`` (ключи ``music.*``, ADR-0150 PR-1).
@@ -414,6 +422,22 @@ def _request_plan(command: MediaCommand, text: str) -> MediaPlan:
     )
 
 
+def _generate_plan(command: MediaCommand) -> MediaPlan:
+    """«спой песенку про X» → ``generate_music(kind, theme)`` кодом (ADR-0150 §9.1, #3696). Песня пишется десятки
+    секунд: фраза — ``source_message`` результата (ожидание/мост/отказ кода), об успехе — по ``started`` моста."""
+    args: Dict[str, Any] = {"kind": command.kind}
+    if command.name:
+        args["theme"] = command.name
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall(GENERATE_MUSIC_TOOL, args),),
+        say_ok=request_ok_text(""),
+        say_fail=REQUEST_FAIL_TEXT,
+        cancel_inflight=True,
+        confirm_started=True,
+    )
+
+
 def plan_media_command(
     command: MediaCommand, media: MediaState, text: str = ""
 ) -> Optional[MediaPlan]:
@@ -426,6 +450,10 @@ def plan_media_command(
         return _request_plan(command, text)
     if command.intent is MediaIntent.NOW_PLAYING:
         return _now_playing_plan(command, media)
+    if command.intent is MediaIntent.GENERATE:
+        return _generate_plan(command)
+    if command.intent is MediaIntent.LIBRARY:
+        return MediaPlan(command=command, library=command.kind, cancel_inflight=True)
     if command.intent is MediaIntent.PLAY_NAMED and command.name:
         plan = _play_named_plan(command)
         if command.themed:  # #3410: «давай тему X» посреди сета — смена темы, без lookup

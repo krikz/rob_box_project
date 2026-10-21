@@ -178,12 +178,12 @@ class MusicTurn:
 
 #: Интенты грамматики, которые просят ЗАПУСТИТЬ музыку. ``PLAY_NAMED`` сюда не входит: его промах по базе
 #: уходит в LLM, и «такой мелодии нет» без тула запуска — честный ответ.
-LAUNCH_INTENTS: frozenset = frozenset({MediaIntent.DJ, MediaIntent.REQUEST_MUSIC})
+LAUNCH_INTENTS: frozenset = frozenset({MediaIntent.DJ, MediaIntent.REQUEST_MUSIC, MediaIntent.GENERATE})
 
 
 #: Интенты, где роутер сам запускает музыку и говорит фразу запуска (сет, заказ, мелодия по имени): ход в историю
 #: модели фразой не кладётся (#3565). ``dj_set`` у ``STOP`` («выключи») запуском не является.
-ROUTER_LAUNCH_INTENTS: frozenset = LAUNCH_INTENTS | {MediaIntent.PLAY_NAMED}
+ROUTER_LAUNCH_INTENTS: frozenset = LAUNCH_INTENTS | {MediaIntent.PLAY_NAMED, MediaIntent.LIBRARY}
 
 
 def history_recorder(core: Any, intent: MediaIntent) -> Optional[Any]:
