@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
-from std_msgs.msg import String
 
 from rob_box_dialog.address import Addressed
 from rob_box_dialog.backlog import Backlog, Heard
@@ -69,10 +68,13 @@ class _DialogueSttHost:
     for the migration checklist.
     """
 
-    __slots__ = ("_node", "media_miss")
+    __slots__ = ("_node", "media_miss", "utterance_id")
 
-    def __init__(self, node: "DialogueNode") -> None:
+    def __init__(self, node: "DialogueNode", utterance_id: Optional[str] = None) -> None:
         self._node = node
+        # ADR-0150 PR-3b (#3690) — id фразы: рефлекс addressed не открывает второй ход, если ранний сигнал
+        # (InterruptRequest) уже открыл его для этой же фразы.
+        self.utterance_id = utterance_id
         # Issue #3176 — ``callable(clean_text)``: вернуть реплику в приём
         # после MediaCommandStep (заказ по имени мимо базы мелодий).
         # ``None`` — возвращать некуда (тестовые харнессы без ``_on_stt``).
@@ -119,6 +121,8 @@ class _DialogueSttHost:
         # ADR-0150 §7.3 (В12): снимок LLM получает ≤ 1 свежую фразу того же
         # источника структурой — её вставит _build_dynamic_system_context.
         self._node._pending_unaddressed = recent
+        # PR-3b: рефлекс addressed (лицо «слушает», earcon, кольцо) - до LLM; ход этой фразы уже мог открыть ранний сигнал.
+        self._node._turn_stages().addressed(self.utterance_id, heard.source or "respeaker")
         doa = "-" if heard.doa_deg is None else f"{heard.doa_deg:.0f}"
         self._node.get_logger().info(
             f"📮 [address] Addressed source={decision.source} doa={doa} person={heard.person_ref or '-'} "
@@ -132,7 +136,7 @@ class _DialogueSttHost:
 
     def bare_wake(self) -> None:
         # В12: «робот» без фразы и без свежей просьбы того же направления —
-        # рефлекс «слушаю» (LISTENING; earcon — ранний «бульк» stt_node), 0 LLM.
+        # рефлекс «слушаю» (LISTENING; лицо и earcon - рефлекс addressed в addressed() выше), 0 LLM.
         # Кадр ожидания ADDRESS_WAIT_S снимается молча, если хода не было.
         node = self._node
         node.get_logger().info(
@@ -246,9 +250,3 @@ class _DialogueSttHost:
 
     def publish_state(self) -> None:
         self._node._publish_state()
-
-    def trigger_thinking_sfx(self) -> None:
-        node = self._node
-        sfx = String()
-        sfx.data = "thinking"
-        node._sound_trigger_pub.publish(sfx)

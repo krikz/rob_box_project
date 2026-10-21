@@ -8,17 +8,13 @@ dialogue.py - Инструменты для управления диалого�
 """
 
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
-
-# Ленивый импорт ROS 2 модулей для поддержки unit тестов
-if TYPE_CHECKING:
-    from std_msgs.msg import String
+from typing import List
 
 from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
 
 from rob_box_core import speech_client
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, shared_publisher
+from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
@@ -92,15 +88,13 @@ class SpeakTextTool(MCPTool):
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
-        from std_msgs.msg import String
         from rob_box_dialog_msgs.msg import SpeechEvent
 
         # ADR-0150 PR-3 (#3688): речь — одним клиентом (SpeechRequest), итог
         # чанка — событием владельца речи (SpeechEvent), а не JSON-эхом.
         speech_client.prepare(node, "request")
-        # Publisher для анимаций (инициализируем сразу, чтобы не создавать дубли в execute())
-        # Issue #3108: общий с PlayAnimationTool publisher на этой ноде.
-        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
+        # Анимацию лица тул больше не публикует: эмоцию аргумента ``animation`` видит диалог (стадия executing
+        # хода) и красит ею рефлексы speaking/done через ExpressionRequest (ADR-0150 PR-3b, #3690).
         self.speech_event_sub = node.create_subscription(
             SpeechEvent, "/voice/speech/event", self._on_speech_event, 10
         )
@@ -424,17 +418,6 @@ class SpeakTextTool(MCPTool):
         chunks_total = len(chunks)
         speech_ids = []
         for i, chunk in enumerate(chunks):
-            # Анимацию ставим только для первого чанка (чтобы не мигало)
-            if i == 0 and animation and animation != "idle":
-                try:
-                    from std_msgs.msg import String as StringMsg
-                    anim_msg = StringMsg()
-                    anim_msg.data = animation
-                    self.animation_pub.publish(anim_msg)
-                    self.log_info(f"🎨 Установлена анимация '{animation}'")
-                except Exception as e:
-                    self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
-
             speech_id = str(uuid.uuid4())
             speech_ids.append(speech_id)
             # Issue #1709 — ПОЛНЫЙ текст и голос чанка для лога его исхода.

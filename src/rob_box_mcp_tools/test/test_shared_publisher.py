@@ -6,7 +6,7 @@ Issue #3108: живой граф (run 36422274238, ``ros2 topic info --verbose``
 
 * ``/voice/generated_music/state`` — 3 (mcp_server, StopMusicTool,
   PlayGeneratedMusicTool);
-* ``/voice/animation/request``     — 2 (SpeakTextTool, PlayAnimationTool);
+* ``/voice/animation/request``     — 2 (SpeakTextTool, PlayAnimationTool; топик снят в ADR-0150 PR-3b #3690);
 * ``/voice/sound/stop``            — 2 (mcp_server, StopMusicTool);
 * ``/voice/tts/set_provider``      — 2 (SetVoiceTool, SetTtsProviderTool).
 
@@ -189,13 +189,12 @@ def test_cache_is_per_node():
 
 _ISSUE_3108_TOPICS = (
     "/voice/generated_music/state",
-    "/voice/animation/request",
+    "/voice/animation/request",  # топик снят в PR-3b (#3690): лицо получает ExpressionRequest, а не строку от тула
     "/voice/sound/stop",
     "/voice/tts/set_provider",  # топик снят в PR-4 ч.3: гард остаётся, чтобы его не вернули прямым publisher'ом
 )
 
 _CREATE_PUBLISHER_CALL = re.compile(r"\.create_publisher\(\s*[^,]+,\s*\"([^\"]+)\"", re.S)
-_SHARED_PUBLISHER_CALL = re.compile(r"shared_publisher\(\s*[^,]+,\s*[^,]+,\s*\"([^\"]+)\"", re.S)
 
 
 def _package_sources():
@@ -211,20 +210,3 @@ def test_no_direct_create_publisher_for_issue_3108_topics(topic):
             if m.group(1) == topic:
                 offenders.append(str(path.relative_to(_PKG)))
     assert offenders == [], f"{topic}: прямой create_publisher в {offenders} — используйте shared_publisher"
-
-
-#: ADR-0158 PR-2: ``/voice/generated_music/state`` и mp3-стоп ``/voice/sound/stop`` из ``mcp_server`` удалены — трек
-#: кэша играет на деке ``PlayerOwner``; общим publisher'ом остаются два топика.
-#: PR-4 ч.3 (#3693): /voice/tts/set_provider больше никто не публикует - провайдера переключает VoiceOwner tts_node.
-_SHARED_TOPICS = ("/voice/animation/request",)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("topic", _SHARED_TOPICS)
-def test_issue_3108_topics_go_through_shared_publisher(topic):
-    users = []
-    for path in _package_sources():
-        for m in _SHARED_PUBLISHER_CALL.finditer(path.read_text(encoding="utf-8")):
-            if m.group(1) == topic:
-                users.append(path.name)
-    assert len(users) >= 2, f"{topic}: ожидалось >= 2 пользователей shared_publisher, нашли {users}"

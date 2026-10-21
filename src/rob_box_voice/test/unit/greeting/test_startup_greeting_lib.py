@@ -2,7 +2,7 @@
 test_startup_greeting_lib.py — Unit-тесты startup_greeting.py (issue #1003).
 
 Чистые тесты без ROS2: проверяем GREETINGS (6–10 прикольных фраз),
-pick_greeting (случайный выбор + override) и pick_finish_sound.
+pick_greeting (случайный выбор + override).
 """
 
 from __future__ import annotations
@@ -10,10 +10,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from rob_box_voice.startup_greeting import (
-    FINISH_SOUNDS,
     GREETINGS,
-    THINKING_SOUND,
-    pick_finish_sound,
     pick_greeting,
 )
 
@@ -31,12 +28,6 @@ class TestGreetingsData:
 
     def test_greetings_contain_myau(self) -> None:
         assert any("Мяу" in p and "на связи" in p for p in GREETINGS)
-
-    def test_finish_sounds(self) -> None:
-        assert FINISH_SOUNDS == ("cute", "very_cute")
-
-    def test_thinking_sound(self) -> None:
-        assert THINKING_SOUND == "thinking"
 
 
 class TestPickGreeting:
@@ -56,8 +47,3 @@ class TestPickGreeting:
 
     def test_pick_greeting_override_stripped(self) -> None:
         assert pick_greeting("  Привет!  ") == "Привет!"
-
-
-class TestPickFinishSound:
-    def test_pick_finish_sound_returns_member(self) -> None:
-        assert pick_finish_sound() in FINISH_SOUNDS

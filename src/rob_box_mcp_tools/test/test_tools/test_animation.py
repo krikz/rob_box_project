@@ -53,11 +53,8 @@ class TestPlayAnimationTool:
         assert result.success is True
         assert "happy" in result.message.lower()
 
-        # Проверяем что сообщение опубликовано
-        pub = mock_node.get_publisher("/voice/animation/request")
-        assert pub is not None
-        assert len(pub.published_messages) == 1
-        assert pub.published_messages[0].data == "happy"
+        # ADR-0150 PR-3b (#3690): тул лицо не трогает - сцену показывает диалог по ExpressionRequest
+        assert mock_node.get_publisher("/voice/animation/request") is None
 
     def test_execute_invalid_animation(self, mock_node):
         """Тест выполнения с невалидной анимацией."""
@@ -88,10 +85,7 @@ class TestPlayAnimationTool:
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 5.0
 
-        # Проверяем формат сообщения с длительностью
-        pub = mock_node.get_publisher("/voice/animation/request")
-        assert len(pub.published_messages) == 1
-        assert pub.published_messages[0].data == "happy:5.0"
+        assert mock_node.get_publisher("/voice/animation/request") is None
 
     def test_execute_with_invalid_duration_too_short(self, mock_node):
         """Тест выполнения с слишком короткой длительностью - должна быть установлена минимальная."""
@@ -104,10 +98,8 @@ class TestPlayAnimationTool:
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 2.0
 
-        # Проверяем что отправлено с минимальной длительностью
-        pub = mock_node.get_publisher("/voice/animation/request")
-        assert len(pub.published_messages) == 1
-        assert pub.published_messages[0].data == "happy:2.0"
+        # то же правило применяет диалог к ttl запроса лица (animations.clamp_show_seconds)
+        assert mock_node.get_publisher("/voice/animation/request") is None
 
     def test_execute_with_invalid_duration_too_long(self, mock_node):
         """Тест выполнения с слишком длинной длительностью - должна быть установлена минимальная."""
@@ -120,10 +112,8 @@ class TestPlayAnimationTool:
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 2.0
 
-        # Проверяем что отправлено с минимальной длительностью
-        pub = mock_node.get_publisher("/voice/animation/request")
-        assert len(pub.published_messages) == 1
-        assert pub.published_messages[0].data == "happy:2.0"
+        # то же правило применяет диалог к ttl запроса лица (animations.clamp_show_seconds)
+        assert mock_node.get_publisher("/voice/animation/request") is None
 
     @pytest.mark.parametrize("duration", [2.0, 5.0, 10.0, 20.0, 30.0])
     def test_execute_with_edge_case_durations(self, mock_node, duration):
@@ -146,3 +136,12 @@ class TestPlayAnimationTool:
         assert result.success is True
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 2.0
+
+
+def test_show_seconds_rule_is_one_for_the_tool_and_the_dialogue():
+    from rob_box_mcp_tools.animations import SHOW_MAX_S, SHOW_MIN_S, clamp_show_seconds
+
+    assert clamp_show_seconds(None) is None
+    assert clamp_show_seconds(5.0) == 5.0
+    assert clamp_show_seconds(SHOW_MIN_S) == SHOW_MIN_S and clamp_show_seconds(SHOW_MAX_S) == SHOW_MAX_S
+    assert clamp_show_seconds(SHOW_MIN_S - 0.1) == SHOW_MIN_S and clamp_show_seconds(SHOW_MAX_S + 0.1) == SHOW_MIN_S

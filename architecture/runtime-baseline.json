@@ -476,7 +476,7 @@
     {
       "key": "multiple_writers|/voice/sound/trigger|",
       "scope": "repo",
-      "debt": "ADR-0150 §5.5.2: «boop» уходит в ExpressionRequest.earcon, /voice/sound/trigger остаётся только play_sound; PR в §11.1 не назначен явно (PR-3/PR-3a - кандидаты), номер уточнит координатор"
+      "debt": "PR-3b (#3690): stt_node («boop») и dialogue_node (thinking, приветствие) переведены на ExpressionRequest.earcon; остаются play_sound (mcp_server) и health_monitor (Main Pi, звук статуса здоровья) - второго писателя снимет перевод health_monitor на earcon (в образе perception нет rob_box_core), номер PR уточнит координатор"
     },
     {
       "key": "multiple_writers|/voice/speaker/register|",

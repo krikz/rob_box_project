@@ -391,10 +391,6 @@ class SttAdmissionHost(Protocol):
         """Push the new FSM state to ``/dialogue/state``."""
         ...
 
-    def trigger_thinking_sfx(self) -> None:
-        """Publish the «thinking» cue to ``/sound/trigger``."""
-        ...
-
 
 # ---------------------------------------------------------------------------
 # Step protocol + orchestrator
@@ -758,7 +754,9 @@ class DispatchTriggerStep:
     * IDLE → WAKE_WORD transition (handled via host).
     * STT_RESULT transition.
     * Publish state.
-    * Publish the «thinking» SFX.
+
+    «Услышал» (лицо, кольцо, earcon) - рефлекс ``addressed`` на допуске реплики (``AddressStep`` ->
+    ``host.addressed``), «думаю» - рефлекс ``thinking`` перед вызовом LLM (ADR-0150 PR-3b); отдельного звука здесь нет.
     """
 
     name: str = "dispatch_trigger"
@@ -767,7 +765,6 @@ class DispatchTriggerStep:
         host.transition_idle_to_wake()
         host.transition_stt_result()
         host.publish_state()
-        host.trigger_thinking_sfx()
         return PASS
 
 

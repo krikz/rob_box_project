@@ -37,7 +37,7 @@ REQUEST_MAX_S = 60.0
 
 
 def parse_animation_request(text: str) -> Tuple[str, Optional[float]]:
-    """v1 ``/voice/animation/request``: ``"name"`` or ``"name:seconds"``."""
+    """Debug ``~/scene`` (and the removed v1 ``/voice/animation/request``): ``"name"`` or ``"name:seconds"``."""
     name, _, dur = str(text or '').strip().partition(':')
     try:
         seconds = float(dur) if dur.strip() else None

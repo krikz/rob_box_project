@@ -28,7 +28,11 @@ import pytest
 
 from rob_box_voice.core.occasion import Occasion, VerdictKind
 from rob_box_voice.dialogue_node import DialogueNode
-from rob_box_voice.startup_greeting import GREETINGS, THINKING_SOUND
+from rob_box_core import expression_client
+from rob_box_voice.startup_greeting import GREETINGS
+
+# ADR-0150 PR-3b (#3690): звуки приветствия - earcon'ы рефлексов (ExpressionRequest), не /voice/sound/trigger.
+HEARD_EARCON, DONE_EARCON = "heard", "done"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -37,7 +41,7 @@ from rob_box_voice.startup_greeting import GREETINGS, THINKING_SOUND
 
 
 @pytest.fixture
-def node():
+def node(monkeypatch):
     """Минимальная DialogueNode без __init__ — повторяет test_startup_greeting_flow."""
     n = object.__new__(DialogueNode)
 
@@ -45,7 +49,8 @@ def node():
     n._logger = logger
     n.get_logger = lambda: logger
 
-    n._sound_trigger_pub = MagicMock()
+    n._earcons = []
+    monkeypatch.setattr(expression_client, "express", lambda _node, **kw: n._earcons.append(kw["earcon"]))
     n._response_pub = MagicMock()
     n._startup_greeting_fired = False
     n._startup_greeting_text = ""
@@ -85,9 +90,8 @@ def _last_timer(node) -> tuple[float, object]:
 
 
 def _published_sound(node) -> str:
-    call = node._sound_trigger_pub.publish.call_args
-    assert call is not None, "звук не публиковался"
-    return call[0][0].data
+    assert node._earcons, "звук не публиковался"
+    return node._earcons[-1]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -105,8 +109,7 @@ def test_startup_greeting_fires_once(node) -> None:
     node._on_startup_greeting_finish()
 
     # Публикация finish-sound состоялась.
-    from rob_box_voice.startup_greeting import FINISH_SOUNDS
-    assert _published_sound(node) in FINISH_SOUNDS
+    assert _published_sound(node) == DONE_EARCON
 
     # Внутреннее состояние OccasionGate: startup помечен consumed.
     stats = node._occasion.stats()
@@ -115,14 +118,14 @@ def test_startup_greeting_fires_once(node) -> None:
     )
 
     # Сбросить mock, чтобы видеть только эффекты второй попытки.
-    node._sound_trigger_pub.publish.reset_mock()
+    node._earcons.clear()
     node._created_timers.clear()
 
     # Вторая попытка: DEFER (one-shot already consumed).
     node._on_startup_greeting_finish()
 
     # sfx НЕ опубликован.
-    node._sound_trigger_pub.publish.assert_not_called()
+    assert node._earcons == []
     # Таймер НЕ создан.
     assert node._created_timers == []
 
@@ -151,13 +154,13 @@ def test_startup_greeting_disabled_in_pr_b_falls_back_to_old_flag(node) -> None:
     )
     # Стартовый сценарий: фаза 1 уже прошла — флаг установлен, идём в фазу 2.
     node._startup_greeting_fired = True
-    node._sound_trigger_pub.publish.reset_mock()
+    node._earcons.clear()
 
     # Фаза 2: должна DEFER'нуть и НЕ публиковать finish-sound.
     node._on_startup_greeting_finish()
 
     # sfx не публиковался.
-    node._sound_trigger_pub.publish.assert_not_called()
+    assert node._earcons == []
     # Никаких таймеров.
     assert node._created_timers == []
     # Старый флаг ВСЁ ЕЩЁ True — двойная защита.
@@ -176,11 +179,11 @@ def test_startup_greeting_refused_in_pr_b_no_sfx(node) -> None:
         )
     )
     node._startup_greeting_fired = True
-    node._sound_trigger_pub.publish.reset_mock()
+    node._earcons.clear()
 
     node._on_startup_greeting_finish()
 
-    node._sound_trigger_pub.publish.assert_not_called()
+    assert node._earcons == []
     assert node._created_timers == []
     assert node._startup_greeting_fired is True
 
@@ -216,23 +219,22 @@ def test_startup_greeting_full_flow_still_works(node) -> None:
 
     # Вызываем _on_startup_greeting — старая логика (флаг → sfx → таймер).
     node._on_startup_greeting()
-    assert _published_sound(node) == THINKING_SOUND
+    assert _published_sound(node) == HEARD_EARCON
     period, callback = _last_timer(node)
     assert period == 2.0
 
     # Стартовое состояние: finish-sound не публиковался.
-    node._sound_trigger_pub.publish.reset_mock()
+    node._earcons.clear()
     node._created_timers.clear()
 
     # Фаза 2: ALLOW → finish-sound + 1.5с таймер.
     callback()
-    from rob_box_voice.startup_greeting import FINISH_SOUNDS
-    assert _published_sound(node) in FINISH_SOUNDS
+    assert _published_sound(node) == DONE_EARCON
     period2, callback2 = _last_timer(node)
     assert period2 == 1.5
 
     # Стартовое состояние: response ещё не публиковался.
-    node._sound_trigger_pub.publish.reset_mock()
+    node._earcons.clear()
     node._response_pub.publish.reset_mock()
     node._created_timers.clear()
 

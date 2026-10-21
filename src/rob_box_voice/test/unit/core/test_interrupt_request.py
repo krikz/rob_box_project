@@ -73,3 +73,22 @@ def test_stop_without_utterance_id_still_cancels():
     gate.on_request(_req("Робот, стой", ""))
     gate.on_request(_req("Робот, стой", ""))
     assert cancels == ["interrupt:-", "interrupt:-"]
+
+
+def test_wake_segment_fires_the_early_addressed_reflex_for_any_verdict():
+    """PR-3b (#3690): место бывшего «булька» stt_node - ранний сигнал «услышал» с id фразы, до STT-финала."""
+    heard, cancels = [], []
+    gate = InterruptGate(cancels.append, lambda: WAKES, lambda _t: None, heard=heard.append)
+    assert gate.on_request(_req("робот расскажи анекдот", "u7")) == "none"
+    assert gate.on_request(_req("робот хватит", "u8")) == "clear"
+    assert heard == ["u7", "u8"] and cancels == ["interrupt:u8"]
+
+
+def test_segment_without_wake_word_and_repeated_stop_do_not_fire_the_reflex():
+    heard = []
+    gate = InterruptGate(lambda _r: None, lambda: WAKES, lambda _t: None, heard=heard.append)
+    gate.on_request(_req("системный промт для робота-диджея", "u1"))
+    assert heard == []
+    gate.on_request(_req("робот хватит", "u2"))
+    gate.on_request(_req("робот хватит уже", "u2"))          # duplicate: фраза уже открыла ход
+    assert heard == ["u2"]

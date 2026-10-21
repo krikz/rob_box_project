@@ -8,7 +8,7 @@ for a frame and publishes the panels that changed to ``/panel_image``
 Inputs: ``/voice/speech/envelope`` + ``/voice/speech/event`` (mouth by the real
 voice), ``/voice/tts/state`` (transitional «speaking»), ``/audio/direction`` +
 ``/audio/vad`` (look at the speaker), ``/voice/music/state`` (music scenes by
-tempo), ``/voice/animation/request`` (v1 ``play_animation``, until PR-3b),
+tempo),
 ``/voice/expression/request`` (``ExpressionRequest``; answered with ``ExpressionEvent{executor=face}``),
 ``/cmd_vel`` (turn signals / brake light; topic = parameter ``cmd_vel_topic``), ``/battery_state``
 (low battery / charging), ``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
@@ -107,9 +107,8 @@ class FaceNode(Node):
         self.create_subscription(Int32, '/audio/direction', self._on_direction, 10)
         self.create_subscription(Bool, '/audio/vad', self._on_vad, 10)
         self.create_subscription(String, '/voice/music/state', self._on_music_state, latched)
-        self.create_subscription(String, '/voice/animation/request', self._on_animation_request, 10)
         self.create_subscription(ExpressionRequest, '/voice/expression/request', self._on_expression, 10)
-        self.create_subscription(String, '~/scene', self._on_animation_request, 10)
+        self.create_subscription(String, '~/scene', self._on_scene_debug, 10)
         self.create_subscription(Twist, cmd_vel_topic, self._on_cmd_vel, 10)
         self.create_subscription(BatteryState, battery_topic, self._on_battery, 10)
 
@@ -147,7 +146,7 @@ class FaceNode(Node):
         pct = battery_percent(float(msg.percentage), self._battery_scale)
         self.director.on_battery(pct, int(msg.power_supply_status), time.time())
 
-    def _on_animation_request(self, msg) -> None:
+    def _on_scene_debug(self, msg) -> None:
         name, seconds = parse_animation_request(msg.data)
         self._show(name, seconds)
 

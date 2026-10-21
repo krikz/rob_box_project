@@ -47,7 +47,7 @@ from nav_msgs.msg import Odometry
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
-from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 
 from rob_box_core.avatar_command import (
@@ -55,7 +55,7 @@ from rob_box_core.avatar_command import (
 )
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.speaker_wire import speaker_result_to_payload
-from rob_box_core import speech_client
+from rob_box_core import expression_client, speech_client
 from rob_box_core.prompt_sections import (
     PromptMarkupError,
     merge_skill_prompts,
@@ -118,6 +118,8 @@ from rob_box_voice.core.music_player_state import (
     parse_music_state,
 )
 from rob_box_voice.core.interrupt_request import InterruptGate
+from rob_box_voice.core.dialogue_stage_mixin import DialogueStageMixin
+from rob_box_voice.core.turn_stages import TurnStages, scene_for_animation
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stt_admission import (
@@ -236,11 +238,7 @@ from rob_box_voice.core.speak_helpers import (
     strip_meta_markers,  # Issue #2547 — strip internal section headers
     strip_speaker_tag, strip_thinking_blocks,
 )
-from rob_box_voice.startup_greeting import (
-    THINKING_SOUND,
-    pick_finish_sound,
-    pick_greeting,
-)
+from rob_box_voice.startup_greeting import pick_greeting
 # ADR-0101 §3.1 — единый шов «можно ли заговорить» (issue #2536, PR-B).
 from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
 from rob_box_voice.core.meeting import (
@@ -473,7 +471,7 @@ def classify_identity_confirmation(text: str) -> Optional[bool]:
     return None
 
 
-class DialogueNode(Node):
+class DialogueNode(DialogueStageMixin, Node):
     # Issue #2829 (ADR-0131 PR-2) -- явный список ``register_error``
     # причин, которые озвучиваем ("не расслышал, повтори"): намеренно
     # НЕ "любой event==register_error", чтобы будущее расширение ack
@@ -775,8 +773,6 @@ class DialogueNode(Node):
         self._avatar_command_pub = self.create_publisher(
             String, AVATAR_COMMAND_TOPIC, 10)
         self._state_pub = self.create_publisher(String, "/voice/dialogue/state", 10)
-        self._sound_trigger_pub = self.create_publisher(
-            String, "/voice/sound/trigger", 10)
         # Issue #1101 — diagnostics for "why LLM wasn't called".
         # Оператор видит «робот молчит», а в логе — ни одного error/warn.
         # Реальная причина обычно одна из: no_wake_word, silenced,
@@ -790,6 +786,16 @@ class DialogueNode(Node):
         self._last_skip_summary_ts: float = time.monotonic()
         # ADR-0150 PR-3 — отмена речи личности (SpeechCancel) одним клиентом.
         speech_client.prepare(self, "cancel")
+        # ADR-0150 PR-3b (#3690) - стадии хода и рефлексы: на каждой TurnEvent и один ExpressionRequest (лицо, earcon),
+        # 0 LLM; кольцо живёт по TurnEvent, исполнители отвечают ExpressionEvent / SoundEvent (молчаливых пропусков нет).
+        expression_client.prepare(self)
+        self._stages = TurnStages(
+            functools.partial(expression_client.express, self), functools.partial(expression_client.turn_event, self),
+            epoch=lambda: self._session_epoch_gate().current, normalize=scene_for_animation,
+            log=self.get_logger().info)
+        self.create_subscription(SpeechEvent, "/voice/speech/event", self._on_speech_event, 10)
+        expression_client.watch_events(self, self._on_expression_event, self._on_sound_event)
+        self.create_timer(1.0, self._turn_stages().tick)
         # ADR-0150 PR-4 (#3693) - здоровье LLM-провайдеров: latched /voice/providers/state + одна фраза на смену.
         # Один топик, писатели по видам: свой kind=llm переиздаётся каждый тик, чужие (tts/stt/music_gen) читаются
         # в доску ``ProviderBoard`` (запись без обновлений 10 с = unknown). Фраза об отказе - любого вида.
@@ -808,7 +814,8 @@ class DialogueNode(Node):
         self._interrupt_gate = InterruptGate(
             lambda reason: speech_client.cancel(
                 self, agent="personality", epoch=self._session_epoch_gate().current, reason=reason),
-            lambda: self._wake_words, self.get_logger().info)
+            lambda: self._wake_words, self.get_logger().info,
+            heard=lambda uid: self._turn_stages().addressed(uid, "respeaker"))
         self.create_subscription(InterruptRequest, "/dialog/interrupt_request", self._interrupt_gate.on_request,
                                  qos_r, callback_group=cbg)
         # Music safety-net hook (issue #935): when the dialog ends and the
@@ -1967,6 +1974,7 @@ class DialogueNode(Node):
             provider_adapter,
             on_event=self._on_task_event,
             speech_gate=self._turn_speech_gate(),
+            on_tool=self._on_tool_stage,
         )
 
     def _on_task_event(self, event: str, payload: dict) -> None:
@@ -2735,7 +2743,7 @@ class DialogueNode(Node):
                              person_ref=person_ref_from(getattr(self, "_utterance_speaker", None), utterance_id)),
             skip_counter=self._llm_skipped_counter,
         )
-        host = _DialogueSttHost(self)
+        host = _DialogueSttHost(self, utterance_id)
         dispatch = {
             "was_idle": was_idle,
             "speaker_tag": speaker_tag,
@@ -2756,6 +2764,7 @@ class DialogueNode(Node):
     ) -> None:
         """Хвост приёма: не PASS — сводка пропусков, PASS — ход LLM."""
         if outcome.kind is not SttOutcomeKind.PASS:
+            self._stage_admission_closed(dispatch.get("utterance_id"), outcome)
             self._maybe_log_skip_summary()
             return
         # PASS — dispatch the cleaned phrase to LLM.
@@ -2805,11 +2814,9 @@ class DialogueNode(Node):
 
         Issue #2628 — extracted because the orchestrator stops at the
         LAST PASS step (typically :class:`DispatchTriggerStep`, which
-        runs the FSM transitions + thinking SFX). Everything below
-        builds the final user-turn text: verbose log, ``_dispatch_turn``. The thinking SFX is **already** published
-        inside :class:`DispatchTriggerStep` via
-        :meth:`_DialogueSttHost.trigger_thinking_sfx`, so we do not
-        publish it again here.
+        runs the FSM transitions). Everything below builds the final
+        user-turn text: verbose log, ``_dispatch_turn``. «Услышал»/«думаю» - рефлексы
+        ``addressed`` (допуск) и ``thinking`` (перед LLM), отдельного звука нет.
 
         ADR-0150 PR-5 — бэклог неадресованных фраз в user-turn больше не
         вставляется: ≤ 1 свежая фраза того же источника идёт в снимок
@@ -4161,7 +4168,7 @@ tentative_plan(question, kind, name)
         self._current_turn_utterance_id = utterance_id
         # 06.10 set98207: ход для скрытого turn_id (request_music не снимает
         # сет своего хода); синтетический ретрай продолжает ход.
-        self._turn_id = next_turn_id(
+        self._turn_id = self._turn_stages().turn_id_for(utterance_id) or next_turn_id(
             getattr(self, "_turn_id", None),
             is_synthetic, is_babble_retry, is_action_claim_retry,
         )
@@ -4216,6 +4223,7 @@ tentative_plan(question, kind, name)
         result = None
         speech_hold: Optional[TurnSpeechHold] = None
         turn_cancelled = False
+        turn_failure = ""
         try:
             # Issue #1077 — перед LLM-вызовом обновляем профиль спикера и
             # собираем контекст о нём (имя, факты, число диалогов). Только
@@ -4260,6 +4268,8 @@ tentative_plan(question, kind, name)
             _llm_provider_name = getattr(
                 self._llm, "name", type(self._llm).__name__
             )
+            # ADR-0150 PR-3b: рефлекс thinking (лицо, кольцо) - код, до вызова LLM.
+            self._turn_stages().thinking(_llm_provider_name)
             # Issue #2631 (ADR-0021 R1) — OTel-span + LLM-метрика (CC=10
             # ветка) вынесены в helper.
             result = await self._invoke_llm_with_telemetry(
@@ -4311,6 +4321,7 @@ tentative_plan(question, kind, name)
             # затем логгер (в try/except, чтобы и тут не падать).
             self._handle_llm_error(exc, user_input, raw_user_command)
             result = None
+            turn_failure = f"llm_error:{type(exc).__name__}"
         finally:
             # A post-turn guard may synchronously dispatch a retry turn,
             # which sets ``self._run_task`` to a fresh coroutine. We must
@@ -4379,6 +4390,9 @@ tentative_plan(question, kind, name)
             self._speak_identity_question(
                 leftover_identity_question, after_answer=True
             )
+            # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM; ретрай
+            # гуарда продолжает тот же ход.
+            self._stage_finish(result, turn_cancelled, turn_failure, tool_retry_dispatched)
             # Issue #992 Bug D — defer the DIALOGUE_END transition
             # when the babble detector scheduled a retry. The retry's
             # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
@@ -6502,10 +6516,8 @@ tentative_plan(question, kind, name)
             )
             return
 
-        # Thinking-звук, как при обычном диалоге.
-        sfx = String()
-        sfx.data = THINKING_SOUND
-        self._sound_trigger_pub.publish(sfx)
+        # «Услышал»-сигнал, как у обычного диалога (earcon рефлекса, а не отдельный триггер звука).
+        self._express_earcon("heard")
 
         # Через 2с — радостный звук, ещё через 1.5с — фраза (как в
         # оригинальной ноды приветствия до рефакторинга).
@@ -6539,9 +6551,7 @@ tentative_plan(question, kind, name)
         self._occasion.mark_consumed(Occasion(kind="startup"))
 
         self._cancel_greeting_timer()
-        sfx = String()
-        sfx.data = pick_finish_sound()
-        self._sound_trigger_pub.publish(sfx)
+        self._express_earcon("done")
         self._greeting_timer = self.create_timer(
             1.5, self._on_startup_greeting_speak
         )
@@ -6723,6 +6733,7 @@ tentative_plan(question, kind, name)
         кладём ``tg_chat_id`` в payload: telegram_node использует его для
         маршрутизации эхо-ответа в правильный чат.
         """
+        self._turn_stages().expect_speech()
         msg = String()
         msg.data = build_ssml_payload(
             text,
@@ -6750,6 +6761,7 @@ tentative_plan(question, kind, name)
         """
         if not chunks:
             return 0
+        self._turn_stages().expect_speech()
         batch_id = str(uuid.uuid4())
         total = len(chunks)
         self._register_active_batch(batch_id, total)
@@ -7105,17 +7117,6 @@ tentative_plan(question, kind, name)
         (TD-1 decomposition).
         """
         return detect_pitch_intent(text)
-
-    def _trigger_sound(self, name: str) -> None:
-        """Publish a one-shot sound trigger; swallows publish exceptions."""
-        try:
-            msg = String()
-            msg.data = name
-            pub = getattr(self, "sound_trigger_pub", None)
-            if pub is not None:
-                pub.publish(msg)
-        except Exception:
-            pass
 
     def _on_mcp_tools_update(self, msg) -> None:
         """Parse MCP tools JSON and update ``available_tools``."""
