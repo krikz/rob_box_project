@@ -12,8 +12,8 @@
   ``passed`` → пустой ответ; невалидная команда → вопрос-шаблон ``understand.invalid`` (повторного вызова нет).
 
 Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
-остаются на ``speak_text``. Нормализация ``"passed": false`` / ``args: ""`` MiniMax — PR-7, здесь такой ответ честно
-``invalid``. Каждый ответ — строка лога :data:`COMMAND_LOG_MARK` (A14 по провайдерам).
+остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
+Каждый ответ — строка лога :data:`COMMAND_LOG_MARK` (A14 по провайдерам).
 """
 
 from __future__ import annotations

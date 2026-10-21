@@ -185,9 +185,20 @@ def test_native_tool_calls_without_command_are_actions() -> None:
     assert [c.name for c in out.tool_calls] == ["get_battery_level"]
 
 
+def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
+    """Бейк-офф 21.10: MiniMax json_in_text — ``"passed": false`` (49 из 52 invalid), tool_choice — ``args: ""``."""
+    log: list = []
+    said = _convert(MINIMAX_CAPS, LLMResponse(content='{"speech": "Привет!", "actions": [], "passed": false}'), log)
+    assert (said.content, said.tool_calls) == ("Привет!", ())
+    assert "verdict=speech" in log[0]
+    empty_args = [{"tool": "get_current_time", "args": ""}]
+    acted = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(_command_call(actions=empty_args),)))
+    assert [(c.name, dict(c.arguments)) for c in acted.tool_calls] == [("get_current_time", {})]
+
+
 @pytest.mark.parametrize("reply, reason", [
     (LLMResponse(content="Просто текст без команды."), "no_command"),
-    (LLMResponse(content='{"speech": "", "passed": false}'), "bad_type"),  # MiniMax до нормализации PR-7
+    (LLMResponse(content='{"speech": "", "passed": true}'), "bad_type"),  # true — не исход из перечисления
     (LLMResponse(content='{"speech": "Привет", "mood": "весело"}'), "unknown_field"),
     (LLMResponse(tool_calls=(_command_call(speech="обре"),), truncated_tool_args=True), "truncated"),
 ])
