@@ -71,6 +71,11 @@ _logger = logging.getLogger(__name__)
 # ── Spec ────────────────────────────────────────────────────────────
 
 
+def _same_provider(provider: Any) -> Any:
+    """Обёртка провайдера по умолчанию: без изменений."""
+    return provider
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     """Декларативная конфигурация одного агента.
@@ -140,6 +145,11 @@ class AgentSpec:
     ] = field(default_factory=dict)
     """``{provider_name: async_callable}``. Personality регистрирует
     deepseek-пробер (есть balance API); supervisor — пусто."""
+
+    wrap_provider: Callable[[Any], Any] = _same_provider
+    """Обёртка каждого собранного провайдера цепочки ДО ``HealthAwareFallbackLLM`` (имя кэша здоровья — у
+    обёрнутого). Personality так включает режим команд по capabilities провайдера (ADR-0150 §4.5,
+    ``rob_box_voice.core.command_bridge``); по умолчанию провайдер как есть."""
 
     # ── обязательно общее ────────────────────────────────────────
     history_trim_limit: int = 10
@@ -269,7 +279,7 @@ def _build_llm_chain(
                 spec.name, name, exc,
             )
             continue
-        built.append(provider)
+        built.append(spec.wrap_provider(provider))
 
     if not built:
         raise RuntimeError(

@@ -140,7 +140,8 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
     """Pin the field count so accidental additions are caught by CI.
 
     The ADR-0083 §2.1 spec listed 18 fields; ADR-0150 PR-6 removed
-    ``skill_slice`` and ``narrow_tools_to_skill`` (skills are gone). A future
+    ``skill_slice`` and ``narrow_tools_to_skill`` (skills are gone); ADR-0150 §4.5
+    (#3696 ч.5) added ``wrap_provider`` (command mode per provider). A future
     ADR must accompany any new field.
     """
     personality_dir, _ = tmp_prompt_dirs
@@ -149,7 +150,7 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
         prompt_dir=personality_dir,
         system_prompt_file="master.txt",
     )
-    assert len(spec.__dataclass_fields__) == 16
+    assert len(spec.__dataclass_fields__) == 17
 
 
 def test_agent_spec_required_fields_have_no_default(
@@ -458,3 +459,43 @@ async def test_build_agent_without_llm_keeps_backward_compatible_path(
     memory = await _make_memory(sqlite_db_path, agent="personality")
     core = build_agent(spec, tools=_make_tools(), memory=memory)
     assert core._llm is not None  # type: ignore[attr-defined]
+
+
+def test_build_llm_chain_wraps_every_built_provider(
+    tmp_prompt_dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0150 §4.5 (#3696 ч.5): ``wrap_provider`` оборачивает КАЖДЫЙ провайдер цепочки до фолбек-обёртки,
+    поэтому форму запроса выбирают возможности того провайдера, который отвечает, а не primary."""
+    from rob_box_harness.core.assembly import build_llm_chain
+    from rob_box_harness.health import HealthAwareFallbackLLM
+
+    built: list[str] = []
+
+    def _named(name: str, **_kwargs: object) -> DummyLLMProvider:
+        provider = DummyLLMProvider()
+        provider.name = name
+        built.append(name)
+        return provider
+
+    monkeypatch.setattr("rob_box_harness.core.assembly.build_provider", _named)
+    wrapped: list[str] = []
+
+    def _wrap(provider: DummyLLMProvider) -> DummyLLMProvider:
+        wrapped.append(provider.name)
+        return provider
+
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(
+        name="personality", prompt_dir=personality_dir, system_prompt_file="master.txt",
+        provider_chain=("deepseek", "minimax"), wrap_provider=_wrap,
+    )
+    llm = build_llm_chain(spec)
+    assert isinstance(llm, HealthAwareFallbackLLM)
+    assert built == wrapped == ["deepseek", "minimax"]
+
+
+def test_agent_spec_wrap_provider_defaults_to_identity(tmp_prompt_dirs: tuple[Path, Path]) -> None:
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(name="personality", prompt_dir=personality_dir, system_prompt_file="master.txt")
+    sentinel = object()
+    assert spec.wrap_provider(sentinel) is sentinel
