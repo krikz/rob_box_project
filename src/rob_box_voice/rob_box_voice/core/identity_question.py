@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import threading
 import time
 from typing import Any, Mapping, Optional
 
@@ -111,7 +112,7 @@ def on_speech_event(node: Any, kind: int, speech_id: str, agent: str) -> None:
 
 def _speaking(node: Any) -> bool:
     watch = getattr(node, "_speaking_watch", None)
-    return bool(watch is not None and watch.speaking())
+    return bool(watch is not None and watch.speaking)  # SpeakingWatch.speaking — свойство (живой прогон 3)
 
 
 def _arm(node: Any, frame: Any) -> None:
@@ -245,8 +246,9 @@ async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT
 
 def start_after_turn_question(node: Any, plan: Optional[Mapping[str, Any]], result: Any) -> None:
     """Вопрос личности после ответа хода (#2828/#2908). LLM в ходе что-то сказала и есть Chooser
-    (:mod:`.identity_dedup`) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn`, задача
-    в loop'е, конец хода её не ждёт); иначе вопрос уходит в речь сразу, как без Chooser'а."""
+    (:mod:`.identity_dedup`) — решение «уже спросила?» идёт ПАРАЛЛЕЛЬНО с речью хода (:func:`ask_after_turn` в своём
+    потоке: loop ноды между ходами не крутится — живой прогон 3, задача в loop'е заснула до следующего хода); иначе
+    вопрос уходит в речь сразу, как без Chooser'а."""
     if plan is None:
         return
     said = list(getattr(node, "_turn_llm_said", None) or ())
@@ -256,13 +258,15 @@ def start_after_turn_question(node: Any, plan: Optional[Mapping[str, Any]], resu
     if getattr(node, "_identity_dedup", None) is None or not any(s.strip() for s in said):
         node._speak_identity_question(plan)
         return
-    node._after_turn_task = asyncio.ensure_future(ask_after_turn(node, plan, said))
+    node._after_turn_task = threading.Thread(target=ask_after_turn, args=(node, plan, said), daemon=True,
+                                             name="identity-dedup")
+    node._after_turn_task.start()
 
 
-async def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
+def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
     """Дождаться вердикта Chooser'а не дольше конца речи хода + ``IDENTITY_DEDUP_AFTER_SPEECH_S``. ``already_said`` —
     фраза кода не звучит, кадр ``Identity`` всё равно открывается — от конца речи хода; не успел — ``not_said``."""
-    if await _dedup_verdict(node, said, plan["question"]) != "already_said":
+    if _dedup_verdict(node, said, plan["question"]) != "already_said":
         node._speak_identity_question(plan)
         return
     node._identity_question_asked_in_turn = True
@@ -272,24 +276,31 @@ async def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
             _arm(node, session(node).snapshot.top("Identity"))
 
 
-async def _dedup_verdict(node: Any, said: Any, phrase: str) -> str:
+def _dedup_verdict(node: Any, said: Any, phrase: str) -> str:
     started = time.monotonic()
-    task = asyncio.ensure_future(asyncio.to_thread(node._identity_dedup.decide, list(said), phrase))
+    box: dict = {}
+    worker = threading.Thread(target=lambda: box.update(v=node._identity_dedup.decide(list(said), phrase)),
+                              daemon=True, name="identity-dedup-model")
+    worker.start()
     ended_at: Optional[float] = None
-    while not task.done():
+    heard = False  # речь хода ещё синтезируется (живой прогон 3: «не говорит» сразу после хода) — конец считаем после начала
+    while worker.is_alive():
         now = time.monotonic()
         if _speaking(node):
-            ended_at = None
+            heard, ended_at = True, None
+        elif not heard:
+            pass
         elif ended_at is None:
             ended_at = now
         elif now - ended_at >= kn.IDENTITY_DEDUP_AFTER_SPEECH_S:
             break
-        await asyncio.sleep(0.05)
+        time.sleep(0.05)
     waited = 0.0 if ended_at is None else (time.monotonic() - ended_at) * 1000.0
-    verdict = task.result()[0] if task.done() else "not_said"
+    done = "v" in box
+    verdict = box["v"][0] if done else "not_said"
     node.get_logger().info(
         f"🔁 [identity-dedup] итог verdict={verdict} ms={(time.monotonic() - started) * 1000.0:.0f} ждали после конца "
-        f"речи: {waited:.0f} мс{'' if task.done() else ' (Chooser не успел — not_said)'}")
+        f"речи: {waited:.0f} мс{'' if done else ' (Chooser не успел — not_said)'}")
     return verdict
 
 

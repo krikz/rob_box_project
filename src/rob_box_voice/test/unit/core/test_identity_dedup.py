@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -64,7 +65,7 @@ def _node(dedup_answer=None, speaking=False):
     logger = MagicMock()
     node = types.SimpleNamespace(get_logger=lambda: logger, _session_pub=None, _speaker_ref=None,
                                  _turn_llm_said=["Голос у меня записан как Аркадий. Ты Аркадий или Матвей?"],
-                                 _speaking_watch=types.SimpleNamespace(speaking=lambda: speaking),
+                                 _speaking_watch=types.SimpleNamespace(speaking=speaking),
                                  _identity_question_asked_in_turn=False)
     node._speak_identity_question = MagicMock(return_value="q1")
     if dedup_answer is not None:
@@ -79,12 +80,10 @@ def _result(text="done"):
 
 def _ask(node, plan, result=None):
     """Конец хода: вопрос стартует, Chooser (если есть) идёт задачей в loop'е — дожидаемся её."""
-    async def go():
-        iq.start_after_turn_question(node, plan, result or _result())
-        task = getattr(node, "_after_turn_task", None)
-        if task is not None:
-            await task
-    asyncio.run(go())
+    iq.start_after_turn_question(node, plan, result or _result())
+    task = getattr(node, "_after_turn_task", None)
+    if task is not None:
+        task.join(5)
 
 
 def test_already_said_skips_code_phrase_but_opens_answer_window():
@@ -100,7 +99,7 @@ def test_already_said_while_robot_still_speaks_opens_window_at_end_of_speech():
     node = _node(ALREADY_SAID, speaking=True)
     _ask(node, PLAN)
     assert iq.question(node) is None  # окно ещё не открыто — речь хода звучит
-    node._speaking_watch = types.SimpleNamespace(speaking=lambda: False)
+    node._speaking_watch.speaking = False
     iq.on_speech_event(node, 4, "llm-chunk-2", "personality")
     assert iq.question(node) is not None
 
@@ -188,15 +187,12 @@ class _SlowModel(_Model):
 def test_slow_chooser_answer_is_used_while_turn_speech_still_plays():
     node = _node(ALREADY_SAID)
     node._identity_dedup = IdentityDedupChooser(_SlowModel(ALREADY_SAID, 0.3), log=node.get_logger)
-    speaking = {"on": True}
-    node._speaking_watch = types.SimpleNamespace(speaking=lambda: speaking["on"])
+    node._speaking_watch = types.SimpleNamespace(speaking=True)
 
-    async def go():
-        iq.start_after_turn_question(node, PLAN, _result())
-        await asyncio.sleep(0.5)  # ответ модели (0.3 с) пришёл раньше конца речи хода
-        speaking["on"] = False
-        await node._after_turn_task
-    asyncio.run(go())
+    iq.start_after_turn_question(node, PLAN, _result())
+    time.sleep(0.5)  # ответ модели (0.3 с) пришёл раньше конца речи хода
+    node._speaking_watch.speaking = False
+    node._after_turn_task.join(5)
     node._speak_identity_question.assert_not_called()
 
 
@@ -204,10 +200,22 @@ def test_chooser_late_after_speech_end_gives_not_said(monkeypatch):
     monkeypatch.setattr(kn, "IDENTITY_DEDUP_AFTER_SPEECH_S", 0.1)
     node = _node(ALREADY_SAID)
     node._identity_dedup = IdentityDedupChooser(_SlowModel(ALREADY_SAID, 1.0), log=node.get_logger)
-    _ask(node, PLAN)
+    node._speaking_watch.speaking = True
+    iq.start_after_turn_question(node, PLAN, _result())
+    time.sleep(0.2)
+    node._speaking_watch.speaking = False  # речь хода кончилась, модель ещё думает
+    node._after_turn_task.join(5)
     node._speak_identity_question.assert_called_once_with(PLAN)
     lines = [c.args[0] for c in node.get_logger().info.call_args_list]
     assert any("итог verdict=not_said" in ln and "ждали после конца речи" in ln and "не успел" in ln for ln in lines)
+
+
+def test_speech_not_started_yet_is_not_its_end():
+    """Живой прогон 3: сразу после хода речь LLM ещё синтезируется — «не говорит» ≠ «договорил»; ждём модель."""
+    node = _node(ALREADY_SAID)
+    node._identity_dedup = IdentityDedupChooser(_SlowModel(ALREADY_SAID, 0.3), log=node.get_logger)
+    _ask(node, PLAN)  # речь так и не началась — вердикт модели не теряется
+    node._speak_identity_question.assert_not_called()
 
 
 def test_nothing_said_by_llm_question_goes_at_once_without_task():
@@ -216,3 +224,11 @@ def test_nothing_said_by_llm_question_goes_at_once_without_task():
     iq.start_after_turn_question(node, PLAN, _result("done"))
     node._speak_identity_question.assert_called_once_with(PLAN)
     assert getattr(node, "_after_turn_task", None) is None
+
+
+def test_real_speaking_watch_property_is_read_not_called():
+    """Живой прогон 3: SpeakingWatch.speaking — свойство; вызов как функции ронял поток Chooser'а."""
+    from rob_box_core.speech_client import SpeakingWatch
+
+    node = types.SimpleNamespace(_speaking_watch=SpeakingWatch("personality"))
+    assert iq._speaking(node) is False
