@@ -109,7 +109,8 @@ class PlanToolExecutor:
         if _plan_kind(call.name) != _NO_PLAN:
             admission = await self.planner.admit(call.name, call.id)
             if admission.status != "go":
-                reason = admission.event.reason if admission.status == "rejected" and admission.event else "plan_wait"
+                rejected = admission.status == "rejected" and admission.event is not None
+                reason = admission.event.reason if rejected else kn.PLAN_WAIT_REASON
                 return _plan_refusal(call, admission.status, reason, admission.event)
         result = await self._execute_direct(call)
         self._after(call, result)

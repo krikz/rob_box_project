@@ -110,3 +110,25 @@ def test_resource_free_kinds_never_wait(tool):
     runner.begin_turn("робот, а потом сделай")
     runner.state.on_speech("started", "s1", text_len=100)
     assert asyncio.run(runner.admit(tool, "b")).status == "go"
+
+
+def test_wait_is_extended_while_the_owner_still_reports_busy(monkeypatch):
+    """Живой робот 21.10: ETA до синтеза короче речи — срок продлевается по свежей ETA, а не рвётся на первой оценке."""
+    monkeypatch.setattr(kn, "PLAN_WAIT_MAX_S", 3.0)
+    monkeypatch.setattr(kn, "PLAN_WAIT_SLACK_S", 0.2)
+    runner, _, _ = _runner()
+    runner.begin_turn("робот, а потом включи музыку")
+    runner.state.on_speech("started", "s1", text_len=1)  # оценка ~0,1 с, потолок по ней ~0,3 с
+
+    async def scenario():
+        admit = asyncio.ensure_future(runner.admit("request_music", "m1"))
+        for spoken in (0, 0, 0):  # владелец ещё говорит: progress каждые 0,25 с
+            await asyncio.sleep(0.25)
+            runner.state.on_speech("progress", "s1", text_len=1, spoken_chars=spoken, seconds=0.5)
+            runner.changed()
+        runner.state.on_speech("finished", "s1")
+        runner.changed()
+        return await asyncio.wait_for(admit, 3.0)
+
+    admission = asyncio.run(scenario())
+    assert admission.status == "go" and admission.waited_s > 0.5

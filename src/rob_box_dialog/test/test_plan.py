@@ -286,7 +286,7 @@ def test_rejected_carries_the_ask():
 # --- эталонные сценарии на фейковых владельцах (§5.6.4) -----------------------------------------------------------
 
 def test_x4_then_sing_a_lullaby_appends_after_the_performance(state):
-    state.on_speech("started", "rap-2", turn_id="t1", text_len=280, perform=True)
+    state.on_speech("started", "rap-2", turn_id="t1", text_len=int(20 * kn.SPEECH_CHARS_PER_S_GUESS), perform=True)
     decision = compose("perform", state.busy(), tier1=policy_word("Робот, а потом спой колыбельную"))
     assert decision.policy == "APPEND" and decision.waits_for == ("perform",)
     event = queued("perform_2", decision, state, turn_id="t2", epoch=1)
@@ -312,7 +312,7 @@ def test_halt_during_speech_and_motion_stops_both_now(state):
 
 
 def test_b_anecdote_then_music_starts_after_speech_with_a_code_phrase(state):
-    state.on_speech("started", "joke", text_len=28)  # 2 с по оценке — ETA не называется
+    state.on_speech("started", "joke", text_len=int(2 * kn.SPEECH_CHARS_PER_S_GUESS))  # 2 с — ETA не называется
     decision = compose(kind_of("request_music"), state.busy(),
                        tier1=policy_word("Робот, расскажи анекдот, а потом включи что-нибудь"))
     event = queued("music_1", decision, state)

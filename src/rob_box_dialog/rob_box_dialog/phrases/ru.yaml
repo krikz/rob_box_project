@@ -98,6 +98,8 @@ perform.ask_replace_music: ["Сейчас играет {title}, выключит
 # --- план (§5.6.4): «в очереди» по PlanEvent queued{after, eta} — фразу строит код (plan.plan_events) -----------
 plan.queued: ["{verb} после {after}."]
 plan.queued.eta: ["{verb} после {after} — примерно через {eta} с."]
+# Действие ждало своей очереди дольше потолка (knowledge.PLAN_WAIT_MAX_S) и не исполнено — говорит код, не молчит.
+plan.timeout: ["Не дождался своей очереди — это не сделал."]
 plan.verb.speech: ["Отвечу"]
 plan.verb.perform: ["Начну"]
 plan.verb.expression: ["Покажу"]

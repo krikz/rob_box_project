@@ -78,8 +78,11 @@ def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     """Фраза кода об исходе действий хода. ``query`` и тулы, чей исход говорит другой код
-    (``knowledge.OUTCOME_SPOKEN_ELSEWHERE``), не входят. Слота фразы нет в данных события — общая фраза о неудаче."""
-    own = [r for r in results if r.cls != _QUERY and r.tool not in kn.OUTCOME_SPOKEN_ELSEWHERE]
+    (``knowledge.OUTCOME_SPOKEN_ELSEWHERE``), не входят — кроме отказа плана (``PLAN_WAIT_REASON``): до владельца
+    запрос не дошёл, и другой код о нём не знает (живой робот 21.10: музыка «потом» не дождалась — робот молчал).
+    Слота фразы нет в данных события — общая фраза о неудаче."""
+    own = [r for r in results if r.cls != _QUERY
+           and (r.tool not in kn.OUTCOME_SPOKEN_ELSEWHERE or r.reason == kn.PLAN_WAIT_REASON)]
     try:
         said = join(own)
     except KeyError as missing:

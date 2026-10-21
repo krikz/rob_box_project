@@ -845,13 +845,14 @@ POLICY_ORDER: Tuple[str, ...] = ("REJECT", "APPEND", "REPLACE", "MERGE")
 #: Блок из события владельца (речь, SFX, движение) без события конца дольше этого срока считается потерянным
 #: (finished не дошёл) — ресурс свободен, план не ждёт вечно. Музыка из снимка плеера не стареет: он переиздаётся.
 RESOURCE_STALE_S = 180.0
-#: Скорость речи для ETA ``queued{eta_ms}``, пока нет замера по ``SpeechEvent progress`` (spoken_chars/seconds):
-#: ОЦЕНКА, не замер (русская речь ~12-15 симв/с).
-SPEECH_CHARS_PER_S_GUESS = 14.0
+#: Скорость речи для ETA ``queued{eta_ms}``, пока нет замера по ``SpeechEvent progress`` (spoken_chars/seconds).
+#: Живой робот 21.10 23:20Z (minimax male-qn-qingse, SpeechEvent started→finished): 55/4,7 = 11,8; 64/6,1 = 10,5;
+#: 41/4,0 = 10,2 симв/с — без времени синтеза (~2–3 с на реплику), его добавляет запас ожидания.
+SPEECH_CHARS_PER_S_GUESS = 11.0
 #: Ключи фраз плана (§5.6.4): «Поставлю после …» по ``PlanEvent queued`` — глагол по строке матрицы, «после чего» —
 #: по столбцу; их обязан содержать ``phrases/ru.yaml`` (как :data:`PHRASE_KEYS`).
 PLAN_PHRASE_KEYS: Tuple[str, ...] = (
-    "plan.queued", "plan.queued.eta",
+    "plan.queued", "plan.queued.eta", "plan.timeout",
     *(f"plan.verb.{kind}" for kind in COMPOSITION_NEW if kind != "halt"),
     *(f"plan.after.{busy}" for busy in COMPOSITION_BUSY if busy not in COMPOSITION_NO_END),
 )
@@ -859,9 +860,12 @@ PLAN_PHRASE_KEYS: Tuple[str, ...] = (
 #: sound_node (``SOUND_QUEUE_MAX_WAIT_S``, длинный — честный ``skipped{busy}``). Планировщик их не ждёт: запрос — сразу.
 OWNER_QUEUES: Tuple[Tuple[str, str], ...] = (("speech", "speech"), ("sfx", "sfx"))
 #: Потолок ожидания действия в очереди плана: оценка ETA занятого + запас, но не больше максимума; ETA неизвестна —
-#: максимум. Не дождался — действие не исполняется, исход ``timeout`` (``plan_wait``), а не тихий старт поверх.
+#: максимум. Пока владелец сообщает о занятом ресурсе (события, свежая ETA), срок продлевается до now + ETA + запас,
+#: но не дальше максимума от начала ожидания. Не дождался — действие не исполняется, исход ``timeout`` с причиной
+#: :data:`PLAN_WAIT_REASON`, и об этом говорит код (а не тихий старт поверх и не молчание).
 PLAN_WAIT_MAX_S = 60.0
-PLAN_WAIT_SLACK_S = 3.0
+PLAN_WAIT_SLACK_S = 5.0
+PLAN_WAIT_REASON = "plan_wait"
 
 
 def plan_wait_ceiling_s(eta_s: Optional[float]) -> float:

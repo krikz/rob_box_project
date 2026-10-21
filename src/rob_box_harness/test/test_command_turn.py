@@ -271,3 +271,11 @@ def test_without_then_the_action_is_not_postponed() -> None:
                           perform={"kind": "tale", "segments": joke}))
     assert [c.name for c in tools.calls][0] == "request_music"
     assert not any(t.startswith("Поставлю") for t, _ in tools.said())
+
+
+def test_plan_timeout_is_spoken_by_code_even_for_music() -> None:
+    """Живой робот 21.10 23:20Z: «а потом включи» не дождалась очереди — робот молчал (о музыке говорит music_turn,
+    а он о запросе, не дошедшем до плеера, не знает). Отказ плана говорит код."""
+    waited = _result("request_music", "timeout", kn.PLAN_WAIT_REASON)
+    assert outcome_phrase([waited]) == phrases.text("plan.timeout")
+    assert outcome_phrase([_result("request_music", "timeout")]) is None  # обычный таймаут музыки — у music_turn

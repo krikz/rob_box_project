@@ -5,7 +5,8 @@
 :attr:`PlanRunner.state` событиями и зовёт :meth:`PlanRunner.changed`), не дольше потолка
 ``knowledge.plan_wait_ceiling_s``; не дождался — честный ``timeout``, действие не исполняется. Очередь, которую ведёт
 сам владелец (``knowledge.OWNER_QUEUES``: реплика за репликой у tts_node, звук за звуком у sound_node), здесь не
-ждётся — запрос уходит владельцу сразу.
+ждётся — запрос уходит владельцу сразу. Пока владелец сообщает, что ресурс занят, срок ожидания продлевается по
+свежей ETA, но не дальше ``knowledge.PLAN_WAIT_MAX_S`` (живой робот 21.10: ETA до синтеза оказалась короче речи).
 """
 
 from __future__ import annotations
@@ -101,7 +102,7 @@ class PlanRunner:
         loop = asyncio.get_running_loop()
         started = loop.time()
         ceiling = kn.plan_wait_ceiling_s(event.eta_ms / 1000 if event.eta_ms else None)
-        free = await self._wait_free(waits.waits_for, started + ceiling)
+        free = await self._wait_free(waits.waits_for, started + ceiling, started + kn.PLAN_WAIT_MAX_S)
         waited = loop.time() - started
         if not free:
             self._log(f"{LOG_MARK} {tool} {block_id[:12]}: {event.after_resource} не освободился за {waited:.1f} с"
@@ -110,13 +111,18 @@ class PlanRunner:
         self._log(f"{LOG_MARK} {tool} {block_id[:12]}: дождался {event.after_resource} за {waited:.1f} с")
         return Admission(decision, "go", event, waited)
 
-    async def _wait_free(self, resources: Sequence[str], deadline: float) -> bool:
+    async def _wait_free(self, resources: Sequence[str], deadline: float, hard: float) -> bool:
+        """Ждать, пока ``resources`` освободятся. Срок ``deadline`` продлевается по свежей ETA занятого (владелец ещё
+        сообщает: реплика синтезируется, звучит) до ``now + ETA + запас``, но не дальше ``hard``."""
         import asyncio  # noqa: PLC0415
 
         loop = asyncio.get_running_loop()
         if self._loop is not loop or self._event is None:
             self._loop, self._event = loop, asyncio.Event()
         while any(r in self.state.busy() for r in resources):
+            etas = [self.state.eta_s(r) for r in resources]
+            if etas and all(e is not None for e in etas):
+                deadline = min(hard, max(deadline, loop.time() + max(etas) + kn.PLAN_WAIT_SLACK_S))
             left = deadline - loop.time()
             if left <= 0:
                 return False
@@ -124,7 +130,7 @@ class PlanRunner:
             try:
                 await asyncio.wait_for(self._event.wait(), left)
             except asyncio.TimeoutError:
-                return not any(r in self.state.busy() for r in resources)
+                continue  # срок вышел: занятое ещё раз — по свежей ETA продлить или отказать
         return True
 
 
