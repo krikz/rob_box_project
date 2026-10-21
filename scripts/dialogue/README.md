@@ -25,7 +25,7 @@ scripts/dialogue/run.ps1          # Windows (PowerShell)
 | | локально | на роботе |
 |---|---|---|
 | системный промпт | `src/rob_box_voice/prompts/master_prompt_compact.txt` | он же |
-| цепочка LLM | `minimax,deepseek` + health-aware fallback | она же (`dialogue_node.yaml`) |
+| цепочка LLM | `deepseek,minimax` + health-aware fallback | она же (`dialogue_node.yaml`) |
 | дефолты провайдеров | `rob_box_harness.providers.catalog` | оттуда же (`_LLM_PROVIDER_REGISTRY`) |
 | каталог инструментов | 51 tool из `rob_box_core.tool_catalog` | он же, через `/mcp/execute` |
 | переходы состояний | `WAKE_WORD → STT_RESULT → DIALOGUE_END` | те же |
@@ -100,7 +100,7 @@ scripts/dialogue/run.ps1 --debug                     # трассировка з
 git check-ignore -v scripts/dialogue/.env
 ```
 
-Достаточно одного ключа: цепочка `minimax,deepseek` просто пропустит
+Достаточно одного ключа: цепочка `deepseek,minimax` просто пропустит
 провайдера, для которого ключа нет, и скажет об этом при старте.
 
 ## Требования

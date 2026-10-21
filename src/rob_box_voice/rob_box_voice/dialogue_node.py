@@ -1123,7 +1123,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # в коде единственный живой путь → переключаем на deepseek.
         # DEEPSEEK_API_KEY в env voice-assistant.
         # 🔴 FIX (live 10.08, issue #1089): приоритетная цепочка LLM-провайдеров.
-        # Формат: "minimax,deepseek" — порядок = приоритет.
+        # Формат: "deepseek,minimax" — порядок = приоритет.
         # Первый в списке = primary, остальные = fallbacks.
         # Каждый провайдер настраивается в своей YAML-секции (<name>.base_url и т.д.).
         self.declare_parameter("llm_providers", "deepseek")
