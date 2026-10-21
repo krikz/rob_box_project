@@ -30,7 +30,6 @@ try:
 except (ImportError, ModuleNotFoundError):
     pass
 from .music_material import *  # #3227: add_music_material (без зависимости от music.py)
-from .scheduler import *
 from .web_search import *
 from .operator_admin import *  # ADR-0051 §6: operator.admin slice (ТАРС diagnostics)
 
@@ -71,8 +70,6 @@ __all__ = [
     "SetVoiceTool",
     # AV-21: minimal operator-voice TTS (каркас; полная интеграция — AV-27)
     "SayTool",
-    # Scheduler tools (issue #968, S6)
-    "TaskDeltaTool",
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

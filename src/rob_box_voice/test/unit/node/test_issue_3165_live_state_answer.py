@@ -45,7 +45,7 @@ FAILURE_PHRASE = "Не получилось выполнить"
 
 
 class _FakeExecutor:
-    """Вместо ``SchedulerToolExecutor`` → ``/mcp/execute``."""
+    """Вместо ``PlanToolExecutor`` → ``/mcp/execute``."""
 
     def __init__(self) -> None:
         self.calls = []
@@ -54,7 +54,7 @@ class _FakeExecutor:
         self.calls.append(call.name)
         return ToolResult(
             tool_call_id=call.id,
-            content=json.dumps({"status": "queued"}),
+            content=json.dumps({"success": True}),
             is_error=False,
         )
 
@@ -91,7 +91,7 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._llm_skipped_counter = new_llm_skip_counter()
     n._cancel_run = MagicMock()
     n._speak_direct = MagicMock()
-    n._scheduler_executor = _FakeExecutor()
+    n._tool_executor = _FakeExecutor()
     n._loop = MagicMock()
     n._core = MagicMock()
     return n
@@ -154,7 +154,7 @@ def test_fact2_router_stop_backs_the_true_claim(run_plans) -> None:
     n = _make_node(playing=True)
     assert n._route_media_command("выключи музыку") is True
     run_plans()
-    assert n._scheduler_executor.calls == ["dj_set", "stop_music"]
+    assert n._tool_executor.calls == ["dj_set", "stop_music"]
     # Ход роутера записан для модели: реплика, фраза, вызванные тулы.
     n._core.record_external_turn.assert_called_once_with(
         "выключи музыку", "Выключил музыку.", ["dj_set", "stop_music"]

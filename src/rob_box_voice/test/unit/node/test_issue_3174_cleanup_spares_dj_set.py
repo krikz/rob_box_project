@@ -95,7 +95,7 @@ def _make_node(snapshot) -> DialogueNode:
     n._llm_skipped_counter = new_llm_skip_counter()
     n._cancel_run = MagicMock()
     n._speak_direct = MagicMock()
-    n._scheduler_executor = _FakeExecutor()
+    n._tool_executor = _FakeExecutor()
     n._loop = MagicMock()
     n._core = MagicMock()
     return n
@@ -163,7 +163,7 @@ def _start_dj_set_via_router(node: DialogueNode, run_plans) -> None:
     node._music_player_state = MusicPlayerState(state="idle")
     assert node._route_media_command(LIVE_DJ_COMMAND) is True
     run_plans()
-    assert node._scheduler_executor.calls == ["dj_set"]
+    assert node._tool_executor.calls == ["dj_set"]
     node._music_player_state = _dj_set_snapshot()
 
 

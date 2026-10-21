@@ -917,11 +917,6 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         self.assertEqual(spec.memory_namespace, "operator")
         # ADR-0083 §2.2 #J — ТАРС видит все инструменты: среза в спеке нет (срез хода задаёт только личность).
         self.assertFalse(hasattr(spec, "narrow_tools_to_skill"))
-        # ADR-0083 §2.2 #F
-        self.assertFalse(
-            spec.use_scheduler,
-            "W7b планировщик живёт только на стороне личности (ADR-0083 §2.2 #F)",
-        )
         # ADR-0083 §1.2 #B
         self.assertEqual(
             dict(spec.per_provider_settings), {},

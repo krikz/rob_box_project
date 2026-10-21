@@ -9,7 +9,7 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.plan.composition import compose, kind_of
-from rob_box_dialog.plan.estimate import SpeechRate, speech_total_s
+from rob_box_dialog.plan.estimate import SpeechRate, remaining_s
 from rob_box_dialog.plan.plan_events import PLAN_EVENT_KINDS, PlanEvent, pending_data, queued, queued_phrase, rejected
 from rob_box_dialog.plan.resources import ResourceState
 from rob_box_dialog.words import policy_word
@@ -133,7 +133,13 @@ def test_llm_when_now_is_like_tier1_now_and_tier1_wins():
     llm = compose("speech", ["speech"], when="now")
     assert (llm.policy, llm.boundary, llm.cells[0].source) == ("REPLACE", "sentence", "llm")
     assert compose("speech", ["speech"], when="after_current").cells[0].source == "table"
-    assert compose("speech", ["speech"], tier1="later", when="now").policy == "APPEND"
+    assert compose("music", ["speech"], tier1="later", when="now").policy == "APPEND"
+
+
+def test_later_does_not_delay_the_reply_itself():
+    """«расскажи анекдот, а потом включи музыку» при играющем треке: реплика не ждёт конца трека."""
+    for row in kn.TIER1_LATER_SKIP_ROWS:
+        assert compose(row, ["track", "motion"], tier1="later").waits_for == ()
 
 
 @pytest.mark.parametrize("text,hint", [
@@ -156,9 +162,10 @@ def test_policy_word(text, hint):
 
 # --- занятость по событиям владельцев --------------------------------------------------------------------------------
 
-def test_speech_is_busy_only_from_started_to_finished(state, clock):
-    state.on_speech("queued", "s1", text_len=140)
-    assert state.busy() == {}  # публикация/очередь ресурс не занимает (V28)
+def test_speech_is_busy_from_owner_queue_to_finished(state, clock):
+    """Голос занят, пока у владельца речи есть живая реплика: его очередь (``queued``) — тоже занятость."""
+    state.on_speech("queued", "s1", turn_id="t1", epoch=3, text_len=140)
+    assert set(state.busy()) == {"speech"}
     state.on_speech("started", "s1", turn_id="t1", epoch=3, text_len=140)
     block = state.busy()["speech"]
     assert (block.block_id, block.turn_id, block.epoch, block.boundary) == ("s1", "t1", 3, "sentence")
@@ -222,7 +229,32 @@ def test_speech_rate_and_total():
     rate.observe(100, 10.0)
     rate.observe(200, 10.0)
     assert rate.chars_per_s == pytest.approx(10 + 0.3 * 10)
-    assert speech_total_s(0, 2500, rate) == 2.5 and speech_total_s(0, 0, rate) is None
+    assert remaining_s(0, 2500, 0, 1.0, rate) == 1.5 and remaining_s(0, 0, 0, 0.0, rate) is None
+    assert remaining_s(130, 0, 0, 0.0, rate) == pytest.approx(10.0)
+
+
+def test_chunks_of_one_reply_keep_voice_busy_until_the_last(state):
+    """speak_text режет реплику на чанки (speech_id на каждый): голос свободен, когда кончился последний."""
+    state.on_speech("queued", "c1", text_len=28)
+    state.on_speech("queued", "c2", text_len=28)
+    state.on_speech("started", "c1", text_len=28)
+    assert state.eta_s("speech") == pytest.approx(56 / kn.SPEECH_CHARS_PER_S_GUESS)
+    state.on_speech("finished", "c1")
+    assert state.busy()["speech"].block_id == "c2"
+    state.on_speech("finished", "c2")
+    assert state.busy() == {}
+
+
+def test_reserved_speech_counts_until_the_owner_ends_it(state):
+    """Хост отдал реплику (id из ответа speak_text) раньше, чем пришёл ``queued`` владельца — голос уже занят;
+    конец, пришедший до ``reserve``, реплику не «оживляет»."""
+    state.reserve(["s1"])
+    assert "speech" in state.busy() and state.eta_s("speech") is None
+    state.on_speech("finished", "s1")
+    assert state.busy() == {}
+    state.on_speech("finished", "s2")
+    state.reserve(["s2"])
+    assert state.busy() == {}
 
 
 # --- PlanEvent ---------------------------------------------------------------------------------------------------
@@ -260,7 +292,7 @@ def test_x4_then_sing_a_lullaby_appends_after_the_performance(state):
     event = queued("perform_2", decision, state, turn_id="t2", epoch=1)
     assert (event.kind, event.after_block, event.after_resource, event.eta_ms) == ("queued", "rap-2", "perform", 20000)
     assert queued_phrase(event, "perform") == "Начну после выступления — примерно через 20 с."
-    assert pending_data(event) == {"status": "pending", "queued_after": "perform", "after_block": "rap-2",
+    assert pending_data(event) == {"status": "pending", "after": "perform", "after_block": "rap-2",
                                    "start_in_s": 20.0}
 
 

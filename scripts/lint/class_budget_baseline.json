@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-21",
-  "base_sha": "691358fcb4b9bf70af9bb3ebf27a1286c13d4865",
+  "created": "2026-10-22",
+  "base_sha": "df18bc0ee85f8239c6fd22622ce2d68b6b3895f0",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -76,12 +76,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 721,
-      "methods": 143
-    },
-    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
-      "wmc": 137,
-      "methods": 26
+      "wmc": 709,
+      "methods": 141
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
       "wmc": 209,

@@ -141,8 +141,8 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
 
     The ADR-0083 §2.1 spec listed 18 fields; ADR-0150 PR-6 removed
     ``skill_slice`` and ``narrow_tools_to_skill`` (skills are gone); ADR-0150 §4.5
-    (#3696 ч.5) added ``wrap_provider`` (command mode per provider). A future
-    ADR must accompany any new field.
+    (#3696 ч.5) added ``wrap_provider`` (command mode per provider); PR-7b (#3699)
+    removed the dead ``use_scheduler`` flag. A future ADR must accompany any new field.
     """
     personality_dir, _ = tmp_prompt_dirs
     spec = AgentSpec(
@@ -150,7 +150,7 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
         prompt_dir=personality_dir,
         system_prompt_file="master.txt",
     )
-    assert len(spec.__dataclass_fields__) == 17
+    assert len(spec.__dataclass_fields__) == 16
 
 
 def test_agent_spec_required_fields_have_no_default(

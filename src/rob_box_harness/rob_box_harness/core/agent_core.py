@@ -126,32 +126,6 @@ def answering_provider(llm: Any) -> str:
 #: он только сообщает число, а публикует его тот, кто умеет.
 PromptObserver = Callable[[PromptStats], None]
 
-# W7a (issue #968, INSIGHT #1): a single LLM response may carry several
-# tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
-# them in the model's raw order fires destructive tools before the voice
-# pipeline has even started — ``stop_music`` used to land on the robot
-# milliseconds after ``speak_text`` was requested, killing the music mid-phrase
-# (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
-# re-ordering fixes the *intra-batch* race:
-#
-# * ordinary tools keep their relative order,
-# * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
-#   flagged ``defer_until_voice_drained`` when the same batch also speaks —
-#   the flag tells the scheduler not to fire the side effect until the voice
-#   channel is empty.
-_VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
-# Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
-# ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
-# взводится только когда тул уже отправил запрос. Иначе в пачке
-# ``[speak_text, <медленный тул>, register_speaker]`` реплика успевала бы
-# уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
-# публикация в топик (миллисекунды), порядок речи и музыки не меняет.
-_REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
-_RUN_FIRST_TOOLS: frozenset[str] = _REGISTER_FIRST_TOOLS
-_DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
-    {"stop_music", "stop_navigation"}
-)
-
 
 def _compose_current_turn_message(
     dynamic_system: str | None,
@@ -337,45 +311,6 @@ def _insert_context_system(
     at = 1 if messages and messages[0].role == "system" else 0
     messages.insert(at, LLMMessage(role="system", content=text))
     return messages
-
-
-def _order_tool_calls(
-    calls: Iterable[ToolCall],
-) -> tuple[list[ToolCall], set[str]]:
-    """Re-order one LLM batch for safe execution.
-
-    Returns ``(ordered, deferred_call_ids)``:
-
-    * ``ordered`` — stable partition: music prelude tools and
-      ``register_speaker`` (issue #2913) first, then the
-      remaining tools in their original relative order, then destructive
-      tools last.
-    * ``deferred_call_ids`` — ids of destructive calls whose side effect
-      must wait until the voice channel drains (only set when the batch
-      also contains a voice tool such as ``speak_text``).
-
-    The re-ordering changes execution order ONLY. Tool results are still
-    returned to the LLM in the model's original order (see
-    :meth:`AgentCore._run_with_tools`), so the OpenAI-style conversation
-    history stays valid.
-    """
-    ordered = list(calls)
-
-    def _partition_key(call: ToolCall) -> int:
-        if call.name in _DEFER_TO_END_TOOLS:
-            return 2
-        if call.name in _RUN_FIRST_TOOLS:
-            return 0
-        return 1
-
-    ordered.sort(key=_partition_key)
-    has_voice = any(call.name in _VOICE_TOOLS for call in ordered)
-    deferred_call_ids = {
-        call.id
-        for call in ordered
-        if has_voice and call.name in _DEFER_TO_END_TOOLS
-    }
-    return ordered, deferred_call_ids
 
 
 #: 🔴 FIX (live 01.09, vision-pi 10:17): MiniMax отдаёт ПСЕВДО-ВЫЗОВ ТЕКСТОМ.
@@ -1430,8 +1365,8 @@ class AgentCore:
         turn because that's a wiring problem, not a tool problem.
         """
         # Issue #2859 — граница хода для per-turn гардов провайдера
-        # (``SchedulerToolExecutor``: «один трек за ход»). Необязательный
-        # хук, как ``begin_group`` ниже: у простых провайдеров его нет.
+        # (``PlanToolExecutor``: «один трек за ход»). Необязательный хук:
+        # у простых провайдеров его нет.
         begin_turn = getattr(self._tools, "begin_turn", None)
         if begin_turn is not None:
             begin_turn()
@@ -1614,28 +1549,11 @@ class AgentCore:
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
             #
-            # S2.3/S2.4 (scheduler-segments-merge, issue #968) — open a
-            # fresh segment group for this batch BEFORE execution starts,
-            # same wiring point as the W7a re-ordering below. Not every
-            # ToolProvider is a SchedulerToolExecutor (e.g. plain
-            # ToolProvider ports in tests), so the call is optional:
-            # begin_group() only exists on the scheduler-backed wrapper.
-            # Skipping it there is exactly today's behaviour
-            # (group_id=None for every task).
-            begin_group = getattr(self._tools, "begin_group", None)
-            if begin_group is not None:
-                begin_group()
-
-            # W7a (issue #968): execution order is re-ordered so music
-            # prelude tools run before voice, and destructive tools
-            # (stop_music / stop_navigation) run last — otherwise a
-            # ``[speak_text, stop_music]`` batch fires stop_music before
-            # TTS even starts (e2e v36). Results are still appended in
-            # the model's ORIGINAL order (keyed by tool_call_id) so the
-            # OpenAI-style history stays valid.
-            execution_order, _deferred = _order_tool_calls(
-                response.tool_calls
-            )
+            # ADR-0150 PR-7b (#3699): порядок исполнения пачки решает планировщик ресурсов исполнителя тулов
+            # (``order_batch``: knowledge.COMPOSITION + Tier-1 хода), а не список тулов здесь. Результаты — в порядке
+            # модели (по tool_call_id), история OpenAI остаётся валидной. Нет хука — порядок модели.
+            order_batch = getattr(self._tools, "order_batch", None)
+            execution_order = list(order_batch(response.tool_calls) if order_batch else response.tool_calls)
             # Issue #1708 — hallucinated-lyrics guard. Resolve the most
             # recent user message so the heuristic can tell a vocal
             # request («спой куплет» — backing mode) apart from a

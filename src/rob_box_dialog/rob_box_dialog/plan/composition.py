@@ -12,7 +12,8 @@
 * ``stop``/``now`` (REPLACE на границе) — только клетки конфликта (не голый MERGE) и не непрерываемое занятое
   (``COMPOSITION_UNINTERRUPTIBLE``); граница — из Tier-1 для голоса (реплика, выступление), иначе из таблицы
   (такт, фраза трека);
-* ``later`` (APPEND после блока) — любая клетка, кроме ресурса без события конца (``COMPOSITION_NO_END``);
+* ``later`` (APPEND после блока) — любая клетка, кроме ресурса без события конца (``COMPOSITION_NO_END``) и кроме
+  строк ``TIER1_LATER_SKIP_ROWS`` (ответ робота «потом» не откладывает);
 * клетку-вопрос (REJECT с ``ask``, решение О9 — спросить человека) Tier-1 не трогает, кроме ``halt``.
 """
 
@@ -91,7 +92,8 @@ def compose(new: str, busy: Iterable[str], tier1: Optional[str] = None, when: st
     for col in dict.fromkeys(busy):
         rule = kn.COMPOSITION[(row, col)]
         cell = Cell(col, rule.policy, rule.boundary, rule.ask, "tier1" if row != new else "table")
-        cells.append(_apply(cell, override, source) if override is not None else cell)
+        skip = override is not None and override.policy == "APPEND" and new in kn.TIER1_LATER_SKIP_ROWS
+        cells.append(_apply(cell, override, source) if override is not None and not skip else cell)
     return Decision(new, tuple(cells))
 
 

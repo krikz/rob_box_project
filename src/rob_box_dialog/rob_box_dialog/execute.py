@@ -6,7 +6,8 @@
 который владелец выдал раньше: ``track_id``, ``speech_id``, ``goal_id``). Нет события к дедлайну класса
 (``knowledge.ACTION_CLASSES``) — честный ``timeout``; событие, которого никто не ждёт, — ``WARNING stale_event``.
 
-Действия хода исполняются по очереди в порядке команды (одновременность и порядок — планировщик PR-7b). Событие
+Действия хода уходят владельцам разом (§5.2: совместимые — параллельно): ждать ли занятый ресурс и что после чего —
+решает планировщик ресурсов у транспорта (``plan.runner``, PR-7b) по ``knowledge.COMPOSITION``. Событие
 ``pending`` (обещание: «Еду к…») закрывает ожидание статусом ``pending``; итог по его ``event_ref`` придёт позже —
 в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS.
 """
@@ -77,17 +78,16 @@ class Executor:
         self._requests: Dict[str, ActionRequest] = {}  # ref ожидания или обещания → запрос
 
     async def run(self, actions: Sequence[Any], snapshot: Any, turn_id: str) -> List[ActionResult]:
-        """Исполнить действия команды (``ToolCall`` с ``tool``/``args``) по очереди; результат — по каждому."""
+        """Исполнить действия команды (``ToolCall`` с ``tool``/``args``) разом; результаты — в порядке команды."""
         import asyncio  # noqa: PLC0415
 
         self._loop = asyncio.get_running_loop()
-        out = []
+        requests = []
         for n, call in enumerate(actions):
             cls = kn.TOOL_CLASSES[call.tool]
-            request = ActionRequest(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, call.tool,
-                                    MappingProxyType(dict(call.args)), cls, deadline_s(cls))
-            out.append(await self._one(request))
-        return out
+            requests.append(ActionRequest(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, call.tool,
+                                          MappingProxyType(dict(call.args)), cls, deadline_s(cls)))
+        return list(await asyncio.gather(*(self._one(r) for r in requests)))
 
     def on_event(self, event: OwnerEvent) -> None:
         """Событие владельца из любого потока (колбэк ROS); сопоставление — в цикле исполнителя."""

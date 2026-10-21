@@ -99,7 +99,7 @@ def test_darya_on_non_intro_phrase_with_confident_boris_not_registered():
 
     assert registered == [], "третий профиль «Дарья» заводиться не должен"
     assert result.get("success") is False, result
-    # Нет слова pending — SchedulerToolExecutor (#2913) не ждёт ack.
+    # Нет слова pending — гейт речи хода (#2913) не ждёт ack.
     assert "pending" not in json.dumps(result, ensure_ascii=False)
     # Отказ — в лог mcp_server, не озвучка «не расслышал».
     assert any("#2925 ОТКАЗ" in line for line in server.node.get_logger().lines)

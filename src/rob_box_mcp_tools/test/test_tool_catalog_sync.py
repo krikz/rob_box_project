@@ -10,8 +10,7 @@ drifted into user-visible breakage:
 * ``move_direction`` advertised ``duration`` against a ``distance``
   parameter — ``TypeError`` on every call that used it.
 * 13 tools registered by ``mcp_server`` were absent from the LLM catalog,
-  including ``task_delta`` (whose in-process interception was therefore
-  unreachable) and every mapping-FSM exit tool.
+  including every mapping-FSM exit tool.
 * ``handle_music`` and four sibling skill facades were offered to the LLM
   with no executor behind them at all.
 

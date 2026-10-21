@@ -531,7 +531,6 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "search_web",
         "faq_search",
     ),
-    "scheduler": ("task_delta",),
 }
 
 

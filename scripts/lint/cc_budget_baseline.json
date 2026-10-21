@@ -19,9 +19,6 @@
     "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
       "build_pregen_task": 22
     },
-    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py": {
-      "TaskScheduler.update": 26
-    },
     "src/rob_box_voice/rob_box_voice/stt_node.py": {
       "STTNode._process_audio": 20,
       "STTNode._recognize_yandex_phase": 22
@@ -138,12 +135,6 @@
       "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
       "method": "build_pregen_task",
       "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py",
-      "method": "TaskScheduler.update",
-      "cc": 26,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {

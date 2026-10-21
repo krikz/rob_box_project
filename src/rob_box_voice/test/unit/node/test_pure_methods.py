@@ -82,7 +82,7 @@ def node():
     setattr(n, "_speech_accumulator", None)
     setattr(n, "_accumulate_no_wake_enabled", False)
     setattr(n, "_pending_backlog_flush", False)
-    setattr(n, "_scheduler_executor", None)
+    setattr(n, "_tool_executor", None)
 
     return n
 

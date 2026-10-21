@@ -103,8 +103,6 @@ slices:
     - finish_mapping
     - optimize_map
     - load_map
-    # планировщик
-    - task_delta
 
   # ── OPERATOR.SPEECH: речевой канал оператора (через ТАРС).
   # ``set_voice`` / ``set_tts_provider`` / ``list_tts_voices`` уже

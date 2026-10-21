@@ -232,5 +232,5 @@ def test_music_stop_in_silence_without_executor_passes_on():
 
 
 def test_runner_stop_music_needs_an_executor():
-    node = SimpleNamespace(_scheduler_executor=None, get_logger=lambda: SimpleNamespace(info=lambda _m: None))
+    node = SimpleNamespace(_tool_executor=None, get_logger=lambda: SimpleNamespace(info=lambda _m: None))
     assert Tier1Runner(node).stop_music() is False

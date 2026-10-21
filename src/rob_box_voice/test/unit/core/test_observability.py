@@ -37,7 +37,6 @@ from rob_box_voice.observability import (
     record_session_duration,
     record_speaker_recognize,
     record_stt_recognize,
-    record_task_updated,
     record_telegram_message,
     record_tts_synthesize,
     record_voice_llm_request,
@@ -65,8 +64,6 @@ class TestNoopBehaviour:
         record_barge_in()
         record_session_duration(12.0, result="success")
         record_telegram_message("in", message_type="text")
-        # W2-6 (issue #968) — MERGE-метрика.
-        record_task_updated()
         # Issue #2554 — audio_node overflow counter.
         record_audio_input_overflow(frames_per_buffer=4096)
 
@@ -151,14 +148,6 @@ class TestMetricsWithPrometheusClient:
         record_session_duration(5.0, result="success")
         after = _hist_sum("voice_session_duration_seconds", {"result": "success"})
         assert after >= before + 5.0
-
-    # ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────
-
-    def test_record_task_updated_increments(self):
-        before = _counter_value("voice_scheduler_task_updated_total", {})
-        record_task_updated()
-        after = _counter_value("voice_scheduler_task_updated_total", {})
-        assert after == before + 1
 
     # ── Issue #2554: audio_node paInputOverflow counter ────────────
 

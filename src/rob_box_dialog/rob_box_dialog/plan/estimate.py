@@ -42,13 +42,14 @@ class SpeechRate:
         self._rate = sample if self._rate is None else self._rate + _RATE_WEIGHT * (sample - self._rate)
 
 
-def speech_total_s(text_len: int, duration_ms: int, rate: SpeechRate) -> Optional[float]:
-    """Полная длительность реплики: синтез знает точно, иначе текст на скорость; ни того ни другого — ``None``."""
+def remaining_s(text_len: int, duration_ms: int, spoken_chars: int, seconds: float, rate: SpeechRate) -> Optional[float]:
+    """Сколько ещё звучать реплике: по длительности синтеза минус прозвучавшее, иначе непрозвучавший текст на
+    скорость; ни длительности, ни длины текста — ``None`` (неизвестно)."""
     if duration_ms > 0:
-        return duration_ms / 1000.0
+        return max(0.0, duration_ms / 1000.0 - seconds)
     if text_len > 0:
-        return text_len / rate.chars_per_s
+        return max(0, text_len - spoken_chars) / rate.chars_per_s
     return None
 
 
-__all__ = ["SpeechRate", "speech_total_s"]
+__all__ = ["SpeechRate", "remaining_s"]

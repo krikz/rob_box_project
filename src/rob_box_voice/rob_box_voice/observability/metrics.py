@@ -37,13 +37,9 @@ TTS. Сейчас observability — только логи в Loki, и ответ
   (result ∈ success|fail — что произошло в конце диалога)
 * ``telegram_message_total{direction, type}`` — counter
 
-Метрики W2-6 (issue #968, волна scheduler-segments-merge, фаза S12):
-
-* ``voice_scheduler_task_updated_total`` — counter (применённая
-  MERGE-правка — TaskScheduler.update()/replace_args())
-
 (Счётчик вердиктов ``quick_decide`` и задержка очереди отложенных фраз
-удалены вместе с классификатором перебивания — ADR-0150 PR-5 #3694.)
+удалены вместе с классификатором перебивания — ADR-0150 PR-5 #3694;
+``voice_scheduler_task_updated_total`` — с планировщиком v1, PR-7b #3699.)
 
 Все метрики живут в ``prometheus_client.REGISTRY`` (process-global).
 Каждая ROS2-нода запускается в отдельном процессе, поэтому
@@ -585,29 +581,3 @@ def record_audio_input_overflow(*, frames_per_buffer: int) -> None:
         labelnames=("frames_per_buffer",),
     )
     counter.labels(frames_per_buffer=str(int(frames_per_buffer))).inc()
-
-
-# ── W2-6 (issue #968, scheduler-segments-merge, фаза S12) ──────────────
-# Метрика MERGE-цепочки: применённые TaskScheduler.update()-правки (S3.2).
-
-
-def record_task_updated() -> None:
-    """Учёт одной применённой MERGE-правки (S3.2, ``TaskScheduler.update()``).
-
-    Инкрементируется на стороне вызывающего слоя (``dialogue_node``),
-    когда приходит lifecycle-событие ``"task.updated"`` от планировщика
-    (``_Channel.replace_args`` — rewrite/replace op применился к ещё не
-    стартовавшему сегменту). Планировщик (``task_scheduler.py``)
-    намеренно НЕ импортирует ``observability`` напрямую — событие уже
-    публикуется через существующий ``on_event``-колбэк
-    (``TaskScheduler(on_event=...)``), тот же механизм, что используется
-    для ``/harness/task_events`` (W7c), эта метрика — второй наблюдатель
-    того же события.
-    """
-    counter = get_metric(
-        "counter",
-        "voice_scheduler_task_updated_total",
-        "Applied TaskScheduler.update() edits (MERGE rewrite/replace "
-        "ops on a not-yet-started segment).",
-    )
-    counter.inc()
