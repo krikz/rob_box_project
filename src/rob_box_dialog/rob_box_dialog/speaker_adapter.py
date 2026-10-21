@@ -172,6 +172,22 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
     return {"name": ref.name if ref.name_state == "confirmed" else None, "name_state": ref.name_state}
 
 
+def voice_registration(sent: bool, outcome: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Исход регистрации голоса по самопредставлению этого хода для раздела ``speaker`` (#3793, ADR-0148).
+
+    Регистрацию делает код до LLM (#2925), исход ход ждёт (``identity_question.settle_identity``); модель тул
+    ``register_speaker`` в этом ходе не видит и без поля обещала «узнаю по голосу» при отказе ``too_short``.
+    ``None`` — регистрации в ходе не было; ``registered: None`` — ответа владельца не дождались (неизвестно)."""
+    if not sent:
+        return None
+    event = (outcome or {}).get("event")
+    if event == "registered":
+        return {"registered": True}
+    if event == "register_error":
+        return {"registered": False, "reason": str((outcome or {}).get("error") or "error")}
+    return {"registered": None, "reason": "no_answer"}
+
+
 def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg: Optional[float],
                    asked_at: Optional[float], speech_id: str = "") -> Dict[str, Any]:
     """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда.
