@@ -282,6 +282,50 @@ def test_turn_handled_by_code_waits_for_its_phrase(rig):
     assert rig.stage_names()[-1] == ("done", "finished")
 
 
+def _fails(rig):
+    return [r for r in rig.requests if r["earcon"] == "fail"]
+
+
+def test_router_lookup_miss_returned_to_llm_is_not_a_failed_turn(rig):
+    """#3794: медиароутер забрал «включи звук X», поиск промахнулся, фраза ушла в LLM: earcon fail не звучит."""
+    rig.stages.addressed(None)
+    rig.stages.hold()
+    rig.stages.handled(None)
+    rig.stages.tool_call("music_library", {})
+    rig.stages.tool_result("music_library", True, "Мелодия не найдена")
+    rig.now += ts.HANDLED_SETTLE_S + 0.1
+    rig.stages.tick()                                   # пока ищем, ход не закрывается
+    assert not _fails(rig) and rig.stage_names()[-1][0] == "executing"
+    rig.stages.hold(reopen=True)
+    assert rig.stages.turn_id_for(None) == rig.events[0]["turn_id"]   # фраза без id (инъекция) - тот же ход
+    rig.stages.thinking("deepseek")
+    rig.stages.tool_call("speak_text", {"text": "нет такого", "animation": "happy"})
+    rig.stages.finish(rig.stages.turn_id_for(None))
+    rig.speech(ts.SPEECH_QUEUED)
+    rig.speech(ts.SPEECH_STARTED)
+    rig.speech(ts.SPEECH_FINISHED)
+    assert not _fails(rig) and rig.stage_names()[-1] == ("done", "finished")
+
+
+def test_router_found_tune_closes_the_held_turn_after_its_phrase(rig):
+    rig.stages.addressed("u1")
+    rig.stages.hold()
+    rig.stages.handled("u1")
+    rig.now += ts.HANDLED_SETTLE_S + 0.1
+    rig.stages.hold(reopen=False)
+    rig.stages.tick()
+    assert rig.stage_names()[-1] == ("done", "finished")
+
+
+def test_really_failed_tool_still_plays_the_fail_earcon(rig):
+    rig.stages.addressed("u1")
+    rig.stages.thinking()
+    rig.stages.tool_call("music_library", {})
+    rig.stages.tool_result("music_library", True, "boom")
+    rig.stages.finish(rig.stages.turn_id_for("u1"))
+    assert len(_fails(rig)) == 1 and rig.stage_names()[-1][0] == "failed"
+
+
 def test_done_alternates_faces_between_turns(rig):
     faces = []
     for n in range(2):

@@ -20,6 +20,7 @@ asyncio, поэтому состояние под одним замком. Вы�
 
 from __future__ import annotations
 
+import functools
 import threading
 import time
 import uuid
@@ -44,6 +45,19 @@ CALM_SCENE, CALM_TTL_MS = "idle", 100
 #: ``SpeechEvent.kind`` (rob_box_dialog_msgs/SpeechEvent).
 SPEECH_QUEUED, SPEECH_STARTED, SPEECH_FINISHED, SPEECH_CANCELLED, SPEECH_REJECTED = 0, 2, 4, 5, 7
 SPEECH_DONE_KINDS = (SPEECH_FINISHED, SPEECH_CANCELLED, SPEECH_REJECTED)
+
+
+def _locked(method):
+    """Метод под замком хода (как ``with self._lock`` в остальных)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
+#: Заглушка вместо открытого хода: удержание без хода никого не трогает.
+_NO_TURN = Turn("", None, "", 0.0, 0)
 
 
 class SpeechLedger:
@@ -145,9 +159,15 @@ class TurnStages:
             turn = self._live()
             if turn is None or (uid and turn.uid and turn.uid != uid):
                 return
-            turn.body_done_at = self._clock()
-            turn.settle_until = turn.body_done_at + HANDLED_SETTLE_S
+            now = self._clock()
+            turn.end_body(now)
+            turn.settle_until = now + HANDLED_SETTLE_S
             self._maybe_complete(turn)
+
+    @_locked
+    def hold(self, reopen: Optional[bool] = None) -> None:
+        """Медиароутер ищет мелодию (``reopen=None``), итог хода не решать; нашёл - ``False``, промах - ``True`` (#3794)."""
+        (self._live() or _NO_TURN).hold(reopen)  # открытого хода нет - удерживать нечего
 
     def finish(self, turn_id: Optional[str], ok: bool = True, reason: str = "", cancelled: bool = False) -> None:
         """Тело хода закончено (``_run_turn``): исход решают результаты тулов и LLM; речь ход дочитает."""
@@ -160,7 +180,7 @@ class TurnStages:
                 return
             if not ok:
                 turn.failure = reason or "error"
-            turn.body_done_at = self._clock()
+            turn.end_body(self._clock())
             self._maybe_complete(turn)
 
     def tick(self) -> None:

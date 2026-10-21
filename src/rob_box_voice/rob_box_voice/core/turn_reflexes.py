@@ -40,6 +40,30 @@ class Turn:
     settle_until: float = 0.0
     failure: str = ""
     errors: Dict[str, str] = field(default_factory=dict)
+    #: Реплику забрал медиароутер и ещё ищет мелодию: она может вернуться в LLM - конец тела откладывается (#3794).
+    holding: bool = False
+    pending_end: Optional[float] = None
+
+    def end_body(self, now: float) -> None:
+        """Тело хода закончено; пока удержание не снято, конец ждёт."""
+        if self.holding:
+            self.pending_end = now
+        else:
+            self.body_done_at = now
+
+    def hold(self, reopen: Optional[bool] = None) -> None:
+        """``None`` - начать удержание; ``False`` - мелодия найдена, ждавший конец вступает в силу; ``True`` - промаха
+        поиска ход не заметит: фраза идёт в LLM (ход снова «адресован» - ход LLM берёт его id), ошибки поиска
+        и ждавший конец сняты."""
+        if reopen is None:
+            self.holding = True
+            return
+        self.holding, pending, self.pending_end = False, self.pending_end, None
+        if reopen:
+            self.body_done_at, self.settle_until, self.failure, self.stage = None, 0.0, "", "addressed"
+            self.errors.clear()
+        elif pending is not None:
+            self.body_done_at = pending
 
     def takes_phrase(self, uid: Optional[str]) -> bool:
         """Ход LLM этой фразы: тот же id; фраза без id берёт открытый ``addressed`` без id (ретрай - нет)."""
