@@ -10,7 +10,8 @@ voice), ``/voice/tts/state`` (transitional «speaking»), ``/audio/direction`` +
 ``/audio/vad`` (look at the speaker), ``/voice/music/state`` (music scenes by
 tempo), ``/voice/animation/request`` (v1 ``play_animation``, until PR-3b),
 ``/voice/expression/request`` (``ExpressionRequest``; writers come in PR-3b),
-``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
+``/cmd_vel`` (turn signals / brake light; topic = parameter ``cmd_vel_topic``), ``/battery_state``
+(low battery / charging), ``~/scene`` (debug: ``name`` or ``name:seconds``). No voice owner for
 ``voice_timeout_s`` (no messages, no voice publishers in
 the graph) -> ``sleep``; it is back -> ``wakeup`` -> idle.
 """
@@ -23,10 +24,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_dialog_msgs.msg import ExpressionRequest, SpeechEnvelope, SpeechEvent
-from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
 
 from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire
+from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
 VOICE_OWNER_TOPIC = '/voice/speech/event'
@@ -72,6 +75,8 @@ class FaceNode(Node):
             'fps': float(FPS), 'mouth_design': 'jaw', 'thinking_design': 'thinking_teeth',
             'idle_bored_every_s': 60.0, 'voice_timeout_s': 7.0, 'test_pattern': False,
             'doa_front_deg': 0.0, 'doa_ccw': True, 'rear_theme': 'default', 'metrics_period_s': 10.0,
+            'cmd_vel_topic': '/cmd_vel', 'battery_topic': '/battery_state', 'battery_percent_scale': 100.0,
+            'tz_offset_h': 3.0,
         }
         for name, default in p.items():
             self.declare_parameter(name, default)
@@ -80,10 +85,11 @@ class FaceNode(Node):
             time.time(), mouth_design=g['mouth_design'], thinking_design=g['thinking_design'],
             idle_bored_every_s=g['idle_bored_every_s'], voice_timeout_s=g['voice_timeout_s'],
             rear_theme=g['rear_theme'], test_pattern=g['test_pattern'],
-            gaze=GazeTrack(front_deg=g['doa_front_deg'], ccw=g['doa_ccw']))
+            gaze=GazeTrack(front_deg=g['doa_front_deg'], ccw=g['doa_ccw']), tz_offset_h=g['tz_offset_h'])
+        self._battery_scale = g['battery_percent_scale']
         self.panels = PanelPublisher(self)
         self._graph_present: Optional[bool] = None
-        self._subscribe()
+        self._subscribe(g['cmd_vel_topic'], g['battery_topic'])
         self._metrics_period = g['metrics_period_s']
         self._reset_metrics(time.time())
         self.create_timer(1.0 / g['fps'], self._on_frame)
@@ -92,7 +98,7 @@ class FaceNode(Node):
             f"face_node: {g['fps']:.0f} fps, mouth={g['mouth_design']}, thinking={g['thinking_design']}, "
             f"test_pattern={g['test_pattern']}, voice_timeout={g['voice_timeout_s']:.0f}s")
 
-    def _subscribe(self) -> None:
+    def _subscribe(self, cmd_vel_topic: str, battery_topic: str) -> None:
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(SpeechEnvelope, '/voice/speech/envelope', self._on_envelope, 10)
         self.create_subscription(SpeechEvent, VOICE_OWNER_TOPIC, self._on_speech_event, 10)
@@ -103,6 +109,8 @@ class FaceNode(Node):
         self.create_subscription(String, '/voice/animation/request', self._on_animation_request, 10)
         self.create_subscription(ExpressionRequest, '/voice/expression/request', self._on_expression, 10)
         self.create_subscription(String, '~/scene', self._on_animation_request, 10)
+        self.create_subscription(Twist, cmd_vel_topic, self._on_cmd_vel, 10)
+        self.create_subscription(BatteryState, battery_topic, self._on_battery, 10)
 
     # -- inputs ---------------------------------------------------------------
     def _on_envelope(self, msg) -> None:
@@ -130,6 +138,13 @@ class FaceNode(Node):
     def _on_music_state(self, msg) -> None:
         if not self.director.on_music_state(msg.data, time.time()):
             self.get_logger().warn(f'/voice/music/state: не JSON-снимок плеера: {msg.data[:120]!r}')
+
+    def _on_cmd_vel(self, msg) -> None:
+        self.director.on_cmd_vel(msg.linear.x, msg.angular.z, time.time())
+
+    def _on_battery(self, msg) -> None:
+        pct = battery_percent(float(msg.percentage), self._battery_scale)
+        self.director.on_battery(pct, int(msg.power_supply_status), time.time())
 
     def _on_animation_request(self, msg) -> None:
         name, seconds = parse_animation_request(msg.data)
