@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Set, Tuple
 
 from . import knowledge as kn
 from .choice import Choice, ChoiceQuestion, Chooser, Option
@@ -61,6 +61,7 @@ REASON_WORDS = {
     "rejected": "сервис генерации отклонил заказ",
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
+    "theme_cache": "под тему хватает сочинённого раньше",
 }
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
                 "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
@@ -272,6 +273,33 @@ def set_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str = "") -> List[
     usable = [t for t in ctx.cache if t.instrumental and t.kind == "instrumental" and t.rating >= 0
               and _theme(ask, t) is not None and theme_tags in t.prompt]
     return sorted(usable, key=order)
+
+
+def _theme_stems(text: str) -> Set[str]:
+    return {w[:kn.THEME_STEM_LEN] for w in _words(text)
+            if len(w) >= kn.THEME_WORD_MIN and not w.startswith(kn.THEME_FIT_STOP)}
+
+
+def theme_fit(theme_tags: str, track: CacheTrack) -> float:
+    """Насколько трек кэша по теме сета (#3775, решение Шифу 21.10 «подогнать под тему что есть»): метка темы целиком
+    в ``prompt`` — 1; иначе доля основ слов темы (``theme_tags``), которые есть в ``prompt``, названии и имени стиля
+    трека. Темы нет — 0. По теме — от ``THEME_FIT_MIN``."""
+    if not theme_tags:
+        return 0.0
+    if theme_tags in track.prompt:
+        return 1.0
+    want = _theme_stems(theme_tags)
+    style = kn.GEN_STYLES.get(track.style_key)
+    have = _theme_stems(" ".join((track.prompt, track.title, style.name if style else "")))
+    return len(want & have) / len(want) if want else 0.0
+
+
+def theme_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str) -> List[CacheTrack]:
+    """Треки кэша сета (:func:`set_cache` без фильтра темы) по теме (:func:`theme_fit` ≥ ``THEME_FIT_MIN``): ближе к
+    теме — раньше, при равных — порядок :func:`set_cache`."""
+    fits = [(theme_fit(theme_tags, t), t) for t in set_cache(ask, ctx)]
+    ranked = sorted(((f, i, t) for i, (f, t) in enumerate(fits) if f >= kn.THEME_FIT_MIN), key=lambda x: (-x[0], x[1]))
+    return [t for _f, _i, t in ranked]
 
 
 def _clip(text: str) -> str:
@@ -592,4 +620,4 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
            "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
-           "theme_title"]
+           "theme_cache", "theme_fit", "theme_title"]

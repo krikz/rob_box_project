@@ -2726,6 +2726,23 @@ GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
 }
 #: Потолок темы в заказе Suno (style/title) — как у ``generate_music(theme ≤ 60)`` (ADR-0158 §3.3).
 GEN_THEME_MAX_CHARS = 60
+# ── Кэш под тему сета (#3775, решение Шифу 21.10: «надо сет 10 треков по теме, есть 2 — дозаказываем недостающие и
+# сразу ставим что есть; нечего поставить — фоном тихо что-то включить и сказать, что готовим сет») ──────────────
+#: Трек кэша «по теме», если в его ``prompt``/названии/имени стиля есть не меньше этой доли слов темы
+#: (``source.theme_fit``). Треть: из темы в три слова («пленников прибывших эскобар») хватает одного — «Эскобар»;
+#: из одного слова — нужно оно само; из EN-тегов строки таблицы (4 слова) — два: одно общее «festive» у зимы и
+#: праздника темы не делает.
+THEME_FIT_MIN = 1.0 / 3.0
+#: Основа слова темы — первые 5 букв (падежи: «эскобар»/«эскобара», «пленников»/«пленные»); короче 4 букв — служебные.
+THEME_STEM_LEN, THEME_WORD_MIN = 5, 4
+#: Основы, которые есть почти в любом названии/просьбе и тему не несут («RoBBox club set», «музыка для…»).
+THEME_FIT_STOP: Tuple[str, ...] = ("музык", "трек", "песн", "мелод", "компози", "robbox", "тем", "сэт", "сет", "set",
+                                   "track", "music", "song")
+#: Фон, пока пишется первый трек темы, когда в кэше по теме нет ничего (K = 0): трек кэша стиля сета тише обычного —
+#: громкость ``amp`` ноты файла (0.35 ≈ −9 дБ; на слух не проверено) — и не длиннее ``SET_BACKGROUND_S`` за проход
+#: (первая задача V6_MINI — типично 30 с, ``GEN_MODELS``; не готова — сет продлевает фон ещё проходом).
+SET_BACKGROUND_GAIN = 0.35
+SET_BACKGROUND_S = 60.0
 #: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
 GEN_STYLES: Mapping[str, GenStyle] = {
     "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
@@ -2831,7 +2848,8 @@ __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_
             "GEN_XFADE_S"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
-__all__ += ["GEN_THEME_MAX_CHARS"]
+__all__ += ["GEN_THEME_MAX_CHARS", "SET_BACKGROUND_GAIN", "SET_BACKGROUND_S", "THEME_FIT_MIN", "THEME_FIT_STOP",
+            "THEME_STEM_LEN", "THEME_WORD_MIN"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",

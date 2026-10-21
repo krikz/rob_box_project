@@ -13,6 +13,9 @@
 * Мост (В4): кэш пуст — первым треком сета играет синтез ближайшим сильным стилем (``GEN_BRIDGE_STYLES``), пока
   пишется первая генерация (сет продлевает мост проходами формы). Фразу моста строит код из фактов; LLM только
   окрашивает её подстановками с дедлайном (:func:`bridge_line`), опоздала или соврала — голая фраза кода.
+* Тема (#3775, решение Шифу 21.10): из N треков сета K берутся из кэша по теме (``source.theme_cache``) и играют
+  сразу, N − K заказываются; K = 0 — пока пишется первый трек темы, тихо (``SET_BACKGROUND_GAIN``) играет фон — трек
+  кэша стиля сета — и фраза кода «Готовлю сет на тему …» (:func:`background_text`); кэша стиля нет — мост синтезом.
 * Провал генерации (В3): заказов больше нет, сет доигрывает то, что есть; фраза причины — от кода. Исключение (В17):
   Suno отклонил кавер произведения (``rejected``) после всех попыток ``COVER_TRIES`` — выходит только это
   произведение, его слоты берут другие произведения темы, заказы идут дальше.
@@ -39,7 +42,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.dj_line import tracks_word
 from rob_box_music.render.audio import xfade_beats
 from rob_box_music.source import (CACHE, COVER_SLOT, GENERATE, REASON_WORDS, CacheTrack, CoverWork, SourceAsk,
-                                  cover_rejected_text, cover_slot, gen_kind, slot_style, theme_title)
+                                  cover_rejected_text, cover_slot, gen_kind, slot_style, theme_fit, theme_title)
 
 from ..renardo_adapter import ALIGN_LEAD_BEATS
 from ..session import NEARLY_LEAD_BEATS
@@ -187,6 +190,37 @@ def synth_set_note(reason: str, style: str) -> str:
     if reason in QUIET_REASONS:
         return ""
     return f"Сгенерировать сет сейчас не могу: {REASON_WORDS.get(reason, reason)} — играю своё: {genre_name(style)}."
+
+
+def background_text(theme: str) -> str:
+    """Фраза запуска сета темы, когда по теме в кэше ничего и играет тихий фон — от кода (Шифу 21.10, #3775)."""
+    return f"Готовлю сет на тему «{theme}», пока немного фона."
+
+
+def theme_why(tracks: int, themed: int, ordered: int, gen_reason: str) -> str:
+    """Почему столько заказано (строка лога ``[gen set]``): кэша по теме хватило, не было, дозаказ, денег нет."""
+    if themed >= tracks:
+        return "по теме хватило кэша — без заказа"
+    if ordered < tracks - themed:
+        return f"заказать все недостающие нельзя: {gen_reason or 'путь трека — кэш стиля/синтез'}"
+    return "по теме в кэше ничего — сет заказом" if not themed else "дозаказ недостающих, что есть — сразу"
+
+
+def themed_count(tags: str, routes: Sequence[Any]) -> int:
+    """K — сколько треков сета взято из кэша по теме (``source.theme_fit`` ≥ ``THEME_FIT_MIN``)."""
+    return sum(r.kind == CACHE and r.track is not None and theme_fit(tags, r.track) >= kn.THEME_FIT_MIN
+               for r in routes)
+
+
+def theme_note(tags: str, routes: Sequence[Any], themed: int, background: Optional[CacheTrack]) -> str:
+    """Часть строки ``[gen set] слоты``: K по теме из кэша, заказано треков (задач), фон, почему (#3775)."""
+    ordered = sum(r.kind == GENERATE for r in routes)
+    head = (f"по теме из кэша={themed if tags else '—'} заказ={ordered} (задач ≈{math.ceil(ordered / 2)}) "
+            f"фон={f'да {background.id}' if background else 'нет'}")
+    if not tags:
+        return head
+    reason = next((r.gen_reason for r in routes if r.gen_reason), "")
+    return f"{head} — {theme_why(len(routes), themed, ordered, reason)}"
 
 
 def launch_text(genre: Any, tracks: int, cached: int, gen_reason: str) -> str:
@@ -671,10 +705,13 @@ class GenSetMaker:
         tags = theme_tags(theme)
         routes = self.router.route_slots(asks, tags, [w for w, _t in covers], seconds=seconds, minimum=len(genres))
         slots, asks = slots[:len(routes)], asks[:len(routes)]
+        themed = themed_count(tags, routes)
+        background = self._background_track(asks, routes, tags, themed, bool(covers))
         self._log().info(f"🎛️ [gen set] слоты: тема={theme or '—'!r} стили={list(genres)} треков={len(slots)} "
+                         f"{theme_note(tags, routes, themed, background)} "
                          f"время={f'{seconds:.0f} с' if seconds else '—'} тема-теги={tags or '—'} "
                          f"непонято={list(unknown)} каверы={[w.material for w, _t in covers]}")
-        return SetRoutes(slots, tuple(routes), unknown, tags, tuple(covers))
+        return SetRoutes(slots, tuple(routes), unknown, tags, tuple(covers), background)
 
     def start(self, plan: "SetRoutes", owner: Any, *, theme: str, persona: Optional[str], set_id: str,
               bridge: Bridge, line_ask: Any = None, speak: Optional[Callable[[str], Any]] = None,
@@ -690,8 +727,8 @@ class GenSetMaker:
         replace_set()
         genres, reason, cache = [plan.genres[i] for i in played], plan.gen_reason(), plan.cache()
         first = plan.routes[played[0]]
-        made = bridge(bridge_style(genres[0])) if first.kind != CACHE and not reason else None
         logger = self._log()
+        made, wait = self._waiting(plan, first.kind != CACHE and not reason, bridge, genres[0], set_id, logger)
         keys = plan.keys()
         gen = GenSet(provider=self._provider, library=self._library(), ask=first.ask, genre=genres[0], theme=theme,
                      set_id=set_id, bpm=made[1] if made else kn.AUDIO_DEFAULT_BPM, tracks=len(played), cache=cache,
@@ -699,18 +736,56 @@ class GenSetMaker:
                      publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags,
                      keys=[keys[i] for i in played],
                      covers=SetCovers(plan.covers(), self._set_cover(plan), plan.pieces()))
-        line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if made else None
+        line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if wait == "да" else None
         session = _gen_session(owner, gen, theme, persona, logger)
         result = session.start()
-        message = start_message(line.text() if line else launch_text(genres, gen.slots, min(len(cache), gen.slots),
-                                                                     reason), plan)
+        if wait == "фон":
+            head = background_text(theme or plan.theme_tags)
+        else:
+            head = line.text() if line else launch_text(genres, gen.slots, min(len(cache), gen.slots), reason)
+        message = start_message(head, plan)
         logger.info(f"🎛️ [gen set] {set_id} {[r.id for r in plan.routes]}: {genres} {gen.slots} "
-                    f"{tracks_word(gen.slots)}, кэш {len(cache)}, мост={'да' if made else '—'} gen={reason or 'ok'} "
+                    f"{tracks_word(gen.slots)}, кэш {len(cache)}, мост={wait} gen={reason or 'ok'} "
                     f"→ {result.get('ok')}")
         return {**result, "theme": theme, "style": genres[0], "styles": list(gen.genres), "source": "generated",
                 "tracks": gen.slots, "cached": min(len(cache), gen.slots), "route": first.id,
                 "routes": [r.id for r in plan.routes], "source_message": message,
                 "session": session if result.get("ok") else None}
+
+    def _background_track(self, asks: Sequence[SourceAsk], routes: Sequence[Any], tags: str, themed: int,
+                          covers: bool) -> Optional[CacheTrack]:
+        """Фон сета темы: по теме в кэше ничего (K = 0), каверов нет, первый трек — заказ → трек кэша стиля сета
+        (``SourceRouter.style_cache``); иначе ``None``."""
+        if not tags or themed or covers or not routes or routes[0].kind != GENERATE:
+            return None
+        return self.router.style_cache(asks[0])
+
+    def _waiting(self, plan: "SetRoutes", waits: bool, bridge: Bridge, genre: str, set_id: str,
+                 log: Any) -> Tuple[Optional[Tuple[Callable[[str], Any], int]], str]:
+        """Что играет, пока пишется первый трек (кэш его не закрыл, ``waits``): тихий фон кэша стиля (сет темы,
+        K = 0) — «фон», иначе мост синтезом — «да»; ждать нечего — ``(None, "—")``."""
+        if not waits:
+            return None, "—"
+        quiet = self._background(plan.background, set_id, log) if plan.background is not None else None
+        return (quiet, "фон") if quiet else (bridge(bridge_style(genre)), "да")
+
+    def _background(self, track: CacheTrack, set_id: str, log: Any) -> Optional[Tuple[Callable[[str], Any], int]]:
+        """Фон сета темы (K = 0): файл кэша стиля тише (``SET_BACKGROUND_GAIN``) и не длиннее ``SET_BACKGROUND_S`` за
+        проход, темп — ``AUDIO_DEFAULT_BPM``; декодируется сразу — не вышло — ``None`` (мост синтезом)."""
+        try:
+            info = self._library().get_track_info(track.id)
+            if not info.get("success"):
+                raise AudioUnavailable("no_row", str(info.get("error")))
+            audio = audio_track(info, f"{set_id}:bg")
+        except AudioUnavailable as exc:
+            log.warning(f"⚠️ [gen set] {set_id} фон {track.id} не звучит: {exc} — мост синтезом")
+            return None
+        bpm = kn.AUDIO_DEFAULT_BPM
+        quiet = replace(audio, bpm_nominal=bpm, gain=kn.SET_BACKGROUND_GAIN,
+                        duration_s=min(audio.duration_s, kn.SET_BACKGROUND_S))
+        log.info(f"🎧 [gen set] {set_id} фон: {track.id} «{track.title}» {quiet.duration_s:.0f} с за проход, "
+                 f"громкость {kn.SET_BACKGROUND_GAIN:g}")
+        return (lambda deck: replace(quiet, track_id=f"{set_id}:00:{deck}")), bpm
 
     def _set_cover(self, plan: "SetRoutes") -> Optional[Callable[[CoverWork, SourceAsk, float], Any]]:
         """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; отказ
@@ -771,6 +846,7 @@ class SetRoutes:
     unknown: Tuple[str, ...] = ()
     theme_tags: str = ""
     theme_covers: Tuple[Tuple[CoverWork, Any], ...] = ()  # материал темы (В14, В17): (произведение, мелодии попыток)
+    background: Optional[CacheTrack] = None  # фон сета темы, пока пишется первый трек (K = 0, #3775)
 
     def keys(self) -> List[str]:
         """Ключ слота каждого трека: кавер (новый или из кэша) — ``cover|<стиль>|<пьеса>``, иначе стиль трека."""
@@ -847,5 +923,5 @@ class _LineBox:
 
 
 __all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
-           "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
+           "background_text", "theme_why", "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

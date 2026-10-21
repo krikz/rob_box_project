@@ -26,9 +26,11 @@ from rob_box_music import knowledge as kn
 from rob_box_music.choice import Chooser
 from rob_box_music.source import (CACHE, GENERATE, CacheTrack, CoverWork, Route, SourceAsk, SourceContext,
                                   choose_route, choose_with_fallback, cover_slot, gen_block, gen_kind, route_seconds,
-                                  set_cache, set_candidates, source_candidates)
+                                  set_cache, set_candidates, source_candidates, theme_cache)
 
 _LOG = logging.getLogger(__name__)
+#: Причина «генерации нет» у трека сета, которому хватило кэша по теме (``source.REASON_WORDS``).
+THEME_CACHE = "theme_cache"
 #: Сколько треков кэша читать в контекст (на роботе 13.10 их 9).
 CACHE_LIMIT = 200
 
@@ -180,6 +182,12 @@ class SourceRouter:
             out.append(route)
         return out
 
+    def style_cache(self, ask: SourceAsk) -> Optional[CacheTrack]:
+        """Первый трек кэша стиля сета без темы (``set_cache``: свежий раньше) — фон сета темы, пока пишется её первый
+        трек (#3775); кэша нет — ``None``."""
+        found = set_cache(ask, self.context(ask, for_set=True))
+        return found[0] if found else None
+
     def _executable(self, route: Route) -> str:
         """Кавер, песня и инструментал исполняются в фоне после выбора (мост играет сразу): выбор остаётся;
         исполнителя нет — ``not_wired``."""
@@ -223,7 +231,9 @@ class SetLedger:
     def context(self, ask: SourceAsk, work: Optional[CoverWork] = None) -> Tuple[SourceContext, bool]:
         """Контекст трека: кэш стиля и темы без взятых (и каверы, если у темы есть материал), лимиты за вычетом
         потраченного; ``True`` — есть запасной вариант задачи стиля или кавера ``work`` (генерация бесплатна).
-        Кэша темы нет и заказать нельзя (деньги, лимит, провайдер) — кэш стиля без темы: он лучше синтеза (В13)."""
+        Тема без каверов: трек кэша по теме (``source.theme_cache``, близкий по словам, не только метка) есть — он, без
+        заказа (``THEME_CACHE``): из N треков сета K берутся из кэша, N − K заказываются. Кэша темы нет и заказать
+        нельзя (деньги, лимит, провайдер) — кэш стиля без темы: он лучше синтеза (В13)."""
         base = self._base
         free = self._spare.get(ask.genre, 0) > 0 or (work is not None and self._spare.get(self._key(ask, work), 0) > 0)
         back = self._cost if free else 0.0
@@ -231,10 +241,19 @@ class SetLedger:
         covers = tuple(t for t in pool.cache if t.kind == "cover") if self._works else ()
         left = None if base.set_left is None else base.set_left - self.spent + back
         ctx = replace(pool, day_left=base.day_left - self.spent + back, set_left=left)
-        cache = set_cache(ask, pool, self._tags)
+        cache, ctx = self._cache(ask, pool, ctx, work)
         if not cache and self._tags and not free and gen_block(ctx, self._cost):
             cache = set_cache(ask, pool)
         return replace(ctx, cache=tuple(cache) + covers), free
+
+    def _cache(self, ask: SourceAsk, pool: SourceContext, ctx: SourceContext,
+               work: Optional[CoverWork]) -> Tuple[List[CacheTrack], SourceContext]:
+        """Кэш трека: у темы без каверов — треки по теме, и тогда без заказа (что есть по теме — сразу, заказ —
+        только недостающим, Шифу 21.10, #3775); иначе кэш стиля с меткой темы, как было."""
+        if not self._tags or work is not None:
+            return set_cache(ask, pool, self._tags), ctx
+        cache = theme_cache(ask, pool, self._tags)
+        return cache, (ctx.without_generate(THEME_CACHE) if cache else ctx)
 
     def take(self, ask: SourceAsk, route: Route, free: bool) -> None:
         cover = gen_kind(route.id) == "cover" or (route.kind == CACHE and getattr(route.track, "kind", "") == "cover")
@@ -252,4 +271,4 @@ class SetLedger:
             self._spare[key] = self._spare.get(key, 0) + 1
 
 
-__all__ = ["CACHE_LIMIT", "SetLedger", "SourceRouter", "cache_track", "cache_tracks", "day_left"]
+__all__ = ["CACHE_LIMIT", "THEME_CACHE", "SetLedger", "SourceRouter", "cache_track", "cache_tracks", "day_left"]

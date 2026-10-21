@@ -20,9 +20,11 @@ from rob_box_mcp_tools.engine.gen.instrumental import (InstrumentalMaker, Instru
 from rob_box_mcp_tools.engine.theme_grounding import order_theme
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import DeterministicChooser
-from rob_box_music.source import SourceAsk, theme_tags, theme_title
+from rob_box_music.model import AudioTrack, TrackError
+from rob_box_music.render.audio import render_audio
+from rob_box_music.source import CacheTrack, SourceAsk, theme_fit, theme_tags, theme_title
 
-from .test_adr0158_pr8_gen_set import Kie, _dj, _lib
+from .test_adr0158_pr8_gen_set import Kie, _dj, _fake_audio_track, _lib
 
 pytestmark = pytest.mark.unit
 
@@ -134,3 +136,97 @@ def test_instrumental_maker_sends_theme_to_kie_and_phrase_names_it(tmp_path):
     titled = InstrumentalResult("t", "Пленников прибывших эскобар", 149.0, theme=THEME)
     assert ready_text(titled, "club") == "А вот новый трек «Пленников прибывших эскобар», клуб, 2 минуты 29 секунд."
     assert wait_text("club", "V6", "", THEME).startswith("Сочиняю новый трек на тему «пленников прибывших эскобар»")
+
+
+# ── Решение Шифу 21.10: «надо сет 10 треков по теме, есть 2 — дозаказываем недостающие и сразу ставим что есть; если
+# нечего поставить — фоном тихо что-то включить и сказать, что готовим сет» ──────────────────────────────────────────
+
+
+def _near_cache(lib, n, title="Ночь в Эскобаре"):
+    """Кэш club, близкий к теме по названию (метки темы в prompt нет — заказан раньше под другие слова)."""
+    for i in range(n):
+        lib.save_track(b"MP3:150.0", prompt=kn.GEN_STYLES["club"].tags, title=f"{title} {i}", is_instrumental=True,
+                       kind="instrumental", style_key="club", genre="club", task_id=f"NEAR{i}", variant=0,
+                       duration_ms=150000)
+
+
+def _slots_line(caplog):
+    return next(r.message for r in caplog.records if "[gen set] слоты" in r.message)
+
+
+def test_theme_fit_is_share_of_theme_words_in_track():
+    near = CacheTrack("a", "Ночь в Эскобаре", style_key="club", prompt=kn.GEN_STYLES["club"].tags)
+    off = CacheTrack("b", "RoBBox club set", style_key="club", prompt=kn.GEN_STYLES["club"].tags)
+    labelled = CacheTrack("c", "x", style_key="club", prompt=f"club house, {THEME}")
+    assert theme_fit(THEME, near) == pytest.approx(1 / 3) and theme_fit(THEME, near) >= kn.THEME_FIT_MIN
+    assert theme_fit(THEME, off) == 0.0 and theme_fit("", near) == 0.0
+    assert theme_fit(THEME, labelled) == 1.0  # повтор темы — метка заказа
+    assert theme_fit("музыка для сета", off) == 0.0  # служебные слова темы не делают
+
+
+def test_theme_cache_covers_whole_set_no_orders(tmp_path, caplog):
+    """K = N: всё по теме из кэша (близкое по словам, не только метка) — ни одного заказа."""
+    lib = _lib(tmp_path)
+    _near_cache(lib, 3)
+    _club_cache(lib, 3)
+    with caplog.at_level("INFO"):
+        plan = _dj(lib, Kie()).gen_sets.plan(THEME, "club", DJ_PHRASE, 3, named=True)
+    assert [r.kind for r in plan.routes] == ["cache"] * 3
+    assert all("Эскобаре" in r.track.title for r in plan.routes)
+    assert plan.gen_reason() == "theme_cache"  # сет ничего не дозаказывает
+    line = _slots_line(caplog)
+    assert "по теме из кэша=3 заказ=0" in line and "фон=нет" in line and "хватило кэша" in line
+
+
+def test_two_of_ten_on_theme_order_eight_and_play_two_at_once(tmp_path, caplog, monkeypatch):
+    """K = 2 из N = 10: 2 трека темы — сразу (первым файл темы, без моста), 8 — заказ (4 задачи по 2 варианта)."""
+    monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
+    lib = _lib(tmp_path)
+    _near_cache(lib, 2)
+    _club_cache(lib, 4)  # кэш стиля без темы не берётся, пока можно заказать
+    dj = _dj(lib, Kie())
+    with caplog.at_level("INFO"):
+        plan = dj.gen_sets.plan(THEME, "club", DJ_PHRASE, 10, named=True)
+        out = dj.execute(action="start", theme=THEME, heard_text=DJ_PHRASE, tracks=10)
+    assert [r.kind for r in plan.routes] == ["cache"] * 2 + ["generate"] * 8
+    assert "по теме из кэша=2 заказ=8 (задач ≈4) фон=нет — дозаказ" in _slots_line(caplog)
+    assert out.success, out.error
+    first = dj._owner.played[0].code  # noqa: SLF001
+    assert "loop(" in first and "amp=var([1, 0]" in first  # трек темы, полная громкость, без моста
+    assert out.data["cached"] == 2
+    assert out.data["source_message"].endswith("2 из сочинённого раньше, остальные допишу по ходу.")
+
+
+def test_nothing_on_theme_quiet_background_phrase_and_ten_orders(tmp_path, caplog, monkeypatch):
+    """K = 0: тихий фон из кэша стиля, фраза кода «Готовлю сет на тему …», все 10 треков — заказ."""
+    monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
+    lib = _lib(tmp_path)
+    _club_cache(lib, 2)
+    dj = _dj(lib, Kie())
+    with caplog.at_level("INFO"):
+        plan = dj.gen_sets.plan(THEME, "club", DJ_PHRASE, 10, named=True)
+        out = dj.execute(action="start", theme=THEME, heard_text=DJ_PHRASE, tracks=10)
+    assert [r.id for r in plan.routes] == [GEN] * 10 and plan.background is not None
+    assert "по теме из кэша=0 заказ=10 (задач ≈5) фон=да" in _slots_line(caplog)
+    assert out.success, out.error
+    assert out.data["source_message"] == f"Готовлю сет на тему «{THEME}», пока немного фона."
+    first = dj._owner.played[0].code  # noqa: SLF001
+    assert f"amp=var([{kn.SET_BACKGROUND_GAIN:g}, 0]" in first and "loop(" in first
+    assert f"sus={kn.SET_BACKGROUND_S * kn.AUDIO_DEFAULT_BPM / 60:g}," in first  # проход фона не длиннее 60 с
+    assert any("мост=фон" in r.message for r in caplog.records)
+
+
+def test_nothing_on_theme_and_no_style_cache_bridge_by_synth(tmp_path, caplog):
+    """K = 0 и кэша стиля нет — как раньше: мост синтезом, фона нет."""
+    with caplog.at_level("INFO"):
+        plan = _dj(_lib(tmp_path), Kie()).gen_sets.plan(THEME, "club", DJ_PHRASE, 3, named=True)
+    assert plan.background is None and "фон=нет" in _slots_line(caplog)
+
+
+def test_audio_gain_scales_note_amp_and_default_keeps_old_code(tmp_path):
+    path = str(tmp_path / "t.wav")
+    loud = render_audio(AudioTrack("a", path, 150.0), "A", xfade_s=1.5, once=False)
+    quiet = render_audio(AudioTrack("a", path, 150.0, gain=0.35), "A", xfade_s=1.5, once=False)
+    assert "amp=var([1, 0]" in loud.code and "amp=var([0.35, 0]" in quiet.code
+    with pytest.raises(TrackError):
+        AudioTrack("a", path, 150.0, gain=0.0)
