@@ -9,7 +9,7 @@ error. Live repro (Vision Pi, 24.09.2026, session Claude)::
 
     tool: "Инструмент 'save_arrangement_preset' недоступен: …"   (отказ)
     spoken='Записала пресет, горный король теперь всегда будет
-            звучать прозрачно!' tools=['save_arrangement_preset', 'load_skill']
+            звучать прозрачно!' tools=['save_arrangement_preset', <тул подгрузки скилла — удалён ADR-0150 PR-6>]
     [CRITICAL] Ты ответил «Записала пресет…» → retry
     save_arrangement_preset → снова отказ
     spoken='Записала твоё предпочтение, в следующий раз горный
@@ -63,7 +63,7 @@ def _published_texts(node: _TestableDialogueNode) -> List[str]:
 
 
 def _always_refusing_preset_tools() -> FakeToolProvider:
-    """``save_arrangement_preset`` always refuses; ``load_skill`` is a no-op."""
+    """``save_arrangement_preset`` always refuses; ``get_music_state`` is a no-op."""
     tools = FakeToolProvider()
     tools.register(
         ToolSpec(
@@ -77,8 +77,8 @@ def _always_refusing_preset_tools() -> FakeToolProvider:
     )
     tools.register(
         ToolSpec(
-            name="load_skill",
-            description="Fake load_skill — no-op success.",
+            name="get_music_state",
+            description="Fake get_music_state — no-op success (в живом логе тут был тул подгрузки скилла, удалён ADR-0150 PR-6).",
             parameters={"type": "object", "properties": {}},
         ),
         lambda args: json.dumps({"ok": True}),
@@ -91,13 +91,13 @@ class TestActionClaimRequiresSuccessE2E(unittest.TestCase):
 
     def test_false_claim_after_tool_refusal_triggers_retry_then_honest_fallback(self):
         llm = _ScriptedLLMProvider([
-            # Turn 1: LLM calls save_arrangement_preset (refused) + load_skill
+            # Turn 1: LLM calls save_arrangement_preset (refused) + get_music_state
             # (ok), then claims success anyway.
             LLMResponse(
                 content="",
                 tool_calls=(
                     ToolCall(id="c1", name="save_arrangement_preset", arguments={}),
-                    ToolCall(id="c2", name="load_skill", arguments={"name": "composer"}),
+                    ToolCall(id="c2", name="get_music_state", arguments={"name": "composer"}),
                 ),
                 finish_reason="tool_calls",
             ),

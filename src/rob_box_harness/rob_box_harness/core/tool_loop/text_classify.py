@@ -79,12 +79,12 @@ _CONTEXT_TAG_RE: re.Pattern[str] = re.compile(r"<([A-Za-z][\w-]*)")
 
 
 def _catalog_identifiers() -> tuple[str, ...]:
-    """Имена тулов из единого каталога (``rob_box_core.tool_catalog``) + ``load_skill``.
+    """Имена тулов из единого каталога (``rob_box_core.tool_catalog``).
 
     Берутся только идентификаторы с ``_``: однословное имя (``say``) — это
     обычное слово речи, а не служебный идентификатор.
     """
-    return tuple(n for n in (*tool_names(), "load_skill") if "_" in n)
+    return tuple(n for n in tool_names() if "_" in n)
 
 
 def quoted_turn_context(text: str, context: str | None) -> str | None:

@@ -1315,7 +1315,7 @@ class TestPhantomActionClaimLive2559:
         вернул отказ («Инструмент 'save_arrangement_preset' недоступен»),
         LLM всё равно ответила «Записала пресет, горный король теперь
         всегда будет звучать прозрачно!» с ``tools=['save_arrangement_
-        preset', 'load_skill']``. До фикса #2942's ``CLAIM_JUSTIFYING_
+        preset', <тул подгрузки скилла>]`` (здесь — get_music_state). До фикса #2942's ``CLAIM_JUSTIFYING_
         TOOLS`` матчил по ИМЕНИ и считал заявление подкреплённым просто
         потому что тул был ВЫЗВАН — не проверяя, что он реально
         сработал. ``tool_error_occurred=True`` обязан НЕ дать тому же
@@ -1326,7 +1326,7 @@ class TestPhantomActionClaimLive2559:
                 "Записала пресет, горный король теперь всегда будет "
                 "звучать прозрачно!"
             ),
-            tools_called=("save_arrangement_preset", "load_skill"),
+            tools_called=("save_arrangement_preset", "get_music_state"),
             tool_error_occurred=True,
         )
         assert hit is not None, (
@@ -1769,7 +1769,7 @@ class TestBuildUniversalActionClaimRetryPromptToolError:
 
     :func:`build_universal_action_claim_retry_prompt` раньше всегда
     писал «но НЕ вызвал НИ ОДНОГО инструмента (tools=[])», что было бы
-    ложью для ``tools=['save_arrangement_preset', 'load_skill']`` —
+    ложью для ``tools=['save_arrangement_preset', <тул подгрузки скилла>]`` —
     инструмент КАК РАЗ был вызван, просто отказал. ``tool_error_
     occurred=True`` переключает текст на честную формулировку про
     ошибку/отказ и просит либо повторить, либо честно сообщить о

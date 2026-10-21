@@ -17,7 +17,6 @@ import time
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from rob_box_dialog.knowledge import STOP_CHOICES, STOP_CHOOSER_DEADLINE_MS
-from rob_box_mcp_tools.engine.chooser_model import ModelChooser, build_provider
 from rob_box_music.choice import Chooser, ChoiceQuestion, Option
 
 _LOG = logging.getLogger(__name__)
@@ -67,7 +66,13 @@ class StopChooser:
 
 def stop_chooser_from_env(env: Optional[Mapping[str, str]] = None,
                           log: Callable[[], Any] = lambda: _LOG) -> StopChooser:
-    """Chooser над ``llm_harness`` (ключ из env); нет ключа — без модели и одна строка в лог."""
+    """Chooser над ``llm_harness`` (ключ из env); нет ключа — без модели и одна строка в лог.
+
+    ``rob_box_mcp_tools`` — объявленная зависимость (``package.xml``); импорт здесь, а не наверху модуля, чтобы
+    импорт ``dialogue_node`` не тянул сетевой слой decision (httpx) — его зовут только при сборке ноды.
+    """
+    from rob_box_mcp_tools.engine.chooser_model import ModelChooser, build_provider  # noqa: PLC0415
+
     provider = build_provider("llm_harness", env, timeout_s=STOP_CHOOSER_DEADLINE_MS / 1000.0)
     if provider is None:
         log().warning("🤔 [stop-chooser] нет ключа/конфига llm_harness — спорный стоп = part_of_command")

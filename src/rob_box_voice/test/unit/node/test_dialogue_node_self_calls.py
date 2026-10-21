@@ -5,7 +5,7 @@
 
 Написан после реального инцидента в change'е skill-scoped-dialogue-context:
 рефакторинг вырезал из файла диапазон строк по двум якорям и вместе с
-целевым методом снёс два соседних (``_load_skill_prompts`` и
+целевым методом снёс два соседних (загрузку фрагментов скиллов и
 ``_on_prompt_stats``). Файл остался синтаксически корректным, вся
 существующая юнит-сюита осталась зелёной — потому что тесты
 ``dialogue_node`` конструируют ноду через ``object.__new__`` и НИКОГДА не
@@ -125,8 +125,8 @@ def test_every_self_call_resolves_to_something_defined(cls_name: str) -> None:
 def test_skill_pipeline_methods_are_present() -> None:
     """Точечная страховка на методы, которые уже терялись при рефакторинге.
 
-    ADR-0083 §2.3 — ``_load_skill_prompts`` мигрировал в
-    ``rob_box_harness.core.assembly.load_skill_prompts`` (PR #2276,
+    ADR-0083 §2.3 — загрузка фрагментов скиллов мигрировала в
+    ``rob_box_harness.core.assembly`` (PR #2276; скиллы удалены ADR-0150 PR-6,
     follow-up ADR-0083 §2.3), поэтому он больше не должен быть
     в этом списке (тест-страховка была именно против регрессии
     «пропал из ноды», теперь его там и нет by design).
@@ -137,10 +137,8 @@ def test_skill_pipeline_methods_are_present() -> None:
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    # ADR-0150 PR-6: скиллы удалены (срез тулов — core/tools_view_host.apply_tools_view), остаётся метрика промпта.
     for required in (
-        "_validate_skill_fragments",
-        "_activate_skill_for",
-        "_publish_skill_load_counters",
         "_on_prompt_stats",
     ):
         assert required in defined, f"{required} пропал из dialogue_node"

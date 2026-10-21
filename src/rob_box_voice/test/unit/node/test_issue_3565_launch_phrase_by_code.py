@@ -120,7 +120,7 @@ def _record(done, phrase="Ставлю «К Элизе».", intent=MediaIntent.P
 def test_router_launch_phrase_is_not_put_into_model_history(done, intent):
     n = _record(done, intent=intent)
     n._core.record_external_turn.assert_not_called()
-    assert [name for _at, name in n._media_actions] == list(done)  # гарды #2549/#2559 его по-прежнему видят
+    assert list(n._media_actions) == list(done)  # гарды #2549/#2559 его по-прежнему видят
 
 
 def test_router_stop_phrase_still_goes_into_model_history():

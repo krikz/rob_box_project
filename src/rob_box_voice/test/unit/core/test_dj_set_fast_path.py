@@ -1,7 +1,7 @@
 """Заказ сета словами человека запускает ``dj_set`` код, без LLM (ADR-0148; живой замер 06.10 19:08 UTC).
 
 «Робот, ты диджей 8битный и нас сегодня вечеринка любителей денди и классической музыки замути сэт на 30 минут»:
-STT 19:08:29.7 → ``process_input`` 30.2 → LLM ``load_skill`` 35.5 → LLM ``dj_set`` 44.4 → ``[music v2] started``
+STT 19:08:29.7 → ``process_input`` 30.2 → LLM подгрузка скилла 35.5 → LLM ``dj_set`` 44.4 → ``[music v2] started``
 46.7 — 17 с тишины. Грамматика видела DJ-запрос, но «и нас» (STT вместо «у нас») не выделило тему, реплика была
 «не закрыта» и ушла в LLM.
 
@@ -34,7 +34,7 @@ def _route(text: str, media: MediaState = MediaState()):
 
 def test_live_phrase_is_routed_to_dj_set_by_code():
     plan = _route(LIVE_1908)
-    assert plan is not None, "реплика ушла бы в LLM (load_skill + dj_set, ~14 с)"
+    assert plan is not None, "реплика ушла бы в LLM (подгрузка скилла + dj_set, ~14 с)"
     assert [c.name for c in plan.tool_calls] == ["dj_set"]
     # ADR-0153 S2: «8битный» — стиль chiptune (код), темой по-прежнему не становится
     assert plan.tool_calls[0].arguments == {"action": "start", "persona": "диджей 8битный", "style": "chiptune",
