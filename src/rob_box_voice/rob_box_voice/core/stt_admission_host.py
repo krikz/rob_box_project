@@ -172,6 +172,9 @@ class _DialogueSttHost:
         # Issue #1279 — «хватит диджеить» is music-stop, not silence.
         return is_music_stop_command(text_lower)
 
+    def stop_music_quietly(self) -> bool:
+        return self._tier1().stop_music()
+
     def handle_command_intent(self, text: str, text_lower: str) -> bool:
         node = self._node
         if not getattr(node, "_command_intent_gate_enabled", False):

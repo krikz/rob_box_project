@@ -257,6 +257,10 @@ class _RecordingHost:
         self.calls.append(f"is_music_stop({text_lower!r})")
         return self._is_music_stop
 
+    def stop_music_quietly(self) -> bool:
+        self.calls.append("stop_music_quietly")
+        return True
+
     def handle_command_intent(self, text: str, text_lower: str) -> bool:
         self.calls.append(f"handle_command_intent({text!r},{text_lower!r})")
         return self._handle_command_intent_match

@@ -255,3 +255,10 @@ phrases:
      must_not: ["llm_call_for_stop", "silenced_for_10min"], notes: "#3696 В19: ясный стоп + новая команда: речь рвётся ≤ 300 мс, «спой другую» — дальше по приёму"}
   - {id: r83, text: "Робот, стоп. Включи музыку", source: issue, expected: {tier1: stop_all},
      must_not: ["llm_call_for_stop", "silenced_for_10min"], notes: "#3696 В19: ясный стоп + новая команда"}
+  # ---- PR-6 ч.3 (#3696): музыку по словам решает код (ADR §9.1 ревизия 5) ----
+  - {id: r84, text: "Робот, включи что-нибудь из библиотеки", source: log, expected: {tier1: music_library},
+     must_not: ["llm_call", "tool:generate_music"],
+     notes: "21.10 hotpatch ч.2: play_named промахнулся → LLM list→play; теперь поиск/список → трек выбирает код → play"}
+  - {id: r85, text: "Робот, выключи музыку", source: issue, expected: {tier1: music_stop_silenced},
+     must_not: ["llm_call", "spoken_in_silence"],
+     notes: "в SILENCED (после «замолчи»): стоп деки и mp3 молча; раньше SilencedStateStep отбрасывал реплику"}

@@ -329,6 +329,12 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
+    def stop_music_quietly(self) -> bool:
+        """ADR-0150 PR-6 (#3696) — стоп музыки и сета в SILENCED без фразы (§6.3: в тишине ничего не звучит).
+        ``False`` — нечем исполнить (нет MCP-исполнителя), реплика идёт дальше по шагам.
+        """
+        ...
+
     def handle_command_intent(self, text: str, text_lower: str) -> bool:
         """Issue #1279 — when ``command_parser`` recognises a non-LLM
         intent (NAVIGATE/STOP/STATUS/MAP/...), run it via command_node
@@ -619,7 +625,8 @@ class Tier1Step:
     """Tier-1 закрытая грамматика (ADR-0150 PR-6 #3696): стоп, тишина и её снятие, громкость по каналу, голос,
     новая сессия — кодом, 0 вызовов LLM; стоит ДО :class:`SilencedStateStep`: в SILENCED работает всё незвучащее.
 
-    «хватит диджеить», «стоп музыку» — стоп музыки, его исполняет :class:`MediaCommandStep` (``PASS``). Ясный стоп
+    «хватит диджеить», «стоп музыку» — стоп музыки, его исполняет :class:`MediaCommandStep` (``PASS``); в SILENCED
+    (туда медиакоманды не доходят) — молча здесь же (``host.stop_music_quietly``, #3696). Ясный стоп
     с продолжением («хватит, спой другую») — стоп и остаток дальше по шагам (тоже Tier-1, если он им покрыт).
     Спорный стоп (В19, «спой песню про стоп») — ``host.dispute_stop``: Chooser решает асинхронно, реплика пока
     закрыта (``HANDLED``), при ``part_of_command`` она продолжит приём со следующего шага.
@@ -629,6 +636,8 @@ class Tier1Step:
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
         if host.is_music_stop_command(ctx.text_lower):
+            if ctx.is_silenced and host.stop_music_quietly():
+                return handled(self.name, "music_stop_silenced")
             return PASS
         command = host.tier1_match(ctx)
         if command is None:

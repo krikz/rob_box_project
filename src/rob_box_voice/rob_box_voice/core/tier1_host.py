@@ -116,7 +116,15 @@ class Tier1Runner:
             pub.publish(fill_intent(IntentMsg(), stop, epoch=gate().current if gate else 0))
         player = getattr(node, "_music_player_state", None)
         if player is not None and (player.is_playing() or player.dj):
-            self._spawn(self._tools((MediaToolCall(DJ_SET_TOOL, {"action": "stop"}), MediaToolCall("stop_music", {}))))
+            self.stop_music()
+
+    def stop_music(self) -> bool:
+        """Стоп деки/сета и mp3 без фразы (стоп всего; «выключи музыку» в SILENCED, #3696). Нет исполнителя — ``False``."""
+        if getattr(self._node, "_scheduler_executor", None) is None:
+            return False
+        self._node.get_logger().info("🔇 [tier1] стоп музыки без фразы: dj_set(stop) + stop_music")
+        self._spawn(self._tools((MediaToolCall(DJ_SET_TOOL, {"action": "stop"}), MediaToolCall("stop_music", {}))))
+        return True
 
     def _run_silence(self, _command: Tier1Command, _text: str) -> None:
         if self._silenced():

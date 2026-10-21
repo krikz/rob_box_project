@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from rob_box_music.dj_line import SET_NOT_FOUND
 
+from .library_command import run_library_command
 from .media_phrases import dj_started_text, launch_text, source_phrase
 from .media_router import DJ_SET_TOOL, NOT_STARTED_TEXT, MediaPlan
 from .music_player_state import MusicEventLog
@@ -69,6 +70,8 @@ async def run_media_plan(
     """
     if plan.cancel_inflight and callable(begin_turn):
         begin_turn()
+    if plan.library:  # #3696: поиск/список → трек выбирает код → play
+        return await run_library_command(plan, call_tool)
     ok, phrase, done, contents = True, "", [], {}
     for call in plan.tool_calls:
         call_ok, content = await call_tool(call)
@@ -91,6 +94,10 @@ async def _confirm_started(
     first = plan.tool_calls[0].name
     data = tool_data(contents.get(first, "")) or {}
     track_id = data.get("track_id")
+    if not track_id and data.get("ok") and data.get("pending"):
+        # песня пишется, моста нет (#3696): фраза ожидания — ``source_message`` тула, о запуске скажет сама песня
+        log(f"🎛️ [media-router v2] {first} pending={data['pending']} без моста — фраза ожидания тула")
+        return True, launch_text(plan.say_ok, data)
     begin = time.monotonic()
     event = await asyncio.to_thread(events.wait, track_id, STARTED_WAIT_S) if events and track_id else None
     waited = time.monotonic() - begin
