@@ -110,6 +110,15 @@ class PromptStats:
     blocks: ContextBlocks | None = None
 
 
+def answering_provider(llm: Any) -> str:
+    """Имя провайдера, ответившего на последний вызов: у цепочки с фолбеком — ``answered_by``, иначе ``name`` LLM.
+
+    ``name`` обёртки (``health-aware-fallback``) один на все провайдеры, и метрика A5 по провайдерам по нему не
+    собирается (живая проверка #3696 ч.4, 21.10).
+    """
+    return getattr(llm, "answered_by", None) or getattr(llm, "name", "unknown")
+
+
 #: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
 #: Harness остаётся без зависимости от prometheus_client и от rclpy —
 #: он только сообщает число, а публикует его тот, кто умеет.
@@ -2183,7 +2192,7 @@ class AgentCore:
             observer(PromptStats(
                 prompt_tokens=reported if reported > 0 else estimate_prompt_tokens(messages, tools),
                 estimated=reported <= 0,
-                provider=getattr(self._llm, "name", "unknown"),
+                provider=answering_provider(self._llm),
                 skill=self._view_label,
                 blocks=measure(messages, tools, self._turn_snapshot),
             ))

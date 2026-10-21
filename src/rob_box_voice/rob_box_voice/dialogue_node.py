@@ -100,6 +100,7 @@ from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 
 from rob_box_voice.core.command_parser import CommandParser
+from rob_box_voice.core import command_bridge
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_voice.core.provider_reporter import ProviderStateReporter, on_provider_states
 from rob_box_voice.core.music_player_state import (
@@ -1081,6 +1082,10 @@ class DialogueNode(DialogueStageMixin, Node):
         # Первый в списке = primary, остальные = fallbacks.
         # Каждый провайдер настраивается в своей YAML-секции (<name>.base_url и т.д.).
         self.declare_parameter("llm_providers", "deepseek")
+        # ADR-0150 §4.5 (#3696 ч.5): провайдеры, которые отвечают ОДНОЙ командой (поле speech, решение О4);
+        # форму запроса (tool_choice | json_in_text | …) выбирает код по capabilities адаптера —
+        # core/command_bridge.py. Пусто — все на speak_text, как до моста.
+        self.declare_parameter("llm_command_providers", "")
         # Per-provider параметры — каждая YAML-секция провайдера
         # (minimax:, deepseek:, mimo:, qwen:) отдаёт свои настройки
         # через dotted-имена.  Пустая строка → используются
@@ -1436,6 +1441,8 @@ class DialogueNode(DialogueStageMixin, Node):
             ),
             dsm=self._dsm,
             user_id="default",
+            wrap_provider=command_bridge.wrapper_for(
+                self.get_parameter("llm_command_providers").value, log=self.get_logger().info),
         )
 
     def _on_prompt_stats(self, stats: Any) -> None:
