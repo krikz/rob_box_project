@@ -130,6 +130,18 @@ def test_fake_caps_select_their_own_mode(mode):
     assert select_mode(caps_for_mode(mode)) == mode
 
 
+def test_thinking_adapter_is_never_asked_for_a_required_tool() -> None:
+    """#3798: модель в режиме размышлений отвечает 400 на ``tool_choice="required"`` — такой адаптер получает
+    команду JSON-ом; DeepSeek размышления выключает сам (``thinking: disabled``) и честно идёт в ``tool_choice``."""
+    import dataclasses
+
+    from rob_box_llm.providers.deepseek import DeepSeekProvider
+
+    thinking = dataclasses.replace(caps_for_mode("tool_choice"), thinking=True, json_mode=True)
+    assert select_mode(thinking) == "json_mode"
+    assert select_mode(DeepSeekProvider(api_key="sk-test").capabilities) == "tool_choice"
+
+
 @pytest.mark.parametrize("mode", MODE_ORDER)
 def test_field_channel_parses_every_reference_phrase(mode):
     channel = FieldChannel(SCHEMA)

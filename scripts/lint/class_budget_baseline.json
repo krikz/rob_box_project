@@ -12,7 +12,7 @@
       "methods": 24
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
-      "wmc": 83,
+      "wmc": 82,
       "methods": 9
     },
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider": {

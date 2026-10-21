@@ -14,10 +14,12 @@ P0 plan ("Что НЕ делаем: не трогаем существующих
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses
 import json
 import logging
 import os
+from types import MappingProxyType
 from typing import Any, AsyncIterator, Iterable, Mapping, Optional, Union
 
 from openai import (
@@ -260,6 +262,8 @@ class _OpenAICompatibleProvider(LLMProvider):
         thinking=False,
         max_context_tokens=0,
     )
+    #: Поля ``extra_body`` каждого запроса адаптера (``LLMSettings.extra`` их не перекрывает).
+    _ALWAYS_BODY: Mapping[str, Any] = MappingProxyType({})
 
     def __init__(
         self,
@@ -380,10 +384,9 @@ class _OpenAICompatibleProvider(LLMProvider):
         # 🔴 FIX (live 06.08): кастомные поля провайдеров — через extra_body,
         # НЕ в kwargs! OpenAI SDK строго типизирован: create(thinking=...) →
         # TypeError → AgentCore error → «задумался» (коммит b5879b79).
-        # DeepSeek V4 думает по умолчанию (thinking mode) — отключаем.
-        extra_body: dict[str, Any] = {}
-        if self.name == "deepseek":
-            extra_body.setdefault("enable_thinking", False)
+        # Поля, которые адаптер шлёт всегда (DeepSeek V4 — выключить размышления, #3798).
+        # Глубокая копия: запрос не делит изменяемые словари с константой класса.
+        extra_body: dict[str, Any] = copy.deepcopy(dict(self._ALWAYS_BODY))
         # s.extra (в т.ч. MiniMax thinking={"type":"disabled"} из
         # DEFAULT_THINKING_POLICY) — тоже кастомные поля → extra_body.
         if s.extra:
@@ -746,9 +749,15 @@ class DeepSeekProvider(_OpenAICompatibleProvider):
     DEFAULT_BASE_URL = "https://api.deepseek.com"
     DEFAULT_MODEL = "deepseek-v4-flash"
 
+    #: deepseek-v4-flash думает по умолчанию. ``enable_thinking: false`` его НЕ выключает (замер API 21.10, #3798:
+    #: ``reasoning_content`` есть), и тогда API отвечает 400 на ``tool_choice="required"`` и на второй запрос хода
+    #: после тула («reasoning_content must be passed back»). Выключает ``thinking: {"type": "disabled"}``.
+    _ALWAYS_BODY = MappingProxyType({"thinking": {"type": "disabled"}})  # тело JSON-ом: внутри обычный dict
+
     # ADR-0150 §4.5: DeepSeek honours ``tool_choice`` and ``json_object``
     # response_format (api-docs.deepseek.com). No JSON-schema structured
-    # output, no reasoning tokens in ``deepseek-flash``; 128K context.
+    # output; reasoning is switched off on every request (``_ALWAYS_BODY``), so ``thinking=False`` and
+    # ``tool_choice=True`` are honest (#3798); 128K context.
     _CAPABILITIES = dataclasses.replace(
         _OpenAICompatibleProvider._CAPABILITIES,
         tool_choice=True,
