@@ -20,12 +20,12 @@ from rob_box_dialog.speaker_adapter import (
     STRANGER,
     AskCandidate,
     AskPolicy,
+    TentativeStates,
     ask_after_turn,
     speaker_block,
     speaker_ref,
 )
 from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
-from rob_box_voice.core.identity_ack import tentative_plan
 from rob_box_voice.core.identity_question import open_question, set_speaker
 
 
@@ -35,6 +35,15 @@ def ask_policy(node: Any) -> AskPolicy:
     if policy is None:
         policy = node._identity_ask = AskPolicy()
     return policy
+
+
+def tentative_states(node: Any) -> TentativeStates:
+    """Гипотезы имени по собеседникам (#2809); окна — параметры ноды; лениво — для нод из ``object.__new__``."""
+    states = getattr(node, "_tentative", None)
+    if states is None:
+        states = node._tentative = TentativeStates(getattr(node, "_identity_answer_window_sec", 180.0),
+                                                   getattr(node, "_identity_question_session_gap_sec", 120.0))
+    return states
 
 
 def note_face(node: Any, msg: Any) -> None:
@@ -125,7 +134,7 @@ def plan_identity_question(node: Any, result: Any, *, other_question: bool) -> O
         f"👥 [В17 #3695] вопрос об имени: {verdict.describe(now)} (kind={cand.kind} key={cand.key[:8]})")
     if verdict.verdict != ASK:
         return None
-    state = (getattr(node, "_identity_confirmations", None) or {}).get(cand.key)
+    state = tentative_states(node).get(cand.key)
     if state is not None:
         state.update(asked=True, asked_utterance_id=cand.utterance_id)
     node._identity_question_asked_in_turn = True  # гарды: вопрос в этом ходе будет — ретрая поверх нет (#2914)
@@ -135,5 +144,6 @@ def plan_identity_question(node: Any, result: Any, *, other_question: bool) -> O
 def ask_planned(node: Any, cand: Optional[AskCandidate]) -> None:
     """Задать вопрос, решённый :func:`plan_identity_question`, последней репликой хода."""
     if cand is not None:
-        node._speak_identity_question(tentative_plan(cand.question(), cand.kind, cand.name), after_answer=True)
+        node._speak_identity_question({"kind": "tentative", "question": cand.question(), "name": cand.name},
+                                      after_answer=True)
         open_question(node, cand)

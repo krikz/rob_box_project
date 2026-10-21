@@ -188,6 +188,35 @@ class AskPolicy:
         self._heard.pop(key, None)
 
 
+class TentativeStates:
+    """Гипотеза имени по собеседнику («<Имя>, это ты?», #2809/#2888; ADR-0150 §7.5): спрашивали ли, что он ответил,
+    подтверждено ли имя и рос ли профиль. Ключ — ``person_ref``.
+
+    Состояние переживает паузу ``answer_window_s``, пока ответа нет (ответ бывает через 84 с — run 35857257981), и
+    ``session_gap_s`` после решения; дольше — новый разговор, состояние с нуля. Время передаёт вызывающий.
+    """
+
+    def __init__(self, answer_window_s: float = 180.0, session_gap_s: float = 120.0) -> None:
+        self.answer_window_s, self.session_gap_s = answer_window_s, session_gap_s
+        self._states: Dict[str, Dict[str, Any]] = {}
+
+    def get(self, person_ref: str) -> Optional[Dict[str, Any]]:
+        return self._states.get(person_ref)
+
+    def fresh(self, person_ref: str, now: float) -> Dict[str, Any]:
+        """Состояние собеседника на эту фразу: прежнее, если пауза не дольше окна, иначе новое."""
+        state = self._states.get(person_ref)
+        if state is None or now - state.get("last_seen_at", 0.0) > self._window(state):
+            state = self._states[person_ref] = {"asked": False, "confirmed": None, "name": None,
+                                                "growth_registered": False}
+        state["last_seen_at"] = now
+        return state
+
+    def _window(self, state: Mapping[str, Any]) -> float:
+        waiting = state.get("asked") and state.get("confirmed") is None
+        return self.answer_window_s if waiting else self.session_gap_s
+
+
 @dataclass(frozen=True)
 class AskCandidate:
     """Кого можно спросить после хода: ``single`` с именем-гипотезой — «<Имя>, это ты?», иначе — «Как тебя зовут?»."""

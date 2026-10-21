@@ -14,6 +14,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -31,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_dialog.speaker_adapter import FaceSightings  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
-from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section, tentative_states  # noqa: E402
 
 ASK_NAME = "Как тебя зовут?"
 
@@ -67,8 +68,6 @@ def _node():
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
     n._faces = FaceSightings()
@@ -80,7 +79,7 @@ def _node():
 
     async def prepare(**kw):
         user_input = await n._apply_speaker_identity(kw["user_input"], None, kw.get("utterance_id"))
-        return user_input, "\n".join(n._pending_identity_hint_lines())
+        return user_input, ""
 
     async def invoke_llm(**kw):
         n.llm_inputs.append(kw.get("user_input"))
@@ -157,7 +156,7 @@ def test_tentative_voice_asks_confirm_after_accumulation_not_in_first_turn():
     _turn(n, "как дела", _Result("Нормально."))
     _turn(n, "что нового", _Result("Всё по-старому."))
     assert n.tts[-1] == "Саша, это ты?"
-    assert n._identity_confirmations["sid-sasha"]["asked"] is True
+    assert tentative_states(n).get("sid-sasha")["asked"] is True
 
 
 def test_live_robot_21_10_chat_with_reads_and_llm_animation_asks_once_after_third_phrase():
@@ -218,8 +217,7 @@ def test_verbal_yes_makes_the_name_confirmed_in_the_snapshot():
     n = _node()
     n._current_speaker = {"is_known": True, "speaker_id": "sid-sasha", "name": None, "tentative_name": "Саша",
                           "tentative_kind": "single", "confidence": 0.75}
-    n._identity_confirmations["sid-sasha"] = {"asked": True, "confirmed": None, "name": None,
-                                              "growth_registered": False}
+    tentative_states(n).fresh("sid-sasha", time.monotonic())["asked"] = True
     n._confirm_tentative_speaker("sid-sasha", "Саша", "да, это я", "utt-x")
     assert speaker_section(n) == {"name": "Саша", "name_state": "confirmed"}
 

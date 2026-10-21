@@ -139,8 +139,6 @@ def dialogue_node():
     n._speaker_lock = threading.Lock()
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._task_lock = threading.Lock()
     n._run_task = MagicMock()
     n._identity_question_session_gap_sec = 120.0

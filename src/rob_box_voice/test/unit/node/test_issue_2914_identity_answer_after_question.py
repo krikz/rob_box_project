@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import rob_box_voice.dialogue_node as dialogue_node_module  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import tentative_states  # noqa: E402
 from identity_v17_legacy import no_accumulation  # noqa: E402
 
 SASHA_ID = "3450f4fb-0000-0000-0000-000000000000"
@@ -128,8 +129,6 @@ def _node():
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     # Прод-значения из config/dialogue_node.yaml.
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
@@ -146,7 +145,7 @@ def _node():
         user_input = await n._apply_speaker_identity(
             kw["user_input"], None, kw.get("utterance_id")
         )
-        dynamic = "\n".join(n._pending_identity_hint_lines())
+        dynamic = ""
         return user_input, dynamic
 
     async def invoke_llm(**_kw):
@@ -182,7 +181,7 @@ def _answer_lines(n):
 
 
 def _state(n):
-    return n._identity_confirmations[SASHA_ID]
+    return tentative_states(n).get(SASHA_ID)
 
 
 def _second_question_asked(n, clock):

@@ -261,3 +261,21 @@ def test_question_texts_come_from_phrases():
 def test_speaker_block_names_only_confirmed(ref, block):
     """Эпизод Б 20.10: гипотеза «Литвин» в снимок не попадает — обращаться по ней нельзя."""
     assert speaker_block(ref) == block
+
+
+# -- состояние гипотезы имени (#2809 -> speaker_adapter, #3695 ч.2d) ------------------------------------------
+
+
+def test_tentative_state_survives_answer_window_while_waiting_then_session_gap():
+    from rob_box_dialog.speaker_adapter import TentativeStates
+
+    states = TentativeStates(answer_window_s=180.0, session_gap_s=120.0)
+    state = states.fresh("p1", 0.0)
+    state["asked"] = True                                   # вопрос задан, ответа ждём
+    assert states.fresh("p1", 170.0) is state               # 84 с и даже 170 с — ответ ещё засчитывается
+    state["confirmed"] = True                               # ответ получен — окно сессии
+    assert states.fresh("p1", 289.0) is state
+    fresh = states.fresh("p1", 410.0)                       # пауза 121 с > 120 с — новый разговор
+    assert fresh is not state and fresh == {"asked": False, "confirmed": None, "name": None,
+                                            "growth_registered": False, "last_seen_at": 410.0}
+    assert states.get("p1") is fresh and states.get("p2") is None

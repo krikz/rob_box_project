@@ -252,6 +252,7 @@ from rob_box_voice.core.speaker_turn import (
     note_interlocutor,
     plan_identity_question,
     speaker_section,
+    tentative_states,
 )
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
@@ -574,18 +575,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # Прокидываем параметры в сам шов — ADR-0139 §2.2. Вынесено в
         # helper, чтобы __init__ оставался в CC-budget ADR-0021.
         self._configure_face_voice_hint()
-        # ("<Имя>, это ты?" / "Как тебя зовут?"), не чаще одного раза за
-        # сессию на кандидата. Ключ -- полный speaker_id (см.
-        # _tentative_session_state); значение -- {"asked", "confirmed",
-        # "name", "growth_registered", "last_seen_at"}. Сколько паузы
-        # переживает состояние -- см. _tentative_state_window_sec
-        # (identity_answer_window_sec / identity_question_session_gap_sec).
-        self._identity_confirmations: dict = {}
-        # Подсказка-гипотеза для _build_dynamic_system_context, выставляется
-        # в _apply_speaker_identity РОВНО на тот один раз, когда решаем
-        # спросить, и потребляется/обнуляется при сборке system_context той
-        # же реплики -- см. _pending_identity_hint_lines.
-        self._pending_identity_hint: Optional[dict] = None
+        # Гипотеза имени по собеседнику (#2809) — speaker_turn.tentative_states (ADR-0150 §7.5, #3695).
         # Issue #2828 -- переспрос по ack регистрации (voice_conflict /
         # name_twin): придержать до выдачи ответа хода, затем прочитать
         # ответ человека. См. rob_box_voice.core.identity_ack.
@@ -2947,10 +2937,9 @@ class DialogueNode(DialogueStageMixin, Node):
                 # разрешён ли ещё один вопрос в этой сессии
                 # (identity_question_session_gap_sec), был ли уже ответ
                 # ("да"/"нет"), и либо переиспользует confident-путь
-                # (после словесного "да"), либо кладёт разовую
-                # подсказку-гипотезу для _build_dynamic_system_context
-                # (см. _pending_identity_hint_lines), либо просто ставит
-                # ничего: имени в снимке нет.
+                # (после словесного "да"), либо ставит кандидата на вопрос
+                # (правило В17 -- после хода, core/speaker_turn); имени-
+                # гипотезы в снимке хода нет (#3695).
                 user_input = self._handle_tentative_speaker(
                     sp, user_input, utterance_id
                 )
@@ -2962,43 +2951,13 @@ class DialogueNode(DialogueStageMixin, Node):
     # тот реагирует на ack регистрации (event="registered", синхронный
     # fire-and-forget сразу после явного register_speaker), а здесь нет
     # никакого ack: passive identify() просто идёт каждой репликой.
-    # Issue #2888: вопрос ОДИН раз за сессию задаёт сам робот -- тем же
-    # hold/replace-механизмом #2828 (_queue_identity_question), он
-    # заменяет ответ хода; «если уместно» на усмотрение LLM не срабатывало
-    # (run 35903232434). LLM получает лишь запрет называть имена.
+    # Issue #2888: вопрос ОДИН раз за сессию задаёт сам робот, «если
+    # уместно» на усмотрение LLM не срабатывало (run 35903232434). С #3695
+    # он звучит после ответа хода (правило В17, core/speaker_turn), а имени-
+    # гипотезы LLM не видит (раздел speaker снимка).
     # Ответ читается на СЛЕДУЮЩЕЙ реплике простой эвристикой
     # (classify_identity_confirmation) -- без NLU, без второго диалогового
     # состояния поверх обычного turn-цикла.
-
-    def _tentative_state_window_sec(self, state: dict) -> float:
-        """Сколько секунд паузы переживает ``state``.
-
-        Вопрос задан, ответа ещё нет -- ``identity_answer_window_sec``:
-        ответ приходит следующей репликой, но она бывает сильно позже
-        (живой прогон 35857257981: 84s, шаги харнесса ~60s). Решённое
-        состояние ("да"/"нет") -- ``identity_question_session_gap_sec``.
-        """
-        if state.get("asked") and state.get("confirmed") is None:
-            return getattr(self, "_identity_answer_window_sec", 180.0)
-        return getattr(self, "_identity_question_session_gap_sec", 120.0)
-
-    def _tentative_session_state(self, speaker_id: str) -> dict:
-        """Состояние переспроса для ``speaker_id`` -- новое, если пауза
-        дольше окна этого состояния (см. ``_tentative_state_window_sec``)."""
-        now = time.monotonic()
-        state = self._identity_confirmations.get(speaker_id)
-        if state is None or (
-            now - state.get("last_seen_at", 0.0)
-        ) > self._tentative_state_window_sec(state):
-            state = {
-                "asked": False,
-                "confirmed": None,
-                "name": None,
-                "growth_registered": False,
-            }
-            self._identity_confirmations[speaker_id] = state
-        state["last_seen_at"] = now
-        return state
 
     def _is_reply_after_question(
         self, state: dict, utterance_id: Optional[str]
@@ -3078,7 +3037,7 @@ class DialogueNode(DialogueStageMixin, Node):
             self._current_speaker.pop("tentative_name", None)
             self._current_speaker.pop("tentative_conf", None)
             self._current_speaker.pop("tentative_kind", None)
-        state = self._identity_confirmations.get(speaker_id)
+        state = tentative_states(self).get(speaker_id)
         if state is not None and state.get("growth_registered"):
             # Отдельная строка для реплик ПОСЛЕ подтверждения -- по ней
             # E2E (n704) отличает "имя из пережившего паузу состояния" от
@@ -3224,15 +3183,8 @@ class DialogueNode(DialogueStageMixin, Node):
             # (core/speaker_turn.plan_identity_question): не на команду, не раньше N-й фразы, один раз.
             self._identity_ask_candidate = AskCandidate(
                 full_sid, tentative_kind, tentative_name, utterance_id, user_input)
-            self._pending_identity_hint = {
-                "kind": tentative_kind,
-                "name": tentative_name,
-                "confidence": float(
-                    sp.get("tentative_conf") or sp.get("confidence") or 0.0
-                ),
-            }
             self.get_logger().info(
-                f"👤 [issue 2809] identity question hint set: "
+                f"👤 [issue 2809] identity question candidate: "
                 f"kind={tentative_kind} (id={full_sid[:8]})"
             )
         return user_input
@@ -3245,7 +3197,7 @@ class DialogueNode(DialogueStageMixin, Node):
         if not full_sid:
             return user_input
 
-        state = self._tentative_session_state(full_sid)
+        state = tentative_states(self).fresh(full_sid, time.monotonic())
         intro = getattr(self, "_turn_self_intro", None)
         if intro:
             return self._tentative_with_self_intro(
@@ -3498,46 +3450,6 @@ class DialogueNode(DialogueStageMixin, Node):
             memory = self._music_state_memory = MusicStateMemory()
         return memory
 
-    def _pending_identity_hint_lines(self) -> list:
-        """Issue #2809 (продолжение) -- строки подсказки-гипотезы для
-        ``<user_profile>``, выставленной ``_handle_tentative_speaker`` этой
-        же реплики. Потребляет и обнуляет ``self._pending_identity_hint``
-        сразу -- подсказка одноразовая, следующий вызов
-        ``_build_dynamic_system_context`` (следующая реплика) её уже не
-        увидит, даже если ``_apply_speaker_identity`` почему-то не
-        вызовется.
-
-        ``contested`` (n210: голос похож на нескольких людей с разными
-        именами) НИКОГДА не несёт имени кандидата -- ни одного, даже в
-        рамках "как его зовут". ``single`` с issue #2888 тоже без имени:
-        вопрос с именем задаёт робот сам (``_ask_tentative_identity``).
-        """
-        hint = getattr(self, "_pending_identity_hint", None)
-        if not hint:
-            return []
-        self._pending_identity_hint = None
-        # Issue #2888 -- вопрос задаёт робот сам (_ask_tentative_identity),
-        # и он заменяет ответ этого хода. Имя-гипотезу LLM больше не
-        # получает: иначе она звучала как факт и оседала в истории диалога.
-        if hint.get("kind") == "single" and hint.get("name"):
-            return [
-                "    <identity_question_rule>Голос похож на знакомого, "
-                "но биометрия не уверена, кто это. НЕ называй никаких "
-                "имён и не говори, что узнал. Вопрос о личности робот "
-                "задаёт сам, ответ придёт следующей репликой; сама про "
-                "личность не переспрашивай.</identity_question_rule>",
-            ]
-        if hint.get("kind") == "contested":
-            return [
-                "    <identity_question_rule>Голос похож сразу на "
-                "нескольких знакомых с разными именами -- кто именно из "
-                "них, неясно. НЕ называй никаких имён и не предполагай, "
-                "кто это. Вопрос «Как тебя зовут?» робот задаёт сам; "
-                "сама про личность не переспрашивай."
-                "</identity_question_rule>",
-            ]
-        return []
-
     def _build_dynamic_system_context(
         self, tg_chat_id: Optional[int] = None
     ) -> str:
@@ -3555,7 +3467,6 @@ class DialogueNode(DialogueStageMixin, Node):
         profile = list(user_profile_lines(sp_name, sp, tg_chat_id))
         if tg_chat_id is None:
             # Issue #2809/#2828 -- разовые подсказки про ГОЛОС в комнате: TG-ход их не тратит.
-            profile.extend(self._pending_identity_hint_lines())
             profile.extend(self._identity_ack_state().pop_hint_lines())
         # ADR-0150 §7.3 (В12): ≤ 1 свежая неадресованная фраза того же направления/человека — структурой;
         # остальной бэклог (ТВ, чужие разговоры) — только счётчик фоновой речи.
