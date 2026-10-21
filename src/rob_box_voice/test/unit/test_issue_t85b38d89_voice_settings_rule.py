@@ -51,12 +51,22 @@ MASTER_PROMPT = (
     / "master_prompt_compact.txt"
 )
 
-_SKILL_FRAGMENT = (
-    Path(__file__).resolve().parents[2]
-    / "prompts"
-    / "skills"
-    / "voice-tts.txt"
-)
+class _CatalogContract:
+    """Контракт ``set_pitch`` из каталога тулов (имя + описание + enum) — его видит LLM.
+
+    Фрагмент ``prompts/skills/voice-tts.txt`` удалён вместе со скиллами (ADR-0150 PR-6): знание о шаге, диапазоне
+    и неработающем ``<prosody pitch>`` живёт в описании схемы ``set_pitch``.
+    """
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        from rob_box_core.tool_catalog import get_tool
+
+        entry = get_tool("set_pitch")
+        enum = entry.parameters["properties"]["action"].get("enum", [])
+        return f"set_pitch(action ∈ {enum}): {entry.description}"
+
+
+_SKILL_FRAGMENT = _CatalogContract()
 
 
 def _read(prompt_path: Path) -> str:
@@ -170,7 +180,7 @@ def test_voice_settings_rule_anchors_to_tts_context_tag() -> None:
     )
 
 
-# ── prompts/skills/voice-tts.txt ───────────────────────────────────────────
+# ── контракт set_pitch в каталоге (бывший prompts/skills/voice-tts.txt) ─────
 
 
 def test_voice_tts_fragment_documents_set_pitch_action_enum() -> None:

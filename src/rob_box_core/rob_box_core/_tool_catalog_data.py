@@ -351,7 +351,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'жанр, если назван. Это просьба, а не приказ: что играть (новую '
                        'генерацию, сочинённое раньше или своё) и что сказать — решает '
                        'робот сам по словам человека; ok=false — честный отказ, его '
-                       'фразу робот скажет сам.',
+                       'фразу робот скажет сам. «Спой / сочини песню про X» — '
+                       'kind=robot_song, theme=слова человека (не music_library); слов '
+                       'песни не сочиняй и не читай через speak_text.',
         'parameters': {   'type': 'object',
                           'properties': {   'kind': {   'type': 'string',
                                                         'description': 'instrumental, '
@@ -431,7 +433,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'name': 'get_current_time',
         'description': 'Получить текущее время и дату. Используй когда пользователь '
                        'спрашивает который час, какая дата, какой день недели, какое '
-                       'время суток, сколько сейчас времени.',
+                       'время суток, сколько сейчас времени. Поле formatted_time уже '
+                       'написано русской прописью — озвучивай его дословно, время не '
+                       'выдумывай.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -1758,8 +1762,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'fast',
         'name': 'set_pitch',
-        'description': "Установить высоту голоса робота. Используй для команд 'говори "
-                       "выше', 'говори ниже'.",
+        'description': 'Высота голоса робота шагом: higher / lower (±0.2, диапазон '
+                       "0.5–2.0), normal — 1.0. Для команд 'говори выше', 'говори "
+                       "ниже'. Абсолютного значения нет; <prosody pitch> в speak_text "
+                       'не работает (MiniMax и Yandex его вырезают, pitch '
+                       'игнорируется) — только этот тул.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Действие с '
@@ -1837,16 +1844,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'starts_music': False,
         'execution_type': 'fast',
         'name': 'set_voice',
-        'description': 'Установить голос TTS на диалог (персистентно, пока не сменят). '
-                       'Используй когда: (1) пользователь просит «говори голосом X» — '
-                       'передай voice=X; (2) хочешь рассказывать историю от разных лиц '
-                       '(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться '
-                       'к дефолтному голосу — передай voice=<default_voice>; (4) юзер '
-                       'просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex '
-                       "anton») — передай voice=... И provider='yandex'. Доступные "
-                       'голоса перечислены в контексте: [TTS] voices=... После '
-                       'set_voice следующий speak_text без voice= говорит '
-                       'установленным голосом.',
+        'description': 'Сменить голос робота НАСОВСЕМ (персистентно, пока не сменят) — '
+                       'только когда человек сам просит сменить голос: (1) «говори '
+                       'голосом X» — передай voice=X; (2) «верни обычный голос» — '
+                       'передай voice=<default_voice>; (3) юзер просит голос с '
+                       'КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex anton») — '
+                       "передай voice=... И provider='yandex'. Доступные голоса "
+                       'перечислены в контексте: [TTS] voices=... Голоса персонажей '
+                       'сказки — параметр voice у speak_text (только эта реплика), не '
+                       'set_voice. Фразу о смене голоса робот говорит сам.',
         'parameters': {   'type': 'object',
                           'properties': {   'voice': {   'type': 'string',
                                                          'description': 'Имя голоса '

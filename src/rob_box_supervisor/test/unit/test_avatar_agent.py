@@ -915,11 +915,8 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         # ADR-0083 §2.3 / §2.4
         self.assertEqual(spec.name, "operator")
         self.assertEqual(spec.memory_namespace, "operator")
-        # ADR-0083 §2.2 #J
-        self.assertFalse(
-            spec.narrow_tools_to_skill,
-            "ТАРС должен видеть все инструменты (ADR-0083 §2.2 #J)",
-        )
+        # ADR-0083 §2.2 #J — ТАРС видит все инструменты: среза в спеке нет (срез хода задаёт только личность).
+        self.assertFalse(hasattr(spec, "narrow_tools_to_skill"))
         # ADR-0083 §2.2 #F
         self.assertFalse(
             spec.use_scheduler,
@@ -945,12 +942,8 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
             f"persist_path должен указывать на общий llm_health.json, "
             f"got {spec.health_cache_persist_path!r}",
         )
-        # ADR-0083 §1.3 #3 — supervisor больше НЕ лезет в voice/skills.
-        self.assertEqual(
-            tuple(spec.skill_slice),
-            ("operator.speech", "operator.control"),
-            "skill_slice должен быть только operator-срезы (ADR-0083 §1.3 #3)",
-        )
+        # ADR-0083 §1.3 #3 / ADR-0150 PR-6 — срезов скиллов нет, в voice/skills supervisor не лезет.
+        self.assertFalse(hasattr(spec, "skill_slice"))
         # ADR-0083 §G — on_prompt observer.
         self.assertIsNotNone(
             spec.on_prompt,

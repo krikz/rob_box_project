@@ -136,16 +136,15 @@
 - id: router-miss-music
   say: "робот сделай так чтобы было повеселее как на вечеринке"
   domain: dj
-  tools_any: [set_dj_mode, compose_music, request_music, load_skill]
+  tools_any: [dj_set, request_music]
   note: |
-    Пред-роутер здесь промахнётся: музыкальных слов нет. Проверяем, что
-    модель дотянется до домена через load_skill и всё равно сработает,
-    а не ответит «нет такой функции» (регрессия #1403).
+    Прямых музыкальных слов нет, есть «вечеринка»: срез тулов хода (rob_box_dialog.tools_view,
+    ADR-0150 PR-6) обязан показать музыку, иначе модель ответит «нет такой функции» (регрессия #1403).
 
 - id: router-miss-nav
   say: "робот отвези меня туда где мы вчера были"
   domain: navigation
-  tools_any: [list_waypoints, navigate_to_waypoint, load_skill, speak_text]
+  tools_any: [list_waypoints, navigate_to_waypoint, speak_text]
   note: |
     Тоже промах роутера. Допустимо честно сказать, что точки нет — но не
     делать вид, что поехал, без вызова навигации.

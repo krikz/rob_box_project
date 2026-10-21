@@ -168,9 +168,8 @@ REASON_MONITOR = MONITOR_MODE_REASON
 #     использует общий ``~/.rob_box/llm_health.json`` — supervisor и
 #     dialogue делят один кеш.
 #   * §1.3 #3 — supervisor лез в ``rob_box_voice/prompts/skills`` по
-#     относительному пути (протечка в чужой пакет). Теперь спек явно
-#     задаёт ``skill_slice=("operator.speech", "operator.control")``
-#     и больше не открывает ``voice/skills``.
+#     относительному пути (протечка в чужой пакет). Срезов скиллов нет
+#     совсем (ADR-0150 PR-6): ТАРС живёт на одном системном промпте.
 #   * §2.3 #G — supervisor не публиковал PromptStats. ``AgentSpec.on_prompt``
 #     зовёт ``_record_supervisor_prompt_stats``, и ``record_llm_prompt_tokens``
 #     пишет в ту же гистограмму, что и dialogue.
@@ -1894,8 +1893,8 @@ class AvatarSupervisor(Node):
         * ``name='operator'``, ``memory_namespace='operator'`` — обе
           ноды пишут в ``/data/harness_voice.db``, фильтрация по
           колонке ``agent`` (миграция 011_agent_namespace.sql).
-        * ``narrow_tools_to_skill=False`` — ТАРС видит все инструменты
-          (ADR-0083 §2.2 #J).
+        * среза тулов нет (``set_visible_tools`` не зовётся) — ТАРС видит
+          все инструменты (ADR-0083 §2.2 #J).
         * ``use_scheduler=False`` — W7b планировщик живёт только на
           стороне личности (ADR-0083 §2.2 #F).
         * ``health_cache_persist_path`` — общий ``~/.rob_box/llm_health.json``
@@ -1941,7 +1940,6 @@ class AvatarSupervisor(Node):
                 name="operator",
                 prompt_dir=self._resolve_prompts_dir() or Path(""),
                 system_prompt_file=self._system_prompt_file,
-                skill_slice=("operator.speech", "operator.control"),
                 use_scheduler=False,
                 memory_namespace="operator",
                 on_prompt=self._record_supervisor_prompt_stats,
@@ -1953,7 +1951,6 @@ class AvatarSupervisor(Node):
                 ).expanduser(),
                 health_balance_checkers={},
                 history_trim_limit=self._param_int("history_max_turns", 10),
-                narrow_tools_to_skill=False,  # ADR-0083 §2.2 #J
                 dsm=DialogueStateMachine(),
                 user_id="operator",
             )
@@ -2171,10 +2168,7 @@ class AvatarSupervisor(Node):
         (colcon symlink / unit-тесты). Возвращает ``Path`` или ``None``.
         Используется в :meth:`_build_agent_core_sync` для построения
         :class:`AgentSpec.prompt_dir` — ``build_agent`` берёт
-        ``system_prompt_file`` и скиллы ``skill_slice`` отсюда.
-        Раньше supervisor ещё читал ``rob_box_voice/prompts/skills``
-        best-effort (протечка ADR-0083 §1.3 #3) — закрыто, теперь
-        ``skill_slice`` строго ``("operator.speech", "operator.control")``.
+        ``system_prompt_file`` отсюда (срезов скиллов нет, ADR-0150 PR-6).
         """
         from pathlib import Path  # noqa: PLC0415
 

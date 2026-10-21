@@ -179,13 +179,13 @@ def test_same_claim_without_router_action_is_still_phantom() -> None:
     assert LIVE_AFTER_STOP_ANSWER not in _said(n)
 
 
-def test_router_action_expires(run_plans, monkeypatch) -> None:
-    """Через ``MEDIA_ACTION_BACKING_S`` стоп роутера заявление не подкрепляет."""
+def test_router_action_does_not_outlive_the_session(run_plans) -> None:
+    """После новой сессии стоп роутера заявление не подкрепляет (окна по времени нет — ADR-0150 PR-6, T10)."""
     n = _make_node(playing=True)
     n._route_media_command("выключи музыку")
     run_plans()
-    later = dialogue_node_module.time.time() + DialogueNode.MEDIA_ACTION_BACKING_S + 1
-    monkeypatch.setattr(dialogue_node_module.time, "time", lambda: later)
+    assert "stop_music" in n._claim_backing_tools(())
+    n._media_actions.clear()  # то же, что делает _reset_dialogue_session
 
     n._music_player_state = MusicPlayerState(state="idle")
     n._handle_result(

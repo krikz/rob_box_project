@@ -64,9 +64,8 @@ def test_master_prompt_has_few_shot_correct_and_wrong_examples() -> None:
     content = MASTER_PROMPT_PATH.read_text(encoding="utf-8")
 
     # ✅ Correct: library track playback — play → done, no re-print of lyrics.
-    # (generate_music was removed 20.08.2026 — MiniMax Music API 410 Gone;
-    # the prompt must NOT teach the LLM to call the dead tool.)
-    assert "generate_music" not in content
+    # generate_music вернулся (ADR-0158, Suno): «спой песню про X» — robot_song, не библиотека (ADR-0150 PR-6).
+    assert 'generate_music(kind="robot_song"' in content
     assert "music_library" in content
     assert "music_library" in content
     # ❌ Wrong: post-amble duplication — full example with the banned phrase.

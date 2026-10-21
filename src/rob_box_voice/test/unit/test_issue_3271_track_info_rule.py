@@ -4,8 +4,8 @@
 трек»): tools=[], ответ «баллада про дождь за окном, который … подыгрывает
 мыслям» — детали выдуманы (в истории была только «короткая грустная
 баллада»). Правило: вопрос про трек → ``music_library`` ДО ответа, говорить
-по полям результата. Правило общее (не под фразу шага) и лежит и в
-RULE #DISCOVERY-TOOLS, и в блоке скилла player.
+по полям результата. Правило общее (не под фразу шага) и лежит в
+RULE #DISCOVERY-TOOLS и в секции библиотеки мастер-промпта (скиллов нет с ADR-0150 PR-6).
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import re
 
 PROMPTS = Path(__file__).resolve().parents[2] / "prompts"
 MASTER = (PROMPTS / "master_prompt_compact.txt").read_text(encoding="utf-8")
-PLAYER = (PROMPTS / "skills" / "player.txt").read_text(encoding="utf-8")
 
 
 def _discovery_block() -> str:
@@ -25,8 +24,8 @@ def _discovery_block() -> str:
 
 
 def _player_block() -> str:
-    m = re.search(r"<<<SKILL-MOVE player>>>(.*?)<<<SKILL-MOVE-END>>>", MASTER, re.DOTALL)
-    assert m, "блок SKILL-MOVE player не найден"
+    m = re.search(r"### Готовые AI-треки из библиотеки \(music_library\)(.*?)(?=\n# )", MASTER, re.DOTALL)
+    assert m, "секция библиотеки (music_library) не найдена"
     return m.group(1)
 
 
@@ -41,8 +40,3 @@ def test_player_block_forbids_retelling_from_history() -> None:
     block = _player_block()
     assert "music_library" in block
     assert "по памяти" in block
-
-
-def test_player_skill_file_mentions_track_info_rule() -> None:
-    assert "music_library" in PLAYER
-    assert "по памяти" in " ".join(PLAYER.split())
