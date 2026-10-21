@@ -72,8 +72,10 @@ class InterruptGate:
         wake_words: Callable[[], Sequence[str]],
         log: Callable[[str], None],
         clock: Callable[[], float] = time.monotonic,
+        heard: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._cancel, self._wake_words, self._log, self._clock = cancel, wake_words, log, clock
+        self._heard = heard
         self._done: "OrderedDict[str, None]" = OrderedDict()
 
     def on_request(self, msg: Any) -> str:
@@ -83,6 +85,9 @@ class InterruptGate:
         if uid and uid in self._done:
             return "duplicate"
         started = self._clock()
+        if self._heard is not None and has_wake_word(text, self._wake_words()):
+            self._heard(uid)    # ранний сигнал «услышал» - рефлекс addressed (бывший boop stt_node), ≤ 300 мс
+
         verdict = stop_verdict(text, self._wake_words())
         if verdict == STOP_CLEAR:
             self._cancel(f"interrupt:{uid or '-'}")

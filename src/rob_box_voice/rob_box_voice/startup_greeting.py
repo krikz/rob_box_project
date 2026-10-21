@@ -4,8 +4,7 @@ startup_greeting.py — данные и хелперы приветствия п
 
 Чистый Python без rclpy, чтобы юнит-тесты работали без ROS2:
 * GREETINGS — 9 прикольных фраз (требование 6–10);
-* THINKING_SOUND / FINISH_SOUNDS — триггеры звуков через sound_node;
-* pick_greeting() / pick_finish_sound() — случайный выбор.
+* pick_greeting() — случайный выбор фразы (звуки приветствия - earcon'ы рефлексов, ADR-0150 PR-3b).
 
 Этот модуль использует dialogue_node (inline-приветствие через
 startup_greeting_sec) (standalone-нода приветствия удалена в #3684).
@@ -29,10 +28,6 @@ GREETINGS: tuple[str, ...] = (
     "Слушаю вас внимательно. Ну, насколько микрофон позволяет.",
 )
 
-# Звуки, которые мы умеем триггерить через sound_node.
-THINKING_SOUND = "thinking"
-FINISH_SOUNDS: tuple[str, ...] = ("cute", "very_cute")
-
 
 def pick_greeting(override: str | None = None) -> str:
     """Вернуть фразу приветствия.
@@ -44,8 +39,3 @@ def pick_greeting(override: str | None = None) -> str:
     if override and override.strip():
         return override.strip()
     return random.choice(GREETINGS)
-
-
-def pick_finish_sound() -> str:
-    """Случайный «радостный» звук из FINISH_SOUNDS."""
-    return random.choice(FINISH_SOUNDS)

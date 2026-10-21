@@ -56,8 +56,9 @@ def test_node_wires_inputs_and_timers():
     node = FaceNode()
     topics = {t for t, _ in node.subscriptions}
     assert {'/voice/speech/envelope', '/voice/speech/event', '/voice/tts/state', '/audio/direction',
-            '/audio/vad', '/voice/music/state', '/voice/animation/request', '/voice/expression/request',
+            '/audio/vad', '/voice/music/state', '/voice/expression/request',
             '~/scene'} <= topics
+    assert '/voice/animation/request' not in topics     # ADR-0150 PR-3b: v1-топик снят, лицо слушает ExpressionRequest
     assert sorted(p for p, _ in node.timers) == [0.04, 1.0]
 
 

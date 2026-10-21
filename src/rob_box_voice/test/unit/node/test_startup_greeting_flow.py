@@ -8,7 +8,7 @@ test_startup_greeting_flow.py — Unit-тесты inline-приветствия 
 Проверяем:
   - приветствие одноразовое (_startup_greeting_fired);
   - пропуск, если диалог активен (state != IDLE) — не перебиваем юзера;
-  - звуки: thinking → pick_finish_sound (cute/very_cute);
+  - звуки: earcon heard → earcon done;
   - фраза: случайная из GREETINGS, если startup_greeting_text пустой;
   - override: явный startup_greeting_text выигрывает.
 
@@ -22,12 +22,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from rob_box_voice.dialogue_node import DialogueNode
-from rob_box_voice.startup_greeting import GREETINGS, THINKING_SOUND
+from rob_box_core import expression_client
+from rob_box_voice.startup_greeting import GREETINGS
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+
+# ADR-0150 PR-3b (#3690): звуки приветствия - earcon'ы рефлексов (ExpressionRequest), не /voice/sound/trigger.
+HEARD_EARCON, DONE_EARCON = "heard", "done"
 
 
 @pytest.fixture
-def node():
+def node(monkeypatch):
     """Минимальная DialogueNode без __init__."""
     n = object.__new__(DialogueNode)
 
@@ -35,7 +39,8 @@ def node():
     n._logger = logger
     n.get_logger = lambda: logger
 
-    n._sound_trigger_pub = MagicMock()
+    n._earcons = []
+    monkeypatch.setattr(expression_client, "express", lambda _node, **kw: n._earcons.append(kw["earcon"]))
     n._response_pub = MagicMock()
     n._startup_greeting_fired = False
     n._startup_greeting_text = ""
@@ -78,9 +83,8 @@ def _last_timer(node) -> tuple[float, object]:
 
 
 def _published_sound(node) -> str:
-    call = node._sound_trigger_pub.publish.call_args
-    assert call is not None, "звук не публиковался"
-    return call[0][0].data
+    assert node._earcons, "звук не публиковался"
+    return node._earcons[-1]
 
 
 def _published_response_payload(node) -> str:
@@ -93,7 +97,7 @@ class TestStartupGreetingFlow:
     def test_greeting_fires_when_idle(self, node) -> None:
         node._on_startup_greeting()
         # thinking-звук сразу.
-        assert _published_sound(node) == THINKING_SOUND
+        assert _published_sound(node) == HEARD_EARCON
         # Запланирована вторая фаза через 2с.
         period, callback = _last_timer(node)
         assert period == 2.0
@@ -103,7 +107,7 @@ class TestStartupGreetingFlow:
         node._dsm.current_state = DialogueStateKind.DIALOGUE
         node._on_startup_greeting()
         # Ни звука, ни таймера — приветствие пропущено.
-        node._sound_trigger_pub.publish.assert_not_called()
+        assert node._earcons == []
         assert node._created_timers == []
         # Но флаг всё равно выставлен — повторно не попробуем.
         assert node._startup_greeting_fired is True
@@ -112,17 +116,16 @@ class TestStartupGreetingFlow:
         node._on_startup_greeting()
         node._on_startup_greeting()
         # Звук опубликован ровно один раз.
-        assert node._sound_trigger_pub.publish.call_count == 1
+        assert len(node._earcons) == 1
         assert len(node._created_timers) == 1
 
     def test_finish_phase_plays_cute_sound(self, node) -> None:
         node._on_startup_greeting()
         _, finish_cb = _last_timer(node)
         finish_cb()
-        # Радостный звук из FINISH_SOUNDS.
-        from rob_box_voice.startup_greeting import FINISH_SOUNDS
-
-        assert _published_sound(node) in FINISH_SOUNDS
+        # Радостный звук - earcon «готово».
+    
+        assert _published_sound(node) == DONE_EARCON
         # Третья фаза запланирована через 1.5с.
         period, speak_cb = _last_timer(node)
         assert period == 1.5

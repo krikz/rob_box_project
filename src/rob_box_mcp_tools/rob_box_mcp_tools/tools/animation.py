@@ -6,14 +6,10 @@ animation.py - Инструменты для управления LED анима
 - PlayAnimationTool: Запустить анимацию по имени с указанной длительностью
 """
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional
 
-# Ленивый импорт ROS 2 модулей для поддержки unit тестов
-if TYPE_CHECKING:
-    from std_msgs.msg import String
-
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, shared_publisher
-from ..animations import KNOWN_ANIMATIONS, normalize_animation
+from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..animations import KNOWN_ANIMATIONS, clamp_show_seconds, normalize_animation
 
 
 class PlayAnimationTool(MCPTool):
@@ -24,14 +20,8 @@ class PlayAnimationTool(MCPTool):
     #: and ``play_animation`` cannot disagree about what the matrix can show.
     AVAILABLE_ANIMATIONS = list(KNOWN_ANIMATIONS)
 
-    def __init__(self, node):
-        super().__init__(node)
-        # Динамический импорт во время выполнения
-        from std_msgs.msg import String
-
-        # Publisher для запроса анимаций
-        # (issue #3108: общий с SpeakTextTool publisher на этой ноде)
-        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
+    # ADR-0150 PR-3b (#3690): тул лицо не трогает. Сцену и время показывает диалог: он видит вызов
+    # (стадия executing хода) и шлёт ExpressionRequest через expression_client, лицо отвечает ExpressionEvent.
 
     @property
     def name(self) -> str:
@@ -100,24 +90,13 @@ class PlayAnimationTool(MCPTool):
             )
         animation = resolved
 
-        # Валидация длительности - если вне диапазона, устанавливаем минимальную
+        # Валидация длительности - вне диапазона ставится минимальная (то же правило применяет диалог)
         if duration is not None:
-            if duration < 2 or duration > 30:
-                original_duration = duration
-                duration = 2.0
+            original_duration, duration = duration, clamp_show_seconds(duration)
+            if duration != original_duration:
                 self.log_info(f"Длительность {original_duration}s вне диапазона, установлена минимальная: {duration}s")
 
-        # Публикуем запрос анимации
-        from std_msgs.msg import String
-        msg = String()
-        # Если указана длительность, добавляем её в формате animation:duration
-        if duration is not None:
-            msg.data = f"{animation}:{duration}"
-        else:
-            msg.data = animation
-        self.animation_pub.publish(msg)
-
-        self.log_info(f"Анимация '{animation}' отправлена")
+        self.log_info(f"Анимация '{animation}' принята (показывает диалог по ExpressionRequest)")
 
         result_data = {"animation": animation}
         if duration is not None:

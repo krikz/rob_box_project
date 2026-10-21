@@ -30,8 +30,14 @@ from __future__ import annotations
 __all__ = [
     "ANIMATION_ALIASES",
     "KNOWN_ANIMATIONS",
+    "SHOW_MAX_S",
+    "SHOW_MIN_S",
+    "clamp_show_seconds",
     "normalize_animation",
 ]
+
+#: ``play_animation``: допустимая длительность показа, секунды; вне диапазона - ``SHOW_MIN_S``.
+SHOW_MIN_S, SHOW_MAX_S = 2.0, 30.0
 
 #: Every name the ``play_animation`` tool offers; each resolves to a face scene.
 KNOWN_ANIMATIONS: tuple[str, ...] = (
@@ -106,3 +112,14 @@ def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str
     candidate = str(animation).strip().lower()
     candidate = ANIMATION_ALIASES.get(candidate, candidate)
     return candidate if candidate in KNOWN_ANIMATIONS else fallback
+
+
+def clamp_show_seconds(duration: float | None) -> float | None:
+    """Длительность показа ``play_animation``: ``None`` - по умолчанию лица; вне ``[SHOW_MIN_S, SHOW_MAX_S]`` - минимум.
+
+    Единственное правило: его применяют и тул (ответ модели), и диалог (ExpressionRequest.ttl_ms).
+    """
+    if duration is None:
+        return None
+    seconds = float(duration)
+    return seconds if SHOW_MIN_S <= seconds <= SHOW_MAX_S else SHOW_MIN_S
