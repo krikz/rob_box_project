@@ -1,0 +1,22 @@
+[
+  {"phrase": "сделай страшную рожу", "face": {"eyes": "wide", "mouth": "teeth", "tint": "red", "rear": "halloween"}},
+  {"phrase": "подмигни", "face": {"blink": "wink_right"}},
+  {"phrase": "притворись, что спишь", "face": {"eyes": "closed", "mouth": "flat", "tempo": "slow"}},
+  {"phrase": "ты диджей", "face": {"eyes": "shades", "mouth": "eq", "rear": "party"}},
+  {"phrase": "покажи, что тебе холодно", "face": {"tint": "cold", "tempo": "fast", "blink": "rapid"}},
+  {"phrase": "включи праздничные фары", "face": {"rear": "party", "duration_s": 10}},
+  {"phrase": "сделай грустные глаза, но улыбайся", "face": {"eyes": "half", "mouth": "grin", "gaze": "down"}},
+  {"phrase": "покажи, что ты злой", "face": {"eyes": "squint", "mouth": "teeth", "tint": "red"}},
+  {"phrase": "удивись", "face": {"eyes": "wide", "mouth": "o"}},
+  {"phrase": "посмотри налево", "face": {"gaze": "left"}},
+  {"phrase": "посмотри вверх", "face": {"gaze": "up"}},
+  {"phrase": "не моргай", "face": {"blink": "none", "eyes": "wide"}},
+  {"phrase": "изобрази радугу", "face": {"tint": "rainbow", "rear": "party"}},
+  {"phrase": "включи аварийку", "face": {"rear": "hazard"}},
+  {"phrase": "притворись, что ты сломался", "face": {"eyes": "x", "mouth": "flat"}},
+  {"phrase": "нахмурься", "face": {"mouth": "frown", "eyes": "squint"}},
+  {"phrase": "подмигни левым глазом", "face": {"blink": "wink_left", "mouth": "grin"}},
+  {"phrase": "покажи, что ты хакер", "face": {"tint": "green", "eyes": "squint", "mouth": "flat", "tempo": "fast"}},
+  {"phrase": "сделай новогоднее настроение", "face": {"rear": "new_year", "tint": "warm", "mouth": "grin"}},
+  {"phrase": "покажи любовь", "face": {"rear": "heart", "tint": "red", "eyes": "half", "mouth": "grin"}}
+]

@@ -1,4 +1,4 @@
-"""ADR-0150 PR-3b (#3690): стадии хода v1 -> TurnEvent + один ExpressionRequest по рефлексу, без LLM."""
+﻿"""ADR-0150 PR-3b (#3690): стадии хода v1 -> TurnEvent + один ExpressionRequest по рефлексу, без LLM."""
 
 import pytest
 from rob_box_dialog import knowledge as kn
@@ -196,6 +196,26 @@ def test_play_animation_shows_the_scene_now_for_the_ordered_time(rig, monkeypatc
     rig.stages.tool_call("play_animation", {"animation": "sleep", "duration": 6})
     assert (rig.requests[-1]["emotion"], rig.requests[-1]["ttl_ms"]) == ("sleep", 6000)
     assert rig.stage_names() == [("addressed", "started")]     # стадия та же, рефлекс executing лицо не перебил
+
+
+def test_play_animation_face_goes_to_the_face_as_validated_slots_with_the_ordered_duration(rig, monkeypatch):
+    monkeypatch.setattr(tt, "show_seconds", lambda d: float(d or 0))
+    rig.stages.addressed("u1")
+    rig.stages.tool_call("play_animation", {"face": {"eyes": "wide", "mouth": "teeth", "tint": "red"}, "duration": 6})
+    assert rig.requests[-1]["face"] == {"eyes": "wide", "mouth": "teeth", "tint": "red", "duration_s": 6.0}
+    assert (rig.requests[-1]["emotion"], rig.requests[-1]["ttl_ms"]) == ("", 6000)
+    rig.stages.tool_call("play_animation", {"animation": "sleep", "face": '{"blink": "wink_left"}'})
+    assert rig.requests[-1]["face"] == {"blink": "wink_left", "duration_s": 5.0}
+    assert rig.requests[-1]["emotion"] == "sleep"          # анимация и сцена лица - вместе
+
+
+def test_play_animation_with_an_invalid_face_drops_the_face_not_the_animation(rig):
+    rig.stages.addressed("u1")
+    before = len(rig.requests)
+    rig.stages.tool_call("play_animation", {"face": {"eyes": "neon"}})
+    assert len(rig.requests) == before                        # ни сцены, ни лица - нечего показывать
+    rig.stages.tool_call("play_animation", {"animation": "sleep", "face": {"color": "#f00"}})
+    assert rig.requests[-1]["face"] is None and rig.requests[-1]["emotion"] == "sleep"
 
 
 def test_unknown_animation_is_ignored_not_shown(rig):

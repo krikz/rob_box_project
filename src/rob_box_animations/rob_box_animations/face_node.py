@@ -28,6 +28,9 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
 
+from rob_box_dialog import face_scene
+from rob_box_dialog.knowledge import FACE_SCENE_CANCEL_SCENES as CANCEL_SCENES
+
 from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire
 from .outside import battery_percent
 from .face_director import FaceDirector, GazeTrack, parse_animation_request
@@ -151,14 +154,31 @@ class FaceNode(Node):
         self._show(name, seconds)
 
     def _on_expression(self, msg) -> None:
-        """ExpressionRequest -> scene; the answer is an ``ExpressionEvent`` (started | skipped{reason})."""
-        if msg.face_json:
-            self.get_logger().warn('ExpressionRequest.face_json пока не исполняется (DSL сцены — PR-3c)')
+        """ExpressionRequest -> scene; the answer is an ``ExpressionEvent`` (started | skipped{reason}).
+
+        ``face_json`` (LLM scene, §5.5.9): valid -> overlay over the reflex for ``duration_s``; invalid -> dropped,
+        the rest of the request still runs, ``skipped{invalid_face}``. A failed/silenced reflex takes the overlay off.
+        """
+        if msg.emotion in CANCEL_SCENES and self.director.clear_face():
+            self.get_logger().info(f'сцена LLM снята рефлексом «{msg.emotion}»')
         name = msg.gesture or msg.emotion
-        if not name:
-            return      # an earcon-only request: nothing for the face to answer
-        scene = self._show(name, msg.ttl_ms / 1000.0 if msg.ttl_ms else None)
-        self._answer(msg.turn_id, scene is not None, '' if scene else 'unknown_scene')
+        if msg.face_json:
+            self._face_scene(msg, answer=not name)
+        if name:
+            scene = self._show(name, msg.ttl_ms / 1000.0 if msg.ttl_ms else None)
+            self._answer(msg.turn_id, scene is not None, '' if scene else 'unknown_scene')
+
+    def _face_scene(self, msg, answer: bool) -> None:
+        """Start the LLM scene of a request; invalid -> ``skipped{invalid_face}``; ``answer``: report ``started`` too."""
+        face, why = face_scene.validate(msg.face_json)
+        if face is None:
+            self.get_logger().warn(f'face_json отброшен ({why}): {msg.face_json[:160]!r}')
+            self._answer(msg.turn_id, False, face_scene.INVALID_REASON)
+            return
+        self.director.apply_face(face.slots(), face.duration_s, time.time())
+        self.get_logger().info(f'сцена LLM: {face.slots()} на {face.duration_s:g} с')
+        if answer:
+            self._answer(msg.turn_id, True, '')
 
     def _answer(self, turn_id: str, started: bool, reason: str) -> None:
         ev = ExpressionEvent()

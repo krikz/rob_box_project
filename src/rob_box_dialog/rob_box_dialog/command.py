@@ -16,24 +16,11 @@ from typing import Any, Collection, FrozenSet, Iterator, List, Mapping, Optional
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.face_scene import FaceScene, problem as face_problem
 
 INVALID_ASK_KEY = "understand.invalid"
 #: Поля команды — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
-
-
-@dataclass(frozen=True)
-class FaceScene:
-    """Сцена лица для LLM (§5.5.9): только enum-слоты ``knowledge.FACE_SCENE_SLOTS``; пусто — из рефлекса."""
-
-    eyes: Optional[str] = None
-    gaze: Optional[str] = None
-    blink: Optional[str] = None
-    mouth: Optional[str] = None
-    tint: Optional[str] = None
-    tempo: Optional[str] = None
-    rear: Optional[str] = None
-    duration_s: float = kn.FACE_SCENE_DEFAULT_S
 
 
 @dataclass(frozen=True)
@@ -43,6 +30,8 @@ class Expression:
     emotion: str = "neutral"
     gesture: Optional[str] = None
     earcon: Optional[str] = None
+    #: TODO(PR-8, ADR-0150 §5.5.9): исполнитель v2 шлёт ``face.to_dict()`` в ``ExpressionRequest.face_json``; проверка
+    #: общая с v1 (``play_animation(face=...)``) - :func:`rob_box_dialog.face_scene.validate`.
     face: Optional[FaceScene] = None
 
 
@@ -418,12 +407,8 @@ def _expression_ok(expr: Expression) -> Tuple[Expression, bool]:
 
 
 def _face_ok(face: Any) -> bool:
-    if not isinstance(face, FaceScene):
-        return False
-    slots_ok = all(getattr(face, s) is None or getattr(face, s) in v for s, v in kn.FACE_SCENE_SLOTS.items())
-    duration = face.duration_s
-    return slots_ok and isinstance(duration, (int, float)) and not isinstance(duration, bool) \
-        and 0 <= duration <= kn.FACE_SCENE_MAX_S
+    """Сцена лица годится, если ``face_scene.problem`` ничего не нашёл."""
+    return face_problem(face) == ""
 
 
 def _drop_bad_faces(cmd: Command) -> Command:

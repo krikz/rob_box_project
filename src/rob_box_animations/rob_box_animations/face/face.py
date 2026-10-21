@@ -432,6 +432,35 @@ def frame_ma(frame: Frame, brightness: int = DRIVER_BRIGHTNESS) -> float:
     return IDLE_MA + lit / 255.0 * MA_PER_CHANNEL
 
 
+# ---------------------------------------------------------------- tint
+#: Слот ``tint`` сцены лица для LLM: множитель RGB глаз и рта (палитра, не свободный цвет). База - тёплый
+#: белый ``EYE`` (25, 21, 9): красный = (25, 3, 1), холод = (7, 15, 20). ``rainbow`` - ``rainbow_tint(t)``.
+TINTS = {
+    'warm': (1.0, 0.8, 0.5),
+    'cold': (0.3, 0.7, 2.2),
+    'red': (1.0, 0.15, 0.1),
+    'green': (0.2, 1.0, 0.3),
+    'blue': (0.1, 0.5, 2.5),
+    'purple': (1.0, 0.2, 2.0),
+}
+RAINBOW_PERIOD_S = 4.0
+
+
+def rainbow_tint(t):
+    """Множитель радуги: оттенок обходит круг за ``RAINBOW_PERIOD_S``; синий канал усилен под тёплую базу."""
+    h = (t / RAINBOW_PERIOD_S) % 1.0 * 6.0
+    x = 1.0 - abs(h % 2.0 - 1.0)
+    r, g, b = [(1, x, 0), (x, 1, 0), (0, 1, x), (0, x, 1), (x, 0, 1), (1, 0, x)][int(h) % 6]
+    return (r * 1.0, g * 1.2, b * 2.7)
+
+
+def tint_of(slot, t):
+    """Множитель RGB по слоту ``tint`` (None - без оттенка)."""
+    if slot is None:
+        return None
+    return rainbow_tint(t) if slot == 'rainbow' else TINTS[slot]
+
+
 # ---------------------------------------------------------------- gaze
 GAZE_FULL_DEG = 60.0          # speaker this far off the nose -> pupils at the edge
 GAZE_MAX_PX = 2.2

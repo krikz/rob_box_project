@@ -6,7 +6,8 @@ envelope's ``t0`` and the player snapshot's ``started_at`` (Sound and Vision
 clocks are kept in sync by chrony).
 
 Priority, highest first: side test frame > ``sleep`` (no voice owner for
-``voice_timeout_s``) > ``wakeup`` (start / voice is back) > talking (TTS) >
+``voice_timeout_s``) > ``wakeup`` (start / voice is back) > LLM face scene (``apply_face``, slots of
+``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (TTS) >
 requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
 ``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > music > idle. Rear lights outside the scenes
 that draw their own: manual ``set_rear`` (for ``duration_s``) > ``rear_theme`` parameter > holiday calendar.
@@ -15,12 +16,15 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from rob_box_dialog.knowledge import FACE_SCENE_MAX_S
+
 from .face import rear as R
-from .face.face import Frame
+from .face.dsl import DSL_KEY, DSL_SPEC
+from .face.face import Frame, tint_of
 from .face.scene import FaceContext, Scene
 from .face.sides import sides_frame
 from .face.states import SCENES, resolve
@@ -183,6 +187,8 @@ class FaceDirector:
         self._asleep = False
         self._wake_until = now + SCENES['wakeup'].period
         self._request: Optional[Tuple[str, float]] = None
+        self._overlay: Optional[Tuple[Mapping[str, str], float]] = None
+        self._replay = False
         self._idle_since = now
         self.key = ''
         self._cur: Optional[Tuple[Scene, float, FaceContext]] = None
@@ -239,6 +245,20 @@ class FaceDirector:
             return self.rear_theme
         return calendar_rear(now, self.tz_offset_h) or 'default'
 
+    def apply_face(self, slots: Mapping[str, str], seconds: float, now: float) -> None:
+        """LLM face scene (§5.5.9) over the reflex for ``seconds`` (≤ 30); its ``rear`` slot sets the rear theme too."""
+        seconds = min(max(float(seconds), 0.0), FACE_SCENE_MAX_S)
+        self._overlay = (dict(slots), now + seconds)
+        self._replay = True                 # a new scene replays from its start (a wink, the sunglasses drop)
+        if slots.get('rear'):
+            self.set_rear(R.REAR_OF_SLOT[slots['rear']], seconds, now)
+
+    def clear_face(self) -> bool:
+        """failed / silenced take the LLM scene (and its rear theme) off the face; True if there was one."""
+        had = self._overlay is not None
+        self._overlay, self._rear = None, None
+        return had
+
     def request(self, name: str, seconds: Optional[float], now: float) -> Optional[str]:
         """Show scene ``name`` (scene or v1 animation name) for ``seconds``; None if unknown."""
         scene = resolve(name, self.mouth_design, self.thinking_design)
@@ -267,6 +287,10 @@ class FaceDirector:
         if now < self._wake_until:
             return 'wakeup', base
         gaze = self.gaze.gaze(now)
+        if self._overlay and now >= self._overlay[1]:
+            self._overlay = None
+        if self._overlay:
+            return DSL_KEY, self._dsl_context(self._overlay[0], gaze, rear, now)
         req = self._request[0] if self._request and now < self._request[1] else None
         if self.speaking(now):
             level, vowel = self.mouth.level(now)
@@ -282,6 +306,11 @@ class FaceDirector:
             name, bpm, beats = music
             return name, FaceContext(bpm=bpm, beat_phase=beats, rear_theme=rear)
         return self._idle(now), FaceContext(gaze_deg=gaze, rear_theme=rear)
+
+    def _dsl_context(self, slots: Mapping[str, str], gaze: Optional[float], rear: str, now: float) -> FaceContext:
+        level, vowel = self.mouth.level(now) if self.speaking(now) else (None, 'A')
+        return FaceContext(gaze_deg=gaze, mouth_level=level, vowel=vowel, tint=tint_of(slots.get('tint'), now),
+                           rear_theme=rear, face=slots)
 
     def _idle(self, now: float) -> str:
         if not self.key.startswith('idle_'):
@@ -299,10 +328,11 @@ class FaceDirector:
             self.key = 'test_pattern'
             return sides_frame()
         key, ctx = self.choose(now)
-        if key != self.key or self._cur is None:
+        if key != self.key or self._cur is None or self._replay:
+            self._replay = False
             self._prev = self._cur
             self._fade_at = now
-            self._cur = (Scene(SCENES[key]), now, ctx)
+            self._cur = (Scene(DSL_SPEC if key == DSL_KEY else SCENES[key]), now, ctx)
             self.key = key
         scene, start, _ = self._cur
         self._cur = (scene, start, ctx)

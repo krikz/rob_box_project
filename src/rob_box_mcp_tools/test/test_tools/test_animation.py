@@ -29,9 +29,9 @@ class TestPlayAnimationTool:
         # 57e96942d добавил необязательный duration; тест не гонялся в CI
         # и продолжал ждать один параметр.
         params = {p.name: p for p in tool.parameters}
-        assert set(params) == {"animation", "duration"}
-        assert params["animation"].required is True
-        assert params["duration"].required is False
+        assert set(params) == {"animation", "duration", "face"}
+        # PR-3c (#3691): хватает animation или face, поэтому обязательного параметра нет
+        assert not any(p.required for p in params.values())
 
     def test_available_animations(self, mock_node):
         """Тест списка доступных анимаций."""

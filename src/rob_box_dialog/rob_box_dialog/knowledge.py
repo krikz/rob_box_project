@@ -431,6 +431,11 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 })
 FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
+#: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
+FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
+                   " напротив робота. Только значения из списков, свободных цветов и форм нет.")
+#: Стадии хода, чьи сцены лица снимают сцену LLM (``failed``/``silenced``: «радостно» о провале не бывает).
+FACE_SCENE_CANCEL_STAGES: Tuple[str, ...] = ("failed", "silenced")
 
 #: Режимы кольца LED ReSpeaker в рефлексах.
 RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse")
@@ -470,6 +475,9 @@ REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "battery.low": Reflex(("low_battery",)),
     "charging": Reflex(("charging",)),
 })
+#: Сцены рефлексов, которые снимают сцену LLM с лица (выводятся из ``REFLEXES``, второй таблицы нет).
+FACE_SCENE_CANCEL_SCENES: Tuple[str, ...] = tuple(
+    scene for stage in FACE_SCENE_CANCEL_STAGES for scene in REFLEXES[stage].face)
 #: Сцена лица на стадии ``executing`` по классу действия; класса нет — ``REFLEXES["executing"]``.
 EXECUTING_FACE: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "action.motion": ("turn_left", "turn_right", "accelerating"),
@@ -599,11 +607,18 @@ def _object(props: Mapping[str, Any], required: Sequence[str] = ()) -> Dict[str,
     return {"type": "object", "properties": dict(props), "required": list(required), "additionalProperties": False}
 
 
-def _expression_schema() -> Dict[str, Any]:
+def face_schema() -> Dict[str, Any]:
+    """JSON-схема сцены лица (§5.5.9): одна на ``Command.expression.face`` и ``play_animation(face=...)``."""
     face = {slot: _enum(values) for slot, values in FACE_SCENE_SLOTS.items()}
     face["duration_s"] = {"type": "number", "minimum": 0, "maximum": FACE_SCENE_MAX_S}
+    schema = _object(face)
+    schema["description"] = FACE_SCENE_HINT
+    return schema
+
+
+def _expression_schema() -> Dict[str, Any]:
     return _object({
-        "emotion": _enum(EMOTIONS), "gesture": _enum(GESTURES), "earcon": _enum(EARCONS), "face": _object(face),
+        "emotion": _enum(EMOTIONS), "gesture": _enum(GESTURES), "earcon": _enum(EARCONS), "face": face_schema(),
     })
 
 

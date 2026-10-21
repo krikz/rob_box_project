@@ -75,7 +75,7 @@ class ReflexOut:
             return
         try:
             self._express(turn_id=turn.turn_id, epoch=self._epoch(), agent=self._agent, emotion=plan.emotion,
-                          gesture=plan.gesture, earcon=plan.earcon, ttl_ms=plan.ttl_ms)
+                          gesture=plan.gesture, earcon=plan.earcon, ttl_ms=plan.ttl_ms, face=plan.face)
         except Exception as exc:  # noqa: BLE001
             self._log(f"[reflex] ExpressionRequest не ушёл: {exc!r}")
 

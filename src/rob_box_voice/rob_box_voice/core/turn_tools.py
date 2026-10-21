@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict
+from dataclasses import replace
+from typing import Any, Callable, Dict, Optional
 
 from rob_box_dialog import expression as ex
+from rob_box_dialog import face_scene as fs
 from rob_box_dialog import knowledge as kn
 
 from .turn_reflexes import ReflexOut, Turn
@@ -41,6 +43,19 @@ def show_seconds(duration: Any) -> float:
         return clamp_show_seconds(float(duration)) or 0.0
     except (ImportError, TypeError, ValueError):
         return 0.0
+
+
+def face_dict(raw: Any, seconds: float = 0.0) -> Optional[Dict[str, Any]]:
+    """Сцена лица из аргумента ``face`` тула -> ``ExpressionRequest.face_json``; ``None`` - нет или невалидна.
+
+    Проверка одна, с лицом (``face_scene.validate``); заказанная ``duration`` тула важнее ``duration_s`` сцены.
+    """
+    if raw is None:
+        return None
+    face, _why = fs.validate(raw)
+    if face is None:
+        return None
+    return replace(face, duration_s=seconds).to_dict() if seconds > 0 else face.to_dict()
 
 
 def error_reason(content: Any) -> str:
@@ -82,12 +97,15 @@ class ToolWatch:
             turn.errors.pop(name, None)
 
     def _show(self, turn: Turn, args: Dict[str, Any]) -> None:
-        """``play_animation``: показать сцену сразу и на заказанное время (до конца хода она красит ``done``)."""
+        """``play_animation``: показать сцену и/или сцену лица LLM сразу и на заказанное время (до конца хода сцена красит ``done``)."""
         scene = self._normalize(str(args.get("animation") or ""))
+        face = face_dict(args.get("face"), show_seconds(args.get("duration")))
         if scene:
             turn.emotion = scene
-            self._out.send(turn, ex.ExpressionPlan(emotion=scene, ttl_ms=int(show_seconds(args.get("duration")) * 1000)))
+        if scene or face:
+            self._out.send(turn, ex.ExpressionPlan(
+                emotion=scene, ttl_ms=int(show_seconds(args.get("duration")) * 1000), face=face))
 
 
-__all__ = ["REASON_MAX", "SHOW_TOOL", "SPEECH_TOOLS", "ToolWatch", "error_reason", "scene_for_animation",
+__all__ = ["REASON_MAX", "SHOW_TOOL", "SPEECH_TOOLS", "ToolWatch", "error_reason", "face_dict", "scene_for_animation",
            "show_seconds"]
