@@ -121,6 +121,22 @@ def test_passed_is_honest_silence_only():
     bad({"passed": "bored"}, "bad_enum")
 
 
+def test_minimax_empty_shapes_normalized():
+    """Бейк-офф 21.10 (ADR §18.2 О4): MiniMax пишет ``"passed": false`` и ``"args": ""`` — это «поля нет»."""
+    said = ok({"speech": "Привет!", "actions": [], "passed": False})
+    assert (said.speech, said.passed) == ("Привет!", None)
+    assert ok({"speech": "Привет!", "passed": ""}).passed is None
+    assert ok({"speech": "Привет!", "passed": None}).passed is None
+    timed = ok({"actions": [{"tool": "get_current_time", "args": ""}]})
+    assert dict(timed.actions[0].args) == {}
+    assert dict(ok({"actions": [{"tool": "get_current_time", "args": None}]}).actions[0].args) == {}
+    found = ok({"actions": [{"tool": "search_web", "args": '{"query": "погода"}'}]})
+    assert dict(found.actions[0].args) == {"query": "погода"}
+    bad({"speech": "x", "passed": True}, "bad_type")
+    bad({"actions": [{"tool": "search_web", "args": "погода"}]}, "bad_type")
+    bad({"actions": [{"tool": "search_web", "args": ["погода"]}]}, "bad_type")
+
+
 # --- действия -----------------------------------------------------------------------------------------------
 
 

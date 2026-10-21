@@ -233,11 +233,36 @@ def _actions(data: Any) -> Tuple[ToolCall, ...]:
         if not isinstance(item, Mapping):
             raise _Bad("bad_type", "actions[]")
         _only(item, ("tool", "args"), "actions[]")
-        tool, args = _get(item, "tool", str), _get(item, "args", Mapping, {}) or {}
+        tool, args = _get(item, "tool", str), _args(item.get("args"))
         if not tool:
             raise _Bad("bad_type", "actions[].tool")
         out.append(ToolCall(tool, MappingProxyType(dict(args))))
     return tuple(out)
+
+
+def _args(value: Any) -> Mapping[str, Any]:
+    """Аргументы действия. Пустое значение (``""``, ``null``) — пустой объект, JSON-строка объекта — объект: так
+    MiniMax пишет ``"args": ""`` в режиме ``tool_choice`` (бейк-офф 21.10: 17 из 23 invalid, ADR §18.2 О4)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise _Bad("bad_type", "actions[].args") from None
+    if not isinstance(value, Mapping):
+        raise _Bad("bad_type", "actions[].args")
+    return value
+
+
+def _passed(value: Any) -> Optional[str]:
+    """Исход «молчать». ``false`` и пустая строка — «не молчу», как отсутствие поля: MiniMax в ``json_in_text`` пишет
+    ``"passed": false`` рядом с речью (бейк-офф 21.10: 49 из 52 invalid). ``true`` — не исход из перечисления."""
+    if value is None or value is False or value == "":
+        return None
+    if not isinstance(value, str):
+        raise _Bad("bad_type", "passed")
+    return value
 
 
 def _perform(data: Any) -> Optional[Performance]:
@@ -264,7 +289,7 @@ def _command(data: Mapping[str, Any]) -> Command:
         speech=_text(data, "speech"), ask=_ask(data.get("ask")), actions=_actions(data.get("actions")),
         perform=_perform(data.get("perform")), when=_get(data, "when", str, "after_current") or "after_current",
         edit_pending=bool(_get(data, "edit_pending", bool, False)), expression=_expression(data.get("expression")),
-        passed=_get(data, "passed", str),
+        passed=_passed(data.get("passed")),
     )
 
 

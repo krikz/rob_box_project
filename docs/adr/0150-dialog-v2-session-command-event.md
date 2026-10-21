@@ -240,7 +240,7 @@ src/rob_box_dialog/                      # НОВЫЙ пакет. Чистый P
     grammar.py          # Tier-1: закрытая грамматика команд (расширение media_command_grammar): стоп, тишина/выход,
                         # громкость по каналу, голос, новая сессия, диджей, да/нет на вопрос о личности
     command.py          # Command{speech?, ask?, actions≤3, expression} (frozen) + parse/validate из tool_calls или JSON
-    speech_channel.py   # транспорт слота речи: FieldChannel | ToolChannel — один включён по итогам бейк-оффа (§4.4)
+    speech_channel.py   # транспорт слота речи: FieldChannel (О4, бейк-офф §4.4; ToolChannel удалён в PR-7)
     tools_view.py       # available_tools(session, capabilities) -> узкий срез каталога (имена + схемы из rob_box_core)
     context.py          # build_context(session, turn_log, facts) -> структурные блоки для LLM, окно озвученной истории
     execute.py          # Executor: actions -> ActionRequest; ожидание ActionEvent владельца; ActionResult{status, …}
