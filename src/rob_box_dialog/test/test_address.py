@@ -225,3 +225,17 @@ def test_flag_in_knowledge_turns_the_wakeless_answer_off(monkeypatch):
     monkeypatch.setattr(kn, "IDENTITY_ANSWER_WITHOUT_WAKE", False)
     decision = decide(_heard("меня зовут Гриша", t=100.0, doa=90.0), None, DEFAULT_WAKE_WORDS, _question())
     assert decision == NotAddressed(address.NO_WAKE)
+
+
+@pytest.mark.parametrize("text, t, addressed", [
+    ("мы разные люди", 100.0, True),                 # ответ на вопрос склейки (#2828) без вейка — #3765
+    ("да, это я", 100.0, True),
+    ("ты обознался", 100.0, True),
+    ("да", 100.0, True),                             # голое да/нет — ответ (на conflict непонятный, решит код)
+    ("Гриша", 100.0, False),                         # голое имя — не ответ на «вы разные люди?»
+    ("мы разные люди", 111.0, False),                # окно то же — REPLY_WINDOW_S (15 с)
+    ("это я вчера включал тебе эту музыку", 100.0, False),  # длинная фраза с «это я» — чужой разговор
+])
+def test_merge_question_answer_without_wake(text, t, addressed):
+    decision = decide(_heard(text, t=t, doa=90.0), None, DEFAULT_WAKE_WORDS, _question(kind="conflict"))
+    assert decision == (Addressed(text, address.IDENTITY_ANSWER) if addressed else NotAddressed(address.NO_WAKE))

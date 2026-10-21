@@ -165,9 +165,20 @@ LOG_N723_ANSWER = (
 ACT = json.loads(ACT_2C.read_text(encoding="utf-8"))
 STEPS = {s["label"]: s for s in ACT["steps"]}
 N721 = STEPS["n721_sasha_intro"]
-N722 = STEPS["n722_boris_intro_conflict"]
+#: Шаг n722 в редакции run 35912751803 (до #3765): тогда приветствие было запрещено (вопрос ЗАМЕНЯЛ ответ хода).
+#: С #3765 вопрос звучит после ответа хода и must_not_say на приветствие из сценария снят, но механику харнесса
+#: (речь — только озвученное, запрет ретрая после смены состояния) эти тесты проверяют на той исторической записи.
+_N722_NOW = STEPS["n722_boris_intro_conflict"]
+FORBIDDEN = ["Привет, Борис", "Приятно познакомиться"]
+N722 = {**_N722_NOW, "acceptance": {**_N722_NOW["acceptance"], "must_not_say": FORBIDDEN}}
 N723 = STEPS["n723_boris_answer_different"]
-FORBIDDEN = N722["acceptance"]["must_not_say"]
+
+
+def test_issue_3765_greeting_is_allowed_question_comes_after():
+    """#3765: приветствие хода — норма, вопрос звучит после него; n723 приходит позже окна 15 с и не склеивает."""
+    assert not _N722_NOW["acceptance"].get("must_not_say")
+    assert N723["required_question"] is True
+    assert "Объединил записи" in N723["acceptance"]["must_not_say"]
 
 
 # ── 1. robot_speech(): речь — только озвученное ──────────────────────────

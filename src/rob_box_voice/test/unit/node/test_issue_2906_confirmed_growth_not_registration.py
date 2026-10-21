@@ -66,7 +66,8 @@ from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
 from ros_stubs import make_speaker_result  # noqa: E402
 
 UTT_ID = "c4a4d9c4772c"
-NOT_HEARD = "Не расслышал"
+#: Просьба повторить после отказа регистрации (#2908, ``phrases`` identity.retry_voice).
+NOT_HEARD = "ещё пару слов"
 
 
 def _embedding(seed: int) -> np.ndarray:
@@ -238,6 +239,7 @@ def test_short_yes_is_silent_and_creates_no_anchor(speaker_node, dialogue_node):
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
     assert NOT_HEARD not in _spoken(dialogue_node)
+    assert getattr(dialogue_node, "_after_turn_question", None) is None, "просьба повторить не отложена"
     assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert not any(a.get("event") == "register_error" for a in acks), acks
     assert len(speaker_node._db.list_speakers()) == 1
@@ -326,10 +328,11 @@ def test_llm_registration_too_short_still_says_not_heard(
         a.get("event") == "register_error" and a.get("error") == "too_short"
         for a in acks
     ), acks
-    # Фикстура моделирует «ход идёт» (_run_task задан): с #2908 просьба
-    # повторить придерживается и ЗАМЕНИТ ответ хода (_deliver_turn_result).
-    held = dialogue_node._identity_ack_state().take_held()
+    # Фикстура моделирует «ход идёт» (_run_task задан): просьба повторить
+    # отложена до конца хода и прозвучит ПОСЛЕ его ответа (#2908, #3765).
+    held = dialogue_node._after_turn_question
     assert held is not None and NOT_HEARD in held["question"], held
+    assert NOT_HEARD not in _spoken(dialogue_node), "посреди хода не звучит"
     assert speaker_node._db.list_speakers() == []
 
 

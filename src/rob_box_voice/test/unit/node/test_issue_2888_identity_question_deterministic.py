@@ -184,12 +184,10 @@ class TestSingleAsksDeterministically:
         n = _node(NAME_AS_FACT)
         _turn(n, "Робот, ты меня узнал по голосу?")
 
-        n._resolve_identity_ack_answer("да, это я")
         n.llm_reply = "Рад тебя слышать, Саша."
         _turn(n, "да, это я")
 
         n._speaker_merge_pub.publish.assert_not_called()
-        assert n._identity_ack_state().pop_hint_lines() == []
         assert n._current_speaker["name"] == "Саша"
         assert n.tts == [NAME_AS_FACT, "Саша, это ты?", "Рад тебя слышать, Саша."]
 
