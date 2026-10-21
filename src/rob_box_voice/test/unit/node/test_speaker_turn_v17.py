@@ -74,7 +74,7 @@ def _node():
     n.tts = []
     n.llm_inputs = []
     n.reply = _Result("Хорошо.")
-    n._speak_direct = MagicMock(side_effect=lambda text, language=None: n.tts.append(text))
+    n._speak_direct = MagicMock(side_effect=lambda text, language=None: (n.tts.append(text), f"sid-{len(n.tts)}")[1])
     n._handle_result = MagicMock(side_effect=lambda result, **_kw: n.tts.append(result.spoken_text))
 
     async def prepare(**kw):
@@ -248,4 +248,10 @@ def test_question_opens_identity_frame_facing_the_speaker():
     assert n.tts[-1] == ASK_NAME
     frame = n._session.snapshot.top("Identity")
     assert (frame.payload["kind"], frame.payload["azimuth_deg"]) == ("unknown", 75.0)
+    assert frame.payload["asked_at"] is None, "вопрос ещё звучит — кадр ждёт его конца (#3771)"
+    from rob_box_voice.core.identity_question import on_speech_event, question
+
+    assert question(n) is None
+    on_speech_event(n, 4, frame.payload["speech_id"], "personality")  # SpeechEvent finished вопроса
+    assert question(n) is not None
     assert n._session.snapshot.speaker.azimuth_deg == 75.0

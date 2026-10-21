@@ -186,7 +186,7 @@ class TestAnswerToNameQuestionV17b:
         from rob_box_voice.core.identity_question import open_question
 
         node._speaker_ref = SpeakerRef(azimuth_deg=azimuth)
-        open_question(node, AskCandidate("stranger", "unknown"))
+        open_question(node, AskCandidate("stranger", "unknown"), "q1")
         # вопрос прозвучал asked_ago_s назад (фраза ответа в тесте кончается «сейчас»)
         frame = node._session.pop_scene("Identity")
         node._session.push_scene("Identity", "code", payload={**frame.payload, "asked_at": time.time() - asked_ago_s})

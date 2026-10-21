@@ -149,6 +149,7 @@ def plan_identity_question(node: Any, result: Any, *, other_question: bool) -> O
 def ask_planned(node: Any, cand: Optional[AskCandidate]) -> None:
     """Задать вопрос, решённый :func:`plan_identity_question`, последней репликой хода."""
     if cand is not None:
-        node._speak_identity_question({"kind": "tentative", "question": cand.question(), "name": cand.name},
-                                      after_answer=True)
-        open_question(node, cand)
+        speech_id = node._speak_identity_question(
+            {"kind": "tentative", "question": cand.question(), "name": cand.name}, after_answer=True)
+        if speech_id:  # не ушёл в речь — ждать нечего, кадра нет
+            open_question(node, cand, speech_id)

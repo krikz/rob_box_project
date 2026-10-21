@@ -1,7 +1,7 @@
 """Кадр ``Identity(ask)`` и ``/dialog/session`` в ``dialogue_node`` v1 (ADR-0150 §7.1, §7.2, §7.5 п.2; #3695).
 
-Вопрос об имени — кадр стека сессии (:class:`rob_box_dialog.session.Session`): код кладёт его, когда вопрос прозвучал,
-он живёт ``IDENTITY_TTL_S`` (15 с) и снимается первой адресованной фразой. Пока кадр жив, фраза без вейка с той же
+Вопрос об имени — кадр стека сессии (:class:`rob_box_dialog.session.Session`): код кладёт его, когда вопрос ушёл в речь (до конца вопроса он ждёт),
+окно ответа ``IDENTITY_TTL_S`` (15 с) открывается, когда вопрос договорён (``SpeechEvent finished``), и снимается первой адресованной фразой. Пока кадр жив, фраза без вейка с той же
 стороны — ответ на него (В17(б), правило — ``speaker_adapter.answers_question``). Ответ «меня зовут X» регистрирует
 голос кодом (#2925, ``_register_self_intro``), голое имя на «Как тебя зовут?» — тоже (:func:`answer_name`).
 
@@ -18,14 +18,17 @@ import math
 import time
 from typing import Any, Optional
 
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import Session, SessionChanged, SessionSnapshot, SpeakerRef
-from rob_box_dialog.speaker_adapter import AskCandidate, question_frame
+from rob_box_dialog.speaker_adapter import AskCandidate, question_frame, question_open
 from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_name
 
 #: Топик снимка сессии (``architecture/ownership.yml``).
 SESSION_TOPIC = "/dialog/session"
 #: ``Identity.kind`` кадров, где ответ — имя: голое имя («Гриша») — представление.
 ASKS_NAME = ("unknown", "contested")
+#: ``SpeechEvent.kind``: finished / cancelled / rejected.
+_FINISHED, _CANCELLED, _REJECTED = 4, 5, 7
 
 
 def session(node: Any) -> Session:
@@ -41,23 +44,49 @@ def set_speaker(node: Any, ref: SpeakerRef) -> None:
     session(node).set_speaker(ref)
 
 
-def open_question(node: Any, cand: AskCandidate) -> None:
-    """Вопрос прозвучал — кадр ``Identity`` с азимутом фразы собеседника: ответ ждётся с той же стороны."""
+def open_question(node: Any, cand: AskCandidate, speech_id: str) -> None:
+    """Вопрос отдан в речь — кадр ``Identity`` с азимутом фразы собеседника, пока ЖДЁТ конца речи ``speech_id``.
+
+    Окно ответа открывает :func:`on_speech_event` (``SpeechEvent finished`` этого вопроса): ход мог отвечать 12 с,
+    вопрос звучит после, и 15 с от конца хода истекли бы до вопроса (#3771)."""
     ref = getattr(node, "_speaker_ref", None)
     azimuth = ref.azimuth_deg if ref is not None else None
-    frame = question_frame(cand.key, cand.kind, cand.name, azimuth, time.time())
-    session(node).push_scene("Identity", "code", payload=frame)
+    frame = question_frame(cand.key, cand.kind, cand.name, azimuth, None, speech_id)
+    session(node).pop_scene("Identity")
+    session(node).push_scene("Identity", "code", ttl_s=float(kn.IDENTITY_WAIT_QUESTION_S), payload=frame)
     node.get_logger().info(
-        f"❓ [Identity #3695] кадр: kind={cand.kind} key={cand.key[:8]} "
-        f"azimuth={'-' if azimuth is None else f'{azimuth:.0f}'} ttl=15s — ответ и без вейка, с той же стороны"
+        f"❓ [Identity #3695] кадр ждёт конца вопроса: kind={cand.kind} key={cand.key[:8]} "
+        f"azimuth={'-' if azimuth is None else f'{azimuth:.0f}'} speech_id={speech_id[:8]}"
     )
 
 
+def on_speech_event(node: Any, kind: int, speech_id: str, agent: str) -> None:
+    """``SpeechEvent`` речи личности: вопрос договорён — открыть окно ответа; отменён/отклонён — снять кадр."""
+    if agent != "personality" or not speech_id or kind not in (_FINISHED, _CANCELLED, _REJECTED):
+        return
+    current = session(node)
+    frame = current.snapshot.top("Identity")
+    if frame is None or frame.payload.get("speech_id") != speech_id or question_open(frame):
+        return
+    if kind != _FINISHED:
+        current.pop_scene("Identity")
+        node.get_logger().info(
+            f"❓ [Identity #3695] кадр снят: вопрос не прозвучал (SpeechEvent kind={kind} speech_id={speech_id[:8]})")
+        return
+    ttl = float(kn.IDENTITY_MIC_GRACE_S + kn.IDENTITY_TTL_S)
+    current.arm_scene("Identity", ttl, {"asked_at": current.now() + kn.IDENTITY_MIC_GRACE_S})
+    node.get_logger().info(
+        f"❓ [Identity #3695] кадр открыт для ответа: kind={frame.payload.get('kind')} "
+        f"azimuth={frame.payload.get('azimuth_deg')} ttl={kn.IDENTITY_TTL_S}s (вопрос договорён, "
+        f"микрофон после речи +{kn.IDENTITY_MIC_GRACE_S}s)")
+
+
 def question(node: Any) -> Optional[Any]:
-    """Живой кадр ``Identity`` (истёкшие сессия снимает) или ``None``."""
+    """Кадр ``Identity`` с открытым окном ответа (истёкшие сессия снимает) или ``None``; ждущий конца вопроса — ``None``."""
     current = session(node)
     current.expire()
-    return current.snapshot.top("Identity")
+    frame = current.snapshot.top("Identity")
+    return frame if question_open(frame) else None
 
 
 def take_answer(node: Any, source: str, heard: Any) -> None:
@@ -135,5 +164,5 @@ def _time(msg: Any, t: float) -> Any:
     return msg
 
 
-__all__ = ["SESSION_TOPIC", "answer_name", "introduced_name", "open_question", "question", "session", "session_state",
+__all__ = ["SESSION_TOPIC", "answer_name", "introduced_name", "on_speech_event", "open_question", "question", "session", "session_state",
            "set_speaker", "take_answer"]

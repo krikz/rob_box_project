@@ -165,19 +165,27 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
 
 
 def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg: Optional[float],
-                   asked_at: float) -> Dict[str, Any]:
-    """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда."""
-    return {"person_ref": person_ref, "kind": kind, "name": name, "azimuth_deg": azimuth_deg, "asked_at": asked_at}
+                   asked_at: Optional[float], speech_id: str = "") -> Dict[str, Any]:
+    """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда.
+
+    ``asked_at`` — когда микрофон снова слышит (конец вопроса + ``IDENTITY_MIC_GRACE_S``); ``None`` — вопрос ещё не договорён (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``, #3771)."""
+    return {"person_ref": person_ref, "kind": kind, "name": name, "azimuth_deg": azimuth_deg, "asked_at": asked_at,
+            "speech_id": speech_id}
+
+
+def question_open(frame: Optional[SceneFrame]) -> bool:
+    """Вопрос договорён и окно ответа идёт: кадр ``Identity`` с ``asked_at`` (до этого он «ждёт», ответа нет)."""
+    return frame is not None and frame.kind == "Identity" and frame.payload.get("asked_at") is not None
 
 
 def answers_question(frame: Optional[SceneFrame], heard: Any) -> bool:
     """Фраза без вейка — ответ на вопрос робота (В17(б)): кадр ``Identity`` жив (TTL — у сессии), фраза пришла
-    после вопроса и не позже ``IDENTITY_TTL_S``, и с той же стороны: DOA ±``IDENTITY_ANSWER_DOA_DEG`` от азимута
+    после открытия окна (``asked_at`` = конец вопроса + грейс микрофона) и не позже ``IDENTITY_TTL_S``, и с той же стороны: DOA ±``IDENTITY_ANSWER_DOA_DEG`` от азимута
     кадра или тот же узнанный длинный голос. Это не окно адресации (§17 Ж): ответить можно только на свой вопрос."""
-    if frame is None or frame.kind != "Identity" or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
+    if not question_open(frame) or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
         return False
     data = frame.payload
-    age = float(getattr(heard, "t", 0.0) or 0.0) - float(data.get("asked_at") or 0.0)
+    age = float(getattr(heard, "t", 0.0) or 0.0) - float(data["asked_at"])
     if not 0.0 <= age <= kn.IDENTITY_TTL_S:
         return False
     azimuth, doa = data.get("azimuth_deg"), getattr(heard, "doa_deg", None)
