@@ -120,7 +120,7 @@ def test_live_phrase_starts_dj_set_without_llm(run_plans):
     n = _make_node()
     _stt(n, LIVE_1908)
     run_plans()
-    n._dispatch_turn.assert_not_called()  # ни load_skill, ни второго раунда LLM
+    n._dispatch_turn.assert_not_called()  # ни подгрузки скилла, ни второго раунда LLM
     assert n._llm_skipped_counter["media_command"] == 1
     [(name, args, hidden)] = n._scheduler_executor.calls
     assert (name, args) == ("dj_set", {"action": "start", "persona": "диджей 8битный", "style": "chiptune",

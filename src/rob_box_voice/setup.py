@@ -29,9 +29,6 @@ setup(
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt') + glob('prompts/*.yaml')),
-        # Skill-specific prompts
-        (os.path.join('share', package_name, 'prompts', 'skills'),
-            glob('prompts/skills/*.txt')),
         # Service definitions
         (os.path.join('share', package_name, 'srv'),
             glob('srv/*.srv')),

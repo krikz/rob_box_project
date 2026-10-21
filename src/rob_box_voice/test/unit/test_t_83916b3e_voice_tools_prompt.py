@@ -64,7 +64,7 @@ def _voice_settings_rule_block() -> str:
     """
     content = _read(MASTER_PROMPT)
     match = re.search(
-        r"🚨 \*\*RULE #VOICE-SETTINGS — .*?(?=🚨 \*\*RULE #|<<<SKILL-OFF>>>)",
+        r"🚨 \*\*RULE #VOICE-SETTINGS — .*?(?=🚨 \*\*RULE #|\n# |\Z)",
         content,
         re.DOTALL,
     )

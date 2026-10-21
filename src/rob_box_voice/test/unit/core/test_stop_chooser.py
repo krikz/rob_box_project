@@ -11,6 +11,7 @@ import json
 import httpx
 import pytest
 
+from rob_box_dialog.knowledge import STOP_CHOOSER_DEADLINE_MS
 from rob_box_harness.decision.chat_choice import ChatChoiceProvider
 from rob_box_mcp_tools.engine.chooser_model import ModelChooser
 
@@ -43,7 +44,7 @@ class _Log:
 def _chooser(handler, log):
     client = lambda timeout_s: httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout_s)  # noqa: E731
     provider = ChatChoiceProvider(base_url="https://llm.test/v1/", model="m-1", client_factory=client)
-    return StopChooser(ModelChooser(provider, deadline_ms=1000, state=state_text), log=lambda: log)
+    return StopChooser(ModelChooser(provider, deadline_ms=STOP_CHOOSER_DEADLINE_MS, state=state_text), log=lambda: log)
 
 
 def _answer(choice):
@@ -100,3 +101,12 @@ def test_question_has_two_labelled_choices_and_no_weights():
     q = question("покажи анимацию стоп")
     assert q.ids() == (STOP, PART_OF_COMMAND) and dict(q.weights) == {}
     assert all(o.label for o in q.options) and "part_of_command" in q.instructions
+
+
+def test_deadline_is_one_place_and_one_and_a_half_seconds(monkeypatch):
+    """Решение Шифу 21.10: дедлайн спорного стопа 1,5 с — одна константа knowledge, её берут и HTTP, и оркестратор."""
+    assert STOP_CHOOSER_DEADLINE_MS == 1500
+    log = _Log()
+    chooser = stop_chooser_from_env(env={"LLM_HARNESS_API_KEY": "sk-test"}, log=lambda: log)
+    assert chooser._deadline_ms == STOP_CHOOSER_DEADLINE_MS  # noqa: SLF001
+    assert any("1500" in text for _, text in log.lines)

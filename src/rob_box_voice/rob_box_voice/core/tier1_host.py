@@ -58,7 +58,8 @@ class Tier1Runner:
         return SessionSnapshot(
             agent="personality", session_id="v1", epoch=0, started_at=0.0,
             scenes=(SceneFrame("Silence", "user"),) if silenced else (),
-            music=MusicStateRef("playing" if playing else "idle", title=title or None),
+            music=MusicStateRef("playing" if playing else "idle", title=title or None,
+                                dj=bool(player is not None and player.dj)),
             speaking=bool(watch is not None and watch.speaking), volume_channel=self.volume_channel)
 
     def voices(self) -> list:

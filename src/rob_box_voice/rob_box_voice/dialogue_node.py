@@ -56,12 +56,6 @@ from rob_box_core.avatar_command import (
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_core import expression_client, speech_client
-from rob_box_core.prompt_sections import (
-    PromptMarkupError,
-    merge_skill_prompts,
-    render_prompt,
-)
-from rob_box_core.tool_catalog import CORE_SKILL, skill_names, tools_for_skill
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_harness.config import LLMConfig
 from rob_box_harness.core.agent_core import AgentCore, DialogResult
@@ -69,9 +63,7 @@ from rob_box_harness.core.assembly import (
     AgentSpec,
     build_agent,
     build_llm_chain,
-    load_skill_prompts,
     load_system_prompt,
-    normalize_skill_slice,
 )
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -110,7 +102,6 @@ from rob_box_llm.provider import LLMMessage, LLMSettings, ToolCall
 from rob_box_voice.core.command_parser import CommandParser
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_voice.core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
-from rob_box_voice.core.skill_router import SkillRouter
 from rob_box_voice.core.music_player_state import (
     MUSIC_EVENT_TOPIC,
     MUSIC_STATE_TOPIC,
@@ -123,6 +114,7 @@ from rob_box_voice.core.turn_stages import TurnStages, scene_for_animation
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
 from rob_box_voice.core.stop_chooser import stop_chooser_from_env
+from rob_box_voice.core.tools_view_host import apply_tools_view
 from rob_box_voice.core.stt_admission import (
     DefaultSttAdmission,
     MediaCommandStep,
@@ -273,7 +265,6 @@ from rob_box_voice.observability import (
     record_session_duration,
     record_task_updated,
     record_llm_prompt_tokens,
-    record_skill_activation,
     record_voice_llm_request,
     start_metrics_server,
     start_span,
@@ -495,29 +486,10 @@ class DialogueNode(DialogueStageMixin, Node):
         # (voice_preset, voice_output_language) логируются
         # в parameters_callback без рестарта ноды.
         self.add_on_set_parameters_callback(self.parameters_callback)
-        # ADR-0083 §2.3 — wiring ``dialogue_node`` через
-        # ``build_agent(spec)``. Чтение файлов промпта/скиллов
-        # делегировано в ``load_system_prompt`` / ``load_skill_prompts``
-        # (assembly.py); здесь мы делаем только split-section
-        # post-processing, а сам ``AgentCore`` собирается в один вызов
-        # ``build_agent(spec, llm=..., tools=..., memory=...)`` ниже.
-        # Инициализируем пустыми значениями — фактический текст
-        # подгружается из spec внутри блока ``build_agent``.
+        # ADR-0083 §2.3 — wiring ``dialogue_node`` через ``build_agent(spec)``: системный промпт читает
+        # ``load_system_prompt`` (assembly.py) ниже. Срез тулов хода — ``core/tools_view_host`` (ADR-0150 PR-6),
+        # скиллов и их фрагментов больше нет.
         self._system_prompt: str = ""
-        self._skill_prompts: dict[str, str] = {}
-        # Фаза 5 change'а: §5 MUSIC и §6 WAYPOINTS размечены в мастер-промпте
-        # как секции скиллов. При skills_enabled=false остаются на месте
-        # (побайтово как раньше), при true — уезжают во фрагменты и едут
-        # вплотную к текущему ходу.
-        self._system_prompt, self._skill_prompts = self._split_skill_sections(
-            self._system_prompt, self._skill_prompts
-        )
-        self._validate_skill_fragments(self._skill_prompts)
-        #: Детерминированный пред-роутер домена. None — скиллы выключены.
-        self._skill_router: Any = None
-        #: Последние прочитанные счётчики load_skill из AgentCore — нужны,
-        #: чтобы публиковать ПРИРОСТ, а не абсолютное значение.
-        self._skill_load_seen: tuple[int, int] = (0, 0)
         self._verbose_llm: bool = bool(self.get_parameter("verbose_llm").value)
         # #1990 — SSoT wake-слов (config/wake_words.yaml, docker). Файл
         # (wake_words_file) — источник personality в проде; параметр wake_words
@@ -543,18 +515,6 @@ class DialogueNode(DialogueStageMixin, Node):
         )
         # Вейк-слова парсера — по умолчанию из одной таблицы rob_box_dialog.knowledge.
         self._command_parser = CommandParser(confidence_base=0.8)
-        # Пред-роутер домена переиспользует ТОТ ЖЕ CommandParser, что и
-        # command_intent_gate — второй классификатор не заводим.
-        if self._skill_prompts:
-            self._skill_router = SkillRouter(
-                self._command_parser,
-                known_skills=tuple(sorted(self._skill_prompts)),
-                confidence=self._command_intent_gate_confidence,
-            )
-            self.get_logger().info(
-                f"🧭 Пред-роутер скиллов включён: "
-                f"{', '.join(sorted(self._skill_prompts))}"
-            )
         # «новая сессия» / «сбрось всё» / Telegram «/clear» — Tier-1 (ADR-0150 PR-6): фразы —
         # ``rob_box_dialog.knowledge.NEW_SESSION_PHRASES``, разбор — ``grammar.match``.
         self._new_session_enabled: bool = bool(
@@ -714,19 +674,8 @@ class DialogueNode(DialogueStageMixin, Node):
         # _build_dynamic_system_context can render the [ACTIVE TASKS]
         # block for the LLM. None when scheduler is disabled/failed.
         self._scheduler_executor: Any = None
-        # ADR-0083 §2.3 — раскол §5 MUSIC / §6 WAYPOINTS по фрагментам
-        # скиллов выполняется ДО ``build_agent``. ``load_system_prompt`` /
-        # ``load_skill_prompts`` (harness) читают те же файлы, что
-        # раньше читала нода, но результат мы обрабатываем на стороне
-        # ноды (node-specific markup rules, ADR-0056) и передаём
-        # post-processed значения в ``build_agent`` через ``system_prompt=``
-        # / ``skill_prompts=`` overrides (см. ADR-0083 §2.3 follow-up).
-        raw_system_prompt = load_system_prompt(personality_spec)
-        raw_skill_prompts = load_skill_prompts(personality_spec)
-        self._system_prompt, self._skill_prompts = self._split_skill_sections(
-            raw_system_prompt, raw_skill_prompts
-        )
-        self._validate_skill_fragments(self._skill_prompts)
+        # ADR-0083 §2.3 — системный промпт читает ``load_system_prompt`` (harness) и передаёт в ``build_agent``.
+        self._system_prompt = load_system_prompt(personality_spec)
         # Issue #1219 — regression guard для voice-change feature:
         # промпт ОБЯЗАН содержать ``RULE #VOICE`` (иначе MiniMax-M3 live
         # молча игнорирует запрос и оставляет голос по умолчанию). Раньше
@@ -750,7 +699,6 @@ class DialogueNode(DialogueStageMixin, Node):
             memory=self._memory,
             llm=self._llm,
             system_prompt=self._system_prompt,
-            skill_prompts=self._skill_prompts,
         )
 
         cbg = ReentrantCallbackGroup()
@@ -1196,15 +1144,6 @@ class DialogueNode(DialogueStageMixin, Node):
         self.declare_parameter("temperature", 0.7)
         self.declare_parameter("max_tokens", 500)
         self.declare_parameter("system_prompt_file", "master_prompt_compact.txt")
-        # Move A (change skill-scoped-dialogue-context, фаза 2): доменные
-        # фрагменты инструкций, приезжающие вплотную к текущему ходу.
-        # ВЫКЛЮЧЕНО по умолчанию — включается решением Шифу по метрикам
-        # voice_llm_prompt_tokens, см. Migration Plan change'а.
-        self.declare_parameter("skills_enabled", False)
-        # Move B — сужение каталога до активного скилла. ВЫКЛЮЧЕНО:
-        # включать только после подтверждённого выигрыша по метрикам
-        # (Migration Plan change'а, шаг 3).
-        self.declare_parameter("skill_tool_narrowing", False)
         self.declare_parameter("history_max_turns", 20)
         self.declare_parameter("dialogue_timeout", 300.0)
         # Один список на весь проект — rob_box_voice.core.dialogue_text.
@@ -1482,7 +1421,7 @@ class DialogueNode(DialogueStageMixin, Node):
         return per_provider
 
     def _resolve_personality_prompt_dir(self) -> Path:
-        """Где лежат ``prompts/`` и ``prompts/skills/`` для personality.
+        """Где лежат ``prompts/`` для personality.
 
         ADR-0083 §2.3 — ``prompt_dir`` часть спек. Возвращаем
         ``<share_dir>/prompts`` через ``ament_index_python`` —
@@ -1520,7 +1459,6 @@ class DialogueNode(DialogueStageMixin, Node):
         except (TypeError, ValueError):
             health_ttl = DEFAULT_HEALTH_TTL_S
 
-        skill_slice: tuple[str, ...] = normalize_skill_slice(skill_names())
         try:
             prompt_dir: Path = self._resolve_personality_prompt_dir()
         except Exception as exc:  # noqa: BLE001 — старт-страховка
@@ -1536,10 +1474,6 @@ class DialogueNode(DialogueStageMixin, Node):
             system_prompt_file=str(
                 self.get_parameter("system_prompt_file").value
                 or "master_prompt_compact.txt"
-            ),
-            skill_slice=skill_slice,
-            narrow_tools_to_skill=bool(
-                self.get_parameter("skill_tool_narrowing").value or False
             ),
             memory_namespace="personality",
             use_scheduler=True,
@@ -1560,156 +1494,6 @@ class DialogueNode(DialogueStageMixin, Node):
             dsm=self._dsm,
             user_id="default",
         )
-
-    def _validate_skill_fragments(self, fragments: dict[str, str]) -> None:
-        """Предупредить, если инструмент скилла не назван в его тексте.
-
-        Блокер живёт в тесте (``test_skill_prompt_contract.py``) — здесь
-        рантайм-страховка на случай, когда на робот приехал промпт из
-        другой сборки: контейнер поднимется и заговорит, но оператор
-        увидит в логе, какой именно скилл разъехался.
-
-        Раньше эта проверка (``_validate_tools_in_prompt``) смотрела
-        ТОЛЬКО музыкальный промпт и только предупреждением — а класс
-        расхождения общий: #1403 (``generate_music`` зарегистрирован, в
-        тексте не упомянут → LLM отвечает «нет такой функции»).
-        """
-        if not fragments:
-            return
-        for skill, text in sorted(fragments.items()):
-            lowered = text.lower()
-            try:
-                tools = tools_for_skill(skill, include_core=(skill == CORE_SKILL))
-            except KeyError:
-                self.get_logger().warning(
-                    f"⚠️ [skills] фрагмент {skill!r} не соответствует ни "
-                    "одному скиллу каталога — он не будет активирован"
-                )
-                continue
-            missing = sorted(
-                entry.name for entry in tools
-                if entry.name.lower() not in lowered
-            )
-            if missing:
-                self.get_logger().warning(
-                    f"⚠️ [skills] скилл {skill!r}: {len(missing)} "
-                    f"инструмент(ов) не описаны во фрагменте: "
-                    f"{', '.join(missing)}. LLM может ответить «нет такой "
-                    f"функции» (класс регрессии #1403)."
-                )
-            else:
-                self.get_logger().debug(
-                    f"[skills] {skill}: все {len(tools)} инструментов описаны ✓"
-                )
-
-    def _skills_enabled(self) -> bool:
-        """Значение параметра ``skills_enabled`` (Move A).
-
-        Отдельный метод, потому что параметр читают два места — загрузка
-        фрагментов и раскол мастер-промпта, — и они обязаны видеть одно и
-        то же значение. Старый yaml без параметра — это ``False``.
-        """
-        try:
-            return bool(self.get_parameter("skills_enabled").value)
-        except Exception:  # noqa: BLE001 — параметр не объявлен (старый yaml)
-            return False
-
-    def _split_skill_sections(
-        self, prompt: str, fragments: dict[str, str]
-    ) -> tuple[str, dict[str, str]]:
-        """Развернуть разметку доменных секций мастер-промпта (фаза 5).
-
-        При ``skills_enabled=false`` возвращает промпт БЕЗ изменений (только
-        без строк-маркеров) и фрагменты как есть — дефолтная конфигурация
-        обязана вести себя ровно как до change'а.
-
-        При ``true`` секции §5 MUSIC и §6 WAYPOINTS уезжают из системного
-        промпта во фрагменты своих скиллов: там они окажутся вплотную к
-        текущей реплике вместо позиции 0.
-
-        Сломанная разметка не роняет ноду и не теряет правила: остаёмся в
-        режиме выключенных скиллов, то есть текст секций остаётся в промпте.
-        """
-        enabled = self._skills_enabled()
-        try:
-            rendered = render_prompt(prompt, skills_enabled=enabled)
-        except PromptMarkupError as exc:
-            self.get_logger().error(
-                f"❌ Разметка секций мастер-промпта сломана: {exc}. "
-                f"Доменные секции остаются в системном промпте "
-                f"(поведение как при skills_enabled=false)."
-            )
-            try:
-                rendered = render_prompt(prompt, skills_enabled=False)
-            except PromptMarkupError:
-                return prompt, fragments
-            return rendered.system_prompt, fragments
-
-        if not enabled:
-            return rendered.system_prompt, fragments
-
-        merged = merge_skill_prompts(fragments, rendered)
-        moved = rendered.by_skill()
-        if moved:
-            self.get_logger().info(
-                "🧩 Доменные секции мастер-промпта уехали во фрагменты: "
-                + ", ".join(
-                    f"{skill} (+{len(text)} симв)"
-                    for skill, text in sorted(moved.items())
-                )
-                + f"; системный промпт {len(prompt)} → "
-                f"{len(rendered.system_prompt)} симв"
-            )
-        return rendered.system_prompt, merged
-
-    def _activate_skill_for(self, text: str) -> None:
-        """Активировать домен ДО обращения к LLM.
-
-        Промах роутера безвреден: при выключенном сужении каталога LLM
-        видит все инструменты и при необходимости позовёт ``load_skill``
-        сама. Поэтому здесь нет ни ретраев, ни исключений наружу —
-        только попытка и метрика.
-        """
-        # getattr, а не прямой доступ: юнит-тесты этого репо собирают ноду
-        # через object.__new__ и не исполняют __init__, поэтому атрибута
-        # может не быть. Телеметрия и активация не имеют права ронять ход
-        # ни в проде, ни в тестовом двойнике.
-        router = getattr(self, "_skill_router", None)
-        if router is None:
-            return
-        try:
-            skill = router.route(text)
-        except Exception as exc:  # noqa: BLE001 — роутер не роняет ход
-            self.get_logger().debug(f"⚠️ [skills] router failed: {exc}")
-            return
-        if not skill:
-            return
-        try:
-            self._core.set_active_skill(skill)
-            record_skill_activation(skill, source="router")
-            self.get_logger().debug(f"🧭 [skills] активирован {skill!r}")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().debug(f"⚠️ [skills] activation failed: {exc}")
-
-    def _publish_skill_load_counters(self) -> None:
-        """Опубликовать прирост «домен пришлось грузить вызовом LLM».
-
-        Доля этого источника против ``router`` — метрика промахов
-        пред-роутера (задача 3.7).
-        """
-        core = getattr(self, "_core", None)
-        if core is None or getattr(self, "_skill_router", None) is None:
-            return
-        try:
-            loaded, misses = core.skill_load_counters
-        except Exception:  # noqa: BLE001
-            return
-        seen_loaded, seen_misses = getattr(self, "_skill_load_seen", (0, 0))
-        for _ in range(max(0, loaded - seen_loaded)):
-            record_skill_activation(core.active_skill, source="llm")
-        for _ in range(max(0, misses - seen_misses)):
-            record_skill_activation("none", source="miss")
-        self._skill_load_seen = (loaded, misses)
 
     def _on_prompt_stats(self, stats: Any) -> None:
         """Опубликовать размер промпта, посчитанный AgentCore.
@@ -5376,10 +5160,9 @@ tentative_plan(question, kind, name)
 
         1. Открыть OTel-span ``dialogue.llm_call`` с атрибутами provider/model.
            ``start_span`` — no-op без OTel.
-        2. Детерминированно активировать skill домен ДО LLM-вызова.
+        2. Задать срез тулов хода ДО LLM-вызова (``tools_view_host``, ADR-0150 PR-6).
         3. Вызвать ``self._core.process_input(...)`` с preclassified_event.
-        4. Опубликовать skill-load counters (``_publish_skill_load_counters``)
-           и записать в span атрибуты ``fallback`` / ``duration_s``.
+        4. Записать в span атрибуты ``fallback`` / ``duration_s``.
         5. В ``finally`` — записать Prometheus-метрику
            ``record_voice_llm_request``. ``success`` определяется по
            факту наличия ``result`` И ``result.error`` (как в
@@ -5396,7 +5179,7 @@ tentative_plan(question, kind, name)
                     or getattr(self._llm, "_model", ""),
                 },
             ) as llm_span:
-                self._activate_skill_for(user_input)
+                apply_tools_view(self, user_input)
                 result = await self._core.process_input(
                     user_input,
                     is_synthetic=is_synthetic,
@@ -5406,7 +5189,6 @@ tentative_plan(question, kind, name)
                     preclassified_event=DialogueEvent.STT_RESULT,
                 )
                 success = result is not None and not result.error
-                self._publish_skill_load_counters()
                 llm_span.set_attribute(
                     "fallback",
                     provider_name == "HealthAwareFallbackLLM",
@@ -5662,13 +5444,6 @@ tentative_plan(question, kind, name)
         if phrase:
             self._speak_direct(phrase)
 
-    # Issue #3165 — сколько секунд действие роутера подкрепляет заявление
-    # модели о нём («я остановил трек», «сделал громче») в ходе без тулов.
-    # Живой прогон 29.09: вопросы пришли через 11 и 33 с после стопа, ответ
-    # ретрая — через 48 с. Дольше двух минут «я остановил» — уже пересказ
-    # истории, и широкие гуарды #2549/#2559 снова требуют тул.
-    MEDIA_ACTION_BACKING_S = 120.0
-
     def _record_media_turn(
         self, plan: MediaPlan, text: str, phrase: str, done: list
     ) -> None:
@@ -5681,30 +5456,25 @@ tentative_plan(question, kind, name)
           (:meth:`_claim_backing_tools`): «я остановил» после стопа
           роутером — не фантом.
         """
-        now = time.time()
         ledger = getattr(self, "_media_actions", None)
         if ledger is None:
             ledger = self._media_actions = deque(maxlen=16)
-        ledger.extend((now, name) for name in done)
+        ledger.extend(done)
         # ADR-0148 / #3461: фраза запуска в окне модели — образец, который она копирует в ходе без тула.
         record = history_recorder(getattr(self, "_core", None), plan.command.intent)
         if record is not None:
             record(text, phrase, done)
 
     def _claim_backing_tools(self, tools_called: Any) -> tuple:
-        """Issue #3165 — тулы хода плюс свежие тулы роутера медиакоманд.
+        """Issue #3165 — тулы хода плюс тулы роутера медиакоманд этой сессии.
 
         Для широких гуардов «заявил действие без тула» (#2549, #2559,
         fallback #2949): модель честно пересказывает стоп/громкость/DJ,
-        исполненные роутером, а в её собственном ходе тулов нет.
+        исполненные роутером, а в её собственном ходе тулов нет. Пересказ
+        сделанного кодом в этой сессии — факт, а не фантом: окна по времени
+        нет (ADR-0150 PR-6, T10), журнал живёт до новой сессии (≤ 16 тулов).
         """
-        horizon = time.time() - self.MEDIA_ACTION_BACKING_S
-        recent = tuple(
-            name
-            for at, name in getattr(self, "_media_actions", None) or ()
-            if at >= horizon
-        )
-        return tuple(tools_called or ()) + recent
+        return tuple(tools_called or ()) + tuple(getattr(self, "_media_actions", None) or ())
 
     def _universal_claim_hit(
         self,
@@ -7145,6 +6915,8 @@ tentative_plan(question, kind, name)
         if backlog is not None:
             backlog.clear()
         self._pending_unaddressed = None
+        # 2b. Журнал действий роутера (#3165): пересказ «я остановил» после сброса — уже не этой сессии.
+        self._media_actions = deque(maxlen=16)
         # 3. DSM → IDLE из любого состояния (rescue path).
         try:
             self._dsm.reset(DialogueStateKind.IDLE)

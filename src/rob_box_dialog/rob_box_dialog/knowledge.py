@@ -202,8 +202,9 @@ NEW_SESSION_PHRASES: Tuple[str, ...] = (
 YES_WORDS: Tuple[str, ...] = ("да", "ага", "угу", "ок", "ладно")
 NO_WORDS: Tuple[str, ...] = ("нет", "не")
 #: В19: Chooser спорного стопа — варианты ответа, дедлайн (таймаут/ошибка → ``part_of_command``, речь не рвётся).
+#: 1,5 с — решение Шифу 21.10 08:22: DeepSeek (``llm_harness``) отвечает за 1,1 с, при 1 с Chooser всегда опаздывал.
 STOP_CHOICES: Tuple[str, ...] = ("stop", "part_of_command")
-STOP_CHOOSER_DEADLINE_MS = 1000
+STOP_CHOOSER_DEADLINE_MS = 1500
 
 # ---------------------------------------------------------------------------------------------------------------
 # Классы действий (§5.1) и тулы по классам
@@ -290,6 +291,71 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 })
 #: Тулы-транспорт речи, а не действия: канал речи выбирает бейк-офф (§4.4), командой как действие не идут.
 SPEECH_CHANNEL_TOOLS: Tuple[str, ...] = ("speak_text",)
+#: Срез тулов хода (§4.2, ``tools_view``): LLM видит ≤ ``TOOLS_VISIBLE_MAX`` схем, а не весь каталог. Всегда —
+#: речь, память, время, поиск, анимация; остальное — группы по словам человека и по сценам снимка (кадр DJ, музыка).
+TOOLS_VISIBLE_MAX = 12
+TOOLS_ALWAYS: Tuple[str, ...] = (
+    "speak_text", "memory_save", "memory_search", "get_current_time", "search_web", "play_animation",
+)
+
+
+@dataclass(frozen=True)
+class ToolGroup:
+    """Группа тулов среза: ``stems`` — основы слов человека (матч по левой границе слова), ``tools`` — ≤ 6 схем.
+
+    ``weak`` — общие глаголы («включи», «поставь»): группа по ним одним уступает группам, названным прямо
+    («включи голос …» — голос, а не музыка).
+    """
+
+    stems: Tuple[str, ...]
+    tools: Tuple[str, ...]
+    weak: Tuple[str, ...] = ()
+
+
+#: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
+#: только по явной голосовой просьбе (#3744: LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
+TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
+    "music": ToolGroup(
+        ("музык", "музон", "песн", "песен", "трек", "мелоди", "сыгра", "играй", "игра", "спой", "спеть", "споёшь",
+         "споешь", "сочини", "сгенер", "дидж", "сет", "сэт", "бит", "библиотек", "композ", "послуша",
+         "рэп", "вечеринк", "танц", "пати"),
+        ("request_music", "generate_music", "music_library", "dj_set", "stop_music", "get_music_state"),
+        weak=("включи", "поставь"),
+    ),
+    "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
+    "voice": ToolGroup(
+        ("голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", "быстр",
+         "побыстр", "медленн", "помедленн", "скорост", "темп реч", "выше", "ниже", "тембр"),
+        ("set_voice", "set_tts_provider", "list_tts_voices", "set_speed", "set_pitch", "estimate_tts_duration"),
+    ),
+    "navigation": ToolGroup(
+        ("поезжай", "поедь", "езжай", "едь", "приедь", "иди", "двигай", "вперёд", "вперед", "назад", "налево",
+         "направо", "поверн", "разверн", "точк", "кухн", "комнат", "маршрут", "где ты", "вернись", "остановись",
+         "отвези", "вези", "поехали", "едем", "приезжай", "туда", "сюда"),
+        ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
+         "get_current_pose"),
+    ),
+    "waypoints_edit": ToolGroup(
+        ("удали точк", "удали все точк", "очисти точк", "координат"),
+        ("delete_waypoint", "clear_waypoints", "navigate_to_coordinates", "list_waypoints"),
+    ),
+    "mapping": ToolGroup(("карт",),
+                         ("start_mapping", "continue_mapping", "finish_mapping", "optimize_map", "load_map")),
+    "people": ToolGroup(("зовут", "помни", "запомни", "знаком", "обо мне", "кто я", "моё имя", "мое имя"),
+                        ("memory_context", "register_speaker")),
+    "sound": ToolGroup(("звук",), ("play_sound", "get_sound_info")),
+    "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
+    "tasks": ToolGroup(("отмени", "продли", "сократи", "задач"), ("task_delta",)),
+    "status": ToolGroup(
+        ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
+        ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
+    ),
+})
+#: Ни одна группа не совпала со словами — тулы статуса (как раньше «core»-скилл каталога).
+TOOL_GROUPS_DEFAULT: Tuple[str, ...] = ("status",)
+#: Тулы каталога, которых нет в срезе LLM: их зовёт только код (Tier-1 «включи X» — lookup_melody медиароутера;
+#: add_music_material — служебный тул старого аранжировщика, движку v2 не нужен).
+TOOLS_CODE_ONLY: Tuple[str, ...] = ("lookup_melody", "search_melody", "add_music_material")
 #: Классы, действий которых в одной команде не больше одного (каждого): один трек и одна цель движения за ход.
 SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.

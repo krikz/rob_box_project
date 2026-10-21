@@ -80,9 +80,6 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
       "ShowMetricsTool.execute": 18
     },
-    "src/rob_box_core/rob_box_core/prompt_sections.py": {
-      "render_prompt": 16
-    },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py": {
       "_OpenAICompatibleProvider.complete": 21,
       "_OpenAICompatibleProvider.stream": 21
@@ -305,12 +302,6 @@
       "method": "ShowMetricsTool.execute",
       "cc": 18,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_core/rob_box_core/prompt_sections.py",
-      "method": "render_prompt",
-      "cc": 16,
-      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
     },
     {
       "path": "src/rob_box_llm/rob_box_llm/providers/deepseek.py",

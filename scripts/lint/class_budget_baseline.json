@@ -1,15 +1,15 @@
 {
   "version": 1,
   "created": "2026-10-21",
-  "base_sha": "86869da45d4f92d4b39d38e749c975d06da390e9",
+  "base_sha": "aee73b981472cd7e1ad7af9a99d3b2cc768cd2dd",
   "limits": {
     "wmc": 80,
     "methods": 40
   },
   "classes": {
     "src/rob_box_harness/rob_box_harness/core/agent_core.py:AgentCore": {
-      "wmc": 172,
-      "methods": 29
+      "wmc": 155,
+      "methods": 24
     },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py:_OpenAICompatibleProvider": {
       "wmc": 83,
@@ -76,8 +76,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 821,
-      "methods": 162
+      "wmc": 790,
+      "methods": 157
     },
     "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py:TaskScheduler": {
       "wmc": 137,

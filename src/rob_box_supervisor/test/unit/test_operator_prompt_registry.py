@@ -8,8 +8,8 @@
 Каталог берём там же, где реестр оператора: ``operator_visible_tools()``
 из ``rob_box_core.tool_catalog`` (llm-видимые + ``operator_visible``, в т.ч.
 ``say``; их же предзаполняет ``ToolRegistry(for_operator=True)``) плюс
-два инструмента, которые добавляются не из каталога: ``show_metrics``
-(``TarsPanelDispatcher.register_tool``) и ``load_skill`` (``AgentCore``).
+инструмент, который добавляется не из каталога: ``show_metrics``
+(``TarsPanelDispatcher.register_tool``). Тул подгрузки скилла удалён (ADR-0150 PR-6).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ _PROMPT = (
 )
 
 #: Не из каталога: регистрируются кодом супервизора / ядра агента.
-_EXTRA_OPERATOR_TOOLS = {"show_metrics", "load_skill"}
+_EXTRA_OPERATOR_TOOLS = {"show_metrics"}
 
 _DOUBLE_BACKTICK_RE = re.compile(r"``([^`]+)``")
 _TOOL_NAME_RE = re.compile(r"([a-z][a-z0-9_]*)(?:\(.*\))?")

@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
-from rob_box_core.tool_catalog import tools_for_skill
 from rob_box_harness.core.tool_loop import (
     apply_babble_filter,
     build_awaiting_confirmation_result,
@@ -87,55 +86,6 @@ if TYPE_CHECKING:
 _MAX_TOOL_ITERATIONS: int = 8
 
 
-#: Имя инструмента, которым LLM подгружает доменный скилл сама.
-#:
-#: Он НЕ живёт в ``rob_box_core.tool_catalog`` намеренно: каталог
-#: описывает то, что робот УМЕЕТ ДЕЛАТЬ (ехать, играть, говорить), а этот
-#: вызов ничего на роботе не исполняет — он меняет состав промпта внутри
-#: harness'а и возвращает текст. Класть его в каталог значило бы просить
-#: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
-#: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
-LOAD_SKILL_TOOL: str = "load_skill"
-
-
-def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
-    """Схема ``load_skill`` в OpenAI-формате.
-
-    Список доступных имён встроен в enum: модель не должна угадывать
-    строку, а промах по имени становится ошибкой валидации у провайдера,
-    а не тихой загрузкой пустоты.
-    """
-    return {
-        "type": "function",
-        "function": {
-            "name": LOAD_SKILL_TOOL,
-            "description": (
-                "Загрузить инструкции по работе с доменом, когда запрос "
-                "пользователя относится к музыке, навигации, памяти, "
-                "голосу или другому домену из списка. Возвращает текст "
-                "инструкций — прочитай его и продолжай ЭТОТ ЖЕ ход. "
-                "Вызывай ОДИН раз, до первого доменного действия."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "enum": list(known),
-                        "description": "Имя домена.",
-                    }
-                },
-                "required": ["skill"],
-            },
-        },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-    }
-
-
 @dataclass(frozen=True)
 class PromptStats:
     """Размер одного запроса к LLM — сырьё для ``voice_llm_prompt_tokens``.
@@ -153,7 +103,8 @@ class PromptStats:
     prompt_tokens: int
     estimated: bool
     provider: str
-    skill: str = "none"
+    #: Срез тулов хода (группы ``rob_box_dialog.tools_view``, ADR-0150 PR-6); ``"all"`` — срез не задан.
+    skill: str = "all"
 
 
 #: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
@@ -190,11 +141,10 @@ _DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
 
 def _compose_current_turn_message(
     dynamic_system: str | None,
-    skill_prompt: str,
     text: str,
 ) -> str:
-    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot and
-    the active skill fragment into the SAME user message as ``text``,
+    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot
+    into the SAME user message as ``text``,
     instead of appending them as separate ``role=system`` messages right
     before it (see the call site in :meth:`AgentCore.process_input` for
     the live-log regression this fixes). Extracted so the branch count
@@ -203,12 +153,9 @@ def _compose_current_turn_message(
     Order is preserved: context blocks first (freshest info nearest the
     question), then a blank line, then the literal user text.
     """
-    context_blocks = [
-        block for block in (dynamic_system, skill_prompt) if block
-    ]
-    if not context_blocks:
+    if not dynamic_system:
         return text
-    return "\n".join(context_blocks) + "\n\n" + text
+    return dynamic_system + "\n\n" + text
 
 
 #: Issue #2955 — source-tag prefixes dialogue_node glues onto the RAW
@@ -234,8 +181,8 @@ def _raw_user_utterance(text: str) -> str:
     Both gates used to read the LAST ``role=user`` LLMMessage off the
     live ``messages`` list (:meth:`AgentCore._find_last_user_input`) --
     but that message is the COMPOSED turn (``_compose_current_turn_message``):
-    the ``<system_context>`` snapshot (speaker profile, memory, active
-    skill -- issue #2817/#2822) glued in FRONT of the literal user text.
+    the ``<system_context>`` snapshot (speaker profile, memory --
+    issue #2817/#2822) glued in FRONT of the literal user text.
     A word like «нравится» sitting in a speaker's PROFILE inside that
     snapshot then unlocked ``contains_praise`` for a request that carried
     no praise at all (live 24.09.2026, issue #2955).
@@ -725,8 +672,8 @@ class AgentCore:
     ``AgentCore`` is the generalisation of the former ``DialogCore`` (issue
     #1986, target-arch §5). It is a pure Python orchestrator over the four
     dialogue ports, deliberately carrying NO persona: personality and the
-    skill slice arrive as configuration (``system_prompt`` /
-    ``skill_prompts`` / ``narrow_tools_to_skill``) from the shell. Two
+    tool slice arrive as configuration (``system_prompt`` from the spec,
+    the per-turn tool view via :meth:`set_visible_tools`) from the shell. Two
     agents (личность, оператор/ТАРС) are two configurations of this one
     engine.
 
@@ -756,8 +703,6 @@ class AgentCore:
         system_prompt: str | None = None,
         use_streaming: bool = False,
         on_prompt: "PromptObserver | None" = None,
-        skill_prompts: Mapping[str, str] | None = None,
-        narrow_tools_to_skill: bool = False,
         llm_settings: LLMSettings | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
@@ -783,22 +728,6 @@ class AgentCore:
                 turns. When the caller passes ``history=None`` to
                 :meth:`process_input`, the core uses its own window
                 (never the memory port) and this value bounds its size.
-            narrow_tools_to_skill: Move B. When ``True`` and a skill is
-                active, the LLM is offered only ``core`` plus that skill's
-                tools instead of the whole catalog. Default ``False`` —
-                the full catalog, byte for byte today's behaviour. Turning
-                it on shrinks the prompt but breaks the provider's cached
-                prefix on every skill switch and introduces a failure mode
-                where a mis-routed turn cannot see the tool it needs; the
-                model can recover via ``load_skill``.
-            skill_prompts: Optional mapping ``skill name -> instruction
-                text``. When a skill is active and present here, its text
-                is appended as the LAST system message of the turn —
-                immediately before the user's line, i.e. AFTER the whole
-                history. That position is the entire point: instructions
-                sitting at index 0 lose to twenty turns of history that
-                demonstrate the opposite behaviour. Empty mapping keeps
-                the pre-skill behaviour byte for byte.
             on_prompt: Optional observer called once per LLM request with
                 a :class:`PromptStats`. Lets the shell publish the prompt
                 size without dragging Prometheus (or rclpy) into the
@@ -858,21 +787,10 @@ class AgentCore:
         self._use_streaming = use_streaming
         self._acceptance_gate = acceptance_gate
         self._on_prompt = on_prompt
-        #: Имя активного скилла. Проставляется активацией (фаза 3);
-        #: "none" — скилл не активирован, поведение как до скиллов.
-        self._active_skill: str = "none"
-        #: Тексты фрагментов: имя скилла -> инструкции. Файлы читает
-        #: shell (ROS2-нода) — harness не ходит в файловую систему.
-        #: Пустой словарь = Move A выключен, вклеивать нечего.
-        self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
-        #: Move B. ``False`` — LLM видит весь каталог, как сегодня.
-        self._narrow_tools_to_skill = narrow_tools_to_skill
-        #: Сколько раз скилл пришлось грузить вызовом LLM вместо
-        #: детерминированного роутера — это и есть «промахи роутера»
-        #: (задача 3.7). Читается нодой для метрики.
-        self._skill_loaded_by_llm: int = 0
-        #: Сколько раз LLM попросила несуществующий домен.
-        self._skill_load_misses: int = 0
+        #: Срез тулов хода (ADR-0150 PR-6, ``rob_box_dialog.tools_view``): имена схем, которые видит LLM, и
+        #: подпись среза для метрики; ``None`` — срез не задан (оператор, тесты): весь каталог провайдера.
+        self._visible_tools: frozenset[str] | None = None
+        self._view_label: str = "all"
         # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
         # thinking-policy merge). Forwarded as ``settings=`` to every
         # ``complete()`` / ``stream()`` so YAML-driven configuration
@@ -1072,7 +990,7 @@ class AgentCore:
                 # сообщение перед текущим вопросом» читается моделью как
                 # «на это надо отреагировать», а не как фоновый снапшот.
                 #
-                # Снапшот и skill-фрагмент теперь склеиваются В ОДИН
+                # Снапшот теперь склеивается В ОДИН
                 # user-ход вместе с текстом юзера — единственное сообщение
                 # этого хода, однозначно «то, на что нужно ответить».
                 # Свежесть не теряется: снапшот по-прежнему собирается на
@@ -1083,9 +1001,8 @@ class AgentCore:
                 #
                 # ``text`` (что уходит в Turn ниже и в историю) НЕ меняется —
                 # склейка живёт только в исходящем LLMMessage.
-                skill_prompt = self._resolve_skill_prompt()
                 llm_user_content = _compose_current_turn_message(
-                    dynamic_system, skill_prompt, text
+                    dynamic_system, text
                 )
                 messages.append(
                     LLMMessage(role="user", content=llm_user_content)
@@ -1491,7 +1408,7 @@ class AgentCore:
         that bypass ``process_input``, e.g. tests) falls back to
         :meth:`_find_last_user_input`, which re-derives it from
         ``messages`` the old (pre-#2955) way — good enough when there is
-        no ``dynamic_system``/``skill_prompt`` bleed to worry about.
+        no ``dynamic_system`` bleed to worry about.
 
         The loop terminates when:
 
@@ -1517,19 +1434,8 @@ class AgentCore:
             begin_turn()
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
-        # Полный набор держим отдельно: при включённом сужении список
-        # нужно ПЕРЕСОБИРАТЬ после каждого load_skill, иначе модель,
-        # сменившая домен, до конца хода так и не увидит его инструменты
-        # (поймано тестом test_model_can_reach_another_domain_via_load_skill).
-        all_openai_tools = list(openai_tools)
-        openai_tools = self._narrow_tools(all_openai_tools)
-        tools_built_for_skill = self._active_skill
-        # Модельный путь активации: LLM сама просит домен, если
-        # детерминированный роутер промахнулся. Результат вызова —
-        # tool-сообщение в самом хвосте messages, то есть позиция
-        # максимальной свежести, и модель действует в ТОМ ЖЕ ходу.
-        if self._skill_prompts:
-            openai_tools.append(_load_skill_spec(self.known_skills()))
+        # Срез хода задал код до хода (set_visible_tools, ADR-0150 PR-6): внутри хода он не меняется.
+        openai_tools = self._narrow_tools(openai_tools)
 
         tools_called: list[str] = []
         seen: set[str] = set()
@@ -1779,12 +1685,6 @@ class AgentCore:
                 response.tool_calls, results_by_call_id, succeeded_tools
             )
 
-            # load_skill мог сменить домен — пересобираем набор, иначе
-            # загрузка скилла была бы бессмысленной: текст пришёл, а
-            # инструменты остались от прошлого домена.
-            if self._active_skill != tools_built_for_skill:
-                openai_tools = self._narrow_tools(all_openai_tools)
-                tools_built_for_skill = self._active_skill
 
             response = await self._stream_response(messages, tools=openai_tools)
 
@@ -1930,7 +1830,7 @@ class AgentCore:
         (e.g. tests). Live turns from :meth:`process_input` go through
         ``_raw_user_utterance(text)`` instead: the message this method
         would find is the COMPOSED turn (``<system_context>`` snapshot +
-        skill prompt + literal text glued together by
+        literal text glued together by
         ``_compose_current_turn_message``), and a word like «нравится»
         sitting in a speaker's PROFILE inside that snapshot used to
         unlock the praise gate for a request that carried no praise at
@@ -2091,9 +1991,7 @@ class AgentCore:
            LLM-цикл, см. issue #968 §8).
         2. Hallucinated-lyrics guard (issue #1708): ``speak_text`` после
            music-tool подавляется, если текст НЕ vocal-request.
-        3. ``load_skill`` — синхронная обработка через
-           :meth:`_handle_load_skill`.
-        4. ``await self._tools.execute(call)`` — иначе.
+        3. ``await self._tools.execute(call)`` — иначе.
         """
         suppressed_texts: list[str] = []
         for call in execution_order:
@@ -2137,10 +2035,6 @@ class AgentCore:
                     text = _extract_speak_text(call.arguments)
                     if text:
                         suppressed_texts.append(text)
-                continue
-
-            if call.name == LOAD_SKILL_TOOL:
-                results_by_call_id[call.id] = self._handle_load_skill(call)
                 continue
 
             results_by_call_id[call.id] = await self._tools.execute(call)
@@ -2246,113 +2140,23 @@ class AgentCore:
             truncated_tool_args=truncated_tool_args,
         ))
 
-    # ---- skills (Move A) -------------------------------------------------
+    # ---- срез тулов хода (ADR-0150 PR-6) -----------------------------------
 
-    @property
-    def active_skill(self) -> str:
-        """Имя активного скилла (``"none"`` — не активирован)."""
-        return self._active_skill
+    def set_visible_tools(self, names: Iterable[str] | None, label: str = "all") -> None:
+        """Срез тулов следующих ходов (``rob_box_dialog.tools_view.available_tools``); ``None`` — весь каталог.
 
-    def set_active_skill(self, skill: str | None) -> None:
-        """Активировать доменный скилл на последующие ходы.
-
-        ``None`` / ``"none"`` снимает активацию. Неизвестное имя НЕ
-        роняет ход: активация приходит из классификатора и из вызова
-        LLM, а ни то ни другое не повод оборвать разговор — скилл просто
-        останется неактивным, и модель увидит полный каталог, как
-        сегодня.
+        Срез задаёт код до хода (по снимку и словам человека), не LLM: тула вне среза модель не видит.
         """
-        self._active_skill = skill or "none"
-
-    @property
-    def skill_load_counters(self) -> tuple[int, int]:
-        """``(загружено вызовом LLM, промахов по имени)``.
-
-        Первое число — метрика промахов детерминированного роутера: если
-        оно растёт, роутер не покрывает реальные формулировки.
-        """
-        return self._skill_loaded_by_llm, self._skill_load_misses
-
-    def known_skills(self) -> tuple[str, ...]:
-        """Скиллы, для которых есть текст фрагмента."""
-        return tuple(sorted(self._skill_prompts))
-
-    def _handle_load_skill(self, call: ToolCall) -> ToolResult:
-        """Исполнить ``load_skill`` внутри harness'а.
-
-        Активирует скилл (он останется активным и на следующих ходах) и
-        возвращает текст инструкций tool-результатом. Ход НЕ прерывается
-        ни при каком исходе: неизвестное имя возвращает ошибку со списком
-        доступных, и модель может исправиться на следующей итерации.
-        """
-        arguments = call.arguments or {}
-        requested = ""
-        if isinstance(arguments, Mapping):
-            requested = str(arguments.get("skill", "") or "").strip()
-
-        text = self._skill_prompts.get(requested)
-        if not text:
-            self._skill_load_misses += 1
-            return ToolResult(
-                tool_call_id=call.id,
-                content=(
-                    f"Неизвестный домен {requested!r}. Доступны: "
-                    + ", ".join(self.known_skills())
-                    + ". Выбери один из них или действуй без загрузки."
-                ),
-                is_error=True,
-            )
-
-        self.set_active_skill(requested)
-        self._skill_loaded_by_llm += 1
-        return ToolResult(
-            tool_call_id=call.id,
-            content=text,
-            is_error=False,
-        )
+        self._visible_tools = None if names is None else frozenset(names)
+        self._view_label = label if names is not None else "all"
 
     def _narrow_tools(
         self, offered: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Сузить каталог до ``core`` + активный скилл (Move B).
-
-        Ничего не делает при выключенном флаге и при неактивном скилле —
-        тогда возвращается ровно то, что пришло.
-
-        Если сужение оставило бы список пустым (скилл не из каталога,
-        рассинхрон манифеста), возвращаем ПОЛНЫЙ набор: пустой tools=
-        доезжает до юзера как «нет такой функции», а это хуже длинного
-        промпта.
-        """
-        if not self._narrow_tools_to_skill:
+        """Оставить только схемы среза хода; среза нет — всё, что пришло от провайдера тулов."""
+        if self._visible_tools is None:
             return offered
-        skill = self._active_skill
-        if skill in ("", "none"):
-            return offered
-        try:
-            allowed = {entry.name for entry in tools_for_skill(skill)}
-        except KeyError:
-            # Неизвестный домен: сузить не по чему — отдаём всё.
-            return offered
-        narrowed = [
-            tool
-            for tool in offered
-            if tool.get("function", {}).get("name") in allowed
-        ]
-        if not narrowed:
-            logging.getLogger(__name__).warning(
-                "AgentCore: narrowing to skill %r left no tools; "
-                "falling back to the full catalog",
-                skill,
-            )
-            return offered
-        return narrowed
-
-    def _resolve_skill_prompt(self) -> str:
-        """Текст активного скилла или пустая строка."""
-        if self._active_skill in ("", "none"):
-            return ""
-        return self._skill_prompts.get(self._active_skill, "")
+        return [tool for tool in offered if tool.get("function", {}).get("name") in self._visible_tools]
 
     def _report_prompt(
         self,
@@ -2380,14 +2184,14 @@ class AgentCore:
                     prompt_tokens=reported,
                     estimated=False,
                     provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._active_skill,
+                    skill=self._view_label,
                 )
             else:
                 stats = PromptStats(
                     prompt_tokens=estimate_prompt_tokens(messages, tools),
                     estimated=True,
                     provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._active_skill,
+                    skill=self._view_label,
                 )
             observer(stats)
         except Exception:  # noqa: BLE001 — телеметрия не роняет ход

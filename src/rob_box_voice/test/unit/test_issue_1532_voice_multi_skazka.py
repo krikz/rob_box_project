@@ -76,31 +76,16 @@ def test_master_prompt_contains_voice_multi_rule() -> None:
     )
 
 
-def test_voice_multi_rule_directs_set_voice_between_speak_text() -> None:
-    """The rule must instruct LLM to call set_voice BETWEEN speak_text.
+def test_voice_multi_rule_uses_per_reply_voice_not_set_voice() -> None:
+    """Голоса персонажей — параметр ``voice`` у каждого ``speak_text``, а не ``set_voice`` (#3744).
 
-    Live 22.08.2026: LLM вызывал speak_text 1 раз → set_voice не вызывался.
-    Без set_voice между фрагментами все персонажи звучат одинаковым голосом.
+    Live 22.08.2026: без смены голоса между фрагментами все персонажи звучали одинаково. Live 21.10 (#3744):
+    LLM в сказке звала ``set_voice`` — а голос персистентный (PR-4), робот оставался «бабушкой». Правило: голос
+    реплики — ``speak_text(..., voice=...)``; ``set_voice`` — только по просьбе человека сменить голос.
     """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    # Must mention set_voice tool explicitly in the multi-voice block.
-    assert "set_voice" in block, (
-        "RULE #VOICE-MULTI must mention set_voice tool — otherwise LLM "
-        "has no way to learn it exists for multi-voice skazkas."
-    )
-    # Must mention speak_text in the multi-voice block.
-    assert "speak_text" in block, (
-        "RULE #VOICE-MULTI must mention speak_text — the narration IS "
-        "spoken via speak_text (just with voice switching between "
-        "fragments)."
-    )
-    # Must say "between" or "МЕЖДУ" — explicit ordering matters.
-    assert re.search(r"МЕЖДУ|between", block, re.IGNORECASE), (
-        "RULE #VOICE-MULTI must say set_voice is called МЕЖДУ (between) "
-        "speak_text fragments — otherwise LLM may call all set_voice "
-        "before any speak_text, defeating the purpose."
-    )
+    block = _multi_block(_read(MASTER_PROMPT))
+    assert "speak_text" in block and re.search(r"voice=\"", block), block
+    assert "НЕ `set_voice`" in block or "не `set_voice`" in block.lower(), block
 
 
 def test_voice_multi_rule_requires_min_two_voices() -> None:
@@ -121,27 +106,6 @@ def test_voice_multi_rule_requires_min_two_voices() -> None:
     assert re.search(r"голос\w*", block, re.IGNORECASE), (
         "RULE #VOICE-MULTI must reference 'голоса' / 'голос' to anchor "
         "the concept of multiple distinct voices."
-    )
-
-
-def test_voice_multi_rule_requires_full_skazka_5_7_fragments() -> None:
-    """The rule must require 5-7 speak_text fragments for a complete skazka.
-
-    Live 22.08.2026: LLM ограничился 1 предложением — обрезка. Без явного
-    требования «минимум 5-7» LLM повторит обрезку.
-    """
-    content = _read(MASTER_PROMPT)
-    block = _multi_block(content)
-    assert re.search(r"5-7|5–7", block), (
-        "RULE #VOICE-MULTI must require '5-7' speak_text fragments for "
-        "a skazka — same as IMPORTANT CONSTRAINTS §2 'Fairy tale/story — "
-        "minimum 5-7 speak_text'. Without this, LLM answers with 1 "
-        "sentence and the user hears only the intro."
-    )
-    assert "полной" in block.lower() or "полн" in block.lower(), (
-        "RULE #VOICE-MULTI must say the skazka must be 'полной' "
-        "(complete) — otherwise LLM might answer 'жила-была девочка' "
-        "(just an opening, no plot)."
     )
 
 

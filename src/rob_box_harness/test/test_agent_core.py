@@ -774,10 +774,7 @@ def test_agent_core_has_seven_method_interface() -> None:
         "process_input",
         "discard_last_reply",
         "clear_history",
-        "active_skill",
-        "set_active_skill",
-        "skill_load_counters",
-        "known_skills",
+        "set_visible_tools",  # ADR-0150 PR-6: срез тулов хода вместо скиллов
         "record_external_turn",  # issue #3165
     }
     removed = {"is_wake_word", "handle_wake_word", "handle_silence", "check_timeout"}
@@ -789,9 +786,8 @@ def test_agent_core_has_seven_method_interface() -> None:
 def test_two_agent_configs_one_engine() -> None:
     """DoD #1986 — «один движок, два агента».
 
-    Две конфигурации :class:`AgentCore` (разные ``system_prompt`` + срез /
-    ``skill_prompts``) на одном и том же классе дают РАЗНОЕ поведение на
-    одном стимуле. Личность и оператор (ТАРС) — это не два движка, а две
+    Две конфигурации :class:`AgentCore` (разные ``system_prompt`` и срез тулов
+    хода) на одном и том же классе дают РАЗНОЕ поведение на одном стимуле. Личность и оператор (ТАРС) — это не два движка, а две
     конфигурации одного ``AgentCore`` (target-arch §5.1).
     """
     persona_llm = _FakeLLMProvider(response_text="Сыграю бит.")
@@ -804,7 +800,6 @@ def test_two_agent_configs_one_engine() -> None:
         memory=_FakeMemoryStore(),
         dsm=DialogueStateMachine(),
         system_prompt="Ты РОББОКС — автономный робот-компаньон.",
-        skill_prompts={"player": "ПЛЕЕР: сначала music_library, потом music_library."},
     )
     # Конфиг «оператор»: operator system_prompt + операторский срез.
     core_operator = AgentCore(
@@ -813,10 +808,8 @@ def test_two_agent_configs_one_engine() -> None:
         memory=_FakeMemoryStore(),
         dsm=DialogueStateMachine(),
         system_prompt="Ты ТАРС — оператор-супервизор робота.",
-        skill_prompts={"operator.speech": "ОПЕРАТОР: для озвучки роботом вызывай say."},
     )
-    core_persona.set_active_skill("player")
-    core_operator.set_active_skill("operator.speech")
+    core_persona.set_visible_tools(["speak_text"], "music")
     _wake(core_persona)
     _wake(core_operator)
 
@@ -831,18 +824,13 @@ def test_two_agent_configs_one_engine() -> None:
     assert persona_msgs[0][0] == "system"
     assert "РОББОКС" in persona_msgs[0][1]
     assert "ТАРС" in operator_msgs[0][1]
-    # Срез доезжает внутри последнего user-сообщения (issue #2817 —
-    # склеен с репликой, а не отдельным system-сообщением перед ней).
-    assert persona_msgs[-1][0] == "user"
-    assert "ПЛЕЕР: сначала music_library, потом music_library." in persona_msgs[-1][1]
-    assert persona_msgs[-1][1].endswith("поставь музыку")
-    assert operator_msgs[-1][0] == "user"
-    assert "ОПЕРАТОР: для озвучки роботом вызывай say." in operator_msgs[-1][1]
-    assert operator_msgs[-1][1].endswith("поставь музыку")
-    # Поведение разное.
+    # Реплика — последнее user-сообщение у обоих (issue #2817).
+    assert persona_msgs[-1][0] == "user" and persona_msgs[-1][1].endswith("поставь музыку")
+    assert operator_msgs[-1][0] == "user" and operator_msgs[-1][1].endswith("поставь музыку")
+    # Поведение разное: свой промпт, свой срез тулов (у ТАРС среза нет — весь каталог).
     assert persona_msgs != operator_msgs
-    assert core_persona.known_skills() == ("player",)
-    assert core_operator.known_skills() == ("operator.speech",)
+    assert core_persona._visible_tools == frozenset({"speak_text"})  # type: ignore[attr-defined]
+    assert core_operator._visible_tools is None  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
