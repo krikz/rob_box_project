@@ -3,23 +3,29 @@
 sound.py - Инструменты для управления звуковыми эффектами
 
 Инструменты:
-- PlaySoundTool: Воспроизвести звуковой эффект
+- PlaySoundTool: Воспроизвести звуковой эффект; итог - по ``SoundEvent`` владельца звука (``sound_node``)
 - GetSoundInfoTool: Получить информацию о доступных звуках
 """
 
-from typing import List, TYPE_CHECKING
+from typing import Any, List, Optional
 import json
 from pathlib import Path
 
-# Ленивый импорт ROS 2 модулей для поддержки unit тестов
-if TYPE_CHECKING:
-    from std_msgs.msg import String
-
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..owner_event import OwnerEvents, owner_events
+
+TRIGGER_TOPIC = "/voice/sound/trigger"
+EVENT_TOPIC = "/voice/sound/event"
 
 
 class PlaySoundTool(MCPTool):
-    """Инструмент для воспроизведения звуковых эффектов."""
+    """Звуковой эффект: запрос ``{sound, request_id}`` владельцу и фраза по его ``SoundEvent`` (ADR-0150 §5.2).
+
+    Успех - не публикация триггера, а ``started`` владельца; ``skipped{busy|voice_stream|not_found|error}`` - честный
+    отказ с причиной; нет события к дедлайну класса - ``timeout``.
+    """
+
+    event_source = EVENT_TOPIC
 
     def __init__(self, node):
         super().__init__(node)
@@ -27,7 +33,7 @@ class PlaySoundTool(MCPTool):
         from std_msgs.msg import String
 
         # Publisher для триггеров звуков
-        self.sound_pub = node.create_publisher(String, "/voice/sound/trigger", 10)
+        self.sound_pub = node.create_publisher(String, TRIGGER_TOPIC, 10)
 
         # Загружаем доступные звуки и их длительности из catalog.json
         self._available_sounds, self._duration_map = self._load_sounds_from_catalog()
@@ -120,17 +126,17 @@ class PlaySoundTool(MCPTool):
 
     @property
     def execution_type(self) -> ToolExecutionType:
-        """Звуки — fire-and-forget: публикуем триггер и возвращаемся немедленно.
+        """Ждём только ответа ``sound_node`` (``started``/``skipped``, миллисекунды), не конца звука.
 
         ALSA-конфликт между sound_node и tts_node устранён через dmix
         (/etc/asound.conf монтируется volume → pcm.!default = dmix_respeaker).
         Оба узла пишут в 'default' device, dmix микширует потоки без конкуренции.
         Звук и речь воспроизводятся параллельно — это ожидаемое поведение.
         """
-        return ToolExecutionType.INSTANT
+        return ToolExecutionType.FAST
 
     def execute(self, sound: str) -> MCPToolResult:
-        """Воспроизвести звук (fire-and-forget через dmix)."""
+        """Попросить ``sound_node`` сыграть звук и дождаться его ответа (звук и речь микширует dmix)."""
         self.log_info(f"Воспроизведение звука: {sound}")
 
         if sound not in self._available_sounds:
@@ -138,17 +144,58 @@ class PlaySoundTool(MCPTool):
                 success=False, error=f"Неизвестный звук: {sound}", message=f"Доступные: {', '.join(self._available_sounds[:10])}..."
             )
 
-        # Публикуем триггер звука — sound_node воспроизведёт асинхронно.
-        # dmix в /etc/asound.conf позволяет sound_node и tts_node одновременно
-        # писать в hw:1,0 (ReSpeaker) без ALSA device busy ошибок.
         from std_msgs.msg import String
-        msg = String()
-        msg.data = sound
-        self.sound_pub.publish(msg)
 
-        duration = self._duration_map.get(sound, 1.5)
-        self.log_info(f"Звук '{sound}' запущен ({duration:.2f}s), воспроизведение идёт параллельно с TTS")
-        return MCPToolResult(success=True, data={"sound": sound, "duration": duration}, message=f"Звук запущен: {sound} ({duration:.1f}s)")
+        def publish(request_id: str) -> None:
+            msg = String()
+            msg.data = json.dumps({"sound": sound, "request_id": request_id}, ensure_ascii=False)
+            self.sound_pub.publish(msg)
+
+        request_id, event = self._events().ask(publish, sound_deadline_s())
+        status, reason = sound_outcome(event)
+        self.log_info(f"Звук '{sound}' (request {request_id[:8]}): {status} {reason or ''}".rstrip())
+        data = {"sound": sound, "request_id": request_id, "status": status, "reason": reason,
+                "duration": self._duration_map.get(sound, 1.5)}
+        phrase = sound_phrase(status, reason, sound)
+        # При отказе модель видит только ``error`` (живой прогон 21.10: голое «busy»): туда же - фраза кода. Успех -
+        # без фразы: в результате только данные исхода, нечего пересказывать.
+        return MCPToolResult(success=status == "done", data=data, error=None if status == "done" else phrase,
+                             message=phrase)
+
+    def _events(self) -> OwnerEvents:
+        from rob_box_dialog_msgs.msg import SoundEvent
+
+        return owner_events(self.node, "sound", lambda: OwnerEvents(
+            self.node, SoundEvent, EVENT_TOPIC, key_of=lambda m: m.request_id))
+
+
+def sound_deadline_s() -> float:
+    """Дедлайн события звука - дедлайн класса ``play_sound`` из ``knowledge`` (одна таблица, §5.1)."""
+    from rob_box_dialog import knowledge as kn
+
+    return float(kn.ACTION_CLASSES[kn.TOOL_CLASSES["play_sound"]].timeout_s)
+
+
+def sound_outcome(event: Optional[Any]) -> tuple:
+    """``SoundEvent`` → ``(status, reason)``: заиграл (``started``/``finished``) - ``done``, пропуск - ``rejected``."""
+    if event is None:
+        return "timeout", None
+    if event.kind == event.KIND_SKIPPED:
+        return "rejected", event.reason or "error"
+    return "done", None
+
+
+def sound_phrase(status: str, reason: Optional[str], sound: str) -> Optional[str]:
+    """Фраза исхода - каталог ``phrases/ru.yaml`` тем же ключом, что строит ``respond`` (код, не LLM); успех -
+    ``None``: звук сам себе доказательство (``knowledge.SILENT_DONE_TOOLS``)."""
+    from rob_box_dialog import phrases
+    from rob_box_dialog.respond import ActionResult, phrase_key
+    from rob_box_dialog import knowledge as kn
+
+    result = ActionResult(turn_id="", epoch=0, agent="personality", tool="play_sound",
+                          cls=kn.TOOL_CLASSES["play_sound"], status=status, reason=reason)
+    key = phrase_key(result)
+    return None if key is None else phrases.text(key, sound=sound)
 
 
 class GetSoundInfoTool(MCPTool):

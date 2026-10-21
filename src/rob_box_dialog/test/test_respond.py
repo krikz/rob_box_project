@@ -32,6 +32,19 @@ def test_motion_promise_and_query_data_go_their_way():
     assert phrase_from_result(_result("search_web", "timeout")).text.startswith("Не дождался")
 
 
+def test_sound_success_is_silent_failure_is_one_honest_phrase():
+    """Шифу 21.10: «включил щелчок и ещё сказал, что он заиграл, бред же» — звук сам себе доказательство (§4.1)."""
+    assert phrase_from_result(_result("play_sound", "done", sound="robot_happy")) is None
+    assert join([_result("play_sound", "done", sound="robot_happy")]) is None
+    busy = phrase_from_result(_result("play_sound", "rejected", "busy", sound="robot_happy"))
+    assert busy.text == "Звук robot_happy не сыграл: другой звук ещё играет." and busy.emotion == "sad"
+    assert phrase_from_result(_result("play_sound", "rejected", "superseded", sound="ui_bell")).text == (
+        "Звук ui_bell не сыграл: следом попросили другой.")
+    assert phrase_from_result(_result("play_sound", "timeout", sound="x")).text.startswith("Не дождался ответа")
+    # «включи звук и поставь громкость»: говорится только то, что не звук
+    assert join([_result("play_sound", "done", sound="robot_happy"), _result("set_volume", "done")]).text == "Готово."
+
+
 def test_operator_phrases_go_to_the_headset():
     result = ActionResult("t", 0, "operator", "say", "action.speak_aloud", "done", data={"seconds": 12})
     said = phrase_from_result(result, Session("operator").snapshot)

@@ -354,6 +354,8 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
 class DjSetTool(MCPTool):
     """«Ты диджей» v2: сет без LLM на пути звука; один сет за раз."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  reasoner: Optional[SetReasoner] = None, speak: Optional[Callable[[str], None]] = None,
@@ -635,6 +637,8 @@ class DjSetTool(MCPTool):
 class RequestMusicTool(MCPTool):
     """«Поставь клубный трек» v2: один club-трек из ``compose``/``render``, без LLM на пути звука."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
@@ -889,6 +893,8 @@ class GenerateMusicTool(MCPTool):
     """«Сгенерируй …» (ADR-0158 §3.3, PR-3): узкий тул-просьба. Становится слотами ``asked_generated`` (+ петь /
     своим голосом по ``kind``, жанр по ``style``) и идёт тем же путём, что ``request_music``: денег, лимита или
     исполнителя генерации нет — кандидатов генерации нет, играет своё или сочинённое раньше, либо честный отказ."""
+
+    event_source = "/voice/music/event"
 
     def __init__(self, node: Any, request: RequestMusicTool) -> None:
         super().__init__(node)

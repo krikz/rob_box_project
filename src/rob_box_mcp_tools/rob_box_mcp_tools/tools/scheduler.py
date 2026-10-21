@@ -65,6 +65,9 @@ class TaskDeltaTool(MCPTool):
     ``RULE #SEGMENT-PLAN`` in ``master_prompt_compact.txt`` (S5.3).
     """
 
+    #: TaskScheduler dialogue_node (SchedulerToolExecutor)
+    event_source = "inproc:task_scheduler"
+
     @property
     def name(self) -> str:
         return "task_delta"

@@ -53,6 +53,9 @@ class MemorySaveTool(MCPTool):
     предпочтения, привычки, имена близких, настройки.
     """
 
+    #: saved{fact_id} - ответ VoiceMemory.save_fact
+    event_source = "inproc:voice_memory"
+
     @property
     def name(self) -> str:
         return "memory_save"

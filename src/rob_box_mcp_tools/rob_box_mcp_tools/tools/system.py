@@ -37,6 +37,8 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, 
 class SetVolumeTool(MCPTool):
     """Инструмент для управления громкостью TTS."""
 
+    event_source = "srv:/tts_node/set_parameters"
+
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
@@ -155,6 +157,8 @@ class SetVolumeTool(MCPTool):
 class SetPitchTool(MCPTool):
     """Инструмент для управления высотой голоса."""
 
+    event_source = "srv:/tts_node/set_parameters"
+
     def __init__(self, node):
         super().__init__(node)
         # Динамический импорт во время выполнения
@@ -261,6 +265,8 @@ class SetPitchTool(MCPTool):
 
 class SetSpeedTool(MCPTool):
     """Инструмент для управления скоростью речи."""
+
+    event_source = "srv:/tts_node/set_parameters"
 
     def __init__(self, node):
         super().__init__(node)

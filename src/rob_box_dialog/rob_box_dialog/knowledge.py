@@ -412,7 +412,16 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
+    "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
 })
+#: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
+#: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода.
+SILENT_DONE_TOOLS: Tuple[str, ...] = ("play_sound",)
+#: play_sound при занятом канале (#3698, просьба Шифу 21.10): короткий текущий звук (earcon ~1 с) - запрос ждёт в
+#: очереди владельца звука и играет следом; ждать не дольше дедлайна события play_sound минус запас на запуск и
+#: доставку события. Текущий звук длиннее (стингер 12 с) - честный skipped{busy}.
+SOUND_QUEUE_MAX_WAIT_S: float = float(ACTION_CLASSES[TOOL_CLASSES["play_sound"]].timeout_s) - 1.0
 #: Короткие ответы на вопросы робота («выключить и зачитать?», «это ты, Вася?», «верно?»): STT не отклоняет их как
 #: «слишком короткую фразу» (порог ``min_text_chars``). Сравнение - по нормализованной форме (нижний регистр, без
 #: пунктуации): «Да.» = «да». Единственная таблица; мусор («э», «ммм») в неё не входит.

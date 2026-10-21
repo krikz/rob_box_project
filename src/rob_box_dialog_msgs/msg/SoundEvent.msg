@@ -7,7 +7,7 @@ uint8 KIND_FINISHED=1
 uint8 KIND_SKIPPED=2
 # Что произошло.
 uint8 kind
-# Причина пропуска (busy, voice_stream, not_found, error); "" иначе.
+# Причина пропуска (busy, voice_stream, not_found, error, superseded); "" иначе.
 string reason
 # Имя звука.
 string sound

@@ -9,10 +9,10 @@
 from __future__ import annotations
 
 import json
-import threading
-import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
+
+from .owner_event import OwnerEvents
 
 REQUEST_TOPIC = "/voice/tts/voice_request"
 EVENT_TOPIC = "/voice/speech/event"
@@ -47,44 +47,28 @@ def resolve_speak_voice(provider: str, requested: Optional[str]) -> Tuple[str, b
 
 
 class VoiceRequests:
-    """Публикатор запросов и ожидание ответа; один на ноду (``voice_requests(node)``)."""
+    """Публикатор запросов голоса; ожидание ``voice_changed`` - общий механизм ``owner_event`` (один на ноду)."""
 
     def __init__(self, node: Any) -> None:
         from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: PLC0415
         from std_msgs.msg import String  # noqa: PLC0415
 
         self._String = String
-        self._kind = SpeechEvent.KIND_VOICE_CHANGED
         self._pub = node.create_publisher(String, REQUEST_TOPIC, 10)
-        self._lock = threading.Lock()
-        self._waiters: Dict[str, Tuple[threading.Event, list]] = {}
-        node.create_subscription(SpeechEvent, EVENT_TOPIC, self._on_event, 20)
-
-    def _on_event(self, msg: Any) -> None:
-        if msg.kind != self._kind:
-            return
-        with self._lock:
-            waiter = self._waiters.get(msg.turn_id)
-        if waiter is not None:
-            waiter[1].append(msg)
-            waiter[0].set()
+        kind = SpeechEvent.KIND_VOICE_CHANGED
+        self._events = OwnerEvents(node, SpeechEvent, EVENT_TOPIC, key_of=lambda m: m.turn_id,
+                                   accept=lambda m: m.kind == kind)
 
     def request(self, voice: str, provider: str = "", wait_s: float = WAIT_S) -> VoiceOutcome:
         """Попросить голос ``voice`` (пусто - дефолт провайдера) и дождаться исхода от владельца."""
-        rid = uuid.uuid4().hex
-        done: Tuple[threading.Event, list] = (threading.Event(), [])
-        with self._lock:
-            self._waiters[rid] = done
-        try:
+        def publish(rid: str) -> None:
             body = self._String()
             body.data = json.dumps({"request_id": rid, "voice": voice, "provider": provider}, ensure_ascii=False)
             self._pub.publish(body)
-            if not done[0].wait(wait_s):
-                return VoiceOutcome("timeout", voice, "", provider)
-        finally:
-            with self._lock:
-                self._waiters.pop(rid, None)
-        ev = done[1][0]
+
+        _rid, ev = self._events.ask(publish, wait_s)
+        if ev is None:
+            return VoiceOutcome("timeout", voice, "", provider)
         ok = ev.voice_applied and not ev.reason
         return VoiceOutcome("applied" if ok else "fallback", ev.voice_requested, ev.voice_applied, ev.provider, ev.reason)
 

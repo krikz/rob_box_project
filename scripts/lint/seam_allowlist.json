@@ -39,5 +39,8 @@
     "/device/snapshot": "Публикует ESP32 sensor hub (прошивка/железо, вне Python-скана src/; моста-агента больше нет, ADR-0159 §1.4). Единственная попытка ROS-моста в этом репо (context_aggregator_node.py, DeviceSnapshot) закомментирована — не источник, просто мёртвый код рядом. Реальные потребители: quest_node.py (battery JSON) и rob_box_supervisor/arbiter_node.py.",
     "/voice/tts/control": "ADR-0150 §6.1/§10.2, PR-3 (#3688), 20.10.2026: старый STOP принимает только адаптер совместимости src/rob_box_voice/rob_box_voice/core/speech_compat.py. Писатели в src/ переведены на rob_box_core.speech_client.cancel (stt_node, dialogue_node, quest_node); остался внешний писатель вне src/ — сценарный раннер E2E docker/vision/test/scenario_runner/runner.py (сценарии 00_barge_in, 05_merge_song). Запись удалить вместе с адаптером, когда раннер перейдёт на /voice/speech/cancel.",
     "~/scene": "Отладочный вход face_node (src/rob_box_animations/rob_box_animations/face_node.py): оператор показывает сцену руками — `ros2 topic pub --once /face_node/scene std_msgs/msg/String \"{data: 'happy:5'}\"`. Писателя в коде нет и не будет."
+  },
+  "action_tools_without_event_source": {
+    "set_music_volume": "ADR-0150 §5.2, PR-7 ч.7b (#3698): мастер-фейдер музыки — OSC /n_set 999 gain без ответа scsynth (RenardoRuntime.set_master_gain), подтверждения уровня нет, OSError считается применённым. Подтверждение через /s_get — #3790; запись удалить в том PR."
   }
 }

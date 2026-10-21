@@ -610,6 +610,9 @@ class RegisterSpeakerTool(MCPTool):
     speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
     """
 
+    #: SpeakerResult registered|register_error от speaker_id_node по utterance_id
+    event_source = "/voice/speaker/result"
+
     def __init__(self, node):
         super().__init__(node)
         from std_msgs.msg import String
@@ -1005,6 +1008,9 @@ class SetVoiceTool(MCPTool):
        "provider_switched": true, ...}``
     """
 
+    #: SpeechEvent voice_changed владельца голоса (voice_request)
+    event_source = "/voice/speech/event"
+
     def __init__(self, node):
         super().__init__(node)
 
@@ -1165,6 +1171,9 @@ class SetTtsProviderTool(MCPTool):
     ``{"tool": "set_tts_provider", "params": {"provider": "yandex"}}``
     → ``{"status": "ok", "provider": "yandex", "default_voice": "anton"}``
     """
+
+    #: SpeechEvent voice_changed владельца голоса (voice_request)
+    event_source = "/voice/speech/event"
 
     def __init__(self, node):
         super().__init__(node)

@@ -69,6 +69,9 @@ class ToolCatalogEntry:
     #: post-turn music guard'а (был дублирован в frozenset'ах и дрейфовал).
     starts_music: bool = False
     execution_type: str = "medium"
+    #: Источник события владельца об исходе действия (``/топик``, ``srv:/…``, ``action:/…``, ``inproc:<владелец>``;
+    #: ADR-0150 §5.2). У тулов класса ``action.*`` обязателен — гард ``seam_without_consumer.py``.
+    event_source: str = ""
     #: Доменные скиллы, в которые входит инструмент. Инструмент может
     #: входить в несколько (``stop_music`` — в composer, dj и player);
     #: описание при этом одно, оно здесь же, поэтому копии контракта,
@@ -111,6 +114,7 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             idempotent=raw.get("idempotent", False),
             starts_music=raw.get("starts_music", False),
             execution_type=raw.get("execution_type", "medium"),
+            event_source=raw.get("event_source", ""),
             skill=tuple(raw.get("skill", ())),
             signature=MappingProxyType(dict(raw.get("signature", {}))),
         )

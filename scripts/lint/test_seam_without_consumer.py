@@ -506,6 +506,38 @@ class AllowlistTests(unittest.TestCase):
         self.assertEqual(data["publishers_without_local_subscriber"], {})
 
 
+class ActionEventSourceTests(unittest.TestCase):
+    """Инвариант 3 (ADR-0150 §5.2, #3698): тул action.* без источника события владельца — FAIL."""
+
+    CLASSES = {"play_sound": "action.media", "set_music_volume": "action.local", "search_web": "query"}
+
+    def _check(self, sources, allowed):
+        catalog = [{"name": name, "event_source": src} for name, src in sources.items()]
+        return swc.action_tools_without_event_source(self.CLASSES, catalog, allowed)
+
+    def test_every_action_with_a_source_or_reasoned_exception_is_clean(self):
+        sources = {"play_sound": "/voice/sound/event", "set_music_volume": "", "search_web": ""}
+        self.assertEqual(self._check(sources, {"set_music_volume": "OSC без ответа"}), [])
+
+    def test_action_without_source_fails(self):
+        problems = self._check({"play_sound": "", "set_music_volume": "", "search_web": ""}, {"set_music_volume": "x"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("play_sound", problems[0])
+
+    def test_source_must_have_a_known_form(self):
+        for bad in ("sound_node", "srv:", "inproc:", "voice/sound/event"):
+            problems = self._check({"play_sound": bad, "set_music_volume": "inproc:x"}, {})
+            self.assertEqual([p.split(" ")[0] for p in problems], ["play_sound"], bad)
+
+    def test_stale_exception_fails(self):
+        problems = self._check({"play_sound": "/voice/sound/event", "set_music_volume": "inproc:runtime"},
+                               {"set_music_volume": "было без источника", "search_web": "не действие"})
+        self.assertEqual(len(problems), 2)
+
+    def test_repo_catalog_passes(self):
+        self.assertEqual(swc.cmd_check_action_event_sources(swc._load_allowlist()), 0)
+
+
 class BaselineRoundTripTests(unittest.TestCase):
     def test_update_then_check_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
