@@ -401,6 +401,18 @@ GROUP_SIZE = {
     'wheel_rear_left': (8, 8),
     'wheel_rear_right': (8, 8),
 }
+#: Panel -> (x, y) of its top-left LED on the face *canvas*: the one coordinate system of effects that cross
+#: panels (a rainbow wave, the katana slash, ``face/effects.py``). The robot unrolled as seen from outside,
+#: walking round it from the front to its left side and on to the back: ``eye_l | mouth | eye_r`` (front),
+#: then ``rear_l | rear_r`` (back, seen from behind). Gaps are the dark space between boards in LEDs, by eye
+#: (not measured on the robot); the mouth hangs 2 rows below the top of the headlights.
+CANVAS_AT = {
+    'eye_l': (0, 0),
+    'mouth': (12, 2),
+    'eye_r': (41, 0),
+    'rear_l': (61, 0),
+    'rear_r': (73, 0),
+}
 
 
 def to_wire(levels):

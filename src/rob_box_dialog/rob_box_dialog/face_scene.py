@@ -36,6 +36,9 @@ class FaceScene:
     tint: Optional[str] = None
     tempo: Optional[str] = None
     rear: Optional[str] = None
+    bg: Optional[str] = None
+    fx: Optional[str] = None
+    feat: Optional[str] = None
     duration_s: float = kn.FACE_SCENE_DEFAULT_S
 
     def slots(self) -> Dict[str, str]:

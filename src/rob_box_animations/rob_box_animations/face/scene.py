@@ -15,6 +15,7 @@ from typing import Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from . import effects as E
 from . import rear as R
 from .face import FPS, Frame
 
@@ -79,14 +80,15 @@ class SceneSpec:
 
 
 def finish(f: Frame, t: float, ctx: FaceContext) -> Frame:
-    """Rear lights for scenes that do not draw them, and the tint."""
-    if not (f.rear_l.any() or f.rear_r.any()):
+    """Rear lights for scenes that do not draw them, the LLM scene's ``feat``, the tint, then ``bg`` and ``fx``."""
+    if not (f.rear_l.any() or f.rear_r.any()) and (not E.has_bg(ctx.face) or ctx.face.get('rear')):
         theme = R.THEMES.get(ctx.rear_theme, R.THEMES['default'])
         f.rear_l, f.rear_r = theme(t)
+    E.features(f, t, ctx.face)
     if ctx.tint is not None:
         k = np.asarray(ctx.tint, dtype=float)
         f.eye_l, f.eye_r, f.mouth = f.eye_l * k, f.eye_r * k, f.mouth * k
-    return f
+    return E.layers(f, t, ctx.face)
 
 
 class Scene:

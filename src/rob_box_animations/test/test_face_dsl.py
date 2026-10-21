@@ -20,7 +20,7 @@ CASES = json.loads((pathlib.Path(__file__).parents[2] / 'rob_box_dialog' / 'test
                    .read_text(encoding='utf-8'))
 #: Значения слотов, что и есть «как у покоя»: от пустой сцены не отличаются.
 SAME_AS_BASE = {('eyes', 'open'), ('gaze', 'speaker'), ('gaze', 'wander'), ('blink', 'normal'), ('mouth', 'flat'), ('mouth', 'talk'),
-                ('tempo', 'normal'), ('rear', 'markers')}
+                ('tempo', 'normal'), ('rear', 'markers'), ('bg', 'none')}
 
 
 def awake() -> FaceDirector:
