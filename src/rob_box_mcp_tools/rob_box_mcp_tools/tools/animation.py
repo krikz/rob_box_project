@@ -35,6 +35,9 @@ def _face_properties() -> Dict[str, MCPToolParameter]:
 class PlayAnimationTool(MCPTool):
     """Инструмент для запуска LED анимации."""
 
+    #: ExpressionEvent исполнителей (показ - по ExpressionRequest диалога)
+    event_source = "/voice/expression/event"
+
     #: Kept as a class attribute for backwards compatibility; the list
     #: itself lives in :mod:`rob_box_mcp_tools.animations` so ``speak_text``
     #: and ``play_animation`` cannot disagree about what the matrix can show.

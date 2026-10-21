@@ -33,6 +33,8 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 class SayTool(MCPTool):
     """Произнести текст голосом оператора через TTS-канал (AV-21)."""
 
+    event_source = "/voice/speech/event"
+
     def __init__(self, node) -> None:
         super().__init__(node)
         speech_client.prepare(node, "request")

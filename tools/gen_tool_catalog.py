@@ -579,6 +579,17 @@ def _assign_skills(entries: list[dict[str, Any]]) -> None:
         )
 
 
+def _event_source(cls: ast.ClassDef) -> str:
+    """``event_source = "…"`` в теле класса тула (ADR-0150 §5.2): строка или константа модуля; нет — ``""``."""
+    node = _CLASS_CONSTANTS.get(cls.name, {}).get("event_source")
+    if node is None:
+        return ""
+    value = _resolve_constant(node)
+    if not isinstance(value, str):
+        raise ToolSourceError(f"{cls.name}.event_source must be a string literal or a module constant")
+    return value
+
+
 def extract_tools() -> list[dict[str, Any]]:
     """Read every ``MCPTool`` subclass under ``tools/`` into catalog entries."""
     global _MODULE_CONSTANTS, _MODULE_LIST_CONSTANTS, _CLASS_CONSTANTS, _CURRENT_CLASS, _PARAM_FACTORIES
@@ -608,6 +619,7 @@ def extract_tools() -> list[dict[str, Any]]:
                 "idempotent": False,
                 "starts_music": False,
                 "execution_type": "medium",
+                "event_source": _event_source(cls),
             }
             params: list[dict[str, Any]] | None = None
             signature: dict[str, Any] | None = None

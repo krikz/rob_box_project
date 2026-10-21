@@ -8,6 +8,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent
 
 import rob_box_voice.sound_node as sn_module
+from rob_box_voice.core.sound_requests import parse_trigger
 from rob_box_voice.sound_node import EARCON_SOUNDS, SoundNode
 
 
@@ -101,6 +102,26 @@ def test_play_sound_trigger_gets_the_same_events(node):
     (skipped,) = _sound_events(node)
     assert (skipped.kind, skipped.reason) == (SoundEvent.KIND_SKIPPED, "busy")
     assert _expression_events(node) == []
+
+
+def test_play_sound_request_id_reaches_the_event(node):
+    """Тул ``play_sound`` ждёт ``SoundEvent`` со своим ``request_id`` (PR-7 ч.7b, #3698)."""
+    node.trigger_callback(types.SimpleNamespace(data='{"sound": "button_click", "request_id": "rq-1"}'))
+    node.trigger_callback(types.SimpleNamespace(data='{"sound": "error", "request_id": "rq-2"}'))
+    (thread,) = _Thread.started
+    assert thread.args == ("button_click", "button_click", "rq-1")
+    (skipped,) = _sound_events(node)
+    assert (skipped.kind, skipped.reason, skipped.request_id, skipped.sound) == (
+        SoundEvent.KIND_SKIPPED, "busy", "rq-2", "error")
+
+
+def test_trigger_forms():
+    assert parse_trigger('{"sound": "ui_confirm", "request_id": "r9"}') == ("ui_confirm", "r9")
+    sound, rid = parse_trigger(" thinking ")  # ручной ros2 topic pub / сценарный раннер: id выдаёт владелец
+    assert sound == "thinking" and rid
+    sound, rid = parse_trigger('{"sound": "error"}')
+    assert sound == "error" and rid
+    assert parse_trigger("{broken")[0] == "{broken"
 
 
 def test_thread_reports_started_then_finished(node):

@@ -31,6 +31,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:melody_library',
         'name': 'add_music_material',
         'description': 'Принять музыкальный материал, который человек ПРИСЛАЛ в '
                        'сообщении (RTTTL-строка, Strudel/Tidal-код '
@@ -67,6 +68,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'clear_waypoints',
         'description': 'Удалить ВСЕ сохранённые точки на текущей карте. Используй '
                        "когда пользователь говорит 'очисти все точки', 'удали все "
@@ -84,6 +86,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'container_status',
         'description': 'Получить статус контейнеров (restart-count, CPU, RAM, uptime) '
                        'через Prometheus/cAdvisor. Используй когда нужно проверить '
@@ -107,6 +110,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_mapping',
         'name': 'continue_mapping',
         'description': 'Продолжить картографирование территории (режим SLAM). '
                        'Используй для добавления новых областей к карте.',
@@ -123,6 +127,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'delete_waypoint',
         'description': 'Удалить сохранённую точку по имени. Используй когда '
                        "пользователь говорит 'удали зал', 'забудь кухню'.",
@@ -143,6 +148,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'dj_set',
         'description': 'Диджей-сет: action=start — начать сет на тему theme (треки, '
                        'переходы и темп решает код), tracks — сколько треков, только '
@@ -250,6 +256,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'estimate_tts_duration',
         'description': 'Оценить длительность TTS-озвучки для заданного текста в '
                        'секундах. Используется для планирования аранжировки музыки под '
@@ -290,6 +297,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'faq_search',
         'description': 'Поиск по FAQ активного мероприятия. Используй когда '
                        'пользователь спрашивает о программе, локации, поступлении, '
@@ -323,6 +331,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_localization',
         'name': 'finish_mapping',
         'description': 'Завершить картографирование и перейти в режим навигации по '
                        'готовой карте (локализация). Можно указать имя карты (например '
@@ -345,6 +354,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': True,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'generate_music',
         'description': 'Просьба сгенерировать музыку (Suno): kind=instrumental — без '
                        'слов, song — песня, robot_song — песня голосом робота; style — '
@@ -398,6 +408,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_battery_level',
         'description': 'Получить текущий уровень заряда батареи робота в процентах.',
         'parameters': {   'type': 'object',
@@ -413,6 +424,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_current_pose',
         'description': 'Получить текущую позицию робота (x, y, theta) в системе '
                        "координат карты. Используй перед 'миссиями' чтобы запомнить "
@@ -430,6 +442,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '',
         'name': 'get_current_time',
         'description': 'Получить текущее время и дату. Используй когда пользователь '
                        'спрашивает который час, какая дата, какой день недели, какое '
@@ -449,6 +462,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_music_state',
         'description': 'Что сейчас играет: диджей-сет (трек N из M, мелодия), трек или '
                        'пьеса (название, источник, темп, инструмент, сколько играет и '
@@ -466,6 +480,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'get_perception_context',
         'description': 'Что робот сейчас видит камерой и чувствует: лица и объекты в '
                        'кадре (детекции с уверенностью; age_s — сколько секунд назад '
@@ -486,6 +501,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'get_robot_status',
         'description': 'Получить текущий статус робота (позиция, батарея, состояние '
                        'систем).',
@@ -502,6 +518,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_sound_info',
         'description': 'Получить информацию о доступных звуковых эффектах. Используй '
                        'этот инструмент чтобы узнать какие звуки доступны, их '
@@ -547,6 +564,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'list_tts_voices',
         'description': 'Список доступных голосов TTS. Без аргументов — голоса '
                        'АКТИВНОГО провайдера (см. [TTS] provider: в контексте). С '
@@ -580,6 +598,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '',
         'name': 'list_waypoints',
         'description': 'Получить список всех сохранённых точек (waypoints) для '
                        'навигации на текущей карте.',
@@ -596,6 +615,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'listen_for_response',
         'description': 'Ждать ответ пользователя через речь. Робот активирует микрофон '
                        'и будет ждать ответа (таймаут 30 секунд). ИСПОЛЬЗУЙ когда '
@@ -630,6 +650,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'srv:/rtabmap/rtabmap/load_database',
         'name': 'load_map',
         'description': 'Загрузить сохранённую карту и перейти в режим локализации '
                        '(навигации). Используй когда нужно переключиться на уже '
@@ -657,6 +678,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'lookup_melody',
         'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
                        "сырой RTTTL-строкой в data['rtttl'], НИЧЕГО не играя: "
@@ -719,6 +741,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'memory_context',
         'description': 'Получить контекст памяти из предыдущих сессий: последние '
                        'реплики + известные факты о пользователе. Используй в начале '
@@ -781,6 +804,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'inproc:voice_memory',
         'name': 'memory_save',
         'description': 'Сохранить факт или предпочтение пользователя в долгосрочную '
                        'память. Используй после того как узнал что-то важное: имя, '
@@ -845,6 +869,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'memory_search',
         'description': 'Поиск по долгосрочной памяти: сохранённые факты о пользователе '
                        '(memory_save) И история разговоров со всех сессий. Используй '
@@ -903,6 +928,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'move_direction',
         'description': 'Движение робота в указанном направлении. Используй для команд '
                        "'вперёд', 'назад', 'поверни налево'.",
@@ -937,6 +963,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'music_library',
         'description': 'Библиотека сгенерированной музыки робота '
                        '(/data/music_library). action: list — «что у тебя есть '
@@ -1051,6 +1078,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'navigate_to_coordinates',
         'description': 'Навигация робота к произвольным координатам (x, y, theta) в '
                        'системе координат карты. Используй для возвращения на '
@@ -1081,6 +1109,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'navigate_to_waypoint',
         'description': 'Навигация робота к именованной точке (waypoint) из базы. '
                        "Используй для команд типа 'иди к кухне', 'поезжай в зал'. "
@@ -1106,6 +1135,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'srv:/rtabmap/rtabmap/detect_more_loop_closures',
         'name': 'optimize_map',
         'description': 'Оптимизировать карту после завершения картографирования: поиск '
                        'дополнительных loop closures, bundle adjustment, очистка '
@@ -1123,6 +1153,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '/voice/expression/event',
         'name': 'play_animation',
         'description': 'Запустить LED анимацию на матрице робота (381 LED) на '
                        'указанное время. ОБЯЗАТЕЛЬНО используй анимации во время '
@@ -1323,7 +1354,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'execution_type': 'instant',
+        'execution_type': 'fast',
+        'event_source': '/voice/sound/event',
         'name': 'play_sound',
         'description': 'Воспроизвести звуковой эффект. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для '
                        'звукового сопровождения эмоций во время разговора.\n'
@@ -1415,6 +1447,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'read_logs',
         'description': 'Получить логи конкретной ROS2-ноды или контейнера. Используй '
                        "когда нужно посмотреть почему нода не работает ('покажи логи "
@@ -1457,6 +1490,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '/voice/speaker/result',
         'name': 'register_speaker',
         'description': 'Зарегистрировать голос текущего собеседника в voice biometric '
                        'DB (resemblyzer d-vector). Вызывай когда: (1) пользователь '
@@ -1525,6 +1559,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'request_music',
         'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
                        'трек (темп, тональность и аранжировку решает код), '
@@ -1576,6 +1611,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'ros2_node_status',
         'description': 'Получить статус ROS2-нод робота (active/missing/failed). '
                        'Используй когда нужно понять, поднялась ли нода (например, '
@@ -1610,6 +1646,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:waypoint_store',
         'name': 'save_waypoint',
         'description': 'Сохранить текущую позицию робота как именованную точку. '
                        "Используй когда пользователь говорит 'запомни это место как "
@@ -1635,6 +1672,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '/voice/speech/event',
         'name': 'say',
         'description': 'Произнести текст голосом от имени оператора робота. Используй, '
                        'когда оператор дал голосовую или текстовую команду произнести '
@@ -1669,6 +1707,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'search_melody',
         'description': 'Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу '
                        '(английским или транслитом: «новогодние» → "christmas", «игры» '
@@ -1701,6 +1740,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'search_web',
         'description': 'Поиск в интернете через DuckDuckGo. Возвращает до N сниппетов '
                        '(title, text, url). Используй ОБЯЗАТЕЛЬНО для любых вопросов, '
@@ -1745,6 +1785,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'set_music_volume',
         'description': 'Громкость МУЗЫКИ (трек/DJ-сет: request_music, dj_set), а НЕ '
                        'голоса робота. Юзер просит «громче/тише/погромче/потише» и '
@@ -1798,6 +1839,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_pitch',
         'description': 'Высота голоса робота шагом: higher / lower (±0.2, диапазон '
                        "0.5–2.0), normal — 1.0. Для команд 'говори выше', 'говори "
@@ -1825,6 +1867,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_speed',
         'description': "Установить скорость речи робота. Используй для команд 'говори "
                        "быстрее', 'говори медленнее'.",
@@ -1849,6 +1892,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/speech/event',
         'name': 'set_tts_provider',
         'description': 'Переключить активного TTS-провайдера (yandex ↔ minimax ↔ '
                        'silero). Используй когда юзер просит СМЕНИТЬ ПРОВАЙДЕРА '
@@ -1880,6 +1924,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/speech/event',
         'name': 'set_voice',
         'description': 'Сменить голос робота НАСОВСЕМ (персистентно, пока не сменят) — '
                        'только когда человек сам просит сменить голос: (1) «говори '
@@ -1960,6 +2005,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_volume',
         'description': 'Громкость ГОЛОСА робота (речь TTS), НЕ музыки. Используй для '
                        "'говори громче', 'тише говори', 'максимальная громкость "
@@ -1987,6 +2033,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'show_metrics',
         'description': 'Показать телеметрию робота на боковом экране TARS 2 (Captain '
                        'Bridge) и получить её значения. Тул выполняет запрос в '
@@ -2038,6 +2085,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'speak_text',
         'description': 'Произнести текст голосом через TTS. ИСПОЛЬЗУЙ ЭТО вместо '
                        'возврата JSON с SSML. ОБЯЗАТЕЛЬНО указывай animation - это '
@@ -2162,6 +2210,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_mapping',
         'name': 'start_mapping',
         'description': 'Начать физическое сканирование и построение карты помещения '
                        '(SLAM). Вызывай ТОЛЬКО если пользователь явно просит '
@@ -2220,6 +2269,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:player_owner',
         'name': 'stop_music',
         'description': 'Выключить всю музыку: диджей-сет, трек или пьесу движка и mp3 '
                        'из библиотеки. Повторный вызов в тишине безопасен. Что '
@@ -2237,6 +2287,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/navigate_to_pose/_action/cancel_goal',
         'name': 'stop_navigation',
         'description': 'Остановить текущую навигацию робота. Используй для команд '
                        "'стоп', 'остановись', 'отмени движение'.",
@@ -2253,6 +2304,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:task_scheduler',
         'name': 'task_delta',
         'description': 'Изменить PENDING-сегменты активного многочастного выступления '
                        '(песня/сказка/стих) без перезапуска с начала. Используй когда '

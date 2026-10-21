@@ -18,6 +18,12 @@ Docs: docs/plans/2026-09-05-operator-agent-architecture-handoff.md §4.1.
    непроверочном коде, но есть ссылки в тестах — сильный признак
    неподключённого шва (ровно сигнатура issue #2116).
 
+3. Действие без источника события (ADR-0150 §5.2, PR-7 #3698). Тул класса
+   ``action.*`` (``rob_box_dialog.knowledge.TOOL_CLASSES``) обязан нести
+   ``event_source`` в каталоге (``rob_box_core/_tool_catalog_data.py``):
+   иначе фразу об успехе нечем подтвердить. Явное исключение — секция
+   ``action_tools_without_event_source`` allow-list с причиной.
+
 Конвенция подключения — как у ``scripts/lint/cc_budget.py`` (ADR-0021):
 
 * ``seam_baseline.json`` грандфазерит текущие находки (обе категории) —
@@ -48,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import subprocess
 import sys
@@ -60,6 +67,11 @@ BASELINE_FILE = REPO_ROOT / "scripts" / "lint" / "seam_baseline.json"
 ALLOWLIST_FILE = REPO_ROOT / "scripts" / "lint" / "seam_allowlist.json"
 
 DEFAULT_TARGETS: tuple[Path, ...] = (REPO_ROOT / "src",)
+KNOWLEDGE_FILE = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
+CATALOG_DATA_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_data.py"
+#: Формы ``event_source`` (``MCPTool.event_source``): топик, сервис, действие ROS или владелец в процессе.
+EVENT_SOURCE_FORMS: tuple[str, ...] = ("/", "srv:/", "action:/", "inproc:")
+_ACTION_ALLOW = "action_tools_without_event_source"
 
 _SKIP_DIR_NAMES = {
     "__pycache__",
@@ -1076,7 +1088,7 @@ def _load_allowlist() -> dict[str, dict[str, str]]:
     if not ALLOWLIST_FILE.exists():
         return {"publishers_without_local_subscriber": {}, "subscribers_without_local_publisher": {}}
     data = json.loads(ALLOWLIST_FILE.read_text(encoding="utf-8"))
-    for category in ("publishers_without_local_subscriber", "subscribers_without_local_publisher"):
+    for category in ("publishers_without_local_subscriber", "subscribers_without_local_publisher", _ACTION_ALLOW):
         entries = data.get(category, {})
         for topic, reason in entries.items():
             if not isinstance(reason, str) or not reason.strip():
@@ -1087,6 +1099,63 @@ def _load_allowlist() -> dict[str, dict[str, str]]:
                 )
                 sys.exit(2)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Действия без источника события (ADR-0150 §5.2)
+# ---------------------------------------------------------------------------
+
+
+def _load_module(path: Path, name: str):
+    """Модуль данных по пути: ``knowledge`` и каталог тулов — чистый Python, без ROS и установки пакетов."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclass ищет свой модуль в sys.modules
+    spec.loader.exec_module(module)
+    return module
+
+
+def _has_event_source(source: str) -> bool:
+    return any(source.startswith(form) and len(source) > len(form) for form in EVENT_SOURCE_FORMS)
+
+
+def action_tools_without_event_source(tool_classes, catalog, allowed) -> list[str]:
+    """Нарушения: тул ``action.*`` без ``event_source`` и без исключения; исключение у тула с источником или у
+    тула не класса ``action.*`` (протухшее исключение — тоже неправда о коде)."""
+    by_name = {entry["name"]: entry for entry in catalog}
+    out = []
+    for tool, cls in sorted(tool_classes.items()):
+        if not cls.startswith("action."):
+            continue
+        source = by_name.get(tool, {}).get("event_source", "")
+        if tool in allowed:
+            if _has_event_source(source):
+                out.append(f"{tool}: источник {source!r} есть — снять исключение {_ACTION_ALLOW}")
+        elif not _has_event_source(source):
+            out.append(f"{tool} ({cls}): event_source={source!r} — нет источника события владельца; объяви "
+                       f"MCPTool.event_source ({' | '.join(EVENT_SOURCE_FORMS)}…) или исключение с причиной")
+    out += [f"{tool}: исключение {_ACTION_ALLOW} у тула не класса action.*"
+            for tool in sorted(allowed) if not str(tool_classes.get(tool, "")).startswith("action.")]
+    return out
+
+
+def cmd_check_action_event_sources(allowlist: dict) -> int:
+    """Инвариант 3 — уровня репозитория (каталог и ``knowledge``), не зависит от сканируемых файлов."""
+    print("\n== Action tools: owner event source (ADR-0150 §5.2, #3698) ==")
+    tool_classes = dict(_load_module(KNOWLEDGE_FILE, "_seam_knowledge").TOOL_CLASSES)
+    catalog = _load_module(CATALOG_DATA_FILE, "_seam_tool_catalog").TOOL_CATALOG_DATA
+    allowed = allowlist.get(_ACTION_ALLOW, {})
+    problems = action_tools_without_event_source(tool_classes, catalog, allowed)
+    for tool, reason in sorted(allowed.items()):
+        print(f"  [ok ] {tool}  — исключение: {reason}")
+    for problem in problems:
+        print(f"  [FAIL] {problem}")
+    actions = sum(1 for cls in tool_classes.values() if cls.startswith("action."))
+    if problems:
+        print(f"\nseam_without_consumer: FAIL — {len(problems)} action tool problem(s) of {actions}.")
+        return 1
+    print(f"\nseam_without_consumer: OK — {actions} action.* tools: event source or explicit exception.")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1395,7 +1464,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.update_baseline:
         return cmd_update_baseline(files, args.base_sha)
-    return cmd_check(files, _load_baseline())
+    rc = cmd_check(files, _load_baseline())
+    return rc | cmd_check_action_event_sources(_load_allowlist())
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SoundNode - воспроизведение звуковых эффектов
-Подписывается: /voice/sound/trigger (String, тул play_sound), /voice/expression/request (earcon рефлексов)
+Подписывается: /voice/sound/trigger (String JSON {sound, request_id}, тул play_sound), /voice/expression/request (earcon рефлексов)
 Публикует: /voice/sound/state (String), /voice/sound/event (SoundEvent), /voice/expression/event (ExpressionEvent)
 
 На каждый запрос звука - событие: started, затем finished, либо skipped{busy|voice_stream|not_found|error}.
@@ -21,7 +21,6 @@ import json
 import random
 import threading
 import time
-import uuid
 import numpy as np
 import sounddevice as sd
 from typing import Dict, List, Optional
@@ -29,7 +28,7 @@ from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
 from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
-    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin,
+    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger,
 )
 
 
@@ -216,10 +215,10 @@ class SoundNode(SoundRequestsMixin, Node):
             self.publish_state("error_no_sounds")
 
     def trigger_callback(self, msg: String):
-        """Обработка триггера звукового эффекта (``play_sound``): исход - ``SoundEvent``."""
-        trigger = msg.data.strip()
-        self.get_logger().info(f"🔔 Триггер: {trigger}")
-        self.start_sound(trigger, uuid.uuid4().hex[:8])
+        """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
+        trigger, request_id = parse_trigger(msg.data)
+        self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
+        self.start_sound(trigger, request_id)
 
     def sound_stop_callback(self, msg: String):
         """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""

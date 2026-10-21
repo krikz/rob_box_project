@@ -39,6 +39,8 @@ _VERDICT_RATING = {"like": kn.RATING_LIKE, "dislike": kn.RATING_DISLIKE}
 class MusicLibraryTool(MCPTool):
     """Библиотека сгенерированной музыки: список, поиск, воспроизведение, оценка, правка, удаление."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, library: GeneratedMusicLibrary, clock: Callable[[], float] = time.time,
                  run: Callable[..., Any] = subprocess.run) -> None:
         super().__init__(node)

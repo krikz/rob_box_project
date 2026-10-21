@@ -127,6 +127,9 @@ def stop_text(was_playing: bool) -> str:
 class StopMusicTool(MCPTool):
     """Выключить всю музыку: сет и деку движка v2 (через их владельцев) и mp3 из библиотеки в ``sound_node``."""
 
+    #: PlayerOwner в процессе mcp_server: was_playing до стопа
+    event_source = "inproc:player_owner"
+
     @property
     def name(self) -> str:
         return "stop_music"

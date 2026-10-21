@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
-from typing import Dict
+from typing import Dict, Tuple
 
 from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SoundEvent
 
@@ -21,6 +22,22 @@ from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SoundEve
 EARCON_SOUNDS: Dict[str, str] = {"heard": "button_click", "done": "ui_confirm", "fail": "error"}
 #: Причины пропуска звука (``SoundEvent.reason``).
 SKIP_BUSY, SKIP_VOICE_STREAM, SKIP_NOT_FOUND, SKIP_ERROR = "busy", "voice_stream", "not_found", "error"
+
+
+def parse_trigger(data: str) -> Tuple[str, str]:
+    """``/voice/sound/trigger``: ``{"sound", "request_id"}`` от ``play_sound`` -> ``(звук, id)``.
+
+    Голое имя звука (ручной ``ros2 topic pub``, сценарный раннер E2E) - тоже запрос, id выдаёт владелец.
+    """
+    text = (data or "").strip()
+    if text.startswith("{"):
+        try:
+            body = json.loads(text)
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            return str(body.get("sound") or "").strip(), str(body.get("request_id") or "") or uuid.uuid4().hex[:8]
+    return text, uuid.uuid4().hex[:8]
 
 
 class SoundRequestsMixin:

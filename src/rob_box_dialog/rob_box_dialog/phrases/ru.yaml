@@ -39,6 +39,14 @@ local.timeout: ["Не дождался подтверждения — не зн�
 media.done: &request_ok ["Включаю музыку."]
 media.rejected: &request_fail ["Не получилось включить музыку."]
 media.timeout: &not_started ["Музыка пока не заиграла."]
+# play_sound (knowledge.TOOL_PHRASES): исход - SoundEvent владельца звука (sound_node), причина - SoundEvent.reason
+sound.played: ["Звук {sound} заиграл."]
+sound.skipped: ["Звук {sound} не сыграл."]
+sound.skipped.busy: ["Звук {sound} не сыграл: другой звук ещё играет."]
+sound.skipped.voice_stream: ["Звук {sound} не сыграл: сейчас идёт голос оператора."]
+sound.skipped.not_found: ["Звука {sound} нет в звуковом пакете."]
+sound.skipped.error: ["Звук {sound} не сыграл: ошибка воспроизведения."]
+sound.timeout: ["Не дождался ответа от звука {sound} — не знаю, сыграл ли."]
 
 motion.started: ["Еду к {target}."]
 motion.done: ["Приехал."]

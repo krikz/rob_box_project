@@ -412,6 +412,8 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
+    "play_sound": MappingProxyType({"done": "sound.played", "rejected": "sound.skipped", "timeout": "sound.timeout"}),
 })
 #: Короткие ответы на вопросы робота («выключить и зачитать?», «это ты, Вася?», «верно?»): STT не отклоняет их как
 #: «слишком короткую фразу» (порог ``min_text_chars``). Сравнение - по нормализованной форме (нижний регистр, без
