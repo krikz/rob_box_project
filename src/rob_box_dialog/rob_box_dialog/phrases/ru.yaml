@@ -93,6 +93,23 @@ perform.no_backing.timeout: ["Бит не успел — читаю без не�
 perform.no_backing.error: ["С битом ошибка — читаю без него."]
 perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]
 
+# --- план (§5.6.4): «в очереди» по PlanEvent queued{after, eta} — фразу строит код (plan.plan_events) -----------
+plan.queued: ["{verb} после {after}."]
+plan.queued.eta: ["{verb} после {after} — примерно через {eta} с."]
+plan.verb.speech: ["Отвечу"]
+plan.verb.perform: ["Начну"]
+plan.verb.expression: ["Покажу"]
+plan.verb.sfx: ["Сыграю звук"]
+plan.verb.music: ["Поставлю"]
+plan.verb.motion: ["Поеду"]
+plan.verb.query: ["Посмотрю"]
+plan.after.speech: ["того, как договорю"]
+plan.after.perform: ["выступления"]
+plan.after.sfx: ["этого звука"]
+plan.after.backing: ["этого бита"]
+plan.after.track: ["этого трека"]
+plan.after.motion: ["того, как доеду"]
+
 # --- музыка (тексты rob_box_voice.core.media_phrases и media_router — по ссылке, как есть) -------------------
 music.dj_started: ["Включаю диджей-сет."]
 music.dj_started_persona: ["Я {persona}, включаю сет."]
