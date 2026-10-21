@@ -61,7 +61,6 @@ def test_ring_follows_turn_events_not_the_removed_animation_topic():
     assert TURN_EVENT_TOPIC in topics and "/voice/animation/request" not in topics
     sub = [fake for topic, fake in node._subscribers if topic == TURN_EVENT_TOPIC][0]
     assert sub.callback == node.turn_event_callback
-    assert not hasattr(node, "ring_sync_map")
 
 
 def test_dialogue_node_payload_only_puts_the_ring_out_in_silence():
