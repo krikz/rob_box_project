@@ -16,8 +16,6 @@ from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_co
 from rob_box_voice.core.media_plan_run import _started_text
 from rob_box_voice.core.media_router import MediaRouter, MediaState
 
-pytestmark = pytest.mark.unit
-
 DJ_PHRASE = "Ты диджей Воландеморт и у нас сегодня сэт для пленников прибывших в Эскобар"
 SET_PHRASE = "сочини новые треки под тему Ты Воландеморт и сэт для пленников прибывших в Эскобар"
 
