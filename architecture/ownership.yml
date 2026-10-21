@@ -261,10 +261,11 @@ topics:
   /dialog/session:
     owner: dialog_node
     type: rob_box_dialog_msgs/SessionState
-    status: planned
-    introduced_by: "PR-7 (#3698)"
-    writers_allowed: [dialog_node]
-    readers: [tts_node, command_node, quest_node, telegram_node]
+    status: live
+    introduced_by: "PR-5b (#3695)"
+    # собеседник (SpeakerRef с азимутом фразы) и кадр Identity; до PR-7 (#3698) пишет v1 dialogue_node, затем dialog_node
+    writers_allowed: [dialogue_node, dialog_node]
+    readers: [face_node]
   /dialog/turn_event:
     owner: dialog_node
     type: rob_box_dialog_msgs/TurnEvent

@@ -17,13 +17,14 @@ the graph) -> ``sleep``; it is back -> ``wakeup`` -> idle.
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SpeechEnvelope, SpeechEvent
+from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SpeechEnvelope, SpeechEvent
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
@@ -38,6 +39,9 @@ from .face_director import FaceDirector, GazeTrack, parse_animation_request
 VOICE_OWNER_TOPIC = '/voice/speech/event'
 #: Publishers in the graph that mean «voice-assistant is up» (tts_node, audio_node).
 VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/voice/tts/state', '/audio/direction')
+#: Азимут собеседника из ``/dialog/session`` (ADR-0150 §7.5, #3695) держит взгляд столько секунд: сырой DOA
+#: (``/audio/direction``) в это время взгляд не уводит — собеседник важнее последнего звука в комнате.
+SPEAKER_GAZE_HOLD_S = 4.0
 
 
 class PanelPublisher:
@@ -108,6 +112,7 @@ class FaceNode(Node):
         self.create_subscription(SpeechEvent, VOICE_OWNER_TOPIC, self._on_speech_event, 10)
         self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
         self.create_subscription(Int32, '/audio/direction', self._on_direction, 10)
+        self.create_subscription(SessionState, '/dialog/session', self._on_session, latched)
         self.create_subscription(Bool, '/audio/vad', self._on_vad, 10)
         self.create_subscription(String, '/voice/music/state', self._on_music_state, latched)
         self.create_subscription(ExpressionRequest, '/voice/expression/request', self._on_expression, 10)
@@ -133,7 +138,16 @@ class FaceNode(Node):
     def _on_direction(self, msg) -> None:
         now = time.time()
         self.director.voice_seen(now)
-        self.director.gaze.on_direction(float(msg.data), now)
+        if now - getattr(self, '_speaker_gaze_at', -math.inf) >= SPEAKER_GAZE_HOLD_S:
+            self.director.gaze.on_direction(float(msg.data), now)
+
+    def _on_session(self, msg) -> None:
+        """Собеседник хода с азимутом его фразы (``SessionState.speaker_azimuth_deg``) — взгляд на него."""
+        azimuth = float(msg.speaker_azimuth_deg)
+        if math.isfinite(azimuth):
+            now = time.time()
+            self._speaker_gaze_at = now
+            self.director.gaze.look_at(azimuth, now)
 
     def _on_vad(self, msg) -> None:
         self.director.gaze.on_vad(bool(msg.data), time.time())
