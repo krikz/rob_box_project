@@ -387,12 +387,18 @@ PROVIDER_HEALTH: Tuple[str, ...] = ("ok", "degraded", "quota", "network", "timeo
 PROVIDER_STALE_S: float = 10.0
 #: Классы здоровья, при которых провайдер ещё годится в цепочку.
 PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded", "unknown")
+#: Транзиентный отказ (таймаут/сеть) STT-провайдера переводит его в ``timeout``/``down`` лишь после стольких
+#: отказов подряд НА РЕЧИ (фразу приняли другие провайдеры). Таймаут на фоновом шуме (итог фразы ``rejected``) не
+#: считается: 21.10 MiniMax-фолбек раз в 10 мин «падал» на шуме, и робот врал вслух (#3755). Квота и ключ
+#: (``quota``/``auth``) - сразу: они не бывают случайными. 3 = ступень лестницы TTL (30/120/300 с) в ``stt_fallback``.
+STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
-    "provider.switched", "provider.no_fallback",
+    "provider.switched", "provider.no_fallback", "provider.switched.stt",
+    *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "identity.ask_name", "identity.confirm",

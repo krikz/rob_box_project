@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Literal, Optional, Protocol, Sequence, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
 from . import phrases
 from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_STALE_S, PROVIDER_USABLE_HEALTH
@@ -116,12 +116,35 @@ def phrase_on_change(prev: Optional[ProviderState], cur: ProviderState) -> Optio
     return f"provider.exhausted.{reason}"
 
 
+Priority = Union[Sequence[str], Mapping[str, Sequence[str]]]
+
+
+def _priority_of(priority: Priority, kind: str) -> Sequence[str]:
+    """Порядок провайдеров вида ``kind``: словарь вид -> порядок (как публикуют писатели) или один общий список."""
+    if isinstance(priority, Mapping):
+        return priority.get(kind, ())
+    return priority
+
+
+def _was_active(cur: ProviderState, prev: Optional[ProviderState], states: Sequence[ProviderState],
+                priority: Sequence[str]) -> bool:
+    """``cur`` был тем провайдером своего вида, которым робот отвечал человеку, ДО отказа.
+
+    Активный - первый пригодный в порядке вида при состоянии, каким оно было до перехода. Сбой запасного при живом
+    основном человеку ничего не меняет: фразы нет (ADR §8 «одна фраза на смену, которую слышит человек», #3755).
+    """
+    before = [prev or ProviderState(cur.name, cur.kind, "ok") if s is cur else s for s in states]
+    order = provider_order(before, priority, cur.kind)
+    return bool(order) and order[0] == cur.name
+
+
 class ProviderAnnouncer:
-    """Одна фраза на смену состояния, не чаще ``ANNOUNCE_MIN_INTERVAL_S`` на (провайдер, причина).
+    """Одна фраза на смену состояния АКТИВНОГО провайдера вида, не чаще ``ANNOUNCE_MIN_INTERVAL_S`` на (провайдер, причину).
 
     Состояние хранит само: вызывающий отдаёт текущий снимок ``observe(states, priority, now)`` и получает готовые
     тексты (ключ и слоты - код, текст - ``phrases``). Что провайдер вылечился, помнится: следующий отказ после
-    паузы озвучится снова. ``priority`` - порядок провайдеров того же вида: запасной берётся из него.
+    паузы озвучится снова. ``priority`` - порядок провайдеров по видам (``{вид: [имена]}``): запасной берётся из
+    порядка того же вида. Отказ неактивного (запасного) провайдера не озвучивается - его видно на доске и в логе.
     """
 
     def __init__(self, min_interval_s: float = ANNOUNCE_MIN_INTERVAL_S) -> None:
@@ -129,7 +152,7 @@ class ProviderAnnouncer:
         self._seen: Dict[Tuple[str, str], ProviderState] = {}
         self._spoken_at: Dict[Tuple[str, str], float] = {}
 
-    def observe(self, states: Sequence[ProviderState], priority: Sequence[str], now: float) -> List[str]:
+    def observe(self, states: Sequence[ProviderState], priority: Priority, now: float) -> List[str]:
         """Тексты фраз о переходах с прошлого вызова (обычно пусто)."""
         out: List[str] = []
         for cur in states:
@@ -137,7 +160,7 @@ class ProviderAnnouncer:
             prev = self._seen.get(key)
             self._seen[key] = cur
             phrase_key = phrase_on_change(prev, cur)
-            if phrase_key is None:
+            if phrase_key is None or not _was_active(cur, prev, states, _priority_of(priority, cur.kind)):
                 continue
             # Тариф один на LLM и TTS (MiniMax): одна причина у одного имени - одна фраза, а не по фразе на вид.
             spoken_key = (cur.name, phrase_key)
@@ -145,15 +168,20 @@ class ProviderAnnouncer:
             if last is not None and now - last < self._min_interval_s:
                 continue
             self._spoken_at[spoken_key] = now
-            out.append(_compose(phrase_key, cur, states, priority))
+            out.append(_compose(phrase_key, cur, states, _priority_of(priority, cur.kind)))
         return out
 
 
 def _compose(phrase_key: str, cur: ProviderState, states: Sequence[ProviderState], priority: Sequence[str]) -> str:
-    """Фраза об отказе + «что делаю дальше»: запасной того же вида из ``provider_order`` или честное «запасного нет»."""
+    """Фраза об отказе + «что делаю дальше»: вид назван, запасной того же вида или честное «запасного нет»."""
     alt = next(iter(provider_order(states, [p for p in priority if p != cur.name], cur.kind)), None)
-    nxt = phrases.text("provider.switched", provider=alt) if alt else phrases.text("provider.no_fallback")
-    return phrases.text(phrase_key, provider=cur.name, next=nxt)
+    if alt:
+        switched = phrases.first_key(f"provider.switched.{cur.kind}", "provider.switched")
+        nxt = phrases.text(switched, provider=alt)
+    else:
+        nxt = phrases.text("provider.no_fallback")
+    subject = phrases.text(f"provider.subject.{cur.kind}", provider=cur.name)
+    return phrases.text(phrase_key, subject=subject, next=nxt)
 
 
 assert set(_EXHAUSTED_REASON) <= set(PROVIDER_HEALTH) and "music_gen" in PROVIDER_KINDS

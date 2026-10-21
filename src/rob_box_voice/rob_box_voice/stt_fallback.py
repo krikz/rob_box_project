@@ -259,6 +259,8 @@ class ProviderDeadCache:
         # Issue #2924 — отдельный счётчик подряд-идущих ТРАНЗИЕНТНЫХ отказов
         # (сеть/таймаут): плоские 30с не спасали серию фраз от таймаута.
         self._transient_streak: dict[str, int] = {}
+        # #3755: транзиентные отказы НА РЕЧИ (фразу приняли другие). Отказ на шуме сюда не попадает.
+        self._speech_strikes: dict[str, int] = {}
 
     # -- запросы ---------------------------------------------------------
 
@@ -278,11 +280,27 @@ class ProviderDeadCache:
             return self._reason.get(provider)
 
     def health_class(self, provider: str) -> str:
-        """Класс отказа (quota/auth/timeout/down) для ``ProviderState``; ``ok``, пока провайдер не мёртв."""
+        """Класс отказа для ``ProviderState``; ``ok``, пока провайдер не мёртв.
+
+        ``quota``/``auth`` - сразу. Транзиентный (``timeout``/``down``) - лишь после
+        ``STT_TRANSIENT_STRIKES_TO_DOWN`` отказов подряд на речи (#3755): иначе таймаут фолбека на шуме
+        (фраза всё равно ``rejected``) озвучивался бы как «провайдер не отвечает». Пропуск провайдера в цепочке
+        (``is_dead``) от этого не зависит - он по-прежнему экономит время.
+        """
+        from rob_box_dialog.knowledge import STT_TRANSIENT_STRIKES_TO_DOWN  # noqa: PLC0415 - единая таблица
+
         with self._lock:
             if self._clock() >= self._dead_until.get(provider, 0.0):
                 return "ok"
-            return self._health_class.get(provider, "down")
+            cls = self._health_class.get(provider, "down")
+            if cls in ("quota", "auth") or self._speech_strikes.get(provider, 0) >= STT_TRANSIENT_STRIKES_TO_DOWN:
+                return cls
+            return "ok"
+
+    def note_speech_failure(self, provider: str) -> None:
+        """Провайдер отказал на фразе, которую приняли другие (то есть это была речь): +1 к счёту подряд."""
+        with self._lock:
+            self._speech_strikes[provider] = self._speech_strikes.get(provider, 0) + 1
 
     # -- мутации ---------------------------------------------------------
 
@@ -294,6 +312,7 @@ class ProviderDeadCache:
             self._health_class.pop(provider, None)
             self._permanent_streak.pop(provider, None)
             self._transient_streak.pop(provider, None)
+            self._speech_strikes.pop(provider, None)
 
     def _transient_ttl_for_streak(self, provider: str) -> float:
         """TTL для ОЧЕРЕДНОГО подряд-идущего транзиентного отказа (issue #2924).
@@ -698,6 +717,17 @@ def _mark_failed(
         )
 
 
+def _note_speech_failures(dead_cache: Optional[ProviderDeadCache], attempts: Sequence[STTAttempt]) -> None:
+    """Фразу приняли: все, кто на ней упал по таймауту/ошибке, отказали на РЕЧИ - засчитать (#3755).
+
+    Фраза с итогом ``rejected`` сюда не доходит: отказ на шуме/эхе провайдеру в счёт не идёт.
+    """
+    if dead_cache is None:
+        return
+    for name in dict.fromkeys(a.provider for a in attempts if a.reason in ("timeout", "error")):
+        dead_cache.note_speech_failure(name)
+
+
 def _skip_for_budget(
     provider: STTProvider,
     attempts: List[STTAttempt],
@@ -806,6 +836,7 @@ def select_recognition(
             clock=clock,
         )
         if text is not None:
+            _note_speech_failures(dead_cache, attempts)
             return text, attempts
 
     # Сюда дошли, если ни один провайдер не дал "ok".

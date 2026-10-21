@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from rob_box_dialog.degrade import ProviderAnnouncer, ProviderBoard, ProviderState
 
@@ -63,8 +63,12 @@ class ProviderStateReporter:
         if own:
             self._publish(own)
         states = own + self._board.states(self._clock(), kinds=("tts", "stt", "music_gen"))
-        # Порядок запасных: для llm - приоритет из цепочки, для остальных - порядок появления на доске.
-        priority = self._priority + [s.name for s in states if s.kind != "llm"]
+        # Порядок запасных - по видам: llm - приоритет из цепочки, остальные - порядок писателя (#3755: список
+        # llm и stt в одной куче давал «STT упал -> переключаюсь на deepseek»).
+        priority: Dict[str, List[str]] = {"llm": list(self._priority)}
+        for s in states:
+            if s.kind != "llm":
+                priority.setdefault(s.kind, []).append(s.name)
         for text in self._announcer.observe(states, priority, self._clock()):
             self._speak(text)
 
