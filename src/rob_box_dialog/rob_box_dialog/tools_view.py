@@ -16,6 +16,7 @@ from rob_box_core.tool_catalog import ToolCatalogEntry, get_tool
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.session import SessionSnapshot
+from rob_box_dialog import phrases
 from rob_box_dialog.words import has_word
 
 
@@ -49,6 +50,24 @@ def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
     return tuple(g for g in requested_groups(text) if actions & set(kn.TOOL_GROUPS[g].tools))
 
 
+def motion_named(text: str) -> bool:
+    """Назвал ли человек движение базы глаголом («поезжай», «двигайся», «повернись»). Восприятие («посмотри налево»)
+    и голые направления движение не открывают; «повернись глазами» — взгляд, а не поворот базы (#3779)."""
+    if has_word(text or "", kn.MOTION_VERB_STEMS):
+        return True
+    return has_word(text or "", kn.MOTION_TURN_STEMS) and not has_word(text or "", kn.MOTION_EYES_STEMS)
+
+
+def motion_refusal(tool: str, text: str) -> Optional[str]:
+    """Честная фраза отказа, если тул движения вызван в ходе, где человек движение не называл; иначе ``None``.
+
+    Страховка исполнителя поверх среза: что бы ни написала LLM, база без глагола движения не поедет. Пустая реплика
+    (вызов не по голосу человека) отказа не даёт — судить не по чему."""
+    if tool not in kn.MOTION_TOOLS or not (text or "").strip() or motion_named(text):
+        return None
+    return phrases.text("motion.rejected.not_asked")
+
+
 def _named(text: str, field: str) -> set:
     return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
 
@@ -68,10 +87,13 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
         return ()
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
+    drive = motion_named(text)
     for name in kn.TOOLS_ALWAYS + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
+        if name in kn.MOTION_TOOLS and not drive:
+            continue
         if name in allowed and name not in names and len(names) < kn.TOOLS_VISIBLE_MAX:
             names.append(name)
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "groups_for", "requested_groups"]
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups"]
