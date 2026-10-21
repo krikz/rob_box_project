@@ -29,6 +29,8 @@ import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 _audio_common = types.ModuleType("audio_common_msgs")
 _audio_common_msg = types.ModuleType("audio_common_msgs.msg")
 _audio_common_msg.AudioData = MagicMock
@@ -185,7 +187,8 @@ class TestQuestionAfterTurnReply:
         assert frame is not None and frame.payload["kind"] == "conflict"
         assert (frame.payload["new_id"], frame.payload["known_id"]) == (BORIS_ID, SASHA_ID)
         assert kn.IDENTITY_TTL_S == kn.REPLY_WINDOW_S == 15
-        assert frame.ttl_until - frame.payload["asked_at"] == kn.IDENTITY_TTL_S
+        # два чтения часов сессии (time.time) — сравнение с допуском
+        assert frame.ttl_until - frame.payload["asked_at"] == pytest.approx(kn.IDENTITY_TTL_S, abs=0.5)
 
 
 class TestAnswerDecidedByCode:
