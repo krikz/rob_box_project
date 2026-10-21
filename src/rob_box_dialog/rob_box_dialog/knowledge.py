@@ -311,7 +311,8 @@ class Reflex:
 
     ``face`` — сцены по очереди/на выбор (``idle_stare ↔ idle_bored``); пусто — лицо не трогается. ``after_ms`` —
     через сколько после события включается, ``deadline_ms`` — не позже чем. Минимальная длительность сцены и
-    ``ttl`` подбираются в PR-3b по видео и добавляются сюда же.
+    ``ttl`` подбираются в PR-3b по видео и добавляются сюда же. ``ttl_ms`` - сколько лицо держит сцену рефлекса, если
+    следующей стадии не будет (страховка от зависшей сцены): терминальные стадии короткие, ожидание - до таймаута хода.
     """
 
     face: Tuple[str, ...]
@@ -319,18 +320,19 @@ class Reflex:
     earcon: Optional[str] = None
     after_ms: Optional[int] = None
     deadline_ms: Optional[int] = None
+    ttl_ms: Optional[int] = None
 
 
 #: Стадия хода / состояние → рефлекс. ``thinking``: зубы или орбита — выбор Шифу (В13), старт с зубов.
 REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "idle": Reflex(("idle_stare", "idle_bored"), ring="breath", after_ms=3000),
-    "addressed": Reflex(("listening",), ring="doa_sector", earcon="heard", deadline_ms=300),
-    "thinking": Reflex(("thinking_teeth",), ring="spin_slow"),
-    "executing": Reflex(("thinking_teeth",)),
-    "speaking": Reflex(("talking",), ring="breath"),
-    "done": Reflex(("happy", "wink"), ring="flash", earcon="done"),
-    "failed": Reflex(("error",), ring="flash_red", earcon="fail"),
-    "timeout": Reflex(("sad",), ring="flash_red", earcon="fail"),
+    "addressed": Reflex(("listening",), ring="doa_sector", earcon="heard", deadline_ms=300, ttl_ms=8000),
+    "thinking": Reflex(("thinking_teeth",), ring="spin_slow", ttl_ms=45000),
+    "executing": Reflex(("thinking_teeth",), ttl_ms=60000),
+    "speaking": Reflex(("talking",), ring="breath", ttl_ms=20000),
+    "done": Reflex(("happy", "wink"), ring="flash", earcon="done", ttl_ms=3000),
+    "failed": Reflex(("error",), ring="flash_red", earcon="fail", ttl_ms=4000),
+    "timeout": Reflex(("sad",), ring="flash_red", earcon="fail", ttl_ms=4000),
     "silenced": Reflex(("sleep",), ring="off"),
     "music.playing": Reflex(("music_groove", "music_shades", "music_vibe"), ring="beat_pulse"),
     "not_addressed": Reflex(()),

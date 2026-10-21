@@ -6,7 +6,7 @@ string turn_id
 uint32 epoch
 # Агент.
 string agent
-# Стадия хода (heard, thinking, acting, speaking, done).
+# Стадия хода (knowledge.TURN_STAGES): addressed, thinking, executing, speaking, done, failed, timeout.
 string stage
 # Статус стадии (started, finished, failed, skipped).
 string status

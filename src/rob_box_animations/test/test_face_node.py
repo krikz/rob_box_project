@@ -59,3 +59,39 @@ def test_node_wires_inputs_and_timers():
             '/audio/vad', '/voice/music/state', '/voice/animation/request', '/voice/expression/request',
             '~/scene'} <= topics
     assert sorted(p for p, _ in node.timers) == [0.04, 1.0]
+
+
+def _expression(**fields):
+    base = dict(turn_id='t1', epoch=1, agent='personality', emotion='', gesture='', earcon='', ttl_ms=0, face_json='')
+    return types.SimpleNamespace(**{**base, **fields})
+
+
+def _face_node():
+    from rclpy.node import Node
+    if Node.__name__ != '_Node':
+        pytest.skip('real rclpy installed: node wiring needs a ROS context')
+    from rob_box_animations.face_node import FaceNode
+    return FaceNode()
+
+
+def test_expression_request_is_answered_with_started_for_a_known_scene():
+    node = _face_node()
+    node._on_expression(_expression(emotion='listening', ttl_ms=8000))
+    (ev,) = node._event_pub.sent
+    assert (ev.executor, ev.turn_id, ev.kind, ev.reason) == ('face', 't1', 0, '')
+    assert node.director._request[0] == 'listening'
+
+
+def test_unknown_scene_is_answered_with_skipped_and_reason_not_with_silence():
+    node = _face_node()
+    node._on_expression(_expression(emotion='moonwalk'))
+    (ev,) = node._event_pub.sent
+    assert (ev.kind, ev.reason) == (1, 'unknown_scene')
+
+
+def test_gesture_wins_over_emotion_and_earcon_only_request_gets_no_face_answer():
+    node = _face_node()
+    node._on_expression(_expression(emotion='happy', gesture='wink'))
+    assert node.director._request[0] == 'wink'
+    node._on_expression(_expression(earcon='heard'))
+    assert len(node._event_pub.sent) == 1
