@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -39,6 +39,8 @@ class FaceContext:
     tint: Optional[Tuple[float, float, float]] = None
     #: rear lights when the scene does not draw them (rear.THEMES)
     rear_theme: str = 'default'
+    #: slots of the LLM face scene (``face_scene.FaceScene.slots()``) for ``dsl.face_scene``
+    face: Optional[Mapping[str, str]] = None
 
 
 IDLE = FaceContext()

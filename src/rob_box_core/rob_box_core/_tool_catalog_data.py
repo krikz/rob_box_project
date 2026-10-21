@@ -1136,7 +1136,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                              'description': 'Название '
                                                                             'анимации '
                                                                             'для '
-                                                                            'воспроизведения',
+                                                                            'воспроизведения '
+                                                                            '(можно '
+                                                                            'вместе с '
+                                                                            'face)',
                                                              'enum': [   'accelerating',
                                                                          'ambulance',
                                                                          'angry',
@@ -1170,11 +1173,107 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'диапазона '
                                                                            'будут '
                                                                            'установлены '
-                                                                           'в 2)'}},
-                          'required': ['animation'],
+                                                                           'в 2)'},
+                                            'face': {   'type': 'object',
+                                                        'description': 'Слоты лица; '
+                                                                       'всё, что не '
+                                                                       'задано, '
+                                                                       'берётся из '
+                                                                       'текущей сцены. '
+                                                                       'left/right - '
+                                                                       'со стороны '
+                                                                       'человека '
+                                                                       'напротив '
+                                                                       'робота. Только '
+                                                                       'значения из '
+                                                                       'списков, '
+                                                                       'свободных '
+                                                                       'цветов и форм '
+                                                                       'нет.',
+                                                        'properties': {   'eyes': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«eyes»',
+                                                                                      'enum': [   'open',
+                                                                                                  'half',
+                                                                                                  'squint',
+                                                                                                  'wide',
+                                                                                                  'closed',
+                                                                                                  'shades',
+                                                                                                  'x']},
+                                                                          'gaze': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«gaze»',
+                                                                                      'enum': [   'speaker',
+                                                                                                  'left',
+                                                                                                  'right',
+                                                                                                  'up',
+                                                                                                  'down',
+                                                                                                  'wander']},
+                                                                          'blink': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«blink»',
+                                                                                       'enum': [   'normal',
+                                                                                                   'rapid',
+                                                                                                   'none',
+                                                                                                   'wink_left',
+                                                                                                   'wink_right']},
+                                                                          'mouth': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«mouth»',
+                                                                                       'enum': [   'grin',
+                                                                                                   'frown',
+                                                                                                   'flat',
+                                                                                                   'o',
+                                                                                                   'teeth',
+                                                                                                   'eq',
+                                                                                                   'talk']},
+                                                                          'tint': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«tint»',
+                                                                                      'enum': [   'warm',
+                                                                                                  'cold',
+                                                                                                  'red',
+                                                                                                  'green',
+                                                                                                  'blue',
+                                                                                                  'purple',
+                                                                                                  'rainbow']},
+                                                                          'tempo': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«tempo»',
+                                                                                       'enum': [   'slow',
+                                                                                                   'normal',
+                                                                                                   'fast']},
+                                                                          'rear': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«rear»',
+                                                                                      'enum': [   'off',
+                                                                                                  'markers',
+                                                                                                  'hazard',
+                                                                                                  'party',
+                                                                                                  'new_year',
+                                                                                                  'halloween',
+                                                                                                  'heart',
+                                                                                                  'rocket']},
+                                                                          'duration_s': {   'type': 'number',
+                                                                                            'description': 'Сколько '
+                                                                                                           'держать '
+                                                                                                           'сцену, '
+                                                                                                           'секунды',
+                                                                                            'minimum': 0,
+                                                                                            'maximum': 30.0}},
+                                                        'required': [],
+                                                        'additionalProperties': False}},
+                          'required': [],
                           'additionalProperties': False},
-        'signature': {   'params': ['animation', 'duration'],
-                         'required': ['animation'],
+        'signature': {   'params': ['animation', 'duration', 'face'],
+                         'required': [],
                          'accepts_kwargs': False},
         'skill': ('expression',)},
     {   'llm_visible': True,

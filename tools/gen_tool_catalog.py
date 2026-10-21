@@ -342,6 +342,39 @@ def _set_styles_values() -> list[str]:
     return list(_knowledge().GEN_STYLES)
 
 
+def _face_param() -> dict[str, Any]:
+    """``play_animation.face`` — объект-сцена лица из ``rob_box_dialog.knowledge.face_schema()`` (ADR-0150 §5.5.9).
+
+    Та же схема, что у ``Command.expression.face``; зеркалит ``tools/animation.py::_face_parameter``.
+    """
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
+    spec = importlib.util.spec_from_file_location("_dialog_knowledge_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    schema = module.face_schema()
+    props: dict[str, Any] = {
+        name: {"name": name, "type": "string", "description": f"Слот лица «{name}»", "required": False,
+               "enum": list(sub["enum"])}
+        for name, sub in schema["properties"].items() if "enum" in sub
+    }
+    duration = schema["properties"]["duration_s"]
+    props["duration_s"] = {"name": "duration_s", "type": "number", "description": "Сколько держать сцену, секунды",
+                           "required": False, "minimum": duration["minimum"], "maximum": duration["maximum"]}
+    return {"name": "face", "type": "object", "description": schema["description"], "required": False,
+            "properties": props}
+
+
+#: ``(tool_name, param_name)`` → resolver целого параметра-объекта, схема которого строится из таблицы знания.
+DYNAMIC_PARAMS = {
+    ("play_animation", "face"): _face_param,
+}
+
+
 def _set_max_tracks() -> int:
     """``dj_set.tracks`` maximum — ``knowledge.SET_MAX_TRACKS`` (``set_plan.MAX_TRACKS``)."""
     return _knowledge().SET_MAX_TRACKS
@@ -624,6 +657,10 @@ def extract_tools() -> list[dict[str, Any]]:
             entry["description"] = description.strip()
 
             for param in params:
+                param_resolver = DYNAMIC_PARAMS.get((name, param.get("name")))
+                if param_resolver is not None:
+                    param.clear()
+                    param.update(param_resolver())
                 if param.get("enum") is DYNAMIC:
                     resolver = DYNAMIC_ENUMS.get((name, param.get("name")))
                     if resolver is None:

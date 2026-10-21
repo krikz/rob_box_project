@@ -393,8 +393,25 @@ def disco(t, bpm):
     return outs[0], outs[1]
 
 
+def hazard(t):
+    """Аварийка: янтарная волна на обоих бортах."""
+    return turn_signal(t, 'left')[0], turn_signal(t, 'right')[1]
+
+
+def party(t, bpm=120.0):
+    """Праздничные фары (слот ``rear: party``): диско-колёса в темпе без трека."""
+    return disco(t, bpm)
+
+
+def dark(t):
+    return np.zeros((8, 8, 3)), np.zeros((8, 8, 3))
+
+
 THEMES = {
     'default': lambda t: taillight(t),
+    'off': dark,
+    'hazard': hazard,
+    'party': party,
     'new_year': new_year,
     'halloween': halloween,
     'valentine': valentine,
@@ -402,4 +419,10 @@ THEMES = {
     'womens_day': tulips,
     'cosmonautics': rocket,
     'birthday': birthday,
+}
+
+#: Слот ``rear`` сцены лица для LLM (``knowledge.FACE_SCENE_SLOTS['rear']``) -> тема из :data:`THEMES`.
+REAR_OF_SLOT = {
+    'off': 'off', 'markers': 'default', 'hazard': 'hazard', 'party': 'party',
+    'new_year': 'new_year', 'halloween': 'halloween', 'heart': 'valentine', 'rocket': 'cosmonautics',
 }

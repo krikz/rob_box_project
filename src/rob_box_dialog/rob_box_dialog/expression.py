@@ -27,12 +27,14 @@ MOTION_DEFAULT_FACE = "accelerating"
 
 @dataclass(frozen=True)
 class ExpressionPlan:
-    """Что код просит у исполнителей на стадии: сцена лица, жест, earcon, время жизни; пусто - не менять."""
+    """Что код просит у исполнителей на стадии: сцена лица, жест, earcon, время жизни, слоты LLM; пусто - не менять."""
 
     emotion: str = ""
     gesture: str = ""
     earcon: str = ""
     ttl_ms: int = 0
+    #: Сцена лица от LLM (``FaceScene.to_dict()``, уже проверенная); пусто - нет (§5.5.9).
+    face: Optional[Mapping[str, object]] = None
 
 
 def _bpm_scene(bpm: Optional[float]) -> Optional[str]:
