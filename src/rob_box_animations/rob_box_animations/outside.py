@@ -52,8 +52,8 @@ class DriveTracker:
             self._cand, self._cand_since = cand, now
         if cand and now - self._cand_since >= TURN_HOLD_S - 1e-6:
             self._turn, self._turn_seen = cand, now
-        elif self._turn and abs(wz) >= TURN_OFF_RADPS:
-            self._turn_seen = now
+        elif self._turn and abs(wz) >= TURN_OFF_RADPS and (wz > 0) == (self._turn == 'left'):
+            self._turn_seen = now        # the hysteresis band holds only the signal of its own side
 
     def _track_brake(self, speed: float, now: float) -> None:
         self._hist.append((now, speed))

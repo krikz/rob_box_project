@@ -51,6 +51,14 @@ def test_turn_signal_holds_through_dip_then_releases():
     assert seen[-1] is None
 
 
+def test_opposite_turn_does_not_revive_the_old_signal():
+    """Found on the robot (PR-3e run): left, 1 s pause, right -> 'turn_left' flashed again on the first right samples."""
+    seen = feed(DriveTracker(), [(0.2, 0.6)] * 15 + [(0.2, 0.0)] * 10 + [(0.2, -0.6)] * 15)
+    assert 'turn_left' not in seen[16 + 5:]
+    assert seen[25:28] == [None, None, None]
+    assert seen[-1] == 'turn_right'
+
+
 def test_turn_signal_dies_when_cmd_vel_goes_stale():
     tr = DriveTracker()
     feed(tr, [(0.3, 0.5)] * 6)
