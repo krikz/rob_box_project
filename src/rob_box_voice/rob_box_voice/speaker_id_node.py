@@ -240,6 +240,14 @@ def is_name_confident(
     )
 
 
+def _candidate_fields(candidate: Optional[SpeakerMatch]) -> dict:
+    """Issue #3767 — лучший кандидат неузнанной фразы для ``SpeakerResult``:
+    гипотеза со score для метки фразы бэклога, не имя. Нет — ``{}``."""
+    if candidate is None or not candidate.name:
+        return {}
+    return {"candidate_name": candidate.name, "candidate_score": round(candidate.confidence, 4)}
+
+
 def _publish_speaker_result(pub, payload: dict) -> None:
     """Типизированная публикация ``SpeakerResult`` (ADR-0150 PR-2).
 
@@ -1068,7 +1076,7 @@ class SpeakerIdNode(Node):
             return
 
         match = self._db.identify(embedding)
-        self._log_identify_candidates(embedding, voiced_sec=duration_sec)
+        best = self._log_identify_candidates(embedding, voiced_sec=duration_sec)
         # Issue #2747 — рост галереи НЕ зависит от исхода identify() выше
         # (см. большой комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE:
         # акустический гейт для этого решения отклонён — same/cross-voice
@@ -1107,6 +1115,7 @@ class SpeakerIdNode(Node):
             name_decision=name_decision,
             utterance_id=utterance_id,
             inconclusive=self._inconclusive_reason(match, duration_sec),
+            candidate=best,
         )
 
     def _inconclusive_reason(
@@ -1304,7 +1313,7 @@ class SpeakerIdNode(Node):
 
     def _log_identify_candidates(
         self, embedding: np.ndarray, voiced_sec: Optional[float] = None
-    ) -> None:
+    ) -> Optional[SpeakerMatch]:
         """Issue W5-4 п.4 — диагностика: best_score И второй кандидат.
 
         Без этого лога в проде виден только булев результат identify()
@@ -1321,10 +1330,14 @@ class SpeakerIdNode(Node):
         паре (score, речь) считается порог в
         ``scripts/maintenance/voice_threshold_sweep.py`` — там же замер
         r(duration, score) = 0.88 на этом пайплайне.
+
+        Issue #3767 — возвращает лучшего кандидата (``None`` — галерея пуста):
+        у неузнанной фразы он уходит в ``SpeakerResult.candidate_*`` как
+        гипотеза для метки фразы бэклога (не имя).
         """
         candidates = self._db.identify_candidates(embedding, top_n=2)
         if not candidates:
-            return
+            return None
         # Суффикс пустой, когда длительность неизвестна (старые вызовы,
         # тесты): молча не врём числом, которого не измеряли.
         voiced = f" | речь={voiced_sec:.2f}s" if voiced_sec is not None else ""
@@ -1344,6 +1357,7 @@ class SpeakerIdNode(Node):
                 f"score={best.confidence:.3f} | "
                 f"(единственный известный спикер в БД){voiced}"
             )
+        return best
 
     def _on_rename_request(self, msg: String) -> None:
         """Rename an existing speaker entry.
@@ -2213,8 +2227,13 @@ class SpeakerIdNode(Node):
         name_decision: Optional[str] = None,
         utterance_id: Optional[str] = None,
         inconclusive: Optional[str] = None,
+        candidate: Optional[SpeakerMatch] = None,
     ) -> None:
         """Serialise and publish the speaker identification result.
+
+        Issue #3767 — ``candidate`` (лучший кандидат без порога): у неузнанной
+        фразы (``match=None``) уходит как ``candidate_name``/``candidate_score``
+        — гипотеза для метки фразы бэклога, не имя.
 
         Issue #2863 — ``inconclusive`` (причина, только для ``match=None``):
         биометрия фразу не оценила (нет эмбеддинга / мало речи). Payload
@@ -2310,6 +2329,7 @@ class SpeakerIdNode(Node):
             if inconclusive:
                 payload["inconclusive"] = True
                 payload["reason"] = inconclusive
+            payload.update(_candidate_fields(candidate))
             self.get_logger().info(
                 "📢 Publishing: is_known=false"
                 + (f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else "")

@@ -92,30 +92,30 @@ def _backlog_with(text, t, doa=None, person="", voice_s=0.0, faces=()):
     return backlog
 
 
-def test_bare_wake_picks_up_fresh_phrase_from_the_same_direction_when_someone_is_in_frame():
+def test_bare_wake_always_picks_up_fresh_phrase_whoever_said_it():
+    """#3767 (Шифу 21.10): «бэклог должен уходить по любому всегда» — ни лица, ни голоса, DOA с другой стороны."""
     backlog = _backlog_with("покажи анимацию ускорения", t=95.0, doa=90.0)
-    out = decide(_heard("Робот", t=100.0, doa=140.0, faces={"f1"}), backlog, WAKES)
-    assert out == Addressed("покажи анимацию ускорения", BACKLOG_PICKUP, True, ("doa",))
+    out = decide(_heard("Робот", t=100.0, doa=270.0), backlog, WAKES)
+    assert out.text == "покажи анимацию ускорения" and out.source == BACKLOG_PICKUP and out.pickup
+    (label,) = out.picked
+    assert label["speaker"] == {"identified": False, "label": "неопознанный", "bio": "none"}
+    assert label["same_as_caller"] is False and label["same_direction"] is False
     assert backlog.background_phrases(100.0) == 0, "подхваченная фраза уходит из бэклога"
 
 
-def test_bare_wake_picks_up_by_recognised_long_phrase_voice_from_another_direction():
-    """Голос длинной фразы бэклога узнан — подхват, хоть в кадре никого и DOA с другой стороны (Шифу 21.10)."""
-    backlog = _backlog_with("включи музыку погромче", t=90.0, doa=270.0, person="p1", voice_s=2.5)
-    out = decide(_heard("робот", t=100.0, doa=90.0), backlog, WAKES)
-    assert out.pickup and out.channels == ("voice",)
+def test_bare_wake_takes_every_fresh_phrase_in_order():
+    backlog = _backlog_with("слушай я хотела рассказать", t=92.0, doa=58.0, voice_s=14.8)
+    backlog.add(_heard("как собрать полку для книг", t=94.5, doa=54.0, voice_s=9.8))
+    out = decide(_heard("робот", t=98.5, doa=299.0), backlog, WAKES)
+    assert out.text == "слушай я хотела рассказать как собрать полку для книг"
+    assert [p["text"] for p in out.picked] == ["слушай я хотела рассказать", "как собрать полку для книг"]
 
 
-@pytest.mark.parametrize("entry_t, entry_doa, entry_person, why", [
-    (70.0, 90.0, "", "старше 20 с"),
-    (95.0, 200.0, "", "другой сектор (телевизор)"),
-    (95.0, None, "", "направление записи неизвестно"),
-    (95.0, 90.0, "p2", "другой человек"),
-])
-def test_bare_wake_without_matching_phrase_is_reflex_only(entry_t, entry_doa, entry_person, why):
-    backlog = _backlog_with("девяносто пять градусов", t=entry_t, doa=entry_doa, person=entry_person)
-    out = decide(_heard("робот", t=100.0, doa=90.0, person="p1" if entry_person else ""), backlog, WAKES)
-    assert out == Addressed("", BARE_WAKE), why
+def test_bare_wake_with_empty_or_stale_backlog_is_reflex_only():
+    backlog = _backlog_with("девяносто пять градусов", t=70.0, doa=90.0, voice_s=2.0)
+    assert decide(_heard("робот", t=100.0, doa=90.0), backlog, WAKES) == Addressed("", BARE_WAKE)
+    assert decide(_heard("робот", t=100.0), Backlog(), WAKES) == Addressed("", BARE_WAKE)
+    assert decide(_heard("робот", t=100.0), None, WAKES) == Addressed("", BARE_WAKE)
 
 
 def test_wake_with_a_phrase_never_takes_the_backlog():

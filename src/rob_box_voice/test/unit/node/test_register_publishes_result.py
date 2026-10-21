@@ -374,7 +374,10 @@ def test_growth_session_grows_gallery_even_when_identify_fails(node):
     )
     # identify() на калиброванном пороге реплику не узнал -- is_known=false,
     # рост галереи никак не подделывает результат обычной идентификации.
-    assert node._result_pub.messages == [{"is_known": False}]
+    # #3767: лучший кандидат уходит гипотезой, не именем.
+    (msg,) = node._result_pub.messages
+    assert msg["is_known"] is False and "name" not in msg
+    assert msg["candidate_name"] == "Деньчик" and msg["candidate_score"] < 0.8
     assert node._growth_session["count"] == 1
 
 
@@ -478,7 +481,10 @@ def test_process_utterance_publishes_unknown_for_unmatched_voice(node):
 
     node._process_utterance(b"\x00\x00" * 1000)
 
-    assert node._result_pub.messages == [{"is_known": False}]
+    # #3767: неузнанный голос несёт лучшего кандидата галереи как гипотезу со score, имени нет.
+    (msg,) = node._result_pub.messages
+    assert msg["is_known"] is False and "name" not in msg
+    assert msg["candidate_name"] == "Саша" and msg["candidate_score"] < 0.5
 
 
 def test_no_growth_without_active_session(node):

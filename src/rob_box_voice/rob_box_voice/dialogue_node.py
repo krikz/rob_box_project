@@ -181,7 +181,7 @@ from rob_box_voice.core.turn import (
     reset_budget as turn_guards_reset_budget,
 )
 from rob_box_dialog.address import heard_from, log_label, person_ref_from
-from rob_box_dialog.backlog import Backlog
+from rob_box_dialog.backlog import Backlog, phrase_count
 from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings
 from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.identity_ack import (
@@ -3475,12 +3475,12 @@ class DialogueNode(DialogueStageMixin, Node):
         if tg_chat_id is None:
             # Issue #2809/#2828 -- разовые подсказки про ГОЛОС в комнате: TG-ход их не тратит.
             profile.extend(self._identity_ack_state().pop_hint_lines())
-        # ADR-0150 §7.3 (В12): ≤ 1 свежая неадресованная фраза того же направления/человека — структурой;
-        # остальной бэклог (ТВ, чужие разговоры) — только счётчик фоновой речи.
+        # ADR-0150 §7.3 (В12, #3767): подхваченные голым «робот» фразы или ≤ 1 свежая фраза того же собеседника —
+        # структурой, с меткой «кто сказал»; остальной бэклог (ТВ, чужие разговоры) — только счётчик фоновой речи.
         recent, self._pending_unaddressed = getattr(self, "_pending_unaddressed", None), None
         backlog = getattr(self, "_backlog", None)
         self.get_logger().info(
-            f"🗒️ [backlog] recent_unaddressed entries={int(bool(recent))} "
+            f"🗒️ [backlog] recent_unaddressed entries={phrase_count(recent)} "
             f"background_phrases={backlog.background_phrases(time.time()) if backlog else 0}"
         )
         # #3695: кто сказал реплику — структурой (имя только при confirmed), а не префиксом в её тексте.

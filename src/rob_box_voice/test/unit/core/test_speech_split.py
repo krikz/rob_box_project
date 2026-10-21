@@ -45,12 +45,12 @@ def test_tail_shorter_than_min_is_never_produced():
     assert b"".join(chunks) == buf
 
 
-def test_bare_wake_5s_after_long_speech_picks_up_a_chunk():
-    """20 с речи -> куски в бэклоге; «робот» через 5 с подхватывает фразу."""
+def test_bare_wake_5s_after_long_speech_picks_up_every_chunk_in_order():
+    """20 с речи -> куски в бэклоге; «робот» через 5 с подхватывает весь рассказ по порядку (#3767)."""
     chunks = split_long_speech(_tone(20.0), SR, 15.0, 0.3)
+    assert len(chunks) == 2
     backlog = Backlog()
-    for i, _ in enumerate(chunks):
-        backlog.add(Heard(text=f"кусок {i}", t=100.0 + i, doa_deg=90.0))
-    assert backlog.background_phrases(105.0) >= 1
-    entry, channels = backlog.pickup(Heard(text="робот", t=105.0, doa_deg=90.0, faces=frozenset({"f1"})))
-    assert entry is not None and channels
+    for i, chunk in enumerate(chunks):
+        backlog.add(Heard(text=f"кусок {i}", t=100.0 + i, doa_deg=90.0, voice_s=len(chunk) / (SR * 2)))
+    taken = backlog.pickup(Heard(text="робот", t=105.0, doa_deg=300.0))
+    assert [e.text for e in taken] == ["кусок 0", "кусок 1"]

@@ -14,12 +14,12 @@ monkeypatches keep working unchanged.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 
 from rob_box_dialog.address import Addressed
-from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.backlog import Backlog, Heard, phrase_count, pickup_summary
 from rob_box_dialog.grammar import Tier1Command
 from rob_box_dialog.knowledge import ADDRESS_WAIT_S
 from rob_box_dialog.words import STOP_NONE, stop_verdict
@@ -118,9 +118,9 @@ class _DialogueSttHost:
         )
         return True
 
-    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]], heard: Heard) -> None:
-        # ADR-0150 §7.3 (В12): снимок LLM получает ≤ 1 свежую фразу того же
-        # источника структурой — её вставит _build_dynamic_system_context.
+    def addressed(self, decision: Addressed, recent: Optional[List[Dict[str, Any]]], heard: Heard) -> None:
+        # ADR-0150 §7.3 (В12, #3767): снимок LLM получает фразы бэклога с метками
+        # «кто сказал» структурой — их вставит _build_dynamic_system_context.
         self._node._pending_unaddressed = recent
         self._node._last_heard = heard  # азимут фразы — собеседнику хода (SpeakerRef.azimuth_deg)
         take_answer(self._node, decision.source, heard)  # кадр Identity снимает первая адресованная фраза (#3695)
@@ -129,11 +129,11 @@ class _DialogueSttHost:
         doa = "-" if heard.doa_deg is None else f"{heard.doa_deg:.0f}"
         self._node.get_logger().info(
             f"📮 [address] Addressed source={decision.source} doa={doa} person={heard.person_ref or '-'} "
-            f"faces={len(heard.faces)} recent_unaddressed={int(bool(recent))}"
+            f"faces={len(heard.faces)} recent_unaddressed={phrase_count(recent)}"
         )
         if decision.pickup:
             self._node.get_logger().info(
-                f"🗒️ [backlog] pickup source=backlog_pickup channels={','.join(decision.channels)} "
+                f"🗒️ [backlog] pickup {pickup_summary(decision.picked)} source=backlog_pickup "
                 f"text={decision.text[:80]!r} — голое «робот», текст хода взят из бэклога кодом"
             )
 

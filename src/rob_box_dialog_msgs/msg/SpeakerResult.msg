@@ -32,6 +32,10 @@ string tentative_name
 float32 tentative_conf
 # Вид предположения (tentative_single); "" - нет.
 string tentative_kind
+# Лучший кандидат голоса без порога у неузнанной фразы (гипотеза, не имя; #3767); "" - галерея пуста.
+string candidate_name
+# Оценка сходства лучшего кандидата.
+float32 candidate_score
 # Исход служебной команды (renamed, merged).
 bool ok
 # Код ошибки регистрации (too_short, no_utterance_context, utterance_not_found).
