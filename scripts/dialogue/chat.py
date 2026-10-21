@@ -8,7 +8,7 @@ it to topics. This script is a second shell — a terminal REPL — around
 the *same* core, so what you talk to here is what the robot runs:
 
 * the same system prompt (``src/rob_box_voice/prompts/master_prompt_compact.txt``),
-* the same provider chain and defaults (``llm_providers: "minimax,deepseek"``
+* the same provider chain and defaults (``llm_providers: "deepseek,minimax"``
   → health-aware fallback),
 * the same 51-tool catalog the LLM sees on the robot,
 * the same DSM transitions per turn (WAKE_WORD → STT_RESULT → DIALOGUE_END),
@@ -191,7 +191,7 @@ def say(text: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_PROVIDERS = "minimax,deepseek"  # docker/vision/config/.../dialogue_node.yaml
+DEFAULT_PROVIDERS = "deepseek,minimax"  # docker/vision/config/.../dialogue_node.yaml
 DEFAULT_PROMPT_FILE = "master_prompt_compact.txt"
 DEFAULT_DB = "~/.rob_box/local_chat.db"
 
