@@ -341,6 +341,22 @@ class ToolGroup:
     weak: Tuple[str, ...] = ()
 
 
+#: Глаголы восприятия: «посмотри налево», «глянь что справа», «посмотри на меня» — взгляд лица
+#: (``play_animation(face={gaze: …})``). Движение базы они НЕ открывают (#3779: «посмотри налево» ехало на 1 м).
+GAZE_VERB_STEMS: Tuple[str, ...] = ("посмотр", "смотри", "глян", "взгляни", "взглян")
+#: Единственная таблица глаголов движения базы: только названные ими тулы ``MOTION_TOOLS`` попадают в срез хода и
+#: исполняются. Направления без глагола («налево», «вперёд») движение не открывают. Матч — по левой границе слова.
+MOTION_VERB_STEMS: Tuple[str, ...] = (
+    "поезжай", "поедь", "езжай", "едь", "приедь", "иди", "пойд", "пройд", "двигай",
+    "подвинь", "отъед", "отъезж", "подъед", "подъезж", "проезжай", "поехали", "едем", "приезжай", "отвези", "вези",
+    "вернись", "катись",
+)
+#: «Повернись/развернись» — движение базы, но «повернись глазами / взглядом / головой» — взгляд лица.
+MOTION_TURN_STEMS: Tuple[str, ...] = ("поверн", "разверн")
+MOTION_EYES_STEMS: Tuple[str, ...] = ("глаз", "взгляд", "взглян", "голов")
+#: Тулы, двигающие базу по слову человека: без глагола движения в реплике не видны LLM и не исполняются.
+MOTION_TOOLS: Tuple[str, ...] = ("move_direction", "navigate_to_waypoint", "navigate_to_coordinates")
+
 #: Группы по приоритету: при пересечении групп срез режется по этому порядку (``TOOLS_VISIBLE_MAX``). Голос —
 #: только по явной голосовой просьбе (#3744: LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
@@ -358,9 +374,9 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("set_voice", "set_tts_provider", "list_tts_voices", "set_speed", "set_pitch", "estimate_tts_duration"),
     ),
     "navigation": ToolGroup(
-        ("поезжай", "поедь", "езжай", "едь", "приедь", "иди", "двигай", "вперёд", "вперед", "назад", "налево",
-         "направо", "поверн", "разверн", "точк", "кухн", "комнат", "маршрут", "где ты", "вернись", "остановись",
-         "отвези", "вези", "поехали", "едем", "приезжай", "туда", "сюда"),
+        ("поезжай", "поедь", "езжай", "едь", "приедь", "иди", "двигай", "поверн", "разверн", "точк", "кухн",
+         "комнат", "маршрут", "где ты", "вернись", "остановись", "отвези", "вези", "поехали", "едем", "приезжай",
+         "туда", "сюда", "отъед", "подъед", "катись"),
         ("navigate_to_waypoint", "list_waypoints", "move_direction", "save_waypoint", "stop_navigation",
          "get_current_pose"),
     ),
@@ -374,7 +390,8 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
                         ("memory_context", "register_speaker")),
     "sound": ToolGroup(("звук",), ("play_sound", "get_sound_info")),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
-    "animation": ToolGroup(("анимац", "изобрази"), ("play_animation",)),
+    # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (#3779, ``MOTION_VERB_STEMS``)
+    "animation": ToolGroup(("анимац", "изобрази", *GAZE_VERB_STEMS), ("play_animation",)),
     "event": ToolGroup(("мероприят", "фестивал", "расписан", "программ", "умеешь"), ("faq_search",)),
     "tasks": ToolGroup(("отмени", "продли", "сократи", "задач"), ("task_delta",)),
     "status": ToolGroup(
@@ -419,7 +436,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.invalid", "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
-    "provider.switched", "provider.no_fallback", "provider.switched.stt",
+    "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),

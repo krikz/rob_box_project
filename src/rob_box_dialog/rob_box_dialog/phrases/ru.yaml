@@ -44,6 +44,7 @@ motion.started: ["Еду к {target}."]
 motion.done: ["Приехал."]
 motion.rejected: ["Не могу поехать."]
 motion.rejected.no_motors: ["Не могу поехать — моторы выключены."]
+motion.rejected.not_asked: ["Ты не просил ехать, остаюсь на месте. Если надо поехать, скажи «поезжай»."]
 motion.timeout: ["Не доехал — время вышло."]
 motion.cancelled: ["Остановился."]
 
