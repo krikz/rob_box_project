@@ -58,7 +58,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
@@ -724,7 +724,10 @@ class SpeakerDatabase:
         """
         if self.gallery_size(speaker_id) >= GALLERY_WARMUP_SIZE:
             return False
-        self.register(name, embedding, speaker_id=speaker_id)
+        # #3801: рост галереи профиль не переименовывает — имя берётся из БД, а ``name`` (снимок сессии роста,
+        # открытой до переименования) — только для профиля, которого ещё нет. Живой робот 21.10: «зови меня
+        # Денчик» → Renamed, следующая реплика дописала эмбеддинг под старым именем и вернула «Энджик».
+        self.register(_stored_name(self._conn, speaker_id, name), embedding, speaker_id=speaker_id)
         return True
 
     def register(
@@ -1269,6 +1272,12 @@ class SpeakerDatabase:
 
 
 # ── Хелперы сериализации профиля (issue #1787) ───────────────────────────────
+
+
+def _stored_name(conn: Any, speaker_id: str, fallback: str) -> str:
+    """Имя профиля в БД; профиля ещё нет — ``fallback`` (#3801: рост галереи не переименовывает)."""
+    row = conn.execute("SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)).fetchone()
+    return row[0] if row else fallback
 
 
 def _split_tags(raw: Optional[str]) -> List[str]:

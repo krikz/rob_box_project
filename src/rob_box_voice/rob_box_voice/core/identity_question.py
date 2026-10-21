@@ -6,8 +6,13 @@
 голос кодом (#2925, ``_register_self_intro``), голое имя на «Как тебя зовут?» — тоже (:func:`answer_name`).
 
 Вопрос склейки после регистрации («вы разные люди или это ты?», #2828; #3765) — тот же кадр (``kind`` twin/conflict,
-:func:`open_merge_question`) с тем же окном. Ответ решает код (:func:`merge_reply`): склеить или нет и тот ли человек
+:func:`open_merge_question`) с тем же окном. Ответ решает код (:func:`identity_reply`): склеить или нет и тот ли человек
 ответил — ``speaker_adapter.merge_answer``; что сказать — фраза ``phrases``, LLM на этот ход не зовётся.
+
+#3801 (решение Шифу 21.10) — на тех же кадре и окне: голос уверенно узнан, а человек назвался другим именем — второй
+профиль не заводится (:func:`refuse_second_profile`, кадр ``same_voice``); «зови меня Y» / «меня зовут не X, а Y» —
+переименование профиля штатным ``/voice/speaker/rename``; неуверенный голос (короткий ответ) — просьба сказать шаблон
+нормальной длины (кадр ``voice_check``). Решения — ``speaker_adapter`` (``rename_step`` и др.), фразы — ``phrases``.
 
 Каждое изменение сессии (собеседник, кадр) уходит latched ``SessionState`` в ``/dialog/session``: собеседник с
 азимутом его фразы — для взгляда лица (``face_node``), до PR-7 пишет v1 ``dialogue_node``.
@@ -22,20 +27,27 @@ import json
 import math
 import threading
 import time
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.reply_grammar import NAME, classify_reply
+from rob_box_dialog.reply_grammar import NAME, classify_rename, classify_reply
 from rob_box_dialog.session import Session, SessionChanged, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import (
+    VOICE_STRANGER,
     AskCandidate,
+    IdentityStep,
     merge_answer,
-    merge_phrase,
+    merge_step,
     question_frame,
     question_open,
     question_reply,
+    rename_step,
+    same_voice_plan,
+    same_voice_step,
+    voice_certainty,
+    voice_check_step,
 )
-from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_name
+from rob_box_voice.core.self_intro import KNOWN_FIRST_NAMES, extract_self_intro_name, same_person_name
 
 #: Топик снимка сессии (``architecture/ownership.yml``).
 SESSION_TOPIC = "/dialog/session"
@@ -70,8 +82,9 @@ def open_question(node: Any, cand: AskCandidate, speech_id: str) -> None:
 
 def open_merge_question(node: Any, plan: Mapping[str, Any], speech_id: str) -> None:
     """Вопрос склейки (#2828) отдан в речь — тот же кадр ``Identity`` (``kind`` twin/conflict), окно — как у
-    вопроса об имени (#3765). Данные вопроса (кого с кем склеивать) — в кадре."""
-    frame = question_frame(plan["new_id"], plan["kind"], plan.get("known_name"), _azimuth(node), None, speech_id)
+    вопроса об имени (#3765). Данные вопроса (кого с кем склеивать) — в кадре. Так же — фраза ``same_voice`` (#3801):
+    нового профиля нет, кадр про узнанного."""
+    frame = question_frame(plan["new_id"] or plan["known_id"], plan["kind"], plan.get("known_name"), _azimuth(node), None, speech_id)
     _push(node, dict(frame, **{k: plan.get(k, "") for k in ("new_id", "new_name", "known_id", "known_name")}))
 
 
@@ -166,19 +179,69 @@ def answer_name(node: Any, text: str) -> Optional[str]:
     return reply.name if known else None
 
 
-def merge_reply(node: Any) -> Optional[str]:
-    """Ответ на вопрос склейки (#2828) в этом ходе — решение кодом и фраза об исходе; ``None`` — ход обычный (LLM).
+def identity_reply(node: Any) -> Optional[str]:
+    """Личность в этом ходе решает код — фраза об исходе; ``None`` — ход обычный (LLM).
 
-    Звать после того, как биометрия ЭТОЙ фразы резолвнута (``_prepare_user_input_context``): «да» засчитывается, только
-    если ответил один из двух профилей (#2829). «Это я» — ``/voice/speaker/merge`` new → known. Фраза не похожа на ответ
-    (кадр снят адресованной фразой о другом) — ничего не склеено, ход обычный."""
+    Звать после того, как биометрия ЭТОЙ фразы резолвнута (``_prepare_user_input_context``): действие с личностью
+    подтверждает только её голос (#2829). Ответ на кадр ``Identity`` кода (``IDENTITY_CODED_KINDS``): склейка (#2828),
+    «один голос — одна личность» и шаблон (#3801); без кадра — просьба звать иначе («зови меня Y», #3801)."""
     asked = getattr(node, "_identity_answer", None)
-    if not asked or asked.get("kind") not in kn.IDENTITY_MERGE_KINDS:
+    if asked and asked.get("kind") in kn.IDENTITY_CODED_KINDS:
+        node._identity_answer = None
+        step = _answer_step(node, asked, _speaker(node))
+    else:
+        step = rename_step(classify_rename(str(getattr(node, "_turn_heard_text", "") or "")), _turn_speaker(node))
+        if step is not None:
+            node.get_logger().info(
+                f"✏️ [#3801] смена имени фразой: rename={step.rename or '-'} шаблон={step.frame is not None} — 0 LLM")
+    if step is None:
         return None
-    node._identity_answer = None
+    _apply(node, step)
+    node._identity_question_asked_in_turn = True  # гарды: ход ответил кодом — ретрая поверх нет (#2914)
+    return step.phrase
+
+
+def code_decides(node: Any, text: str) -> bool:
+    """Ответ этого хода решит :func:`identity_reply` — по представлению он не регистрируется (#3801: шаблон «Меня
+    зовут Y, и это мой голос» и «меня зовут не X, а Y» — не новый человек)."""
+    asked = getattr(node, "_identity_answer", None)
+    if asked and asked.get("kind") in kn.IDENTITY_CODED_KINDS:
+        return True
+    return classify_rename(text) is not None and voice_certainty(_turn_speaker(node)) != VOICE_STRANGER
+
+
+def _speaker(node: Any) -> Dict[str, Any]:
     with node._speaker_lock:
-        speaker = dict(getattr(node, "_current_speaker", None) or {})
-    same, speaker_ok = merge_answer(asked, asked.get("text", ""), speaker)
+        return dict(getattr(node, "_current_speaker", None) or {})
+
+
+def _turn_speaker(node: Any) -> Dict[str, Any]:
+    """Результат биометрии фразы ЭТОГО хода; у хода без своей фразы (Telegram, ретрай) — ``{}``: имя не меняется."""
+    uid = getattr(node, "_current_turn_utterance_id", None)
+    if not uid or uid != getattr(node, "_last_resolved_utterance_id", None):
+        return {}
+    return _speaker(node)
+
+
+def _answer_step(node: Any, asked: Mapping[str, Any], speaker: Mapping[str, Any]) -> Optional[IdentityStep]:
+    kind, text = asked.get("kind"), str(asked.get("text", ""))
+    node.get_logger().info(
+        f"👥 [#3801] ответ на кадр {kind}: reply={asked.get('reply')} голос={voice_certainty(speaker)} "
+        f"({str(speaker.get('speaker_id') or 'unknown')[:8]})")
+    if kind == kn.IDENTITY_VOICE_CHECK_KIND:
+        return voice_check_step(asked, speaker)
+    renamed = rename_step(classify_rename(text), speaker)
+    if renamed is not None:
+        return renamed
+    if kind == kn.IDENTITY_SAME_VOICE_KIND:
+        return same_voice_step(asked, text) if asked.get("reply") != "other" else None
+    return _merge_answer_step(node, asked, text, speaker)
+
+
+def _merge_answer_step(node: Any, asked: Mapping[str, Any], text: str,
+                       speaker: Mapping[str, Any]) -> Optional[IdentityStep]:
+    """Ответ на вопрос склейки (#2828): решение — ``speaker_adapter.merge_step``; фраза не по теме — ход обычный."""
+    same, speaker_ok = merge_answer(asked, text, speaker)
     if same is None and asked.get("reply") == "other":
         node.get_logger().info("👥 [issue #2828] вопрос склейки снят фразой не по теме — ничего не склеено")
         return None
@@ -190,19 +253,31 @@ def merge_reply(node: Any) -> Optional[str]:
     node.get_logger().info(
         f"👥 [issue #2828] ответ на переспрос: same={same} kind={asked['kind']} new={asked['new_id'][:8]} "
         f"known={asked['known_id'][:8]} — фраза кодом, 0 LLM (#3765)")
-    if same is True:
-        _merge(node, asked)
-    node._identity_question_asked_in_turn = True  # гарды: ход ответил кодом — ретрая поверх нет (#2914)
-    return merge_phrase(asked, same)
+    return merge_step(asked, text, speaker)
+
+
+def _apply(node: Any, step: IdentityStep) -> None:
+    if step.merge:
+        _merge(node, dict(zip(("new_id", "known_id", "known_name"), step.merge)))
+    if step.rename:
+        _rename(node, *step.rename)
+    node._identity_followup = step.frame  # кадр voice_check откроет deliver_turn_result после фразы
 
 
 def deliver_turn_result(node: Any, result: Any, coded_reply: Optional[str], **kwargs: Any) -> None:
-    """Выдать ответ хода. Фраза кода (:func:`merge_reply`) — терминальная: звучит как есть, мимо гардов LLM-текста
-    (живой робот 21.10: гард #2549 счёл «Запомню обоих» галлюцинацией и отправил CRITICAL-ретрай в LLM)."""
-    if coded_reply:
-        node._speak_direct(coded_reply)
-    else:
+    """Выдать ответ хода. Фраза кода (:func:`identity_reply`) — терминальная: звучит как есть, мимо гардов LLM-текста
+    (живой робот 21.10: гард #2549 счёл «Запомню обоих» галлюцинацией и отправил CRITICAL-ретрай в LLM). Просьба
+    шаблона (#3801) кладёт кадр ``Identity(voice_check)`` — окно от конца этой фразы, как у вопроса."""
+    if not coded_reply:
         node._handle_result(result, **kwargs)
+        return
+    speech_id = node._speak_direct(coded_reply)
+    frame = getattr(node, "_identity_followup", None)
+    node._identity_followup = None
+    if frame and speech_id:
+        person = frame.get("known_id") or frame.get("new_id") or ""
+        _push(node, dict(question_frame(person, frame["kind"], frame.get("name"), _azimuth(node), None, speech_id),
+                         **{k: v for k, v in frame.items() if k != "kind"}))
 
 
 def _merge(node: Any, plan: Mapping[str, Any]) -> None:
@@ -220,6 +295,50 @@ def _merge(node: Any, plan: Mapping[str, Any]) -> None:
         if node._current_speaker.get("speaker_id") == plan["new_id"]:
             node._current_speaker["speaker_id"] = plan["known_id"]
             node._current_speaker["name"] = plan["known_name"]
+
+
+def _rename(node: Any, speaker_id: str, name: str) -> None:
+    """Переименовать профиль штатным путём (``/voice/speaker/rename`` → ``speaker_id_node._on_rename_request``, тот же,
+    что у тула ``register_speaker`` с ``old_name``) и поправить собеседника хода."""
+    pub = getattr(node, "_speaker_rename_pub", None)
+    if pub is None or not speaker_id:
+        node.get_logger().warning("✏️ [#3801] переименовать нечем: нет rename-паблишера или id")
+        return
+    from std_msgs.msg import String
+
+    msg = String()
+    msg.data = json.dumps({"speaker_id": speaker_id, "new_name": name}, ensure_ascii=False)
+    pub.publish(msg)
+    node.get_logger().info(f"✏️ [#3801] переименование профиля {speaker_id[:8]} → {name!r}")
+    with node._speaker_lock:
+        if node._current_speaker.get("speaker_id") == speaker_id:
+            node._current_speaker["name"] = name
+
+
+def settled_by_voice(node: Any, intro: str, known: Optional[str]) -> bool:
+    """Регистрация по представлению не нужна (``True``): фраза уверенно узнана под этим же именем (#2925) — регистрировать
+    нечего; под другим — один голос, одна личность (#3801, :func:`refuse_second_profile`)."""
+    if not known:
+        return False
+    if same_person_name(known, intro):
+        node.get_logger().info(f"👤 [issue #2925] {intro!r} уже узнан по голосу -- регистрация по представлению не нужна")
+        return True
+    return refuse_second_profile(node, intro, known)
+
+
+def refuse_second_profile(node: Any, intro: str, known: str) -> bool:
+    """Один голос — одна личность (#3801): фраза уверенно узнана как ``known``, человек назвался ``intro`` — регистрации
+    нет, ``register_speaker`` LLM в этом ходе не видит, после ответа хода робот говорит ``identity.same_voice`` и ждёт
+    ответа кадром ``Identity(same_voice)``. ``False`` — у узнанного нет id (тогда регистрация, как раньше)."""
+    speaker_id = str(_speaker(node).get("speaker_id") or "")
+    if not speaker_id:
+        return False
+    node._turn_hidden_tools = ("register_speaker",)
+    held = node._queue_identity_question(same_voice_plan(speaker_id, known, intro))
+    node.get_logger().info(
+        f"👥 [#3801] один голос — одна личность: голос уверенно {known!r} ({speaker_id[:8]}), назвался {intro!r} — "
+        f"второй профиль не заводится, register_speaker скрыт, фраза после ответа хода={held}")
+    return True
 
 
 async def settle_identity(node: Any, timeout_s: float = kn.REGISTER_OUTCOME_WAIT_S) -> None:
@@ -270,7 +389,7 @@ def ask_after_turn(node: Any, plan: Mapping[str, Any], said: Any) -> None:
         node._speak_identity_question(plan)
         return
     node._identity_question_asked_in_turn = True
-    if plan.get("kind") in kn.IDENTITY_MERGE_KINDS:
+    if plan.get("kind") in kn.IDENTITY_CODED_KINDS:
         open_merge_question(node, plan, ANY_SPEECH)
         if not _speaking(node):
             _arm(node, session(node).snapshot.top("Identity"))
@@ -305,7 +424,10 @@ def _dedup_verdict(node: Any, said: Any, phrase: str) -> str:
 
 
 def introduced_name(node: Any, text: str) -> Optional[str]:
-    """Имя, которым человек назвал себя в реплике хода: «меня зовут X» (#2925) или голое имя в ответ на вопрос."""
+    """Имя, которым человек назвал себя в реплике хода: «меня зовут X» (#2925) или голое имя в ответ на вопрос.
+    Ответ, который решает код (:func:`code_decides`: шаблон, склейка, смена имени, #3801), — не представление."""
+    if code_decides(node, text):
+        return None
     return extract_self_intro_name(text) or answer_name(node, text)
 
 
@@ -348,6 +470,7 @@ def _time(msg: Any, t: float) -> Any:
     return msg
 
 
-__all__ = ["SESSION_TOPIC", "answer_name", "introduced_name", "merge_reply", "on_speech_event", "open_merge_question",
-           "open_question", "question", "session", "session_state", "set_speaker", "settle_identity", "take_answer",
-           "ask_after_turn", "deliver_turn_result", "start_after_turn_question", "ANY_SPEECH"]
+__all__ = ["SESSION_TOPIC", "answer_name", "code_decides", "identity_reply", "introduced_name", "on_speech_event",
+           "open_merge_question", "open_question", "question", "refuse_second_profile", "session", "session_state",
+           "set_speaker", "settle_identity", "settled_by_voice", "take_answer", "ask_after_turn", "deliver_turn_result",
+           "start_after_turn_question", "ANY_SPEECH"]

@@ -165,8 +165,10 @@ topics:
     owner: mcp_server
     type: std_msgs/String
     status: live
-    writers_allowed: [mcp_server]
+    # тул register_speaker с old_name (mcp_server) и dialogue_node («зови меня Y» кодом, #3801) переименовывают профиль
+    writers_allowed: [dialogue_node, mcp_server]
     readers: [speaker_id_node]
+    debt: "два писателя, как у /voice/speaker/register: PR-5b (#3695) оставляет одного (путь через SpeakerRef)"
   /voice/speaker/merge:
     owner: dialogue_node
     type: std_msgs/String

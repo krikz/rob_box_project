@@ -185,7 +185,7 @@ from rob_box_voice.core.turn import (
 from rob_box_dialog.address import heard_from, log_label, person_ref_from
 from rob_box_dialog.backlog import Backlog, phrase_count
 from rob_box_dialog import phrases
-from rob_box_dialog.knowledge import IDENTITY_MERGE_KINDS
+from rob_box_dialog.knowledge import IDENTITY_CODED_KINDS
 from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings, merge_plan
 from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
@@ -249,9 +249,10 @@ from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
 from rob_box_voice.core.identity_question import (
     SESSION_TOPIC,
     deliver_turn_result,
+    identity_reply,
     introduced_name,
-    merge_reply,
     open_merge_question,
+    settled_by_voice,
     settle_identity,
     start_after_turn_question,
 )
@@ -792,6 +793,11 @@ class DialogueNode(DialogueStageMixin, Node):
             # оператора (speaker_id_node._on_merge_request).
             self._speaker_merge_pub = self.create_publisher(
                 String, "/voice/speaker/merge", 10)
+            # Issue #3801 -- «зови меня Y» переименовывает профиль тем же
+            # путём, что тул register_speaker с old_name
+            # (speaker_id_node._on_rename_request).
+            self._speaker_rename_pub = self.create_publisher(
+                String, "/voice/speaker/rename", 10)
             # Issue #1787 — реплики опознанного спикера уходят в
             # speaker_id_node, который считает по ним темы и выбирает
             # внутреннюю кличку (эпитет). Текст есть только здесь, БД
@@ -1999,7 +2005,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # Issue #2914 -- ретраи гардов этого хода говорить поверх вопроса
         # не должны (см. _apply_post_turn_retry_guards).
         self._identity_question_asked_in_turn = True
-        if speech_id and plan.get("kind") in IDENTITY_MERGE_KINDS:
+        if speech_id and plan.get("kind") in IDENTITY_CODED_KINDS:
             open_merge_question(self, plan, speech_id)
         return speech_id
 
@@ -3131,11 +3137,9 @@ class DialogueNode(DialogueStageMixin, Node):
         if not intro or not utterance_id or pub is None:
             return
         known = self._confident_speaker_name(utterance_id)
-        if known and same_person_name(known, intro):
-            self.get_logger().info(
-                f"👤 [issue #2925] {intro!r} уже узнан по голосу -- "
-                "регистрация по представлению не нужна"
-            )
+        # Уверенно узнан под этим же именем -- регистрировать нечего; под
+        # другим -- второй профиль не заводится (#3801).
+        if settled_by_voice(self, intro, known):
             return
         msg = String()
         msg.data = json.dumps(
@@ -3561,7 +3565,7 @@ class DialogueNode(DialogueStageMixin, Node):
             # Issue #2631 (ADR-0021 R1) — OTel-span + LLM-метрика (CC=10
             # ветка) вынесены в helper. #3765: ответ на вопрос склейки после
             # регистрации решает код, фраза — из phrases, LLM не зовётся.
-            coded_reply = merge_reply(self)
+            coded_reply = identity_reply(self)
             result = DialogResult(spoken_text=coded_reply) if coded_reply else await self._invoke_llm_with_telemetry(
                 user_input=user_input,
                 is_synthetic=is_synthetic,
