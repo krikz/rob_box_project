@@ -44,6 +44,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool, Int32, String
 from nav_msgs.msg import Odometry
+from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
 from rob_box_dialog_msgs.msg import SpeakerResult
@@ -182,7 +183,7 @@ from rob_box_voice.core.turn import (
     begin_babble_retry as begin_babble_retry,
     reset_budget as turn_guards_reset_budget,
 )
-from rob_box_dialog.address import heard_from, person_ref_from
+from rob_box_dialog.address import heard_from, log_label, person_ref_from
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.identity_ack import (
@@ -831,6 +832,8 @@ class DialogueNode(Node):
             UtteranceMsg, "/voice/stt/utterance",
             # «Клод …» из Telegram (#3518) решает rob_box_dialog.address.decide.
             self._on_stt, qos_r, callback_group=cbg)
+        # ADR-0150 PR-5 — команды движения/статуса после допуска: исполнитель command_node.
+        self._intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", qos_r)
         self.create_subscription(Bool, "/audio/vad", lambda m: self._doa.on_vad(m.data, time.time()), 10)
         self.create_subscription(Int32, "/audio/direction", lambda m: self._doa.on_direction(m.data, time.time()), 10)
         # ADR-0066 §6.1 — единственная связь с агентом оператора:
@@ -2693,6 +2696,9 @@ class DialogueNode(Node):
         raw_text = (msg.text or "").strip()
         if not raw_text:
             return
+        # Контракт с координатором: «Клод …» из Telegram он читает из этой строки
+        # (до ADR-0150 PR-5 её писал command_node, читавший каждую реплику).
+        self.get_logger().info(f"🎤 STT: {log_label(msg)}")
         text = raw_text
         from_tg = msg.source == UtteranceMsg.SOURCE_TELEGRAM and bool(msg.chat_id)
         tg_chat_id = int(msg.chat_id) if from_tg else None

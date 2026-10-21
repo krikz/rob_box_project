@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from std_msgs.msg import String
 
 from rob_box_dialog.address import Addressed
@@ -27,6 +28,7 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
 from rob_box_voice.core.dialogue_text import is_unsilence_command
+from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
 
 if TYPE_CHECKING:  # pragma: no cover -- avoids a circular import at runtime
@@ -177,11 +179,16 @@ class _DialogueSttHost:
             return False
         node._llm_skipped_counter["command_intent"] += 1
         node._cancel_run("command intent (issue 1279)", stop_tts=True)
+        # ADR-0150 PR-5 (#3694) — исполнитель получает решённое намерение по
+        # /dialog/intent; сам реплики он больше не читает.
+        gate = getattr(node, "_session_epoch_gate", None)
+        msg = fill_intent(IntentMsg(), command, epoch=gate().current if gate else 0)
+        node._intent_pub.publish(msg)
         node.get_logger().info(
             f"🎯 [issue 1279] command intent="
             f"{command.intent.value} conf={command.confidence:.2f} "
-            f"— LLM dispatch skipped (command_node handles): "
-            f"{text[:60]!r}"
+            f"→ /dialog/intent kind={msg.kind} epoch={msg.epoch} "
+            f"(LLM dispatch skipped): {text[:60]!r}"
         )
         return True
 

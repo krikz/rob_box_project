@@ -63,6 +63,7 @@ def _make_node(gate_enabled: bool = True) -> DialogueNode:
     n._dispatch_turn = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
+    n._intent_pub = MagicMock()
     return n
 
 
@@ -94,6 +95,19 @@ class TestCommandIntentGate:
         # Счётчик command_intent увеличился, LLM-диспатч пропущен.
         assert node._llm_skipped_counter["command_intent"] == 1
         assert node._cancel_run.called
+
+    @pytest.mark.parametrize("phrase, kind", [("робот стоп", "stop_motion"), ("робот вперёд", "move")])
+    def test_command_goes_to_executor_as_dialog_intent(self, phrase, kind):
+        """ADR-0150 PR-5: command_node получает решённое намерение по /dialog/intent, реплик не читает."""
+        node = _make_node(gate_enabled=True)
+        _stt(node, phrase)
+        intent = node._intent_pub.publish.call_args.args[0]
+        assert intent.kind == kind
+
+    def test_non_command_publishes_no_intent(self):
+        node = _make_node(gate_enabled=True)
+        _stt(node, "робот расскажи анекдот")
+        node._intent_pub.publish.assert_not_called()
 
     @pytest.mark.parametrize(
         "phrase",
