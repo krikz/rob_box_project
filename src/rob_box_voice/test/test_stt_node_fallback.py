@@ -243,9 +243,6 @@ def _make_stt_node_stub(**param_overrides):
         unclear_phrase="Не расслышал, скажи ещё раз",
         unclear_cooldown_s=5.0,
         tts_grace_s=2.5,
-        # Issue #1251 — ранний «бульк»
-        early_boop_enabled=True,
-        early_boop_trigger="boop",
         # Issue #2365 Phase 2 — цепочка провайдеров. MiniMax по умолчанию
         # ВЫКЛЮЧЕН в тестах намеренно: иначе у разработчика с живым
         # MINIMAX_API_KEY в окружении юнит-тесты полезут в сеть и станут

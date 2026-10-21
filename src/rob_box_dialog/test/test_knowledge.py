@@ -171,6 +171,14 @@ def test_reflexes_use_known_scenes_ring_modes_and_earcons():
     assert set(kn.TOOL_PHRASES) <= set(kn.TOOL_CLASSES)
 
 
+def test_reflex_ttl_is_set_for_every_turn_stage_and_fits_the_face_limit():
+    # face_node держит сцену запроса не дольше REQUEST_MAX_S (60 с); терминальные стадии короче ожидания
+    for stage in kn.TURN_STAGES:
+        ttl = kn.REFLEXES[stage].ttl_ms
+        assert ttl is not None and 0 < ttl <= 60_000, stage
+    assert max(kn.REFLEXES[s].ttl_ms for s in ("done", "failed", "timeout")) < kn.REFLEXES["thinking"].ttl_ms
+
+
 def test_calendar_themes_exist_in_rear_lights():
     themes = set(_literal(FACE / "rear.py", "THEMES"))
     for theme in kn.CALENDAR:

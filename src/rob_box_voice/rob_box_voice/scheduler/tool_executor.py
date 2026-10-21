@@ -157,8 +157,12 @@ class SchedulerToolExecutor:
         *,
         on_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
         speech_gate: Optional[TurnSpeechGate] = None,
+        on_tool: Optional[Callable[[str, dict[str, Any], Optional[ToolResult]], None]] = None,
     ) -> None:
         self._underlying = underlying
+        # ADR-0150 PR-3b (#3690) — стадия хода «executing»: ``on_tool(имя, аргументы, None)`` перед вызовом тула и
+        # ``on_tool(имя, аргументы, результат)`` после; ошибка наблюдателя ход не ломает.
+        self._on_tool = on_tool
         # Issue #2913 — speak_text хода не обгоняет исход register_speaker
         # и не звучит, если ход отвечает вопросом о личности. None — без
         # гейта (как до #2913).
@@ -212,7 +216,22 @@ class SchedulerToolExecutor:
         """Release resources of the underlying provider."""
         return await self._underlying.aclose()
 
+    def _notify_tool(self, call: ToolCall, result: Optional[ToolResult]) -> None:
+        if self._on_tool is None:
+            return
+        try:
+            self._on_tool(call.name, dict(call.arguments or {}), result)
+        except Exception:  # noqa: BLE001 — наблюдатель рефлексов не ломает ход
+            _LOG.warning("on_tool observer failed for %s", call.name, exc_info=True)
+
     async def execute(self, call: ToolCall) -> ToolResult:
+        """Run *call* (see :meth:`_execute`) and tell the observer before and after (ADR-0150 PR-3b)."""
+        self._notify_tool(call, None)
+        result = await self._execute(call)
+        self._notify_tool(call, result)
+        return result
+
+    async def _execute(self, call: ToolCall) -> ToolResult:
         """Route *call* through the scheduler, or execute it directly.
 
         Returns immediately for queued tools (``status=queued``);

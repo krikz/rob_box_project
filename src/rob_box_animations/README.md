@@ -30,8 +30,8 @@ rob_box_animations/
 | `/voice/tts/state` | переходный источник «говорит» (дебаунс 0,6 с между чанками) |
 | `/audio/direction` + `/audio/vad` | взгляд на говорящего, пока VAD слышит речь (+ 8 с) |
 | `/voice/music/state` | сцена музыки по `dj.bpm`, фаза от `dj.started_at` |
-| `/voice/animation/request` | v1 `play_animation`: `имя` или `имя:секунды` |
 | `/voice/expression/request` | `ExpressionRequest` (эмоция/жест; `face_json` — PR-3c) |
+| `/voice/expression/event` (публикует) | `ExpressionEvent{executor=face}`: `started` или `skipped{unknown_scene}` на каждый запрос с эмоцией/жестом |
 | `~/scene` | отладка: `ros2 topic pub --once /face_node/scene std_msgs/msg/String "{data: 'happy:5'}"` |
 
 Выход — `/panel_image` (`sensor_msgs/Image` rgb8, `frame_id` = логическая

@@ -28,12 +28,8 @@ stt_node:
     unclear_phrase: Не расслышал, скажи ещё раз
     unclear_cooldown_s: 5.0
     tts_grace_s: 2.5
-    # Issue #1251 — ранний «бульк» (сигнал «услышал, wake word есть»):
-    # как только partial/final STT содержит wake word, публикуем триггер
-    # на /voice/sound/trigger → sound_node играет короткий «бульк» через
-    # ~2-3с после конца фразы (а не ~8с, когда закончатся LLM+TTS).
-    early_boop_enabled: true
-    early_boop_trigger: boop
+    # ADR-0150 PR-3b (#3690): раннего «булька» stt_node больше нет - сегмент с вейком уходит в
+    # /dialog/interrupt_request, по нему диалог включает рефлекс addressed (лицо, кольцо, earcon «услышал»).
     # ADR-0150 PR-5 (#3694): речь stt_node не глушит — на сегмент с вейком
     # публикует /dialog/interrupt_request, решает dialogue_node.
     # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====

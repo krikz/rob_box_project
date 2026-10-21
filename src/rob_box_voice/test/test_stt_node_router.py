@@ -13,7 +13,7 @@
 * personality-слово («робокс») из микрофона шлема агента НЕ адресует.
 
 Тест НЕ требует rclpy: STTNode собирается через ``__new__`` + MagicMock
-(тот же приём, что в test_stt_node_fallback.py / test_stt_node_boop.py).
+(тот же приём, что в test_stt_node_fallback.py).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _node_no_op(self, *a, **kw):
 
 
 def _ensure_rclpy_mock(monkeypatch):
-    """Минимальный rclpy mock (как в test_stt_node_boop)."""
+    """Минимальный rclpy mock (как в test_stt_node_fallback)."""
 
     class _NodeBase:
         def __init__(self, *a, **kw):
@@ -156,7 +156,6 @@ def _make_node(**overrides):
         min_text_chars=3,
         _last_speaker_tag=None,
         _phrase_started_at=0.0,
-        _boop_fired=False,
         wake_words=["робокс", "робот"],
         operator_wake_words=["тарс", "tars"],
         # публикаторы — mocks
@@ -165,7 +164,6 @@ def _make_node(**overrides):
         avatar_stt_result_pub=MagicMock(),
         state_pub=MagicMock(),
         speaker_pub=MagicMock(),
-        boop_pub=MagicMock(),
         # поведенческие mocks (обходим реальную публикацию/LLM-сайд-эффекты)
         publish_result=MagicMock(),
         _publish_speaker=MagicMock(),
@@ -391,11 +389,3 @@ class TestHelpers:
         node._publish_ptt_result("текст грипа")
         node.avatar_ptt_result_pub.publish.assert_called_once()
         assert node.avatar_ptt_result_pub.publish.call_args[0][0].data == "текст грипа"
-
-    def test_boop_not_fired_on_headset_streams(self):
-        """Бульк — сигнал личности; на потоках шлема (ptt/wake) не играем."""
-        node = _make_node()
-        # имитируем, что источник активен = wake → бульк не должен сработать
-        node._active_source = "wake"
-        node._maybe_fire_early_boop("тарс включи свет")
-        node.boop_pub.publish.assert_not_called()

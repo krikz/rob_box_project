@@ -224,7 +224,6 @@ class _RecordingHost:
         self._media_command = media_command
         self.take_turn_count = 0
         self.publish_state_count = 0
-        self.thinking_sfx_count = 0
 
     def backlog(self) -> Optional[Backlog]:
         return self._backlog
@@ -280,10 +279,6 @@ class _RecordingHost:
     def publish_state(self) -> None:
         self.calls.append("publish_state")
         self.publish_state_count += 1
-
-    def trigger_thinking_sfx(self) -> None:
-        self.calls.append("trigger_thinking_sfx")
-        self.thinking_sfx_count += 1
 
 
 def _ctx(**overrides: object) -> SttContext:
@@ -574,15 +569,15 @@ class TestTakeTurnStep:
 
 
 class TestDispatchTriggerStep:
-    def test_fires_fsm_and_sfx(self) -> None:
+    def test_fires_fsm_without_a_sound(self) -> None:
         host = _RecordingHost()
         out = DispatchTriggerStep().apply(_ctx(), host)
         assert out.kind is SttOutcomeKind.PASS
         assert "transition_idle_to_wake" in host.calls
         assert "transition_stt_result" in host.calls
         assert "publish_state" in host.calls
-        assert "trigger_thinking_sfx" in host.calls
-        assert host.thinking_sfx_count == 1
+        # ADR-0150 PR-3b: «думаю»/«услышал» - рефлексы стадий, отдельного звука у шага нет
+        assert not any("sfx" in call or "sound" in call for call in host.calls)
 
 
 # ---------------------------------------------------------------------------
@@ -736,10 +731,9 @@ class TestEndToEnd:
         assert out.new_context is not None
         # wake-word stripped.
         assert out.new_context.text == "расскажи анекдот"
-        # FSM + SFX fired.
+        # FSM fired (звука нет: рефлексы addressed/thinking - стадии хода).
         assert "transition_idle_to_wake" in host.calls
         assert "transition_stt_result" in host.calls
-        assert "trigger_thinking_sfx" in host.calls
         # Ход принят (TakeTurnStep): отмена хода в полёте, речь не рвётся.
         assert host.take_turn_count == 1
 

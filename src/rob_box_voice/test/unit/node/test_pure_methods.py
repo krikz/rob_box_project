@@ -177,24 +177,6 @@ class TestDetectPitchIntent:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  _trigger_sound
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestTriggerSound:
-    def test_publishes_sound_name(self, node):
-        node._trigger_sound("startup")
-
-        node.sound_trigger_pub.publish.assert_called_once()
-        msg = node.sound_trigger_pub.publish.call_args[0][0]
-        assert msg.data == "startup"
-
-    def test_no_crash_on_publish_exception(self, node):
-        node.sound_trigger_pub.publish.side_effect = RuntimeError("bus error")
-        # Должен поглотить ошибку без краша
-        node._trigger_sound("startup")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  _on_mcp_tools_update
 # ─────────────────────────────────────────────────────────────────────────────
 
