@@ -14,18 +14,14 @@ Pure-Python — no ROS2, no rclpy. Covers:
   - :class:`RejectedMarkerStep` drops ``rejected`` / ``empty`` /
     «тишина» markers (Issue #989).
   - :class:`SilencedStateStep` allows unsilence, drops everything else.
-  - :class:`WakeWordStep` — TG bypass, wake-word pass, backlog
-    accumulate-or-drop.
-  - :class:`StripWakeWordStep` — strip wake-word, fallback to ``raw``
-    when backlog pending.
+  - :class:`AddressStep` — адресация кодом (ADR-0150 PR-5): вейк, TG,
+    координатор, бэклог (В12); :class:`BareWakeStep` — голое «робот».
   - :class:`SilenceCommandStep` — silence + music-stop override.
   - :class:`CommandIntentGateStep` — TG bypass, command_parser path.
   - :class:`NewSessionStep` — host ``reset_session`` path.
-  - :class:`BacklogFlushStep` — host flag set + always PASS.
   - :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет (ADR-0150 PR-5).
   - :class:`DispatchTriggerStep` — FSM + sfx chain.
 * ``default_steps()`` order matches legacy inline branches.
-* ``SttContext.backlog_pending`` snapshot semantics.
 """
 
 from __future__ import annotations
@@ -36,8 +32,11 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
+from rob_box_dialog.backlog import Backlog, Heard
+
 from rob_box_voice.core.stt_admission import (
-    BacklogFlushStep,
+    AddressStep,
+    BareWakeStep,
     CommandIntentGateStep,
     DispatchTriggerStep,
     EmptyTextStep,
@@ -50,9 +49,7 @@ from rob_box_voice.core.stt_admission import (
     SttAdmission,
     SttContext,
     SttOutcomeKind,
-    StripWakeWordStep,
     TakeTurnStep,
-    WakeWordStep,
     default_steps,
     drop,
     handled,
@@ -157,9 +154,9 @@ class TestSttContext:
         with pytest.raises(Exception):  # FrozenInstanceError
             ctx.text = "new"  # type: ignore[misc]
 
-    def test_backlog_pending_default(self) -> None:
-        ctx = SttContext(raw="r", text="t", text_lower="t")
-        assert ctx.backlog_pending is False
+    def test_heard_and_bare_defaults(self) -> None:
+        ctx = _ctx()
+        assert ctx.heard is None and ctx.bare is False
 
     def test_skip_counter_is_shared(self) -> None:
         # Two contexts can share a counter dict — orchestrator relies on
@@ -209,6 +206,7 @@ class _RecordingHost:
         handle_command_intent_match: bool = False,
         reset_session_match: bool = False,
         accumulate: bool = True,
+        backlog: Optional[Backlog] = None,
         state_idle: bool = True,
         music_stop_overrides: Tuple[str, ...] = (),
         silence_phrases: Tuple[str, ...] = ("замолчи",),
@@ -221,6 +219,9 @@ class _RecordingHost:
         self._handle_command_intent_match = handle_command_intent_match
         self._reset_session_match = reset_session_match
         self._accumulate = accumulate
+        self._backlog = backlog
+        self.addressed_calls: List[object] = []
+        self.remembered: List[Heard] = []
         self._state_idle = state_idle
         self._music_stop_overrides = music_stop_overrides
         self._silence_phrases = silence_phrases
@@ -233,11 +234,20 @@ class _RecordingHost:
         self.calls.append(f"unsilence({text_lower!r})")
         return self._unsilence_ok
 
-    def accumulate_without_wake(
-        self, speaker_tag: Optional[str], text: str
-    ) -> bool:
-        self.calls.append(f"accumulate({speaker_tag!r},{text!r})")
+    def backlog(self) -> Optional[Backlog]:
+        return self._backlog
+
+    def remember_unaddressed(self, heard: Heard) -> bool:
+        self.calls.append(f"remember({heard.text!r})")
+        if self._accumulate:
+            self.remembered.append(heard)
         return self._accumulate
+
+    def addressed(self, decision: object, recent: object) -> None:
+        self.addressed_calls.append((decision, recent))
+
+    def bare_wake(self) -> None:
+        self.calls.append("bare_wake")
 
     def handle_silence_command(self) -> bool:
         self.calls.append("handle_silence")
@@ -263,9 +273,6 @@ class _RecordingHost:
     def handle_media_command(self, text: str) -> bool:
         self.calls.append(f"handle_media_command({text!r})")
         return self._media_command
-
-    def flush_pending_backlog(self) -> None:
-        self.calls.append("flush_pending_backlog")
 
     def take_turn(self) -> None:
         self.calls.append("take_turn")
@@ -298,7 +305,6 @@ def _ctx(**overrides: object) -> SttContext:
         "state_name": "IDLE",
         "is_silenced": False,
         "wake_words": ("робот", "робокс", "робобокс"),
-        "backlog_pending": False,
     }
     base.update(overrides)
     return SttContext(**base)  # type: ignore[arg-type]
@@ -378,71 +384,64 @@ class TestSilencedStateStep:
         assert any("unsilence" in c for c in host.calls)
 
 
-class TestWakeWordStep:
-    def test_tg_bypasses(self) -> None:
+class TestAddressStep:
+    def test_tg_is_addressed_without_wake(self) -> None:
         host = _RecordingHost()
-        out = WakeWordStep().apply(_ctx(tg_chat_id=42), host)
+        out = AddressStep().apply(_ctx(text="просто текст", text_lower="просто текст", tg_chat_id=42), host)
         assert out.kind is SttOutcomeKind.PASS
-        # TG must not consult wake words or accumulator.
-        assert all("accumulate" not in c for c in host.calls)
+        assert out.new_context.text == "просто текст"
+        assert all("remember" not in c for c in host.calls)
 
-    def test_wake_word_passes(self) -> None:
+    def test_tg_coordinator_is_not_addressed(self) -> None:
+        out = AddressStep().apply(_ctx(text="Клод привет", text_lower="клод привет", tg_chat_id=42), _RecordingHost())
+        assert out.kind is SttOutcomeKind.HANDLED
+        assert out.reason == "NotAddressed(coordinator)"
+
+    def test_wake_word_strips_and_passes(self) -> None:
         host = _RecordingHost()
-        out = WakeWordStep().apply(_ctx(), host)
+        out = AddressStep().apply(_ctx(), host)
         assert out.kind is SttOutcomeKind.PASS
+        assert out.new_context.text == "расскажи анекдот" and out.new_context.bare is False
+        assert len(host.addressed_calls) == 1
 
-    def test_no_wake_word_with_accumulator_handles(self) -> None:
+    def test_no_wake_word_with_backlog_handles(self) -> None:
         host = _RecordingHost(accumulate=True)
-        out = WakeWordStep().apply(
-            _ctx(text="фон", text_lower="фон"), host
-        )
+        out = AddressStep().apply(_ctx(text="фон", text_lower="фон"), host)
         assert out.kind is SttOutcomeKind.HANDLED
         assert out.reason == "backlog_accumulated"
+        assert [h.text for h in host.remembered] == ["фон"]
 
-    def test_no_wake_word_no_accumulator_drops(self) -> None:
+    def test_no_wake_word_no_backlog_drops(self) -> None:
         host = _RecordingHost(accumulate=False)
-        out = WakeWordStep().apply(
-            _ctx(text="фон", text_lower="фон"), host
-        )
+        out = AddressStep().apply(_ctx(text="фон", text_lower="фон"), host)
         assert out.kind is SttOutcomeKind.DROP
         assert out.reason == "no_wake_word"
 
-
-class TestStripWakeWordStep:
-    def test_tg_bypasses(self) -> None:
-        out = StripWakeWordStep().apply(_ctx(tg_chat_id=1), _RecordingHost())
+    def test_bare_wake_with_fresh_backlog_picks_it_up(self) -> None:
+        backlog = Backlog()
+        backlog.add(Heard(text="покажи анимацию", t=95.0, doa_deg=90.0))
+        heard = Heard(text="робот", t=100.0, doa_deg=95.0)
+        out = AddressStep().apply(_ctx(text="робот", text_lower="робот", heard=heard), _RecordingHost(backlog=backlog))
         assert out.kind is SttOutcomeKind.PASS
+        assert out.new_context.text == "покажи анимацию" and out.new_context.bare is False
 
-    def test_strips_and_passes(self) -> None:
-        out = StripWakeWordStep().apply(
-            _ctx(text="робот расскажи анекдот",
-                 text_lower="робот расскажи анекдот"),
-            _RecordingHost(),
-        )
+    def test_bare_wake_without_backlog_marks_bare(self) -> None:
+        out = AddressStep().apply(_ctx(text="робот", text_lower="робот"), _RecordingHost(backlog=Backlog()))
         assert out.kind is SttOutcomeKind.PASS
-        assert out.new_context is not None
-        assert out.new_context.text == "расскажи анекдот"
+        assert out.new_context.text == "" and out.new_context.bare is True
 
-    def test_empty_after_strip_with_backlog_falls_back_to_raw(self) -> None:
-        # Issue #2346 — bare wake-word preserves ``raw`` when backlog
-        # is pending (legacy L2288-2291 byte-for-byte).
-        out = StripWakeWordStep().apply(
-            _ctx(text="робот", text_lower="робот",
-                 raw="робот",
-                 backlog_pending=True),
-            _RecordingHost(),
-        )
-        assert out.kind is SttOutcomeKind.PASS
-        assert out.new_context is not None
-        assert out.new_context.text == "робот"
 
-    def test_empty_after_strip_without_backlog_drops(self) -> None:
-        out = StripWakeWordStep().apply(
-            _ctx(text="робот", text_lower="робот", backlog_pending=False),
-            _RecordingHost(),
-        )
-        assert out.kind is SttOutcomeKind.DROP
-        assert out.reason == "empty_after_strip"
+class TestBareWakeStep:
+    def test_bare_is_handled_by_reflex(self) -> None:
+        host = _RecordingHost()
+        out = BareWakeStep().apply(_ctx(bare=True, text="", text_lower=""), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "bare_wake"
+        assert "bare_wake" in host.calls
+
+    def test_normal_phrase_passes(self) -> None:
+        host = _RecordingHost()
+        assert BareWakeStep().apply(_ctx(), host).kind is SttOutcomeKind.PASS
+        assert "bare_wake" not in host.calls
 
 
 class TestSilenceCommandStep:
@@ -567,27 +566,6 @@ class TestMediaCommandStep:
         assert host.take_turn_count == 0
 
 
-class TestBacklogFlushStep:
-    def test_flushes_when_backlog_pending(self) -> None:
-        host = _RecordingHost()
-        out = BacklogFlushStep().apply(
-            _ctx(backlog_pending=True), host
-        )
-        assert out.kind is SttOutcomeKind.PASS
-        assert "flush_pending_backlog" in host.calls
-
-    def test_noop_when_backlog_empty(self) -> None:
-        # Issue #1766 — flag must NOT be set when backlog is empty
-        # (legacy ``if backlog_pending: self._pending_backlog_flush = True``
-        # at L2350-2351).
-        host = _RecordingHost()
-        out = BacklogFlushStep().apply(
-            _ctx(backlog_pending=False), host
-        )
-        assert out.kind is SttOutcomeKind.PASS
-        assert "flush_pending_backlog" not in host.calls
-
-
 class TestTakeTurnStep:
     def test_takes_turn_and_passes(self) -> None:
         # ADR-0150 §6.2 (PR-5): одна политика — ход в полёте отменяется,
@@ -696,14 +674,11 @@ class TestOrchestrator:
             logger.removeHandler(cap)
 
     def test_pass_threads_context_mutation(self) -> None:
-        # StripWakeWordStep rewrites ``text``. The orchestrator must
+        # AddressStep rewrites ``text`` (вейк снят). The orchestrator must
         # thread the new context to the next step so silence /
         # command-intent steps see the **stripped** text.
-        # Manually compose a tiny pipeline: wake → strip → silence.
-
         steps = [
-            WakeWordStep(),
-            StripWakeWordStep(),
+            AddressStep(),
             SilenceCommandStep(),
         ]
         ctx = _ctx(
@@ -733,14 +708,13 @@ class TestOrchestrator:
         assert names == [
             "EmptyTextStep",
             "RejectedMarkerStep",
+            "AddressStep",
             "SilencedStateStep",
-            "WakeWordStep",
-            "StripWakeWordStep",
+            "BareWakeStep",
             "SilenceCommandStep",
             "CommandIntentGateStep",
             "NewSessionStep",
             "MediaCommandStep",
-            "BacklogFlushStep",
             "TakeTurnStep",
             "DispatchTriggerStep",
         ]
@@ -776,7 +750,7 @@ class TestEndToEnd:
 
     def test_full_pipeline_silenced_no_unsilence_drops(self) -> None:
         ctx = _ctx(
-            text="расскажи анекдот", text_lower="расскажи анекдот",
+            text="робот расскажи анекдот", text_lower="робот расскажи анекдот",
             state_name="SILENCED", is_silenced=True, skip_counter={},
         )
         host = _RecordingHost()
@@ -814,7 +788,7 @@ class TestEndToEnd:
         host = _RecordingHost(accumulate=True)
         out = _admission().evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.HANDLED
-        assert out.step_name == "wake_word"
+        assert out.step_name == "address"
         assert out.reason == "backlog_accumulated"
 
     def test_full_pipeline_no_wake_word_no_accumulator_drops(self) -> None:
@@ -822,7 +796,7 @@ class TestEndToEnd:
         host = _RecordingHost(accumulate=False)
         out = _admission().evaluate(ctx, host)
         assert out.kind is SttOutcomeKind.DROP
-        assert out.step_name == "wake_word"
+        assert out.step_name == "address"
         assert out.reason == "no_wake_word"
         # Counter incremented.
         assert ctx.skip_counter.get("no_wake_word") == 1

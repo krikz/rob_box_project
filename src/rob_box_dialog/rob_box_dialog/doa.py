@@ -29,6 +29,11 @@ def circular_mean_deg(values) -> Optional[float]:
     return round(math.degrees(math.atan2(sin, cos)), 6) % 360.0
 
 
+def angle_diff_deg(a: float, b: float) -> float:
+    """Наименьший угол между направлениями, 0…180."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
 class DoaTrack:
     """Отсчёты DOA, снятые во время речи (VAD), и направление фразы по окну её звучания."""
 

@@ -14,16 +14,18 @@ monkeypatches keep working unchanged.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from std_msgs.msg import String
 
+from rob_box_dialog.address import Addressed
+from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.knowledge import ADDRESS_WAIT_S
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
-from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
 from rob_box_voice.core.dialogue_text import is_unsilence_command
 from rob_box_voice.core.command_parser import IntentType
 
@@ -48,14 +50,8 @@ _NO_INTAKE = _NoIntake()
 # ``rob_box_voice.core.stt_admission`` to the ROS-bound surfaces of
 # DialogueNode (locks, FSM, publishers, accumulators).
 #
-# Lock discipline (single source of truth):
-#
-#   * ``_speaker_lock``  — held only inside ``accumulate_without_wake``,
-#     wrapping the snapshot of ``_current_speaker``. Released before any
-#     logger call or accumulator mutation.
-#
-# No other lock is acquired while it is held → no inversion. The
-# orchestrator never sees a lock; it only calls into these methods.
+# Locks: the host takes none (ADR-0150 PR-5 — backlog entries carry their own
+# DOA / person_ref, the ``_current_speaker`` snapshot is no longer read here).
 # ---------------------------------------------------------------------------
 
 
@@ -100,36 +96,51 @@ class _DialogueSttHost:
         node._publish_state()
         return True
 
-    def accumulate_without_wake(
-        self,
-        speaker_tag: Optional[str],
-        text: str,
-    ) -> bool:
+    def backlog(self) -> Optional[Backlog]:
         node = self._node
-        accumulator = getattr(node, "_speech_accumulator", None)
         if not getattr(node, "_accumulate_no_wake_enabled", False):
+            return None
+        return getattr(node, "_backlog", None)
+
+    def remember_unaddressed(self, heard: Heard) -> bool:
+        backlog = self.backlog()
+        if backlog is None:
             return False
-        if accumulator is None:
-            return False
-        # Legacy L2256-2271 — speaker snapshot under _speaker_lock; emit
-        # diag log; add to accumulator; log acceptance.
-        with node._speaker_lock:
-            sp = dict(getattr(node, "_current_speaker", {}) or {})
-        sp_name = (
-            sanitize_speaker_name(sp.get("name")) if sp.get("is_known") else ""
-        )
-        node._emit_backlog_diag_log(sp, sp_name, speaker_tag, text)
-        accumulator.add(
-            text,
-            speaker_tag=speaker_tag,
-            speaker_name=sp_name or None,
-        )
-        node.get_logger().info(
-            f"🗒️ [backlog] accumulated (no_wake_word) "
-            f"tag={speaker_tag!r} speaker={sp_name or 'незнакомец'!r} "
-            f"text={text[:60]!r}"
+        backlog.add(heard)
+        self._node.get_logger().info(
+            f"🗒️ [backlog] accumulated (no_wake_word) doa={heard.doa_deg!r} "
+            f"person={heard.person_ref or '-'} text={heard.text[:60]!r}"
         )
         return True
+
+    def addressed(self, decision: Addressed, recent: Optional[Dict[str, Any]]) -> None:
+        # ADR-0150 §7.3 (В12): снимок LLM получает ≤ 1 свежую фразу того же
+        # источника структурой — её вставит _build_dynamic_system_context.
+        self._node._pending_unaddressed = recent
+        if decision.pickup:
+            self._node.get_logger().info(
+                f"🗒️ [backlog] pickup source=backlog_pickup text={decision.text[:80]!r} "
+                "— голое «робот», текст хода взят из бэклога кодом"
+            )
+
+    def bare_wake(self) -> None:
+        # В12: «робот» без фразы и без свежей просьбы того же направления —
+        # рефлекс «слушаю» (LISTENING; earcon — ранний «бульк» stt_node), 0 LLM.
+        # Кадр ожидания ADDRESS_WAIT_S снимается молча, если хода не было.
+        node = self._node
+        node.get_logger().info(
+            f"🙉 [address] голое «робот» без свежей фразы — рефлекс addressed, 0 LLM, ожидание {ADDRESS_WAIT_S:.0f} с"
+        )
+        if self.transition_idle_to_wake():
+            loop = getattr(node, "_loop", None)
+            if loop is not None:
+                loop.call_soon_threadsafe(loop.call_later, ADDRESS_WAIT_S, self._end_wait)
+
+    def _end_wait(self) -> None:
+        node = self._node
+        if node._dsm.current_state == DialogueStateKind.LISTENING:
+            node._dsm.reset(DialogueStateKind.IDLE)
+            node._publish_state()
 
     def handle_silence_command(self) -> bool:
         node = self._node
@@ -201,9 +212,6 @@ class _DialogueSttHost:
             f"tg={bool(tg_chat_id)}"
         )
         return True
-
-    def flush_pending_backlog(self) -> None:
-        self._node._pending_backlog_flush = True
 
     def take_turn(self) -> None:
         # Issue #2939 — за отменой всегда идёт DispatchTriggerStep: сессию

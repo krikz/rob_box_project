@@ -42,7 +42,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 from nav_msgs.msg import Odometry
 from rob_box_dialog_msgs.msg import InterruptRequest
 from rob_box_dialog_msgs.msg import ProviderStateArray
@@ -116,7 +116,6 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
     parse_music_state,
 )
-from rob_box_voice.core.coordinator_address import skip_coordinator_tg
 from rob_box_voice.core.interrupt_request import InterruptGate
 from rob_box_voice.core.media_plan_run import command_turn_context, run_media_plan
 from rob_box_voice.core.music_state_prompt import MusicStateMemory
@@ -183,7 +182,9 @@ from rob_box_voice.core.turn import (
     begin_babble_retry as begin_babble_retry,
     reset_budget as turn_guards_reset_budget,
 )
-from rob_box_voice.core.speech_accumulator import SpeechAccumulator
+from rob_box_dialog.address import heard_from, person_ref_from
+from rob_box_dialog.backlog import Backlog
+from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.identity_ack import (
     IdentityAckQuestion,
     hold_question,
@@ -679,13 +680,13 @@ class DialogueNode(Node):
         self._identity_answer_window_sec: float = float(
             self.get_parameter("identity_answer_window_sec").value
         )
-        # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
-        # 2026-08-20-voice-backlog-accumulator-design.md).
-        self._speech_accumulator = SpeechAccumulator(
-            window_sec=float(self.get_parameter("accumulate_window_sec").value),
-        )
+        # ADR-0150 §7.3 (PR-5, В12): бэклог фраз без вейка — {text, t, doa_deg,
+        # person_ref} на TTL; в LLM — только ≤ 1 свежая фраза того же источника.
+        self._backlog = Backlog()
         self._accumulate_no_wake_enabled = bool(self.get_parameter("accumulate_no_wake_enabled").value)
-        self._pending_backlog_flush = False
+        self._pending_unaddressed: Optional[Dict[str, Any]] = None
+        # Направление на говорящего по фразе: DOA ReSpeaker во время речи (VAD).
+        self._doa = DoaTrack()
         # Issue #1195 — последний chat_id из Telegram (поле chat_id у
         # Utterance с source=telegram). Используется для
         # маршрутизации ответа: dialogue_node кладёт tg_chat_id в
@@ -828,9 +829,10 @@ class DialogueNode(Node):
         # id фразы, источник и chat_id - поля, склейки по тексту больше нет.
         self.create_subscription(
             UtteranceMsg, "/voice/stt/utterance",
-            # Issue #3518 -- «Клод …» из Telegram адресовано координатору.
-            skip_coordinator_tg(self._on_stt, self.get_logger),
-            qos_r, callback_group=cbg)
+            # «Клод …» из Telegram (#3518) решает rob_box_dialog.address.decide.
+            self._on_stt, qos_r, callback_group=cbg)
+        self.create_subscription(Bool, "/audio/vad", lambda m: self._doa.on_vad(m.data, time.time()), 10)
+        self.create_subscription(Int32, "/audio/direction", lambda m: self._doa.on_direction(m.data, time.time()), 10)
         # ADR-0066 §6.1 — единственная связь с агентом оператора:
         # sub /dialogue/control (String JSON {action: pause|resume}),
         # pub /dialogue/control_ack (String JSON {state, since_ms, ts_s, reason}).
@@ -1293,10 +1295,8 @@ class DialogueNode(Node):
         # подтверждения профиля. 2 = защита от нестабильных tags Yandex;
         # 1 = мгновенное подтверждение (если tag стабилен).
         self.declare_parameter("speaker_min_phrases", 2)
-        # Бэклог-аккумулятор фоновой речи без wake-слова (docs/plans/
-        # 2026-08-20-voice-backlog-accumulator-design.md).
+        # Бэклог фраз без вейка (ADR-0150 §7.3); TTL/окна — knowledge.BACKLOG_*.
         self.declare_parameter("accumulate_no_wake_enabled", True)
-        self.declare_parameter("accumulate_window_sec", 180.0)
         # 🔴 FIX (issue #1082): health-кэш LLM-провайдеров. Файл переживает
         # рестарт робота: если MiniMax мёртв (квота), первый же
         # запрос после ребута идёт на deepseek, а не тратит время на
@@ -2707,7 +2707,6 @@ class DialogueNode(Node):
         speaker_tag, speaker_duration_s = parse_speaker_event(speaker_event)
         state = self._dsm.current_state
         was_idle = state == DialogueStateKind.IDLE
-        backlog_pending = self._compute_backlog_pending()
         # Lazy init so legacy test harness (``object.__new__`` without
         # ``__init__``) can drive ``_on_stt`` without owning a pipeline
         # instance. Production code gets the pipeline at __init__ via
@@ -2726,7 +2725,8 @@ class DialogueNode(Node):
             state_name=state.name,
             is_silenced=(state == DialogueStateKind.SILENCED),
             wake_words=tuple(self._wake_words),
-            backlog_pending=backlog_pending,
+            heard=heard_from(msg, now=time.time(), doa=getattr(self, "_doa", None),
+                             person_ref=person_ref_from(getattr(self, "_utterance_speaker", None), utterance_id)),
             skip_counter=self._llm_skipped_counter,
         )
         host = _DialogueSttHost(self)
@@ -2735,7 +2735,6 @@ class DialogueNode(Node):
             "speaker_tag": speaker_tag,
             "speaker_duration_s": speaker_duration_s,
             "from_tg": bool(tg_chat_id is not None),
-            "backlog_pending": backlog_pending,
             "utterance_id": utterance_id,
         }
         # Issue #3176 — заказ по имени, которого нет в базе мелодий, роутер
@@ -2786,23 +2785,6 @@ class DialogueNode(Node):
     # owns the *order*; the helpers own the *side effects* the orchestrator
     # delegates via the ``SttAdmissionHost`` protocol.
 
-    def _compute_backlog_pending(self) -> bool:
-        """Snapshot of the no-wake backlog before admission runs.
-
-        Computed **once** before :class:`SttAdmission.evaluate` so both
-        :class:`StripWakeWordStep` (decides whether bare wake-word
-        preserves ``raw``) and :class:`BacklogFlushStep` (sets
-        ``_pending_backlog_flush``) see the same value, and so the
-        dispatch tail sees the same value as the orchestrator.
-        Mirrors the legacy L2281-2285 logic byte-for-byte.
-        """
-        accumulator = getattr(self, "_speech_accumulator", None)
-        if not getattr(self, "_accumulate_no_wake_enabled", False):
-            return False
-        if accumulator is None:
-            return False
-        return not accumulator.is_empty()
-
     def _dispatch_cleaned(
         self,
         *,
@@ -2811,7 +2793,6 @@ class DialogueNode(Node):
         speaker_tag: Optional[str],
         speaker_duration_s: float,
         from_tg: bool,
-        backlog_pending: bool,
         utterance_id: Optional[str] = None,
     ) -> None:
         """Tail of the old ``_on_stt`` after the 12-branch pipeline.
@@ -2824,30 +2805,13 @@ class DialogueNode(Node):
         :meth:`_DialogueSttHost.trigger_thinking_sfx`, so we do not
         publish it again here.
 
-        Issue #2779 — backlog-hint injection used to happen HERE, right
-        after STT, using whatever ``_current_speaker`` happened to hold
-        at that instant. That is BEFORE :meth:`_apply_speaker_identity`
-        has waited for the (slower) voice-biometry inference of THIS
-        very utterance to land — so the snapshot is frequently stale
-        (still the *previous* speaker). Injecting the hint that early
-        is exactly how a backlog entry mislabelled with a stale name
-        leaked into the prompt verbatim. The hint is now built in
-        :meth:`_prepare_user_input_context`, AFTER that wait, so the
-        speaker-mismatch filter (:meth:`SpeechAccumulator.format_user_hint`)
-        sees the real current speaker. ``backlog_pending`` is threaded
-        through ``_dispatch_turn`` → ``_run_turn`` for that purpose.
+        ADR-0150 PR-5 — бэклог неадресованных фраз в user-turn больше не
+        вставляется: ≤ 1 свежая фраза того же источника идёт в снимок
+        (``recent_unaddressed`` в ``_build_dynamic_system_context``).
         """
         raw_user_command = clean
         if self._verbose_llm:
             self.get_logger().info(f"📥 LLM INPUT: {clean[:200]!r}")
-        # Issue #1766 — markers the operator / e2e harness grep for.
-        if backlog_pending:
-            self.get_logger().info(
-                f"📥 LLM INPUT backlog_pending=true backlog_handled=false "
-                f"(backlog_hint injected later, post speaker-resolution, "
-                f"in _prepare_user_input_context; backlog_handled=true "
-                f"появится при _build_dynamic_system_context)"
-            )
         # Issue #live 12:45 — guards see the *raw* command.
         self._dispatch_turn(
             clean,
@@ -2856,7 +2820,6 @@ class DialogueNode(Node):
             speaker_tag=speaker_tag,
             speaker_duration_s=speaker_duration_s,
             from_tg=from_tg,
-            backlog_pending=backlog_pending,
             utterance_id=utterance_id,
         )
 
@@ -3069,7 +3032,6 @@ class DialogueNode(Node):
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
         occasion: "Occasion | None" = None,
-        backlog_pending: bool = False,
         utterance_id: str | None = None,
     ) -> None:
         # ADR-0101 §3.1 / #2536 — повод (ещё не подключён в wake-gate,
@@ -3111,7 +3073,6 @@ class DialogueNode(Node):
                 speaker_tag=speaker_tag,
                 speaker_duration_s=speaker_duration_s,
                 from_tg=from_tg,
-                backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
                 # Issue #2835 — поколение сессии, в котором родился ход
                 # (для ретрая изнутри хода — поколение родителя).
@@ -4040,47 +4001,17 @@ tentative_plan(question, kind, name)
             "formatted_time дословно и озвучь его через speak_text. "
             "НЕ выдумывай время сам.</reminder>"
         )
-        # Бэклог-аккумулятор фоновой речи без wake-слова: при сливе добавляем
-        # <speech_backlog> внутрь <system_context>. raw_user_command при этом
-        # не трогаем — гарды смотрят только на текущую фразу.
-        # Issue #1766 — `backlog_handled=true` маркер в логе: оператор / e2e
-        # может грепом проверить «был ли в этом turn бэклог» и сравнить с
-        # acceptance (LLM должен выполнить явную команду из бэклога).
-        if getattr(self, "_pending_backlog_flush", False):
-            self._pending_backlog_flush = False
-            acc = getattr(self, "_speech_accumulator", None)
-            if acc is not None:
-                # Issue #2779 — фильтруем по ТЕКУЩЕМУ (уже разрешённому
-                # биометрией) собеседнику: ``sp``/``sp_name`` выше в этой
-                # же функции — тот самый снимок ``_current_speaker``,
-                # ради актуальности которого ``_apply_speaker_identity``
-                # уже подождал inference. Запись чужого (по имени)
-                # диктора в блок не попадает и НЕ вычищается —
-                # см. ``discard_visible``.
-                # Issue #2779 — не ``sp_name or None``: лишний ``BoolOp``
-                # разрастил бы CC этого метода мимо cc_budget baseline
-                # (ADR-0021 R1). ``_is_entry_foreign`` короткозамыкает на
-                # ``current_known`` и никогда не смотрит на имя, когда
-                # ``current_known`` ложно, так что "" здесь эквивалентно
-                # ``None`` по итоговому поведению.
-                current_known = bool(sp.get("is_known"))
-                current_name = sp_name
-                block = acc.format_block(
-                    current_speaker_known=current_known,
-                    current_speaker_name=current_name,
-                )
-                if block:
-                    # Кол-во ФАКТИЧЕСКИ слитых записей (не всех, что лежали
-                    # в аккумуляторе — чужие остаются для своего часа).
-                    n_entries = len(
-                        acc._visible_entries(current_known, current_name)  # noqa: SLF001 — diagnostic
-                    )
-                    lines.append(block)
-                    self.get_logger().info(
-                        f"🗒️ [backlog] flushed to LLM backlog_handled=true "
-                        f"entries={n_entries} block={block[:200]!r}"
-                    )
-                acc.discard_visible(current_known, current_name)
+        # ADR-0150 §7.3 (В12): ≤ 1 свежая неадресованная фраза того же
+        # направления/человека — структурой, без инструкции; остальной бэклог
+        # (ТВ, чужие разговоры) — только счётчик фоновой речи.
+        recent, self._pending_unaddressed = getattr(self, "_pending_unaddressed", None), None
+        if recent:
+            lines.append(f"  <recent_unaddressed>{json.dumps(recent, ensure_ascii=False)}</recent_unaddressed>")
+        backlog = getattr(self, "_backlog", None)
+        self.get_logger().info(
+            f"🗒️ [backlog] recent_unaddressed entries={int(bool(recent))} "
+            f"background_phrases={backlog.background_phrases(time.time()) if backlog else 0}"
+        )
         lines.append("</system_context>")
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
@@ -4204,7 +4135,6 @@ tentative_plan(question, kind, name)
         speaker_tag: str | None = None,
         speaker_duration_s: float = 0.0,
         from_tg: bool = False,
-        backlog_pending: bool = False,
         utterance_id: str | None = None,
         session_epoch: int | None = None,
     ) -> None:
@@ -4299,7 +4229,6 @@ tentative_plan(question, kind, name)
                 user_input=user_input,
                 from_tg=from_tg,
                 speaker_context=speaker_context,
-                backlog_pending=backlog_pending,
                 utterance_id=utterance_id,
             )
             # 🔴 FIX (issue #1101): _on_stt уже сделал DSM-переход
@@ -5547,7 +5476,6 @@ tentative_plan(question, kind, name)
         user_input: str,
         from_tg: bool,
         speaker_context: Optional[str],
-        backlog_pending: bool = False,
         utterance_id: Optional[str] = None,
     ) -> tuple[str, Any]:
         """Issue #992 / #1077 / #1195 / live 10.08 — user_input prelude.
@@ -5557,14 +5485,6 @@ tentative_plan(question, kind, name)
 
         * Telegram-источник → префикс ``[TG] `` (issue #1195).
         * Голосовая биометрия → :meth:`_apply_speaker_identity` (issue #1077).
-        * Issue #2779 — backlog-хинт (``[URGENT_BACKLOG]``) собирается
-          ЗДЕСЬ, ПОСЛЕ ``_apply_speaker_identity`` — та дожидается
-          inference голосовой биометрии для ТЕКУЩЕЙ фразы, так что
-          ``self._current_speaker`` тут уже точен, а не устаревший
-          снимок с прошлой реплики. Раньше хинт строился в
-          ``_dispatch_cleaned`` сразу после STT, до этого ожидания —
-          именно там утекала запись бэклога с чужим (устаревшим) именем
-          (см. issue #2779, критерий приёмки §1–2).
         * Two-system-prompt snapshot → :meth:`_build_dynamic_system_context`
           (live 10.08). Используется как второй system-message в
           ``messages[]``.
@@ -5597,35 +5517,7 @@ tentative_plan(question, kind, name)
                 user_input, speaker_context, utterance_id
             )
             self._register_self_intro(utterance_id)
-        if backlog_pending:
-            user_input = self._inject_backlog_hint(user_input)
         return user_input, self._build_dynamic_system_context(tg_chat_id)
-
-
-    def _inject_backlog_hint(self, user_input: str) -> str:
-        """Issue #2779 — добавить ``[URGENT_BACKLOG]`` хинт в user-turn.
-
-        Читает ``self._current_speaker`` — на этот момент (вызывается
-        ПОСЛЕ ``_apply_speaker_identity``) он уже отражает биометрию
-        ИМЕННО текущей фразы, а не устаревший снимок. Запись бэклога,
-        помеченная ИМЕНЕМ другого диктора (не текущего), в хинт не
-        попадает — она остаётся в аккумуляторе дожидаться своего
-        собеседника (см. ``SpeechAccumulator._is_entry_foreign``).
-        """
-        accumulator = getattr(self, "_speech_accumulator", None)
-        if accumulator is None:
-            return user_input
-        with self._speaker_lock:
-            sp = dict(self._current_speaker)
-        current_known = bool(sp.get("is_known"))
-        current_name = sanitize_speaker_name(str(sp.get("name") or "")) or None
-        hint = accumulator.format_user_hint(
-            current_speaker_known=current_known,
-            current_speaker_name=current_name,
-        )
-        if hint:
-            user_input = f"{user_input}\n{hint}"
-        return user_input
 
 
     def _music_playing_now(self) -> bool:
@@ -7307,13 +7199,10 @@ tentative_plan(question, kind, name)
         # 1b. Issue #2835 — музыка прошлой сессии остановлена.
         self._reset_session_music()
         # 2. Бэклог-аккумулятор фоновой речи (если реализован).
-        acc = getattr(self, "_speech_accumulator", None)
-        if acc is not None:
-            try:
-                acc.clear()
-            except Exception:  # noqa: BLE001
-                pass
-        self._pending_backlog_flush = False
+        backlog = getattr(self, "_backlog", None)
+        if backlog is not None:
+            backlog.clear()
+        self._pending_unaddressed = None
         # 3. DSM → IDLE из любого состояния (rescue path).
         try:
             self._dsm.reset(DialogueStateKind.IDLE)
@@ -7540,39 +7429,6 @@ tentative_plan(question, kind, name)
             self.get_logger().warn(f"asyncio loop driver join raised: {exc}")
         finally:
             executor.shutdown(wait=False)
-
-    # Issue #2346/t_39b59d89: обратимая диагностика act3 n302/n303/n308.
-    # Даёт 100% ответ, почему `speaker='Борис'/'Саша'` пропущен в
-    # pattern-проверке harness'а: голос не опознан (`is_known=False`)?
-    # Или `name` пустой/неправильный? Не трогает ни threshold, ни
-    # attr-race — только пишет сырой dump `_current_speaker` рядом с
-    # существующим backlog-логом, чтобы в следующем прогоне (после фикса
-    # SKIPPED-шага "Collect robot logs" в workflow) сразу читать причину
-    # из docker logs / артефакта e2e-voice-logs-<RID>. Вынесено из
-    # `_on_stt` чтобы не растить CC (ADR-0021 R1).
-    def _emit_backlog_diag_log(
-        self,
-        sp: dict,
-        sp_name: str,
-        speaker_tag: object,
-        text: str,
-    ) -> None:
-        # Issue #2471 / ADR-0109 — diag-лог вне scope контракта #2440
-        # (no `speaker_id[:8]` для LLM/MCP). Полный id идёт отдельным полем
-        # `speaker_id_full`, чтобы grep / e2e-flow могли однозначно
-        # матчить его против UUID в voice_memory. Префикс 8 символов
-        # остаётся как human-readable shortening.
-        self.get_logger().info(
-            f"robot_log(step=backlog_diag): raw_current_speaker="
-            f"is_known={sp.get('is_known')!r} "
-            f"name={sp.get('name')!r} "
-            f"confidence={sp.get('confidence')!r} "
-            f"speaker_id_short={str(sp.get('speaker_id') or '')[:8]!r} "
-            f"speaker_id_full={sp.get('speaker_id')!r} "
-            f"tag_in={speaker_tag!r} "
-            f"sanitized_name={sp_name!r} "
-            f"text={text[:60]!r}"
-        )
 
     def destroy_node(self) -> None:
         try:

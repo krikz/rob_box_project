@@ -18,10 +18,23 @@ WAKE_YAML = REPO_ROOT / "docker" / "sound" / "config" / "wake_words.yaml"
 
 def test_wake_words_yaml_matches_code():
     data = yaml.safe_load(WAKE_YAML.read_text(encoding="utf-8"))
-    assert data["personality"] == list(kn.DEFAULT_WAKE_WORDS)
+    plain = [w for w in data["personality"] if isinstance(w, str)]
+    risky = [w["word"] for w in data["personality"] if isinstance(w, dict) and w.get("risky") is True]
+    assert plain == list(kn.DEFAULT_WAKE_WORDS)
+    assert risky == list(kn.RISKY_WAKE_WORDS)
+    assert data["personality"][-len(risky):] == [{"word": w, "risky": True} for w in risky]  # рискованные — в конце
+    assert data["risky_enabled"] is False  # В18: выключены по умолчанию
     assert data["operator"] == list(kn.DEFAULT_OPERATOR_WAKE_WORDS)
     expected = (list(kn.DEFAULT_WAKE_WORDS), list(kn.DEFAULT_OPERATOR_WAKE_WORDS))
     assert kn.resolve_wake_word_namespaces(str(WAKE_YAML)) == expected
+
+
+def test_risky_wake_words_switch_on_with_one_line(tmp_path):
+    text = WAKE_YAML.read_text(encoding="utf-8").replace("risky_enabled: false", "risky_enabled: true")
+    path = tmp_path / "wake_words.yaml"
+    path.write_text(text, encoding="utf-8")
+    personality, _ = kn.resolve_wake_word_namespaces(str(path))
+    assert personality == list(kn.DEFAULT_WAKE_WORDS) + list(kn.RISKY_WAKE_WORDS)
 
 
 def test_wake_words_loader_is_safe(tmp_path):

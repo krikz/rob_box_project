@@ -25,7 +25,7 @@ from nav2_msgs.action import NavigateToPose
 
 # Import from core module
 from rob_box_voice.core.command_parser import CommandParser, Command, IntentType
-from rob_box_voice.core.coordinator_address import stt_log_label
+from rob_box_dialog.address import log_label as stt_log_label
 
 
 class CommandNode(Node):
