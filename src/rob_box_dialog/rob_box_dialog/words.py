@@ -58,9 +58,13 @@ def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
     стоп-слово: «робот, стоп», «всё, хватит, спой другую». Спорная — стоп-слово дальше по фразе: «спой песню про
     стоп», «покажи анимацию стоп»; её решает Chooser (PR-6), речь до решения не рвётся. Одна функция на перебивание
     речи (stt_node → ``/dialog/interrupt_request``) и на Tier-1 грамматику.
+
+    Команда — то, что ПОСЛЕ вейка: слова перед ним — хвост речи самого робота, который микрофон склеил с фразой
+    человека (живой лог 21.10: «старой робот хватит» на сказке «…у корней старой сосны»). Вейк в конце фразы
+    («хватит, робот») — команда перед ним.
     """
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
-    tokens = _TOKEN.findall(strip_wake_word(text, words).lower())
+    tokens = _TOKEN.findall(_command_part(text, words).lower())
     stops = [_is_stop(t) for t in tokens]
     skip = set(STOP_LEAD_WORDS) | {w.lower() for w in words}
     lead = next((i for i, t in enumerate(tokens) if t not in skip), None)
@@ -68,6 +72,15 @@ def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
     if lead is not None and stops[lead] and after not in STOP_QUESTION_PARTICLES:
         return STOP_CLEAR
     return STOP_DISPUTED if any(stops) else STOP_NONE
+
+
+def _command_part(text: str, words: Tuple[str, ...]) -> str:
+    """Текст после первого вейка; вейк в конце фразы или без вейка — вся фраза без него."""
+    match = _pattern(words, _RIGHT).search(text or "") if words else None
+    if match is None:
+        return text or ""
+    after = (text or "")[match.end():]
+    return after if _TOKEN.search(after) else (text or "")[:match.start()]
 
 
 def _is_stop(token: str) -> bool:
