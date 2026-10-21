@@ -67,3 +67,46 @@ def test_one_subscription_per_node_and_kind_of_request():
     first = owner_events(node, "sound", lambda: _events(node))
     assert owner_events(node, "sound", lambda: _events(node)) is first
     assert len(node.subs) == 1
+
+
+def test_explicit_request_id_is_the_correlation_key():
+    """Владелец сам возвращает id (``utterance_id`` регистрации, #3793) — ждём его, а не новый uuid."""
+    node = _Node()
+    events = _events(node)
+    (_topic, cb), = node.subs
+    rid, got = events.ask(lambda r: cb(_msg(r)), 1.0, request_id="utt-1")
+    assert rid == "utt-1" and got.rid == "utt-1"
+
+
+def test_remembered_event_answers_a_request_sent_by_someone_else():
+    """Запрос отправил другой (робот сам, до вызова тула) — исход уже пришёл: берём его без ожидания."""
+    node = _Node()
+    events = _events(node, remember=2)
+    (_topic, cb), = node.subs
+    cb(_msg("utt-1", "too_short"))
+    assert events.ask(None, 5.0, request_id="utt-1")[1].kind == "too_short"
+
+
+def test_waiting_for_someone_elses_request_gets_the_late_event():
+    node = _Node()
+    events = _events(node, remember=2)
+    (_topic, cb), = node.subs
+    threading.Timer(0.05, cb, args=(_msg("utt-1"),)).start()
+    assert events.ask(None, 2.0, request_id="utt-1")[1].rid == "utt-1"
+
+
+def test_own_request_does_not_take_a_stale_remembered_event():
+    node = _Node()
+    events = _events(node, remember=2)
+    (_topic, cb), = node.subs
+    cb(_msg("utt-1", "old"))
+    assert events.ask(lambda r: None, 0.05, request_id="utt-1")[1] is None
+
+
+def test_memory_keeps_only_the_last_events():
+    node = _Node()
+    events = _events(node, remember=2)
+    (_topic, cb), = node.subs
+    for rid in ("a", "b", "c"):
+        cb(_msg(rid))
+    assert list(events._recent) == ["b", "c"]

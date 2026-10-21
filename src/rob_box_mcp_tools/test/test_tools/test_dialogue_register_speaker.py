@@ -52,7 +52,7 @@ def _install_mcp_base_stub() -> types.ModuleType:
 
     @dataclass_like
     class MCPToolResult:
-        def __init__(self, success, data=None, message=None):
+        def __init__(self, success, data=None, message=None, error=None):
             self.success = bool(success)
             self.data = data if data is not None else {}
             self.message = message
@@ -189,6 +189,14 @@ def _load_dialogue_restoring_sys_modules():
 
 _dialogue = _load_dialogue_restoring_sys_modules()
 RegisterSpeakerTool = _dialogue.RegisterSpeakerTool
+#: Фраза хода (фолбек ``_current_turn_utterance_id``): без неё запрос не уходит (#3793, no_utterance_context).
+_UTT = "a1b2c3d4e5f6"
+
+
+@pytest.fixture(autouse=True)
+def _short_register_deadline(monkeypatch):
+    """#3793: тул ждёт SpeakerResult владельца до дедлайна класса; здесь владельца нет — исход timeout сразу."""
+    monkeypatch.setattr(_dialogue, "register_deadline_s", lambda: 0.01)
 
 
 @pytest.fixture(autouse=True)
@@ -232,7 +240,7 @@ def mock_node() -> MagicMock:
     # RegisterSpeakerTool.execute() (issue #2842 фолбек) получал бы
     # MagicMock вместо None и падал на ``json.dumps`` в publish-пейлоаде.
     # Явно фиксируем отсутствие атрибута — как на реальном mcp_server node.
-    node._current_turn_utterance_id = None
+    node._current_turn_utterance_id = _UTT
     register_pub = MagicMock()
     rename_pub = MagicMock()
     node.create_publisher.side_effect = lambda msg_type, topic, depth: (
@@ -345,8 +353,8 @@ def test_valid_cyrillic_name_is_published(
     mock_node: MagicMock,
 ) -> None:
     result = tool.execute(name="Денис")
-    assert result.success is True
-    assert result.data["registered_name"] == "Денис"
+    assert result.data["status"] == "timeout"  # #3793: владелец в тесте молчит
+    assert result.data["name"] == "Денис"
 
     # Проверяем, что в /voice/speaker/register ушёл корректный JSON.
     pub = mock_node.register_pub
@@ -356,7 +364,7 @@ def test_valid_cyrillic_name_is_published(
     payload = json.loads(sent_msg.data)
     # Issue #2829 (ADR-0131 PR-2) — payload несёт utterance_id (None в
     # тесте: скрытый аргумент не передан, а node-фолбек тоже None).
-    assert payload == {"name": "Денис", "utterance_id": None}
+    assert payload == {"name": "Денис", "utterance_id": _UTT}
 
 
 def test_lowercase_name_is_capitalized(
@@ -365,11 +373,11 @@ def test_lowercase_name_is_capitalized(
 ) -> None:
     """«денис» → «Денис» (capitalize), без потери кириллицы."""
     result = tool.execute(name="денис")
-    assert result.success is True
-    assert result.data["registered_name"] == "Денис"
+    assert result.data["status"] == "timeout"  # #3793: владелец в тесте молчит
+    assert result.data["name"] == "Денис"
 
     sent_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(sent_msg.data) == {"name": "Денис", "utterance_id": None}
+    assert json.loads(sent_msg.data) == {"name": "Денис", "utterance_id": _UTT}
 
 
 def test_name_with_whitespace_is_trimmed(
@@ -377,11 +385,11 @@ def test_name_with_whitespace_is_trimmed(
     mock_node: MagicMock,
 ) -> None:
     result = tool.execute(name="  Антон  ")
-    assert result.success is True
-    assert result.data["registered_name"] == "Антон"
+    assert result.data["status"] == "timeout"  # #3793: владелец в тесте молчит
+    assert result.data["name"] == "Антон"
 
     sent_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(sent_msg.data) == {"name": "Антон", "utterance_id": None}
+    assert json.loads(sent_msg.data) == {"name": "Антон", "utterance_id": _UTT}
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +407,7 @@ def test_rename_publishes_to_rename_topic_not_register(
     register-хендлер читает только {"name": ...} и молча игнорировал
     rename (bug #1101 live 11.08)."""
     result = tool.execute(name="Денис", old_name="Эйджик")
-    assert result.success is True
+    assert result.data["status"] == "timeout"  # #3793: владелец в тесте молчит
 
     # rename ушёл на rename-топик (первый вызов rename_pub).
     assert mock_node.rename_pub.publish.called
@@ -412,7 +420,7 @@ def test_rename_publishes_to_rename_topic_not_register(
     # новый name зарегистрирован на register-топик (НЕ на rename).
     assert mock_node.register_pub.publish.called
     register_msg = mock_node.register_pub.publish.call_args[0][0]
-    assert json.loads(register_msg.data) == {"name": "Денис", "utterance_id": None}
+    assert json.loads(register_msg.data) == {"name": "Денис", "utterance_id": _UTT}
 
 
 def test_rename_without_new_name_only_renames(
@@ -441,8 +449,8 @@ def test_rename_ignores_noise_old_name(
 ) -> None:
     """old_name='null'/'None' — не шлём rename (guard на литералы)."""
     result = tool.execute(name="Денис", old_name="null")
-    assert result.success is True
-    assert result.data["registered_name"] == "Денис"
+    assert result.data["status"] == "timeout"  # #3793: владелец в тесте молчит
+    assert result.data["name"] == "Денис"
     # rename не публиковался (old_name='null' отброшен).
     mock_node.rename_pub.publish.assert_not_called()
     # register как обычно.
@@ -514,6 +522,6 @@ def test_names_containing_noise_prefix_are_published(
     """Фильтр сравнивает ЦЕЛОЕ имя, а не префикс/substring — реальные имена,
     начинающиеся с заглушечного слова, проходят и публикуются."""
     result = tool.execute(name=real_name)
-    assert result.success is True, f"{real_name!r} не должен быть отклонён"
-    assert result.data["registered_name"] == real_name.strip().capitalize()
+    assert result.data["status"] == "timeout", f"{real_name!r} не должен быть отклонён"
+    assert result.data["name"] == real_name.strip().capitalize()
     assert mock_node.register_pub.publish.called

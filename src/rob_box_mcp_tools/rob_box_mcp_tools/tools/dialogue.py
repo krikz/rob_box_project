@@ -15,6 +15,7 @@ from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
 from rob_box_core import speech_client
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..owner_event import OwnerEvents, owner_events
 from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
@@ -599,6 +600,10 @@ class EstimateTtsDurationTool(MCPTool):
         )
 
 
+#: Топик исходов ``speaker_id_node`` (биометрия фразы и ack регистрации), ``SpeakerResult``.
+SPEAKER_RESULT_TOPIC = "/voice/speaker/result"
+
+
 class RegisterSpeakerTool(MCPTool):
     """Issue #1077 + #1101 — регистрация голоса спикера через LLM tool.
 
@@ -606,12 +611,17 @@ class RegisterSpeakerTool(MCPTool):
     - Пользователь сказал «меня зовут X» (LLM извлёк имя из контекста)
     - LLM хочет спросить имя незнакомца (name=null → publish ask_event)
 
-    Tool публикует в /voice/speaker/register JSON {"name": "..."}
-    speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
+    Tool публикует в /voice/speaker/register JSON {"name": "...", "utterance_id": "..."}
+    speaker_id_node получает d-vector этой фразы и сохраняет embedding.
+
+    #3793 (ADR-0148, ADR-0150 §5.2): исход — не публикация, а ``SpeakerResult``
+    владельца (registered / register_error{too_short|…}) с тем же
+    ``utterance_id``; нет события к дедлайну класса ``action.identity`` —
+    ``timeout``. Фразу исхода строит код (``phrases``), модель её не придумывает.
     """
 
     #: SpeakerResult registered|register_error от speaker_id_node по utterance_id
-    event_source = "/voice/speaker/result"
+    event_source = SPEAKER_RESULT_TOPIC
 
     def __init__(self, node):
         super().__init__(node)
@@ -626,6 +636,9 @@ class RegisterSpeakerTool(MCPTool):
         self._speaker_rename_pub = node.create_publisher(
             String, "/voice/speaker/rename", 10
         )
+        # #3793: подписка сразу — исход регистрации по представлению
+        # (её шлёт dialogue_node до вызова LLM) приходит раньше вызова тула.
+        register_events(node)
 
     @property
     def name(self) -> str:
@@ -644,8 +657,8 @@ class RegisterSpeakerTool(MCPTool):
             "«зовут-это», «зовут меня» — это шумовые токены из фразы, а не "
             "реальные имена. Извлеки имя из контекста вручную (например, для "
             "фразы «робот меня зовут Денис говорю» — передай name=\"Денис\"). "
-            "Имя сохранится в БД вместе с эмбеддингом голоса, после этого "
-            "пользователя можно будет узнавать по голосу."
+            "Ответ тула — исход: голос записан, не записан (с причиной) или "
+            "ответа не дождались."
         )
 
     @property
@@ -790,14 +803,6 @@ class RegisterSpeakerTool(MCPTool):
                     'говорю» — передай name="Денис") и вызови тул ещё раз.'
                 ),
             )
-        # Issue #2925 — регистрация согласуется с тем, что человек сказал
-        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
-        gated = self._gate_result(
-            name_clean, self_intro_name, intro_registered, known_speaker_name
-        )
-        if gated is not None:
-            return gated
-        # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
         # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода:
         # speaker_id_node регистрирует ИМЕННО фразу, в которой человек
         # представился, а не "следующую фразу кого угодно" (см.
@@ -811,26 +816,36 @@ class RegisterSpeakerTool(MCPTool):
         # dialogue_node.
         if utterance_id is None:
             utterance_id = getattr(self.node, "_current_turn_utterance_id", None)
-        msg = String()
-        msg.data = json.dumps(
-            {"name": name_clean, "utterance_id": utterance_id},
-            ensure_ascii=False,
+        # Issue #2925 — регистрация согласуется с тем, что человек сказал
+        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
+        gated = self._gate_result(
+            name_clean, self_intro_name, intro_registered, known_speaker_name,
+            utterance_id,
         )
-        self._speaker_register_pub.publish(msg)
-        self.log_info(f"[register_speaker] published name={name_clean!r}")
-        return MCPToolResult(
-            success=True,
-            # status pending: исход регистрации - событие speaker_id_node позже, не этот ответ (ADR-0150 PR-7 ч.7c)
-            data={"registered_name": name_clean, "speaker_id": "pending", "status": "pending"},
-            # Issue #2863 — честно: тул только ОТПРАВЛЯЕТ запрос, исход решает
-            # speaker_id_node позже (эталон / «уже знаю» / отказ). Прежнее
-            # «Голос зарегистрирован» заявляло результат, которого тул не знает.
-            message=(
-                f"Запрос на запоминание голоса как '{name_clean}' отправлен. "
-                "Если этот человек уже узнан по голосу под этим именем — "
-                "новый эталон не создаётся, повторно вызывать не нужно."
-            ),
-        )
+        if gated is not None:
+            return gated
+        if not utterance_id:
+            # speaker_id_node без фразы откажет всегда (no_utterance_context, #2829) — исход известен без запроса.
+            return self._outcome(name_clean, "rejected", "no_utterance_context", sent_by_robot=False)
+
+        def publish(request_id: str) -> None:
+            msg = String()
+            msg.data = json.dumps({"name": name_clean, "utterance_id": request_id}, ensure_ascii=False)
+            self._speaker_register_pub.publish(msg)
+            self.log_info(f"[register_speaker] published name={name_clean!r} utterance_id={request_id}")
+
+        # #3793: исход — SpeakerResult владельца с тем же utterance_id, а не публикация.
+        _, event = register_events(self.node).ask(publish, register_deadline_s(), request_id=utterance_id)
+        return self._outcome(name_clean, *register_outcome(event), sent_by_robot=False)
+
+    def _outcome(self, name: str, status: str, reason: str | None, sent_by_robot: bool) -> MCPToolResult:
+        """Результат тула по исходу регистрации (#3793): фраза — код (``phrases``), при отказе она же в ``error``
+        (модель при неуспехе видит error)."""
+        phrase = register_phrase(status, reason, name)
+        self.log_info(f"[register_speaker] '{name}': {status} {reason or ''} (sent_by_robot={sent_by_robot})".rstrip())
+        data = {"name": name, "status": status, "reason": reason, "sent_by_robot": sent_by_robot}
+        return MCPToolResult(success=status == "done", data=data, message=phrase,
+                             error=None if status == "done" else phrase)
 
     def _publish_rename(self, old_name: str | None, name: str | None) -> None:
         """Issue #1101 — поправка имени («я не X, я Y»): rename идёт на
@@ -861,12 +876,15 @@ class RegisterSpeakerTool(MCPTool):
         self_intro_name: str | None,
         intro_registered: bool | None,
         known_speaker_name: str | None,
+        utterance_id: str | None = None,
     ) -> MCPToolResult | None:
         """Issue #2925 — ответ тула без публикации, или ``None`` (публикуем).
 
-        В ответе нет слова ``pending``: по нему ``SchedulerToolExecutor``
-        (issue #2913) решает, что ack регистрации придёт, и держит речь
-        хода. Здесь запрос не уходит — ждать нечего.
+        #3793: регистрацию по представлению уже отправил робот — второй
+        запрос не уходит, но ответ — её исход (``SpeakerResult`` с тем же
+        ``utterance_id``, пришедший до вызова тула или в пределах дедлайна),
+        а не «уже отправлена» (живой прогон 21.10: too_short, а LLM сказала
+        «Записал вас»).
         """
         verdict = register_speaker_gate(
             name, self_intro_name, intro_registered, known_speaker_name
@@ -877,18 +895,12 @@ class RegisterSpeakerTool(MCPTool):
             self.log_info(
                 f"[register_speaker] #2925: регистрация по представлению "
                 f"'{self_intro_name}' уже отправлена роботом в этом ходе — "
-                f"повторный запрос name={name!r} не публикую"
+                f"повторный запрос name={name!r} не публикую, жду её исход"
             )
-            return MCPToolResult(
-                success=True,
-                data={"registered_name": self_intro_name,
-                      "sent_by_robot": True},
-                message=(
-                    f"Голос уже отправлен на запоминание как "
-                    f"'{self_intro_name}' — человек сам представился. "
-                    "Повторно вызывать не нужно."
-                ),
-            )
+            if not utterance_id:
+                return self._outcome(self_intro_name, "timeout", None, sent_by_robot=True)
+            _, event = register_events(self.node).ask(None, register_deadline_s(), request_id=utterance_id)
+            return self._outcome(self_intro_name, *register_outcome(event), sent_by_robot=True)
         self.log_warning(
             f"[register_speaker] #2925 ОТКАЗ: name={name!r} — в реплике "
             f"человек не представлялся, а голос уверенно узнан как "
@@ -944,6 +956,46 @@ def register_speaker_gate(
     if self_intro_name and _name_key(self_intro_name) == _name_key(name):
         return None
     return "not_self_introduction"
+
+
+def register_events(node) -> OwnerEvents:
+    """Ожидания ack регистрации на ноду (#3793): ``SpeakerResult`` registered/register_error по ``utterance_id``;
+    последние исходы помнятся — регистрацию по представлению шлёт ``dialogue_node`` раньше вызова тула."""
+    from rob_box_dialog_msgs.msg import SpeakerResult
+
+    acks = (SpeakerResult.EVENT_REGISTERED, SpeakerResult.EVENT_REGISTER_ERROR)
+    return owner_events(node, "register_speaker", lambda: OwnerEvents(
+        node, SpeakerResult, SPEAKER_RESULT_TOPIC, key_of=lambda m: m.utterance_id,
+        accept=lambda m: m.event in acks and bool(m.utterance_id), remember=32))
+
+
+def register_deadline_s() -> float:
+    """Дедлайн исхода регистрации — дедлайн класса ``register_speaker`` из ``knowledge`` (одна таблица, §5.1)."""
+    from rob_box_dialog import knowledge as kn
+
+    return float(kn.ACTION_CLASSES[kn.TOOL_CLASSES["register_speaker"]].timeout_s)
+
+
+def register_outcome(event) -> tuple:
+    """``SpeakerResult`` → ``(status, reason)``: registered — ``done`` («уже знаю» — причина ``already_known``),
+    register_error — ``rejected`` с кодом ошибки владельца, нет события — ``timeout``."""
+    if event is None:
+        return "timeout", None
+    if event.event == event.EVENT_REGISTER_ERROR:
+        return "rejected", event.error or "error"
+    return "done", ("already_known" if event.already_known else None)
+
+
+def register_phrase(status: str, reason, name: str):
+    """Фраза исхода — каталог ``phrases/ru.yaml`` тем же ключом, что строит ``respond`` (код, не LLM)."""
+    from rob_box_dialog import knowledge as kn
+    from rob_box_dialog import phrases
+    from rob_box_dialog.respond import ActionResult, phrase_key
+
+    result = ActionResult(turn_id="", epoch=0, agent="personality", tool="register_speaker",
+                          cls=kn.TOOL_CLASSES["register_speaker"], status=status, reason=reason)
+    key = phrase_key(result)
+    return None if key is None else phrases.text(key, name=name)
 
 
 # Список поддерживаемых TTS-провайдеров для переключения (issue #1765).
