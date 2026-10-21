@@ -81,13 +81,12 @@ class TestOwnerTelegramTurn:
         assert "<role>guest</role>" in profile
         assert "Литвин" not in profile
 
-    def test_tg_turn_does_not_spend_voice_identity_hints(self):
-        """Подсказка-гипотеза голоса (#2809) ждёт голосовую реплику, а не TG."""
+    def test_tg_turn_has_no_voice_speaker_section(self):
+        """Голос комнаты к TG-ходу не относится (#3598): раздела ``speaker`` нет (#3695), правил-подсказок нет."""
         n = _tg_node()
-        n._pending_identity_hint = {"kind": "contested"}
         _, ctx = _prepare(n, from_tg=True)
         assert "identity_question_rule" not in ctx
-        assert n._pending_identity_hint == {"kind": "contested"}
+        assert "<speaker>" not in ctx
 
 
 class TestVoiceTurnUnchanged:

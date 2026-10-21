@@ -44,6 +44,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
 from identity_v17_legacy import no_accumulation  # noqa: E402
 
 SASHA_ID = "5baad325-0000-0000-0000-000000000000"
@@ -97,8 +98,6 @@ def _node(llm_reply):
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
     n.tts = []
@@ -113,7 +112,7 @@ def _node(llm_reply):
 
     async def prepare(**kw):
         user_input = await n._apply_speaker_identity(kw["user_input"], None)
-        dynamic = "\n".join(n._pending_identity_hint_lines())
+        dynamic = ""
         n.llm_context.append(dynamic)
         return user_input, dynamic
 
@@ -165,8 +164,10 @@ class TestSingleAsksDeterministically:
 
         _turn(n, "Робот, ты меня узнал по голосу?")
 
-        assert n.llm_context[0], "LLM должна знать, что вопрос задан"
+        # #3695: правил-подсказок о вопросе в снимке больше нет; кто говорит — раздел speaker, имя-гипотеза в нём
+        # не появляется (test_speaker_turn_v17::test_snapshot_speaker_section_names_only_confirmed)
         assert "Саш" not in n.llm_context[0]
+        assert speaker_section(n) == {"name": None, "name_state": "tentative"}
 
     def test_not_asked_again_in_same_session(self):
         n = _node(NAME_AS_FACT)

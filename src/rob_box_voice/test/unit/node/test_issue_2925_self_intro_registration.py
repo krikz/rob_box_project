@@ -43,6 +43,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import tentative_states  # noqa: E402
 from ros_stubs import make_speaker_result  # noqa: E402
 
 SASHA_ID = "d8844740-0000-0000-0000-000000000000"
@@ -121,8 +122,6 @@ def _node():
     n._speaker_register_pub = MagicMock()
     n._speaker_register_pub.publish.side_effect = _publish_register
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
     n.tts = []
@@ -134,9 +133,7 @@ def _node():
     n._handle_result = MagicMock(
         side_effect=lambda result, **_kw: n.tts.append(result.spoken_text)
     )
-    n._build_dynamic_system_context = lambda tg_chat_id=None: "\n".join(
-        n._pending_identity_hint_lines()
-    )
+    n._build_dynamic_system_context = lambda tg_chat_id=None: ""
 
     async def invoke_llm(**_kw):
         # Контекст хода, который получил бы register_speaker (#2842).
@@ -228,7 +225,7 @@ class TestCase2NoHypothesisQuestionOnOtherName:
         assert "Саша, это ты?" not in n.tts, n.tts
         assert n.registered == [{"name": "Борис", "utterance_id": "utt-708b"}]
         assert n.tts == [N708_LLM]
-        assert n._identity_confirmations[SASHA_ID]["asked"] is False
+        assert tentative_states(n).get(SASHA_ID)["asked"] is False
 
     def test_similar_voice_goes_to_2828_conflict_question(self):
         """Голос выше порога слияния — ADR-0127 заводит отдельный профиль,

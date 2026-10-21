@@ -57,6 +57,7 @@ from rob_box_harness.identity.base import (  # noqa: E402
 )
 from rob_box_harness.memory import InMemoryStore  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import tentative_states  # noqa: E402
 
 # Do not leak import-only hardware stubs into the rest of pytest. The imported
 # modules keep the references they needed; later tests see their real modules.
@@ -79,29 +80,12 @@ def _make_node(identity: MemoryIdentitySeam) -> DialogueNode:
     (_handle_tentative_speaker). Всё остальное — MagicMock, чтобы тест не
     зависел от TTS/LLM/истории.
 
-    ``tentative_states`` имитирует ``_identity_confirmations`` из
-    DialogueNode: ключ — ``full_sid``, значение — тот же dict, что
-    выдаёт реальный ``_tentative_session_state`` (``confirmed=None``,
-    не ``False``, иначе существующий блок ``if state.get("confirmed")
-    is False`` в строке 4006 рано возвращает ``_tag_tentative``).
+    Состояние гипотезы — настоящее (``speaker_turn.tentative_states``, #3695).
     """
     n = object.__new__(DialogueNode)
     n.get_logger = MagicMock(return_value=MagicMock())
     n._speaker_lock = threading.Lock()
     n._identity = identity
-    n._pending_identity_hint = None
-    n._tentative_states: dict = {}
-    n._tentative_session_state = MagicMock(
-        side_effect=lambda full_sid: n._tentative_states.setdefault(
-            full_sid,
-            {
-                "asked": False,
-                "confirmed": None,
-                "name": None,
-                "growth_registered": False,
-            },
-        )
-    )
     n._resolve_pending_tentative_answer = MagicMock()
     n._confirm_tentative_speaker = MagicMock(
         return_value="[Speaker:confirmed]"  # условный tag
@@ -294,7 +278,7 @@ def test_face_hint_suppresses_tentative_question_in_window():
     )
 
     # confirmation path: переспрос НЕ задан, _confirm_tentative_speaker вызван.
-    state = node._tentative_states["c9e981cb"]
+    state = tentative_states(node).get("c9e981cb")
     assert state["asked"] is True, (
         "asked=True допустимо — блок ADR-0139 ставит asked=True перед "
         "вызовом _confirm_tentative_speaker (как и #2809 confirmation)."
@@ -372,7 +356,7 @@ def test_face_hint_disabled_flag_falls_back_to_old_behavior():
     sp = _single_sp("Дэнчик", score=0.791)
     node._handle_tentative_speaker(sp, "привет", "utt-2")
 
-    state = node._tentative_states["c9e981cb"]
+    state = tentative_states(node).get("c9e981cb")
     # Переспрос задан (asked=True), confirmation НЕ вызван.
     # ``confirmed`` остаётся ``None`` до явного «да»/«нет» от человека
     # (resolve_pending выставляет True/False), поэтому здесь ждём None.
@@ -405,7 +389,7 @@ def test_face_hint_low_similarity_does_not_suppress_question():
     sp = _single_sp("Дэнчик", score=0.791)
     node._handle_tentative_speaker(sp, "привет", "utt-3")
 
-    state = node._tentative_states["c9e981cb"]
+    state = tentative_states(node).get("c9e981cb")
     # band == "low" → hint игнорируется → переспрос задан.
     # В17 (#3695): вопрос не задан сейчас — собеседник стал кандидатом, решение после хода.
     assert state["asked"] is False
@@ -439,7 +423,7 @@ def test_face_hint_name_mismatch_does_not_suppress_question():
     sp = _single_sp("Дэнчик", score=0.791)
     node._handle_tentative_speaker(sp, "привет", "utt-4")
 
-    state = node._tentative_states["c9e981cb"]
+    state = tentative_states(node).get("c9e981cb")
     # В17 (#3695): вопрос не задан сейчас — собеседник стал кандидатом, решение после хода.
     assert state["asked"] is False
     assert state["confirmed"] is None
