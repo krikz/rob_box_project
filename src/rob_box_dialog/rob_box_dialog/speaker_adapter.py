@@ -17,6 +17,9 @@
 * :func:`merge_plan` / :func:`merge_answer` / :func:`merge_phrase` — вопрос «вы разные люди или это ты?» после
   регистрации (#2828, ADR-0127; #3765): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил, #2829), что
   робот говорит об исходе — кодом, без подсказки LLM (ADR-0148).
+* :func:`voice_certainty` / :class:`IdentityStep` — #3801 (решение Шифу 21.10): один голос — одна личность
+  (:func:`same_voice_plan`), имя меняется фразой (:func:`rename_step`), неуверенный голос подтверждается шаблоном
+  нормальной длины (:func:`template_step`, :func:`voice_check_step`); что сделать и что сказать — кодом.
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -35,7 +38,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.greeting_reply import is_greeting_reply
-from rob_box_dialog.reply_grammar import NO, YES, Reply, classify_reply, classify_same
+from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
 
@@ -200,7 +203,10 @@ def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Repl
 def question_reply(kind: str, text: str) -> Optional[Reply]:
     """Похожа ли фраза на ответ на вопрос вида ``kind`` (кадр ``Identity``): на вопрос склейки (``IDENTITY_MERGE_KINDS``)
     — «это я»/«мы разные» (``YES``/``NO``) или да/нет; на вопрос об имени — имя/да/нет/отказ."""
-    if kind in kn.IDENTITY_MERGE_KINDS:
+    rename = classify_rename(text)
+    if rename is not None:  # «меня зовут не X, а Y» — ответ-имя, а не «Не» (#3801)
+        return Reply(NAME, rename.name)
+    if kind in kn.IDENTITY_MERGE_KINDS + (kn.IDENTITY_SAME_VOICE_KIND,):
         same = classify_same(text)
         if same is not None:
             return Reply(YES if same else NO)
@@ -217,15 +223,22 @@ def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
             "known_id": str(other.get("speaker_id") or ""), "known_name": str(other.get("name") or "")}
 
 
-def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> Tuple[Optional[bool], bool]:
-    """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
-    ``None`` — не понять. Голое да/нет — ответ только на ``twin`` («Ты тот самый X?»); на ``conflict`` вопрос двойной.
-    «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
-    #2829): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
+def said_same(plan: Mapping[str, Any], text: str) -> Optional[bool]:
+    """Что человек СКАЗАЛ на вопрос «один человек или двое?»: ``True`` — один, ``False`` — разные, ``None`` — не понять.
+    Голое да/нет — ответ только на ``twin`` («Ты тот самый X?») и ``same_voice``; на ``conflict`` вопрос двойной."""
     same = classify_same(text, max_words=None)
-    if same is None and plan.get("kind") == "twin":
+    if same is None and plan.get("kind") in ("twin", kn.IDENTITY_SAME_VOICE_KIND):
         reply = classify_reply(text, asks_name=False)
         same = {YES: True, NO: False}.get(reply.kind) if reply is not None else None
+    return same
+
+
+def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> Tuple[Optional[bool], bool]:
+    """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
+    ``None`` — не понять (:func:`said_same`).
+    «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
+    #2829): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
+    same = said_same(plan, text)
     current = str(speaker.get("speaker_id") or "") if speaker.get("is_known") else ""
     speaker_ok = bool(current) and current in (plan.get("new_id"), plan.get("known_id"))
     return (None if same and not speaker_ok else same), speaker_ok
@@ -236,6 +249,101 @@ def merge_phrase(plan: Mapping[str, Any], same: Optional[bool]) -> str:
     if same is True:
         return phrases.text("identity.merged", name=plan.get("known_name") or plan.get("new_name"))
     return phrases.text("identity.kept_apart" if same is False else "identity.merge_unclear")
+
+
+# ── #3801 (решение Шифу 21.10): один голос — одна личность, имя меняется фразой, подтверждение шаблоном ───────────
+#: :func:`voice_certainty`
+VOICE_SURE, VOICE_UNSURE, VOICE_STRANGER = "sure", "unsure", "stranger"
+
+
+def voice_certainty(speaker: Mapping[str, Any]) -> str:
+    """Годится ли голос ЭТОЙ фразы для действий с личностью. ``sure`` — у результата биометрии есть имя (порог 0.72 и
+    отрыв от соседа проверил ``speaker_id_node``; порогов здесь нет); ``unsure`` — узнан без имени (гипотеза, спор),
+    биометрия фразу не оценила (мало речи) или лучший кандидат не ниже ``IDENTITY_TEMPLATE_MIN_SCORE`` — тогда робот
+    просит шаблон; иначе ``stranger`` (чужой голос: чужую личность не трогает, #2829)."""
+    if speaker.get("is_known"):
+        return VOICE_SURE if speaker.get("name") and speaker.get("speaker_id") else VOICE_UNSURE
+    if speaker.get("inconclusive"):
+        return VOICE_UNSURE
+    score = speaker.get("candidate_score")
+    return VOICE_UNSURE if score is not None and float(score) >= kn.IDENTITY_TEMPLATE_MIN_SCORE else VOICE_STRANGER
+
+
+@dataclass(frozen=True)
+class IdentityStep:
+    """Что код делает с личностью в этом ходе: ``phrase`` — что робот говорит (0 LLM, ADR-0148); ``rename`` —
+    ``(speaker_id, новое имя)``; ``merge`` — ``(src, dst, имя dst)``; ``frame`` — кадр ``Identity(voice_check)`` после фразы."""
+
+    phrase: str
+    rename: Tuple[str, ...] = ()
+    merge: Tuple[str, ...] = ()
+    frame: Optional[Mapping[str, Any]] = None
+
+
+def _same_name(left: Any, right: Any) -> bool:
+    a, b = (str(x or "").strip().lower().replace("ё", "е") for x in (left, right))
+    return bool(a) and a == b
+
+
+def same_voice_plan(speaker_id: str, known: str, name: str) -> Dict[str, Any]:
+    """Голос уверенно узнан как ``known``, а человек назвался ``name``: второй профиль не заводится, после ответа хода
+    робот говорит ``identity.same_voice``, ответ ждёт кадр ``Identity(same_voice)`` (окно ``REPLY_WINDOW_S``)."""
+    return {"kind": kn.IDENTITY_SAME_VOICE_KIND, "question": phrases.text("identity.same_voice", known=known, name=name),
+            "new_id": "", "new_name": name, "known_id": speaker_id, "known_name": known}
+
+
+def template_step(action: str, name: str, plan: Optional[Mapping[str, Any]] = None) -> IdentityStep:
+    """Попросить сказать шаблон ``identity.template``; кадр ``voice_check`` помнит, что сделать (``rename`` | ``merge``),
+    если голос шаблона уверенно совпадёт."""
+    frame = {"kind": kn.IDENTITY_VOICE_CHECK_KIND, "action": action, "name": name}
+    frame.update({k: str((plan or {}).get(k) or "") for k in ("new_id", "new_name", "known_id", "known_name")})
+    template = phrases.text("identity.template", name=name)
+    return IdentityStep(phrases.text("identity.say_template", template=template), frame=frame)
+
+
+def rename_step(rename: Optional[Rename], speaker: Mapping[str, Any]) -> Optional[IdentityStep]:
+    """«Зови меня Y» / «меня зовут не X, а Y»: уверенный голос — переименовать ЕГО профиль; неуверенный — просьба
+    шаблона; чужой голос или просьбы нет — ``None`` (ход обычный)."""
+    certainty = voice_certainty(speaker) if rename is not None else VOICE_STRANGER
+    if rename is None or certainty == VOICE_STRANGER:
+        return None
+    if certainty == VOICE_UNSURE:
+        return template_step("rename", rename.name)
+    if _same_name(speaker.get("name"), rename.name):
+        return IdentityStep(phrases.text("identity.name_same", name=rename.name))
+    return IdentityStep(phrases.text("identity.renamed", name=rename.name),
+                        rename=(str(speaker["speaker_id"]), rename.name))
+
+
+def same_voice_step(plan: Mapping[str, Any], text: str) -> IdentityStep:
+    """Ответ на ``identity.same_voice``: «это я» — согласие; «мы разные» и прочее — голос один, второй записи нет."""
+    if said_same(plan, text):
+        return IdentityStep(phrases.text("identity.same_voice_ok", name=plan.get("known_name")))
+    return IdentityStep(phrases.text("identity.one_voice", name=plan.get("new_name")))
+
+
+def merge_step(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any]) -> IdentityStep:
+    """Ответ на вопрос склейки: «это я» тем же голосом — склейка ``new → known``; «это я», а голос неуверенный
+    (короткий ответ) — просьба шаблона вместо «Не понял ответ»; остальное — :func:`merge_answer`."""
+    same, _ = merge_answer(plan, text, speaker)
+    if same is None and said_same(plan, text) and voice_certainty(speaker) == VOICE_UNSURE:
+        return template_step("merge", str(plan.get("known_name") or plan.get("new_name") or ""), plan)
+    return IdentityStep(merge_phrase(plan, same), merge=_merge_ids(plan) if same is True else ())
+
+
+def _merge_ids(plan: Mapping[str, Any]) -> Tuple[str, ...]:
+    return tuple(str(plan.get(k) or "") for k in ("new_id", "known_id", "known_name"))
+
+
+def voice_check_step(frame: Mapping[str, Any], speaker: Mapping[str, Any]) -> IdentityStep:
+    """Ответ шаблоном: голос уверенно совпал — действие кадра (переименовать этот профиль / склеить, если голос — один из
+    двух профилей вопроса); нет — честная фраза, ничего не меняется."""
+    sid = str(speaker.get("speaker_id") or "") if voice_certainty(speaker) == VOICE_SURE else ""
+    if sid and frame.get("action") == "rename":
+        return IdentityStep(phrases.text("identity.renamed", name=frame.get("name")), rename=(sid, str(frame["name"])))
+    if sid and frame.get("action") == "merge" and sid in (frame.get("new_id"), frame.get("known_id")):
+        return IdentityStep(merge_phrase(frame, True), merge=_merge_ids(frame))
+    return IdentityStep(phrases.text("identity.voice_check_failed"))
 
 
 def greeting_frame(person_ref: str, name: str, speech_id: str) -> Dict[str, Any]:

@@ -3,7 +3,7 @@
 :func:`classify_reply` — единственное место решения «фраза без вейка в открытом окне ответа — ответ или чужой
 разговор». Виды: ``name`` («меня зовут X», «я X», «зови меня X», голое имя из 1–2 слов), ``yes`` / ``no`` («да», «это
 я», «не я»), ``refusal`` («не скажу», «секрет», «потом»). :func:`classify_same` — ответ на вопрос склейки после
-регистрации («это я» / «мы разные», #2828). Похоже на ответ — фраза берётся как ход; нет — бэклог.
+регистрации («это я» / «мы разные», #2828). :func:`classify_rename` — «зови меня Y» / «меня зовут не X, а Y» (#3801). Похоже на ответ — фраза берётся как ход; нет — бэклог.
 Слова — из :mod:`.knowledge`; DOA и голос здесь не участвуют (DOA в комнате прыгает, решение Шифу).
 """
 
@@ -103,4 +103,42 @@ def classify_same(text: str, *, max_words: Optional[int] = kn.REPLY_SAME_MAX_WOR
     return same if different != same else None
 
 
-__all__ = ["NAME", "NO", "REFUSAL", "Reply", "YES", "classify_reply", "classify_same"]
+@dataclass(frozen=True)
+class Rename:
+    """Просьба звать иначе (#3801): ``name`` — новое имя (с заглавной), ``old`` — названное неверное (поправка) или ``""``."""
+
+    name: str
+    old: str = ""
+
+
+def _name_word(word: str) -> bool:
+    return len(word) >= 2 and word.replace("-", "").isalpha() and word not in kn.REPLY_NOT_A_NAME
+
+
+def _correction(words: List[str]) -> Optional[Rename]:
+    """«меня зовут не X, а Y», «я не X, а Y»: голова представления (или «я»), затем «не X а Y»."""
+    heads = [tuple(p.split()) for p in kn.REPLY_INTRO_PHRASES + kn.REPLY_RENAME_PHRASES] + [("я",)]
+    for i in range(1, len(words) - 3):
+        if words[i] != "не" or words[i + 2] != "а" or not _name_word(words[i + 3]):
+            continue
+        if any(i >= len(h) and tuple(words[i - len(h):i]) == h for h in heads):
+            return Rename(_display(words[i + 3]), _display(words[i + 1]))
+    return None
+
+
+def classify_rename(text: str) -> Optional[Rename]:
+    """Человек просит звать его иначе (#3801, решение Шифу 21.10: ошибку STT в имени исправляют фразой) или ``None``.
+    Решать, чье это имя менять, — не здесь: только по уверенному голосу (``speaker_adapter.rename_step``)."""
+    words = _words(strip_wake_word(text or ""))
+    corrected = _correction(words)
+    if corrected is not None:
+        return corrected
+    for phrase in kn.REPLY_RENAME_PHRASES:
+        head = phrase.split()
+        for i in range(len(words) - len(head)):
+            if words[i:i + len(head)] == head and _name_word(words[i + len(head)]):
+                return Rename(_display(words[i + len(head)]))
+    return None
+
+
+__all__ = ["NAME", "NO", "REFUSAL", "Rename", "Reply", "YES", "classify_rename", "classify_reply", "classify_same"]
