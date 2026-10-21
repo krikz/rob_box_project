@@ -276,7 +276,7 @@ def test_schema_fields_match_the_dataclasses():
     def names(cls):
         return {f.name for f in dataclasses.fields(cls)}
 
-    assert set(schema) == names(cm.Command) - {"dropped"}
+    assert set(schema) == names(cm.Command) - {"dropped", "moved"}
     assert set(schema["ask"]["properties"]) == names(cm.Ask) - {"key"}
     assert set(schema["perform"]["properties"]) == names(cm.Performance)
     assert set(schema["expression"]["properties"]) == names(cm.Expression)
@@ -349,6 +349,8 @@ def _random_command(rng):
                         "backing": rng.choice(kn.PERFORM_BACKINGS), "from_segment": rng.randint(0, 4)}
     if rng.random() < 0.5:
         d["expression"] = {"emotion": rng.choice(list(kn.EMOTIONS) + ["joy"]), "face": _face(rng)}
+        if rng.random() < 0.3:  # слоты лица уровнем выше, как у DeepSeek (#3698)
+            d["expression"].update(d["expression"].pop("face") if rng.random() < 0.7 else _face(rng))
     for key, values in (("when", kn.WHEN + ("soon",)), ("passed", kn.PASSED), ("edit_pending", (True, False))):
         if rng.random() < 0.1:
             d[key] = rng.choice(values)
@@ -393,7 +395,7 @@ def test_thousands_of_random_commands_never_raise():
             assert len(res.actions) <= kn.ACTIONS_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
             assert not (res.perform and res.speech)
-            assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=())  # мост → исполнитель команды
+            assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=(), moved=())  # мост → исполнитель
             assert res.expression.emotion in kn.EMOTIONS
             assert res.expression.face is None or isinstance(res.expression.face, FaceScene)
         else:
