@@ -234,6 +234,9 @@ from rob_box_voice.startup_greeting import pick_greeting
 # ADR-0101 §3.1 — единый шов «можно ли заговорить» (issue #2536, PR-B).
 from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
 from rob_box_voice.core.meeting import (
+    MEETING_SOURCE_COOLDOWN_SEC,
+    MeetingGreeter,
+    greet_node_on_meeting,
     parse_meeting_marker,
 )
 
@@ -1231,8 +1234,9 @@ class DialogueNode(DialogueStageMixin, Node):
         # ADR-0101 §3.1 / PR-B: единый шов «можно ли заговорить» (issue #2536).
         # Стартовый gate: глобальный дебаунс 2с, startup — one-shot,
         # dj_tick / unclear / inactivity — резерв для PR-D/E.
-        # Встреча лицом больше не повод заговорить: робот сам в разговор не вступает (В12′, ADR-0150 §18.3; #3695).
-        self._occasion: OccasionGate = OccasionGate()
+        # Встреча лицом — повод поздороваться с ЗНАКОМЫМ после долгой разлуки: исключение Шифу 21.10 из В12′.
+        self._occasion: OccasionGate = OccasionGate(source_cooldowns={"meeting": MEETING_SOURCE_COOLDOWN_SEC})
+        self._meeting_greeter: MeetingGreeter = MeetingGreeter()
         # Issue #1219 — LLM voice selection: активный TTS-провайдер для
         # контекста [TTS]. Должен совпадать с tts_node.yaml provider
         # (minimax). Установленный голос хранит tts_node (VoiceOwner, PR-4 ч.3) и сообщает его в provider_state.
@@ -6034,6 +6038,8 @@ class DialogueNode(DialogueStageMixin, Node):
                 self.get_logger().debug(
                     f"👤 [ADR-0139] note_face_seen failed (ignored): {exc!r}"
                 )
+        # Знакомый после долгой разлуки → одна фраза (исключение Шифу 21.10 из В12′); решение — core/meeting.
+        greet_node_on_meeting(self, marker)
 
     def _cancel_greeting_timer(self) -> None:
         """Отменить одноразовый таймер приветствия, если он создан."""

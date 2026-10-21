@@ -8,17 +8,22 @@ ADR-0102 «Повод», ADR-0123).
   анти-выдумочное правило (ADR-0089 §2.2, #2583): ``source_camera`` в
   ``{"stub", "unknown"}`` не порождает маркер, даже если JSON валиден.
 
-Приветствие Встречи (``MeetingGreeter``) удалено: робот сам в разговор не
-вступает (В12′, ADR-0150 §18.3; #3695).
+Приветствие знакомого после долгой разлуки — исключение Шифу 21.10 из В12′
+(ADR-0150 §18.3; #3695): одна фраза по имени, без вопросов; незнакомец молчит.
 """
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from rob_box_voice.core.meeting import (
+    MeetingGreeter,
     MeetingMarker,
+    greet_on_meeting,
     parse_meeting_marker,
+    time_of_day_greeting,
 )
 
 
@@ -128,3 +133,146 @@ class TestParseMeetingMarker:
         """``source_camera`` по умолчанию — пустая строка, не stub."""
         marker = parse_meeting_marker('face', self._good_payload())
         assert marker is not None
+
+
+HOUR = 3600.0
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _marker(name: str = 'Денис', person_id: str = 'p1', is_new: bool = False, count: int = 3) -> MeetingMarker:
+    return MeetingMarker(person_id=person_id, name=name, is_new=is_new, similarity=0.9,
+                         encounter_count=count, face_px=100.0, privacy_mode='workshop')
+
+
+class _Meet:
+    """Обвязка: часы, греттер, список сказанного."""
+
+    def __init__(self, hour: int = 10, idle: bool = True, allowed: bool = True) -> None:
+        self.clock = _Clock()
+        wall = time.struct_time((2026, 10, 21, hour, 0, 0, 2, 294, 0))
+        self.greeter = MeetingGreeter(clock=self.clock, wall_clock=lambda: wall)
+        self.said: list = []
+        self.idle = idle
+        self.allowed = allowed
+
+    def meet(self, marker: MeetingMarker):
+        return greet_on_meeting(self.greeter, marker, idle=self.idle,
+                                allowed=lambda m: self.allowed, speak=self.said.append)
+
+
+@pytest.mark.parametrize('hour,expected', [(4, 'Доброй ночи'), (5, 'Доброе утро'), (12, 'Добрый день'),
+                                           (18, 'Добрый вечер'), (23, 'Доброй ночи')])
+def test_time_of_day(hour: int, expected: str) -> None:
+    assert time_of_day_greeting(hour) == expected
+
+
+class TestGreetAfterLongAbsence:
+    def test_known_after_21_hours_gets_one_phrase_with_name(self) -> None:
+        m = _Meet()
+        m.meet(_marker(count=1))  # первая встреча в запуске: просто запомнили
+        assert m.said == []
+        m.clock.now += 21 * HOUR
+        phrase = m.meet(_marker())
+        assert phrase is not None and 'Денис' in phrase
+        assert m.said == [phrase]
+
+    def test_phrase_has_time_of_day(self) -> None:
+        m = _Meet(hour=19)
+        m.meet(_marker(count=1))
+        m.clock.now += 21 * HOUR
+        m.meet(_marker())
+        assert m.said and 'Добрый вечер' in m.said[0]
+
+    def test_again_after_one_hour_is_silent(self) -> None:
+        m = _Meet()
+        m.meet(_marker(count=1))
+        m.clock.now += 21 * HOUR
+        m.meet(_marker())
+        m.clock.now += HOUR
+        assert m.meet(_marker()) is None
+        assert len(m.said) == 1
+
+    def test_phrase_is_not_a_question(self) -> None:
+        m = _Meet()
+        for seed in range(30):
+            m.greeter._rng.seed(seed)
+            assert '?' not in m.greeter.compose(_marker())
+
+    def test_after_restart_known_person_greeted_once(self) -> None:
+        m = _Meet()
+        assert m.meet(_marker(count=5)) is not None
+        m.clock.now += 60
+        assert m.meet(_marker(count=6)) is None
+
+    def test_first_ever_encounter_is_silent(self) -> None:
+        m = _Meet()
+        assert m.meet(_marker(count=1)) is None
+
+    def test_fake_face_with_name_after_20_hours_greets_once(self) -> None:
+        m = _Meet()
+        m.meet(_marker(name='Литвин', person_id='fake', count=1))
+        m.clock.now += 20 * HOUR
+        assert 'Литвин' in m.meet(_marker(name='Литвин', person_id='fake'))
+        m.clock.now += 60
+        assert m.meet(_marker(name='Литвин', person_id='fake')) is None
+
+
+class TestNoGreeting:
+    def test_stranger_gets_no_phrase_and_no_question(self) -> None:
+        m = _Meet()
+        assert m.meet(_marker(name='', is_new=True, count=1)) is None
+        m.clock.now += 48 * HOUR
+        assert m.meet(_marker(name='', is_new=True, count=1)) is None
+        assert m.said == []
+
+    def test_unnamed_returning_face_is_silent(self) -> None:
+        m = _Meet()
+        m.clock.now += 48 * HOUR
+        assert m.meet(_marker(name='', count=7)) is None
+
+    def test_dialogue_active_does_not_interrupt_and_retries_later(self) -> None:
+        m = _Meet(idle=False)
+        assert m.meet(_marker(count=5)) is None
+        assert m.said == []
+        m.idle = True
+        assert m.meet(_marker(count=5)) is not None
+
+    def test_gate_refusal_does_not_burn_the_greeting(self) -> None:
+        m = _Meet(allowed=False)
+        assert m.meet(_marker(count=5)) is None
+        m.allowed = True
+        assert m.meet(_marker(count=5)) is not None
+
+    def test_node_glue_speaks_once_through_real_occasion_gate(self) -> None:
+        from types import SimpleNamespace
+
+        from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+        from rob_box_voice.core.meeting import greet_node_on_meeting
+        from rob_box_voice.core.occasion import OccasionGate
+
+        m = _Meet()
+        spoken: list = []
+        logger = SimpleNamespace(info=lambda *_: None, warning=lambda *_: None)
+        node = SimpleNamespace(
+            _occasion=OccasionGate(source_cooldowns={'meeting': 5.0}), _meeting_greeter=m.greeter,
+            _dsm=SimpleNamespace(current_state=DialogueStateKind.IDLE),
+            _publish_response=lambda text, animation='neutral': spoken.append((text, animation)),
+            get_logger=lambda: logger)
+        greet_node_on_meeting(node, _marker(count=5))
+        greet_node_on_meeting(node, _marker(count=5))
+        assert len(spoken) == 1 and 'Денис' in spoken[0][0]
+        node._dsm.current_state = DialogueStateKind.SILENCED
+        greet_node_on_meeting(node, _marker(name='Ольга', person_id='p2', count=5))
+        assert len(spoken) == 1
+
+    def test_two_people_both_greeted(self) -> None:
+        m = _Meet()
+        assert 'Денис' in m.meet(_marker(count=5))
+        assert 'Ольга' in m.meet(_marker(name='Ольга', person_id='p2', count=5))
