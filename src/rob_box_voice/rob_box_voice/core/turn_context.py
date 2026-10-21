@@ -38,13 +38,16 @@ def _position(node: Any) -> Any:
     return {"x": round(pose["x"], 2), "y": round(pose["y"], 2), "theta": round(pose["theta"], 3), "frame": "odom"}
 
 
-def context_sections(node: Any, profile: str, recent: Optional[Any] = None) -> Dict[str, Any]:
-    """Разделы ``knowledge.CONTEXT_SECTIONS`` хода: ``profile`` — строки ``<user_profile>`` (шов собеседника v1)."""
+def context_sections(node: Any, profile: str, recent: Optional[Any] = None,
+                     speaker: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Разделы ``knowledge.CONTEXT_SECTIONS`` хода: ``profile`` — строки ``<user_profile>`` (шов собеседника v1),
+    ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``; у хода из Telegram — нет)."""
     provider, voice = tts_state(node)
     info = voice_info_for(provider, voice) or {}
     memory = getattr(node, "_music_state_mem", None)
     return {
         "user_profile": profile,
+        "speaker": speaker,
         "tts_context": _tts_context(provider, voice),
         "speech_gender": info.get("gender"),
         "position": _position(node),

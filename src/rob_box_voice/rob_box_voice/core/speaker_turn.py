@@ -21,8 +21,10 @@ from rob_box_dialog.speaker_adapter import (
     AskCandidate,
     AskPolicy,
     ask_after_turn,
+    speaker_block,
     speaker_ref,
 )
+from rob_box_voice.core.dialogue_helpers import sanitize_speaker_name
 from rob_box_voice.core.identity_ack import tentative_plan
 
 
@@ -88,6 +90,19 @@ def _biometry(sp: Mapping[str, Any], utterance_id: str) -> str:
     if sp.get("tentative_kind"):
         tentative = f" tentative={sp.get('tentative_name')}@{float(sp.get('tentative_conf') or 0):.3f}"
     return f"bio=known conf={float(sp.get('confidence') or 0):.3f} name={sp.get('name') or '-'}{tentative}"
+
+
+def speaker_section(node: Any) -> dict:
+    """Раздел ``speaker`` снимка хода (ADR-0150 §7.3, #3695): собеседник по текущему результату биометрии и лицам
+    в кадре через адаптер; имя — только при ``confirmed``. Словесное «да, это я» (#2809) уже записало имя в
+    ``_current_speaker`` — оно здесь и становится подтверждённым."""
+    with node._speaker_lock:
+        sp = dict(getattr(node, "_current_speaker", None) or {})
+    sp["name"] = sanitize_speaker_name(sp.get("name")) or None  # live 12.08: «Null»/«None» в БД — не имя
+    now = time.time()
+    faces = getattr(node, "_faces", None)
+    names = faces.names_during(now - IDENTITY_FACE_RECENT_S, now) if faces is not None else frozenset()
+    return speaker_block(speaker_ref(sp, now=now, face_names=names, prev=getattr(node, "_speaker_ref", None)))
 
 
 def plan_identity_question(node: Any, result: Any, *, other_question: bool) -> Optional[AskCandidate]:

@@ -33,6 +33,7 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
 from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry  # noqa: E402
 
 
@@ -88,7 +89,8 @@ class TestRaceSttBeforeBiometry:
             return await task
 
         result = _run(scenario())
-        assert "[Spkr:Boris]" in result
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Boris"
         assert "Anton" not in result
 
 
@@ -109,9 +111,10 @@ class TestTimeoutIsHonestUnknown:
                 "kto-to novyj govorit", speaker_context=None, utterance_id="utt-never"
             )
         )
+        result_sp = speaker_section(node)
 
         assert "Anton" not in result
-        assert "[Speaker:unknown]" in result
+        assert result_sp["name_state"] == "unknown"
         assert node._current_speaker == {"is_known": False}
 
 
@@ -131,12 +134,16 @@ class TestSpeakerSwitchAcrossUtterances:
         result_a = _run(
             node._apply_speaker_identity("fraza a", speaker_context=None, utterance_id="utt-a")
         )
+        assert result_a == "fraza a"  # текст человека — без префиксов (#3695)
+        result_a_sp = speaker_section(node)
         result_b = _run(
             node._apply_speaker_identity("fraza b", speaker_context=None, utterance_id="utt-b")
         )
+        assert result_b == "fraza b"  # текст человека — без префиксов (#3695)
+        result_b_sp = speaker_section(node)
 
-        assert "[Spkr:Anton]" in result_a
-        assert "[Spkr:Boris]" in result_b
+        assert result_a_sp["name"] == "Anton"
+        assert result_b_sp["name"] == "Boris"
 
 
 class TestOutOfOrderResults:
@@ -155,12 +162,16 @@ class TestOutOfOrderResults:
         result_1 = _run(
             node._apply_speaker_identity("fraza 1", speaker_context=None, utterance_id="utt-1")
         )
+        assert result_1 == "fraza 1"  # текст человека — без префиксов (#3695)
+        result_1_sp = speaker_section(node)
         result_2 = _run(
             node._apply_speaker_identity("fraza 2", speaker_context=None, utterance_id="utt-2")
         )
+        assert result_2 == "fraza 2"  # текст человека — без префиксов (#3695)
+        result_2_sp = speaker_section(node)
 
-        assert "[Spkr:Anton]" in result_1
-        assert "[Spkr:Boris]" in result_2
+        assert result_1_sp["name"] == "Anton"
+        assert result_2_sp["name"] == "Boris"
 
 
 class TestNoUtteranceIdFallsBackToLegacyRead:
@@ -180,5 +191,7 @@ class TestNoUtteranceIdFallsBackToLegacyRead:
         result = _run(
             node._apply_speaker_identity("prodolzhenie razgovora", speaker_context=None)
         )
+        assert result == "prodolzhenie razgovora"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
 
-        assert "[Spkr:Anton]" in result
+        assert result_sp["name"] == "Anton"

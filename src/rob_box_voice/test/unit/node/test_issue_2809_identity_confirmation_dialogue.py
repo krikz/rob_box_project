@@ -73,6 +73,7 @@ from rob_box_voice.dialogue_node import (  # noqa: E402
     DialogueNode,
     classify_identity_confirmation,
 )
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
 from identity_v17_legacy import finish_turn_after_identity  # noqa: E402
 
 SPEAKER_ID = "1ae4b0ac-0000-0000-0000-000000000000"
@@ -203,8 +204,9 @@ class TestSingleHypothesis:
         node._current_speaker = _tentative_single()
 
         result1 = _run(node._apply_speaker_identity("privet", speaker_context=None))
+        result1_sp = speaker_section(node)
         assert "Denchik" not in result1  # имя никогда не идёт в user_input
-        assert "[Speaker:tentative]" in result1
+        assert result1_sp == {"name": None, "name_state": "tentative"}
         assert node._pending_identity_hint == {
             "kind": "single",
             "name": "Denchik",
@@ -225,14 +227,17 @@ class TestSingleHypothesis:
         result2 = _run(
             node._apply_speaker_identity("kak dela", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result2
+        result2_sp = speaker_section(node)
+        assert result2_sp == {"name": None, "name_state": "tentative"}
         assert "Denchik" not in result2
         assert node._pending_identity_hint is None
 
         result3 = _run(
             node._apply_speaker_identity("chto novogo", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result3
+        assert result3 == "chto novogo"  # текст человека — без префиксов (#3695)
+        result3_sp = speaker_section(node)
+        assert result3_sp == {"name": None, "name_state": "tentative"}
         assert node._pending_identity_hint is None
 
     def test_confirmed_yes_uses_name_until_end_of_session(self, node):
@@ -243,7 +248,9 @@ class TestSingleHypothesis:
         result = _run(
             node._apply_speaker_identity("да, это я", speaker_context=None)
         )
-        assert "[Spkr:Denchik]" in result
+        assert result == "да, это я"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
         assert node._current_speaker["name"] == "Denchik"
         assert "tentative_name" not in node._current_speaker
 
@@ -269,7 +276,9 @@ class TestSingleHypothesis:
         result2 = _run(
             node._apply_speaker_identity("kak pogoda", speaker_context=None)
         )
-        assert "[Spkr:Denchik]" in result2
+        assert result2 == "kak pogoda"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp["name"] == "Denchik"
         assert node._speaker_register_pub.publish.call_count == 1  # не выросло
 
     def test_confirmed_no_stays_silent_until_end_of_session(self, node):
@@ -281,7 +290,8 @@ class TestSingleHypothesis:
         result = _run(
             node._apply_speaker_identity("нет, не я", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result
+        result_sp = speaker_section(node)
+        assert result_sp == {"name": None, "name_state": "tentative"}
         assert "Denchik" not in result
         assert node._pending_identity_hint is None
         assert node._speaker_register_pub.publish.call_count == 0
@@ -292,7 +302,9 @@ class TestSingleHypothesis:
         result2 = _run(
             node._apply_speaker_identity("chto tam", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result2
+        assert result2 == "chto tam"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp == {"name": None, "name_state": "tentative"}
         assert node._pending_identity_hint is None
 
     def test_after_gap_hint_again_but_question_once_per_speaker(self, node):
@@ -333,9 +345,11 @@ class TestContestedHypothesis:
                 "ya mimo shel, imya svoe ne nazovu", speaker_context=None
             )
         )
+        result_sp = speaker_section(node)
         assert "Boris" not in result
         assert "Sasha" not in result
-        assert "[Speaker:tentative]" in result
+        # contested: гипотезы одного имени нет — для снимка это unknown, имён в снимке нет
+        assert result_sp == {"name": None, "name_state": "unknown"}
 
         hint_lines = node._pending_identity_hint_lines()
         assert hint_lines  # вопрос всё же есть -- нейтральный
@@ -382,7 +396,9 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я.", speaker_context=None))
-        assert "[Spkr:Denchik]" in result
+        assert result == "да, это я."  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
         assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
         assert node._pending_identity_hint is None
 
@@ -398,7 +414,9 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я.", speaker_context=None))
-        assert "[Spkr:Denchik]" in result
+        assert result == "да, это я."  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
         assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
         assert node._speaker_register_pub.publish.call_count == 1
         assert "Speaker confirmed verbally: 'Denchik'" in _logged(node)
@@ -407,7 +425,9 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result2 = _run(node._apply_speaker_identity(
             "а что ты обо мне запомнил", speaker_context=None))
-        assert "[Spkr:Denchik]" in result2
+        assert result2 == "а что ты обо мне запомнил"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp["name"] == "Denchik"
         assert node._pending_identity_hint is None  # не переспрашиваем
         assert node._speaker_register_pub.publish.call_count == 1
         assert "Speaker verbal confirmation reused: 'Denchik'" in _logged(node)
@@ -421,8 +441,10 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я", speaker_context=None))
+        assert result == "да, это я"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
         # Вопрос протух: "да" не считается ответом, вопрос задаётся заново.
-        assert "[Spkr:Denchik]" not in result
+        assert result_sp["name"] != "Denchik"
         assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is None
         assert node._pending_identity_hint is not None
         assert node._speaker_register_pub.publish.call_count == 0
@@ -459,5 +481,7 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "ты ещё здесь", speaker_context=None))
-        assert "[Spkr:Denchik]" not in result
+        assert result == "ты ещё здесь"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] != "Denchik"
         assert node._pending_identity_hint is not None

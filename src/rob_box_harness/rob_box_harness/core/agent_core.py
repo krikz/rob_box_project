@@ -163,18 +163,12 @@ def _compose_current_turn_message(
 
 #: Issue #2955 — source-tag prefixes dialogue_node glues onto the RAW
 #: STT transcript before it ever reaches :meth:`AgentCore.process_input`
-#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195), and
-#: ``[Spkr:<name>]`` / ``[Speaker:unknown]`` / ``[Speaker:tentative]``
-#: for voice-biometry hints (issue #1077 / #2809). None of these are
-#: words the user said — a praise/vocal-request gate scanning the tag
+#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195). It is
+#: not a word the user said — a praise/vocal-request gate scanning the tag
 #: itself (instead of the utterance after it) would be scanning the
-#: wrong text. Only one tag is ever applied per turn today
-#: (``_prepare_user_input_context`` branches ``if from_tg / elif
-#: speaker_id_enabled``), but the loop below tolerates a hypothetical
-#: stack without special-casing the count.
-_SOURCE_PREFIX_RE = re.compile(
-    r"^(?:\[(?:TG|Spkr:[^\]]*|Speaker:[^\]]*)\]\s*)+"
-)
+#: wrong text. Voice-biometry prefixes are gone (ADR-0150 §7.3, #3695):
+#: the speaker reaches the LLM as the ``speaker`` snapshot section.
+_SOURCE_PREFIX_RE = re.compile(r"^(?:\[TG\]\s*)+")
 
 
 def _raw_user_utterance(text: str) -> str:

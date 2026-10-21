@@ -230,14 +230,12 @@ from rob_box_voice.core.speak_helpers import (
     strip_done_marker, strip_history_marker, strip_markdown,
     EMPTY_REPLY_PHRASE,
     strip_meta_markers,  # Issue #2547 — strip internal section headers
-    strip_speaker_tag, strip_thinking_blocks,
+    strip_thinking_blocks,
 )
 from rob_box_voice.startup_greeting import pick_greeting
 # ADR-0101 §3.1 — единый шов «можно ли заговорить» (issue #2536, PR-B).
 from rob_box_voice.core.occasion import Occasion, OccasionGate, VerdictKind
 from rob_box_voice.core.meeting import (
-    MeetingGreeter,
-    MeetingMarker,
     parse_meeting_marker,
 )
 
@@ -255,6 +253,7 @@ from rob_box_voice.core.speaker_turn import (
     note_face,
     note_interlocutor,
     plan_identity_question,
+    speaker_section,
 )
 # ADR-0101 §3.1 — ``Occasion`` импортирован выше (PR-B, #2536); старая
 # однострочная запись из PR-A удалена как дубликат (использовалась только в
@@ -1234,19 +1233,8 @@ class DialogueNode(DialogueStageMixin, Node):
         # ADR-0101 §3.1 / PR-B: единый шов «можно ли заговорить» (issue #2536).
         # Стартовый gate: глобальный дебаунс 2с, startup — one-shot,
         # dj_tick / unclear / inactivity — резерв для PR-D/E.
-        self._occasion: OccasionGate = OccasionGate(
-            # Issue #2599 PR-C: «meeting» — повод, который поднимает
-            # лицевая нода, когда трек стал Встречей (ADR-0123 §3).
-            # Кулдаун на сам повод короткий: не давать двум людям,
-            # вошедшим вместе, слипнуться в одно приветствие. За то,
-            # чтобы не здороваться с ОДНИМ человеком по десять раз,
-            # отвечает per-person кулдаун в ``MeetingGreeter``.
-            source_cooldowns={"meeting": 5.0},
-        )
-        # Issue #2599 PR-C — «Денис входит в мастерскую → робот
-        # заговаривает первым». Фраза собирается без LLM: приветствие
-        # обязано звучать даже когда у облака кончились деньги.
-        self._meeting_greeter: MeetingGreeter = MeetingGreeter()
+        # Встреча лицом больше не повод заговорить: робот сам в разговор не вступает (В12′, ADR-0150 §18.3; #3695).
+        self._occasion: OccasionGate = OccasionGate()
         # Issue #1219 — LLM voice selection: активный TTS-провайдер для
         # контекста [TTS]. Должен совпадать с tts_node.yaml provider
         # (minimax). Установленный голос хранит tts_node (VoiceOwner, PR-4 ч.3) и сообщает его в provider_state.
@@ -2895,25 +2883,11 @@ class DialogueNode(DialogueStageMixin, Node):
         speaker_context: Optional[str],
         utterance_id: Optional[str] = None,
     ) -> str:
-        """Issue #1077 — префикс спикера для LLM.
+        """Собеседник этой фразы: биометрия по ``utterance_id`` → ``SpeakerRef`` (адаптер) и ветка tentative.
 
-        🔴 FIX (issue #1101): НЕ используем формат «[Говорит <имя>]» —
-        DSM-классификатор ``on_user_input`` ищет wake-word («роббокс»,
-        «робот», …) в ЛЮБОМ месте текста и матчит его внутри префикса
-        «[Говорит робот Антон]» → возвращает ``WAKE_WORD`` вместо
-        ``STT_RESULT`` → guard ``event == STT_RESULT`` пропускает LLM →
-        «акцепт есть, робот не отвечает».
-
-        Новый формат «[Speaker:<id> name=Антон conf=0.92]» не содержит
-        wake-слов. Данные о спикере уже доступны в dynamic_system →
-        LLM получает имя из system-context, а не из user-prefix.
-
-        Args:
-            user_input: Raw STT-транскрипт.
-            speaker_context: Контекст от Yandex tag (если уже загружен).
-
-        Returns:
-            user_input с техническим префиксом спикера (без wake-words).
+        ADR-0150 §7.3/§7.5 (#3695): текст человека LLM получает как есть — без префиксов собеседника (были
+        ``Spkr``/``Speaker`` в квадратных скобках); кто говорит — структурный раздел ``speaker`` снимка хода (имя только при ``confirmed``).
+        ``speaker_context`` не используется (сигнатура вызывающих).
         """
         # Issue #2829 (ADR-0131) — резолвим _current_speaker ПО ЭТОЙ фразе
         # (join по utterance_id). Идемпотентно: если ``_prepare_user_input_
@@ -2937,34 +2911,21 @@ class DialogueNode(DialogueStageMixin, Node):
             sid = str(sp.get("speaker_id") or "")[:8]
             # Issue #1787 — отдаём реплику speaker_id_node: он копит по ней
             # темы и подбирает внутреннюю кличку. Публикуем СЫРОЙ текст,
-            # до служебных префиксов ([Spkr:…] исказил бы подсчёт тем).
+            # как сказал человек.
             # Делается до проверки имени: эпитет нужен как раз тем, у кого
             # имя мусорное или отсутствует.
             self._publish_speaker_observation(
                 str(sp.get("speaker_id") or ""), user_input
             )
             if name:
-                # 🔴 FIX (live 12.08): защита от мусорных имён в БД
-                # (resemblyzer может хранить "Null", "null", "None").
-                # Такие имена — не имена, игнорируем.
+                # live 12.08: мусорные имена в БД ("Null", "None") — не имена; снимок их не пропускает
+                # (sanitize_speaker_name в _build_dynamic_system_context).
                 if not sanitize_speaker_name(name):
                     self.get_logger().warning(
                         f"👤 [issue 1077] Ignoring invalid speaker name: {name!r} "
                         f"(treating as unknown)"
                     )
-                    if speaker_context is None:
-                        user_input = f"[Speaker:unknown] {user_input}"
                     return user_input
-                # 🔴 FIX (live 12.08): всегда добавляем имя спикера в
-                # user_input — даже если speaker_context уже загружен.
-                # LLM получает имя через dynamic_system (<system_context>),
-                # но дублирующая подсказка в user_input страхует от
-                # «потери» имени (баг: спикер распознан, LLM молчит).
-                # Формат без wake-слов: [Spkr:Антон] — DSM не матчит
-                # «робот»/«роббокс» внутри скобок.
-                tag = f"[Spkr:{name}]"
-                if tag not in user_input:
-                    user_input = f"{tag} {user_input}"
                 self.get_logger().info(
                     f"👤 [issue 1077] Speaker: {name!r} conf={conf:.2f}"
                 )
@@ -2986,13 +2947,10 @@ class DialogueNode(DialogueStageMixin, Node):
                 # (после словесного "да"), либо кладёт разовую
                 # подсказку-гипотезу для _build_dynamic_system_context
                 # (см. _pending_identity_hint_lines), либо просто ставит
-                # [Speaker:tentative] без имени.
+                # ничего: имени в снимке нет.
                 user_input = self._handle_tentative_speaker(
                     sp, user_input, utterance_id
                 )
-        else:
-            if speaker_context is None:
-                user_input = f"[Speaker:unknown] {user_input}"
         return user_input
 
     # -- Issue #2809 (продолжение): переспрос про tentative-личность --------
@@ -3093,12 +3051,6 @@ class DialogueNode(DialogueStageMixin, Node):
         if answer and tentative_name:
             state["name"] = tentative_name
 
-    def _tag_tentative(self, user_input: str) -> str:
-        tag = "[Speaker:tentative]"
-        if tag not in user_input:
-            user_input = f"{tag} {user_input}"
-        return user_input
-
     def _confirm_tentative_speaker(
         self,
         speaker_id: str,
@@ -3109,9 +3061,8 @@ class DialogueNode(DialogueStageMixin, Node):
         """Словесное "да, это я" -- дальше ведём себя так, как будто
         биометрия сама уверенно опознала: мутируем ``_current_speaker``
         (тот же снимок следующим шагом читает
-        ``_build_dynamic_system_context`` этой же реплики) и возвращаем
-        обычный ``[Spkr:...]`` -- переиспользуем confident-путь целиком,
-        вторую копию его логики не заводим.
+        ``_build_dynamic_system_context`` этой же реплики): имя попадает в раздел ``speaker`` снимка как у
+        уверенной биометрии -- вторую копию её логики не заводим.
 
         Issue #6 (ADR-0123 §6, #2771): это ЛОКАЛЬНАЯ мутация снимка
         dialogue_node, наружу (``/voice/speaker/result``, откуда читает
@@ -3124,9 +3075,6 @@ class DialogueNode(DialogueStageMixin, Node):
             self._current_speaker.pop("tentative_name", None)
             self._current_speaker.pop("tentative_conf", None)
             self._current_speaker.pop("tentative_kind", None)
-        tag = f"[Spkr:{name}]"
-        if tag not in user_input:
-            user_input = f"{tag} {user_input}"
         state = self._identity_confirmations.get(speaker_id)
         if state is not None and state.get("growth_registered"):
             # Отдельная строка для реплик ПОСЛЕ подтверждения -- по ней
@@ -3267,7 +3215,7 @@ class DialogueNode(DialogueStageMixin, Node):
                 full_sid, state["name"], user_input, utterance_id
             )
         if state.get("confirmed") is False:
-            return self._tag_tentative(user_input)
+            return user_input
         if not state["asked"]:
             # ADR-0150 В17 (#3695): не спрашивать сейчас — кандидат; вопрос решается после хода
             # (core/speaker_turn.plan_identity_question): не на команду, не раньше N-й фразы, один раз.
@@ -3284,7 +3232,7 @@ class DialogueNode(DialogueStageMixin, Node):
                 f"👤 [issue 2809] identity question hint set: "
                 f"kind={tentative_kind} (id={full_sid[:8]})"
             )
-        return self._tag_tentative(user_input)
+        return user_input
 
     def _handle_tentative_speaker(
         self, sp: dict, user_input: str, utterance_id: Optional[str] = None
@@ -3292,7 +3240,7 @@ class DialogueNode(DialogueStageMixin, Node):
         """Диспетчер переспроса для tentative-случая (см. блок выше)."""
         full_sid, tentative_kind, tentative_name = self._tentative_identity_parts(sp)
         if not full_sid:
-            return self._tag_tentative(user_input)
+            return user_input
 
         state = self._tentative_session_state(full_sid)
         intro = getattr(self, "_turn_self_intro", None)
@@ -3354,7 +3302,7 @@ class DialogueNode(DialogueStageMixin, Node):
             f"себя {intro!r} (гипотеза биометрии: {tentative_name!r}, "
             f"id={full_sid[:8]}) -- путь регистрации"
         )
-        return self._tag_tentative(user_input)
+        return user_input
 
     def _note_self_intro(
         self, user_input: str, utterance_id: Optional[str]
@@ -3613,7 +3561,9 @@ class DialogueNode(DialogueStageMixin, Node):
             f"🗒️ [backlog] recent_unaddressed entries={int(bool(recent))} "
             f"background_phrases={backlog.background_phrases(time.time()) if backlog else 0}"
         )
-        lines = [build_context(context_sections(self, "\n".join(profile), recent))]
+        # #3695: кто сказал реплику — структурой (имя только при confirmed), а не префиксом в её тексте.
+        speaker = speaker_section(self) if tg_chat_id is None else None
+        lines = [build_context(context_sections(self, "\n".join(profile), recent, speaker))]
         # W7c (issue #968): активные задачи планировщика (voice/music/anim
         # каналы) — LLM видит «что сейчас исполняется» перед каждым ходом
         # и НЕ добавляет пост-амбл «Готово!» поверх играющего трека
@@ -5065,7 +5015,7 @@ class DialogueNode(DialogueStageMixin, Node):
             # текущего, а не предыдущего собеседника.
             await self._resolve_speaker_for_utterance(utterance_id)
             # Issue #2828 -- ответ на переспрос по ack регистрации читаем
-            # по СЫРОЙ реплике, до префиксов [Spkr:...]/[Speaker:...].
+            # по сырой реплике человека.
             self._resolve_identity_ack_answer(user_input)
             # Issue #2925 -- представление в реплике читаем ДО решения о
             # tentative-вопросе (#2888), регистрируем ПОСЛЕ него.
@@ -5499,12 +5449,6 @@ class DialogueNode(DialogueStageMixin, Node):
         spoken = strip_history_marker(
             final_text_for_speech(result, self.get_logger().warning)
         )
-        # 🔴 FIX (live 20.08 DJ): LLM скопировала входной маркер
-        # ``[Spkr:<имя>]`` в свой ответ → служебный текст ``[CRITICAL]
-        # ...`` озвучивался целиком (маркер спикера сбивал
-        # startswith-проверку служебного текста ниже). Спикер-тег —
-        # внутренний маршрутный маркер, в TTS он попадать не должен.
-        spoken = strip_speaker_tag(spoken)
         # 🔴 FIX (live 16:02 «английская мысль на Бахе»): MiniMax M3
         # возвращает ``<think>...</think>`` в content перед реальным
         # ответом. Done-чекер ниже ловит «done», но если перед ним лежит
@@ -6126,7 +6070,8 @@ class DialogueNode(DialogueStageMixin, Node):
 
         Колбэк горячий: топик общий с person-детекцией и сыплет ~5
         событий в секунду на человека. Поэтому здесь только дешёвая
-        проверка, а вся логика — в :meth:`_handle_meeting`.
+        проверка. Приветствие Встречи удалено (В12′: робот сам в разговор не вступает; #3695) — маркер Встречи
+        нужен только шву лица (ADR-0139).
 
         ADR-0139 §2.3: дополнительно кладём наблюдение лица в шов
         «Знакомый» (``self._identity.note_face_seen``), чтобы голосовой
@@ -6145,7 +6090,7 @@ class DialogueNode(DialogueStageMixin, Node):
         if marker is None:
             return
         # ADR-0139 §2.3 — note_face_seen через тот же подписочный путь,
-        # что и _handle_meeting. Не плодим новый топик
+        # что и прежняя Встреча. Не плодим новый топик
         # /perception/face/meeting (контракт Vision Pi, ADR-0139 §5.2).
         if self._face_voice_hint_enabled:
             try:
@@ -6161,82 +6106,10 @@ class DialogueNode(DialogueStageMixin, Node):
                 )
             except Exception as exc:  # noqa: BLE001
                 # ADR-0139 §2.5: hint — деградируемая функциональность,
-                # падение не должно ронять основной поток _handle_meeting.
+                # падение не должно ронять колбэк.
                 self.get_logger().debug(
                     f"👤 [ADR-0139] note_face_seen failed (ignored): {exc!r}"
                 )
-        try:
-            self._handle_meeting(marker)
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ [issue 2599] обработка Встречи упала: {exc!r}"
-            )
-
-    def _handle_meeting(self, marker: MeetingMarker) -> None:
-        """Решить и сказать: «Денис вошёл → робот здоровается первым».
-
-        Три независимых фильтра, в порядке дешевизны:
-
-        1. **Диалог не идёт.** Приветствие — для IDLE. Перебивать
-           человека, который уже говорит, хуже, чем промолчать (та же
-           логика, что у startup-приветствия).
-        2. **Не частим с ЭТИМ человеком** (``MeetingGreeter``,
-           per-person кулдаун): вышел покурить и вернулся — это не
-           новая встреча.
-        3. **Повод** (``OccasionGate``, ADR-0102): глобальный дебаунс и
-           стаб-фильтр. Единственная точка решения «можно ли заговорить
-           без слова пользователя» — своей копии правил здесь нет.
-        """
-        if self._dsm.current_state != DialogueStateKind.IDLE:
-            self.get_logger().info(
-                f"👤 [встреча] {marker.name or 'незнакомец'} — диалог "
-                f"активен ({self._dsm.current_state}), не перебиваю"
-            )
-            return
-
-        if not self._meeting_greeter.should_greet(marker):
-            return
-
-        verdict = self._occasion.may_speak(
-            Occasion(
-                kind="meeting",
-                is_user_initiated=False,
-                payload={
-                    # Настоящие значения из VisionEvent, а не константы:
-                    # у OccasionGate свой стаб-фильтр по этим двум полям,
-                    # и подставлять в них «правильные» значения — значит
-                    # его отключить (ADR-0089 §2.2, #2583).
-                    "event_type": "face",
-                    "source_camera": marker.source_camera,
-                    "person_id": marker.person_id,
-                    "name": marker.name,
-                    "is_new": marker.is_new,
-                },
-            )
-        )
-        if verdict.kind != VerdictKind.ALLOW:
-            self.get_logger().info(
-                f"👤 [встреча] {marker.name or 'незнакомец'} — повод "
-                f"отклонён: {verdict.reason}"
-            )
-            return
-
-        phrase = self._meeting_greeter.greet(marker)
-        if not phrase:
-            return
-
-        self.get_logger().info(
-            "🗣 [встреча] %s (person=%s sim=%.3f new=%s встреч=%d): %r"
-            % (
-                marker.name or "незнакомец",
-                marker.person_id[:8],
-                marker.similarity,
-                marker.is_new,
-                marker.encounter_count,
-                phrase,
-            )
-        )
-        self._publish_response(phrase, animation="happy")
 
     def _cancel_greeting_timer(self) -> None:
         """Отменить одноразовый таймер приветствия, если он создан."""
@@ -6795,7 +6668,7 @@ class DialogueNode(DialogueStageMixin, Node):
         До этой правки акты E2E были изолированы только по БД дикторов
         (e2e_mode стирает ``/data/speakers.e2e.db``), а окно ходов LLM
         переживало переход: в акте 2b (run 35903232434) LLM видела ход
-        акта 2 «[Spkr:Саша] поищи … про чай» и сказала НОВОЙ Саше факт
+        акта 2 «(Саша) поищи … про чай» и сказала НОВОЙ Саше факт
         старой. Сброс — тот же ``_reset_dialogue_session``, что у фразы
         «новая сессия», но без голосового подтверждения.
 

@@ -112,17 +112,10 @@ class TestStripMetaMarkersBracketed:
     def test_only_marker_becomes_empty(self) -> None:
         assert strip_meta_markers("[Мнение ассистента]") == ""
 
-    def test_speaker_tag_is_NOT_stripped(self) -> None:
-        # Speaker tags are owned by ``strip_speaker_tag`` which runs
-        # BEFORE ``strip_meta_markers`` in the pipeline — this helper
-        # must NOT also strip them, because the speaker routing
-        # marker is then invisible to the service-text guard
-        # (``[Spkr:X] [CRITICAL] ...`` would collapse into
-        # ``[CRITICAL] ...`` if both strips fired). Pinning the
-        # exclusion here keeps the pipeline contract honest.
-        assert strip_meta_markers("[Spkr:Эйджик] Привет") == (
-            "[Spkr:Эйджик] Привет"
-        )
+    def test_former_speaker_tag_is_an_ordinary_bracket_marker(self) -> None:
+        # #3695: префикс собеседника в текст реплики больше не ставится (раздел ``speaker`` снимка), отдельной
+        # зачистки для него нет — если модель всё же выдаст такую скобку, она снимается как любая мета-вставка.
+        assert strip_meta_markers("[Spkr:Эйджик] Привет") == "Привет"
 
     def test_critical_marker_is_NOT_stripped(self) -> None:
         # ``[CRITICAL]`` is a service-text marker consumed by the
@@ -148,22 +141,8 @@ class TestStripMetaMarkersBracketed:
             "[SYSTEM block regurgitated]"
         ) == "[SYSTEM block regurgitated]"
 
-    def test_stacked_speaker_tag_then_meta_marker_not_stripped(
-        self,
-    ) -> None:
-        # The ``[Spkr:X]`` prefix is in the exclusion list, so
-        # ``strip_meta_markers`` does NOT touch the input at all —
-        # the leading speaker tag is owned by ``strip_speaker_tag``
-        # which runs first in the pipeline. Pinning this behaviour
-        # protects against accidental regression: if someone widens
-        # the exclusion list and lets ``strip_meta_markers`` strip
-        # the speaker-tag prefix, the service-text guard below
-        # (``[Spkr:X] [CRITICAL] ...`` → ``[CRITICAL] ...``) would
-        # collapse the prefix into TTS-readable body content.
-        # (теперь ``[Spkr:X]`` остаётся, а следующая мета-вставка снимается.)
-        assert strip_meta_markers(
-            "[Spkr:Эйджик] [Мнение ассистента] Привет"
-        ) == "[Spkr:Эйджик] Привет"
+    def test_stacked_bracket_markers_are_all_stripped(self) -> None:
+        assert strip_meta_markers("[Spkr:Эйджик] [Мнение ассистента] Привет") == "Привет"
 
 
 class TestStripMetaMarkersBold:
