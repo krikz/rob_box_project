@@ -231,6 +231,50 @@ def test_executor_lets_speech_through_after_a_started_launch_and_forgets_at_turn
     assert underlying.executed == ["request_music", "speak_text"]
 
 
+# ── звуковой эффект в ходе «включи звук X» (#3794, PR-7b #3698) ─────────────────
+
+SOUND_ARGS = {"sound": "robot_happy"}
+
+
+def test_sound_that_played_is_not_called_nothing_played():
+    """Живой прогон 21.10 15:39Z: «Робот, включи звук радостный» → play_sound done (SoundEvent started), звук
+    играл, а код music turn сказал «Ничего не заиграло — я мелодию не запускал». Грамматика читает «включи звук
+    радостный» как пьесу; исполненный звуковой эффект — не повод для фразы о музыке."""
+    from rob_box_voice.core.music_turn import piece_requested
+
+    assert piece_requested("Робот, включи звук радостный") is True  # причина ложной фразы
+    played = _turn(("play_sound", SOUND_ARGS, False, "Звук robot_happy заиграл."))
+    assert played.sounds == [True]
+    assert turn_reply(played, requested=False, voiced=1, piece=True) is None
+
+
+def test_sound_refused_busy_gives_one_phrase_the_sound_tools_not_nothing_played():
+    """Отказ ``skipped{busy}``: об исходе — фраза тула play_sound (её видит модель), второй фразы о музыке нет."""
+    refused = _turn(("play_sound", SOUND_ARGS, True, "Звук robot_happy не сыграл: другой звук ещё играет."))
+    assert refused.sounds == [False]
+    assert turn_reply(refused, requested=False, voiced=1, piece=True) is None
+
+
+def test_piece_asked_and_nothing_executed_is_still_nothing_played():
+    from rob_box_voice.core.media_phrases import NOT_PLAYED_TEXT
+
+    assert turn_reply(MusicTurn(), requested=False, voiced=0, piece=True) == NOT_PLAYED_TEXT
+
+
+def test_executor_records_the_sound_outcome_and_forgets_it_at_turn_boundary():
+    underlying = _Underlying({"play_sound": (False, "Звук robot_happy заиграл.")})
+    executor = SchedulerToolExecutor(underlying, scheduler=None)
+
+    async def _turn_calls():
+        executor.begin_turn()
+        await executor.execute(ToolCall(id="1", name="play_sound", arguments=SOUND_ARGS))
+        recorded = list(executor.music_turn.sounds)
+        executor.begin_turn()
+        return recorded, list(executor.music_turn.sounds)
+
+    assert _run(_turn_calls()) == ([True], [])
+
+
 def test_turn_heard_text_is_the_human_phrase_and_retry_keeps_it():
     """06.10 18:04: скрытый ``heard_text`` dj_set — реплика человека; синтетический ретрай её не затирает."""
     from rob_box_voice.core.music_turn import turn_heard_text

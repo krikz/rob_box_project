@@ -156,8 +156,10 @@ class PlaySoundTool(MCPTool):
         self.log_info(f"Звук '{sound}' (request {request_id[:8]}): {status} {reason or ''}".rstrip())
         data = {"sound": sound, "request_id": request_id, "status": status, "reason": reason,
                 "duration": self._duration_map.get(sound, 1.5)}
-        return MCPToolResult(success=status == "done", data=data, error=None if status == "done" else (reason or status),
-                             message=sound_phrase(status, reason, sound))
+        phrase = sound_phrase(status, reason, sound)
+        # При отказе модель видит только ``error`` (живой прогон 21.10: голое «busy»): туда же - фраза кода.
+        return MCPToolResult(success=status == "done", data=data, error=None if status == "done" else phrase,
+                             message=phrase)
 
     def _events(self) -> OwnerEvents:
         from rob_box_dialog_msgs.msg import SoundEvent

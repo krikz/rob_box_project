@@ -73,8 +73,9 @@ def test_trigger_carries_sound_and_request_id_and_started_is_success(monkeypatch
 def test_busy_channel_is_an_honest_refusal_with_reason(monkeypatch):
     tool, _ = _tool(lambda b: [_event(SoundEvent.KIND_SKIPPED, b["request_id"], reason="busy")], monkeypatch)
     out = tool.execute(sound="robot_happy")
-    assert not out.success and out.error == "busy" and out.data["status"] == "rejected"
-    assert out.message == "Звук robot_happy не сыграл: другой звук ещё играет."
+    assert not out.success and out.data["status"] == "rejected" and out.data["reason"] == "busy"
+    # модель при отказе видит только error: там фраза кода, а не голое «busy» (живой прогон 21.10)
+    assert out.message == out.error == "Звук robot_happy не сыграл: другой звук ещё играет."
 
 
 def test_unknown_reason_falls_back_to_the_generic_refusal(monkeypatch):

@@ -55,6 +55,10 @@ from .media_router import DJ_SET_TOOL, GENERATE_MUSIC_TOOL, REQUEST_MUSIC_TOOL, 
 #: результата, ``MCPToolResult.message``); ``search`` / ``info`` модель пересказывает по полям результата сама.
 LIBRARY_TOOL = "music_library"
 LIBRARY_SPOKEN_ACTIONS = ("list", "play", "rate", "update", "delete")
+#: Звуковой эффект (ADR-0150 PR-7b, #3698): его итог - ``SoundEvent`` владельца звука, фразу об исходе строит тул.
+#: Ход, где эффект исполнился (``done`` или честный отказ), - про звук, а не про пьесу: «Ничего не заиграло» музыки
+#: о нём не говорится (живой прогон 21.10 15:39Z: звук играл, а робот сказал, что ничего не заиграло, #3794).
+SOUND_TOOL = "play_sound"
 #: Код отказа ``speak_text`` в ходе, где запуск музыки не удался.
 SPEECH_REFUSAL_CODE = "music_phrase_by_code"
 #: Что видит модель вместо исполнения ``speak_text``.
@@ -134,11 +138,14 @@ class MusicTurn:
     launches: List[Launch] = field(default_factory=list)
     #: Фраза итога ``music_library`` хода (список / играет / оценка / удаление) или ``None``.
     library_phrase: Optional[str] = None
+    #: Исходы ``play_sound`` хода: ``True`` - звук заиграл (``SoundEvent started``), ``False`` - отказ/таймаут.
+    sounds: List[bool] = field(default_factory=list)
 
     def reset(self) -> None:
         """Граница хода."""
         self.launches.clear()
         self.library_phrase = None
+        self.sounds.clear()
 
     def library_answered(self) -> bool:
         """Итог библиотеки хода говорит код, запусков v2 в ходе не было."""
@@ -151,6 +158,8 @@ class MusicTurn:
             self.launches.append(Launch(tool, args, media_tool_succeeded(is_error, content), content))
         elif tool == LIBRARY_TOOL and str(args.get("action") or "") in LIBRARY_SPOKEN_ACTIONS:
             self.library_phrase = library_result_phrase(is_error, content)
+        elif tool == SOUND_TOOL:
+            self.sounds.append(not is_error)
 
     def speech_allowed(self) -> bool:
         """``speak_text`` модели можно исполнить: запусков не было или последний удался и это не пьеса
@@ -211,7 +220,9 @@ def turn_reply(
 
     * запусков не было: просили сет — :data:`NOT_LAUNCHED_TEXT`; просили пьесу (``piece``) и никакой другой
       музыкальный тул не сработал (``other_launch``) — :data:`NOT_PLAYED_TEXT` (прогон 12.10 16:48: «Токкату ре
-      минор Баха ставлю мелодией.» с ``tools=[]``); иначе ``None``;
+      минор Баха ставлю мелодией.» с ``tools=[]``); иначе ``None``. Ход со звуковым эффектом с исходом
+      (``turn.sounds``: «включи звук радостный» грамматика тоже читает как пьесу) — про звук: об исходе говорит
+      фраза тула ``play_sound``, «Ничего не заиграло» не звучит;
     * последний запуск удался и модель уже сказала своё через ``speak_text`` (``voiced`` > 0, «рэп под бит») —
       ``None``; не сказала — фраза об успехе (:meth:`MusicTurn.phrase`);
     * последний запуск не удался — честная фраза :meth:`MusicTurn.phrase` всегда.
@@ -221,7 +232,7 @@ def turn_reply(
     if not turn.launches:
         if requested:
             return NOT_LAUNCHED_TEXT
-        return NOT_PLAYED_TEXT if piece and not other_launch else None
+        return NOT_PLAYED_TEXT if piece and not other_launch and not turn.sounds else None
     if turn.launches[-1].ok and voiced > 0:
         return None
     return turn.phrase()
