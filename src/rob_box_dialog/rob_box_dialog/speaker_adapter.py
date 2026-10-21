@@ -31,6 +31,7 @@ from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optiona
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
+from rob_box_dialog.greeting_reply import is_greeting_reply
 from rob_box_dialog.reply_grammar import Reply, classify_reply
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
@@ -191,6 +192,31 @@ def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Repl
     if not 0.0 <= age <= kn.IDENTITY_TTL_S:
         return None
     return classify_reply(str(getattr(heard, "text", "") or ""), asks_name=frame.payload.get("kind") in kn.IDENTITY_ASKS_NAME)
+
+
+def greeting_frame(person_ref: str, name: str, speech_id: str) -> Dict[str, Any]:
+    """Данные кадра ``GreetingReply`` (#3776): кого поприветствовали; ``asked_at`` ``None`` — приветствие ещё звучит
+    (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``)."""
+    return {"person_ref": person_ref, "name": name, "asked_at": None, "speech_id": speech_id}
+
+
+def greeting_open(frame: Optional[SceneFrame]) -> bool:
+    return frame is not None and frame.kind == "GreetingReply" and frame.payload.get("asked_at") is not None
+
+
+def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
+    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10, #3776): окно ``REPLY_WINDOW_S`` открыто, и
+    это либо ответ по грамматике приветствия (``"grammar"``), либо лицо приветствованного в кадре в момент фразы
+    (``"face"``; канал лица надёжен). DOA — не условие. Иначе ``""`` (бэклог)."""
+    if not greeting_open(frame) or not kn.GREETING_REPLY_WITHOUT_WAKE:
+        return ""
+    age = float(getattr(heard, "t", 0.0) or 0.0) - float(frame.payload["asked_at"])
+    if not 0.0 <= age <= kn.REPLY_WINDOW_S:
+        return ""
+    if is_greeting_reply(str(getattr(heard, "text", "") or "")):
+        return "grammar"
+    name = str(frame.payload.get("name") or "").lower()
+    return "face" if name and name in (getattr(heard, "faces", ()) or ()) else ""
 
 
 def trusted_voice(heard: Any) -> str:

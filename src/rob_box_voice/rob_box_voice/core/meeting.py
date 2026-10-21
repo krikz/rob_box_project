@@ -162,7 +162,7 @@ def greet_on_meeting(
     *,
     idle: bool,
     allowed: Callable[[MeetingMarker], bool],
-    speak: Callable[[str], None],
+    speak: Callable[[str], Any],
 ) -> Optional[str]:
     """Встреча → максимум одна фраза-приветствие. Вернуть сказанное или ``None``.
 
@@ -187,6 +187,7 @@ def greet_node_on_meeting(node: Any, marker: MeetingMarker) -> None:
     Ошибка приветствия не должна ронять колбэк лица (ADR-0139 §2.5): логируем и идём дальше.
     """
     from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+    from rob_box_voice.core.greeting_window import open_window
     from rob_box_voice.core.occasion import Occasion, VerdictKind
 
     def allowed(m: MeetingMarker) -> bool:
@@ -194,13 +195,19 @@ def greet_node_on_meeting(node: Any, marker: MeetingMarker) -> None:
             'event_type': 'face', 'source_camera': m.source_camera, 'person_id': m.person_id, 'name': m.name})
         return node._occasion.may_speak(occasion).kind == VerdictKind.ALLOW
 
+    spoken: Dict[str, str] = {}
+
+    def speak(text: str) -> None:
+        spoken['speech_id'] = node._publish_response(text, animation='happy')
+
     try:
         phrase = greet_on_meeting(
             node._meeting_greeter, marker,
-            idle=node._dsm.current_state == DialogueStateKind.IDLE, allowed=allowed,
-            speak=lambda text: node._publish_response(text, animation='happy'),
+            idle=node._dsm.current_state == DialogueStateKind.IDLE, allowed=allowed, speak=speak,
         )
         if phrase:
+            # #3776: после приветствия окно 15 с — «привет» в ответ без «робот» (кадр ждёт конца речи).
+            open_window(node, marker.person_id, marker.name.strip(), str(spoken.get('speech_id') or ''))
             node.get_logger().info(f'🗣 [встреча] {marker.name} (person={marker.person_id[:8]}): {phrase!r}')
     except Exception as exc:  # noqa: BLE001
         node.get_logger().warning(f'⚠️ [встреча] приветствие упало: {exc!r}')
