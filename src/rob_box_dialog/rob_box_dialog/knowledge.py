@@ -708,8 +708,22 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
     }}
 
 
-def prompt_fragment() -> str:
-    """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную)."""
+#: Кто говорит об итоге действий (§4.1): ``event`` — код по событию исполнителя (v2); ``reply`` — сама LLM следующей
+#: командой по результатам тулов (мост v1 ``core/command_bridge.py`` до PR-7/PR-8, где фраз по событиям ещё нет).
+AFTER_ACTIONS: Mapping[str, str] = MappingProxyType({
+    "event": "о результате скажет код по событию исполнителя.",
+    "reply": "результаты действий придут тебе следующим сообщением — тогда скажи человеку итог в speech.",
+})
+
+
+def prompt_fragment(after_actions: str = "event") -> str:
+    """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную).
+
+    :raises ValueError: ``after_actions`` не из :data:`AFTER_ACTIONS`.
+    """
+    if after_actions not in AFTER_ACTIONS:
+        raise ValueError(f"prompt_fragment: after_actions must be one of {tuple(AFTER_ACTIONS)}, got {after_actions!r}")
+
     def _set(values: Sequence[str]) -> str:
         return "{" + ", ".join(values) + "}"
 
@@ -717,7 +731,7 @@ def prompt_fragment() -> str:
     lines: List[str] = [
         "Ответ — одна команда (JSON-объект) с полями:",
         f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. Если есть actions, speech не озвучивается:"
-        " о результате скажет код по событию исполнителя.",
+        f" {AFTER_ACTIONS[after_actions]}",
         f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}.",
         f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
         f" {' и '.join(SINGLE_ACTION_CLASSES)}.",

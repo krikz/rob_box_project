@@ -25,6 +25,11 @@ dialogue_node:
     # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
     # первый = primary, остальные = fallbacks
     llm_providers: "deepseek,minimax"
+    # ADR-0150 §4.5 (#3696 ч.5): провайдеры, отвечающие ОДНОЙ командой (поле speech, решение О4); форму запроса
+    # выбирает код по capabilities адаптера (DeepSeek → tool_choice, MiniMax → json_in_text) — core/command_bridge.py.
+    # Пусто — все на speak_text, как до моста. Включение: "deepseek". MiniMax не включать до нормализации
+    # "passed": false / args: "" (PR-7): по бейк-оффу 52 из 174 его JSON-ответов invalid.
+    llm_command_providers: ""
     enable_mcp_tools: true
 
     # Бэклог-аккумулятор фоновой речи без wake-слова.

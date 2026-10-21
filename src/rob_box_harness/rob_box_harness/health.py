@@ -592,6 +592,9 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
         # the ``settings=`` arg verbatim for every provider (legacy
         # behaviour).
         self._settings_for: dict[str, Any] = dict(settings_for or {})
+        #: Провайдер последнего обращения цепочки — тот, что ответил (метрики по провайдерам, ADR-0150 §14 A5):
+        #: ``name`` обёртки один на всех, а промпт и токены — у конкретного провайдера.
+        self.answered_by: str | None = None
 
     # ---- capability introspection --------------------------------------
 
@@ -835,6 +838,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 continue  # probe just marked it dead
             try:
                 provider_settings = self._resolve_settings_for(name, settings)
+                self.answered_by = name
                 self._log.info("[health] → calling provider=%s", name)
                 result = await provider.complete(
                     messages, tools=tools, settings=provider_settings
@@ -886,6 +890,7 @@ class HealthAwareFallbackLLM(LLMProvider):  # type: ignore[misc]
                 continue
             try:
                 provider_settings = self._resolve_settings_for(name, settings)
+                self.answered_by = name
                 self._log.info("[health] → streaming from provider=%s", name)
                 async for chunk in provider.stream(
                     messages, tools=tools, settings=provider_settings
