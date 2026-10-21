@@ -18,7 +18,6 @@ from rob_box_harness.memory.base import InMemoryStore
 from rob_box_harness.tools import ToolSpec
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
-INVALID = phrases.text("understand.invalid")
 HAPPY = {"sound": "robot_happy"}
 
 
@@ -189,8 +188,8 @@ def test_speech_voice_is_the_voice_of_this_line_only() -> None:
 def test_set_voice_out_of_the_turn_slice_is_not_executed() -> None:
     """#3744: ``set_voice`` в срезе хода только по явной голосовой просьбе; вне среза команда невалидна."""
     tools = _Tools()
-    _turn(tools, _command(speech="Сменю голос", actions=[{"tool": "set_voice", "args": {"voice": "zahar"}}]))
-    assert tools.acted() == [] and tools.said() == [(INVALID, None)]
+    result, _ = _turn(tools, _command(speech="Сменю голос", actions=[{"tool": "set_voice", "args": {"voice": "zahar"}}]))
+    assert tools.acted() == [] and tools.said() == [] and result.turn_failure.startswith("invalid_command")
 
 
 def test_query_data_go_back_to_llm_then_its_speech_is_spoken() -> None:
@@ -206,16 +205,28 @@ def test_query_data_go_back_to_llm_then_its_speech_is_spoken() -> None:
 def test_queries_beyond_two_iterations_are_refused() -> None:
     ask = _command(actions=[{"tool": "get_current_time", "args": {}}])
     tools = _Tools({"get_current_time": ToolResult("x", "12:00")})
-    _, llm = _turn(tools, ask, ask, ask)
+    result, llm = _turn(tools, ask, ask, ask)
     assert len(llm.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert tools.acted() == ["get_current_time"] * kn.LLM_QUERY_ITERATIONS_MAX
-    assert tools.said() == [(INVALID, None)]
+    assert tools.said() == [] and result.turn_failure == "nothing_to_do"
 
 
-def test_invalid_command_asks_to_repeat_and_executes_nothing() -> None:
+def test_invalid_command_fails_the_turn_without_speech_and_executes_nothing() -> None:
     tools = _Tools()
-    _turn(tools, _command(actions=[{"tool": "play_sound", "args": {"sound": "nope"}}]))
-    assert tools.acted() == [] and tools.said() == [(INVALID, None)]
+    result, _ = _turn(tools, _command(actions=[{"tool": "play_sound", "args": {"sound": "nope"}}]))
+    assert tools.acted() == [] and tools.said() == [] and result.spoken_text == ""
+    assert result.turn_failure.startswith("invalid_command")
+
+
+def test_bridge_marked_invalid_command_fails_the_turn_without_speech() -> None:
+    tools = _Tools()
+    result, _ = _turn(tools, _command(**{kn.COMMAND_INVALID_FIELD: "bad_enum"}))
+    assert tools.calls == [] and result.spoken_text == "" and result.turn_failure == "invalid_command:bad_enum"
+
+
+def test_valid_turn_has_no_failure() -> None:
+    result, _ = _turn(_Tools(), _command(speech="Привет!"))
+    assert result.turn_failure == ""
 
 
 def test_handles_only_a_single_command_call() -> None:

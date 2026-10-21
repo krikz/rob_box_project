@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 import pytest
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog import phrases
 from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateMachine
 from rob_box_harness.health import HealthAwareFallbackLLM, HealthCache
@@ -21,10 +21,11 @@ from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings,
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
 from rob_box_voice.core import command_bridge as cb
+from rob_box_voice.core.dialogue_stage_mixin import DialogueStageMixin
+from rob_box_voice.core.turn_stages import TurnStages
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 MINIMAX_CAPS = MiniMaxProvider(api_key="test").capabilities
-INVALID_TEXT = phrases.text("understand.invalid")
 
 
 def _tool(name: str) -> Mapping[str, Any]:
@@ -227,12 +228,14 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     (LLMResponse(content='{"speech": "Привет", "mood": "весело"}'), "unknown_field"),
     (LLMResponse(tool_calls=(_command_call(speech="обре"),), truncated_tool_args=True), "truncated"),
 ])
-def test_invalid_twice_asks_to_repeat_after_one_retry(reply: LLMResponse, reason: str) -> None:
-    """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — «Не понял, повтори»."""
+def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMResponse, reason: str) -> None:
+    """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — вызов ``command`` с пометкой, без речи."""
     log: list = []
     inner = _Inner(MINIMAX_CAPS, [reply, reply], name="minimax")
     out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=TOOLS))
-    assert (out.content, out.tool_calls) == (INVALID_TEXT, ()) and len(inner.requests) == 2
+    (call,) = out.tool_calls
+    assert out.content == "" and call.name == kn.COMMAND_TOOL and len(inner.requests) == 2
+    assert call.arguments == {kn.COMMAND_INVALID_FIELD: reason}
     assert f"verdict=invalid:{reason}" in log[0] and f"verdict=invalid:{reason}" in log[1]
     assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['{reason}'] → verdict=invalid:{reason} (")
 
@@ -325,6 +328,18 @@ def _core(inner: _Inner, streaming: bool, spoken: _Spoken) -> AgentCore:
                                    cache=HealthCache())
     return AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
                      system_prompt="ты РОББОКС", use_streaming=streaming)
+
+
+class _Node(DialogueStageMixin):
+    """Узел v1 в части стадий хода: ``TurnStages`` с записью рефлексов, открытый ход личности."""
+
+    def __init__(self) -> None:
+        self.rig = SimpleNamespace(requests=[], events=[])
+        self._stages = TurnStages(lambda **kw: self.rig.requests.append(kw), lambda **kw: self.rig.events.append(kw))
+        self._stages.addressed("u1")
+        self._turn_id = self._stages.turn_id_for("u1")
+        self.stages = SimpleNamespace(
+            requests=self.rig.requests, stage_names=lambda: [(e["stage"], e["status"]) for e in self.rig.events])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -452,14 +467,28 @@ def test_agent_core_invalid_then_fixed_command_executes_the_action(streaming: bo
 
     assert result.error is None and len(inner.requests) == 2
     assert "bad_args" in inner.requests[1]["messages"][-1].content
-    assert spoken.said == ["Запомнил: Саша любит чай."] and INVALID_TEXT not in spoken.said
+    assert spoken.said == ["Запомнил: Саша любит чай."] and result.turn_failure == ""
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_agent_core_invalid_twice_says_not_understood(streaming: bool) -> None:
+def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is_normal(streaming: bool) -> None:
     bad = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "memory_save", "args": {}}]),))
-    inner = _Inner(DEEPSEEK_CAPS, [bad, bad])
+    good = LLMResponse(tool_calls=(_command_call(speech="Привет, Шифу."),))
+    inner = _Inner(DEEPSEEK_CAPS, [bad, bad, good])
     spoken = _Spoken()
-    result = asyncio.run(_core(inner, streaming, spoken).process_input(
-        "запомни", preclassified_event=DialogueEvent.STT_RESULT))
-    assert len(inner.requests) == 2 and result.spoken_text == INVALID_TEXT and spoken.said == []
+    core = _core(inner, streaming, spoken)
+    result = asyncio.run(core.process_input("запомни", preclassified_event=DialogueEvent.STT_RESULT))
+    assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
+    assert result.turn_failure.startswith("invalid_command") and result.error is None
+
+    # Узел закрывает ход рефлексом failed (лицо error, earcon fail; кольцо flash_red — в таблице рефлексов) — тем же путём, что провал тула.
+    node = _Node()
+    node._stage_finish(result, False, "", False)
+    assert node.stages.stage_names()[-1] == ("failed", "failed")
+    assert (node.stages.requests[-1]["emotion"], node.stages.requests[-1]["earcon"]) == ("error", "fail")
+
+    # Следующий ход идёт обычно: никаких хвостов состояния.
+    core._dsm.on_event(DialogueEvent.WAKE_WORD)  # новая реплика с вейк-словом, как у узла
+    core._dsm.on_event(DialogueEvent.STT_RESULT)
+    nxt = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
+    assert nxt.turn_failure == "" and nxt.spoken_text == "Привет, Шифу."

@@ -5,8 +5,9 @@ PR-7 ч.7c (#3698). Мост ``rob_box_voice.core.command_bridge`` отдаёт 
 тул, а отдаёт :class:`CommandTurn`:
 
 * команда проверяется :func:`rob_box_dialog.command.validate` по срезу тулов хода (``set_voice`` виден только по явной
-  голосовой просьбе, #3744); невалидна — вопрос-шаблон ``understand.invalid`` (повтор по нарушениям уже сделал мост
-  ``command_bridge`` по тому же срезу, #3698; здесь — страховка, второго вызова LLM нет);
+  голосовой просьбе, #3744); невалидна (или мост уже признал её такой: ``COMMAND_INVALID_FIELD``) — речи нет, ход закрывается провалом:
+  :attr:`CommandTurn.failure` → рефлекс ``failed`` (earcon fail, красное кольцо), следующий ход идёт обычно (повтор по
+  нарушениям уже сделал мост ``command_bridge`` по тому же срезу, #3698; второго вызова LLM нет);
 * действия исполняет :class:`rob_box_dialog.execute.Executor`; транспорт — исполнитель тулов v1 (MCP, каналы
   планировщика), исход — событие владельца, которое тул кладёт в данные результата (``status``/``reason``, PR-7b);
 * фразу об исходе строит код (:func:`rob_box_dialog.respond.join`); ``speech`` модели при действиях не звучит
@@ -30,7 +31,7 @@ from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Optional, 
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.command import INVALID_ASK_KEY, Command, Invalid, parse, validate
+from rob_box_dialog.command import Command, Invalid, parse, validate
 from rob_box_dialog.execute import ActionRequest, Executor, OwnerEvent
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall, ToolResult
@@ -113,6 +114,8 @@ class CommandTurn:
         self._turn = uuid.uuid4().hex[:12]
         self._queries = 0
         self._n = 0
+        #: Причина провала хода (``""`` — не провалился): невалидная команда → ``TurnStages.finish(ok=False)``.
+        self.failure = ""
 
     @staticmethod
     def handles(response: LLMResponse) -> bool:
@@ -123,11 +126,15 @@ class CommandTurn:
     async def run(self, response: LLMResponse, messages: List[LLMMessage], next_response: Next) -> CommandStep:
         """Исполнить команду; ``messages`` дополняется только на ``query`` (данные — обратно LLM)."""
         call = response.tool_calls[0]
-        cmd = validate(parse(dict(call.arguments)), self._available)
+        marked = call.arguments.get(kn.COMMAND_INVALID_FIELD)
+        cmd = Invalid(str(marked)) if marked else validate(parse(dict(call.arguments)), self._available)
         done: List[Tuple[ToolCall, ToolResult]] = []
         if isinstance(cmd, Invalid):
-            _LOG.warning(f"{LOG_MARK} невалидна: {cmd.reason} {cmd.detail[:120]!r}")
-            await self._say(done, [(phrases.text(cmd.ask.key or INVALID_ASK_KEY), "")])
+            self.failure = f"invalid_command:{cmd.reason}"[:60]
+            _LOG.warning(f"{LOG_MARK} невалидна: {cmd.reason} {cmd.detail[:120]!r} → ход провален, без речи")
+            # Провалившийся вызов виден в ``tools_called``/``tool_error_occurred``: пустой ответ после него — не «тихий
+            # первый ответ», v1-ретрай #1217 (второй вызов LLM) не нужен.
+            done.append((call, ToolResult(tool_call_id=call.id, content=self.failure, is_error=True)))
             return self._step(done, LLMResponse(content=""))
         results = await self._execute(self._allowed(cmd), done)
         if results and all(r.cls == _QUERY for r in results):
@@ -136,7 +143,9 @@ class CommandTurn:
             messages.append(LLMMessage(role="assistant", content="", tool_calls=(call,)))
             messages.append(LLMMessage(role="tool", content=data.content, tool_call_id=call.id, tool_result=data))
             return self._step(done, await next_response())
-        lines = spoken_lines(cmd, results) or ([] if done else [(phrases.text(INVALID_ASK_KEY), "")])
+        lines = spoken_lines(cmd, results)
+        if not lines and not done:  # нечего исполнить и нечего сказать (query сверх лимита): провал, а не молчаливое «ок»
+            self.failure = "nothing_to_do"
         _LOG.info(f"{LOG_MARK} ход окончен: {[(r.tool, r.status, r.reason) for r in results]} "
                   f"скажу {[text[:60] for text, _ in lines]}")
         await self._say(done, lines)

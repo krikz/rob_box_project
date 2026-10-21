@@ -30,7 +30,6 @@ def bad(raw, reason, tools=ALL, **kw):
     res = validate(parse(raw), tools, **kw)
     assert isinstance(res, Invalid), res
     assert res.reason == reason, res
-    assert res.ask.key == "understand.invalid" and res.ask.text is None
     return res
 
 
@@ -399,8 +398,6 @@ def test_thousands_of_random_commands_never_raise():
             assert parse(cm.to_args(res)) == dataclasses.replace(res, dropped=(), moved=())  # мост → исполнитель
             assert res.expression.emotion in kn.EMOTIONS
             assert res.expression.face is None or isinstance(res.expression.face, FaceScene)
-        else:
-            assert res.ask.key == "understand.invalid"
     assert seen[Command] >= 300 and seen[Invalid] >= 300, seen
 
 

@@ -45,6 +45,7 @@ class DialogueStageMixin:
         if retry_dispatched:
             return
         error = failure or (str(result.error)[:60] if result is not None and result.error is not None else "")
+        error = error or getattr(result, "turn_failure", "")
         self._turn_stages().finish(self._turn_id, ok=not error, reason=error, cancelled=cancelled)
 
     def _on_tool_stage(self, name: str, args: Any, result: Any) -> None:

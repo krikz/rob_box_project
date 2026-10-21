@@ -463,7 +463,7 @@ PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded", "unknown")
 STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
-    "understand.invalid", "understand.timeout",
+    "understand.timeout",
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
@@ -754,8 +754,11 @@ TURN_DEADLINE_S = 12
 #: Query-цикл (§4.1): не больше двух итераций данных → LLM на ход.
 LLM_QUERY_ITERATIONS_MAX = 2
 #: Невалидная команда LLM возвращается модели перечнем нарушений (tool-результат на её вызов ``command``) — столько
-#: повторов на ответ; дальше невалидна — ``understand.invalid`` (решение Шифу 21.10 по #3698, ADR-0148 п.2).
+#: повторов на ответ; дальше невалидна — ход закрывается как ``failed`` без речи (рефлекс ``REFLEXES["failed"]``:
+#: earcon fail, красное кольцо), следующий ход идёт обычно (решения Шифу 21.10 по #3698, ADR-0148 п.2).
 COMMAND_RETRIES_MAX = 1
+#: Поле аргументов вызова ``command``, которым мост отдаёт исполнителю хода невалидную команду (значение — причина).
+COMMAND_INVALID_FIELD = "invalid"
 
 # ---------------------------------------------------------------------------------------------------------------
 # Матрица одновременности (§5.6.2) — данные; читает ``plan.composition.compose``

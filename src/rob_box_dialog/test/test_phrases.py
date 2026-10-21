@@ -34,7 +34,7 @@ def test_variants_and_slots_are_well_formed():
 
 def test_text_fills_slots_and_picks_variant_by_modulo():
     assert phrases.text("memory.saved", fact="Саша любит зелёный чай") == "Запомнил: Саша любит зелёный чай."
-    assert phrases.text("understand.invalid", 7) == phrases.text("understand.invalid", 0)
+    assert phrases.text("understand.timeout", 7) == phrases.text("understand.timeout", 0)
     with pytest.raises(KeyError):
         phrases.text("memory.saved")
     with pytest.raises(KeyError):

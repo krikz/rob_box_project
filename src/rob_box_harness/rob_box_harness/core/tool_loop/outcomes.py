@@ -80,6 +80,9 @@ class _ToolLoopOutcome:
         music-гуарду: ошибка валидации ``compose_music`` и успешный повтор в
         том же ходе — это успех, а один булев ``tool_error_occurred`` его
         не отличает от провала.
+    turn_failure:
+        ADR-0150 PR-7 (#3698) — причина провала хода режима команд (невалидная команда после повтора), ``""`` — нет.
+        Ноде нужна для стадии ``failed``: речи у такого хода нет, ошибки тула тоже.
     """
     spoken_text: str
     tools_called: list[str]
@@ -93,6 +96,7 @@ class _ToolLoopOutcome:
     music_call_args: dict[str, Any] | None = None
     tool_error_occurred: bool = False
     succeeded_tools: tuple[str, ...] = ()
+    turn_failure: str = ""
 
 
 __all__ = ["_ToolLoopOutcome"]
