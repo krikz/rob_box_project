@@ -1,5 +1,10 @@
 # scripts/tts_bench — измерение TTS chunk-to-chunk latency (ADR-0056 §3.7)
 
+> **Устарело частично (ADR-0150 PR-7c ч.4а, #3700):** спекулятивный pre-generate
+> и параметр `pregenerate_enabled` удалены из `tts_node`, метрик `pregens_*` и
+> `publish_prefetch_metrics()` больше нет. Режимы baseline/speculative ниже —
+> история; скрипт меряет интервал между чанками текущего пайплайна.
+
 ## Контекст
 
 ADR-0056 §3.7 / issue **#2003** требуют доказать, что speculative

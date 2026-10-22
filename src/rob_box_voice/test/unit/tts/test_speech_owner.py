@@ -351,10 +351,9 @@ def test_presynth_commit_false_holds_audio_until_commit(setup):
     assert node.chunks == []  # не играем
     assert _kinds(node) == ["queued", "synthesized"]
     assert dict(_events(node))["synthesized"].duration_ms == 500
-    pregen = []
-    held = owner.claim_presynth("sid-1", pregen.append)
-    assert held["sample_rate"] == 16000 and held["audio_np"].size == 8000 and pregen == []
-    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"  # дальше - обычный pregen
+    held = owner.claim_presynth("sid-1")
+    assert held["sample_rate"] == 16000 and held["audio_np"].size == 8000
+    assert owner.claim_presynth("sid-1") is None  # взят один раз; дальше - обычный синтез
 
 
 def test_cancel_drops_held_presynth(setup):
@@ -363,7 +362,7 @@ def test_cancel_drops_held_presynth(setup):
     _presynth_node(node)
     node.subs["/voice/speech/request"](_request(commit=False))
     node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
-    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"
+    assert owner.claim_presynth("sid-1") is None
 
 
 def test_cancel_during_presynth_drops_the_result_and_says_cancelled(setup):
@@ -376,7 +375,7 @@ def test_cancel_during_presynth_drops_the_result_and_says_cancelled(setup):
     fn, args = started[0]
     fn(*args)  # синтез закончился уже после отмены
     assert _kinds(node) == ["queued", "cancelled"]
-    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"
+    assert owner.claim_presynth("sid-1") is None
 
 
 def test_presynth_then_commit_true_goes_to_pipeline(setup):
@@ -386,7 +385,7 @@ def test_presynth_then_commit_true_goes_to_pipeline(setup):
     node.subs["/voice/speech/request"](_request(commit=True, at=node.ros_now_s + 1.0))
     (chunk,) = node.chunks
     assert chunk["speech_id"] == "sid-1" and chunk["_speech"]["at"] == node.ros_now_s + 1.0
-    assert owner.claim_presynth("sid-1", lambda sid: None)["audio_np"].size == 8000
+    assert owner.claim_presynth("sid-1")["audio_np"].size == 8000
 
 
 def test_presynth_in_streaming_mode_is_rejected(setup):

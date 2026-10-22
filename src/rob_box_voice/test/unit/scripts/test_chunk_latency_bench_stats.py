@@ -93,7 +93,7 @@ percentile = bench.percentile
 
 # Наш стаб ``rclpy`` нужен только для import-устойчивости
 # ``chunk_latency_bench.py``. После загрузки — снимаем его,
-# чтобы другие тесты (test_pregen_tts_integration.py и т.п.)
+# чтобы другие тесты
 # видели настоящее окружение и сами решали, надо ли им skip-аться
 # на отсутствии rclpy / torch / sounddevice. Иначе install stub
 # сбивает их _skipif_ логику, и они падают вместо skip.
