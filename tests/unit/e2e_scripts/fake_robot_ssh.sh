@@ -33,6 +33,7 @@
 #   FAKE_ROBOT_STATE     — каталог состояния (обязателен)
 #   FAKE_ROBOT_LOG       — файл «docker logs voice-assistant» (необязателен)
 #   FAKE_DIALOGUE_REJECT — 1: dialogue_node отклоняет e2e_session_reset_token
+#   FAKE_ENGINE          — значение dialog_engine у /dialog_node (пусто = v1, ноды нет)
 set -u
 : "${FAKE_ROBOT_STATE:?fake_robot_ssh.sh: FAKE_ROBOT_STATE не задан}"
 mkdir -p "$FAKE_ROBOT_STATE"
@@ -79,6 +80,16 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
             ;;
         get:e2e_session_reset_token)
             echo "String value is: $(cat "$f" 2>/dev/null)"
+            ;;
+        get:dialog_engine)
+            # ADR-0150 PR-8 (#3702): /dialog_node есть только при v2. Фейк —
+            # робот v1 (ros2cli печатает «Node not found»), если не задан
+            # FAKE_ENGINE.
+            if [ "$node" = /dialog_node ] && [ -n "${FAKE_ENGINE:-}" ]; then
+                echo "String value is: $FAKE_ENGINE"
+            else
+                echo "Node not found"
+            fi
             ;;
         *)
             _unsupported "ros2 $*"
