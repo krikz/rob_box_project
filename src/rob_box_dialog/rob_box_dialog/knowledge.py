@@ -340,6 +340,9 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 #: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` всегда в срезе агента чата; КОГДА звать - решает модель по правилу
 #: промпта чата (RULE #ALOUD), а не список слов в коде (решение Шифу 22.10: без костылей под формулировки).
 ALOUD_TOOL = "say_aloud"
+#: Тулы озвучки динамиками (``action.speak_aloud``) — всегда в срезе своего агента: у чата ``say_aloud``, у оператора
+#: (ТАРС) ``say`` (§9.3, PR-13). Чей какой — решает срез каталога агента (``agents.tools_for``), не этот список.
+ALOUD_TOOLS: Tuple[str, ...] = (ALOUD_TOOL, "say")
 #: Бюджет хода чата. Чат - не голос: человек ждёт текст, и сочинить историю LLM-у дольше 12 с (В5 - про разговор
 #: вслух). Решение координатора 22.10: ход чата 40 с, иначе сценарий «сочини и расскажи» упирается в ``understand.timeout``.
 CHAT_TURN_DEADLINE_S = 40
@@ -369,9 +372,10 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
 #: ``recent_actions`` — исходы действий прошлых ходов окна v2 структурой (``turn_log``, ``ActionResult``: тул, статус,
 #: причина), а не текстом в репликах (§7.3, PR-8 #3702).
+#: ``operator_journal`` — журнал ТАРС (§7.4, #3297): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "performance",
-    "recent_unaddressed", "recent_actions",
+    "recent_unaddressed", "recent_actions", "operator_journal",
 )
 
 

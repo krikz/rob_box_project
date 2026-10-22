@@ -64,21 +64,9 @@ from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
 )
-# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
-# Issue #2233 — try/except fallback: round-деплои (z-{e2e}/test-round-N)
-# наследуют voice-assistant-humble-*-test из registry, а тот обновляется
-# develop-билдами БЕЗ SHA-tag pinning (issue #1826 anti-loop). Если
-# PR #2218 (utterance) merged в develop ПОСЛЕ последнего push
-# voice-assistant-humble-test → supervisor стартует в base-image без
-# rob_box_core.utterance → ModuleNotFoundError → restart-loop.
-# Fallback держит supervisor живым: monitor-режим публикует /avatar/state,
-# avatar-TTS запросы уходят с минимальной локальной реализацией Sink/Utterance.
-# Удалить этот блок когда round-ветки начнут использовать SHA-pinned теги
-# или develop-build будет триггерить voice-assistant rebuild (TODO issue).
-try:
-    from rob_box_core.utterance import Sink, Utterance  # type: ignore[import-not-found]
-except ImportError:
-    from rob_box_supervisor._utterance_fallback import Sink, Utterance  # noqa: F401
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML. Фолбек #2233 удалён (ADR-0150 D2, PR-13):
+# образ супервизора собирается на базе voice-assistant с тем же rob_box_core.
+from rob_box_core.utterance import Sink, Utterance  # noqa: E402
 # Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
 # whitelist'а AV-28 §P7: single source of truth в rob_box_core.bridge_protocol.
 # Раньше копия тут расходилась с ws_server / YAML (молчаливый отказ на
@@ -91,6 +79,8 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
+# ADR-0150 PR-13 (#3708) — ТАРС на общем движке при dialog_engine=v2.
+from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
 # ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
 # До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
 # свой ``_load_operator_system_prompt``, своя ``_load_operator_skill_prompts``
@@ -242,10 +232,10 @@ class _DialogControlClient:
             raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: владелец отказал action={payload['action']}")
 
 
-def _dialogue_control_publisher(node: Any) -> Any:
+def _dialogue_control_publisher(node: Any, engine: str) -> Any:
     """Писатель управления личностью по флагу движка: ``v1`` — топик ``/dialogue/control``, ``v2`` — сервис
     ``/dialog/control`` (клиент в своей реентерабельной группе: ответ приходит, пока обработчик команды ждёт)."""
-    if dialog_engine.declare(node) == dialog_engine.V1:
+    if engine == dialog_engine.V1:
         return node.create_publisher(RosString, DIALOGUE_CONTROL_TOPIC, 10)
     from rob_box_dialog_msgs.srv import DialogControl  # noqa: PLC0415 - только v2
 
@@ -446,9 +436,8 @@ AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 # Никакого AgentCore / ToolProvider / памяти на этом пути (инвариант 6c).
 GRIP_PTT_RESULT_TOPIC: str = "/avatar/ptt/result"
 GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
-# Выход пайплайна — динамики робота: SpeechRequest клиентом речи (ADR-0150
-# PR-3), агент ``operator`` — как у инструмента say.
-GRIP_TTS_REQUEST_TOPIC: str = "/voice/speech/request"
+# Выход пайплайна — динамики робота: SpeechRequest клиентом речи ``speech_client`` (ADR-0150 PR-3), агент
+# ``operator`` — как у инструмента say. Своего имени топика у супервизора нет (PR-13).
 # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем: собственные реплики
 # avatar_supervisor'а идут в /avatar/tts/request (sink="headset"), tts_node
 # шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем. Грип и
@@ -553,7 +542,8 @@ class AvatarSupervisor(Node):
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
         # ADR-0150 PR-10 (#3704): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
         # пауза личности идёт сервисом DialogControl ``/dialog/control`` (hold/resume с ack).
-        self._dialogue_control_pub = _dialogue_control_publisher(self)
+        self._dialog_engine = dialog_engine.declare(self)
+        self._dialogue_control_pub = _dialogue_control_publisher(self, self._dialog_engine)
         # AV-28 §P7 (issue #1920) — voice style preset/language подписки
         # удалены по ADR-0087: канал был «честный no-op» после PR #2255
         # (whitelist + log + ack, без побочного эффекта) и без владельца
@@ -652,6 +642,9 @@ class AvatarSupervisor(Node):
         # каждым входом гоним его в DIALOGUE (см. _run_agent_sync).
         self._agent_core: Any = None
         self._operator_dsm: Any = None
+        # ADR-0150 PR-13 (#3708): при dialog_engine=v2 ТАРС — общий движок rob_box_dialog (operator_turns), при v1 —
+        # AgentCore ниже (удаление — PR-15). Сборка и ход выбираются здесь один раз.
+        self._agent_builder, self._agent_runner = agent_path(self, self._dialog_engine)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -1932,7 +1925,7 @@ class AvatarSupervisor(Node):
         пересобирать AgentCore (там LLM/Tools/Memory init дорого).
         """
         if self._agent_core is None:
-            core, dsm = self._build_agent_core_sync()
+            core, dsm = self._agent_builder()
             if core is not None:
                 self._agent_core = core
                 self._operator_dsm = dsm
@@ -2525,7 +2518,7 @@ class AvatarSupervisor(Node):
         self._tars_stage.thinking(request_id)
         try:
             with self._dialogue_control_swap():
-                result = self._run_agent_sync(core, payload)
+                result = self._agent_runner(core, {**payload, "request_id": request_id})
         except Exception as exc:  # noqa: BLE001 — НЕ ДОЛЖНО сбежать из swap
             # ``_dialogue_control_swap`` имеет try/finally, но защищаемся от
             # ошибок ВНЕ swap (publish, метрики). Сам swap уже

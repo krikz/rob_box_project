@@ -23,9 +23,9 @@ from __future__ import annotations
 import json
 import unittest
 
+from rob_box_core.speech_client import SPEECH_REQUEST_TOPIC
 from rob_box_supervisor.supervisor_node import (
     AVATAR_TTS_REQUEST_TOPIC,
-    GRIP_TTS_REQUEST_TOPIC,
     AvatarSupervisor,
 )
 
@@ -66,8 +66,8 @@ class TestAvatarTtsPublisherDeclared(unittest.TestCase):
     def test_old_voice_tts_request_publisher_still_declared_for_say(self) -> None:
         # /voice/speech/request оставлен ТОЛЬКО для инструмента say.
         # Грип больше туда не ходит; supervisor для собственных реплик — тоже.
-        self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/speech/request")
+        self.assertIn(SPEECH_REQUEST_TOPIC, self.node._publishers)
+        self.assertEqual(SPEECH_REQUEST_TOPIC, "/voice/speech/request")
 
 
 class TestPublishAvatarTtsWithDefaults(unittest.TestCase):

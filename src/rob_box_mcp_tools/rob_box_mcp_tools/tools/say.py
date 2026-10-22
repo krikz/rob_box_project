@@ -18,8 +18,11 @@ say.py - Инструмент «say» для супервизор-агента (
 
 ADR-0150 PR-3 (#3688): реплика уходит единственным клиентом речи
 ``rob_box_core.speech_client.say`` (``SpeechRequest``, агент ``operator``);
-``tts_node`` синтезирует независимо от состояния dialogue_node. Подтверждение
-по ``SpeechEvent`` — PR-13 (ТАРС: say как action.speak_aloud).
+``tts_node`` синтезирует независимо от состояния dialogue_node.
+
+ADR-0150 PR-13 (#3708, §9.3, решение В7 «да, а»): ``say`` — действие класса ``action.speak_aloud``, как ``say_aloud``
+чата. Успех — событие владельца речи, а не публикация: началась — ``pending`` с ``event_ref=speech_id`` (итог
+«Озвучил (N с)» приходит позже событием ``finished``), отказ — ``rejected{reason}``.
 """
 
 import uuid
@@ -28,12 +31,45 @@ from typing import List, Optional
 from rob_box_core import speech_client
 from rob_box_core.utterance import Sink, Utterance
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..owner_event import OwnerEvents, owner_events
 
 #: Сколько тул ждёт начала реплики. Дольше - реплика стоит в очереди владельца речи за чужой: итог придёт позже
 #: событием по ``speech_id`` (``pending``), а не «не озвучено».
 START_WAIT_S = 8.0
+
+
+def speak_and_wait(tool: MCPTool, text: str, voice: Optional[str], agent: str, **request: object) -> MCPToolResult:
+    """Отдать реплику агента ``agent`` владельцу речи и дождаться её начала (или отказа): исход — по ``SpeechEvent``.
+
+    ``pending`` (звучит) — успех с ``event_ref``: итог хост агента получит позже событием с тем же ``speech_id``."""
+    if not text or not text.strip():
+        return MCPToolResult(success=False, error="empty_text", message="Текст для озвучки пустой",
+                             data={"status": "rejected", "reason": "empty_text"})
+    speech_id = str(uuid.uuid4())
+
+    def publish(rid: str) -> None:
+        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, speech_id=rid)
+        speech_client.say(tool.node, utterance, agent=agent, **request)
+
+    _rid, event = _events(tool, agent).ask(publish, START_WAIT_S, request_id=speech_id)
+    status, reason, seconds = speech_client.event_outcome(event) if event is not None else ("pending", None, 0)
+    data = {"status": status, "reason": reason, "seconds": seconds, "speech_id": speech_id}
+    if status == "pending":
+        data["event_ref"] = speech_id
+    tool.log_info(f"{tool.name} {speech_id[:8]}: {status} {reason or ''}".rstrip())
+    ok = status in ("done", "pending")
+    return MCPToolResult(success=ok, data=data, error=None if ok else f"Не озвучено: {reason or status}",
+                         message=f"{tool.name}: {status}")
+
+
+def _events(tool: MCPTool, agent: str) -> OwnerEvents:
+    from rob_box_dialog_msgs.msg import SpeechEvent
+
+    wanted = (speech_client.KIND_STARTED, *speech_client.KIND_STATUS)
+    return owner_events(tool.node, tool.name, lambda: OwnerEvents(
+        tool.node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
+        accept=lambda m: m.agent == agent and int(m.kind) in wanted))
 
 
 class SayTool(MCPTool):
@@ -86,41 +122,13 @@ class SayTool(MCPTool):
         ]
 
     @property
-    def execution_type(self) -> ToolExecutionType:
-        """Fire-and-forget: текст ушёл в топик — LLM может продолжать."""
-        return ToolExecutionType.INSTANT
-
-    @property
     def slice(self) -> str:
-        # ADR-0052 / issue #1998 §6.2: ``say`` — это голосовой канал
-        # оператора (ТАРС), LLM-личность его НЕ зовёт. Срез фиксируется
-        # тут, в slice_policy.yaml — список для ``operator.speech``
-        # (один из четырёх operator-тулов, которые dialogue_node не может
-        # звать, даже если бы LLM попросил).
+        # ADR-0052 / issue #1998 §6.2: ``say`` — голосовой канал оператора (ТАРС), LLM-личность его НЕ зовёт.
         return "operator.speech"
 
     def execute(self, text: str) -> MCPToolResult:
-        """Опубликовать текст в TTS-канал.
-
-        Каркас (AV-21): не ждём подтверждения от ``tts_node``. Это
-        согласовано с INSTANT-семантикой выше. Полная интеграция с
-        voice-floor и barge-in — карточка AV-27.
-        """
-        if not text or not text.strip():
-            return MCPToolResult(
-                success=False,
-                error="empty_text",
-                message="Текст для произнесения пустой",
-            )
-
-        speech_id = speech_client.say(
-            self.node, Utterance(text=text, sink=Sink.SPEAKERS), agent="operator"
-        )
-        return MCPToolResult(
-            success=True,
-            data={"text": text, "source": "operator", "speech_id": speech_id},
-            message=f"say: опубликовано {len(text)} символов в TTS-канал",
-        )
+        """Реплика оператора динамиками; исход — событие владельца речи (``action.speak_aloud``, PR-13)."""
+        return speak_and_wait(self, text, None, "operator")
 
 
 class SayAloudTool(MCPTool):
@@ -173,32 +181,7 @@ class SayAloudTool(MCPTool):
 
     def execute(self, text: str, voice: Optional[str] = None) -> MCPToolResult:
         """Отдать реплику владельцу речи и дождаться начала (или отказа)."""
-        if not text or not text.strip():
-            return MCPToolResult(success=False, error="empty_text", message="Текст для озвучки пустой",
-                                 data={"status": "rejected", "reason": "empty_text"})
-        speech_id = str(uuid.uuid4())
-
-        def publish(rid: str) -> None:
-            utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, speech_id=rid)
-            speech_client.say(self.node, utterance, agent="telegram", interruptible=False)
-
-        _rid, event = self._events().ask(publish, START_WAIT_S, request_id=speech_id)
-        status, reason, seconds = speech_client.event_outcome(event) if event is not None else ("pending", None, 0)
-        data = {"status": status, "reason": reason, "seconds": seconds, "speech_id": speech_id}
-        if status == "pending":
-            data["event_ref"] = speech_id
-        self.log_info(f"say_aloud {speech_id[:8]}: {status} {reason or ''}".rstrip())
-        ok = status in ("done", "pending")
-        return MCPToolResult(success=ok, data=data, error=None if ok else f"Не озвучено: {reason or status}",
-                             message=f"say_aloud: {status}")
-
-    def _events(self) -> OwnerEvents:
-        from rob_box_dialog_msgs.msg import SpeechEvent
-
-        wanted = (speech_client.KIND_STARTED, *speech_client.KIND_STATUS)
-        return owner_events(self.node, "say_aloud", lambda: OwnerEvents(
-            self.node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
-            accept=lambda m: m.agent == "telegram" and int(m.kind) in wanted))
+        return speak_and_wait(self, text, voice, "telegram", interruptible=False)
 
 
-__all__ = ["SayAloudTool", "SayTool"]
+__all__ = ["SayAloudTool", "SayTool", "speak_and_wait"]

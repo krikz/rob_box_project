@@ -19,14 +19,13 @@ YAML-формат
 
     senders:
       dialogue_node:        [core, personality]
-      avatar_supervisor:    [core, personality, operator.speech, operator.control, operator.admin]
+      avatar_supervisor:    [core, personality, operator.speech, operator.admin]
       harness:              [core, personality]
 
     slices:
       core:                 [get_battery_level, get_current_time, ...]
       personality:          [speak_text, listen_for_response, ...]
-      operator.speech:      [say, set_voice, set_voice_preset, ...]
-      operator.control:     [dialogue_pause, dialogue_resume, ...]
+      operator.speech:      [say, set_voice, set_tts_provider, list_tts_voices]
       operator.admin:       [ros2_node_status, read_logs, container_status]
 
 Один и тот же tool может входить в несколько срезов (``stop_navigation``
@@ -55,7 +54,6 @@ KNOWN_SLICES: FrozenSet[str] = frozenset(
         "core",
         "personality",
         "operator.speech",
-        "operator.control",
         "operator.admin",
         "telegram",
     }

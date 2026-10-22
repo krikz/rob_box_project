@@ -280,8 +280,7 @@ class MCPTool(ABC):
         Дефолт — ``"core"`` (узкий read-only срез: батарея, поза, время,
         статус). Подклассы, доступные LLM-личности, обязаны переопределить
         на ``"personality"`` (музыка, память, навигация, mapping). Тулы
-        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.control"`` /
-        ``"operator.admin"``.
+        оператора (ТАРС) — ``"operator.speech"`` / ``"operator.admin"``.
 
         Проверяется на регистрации (``mcp_server._register_tools`` ловит
         пустой/неизвестный ``slice`` и отказывает старту) и на каждом

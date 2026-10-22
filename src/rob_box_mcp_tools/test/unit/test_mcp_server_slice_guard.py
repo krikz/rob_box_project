@@ -302,12 +302,14 @@ def test_synthetic_classifier_used_in_tests():
         ("dialogue_node", "speak_text", True),
         ("dialogue_node", "play_animation", True),
         ("dialogue_node", "say", False),                # operator.speech
-        ("dialogue_node", "dialogue_pause", False),     # operator.control
+        ("dialogue_node", "container_status", False),   # operator.admin
         ("dialogue_node", "read_logs", False),          # operator.admin
         ("dialogue_node", "show_metrics", False),       # operator.admin (issue #2113)
         # avatar_supervisor (все срезы)
         ("avatar_supervisor", "say", True),
-        ("avatar_supervisor", "dialogue_pause", True),
+        ("avatar_supervisor", "container_status", True),
+        # призрак удалённого среза operator.control (D17): ни у кого
+        ("avatar_supervisor", "dialogue_pause", False),
         ("avatar_supervisor", "read_logs", True),
         ("avatar_supervisor", "speak_text", True),
         ("avatar_supervisor", "show_metrics", True),    # issue #2113/2184
@@ -344,7 +346,7 @@ def test_matrix_against_bundled_yaml(sender, tool, should_be_allowed):
 #       '{"query": "rate(network_latency_ms[5m])", "datasource": "prometheus"}')]
 #   [16] tool: "Инструмент 'show_metrics' недоступен: tool 'show_metrics' не
 #       принадлежит ни одному срезу sender'а 'avatar_supervisor' (доступные
-#       срезы: core, operator.admin, operator.control, operator.speech, personality)"
+#       срезы: core, operator.admin, operator.speech, personality)"
 #
 # До фикса sender avatar_supervisor не видел show_metrics ни в одном срезе —
 # mcp_server отвечал slice-Failure, тул был зарегистрирован только в
