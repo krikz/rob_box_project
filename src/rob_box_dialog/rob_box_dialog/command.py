@@ -417,6 +417,14 @@ def _check_passed(cmd: Command) -> None:
         raise _Bad("passed_with_content", "молчание вместе с речью или действиями")
 
 
+def is_empty(cmd: Command) -> bool:
+    """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``.
+
+    Грамматика такую команду допускает (фрагменты в тестах, лицо без слов); ответ МОДЕЛИ так быть не может — мост
+    режима команд считает его нарушением :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698)."""
+    return cmd.passed is None and not (cmd.speech or cmd.ask or cmd.actions or cmd.perform)
+
+
 def _check_speech(text: Optional[str], limit: int, where: str) -> None:
     if text is None:
         return
@@ -569,6 +577,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_SPEECH_WITH_ACTIONS: "speech при actions не звучит: если это ответ по сути (шутка, стих, ответ на "
                                       "вопрос) — положи его в perform.segments; если это слова про само действие "
                                       "(«вот звук») — убери speech, о результате скажет код",
+    kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "
+                                "выступлением (perform); молчать — passed",
     "single_action_class": "в этом классе действий — одно действие за ход",
     "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
     "bad_args": "аргументы действия не по схеме тула",

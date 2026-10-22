@@ -446,3 +446,18 @@ def test_every_reason_the_validator_raises_has_words_for_the_model():
     source = pathlib.Path(cm.__file__).read_text(encoding="utf-8")
     raised = set(re.findall(r'_Bad\("([a-z_]+)"', source))
     assert raised and raised <= set(cm.HINTS)
+    assert kn.VIOLATION_EMPTY_COMMAND in cm.HINTS  # нарушение моста (#3698) — тоже со словами для модели
+
+
+@pytest.mark.parametrize("raw, empty", [
+    ({"expression": {"emotion": "happy"}}, True),
+    ({"speech": "   "}, True),
+    ({}, True),
+    ({"passed": "nothing_to_say"}, False),
+    ({"speech": "Привет"}, False),
+    ({"ask": {"expects": "name", "text": "Как тебя зовут?"}}, False),
+    ({"actions": [{"tool": "get_current_time", "args": {}}]}, False),
+])
+def test_is_empty_marks_commands_with_nothing_to_do_or_say(raw, empty):
+    """#3698: ответ модели без речи, вопроса, действий и выступления (и не passed) мост считает нарушением."""
+    assert cm.is_empty(ok(raw)) is empty

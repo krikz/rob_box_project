@@ -31,7 +31,7 @@ from dataclasses import replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import NOT_RUN, Busy, Command, Invalid, Result, explain, parse, to_args, validate
+from rob_box_dialog.command import NOT_RUN, Busy, Command, Invalid, Result, explain, is_empty, parse, to_args, validate
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -109,13 +109,20 @@ def reply_command(content: str, calls: Iterable[ToolCall]) -> Result:
 def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy()) -> Result:
     """Команда ответа провайдера, проверенная по срезу тулов запроса и занятому сейчас (``busy`` — ACTIVE-сегмент
     выступления для ``edit_pending``, PR-7c). Оборванный JSON аргументов — ``truncated``; вызов ``command`` с пустыми
-    аргументами — ``bad_json`` (адаптер отдаёт ``{}``, когда JSON не разобрался)."""
+    аргументами — ``bad_json`` (адаптер отдаёт ``{}``, когда JSON не разобрался); команда, которой нечего исполнить и
+    нечего сказать (не ``passed``), — ``empty_command``: тот же повтор с объяснением, а не «тихий ответ» для v1-ретрая
+    #1217 мимо команды (ночной замер #3698 22.10, ход 4)."""
     if response.truncated_tool_args:
         return Invalid("truncated", "аргументы обрезаны по max_tokens")
     if any(c.name == kn.COMMAND_TOOL and not c.arguments for c in response.tool_calls):
         return Invalid("bad_json", "аргументы command пусты или не JSON")
     result = reply_command(response.content, response.tool_calls)
-    return validate(_without_speech_tool(result), available, busy=busy) if isinstance(result, Command) else result
+    if not isinstance(result, Command):
+        return result
+    checked = validate(_without_speech_tool(result), available, busy=busy)
+    if isinstance(checked, Command) and is_empty(checked):
+        return Invalid(kn.VIOLATION_EMPTY_COMMAND, "нет speech, ask, actions, perform и passed")
+    return checked
 
 
 def retry_messages(response: LLMResponse, invalid: Invalid) -> List[LLMMessage]:
