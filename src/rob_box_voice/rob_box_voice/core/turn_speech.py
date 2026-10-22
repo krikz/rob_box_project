@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from .dialogue_guards import is_system_template_regurgitated_in_ssml, is_tool_call_markup
+
 #: Потолок «первой фразы» для fallback-озвучки (acceptance #2874: ~120).
 FIRST_SENTENCE_LIMIT: int = 120
 
@@ -145,8 +147,17 @@ def final_text_for_speech(result: object, warn) -> str:
     (ход без тулов → честная фраза кода :data:`EMPTY_REPLY_PHRASE`, с тулами
     → тишина, о действии говорит код). ``warn`` — логгер для строки
     «🤐 [issue 3598] …».
+
+    Тем же путём уходит служебный синтаксис вместо речи — разметка вызова тула (#2760) и ``<system>``-шаблон
+    (#2175): дальше по тракту ``build_ssml_payload`` снимает теги, и отказ tts_node их уже не узнал бы (робот прочёл
+    бы значения параметров). Детекторы — те же, что у tts_node (одна таблица в ``dialogue_guards``); ретрай LLM
+    на такой ответ удалён в ADR-0150 PR-7 ч.7d-2 (#3698), нормализация переезжает в tts_node в PR-15.
     """
     text = getattr(result, "spoken_text", "") or ""
+    service = _service_syntax(text)
+    if service:
+        warn(f"🤐 [{service}] финальный текст хода — служебный синтаксис, не озвучиваю: {text[:160]!r}")
+        return ""
     marker = getattr(result, "internal_text_marker", None)
     if not marker:
         return text
@@ -154,6 +165,15 @@ def final_text_for_speech(result: object, warn) -> str:
         f"🤐 [issue 3598] финальный текст хода — рассуждение модели "
         f"(цитирует {marker!r}), не озвучиваю: {text[:160]!r}"
     )
+    return ""
+
+
+def _service_syntax(text: str) -> str:
+    """Метка служебного синтаксиса в тексте хода (``issue 2760`` / ``issue 2175``) или ``""``."""
+    if is_tool_call_markup(text):
+        return "issue 2760"
+    if is_system_template_regurgitated_in_ssml(text.strip()):
+        return "issue 2175"
     return ""
 
 

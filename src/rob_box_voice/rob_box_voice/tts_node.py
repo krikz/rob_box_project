@@ -164,22 +164,19 @@ from .tts_text_guard import ensure_readable as _tts_guard_ensure_readable
 from .tts_text_guard import readable_chain as _tts_guard_readable_chain
 from .tts_text_guard import should_skip as _tts_guard_should_skip
 
-# Issue #2175 — defense-in-depth: refuse to synthesize MiniMax's
-# regurgitated ``<system>...</system>`` template even if the dialogue
-# guard somehow let it through. Pure-Python helper, identical regex
-# to the one in ``dialogue_node._check_system_template_regurgitate_and_retry``
-# для extracted spoken; для SSML используется отдельный helper
-# ``is_system_template_regurgitated_in_ssml`` (более узкая regex,
-# учитывающая ``<speak>...</speak>``-обёртку).
+# Issue #2175 — refuse to synthesize MiniMax's regurgitated
+# ``<system>...</system>`` template (regex учитывает ``<speak>``-обёртку).
+# ADR-0150 PR-7 ч.7d-2 (#3698): ретрай LLM в dialogue_node удалён — отказ
+# здесь единственная защита.
 from .core.dialogue_guards import (
     is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
 )
 
 # Issue #2760 — тот же приём для разметки протокола tool-calls: модель
-# печатает ``<function_calls><invoke name="...">`` текстом, dialogue-guard
-# требует ретрай, а этот уровень гарантирует, что теги не прозвучат, даже
-# если реплика пришла мимо него (прогон 35704637846: два чанка ушли в
-# синтез). Детектор ``search``-овый, поэтому работает и на сыром SSML.
+# печатает ``<function_calls><invoke name="...">`` текстом; этот уровень
+# гарантирует, что теги не прозвучат (прогон 35704637846: два чанка ушли в
+# синтез; ретрай в dialogue_node удалён в ADR-0150 PR-7 ч.7d-2, #3698).
+# Детектор ``search``-овый, поэтому работает и на сыром SSML.
 from .core.dialogue_guards import is_tool_call_markup as _is_tool_call_markup
 
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
