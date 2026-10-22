@@ -2,6 +2,7 @@
 """Аудит честности речи робота по логу ``voice-assistant`` (ADR-0150 §14 A3; карточка #3684).
 
     python scripts/dialog/honesty_audit.py <log>
+    python scripts/dialog/honesty_audit.py --db <e2e.db>      # диалог v2: озвученное против исходов действий
 
 Находит ходы, где озвученная реплика содержит ОТЧЁТ ОБ ИСПОЛНЕНИИ («включаю», «записал», «показываю») или ОТКАЗ
 («сгенерить не может», «ничего не заиграло»), а подтверждающего ``Инструмент X выполнен успешно`` в окне того же хода
@@ -30,6 +31,7 @@ for _pkg in ("rob_box_voice", "rob_box_core", "rob_box_music", "rob_box_dialog")
     sys.path.insert(0, str(_REPO / "src" / _pkg))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import e2e_db  # noqa: E402
 import logparse  # noqa: E402
 from rob_box_voice.core.media_phrases import LAUNCH_PHRASE_STEMS  # noqa: E402
 
@@ -106,6 +108,21 @@ def audit(turns: Sequence[logparse.Turn]) -> List[Finding]:
     return [f for t in turns for f in audit_turn(t)]
 
 
+def audit_db(turns: Sequence[e2e_db.DbTurn]) -> List[Finding]:
+    """Те же правила по e2e-БД v2: проверяется ОЗВУЧЕННОЕ (``speech_spoken``), опора — исходы действий хода
+    (``action``: ``done`` — для утверждения, любая попытка — для отказа)."""
+    found: List[Finding] = []
+    for n, turn in enumerate(turns, 1):
+        done, attempted = set(turn.tools_done), set(turn.tools_attempted)
+        for text in turn.spoken:
+            for rule in CLAIM_RULES:
+                backing = done if rule.kind == "claim" else attempted
+                if rule.pattern.search(text) and not backing & rule.tools:
+                    found.append(Finding(n, (), rule.name, rule.kind, text, turn.tools_done,
+                                         tuple(sorted(attempted - done)), turn.user_text))
+    return found
+
+
 def render(findings: Sequence[Finding], turns: int) -> str:
     out = [f"Ходов проверено: {turns}; находок: {len(findings)}.", ""]
     if findings:
@@ -125,8 +142,16 @@ def render(findings: Sequence[Finding], turns: int) -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("log", type=Path)
+    ap.add_argument("log", type=Path, nargs="?")
+    ap.add_argument("--db", type=Path, help="e2e-БД диалога v2 (dialog_events) вместо лога")
     args = ap.parse_args(argv)
+    if args.db is not None:
+        db_turns = e2e_db.load(args.db)
+        db_findings = audit_db(db_turns)
+        print(render(db_findings, len(db_turns)))
+        return 1 if db_findings else 0
+    if args.log is None:
+        ap.error("нужен лог или --db")
     turns = logparse.load_turns(args.log)
     findings = audit(turns)
     print(render(findings, len(turns)))

@@ -2,6 +2,7 @@
 """Метрики хода диалога по логу ``voice-assistant`` (ADR-0150 §14: A1, A2, A5, A29, A31; карточка #3684).
 
     python scripts/dialog/turn_metrics.py <log> [--per-turn]
+    python scripts/dialog/turn_metrics.py --db <e2e.db>      # диалог v2: таблица dialog_events (PR-8 #3702)
 
 Считает на каждый адресованный ход (``🚀 [turn]``): вызовы LLM, STT -> первая реплика TTS (мс), число схем тулов
 в вызове (``tools(N)``), токены на вызов LLM (``🧮 [prompt] tokens=N``, #3696), вопросы о личности в речи, записи
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import e2e_db  # noqa: E402
 import logparse  # noqa: E402
 
 # Вопрос о личности в озвучке (A29, ADR §7.5). Только для аудита логов, не для рантайма.
@@ -114,11 +116,42 @@ def render_per_turn(turns: Sequence[logparse.Turn]) -> str:
     return "\n".join(out)
 
 
+def render_db(turns: Sequence[e2e_db.DbTurn]) -> str:
+    """Метрики диалога v2 по e2e-БД: A1 (вызовы LLM на ход, Tier-1 — 0), A2 (до первой речи), A13 (служебный текст
+    в начатой речи), A14 (невалидные ответы по провайдерам)."""
+    with_agg = [t for t in turns if t.aggregate]
+    llm = [float(t.aggregate.get("llm_calls") or 0) for t in with_agg]
+    lat = [t.first_sound_ms for t in turns if t.first_sound_ms is not None]
+    hits = e2e_db.marker_hits(turns)
+    out = [
+        f"Ходов в e2e-БД: {len(turns)}; с агрегатом: {len(with_agg)}; без LLM (Tier-1 и др.): "
+        f"{sum(1 for n in llm if n == 0)}.",
+        "",
+        "| Метрика | ходов | p50 | p95 | max |",
+        "|---|---|---|---|---|",
+        _stat_row("A1 `llm_calls` на ход (p50 = 1, p100 ≤ 3)", llm),
+        _stat_row("A2 реплика → первая речь, мс (LLM-ход p50 ≤ 4000, p95 ≤ 8000)", lat),
+        "",
+        f"- A13 служебный текст в начатой речи: {len(hits)} "
+        f"({'; '.join(f'{tid}: {text[:60]!r}' for tid, text in hits) or '-'}).",
+    ]
+    for provider, (total, invalid) in sorted(e2e_db.per_provider(turns).items()):
+        share = f"{100.0 * invalid / total:.0f} %" if total else "n/a"
+        out.append(f"- A14 `{provider}`: ответов {total}, невалидных {invalid} ({share}; порог ≤ 10 %).")
+    return "\n".join(out)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("log", type=Path)
+    ap.add_argument("log", type=Path, nargs="?")
     ap.add_argument("--per-turn", action="store_true", help="добавить таблицу по каждому ходу")
+    ap.add_argument("--db", type=Path, help="e2e-БД диалога v2 (dialog_events) вместо лога")
     args = ap.parse_args(argv)
+    if args.db is not None:
+        print(render_db(e2e_db.load(args.db)))
+        return 0
+    if args.log is None:
+        ap.error("нужен лог или --db")
     lines = logparse.read_lines(args.log)
     turns = logparse.split_turns(lines)
     print(render(turns, lines))
