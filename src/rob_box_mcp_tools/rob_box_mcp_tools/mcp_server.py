@@ -58,6 +58,7 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
 )
 
+from .engine.backing_deck import BackingDeck
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.gen.kie_suno import KieSunoProvider
 from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_lyrics_ask
@@ -344,6 +345,10 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
                                songs=_song_studio(node, events),  # PR-7: песня голосом робота
                                instrumental=_instrumental_maker(node, cover))  # «сгенерируй рок»
+    # ADR-0150 PR-7c: подложка выступления — request_music(intent=backing); outro — stop_music(boundary=bar)
+    request.backing = BackingDeck(owner, adapter, lambda mood: request._stage_club("", mood),  # noqa: SLF001
+                                  confirm, lambda: music_busy(owner, dj_set), log=node.get_logger())
+    node._backing_deck = request.backing
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)

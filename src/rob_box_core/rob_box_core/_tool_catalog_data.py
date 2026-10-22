@@ -1564,14 +1564,21 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'трек (темп, тональность и аранжировку решает код), '
                        'intent=melody — известная мелодия по названию из text. text — '
                        'слова человека дословно. Об успехе робот скажет сам, когда '
-                       'музыка реально заиграет; ok=false — музыка не заиграла.',
+                       'музыка реально заиграет; ok=false — музыка не заиграла. '
+                       'intent=backing — бит под выступление робота, его ставит код '
+                       'выступления.',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
                                                           'description': 'track — '
                                                                          'трек, melody '
                                                                          '— мелодия по '
-                                                                         'названию',
-                                                          'enum': ['track', 'melody']},
+                                                                         'названию, '
+                                                                         'backing — '
+                                                                         'бит '
+                                                                         'выступления',
+                                                          'enum': [   'track',
+                                                                      'melody',
+                                                                      'backing']},
                                             'text': {   'type': 'string',
                                                         'description': 'Слова человека '
                                                                        'дословно, без '
@@ -1591,7 +1598,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'enum': [   'auto',
                                                                      'club',
                                                                      'classical',
-                                                                     'folk']}},
+                                                                     'folk']},
+                                            'min_seconds': {   'type': 'number',
+                                                               'description': 'Только '
+                                                                              'для '
+                                                                              'backing: '
+                                                                              'сколько '
+                                                                              'секунд '
+                                                                              'ещё '
+                                                                              'звучать '
+                                                                              'биту'}},
                           'required': ['intent', 'text'],
                           'additionalProperties': False},
         'signature': {   'params': [   'intent',
@@ -1599,7 +1615,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'mood',
                                        'genre',
                                        'turn_id',
-                                       'heard_text'],
+                                       'heard_text',
+                                       'min_seconds'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer', 'dj')},
@@ -2275,10 +2292,19 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'из библиотеки. Повторный вызов в тишине безопасен. Что '
                        'сказать, вернёт тул.',
         'parameters': {   'type': 'object',
-                          'properties': {},
+                          'properties': {   'boundary': {   'type': 'string',
+                                                            'description': 'now — '
+                                                                           'сразу (по '
+                                                                           'умолчанию); '
+                                                                           'bar — бит '
+                                                                           'выступления '
+                                                                           'на '
+                                                                           'ближайшем '
+                                                                           'такте',
+                                                            'enum': ['now', 'bar']}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'signature': {'params': ['boundary'], 'required': [], 'accepts_kwargs': False},
         'skill': ('composer', 'dj', 'player')},
     {   'llm_visible': True,
         'operator_visible': False,
