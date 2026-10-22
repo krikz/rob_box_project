@@ -167,7 +167,7 @@ zenoh-router-sound [Sound Pi]
 - **Связь:** zenoh-router-vision
 
 ### Sound Pi (10.1.1.12 eth0 / 10.1.1.22 wlan0, ADR-0159)
-- **Голос:** voice-assistant (7 nodes), voice-action-server, supercollider
+- **Голос:** voice-assistant (7 nodes), supercollider
 - **ТАРС:** avatar-supervisor, avatar-arbiter
 - **Оператор:** quest (WebXR), telegram-bot (с PR-7)
 - **Связь:** zenoh-router-sound
