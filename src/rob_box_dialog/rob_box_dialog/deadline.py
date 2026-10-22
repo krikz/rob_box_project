@@ -63,11 +63,13 @@ class TurnDeadline:
         кончился бюджет хода) или ``asyncio.TimeoutError`` (если раньше кончился таймаут провайдера)."""
         import asyncio  # noqa: PLC0415 — asyncio тянет socket: пакет при импорте чистый (test_purity)
 
+        left = self.left()
         limit = self.cap(provider_timeout_s)
         try:
             return await asyncio.wait_for(_as_coro(awaitable), timeout=limit)
         except asyncio.TimeoutError:
-            if self.expired():
+            # Чей предел сработал, решает то, какой был меньше на входе, а не часы после (дрожание таймера ±мс).
+            if provider_timeout_s is None or float(provider_timeout_s) >= left:
                 raise DeadlineExpired(what, self.elapsed()) from None
             raise
 

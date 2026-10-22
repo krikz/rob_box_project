@@ -69,6 +69,17 @@ def test_wait_cancels_and_raises_when_turn_budget_ends():
     assert err.what == "llm:deepseek" and cancelled == [True]
 
 
+def test_deadline_is_reported_even_if_timer_fires_a_hair_early():
+    """``wait_for`` может сработать на долю мс раньше, чем часы хода покажут ноль: это всё равно дедлайн хода."""
+    clock = Clock()  # часы хода стоят: elapsed = 0, хотя реальный таймер истёк
+
+    async def main():
+        with pytest.raises(DeadlineExpired):
+            await TurnDeadline(budget_s=0.02, clock=clock).wait(asyncio.sleep(5), "llm")
+
+    asyncio.run(main())
+
+
 def test_provider_timeout_before_deadline_is_plain_timeout():
     async def main():
         with pytest.raises(asyncio.TimeoutError):
