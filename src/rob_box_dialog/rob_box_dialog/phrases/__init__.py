@@ -1,6 +1,6 @@
 """Каталог фраз робота (ADR-0150 §5.4): тексты — ``phrases/ru.yaml``, одна таблица на весь проект.
 
-Ключ ``{класс}.{статус}[.{причина}]`` или особый (``understand.timeout``, ``music.*``); 1–3 варианта со слотами
+Ключ ``{класс}.{статус}[.{причина}]`` или особый (``understand.timeout``, ``music.*``); 1–8 вариантов со слотами
 ``{name}``. Нет ключа или слота — ``KeyError`` (громко): фраза об исполнении не может молча стать пустой.
 """
 
@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import functools
 import pathlib
+import random
 from typing import Any, Mapping, Optional, Tuple
 
 import yaml
 
 CATALOG_PATH = pathlib.Path(__file__).with_name("ru.yaml")
-MAX_VARIANTS = 3
+MAX_VARIANTS = 8
 
 
 @functools.lru_cache(maxsize=1)
@@ -33,6 +34,27 @@ def text(key: str, variant: int = 0, **slots: Any) -> str:
     """Вариант ``variant`` (по модулю числа вариантов) фразы ``key`` со слотами."""
     variants = catalog()[key]
     return variants[variant % len(variants)].format(**slots)
+
+
+def pick(key: str, last: Optional[int] = None, rng: Optional[random.Random] = None, **slots: Any) -> Tuple[str, int]:
+    """Случайный вариант ``key`` без повтора предыдущего (``last`` — индекс прошлого выбора); ``(текст, индекс)``.
+    Выбор кодом (ADR-0148): модель фразу не выбирает. У единственного варианта повтор неизбежен."""
+    variants = catalog()[key]
+    choices = [i for i in range(len(variants)) if i != last] or [0]
+    index = (rng or random).choice(choices)
+    return variants[index].format(**slots), index
+
+
+class Picker:
+    """Выбор вариантов кодом с памятью: один и тот же вариант ключа дважды подряд не звучит."""
+
+    def __init__(self, rng: Optional[random.Random] = None) -> None:
+        self._rng = rng
+        self._last: dict = {}
+
+    def __call__(self, key: str) -> str:
+        text, self._last[key] = pick(key, self._last.get(key), self._rng)
+        return text
 
 
 def first_key(*keys: Optional[str]) -> Optional[str]:

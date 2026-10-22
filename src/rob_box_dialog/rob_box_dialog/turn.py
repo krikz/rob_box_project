@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -106,6 +107,7 @@ class _Turn:
     stage: str = "addressed"
     status: str = "finished"
     reason: str = ""
+    pickup: bool = False
     said: List[str] = field(default_factory=list)
 
 
@@ -128,8 +130,17 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
     return ()
 
 
-def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult]) -> Optional[str]:
-    """Фраза Tier-1: громкость — по исходу тула; стоп и тишина молчат; голос говорит сам тул (SpeechEvent)."""
+def voices_passed(pickup: bool, snapshot: SessionSnapshot) -> bool:
+    """«Промолчать» модели на адресованную реплику озвучивает код (Шифу 22.10); из бэклога и в тишине — молчание."""
+    return not pickup and snapshot.top("Silence") is None
+
+
+def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
+                 pick: Callable[[str], str] = lambda key: "") -> Optional[str]:
+    """Фраза Tier-1: громкость — по исходу тула; новая сессия — вариант из каталога; стоп и тишина молчат; голос говорит
+    сам тул (SpeechEvent)."""
+    if command.kind == "new_session":
+        return pick(kn.NEW_SESSION_PHRASE)
     if command.kind != "volume":
         return None
     prefix = "music" if command.args["channel"] == "music" else "voice"
@@ -182,8 +193,10 @@ class TurnEngine:
                  voices: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None, turn_log: Optional[TurnLog] = None,
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_DEADLINE_S,
-                 log: Optional[logging.Logger] = None) -> None:
+                 log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None) -> None:
         self.session = session
+        self._rng = rng
+        self._pick = phrases.Picker(rng)
         self.log = turn_log or TurnLog()
         self._ports = ports
         self._system = system_prompt
@@ -202,7 +215,7 @@ class TurnEngine:
 
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
-                     TurnDeadline(self._deadline_s, clock=self._clock))
+                     TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup)
         self.log.begin(turn.turn_id, turn.epoch, turn.text)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
@@ -255,8 +268,9 @@ class TurnEngine:
         elif command.kind == "new_session":
             self.session.reset()
             self.log.reset()
+            turn.epoch = self.session.snapshot.epoch  # сам ход — в новой сессии: его подтверждение не «устарело»
         results = await self._execute(turn, actions, snap)
-        said = tier1_phrase(command, results)
+        said = tier1_phrase(command, results, self._pick)
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
 
@@ -306,7 +320,12 @@ class TurnEngine:
         """Исполнить команду. Все действия — ``query`` и итерации ещё есть: вернуть данные для модели."""
         turn.stage = "done"
         if cmd.passed:
-            self._log.info(f"{LOG_MARK} passed={cmd.passed}")
+            turn.reason = "passed"
+            self._log.info(f"{LOG_MARK} passed={cmd.passed} addressed={not turn.pickup}")
+            # Решение Шифу 22.10: на адресованную реплику (вейк, окно ответа, Telegram) молчать нельзя — код мычит;
+            # passed из бэклога (подхват накопленного) — тихо.
+            if voices_passed(turn.pickup, self.session.snapshot):
+                self._say(turn, self._pick(kn.PASSED_ADDRESSED_PHRASE))
             return None
         results = await self._execute(turn, _runnable(cmd.actions, last), snap)
         if self._stale(turn, "results"):
@@ -390,4 +409,4 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "TurnEngine", "outcome_phrase", "tier1_actions",
-           "tier1_for", "tier1_phrase"]
+           "tier1_for", "tier1_phrase", "voices_passed"]

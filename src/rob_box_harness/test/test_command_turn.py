@@ -217,6 +217,16 @@ def test_queries_beyond_two_iterations_are_refused() -> None:
     assert tools.said() == [] and result.turn_failure == "nothing_to_do"
 
 
+def test_passed_is_a_quiet_step_not_a_failure() -> None:
+    """#3859: «промолчать» от моста — не провал и не «нечего исполнить»; речи и исполнения нет (шаг CommandTurn)."""
+    tools = _Tools()
+    response = _command(passed="nothing_to_say")
+    turn = CommandTurn(tools, [])
+    step = asyncio.run(turn.run(response, [], lambda: None))
+    assert (turn.failure, step.calls, step.response.content) == ("", (), "")
+    assert tools.acted() == [] and tools.said() == []
+
+
 def test_invalid_command_fails_the_turn_without_speech_and_executes_nothing() -> None:
     tools = _Tools()
     result, _ = _turn(tools, _command(actions=[{"tool": "play_sound", "args": {"sound": "nope"}}]))

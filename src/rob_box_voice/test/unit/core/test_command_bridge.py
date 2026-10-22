@@ -273,9 +273,11 @@ def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMRespo
     assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['{reason}'] → verdict=invalid:{reason} (")
 
 
-def test_passed_is_honest_silence() -> None:
+def test_passed_is_honest_silence_carried_as_command() -> None:
+    """#3859: молчание — вызов ``command`` с одним полем ``passed`` (пустой ответ потребитель принял бы за ошибку)."""
     out = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(passed="nothing_to_say"),)))
-    assert (out.content, out.tool_calls) == ("", ())
+    (call,) = out.tool_calls
+    assert out.content == "" and call.name == kn.COMMAND_TOOL and call.arguments == {"passed": "nothing_to_say"}
 
 
 def test_perform_and_voice_go_to_the_command_executor_ask_is_spoken() -> None:

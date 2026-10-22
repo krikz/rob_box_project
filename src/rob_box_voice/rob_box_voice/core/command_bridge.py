@@ -171,13 +171,17 @@ def _without_speech_tool(cmd: Command) -> Command:
 def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
     """Команда → ``(текст речи, вызовы, вердикт для лога)`` в форме v1-цикла: голая реплика — текстом (авто-TTS ноды),
     команда с действиями, выступлением или голосом реплики — одним вызовом ``command`` исполнителю команды.
-    Невалидная — тоже вызов ``command``, но с причиной в ``COMMAND_INVALID_FIELD``: речи нет, ход закроет провал."""
+    Невалидная — тоже вызов ``command``, но с причиной в ``COMMAND_INVALID_FIELD``: речи нет, ход закроет провал.
+    «Промолчать» (``passed``) — вызов ``command`` с одним полем ``passed``: пустой ответ без вызова потребитель не отличил бы
+    от пустого (``Invalid(empty)``, #3859), а так исход доходит до хода как есть."""
     if isinstance(result, Invalid):
         call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
                         arguments={kn.COMMAND_INVALID_FIELD: result.reason})
         return "", (call,), f"invalid:{result.reason}"
     if result.passed:
-        return "", (), f"passed:{result.passed}"
+        call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
+                        arguments={"passed": result.passed})
+        return "", (call,), f"passed:{result.passed}"
     cmd = _without_speech_tool(result)
     if cmd.actions or cmd.perform is not None or (cmd.voice and _spoken(cmd)):
         call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))

@@ -10,7 +10,7 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 M = install_dialog_msgs_stub()
 
-from rob_box_dialog import knowledge as kn  # noqa: E402
+from rob_box_dialog import knowledge as kn, phrases  # noqa: E402
 from rob_box_dialog.address import VOICE, Addressed  # noqa: E402
 from rob_box_dialog.command import Command, Invalid, ToolCall as CommandCall  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
@@ -91,6 +91,21 @@ def test_bridge_legacy_form_round_trips_to_the_same_command():
     assert verdict == "command" and text == ""
     back = to_result(LLMResponse(tool_calls=calls))
     assert back.actions == original.actions
+
+
+def test_passed_goes_bridge_to_result_to_engine_as_passed_not_invalid():
+    """#3859: «промолчать» моста доходит до TurnEngine как passed: ход finished/passed, не invalid; речь - фраза кода."""
+    text, calls, verdict = command_bridge.to_legacy(Command(passed="nothing_to_say"))
+    assert (text, verdict) == ("", "passed:nothing_to_say")
+    assert to_result(LLMResponse(tool_calls=calls)) == Command(passed="nothing_to_say")
+    ports, node, _ = _ports([LLMResponse(tool_calls=calls)])
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    agg = asyncio.run(engine.run(Addressed("робот мы тут немного пошумим ты просто слушай", VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished")
+    mumble = [s.text for s in node.pubs["/voice/speech/request"].sent]  # адресованная реплика: код мычит (Шифу 22.10)
+    assert len(mumble) == 1 and any(v in mumble[0] for v in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE])
+    stages = [(e.stage, e.status, e.reason) for e in node.pubs["/dialog/turn_event"].sent]
+    assert stages[-1] == ("done", "finished", "passed")
 
 
 def test_follow_answers_the_command_call_with_tool_result():
