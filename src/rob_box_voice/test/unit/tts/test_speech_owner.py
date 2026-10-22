@@ -248,6 +248,48 @@ def test_boundary_sentence_cancel_waits_for_sentence_end(setup):
     assert (kind, ev.spoken_chars) == ("cancelled", 8)
 
 
+def test_output_latency_has_one_source():
+    """Задержка вывода — одно число (knowledge): tts_node берёт из него дефолт, yaml его не переписывает (PR-7c)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[5]
+    tts_node = (root / "src/rob_box_voice/rob_box_voice/tts_node.py").read_text(encoding="utf-8")
+    assert 'declare_parameter("output_latency_ms", SPEECH_OUTPUT_LATENCY_MS)' in tts_node
+    for yaml in root.glob("**/config/**/tts_node.yaml"):
+        if "node_modules" not in yaml.parts:
+            assert "output_latency_ms:" not in yaml.read_text(encoding="utf-8"), yaml
+
+
+def test_cancel_now_overrides_sentence_boundary(setup):
+    """«Стой» (ADR-0150 PR-7c): реплика просила границу предложения, отмена с ``boundary=now`` режет сразу."""
+    node, owner, clock = setup
+    owner.admit(_chunk(agent="personality", boundary=1), "s")
+    owner.started("s", np.zeros((32000, 2), dtype=np.float32), 16000)
+    clock.t += 0.2
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", epoch=0, agent="personality",
+                                                     boundary=M.SpeechCancel.BOUNDARY_NOW))
+    assert node.interrupts == 1  # не ждём конца предложения
+
+
+def test_cancel_as_requested_keeps_the_sentence_boundary(setup):
+    node, owner, clock = setup
+    owner.admit(_chunk(agent="personality", boundary=1), "s")
+    owner.started("s", np.zeros((32000, 2), dtype=np.float32), 16000)
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="s", epoch=0, agent="personality",
+                                                     boundary=M.SpeechCancel.BOUNDARY_AS_REQUESTED))
+    assert node.interrupts == 0
+
+
+def test_client_cancel_carries_the_boundary(setup):
+    node, _, _ = setup
+    speech_client.cancel(node, agent="personality", speech_id="s", boundary="now")
+    speech_client.cancel(node, agent="personality", speech_id="s")
+    sent = node.pubs["/voice/speech/cancel"].sent
+    assert [m.boundary for m in sent] == [M.SpeechCancel.BOUNDARY_NOW, M.SpeechCancel.BOUNDARY_AS_REQUESTED]
+    with pytest.raises(ValueError):
+        speech_client.cancel(node, agent="personality", speech_id="s", boundary="soon")
+
+
 def test_progress_once_per_sentence(setup):
     node, owner, clock = setup
     tick = node.timers[0][1]
@@ -313,6 +355,28 @@ def test_presynth_commit_false_holds_audio_until_commit(setup):
     held = owner.claim_presynth("sid-1", pregen.append)
     assert held["sample_rate"] == 16000 and held["audio_np"].size == 8000 and pregen == []
     assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"  # дальше - обычный pregen
+
+
+def test_cancel_drops_held_presynth(setup):
+    """Сегмент выступления заменён правкой: отмена по ``speech_id`` выбрасывает его готовый PCM (не держим вечно)."""
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False))
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
+    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"
+
+
+def test_cancel_during_presynth_drops_the_result_and_says_cancelled(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    started = []
+    node._synthesis_executor = types.SimpleNamespace(submit=lambda fn, *a: started.append((fn, a)))
+    node.subs["/voice/speech/request"](_request(commit=False))
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
+    fn, args = started[0]
+    fn(*args)  # синтез закончился уже после отмены
+    assert _kinds(node) == ["queued", "cancelled"]
+    assert owner.claim_presynth("sid-1", lambda sid: "pregen") == "pregen"
 
 
 def test_presynth_then_commit_true_goes_to_pipeline(setup):
