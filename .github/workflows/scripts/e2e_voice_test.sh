@@ -593,6 +593,66 @@ reset_dialogue_session_for_act() {  # $1 = токен (только [A-Za-z0-9_.
     echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
     exit 2
 }
+
+# --- ADR-0150 PR-8 (#3702): движок диалога v1 | v2 --------------------------
+# При ``dialog_engine: v2`` (dialog_engine.yaml на роботе) вместо dialogue_node
+# работает dialog_node: параметра e2e_session_reset_token у него нет, сессию
+# сбрасывает сервис /dialog/control (reset, set_by=tars), а текст ходов для
+# приёмки (turn_metrics.py --db, honesty_audit.py --db) пишется в e2e-БД
+# только при e2e_mode и пути ВНЕ /data (rob_box_dialog.e2e_events).
+# Движок узнаём у самой ноды: значение параметра dialog_engine у /dialog_node.
+# Ноды нет (v1) — путь v1 без изменений.
+E2E_DIALOG_ENGINE="v1"
+E2E_DIALOG_DB_PATH="${E2E_DIALOG_DB_PATH:-/tmp/e2e_dialog/dialog_events_${RUN_ID:-local}.db}"
+E2E_DIALOG_DB_ACTIVATED=0
+_read_dialog_param() {  # $1 = имя параметра /dialog_node → True|False|строка
+    robot_ros "ros2 param get /dialog_node $1 --no-daemon" 2>/dev/null \
+        | grep -aoE '(Boolean|String) value is: .*' | tail -1 | sed -E 's/^(Boolean|String) value is: //'
+}
+detect_dialog_engine() {
+    E2E_DIALOG_ENGINE="v1"
+    [ "$(_read_dialog_param dialog_engine)" = "v2" ] && E2E_DIALOG_ENGINE="v2"
+    echo "E2E_DIALOG_ENGINE ${E2E_DIALOG_ENGINE}"
+    return 0
+}
+reset_dialog_v2_session_for_act() {
+    local out
+    out="$(robot_ros "timeout 30 ros2 service call /dialog/control rob_box_dialog_msgs/srv/DialogControl '{action: 2, set_by: tars}'" 2>&1)"
+    if printf '%s' "$out" | grep -q 'ok=True'; then
+        log "🧹 dialog_node (v2): новая сессия перед актом (/dialog/control reset, $(printf '%s' "$out" | grep -oE 'epoch=[0-9]+' | tail -1)) — ходы прошлых актов LLM не увидит"
+        return 0
+    fi
+    echo "E2E_FATAL: dialog_node (v2) не подтвердил сброс сессии перед актом (/dialog/control reset без ok=True) — акт увидел бы ходы прошлого акта (issue #2890)" >&2
+    printf '%s\n' "$out" | tail -3 >&2
+    exit 2
+}
+activate_e2e_dialog_db() {
+    case "$E2E_DIALOG_DB_PATH" in
+        /data | /data/*)
+            echo "E2E_FATAL: E2E_DIALOG_DB_PATH=$E2E_DIALOG_DB_PATH внутри боевой /data — e2e-БД ходов только вне неё" >&2
+            exit 2 ;;
+    esac
+    # Колбэк параметров ноды переоткрывает БД по значениям, которые ещё не
+    # записаны (rclpy пишет их после колбэка): повтор пути после e2e_mode=true
+    # переоткрывает БД с уже записанным e2e_mode.
+    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_mode true --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
+    if [ "$(_read_dialog_param e2e_mode)" = "True" ] && [ "$(_read_dialog_param e2e_db_path)" = "$E2E_DIALOG_DB_PATH" ]; then
+        E2E_DIALOG_DB_ACTIVATED=1
+        log "🧪 dialog_node: e2e_mode=true — текст ходов пишется в e2e-БД вне /data"
+        echo "E2E_DIALOG_DB ${E2E_DIALOG_DB_PATH}"
+        return 0
+    fi
+    log "⚠️ dialog_node: e2e-БД не включилась (e2e_mode/e2e_db_path не прочитались обратно) — метрик хода по этому акту не будет"
+    echo "E2E_DIALOG_DB off"
+}
+deactivate_e2e_dialog_db() {
+    [ "$E2E_DIALOG_DB_ACTIVATED" = "1" ] || return 0
+    robot_ros "ros2 param set /dialog_node e2e_mode false --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
+    log "🧪 dialog_node: e2e_mode=$(_read_dialog_param e2e_mode) — запись ходов остановлена, БД осталась в контейнере: $E2E_DIALOG_DB_PATH"
+}
 isolate_act_start() {  # $1 = файл сценария
     local scenario="$1" inherits=0 registers=1
     scenario_inherits_previous_act "$scenario" || inherits=$?
@@ -612,10 +672,16 @@ isolate_act_start() {  # $1 = файл сценария
     if [ "$registers" = "0" ] || scenario_writes_memory "$scenario"; then
         activate_e2e_memory_db
     fi
+    detect_dialog_engine
     if [ "$inherits" = "0" ]; then
         log "🔗 акт наследует окно диалога прошлого акта (inherits_previous_act=true) — сброс сессии пропущен намеренно"
+    elif [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
+        reset_dialog_v2_session_for_act
     else
         reset_dialogue_session_for_act "e2e-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
+    if [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
+        activate_e2e_dialog_db
     fi
 }
 
@@ -1628,7 +1694,9 @@ check_backlog_accumulated() {  # $1=before_rfc3339
     local before="$1"
     local logs
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
-    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
+    # v1 (stt_admission_host): «🗒️ [backlog] accumulated (no_wake_word) …»;
+    # v2 (dialog_node, ADR-0150 PR-8): «[backlog] accumulated reason=no_wake entries=N».
+    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated (\(no_wake_word\)|reason=no_wake)'
 }
 
 # vad_reject_reason() — почему шаг НЕ доехал до STT (issue: ложный диагноз).
@@ -2618,7 +2686,7 @@ observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/he
 # Issue #3248 — restore_robot_tts_default (e2e_voice_lib.sh): акт, менявший
 # голос/провайдера (mv01 → Yandex alena), возвращает дефолт set_voice в обход
 # LLM; иначе следующий акт и живые люди слышат голос из этого акта.
-trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; deactivate_e2e_dialog_db; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.

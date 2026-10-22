@@ -25,6 +25,9 @@
 #   REPORT     (default tests/e2e/_artifacts/night_<UTC>/)
 #   POLL_SEC   (default 60)       — период опроса статуса
 #   MAX_WAIT   (default 3600)     — потолок ожидания одного акта, сек
+#   TTS_PROVIDER (default пусто = auto воркфлоу) — кто озвучивает команды на
+#              билд-машине: auto|minimax|silero|yandex. Многодикторные акты —
+#              minimax: auto выбирает неизмеренный Yandex, и Борис звучит как Саша.
 #   STOP_ON_FOUNDATION_FAIL (default 1) — прервать марафон, если акт 1 или 2
 #              красный: без wake-word и без профилей голосов остальные акты
 #              не диагностичны, они просто утонут в no_accept.
@@ -46,6 +49,9 @@ POLL_SEC="${POLL_SEC:-60}"
 MAX_WAIT="${MAX_WAIT:-3600}"
 DRY_RUN="${DRY_RUN:-0}"
 STOP_ON_FOUNDATION_FAIL="${STOP_ON_FOUNDATION_FAIL:-1}"
+TTS_PROVIDER="${TTS_PROVIDER:-}"
+TTS_ARGS=()
+[ -n "$TTS_PROVIDER" ] && TTS_ARGS=(-f tts_provider="$TTS_PROVIDER")
 
 # --- robot-busy sentinel (взаимное исключение с e2e-ротацией) ---------------
 # Робот один: ротация (agent-flow-e2e-process.sh, cron every 20m) и марафон
@@ -129,7 +135,7 @@ if [ -z "$plan" ]; then
 fi
 
 n_acts="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
-log "REF=$REF  актов=$n_acts  отчёт=$REPORT"
+log "REF=$REF  актов=$n_acts  tts_provider=${TTS_PROVIDER:-auto}  отчёт=$REPORT"
 printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)"
 done
@@ -216,6 +222,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
             -f acceptance_file="$a_acc" \
             -f triggered_by_script="run_night_marathon.sh" \
             -f triggered_by_reason="night marathon act $a_n: $a_title" \
+            ${TTS_ARGS[@]+"${TTS_ARGS[@]}"} \
             >/dev/null 2>&1; then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
         printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\n' \

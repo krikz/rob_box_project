@@ -228,7 +228,7 @@
       "voice": "anton",
       "text": "Робот, новая сессия, забудь этот разговор.",
       "patterns": [
-        "session reset|session_reset|Новая сессия|new session"
+        "session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"
       ],
       "_why": "Issue #2865: без сброса факт n203 лежит в окне чата, и LLM отвечает на n213 из истории, не зовя memory_search (run 35886659057, n208: tools=[]). Паттерн — строка «🧹 [new-session] session reset» из dialogue_node.reset_session: если сброс не случился, n213 ничего не доказывает, и этот шаг обязан покраснеть сам."
     },

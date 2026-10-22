@@ -50,6 +50,11 @@ FUNCTIONS = (
     "activate_e2e_memory_db",
     "_read_dialogue_reset_token",
     "reset_dialogue_session_for_act",
+    "_read_dialog_param",
+    "detect_dialog_engine",
+    "reset_dialog_v2_session_for_act",
+    "activate_e2e_dialog_db",
+    "deactivate_e2e_dialog_db",
     "isolate_act_start",
 )
 
@@ -58,6 +63,18 @@ FAKE_ROBOT = r'''
 log() { echo ">>> $*"; }
 _pfile() { echo "$STATE/$(echo "$1$2" | tr '/' '_')"; }
 robot_ros() {
+    # v2 (ADR-0150 PR-8 #3702): сброс сессии — сервис /dialog/control.
+    case "$*" in
+        *"service call /dialog/control "*"action: 2"*"set_by: tars"*)
+            if [ "${FAKE_V2_RESET_REJECT:-0}" = 1 ]; then
+                echo "rob_box_dialog_msgs.srv.DialogControl_Response(ok=False, epoch=0, scenes=[])"
+            else
+                echo "RESET /dialog_node" >> "$STATE/events"
+                echo "rob_box_dialog_msgs.srv.DialogControl_Response(ok=True, epoch=1, scenes=[])"
+            fi
+            return 0
+            ;;
+    esac
     # shellcheck disable=SC2086
     set -- $*
     local verb="$3" node="$4" name="$5" value="$6" f
@@ -79,6 +96,9 @@ robot_ros() {
                     echo "RESET $node" >> "$STATE/events"
                     echo "$value" > "$f"
                     ;;
+                e2e_db_path)
+                    echo "$value" > "$f"
+                    ;;
             esac
             ;;
         get)
@@ -90,8 +110,16 @@ robot_ros() {
                         echo "Boolean value is: False"
                     fi
                     ;;
-                e2e_session_reset_token)
+                e2e_session_reset_token | e2e_db_path)
                     echo "String value is: $(cat "$f" 2>/dev/null)"
+                    ;;
+                dialog_engine)
+                    # /dialog_node есть только при v2; при v1 ros2cli печатает «Node not found».
+                    if [ "$node" = /dialog_node ] && [ -n "${FAKE_ENGINE:-}" ]; then
+                        echo "String value is: $FAKE_ENGINE"
+                    else
+                        echo "Node not found"
+                    fi
                     ;;
             esac
             ;;
@@ -122,7 +150,8 @@ def _require_bash_sees(path: Path) -> None:
         pytest.skip(f"bash не видит {path} (вероятно WSL на Windows) — проверка только в CI")
 
 
-def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None):
+def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None, engine=None,
+                   v2_reject=False, db_path="/tmp/e2e_dialog/dialog_events_test.db", tail=""):
     state = tmp_path / "state"
     state.mkdir()
     for key, value in (preset or {}).items():
@@ -135,13 +164,19 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None)
     script = (
         f'STATE="{_bash_path(state)}"\n'
         f'python3() {{ "{py}" "$@"; }}\n'
+        f'E2E_DIALOG_ENGINE=v1\nE2E_DIALOG_DB_PATH="{db_path}"\nE2E_DIALOG_DB_ACTIVATED=0\n'
         f"{FAKE_ROBOT}\n{body}\n"
         f'isolate_act_start "{_bash_path(scenario)}"\n'
+        f"{tail}\n"
         'echo "EXIT_OK"\n'
     )
     env = {"PATH": os.environ.get("PATH", ""), "PYTHONIOENCODING": "utf-8"}
     if reject:
         env["FAKE_DIALOGUE_REJECT"] = "1"
+    if engine:
+        env["FAKE_ENGINE"] = engine
+    if v2_reject:
+        env["FAKE_V2_RESET_REJECT"] = "1"
     # Скрипт — через stdin, не ``-c``: на Windows склейка аргумента
     # командной строки для msys-bash портит кавычки в длинном скрипте.
     proc = subprocess.run(
@@ -334,3 +369,105 @@ def test_trap_is_armed_before_act_isolation():
     assert src.rfind("trap '", 0, trap_at) != -1
     call_at = src.index('isolate_act_start "$SCENARIO_FILE"')
     assert trap_at < call_at
+
+
+# ── ADR-0150 PR-8 (#3702): харнесс понимает dialog_engine v2 ────────────────
+
+V2_DB = "/tmp/e2e_dialog/dialog_events_test.db"
+
+
+def _param(tmp_path: Path, node: str, name: str) -> str:
+    f = tmp_path / "state" / (node + name).replace("/", "_")
+    return f.read_text(encoding="utf-8").strip() if f.exists() else ""
+
+
+@bash_required
+def test_v1_robot_keeps_v1_path(tmp_path):
+    """/dialog_node нет — движок v1, сброс через dialogue_node как раньше, e2e-БД ходов не трогается."""
+    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"))
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "E2E_DIALOG_ENGINE v1" in proc.stdout
+    assert events == ["RESET /dialogue_node"]
+    assert _param(tmp_path, "/dialog_node", "e2e_mode") == ""
+
+
+@bash_required
+def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
+    """v2: сброс — /dialog/control reset (не параметр dialogue_node), e2e-БД ходов — вне /data."""
+    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2")
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "E2E_DIALOG_ENGINE v2" in proc.stdout
+    assert "RESET /dialog_node" in events
+    assert "RESET /dialogue_node" not in events
+    assert "epoch=1" in proc.stdout
+    assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
+    assert _param(tmp_path, "/dialog_node", "e2e_mode") == "true"
+    assert _param(tmp_path, "/dialog_node", "e2e_db_path") == V2_DB
+
+
+@bash_required
+def test_v2_rejected_reset_is_fatal(tmp_path):
+    proc, events = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", v2_reject=True)
+
+    assert proc.returncode == 2
+    assert "E2E_FATAL" in proc.stderr and "dialog_node (v2)" in proc.stderr
+    assert "ok=False" in proc.stderr
+    assert "EXIT_OK" not in proc.stdout
+    assert "RESET /dialog_node" not in events
+
+
+@bash_required
+def test_v2_inheriting_act_skips_reset_but_records_turns(tmp_path):
+    scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
+
+    proc, events = _run_isolation(tmp_path, scenario, engine="v2")
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "RESET /dialog_node" not in events and "RESET /dialogue_node" not in events
+    assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
+
+
+@bash_required
+def test_v2_e2e_db_inside_data_is_fatal(tmp_path):
+    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", db_path="/data/dialog.db")
+
+    assert proc.returncode == 2
+    assert "E2E_FATAL" in proc.stderr and "/data" in proc.stderr
+    assert _param(tmp_path, "/dialog_node", "e2e_mode") == ""
+
+
+@bash_required
+def test_v2_deactivate_stops_recording(tmp_path):
+    proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", tail="deactivate_e2e_dialog_db")
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert _param(tmp_path, "/dialog_node", "e2e_mode") == "false"
+    assert "e2e_mode=False" in proc.stdout
+
+
+def test_trap_returns_dialog_node_from_e2e_db():
+    src = E2E_SCRIPT.read_text(encoding="utf-8")
+    trap_line = next(line for line in src.splitlines() if line.startswith("trap 'restore_robot_tts_default"))
+    assert "deactivate_e2e_dialog_db" in trap_line
+
+
+def test_v2_log_lines_match_harness_patterns():
+    """Контракт «лог dialog_node v2 ↔ паттерны харнесса»: строки берутся из исходников v2."""
+    node = (REPO_ROOT / "src/rob_box_voice/rob_box_voice/dialog_node.py").read_text(encoding="utf-8")
+    turn = (REPO_ROOT / "src/rob_box_dialog/rob_box_dialog/turn.py").read_text(encoding="utf-8")
+    address = (REPO_ROOT / "src/rob_box_dialog/rob_box_dialog/address.py").read_text(encoding="utf-8")
+    grammar = (REPO_ROOT / "src/rob_box_dialog/rob_box_dialog/grammar.py").read_text(encoding="utf-8")
+    assert 'f"[backlog] accumulated reason={decision.reason} entries="' in node
+    assert re.search(r'NO_WAKE, [A-Z_, ]+= "no_wake"', address)
+    assert 'f"{LOG_MARK} tier1 kind={command.kind} ' in turn and 'Tier1Command("new_session")' in grammar
+
+    harness = E2E_SCRIPT.read_text(encoding="utf-8")
+    backlog_re = re.search(r"check_backlog_accumulated\(\) \{.*?grep -qE '([^']+)'", harness, re.S).group(1)
+    assert re.search(backlog_re, "[backlog] accumulated reason=no_wake entries=3")
+    assert re.search(backlog_re, "🗒️ [backlog] accumulated (no_wake_word) doa=12.0 speaker='Саша'")
+
+    act1 = json.loads((NIGHT / "night_marathon_act1_wakeup_v1.json").read_text(encoding="utf-8"))
+    reset_pat = next(s for s in act1["steps"] if s["label"] == "n102_session_reset")["patterns"][0]
+    assert re.search(reset_pat, "🧭 [turn-v2] tier1 kind=new_session args={} turn=ab12")

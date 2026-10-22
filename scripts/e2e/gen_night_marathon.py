@@ -449,7 +449,7 @@ act(
         step(
             "n102_session_reset",
             "Робот, сбрось всё и начни новую сессию, у нас ночная смена с чистого листа.",
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
         ),
         step("n103_time", "Робот, который сейчас час?", expect_tools=["get_current_time"]),
         step(
@@ -753,7 +753,7 @@ act(
             "n212_session_reset_before_search",
             "Робот, новая сессия, забудь этот разговор.",
             voice=SASHA,
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
             why="Issue #2865: без сброса факт n203 лежит в окне чата, и LLM "
             "отвечает на n213 из истории, не зовя memory_search (run "
             "35886659057, n208: tools=[]). Паттерн — строка "
@@ -1629,7 +1629,7 @@ act(
         step(
             "n1006_session_reset",
             "Робот, новая сессия, забудь этот разговор.",
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
         ),
         step(
             "n1007_no_leak",

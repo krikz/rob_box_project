@@ -19,7 +19,7 @@
       "voice": "anton",
       "text": "Робот, сбрось всё и начни новую сессию, у нас ночная смена с чистого листа.",
       "patterns": [
-        "session reset|session_reset|Новая сессия|new session"
+        "session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"
       ]
     },
     {
