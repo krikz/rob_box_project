@@ -24,6 +24,7 @@ provider.subject.music_gen: ["{provider} (генерация музыки)"]
 voice.applied: ["Говорю голосом {voice}."]
 voice.unavailable: ["Голос {requested} недоступен, остаюсь на {applied}."]
 voice.rejected: ["Не получилось сменить голос: провайдер {provider} не подходит."]
+voice.already_default: ["Я и так говорю своим обычным голосом."]
 voice.timeout: ["Не дождался подтверждения смены голоса, не знаю, какой сейчас."]
 provider.no_fallback: ["Запасного нет — потерпи, пока вернётся."]
 

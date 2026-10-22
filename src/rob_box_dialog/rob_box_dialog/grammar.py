@@ -158,6 +158,12 @@ def _voice_tokens(voice_id: str, display: str) -> List[str]:
     return _words(f"{display} {split}")
 
 
+def _is_default_voice(names: Sequence[str]) -> bool:
+    """«верни свой обычный голос»: есть слово-признак «обычного» и больше ничего, кроме служебных (#3803)."""
+    marked = any(_starts(w, kn.VOICE_DEFAULT_STEMS) for w in names)
+    return marked and all(_starts(w, kn.VOICE_DEFAULT_STEMS) or w in kn.VOICE_DEFAULT_FILLER for w in names)
+
+
 def _voice(text: str, _snapshot: SessionSnapshot, voices: Voices) -> Optional[Tier1Command]:
     """«включи голос надёжного мужика» → ``set_voice{voice}``: каждое слово вне служебных совпадает (первые
     ``VOICE_STEM_LEN`` букв) со словом ОДНОГО голоса реестра; не нашлось или двое — не Tier-1 (решает LLM)."""
@@ -167,6 +173,8 @@ def _voice(text: str, _snapshot: SessionSnapshot, voices: Voices) -> Optional[Ti
     names = [w for w in words if not (w.startswith(kn.VOICE_NOUN_STEM) or w in kn.VOICE_FILLER)]
     if not names:
         return None
+    if _is_default_voice(names):
+        return Tier1Command("set_voice", MappingProxyType({"voice": kn.VOICE_DEFAULT_ARG}))
     n = kn.VOICE_STEM_LEN
     hits = [vid for vid, display in voices
             if all(any(len(w) >= n and t[:n] == w[:n] for t in _voice_tokens(vid, display)) for w in names)]

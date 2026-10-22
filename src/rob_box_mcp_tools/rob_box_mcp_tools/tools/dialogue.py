@@ -16,6 +16,9 @@ from rob_box_core import speech_client
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..owner_event import OwnerEvents, owner_events
+from rob_box_dialog import phrases
+from rob_box_dialog.knowledge import VOICE_DEFAULT_ARG
+
 from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
@@ -30,11 +33,15 @@ try:
     from rob_box_voice.tts_voice_registry import (
         default_voice_for,
         resolve_voice,
+        robot_default_voice,
         voices_for,
     )
 except ImportError:  # pragma: no cover — fallback для minimal environments
     def default_voice_for(provider: str) -> str:
         return ""
+
+    def robot_default_voice() -> tuple:
+        return "", ""
 
     def resolve_voice(provider: str, requested) -> tuple:
         return (requested or ""), False
@@ -1076,7 +1083,7 @@ class SetVoiceTool(MCPTool):
         return (
             "Сменить голос робота НАСОВСЕМ (персистентно, пока не сменят) — только когда человек сам "
             "просит сменить голос: (1) «говори голосом X» — передай voice=X; (2) «верни обычный голос» "
-            "— передай voice=<default_voice>; (3) юзер "
+            "— передай voice=default (провайдера и голос подставит код); (3) юзер "
             "просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex "
             "anton») — передай voice=... И provider='yandex'. "
             "Доступные голоса перечислены в контексте: [TTS] voices=... "
@@ -1134,6 +1141,13 @@ class SetVoiceTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    def _already_default(self, provider: str, voice: str) -> bool:
+        """Робот уже говорит голосом по умолчанию (фактическое состояние ``tts_node``, не догадка)."""
+        node = self.node
+        if getattr(node, "actual_tts_provider", None) != provider:
+            return False
+        return (getattr(node, "actual_tts_voice", None) or default_voice_for(provider)) == voice
+
     def execute(self, voice: str, provider: str = "") -> MCPToolResult:
         """Установить голос (опционально — переключить провайдера).
 
@@ -1155,6 +1169,18 @@ class SetVoiceTool(MCPTool):
         # Валидируем параметр ДО валидации voice: если юзер указал
         # кривое имя провайдера, не сбрасываем его в активного молча —
         # возвращаем provider_unknown, LLM поправит.
+        if voice_clean.lower() == VOICE_DEFAULT_ARG:
+            # «Обычный голос» - голос робота по умолчанию (#3803), а не дефолт ТЕКУЩЕГО провайдера: решает код.
+            provider, voice_clean = robot_default_voice()
+            if self._already_default(provider, voice_clean):
+                phrase = phrases.text("voice.already_default")
+                self.log_info(f"[set_voice] voice={voice_clean!r} provider={provider} status=already_default")
+                _say_outcome(self.node, phrase)
+                return MCPToolResult(
+                    success=True,
+                    data={"status": "already_default", "voice_applied": voice_clean, "provider": provider},
+                    message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
+                )
         requested_provider, prov_err = _validate_provider(provider)
         if prov_err == "provider_empty":
             # Пустая строка — пользовательский «не указывать»; не ошибка.

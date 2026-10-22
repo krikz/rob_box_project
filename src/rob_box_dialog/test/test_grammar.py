@@ -253,6 +253,26 @@ VOICE = [
 ]
 
 
+# «Верни обычный голос» (#3803): значение default разворачивает код, провайдера и голос модель не выбирает
+DEFAULT_VOICE_PHRASES = [
+    "Робот, верни свой обычный голос", "верни обычный голос", "верни мне мой обычный голос",
+    "говори своим обычным голосом", "поставь голос по умолчанию", "вернись к обычному голосу",
+    "верни свой стандартный голос",
+]
+
+
+@pytest.mark.parametrize("text", DEFAULT_VOICE_PHRASES)
+def test_default_voice_is_resolved_by_code(text):
+    assert match(text, IDLE, VOICES) == Tier1Command("set_voice", {"voice": "default"}), text
+
+
+@pytest.mark.parametrize("text", ["верни обычный голос надёжного мужика", "какой у тебя обычный голос",
+                                  "верни голос обратно"])
+def test_default_voice_needs_nothing_else(text):
+    command = match(text, IDLE, VOICES)
+    assert command is None or command.args.get("voice") != "default", text
+
+
 @pytest.mark.parametrize("text, voices, voice", VOICE)
 def test_voice_by_registry(text, voices, voice):
     command = match(text, IDLE, voices)

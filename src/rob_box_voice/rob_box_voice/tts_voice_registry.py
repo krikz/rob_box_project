@@ -74,6 +74,16 @@ DEFAULT_VOICES: dict[str, str] = {
     "silero": "aidar",
 }
 
+#: Голос робота «по умолчанию» (#3803): провайдер, на котором он говорит «обычным голосом». Одна запись; голос
+#: берётся из ``DEFAULT_VOICES``. «Верни свой обычный голос» разворачивает код (``robot_default_voice``), не LLM.
+ROBOT_DEFAULT_PROVIDER = "minimax"
+
+
+def robot_default_voice() -> tuple[str, str]:
+    """``(провайдер, голос)`` обычного голоса робота; не дефолт ТЕКУЩЕГО провайдера."""
+    return ROBOT_DEFAULT_PROVIDER, DEFAULT_VOICES[ROBOT_DEFAULT_PROVIDER]
+
+
 # AV-27 / issue #1919 — метаданные голосов для wire payload
 # (VoiceInfo в messages.ts:125-133). ``voice_id`` — ключ в PROVIDER_VOICES,
 # всё остальное — обогащение для отображения в UI Quest voice-picker.
