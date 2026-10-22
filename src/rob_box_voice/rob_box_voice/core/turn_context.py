@@ -41,7 +41,8 @@ def _position(node: Any) -> Any:
 def _performance(node: Any) -> Optional[Dict[str, Any]]:
     """Идущее выступление (хост ``perform_host`` у исполнителя тулов): спетое/звучащее дословно, первый не начатый."""
     performer = getattr(getattr(node, "_tool_executor", None), "performer", None)
-    return performer.context() if performer is not None else None
+    block = performer.context() if performer is not None else None
+    return block if isinstance(block, dict) else None  # исполнитель без хоста выступления — раздела нет
 
 
 def context_sections(node: Any, profile: str, recent: Optional[Any] = None,
