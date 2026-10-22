@@ -349,9 +349,11 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
 #: ``performance`` — идущее выступление (``plan.perform.context_block``): спетое и звучащее дословно, номер первого не
 #: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
+#: ``recent_actions`` — исходы действий прошлых ходов окна v2 структурой (``turn_log``, ``ActionResult``: тул, статус,
+#: причина), а не текстом в репликах (§7.3, PR-8 #3702).
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "performance",
-    "recent_unaddressed",
+    "recent_unaddressed", "recent_actions",
 )
 
 
