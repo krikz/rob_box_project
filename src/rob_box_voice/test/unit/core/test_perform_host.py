@@ -20,6 +20,8 @@ from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.perform_host import PerformHost
 
 M = install_dialog_msgs_stub()
+#: Тип ``builtin_interfaces/Time`` той сборки сообщений, что под рукой (rosidl в CI, заглушка без ROS).
+TIME = type(M.SpeechEvent().stamp)
 
 
 def plain_text(ssml: str) -> str:
@@ -49,16 +51,9 @@ class _Node:
         return self.pubs.setdefault(topic, _Pub())
 
     def get_clock(self) -> Any:
-        node = self
-
-        class _Now:
-            nanoseconds = int(node.now_s * 1e9)
-
-            @staticmethod
-            def to_msg() -> Any:
-                return types.SimpleNamespace(sec=int(node.now_s), nanosec=0)
-
-        return types.SimpleNamespace(now=lambda: _Now())
+        ns = int(self.now_s * 1e9)
+        stamp = TIME(sec=ns // 10**9, nanosec=ns % 10**9)
+        return types.SimpleNamespace(now=lambda: types.SimpleNamespace(nanoseconds=ns, to_msg=lambda: stamp))
 
     def get_logger(self) -> Any:
         return types.SimpleNamespace(info=self.logs.append)

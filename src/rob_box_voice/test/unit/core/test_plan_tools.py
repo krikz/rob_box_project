@@ -156,8 +156,10 @@ class _HostNode:
         self.timers.append((period, callback))
 
     def get_clock(self):
-        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(1000 * 1e9),
-                                                           to_msg=lambda: SimpleNamespace(sec=1000, nanosec=0)))
+        from rob_box_dialog_msgs import msg  # заглушка без ROS или rosidl в CI — стамп того же типа
+
+        stamp = type(msg.SpeechEvent().stamp)(sec=1000, nanosec=0)
+        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(1000 * 1e9), to_msg=lambda: stamp))
 
     def get_logger(self):
         return SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
