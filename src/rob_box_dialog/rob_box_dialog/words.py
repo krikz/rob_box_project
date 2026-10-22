@@ -62,12 +62,15 @@ def has_word(text: str, stems: Sequence[str]) -> bool:
 class StopCall:
     """Разбор стоп-команды (В19): вердикт, стоп-слово и текст ПОСЛЕ него («хватит, спой другую» → «спой другую»).
 
-    ``word``/``rest`` заполнены только у ясного вердикта; у спорного ``word`` — первое стоп-слово фразы.
+    ``word``/``rest``/``words`` заполнены только у ясного вердикта; у спорного ``word`` — первое стоп-слово фразы.
+    ``words`` — все стоп-слова ведущей серии («всё, хватит, замолчи» → «хватит», «замолчи»): вид команды решает
+    самое сильное из них (тишина — только по слову из ``SILENCE_WORDS``).
     """
 
     verdict: str
     word: str = ""
     rest: str = ""
+    words: Tuple[str, ...] = ()
 
 
 def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
@@ -94,9 +97,9 @@ def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopC
     skip = set(STOP_LEAD_WORDS) | {w.lower() for w in words}
     lead = next((i for i, t in enumerate(tokens) if t not in skip), None)
     if lead is not None and _clear_at(tokens, lead):
-        return StopCall(STOP_CLEAR, tokens[lead], _rest(part, spans, lead, skip))
+        return StopCall(STOP_CLEAR, tokens[lead], _rest(part, spans, lead, skip), _stop_run(tokens, lead, skip))
     first = next((t for t in tokens if _is_stop(t)), "")
-    return StopCall(STOP_DISPUTED, first) if first else StopCall(STOP_NONE)
+    return StopCall(STOP_DISPUTED, first, words=(first,)) if first else StopCall(STOP_NONE)
 
 
 def policy_word(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
@@ -120,6 +123,13 @@ def policy_word(text: str, wake_words: Optional[Sequence[str]] = None) -> Option
         if (anywhere and _pattern(anywhere, _RIGHT).search(part)) or lead in group.lead_only:
             return key
     return None
+
+
+def _stop_run(tokens: Sequence[str], lead: int, skip: set) -> Tuple[str, ...]:
+    """Стоп-слова ведущей серии: от ведущего до первого слова новой команды (вводные не в счёт)."""
+    tail = next((i for i in range(lead + 1, len(tokens)) if not (_is_stop(tokens[i]) or tokens[i] in skip)),
+                len(tokens))
+    return tuple(t for t in tokens[lead:tail] if _is_stop(t))
 
 
 def _rest(part: str, spans: Sequence[Tuple[str, int]], lead: int, skip: set) -> str:

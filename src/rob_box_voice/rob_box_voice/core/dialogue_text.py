@@ -25,7 +25,7 @@ DEFAULT_UNSILENCE_COMMANDS = UNSILENCE_WORDS
 
 
 def is_silence_command(text_lower: str, commands: Sequence[str] | None = None) -> bool:
-    """Есть ли в фразе команда тишины — слово, начинающееся с основы «помолч»/«замолч»/«хватит»."""
+    """Есть ли в фразе команда тишины — слово с основой «помолч»/«замолч» («хватит» — стоп звуков, не тишина, #3700)."""
     return has_word(text_lower, SILENCE_WORDS if commands is None else commands)
 
 

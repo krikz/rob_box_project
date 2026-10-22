@@ -120,8 +120,8 @@ phrases:
      must_not: ["speech_cancelled", "ignored_during_tts"],
      notes: "#993: команда во время рэпа/песни игнорировалась (VAD гейтился на всё время TTS). A22: речь не обрывается, подложка на границе такта. Проверять во время рэпа (r28)"}
   - {id: r32, text: "Робот, хватит", source: issue, expected: {tier1: stop},
-     must_not: ["llm_call", "double_speech_request", "silenced_for_10min"],
-     notes: "A16: ровно 1 SpeechRequest/STOP (сейчас 2); A9: тишина по TTL, не бессрочно; марафон 29→30.09"}
+     must_not: ["llm_call", "double_speech_request", "silenced_for_10min", "silenced"],
+     notes: "A16: ровно 1 SpeechRequest/STOP (сейчас 2); #3700 (Шифу 22.10): «хватит» останавливает звуки (речь, выступление, музыку, сет), режим тишины не включает — тишину даёт «замолчи/помолчи» (A9: по TTL); следующая команда принимается; марафон 29→30.09"}
   - {id: r33, text: "Робот, стой", source: issue, expected: {tier1: stop},
      must_not: ["llm_call"], notes: "A21: «стой» — тишина ≤ 300 мс"}
   - {id: r34, text: "Робот, играй громче", source: marathon, expected: {actions: [music_master_gain]},

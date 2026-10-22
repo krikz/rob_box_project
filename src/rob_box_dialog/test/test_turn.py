@@ -115,6 +115,42 @@ def test_tier1_stop_all_stops_music_motion_and_speech():
     assert ports.said == []
 
 
+def _with_music(engine, **music):
+    engine.session._snap = engine.session.snapshot.__class__(
+        **{**vars(engine.session.snapshot), "music": MusicStateRef("playing", **music)})
+
+
+def test_enough_stops_the_set_and_speech_but_does_not_silence_and_next_command_is_taken():
+    """Решение Шифу 22.10 (#3700): «хватит» — остановить звуки; режим тишины не включается, следующая реплика идёт."""
+    ports = Ports()
+    engine = _engine(ports)
+    _with_music(engine, dj=True)
+    _run(engine, "хватит")
+    assert ports.cancels == ["tier1 stop_all"]
+    assert ports.executed == [[("dj_set", {"action": "stop"}), ("stop_music", {})]]
+    assert engine.session.snapshot.top("Silence") is None
+    assert ports.said == []
+    _run(engine, "музыку громче")  # следующая команда принята, а не проглочена тишиной
+    assert ports.executed[-1] == [("set_music_volume", {"action": "louder"})]
+    assert ports.said == [(phrases.text("music.volume.louder"), None, None)]
+
+
+def test_enough_with_nothing_playing_does_not_silence_and_says_nothing():
+    ports = Ports()
+    engine = _engine(ports)
+    _run(engine, "Робот, хватит")
+    assert engine.session.snapshot.top("Silence") is None
+    assert ports.executed == [] and ports.said == [] and ports.asked == []
+
+
+def test_shut_up_is_still_silence():
+    ports = Ports()
+    engine = _engine(ports)
+    _run(engine, "замолчи")
+    assert engine.session.snapshot.top("Silence") is not None
+    assert ports.cancels == ["tier1 silence"]
+
+
 def test_tier1_actions_dj_set_is_stopped_with_set():
     snap = Session("personality").snapshot
     dj = snap.__class__(**{**vars(snap), "music": MusicStateRef("playing", dj=True)})

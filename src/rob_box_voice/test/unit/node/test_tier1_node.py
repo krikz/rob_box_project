@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+from rob_box_harness.core.dialogue_state_machine import DialogueStateKind, DialogueStateMachine
 from rob_box_llm.provider import ToolResult
 
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
@@ -205,10 +205,64 @@ def test_stop_in_silence_works(run_plans):
 
 def test_silence_outside_silence_is_the_old_path(run_plans):
     n = _make_node()
-    _stt(n, "Робот, хватит")
+    _stt(n, "Робот, замолчи")
     n._handle_silence.assert_called_once()
     n._dispatch_turn.assert_not_called()
     assert n._llm_skipped_counter["silence_command"] == 1
+
+
+def _real_silence(node):
+    """Настоящий DSM и настоящая ``_handle_silence``: режим тишины виден по состоянию, а не по вызову мока."""
+    node._dsm = DialogueStateMachine()
+    node._handle_silence = lambda: DialogueNode._handle_silence(node)
+    return node
+
+
+def test_enough_in_the_middle_of_a_performance_does_not_enter_silence_and_next_command_goes(run_plans):
+    """Решение Шифу 22.10 (#3700): «хватит» — стоп выступления, SILENCED не включается, следующая реплика принимается
+    (в громком прогоне PR-7c после «хватит» посреди рэпа робот глотал команды)."""
+    n = _real_silence(_make_node(playing=True))
+    n._tool_executor.performer = _Performer(owns_backing=True)
+    _stt(n, "Робот, хватит")
+    run_plans()
+    assert n._tool_executor.performer.calls == ["stop"]
+    assert n._dsm.current_state != DialogueStateKind.SILENCED
+    n._speak_direct.assert_not_called()
+    n._dispatch_turn.assert_not_called()
+    _stt(n, "Робот, расскажи анекдот")
+    n._dispatch_turn.assert_called_once()
+    assert "расскажи анекдот" in str(n._dispatch_turn.call_args)
+
+
+def test_enough_stops_a_playing_set_and_does_not_enter_silence(run_plans):
+    n = _real_silence(_make_node(playing=True))
+    n._music_player_state = MusicPlayerState(state="playing", dj=True, dj_info={"enabled": True, "title": "Set"})
+    _stt(n, "Робот, хватит")
+    run_plans()
+    assert n._tool_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
+    assert n._dsm.current_state != DialogueStateKind.SILENCED
+    n._dispatch_turn.assert_not_called()
+
+
+def test_enough_with_nothing_sounding_changes_nothing(run_plans):
+    n = _real_silence(_make_node())
+    _stt(n, "Робот, хватит")
+    run_plans()
+    assert n._dsm.current_state != DialogueStateKind.SILENCED
+    assert n._tool_executor.calls == []  # нечего останавливать
+    n._speak_direct.assert_not_called()  # и фразы нет: «Хорошо» после «хватит» само было бы лишним звуком
+    n._dispatch_turn.assert_not_called()
+    _stt(n, "Робот, расскажи анекдот")
+    n._dispatch_turn.assert_called_once()
+
+
+def test_shut_up_still_enters_silence_and_swallows_the_next_command(run_plans):
+    n = _real_silence(_make_node())
+    _stt(n, "Робот, замолчи")
+    assert n._dsm.current_state == DialogueStateKind.SILENCED
+    n._speak_direct.assert_called_once_with("Хорошо, молчу.")
+    _stt(n, "Робот, расскажи анекдот")
+    n._dispatch_turn.assert_not_called()
 
 
 @pytest.mark.parametrize("silenced, spoken", [(False, True), (True, False)])
@@ -248,9 +302,11 @@ def test_disputed_stop_part_of_command_goes_on_and_speech_is_not_cut(run_plans):
     n._handle_silence.assert_not_called()
 
 
-@pytest.mark.parametrize("text, silence", [("Робот, спой другую и хватит", True), ("Робот, покажи анимацию стоп", False)])
+@pytest.mark.parametrize("text, silence", [
+    ("Робот, спой другую и замолчи", True), ("Робот, спой другую и хватит", False),
+    ("Робот, покажи анимацию стоп", False)])
 def test_disputed_stop_judged_stop_stops(run_plans, text, silence):
-    # Вид — от грамматики: «хватит» — тишина (как ясное «хватит»), «стоп» — стоп всего.
+    # Вид — от грамматики: «замолчи» — тишина, «хватит» и «стоп» — стоп всего (#3700).
     n = _make_node(verdict="stop")
     _stt(n, text)
     run_plans()
