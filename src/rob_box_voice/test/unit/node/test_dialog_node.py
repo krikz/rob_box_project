@@ -138,7 +138,8 @@ def test_music_state_goes_to_session_snapshot(node):
     msg.data = json.dumps({"state": "playing", "track_id": "t9", "dj": {"enabled": True, "title": "Сет"}})
     node._on_music_state(msg)
     music = node._session.snapshot.music
-    assert (music.state, music.track_id, music.dj) == ("playing", "t9", True)
+    assert (music.state, music.track_id) == ("playing", "t9")
+    assert node._session.snapshot.top("DJ") is not None
 
 
 def test_clear_stop_interrupt_cancels_speech_of_epoch(node):
@@ -157,3 +158,59 @@ def test_e2e_db_outside_data_only(node, tmp_path):
     events = node._open_events()
     assert events is not None and events.path.endswith("e2e.db")
     events.close()
+
+
+def _music_msg(**dj):
+    msg = MagicMock()
+    msg.data = json.dumps({"state": "playing", "track_id": "t9", "dj": {"enabled": True, **dj}})
+    return msg
+
+
+def _voice_changed(requested, applied, provider):
+    event = M.SpeechEvent()
+    event.kind, event.voice_requested, event.voice_applied, event.provider = \
+        M.SpeechEvent.KIND_VOICE_CHANGED, requested, applied, provider
+    return event
+
+
+def _hold(node, action, set_by="operator", ttl_s=0.0):
+    return node._on_control(DialogControl.Request(action=action, set_by=set_by, ttl_s=ttl_s), types.SimpleNamespace())
+
+
+def test_control_refuses_foreign_set_by_and_unknown_action(node):
+    out = _hold(node, DialogControl.Request.ACTION_HOLD, set_by="user")
+    assert out.ok is False and node._session.snapshot.top("OperatorHold") is None
+    assert _hold(node, 99).ok is False
+
+
+def test_operator_hold_drops_voice_and_does_not_collect_backlog(node):
+    _hold(node, DialogControl.Request.ACTION_HOLD, set_by="tars", ttl_s=60.0)
+    node._on_utterance(_utterance("Робот, как дела"))
+    node._on_utterance(_utterance("ну вот покажи анимацию"))
+    assert node.last_turn is None and node.test_llm.calls == 0
+    assert list(node._backlog._entries) == []
+    _hold(node, DialogControl.Request.ACTION_RESUME, set_by="tars")
+    node._on_utterance(_utterance("Робот, как дела"))
+    node.last_turn.result(timeout=10)
+    assert node.test_llm.calls == 1
+
+
+def test_dj_set_pushes_frames_and_idle_returns_voice_changed_during_set(node):
+    node._on_speech_event(_voice_changed("Reliable_Man", "Reliable_Man", "minimax"))
+    node._on_music_state(_music_msg(set_id="s1", persona="Дядя Стёпа"))
+    assert [f.kind for f in node._session.snapshot.scenes] == ["DJ", "Persona"]
+    node._on_speech_event(_voice_changed("alena", "alena", "yandex"))  # LLM сета сменила голос
+    idle = MagicMock()
+    idle.data = json.dumps({"state": "idle"})
+    node._on_music_state(idle)
+    assert node._session.snapshot.scenes == ()
+    asked = [json.loads(m.data) for m in _published(node, "/voice/tts/voice_request")]
+    assert [(a["provider"], a["voice"]) for a in asked] == [("minimax", "Reliable_Man")]
+    assert asked[0]["request_id"]
+
+
+def test_new_session_returns_default_voice_once(node):
+    node._on_speech_event(_voice_changed("alena", "alena", "yandex"))
+    _hold(node, DialogControl.Request.ACTION_RESET)
+    asked = [json.loads(m.data) for m in _published(node, "/voice/tts/voice_request")]
+    assert [(a["provider"], a["voice"]) for a in asked] == [tuple(dn.robot_default_voice())]

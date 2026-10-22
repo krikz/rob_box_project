@@ -388,7 +388,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
         original_publish = self.node._publish_dialogue_control
         published_actions: list[str] = []
 
-        def spy_publish(action: str, reason: str = "") -> bool:
+        def spy_publish(action: str, reason: str = "", ttl_s: float = 0.0) -> bool:
             published_actions.append(action)
             return True
 

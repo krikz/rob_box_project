@@ -160,7 +160,7 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             self._services.append(svc)
             return svc
 
-        def create_client(self, srv_type: Any, name: str) -> MagicMock:
+        def create_client(self, srv_type: Any, name: str, **_kwargs: Any) -> MagicMock:
             """Подмена create_client (использовался для записи в чужие
             ROS-параметры — voice-vr 21 / ADR-0080 §2.7 запись удалена,
             метод остался для будущих сервисов)."""
@@ -483,3 +483,17 @@ _install_ros_mocks()
 from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
 
 install_dialog_msgs_stub()
+
+try:  # настоящий rosidl-пакет (CI) или заглушка сервиса DialogControl (Windows): v2-путь супервизора (PR-10)
+    import rob_box_dialog_msgs.srv  # noqa: F401, E402
+except ImportError:
+    class _Request:
+        ACTION_HOLD, ACTION_RESUME, ACTION_RESET = 0, 1, 2
+
+        def __init__(self, action: int = 0, set_by: str = "", ttl_s: float = 0.0) -> None:
+            self.action, self.set_by, self.ttl_s = action, set_by, ttl_s
+
+    _srv = types.ModuleType("rob_box_dialog_msgs.srv")
+    _srv.DialogControl = type("DialogControl", (), {"Request": _Request})
+    sys.modules["rob_box_dialog_msgs.srv"] = _srv
+    sys.modules["rob_box_dialog_msgs"].srv = _srv

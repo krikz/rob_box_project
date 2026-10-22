@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import json
 import os
+import threading
 import time
 import types
 import uuid
@@ -205,20 +206,55 @@ DIALOGUE_CONTROL_PAUSE: str = "pause"
 DIALOGUE_CONTROL_RESUME: str = "resume"
 
 
-class _NoDialogueControl:
-    """``/dialogue/control`` при ``dialog_engine=v2`` (ADR-0150 PR-8, #3702): топика нет — слушает его только
-    ``dialogue_node`` v1. Публикация — громкий отказ (``_publish_dialogue_control`` вернёт ``False``), а не тихий
-    успех; пауза личности v2 — DialogControl ``/dialog/control`` (PR-10/PR-13)."""
+#: Сервис управления диалогом v2 (ADR-0150 §10.1, PR-10 #3704) и сколько ждём ack владельца.
+DIALOG_CONTROL_SERVICE: str = "/dialog/control"
+DIALOG_CONTROL_ACK_TIMEOUT_S: float = 3.0
+#: Страховка ``hold`` на время хода ТАРС: упавший супервизор не оставит личность глухой навсегда (§7.2: «таймаут
+#: супервизора»). Явный ``off`` (legacy ``/avatar/set_voice_mode``) держит до ``resume``.
+OPERATOR_HOLD_TTL_S: float = 300.0
+_HOLD_ACTION = {DIALOGUE_CONTROL_PAUSE: 0, DIALOGUE_CONTROL_RESUME: 1}  # DialogControl.ACTION_HOLD / ACTION_RESUME
 
-    def publish(self, _msg: Any) -> None:
-        raise RuntimeError("dialog_engine=v2: /dialogue/control нет (DialogControl — PR-10/PR-13)")
+
+class _DialogControlClient:
+    """``dialog_engine=v2``: ``pause``/``resume`` супервизора -> ``DialogControl.hold``/``resume`` с ack владельца.
+
+    Тот же вход ``publish(String JSON {action, reason, ttl_s})``, что у топика v1, но исход честный: нет сервиса,
+    нет ответа за срок или ``ok=false`` — исключение (``_publish_dialogue_control`` вернёт ``False``), а не
+    «отправил и забыл»."""
+
+    def __init__(self, client: Any, srv: Any, timeout_s: float = DIALOG_CONTROL_ACK_TIMEOUT_S) -> None:
+        self._client, self._srv, self._timeout_s = client, srv, timeout_s
+
+    def publish(self, msg: Any) -> None:
+        payload = json.loads(msg.data)
+        action = _HOLD_ACTION[payload["action"]]
+        if not self._client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: сервиса нет (dialog_node v2 не запущен?)")
+        request = self._srv.Request()
+        request.action, request.set_by, request.ttl_s = action, "operator", float(payload.get("ttl_s") or 0.0)
+        done = threading.Event()
+        future = self._client.call_async(request)
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(self._timeout_s):
+            raise TimeoutError(f"{DIALOG_CONTROL_SERVICE}: нет ack за {self._timeout_s:g} с")
+        response = future.result()
+        if not response.ok:
+            raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: владелец отказал action={payload['action']}")
 
 
 def _dialogue_control_publisher(node: Any) -> Any:
-    """Писатель ``/dialogue/control`` по флагу движка: ``v1`` — топик, ``v2`` — :class:`_NoDialogueControl`."""
+    """Писатель управления личностью по флагу движка: ``v1`` — топик ``/dialogue/control``, ``v2`` — сервис
+    ``/dialog/control`` (клиент в своей реентерабельной группе: ответ приходит, пока обработчик команды ждёт)."""
     if dialog_engine.declare(node) == dialog_engine.V1:
         return node.create_publisher(RosString, DIALOGUE_CONTROL_TOPIC, 10)
-    return _NoDialogueControl()
+    from rob_box_dialog_msgs.srv import DialogControl  # noqa: PLC0415 - только v2
+
+    try:
+        from rclpy.callback_groups import ReentrantCallbackGroup  # noqa: PLC0415
+        group = {"callback_group": ReentrantCallbackGroup()}
+    except ImportError:  # unit-окружение без rclpy
+        group = {}
+    return _DialogControlClient(node.create_client(DialogControl, DIALOG_CONTROL_SERVICE, **group), DialogControl)
 
 
 # AV-27 / issue #1919 — TTS picker топики (симметрично /avatar/set_voice_mode).
@@ -515,8 +551,8 @@ class AvatarSupervisor(Node):
         # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
         # resume в finally) и для обработки явных
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
-        # ADR-0150 PR-8 (#3702): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
-        # топика нет (пауза личности v2 — DialogControl ``/dialog/control``, PR-10/PR-13).
+        # ADR-0150 PR-10 (#3704): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
+        # пауза личности идёт сервисом DialogControl ``/dialog/control`` (hold/resume с ack).
         self._dialogue_control_pub = _dialogue_control_publisher(self)
         # AV-28 §P7 (issue #1920) — voice style preset/language подписки
         # удалены по ADR-0087: канал был «честный no-op» после PR #2255
@@ -1231,7 +1267,7 @@ class AvatarSupervisor(Node):
     }
 
     def _publish_dialogue_control(
-        self, action: str, reason: str = ""
+        self, action: str, reason: str = "", ttl_s: float = 0.0
     ) -> bool:
         """Опубликовать ``{action, reason, ts_s}`` в ``/dialogue/control``.
 
@@ -1252,6 +1288,7 @@ class AvatarSupervisor(Node):
                 "action": action,
                 "reason": reason,
                 "ts_s": time.time(),
+                "ttl_s": float(ttl_s),
             }
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)
@@ -1833,6 +1870,7 @@ class AvatarSupervisor(Node):
         applied_in = self._publish_dialogue_control(
             DIALOGUE_CONTROL_PAUSE,
             reason="agent_during_command",
+            ttl_s=OPERATOR_HOLD_TTL_S,
         )
         if not applied_in:
             # Если publish упал (нет подписчика / rclpy error) — не валим
