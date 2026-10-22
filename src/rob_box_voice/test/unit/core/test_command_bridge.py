@@ -661,3 +661,14 @@ def test_agent_core_empty_twice_fails_the_turn_without_a_third_llm_call(streamin
 
     assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
     assert result.turn_failure == f"invalid_command:{kn.VIOLATION_EMPTY_COMMAND}" and result.error is None
+
+
+def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> None:
+    """PR-12a (#3706): мост проверяет команду для своего агента — у телеграма ``speech`` при действиях — текст в чат
+    (законно), у Личности — нарушение ``speech_with_actions`` (§4.1). Цепочка телеграма — ``wrapper_for(agent=)``."""
+    reply = LLMResponse(tool_calls=(_command_call(speech="Записываю.", actions=SAVE),))
+    assert cb.judge(reply, ["memory_save"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
+    chat = cb.judge(reply, ["memory_save"], agent=kn.TEXT_CHANNEL_AGENT)
+    assert chat.speech == "Записываю." and [a.tool for a in chat.actions] == ["memory_save"]
+    wrapped = cb.wrapper_for("deepseek", agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
+    assert wrapped._judged(reply, ["memory_save"]).speech == "Записываю."

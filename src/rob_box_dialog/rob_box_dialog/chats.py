@@ -1,0 +1,125 @@
+"""Телеграм-агент на общем движке: сессия, история и ход на каждый чат (ADR-0150 §9.2, решение В10; PR-12a #3706).
+
+Чат — не вторая голова голосового диалога: у него своя :class:`~rob_box_dialog.session.Session`
+(``agent="telegram"``, ``session_id="telegram:<chat_id>"``), своё окно ходов и свой :class:`TurnEngine`. Адресация —
+та же таблица (:func:`rob_box_dialog.address.decide`): текст в чате адресован всегда, «Клод …» — координатору
+(``NotAddressed(coordinator)``). Команды роботу идут к тем же владельцам (исполнитель хоста), а фразы — и слова модели,
+и фраза кода об исходе по событию — уходят текстом в чат (:class:`ChatPorts`, ``DialogOutput``), а не в динамики.
+
+Чистый модуль: транспорт (LLM, исполнитель, публикация ``DialogOutput``) — снаружи, у ROS-хоста.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any, Callable, Dict, Optional, Sequence
+
+from rob_box_dialog.address import SOURCE_TELEGRAM, Decision, decide
+from rob_box_dialog.backlog import Heard
+
+_LOG = logging.getLogger(__name__)
+#: Строка лога телеграм-агента.
+LOG_MARK = "💬 [tg-agent]"
+#: ``DialogOutput.channel_ref`` чата: ``telegram:<chat_id>``.
+CHANNEL_PREFIX = "telegram:"
+#: ``Send(channel_ref, text, speech_id)`` — публикация ``DialogOutput`` хостом.
+Send = Callable[[str, str, str], None]
+
+
+def channel_ref(chat_id: int) -> str:
+    return f"{CHANNEL_PREFIX}{int(chat_id)}"
+
+
+def chat_of(ref: str) -> Optional[int]:
+    """``telegram:<chat_id>`` → ``chat_id``; чужой канал или мусор — ``None``."""
+    if not isinstance(ref, str) or not ref.startswith(CHANNEL_PREFIX):
+        return None
+    try:
+        return int(ref[len(CHANNEL_PREFIX):])
+    except ValueError:
+        return None
+
+
+class ChatPorts:
+    """Порты хода одного чата: LLM и исполнение — общие порты хоста (``base``), речь — текст в чат.
+
+    Стадии хода лицо и кольцо не трогают (чат — не разговор с роботом вслух), отменять в чате нечего, выступление
+    личности стоп из чата не рвёт; стоп движения — тот же интент, что у голоса."""
+
+    def __init__(self, base: Any, chat_id: int, send: Send, log: Callable[[str], None] = _LOG.info) -> None:
+        self._base = base
+        self._ref = channel_ref(chat_id)
+        self._send = send
+        self._log = log
+
+    def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Any:
+        return self._base.ask(messages, tools, timeout_s)
+
+    def execute(self, actions: Sequence[Any], snapshot: Any, turn_id: str) -> Any:
+        return self._base.execute(actions, snapshot, turn_id)
+
+    def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
+            emotion: Optional[str] = None) -> str:
+        speech_id = uuid.uuid4().hex
+        self._send(self._ref, text, speech_id)
+        self._log(f"{LOG_MARK} → {self._ref} turn={turn_id} epoch={epoch} chars={len(text)}")
+        return speech_id
+
+    def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
+              llm_calls: int = 0, provider: str = "", source: str = "") -> None:
+        if status != "started":
+            self._log(f"{LOG_MARK} {self._ref} turn={turn_id} stage={stage} status={status} reason={reason or '-'} "
+                      f"llm_calls={llm_calls} provider={provider or '-'}")
+
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
+        return None
+
+    def stop_perform(self, how: str) -> bool:
+        return False
+
+    def intent(self, turn_id: str, epoch: int, kind: str) -> None:
+        self._base.intent(turn_id, epoch, kind)
+
+
+class ChatTurns:
+    """Ходы телеграм-агента: движок на чат (создаётся при первом сообщении чата), ходы одного чата — по очереди."""
+
+    def __init__(self, make_engine: Callable[[int], Any], wake_words: Sequence[str] = (),
+                 log: Callable[[str], None] = _LOG.info) -> None:
+        self._make = make_engine
+        self._wake = tuple(wake_words)
+        self._log = log
+        self._engines: Dict[int, Any] = {}
+        self._locks: Dict[int, Any] = {}
+
+    def decide(self, chat_id: int, text: str, now: float) -> Decision:
+        """Адресация реплики чата той же таблицей, что у голоса (``source=telegram``)."""
+        decision = decide(Heard(text=(text or "").strip(), t=now, source=SOURCE_TELEGRAM), None, self._wake)
+        self._log(f"{LOG_MARK} {channel_ref(chat_id)} decision={type(decision).__name__} "
+                  f"reason={getattr(decision, 'reason', '-')}")
+        return decision
+
+    def engine(self, chat_id: int) -> Any:
+        """Движок чата; первый раз — новая сессия ``telegram:<chat_id>`` со своей историей."""
+        chat_id = int(chat_id)
+        if chat_id not in self._engines:
+            self._engines[chat_id] = self._make(chat_id)
+            self._log(f"{LOG_MARK} новая сессия {channel_ref(chat_id)} (чатов: {len(self._engines)})")
+        return self._engines[chat_id]
+
+    async def run(self, chat_id: int, addressed: Any) -> Any:
+        """Ход чата; новый ход того же чата ждёт конца текущего (другие чаты — не ждут). Упавший ход — громкая
+        строка лога и ``None`` (задачу ``run_coroutine_threadsafe`` никто не ждёт: иначе ошибка пропала бы молча)."""
+        import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
+
+        lock = self._locks.setdefault(int(chat_id), asyncio.Lock())
+        async with lock:
+            try:
+                return await self.engine(chat_id).run(addressed)
+            except Exception as exc:  # noqa: BLE001 — упавший ход чата не роняет ноду, но громко
+                self._log(f"{LOG_MARK} {channel_ref(chat_id)} ход упал: {type(exc).__name__}: {exc}")
+                return None
+
+
+__all__ = ["CHANNEL_PREFIX", "ChatPorts", "ChatTurns", "LOG_MARK", "channel_ref", "chat_of"]

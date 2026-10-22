@@ -115,12 +115,15 @@ _DEFAULT_TTL_S: Mapping[Tuple[str, str], float] = MappingProxyType({
 class Session:
     """Владелец сессии одного агента. Писать в неё может только код через эти методы."""
 
-    def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic,
+                 session_id: Optional[str] = None) -> None:
+        """``session_id`` — имя сессии канала (телеграм: ``telegram:<chat_id>``, §9.2); ``None`` — новое uuid."""
         if agent not in kn.AGENTS:
             raise ValueError(f"Session: agent must be one of {kn.AGENTS}, got {agent!r}")
         self._clock = clock
         self._listeners: List[Listener] = []
-        self._snap = SessionSnapshot(agent=agent, session_id=uuid.uuid4().hex, epoch=0, started_at=clock())
+        self._snap = SessionSnapshot(agent=agent, session_id=session_id or uuid.uuid4().hex, epoch=0,
+                                     started_at=clock())
 
     @property
     def snapshot(self) -> SessionSnapshot:

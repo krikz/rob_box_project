@@ -20,6 +20,7 @@ from telegram.error import TimedOut, NetworkError
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
+from ..inbox import log_incoming
 from ..radio import get_radio_mode
 from ..voice_processor import transcribe_voice
 
@@ -68,6 +69,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not user_text:
         return
+
+    # PR-12a (#3706): каждое сообщение — строкой [tg-in] в лог (канал координатора «Клод …»).
+    log_incoming(_node(context), chat_id, user_text)
 
     # React with 👀 to indicate we received the message
     await _react_eyes(update)
@@ -235,6 +239,7 @@ async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # source marker (issue #1195) — same as text messages, so the
         # LLM reply is routed back into this chat.
         await update.message.reply_text(f"🎤 Распознано: _{text}_", parse_mode="Markdown")
+        log_incoming(node, chat_id, text)
         node.forward_to_stt(text, chat_id=chat_id)
 
 

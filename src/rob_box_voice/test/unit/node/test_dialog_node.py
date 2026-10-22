@@ -60,13 +60,15 @@ class _Tools:
 @pytest.fixture()
 def node(monkeypatch):
     llm = _LLM([LLMResponse(content="Привет, я робот.")])
+    chat_llm = _LLM([LLMResponse(content="Привет из чата.")])
     tools = _Tools()
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter: (llm, "Ты робот."))
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
+        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
     monkeypatch.setattr(dn, "build_tools", lambda node: tools)
     made = dn.DialogNode()
     stamp = TIME(sec=1, nanosec=0)
     made.get_clock = lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
-    made.test_llm, made.test_tools = llm, tools
+    made.test_llm, made.test_tools, made.test_chat_llm = llm, tools, chat_llm
     yield made
     made.shutdown()
 
@@ -104,6 +106,30 @@ def test_addressed_utterance_runs_turn_and_speaks(node):
     said = _published(node, "/voice/speech/request")
     assert [s.text for s in said] == ["<speak>Привет, я робот.</speak>"]
     assert node.test_llm.calls == 1
+
+
+def _chat_utterance(text, chat_id=42):
+    msg = M.Utterance()
+    msg.text, msg.source, msg.chat_id, msg.provider = text, M.Utterance.SOURCE_TELEGRAM, chat_id, "telegram"
+    return msg
+
+
+def test_telegram_utterance_is_a_chat_agent_turn_answered_as_dialog_output(node):
+    """PR-12a (#3706): реплика чата — ход телеграм-агента своего чата (своя LLM), ответ — ``DialogOutput`` в
+    ``/dialog/output``; Личность её не слышит и в динамики ничего не идёт."""
+    node._on_utterance(_chat_utterance("который час"))
+    node.last_chat_turn.result(timeout=10)
+    out = _published(node, "/dialog/output")
+    assert [(o.agent, o.channel_ref, o.text) for o in out] == [("telegram", "telegram:42", "Привет из чата.")]
+    assert node.test_chat_llm.calls == 1 and node.test_llm.calls == 0
+    assert _published(node, "/voice/speech/request") == [] and node.last_turn is None
+    assert node._chats.engine(42).session.snapshot.session_id == "telegram:42"
+
+
+def test_coordinator_call_from_chat_reaches_nobody(node):
+    node._on_utterance(_chat_utterance("Клод, глянь лог"))
+    assert node.last_chat_turn is None and node.last_turn is None
+    assert node.test_chat_llm.calls == 0 and _published(node, "/dialog/output") == []
 
 
 def test_unaddressed_utterance_goes_to_backlog_without_turn(node):
@@ -233,7 +259,7 @@ class _HttpLLM:
 
 def _hang_node(monkeypatch, llm):
     tools = _Tools()
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter: (llm, "Ты робот."))
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
     monkeypatch.setattr(dn, "build_tools", lambda node: tools)
     made = dn.DialogNode()
     stamp = TIME(sec=1, nanosec=0)

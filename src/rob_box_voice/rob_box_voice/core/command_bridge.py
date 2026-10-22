@@ -29,6 +29,7 @@ import json
 import time
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
@@ -107,12 +108,13 @@ def reply_command(content: str, calls: Iterable[ToolCall]) -> Result:
     return from_text
 
 
-def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy()) -> Result:
+def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy(), agent: str = kn.AGENTS[0]) -> Result:
     """Команда ответа провайдера, проверенная по срезу тулов запроса и занятому сейчас (``busy`` — ACTIVE-сегмент
     выступления для ``edit_pending``, PR-7c). Оборванный JSON аргументов — ``truncated``; вызов ``command`` с пустыми
     аргументами — ``bad_json`` (адаптер отдаёт ``{}``, когда JSON не разобрался); команда, которой нечего исполнить и
     нечего сказать (не ``passed``), — ``empty_command``: тот же повтор с объяснением, а не «тихий ответ» для v1-ретрая
-    #1217 мимо команды (ночной замер #3698 22.10, ход 4)."""
+    #1217 мимо команды (ночной замер #3698 22.10, ход 4). ``agent`` — чья команда (телеграм: речь при действиях
+    законна, ``say_aloud`` доступен — ``command.validate``)."""
     if response.truncated_tool_args:
         return Invalid("truncated", "аргументы обрезаны по max_tokens")
     if any(c.name == kn.COMMAND_TOOL and not c.arguments for c in response.tool_calls):
@@ -120,7 +122,7 @@ def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy()) 
     result = reply_command(response.content, response.tool_calls)
     if not isinstance(result, Command):
         return result
-    checked = validate(_without_speech_tool(result), available, busy=busy)
+    checked = validate(_without_speech_tool(result), available, SimpleNamespace(agent=agent), busy=busy)
     if isinstance(checked, Command) and is_empty(checked):
         return Invalid(kn.VIOLATION_EMPTY_COMMAND, "нет speech, ask, actions, perform и passed")
     return checked
@@ -225,9 +227,11 @@ async def _collect(stream: AsyncIterator[LLMChunk]) -> LLMResponse:
 class CommandModeLLM(LLMProvider):
     """Провайдер цепочки, отвечающий командой; имя, возможности и здоровье — у обёрнутого (имя кэша то же)."""
 
-    def __init__(self, inner: Any, log: Log = _no_log, busy: Callable[[], Busy] = Busy) -> None:
+    def __init__(self, inner: Any, log: Log = _no_log, busy: Callable[[], Busy] = Busy,
+                 agent: str = kn.AGENTS[0]) -> None:
         self._inner = inner
         self._busy = busy
+        self._agent = agent
         self.name = getattr(inner, "name", type(inner).__name__)
         self.mode: CommandMode = select_mode(inner.capabilities)
         self._channel = FieldChannel(kn.command_schema("json"))
@@ -279,7 +283,7 @@ class CommandModeLLM(LLMProvider):
                            usage=response.usage, raw=response.raw)
 
     def _judged(self, response: LLMResponse, available: Iterable[str]) -> Result:
-        result = judge(response, available, self._busy())
+        result = judge(response, available, self._busy(), self._agent)
         self._log(log_line(self.name, self.mode, result, to_legacy(result)[2]))
         return result
 
@@ -310,15 +314,15 @@ def command_providers(value: Union[str, Iterable[str], None]) -> frozenset:
 
 
 def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
-                busy: Callable[[], Busy] = Busy) -> Callable[[Any], Any]:
+                busy: Callable[[], Busy] = Busy, agent: str = kn.AGENTS[0]) -> Callable[[Any], Any]:
     """Обёртка провайдера для ``AgentSpec.wrap_provider``: провайдеры из списка — в режим команд, прочие как есть;
-    ``busy`` — что занято сейчас (выступление) для валидатора команды."""
+    ``busy`` — что занято сейчас (выступление) для валидатора команды, ``agent`` — чьи команды проверяются."""
     names = command_providers(value)
 
     def wrap(provider: Any) -> Any:
         if str(getattr(provider, "name", "")).lower() not in names:
             return provider
-        wrapped = CommandModeLLM(provider, log, busy)
+        wrapped = CommandModeLLM(provider, log, busy, agent)
         log(f"{COMMAND_LOG_MARK} provider={wrapped.name} mode={wrapped.mode} (по capabilities адаптера)")
         return wrapped
 
