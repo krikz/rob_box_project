@@ -91,7 +91,7 @@ CASES = load_cases()
 def caps_for_mode(mode: str) -> ProviderCapabilities:
     return ProviderCapabilities(
         text=True,
-        tools=mode in ("structured_output", "tool_choice"),
+        tools=mode in ("structured_output", "tool_choice", "tool_offered"),
         structured_output=mode == "structured_output",
         tool_choice=mode in ("structured_output", "tool_choice"),
         json_mode=mode in ("structured_output", "json_mode"),
@@ -161,8 +161,15 @@ def test_request_shape_matches_mode(mode):
     req = FieldChannel(SCHEMA).build_request(mode)
     assert req.mode == mode
     assert (req.response_format is not None) == (mode in ("structured_output", "json_mode"))
-    assert bool(req.tools) == (mode == "tool_choice")
+    assert bool(req.tools) == (mode in ("tool_choice", "tool_offered"))
     assert req.tool_choice == ("required" if mode == "tool_choice" else None)
+
+
+def test_tool_offered_takes_json_in_text_when_the_model_skips_the_tool():
+    """#3698 ч.7d: без принуждения модель может ответить JSON-ом в тексте — тот же парсер, та же команда."""
+    reply = ModeReply(content='Вот: {"speech": "Привет"}')
+    parsed = FieldChannel(SCHEMA).parse(reply, "tool_offered", PARSE)
+    assert isinstance(parsed, Command) and parsed.speech == "Привет"
 
 
 def test_field_channel_tool_mode_without_command_call_is_unparseable_not_silently_empty():
