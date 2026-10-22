@@ -886,7 +886,7 @@ setup_sensor_hub() {
 # SOUND PI (ADR-0159): ReSpeaker + голосовой стек + SuperCollider + сенсорный хаб
 # ═══════════════════════════════════════════════════════════════════════════
 # Третий узел робота. Сюда переезжают с Vision Pi контейнеры, привязанные к
-# ReSpeaker (voice-assistant, supercollider, voice-action-server), и
+# ReSpeaker (voice-assistant, supercollider), и
 # perception_bridge (образ perception) — обычная ROS-нода, говорящая с ESP32 по serial через
 # TTL-USB конвертер (от агента-моста отказались, решение Шифу 19.10.2026). LED-матрица
 # остаётся на Vision Pi (SPI), общение с ней — по ROS-топикам через Zenoh.

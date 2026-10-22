@@ -136,7 +136,7 @@ COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
 # duckduckgo-search — лёгкие, ставятся в app-layer точечно.
 #
 # Пакеты:
-#   - aiohttp — voice-action-server / rob_box_quest ws-server
+#   - aiohttp — rob_box_quest ws-server
 #   - prometheus_client — metrics endpoint audio_node (issue #1160)
 #   - resemblyzer — speaker_id_node (issue #1077); на ARM64 компилирует
 #     llvmlite ~3 min, на x86 — pre-built wheel

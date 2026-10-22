@@ -5,7 +5,7 @@ Phase 1.2: чистая server-логика без ROS-ноды.
 - SUBSCRIBE → JSON_EVENT{subscribe_ack} c выделенным stream_id
 - heartbeat каждые 200 мс (JSON_EVENT{type:"heartbeat"})
 - watchdog: нет ping > 600 мс → close + GOODBYE{reason:"timeout"}
-- /healthz endpoint (как у voice-action-server)
+- /healthz endpoint
 
 ROS/Zenoh-мост подключается в Phase 1.3 через DI: WSSServer.__init__
 принимает интерфейс `Bridge` (publish/subscribe методы) — это позволяет

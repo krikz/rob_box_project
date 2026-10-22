@@ -116,7 +116,7 @@ docker/
 │   ├── config/    # ✅ Конфиги (volumes)
 │   ├── scripts/   # ✅ Скрипты (volumes)
 │   └── <service>/ # Только Dockerfile
-└── sound/         # Sound Pi сервисы (voice-assistant, supercollider, voice-action-server, supervisor, avatar-arbiter, quest, telegram-bot)
+└── sound/         # Sound Pi сервисы (voice-assistant, supercollider, supervisor, avatar-arbiter, quest, telegram-bot)
     ├── config/    # ✅ Конфиги (volumes)
     ├── scripts/   # ✅ Скрипты (volumes)
     └── <service>/ # Только Dockerfile

@@ -17,7 +17,9 @@ SOUND = REPO_ROOT / "docker" / "sound"
 VISION = REPO_ROOT / "docker" / "vision"
 
 # supervisor (ТАРС) — решение Шифу 19.10 (ADR-0159 В8): пишет в тот же harness_voice.db.
-MOVED_SERVICES = ("voice-assistant", "supercollider", "voice-action-server", "supervisor")
+MOVED_SERVICES = ("voice-assistant", "supercollider", "supervisor")
+# ADR-0150 PR-7c ч.4в (#3700): сайдкар без клиентов удалён — его нет ни на одном узле.
+REMOVED_SERVICES = ("voice-action-server",)
 # Волна 2 (ADR-0159 PR-7, решение Шифу 20.10 — В9): им не нужны устройства Vision Pi, только топики.
 WAVE2_SERVICES = ("avatar-arbiter", "quest", "telegram-bot")
 
@@ -44,6 +46,8 @@ def test_voice_stack_lives_on_sound_pi_only() -> None:
     for name in MOVED_SERVICES + WAVE2_SERVICES:
         assert name in sound, f"{name} должен быть в docker/sound"
         assert name not in vision, f"{name} остался в docker/vision — две реализации"
+    for name in REMOVED_SERVICES:
+        assert name not in sound and name not in vision, f"{name} удалён (ADR-0150 PR-7c ч.4в)"
     # Vision не зависит от переехавших сервисов: межузловой depends_on compose не выражает
     for name, svc in vision.items():
         deps = svc.get("depends_on") or {}
@@ -117,7 +121,7 @@ def test_wave2_quest_is_addressed_by_sound_pi() -> None:
     assert quest["container_name"] == "rob-box-quest"
     env = _env(quest)
     assert env["QUEST_IP"] == "10.1.1.12"
-    assert env["WS_PORT"] == "8766", "8765 держит voice-action-server на том же хосте"
+    assert env["WS_PORT"] == "8766", "порт quest на Sound Pi — 8766 (Caddyfile)"
     assert quest["build"]["dockerfile"] == "docker/sound/quest/Dockerfile"
     assert "quest-certs:/certs" in quest["volumes"]
     script = (SOUND / "scripts/quest/start_quest.sh").read_text(encoding="utf-8")
