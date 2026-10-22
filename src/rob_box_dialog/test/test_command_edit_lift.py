@@ -65,3 +65,17 @@ def test_prompt_example_of_an_edit_parses_as_a_valid_edit():
 def test_command_without_edit_fields_is_untouched():
     cmd = parse({"perform": _RAP})
     assert isinstance(cmd, Command) and cmd.moved == () and cmd.dropped == () and not cmd.edit_pending
+
+
+def test_add_beat_during_a_performance_is_a_valid_command_live_a22():
+    """A22 22.10 a22_2: «Робот, добавь бит» во время рэпа без бита — ``perform`` с подложкой без куплетов (0) или с
+    одним; раньше ``bad_segments`` дважды и ход провален. Вне выступления — по-прежнему от SEGMENTS_MIN."""
+    empty = {"perform": {"kind": "rap", "backing": "beat", "segments": []}, "edit_pending": True}
+    one = {"perform": {"kind": "rap", "backing": "beat", "segments": ["Бит пошёл, комар в такт."]}}
+    for raw in (empty, one):
+        assert isinstance(validate(parse(raw), ALL, busy=BUSY), Command), raw
+    none = {"perform": {"kind": "rap", "backing": "none", "segments": []}}
+    res = validate(parse(none), ALL, busy=BUSY)
+    assert isinstance(res, Invalid) and res.reason == "bad_segments"  # ни куплетов, ни бита — нечего делать
+    res = validate(parse(one), ALL, busy=Busy())
+    assert isinstance(res, Invalid) and res.reason == "bad_segments"  # новое выступление — от SEGMENTS_MIN
