@@ -150,3 +150,25 @@ def test_voice_group_is_never_carried_over():
     names = _names(available_tools(SNAPSHOTS["idle"], text="расскажи анекдот", carry=("voice", "music")))
     assert "set_voice" not in names and "generate_music" in names
     assert set(kn.TOOL_GROUPS_EXPLICIT) <= set(kn.TOOL_GROUPS)
+
+
+#: Реплики акта 1 марафона, прозвучавшие под играющий диджей-сет (run 39849541397, #3857): срез был
+#: ``command, memory_save, memory_search, get_current_time, search_web, play_animation, request_music,
+#: generate_music, music_library, dj_set, stop_music, get_music_state`` — тула, о котором спросили, в нём не было.
+@pytest.mark.parametrize("frame", ["music", "dj"])
+@pytest.mark.parametrize("text, tool", [
+    ("робот сколько у тебя осталось заряда до утра дотянешь", "get_battery_level"),
+    ("робот доложи статус все ли у тебя работает ничего не отвалилось", "get_robot_status"),
+    ("робот что ты сейчас видишь вокруг себя опиши в двух словах", "get_perception_context"),
+    ("робот какие звуки ты вообще умеешь издавать", "get_sound_info"),
+    ("робот где ты", "get_current_pose"),
+])
+def test_named_group_is_not_crowded_out_by_the_music_scene(frame, text, tool):
+    names = _names(available_tools(SNAPSHOTS[frame], text=text))
+    assert tool in names
+    assert "stop_music" in names  # музыка играет — остановить её можно и в этом ходе
+
+
+def test_music_scene_still_fills_a_neutral_turn():
+    assert groups_for(SNAPSHOTS["dj"], "расскажи анекдот") == ("music",)
+    assert groups_for(SNAPSHOTS["music"], "сколько у тебя заряда") == ("status", "music")

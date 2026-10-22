@@ -411,7 +411,9 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("музык", "музон", "песн", "песен", "трек", "мелоди", "сыгра", "играй", "игра", "спой", "спеть", "споёшь",
          "споешь", "сочини", "сгенер", "дидж", "сет", "сэт", "бит", "библиотек", "композ", "послуша",
          "рэп", "вечеринк", "танц", "пати"),
-        ("request_music", "generate_music", "music_library", "dj_set", "stop_music", "get_music_state"),
+        # порядок — приоритет при обрезке среза: под играющую музыку рядом с названной группой первыми
+        # остаются «стоп» и «что играет» (#3857)
+        ("stop_music", "get_music_state", "request_music", "dj_set", "music_library", "generate_music"),
         weak=("включи", "поставь"),
     ),
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
