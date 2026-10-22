@@ -210,6 +210,16 @@ VOICE_FILLER: Tuple[str, ...] = (
 #: Сколько первых букв слова человека и слова имени голоса должны совпасть: «надёжного мужика» ↔ «Надёжный
 #: мужчина» (``муж``), «Алёну» ↔ «Алёна».
 VOICE_STEM_LEN = 3
+#: Значение ``set_voice.voice``: «голос робота по умолчанию» (#3803). Провайдер и голос подставляет код
+#: (``tts_voice_registry.robot_default_voice``), модель их не выбирает.
+VOICE_DEFAULT_ARG = "default"
+#: «Верни свой обычный голос» / «голос по умолчанию»: корни слов-признаков «обычного» голоса (первые буквы).
+VOICE_DEFAULT_STEMS: Tuple[str, ...] = ("обычн", "стандартн", "дефолтн", "родн", "прежн", "умолчан", "нормальн")
+#: Служебные слова этой фразы сверх ``VOICE_FILLER`` («верни ... обратно», «по умолчанию»).
+VOICE_DEFAULT_FILLER: Tuple[str, ...] = (
+    "верни", "вернись", "вернуть", "обратно", "назад", "снова", "опять", "по", "своим", "твоим", "свое", "своё",
+    "роботу", "робот", "мой", "к",
+)
 #: «Новая сессия» (U8): фразы — подстрокой после снятия вейка (как в v1); Telegram «/clear» — правило хоста.
 NEW_SESSION_PHRASES: Tuple[str, ...] = (
     "новая сессия", "новую сессию", "новый диалог", "новый разговор",
@@ -469,7 +479,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
-    "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout",
+    "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
