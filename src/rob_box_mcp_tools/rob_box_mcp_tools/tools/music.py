@@ -143,7 +143,8 @@ class StopMusicTool(MCPTool):
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
-        return []
+        return [MCPToolParameter(name="boundary", type="string", required=False, enum=["now", "bar"],
+                                 description="now — сразу (по умолчанию); bar — бит выступления на ближайшем такте")]
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -153,8 +154,14 @@ class StopMusicTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self) -> MCPToolResult:
-        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2)."""
+    def execute(self, boundary: str = "now") -> MCPToolResult:
+        """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2).
+        ``boundary=bar`` при звучащем бите выступления — outro на ближайшем такте (``BackingDeck``, ADR-0150 PR-7c)."""
+        deck = getattr(self.node, "_backing_deck", None)
+        if boundary == "bar" and deck is not None and deck.playing:
+            outro = deck.outro()
+            self.log_info(f"[stop_music] outro бита выступления: {outro}")
+            return MCPToolResult(success=True, data={"was_playing": True, **outro}, message=stop_text(True))
         owner = getattr(self.node, "_player_owner", None)
         dj_set = getattr(self.node, "_dj_set_tool", None)
         was_playing = bool(owner is not None and owner.is_playing()) or bool(getattr(dj_set, "running", False))

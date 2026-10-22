@@ -54,6 +54,7 @@ from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cach
                                   source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
+from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .gen.song import SongStudio
@@ -315,6 +316,8 @@ def music_busy(owner: Any, dj: Any) -> bool:
 #: intent=track, треки сета), пьеса по нотам партитуры, мелодия из архива RTTTL. Слова — ``media_phrases.SOURCE_WORDS``.
 SOURCE_SYNTH, SOURCE_PIECE, SOURCE_MELODY = "synth", "piece", "melody"
 _PIECE_SOURCES = {SCORE: SOURCE_PIECE, RTTTL: SOURCE_MELODY}
+#: Что не заиграло — во фразе отказа заказа: мелодия (пьеса по названию) или музыка.
+_NOT_PLAYING = {True: "мелодия не заиграла", False: "музыка не заиграла"}
 #: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет».
 TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played")
 
@@ -671,6 +674,8 @@ class RequestMusicTool(MCPTool):
         self._instrumental = (InstrumentalOrder(instrumental, play_cached, speak, hold=lambda: self.hold, log=self._log)
                               if instrumental is not None else None)
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
+        #: Подложка выступления (``intent=backing``, ADR-0150 PR-7c): ставит ``mcp_server`` — ей нужен клок адаптера.
+        self.backing: Optional[BackingDeck] = None
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
@@ -696,18 +701,21 @@ class RequestMusicTool(MCPTool):
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
                 "человека дословно. Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — "
-                "музыка не заиграла.")
+                "музыка не заиграла. intent=backing — бит под выступление робота, его ставит код выступления.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
-            MCPToolParameter(name="intent", type="string", description="track — трек, melody — мелодия по названию",
-                             enum=["track", "melody"]),
+            MCPToolParameter(name="intent", type="string",
+                             description="track — трек, melody — мелодия по названию, backing — бит выступления",
+                             enum=["track", "melody", "backing"]),  # backing = BACKING_INTENT (литерал — каталог)
             MCPToolParameter(name="text", type="string", description="Слова человека дословно, без пересказа"),
             MCPToolParameter(name="mood", type="string", description="Настроение трека", required=False,
                              enum=sorted(kn.MOOD_ENERGY)),
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
                              enum=["auto", "club", "classical", "folk"]),
+            MCPToolParameter(name="min_seconds", type="number", required=False,
+                             description="Только для backing: сколько секунд ещё звучать биту"),
         ]
 
     @property
@@ -724,9 +732,12 @@ class RequestMusicTool(MCPTool):
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
                 genre: Optional[str] = None, turn_id: Optional[str] = None,
-                heard_text: Optional[str] = None) -> MCPToolResult:
+                heard_text: Optional[str] = None, min_seconds: Optional[float] = None) -> MCPToolResult:
         """``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не
-        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает."""
+        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает.
+        ``backing`` — подложка выступления (:mod:`.backing_deck`, ADR-0150 PR-7c)."""
+        if intent == BACKING_INTENT:
+            return tool_result(backing_order(self.backing, mood, min_seconds), "бит не заиграл")
         return self.order(intent, text, mood, genre, turn_id, heard_text)
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
@@ -740,7 +751,7 @@ class RequestMusicTool(MCPTool):
                                 "detail": "сет запущен в этом ходе и играет — заказ его не заменяет"},
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
-        what = "мелодия не заиграла" if classic else "музыка не заиграла"
+        what = _NOT_PLAYING[classic]
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
         ask = ask or source_ask(heard_text or text)
         piece = self._stage_piece(text, heard_text) if classic else None
