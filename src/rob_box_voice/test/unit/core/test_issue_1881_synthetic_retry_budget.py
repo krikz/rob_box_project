@@ -27,10 +27,7 @@ from __future__ import annotations
 
 import unittest
 
-from rob_box_voice.core.dialogue_guards import (
-    _strip_trailing_critical_block,
-    build_babble_retry_prompt,
-)
+from rob_box_voice.core.dialogue_guards import _strip_trailing_critical_block
 
 
 # ---------------------------------------------------------------------------
@@ -82,48 +79,6 @@ class TestStripTrailingCriticalBlock(unittest.TestCase):
         text = "юзер сказал [CRITICAL] что-то\nразное"
         result = _strip_trailing_critical_block(text)
         self.assertEqual(result, "юзер сказал")
-
-
-class TestBuildBabbleRetryPromptStripsOldBlock(unittest.TestCase):
-    """Сам сценарий карточки: babble-retry поверх babble-retry."""
-
-    def test_no_previous_critical_appends_block(self) -> None:
-        """Обычный путь — нет прошлого блока, добавляем как раньше."""
-        prompt = build_babble_retry_prompt("роббокс зачитай рэп")
-        self.assertIn("роббокс зачитай рэп", prompt)
-        self.assertIn("[CRITICAL]", prompt)
-        # Только один [CRITICAL]-блок.
-        self.assertEqual(prompt.count("[CRITICAL]"), 1)
-
-    def test_previous_critical_block_is_replaced(self) -> None:
-        """Сценарий из карточки #1881 (vision-pi 02.09, raw):
-        user_input уже содержит прошлый [CRITICAL]-блок от babble-retry.
-        build_babble_retry_prompt должен его УБРАТЬ, а не склеивать."""
-        prev_critical = (
-            "[CRITICAL] Твой предыдущий ответ был метатекст...\n"
-            "❌ ЗАПРЕЩЕНО отвечать текстом...\n"
-            "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool..."
-        )
-        user_input_with_prev = (
-            f"[Speaker:unknown] зачитай рэп про космос\n\n{prev_critical}"
-        )
-        prompt = build_babble_retry_prompt(user_input_with_prev)
-        # Юзер-фраза остаётся
-        self.assertIn("зачитай рэп про космос", prompt)
-        # Старый блок удалён — в итоговом промпте ровно ОДИН [CRITICAL].
-        self.assertEqual(
-            prompt.count("[CRITICAL]"),
-            1,
-            f"build_babble_retry_prompt должен заменить, а не склеивать "
-            f"[CRITICAL]-блоки — иначе LLM видит противоречивые инструкции; "
-            f"got prompt={prompt!r}",
-        )
-        # Старые подсказки из прошлого блока не должны протечь.
-        # Конкретная фраза из build_babble_retry_prompt — нормальный
-        # новый блок; конкретная фраза из прошлого блока должна быть
-        # только ОДИН раз (в новом блоке, а не дважды).
-        old_marker = "Твой предыдущий ответ был метатекст"
-        self.assertEqual(prompt.count(old_marker), 1)
 
 
 # ---------------------------------------------------------------------------

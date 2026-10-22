@@ -40,7 +40,6 @@ def _make_node() -> DialogueNode:
     n.internet_available = True
     n.current_time_info = {}
     n._verbose_llm = False
-    n._babble_retry_used = False
     n._memory = MagicMock()
     n._active_tg_chat_id = None
     # Upstream-regression t_5e06c47d: dialogue_node.py:640 / :678 / :682.

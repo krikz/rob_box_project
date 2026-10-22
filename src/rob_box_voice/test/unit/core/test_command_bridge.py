@@ -569,7 +569,7 @@ def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is
 
     # Узел закрывает ход рефлексом failed (лицо error, earcon fail; кольцо flash_red — в таблице рефлексов) — тем же путём, что провал тула.
     node = _Node()
-    node._stage_finish(result, False, "", False)
+    node._stage_finish(result, False, "")
     assert node.stages.stage_names()[-1] == ("failed", "failed")
     assert (node.stages.requests[-1]["emotion"], node.stages.requests[-1]["earcon"]) == ("error", "fail")
 

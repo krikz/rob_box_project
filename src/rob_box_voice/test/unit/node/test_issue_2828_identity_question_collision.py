@@ -116,7 +116,6 @@ def _turn_node(ack_during_llm=None, ack_after_result=None):
     n._prepare_user_input_context = AsyncMock(side_effect=lambda **kw: (kw["user_input"], "<system_context/>"))
     n._llm = MagicMock()
     n._retry_dispatched_in_turn = False
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     return n
 
