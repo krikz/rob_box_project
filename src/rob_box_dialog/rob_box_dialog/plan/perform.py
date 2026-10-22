@@ -39,7 +39,7 @@ from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_dialog.plan.segments import FIXED, HEARD, Line, SegmentList, segment_rows
-from rob_box_dialog.plan.sync import BeatGrid, next_bar
+from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms, next_bar
 
 _LOG = logging.getLogger(__name__)
 LOG_MARK = "🎤 [perform]"
@@ -179,8 +179,8 @@ class SpeechSide:
         line.state, line.spoken_chars = state, spoken
         if not line.no:
             return []
-        return [self._event("segment_finished", line.no, synced=line.synced,
-                            reason="" if state == "done" else "cancelled")]
+        return [self._event("segment_finished", line.no, synced=line.synced, spoken_chars=spoken,
+                            text_len=len(line.text), reason="" if state == "done" else "cancelled")]
 
     def _started(self, line: Line, now: float, duration_ms: int) -> List[Effect]:
         """Звучит. Встала позже своего такта (очередь, синтез в пути) — уже не на такте: ``synced=false`` честно."""
@@ -192,7 +192,8 @@ class SpeechSide:
         if not line.no:
             return []
         eta_ms = int(max(0.0, self.lines.predicted_end(now, self._grid()) - now) * 1000)
-        return [self._event("segment_started", line.no, synced=line.synced),
+        return [self._event("segment_started", line.no, synced=line.synced, text_len=len(line.text),
+                            offset_ms=beat_offset_ms(self._grid(), line.heard_at)),
                 self._event("prediction", line.no, eta_ms=eta_ms)]
 
     def _rejected(self, line: Line) -> None:
@@ -495,7 +496,8 @@ class PerformBlock:
         done = self.summary()
         self.log(f"конец ({reason}) сегментов {done['segments_done']}, символов {done['spoken_chars']}, "
                  f"synced={done['synced']}, подложка {done['backing']}")
-        return [self._event("block_end", done["segments_done"], synced=done["synced"], reason=reason)]
+        return [self._event("block_end", done["segments_done"], synced=done["synced"], reason=reason,
+                            spoken_chars=done["spoken_chars"])]
 
     def _event(self, kind: str, no: int = 0, **fields: Any) -> PlanEvent:
         return PlanEvent(kind, self.block_id, segment_no=no, **self._ids, **fields)
