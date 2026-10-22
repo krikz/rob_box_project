@@ -34,10 +34,23 @@
 #   FAKE_ROBOT_LOG       — файл «docker logs voice-assistant» (необязателен)
 #   FAKE_DIALOGUE_REJECT — 1: dialogue_node отклоняет e2e_session_reset_token
 #   FAKE_ENGINE          — значение dialog_engine у /dialog_node (пусто = v1, ноды нет)
+#
+# Музыка (issue #3871): ``docker exec voice-assistant ... python3`` идёт с фейковым
+# rclpy из ros_stubs/ (см. там docstring): файл $FAKE_ROBOT_STATE/music_state.json —
+# latched /voice/music/state (нет файла — плеер молчал), mcp_calls — журнал /mcp/execute.
+#   FAKE_MUSIC_STUCK=1       — стоп-тул отвечает ok, а музыка продолжает играть
+#   FAKE_MUSIC_STOP_DELAY=N  — секунд до idle после стоп-тула
+#   FAKE_NO_SIGN=1           — у харнесса нет секрета /mcp/execute
 set -u
 : "${FAKE_ROBOT_STATE:?fake_robot_ssh.sh: FAKE_ROBOT_STATE не задан}"
 mkdir -p "$FAKE_ROBOT_STATE"
 printf '%s\n' "$*" >> "$FAKE_ROBOT_STATE/ssh_calls"
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_STUBS="$_HERE/ros_stubs"
+_SRC="$(cd "$_HERE/../../.." && pwd)/src"
+# rob_box_voice.core.__init__ тянет rob_box_dialog / rob_box_core (в контейнере они установлены).
+_VOICE_SRC="$_SRC/rob_box_voice:$_SRC/rob_box_dialog:$_SRC/rob_box_core"
 
 _unsupported() {
     echo "fake_robot_ssh: не поддержано: $*" >&2
@@ -119,7 +132,17 @@ docker() {
             # source ROS-окружения на роботе — в фейке no-op (вызывается
             # из $cmd через eval, shellcheck этого не видит).
             # shellcheck disable=SC2329
-            ( source() { :; }; eval "$cmd" )
+            (
+                source() { :; }
+                # python3 внутри «контейнера» (подписанный /mcp/execute, снимок /voice/music/state --
+                # issue #3871): ROS нет, поэтому rclpy/std_msgs/rob_box_mcp_tools -- фейки из
+                # ros_stubs/, а чистый парсер снимка -- НАСТОЯЩИЙ rob_box_voice.core.music_player_state.
+                # shellcheck disable=SC2329
+                python3() {
+                    PYTHONIOENCODING=utf-8 PYTHONPATH="$_STUBS:$_VOICE_SRC${PYTHONPATH:+:$PYTHONPATH}" command python3 "$@"
+                }
+                eval "$cmd"
+            )
             ;;
         logs:* | exec:* | ps:*)
             # Других контейнеров (telegram-bot и т.п.) на фейк-роботе нет.
