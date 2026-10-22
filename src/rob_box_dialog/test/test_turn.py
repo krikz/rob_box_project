@@ -75,6 +75,10 @@ def _run(engine, text, source=VOICE):
     return asyncio.run(engine.run(Addressed(text, source)))
 
 
+def _run_addressed(engine, addressed):
+    return asyncio.run(engine.run(addressed))
+
+
 def test_bare_wake_is_reflex_only_zero_llm():
     ports = Ports()
     agg = _run(_engine(ports), "", BARE_WAKE)
@@ -113,6 +117,17 @@ def test_tier1_new_session_resets_epoch_and_window():
     _run(engine, "новая сессия")
     assert engine.session.snapshot.epoch == 1
     assert engine.log.window() == ()
+    assert ports.said[-1][0] in phrases.catalog()[kn.NEW_SESSION_PHRASE]
+
+
+def test_new_session_confirmation_never_repeats_twice_in_a_row():
+    ports = Ports()
+    engine = _engine(ports)
+    for _ in range(30):
+        _run(engine, "новая сессия")
+    said = [t for t, _, _ in ports.said]
+    assert len(said) == 30 and set(said) <= set(phrases.catalog()[kn.NEW_SESSION_PHRASE])
+    assert all(a != b for a, b in zip(said, said[1:])) and len(set(said)) > 3
 
 
 def test_tier1_stop_all_stops_music_motion_and_speech():
@@ -212,10 +227,31 @@ def test_invalid_command_fails_turn_without_speech():
     assert ports.stages[-1] == ("failed", "failed", "invalid_command:bad_json")
 
 
-def test_passed_is_silent():
+def test_passed_is_not_a_failure():
     ports = Ports(answers=[Answer(Command(passed="not_for_me"), "deepseek")])
     agg = _run(_engine(ports), "это не тебе")
-    assert ports.said == [] and agg.stage == "done"
+    assert agg.stage == "done"
+    # #3859: молчание — законный исход, не провал: finished/passed
+    assert (agg.status, ports.stages[-1]) == ("finished", ("done", "finished", "passed"))
+
+
+def test_passed_on_addressed_phrase_is_mumbled_by_code():
+    """Решение Шифу 22.10: «промолчать» на адресованную реплику — короткая фраза из каталога, не тишина."""
+    ports = Ports(answers=[Answer(Command(passed="nothing_to_say"), "deepseek")])
+    agg = _run(_engine(ports), "робот скажи что-нибудь")
+    assert [t for t, _, _ in ports.said] and ports.said[0][0] in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE]
+    assert (agg.status, ports.stages[-1]) == ("finished", ("done", "finished", "passed"))
+
+
+def test_passed_from_backlog_pickup_or_silence_stays_quiet():
+    ports = Ports(answers=[Answer(Command(passed="not_addressed"), "deepseek")])
+    _run_addressed(_engine(ports), Addressed("фон", "backlog_pickup", True, ()))
+    assert ports.said == []
+    ports = Ports(answers=[Answer(Command(passed="nothing_to_say"), "deepseek")])
+    engine = _engine(ports)
+    engine.session.push_scene("Silence", "user")
+    _run(engine, "что-то")
+    assert ports.said == []
 
 
 def test_query_data_goes_back_to_llm_once_then_answer():

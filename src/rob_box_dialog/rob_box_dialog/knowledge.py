@@ -483,9 +483,12 @@ PROVIDER_USABLE_HEALTH: Tuple[str, ...] = ("ok", "degraded", "unknown")
 #: считается: 21.10 MiniMax-фолбек раз в 10 мин «падал» на шуме, и робот врал вслух (#3755). Квота и ключ
 #: (``quota``/``auth``) - сразу: они не бывают случайными. 3 = ступень лестницы TTL (30/120/300 с) в ``stt_fallback``.
 STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
+#: Фразы, которые выбирает код (решения Шифу 22.10): «промолчать» на адресованную реплику и подтверждение «новой сессии».
+PASSED_ADDRESSED_PHRASE = "understand.nothing_to_say"
+NEW_SESSION_PHRASE = "tier1.new_session"
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
-    "understand.timeout",
+    "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",

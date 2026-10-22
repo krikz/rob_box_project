@@ -145,6 +145,9 @@ class CommandTurn:
             # первый ответ», v1-ретрай #1217 (второй вызов LLM) не нужен.
             done.append((call, ToolResult(tool_call_id=call.id, content=self.failure, is_error=True)))
             return self._step(done, LLMResponse(content=""))
+        if cmd.passed:  # честное молчание (#3859): не провал и не «нечего исполнить»; ход закрывается без речи
+            _LOG.info(f"{LOG_MARK} passed={cmd.passed}")
+            return self._step(done, LLMResponse(content=""))
         performed = self._perform(cmd, call, done)
         first = self._before_actions(cmd, with_segments=not performed)
         if first:
