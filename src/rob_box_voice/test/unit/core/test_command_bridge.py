@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 import pytest
+import yaml
 
 from rob_box_dialog import knowledge as kn
 from rob_box_harness.core.agent_core import AgentCore
@@ -297,6 +300,29 @@ def test_wrapper_for_wraps_only_listed_providers_and_logs_the_mode() -> None:
     assert cb.command_providers(["minimax", " "]) == frozenset({"minimax"})
 
 
+_REPO = Path(__file__).resolve().parents[5]
+_NODE_YAMLS = (_REPO / "src/rob_box_voice/config/dialogue_node.yaml",
+               _REPO / "docker/sound/config/voice_assistant/dialogue_node.yaml")
+
+
+def test_command_mode_default_has_one_source_in_knowledge() -> None:
+    """Значение по умолчанию - одно (``knowledge``): параметр берёт его оттуда, yaml его не дублируют."""
+    src = (_REPO / "src/rob_box_voice/rob_box_voice/dialogue_node.py").read_text(encoding="utf-8")
+    match = re.search(r"declare_parameter\(\s*[\"']llm_command_providers[\"']\s*,\s*([^)]+?)\s*\)", src)
+    assert match and match.group(1) == "COMMAND_PROVIDERS_DEFAULT"
+    for path in _NODE_YAMLS:
+        params = yaml.safe_load(path.read_text(encoding="utf-8"))["dialogue_node"]["ros__parameters"]
+        assert not params.get("llm_command_providers"), f"{path}: второй источник значения (пустая строка - выключатель)"
+
+
+def test_command_mode_is_on_by_default_for_deepseek_only() -> None:
+    """Решение Шифу 22.10 (#3698): без конфига режим команд включён у DeepSeek; MiniMax-фолбек - старый путь v1."""
+    assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek"
+    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
+    deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
+    assert isinstance(wrap(deepseek), cb.CommandModeLLM) and wrap(minimax) is minimax
+
+
 # ── сквозной ход через v1-цикл AgentCore и цепочку здоровья ────────────────────────────────────────────────
 
 
@@ -372,6 +398,35 @@ def test_agent_core_query_returns_data_to_llm_then_speech_is_final(streaming: bo
     second = inner.requests[1]
     assert second["settings"].tool_choice == "required"
     assert any(m.role == "tool" and "12:00" in str(m.content) for m in second["messages"])
+
+
+class _Down(_Inner):
+    """DeepSeek лёг (нет денег / сеть): любой запрос падает, цепочка здоровья идёт к следующему."""
+
+    def _take(self, messages: Iterable[LLMMessage], tools: Iterable[Mapping[str, Any]],
+              settings: Optional[LLMSettings]) -> LLMResponse:
+        self.requests.append({"messages": list(messages), "tools": list(tools), "settings": settings})
+        raise RuntimeError("deepseek is down")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_fallback_to_a_provider_outside_the_list_keeps_the_old_v1_path(streaming: bool) -> None:
+    """Режим команд включён по умолчанию (#3698): MiniMax-фолбек вне списка - свои тулы и ``speak_text``, без команды."""
+    down = _Down(DEEPSEEK_CAPS, [])
+    say = ToolCall(id="s1", name="speak_text", arguments={"text": "Привет, я РОББОКС."})
+    minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(say,)), LLMResponse(content="")], name="minimax")
+    spoken = _Spoken()
+    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
+    chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
+    core = AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
+                     system_prompt="ты РОББОКС", use_streaming=streaming)
+    result = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and down.requests
+    assert spoken.said == ["Привет, я РОББОКС."]
+    offered = [t["function"]["name"] for t in minimax.requests[0]["tools"]]
+    assert kn.COMMAND_TOOL not in offered and "speak_text" in offered
+    assert minimax.requests[0]["settings"] is None or minimax.requests[0]["settings"].tool_choice != "required"
 
 
 # ── повтор невалидной команды с перечнем нарушений (решение Шифу 21.10, #3698) ─────────────────────────────────

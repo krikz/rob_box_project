@@ -188,7 +188,7 @@ from rob_box_voice.core.turn import (
 from rob_box_dialog.address import heard_from, log_label, person_ref_from
 from rob_box_dialog.backlog import Backlog, phrase_count
 from rob_box_dialog import phrases
-from rob_box_dialog.knowledge import IDENTITY_CODED_KINDS
+from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT, IDENTITY_CODED_KINDS
 from rob_box_dialog.speaker_adapter import AskCandidate, FaceSightings, merge_plan
 from rob_box_dialog.doa import DoaTrack
 from rob_box_voice.core.stt_admission_host import (  # noqa: F401
@@ -1017,8 +1017,9 @@ class DialogueNode(DialogueStageMixin, Node):
         self.declare_parameter("llm_providers", "deepseek")
         # ADR-0150 §4.5 (#3696 ч.5): провайдеры, которые отвечают ОДНОЙ командой (поле speech, решение О4);
         # форму запроса (tool_choice | json_in_text | …) выбирает код по capabilities адаптера —
-        # core/command_bridge.py. Пусто — все на speak_text, как до моста.
-        self.declare_parameter("llm_command_providers", "")
+        # core/command_bridge.py. По умолчанию — knowledge.COMMAND_PROVIDERS_DEFAULT (решение Шифу 22.10);
+        # пустая строка — все на speak_text, как до моста.
+        self.declare_parameter("llm_command_providers", COMMAND_PROVIDERS_DEFAULT)
         # Per-provider параметры — каждая YAML-секция провайдера
         # (minimax:, deepseek:, mimo:, qwen:) отдаёт свои настройки
         # через dotted-имена.  Пустая строка → используются
