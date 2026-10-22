@@ -224,6 +224,33 @@ class TestRos2NodeStatusTool:
         assert result.data["active"] == len(_DEFAULT_EXPECTED_NODES)
         assert result.data["missing"] == 0
 
+    @pytest.mark.parametrize(
+        "dialog_node, absent",
+        [("/dialog_node", "/dialogue_node"), ("/dialogue_node", "/dialog_node")],
+    )
+    def test_dialog_node_follows_running_engine(self, mock_node, dialog_node, absent):
+        """#3865: на роботе с одним из движков диалога вторая нода не «пропала»."""
+        live = [n for n in _DEFAULT_EXPECTED_NODES if n != "/dialog_node"] + [dialog_node]
+        with patch(
+            "rob_box_mcp_tools.tools.operator_admin._probe_ros_node_names",
+            return_value=live,
+        ):
+            result = Ros2NodeStatusTool(mock_node).execute()
+
+        assert result.data["missing_list"] == []
+        assert dialog_node in result.data["active_list"]
+        assert absent not in result.data["active_list"]
+
+    def test_explicit_nodes_are_not_rewritten(self, mock_node):
+        """Заказанное оператором имя ноды диалога не подменяется."""
+        with patch(
+            "rob_box_mcp_tools.tools.operator_admin._probe_ros_node_names",
+            return_value=["/dialog_node"],
+        ):
+            result = Ros2NodeStatusTool(mock_node).execute(nodes=["/dialogue_node"])
+
+        assert result.data["missing_list"] == ["/dialogue_node"]
+
 
 # ----------------------------------------------------------------------------
 # ReadLogsTool

@@ -8,9 +8,19 @@ node_monitor.py - ROS2 Node Availability Monitor.
 
 import subprocess
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, TYPE_CHECKING
 
-from rclpy.node import Node
+if TYPE_CHECKING:  # rclpy нужен только для аннотаций: монитор тестируется без ROS
+    from rclpy.node import Node
+
+#: Ноды диалога по значению флага ``dialog_engine`` (``rob_box_core.dialog_engine``, ADR-0150 §11): на роботе
+#: стартует ровно одна из двух - ``v2`` ``/dialog_node``, ``v1`` ``/dialogue_node``. Сам флаг монитору недоступен:
+#: образ perception (Main Pi) не содержит ``rob_box_core``, а ``dialog_engine.yaml`` лежит на Sound Pi. Поэтому
+#: монитор не гадает по флагу, а берёт ту из двух нод, что реально есть в графе (``DIALOG_NODES`` - её
+#: альтернативы). После PR-15 (#3711, v1 удалён) остаётся одна ``/dialog_node``.
+DIALOG_NODES = ('/dialog_node', '/dialogue_node')
+#: Подпись ожидаемой диалоговой ноды, пока ни одна из двух не появлялась в графе.
+DIALOG_NODES_LABEL = '|'.join(DIALOG_NODES)
 
 
 class NodeAvailabilityMonitor:
@@ -31,7 +41,7 @@ class NodeAvailabilityMonitor:
 
     """
 
-    def __init__(self, node: Node, expected_nodes: List[str] = None):
+    def __init__(self, node: 'Node', expected_nodes: Optional[List[str]] = None):
         """
         Инициализация монитора.
 
@@ -40,15 +50,16 @@ class NodeAvailabilityMonitor:
         node : Node
             ROS2 нода для логирования
         expected_nodes : List[str], optional
-            Список ожидаемых нод (опционально)
+            Список ожидаемых нод (опционально); любая из :data:`DIALOG_NODES` в нём означает
+            «нода диалога текущего движка»
 
         """
         self.node = node
-        self.expected_nodes = [
+        self._base_expected = list(expected_nodes) if expected_nodes is not None else [
             '/audio_node',
             '/stt_node',
             '/tts_node',
-            '/dialogue_node',
+            DIALOG_NODES[0],
             '/context_aggregator',
             # OAK-D camera node (oak-d container, namespace /camera)
             '/camera/camera',
@@ -56,7 +67,10 @@ class NodeAvailabilityMonitor:
             # RTAB-Map SLAM node (rtabmap container, namespaced)
             '/rtabmap/rtabmap',
         ]
+        #: Последняя увиденная в графе нода диалога (чтобы её пропажа была ``failed``, а не молчание).
+        self._dialog_node: Optional[str] = None
         self.node_status: Dict[str, Dict] = {}
+        self.expected_nodes = self._resolve_expected([])
 
         # Периодическая проверка (каждые 5 секунд)
         self.check_timer = self.node.create_timer(5.0, self.check_nodes)
@@ -64,6 +78,27 @@ class NodeAvailabilityMonitor:
         self.node.get_logger().info(
             f'📡 Node Monitor: отслеживаем {len(self.expected_nodes)} нод'
         )
+
+    def _resolve_expected(self, active_nodes: List[str]) -> List[str]:
+        """Ожидаемые ноды с нодой диалога текущего движка вместо альтернатив :data:`DIALOG_NODES`.
+
+        Присутствующая в графе нода диалога запоминается; пропала - ожидается та же (``failed``); не
+        появлялась ни разу - :data:`DIALOG_NODES_LABEL` (``missing``). Запись другого движка из
+        ``node_status`` убирается: при смене ``dialog_engine`` старая нода не должна висеть «упавшей».
+        """
+        present = [name for name in DIALOG_NODES if name in active_nodes]
+        if present:
+            self._dialog_node = present[0]
+        dialog = self._dialog_node or DIALOG_NODES_LABEL
+        for name in (*DIALOG_NODES, DIALOG_NODES_LABEL):
+            if name != dialog:
+                self.node_status.pop(name, None)
+        expected: List[str] = []
+        for name in self._base_expected:
+            name = dialog if name in DIALOG_NODES else name
+            if name not in expected:
+                expected.append(name)
+        return expected
 
     def check_nodes(self):
         """
@@ -91,6 +126,7 @@ class NodeAvailabilityMonitor:
             stdout = result.stdout.strip()
             active_nodes = stdout.split('\n') if stdout else []
 
+            self.expected_nodes = self._resolve_expected(active_nodes)
             for expected_node in self.expected_nodes:
                 if expected_node in active_nodes:
                     # Нода активна
