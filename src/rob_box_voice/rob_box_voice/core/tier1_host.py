@@ -122,15 +122,14 @@ class Tier1Runner:
 
     def _stop_performance(self, text: str) -> bool:
         """Остановить выступление по слову (``policy_word``: «стой» — halt, иначе — до конца предложения). ``True`` —
-        музыка, что играет, — бит выступления, и его снимет само выступление (outro на такте)."""
+        музыка, что играет, — бит выступления, и её снимает само выступление («стой» — сразу ``stop_music(now)``,
+        «хватит» — outro на такте): общий стоп музыки поверх него не нужен (один стоп от одного владельца, #3835)."""
         performer = getattr(getattr(self._node, "_tool_executor", None), "performer", None)
         if performer is None:
             return False
-        if policy_word(text) == "halt":
-            performer.halt()
-            return False
         owns_music = performer.owns_backing
-        return performer.stop() and owns_music
+        stopped = performer.halt() if policy_word(text) == "halt" else performer.stop()
+        return stopped and owns_music
 
     def stop_music(self) -> bool:
         """Стоп деки/сета и mp3 без фразы (стоп всего; «выключи музыку» в SILENCED, #3696). Нет исполнителя — ``False``."""

@@ -138,12 +138,25 @@ def test_enough_during_a_performance_outros_its_beat_instead_of_cutting_music(ru
 
 
 def test_halt_during_a_performance_cuts_everything_now(run_plans):
+    """«Стой»: выступление рвёт речь и свой бит само (``stop_music(now)``); общий стоп музыки поверх него — второй и
+    третий вызов того же стопа (#3835), его нет."""
     n = _make_node(playing=True)
     n._tool_executor.performer = _Performer(owns_backing=True)
     _stt(n, "Робот, стой")
     run_plans()
     assert n._tool_executor.performer.calls == ["halt"]
-    assert ("stop_music", {}) in n._tool_executor.calls
+    assert n._tool_executor.calls == []
+    assert _speech_stopped(n)
+    assert n._intent_pub.publish.call_args[0][0].kind == "stop_motion"
+
+
+def test_halt_over_someone_elses_music_still_stops_that_music_once(run_plans):
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _Performer(owns_backing=False)
+    _stt(n, "Робот, стой")
+    run_plans()
+    assert n._tool_executor.performer.calls == ["halt"]
+    assert n._tool_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
 
 
 def test_enough_over_someone_elses_music_stops_that_music_too(run_plans):

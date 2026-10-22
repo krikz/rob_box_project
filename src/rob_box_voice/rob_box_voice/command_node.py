@@ -233,8 +233,10 @@ class CommandNode(Node):
 
     def handle_stop(self, command: Command):
         """Обработка команды остановки"""
+        # «Стой» — тишина без фразы (ADR-0150 §5.4, #3835): ту же команду Tier-1 уже исполнил тем же стопом, что рвёт
+        # речь; озвученное тут «Останавливаюсь» синтезировалось и отменялось до звука, а ход ждал его 10 с и
+        # закрывался timeout speech_not_started (earcon fail + красное кольцо). Подтверждение — сам факт остановки.
         self.get_logger().info('🛑 Остановка')
-        self.publish_feedback('Останавливаюсь')
 
         # Отменить ВСЕ Nav2 goals через cancel service
         if self.enable_navigation:
