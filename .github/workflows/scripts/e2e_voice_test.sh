@@ -116,6 +116,20 @@ E2E_TTS_PROVIDER="${E2E_TTS_PROVIDER:-auto}"
 E2E_TTS_PROVIDER_ORDER="${E2E_TTS_PROVIDER_ORDER:-yandex,minimax,silero}"
 # Результат резолва (заполняется resolve_tts_provider, кэш на весь прогон).
 E2E_TTS_PROVIDER_RESOLVED=""
+# Issue #3875 — синтез фраз на katana падал на мигающем DNS (NameResolutionError →
+# MINIMAX_NETWORKERROR → `E2E_STEP … FAIL synth`, runs 39862350722 и 39863945631).
+#   E2E_SYNTH_RETRY_DELAYS   паузы перед повторами сетевого отказа: 3 повтора через 2/5/10 с;
+#   E2E_SYNTH_CACHE          1 — кэш между прогонами, 0 — только внутри прогона;
+#   E2E_SYNTH_CACHE_DIR      каталог кэша: ВНЕ /tmp/e2e_v2_* (его чистит cleanup прогона);
+#   E2E_SYNTH_CACHE_TTL_DAYS файлы, не бывшие в деле дольше этого срока, удаляются.
+E2E_SYNTH_RETRY_DELAYS="${E2E_SYNTH_RETRY_DELAYS:-2 5 10}"
+E2E_SYNTH_CACHE="${E2E_SYNTH_CACHE:-1}"
+E2E_SYNTH_CACHE_DIR="${E2E_SYNTH_CACHE_DIR:-${HOME:-/tmp}/.cache/rob_box_e2e/synth}"
+E2E_SYNTH_CACHE_TTL_DAYS="${E2E_SYNTH_CACHE_TTL_DAYS:-30}"
+#   E2E_PRESYNTH             0 — не пред-синтезировать акт (отладка; тесты гейтов без TTS).
+# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth).
+E2E_PRESYNTH="${E2E_PRESYNTH:-1}"
+E2E_PRESYNTH_FAILED=0
 # MiniMax T2A v2 — те же дефолты, что у tts_node (config/tts_node.yaml).
 MINIMAX_TTS_MODEL="${MINIMAX_TTS_MODEL:-speech-02-hd}"
 MINIMAX_TTS_BASE_URL="${MINIMAX_TTS_BASE_URL:-https://api.minimax.io}"
@@ -1433,11 +1447,11 @@ tts_probe_provider() {  # $1=provider
     case "$provider" in
         yandex)
             [ -n "${YANDEX_API_KEY:-}" ] || { log "TTS probe yandex: пропуск — нет YANDEX_API_KEY"; return 1; }
-            synth_yandex "проверка связи" "anton" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            synth_with_retry yandex "проверка связи" "anton" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
             ;;
         minimax)
             [ -n "${MINIMAX_API_KEY:-}" ] || { log "TTS probe minimax: пропуск — нет MINIMAX_API_KEY"; return 1; }
-            synth_minimax "проверка связи" "Russian_ReliableMan" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            synth_with_retry minimax "проверка связи" "Russian_ReliableMan" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
             ;;
         silero)
             synth_silero "проверка связи" "aidar" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
@@ -1487,11 +1501,108 @@ resolve_tts_provider() {
     return 1
 }
 
+# synth_dispatch() — вызов конкретного провайдера, без ретраев и кэша.
+synth_dispatch() {  # $1=provider $2=text $3=native_voice $4=out_wav
+    local provider="$1" text="$2" native="$3" out="$4"
+    case "$provider" in
+        yandex)  synth_yandex  "$text" "$native" "$out" ;;
+        minimax) synth_minimax "$text" "$native" "$out" ;;
+        silero)  synth_silero  "$text" "$native" "$out" ;;
+        *)       echo "{\"provider\": \"$provider\", \"result\": \"fail\", \"error_class\": \"UnknownProvider\"}" >&2; return 1 ;;
+    esac
+}
+
+# synth_net_error_class() — сетевой ли отказ в stderr провайдера ($1=файл).
+# rc 0 + класс в stdout (самый конкретный из встреченных) — да; rc 1 — нет.
+# Сетевой = ровно то, что провайдеры сами классифицируют `"error_class": "NetworkError"`
+# (minimax: любое исключение requests, в т.ч. NameResolutionError/ConnectionError/таймаут;
+# yandex: UNAVAILABLE/DEADLINE_EXCEEDED/CANCELLED). Auth/Quota/BadRequest/ApiError
+# повторять бессмысленно: ответ тот же, а деньги и время тратятся.
+synth_net_error_class() {
+    local f="$1" c
+    grep -qaE '"error_class": *"NetworkError"|_NETWORKERROR' "$f" 2>/dev/null || return 1
+    for c in NameResolutionError ConnectTimeout ReadTimeout Timeout ConnectionError DEADLINE_EXCEEDED UNAVAILABLE; do
+        if grep -qa "$c" "$f" 2>/dev/null; then printf '%s' "$c"; return 0; fi
+    done
+    printf 'NetworkError'
+    return 0
+}
+
+# synth_with_retry() — провайдер + ретраи сетевых отказов. Поведение и rc те же,
+# что у synth_dispatch; stderr провайдера каждой попытки остаётся в потоке (последняя
+# строка потока — последний отказ, на неё смотрит `tail -1` вызывающих).
+# Лог: `synth retry k/N (<класс>) …` перед каждой паузой.
+synth_with_retry() {  # $1=provider $2=text $3=native_voice $4=out_wav
+    local provider="$1" text="$2" native="$3" out="$4"
+    local -a delays=()
+    read -r -a delays <<< "$E2E_SYNTH_RETRY_DELAYS"
+    local total=${#delays[@]} k=0 rc cls errf
+    errf="$(mktemp 2>/dev/null)" || errf="/tmp/e2e_synth_err_$$"
+    while :; do
+        rc=0
+        synth_dispatch "$provider" "$text" "$native" "$out" 2>"$errf" || rc=$?
+        if [ "$rc" = "0" ]; then cat "$errf" >&2; rm -f "$errf"; return 0; fi
+        if ! cls="$(synth_net_error_class "$errf")"; then
+            cat "$errf" >&2; rm -f "$errf"; return "$rc"
+        fi
+        if [ "$k" -ge "$total" ]; then
+            echo ">>> synth retry исчерпан: ${total} повтор(а) подряд сетевой отказ (${cls}), provider=${provider}"
+            cat "$errf" >&2; rm -f "$errf"; return "$rc"
+        fi
+        cat "$errf" >&2
+        k=$((k + 1))
+        echo ">>> synth retry ${k}/${total} (${cls}) provider=${provider}, повтор через ${delays[$((k - 1))]}s"
+        sleep "${delays[$((k - 1))]}"
+    done
+}
+
+# Кэш синтеза. Кладём СЫРОЙ wav провайдера (до EQ): EQ — ffmpeg после синтеза, дёшев,
+# и зависит только от кода харнесса, поэтому в ключе его нет. Ключ: версия формата,
+# провайдер, голос провайдера, текст и параметры синтеза (модель/скорость/формат).
+_synth_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+    else python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; fi
+}
+
+synth_cache_key() {  # $1=provider $2=native_voice $3=text
+    local params
+    case "$1" in
+        minimax) params="model=${MINIMAX_TTS_MODEL:-}|speed=${YANDEX_SPEED:-1.0}|wav32000mono" ;;
+        yandex)  params="speed=${YANDEX_SPEED:-1.0}|wav-lufs" ;;
+        silero)  params="rate=${E2E_SILERO_SAMPLE_RATE:-48000}|model=${E2E_SILERO_MODEL:-}|wav" ;;
+        *)       params="" ;;
+    esac
+    printf 'v1\x1f%s\x1f%s\x1f%s\x1f%s' "$1" "$2" "$3" "$params" | _synth_sha256
+}
+
+# Каталог кэша: постоянный на билд-машине; если выключен/недоступен — на время прогона
+# (в OUT_DIR), чтобы пред-синтез акта всё равно доезжал до шагов.
+synth_cache_dir() {
+    local d
+    if [ "${E2E_SYNTH_CACHE:-1}" = "1" ]; then
+        d="$E2E_SYNTH_CACHE_DIR"
+        if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then printf '%s' "$d"; return 0; fi
+    fi
+    d="${OUT_DIR:-/tmp}/.synth_cache"
+    mkdir -p "$d" 2>/dev/null && printf '%s' "$d"
+}
+
+synth_wav_ok() {  # $1=файл: есть и длиннее заголовка wav
+    [ -f "$1" ] && [ "$(wc -c < "$1" 2>/dev/null || echo 0)" -gt 44 ]
+}
+
+synth_cache_prune() {  # $1=dir
+    [ -d "$1" ] || return 0
+    find "$1" -maxdepth 1 -type f -name '*.wav' -mtime "+${E2E_SYNTH_CACHE_TTL_DAYS:-30}" -delete 2>/dev/null || true
+    find "$1" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
+}
+
 # synth_command() — единственная точка синтеза команды для run_step.
 # Резолвит провайдера (лениво, один раз), переводит голос сценария в каталог
-# провайдера (map_tts_voice из e2e_voice_lib.sh) и диспатчит.
+# провайдера (map_tts_voice из e2e_voice_lib.sh), берёт готовое из кэша либо
+# синтезирует (с ретраями сетевых отказов, #3875) и кладёт результат в кэш.
 synth_command() {  # $1=text $2=voice $3=out_wav
-    local text="$1" voice="$2" out="$3" provider native
+    local text="$1" voice="$2" out="$3" provider native cdir cfile key tmp
     if ! resolve_tts_provider; then
         echo '{"provider": "none", "result": "fail", "error_class": "NoProvider", "detail": "ни один TTS-провайдер не доступен"}' >&2
         return 1
@@ -1499,11 +1610,72 @@ synth_command() {  # $1=text $2=voice $3=out_wav
     provider="$E2E_TTS_PROVIDER_RESOLVED"
     native="$(map_tts_voice "$provider" "$voice")"
     case "$provider" in
-        yandex)  synth_yandex  "$text" "$native" "$out" ;;
-        minimax) synth_minimax "$text" "$native" "$out" ;;
-        silero)  synth_silero  "$text" "$native" "$out" ;;
-        *)       echo "{\"provider\": \"$provider\", \"result\": \"fail\", \"error_class\": \"UnknownProvider\"}" >&2; return 1 ;;
+        yandex|minimax|silero) ;;
+        *) synth_dispatch "$provider" "$text" "$native" "$out"; return $? ;;
     esac
+    cdir="$(synth_cache_dir)"
+    key="$(synth_cache_key "$provider" "$native" "$text")"
+    cfile="${cdir:+$cdir/${provider}_${key}.wav}"
+    if [ -n "$cfile" ] && synth_wav_ok "$cfile" && cp -f "$cfile" "$out" 2>/dev/null && synth_wav_ok "$out"; then
+        touch "$cfile" 2>/dev/null || true
+        echo ">>> synth cache hit: ${provider}/${native} key=${key:0:12}"
+        return 0
+    fi
+    synth_with_retry "$provider" "$text" "$native" "$out" || return $?
+    if [ -n "$cfile" ] && synth_wav_ok "$out"; then
+        tmp="${cfile}.tmp.$$"
+        if cp -f "$out" "$tmp" 2>/dev/null && mv -f "$tmp" "$cfile" 2>/dev/null; then :; else rm -f "$tmp"; fi
+    fi
+    return 0
+}
+
+# synth_surface_log() — строки `synth retry`/`synth cache` из лога синтеза шага
+# (stdout синтеза уходит в файл) поднимаем в основной лог прогона. $1=label $2=файл.
+synth_surface_log() {
+    local line
+    [ -f "$2" ] || return 0
+    while IFS= read -r line; do
+        log "STEP ${1}: ${line#>>> }"
+    done < <(grep -aE '^>>> synth (retry|cache)' "$2" 2>/dev/null)
+    return 0
+}
+
+# presynth_scenario() — пред-синтез ВСЕХ фраз акта до первого PLAY (#3875). Сеть
+# мигнула — узнаём это на старте с ретраями, а не на n108 посреди акта, когда
+# робот уже получил половину сценария. Не вышло — `E2E_INFRA_FAIL synth` сразу.
+# Готовые wav лежат в OUT_DIR (и в кэше), run_step берёт их из кэша без сети.
+# $1=scenario_file; rc 0 — все фразы готовы, 1 — отказ (kind=synth уже помечен).
+presynth_scenario() {
+    local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir
+    local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
+    local required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok
+    local row_read="$E2E_SCENARIO_ROW_READ"
+    ensure_outdir
+    parse_scenario_to_tsv "$scenario" "$rows"
+    cdir="$(synth_cache_dir)"
+    synth_cache_prune "$cdir"
+    log "PRESYNTH: синтез фраз акта до первого PLAY (кэш: ${cdir:-нет}, паузы ретраев: ${E2E_SYNTH_RETRY_DELAYS})"
+    while IFS=$'\x1f' eval "$row_read"; do
+        [ -z "$idx" ] && continue
+        [ -n "$text" ] || continue
+        safe="$(safe_label "$label")"
+        slog="$OUT_DIR/synth_${safe}.log"
+        n=$((n + 1))
+        if synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$slog" 2>&1 < /dev/null; then
+            synth_surface_log "$label" "$slog"
+            grep -qa '^>>> synth cache hit' "$slog" && hits=$((hits + 1))
+        else
+            synth_surface_log "$label" "$slog"
+            log "PRESYNTH ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$slog"))"
+            emit_step "${label} FAIL synth"
+            mark_fail_kind synth
+            echo "E2E_INFRA_FAIL synth"
+            log "PRESYNTH: акт не начат — робот ни разу не вызывался, это инфра билд-машины, не регресс робота"
+            return 1
+        fi
+    done < "$rows"
+    log "PRESYNTH: готово ${n} фраз (из кэша ${hits})"
+    return 0
 }
 
 # Проверка полного цикла в логах робота с момента BEFORE.
@@ -1849,7 +2021,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # пере-синтезируем, а не падаем с paplay open(): No such file.
         log "STEP ${label}: cmd_${safe}.wav отсутствует — повторный синтез (cleanup-resilience)"
     fi
-    if ! synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
+    synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1
+    local _synth_rc=$?
+    synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"
+    if [ "$_synth_rc" != "0" ]; then
         log "STEP ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         emit_step "${label} FAIL synth"
         mark_fail_kind synth
@@ -2076,7 +2251,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
                 ensure_outdir
                 synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                    || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
+                    || { synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"; log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
                 ensure_outdir
                 ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
             fi
@@ -2743,10 +2918,17 @@ cat > "$OUT_DIR/tts_provider.json" <<TTSJSON
 }
 TTSJSON
 
+# Issue #3875 — пред-синтез всех фраз акта ДО записи, изоляции и первого PLAY: мигнувшая
+# сеть билд-машины выясняется на старте (с ретраями), а не посреди акта. Не вышло —
+# E2E_INFRA_FAIL synth; робот не тронут, акт не начинается (см. ветку PASS=1 ниже).
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH" = "1" ]; then
+    presynth_scenario "$SCENARIO_FILE" || E2E_PRESYNTH_FAILED=1
+fi
+
 # --- сценарий или одиночная команда ----------------------------------------
 # Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
 # попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
-start_recording
+[ "$E2E_PRESYNTH_FAILED" = "1" ] || start_recording
 
 # Advisory health probe is always collected, but never changes PASS/FAIL.
 # Keep it in the run artifact so e2e reports expose infrastructure health.
@@ -2766,7 +2948,7 @@ trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db;
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
-if [ -n "$SCENARIO_FILE" ]; then
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     isolate_act_start "$SCENARIO_FILE"
     # Issue #3871 — музыка/DJ-сет не переживают прогон: 22.10 замер акта 1 шёл под сет из
     # Telegram. Играет — стоп через подписанный /mcp/execute и ожидание idle; не вышло — E2E_FATAL.
@@ -2778,12 +2960,16 @@ fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
 # name_confidence_band_high на время всего прогона.
-if [ -n "$SCENARIO_FILE" ]; then
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     apply_node_params "$SCENARIO_FILE"
 fi
 
 PASS=1
-if [ -n "$SCENARIO_FILE" ]; then
+if [ "$E2E_PRESYNTH_FAILED" = "1" ]; then
+    # Issue #3875: пред-синтез провален (E2E_INFRA_FAIL synth уже выведен) — шаги не играем.
+    PASS=0
+    log "акт не начат: пред-синтез фраз не удался (см. PRESYNTH выше)"
+elif [ -n "$SCENARIO_FILE" ]; then
     # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
     #           "patterns":["save_speaker_profile"],
     #           "acceptance":{"expected_tool_calls":["generate_music"],

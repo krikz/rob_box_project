@@ -285,6 +285,8 @@ class TestE2EVoiceTestScriptGating:
     def require_yandex_key(self, monkeypatch):
         """Скрипт требует YANDEX_API_KEY — подсовываем fake."""
         monkeypatch.setenv("YANDEX_API_KEY", "fake-key-for-test")
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
 
     @pytest.fixture(autouse=True)
     def fake_robot(self, monkeypatch, tmp_path):
@@ -545,6 +547,8 @@ class TestGate1AggregateIntegration:
             "[mcp_server-10] ✅ Инструмент generate_music выполнен успешно\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
@@ -590,6 +594,8 @@ class TestGate1AggregateIntegration:
             "[mcp_server-10] Renardo PTree.__init__()\n",
         )
         monkeypatch.setenv("YANDEX_API_KEY", "fake")
+        # #3875: тесты гейтов не про TTS -- пред-синтез акта (E2E_INFRA_FAIL при мёртвом TTS) отключён
+        monkeypatch.setenv("E2E_PRESYNTH", "0")
         result = subprocess.run(
             [str(E2E_SCRIPT),
              "--scenario", str(scenario),
