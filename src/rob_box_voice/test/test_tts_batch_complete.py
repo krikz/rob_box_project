@@ -13,9 +13,9 @@ Pure-Python tests that exercise:
 
 The tests do not spin up ROS — they import the helper module directly and
 use ``json.loads`` to verify the on-the-wire contract that ``tts_node`` and
-``dialogue_node`` share. The actual ``/voice/tts/batch_complete`` publication
-logic lives in ``tts_node._publish_tts_finished`` and is exercised via the
-dialogue_shell integration test (separate file).
+``dialogue_node`` share. The batch closure (``batch_complete`` marker on the
+last ``/voice/tts/finished``; the separate topic was removed in ADR-0150 PR-7c ч.4б)
+lives in ``tts_node._publish_tts_finished``.
 
 Run with::
 
@@ -106,7 +106,7 @@ class TestSplitIntoChunks(unittest.TestCase):
 class TestBatchCompleteFireRule(unittest.TestCase):
     """Document the fire-rule the ``tts_node`` uses (issue #980).
 
-    The rule is: a ``/voice/tts/batch_complete`` is published only when
+    The rule is: the batch is closed (``batch_complete`` marker) only when
     ``batch_index == batch_total`` *and* both are present (not None).
     These tests verify the predicate the ``_publish_tts_finished`` helper
     applies at runtime — encoded as a standalone function so we don't

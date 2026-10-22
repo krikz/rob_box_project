@@ -91,7 +91,6 @@ def _setup(loop, replies: list[str]):
     node.get_logger = lambda: MagicMock()
     node._core = core
     node._loop = loop
-    node._pending_music_cleanup = False
     node._session_started_at = None
     node._dsm = MagicMock()
     node._publish_state = lambda: None

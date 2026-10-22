@@ -191,13 +191,6 @@ except ImportError:
     _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
 
 
-#: Issue #3174 — причины ``/mcp/music_cleanup``, которые означают конец речи
-#: или диалога, а не просьбу остановить музыку. По ним DJ-сет не гасится
-#: (см. ``MCPServer._cleanup_spares_dj_set``); остальные причины — явный стоп.
-SOFT_MUSIC_CLEANUP_REASONS = frozenset(
-    {"tts_batch_complete", "dialogue_end", "new_dialogue"}
-)
-
 def _string_publisher(publisher: Any) -> Any:
     """``text -> publisher.publish(String(data=text))`` — публикация для ``PlayerOwner``."""
     def publish(text: str) -> None:
@@ -329,7 +322,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                        history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
                        lines=bool(node.get_parameter("music_v2_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
-    node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
+    node._dj_set_tool = dj_set  # стоп деки закрывает и сет (MCPServer._stop_deck)
     cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
     dj_set.gen_sets = _gen_set_maker(node, cover)  # ADR-0158 PR-8: рок/гранж-сет — кэш и генерация
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
@@ -665,27 +658,6 @@ class MCPServer(Node):
         # Публикуем каталог инструментов один раз — он latched (см. tools_qos).
         self.publish_tools()
 
-        # --------------------------------------------------------------
-        # Music cleanup — issue #935, ADR-0141
-        # --------------------------------------------------------------
-        # dialogue_node публикует в /mcp/music_cleanup конец речи/диалога и
-        # явные стопы; мягкие причины деку не трогают (_cleanup_spares_deck).
-        # Subscribe to /mcp/music_cleanup — payload is JSON like
-        # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
-        # payload defaults to dialogue_end.
-        try:
-            self._music_cleanup_sub = self.create_subscription(
-                String,
-                "/mcp/music_cleanup",
-                self._on_music_cleanup,
-                qos_profile,
-            )
-            self.get_logger().info("🎵 Подписан на /mcp/music_cleanup (issue #935)")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
-            )
-
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
 
@@ -788,53 +760,10 @@ class MCPServer(Node):
             return None
         return current.who.id
 
-    def _on_music_cleanup(self, msg: "String") -> None:
-        """Topic callback: force-stop music on dialogue/shutdown events.
-
-        Triggered by messages on ``/mcp/music_cleanup`` published by
-        :class:`dialogue_node` when the dialogue ends. Payload is JSON;
-        an empty/non-JSON string defaults to ``reason="dialogue_end"``.
-        """
-        try:
-            payload = json.loads(msg.data) if msg.data else {}
-        except (TypeError, ValueError):
-            payload = {}
-        reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
-        if self._cleanup_spares_deck(reason):
-            return
-        playing = music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None))
-        self._stop_deck(reason)
-        self.get_logger().info(f"🎵 [{reason}] cleanup: дека {'снята' if playing else 'и так пуста'}")
-
-    def _cleanup_spares_deck(self, reason: str) -> bool:
-        """Issue #3174 / ADR-0141 — мягкий cleanup не гасит играющую деку.
-
-        ``tts_batch_complete`` / ``dialogue_end`` / ``new_dialogue`` — конец
-        речи или диалога, а не просьба остановить. Дека движка (сет или
-        одиночный трек) живёт до явного стопа (``user_stop_command``,
-        ``stop_command_guard``, ``new_session``, ``shutdown`` — они
-        проходят). Играет ли дека — знает её владелец, ``PlayerOwner``.
-        Живой прогон 29.09 05:00: ход «поставь к Элизе» без тулов взвёл
-        cleanup, и сет, запущенный роутером, замолчал на 38 с.
-        06.10 15:30 UTC: ход с ``tools=[]`` взвёл cleanup, и
-        ``tts_batch_complete`` погасил идущий сет — идущий сет (его владелец
-        ``DjSetTool``) мягкий cleanup тоже не трогает, даже если дека в этот
-        миг не отметилась ``started``.
-        """
-        if reason not in SOFT_MUSIC_CLEANUP_REASONS:
-            return False
-        if not music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None)):
-            return False
-        self.get_logger().info(
-            f"🎧 [{reason}] дека играет — мягкий cleanup музыку не трогает "
-            "(issue #3174, ADR-0141)"
-        )
-        return True
-
     def _stop_deck(self, reason: str) -> None:
         """Жёсткий cleanup: закрыть сет и снять деку через их владельцев.
 
-        Одна точка стопа для ``stop_music`` и ``/mcp/music_cleanup``: глушить
+        Одна точка стопа для ``stop_music``: глушить
         Renardo за спиной ``PlayerOwner`` нельзя — снимок остался бы
         ``playing``, а ``SetSession`` поставила бы следующий трек.
         """

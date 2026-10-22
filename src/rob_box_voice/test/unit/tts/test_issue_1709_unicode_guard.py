@@ -166,7 +166,6 @@ def _make_node(tts_node_cls):
     n.get_logger = lambda: logger
     n.current_speech_id = None
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Для тестов
     # dialogue_callback (одиночный submit без активного batch'а)
@@ -241,8 +240,7 @@ class TestForeignScriptDropped:
         """MCP speak_text не должен висеть: приходит finished(success=False).
 
         Без этого ``pending_speeches`` в SpeakTextTool никогда не
-        закрывается, ``batch_complete`` не публикуется и dialogue_node
-        не делает music_cleanup (issue #980 контракт).
+        закрывается и ``batch_complete`` не публикуется (issue #980 контракт).
         """
         node = _make_node(tts_node_cls)
         node.dialogue_callback(
@@ -271,8 +269,8 @@ class TestForeignScriptDropped:
         assert payloads[0]["batch_id"] == "batch-1"
         assert payloads[0]["batch_index"] == 2
         assert payloads[0]["batch_total"] == 2
-        # Последний чанк батча → batch_complete тоже улетает.
-        assert node.batch_complete_pub.messages, (
+        # Последний чанк батча → маркер закрытия батча тоже улетает.
+        assert any(p.get("batch_complete") for p in payloads), (
             "последний чанк батча должен закрыть батч даже когда текст "
             "отброшен guard'ом"
         )

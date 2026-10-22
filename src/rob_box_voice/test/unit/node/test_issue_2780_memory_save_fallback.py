@@ -93,20 +93,16 @@ def _make_node() -> DialogueNode:
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._speech_client_pubs = {"cancel": MagicMock()}
-    n._music_cleanup_pub = MagicMock()
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
     # Память — не музыка: DJ-сессии в этом сценарии нет и быть не должно.
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = False
-    n._active_batches = {}
     n._effects = MagicMock()
     n._effects.handle_tts_finished = MagicMock()
     n._effects.handle_sound_state = MagicMock()
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
     n._task_lock = MagicMock()

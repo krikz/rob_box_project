@@ -63,8 +63,6 @@ def node(monkeypatch):
     n.get_logger = lambda: logger
 
     # Прочие зависимости, чтобы ``_dispatch_turn`` не упал на ранних шагах.
-    n._pending_music_cleanup = False
-    n._publish_music_cleanup = MagicMock()
     n._session_started_at = None
     n._session_end_reason = None
     n._loop = MagicMock()

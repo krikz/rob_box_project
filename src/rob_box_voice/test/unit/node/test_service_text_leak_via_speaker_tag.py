@@ -47,7 +47,6 @@ def _make_node() -> DialogueNode:
     # ``_action_claim_retry_used`` (line 3555) — every test that calls it
     # through ``object.__new__`` needs these seeded explicitly to avoid
     # AttributeError before we ever get to the assertion.
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
     return n
 

@@ -70,7 +70,6 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._speech_client_pubs = {"cancel": MagicMock()}
-    n._music_cleanup_pub = MagicMock()
     # ADR-0066 — pub для /dialogue/control_ack (тест-dialogue_control).
     n._dialogue_control_pub = MagicMock()
 
@@ -105,12 +104,10 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._effects.handle_tts_finished = MagicMock()
     n._effects.handle_sound_state = MagicMock()
 
-    n._active_batches = {}
     # Telegram echo routing (issue #1195) — `_publish_response` and
     # `_publish_response_batch` read it unconditionally; `__init__` sets it
     # to None and this fixture bypasses `__init__`.
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = False
     n._session_started_at = None
     n._session_end_reason = "success"
 
@@ -773,39 +770,6 @@ class TestPublishResponseBatch:
         assert first["batch_id"] == second["batch_id"]
 
 
-class TestTtsBatchRegistry:
-    def test_register_is_idempotent(self):
-        n = _make_node()
-        n._register_active_batch("b1", 2)
-        n._register_active_batch("b1", 2)
-        assert n._active_batches == {"b1": 2}
-
-    def test_unregister_removes(self):
-        n = _make_node()
-        n._register_active_batch("b1", 2)
-        n._unregister_active_batch("b1")
-        assert n._active_batches == {}
-
-    def test_batch_complete_fires_cleanup_when_empty_and_pending(self):
-        n = _make_node()
-        n._pending_music_cleanup = True
-        n._publish_music_cleanup = MagicMock()
-        msg = MagicMock()
-        msg.data = json.dumps({"batch_id": "b1", "chunks_total": 1})
-        n._on_tts_batch_complete(msg)
-        n._publish_music_cleanup.assert_called_once()
-
-    def test_batch_complete_defers_when_batches_active(self):
-        n = _make_node()
-        n._pending_music_cleanup = True
-        n._register_active_batch("b2", 2)
-        n._publish_music_cleanup = MagicMock()
-        msg = MagicMock()
-        msg.data = json.dumps({"batch_id": "b1", "chunks_total": 1})
-        n._on_tts_batch_complete(msg)
-        n._publish_music_cleanup.assert_not_called()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Silence (legacy: test_query_queue_cleared_on_silence)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -889,20 +853,6 @@ class TestBabbleDetector:
         assert user_wants_performance("спой мне песню")
         assert user_wants_performance("зачитай рэп")
         assert not user_wants_performance("как дела?")
-
-
-class TestMusicCleanup:
-    def test_publish_music_cleanup_noop_without_pub(self):
-        n = _make_node()
-        n._music_cleanup_pub = None
-        n._publish_music_cleanup()  # не должно падать
-
-    def test_publish_music_cleanup_publishes_json(self):
-        n = _make_node()
-        n._music_cleanup_pub = MagicMock()
-        n._publish_music_cleanup(reason="dialogue_end")
-        msg = n._music_cleanup_pub.publish.call_args[0][0]
-        assert json.loads(msg.data) == {"reason": "dialogue_end"}
 
 
 class TestPublishState:

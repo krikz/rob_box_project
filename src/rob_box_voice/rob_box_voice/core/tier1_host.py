@@ -219,4 +219,12 @@ class Tier1Runner:
         self._spawn(go())
 
 
-__all__ = ["TG_CLEAR", "Tier1Runner"]
+def runner_of(node: Any) -> Tier1Runner:
+    """Раннер Tier-1 ноды (один на ноду, создаётся при первом обращении)."""
+    runner = getattr(node, "_tier1", None)
+    if runner is None:
+        runner = node._tier1 = Tier1Runner(node)
+    return runner
+
+
+__all__ = ["TG_CLEAR", "Tier1Runner", "runner_of"]

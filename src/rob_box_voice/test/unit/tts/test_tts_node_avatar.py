@@ -74,7 +74,6 @@ def _make_request_node():
     logger = MagicMock()
     n.get_logger = lambda: logger
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._avatar_tts_error_pub = _CapturingPublisher()
     n._avatar_tts_request_id = None
     n.current_speech_id = None

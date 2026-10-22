@@ -31,17 +31,14 @@ def _make_node(turn: MusicTurn, set_tracks=None) -> DialogueNode:
     logger = MagicMock()
     n._logger = logger
     n.get_logger = lambda: logger
-    for attr in ("_response_pub", "_state_pub", "_sound_trigger_pub", "_speech_client_pubs", "_music_cleanup_pub",
+    for attr in ("_response_pub", "_state_pub", "_sound_trigger_pub", "_speech_client_pubs",
                  "_dsm", "_effects", "_task_lock", "_dispatch_turn", "_loop", "_core", "_cancel_run",
                  "_speak_direct", "_retract_rejected_reply"):
         setattr(n, attr, MagicMock())
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = False
-    n._active_batches = {}
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
     n._startup_greeting_fired = False

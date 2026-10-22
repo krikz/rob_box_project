@@ -1,7 +1,6 @@
 """Unit tests for MCP server startup behavior."""
 
 import importlib.util
-import json
 import os
 import sys
 import types
@@ -358,7 +357,9 @@ def test_old_music_watchdog_is_gone(monkeypatch):
     assert "MUSIC_WATCHDOG" not in source and "MusicManager" not in source
 
 
-# ── Issue #3174 / ADR-0149 — music_cleanup и дека движка ──────────────────
+# ── ADR-0149 / ADR-0150 PR-7c ч.4б — стоп деки движка через её владельца ─────────────
+# Топика уборки музыки (и мягких причин «конец речи») больше нет: жёсткие стопы диалога v1 («новая сессия»,
+# стоп-команда при пустом ответе LLM) идут тулами dj_set(stop) + stop_music (test_issue_3700_music_stops_by_owner).
 
 
 class _Deck:
@@ -386,57 +387,15 @@ class _DjSet:
         self.closed.append(reason)
 
 
-def _cleanup_server(module, *, deck_playing):
+@pytest.mark.unit
+def test_stop_deck_closes_the_set_and_stops_the_deck_through_its_owner(monkeypatch):
+    """Стоп закрывает сет и снимает деку у владельца, а не за его спиной (Renardo мимо ``PlayerOwner``)."""
+    module = _load_mcp_server_module(monkeypatch)
     server = _FakeServer()
-    server._player_owner = _Deck(deck_playing)
+    server._player_owner = _Deck(True)
     server._dj_set_tool = _DjSet()
-    server._cleanup_spares_deck = lambda reason: module.MCPServer._cleanup_spares_deck(server, reason)
-    server._stop_deck = lambda reason: module.MCPServer._stop_deck(server, reason)
-    return server
 
+    module.MCPServer._stop_deck(server, "stop_music")
 
-def _send_cleanup(module, server, reason):
-    msg = module.String()
-    msg.data = json.dumps({"reason": reason})
-    module.MCPServer._on_music_cleanup(server, msg)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("reason", ["tts_batch_complete", "dialogue_end", "new_dialogue"])
-def test_soft_cleanup_spares_playing_deck(monkeypatch, reason):
-    """Живой прогон 29.09 05:00: сет роутера, ход без тулов → тишина 38 с."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _cleanup_server(module, deck_playing=True)
-
-    _send_cleanup(module, server, reason)
-
-    assert server._player_owner.stopped == [] and server._dj_set_tool.closed == []
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "reason",
-    ["user_stop_command", "stop_command_guard", "new_session", "shutdown"],
-)
-def test_explicit_cleanup_stops_deck_through_its_owner(monkeypatch, reason):
-    """Жёсткий стоп закрывает сет и снимает деку у владельца, а не за его спиной."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _cleanup_server(module, deck_playing=True)
-
-    _send_cleanup(module, server, reason)
-
-    assert server._dj_set_tool.closed == [reason]
-    assert server._player_owner.stopped == [reason]
-
-
-@pytest.mark.unit
-def test_soft_cleanup_spares_a_running_set_even_if_the_deck_looks_idle(monkeypatch):
-    """06.10 15:30 UTC: ход ``tools=[]`` → ``tts_batch_complete`` погасил идущий сет. Идёт ли сет — знает его
-    владелец ``DjSetTool.running``, а не только отметка ``started`` деки."""
-    module = _load_mcp_server_module(monkeypatch)
-    server = _cleanup_server(module, deck_playing=False)
-    server._dj_set_tool.running = True
-
-    _send_cleanup(module, server, "tts_batch_complete")
-
-    assert server._dj_set_tool.closed == [] and server._player_owner.stopped == []
+    assert server._dj_set_tool.closed == ["stop_music"]
+    assert server._player_owner.stopped == ["stop_music"]

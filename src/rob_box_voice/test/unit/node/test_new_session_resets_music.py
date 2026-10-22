@@ -5,7 +5,8 @@
 что и ``session reset``.
 
 Поведения (acceptance issue):
-1. new-session: music_cleanup опубликован, одна фраза подтверждения.
+1. new-session: музыка остановлена владельцем плеера (``dj_set(stop)`` + ``stop_music``, ADR-0150 PR-7c ч.4б —
+   ``test_issue_3700_music_stops_by_owner.py``), одна фраза подтверждения.
 2. Ретраи от хода, отменённого barge-in'ом или сбросом, не запускаются.
 
 ADR-0149 PR-13a: DJ-контроллер старого пути, забор на запоздалый
@@ -18,7 +19,6 @@ test_interrupt_policy.py / test_new_session_reset.py), rclpy замокан в c
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,14 +42,8 @@ def _make_reset_node() -> DialogueNode:
     n._maybe_record_session_end = MagicMock()
     n._publish_state = MagicMock()
     n._publish_response = MagicMock()
-    n._music_cleanup_pub = MagicMock()
-    n._pending_music_cleanup = True
-    n._track_mode_music_active = True
+    n._tool_executor = None  # стоп музыки — отдельный тест (test_issue_3700_music_stops_by_owner.py)
     return n
-
-
-def _published(pub: MagicMock) -> list[dict]:
-    return [json.loads(c.args[0].data) for c in pub.publish.call_args_list]
 
 
 class _Result:
@@ -64,7 +58,6 @@ def _make_turn_node() -> DialogueNode:
     n._task_lock = threading.Lock()
     n._run_cancelled = False
     n._babble_retry_used = False
-    n._pending_music_cleanup = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
@@ -73,19 +66,16 @@ def _make_turn_node() -> DialogueNode:
     )
     n._llm = MagicMock()
     n._speak_direct = MagicMock()
-    n._active_batches = set()
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
-    n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = MagicMock()
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
     return n
 
@@ -103,16 +93,6 @@ class TestNewSessionResetsMusic:
 
         n._publish_response.assert_called_once()
         assert "новую сессию" in n._publish_response.call_args.args[0]
-
-
-    def test_music_cleanup_published(self):
-        n = _make_reset_node()
-
-        n._reset_dialogue_session()
-
-        assert {"reason": "new_session"} in _published(n._music_cleanup_pub)
-        assert n._pending_music_cleanup is False
-        assert n._track_mode_music_active is False
 
 
     def test_reset_advances_session_epoch(self):

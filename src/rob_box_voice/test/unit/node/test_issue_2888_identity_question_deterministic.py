@@ -124,7 +124,6 @@ def _node(llm_reply):
     n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
     n._retry_dispatched_in_turn = False
-    n._finalize_music_cleanup_policy = MagicMock()
     n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     no_accumulation(n)

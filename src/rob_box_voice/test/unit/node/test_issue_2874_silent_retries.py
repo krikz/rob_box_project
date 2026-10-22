@@ -46,14 +46,11 @@ def _make_node(replies):
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._pending_music_cleanup = False
-    n._track_mode_music_active = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
     n._build_dynamic_system_context = MagicMock(return_value="<ctx/>")
     n._llm = MagicMock()
-    n._active_batches = {}
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
@@ -71,7 +68,6 @@ def _make_node(replies):
     n._publish_response_batch = n._tts.batch
     n._publish_response_batch.side_effect = lambda chunks, *a, **k: len(chunks)
     n._speak_direct = n._tts.direct
-    n._publish_music_cleanup = n._tts.cleanup
 
     def _tail(result, **kw):
         n._voice_turn_text(
@@ -156,7 +152,6 @@ class TestNormalTurnUnchanged:
         n._publish_response.assert_called_once_with("Всё отлично, спасибо!")
         n._dispatch_turn.assert_not_called()
         assert n._turn_speech_hold is None
-        assert n._active_batches == {}
 
     def test_direct_handle_result_path_publishes_immediately(self):
         """Вне ``_run_turn`` (нет открытого hold) — как раньше, сразу."""
@@ -166,16 +161,6 @@ class TestNormalTurnUnchanged:
         n._voice_turn_text("Привет!", user_input="привет")
 
         n._publish_response.assert_called_once_with("Привет!")
-
-    def test_stop_music_cleanup_fires_after_held_reply(self):
-        """Придержанный ответ не даёт погасить музыку раньше, чем он прозвучит."""
-        n = _make_node([_Result("Выключаю.", ["stop_music"])])
-
-        _run(n, "выключи музыку")
-
-        names = [c[0] for c in n._tts.mock_calls]
-        assert names.index("response") < names.index("cleanup")
-        assert n._active_batches == {}
 
 
 class TestBudgetExhaustedAndMusicTrim:

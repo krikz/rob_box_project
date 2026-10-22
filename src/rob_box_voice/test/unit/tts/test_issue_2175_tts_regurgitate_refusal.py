@@ -164,7 +164,6 @@ def _make_node(tts_node_cls):
     n.get_logger = lambda: logger
     n.current_speech_id = None
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Эти конкретные тесты
     # про regurgitate-guard не трогают overlap-ветку (chunk'и скипаются ДО

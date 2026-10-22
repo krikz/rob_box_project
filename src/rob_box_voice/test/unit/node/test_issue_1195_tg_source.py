@@ -57,7 +57,6 @@ def node():
     # ``object.__new__`` skips ``__init__`` — anything the SUT reads must be
     # pre-seeded explicitly. Without these the wake-gate tests below
     # AttributeError on the next code path that walks into ``_run_turn``.
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
     return n
 
@@ -129,7 +128,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._task_lock = threading.Lock()
     n._run_cancelled = False
     n._babble_retry_used = False
-    n._pending_music_cleanup = False
     n._speaker_id_enabled = True  # даже при включённой биометрии — TG без неё
     n._active_tg_chat_id = 42  # issue #3598 — chat_id этого TG-сообщения
 
@@ -138,13 +136,10 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._build_dynamic_system_context = MagicMock(return_value="<system_context/>")
     n._llm = MagicMock()
     n._speak_direct = MagicMock()
-    n._active_batches = set()
     n._dsm = MagicMock()
     n._dsm.current_state = "idle"  # не DIALOGUE — финальный DIALOGUE_END не нужен
     n._publish_state = MagicMock()
-    n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
 
     logger = MagicMock()
@@ -161,7 +156,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     # Issue #992 Bug C' (regression 30.08): новые retry-флаги в __init__
     # DialogueNode — фикстура через object.__new__ их не получает, задаём вручную.
     # _action_claim_retry_used живёт в _check_unbacked_action_claim_and_retry.
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
 
     await n._run_turn("продолжай", from_tg=True)

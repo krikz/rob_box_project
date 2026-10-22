@@ -53,7 +53,6 @@ def _bare_node(**attrs):
     n = object.__new__(DialogueNode)
     n._active_tg_chat_id = None
     n._response_pub = MagicMock()
-    n._register_active_batch = MagicMock()
     for key, value in attrs.items():
         setattr(n, key, value)
     return n

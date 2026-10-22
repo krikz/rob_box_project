@@ -484,11 +484,6 @@
       "debt": "PR-5b (#3695): собеседник через SpeakerRef оставляет одного писателя (ADR-0150 §7.5)"
     },
     {
-      "key": "multiple_writers|/voice/tts/batch_complete|",
-      "scope": "repo",
-      "debt": "PR-7c (#3700): заменён SpeechEvent finished по сегменту и PlanEvent block end (ADR-0150 §2.3, §12)"
-    },
-    {
       "key": "multiple_writers|/voice/tts/control|",
       "scope": "repo",
       "debt": "PR-3 (#3688) и PR-5 (#3694): STOP заменён SpeechCancel и /dialog/interrupt_request"
