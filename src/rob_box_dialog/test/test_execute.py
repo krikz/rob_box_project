@@ -155,3 +155,66 @@ def test_unknown_status_from_owner_is_not_success():
 @pytest.mark.parametrize("cls", sorted(kn.ACTION_CLASSES))
 def test_every_class_has_finite_deadline(cls):
     assert 0 < deadline_s(cls) <= 120
+
+
+# -- эпоха и перебивание (PR-9 #3703, ADR-0150 §6.2) ---------------------------------------------------------------
+
+
+def test_owner_event_of_old_epoch_is_dropped_as_stale_epoch(caplog):
+    epoch = [0]
+
+    def answer(request):
+        epoch[0] = 1  # пока владелец исполнял, человек сказал «стой»: эпоха +1
+        return OwnerEvent(request.turn_id, "done")
+
+    owner = Owner(answer)
+    ex = _executor(owner, epoch=lambda: epoch[0])
+    with caplog.at_level(logging.WARNING):
+        [res] = _run(ex.run([ToolCall("memory_save", {"fact": "x"})], SNAP, "t20"))
+    assert (res.status, res.reason) == ("cancelled", "stale_epoch")
+    assert "stale_epoch memory_save t20/0 epoch=0 now=1" in caplog.text
+
+
+def test_late_result_of_old_epoch_does_not_reach_on_late(caplog):
+    late, epoch = [], [0]
+    owner = Owner(lambda r: OwnerEvent(r.turn_id, "pending", event_ref="goal-9"))
+    ex = _executor(owner, on_late=late.append, epoch=lambda: epoch[0])
+
+    async def scenario():
+        out = await ex.run([ToolCall("navigate_to_waypoint", {"name": "кухня"})], SNAP, "t21")
+        epoch[0] = 1
+        ex.on_event(OwnerEvent("goal-9", "done"))
+        return out
+
+    with caplog.at_level(logging.WARNING):
+        [res] = _run(scenario())
+    assert res.status == "pending" and late == []
+    assert "stale_epoch navigate_to_waypoint" in caplog.text
+
+
+def test_turn_cancel_cuts_interruptible_request_but_motion_send_survives(caplog):
+    """Отмена хода (перебивание): ``query`` рвётся вместе с ходом, отправка движения доживает до события владельца —
+    его исход старой эпохи уходит строкой ``stale_epoch``, а не в ход (§5.1: motion непрерываем)."""
+    epoch, sent = [0], []
+
+    async def send(request):
+        await asyncio.sleep(0.05)  # владелец исполняет
+        sent.append(request.tool)
+        ex.on_event(OwnerEvent(request.turn_id, "done"))
+
+    ex = Executor(send, epoch=lambda: epoch[0])
+
+    async def scenario():
+        turn = asyncio.ensure_future(ex.run([ToolCall("get_current_time", {}),
+                                             ToolCall("navigate_to_waypoint", {"name": "кухня"})], SNAP, "t22"))
+        await asyncio.sleep(0.01)
+        turn.cancel()
+        epoch[0] = 1
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        await asyncio.sleep(0.1)
+
+    with caplog.at_level(logging.WARNING):
+        _run(scenario())
+    assert sent == ["navigate_to_waypoint"], "query отменён до владельца, движение доехало"
+    assert "stale_epoch navigate_to_waypoint t22/1" in caplog.text

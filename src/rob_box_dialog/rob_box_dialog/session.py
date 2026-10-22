@@ -183,6 +183,12 @@ class Session:
         не трогаются («забудь всё» ≠ «выключи музыку»)."""
         self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None)
 
+    def replace_epoch(self) -> int:
+        """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий
+        прошлой эпохи больше не исполняются; сцены, вопрос и всё остальное — как были (это не новая сессия)."""
+        self._commit("replace_epoch", epoch=self._snap.epoch + 1)
+        return self._snap.epoch
+
     def set_voice(self, requested: Optional[str] = None, applied: Optional[str] = None,
                   provider: Optional[str] = None) -> None:
         """Обновить голос: переданные поля заменяются, ``None`` — оставить как было."""

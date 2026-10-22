@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
+import socket
 import sys
+import threading
 import types
 from unittest.mock import MagicMock
 
@@ -157,3 +161,156 @@ def test_e2e_db_outside_data_only(node, tmp_path):
     events = node._open_events()
     assert events is not None and events.path.endswith("e2e.db")
     events.close()
+
+
+# -- перебивание по эпохе (PR-9 #3703, ADR-0150 §6.2) ---------------------------------------------------------------
+
+
+class _SilentServer:
+    """HTTP-сервер, который принимает запрос и молчит (LLM «думает»): видно, закрыл ли клиент соединение."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.port = self.sock.getsockname()[1]
+        self.got_request, self.closed = threading.Event(), threading.Event()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        conn, _ = self.sock.accept()
+        conn.settimeout(30)
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                self.closed.set()  # клиент закрыл соединение — запрос к провайдеру оборван
+                return
+            self.got_request.set()
+
+
+class _HttpLLM:
+    """Провайдер, чей ``complete`` — настоящий HTTP-запрос httpx к молчащему серверу."""
+
+    answered_by = "deepseek"
+
+    def __init__(self, port):
+        self.url, self.calls = f"http://127.0.0.1:{port}/v1/chat/completions", 0
+        self.cancelled = threading.Event()
+
+    async def complete(self, messages, tools=(), settings=None):
+        import httpx
+
+        self.calls += 1
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                await client.post(self.url, json={"messages": []})
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        raise AssertionError("молчащий сервер не отвечает")
+
+
+def _hang_node(monkeypatch, llm):
+    tools = _Tools()
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter: (llm, "Ты робот."))
+    monkeypatch.setattr(dn, "build_tools", lambda node: tools)
+    made = dn.DialogNode()
+    stamp = TIME(sec=1, nanosec=0)
+    made.get_clock = lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+    return made
+
+
+def _drain(node):
+    """Дать отменённым задачам хода доотмениться в цикле ноды, затем остановить её."""
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.2), node._loop).result(5)
+    node.shutdown()
+
+
+def _said(text, uid):
+    msg = _utterance(text)
+    msg.utterance_id = uid
+    return msg
+
+
+@pytest.mark.parametrize("word, boundary", [("стой", 1), ("хватит", 0)])
+def test_stop_during_llm_turn_closes_http_request_and_bumps_epoch(monkeypatch, word, boundary):
+    """«Робот, расскажи сказку» → LLM думает (HTTP-запрос висит) → «Робот, стой/хватит»: задача хода отменена,
+    httpx закрыл соединение с провайдером, речь эпохи 0 отменена по границе слова, эпоха 1, ответа сказки нет."""
+    server = _SilentServer()
+    llm = _HttpLLM(server.port)
+    node = _hang_node(monkeypatch, llm)
+    try:
+        node._on_utterance(_said("Робот, расскажи сказку", "u1"))
+        story = node.last_turn
+        assert server.got_request.wait(10), "запрос к провайдеру не ушёл"
+        node._on_utterance(_said(f"Робот, {word}", "u2"))
+        node.last_turn.result(timeout=10)
+        assert story.cancelled() and llm.cancelled.is_set()
+        assert server.closed.wait(10), "HTTP-соединение старой эпохи не закрыто"
+        cancels = _published(node, "/voice/speech/cancel")
+        assert cancels and all(c.epoch == 0 for c in cancels) and cancels[0].boundary == boundary
+        assert node._session.snapshot.epoch == 1
+        assert _published(node, "/voice/speech/request") == [], "речи старой эпохи нет"
+        assert llm.calls == 1
+    finally:
+        _drain(node)
+
+
+def test_interrupt_request_clear_stop_cancels_turn_in_flight(monkeypatch):
+    server = _SilentServer()
+    llm = _HttpLLM(server.port)
+    node = _hang_node(monkeypatch, llm)
+    try:
+        node._on_utterance(_said("Робот, расскажи сказку", "u1"))
+        story = node.last_turn
+        assert server.got_request.wait(10)
+        msg = M.InterruptRequest()
+        msg.text_partial, msg.utterance_id = "Робот, стой", "u2"
+        node._on_interrupt(msg)
+        with pytest.raises(concurrent.futures.CancelledError):
+            story.result(timeout=10)
+        assert server.closed.wait(10)
+        assert _published(node, "/voice/speech/cancel")[0].boundary == 1
+    finally:
+        _drain(node)
+
+
+def test_interrupt_request_of_the_stop_phrase_does_not_cancel_its_own_turn(node):
+    """Порядок топиков не гарантирован: запрос перебивания пришёл после реплики той же фразы — ход стопа живёт."""
+    node._on_utterance(_said("Робот, стой", "u7"))
+    own = node.last_turn
+    msg = M.InterruptRequest()
+    msg.text_partial, msg.utterance_id = "Робот, стой", "u7"
+    node._on_interrupt(msg)
+    own.result(timeout=10)
+    assert not own.cancelled() and node._session.snapshot.epoch == 1
+
+
+def test_not_a_stop_waits_for_turn_and_does_not_cancel_speech(node):
+    msg = M.InterruptRequest()
+    msg.text_partial, msg.utterance_id = "Робот, а который час", "u3"
+    node._on_interrupt(msg)
+    assert _published(node, "/voice/speech/cancel") == []
+
+
+def test_cancel_goes_through_fallback_chain_without_asking_next_provider(monkeypatch):
+    """Отмена хода не считается сбоем провайдера: цепочка ``HealthAwareFallbackLLM`` не зовёт следующего (иначе
+    «стой» запустил бы второй HTTP-запрос старой эпохи) и не метит первого больным."""
+    from rob_box_harness.health import HealthAwareFallbackLLM, HealthCache
+
+    server = _SilentServer()
+    first = _HttpLLM(server.port)
+    first.name = "deepseek"
+    second = _LLM([LLMResponse(content="Жили-были…")])
+    second.name = "minimax"
+    cache = HealthCache()
+    node = _hang_node(monkeypatch, HealthAwareFallbackLLM([first, second], cache=cache))
+    try:
+        node._on_utterance(_said("Робот, расскажи сказку", "u1"))
+        assert server.got_request.wait(10)
+        node._on_utterance(_said("Робот, стой", "u2"))
+        node.last_turn.result(timeout=10)
+        assert server.closed.wait(10) and first.cancelled.is_set()
+        assert second.calls == 0 and not cache.is_unavailable("deepseek")
+    finally:
+        _drain(node)

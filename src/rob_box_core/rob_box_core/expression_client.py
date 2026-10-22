@@ -21,8 +21,9 @@ EXPRESSION_EVENT_TOPIC = "/voice/expression/event"
 SOUND_EVENT_TOPIC = "/voice/sound/event"
 TURN_EVENT_TOPIC = "/dialog/turn_event"
 
-#: Статусы ``TurnEvent.status``: ``skipped`` - стадия не состоялась (кольцо и лицо её не показывают).
-TURN_STATUSES = ("started", "finished", "failed", "skipped")
+#: Статусы ``TurnEvent.status``: ``skipped`` - стадия не состоялась (кольцо и лицо её не показывают);
+#: ``cancelled`` - ход перебит стопом или устарел по эпохе (ADR-0150 §6.2, PR-9).
+TURN_STATUSES = ("started", "finished", "failed", "skipped", "cancelled")
 #: Потолок ``ExpressionRequest.ttl_ms`` (uint32), мс; исполнители режут свой предел сами.
 TTL_MAX_MS = 600_000
 
