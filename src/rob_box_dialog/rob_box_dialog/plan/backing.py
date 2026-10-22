@@ -22,6 +22,9 @@ class Backing:
     mood: str
     min_s: float
     extend: bool = False
+    #: Человек согласился сменить играющую музыку на бит («да» на ``perform.ask_replace_music``, О9 (б)): сначала
+    #: снять её, потом ставить бит.
+    replace: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,8 +45,9 @@ def grid_of(fields: Mapping[str, Any]) -> Optional[BeatGrid]:
 
 
 class BackingTrack:
-    """Подложка одного выступления. Состояния: ``none`` (не просили) → ``requested`` → ``playing`` | ``failed``;
-    ``playing`` → ``ended`` (кончилась или сняли снаружи) | ``stopped`` (сняли мы)."""
+    """Подложка одного выступления. Состояния: ``none`` (не просили) → [``asking`` — играет чужая музыка, спросили
+    человека] → ``requested`` → ``playing`` | ``failed``; ``playing`` → ``ended`` (кончилась или сняли снаружи) |
+    ``stopped`` (сняли мы)."""
 
     def __init__(self, kind: str) -> None:
         self.moods: Tuple[str, ...] = tuple(kn.PERFORM_BACKING_MOODS.get(kind, ()))
@@ -64,15 +68,24 @@ class BackingTrack:
         return self.moods[max(0, self.attempt - 1)] if self.moods else ""
 
     @property
+    def unresolved(self) -> bool:
+        """Исход подложки ещё неизвестен (ждём ``started`` или ответа человека) — выступление не начинается."""
+        return self.state in ("requested", "asking")
+
+    @property
     def sounding(self) -> bool:
         """Играет или может вот-вот встать — снимать при конце выступления."""
         return self.state in ("requested", "playing")
 
-    def request(self, now: float, min_s: float) -> Backing:
+    def request(self, now: float, min_s: float, replace: bool = False) -> Backing:
         """Следующая попытка: настроение по порядку, срок ``started`` — ``PERFORM_BACKING_START_S``."""
         self.attempt += 1
         self.state, self.deadline = "requested", now + kn.PERFORM_BACKING_START_S
-        return Backing(self.mood, round(min_s, 1))
+        return Backing(self.mood, round(min_s, 1), replace=replace)
+
+    def ask(self, now: float) -> None:
+        """Играет чужая музыка: бит — только если человек согласится; ответ ждём ``PERFORM_ASK_WAIT_S``."""
+        self.state, self.deadline = "asking", now + kn.PERFORM_ASK_WAIT_S
 
     def extension(self, now: float, fields: Mapping[str, Any], speech_end: float, min_s: float) -> Optional[Backing]:
         """``nearly_finished``: речь (с outro) кончится позже подложки — продлить её проходом формы."""
@@ -108,7 +121,7 @@ class BackingTrack:
         return self.attempt < len(self.moods)
 
     def timed_out(self, now: float) -> bool:
-        return self.state == "requested" and self.deadline is not None and now >= self.deadline
+        return self.unresolved and self.deadline is not None and now >= self.deadline
 
     def verdict(self, kind: str, track_id: Optional[str], now: float) -> str:
         """Что событие плеера значит для выступления: ``ignore``; ``late`` (наша подложка встала, когда её уже не

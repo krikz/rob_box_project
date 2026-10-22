@@ -29,6 +29,7 @@ from rob_box_harness.core.dialogue_state_machine import (
 )
 from rob_box_voice.core.dialogue_guards import is_music_stop_command
 from rob_box_voice.core.greeting_window import not_a_reply, take_reply, window
+from rob_box_voice.core import perform_ask
 from rob_box_voice.core.identity_question import question, take_answer
 from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
@@ -148,6 +149,9 @@ class _DialogueSttHost:
 
     def greeting_window(self) -> Optional[Any]:
         return window(self._node)
+
+    def perform_ask(self) -> Optional[Any]:
+        return perform_ask.window(self._node)
 
     def bare_wake(self) -> None:
         # В12: «робот» без фразы и без свежей просьбы того же направления —

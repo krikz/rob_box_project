@@ -243,6 +243,9 @@ class _RecordingHost:
     def greeting_window(self):
         return getattr(self, "greeting", None)
 
+    def perform_ask(self):
+        return getattr(self, "ask", None)
+
     def bare_wake(self) -> None:
         self.calls.append("bare_wake")
 

@@ -156,6 +156,43 @@ def test_enough_over_someone_elses_music_stops_that_music_too(run_plans):
     assert ("stop_music", {}) in n._tool_executor.calls
 
 
+class _AskedPerformer:
+    """Выступление спросило «выключить и зачитать?» и ждёт ответа (О9′)."""
+
+    def __init__(self) -> None:
+        self.answers = []
+
+    def answer(self, yes):
+        self.answers.append(yes)
+        return True
+
+
+@pytest.mark.parametrize("text,yes", [("Робот, да", True), ("Робот, нет", False)])
+def test_answer_to_the_performance_question_goes_to_the_performance(run_plans, text, yes):
+    import time
+
+    from rob_box_voice.core import perform_ask
+    from rob_box_voice.core.identity_question import session
+
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _AskedPerformer()
+    perform_ask.open_window(n, "Still Dre")
+    session(n).arm_scene(perform_ask.KIND, 15.0, {"asked_at": time.time() - 1.0})  # ответ — после грейса микрофона
+    _stt(n, text)
+    run_plans()
+    assert n._tool_executor.performer.answers == [yes]
+    n._dispatch_turn.assert_not_called()  # ответ — кодом, без LLM
+    assert perform_ask.window(n) is None  # окно и вопрос сняты
+
+
+def test_yes_without_a_question_is_not_an_answer(run_plans):
+    n = _make_node()
+    n._tool_executor.performer = _AskedPerformer()
+    _stt(n, "Робот, да")
+    run_plans()
+    assert n._tool_executor.performer.answers == []
+
+
 def test_stop_in_silence_works(run_plans):
     n = _make_node(silenced=True)
     _stt(n, "Робот, хватит")

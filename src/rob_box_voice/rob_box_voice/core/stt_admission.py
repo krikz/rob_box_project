@@ -304,6 +304,10 @@ class SttAdmissionHost(Protocol):
         """Живой кадр ``GreetingReply`` — окно ответа после приветствия при встрече (#3776); ``None`` — окна нет."""
         ...
 
+    def perform_ask(self) -> Optional[Any]:
+        """Живой кадр ``PerformAsk`` — выступление спросило «выключить и зачитать?» (О9′, #3700); ``None`` — нет."""
+        ...
+
     def bare_wake(self) -> None:
         """Голое «робот» без свежей фразы (В12): только рефлекс «слушаю» и
         кадр ожидания, 0 вызовов LLM.
@@ -600,7 +604,8 @@ class AddressStep:
         source = "telegram" if ctx.tg_chat_id is not None else "respeaker"
         heard = replace(ctx.heard or Heard(text=ctx.text, t=0.0, source=source), text=ctx.text)
         backlog = host.backlog()
-        decision = decide(heard, backlog, ctx.wake_words, host.identity_question(), host.greeting_window())
+        decision = decide(heard, backlog, ctx.wake_words, host.identity_question(), host.greeting_window(),
+                          host.perform_ask())
         if isinstance(decision, NotAddressed):
             if decision.reason == NO_WAKE:
                 if host.remember_unaddressed(heard):

@@ -117,10 +117,11 @@ class SegmentList:
     def segments(self) -> List[Line]:
         return [line for line in self.lines if line.no]
 
-    def insert(self, line: Line, front: bool = False) -> Line:
-        """Фраза кода — в начало или перед первой не отданной репликой (там её поставит очередь владельца речи)."""
+    def insert(self, line: Line) -> Line:
+        """Фраза кода — перед первой не отданной репликой (там её поставит очередь владельца речи): после уже
+        прозвучавшего (вопрос о музыке), до куплетов («Поехали!»)."""
         pending = next((i for i, x in enumerate(self.lines) if x.state == "pending"), len(self.lines))
-        self.lines.insert(0 if front else pending, line)
+        self.lines.insert(pending, line)
         return line
 
     # -- граница сегмента (О7) -----------------------------------------------------------------------------------------

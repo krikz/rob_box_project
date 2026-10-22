@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, MusicStop
-from rob_box_dialog.plan.perform import Cancel, PerformBlock, Say
+from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say
 from rob_box_dialog.plan.plan_events import PlanEvent
 
 LATENCY_MS = 550
@@ -52,6 +52,7 @@ class Sim:
     plan_events: List[PlanEvent] = field(default_factory=list)
     effects: List[Tuple[float, object]] = field(default_factory=list)
     music_log: List[Tuple[float, object]] = field(default_factory=list)
+    asks: List[AskReplace] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         ids = itertools.count(1)
@@ -92,8 +93,8 @@ class Sim:
             self.t = max(self.t, when)
             fn()
 
-    def start(self) -> None:
-        self.apply(self.block.start(self.t))
+    def start(self, playing: str = "") -> None:
+        self.apply(self.block.start(self.t, playing))
 
     # -- хост ------------------------------------------------------------------------------------------------------
 
@@ -110,6 +111,8 @@ class Sim:
                 self._backing(effect)
             elif isinstance(effect, MusicStop):
                 self.music_log.append((self.t, effect))
+            elif isinstance(effect, AskReplace):
+                self.asks.append(effect)
 
     def speech_event(self, kind: str, speech_id: str, **kw) -> None:
         self.apply(self.block.on_speech(kind, speech_id, self.t, **kw))

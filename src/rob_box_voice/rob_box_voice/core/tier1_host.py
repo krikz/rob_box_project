@@ -23,6 +23,7 @@ from rob_box_dialog.words import policy_word
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateKind
 from rob_box_voice.core.command_intent import fill_intent
+from rob_box_voice.core import perform_ask
 from rob_box_voice.core.command_parser import Command, IntentType
 from rob_box_voice.core.media_router import DJ_SET_TOOL, MediaToolCall
 from rob_box_voice.core.stop_chooser import STOP
@@ -62,7 +63,8 @@ class Tier1Runner:
             scenes=(SceneFrame("Silence", "user"),) if silenced else (),
             music=MusicStateRef("playing" if playing else "idle", title=title or None,
                                 dj=bool(player is not None and player.dj)),
-            speaking=bool(watch is not None and watch.speaking), volume_channel=self.volume_channel)
+            speaking=bool(watch is not None and watch.speaking), volume_channel=self.volume_channel,
+            pending_ask=perform_ask.ASK if perform_ask.window(node) is not None else None)
 
     def voices(self) -> list:
         provider, _ = tts_state(self._node)
@@ -173,8 +175,14 @@ class Tier1Runner:
         # Фразу «Говорю голосом X» / «Голос X недоступен» строит сам тул по SpeechEvent voice_changed (PR-4).
         self._spawn(self._tools((MediaToolCall("set_voice", {"voice": command.args["voice"]}),)))
 
-    def _run_answer(self, command: Tier1Command, _text: str) -> None:  # pragma: no cover — v1 вопроса не ставит
-        self._node.get_logger().info(f"🧩 [tier1] answer {dict(command.args)} — вопроса v1 не ведёт, пропуск")
+    def _run_answer(self, command: Tier1Command, _text: str) -> None:
+        """«Да»/«нет» на вопрос выступления «выключить и зачитать?» (О9′, #3700): ответ — выступлению, окно — снять."""
+        node = self._node
+        perform_ask.close(node)
+        performer = getattr(getattr(node, "_tool_executor", None), "performer", None)
+        yes = command.args.get("value") == "yes"
+        taken = performer is not None and performer.answer(yes)
+        node.get_logger().info(f"🧩 [tier1] answer {'да' if yes else 'нет'} → выступление: {taken}")
 
     async def _tools(self, calls: tuple) -> bool:
         node = self._node

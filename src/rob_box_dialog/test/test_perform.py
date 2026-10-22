@@ -383,10 +383,54 @@ def test_replaced_and_dropped_lines_release_their_presynth():
 
 
 def test_busy_music_is_not_retried_and_reading_goes_over_it():
-    """Играет другая музыка (``busy``): вторая попытка бессмысленна — фраза и чтение без бита поверх неё."""
+    """Музыка встала между вопросом и заказом (``busy`` от движка): вторая попытка бессмысленна — чтение без бита
+    поверх неё (не в тишину), без фразы об отказе бита."""
     sim = Sim(rap(), music=("rejected:busy", "ok"))
     sim.start()
     sim.run(300)
     assert len(sim.backings()) == 1
-    assert sim.heard[0].text == phrases.text("perform.no_backing.busy")
+    assert [h.text for h in sim.heard] == list(SEGS)
+
+
+# --- О9 (б), О9′: играет чужая музыка — спросить «выключить и зачитать?» ---------------------------------------------
+
+def _asked(sim):
+    sim.start(playing="Still Dre")
+    question = phrases.text("perform.ask_replace_music", title="Still Dre")
+    (ask,) = sim.asks
+    assert sim.backings() == [] and ask.title == "Still Dre"
+    sim.run(30, stop=lambda: any(h.text == question and h.outcome for h in sim.heard))
+    assert sim.heard[0].text == question and sim.segments_heard() == []  # ждём ответа, куплеты не начаты
+    return ask
+
+
+def test_yes_replaces_the_playing_music_with_the_beat():
+    sim = Sim(rap())
+    _asked(sim)
+    sim.apply(sim.block.answer(True, sim.t))
+    (backing,) = sim.backings()
+    assert backing.replace is True  # хост сначала снимет играющую музыку
+    sim.run(300)
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
+    assert all(e.synced for e in sim.events("segment_started"))
+
+
+def test_no_reads_over_the_playing_music_without_a_beat():
+    sim = Sim(rap())
+    _asked(sim)
+    sim.apply(sim.block.answer(False, sim.t))
+    sim.run(300)
+    assert sim.backings() == [] and sim.music_stops() == []  # чужую музыку не трогаем
+    assert [h.text for h in sim.heard[1:]] == list(SEGS)
+    assert sim.block.answer(True, sim.t) == []  # ответ после конца — ничего
+
+
+def test_silence_after_the_question_is_no():
+    sim = Sim(rap())
+    t0 = sim.t
+    _asked(sim)
+    sim.run(300)
+    assert sim.backings() == []
+    first = sim.segments_heard()[0]
+    assert first.start - t0 >= kn.PERFORM_ASK_WAIT_S - 1  # ждали окно ответа целиком
     assert [h.text for h in sim.segments_heard()] == list(SEGS)

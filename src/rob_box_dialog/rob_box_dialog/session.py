@@ -170,11 +170,11 @@ class Session:
         return None
 
     def expire(self) -> Tuple[SceneFrame, ...]:
-        """Снять кадры с истёкшим TTL (и вопрос, если истёк его кадр ``Identity``)."""
+        """Снять кадры с истёкшим TTL (и вопрос, если истёк его кадр: ``Identity``, ``PerformAsk``)."""
         now = self._clock()
         gone = tuple(f for f in self._snap.scenes if f.ttl_until is not None and f.ttl_until <= now)
         if gone:
-            asked = {"pending_ask": None} if any(f.kind == "Identity" for f in gone) else {}
+            asked = {"pending_ask": None} if any(f.kind in kn.ASK_SCENES for f in gone) else {}
             self._commit("expire", scenes=tuple(f for f in self._snap.scenes if f not in gone), **asked)
         return gone
 

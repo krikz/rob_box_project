@@ -67,8 +67,8 @@ def test_code_phrase_goes_before_the_first_not_committed_line():
     lines.lines[0].state = "committed"
     phrase = lines.insert(Line(0, "Бит не завёлся", "p1", key="perform.no_backing.error", state="committed"))
     assert [line.no for line in lines.lines] == [1, 0, 2, 3, 4]
-    lead = lines.insert(Line(0, "Поехали!", "p2"), front=True)
-    assert lines.lines[0] is lead and lines.find("p1") is phrase
+    lead = lines.insert(Line(0, "Поехали!", "p2"))
+    assert lines.lines[2] is lead and lines.find("p1") is phrase  # после отданных — до первого куплета в очереди
     assert [line.no for line in lines.segments()] == [1, 2, 3, 4]
 
 

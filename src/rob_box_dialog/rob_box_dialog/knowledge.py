@@ -483,7 +483,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
-    *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "busy", "error")),
+    *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
@@ -622,7 +622,9 @@ CALENDAR: Tuple[CalendarTheme, ...] = (
 # ---------------------------------------------------------------------------------------------------------------
 
 #: Кадры стека сцен сессии.
-SCENE_KINDS: Tuple[str, ...] = ("Silence", "Persona", "DJ", "OperatorHold", "Identity", "GreetingReply")
+SCENE_KINDS: Tuple[str, ...] = ("Silence", "Persona", "DJ", "OperatorHold", "Identity", "GreetingReply", "PerformAsk")
+#: Кадры вопроса робота: их истечение снимает и ``pending_ask`` сессии (имя; «выключить и зачитать?», О9′).
+ASK_SCENES: Tuple[str, ...] = ("Identity", "PerformAsk")
 #: Кто кладёт кадр ``Silence``/``OperatorHold``: пользовательскую тишину снимает не оператор, и наоборот.
 SCENE_SETTERS: Tuple[str, ...] = ("user", "operator", "code")
 #: Собеседник хода, который назвался сам, а голос похож на другого (#3765): личность выясняет робот, LLM — только имя.
@@ -902,11 +904,16 @@ PERFORM_BACKING_MOODS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 })
 #: Подложка не ``started`` за столько секунд — отказ ``timeout`` (дедлайн класса ``action.media``, §5.1).
 PERFORM_BACKING_START_S: float = float(ACTION_CLASSES["action.media"].timeout_s)
-#: Причины отказа подложки со своей фразой ``perform.no_backing.{reason}``; остальные — ``error``.
+#: Играет чужая музыка (трек, сет), а выступлению нужен бит: «Сейчас играет …, выключить и зачитать?» (О9 (б), О9′).
+#: «Да» — снять её и поставить бит, «нет» или нет ответа — читать без бита поверх неё. Ждём: фраза вопроса (оценка) +
+#: микрофон после речи + окно ответа ``REPLY_WINDOW_S`` (одно окно с вопросом об имени).
+PERFORM_ASK_PHRASE_S = 4.0
+PERFORM_ASK_WAIT_S: float = PERFORM_ASK_PHRASE_S + IDENTITY_MIC_GRACE_S + REPLY_WINDOW_S
+#: Причины отказа подложки (остальные — ``error``); у каждой, кроме ``busy``, фраза ``perform.no_backing.{reason}``.
+#: ``busy`` — без фразы: человек ответил «нет» на «выключить и зачитать?» или музыка успела встать — читаем под неё.
 PERFORM_NO_BACKING_REASONS: Tuple[str, ...] = ("quota", "network", "timeout", "busy")
 #: Причины, при которых вторая попытка подложки бессмысленна: ``busy`` — играет другая музыка (молча её не вытесняем,
 #: О9 (б)): выступление идёт без бита поверх неё.
-#: до 3в (#3700, О9′): сейчас при ``busy`` сразу «читаю под неё»; 3в сначала спрашивает «выключить и зачитать?».
 PERFORM_NO_RETRY_REASONS: Tuple[str, ...] = ("busy",)
 #: outro подложки: музыка снимается на ближайшем такте после речи — запас на такт при 60 BPM; речь вышла длиннее
 #: подложки — она продлевается по ``nearly_finished``.
