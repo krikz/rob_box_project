@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from rob_box_harness.core.agent_core import DialogResult
 
-from .test_issue_1882_planning_narration import _make_node, _published_texts
+from ._result_node import make_result_node as _make_node, published_texts as _published_texts
 
 
 def _result(spoken: str, tools=()) -> DialogResult:

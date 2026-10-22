@@ -38,7 +38,6 @@ def _make_node(replies):
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = MagicMock()
@@ -93,16 +92,6 @@ def test_llm_error_in_the_result_ends_the_turn_failed():
     _run(n, utterance_id="u1")
 
     assert _stages(n)[-1] == ("failed", "failed") and "provider down" in n.events[-1]["reason"]
-
-
-def test_guard_retry_continues_the_turn_instead_of_ending_it():
-    n = _make_node([_Result("Сейчас около трёх.")])
-    n._apply_post_turn_retry_guards = MagicMock(return_value=True)
-    n._stages.addressed("u1")
-
-    _run(n, utterance_id="u1")
-
-    assert _stages(n) == [("addressed", "started"), ("thinking", "started")]
 
 
 def test_cancelled_turn_is_closed_without_a_reflex():

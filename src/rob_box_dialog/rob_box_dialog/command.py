@@ -55,7 +55,9 @@ class Ask:
 
 @dataclass(frozen=True)
 class Performance:
-    """Выступление (§5.6.3): сегменты — содержимое, а не отчёт; ``from_segment`` — с какого править (edit_pending).
+    """Выступление (§5.6.3): сегменты — содержимое, а не отчёт. ``from_segment`` — с какого править (edit_pending);
+    его выбирает код (хост выступления: первый ещё не отданный на звучание, #3700), LLM его не задаёт — разбор
+    отбрасывает это поле из ответа модели.
 
     ``voice_per_segment`` — голос каждого сегмента (сказка разными голосами, #3269); ``""`` — текущий голос робота.
     Голос робота он не меняет: это ``set_voice`` (только по явной просьбе, #3744)."""
@@ -71,8 +73,9 @@ class Performance:
 @dataclass(frozen=True)
 class Command:
     """Одна команда хода. ``dropped`` — поля, которые разбор или валидатор отбросили, не отвергая команду (сцена
-    лица, лишние поля экспрессии); ``moved`` — слоты лица, которые разбор переложил из ``expression`` в
-    ``expression.face`` (§5.5.9, #3698: DeepSeek кладёт их на уровень выше).
+    лица, лишние поля экспрессии); ``moved`` — поля, которые разбор переложил на их место: слоты лица из
+    ``expression`` в ``expression.face`` (§5.5.9, #3698: DeepSeek кладёт их на уровень выше) и ``edit_pending`` из
+    ``perform`` в команду (#3700: DeepSeek кладёт флаг правки внутрь выступления).
 
     ``voice`` — голос реплики ``speech``/``ask`` (не голос робота: его меняет ``set_voice``)."""
 
@@ -328,8 +331,7 @@ def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
         return None
     if not isinstance(data, Mapping):
         raise _Bad("bad_type", "perform")
-    _only(data, ("kind", "segments", "backing", "expression_per_segment", "from_segment", "voice_per_segment"),
-          "perform")
+    _only(data, ("kind", "segments", "backing", "expression_per_segment", "voice_per_segment"), "perform")
     segments = _get(data, "segments", list, []) or []
     if not all(isinstance(s, str) for s in segments):
         raise _Bad("bad_type", "perform.segments")
@@ -339,7 +341,6 @@ def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
         backing=_get(data, "backing", str, "none") or "none",
         expression_per_segment=None if per is None else tuple(
             _expression(e, f"perform.expression_per_segment[{i}]", fix) for i, e in enumerate(per)),
-        from_segment=_get(data, "from_segment", int, 0) or 0,
         voice_per_segment=_voices(data),
     )
 
@@ -354,9 +355,32 @@ def _voices(data: Mapping[str, Any]) -> Optional[Tuple[str, ...]]:
     return tuple((v or "").strip() for v in voices)
 
 
+def _lift_edit(data: Mapping[str, Any], fix: _Repairs) -> Mapping[str, Any]:
+    """Поля правки выступления на их место (§5.6.4 X3, #3700). Живой прогон A20 22.10, DeepSeek 3 из 3 мимо схемы:
+    ``edit_pending`` внутри ``perform`` (→ переезжает в команду, ``moved``; флаг команды, если есть, главный) и
+    ``from_segment`` в ``perform`` или в команде с номером звучащего сегмента. С какого сегмента править, выбирает код
+    (первый не отданный на звучание — ``PerformHost.edit``), поэтому ``from_segment`` модели уходит в ``dropped``."""
+    out = dict(data)
+    if "from_segment" in out:
+        del out["from_segment"]
+        fix.dropped.append("command.from_segment")
+    perf = out.get("perform")
+    if isinstance(perf, Mapping) and ("edit_pending" in perf or "from_segment" in perf):
+        inner = dict(perf)
+        if "edit_pending" in inner:
+            out.setdefault("edit_pending", inner.pop("edit_pending"))
+            fix.moved.append("perform.edit_pending")
+        if "from_segment" in inner:
+            del inner["from_segment"]
+            fix.dropped.append("perform.from_segment")
+        out["perform"] = inner
+    return out
+
+
 def _command(data: Mapping[str, Any]) -> Command:
-    _only(data, _COMMAND_FIELDS, "command")
     fix = _Repairs()
+    data = _lift_edit(data, fix)
+    _only(data, _COMMAND_FIELDS, "command")
     cmd = Command(
         speech=_text(data, "speech"), voice=_text(data, "voice"), ask=_ask(data.get("ask")),
         actions=_actions(data.get("actions")),
@@ -415,6 +439,14 @@ def _check_passed(cmd: Command) -> None:
         raise _Bad("bad_enum", f"passed={cmd.passed}", kn.PASSED)
     if cmd.speech or cmd.ask or cmd.actions or cmd.perform:
         raise _Bad("passed_with_content", "молчание вместе с речью или действиями")
+
+
+def is_empty(cmd: Command) -> bool:
+    """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``.
+
+    Грамматика такую команду допускает (фрагменты в тестах, лицо без слов); ответ МОДЕЛИ так быть не может — мост
+    режима команд считает его нарушением :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698)."""
+    return cmd.passed is None and not (cmd.speech or cmd.ask or cmd.actions or cmd.perform)
 
 
 def _check_speech(text: Optional[str], limit: int, where: str) -> None:
@@ -494,20 +526,13 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
-    _check_edit(cmd.edit_pending, perf.from_segment, busy)
+    _check_edit(cmd.edit_pending, busy)
 
 
-def _check_edit(edit_pending: bool, from_segment: int, busy: Busy) -> None:
-    if from_segment < 0:
-        raise _Bad("bad_segments", f"from_segment={from_segment}")
-    if not edit_pending:
-        if from_segment:
-            raise _Bad("from_segment_without_edit", str(from_segment))
-        return
-    if busy.active_segment is None:
+def _check_edit(edit_pending: bool, busy: Busy) -> None:
+    """Правке нужно идущее выступление; с какого сегмента — решает его хост (#3700), не модель."""
+    if edit_pending and busy.active_segment is None:
         raise _Bad("edit_without_active_perform", "править нечего: выступление не идёт")
-    if from_segment < busy.active_segment + 1:
-        raise _Bad("edit_started_segment", f"from_segment={from_segment}, ACTIVE={busy.active_segment}")
 
 
 def _check_when(when: str, busy: Busy) -> None:
@@ -569,6 +594,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_SPEECH_WITH_ACTIONS: "speech при actions не звучит: если это ответ по сути (шутка, стих, ответ на "
                                       "вопрос) — положи его в perform.segments; если это слова про само действие "
                                       "(«вот звук») — убери speech, о результате скажет код",
+    kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "
+                                "выступлением (perform); молчать — passed",
     "single_action_class": "в этом классе действий — одно действие за ход",
     "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
     "bad_args": "аргументы действия не по схеме тула",
@@ -584,9 +611,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",
     "edit_without_perform": "edit_pending — только вместе с perform",
-    "from_segment_without_edit": "from_segment — только при edit_pending",
     "edit_without_active_perform": "править нечего: выступление не идёт, убери edit_pending",
-    "edit_started_segment": "from_segment — после звучащего сегмента",
     "now_vs_uninterruptible": "when=now нельзя: занятое действие не прерывается, нужен after_current",
 })
 
@@ -639,8 +664,6 @@ def _perform_args(perf: Performance) -> Dict[str, Any]:
         out["expression_per_segment"] = [_expression_args(e) for e in perf.expression_per_segment]
     if perf.voice_per_segment is not None:
         out["voice_per_segment"] = list(perf.voice_per_segment)
-    if perf.from_segment:
-        out["from_segment"] = perf.from_segment
     return out
 
 

@@ -5,8 +5,9 @@
 подряд; на исчерпании retry-budget (#1881) сырой ответ ушёл целиком
 (11 TTS-чанков, ~40 с монолога).
 
-Прогоняем настоящий ``_run_turn`` + tool-skipped гуард (музыкальный Bug C
-удалён в ADR-0149 PR-13a) и считаем, что реально ушло в TTS.
+Прогоняем настоящий ``_run_turn`` и считаем, что реально ушло в TTS
+(музыкальный Bug C удалён в ADR-0149 PR-13a, post-turn tool-skipped гуард —
+в ADR-0150 PR-7 ч.7d-1: ретраев из ``finally`` хода больше нет).
 ``_handle_result`` заменён хвостом, который зовёт ``_voice_turn_text`` —
 ровно так заканчивается настоящий ``_handle_result``.
 
@@ -54,7 +55,6 @@ def _make_node(replies):
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = MagicMock()
@@ -92,55 +92,6 @@ def _run(n, text, **kw):
         return_value=MagicMock(),
     ):
         asyncio.run(n._run_turn(text, session_epoch=0, **kw))
-
-
-def _run_chain(n, text=_USER):
-    """Юзерский ход + ретраи, которые ход задиспатчил (как в проде)."""
-    _run(n, text)
-    while n._dispatch_turn.call_count:
-        call = n._dispatch_turn.call_args
-        n._dispatch_turn.reset_mock()
-        _run(
-            n, call.args[0],
-            is_synthetic=True,
-            raw_user_command=call.kwargs.get("raw_user_command"),
-        )
-
-
-class TestRetryChainIsSilent:
-    """Ход с синхронным ретраем молчит, звучит только итог цепочки.
-
-    ADR-0149 PR-13a: музыкальный Bug C (``MusicGuard``), на котором был снят
-    живой лог, удалён; механизм «придержать ответ до решения post-turn
-    гуардов» тот же для tool-skipped гуарда (#1777).
-    """
-
-    def _real_tool_guard(self, n):
-        del n._apply_tool_skipped_guard  # настоящий гуард
-        n._tool_retry_used = False
-
-    def test_turn_with_retry_is_silent_and_retry_answer_is_voiced(self):
-        n = _make_node([
-            _Result("Сейчас около трёх часов."),  # время из головы, без тула
-            _Result("Сейчас пятнадцать ноль семь.", ["get_current_time"]),
-        ])
-        self._real_tool_guard(n)
-
-        _run_chain(n, "который час")
-
-        assert n._core.process_input.await_count == 2
-        n._publish_response.assert_called_once_with("Сейчас пятнадцать ноль семь.")
-        assert "около трёх" not in str(_voiced(n))
-
-    def test_exhausted_chain_does_not_speak_raw_monologue(self):
-        n = _make_node([_Result(_MONOLOGUE)])
-        self._real_tool_guard(n)
-        n._tool_retry_used = True  # ретрай уже потрачен — гуард молчит
-        n._retry_budget_exhausted_in_turn = True
-
-        _run(n, "который час")
-
-        n._publish_response_batch.assert_not_called()
 
 
 class TestNormalTurnUnchanged:
@@ -195,3 +146,16 @@ class TestBudgetExhaustedAndMusicTrim:
         n._voice_turn_text(_MONOLOGUE, user_input="зачитай рэп про диджея")
 
         n._publish_response_batch.assert_called_once()
+
+
+class TestNoPostTurnRetry:
+    """ADR-0150 PR-7 ч.7d-1 (#3698): tool-skipped ретрай (#1777) удалён — ход без тула не зовёт LLM второй раз."""
+
+    def test_time_answer_without_tool_is_voiced_and_llm_called_once(self):
+        n = _make_node([_Result("Сейчас около трёх часов.")])
+
+        _run(n, "который час")
+
+        assert n._core.process_input.await_count == 1
+        n._publish_response.assert_called_once_with("Сейчас около трёх часов.")
+        n._dispatch_turn.assert_not_called()

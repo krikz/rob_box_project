@@ -160,10 +160,20 @@ def test_launch_without_flag_file_is_v1(monkeypatch, tmp_path, which):
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_v2_does_not_start_dialogue_node(monkeypatch, tmp_path, which):
+def test_launch_v2_starts_dialog_node_instead_of_dialogue_node(monkeypatch, tmp_path, which):
     names, tts = _nodes(monkeypatch, which, _config(tmp_path, "v2"))
-    assert names == [n for n in NODES_BEFORE[which] if n != "dialogue_node"]
+    assert names == ["dialog_node" if n == "dialogue_node" else n for n in NODES_BEFORE[which]]
     assert {"dialog_engine": "v2"} in tts.kwargs["parameters"]
+
+
+def test_launch_v2_dialog_node_gets_its_yaml_and_flag(monkeypatch, tmp_path):
+    _fake_launch(monkeypatch)
+    cfg = _config(tmp_path, "v2")
+    tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
+                "parameters": ["tts_node.yaml"]}
+    dialog, tts = de.launch_nodes({"config_dir": str(cfg)}, _Node(name="dialogue_node"), tts_args)
+    assert (dialog.kwargs["executable"], dialog.name) == ("dialog_node", "dialog_node")
+    assert dialog.kwargs["parameters"] == [str(cfg / "dialog_node.yaml"), {"dialog_engine": "v2"}]
 
 
 def test_flag_value_lives_only_in_dialog_engine_module():

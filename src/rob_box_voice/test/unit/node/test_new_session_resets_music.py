@@ -57,7 +57,6 @@ def _make_turn_node() -> DialogueNode:
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._babble_retry_used = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
@@ -69,7 +68,6 @@ def _make_turn_node() -> DialogueNode:
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = MagicMock()
@@ -110,46 +108,10 @@ class TestNewSessionResetsMusic:
 
 
 class TestCancelledTurnDoesNotRetry:
-    def test_normal_turn_still_runs_post_turn_guards(self):
-        """Контроль: без отмены/сброса гуард работает как раньше."""
+    def test_barge_in_cancelled_turn_dispatches_nothing(self):
+        """Отменённый ход приходил в finally с ``result=None`` → Bug C слал
+        [CRITICAL]-ретрай. ADR-0150 PR-7 ч.7d-1: post-turn ретраев нет вовсе."""
         n = _make_turn_node()
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_called_once()
-
-    def test_barge_in_cancelled_turn_dispatches_no_retry(self):
-        """Отменённый ход приходил в finally с ``result=None`` →
-        ``tools_called=()`` → Bug C слал [CRITICAL]-ретрай."""
-        n = _make_turn_node()
-        n._core.process_input = AsyncMock(side_effect=asyncio.CancelledError())
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_not_called()
-
-    def test_turn_outliving_session_reset_dispatches_no_retry(self):
-        n = _make_turn_node()
-
-        async def _llm_while_reset(*_a, **_kw):
-            n._session_epoch_gate().advance()  # «забудь всё» посреди хода
-            return _Result()
-
-        n._core.process_input = AsyncMock(side_effect=_llm_while_reset)
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_not_called()
-
-    def test_real_tool_guard_retry_not_dispatched_for_cancelled_turn(self):
-        """Без мока гуарда: реальный tool-skipped гуард на «который час» с
-        пустыми tools отдал бы ретрай. После отмены — ни одного _dispatch_turn."""
-        n = _make_turn_node()
-        del n._apply_tool_skipped_guard
-        n._retry_dispatched_in_turn = False
-        n._tool_retry_used = False
-        n._synthetic_retries_left = 3
-        n._reopen_dialogue_for_retry = MagicMock()
         n._core.process_input = AsyncMock(side_effect=asyncio.CancelledError())
 
         asyncio.run(n._run_turn("который час", session_epoch=0))

@@ -41,10 +41,8 @@ class DialogueStageMixin:
         elif outcome.reason != LLMSkipReason.BARE_WAKE.value:
             self._turn_stages().handled(utterance_id)
 
-    def _stage_finish(self, result: Any, cancelled: bool, failure: str, retry_dispatched: bool) -> None:
-        """Тело хода закончено: исход ``done|failed`` - из ошибки LLM / исключения; ретрай гуарда ход продолжает."""
-        if retry_dispatched:
-            return
+    def _stage_finish(self, result: Any, cancelled: bool, failure: str) -> None:
+        """Тело хода закончено: исход ``done|failed`` - из ошибки LLM / исключения."""
         error = failure or (str(result.error)[:60] if result is not None and result.error is not None else "")
         error = error or getattr(result, "turn_failure", "")
         self._turn_stages().finish(self._turn_id, ok=not error, reason=error, cancelled=cancelled)

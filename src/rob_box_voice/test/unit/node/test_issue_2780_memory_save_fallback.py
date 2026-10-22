@@ -101,7 +101,6 @@ def _make_node() -> DialogueNode:
     n._effects.handle_tts_finished = MagicMock()
     n._effects.handle_sound_state = MagicMock()
     n._verbose_llm = False
-    n._babble_retry_used = False
     n._action_claim_retry_used = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
@@ -110,7 +109,6 @@ def _make_node() -> DialogueNode:
     n._consume_synthetic_retry = MagicMock(return_value=True)
     # Guard'ы ВЫШЕ по цепочке _handle_result — не предмет этого файла.
     n._dispatch_turn = MagicMock()
-    n._check_babble_and_retry = MagicMock(return_value=False)
     n._check_embedded_renardo_code_and_retry = MagicMock(return_value=False)
     return n
 
