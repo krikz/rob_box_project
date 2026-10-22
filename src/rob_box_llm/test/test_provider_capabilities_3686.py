@@ -25,8 +25,17 @@ def test_deepseek_declares_tool_choice_and_json_mode():
 def test_minimax_does_not_claim_tool_choice_adr_0143():
     caps = MiniMaxProvider(api_key="k").capabilities
     assert caps.tool_choice is False
-    assert caps.thinking is True
     assert caps.tools and caps.image_input
+
+
+def test_minimax_thinking_follows_model_and_policy_3698():
+    """Замер 22.10: M3 с ``thinking: disabled`` не думает (0/80), Flash думает всегда, M2.x поле игнорируют."""
+    voice = MiniMaxProvider(api_key="k")  # политика голоса — disabled
+    assert voice.capabilities.thinking is False
+    assert voice.capabilities_for("MiniMax-M3.1-Flash").thinking is True
+    assert voice.capabilities_for("MiniMax-M2.7").thinking is True
+    assert MiniMaxProvider(api_key="k", thinking=None).capabilities.thinking is True
+    assert MiniMaxProvider(api_key="k", model="MiniMax-M3.1-Flash").capabilities.thinking is True
 
 
 def test_minimax_non_vision_model_keeps_new_flags():

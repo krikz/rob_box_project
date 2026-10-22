@@ -55,20 +55,21 @@ class FieldChannel:
         if mode == "structured_output":
             fmt = {"type": "json_schema", "json_schema": {"name": COMMAND_TOOL, "schema": self._schema}}
             return ModeRequest(mode, response_format=fmt)
-        if mode == "tool_choice":
+        if mode in ("tool_choice", "tool_offered"):
             tool = _function_tool(COMMAND_TOOL, "Выдать команду роботу", self._schema)
-            return ModeRequest(mode, tools=(tool,), tool_choice="required")
+            return ModeRequest(mode, tools=(tool,), tool_choice="required" if mode == "tool_choice" else None)
         if mode == "json_mode":
             return ModeRequest(mode, response_format={"type": "json_object"}, instruction=_JSON_INSTRUCTION)
         return ModeRequest(mode, instruction=_JSON_INSTRUCTION)
 
     def to_text(self, reply: ModeReply, mode: CommandMode) -> str:
-        """Текст команды для парсера: аргументы тула ``command`` или ``content``."""
-        if mode == "tool_choice":
+        """Текст команды для парсера: аргументы тула ``command`` или ``content``. Без принуждения (``tool_offered``)
+        модель может ответить JSON-ом в тексте — его разбирает тот же парсер."""
+        if mode in ("tool_choice", "tool_offered"):
             for name, args in reply.tool_calls:
                 if name == COMMAND_TOOL:
                     return json.dumps(dict(args), ensure_ascii=False)
-            return ""
+            return reply.content if mode == "tool_offered" else ""
         return reply.content
 
     def parse(self, reply: ModeReply, mode: CommandMode, parse: Callable[[str], T]) -> T:

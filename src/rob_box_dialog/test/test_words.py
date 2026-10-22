@@ -61,11 +61,11 @@ def test_strip_removes_first_whole_word_wake_with_punctuation():
 
 
 @pytest.mark.parametrize("text", [
-    "Робот, понял, хватит, останавливай",
+    "Робот, понял, замолчи, останавливай",
     "помолчи",
     "замолчите все",
-    "робот хватит",
-    "ХВАТИТ",
+    "робот замолчи",
+    "ПОМОЛЧИ",
 ])
 def test_silence_words_match_on_word_start(text):
     assert has_word(text, SILENCE_WORDS)
@@ -74,6 +74,13 @@ def test_silence_words_match_on_word_start(text):
 @pytest.mark.parametrize("text", ["нехватка денег", "он захватит флаг", "молчаливый", "ничего"])
 def test_silence_words_do_not_match_inside_words(text):
     assert not has_word(text, SILENCE_WORDS)
+
+
+@pytest.mark.parametrize("text", ["хватит", "Робот, хватит", "ХВАТИТ", "стоп", "отставить"])
+def test_enough_is_not_a_silence_word(text):
+    """Решение Шифу 22.10 (#3700): «хватит» останавливает звуки, режим тишины не включает."""
+    assert not has_word(text, SILENCE_WORDS)
+    assert has_word(text, TIER1_POLICY["stop"].words)
 
 
 def test_unsilence_words():

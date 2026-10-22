@@ -28,9 +28,11 @@ class Caps:
         (Caps(tool_choice=True, tools=False, json_mode=True), "json_mode"),  # tool_choice без tools — не режим
         # #3798: модель в режиме размышлений отвечает 400 на tool_choice="required" — команда JSON-ом
         (Caps(tool_choice=True, tools=True, json_mode=True, thinking=True), "json_mode"),
-        (Caps(tool_choice=True, tools=True, thinking=True), "json_in_text"),
+        # #3698 ч.7d: тулы есть, принуждения нет (MiniMax, ADR-0143) или модель думает — тул предложен без tool_choice
+        (Caps(tool_choice=True, tools=True, thinking=True), "tool_offered"),
         (Caps(json_mode=True, tools=True), "json_mode"),
-        (Caps(tools=True), "json_in_text"),
+        (Caps(tools=True), "tool_offered"),
+        (Caps(tools=True, thinking=True), "tool_offered"),
         (Caps(), "json_in_text"),
     ],
 )
@@ -39,7 +41,7 @@ def test_select_mode_follows_declared_capabilities(caps, expected):
 
 
 def test_mode_order_matches_adr_section_4_5():
-    assert MODE_ORDER == ("structured_output", "tool_choice", "json_mode", "json_in_text")
+    assert MODE_ORDER == ("structured_output", "tool_choice", "json_mode", "tool_offered", "json_in_text")
 
 
 def test_provider_order_keeps_priority_and_prefers_healthy():

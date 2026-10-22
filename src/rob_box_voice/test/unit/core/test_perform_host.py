@@ -270,6 +270,33 @@ def test_edit_pending_starts_at_the_first_not_released_segment_whatever_the_mode
     assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
 
 
+def test_perform_with_backing_and_no_new_segments_adds_the_beat(loop):
+    """A22 22.10 (#3700): «Робот, добавь бит» → DeepSeek шлёт ``perform{backing: beat, segments: []}`` поверх рэпа
+    без бита — это «добавь бит» (#993): бит кодом, куплеты прежние."""
+    host, node, tools, events = _host(loop, STARTED)
+    host.start(Performance(kind="rap", segments=RAP.segments, backing="none"), "t1")
+    _settle(loop)
+    assert tools.calls == []
+    out = host.start(Performance(kind="rap", segments=(), backing="beat"), "t2")
+    _settle(loop)
+    assert out == {"status": "done", "backing": True}
+    assert [c.arguments["intent"] for c in tools.calls] == ["backing"]
+    assert [e for e in events if e.kind == "segment_replaced"] == []
+    again = host.edit(Performance(kind="rap", segments=(), backing="beat"))  # бит уже есть — второго нет
+    _settle(loop)
+    assert again["status"] == "rejected" and len(tools.calls) == 1
+
+
+def test_edit_with_new_segments_and_backing_adds_the_beat_too(loop):
+    """A22 22.10 a22_3: на «добавь бит» правка с новыми куплетами и ``backing: beat`` — куплеты правятся и бит есть."""
+    host, node, tools, events = _host(loop, STARTED)
+    host.start(Performance(kind="rap", segments=RAP.segments, backing="none"), "t1")
+    out = host.edit(Performance(kind="rap", segments=("Бит пошёл.", "Комар в такт."), backing="beat"))
+    _settle(loop)
+    assert out == {"status": "done"} and [c.arguments["intent"] for c in tools.calls] == ["backing"]
+    assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
+
+
 def test_context_while_performing_and_none_after(loop):
     host, node, _, _ = _host(loop, STARTED)
     assert host.context() is None and host.active_segment is None

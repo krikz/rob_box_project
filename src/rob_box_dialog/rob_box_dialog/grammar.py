@@ -71,12 +71,15 @@ def _starts(word: str, stems: Sequence[str]) -> bool:
 
 
 def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
-    """Ясный стоп: тишина (основы ``SILENCE_WORDS``) или ``stop_all``; после стопа ещё команда — ``stop_all`` +
-    ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с ``disputed``."""
+    """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи») или ``stop_all``
+    (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10, #3700); после
+    стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
+    ``disputed``."""
     call = stop_command(text)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
         return None
-    kind = "silence" if _starts(call.word, kn.SILENCE_WORDS) and not call.rest else "stop_all"
+    silence = not call.rest and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
+    kind = "silence" if silence else "stop_all"
     return Tier1Command(kind, disputed=call.verdict == STOP_DISPUTED, rest=call.rest)
 
 

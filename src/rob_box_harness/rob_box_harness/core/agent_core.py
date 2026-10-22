@@ -46,11 +46,6 @@ from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-expor
     _ToolLoopOutcome,
 )
 from rob_box_harness.core.tool_loop.command_turn import CommandTurn
-from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
-    ContentSpeech,
-    speak_closing_content,
-    speak_content_beside_set_voice,
-)
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -241,13 +236,6 @@ def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
     return reply if any(turn is reply for turn in kept) else None
 
 
-def _reply_text(spoken: str, internal_marker: str | None) -> str:
-    """Issue #3598 — финальный текст, годный в историю: рассуждение → ``""``."""
-    if internal_marker:
-        return ""
-    return spoken
-
-
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -352,7 +340,6 @@ from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — bac
     is_pseudo_tool_call as _is_pseudo_tool_call,
     is_silent_text,  # Issue #1217 — маркеры конца хода v1, одна таблица с нодой
     is_tool_call_markup,  # Issue #2760
-    quoted_turn_context,  # Issue #3598
 )
 
 
@@ -570,12 +557,6 @@ class DialogResult:
     succeeded_tools: list[str] = field(default_factory=list)
     # ADR-0150 PR-7 (#3698) — режим команд: невалидная команда после повтора. Речи нет, стадия хода ``failed``.
     turn_failure: str = ""
-    # Issue #3598 — финальный текст хода цитирует служебное из контекста
-    # хода (``"<music_state>"``) или имя тула (``"speak_text"``): это
-    # рассуждение модели, а не реплика человеку. ``None`` — текст чистый.
-    # Ядро такой текст в историю не пишет; оболочка его не озвучивает
-    # (см. :func:`~rob_box_harness.core.tool_loop.text_classify.quoted_turn_context`).
-    internal_text_marker: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1014,12 +995,6 @@ class AgentCore:
                 result.tool_error_occurred = outcome.tool_error_occurred
                 result.succeeded_tools = list(outcome.succeeded_tools)
                 result.turn_failure = outcome.turn_failure
-                # Issue #3598 — рассуждение с тегами контекста/именами тулов
-                # не реплика: в историю не ложится (иначе задаёт тон
-                # следующим ходам — живой лог 13.10, ``[3] assistant``).
-                result.internal_text_marker = quoted_turn_context(
-                    outcome.spoken_text, dynamic_system
-                )
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1027,9 +1002,7 @@ class AgentCore:
                     # "done" misleads the model into (a) echoing old topics
                     # and (b) replying "done" itself (silent failures). Silent
                     # turns are dropped entirely — they add no useful context.
-                    assistant_content = outcome.spoken_via_tool or _reply_text(
-                        outcome.spoken_text, result.internal_text_marker
-                    )
+                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
                     if not self._is_silent_spoken(assistant_content, ()):
                         assistant_metadata = dict(user_metadata)
                         # 🔴 FIX (live 01.09, vision-pi): история хранила
@@ -1391,12 +1364,6 @@ class AgentCore:
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
         spoken_texts: list[str] = []
-        # Issue #3269 — реплики, которые модель пишет в content рядом с
-        # set_voice (сказка разными голосами), озвучиваются как speak_text.
-        # Удаляется вместе с v1-путём speak_text, когда режим команд включён
-        # и проверен вживую (ADR-0150 PR-7 ч.7d / PR-15), не раньше: иначе
-        # запасной MiniMax снова молчит на сказке (#3698, решение координатора).
-        content_speech = ContentSpeech()
         # ADR-0150 PR-7 ч.7c — команда LLM (вызов ``command`` от моста режима команд) исполняется кодом:
         # действия → событие владельца → фраза кода, ход терминален; query — данные обратно LLM (≤ 2 раз).
         commands = CommandTurn(self._tools, openai_tools)
@@ -1484,13 +1451,8 @@ class AgentCore:
                 self._record_succeeded_tools(step.calls, step.results, succeeded_tools)
                 response = step.response
                 continue
-            # Issue #3269 — content рядом с set_voice-пачкой — реплика,
-            # а не служебный текст: первым вызовом пачки становится
-            # speak_text(content, voice=голос до этой пачки). См.
-            # :mod:`.tool_loop.content_speech`.
-            response = speak_content_beside_set_voice(
-                response, content_speech, openai_tools
-            )
+            # ADR-0150 PR-7 ч.7d-3 (#3698): content рядом с set_voice (#3269) речью не считается — §4.4: content вне
+            # канала речи не озвучивается; сказка разными голосами — perform.voice_per_segment режима команд.
             if not response.tool_calls:
                 break
 
@@ -1632,15 +1594,6 @@ class AgentCore:
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
-
-        # Issue #3269 — финал сказки, чьи реплики шли из content: цикл его
-        # не исполняет, а dialogue_node после speak_text пропустит его как
-        # дубль (#988) — озвучиваем здесь, тем же голосом.
-        closing = await speak_closing_content(
-            response, content_speech, self._tools, spoken_texts
-        )
-        speak_text_count += closing
-        speak_text_real_count += closing
 
         # Issue #1253 — babble filter on tool error. A tool failed
         # (is_error=True) and the LLM answered with ONLY words: no retry

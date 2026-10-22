@@ -35,7 +35,7 @@ class AgentSpec:
     sink: Optional[Sink]
 
 
-#: Тишина «хватит» — только у Личности (решение О2): оператор и телеграм ею не блокируются.
+#: Тишина «замолчи/помолчи» — только у Личности (решение О2): оператор и телеграм ею не блокируются.
 AGENT_SPECS: Mapping[str, AgentSpec] = MappingProxyType({
     "personality": AgentSpec("personality", GRAMMAR_GROUPS, "llm", "personality", Sink.SPEAKERS),
     "operator": AgentSpec("operator", ("stop", "volume", "yes_no"), "operator", "operator", Sink.HEADSET),

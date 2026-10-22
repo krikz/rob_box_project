@@ -232,9 +232,10 @@ class TestUserInputClassification:
         dsm = _make_dsm()
         assert dsm.on_user_input("замолчи") == DialogueEvent.SILENCE_COMMAND
 
-    def test_silence_khvatit(self) -> None:
+    def test_khvatit_is_not_silence(self) -> None:
+        """«хватит» — стоп звуков (Шифу 22.10, #3700), а не кадр тишины."""
         dsm = _make_dsm()
-        assert dsm.on_user_input("хватит") == DialogueEvent.SILENCE_COMMAND
+        assert dsm.on_user_input("хватит") == DialogueEvent.STT_RESULT
 
     def test_stop_is_not_silence(self) -> None:
         """«стоп» — Tier-1 стоп (ADR-0150 §5.6.4), не кадр тишины."""

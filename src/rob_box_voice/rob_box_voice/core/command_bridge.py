@@ -3,8 +3,9 @@
 Временный модуль (#3696 ч.5, удаляется в PR-8 вместе с v1-циклом ``AgentCore``). Оборачивает ОДИН провайдер цепочки:
 
 * **форма запроса — по возможностям адаптера**, а не по промпту: ``degrade.select_mode(capabilities)`` →
-  ``tool_choice`` (DeepSeek: тул ``command`` + ``tool_choice="required"``) | ``json_in_text`` (MiniMax: JSON в тексте) |
-  ``json_mode`` / ``structured_output``; запрос строит ``speech_channel.FieldChannel`` (решение О4: речь — поле
+  ``tool_choice`` (DeepSeek: тул ``command`` + ``tool_choice="required"``) | ``tool_offered`` (MiniMax: тул ``command``
+  без ``tool_choice`` — принуждение сервер не исполняет, ADR-0143, замер #3698 ч.7d) | ``json_mode`` /
+  ``structured_output`` | ``json_in_text``; запрос строит ``speech_channel.FieldChannel`` (решение О4: речь — поле
   ``speech``), тула ``speak_text`` модель в этом режиме не видит — слот речи один;
 * **ответ разбирает один парсер** ``rob_box_dialog.command.parse``: голая реплика (без действий, выступления и голоса)
   → текст речи (терминальный ход, авто-TTS ``dialogue_node``); остальное → один вызов ``command``, который v1-цикл

@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U8
+from rob_box_dialog import knowledge as kn
 from rob_box_core.utterance import Utterance
 
 from . import speech_compat
@@ -204,12 +205,14 @@ class SpeechLedger:
         return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
 
     def schedule_boundary_stop(self, rec: SpeechRecord) -> None:
-        """``boundary=sentence``: заглушить на ближайшем конце предложения."""
+        """``boundary=sentence``: заглушить на ближайшем конце предложения, но слышимо не позже
+        ``SPEECH_STOP_AUDIBLE_MAX_S`` (§5.6.4); срок наступил раньше конца предложения — режется на сроке."""
         spoken = self.spoken_chars(rec)
+        deadline = self._clock() + kn.SPEECH_STOP_AUDIBLE_MAX_S - kn.SPEECH_OUTPUT_LATENCY_MS / 1000.0
         with self._lock:
             rec.stop_chars = next((e for e in rec.ends if e >= spoken), rec.text_len)
             share = rec.stop_chars / rec.text_len if rec.text_len else 0.0
-            rec.stop_at = (rec.started_at or self._clock()) + rec.duration_s * share
+            rec.stop_at = min(deadline, (rec.started_at or self._clock()) + rec.duration_s * share)
 
     def due_stops(self) -> List[SpeechRecord]:
         """Играющие реплики, чья граница отмены уже наступила."""
@@ -272,18 +275,18 @@ class SpeechOwner:
             return
         if not msg.commit:
             self.admit(chunk, chunk["speech_id"])
-            self.presynth.run(self._node, chunk, self._presynth_done)
+            self.presynth.run(self._node, chunk, self._presynth_done, self.ledger.is_cancelled)
             return
         self._node.dialogue_callback(_JsonMsg(json.dumps(chunk, ensure_ascii=False)))
 
     def on_cancel(self, msg: Any) -> None:
         targets = self.ledger.select_cancel(msg.speech_id, int(msg.epoch), msg.agent)
-        dropped = self.presynth.claim(msg.speech_id) is not None if msg.speech_id else False
+        dropped = self._drop_presynth({rec.speech_id for rec in targets} | {msg.speech_id} - {""})
         now = int(getattr(msg, "boundary", CANCEL_AS_REQUESTED)) == CANCEL_NOW
         self._log(
             f"🛑 SpeechCancel speech_id={msg.speech_id[:8] or '-'} epoch<={msg.epoch} "
             f"agent={msg.agent} reason={msg.reason or '-'}{' сразу' if now else ''}: отменено {len(targets)}"
-            + (", пред-синтез выброшен" if dropped else "")
+            + (f", пред-синтез выброшен: {dropped}" if dropped else "")
         )
         playing = [rec for rec in targets if rec.state == "playing"]
         on_boundary = [rec for rec in playing if rec.meta.boundary == 1 and not now]
@@ -292,9 +295,23 @@ class SpeechOwner:
         if len(on_boundary) < len(playing):
             self._node._interrupt_playback()  # ожидающие снимут FIFO-ворота tts_node
 
+    def _drop_presynth(self, speech_ids: set) -> int:
+        """Выбросить готовый пред-синтез отменённых реплик и закрыть их ``cancelled`` (#3834: и по эпохе)."""
+        dropped = [sid for sid in speech_ids if self.presynth.claim(sid) is not None]
+        for sid in dropped:
+            rec = self.ledger.close(sid)
+            if rec is not None:
+                self._emit("cancelled", rec, spoken_chars=0, reason="cancelled")
+        return len(dropped)
+
+    def shutdown(self) -> None:
+        """Нода уходит: пул пред-синтеза гасится, ждущие сегменты не синтезируются."""
+        self.presynth.shutdown()
+
     def cancel_all(self, reason: str) -> None:
         """Старый STOP: отменить всё и заглушить то, что звучит (даже без записи)."""
-        self.ledger.select_cancel("", EPOCH_ALL, ANY_AGENT)
+        targets = self.ledger.select_cancel("", EPOCH_ALL, ANY_AGENT)
+        self._drop_presynth({rec.speech_id for rec in targets})
         self._log(f"🛑 STOP ({reason}): все реплики отменены")
         self._node._interrupt_playback()
 
@@ -365,8 +382,9 @@ class SpeechOwner:
             if rec is not None:
                 self._emit("cancelled", rec, spoken_chars=0, reason="cancelled")
             return
+        # Запись остаётся в журнале до ``commit=true`` с тем же speech_id: так отмена
+        # по эпохе находит и готовый пред-синтез, а не только ждущий (#3834).
         self.synthesized(speech_id, duration_s, ctx, None)
-        self.ledger.close(speech_id)  # реплика ждёт commit=true с тем же speech_id
 
     # -- публикация ---------------------------------------------------------------
 
@@ -440,6 +458,9 @@ class _NullOwner:
         return True
 
     def claim_presynth(self, speech_id: Optional[str]) -> Any:
+        return None
+
+    def shutdown(self) -> None:
         return None
 
 

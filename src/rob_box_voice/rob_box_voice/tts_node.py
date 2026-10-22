@@ -11,7 +11,7 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + M
 
 Concurrency
 -----------
-Two bounded executors, both ``concurrent.futures.ThreadPoolExecutor``:
+Bounded executors, all ``concurrent.futures.ThreadPoolExecutor``:
 
 * **Synthesis executor** (``self._synthesis_executor``) —
   ``max_workers = SYNTHESIS_MAX_WORKERS_DEFAULT = 2`` (ROS-параметр
@@ -26,6 +26,9 @@ Two bounded executors, both ``concurrent.futures.ThreadPoolExecutor``:
   ``_synthesize_minimax*``. Нужен, потому что ROS-callback синхронный,
   а ``MiniMaxTTSProvider.stream()`` — async; одного воркера достаточно,
   т.к. он тут же ``.result()``-ит и выходит.
+* **Пред-синтез** ``commit=false`` (ADR-0150 PR-3) — свой пул
+  ``core.speech_timing.Presynth`` (``PRESYNTH_MAX_WORKERS = 2``): готовая
+  реплика ``commit=true`` не стоит в synthesis executor за правками (#3834).
 
 Rationale: Yandex и MiniMax провайдеры не открывают соединения на каждый
 запрос — каждый worker держит свой keep-alive HTTP/2 или gRPC-channel.
@@ -5980,6 +5983,7 @@ class TTSNode(Node):
         and we don't want to hang ROS teardown; the daemon-style behavior
         matches the previous bare-daemon-thread semantics.
         """
+        owner_of(self).shutdown()  # свой пул пред-синтеза commit=false (#3834)
         executor = getattr(self, "_synthesis_executor", None)
         if executor is None:
             return

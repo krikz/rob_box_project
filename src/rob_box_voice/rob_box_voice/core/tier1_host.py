@@ -104,7 +104,8 @@ class Tier1Runner:
         getattr(self, f"_run_{command.kind}")(command, text)
 
     def _run_stop_all(self, _command: Tier1Command, text: str) -> None:
-        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча. Идёт выступление
+        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча; режим тишины
+        НЕ включается («хватит» — решение Шифу 22.10, #3700; без звуков он ничего не ломает). Идёт выступление
         (ADR-0150 PR-7c): «хватит» — дочитать предложение, бит выступления снимет оно само на такте (outro); «стой» —
         всё сразу."""
         node = self._node
@@ -121,15 +122,14 @@ class Tier1Runner:
 
     def _stop_performance(self, text: str) -> bool:
         """Остановить выступление по слову (``policy_word``: «стой» — halt, иначе — до конца предложения). ``True`` —
-        музыка, что играет, — бит выступления, и его снимет само выступление (outro на такте)."""
+        музыка, что играет, — бит выступления, и её снимает само выступление («стой» — сразу ``stop_music(now)``,
+        «хватит» — outro на такте): общий стоп музыки поверх него не нужен (один стоп от одного владельца, #3835)."""
         performer = getattr(getattr(self._node, "_tool_executor", None), "performer", None)
         if performer is None:
             return False
-        if policy_word(text) == "halt":
-            performer.halt()
-            return False
         owns_music = performer.owns_backing
-        return performer.stop() and owns_music
+        stopped = performer.halt() if policy_word(text) == "halt" else performer.stop()
+        return stopped and owns_music
 
     def stop_music(self) -> bool:
         """Стоп деки/сета и mp3 без фразы (стоп всего; «выключи музыку» в SILENCED, #3696). Нет исполнителя — ``False``."""
@@ -140,7 +140,7 @@ class Tier1Runner:
         return True
 
     def _run_silence(self, _command: Tier1Command, text: str) -> None:
-        """«Хватит/замолчи»: тишина; идущее выступление дочитывает предложение и снимает свой бит на такте (X5)."""
+        """«Замолчи/помолчи»: тишина (SILENCED); выступление дочитывает предложение и снимает бит на такте (X5)."""
         self._stop_performance(text)
         if self._silenced():
             self._node._cancel_run("tier1 silence (уже тишина)", stop_tts=True)
