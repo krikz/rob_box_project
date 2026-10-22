@@ -136,6 +136,22 @@ def test_old_music_tools_are_gone_and_v2_tools_are_the_music_path():
     assert V2_TOOLS <= {e.name for e in operator_visible_tools()}
 
 
+def test_3700_llm_schema_of_request_music_has_no_backing():
+    """Бит выступления заказывает код выступления: LLM он в схеме не предъявляется (ADR-0148 п.2, #3700)."""
+    from rob_box_core.tool_catalog import get_tool
+    from rob_box_dialog.knowledge import BACKING_INTENT
+
+    for schema in (get_tool("request_music").parameters, ToolRegistry().get("request_music").parameters):
+        assert schema["properties"]["intent"]["enum"] == ["track", "melody"]
+        assert BACKING_INTENT not in repr(schema)  # ни в enum, ни в описаниях (схема — mappingproxy)
+    assert BACKING_INTENT not in get_tool("request_music").description
+    # сам тул от кода выступления бит принимает (его enum нестрогий — LLM-путь отказывает в PlanToolExecutor)
+    _dj, req = _tools(_rig())
+    intent = next(p for p in req.parameters if p.name == "intent")
+    assert intent.enum == ["track", "melody"] and intent.enum_strict is False
+    assert req.validate_parameters(intent=BACKING_INTENT, text="") == (True, None)
+
+
 def test_dialogue_registry_offers_tools_of_its_engine():
     v2 = {spec.name for spec in ToolRegistry().list_tools()}
     assert {"dj_set", "request_music"} <= v2 and not (OLD_LLM_MUSIC_TOOLS & v2)

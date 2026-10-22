@@ -5,7 +5,8 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.plan.backing import Backing, BackingTrack, grid_of
-from rob_box_dialog.plan.sync import BeatGrid, Slot, bar_at_or_after, beat_heard_at, earliest, layout, next_bar
+from rob_box_dialog.plan.sync import (BeatGrid, Slot, bar_at_or_after, beat_heard_at, beat_offset_ms, earliest, layout,
+                                      next_bar)
 
 # 120 BPM, 4/4: такт 2 с; доля старта подложки звучит в t=100
 GRID = BeatGrid(bpm=120.0, beat_at=100.0, bar_beats=4.0, start_beat=16.0)
@@ -24,6 +25,17 @@ def test_grid_geometry():
     assert GRID.beat_time(48.0) == pytest.approx(116.0)  # 32 доли = 16 с
     with pytest.raises(ValueError):
         BeatGrid(bpm=0.0, beat_at=1.0, bar_beats=4.0)
+
+
+def test_beat_offset_is_signed_ms_from_the_nearest_beat():
+    """A19: доля = 0.5 с при 120 BPM; позже ближайшей доли — плюс, раньше — минус; сетки нет — ``None``."""
+    assert beat_offset_ms(GRID, 108.0) == 0
+    assert beat_offset_ms(GRID, 108.03) == 30
+    assert beat_offset_ms(GRID, 107.97) == -30
+    assert beat_offset_ms(GRID, 108.2) == 200  # ближайшая доля 108.0, а не 108.5
+    assert beat_offset_ms(GRID, 108.3) == -200  # ближайшая — 108.5
+    assert beat_offset_ms(GRID, 95.8) == -200  # раньше старта подложки сетка продолжается назад (ближайшая — 96.0)
+    assert beat_offset_ms(None, 108.0) is None
 
 
 def test_no_grid_means_right_after_previous_and_honest_unsynced():

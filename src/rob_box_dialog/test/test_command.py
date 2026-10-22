@@ -153,6 +153,13 @@ def test_args_follow_the_catalog_schema(args):
     bad({"actions": [{"tool": "set_volume", "args": args}]}, "bad_args")
 
 
+def test_3700_command_mode_cannot_order_the_performance_beat():
+    """Бит выступления заказывает код выступления, не LLM: ``intent=backing`` вне схемы тула — ``bad_args``."""
+    order = {"tool": "request_music", "args": {"intent": kn.BACKING_INTENT, "text": "бит", "min_seconds": 45}}
+    bad({"actions": [order]}, "bad_args")
+    ok({"actions": [{"tool": "request_music", "args": {"intent": "melody", "text": "калинку"}}]})
+
+
 def test_number_and_integer_args():
     assert ok({"actions": [{"tool": "move_direction", "args": {"direction": "вперёд", "distance": 1.5}}]})
     bad({"actions": [{"tool": "move_direction", "args": {"direction": "вперёд", "distance": True}}]}, "bad_args")

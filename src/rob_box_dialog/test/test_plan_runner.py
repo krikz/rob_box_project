@@ -5,7 +5,8 @@ import asyncio
 import pytest
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.plan.runner import PlanRunner
+from rob_box_dialog.plan.plan_events import PlanEvent, event_line
+from rob_box_dialog.plan.runner import LOG_MARK, PlanRunner
 
 
 def _runner():
@@ -59,6 +60,21 @@ def test_wait_ceiling_gives_an_honest_timeout(monkeypatch):
     admission = asyncio.run(runner.admit("request_music", "m1"))
     assert admission.status == "timeout" and admission.event.after_resource == "track"
     assert any("не освободился" in ln for ln in lines)
+
+
+def test_event_line_format_carries_what_the_acceptance_reads():
+    """Одна функция форматирования строки ``PlanEvent`` (A19–A22 по ``docker logs``): ключ=значение, без потерь."""
+    event = PlanEvent("segment_finished", "blk-perform-0001", segment_no=2, synced=True, spoken_chars=71,
+                      text_len=71, eta_ms=1500, reason="cancelled")
+    assert event_line(event) == ("PlanEvent segment_finished block=blk-perform- seg=2 synced=true spoken_chars=71 "
+                                 "text_len=71 offset_ms=- after=-/- eta_ms=1500 reason=cancelled")
+    started = PlanEvent("segment_started", "b", segment_no=1, synced=True, text_len=40, offset_ms=-12)
+    assert "seg=1 synced=true spoken_chars=0 text_len=40 offset_ms=-12 " in event_line(started)
+    queued = PlanEvent("queued", "m1", after_block="joke-1234567890", after_resource="speech", eta_ms=3000)
+    assert event_line(queued).endswith("after=speech/joke-123 eta_ms=3000 reason=-")
+    lines = []
+    PlanRunner(log=lines.append).emit(event)
+    assert lines == [f"{LOG_MARK} {event_line(event)}"]
 
 
 def test_ceiling_formula():
