@@ -481,7 +481,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
-    "perform.ask_replace_music", "identity.ask_name", "identity.confirm",
+    "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
     "music.volume_fail", "voice.volume_fail",
@@ -904,6 +904,9 @@ PERFORM_NO_BACKING_REASONS: Tuple[str, ...] = ("quota", "network", "timeout")
 #: outro подложки: музыка снимается на ближайшем такте после речи — запас на такт при 60 BPM; речь вышла длиннее
 #: подложки — она продлевается по ``nearly_finished``.
 PERFORM_OUTRO_S = 4.0
+#: Длина подложки при запросе: оценка речи (``SPEECH_CHARS_PER_S_GUESS`` или замер) × запас + outro (решение
+#: координатора 22.10: подложка просится сразу, параллельно с пред-синтезом).
+PERFORM_FORM_MARGIN = 1.2
 #: Граница сегмента (О7): следующий сегмент отдаётся владельцу речи (``commit=true``) за столько секунд до конца
 #: звучащего — правка (``edit_pending``), синтезированная к этому моменту, звучит, позже — продолжается старое.
 #: Оценка, не замер.
@@ -911,6 +914,9 @@ PERFORM_COMMIT_AHEAD_S = 2.0
 #: Доставка ``commit=true`` до ожидания ``at`` в tts_node (публикация, очередь, взять пред-синтез). Оценка, не замер:
 #: попадание в долю меряет A19 (спайк PR-S1).
 PERFORM_COMMIT_LEAD_S = 0.3
+#: Реплика встала позже своего такта больше чем на столько (очередь, синтез в пути) — она не на такте:
+#: ``PlanEvent.synced=false`` честно (±40 мс — предварительный порог A19, §16).
+PERFORM_SYNC_TOLERANCE_S = 0.04
 
 # ---------------------------------------------------------------------------------------------------------------
 # Команда LLM (§4.1): пределы и перечисления; схема и промпт генерируются ниже

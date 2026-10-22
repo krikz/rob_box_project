@@ -34,7 +34,7 @@ def test_import_pulls_no_forbidden_modules_at_runtime():
         "import rob_box_dialog.context, rob_box_dialog.music_state, rob_box_dialog.execute\n"
         "import rob_box_dialog.plan.composition, rob_box_dialog.plan.resources, rob_box_dialog.plan.plan_events\n"
         "import rob_box_dialog.plan.runner, rob_box_dialog.plan.sync, rob_box_dialog.plan.segments\n"
-        "import rob_box_dialog.plan.backing\n"
+        "import rob_box_dialog.plan.backing, rob_box_dialog.plan.perform\n"
         f"bad = sorted(m for m in sys.modules if m.split('.')[0] in {sorted(FORBIDDEN)!r})\n"
         "print(bad); sys.exit(1 if bad else 0)\n"
     )
