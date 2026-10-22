@@ -86,7 +86,24 @@ def test_next_line_is_due_ahead_of_the_end_of_the_sounding_one():
     play(lines.lines[0], start=100.0, duration=8.0)
     lines.lines[1].ready = True
     assert lines.due(105.0) is None  # до конца 3 с > AHEAD
-    assert lines.due(108.0 - kn.PERFORM_COMMIT_AHEAD_S) == (lines.lines[1], 108.0)
+    assert lines.due(108.0 - kn.PERFORM_COMMIT_AHEAD_S) == (lines.lines[1], 108.0 + kn.SPEECH_RELEASE_TAIL_S)
+
+
+def test_bar_inside_the_release_tail_is_skipped_live_a19_1_segment_5():
+    """A19 22.10 a19_1: сегмент 4 started 07:11:31.848 (+0.55 звучание), 12.30 с, бит 136 BPM; такт в 0.05 с после
+    предсказанного конца, finished пришёл на 0.25–0.3 с позже — сегмент 5 встал на 0.211 с позже такта. С хвостом
+    граница — следующий такт, и реплика успевает к нему."""
+    from rob_box_dialog.plan.sync import next_bar
+    grid = BeatGrid(bpm=136.0, beat_at=1792653035.9249, bar_beats=4.0)
+    lines = make()
+    play(lines.lines[0], start=1792653091.848 + 0.55, duration=12.30)
+    lines.lines[1].ready = True
+    end = lines.lines[0].ends_at()
+    line, after = lines.due(end - kn.PERFORM_COMMIT_AHEAD_S)
+    slot = next_bar(grid, end - kn.PERFORM_COMMIT_AHEAD_S, kn.SPEECH_OUTPUT_LATENCY_MS, after)
+    released = end - kn.SPEECH_OUTPUT_LATENCY_MS / 1000.0 + 0.30  # finished по логу: started + 12.30 + хвост 0.3
+    assert slot.at - kn.SPEECH_OUTPUT_LATENCY_MS / 1000.0 >= released  # успевает: tts свободен до своего «at»
+    assert slot.at - end > grid.bar_s * 0.5  # такт в хвосте пропущен — следующий
 
 
 def test_committed_not_started_line_blocks_the_next():

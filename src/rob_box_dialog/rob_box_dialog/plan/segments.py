@@ -130,13 +130,15 @@ class SegmentList:
         """``(следующая, конец предыдущей)``, если пора отдавать следующую на звучание: ничего ещё не звучало;
         предыдущая кончилась; звучит и до конца ≤ ``PERFORM_COMMIT_AHEAD_S`` (или длительность неизвестна — порядок
         держит очередь владельца речи). Отданная, но не начатая — ждём её старта. Версия — по правилу О7
-        (:meth:`_version`). Конец предыдущей неизвестен — 0."""
+        (:meth:`_version`). Конец предыдущей — когда владелец речи её отпустит: звучание плюс
+        ``SPEECH_RELEASE_TAIL_S`` (раньше следующая не зазвучит, такт в этом хвосте — опоздание); неизвестен — 0."""
         nxt = self.first("pending")
         prev = next((line for line in reversed(self.lines) if line.state in FIXED), None)
         if nxt is None or (prev is not None and not _boundary(prev, now)):
             return None
         line = self._version(nxt, prev)
-        return None if line is None else (line, (prev and prev.ends_at()) or 0.0)
+        end = prev.ends_at() if prev is not None else None
+        return None if line is None else (line, end + kn.SPEECH_RELEASE_TAIL_S if end else 0.0)
 
     def _version(self, line: Line, prev: Optional[Line]) -> Optional[Line]:
         """Правка, если синтезирована; иначе прежняя версия, если готова и граница уже есть; иначе ждать."""
