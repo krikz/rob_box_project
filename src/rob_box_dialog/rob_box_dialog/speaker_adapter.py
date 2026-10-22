@@ -197,6 +197,21 @@ def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg:
             "speech_id": speech_id}
 
 
+def in_reply_window(asked_at: Any, t: Any, *, in_grace: bool = False) -> bool:
+    """Фраза, кончившаяся в ``t``, — в окне ответа на вопрос робота: от ``asked_at`` (конец вопроса + грейс микрофона
+    ``IDENTITY_MIC_GRACE_S`` против эха вопроса) до ``asked_at + REPLY_WINDOW_S``. ``asked_at`` ``None`` — вопрос
+    ещё звучит, окна нет.
+
+    ``in_grace`` — окно начинается с КОНЦА вопроса (``asked_at - IDENTITY_MIC_GRACE_S``): для ответа, который эхом
+    вопроса быть не может (целое «да»/«нет» из таблицы на «выключить и зачитать?», #3849: «да» за 25 мс до
+    ``asked_at`` уходило в бэклог, окно истекало молчаливым «нет»). Окно имени и приветствия — без него (В17)."""
+    if asked_at is None:
+        return False
+    age = float(t or 0.0) - float(asked_at)
+    opens = -kn.IDENTITY_MIC_GRACE_S if in_grace else 0.0
+    return opens <= age <= kn.REPLY_WINDOW_S
+
+
 def question_open(frame: Optional[SceneFrame]) -> bool:
     """Вопрос договорён и окно ответа идёт: кадр ``Identity`` с ``asked_at`` (до этого он «ждёт», ответа нет)."""
     return frame is not None and frame.kind == "Identity" and frame.payload.get("asked_at") is not None
@@ -210,8 +225,7 @@ def answer_to_question(frame: Optional[SceneFrame], heard: Any) -> Optional[Repl
     (§17 Ж): ответить можно только на свой вопрос."""
     if not question_open(frame) or not kn.IDENTITY_ANSWER_WITHOUT_WAKE:
         return None
-    age = float(getattr(heard, "t", 0.0) or 0.0) - float(frame.payload["asked_at"])
-    if not 0.0 <= age <= kn.IDENTITY_TTL_S:
+    if not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0)):
         return None
     return question_reply(str(frame.payload.get("kind") or ""), str(getattr(heard, "text", "") or ""))
 
@@ -378,8 +392,7 @@ def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
     (``"face"``; канал лица надёжен). DOA — не условие. Иначе ``""`` (бэклог)."""
     if not greeting_open(frame) or not kn.GREETING_REPLY_WITHOUT_WAKE:
         return ""
-    age = float(getattr(heard, "t", 0.0) or 0.0) - float(frame.payload["asked_at"])
-    if not 0.0 <= age <= kn.REPLY_WINDOW_S:
+    if not in_reply_window(frame.payload["asked_at"], getattr(heard, "t", 0.0)):
         return ""
     if is_greeting_reply(str(getattr(heard, "text", "") or "")):
         return "grammar"

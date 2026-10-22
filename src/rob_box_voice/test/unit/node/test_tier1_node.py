@@ -198,6 +198,28 @@ def test_answer_to_the_performance_question_goes_to_the_performance(run_plans, t
     assert perform_ask.window(n) is None  # окно и вопрос сняты
 
 
+@pytest.mark.parametrize("since_question_end_s", [0.0, 2.475, 4.0])
+def test_wakeless_yes_right_after_the_question_goes_to_the_performance(run_plans, since_question_end_s):
+    """#3849 (приёмка PR-7c, прогон o9y_2): окно открыто, «да» без вейка и без меток времени (инъекция ``source:
+    respeaker``) пришло через 2.475 с после конца вопроса — за 25 мс до ``asked_at`` (конец грейса микрофона). Было:
+    адресация отсекала его, «да» уходило в бэклог, окно истекало → молчаливое «нет». Теперь — ответ выступлению."""
+    import time
+
+    from rob_box_voice.core import perform_ask
+    from rob_box_voice.core.identity_question import session
+
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _AskedPerformer()
+    perform_ask.open_window(n, "RoBBox club")
+    question_end = time.time() - since_question_end_s
+    session(n).arm_scene(perform_ask.KIND, 17.5, {"asked_at": question_end + 2.5, "title": "RoBBox club"})
+    _stt(n, "да")
+    run_plans()
+    assert n._tool_executor.performer.answers == [True]
+    n._dispatch_turn.assert_not_called()
+    assert perform_ask.window(n) is None
+
+
 def test_yes_without_a_question_is_not_an_answer(run_plans):
     n = _make_node()
     n._tool_executor.performer = _AskedPerformer()
