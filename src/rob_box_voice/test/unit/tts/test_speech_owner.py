@@ -23,6 +23,7 @@ from rob_box_voice.core.speech_owner import (
     plain_text,
     sentence_ends,
 )
+from rob_box_voice.core.speech_timing import Presynth
 
 M = install_dialog_msgs_stub()
 _KIND_NAMES = ("queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")
@@ -332,12 +333,14 @@ def test_at_in_the_past_plays_at_once(setup):
     assert time.monotonic() - t0 < 0.2
 
 
-def _presynth_node(node):
-    node._synthesis_executor = types.SimpleNamespace(submit=lambda fn, *a: fn(*a))
+def _presynth_node(node, submit=lambda fn, *a: fn(*a)):
+    node.owner.presynth = Presynth(executor=types.SimpleNamespace(submit=submit))
     node._extract_text_from_ssml = plain_text
     node._parse_ssml_attributes = lambda ssml: {}
+    node.synth_calls = []
 
     def chain(voice, language, attrs, text, sink, ctx):
+        node.synth_calls.append(text)
         ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider="minimax")
 
     node._sap_run_provider_chain = chain
@@ -365,16 +368,51 @@ def test_cancel_drops_held_presynth(setup):
     assert owner.claim_presynth("sid-1") is None
 
 
+def test_cancel_while_presynth_waits_in_pool_skips_synthesis(setup):
+    """#3834: отменённый в очереди пула сегмент не идёт в (платный) синтез и закрывается ``cancelled``."""
+    node, owner, _ = setup
+    queued = []
+    _presynth_node(node, submit=lambda fn, *a: queued.append((fn, a)))
+    node.subs["/voice/speech/request"](_request(commit=False))
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
+    fn, args = queued[0]
+    fn(*args)  # поток пула освободился уже после отмены
+    assert node.synth_calls == []
+    assert _kinds(node) == ["queued", "cancelled"]
+    assert owner.claim_presynth("sid-1") is None
+
+
 def test_cancel_during_presynth_drops_the_result_and_says_cancelled(setup):
     node, owner, _ = setup
     _presynth_node(node)
-    started = []
-    node._synthesis_executor = types.SimpleNamespace(submit=lambda fn, *a: started.append((fn, a)))
+    chain = node._sap_run_provider_chain
+
+    def chain_cancelled_midway(*args):
+        node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
+        chain(*args)  # синтез закончился уже после отмены
+
+    node._sap_run_provider_chain = chain_cancelled_midway
     node.subs["/voice/speech/request"](_request(commit=False))
-    node.subs["/voice/speech/cancel"](M.SpeechCancel(speech_id="sid-1", epoch=0, agent="personality"))
-    fn, args = started[0]
-    fn(*args)  # синтез закончился уже после отмены
     assert _kinds(node) == ["queued", "cancelled"]
+    assert owner.claim_presynth("sid-1") is None
+
+
+def test_epoch_cancel_drops_held_presynth_and_says_cancelled(setup):
+    """#3834: отмена по эпохе находит и готовый пред-синтез (раньше — только по ``speech_id``)."""
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False, epoch=3, interruptible=True))
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(epoch=3, agent="personality"))
+    assert owner.claim_presynth("sid-1") is None
+    assert _kinds(node) == ["queued", "synthesized", "cancelled"]
+    assert owner.ledger.get("sid-1") is None
+
+
+def test_legacy_stop_drops_held_presynth(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    node.subs["/voice/speech/request"](_request(commit=False, interruptible=True))
+    owner.cancel_all("STOP")
     assert owner.claim_presynth("sid-1") is None
 
 
