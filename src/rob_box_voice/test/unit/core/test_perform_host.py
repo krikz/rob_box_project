@@ -130,6 +130,27 @@ def test_segment_goes_on_the_bar_after_synthesis(loop):
     assert commit.at == pytest.approx(1002.0)  # первая доля бита (самый ранний звук 1000 + 0.55 + 0.3 < 1002)
 
 
+def test_3700_performance_orders_the_beat_through_the_executor_owned_path(loop):
+    """Бит под выступление проходит исполнитель тулов ноды своим путём (``execute_owned``), хотя тот же вызов из хода
+    LLM он отклоняет: заказ кода выступления не ломается сужением схемы."""
+    from rob_box_voice.core.plan_tools import PlanToolExecutor
+
+    tools = _Tools(STARTED)
+
+    class _Underlying:
+        async def execute(self, call: Any) -> ToolResult:
+            return await tools.run(call)
+
+    executor, node, events = PlanToolExecutor(_Underlying()), _Node(), []
+    host = PerformHost(node, executor.execute_owned, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
+                       clock=lambda: node.now_s)
+    host.start(RAP, "t1")
+    _settle(loop)
+    (order,) = tools.calls
+    assert order.name == "request_music" and order.arguments["intent"] == kn.BACKING_INTENT
+    assert host.owns_backing  # ответ тула дошёл до блока: started с сеткой
+
+
 def test_busy_music_reads_over_it_without_a_second_try(loop):
     """Музыка встала между вопросом и заказом (``busy`` от движка): второй попытки нет, чтение поверх неё без
     фразы об отказе бита (музыка звучит — это не тишина)."""
