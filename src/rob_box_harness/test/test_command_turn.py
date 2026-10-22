@@ -279,3 +279,53 @@ def test_plan_timeout_is_spoken_by_code_even_for_music() -> None:
     waited = _result("request_music", "timeout", kn.PLAN_WAIT_REASON)
     assert outcome_phrase([waited]) == phrases.text("plan.timeout")
     assert outcome_phrase([_result("request_music", "timeout")]) is None  # обычный таймаут музыки — у music_turn
+
+
+# ── выступление отдаётся его владельцу (ADR-0150 PR-7c #3700) ──────────────────────────────────────────────
+
+
+class _Performer:
+    """Хост выступления-двойник: что ему отдали и какой сегмент звучит."""
+
+    def __init__(self, active: Optional[int] = None) -> None:
+        self.active_segment = active
+        self.started: List[Any] = []
+        self.edited: List[Any] = []
+
+    def start(self, perf: Any, turn_id: str) -> Dict[str, Any]:
+        self.started.append(perf)
+        return {"status": "pending"}
+
+    def edit(self, perf: Any) -> Dict[str, Any]:
+        self.edited.append(perf)
+        return {"status": "done"}
+
+
+RAP = {"kind": "rap", "segments": ["Я комар, звеню всю ночь.", "Ты не спишь, а мне не в мочь."], "backing": "beat"}
+
+
+def test_perform_goes_to_its_owner_not_to_speak_text() -> None:
+    """Рэп под бит — одно действие: сегменты, подложку и такты ведёт владелец выступления, а не N ``speak_text``."""
+    tools = _Tools()
+    tools.performer = _Performer()
+    result, llm = _turn(tools, _command(perform=RAP))
+    (perf,) = tools.performer.started
+    assert perf.segments == tuple(RAP["segments"]) and perf.backing == "beat"
+    assert tools.said() == [] and tools.acted() == [] and len(llm.requests) == 1
+    assert not result.turn_failure
+
+
+def test_edit_pending_goes_to_the_running_performance() -> None:
+    """X3 «и про енота»: правка не начатых сегментов — валидна, пока идёт выступление (ACTIVE от владельца)."""
+    tools = _Tools()
+    tools.performer = _Performer(active=2)
+    result, _ = _turn(tools, _command(perform={**RAP, "from_segment": 3}, edit_pending=True))
+    (perf,) = tools.performer.edited
+    assert perf.from_segment == 3 and tools.performer.started == [] and not result.turn_failure
+
+
+def test_edit_pending_without_a_performance_is_invalid() -> None:
+    tools = _Tools()
+    tools.performer = _Performer(active=None)
+    result, _ = _turn(tools, _command(perform={**RAP, "from_segment": 3}, edit_pending=True))
+    assert tools.performer.edited == [] and result.turn_failure.startswith("invalid_command")

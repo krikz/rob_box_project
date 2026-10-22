@@ -82,16 +82,15 @@ def presynth(line: Line) -> Say:
 
 def withdraw(lines: SegmentList, active_boundary: str) -> List[Cancel]:
     """Снять речь выступления: звучащую — с границей ``active_boundary`` (``sentence`` — дочитать предложение;
-    состояние сменит её событие конца), отданные на звучание — сразу (звука ещё нет), не отданные — не отдавать."""
+    состояние сменит её событие конца), отданные на звучание — сразу (звука ещё нет), не отданные — не отдавать
+    (их отмена выбрасывает готовый пред-синтез у владельца речи)."""
     out: List[Cancel] = []
     for line in lines.lines:
         if line.state == "active":
             out.append(Cancel(line.speech_id, active_boundary))
-        elif line.state == "committed":
+        elif line.state in ("committed", "pending"):
             out.append(Cancel(line.speech_id))
-            line.state = "cancelled"
-        elif line.state == "pending":
-            line.state = "dropped"
+            line.state = "cancelled" if line.state == "committed" else "dropped"
     return out
 
 
@@ -135,6 +134,7 @@ class SpeechSide:
         self._event = event
         self._log = log
         self._grid = grid
+        self._released = 0
 
     def commit(self, now: float) -> List[Effect]:
         """На границе — следующую реплику на звучание: на ближайшем такте подложки (без неё — сразу за предыдущей)."""
@@ -144,7 +144,14 @@ class SpeechSide:
         line, after = due
         slot = next_bar(self._grid(), now, self._latency_ms, after)
         line.state, line.at, line.synced = "committed", slot.at, slot.synced
-        return [Say(line.speech_id, line.text, True, slot.at, line.voice, line.emotion, line.key)]
+        return [*self.release(), Say(line.speech_id, line.text, True, slot.at, line.voice, line.emotion, line.key)]
+
+    def release(self) -> List[Cancel]:
+        """Версии сегментов, которые уже не прозвучат (заменены правкой, уступили на границе), — отмена: владелец речи
+        выбрасывает их готовый пред-синтез."""
+        gone = self.lines.gone[self._released:]
+        self._released = len(self.lines.gone)
+        return [Cancel(line.speech_id) for line in gone]
 
     def on_event(self, kind: str, line: Line, now: float, duration_ms: int, spoken_chars: int) -> List[Effect]:
         """Переход реплики по ``SpeechEvent``; ``progress`` и не подходящие состоянию события — без перехода."""
@@ -206,7 +213,7 @@ class SpeechSide:
             return [], reason or "edit_late"
         new, numbers = self.lines.replace_tail(first_no, rows)
         self._log(f"{LOG_MARK} правка — сегменты {numbers} заменены")
-        out: List[Effect] = [presynth(line) for line in new]
+        out: List[Effect] = [*self.release(), *(presynth(line) for line in new)]
         return out + [self._event("segment_replaced", no, reason="edit") for no in numbers], ""
 
 
@@ -393,7 +400,8 @@ class PerformBlock:
         return [self.speech.lead_in(), *self._pump(now)]
 
     def _backing_rejected(self, reason: str, now: float) -> List[Effect]:
-        if self.backing.can_retry():
+        """Отказ подложки: вторая попытка другим настроением, если в ней есть смысл (``busy`` — нет)."""
+        if self.backing.can_retry() and reason not in kn.PERFORM_NO_RETRY_REASONS:
             self._log(f"{LOG_MARK} {self.block_id[:8]}: подложка отказала ({reason}) — вторая попытка")
             return [self.backing.request(now, self._backing_need(now))]
         return self._backing_failed(reason, now)

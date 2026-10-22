@@ -140,3 +140,45 @@ def test_host_feeds_owner_events_into_the_snapshot():
     assert set(executor.planner.state.busy()) == {"sfx", "track"}
     plan_host.begin_turn(node, "робот, а потом включи музыку")
     assert executor.planner.hint == "later"
+
+
+class _HostNode:
+    """Нода-двойник для ``make_tool_executor``: публикаторы, таймеры, часы, логгер."""
+
+    def __init__(self):
+        self.timers, self.pubs = [], {}
+        self._loop = None
+
+    def create_publisher(self, msg_type, topic, depth):
+        return self.pubs.setdefault(topic, SimpleNamespace(sent=[], publish=lambda m, t=topic: self.pubs[t].sent.append(m)))
+
+    def create_timer(self, period, callback):
+        self.timers.append((period, callback))
+
+    def get_clock(self):
+        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(1000 * 1e9),
+                                                           to_msg=lambda: SimpleNamespace(sec=1000, nanosec=0)))
+
+    def get_logger(self):
+        return SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+
+
+def test_performance_speech_goes_to_its_host_and_the_block_holds_the_perform_column():
+    """PR-7c: реплики выступления (и их пред-синтез без звука) голос в снимке не занимают — их видит хост; колонку
+    ``perform`` держит блок выступления от ``block_start`` до ``block_end`` («а потом …» ждёт его конца)."""
+    from rob_box_dialog.command import Performance
+
+    node = _HostNode()
+    executor = plan_host.make_tool_executor(node, _Underlying(), on_tool=None)
+    node._tool_executor = executor
+    assert [p for p, _ in node.timers] == [0.1]  # таймер выступления
+    host = executor.performer
+    host.start(Performance(kind="tale", segments=("Жил-был кот.", "И ушёл.")), "t1")
+    sid = node.pubs["/voice/speech/request"].sent[0].speech_id
+    assert set(executor.planner.state.busy()) == {"perform"}
+    plan_host.on_speech(node, SimpleNamespace(kind=0, speech_id=sid, turn_id="t1", epoch=0, text_len=12,
+                                              duration_ms=0, spoken_chars=0, seconds=0.0))  # KIND_QUEUED
+    assert "speech" not in executor.planner.state.busy()
+    assert plan_host.perform_busy(node).active_segment == 0
+    host.halt()
+    assert executor.planner.state.busy() == {} and plan_host.perform_busy(node).active_segment is None

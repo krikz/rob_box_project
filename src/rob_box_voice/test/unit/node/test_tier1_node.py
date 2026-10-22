@@ -110,6 +110,52 @@ def test_stop_stops_speech_motion_and_music_without_llm(run_plans):
     assert n._llm_skipped_counter["tier1"] == 1
 
 
+class _Performer:
+    """Хост выступления-двойник (ADR-0150 PR-7c): чей бит играет и что ему сказали."""
+
+    def __init__(self, owns_backing: bool) -> None:
+        self.owns_backing, self.calls = owns_backing, []
+
+    def stop(self):
+        self.calls.append("stop")
+        return True
+
+    def halt(self):
+        self.calls.append("halt")
+        return True
+
+
+def test_enough_during_a_performance_outros_its_beat_instead_of_cutting_music(run_plans):
+    """X5: «хватит» — выступление дочитывает предложение и само снимает свой бит на такте; общий стоп музыки бит не
+    рвёт посреди доли."""
+    for text in ("Робот, хватит", "Робот, стоп"):  # тишина и стоп всего — оба дочитывают и снимают бит на такте
+        n = _make_node(playing=True)
+        n._tool_executor.performer = _Performer(owns_backing=True)
+        _stt(n, text)
+        run_plans()
+        assert n._tool_executor.performer.calls == ["stop"], text
+        assert n._tool_executor.calls == [], text
+
+
+def test_halt_during_a_performance_cuts_everything_now(run_plans):
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _Performer(owns_backing=True)
+    _stt(n, "Робот, стой")
+    run_plans()
+    assert n._tool_executor.performer.calls == ["halt"]
+    assert ("stop_music", {}) in n._tool_executor.calls
+
+
+def test_enough_over_someone_elses_music_stops_that_music_too(run_plans):
+    """Читали без бита поверх трека человека: «стоп» — стоп всего, как раньше (трек тоже)."""
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _Performer(owns_backing=False)
+    _stt(n, "Робот, стоп")
+    run_plans()
+    assert n._tool_executor.performer.calls == ["stop"]
+    assert ("stop_music", {}) in n._tool_executor.calls
+
+
 def test_stop_in_silence_works(run_plans):
     n = _make_node(silenced=True)
     _stt(n, "Робот, хватит")

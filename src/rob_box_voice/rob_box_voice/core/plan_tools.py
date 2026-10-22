@@ -60,6 +60,8 @@ class PlanToolExecutor:
         self._on_tool = on_tool
         self._track_guard = TrackStartGuard()  # issue #2859 — один запуск трека за ход (уходит в PR-7c)
         self.music_turn = MusicTurn()  # ADR-0148 — запуски музыки хода и речь о них
+        #: Хост выступления ноды (``perform_host.PerformHost``, ADR-0150 PR-7c): ``command_turn`` отдаёт ему ``perform``.
+        self.performer: Any = None
 
     def begin_turn(self) -> None:
         """Граница хода (``AgentCore``, медиароутер): лимит «один трек» и музыка хода. Tier-1 плана сюда не входит:
@@ -91,6 +93,11 @@ class PlanToolExecutor:
 
     async def aclose(self) -> None:
         return await self._underlying.aclose()
+
+    async def execute_owned(self, call: ToolCall) -> ToolResult:
+        """Вызов кода-владельца (подложка выступления): без допуска плана, без лимита трека хода и без речи «музыки
+        хода» — это не ход LLM, его ресурсы ведёт сам владелец (``PerformBlock``)."""
+        return await self._underlying.execute(call)
 
     async def execute(self, call: ToolCall) -> ToolResult:
         """Допуск по плану → исполнение → наблюдатель стадий до и после."""

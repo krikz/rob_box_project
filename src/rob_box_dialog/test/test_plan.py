@@ -196,6 +196,19 @@ def test_cancelled_speech_frees_voice(state):
     assert state.busy() == {}
 
 
+def test_owner_held_block_lives_until_its_end_without_going_stale(state, clock):
+    """Выступление (PR-7c) держит колонку ``perform`` от ``block_start`` до ``block_end`` — минутами, не «потерян»."""
+    state.on_block("perform", "p1", True)
+    clock.t += kn.RESOURCE_STALE_S + 10
+    assert state.busy()["perform"].block_id == "p1"
+    state.on_block("perform", "p1", True, remaining_s=12.0)
+    assert state.eta_s("perform") == pytest.approx(12.0)
+    state.on_block("perform", "other", False)  # чужой конец не снимает
+    assert "perform" in state.busy()
+    state.on_block("perform", "p1", False)
+    assert state.busy() == {}
+
+
 def test_sound_music_motion(state, clock):
     state.on_sound("started", "r1")
     state.on_sound("skipped", "r2")  # пропуск другого запроса текущий звук не освобождает

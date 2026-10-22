@@ -4,18 +4,26 @@
 Снимок (:class:`rob_box_dialog.plan.resources.ResourceState`) кормят только события владельцев: ``SpeechEvent``
 (tts_node), ``SoundEvent`` (sound_node), снимок ``/voice/music/state`` (плеер). Движение в v1 снимком не ведётся
 (Nav2-результат нода не слушает): «стой» исполняет Tier-1 грамматика, «направо» во время песни — MERGE по таблице.
+
+Выступление (PR-7c, :mod:`.perform_host`): его реплики видит только его хост (их ``SpeechEvent`` в снимок речи не
+идут — пред-синтез без звука голос не занимает); колонку ``perform`` снимка ведут события блока
+(``block_start``/``prediction``/``block_end``).
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Optional
 
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Busy
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
+from .music_player_state import parse_music_event
+from .perform_host import TICK_S, PerformHost
 from .plan_tools import PlanToolExecutor
 
 PLAN_EVENT_TOPIC = "/dialog/plan_event"
@@ -24,7 +32,7 @@ _SOUND_KINDS = {getattr(SoundEvent, n): n[5:].lower() for n in dir(SoundEvent) i
 
 
 def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanToolExecutor:
-    """Исполнитель тулов личности под планом; ``PlanEvent`` — в ``/dialog/plan_event`` и строкой лога."""
+    """Исполнитель тулов личности под планом и хост выступления; ``PlanEvent`` — в ``/dialog/plan_event`` и логом."""
     pub = node.create_publisher(PlanEventMsg, PLAN_EVENT_TOPIC, 10)
 
     def publish(event: PlanEvent) -> None:
@@ -35,11 +43,36 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
         msg.stamp = node.get_clock().now().to_msg()
         pub.publish(msg)
 
-    return PlanToolExecutor(provider_adapter, PlanRunner(publish=publish, log=node.get_logger().info), on_tool=on_tool)
+    planner = PlanRunner(publish=publish, log=node.get_logger().info)
+    executor = PlanToolExecutor(provider_adapter, planner, on_tool=on_tool)
+
+    def perform_event(event: PlanEvent) -> None:
+        """Событие выступления: колонка ``perform`` снимка (APPEND «а потом …» ждёт конца выступления) и публикация."""
+        active = event.kind != "block_end"
+        remaining = event.eta_ms / 1000.0 if event.kind == "prediction" else None
+        if event.kind in ("block_start", "prediction", "block_end"):
+            planner.state.on_block("perform", event.block_id, active, remaining)
+            planner.changed()
+        planner.emit(event)
+
+    executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
+                                     perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node))
+    node.create_timer(TICK_S, executor.performer.tick)
+    return executor
+
+
+def _now(node: Any) -> float:
+    """Время выступления — ROS-часы ноды (стенные, как ``SpeechRequest.at`` и ``beat_at`` плеера)."""
+    return node.get_clock().now().nanoseconds / 1e9
 
 
 def _planner(node: Any) -> Any:
     return getattr(getattr(node, "_tool_executor", None), "planner", None)
+
+
+def performer(node: Any) -> Optional[PerformHost]:
+    """Хост выступления ноды (``None`` — исполнителя тулов нет)."""
+    return getattr(getattr(node, "_tool_executor", None), "performer", None)
 
 
 def begin_turn(node: Any, user_input: str) -> None:
@@ -50,11 +83,16 @@ def begin_turn(node: Any, user_input: str) -> None:
 
 
 def on_speech(node: Any, msg: SpeechEvent) -> None:
+    kind = _SPEECH_KINDS.get(int(msg.kind), "")
+    host = performer(node)
+    if host is not None and host.owns(msg.speech_id):
+        host.on_speech(kind, msg.speech_id, int(msg.duration_ms), int(msg.spoken_chars))
+        return
     planner = _planner(node)
     if planner is None:
         return
     planner.state.on_speech(
-        _SPEECH_KINDS.get(int(msg.kind), ""), msg.speech_id, turn_id=msg.turn_id, epoch=int(msg.epoch),
+        kind, msg.speech_id, turn_id=msg.turn_id, epoch=int(msg.epoch),
         text_len=int(msg.text_len), duration_ms=int(msg.duration_ms), spoken_chars=int(msg.spoken_chars),
         seconds=float(msg.seconds))
     planner.changed()
@@ -80,4 +118,19 @@ def on_music(node: Any, snapshot: Any) -> None:
     planner.changed()
 
 
-__all__ = ["PLAN_EVENT_TOPIC", "begin_turn", "make_tool_executor", "on_music", "on_sound", "on_speech"]
+def on_music_event(node: Any, msg: Any) -> None:
+    """``/voice/music/event``: ``nearly_finished``/``finished``/``idle`` подложки — выступлению."""
+    host = performer(node)
+    event = parse_music_event(getattr(msg, "data", None))
+    if host is not None and event is not None:
+        host.on_music_event(event.event, event.track_id, event.fields)
+
+
+def perform_busy(node: Any) -> Busy:
+    """Что занято для валидатора команды: идущее выступление и его ACTIVE-сегмент (``edit_pending``)."""
+    host = performer(node)
+    return Busy(active_segment=None if host is None else host.active_segment)
+
+
+__all__ = ["PLAN_EVENT_TOPIC", "begin_turn", "make_tool_executor", "on_music", "on_music_event", "on_sound",
+           "on_speech", "perform_busy", "performer"]
