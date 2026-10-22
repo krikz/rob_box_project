@@ -507,10 +507,9 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
     def test_publish_tts_goes_through_speech_client_as_telegram(self) -> None:
         """ADR-0150 PR-3: реплика из Telegram - один SpeechRequest (агент telegram),
-        а не JSON в /voice/dialogue/response или /voice/tts/request."""
+        а не JSON в старые голосовые топики (``/voice/tts/*``, ``/voice/dialogue/*``)."""
         topics = [p.topic for p in self.node._created_publishers]
-        self.assertNotIn("/voice/tts/request", topics)
-        self.assertNotIn("/voice/dialogue/response", topics)
+        self.assertEqual([t for t in topics if t.startswith(("/voice/tts/", "/voice/dialogue/"))], [])
         pub = self._publisher_for("/voice/speech/request")
 
         speech_id = self.node.publish_tts("Всем привет & пока")

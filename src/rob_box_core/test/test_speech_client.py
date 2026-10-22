@@ -135,3 +135,15 @@ def test_speech_agents_cover_dialog_engine_agents():
     """Агенты движка (knowledge.AGENTS) - подмножество авторов речи."""
     knowledge = pytest.importorskip("rob_box_dialog.knowledge")
     assert set(knowledge.AGENTS) <= set(speech_client.SPEECH_AGENTS)
+
+
+@pytest.mark.parametrize("kind, reason, seconds, expected", [
+    (2, "", 0.0, ("pending", None, 0)),
+    (4, "", 11.6, ("done", None, 12)),
+    (5, "", 3.0, ("cancelled", None, 3)),
+    (7, "unsupported_script", 0.0, ("rejected", "unsupported_script", 0)),
+    (7, "", 0.0, ("rejected", "error", 0)),
+])
+def test_event_outcome_maps_speech_event_to_action_status(kind, reason, seconds, expected):
+    event = types.SimpleNamespace(kind=kind, reason=reason, seconds=seconds)
+    assert speech_client.event_outcome(event) == expected

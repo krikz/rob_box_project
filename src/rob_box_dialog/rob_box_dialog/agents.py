@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping, Optional, Tuple
 
-from rob_box_core.tool_catalog import ToolCatalogEntry, llm_visible_tools, operator_visible_tools
+from rob_box_core.tool_catalog import ToolCatalogEntry, llm_visible_tools, operator_visible_tools, telegram_visible_tools
 from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
 
@@ -25,12 +25,13 @@ TIER1_GROUPS: Mapping[str, str] = MappingProxyType({
 _VIEWS: Mapping[str, Callable[[], Tuple[ToolCatalogEntry, ...]]] = MappingProxyType({
     "llm": llm_visible_tools,
     "operator": operator_visible_tools,
+    "telegram": telegram_visible_tools,
 })
 
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """Спецификация агента: ``grammar`` — группы Tier-1, ``tools_view`` — срез каталога (``llm``/``operator``),
+    """Спецификация агента: ``grammar`` — группы Tier-1, ``tools_view`` — срез каталога (``llm``/``operator``/``telegram``),
     ``prompt`` — имя системного промпта, ``sink`` — куда звучат фразы; ``None`` — текстовый канал агента."""
 
     name: str
@@ -44,7 +45,7 @@ class AgentSpec:
 AGENT_SPECS: Mapping[str, AgentSpec] = MappingProxyType({
     "personality": AgentSpec("personality", GRAMMAR_GROUPS, "llm", "personality", Sink.SPEAKERS),
     "operator": AgentSpec("operator", ("stop", "volume", "yes_no"), "operator", "operator", Sink.HEADSET),
-    "telegram": AgentSpec("telegram", ("stop", "new_session"), "llm", "telegram", None),
+    "telegram": AgentSpec("telegram", ("stop", "new_session"), "telegram", "telegram", None),
 })
 
 

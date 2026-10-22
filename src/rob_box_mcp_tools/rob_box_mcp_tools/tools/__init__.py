@@ -70,6 +70,7 @@ __all__ = [
     "SetVoiceTool",
     # AV-21: minimal operator-voice TTS (каркас; полная интеграция — AV-27)
     "SayTool",
+    "SayAloudTool",  # PR-12b: озвучка из чата Telegram с итогом по SpeechEvent
     # Memory tools
     "MemorySaveTool",
     "MemorySearchTool",

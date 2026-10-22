@@ -22,12 +22,18 @@ ADR-0150 PR-3 (#3688): реплика уходит единственным кл
 по ``SpeechEvent`` — PR-13 (ТАРС: say как action.speak_aloud).
 """
 
-from typing import List
+import uuid
+from typing import List, Optional
 
 from rob_box_core import speech_client
 from rob_box_core.utterance import Sink, Utterance
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+from ..owner_event import OwnerEvents, owner_events
+
+#: Сколько тул ждёт начала реплики. Дольше - реплика стоит в очереди владельца речи за чужой: итог придёт позже
+#: событием по ``speech_id`` (``pending``), а не «не озвучено».
+START_WAIT_S = 8.0
 
 
 class SayTool(MCPTool):
@@ -117,4 +123,82 @@ class SayTool(MCPTool):
         )
 
 
-__all__ = ["SayTool"]
+class SayAloudTool(MCPTool):
+    """Озвучить текст из чата Telegram динамиками робота (ADR-0150 §5.1, §9.2.3; PR-12b #3707).
+
+    ``SpeechRequest(agent=telegram, sink=speakers, interruptible=false)``: реплики разных агентов очередь ``tts_node``
+    не перебивает, тишина Личности (решение О2) и её «хватит» чата не касаются. Успех - не публикация запроса, а
+    событие владельца речи: началась - ``pending`` с ``event_ref=speech_id`` (итог «Озвучил (12 с)» придёт позже
+    событием ``finished``), отказ - ``rejected{reason}``. Отказ ``operator_hold`` решает хост чата до вызова.
+    """
+
+    event_source = "/voice/speech/event"
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
+        speech_client.prepare(node, "request")
+
+    @property
+    def name(self) -> str:
+        return "say_aloud"
+
+    @property
+    def llm_visible(self) -> bool:
+        return False  # агент чата видит его через telegram_visible; Личность и оператор - нет
+
+    @property
+    def telegram_visible(self) -> bool:
+        return True
+
+    @property
+    def description(self) -> str:
+        return (
+            "Озвучить текст динамиками робота, когда человек в чате просит рассказать, прочитать или сказать "
+            "вслух (например, сочинённую историю). Текст чата ты пишешь в ответе, а сюда передай ту же "
+            "реплику целиком. Итог «Озвучил» в чат пишет код по событию динамиков, не ты."
+        )
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="text", type="string", description="Что произнести, русским текстом без SSML.",
+                             required=True),
+            MCPToolParameter(name="voice", type="string", required=False,
+                             description="Голос разовой реплики; пусто - текущий голос робота."),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "telegram"
+
+    def execute(self, text: str, voice: Optional[str] = None) -> MCPToolResult:
+        """Отдать реплику владельцу речи и дождаться начала (или отказа)."""
+        if not text or not text.strip():
+            return MCPToolResult(success=False, error="empty_text", message="Текст для озвучки пустой",
+                                 data={"status": "rejected", "reason": "empty_text"})
+        speech_id = str(uuid.uuid4())
+
+        def publish(rid: str) -> None:
+            utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, speech_id=rid)
+            speech_client.say(self.node, utterance, agent="telegram", interruptible=False)
+
+        _rid, event = self._events().ask(publish, START_WAIT_S, request_id=speech_id)
+        status, reason, seconds = speech_client.event_outcome(event) if event is not None else ("pending", None, 0)
+        data = {"status": status, "reason": reason, "seconds": seconds, "speech_id": speech_id}
+        if status == "pending":
+            data["event_ref"] = speech_id
+        self.log_info(f"say_aloud {speech_id[:8]}: {status} {reason or ''}".rstrip())
+        ok = status in ("done", "pending")
+        return MCPToolResult(success=ok, data=data, error=None if ok else f"Не озвучено: {reason or status}",
+                             message=f"say_aloud: {status}")
+
+    def _events(self) -> OwnerEvents:
+        from rob_box_dialog_msgs.msg import SpeechEvent
+
+        wanted = (speech_client.KIND_STARTED, *speech_client.KIND_STATUS)
+        return owner_events(self.node, "say_aloud", lambda: OwnerEvents(
+            self.node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
+            accept=lambda m: m.agent == "telegram" and int(m.kind) in wanted))
+
+
+__all__ = ["SayAloudTool", "SayTool"]

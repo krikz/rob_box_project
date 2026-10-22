@@ -247,6 +247,14 @@ def test_say_is_operator_visible_and_hidden_from_personality(catalog) -> None:
     assert "say" in _registered_tool_names()
 
 
+def test_telegram_visible_tools_are_registered_and_hidden_from_personality(catalog) -> None:
+    """telegram_visible (``say_aloud``, PR-12b) - «чат-только»: зарегистрирован на сервере, личности не виден."""
+    chat_only = {entry.name for entry in catalog if entry.telegram_visible}
+    assert chat_only == {"say_aloud"}
+    assert chat_only <= _registered_tool_names()
+    assert not [entry.name for entry in catalog if entry.telegram_visible and entry.llm_visible]
+
+
 def test_registered_tools_are_not_hidden_from_the_llm(catalog) -> None:
     """A registered tool should be in the catalog and visible, or explicitly hidden.
 
@@ -264,6 +272,7 @@ def test_registered_tools_are_not_hidden_from_the_llm(catalog) -> None:
         for name in registered
         if not by_name[name].llm_visible
         and not by_name[name].operator_visible
+        and not by_name[name].telegram_visible
         and name not in _TARS_ONLY_HIDDEN_TOOLS
     )
     assert not hidden, (

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from rob_box_core.utterance import PRIORITY_OPERATOR, Utterance
 
@@ -189,8 +189,21 @@ class EpochWatch:
 
 
 #: ``SpeechEvent.kind`` (``rob_box_dialog_msgs/msg/SpeechEvent.msg``): началось звучание / реплика закончилась.
-_KIND_STARTED = 2
-_KIND_ENDED = (4, 5, 7)  # finished, cancelled, rejected
+KIND_STARTED = 2
+#: Итог реплики по виду события: статус результата действия (``knowledge.ACTION_STATUSES``). Единственная таблица:
+#: ею читают итог ``say_aloud`` (тул, ожидающий начала) и хост чата (поздний итог по ``speech_id``).
+KIND_STATUS = {4: "done", 5: "cancelled", 7: "rejected"}
+_KIND_ENDED = tuple(KIND_STATUS)  # finished, cancelled, rejected
+
+
+def event_outcome(event: Any) -> Tuple[str, Optional[str], int]:
+    """``SpeechEvent`` -> ``(статус, причина, секунды)`` результата действия: звучит (``started``) - ``pending``,
+    конец - по :data:`KIND_STATUS`; ``rejected`` без причины - ``error``, секунды - целые (фраза «Озвучил (12 с)»)."""
+    status = KIND_STATUS.get(int(getattr(event, "kind", -1)), "pending")
+    reason = str(getattr(event, "reason", "") or "") or ("error" if status == "rejected" else None)
+    return status, reason, int(round(float(getattr(event, "seconds", 0.0) or 0.0)))
+
+
 #: Реплика без события конца дольше этого срока считается отзвучавшей (событие потерялось).
 SPEAKING_STALE_S = 120.0
 
@@ -211,7 +224,7 @@ class SpeakingWatch:
         if getattr(event, "agent", "") != self.agent:
             return
         kind, sid = int(getattr(event, "kind", -1)), str(getattr(event, "speech_id", "") or "")
-        if kind == _KIND_STARTED:
+        if kind == KIND_STARTED:
             self._live[sid] = self._clock()
         elif kind in _KIND_ENDED:
             self._live.pop(sid, None)
@@ -229,6 +242,8 @@ __all__ = [
     "CANCEL_BOUNDARIES",
     "EPOCH_ALL",
     "EpochWatch",
+    "KIND_STARTED",
+    "KIND_STATUS",
     "PRIORITY_NORMAL",
     "PRIORITY_OPERATOR_U8",
     "SPEECH_AGENTS",
@@ -240,6 +255,7 @@ __all__ = [
     "SpeakingWatch",
     "build_request",
     "cancel",
+    "event_outcome",
     "prepare",
     "say",
 ]

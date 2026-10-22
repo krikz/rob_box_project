@@ -134,6 +134,8 @@ class V2Ports:
         self._turn = ""
         self._n = 0
         self._performer = performer
+        #: Хост агента (чат Telegram) берёт поздний итог ``pending``-действия: «Озвучил (12 с)» по SpeechEvent.
+        self.on_late: Optional[Callable[[ActionResult], None]] = None
         self.executor = Executor(self._send, on_late=self._late, epoch=epoch)
 
     async def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Answer:
@@ -171,6 +173,8 @@ class V2Ports:
 
     def _late(self, result: ActionResult) -> None:
         self._log(f"🧭 [turn-v2] поздний исход {result.tool} {result.turn_id}: {result.status} {result.reason}")
+        if self.on_late is not None:
+            self.on_late(result)
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
             emotion: Optional[str] = None) -> str:

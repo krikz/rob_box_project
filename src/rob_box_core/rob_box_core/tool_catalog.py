@@ -35,6 +35,7 @@ __all__ = [
     "get_tool",
     "llm_visible_tools",
     "operator_visible_tools",
+    "telegram_visible_tools",
     "skill_names",
     "tool_names",
     "tools_for_skill",
@@ -61,6 +62,8 @@ class ToolCatalogEntry:
     #: «ТАРС-только» инструментов (``llm_visible=False``), которые оператору
     #: нужны (``say``). Реестр оператора = ``operator_visible_tools()``.
     operator_visible: bool = False
+    #: Предъявлять ли инструмент агенту чата Telegram сверх llm-видимых (ADR-0150 §9.2): ``say_aloud``.
+    telegram_visible: bool = False
     read_only: bool = False
     destructive: bool = True
     idempotent: bool = False
@@ -109,6 +112,7 @@ def _build() -> tuple[ToolCatalogEntry, ...]:
             parameters=MappingProxyType(dict(raw["parameters"])),
             llm_visible=raw.get("llm_visible", True),
             operator_visible=raw.get("operator_visible", False),
+            telegram_visible=raw.get("telegram_visible", False),
             read_only=raw.get("read_only", False),
             destructive=raw.get("destructive", True),
             idempotent=raw.get("idempotent", False),
@@ -155,6 +159,15 @@ def operator_visible_tools() -> tuple[ToolCatalogEntry, ...]:
         entry
         for entry in TOOL_CATALOG
         if entry.llm_visible or entry.operator_visible
+    )
+
+
+def telegram_visible_tools() -> tuple[ToolCatalogEntry, ...]:
+    """Вернуть инструменты агента чата Telegram: llm-видимые ∪ telegram_visible (``say_aloud``)."""
+    return tuple(
+        entry
+        for entry in TOOL_CATALOG
+        if entry.llm_visible or entry.telegram_visible
     )
 
 

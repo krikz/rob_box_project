@@ -84,7 +84,10 @@ _REPLAY_CACHE_SIZE = 1024
 #: имя ROS-ноды: личность одна, а нод у неё две (v1 ``dialogue_node``, v2 ``dialog_node``) — одна запись знания (#3853).
 PERSONALITY_SENDER = "dialogue_node"
 
-DEFAULT_ALLOWED_SENDERS = frozenset({PERSONALITY_SENDER, "avatar_supervisor", "harness"})
+#: Имя агента чата Telegram в MCP (PR-12b): срез ``telegram`` (``say_aloud``) доступен только ему.
+TELEGRAM_SENDER = "telegram_agent"
+
+DEFAULT_ALLOWED_SENDERS = frozenset({PERSONALITY_SENDER, TELEGRAM_SENDER, "avatar_supervisor", "harness"})
 
 
 class RequestAuthenticator:

@@ -294,7 +294,8 @@ ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
     ),
     # событие speaker_id_node (registered); дедлайн в §5.1 не задан — взят как у action.local
     "action.identity": ActionClass(3.0, False, "speaker_id_node", _keys("identity", "done", "rejected", "timeout")),
-    # say_aloud — только агенты оператора и телеграма; подтверждение — SpeechEvent finished
+    # say / say_aloud — только агенты оператора и телеграма; подтверждение — SpeechEvent finished (у say_aloud
+    # started — ``pending`` с ``event_ref``, итог «Озвучил (N с)» приходит позже: дедлайн хода речь не ждёт)
     "action.speak_aloud": ActionClass(
         None, True, "/voice/speech/event", _keys("speak_aloud", "done", "rejected", "cancelled"),
         agents=("operator", "telegram"),
@@ -334,7 +335,17 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     )},
     "register_speaker": "action.identity",
     "say": "action.speak_aloud",
+    "say_aloud": "action.speak_aloud",
 })
+#: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` виден агенту чата только когда человек назвал глагол озвучки
+#: («расскажи», «прочитай», «вслух»); голос робота не включается по догадке LLM (ADR-0148). Матч - по левой границе.
+ALOUD_TOOL = "say_aloud"
+ALOUD_VERB_STEMS: Tuple[str, ...] = (
+    "вслух", "озвуч", "расскаж", "прочита", "прочти", "зачита", "произнес", "проговор", "объяви", "голосом",
+    "динамик", "громк", "продава", "агитир", "крикн", "рекламир",
+)
+#: Бюджет хода чата: текст в чате ждут дольше голоса (сочинить историю - секунды LLM), 12 с (В5) - для разговора вслух.
+CHAT_TURN_DEADLINE_S = 40
 #: Тулы-транспорт речи, а не действия: канал речи выбирает бейк-офф (§4.4), командой как действие не идут.
 SPEECH_CHANNEL_TOOLS: Tuple[str, ...] = ("speak_text",)
 #: Срез тулов хода (§4.2, ``tools_view``): LLM видит ≤ ``TOOLS_VISIBLE_MAX`` схем, а не весь каталог. Всегда —
@@ -490,7 +501,7 @@ NEW_SESSION_PHRASE = "tier1.new_session"
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
-    "speak_aloud.rejected.unsupported_script", "speak_aloud.timeout",
+    "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",

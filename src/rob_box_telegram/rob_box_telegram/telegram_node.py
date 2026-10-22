@@ -417,7 +417,7 @@ class TelegramNode(Node):
         Старый код (commands.py say_handler, messages.py playvoice) зовёт
         ``node.publish_tts(text)`` напрямую; ``publish_tts_with_floor`` — то же
         после AcquireFloor(voice). Раньше реплика шла JSON-ом в
-        ``/voice/dialogue/response`` или ``/voice/tts/request`` (по режиму);
+        ``/voice/dialogue/response`` или старый TTS-топик (по режиму);
         теперь — один ``SpeechRequest``, итог — ``SpeechEvent`` того же id.
         """
         if is_metrics_enabled():

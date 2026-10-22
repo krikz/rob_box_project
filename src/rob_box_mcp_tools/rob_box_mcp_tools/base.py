@@ -370,6 +370,16 @@ class MCPTool(ABC):
         return False
 
     @property
+    def telegram_visible(self) -> bool:
+        """Показывать ли инструмент агенту чата Telegram сверх llm-видимых (ADR-0150 §9.2).
+
+        Нужен инструментам «чат-только» (``llm_visible=False``): ``say_aloud`` — озвучка из чата динамиками;
+        Личность и оператор его не видят. Тул обязан быть зарегистрирован в ``mcp_server`` и лежать в срезе
+        ``telegram`` (``slice_policy.yaml``).
+        """
+        return False
+
+    @property
     def blocking(self) -> bool:
         """
         Требуется ли ждать результата перед продолжением диалога

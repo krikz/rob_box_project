@@ -636,6 +636,7 @@ def extract_tools() -> list[dict[str, Any]]:
                     "idempotent",
                     "llm_visible",
                     "operator_visible",
+                    "telegram_visible",
                     "starts_music",
                 ):
                     value = _returned_literal(fn)

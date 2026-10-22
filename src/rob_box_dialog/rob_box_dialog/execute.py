@@ -98,6 +98,11 @@ class Executor:
                                           MappingProxyType(dict(call.args)), cls, deadline_s(cls)))
         return list(await asyncio.gather(*(self._one(r) for r in requests)))
 
+    def expects(self, ref: str) -> bool:
+        """Ждёт ли исполнитель событие с этим ``ref`` (запрос в полёте или обещание ``pending``): хост с несколькими
+        исполнителями (чаты Telegram) отдаёт событие тому, кто его ждёт, а не всем."""
+        return ref in self._waiting or ref in self._requests
+
     def on_event(self, event: OwnerEvent) -> None:
         """Событие владельца из любого потока (колбэк ROS); сопоставление — в цикле исполнителя."""
         loop = self._loop
