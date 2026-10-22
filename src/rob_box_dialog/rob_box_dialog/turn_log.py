@@ -125,6 +125,10 @@ class TurnLog:
         self._add(turn_id, WindowEntry(ASSISTANT, part))
         return part
 
+    def speech(self, speech_id: str) -> Optional[Tuple[str, str]]:
+        """``(turn_id, текст)`` реплики, которая ещё не отзвучала; чужая или уже отзвучавшая — ``None``."""
+        return self._speech.get(speech_id)
+
     def result(self, turn_id: str, result: Any) -> None:
         """Результат действия хода (``ActionResult``) — структурой."""
         self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
