@@ -33,11 +33,8 @@ def _make_node() -> DialogueNode:
         setattr(n, attr, MagicMock())
     n._active_tg_chat_id = None
     n._verbose_llm = False
-    n._action_claim_retry_used = False
-    n._retry_dispatched_in_turn = False
     n._run_task = None
     n._startup_greeting_fired = False
-    n._consume_synthetic_retry = MagicMock(return_value=True)
     n._music_player_state = MusicPlayerState(state="idle")
     n._llm_skipped_counter = new_llm_skip_counter()
     n._tool_executor = SimpleNamespace(music_turn=MusicTurn())
@@ -115,7 +112,6 @@ def _record(done, phrase="Ставлю «К Элизе».", intent=MediaIntent.P
 def test_router_launch_phrase_is_not_put_into_model_history(done, intent):
     n = _record(done, intent=intent)
     n._core.record_external_turn.assert_not_called()
-    assert list(n._media_actions) == list(done)  # гарды #2549/#2559 его по-прежнему видят
 
 
 def test_router_stop_phrase_still_goes_into_model_history():

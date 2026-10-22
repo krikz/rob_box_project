@@ -60,7 +60,6 @@ def _make_node(replies):
     n._core = MagicMock()
     n._core.process_input = AsyncMock(side_effect=list(replies))
     n._dispatch_turn = MagicMock()
-    n._reopen_dialogue_for_retry = MagicMock()
     n._loop = MagicMock()
     # Всё, что звучит: авто-TTS ответа хода + прямые фразы гуардов.
     n._tts = MagicMock()
@@ -114,19 +113,7 @@ class TestNormalTurnUnchanged:
         n._publish_response.assert_called_once_with("Привет!")
 
 
-class TestBudgetExhaustedAndMusicTrim:
-    def test_budget_exhausted_speaks_first_sentence(self):
-        n = _make_node([])
-        n._turn_speech_hold = None
-        n._retry_budget_exhausted_in_turn = True
-
-        n._voice_turn_text(_MONOLOGUE, user_input="расскажи что-нибудь")
-
-        n._publish_response.assert_called_once_with(
-            "Поехали, зал — Still Dre открывает вечер."
-        )
-        n._publish_response_batch.assert_not_called()
-
+class TestMusicTrim:
     def test_long_monologue_in_music_context_trimmed(self):
         n = _make_node([])
         n._turn_speech_hold = None

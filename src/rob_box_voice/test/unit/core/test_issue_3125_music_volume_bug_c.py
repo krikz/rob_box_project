@@ -132,18 +132,3 @@ class TestLiveAB_ClosedByTier1:
 
 
 # --- (c) #3004: ошибка валидации, затем успех в том же ходе -----------------
-
-
-# --- честный claim после set_music_volume не ловится как phantom -----------
-
-
-class TestHonestVolumeClaimIsBacked:
-    def test_claim_backed_by_set_music_volume(self) -> None:
-        from rob_box_voice.core.dialogue_guards import detect_universal_action_claim
-
-        spoken = "Сделал трек громче, качаем дальше!"
-        assert detect_universal_action_claim(spoken=spoken, tools_called=()) is not None
-        assert (
-            detect_universal_action_claim(spoken=spoken, tools_called=("set_music_volume",))
-            is None
-        )

@@ -43,7 +43,6 @@ def _make_node(replies):
     n._core = MagicMock()
     n._core.process_input = AsyncMock(side_effect=list(replies))
     n._dispatch_turn = MagicMock()
-    n._reopen_dialogue_for_retry = MagicMock()
     n._loop = MagicMock()
     n._handle_result = MagicMock()
     n._handle_llm_error = MagicMock()

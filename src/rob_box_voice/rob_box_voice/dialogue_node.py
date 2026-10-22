@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
-from collections import deque
 import functools
 import json
 import logging
@@ -148,18 +147,7 @@ from rob_box_voice.core.llm_skip_reasons import (
 )
 from rob_box_voice.core.tier1_host import runner_of as tier1_runner_of
 from rob_box_voice.core.dialogue_guards import (
-    ACTION_CLAIM_RULES,
-    build_action_claim_failure_fallback,  # Issue #2949
-    build_fact_memory_save_fallback,  # Issue #2780 п.3
-    build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
-    build_unbacked_action_retry_prompt,
-    build_universal_action_claim_retry_prompt,
-    detect_phantom_action_claim,  # Issue #2559 phantom-action
-    detect_unbacked_action_claim,
-    detect_universal_action_claim,
     is_music_stop_command,
-    spoken_matches_claim_category,  # Issue #2780 п.3
-    UniversalActionClaimHit,  # Issue #3174
 )
 from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION as EMOTION_TO_ANIMATION,
@@ -191,7 +179,6 @@ from rob_box_voice.core.media_router import (
     media_state_from_snapshot,
     media_tool_succeeded,
 )
-from rob_box_voice.core.media_phrases import honest_launch_reply
 from rob_box_voice.core.music_turn import executor_turn_reply, history_recorder, next_turn_id, turn_heard_text
 from rob_box_voice.core.named_play import (
     NamedPlayStatus,
@@ -844,58 +831,9 @@ class DialogueNode(DialogueStageMixin, Node):
             ),
             callback_group=cbg)
 
-        # 🔴 FIX (live 30.08, e2e 33251879328): один флаг «в этом ходе гуард
-        # уже отправил ретрай» на ВСЕ гуарды сразу.
-        #
-        # ``_run_turn`` откладывает ``DIALOGUE_END``, когда ретрай в пути:
-        # без этого родительский ход роняет DSM в IDLE, и ``process_input``
-        # ретрая коротит на закрытом диалоге — возвращает пустоту за 1 мс,
-        # без единого HTTP-запроса (issue #1204). Раньше условие
-        # перечисляло гуарды поимённо, и оба новых (Bug C′ и Bug E) в него
-        # не попали: шаги tc12_delete_track и tc16_delete_waypoint легли с
-        # ``llm_error``, юзер услышал «Принял.».
-        #
-        # Теперь флаг ставит :meth:`_mark_retry_dispatched`, а вызвать её
-        # обязан каждый ``_check_*_and_retry`` — это проверяет
-        # ``test_dialogue_retry_flag_wiring.py``.
-        self._retry_dispatched_in_turn: bool = False
         # Issue #2835 — поколение диалоговой сессии: ход/ретрай, родившийся
         # до «новой сессии», после неё не запускается и не включает DJ.
         self._session_epoch = SessionEpoch()
-
-        # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
-        # Тот же одноразовый контракт, что у babble-флага выше: ретраим
-        # РОВНО один раз, иначе LLM и код уходят в пинг-понг.
-        self._action_claim_retry_used: bool = False
-
-
-        # Issue #2549 — универсальный anti-hallucination guard (см.
-        # :func:`detect_universal_action_claim`). Срабатывает когда в
-        # ``spoken`` есть action-verb (сделал/запустил/включил/проверю/
-        # обновлю/перезапущу/…), но ``tools_called`` пустой. Существующий
-        # Bug E guard слишком узкий для DJ-кейсов («сделала два pass»,
-        # «вплела тему Грига» — user_input не содержит «сделай»).
-        # Тот же одноразовый контракт: один ретрай на turn.
-        self._universal_action_claim_retry_used: bool = False
-
-        # Issue #2559 — phantom-action claim (общий, НЕ music-only):
-        # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
-        # Round 3 live (Vision Pi 10.1.1.21, 15.09.2026) — 6 случаев за
-        # час. Bug E (#992 / #2548) ловит только узкие music-claim'ы
-        # при ``dj_active`` или music-kw; phantom-action — расширение
-        # на ВСЕ action-verb'ы вне зависимости от контекста.
-        self._phantom_action_retry_used: bool = False
-
-        # Issue #1881 — общий бюджет СИНТЕТИЧЕСКИХ ретраев на user-turn.
-        # Раньше у каждого guard'а был свой одноразовый флаг, и каждый
-        # СВОЙ сбрасывал ЧУЖИЕ на следующем turn — ping-pong был неизбежен.
-        # Единый бюджет декрементируется любым guard'ом; на свежем
-        # user-initiated turn — ресетится в
-        # ``_dispatch_turn`` / ``_run_turn``. Чтобы существующие
-        # поимённые флаги не разъехались с новым бюджетом (тесты читают
-        # их напрямую), guard'ы синхронно выставляют свой флаг и декрементят
-        # ``_synthetic_retries_left`` через ``_consume_synthetic_retry``.
-        self._synthetic_retries_left: int = self.DEFAULT_SYNTHETIC_RETRIES
 
         # Issue #1160 — Prometheus metrics: длительность диалоговой
         # сессии. Фиксируем момент первого wake-word-диалога из IDLE;
@@ -2284,7 +2222,6 @@ class DialogueNode(DialogueStageMixin, Node):
         self,
         user_input: str,
         was_idle: bool = False,
-        is_action_claim_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -2314,7 +2251,6 @@ class DialogueNode(DialogueStageMixin, Node):
         asyncio.run_coroutine_threadsafe(
             self._run_turn(
                 user_input,
-                is_action_claim_retry=is_action_claim_retry,
                 is_synthetic=is_synthetic,
                 raw_user_command=raw_user_command,
                 speaker_tag=speaker_tag,
@@ -2395,8 +2331,8 @@ class DialogueNode(DialogueStageMixin, Node):
         # resolve() не ждёт ещё раз (см. ``_resolve_speaker_for_utterance``).
         await self._resolve_speaker_for_utterance(utterance_id)
         if not utterance_id:
-            # Нет utterance_id (синтетический/ретрай-ход без новой
-            # фразы -- babble-retry, DJ auto, action-claim retry, ...):
+            # Нет utterance_id (ход без новой аудио-фразы: Telegram,
+            # прямой вызов в тестах):
             # новой аудио-фразы для сверки нет, читаем последний
             # РАЗРЕШЁННЫЙ снимок как есть (issue #2829 гонка тут
             # неприменима -- ждать нечего).
@@ -3070,7 +3006,6 @@ class DialogueNode(DialogueStageMixin, Node):
         self,
         user_input: str,
         *,
-        is_action_claim_retry: bool = False,
         is_synthetic: bool = False,
         raw_user_command: str | None = None,
         speaker_tag: str | None = None,
@@ -3096,7 +3031,7 @@ class DialogueNode(DialogueStageMixin, Node):
         # сет своего хода); синтетический ретрай продолжает ход.
         self._turn_id = self._turn_stages().turn_id_for(utterance_id) or next_turn_id(
             getattr(self, "_turn_id", None),
-            is_synthetic, is_action_claim_retry,
+            is_synthetic,
         )
         self._turn_heard_text = turn_heard_text(
             getattr(self, "_turn_heard_text", None), user_input, is_synthetic)
@@ -3109,26 +3044,8 @@ class DialogueNode(DialogueStageMixin, Node):
         self._turn_llm_said = []
         self._turn_set_tracks = None
         self._run_cancelled = False
-        # Issue #1881 — бюджет синтетических ретраев сбрасывается ТОЛЬКО на
-        # ход человека (is_synthetic=False). Issue #2631 — политика в helper.
-        self._reset_turn_retry_budgets(is_synthetic=is_synthetic)
-        # Issue #992 Bug D — when the babble detector schedules a retry
-        # we MUST NOT end the dialogue at the bottom of this turn. The
-        # retry's ``_run_turn`` will run on the same DSM session and
-        # needs to find DIALOGUE (or at least LISTENING) state so the
-        # wake-word classifier short-circuits to STT_RESULT and the
-        # LLM gate fires. Without this guard the first turn's
-        # unconditional ``DIALOGUE_END`` drops the DSM back to IDLE,
-        # the retry's ``process_input`` classifies the synthetic
-        # prompt as STT_RESULT but stays in IDLE (no-op), and the
-        # LLM is never called — the user hears nothing.
-        # Общий флаг «гуард отправил ретрай» — сбрасывается на КАЖДЫЙ ход,
-        # включая сам ретрай (иначе отложенный DIALOGUE_END залипнет).
-        self._retry_dispatched_in_turn = False
-        self._retry_budget_exhausted_in_turn = False
         # Issue #2914 -- «в этом ходе прозвучал вопрос о личности».
         self._identity_question_asked_in_turn = False
-        guard_retry_pending = False
         # Issue #918 — turn может быть отменён или упасть ДО присваивания
         # result (speaker-профиль, LLM, тул-луп). Инициализируем None
         # заранее, чтобы finally-блок мог безопасно отличить «результата
@@ -3215,7 +3132,6 @@ class DialogueNode(DialogueStageMixin, Node):
             # post-turn гуардов в ``finally`` (_release_turn_speech).
             speech_hold = self._turn_speech_hold = TurnSpeechHold()
             deliver_turn_result(self, result, coded_reply, user_input=user_input, raw_user_command=raw_user_command)
-            guard_retry_pending = bool(self._retry_dispatched_in_turn)
         except asyncio.CancelledError:
             self.get_logger().info("🛑 Turn cancelled (barge-in)")
             turn_cancelled = True
@@ -3233,11 +3149,7 @@ class DialogueNode(DialogueStageMixin, Node):
             result = None
             turn_failure = f"llm_error:{type(exc).__name__}"
         finally:
-            # A post-turn guard may synchronously dispatch a retry turn,
-            # which sets ``self._run_task`` to a fresh coroutine. We must
-            # not wipe that reference here or the test driver (and any
-            # hook that watches ``self._run_task``) would lose the retry.
-            # Only clear the slot when no replacement was scheduled.
+            # Слот хода чистим, только если в нём всё ещё этот ход (его могла сменить новая реплика).
             # Issue #2828/#3765 -- вопрос по ack регистрации, отложенный до
             # конца хода, забираем под тем же локом, что освобождает слот:
             # иначе он проскочил бы между «ход идёт» и «хода нет» и потерялся.
@@ -3251,30 +3163,16 @@ class DialogueNode(DialogueStageMixin, Node):
             # фразы собеседника) и звучит последней репликой.
             identity_ask = plan_identity_question(
                 self, result, other_question=leftover_identity_question is not None)
-            # Issue #2874 — ход с ретраем гуарда (решено в ``_handle_result``)
-            # свой текст не придерживает; отозванный гуардом ответ молчит,
-            # остальное звучит. Переспрос #2828, пришедший после ответа, —
-            # после него, как и раньше. ADR-0150 PR-7 ч.7d-1: post-turn
-            # tool-skipped гуард (#1777) удалён — ретраев из ``finally`` нет.
-            self._release_turn_speech(speech_hold, retry_dispatched=False)
+            # Issue #2874 — придержанный текст хода звучит после решения о вопросе; отозванный ответ молчит.
+            # Переспрос #2828, пришедший после ответа, — после него, как и раньше. ADR-0150 PR-7 ч.7d (#3698):
+            # синтетических ретраев LLM нет ни в ``_handle_result``, ни в ``finally``.
+            self._release_turn_speech(speech_hold)
             start_after_turn_question(self, leftover_identity_question, result)
             ask_planned(self, identity_ask)
             # ADR-0150 PR-3b: тело хода закончено - исход done|failed решает код по итогам тулов и LLM.
             self._stage_finish(result, turn_cancelled, turn_failure)
-            # Issue #992 Bug D — defer the DIALOGUE_END transition
-            # when the babble detector scheduled a retry. The retry's
-            # ``_run_turn`` needs the DSM to stay in DIALOGUE so the
-            # LLM gate fires; otherwise the synthetic prompt is
-            # classified as STT_RESULT but the state stays in IDLE
-            # (no-op), and the user never hears the retry answer.
-            # Issue #2631 (ADR-0021 R1) — DIALOGUE_END decision
-            # (CC=5 ветка) вынесен в helper. Сигнатура и поведение
-            # идентичны inline-блоку.
-            self._finalize_turn_dsm(
-                guard_retry_pending=guard_retry_pending,
-                tool_retry_dispatched=False,
-                session_handed_over=self._take_session_handover(),
-            )
+            # Issue #2631 (ADR-0021 R1) — DIALOGUE_END decision вынесен в helper.
+            self._finalize_turn_dsm(session_handed_over=self._take_session_handover())
             TURN_EPOCH.reset(epoch_token)
 
     # ── Issue #2835 — поколение сессии ────────────────────────────────
@@ -3320,320 +3218,13 @@ class DialogueNode(DialogueStageMixin, Node):
         self.get_logger().info(f"🔇 [{reason}] стоп музыки владельцем плеера: {stopped}")
         return stopped
 
-    def _check_unbacked_action_claim_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #992 Bug E — одноразовый ретрай «сказал, но не сделал».
-
-        Живой прогон 30.08 (vision-pi 12:31–12:38): восемь ходов из
-        восемнадцати заканчивались утверждением о выполненном действии при
-        пустом ``tools_called``. «Точка сохранена.» — а двумя ходами позже
-        «Точек пока нет». Детектор узкий (см.
-        :data:`~rob_box_voice.core.dialogue_guards.ACTION_CLAIM_RULES`):
-        должны совпасть И запрос юзера, И формулировка отчёта, И отсутствие
-        нужного тула. Музыкальные правила (``music_state``, ``track_load``,
-        ``music_prose_action``) удалены в ADR-0149 PR-13a: об успехе запуска
-        музыки говорит код по событию ``started``.
-
-        Returns:
-            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
-            текст в TTS (иначе юзер услышит неправду, а потом ответ ретрая).
-        """
-        if getattr(self, "_action_claim_retry_used", False):
-            return False
-        rule = detect_unbacked_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=tuple(tools_called or ()),
-        )
-        if rule is None:
-            return False
-
-        # Тот же перевод DSM, что и в babble-ретрае: без него
-        # process_input увидит IDLE и вернёт пустой результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Помечаем ДО отправки — реентрантный вызов из самого ретрая
-        # не должен уметь запустить второй.
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(guard_name="action_claim"):
-            return False
-        self._action_claim_retry_used = True
-        self._mark_retry_dispatched()
-        self.get_logger().warning(
-            f"🧾 [issue 992 Bug E] заявлено действие без тула "
-            f"(category={rule.category}, tools={list(tools_called)!r}, "
-            f"spoken={spoken[:60]!r}) — один ретрай"
-        )
-        self._dispatch_turn(
-            build_unbacked_action_retry_prompt(
-                user_input=user_input or "", spoken=spoken, rule=rule
-            ),
-            is_action_claim_retry=True,
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
-
-    def _check_universal_action_claim_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-        tool_error_occurred: bool = False,
-    ) -> bool:
-        """Issue #2549 — широкий anti-hallucination guard.
-
-        Live DJ-сет 2026-09-15: LLM выдавала ``spoken`` вида::
-
-            «Сделала два pass подряд: сначала один темп-каркас с
-            heartbeat'ом и пульсом Бочкинса, потом второй…»
-            «Вплела тему Грига как второй голос над пульсом Бочкинса…»
-            «Проверю состояние и перезапущу.»
-            «Ок, давай я снова перезапущу. Бочкинс с Григом наверху —
-            стартую заново.»
-
-        Все четыре — при ``tools_called=()``. Существующий Bug E
-        guard (:func:`detect_unbacked_action_claim`) для таких фраз НЕ
-        срабатывает: его таблица узкая, требует совпадения И в
-        ``user_input``, И в ``spoken``. Здесь же юзер просил абстрактно
-        («докрути музыку») без явного «сделай/запусти» — а LLM всё
-        равно отчитывается о действии.
-
-        Защита: если в ``spoken`` есть action-verb в past или future и
-        ни один тул из :data:`CLAIM_JUSTIFYING_TOOLS` не был вызван —
-        это action hallucination. Требуем ОДИН одноразовый CRITICAL-
-        ретрай (тот же контракт, что у Bug E выше).
-
-        Returns:
-            ``True`` — ретрай отправлен, вызывающий НЕ должен публиковать
-            текст в TTS (иначе юзер услышит ложное «сделала/запустил/»,
-            а потом ответ ретрая).
-        """
-        if not spoken:
-            return False
-        if getattr(self, "_universal_action_claim_retry_used", False):
-            return False
-        if getattr(self, "_retry_dispatched_in_turn", False):
-            # Другой guard уже отправил ретрай в этом turn (babble /
-            # action-claim Bug E / renardo / tool) — параллельный
-            # CRITICAL-тур вызовет пинг-понг.
-            return False
-
-        hit = self._universal_claim_hit(
-            spoken=spoken,
-            tools_called=tools_called,
-            tool_error_occurred=tool_error_occurred,
-        )
-        if hit is None:
-            return False
-
-        # Тот же перевод DSM, что и в babble/renardo/action-claim
-        # ретраях: без него process_input увидит IDLE и вернёт пустой
-        # результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(
-            guard_name="universal_action_claim"
-        ):
-            return False
-        self._universal_action_claim_retry_used = True
-        self._mark_retry_dispatched()
-        self.get_logger().warning(
-            "🧾 [issue 2549] anti-hallucination guard: spoken содержит "
-            f"action-verb «{hit.verb}» ({hit.tense}), "
-            f"tool_error_occurred={tool_error_occurred!r} — "
-            f"head={hit.excerpt!r}, user_input={user_input!r}, "
-            f"tools={list(tools_called)!r}"
-        )
-        self._dispatch_turn(
-            build_universal_action_claim_retry_prompt(
-                user_input=user_input,
-                spoken=spoken,
-                hit=hit,
-                tool_error_occurred=tool_error_occurred,
-            ),
-            is_action_claim_retry=False,  # свой тип, чтобы не путать с Bug E
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
-
-    def _check_phantom_action_and_retry(
-        self,
-        *,
-        spoken: str,
-        user_input: Optional[str],
-        tools_called: tuple,
-    ) -> bool:
-        """Issue #2559 — общий (НЕ music-only) guard «обещал, но не сделал».
-
-        Round 3 live-check 15.09.2026 (Vision Pi 10.1.1.21): 6 случаев
-        за час, когда LLM говорила «сейчас перезапущу / сделал погуще /
-        подложу слой» при ``tools_called=[]``. Существующий Bug E
-        (``_check_unbacked_action_claim_and_retry``) узкий — бытовые
-        «проверю состояние и перезапущу» / «подкручу / установлю голос»
-        проходили мимо.
-
-        Условия срабатывания (см. ``detect_phantom_action_claim``):
-
-          1. ``spoken`` содержит хотя бы один ``PHANTOM_ACTION_VERBS_RE``
-             stem (сделал / запустил / перезапущу / проверю / подложу /
-             подкручу / обновлю / поменяю / изменю / доработаю и т.п.);
-          2. ``tools_called`` пуст;
-          3. ``user_input`` НЕ содержит «не буду / не надо» (защита
-             от ложного срабатывания на легитимный «не буду перезапускать»).
-
-        Контракт ретрая (как Bug E / Bug F): один CRITICAL-ретрай на
-        user-turn, иначе LLM уходит в ping-pong (issue #1881). При
-        срабатывании возвращает ``True`` — вызывающий НЕ должен
-        публиковать текст в TTS (иначе юзер услышит «сделал» + потом
-        ответ ретрая).
-        """
-        if getattr(self, "_phantom_action_retry_used", False):
-            return False
-        if not detect_phantom_action_claim(
-            user_input=user_input,
-            spoken=spoken,
-            tools_called=self._claim_backing_tools(tools_called),
-        ):
-            return False
-
-        # Тот же перевод DSM, что и в bug E / Bug F: без него
-        # process_input увидит IDLE и вернёт пустой результат.
-        try:
-            if self._dsm.current_state == DialogueStateKind.IDLE:
-                self._dsm.on_event(DialogueEvent.WAKE_WORD)
-                self._publish_state()
-            self._dsm.on_event(DialogueEvent.STT_RESULT)
-            self._publish_state()
-        except ImportError:
-            pass
-
-        # Issue #1881 — общий budget декрементится рядом с поимённым
-        # флагом. Если budget == 0, ретрай НЕ отправляется.
-        if not self._consume_synthetic_retry(guard_name="phantom_action"):
-            return False
-        self._phantom_action_retry_used = True
-        self._mark_retry_dispatched()
-        self.get_logger().warning(
-            f"🎭 [issue 2559] phantom-action claim без тула "
-            f"(tools={list(tools_called)!r}, spoken={spoken[:80]!r}) — "
-            f"один ретрай с требованием вызвать tool или убрать claim-verb"
-        )
-        self._dispatch_turn(
-            build_phantom_action_retry_prompt(user_input),
-            # Свой тип — НЕ путать с Bug E. ``is_action_claim_retry``
-            # обрабатывается в Bug E-ветке (``_run_turn``), и phantom-
-            # action намеренно избегает этого флага, чтобы флаги разных
-            # guards не сбрасывали друг друга (issue #1881 ping-pong fix).
-            is_action_claim_retry=False,
-            is_synthetic=True,
-            raw_user_command=user_input,
-        )
-        return True
-
-    def _reopen_dialogue_for_retry(self) -> None:
-        """Re-drive the DSM to DIALOGUE before a synchronous retry dispatch.
-
-        ``agent_core.process_input`` gates the LLM on
-        ``current_state == DIALOGUE``. The parent turn's ``process_input``
-        already fired ``DIALOGUE_END``, so by the time the post-turn guard
-        runs the state is IDLE — a retry dispatched from here would
-        short-circuit and never reach the LLM (13.08 DJ incident: retry
-        returned in ~1 ms with zero ``[health]`` logs).
-
-        Issue #992 / #1204.
-        """
-        if self._dsm.current_state == DialogueStateKind.IDLE:
-            self._dsm.on_event(DialogueEvent.WAKE_WORD)
-            self._publish_state()
-        self._dsm.on_event(DialogueEvent.STT_RESULT)
-        self._publish_state()
-
-    def _mark_retry_dispatched(self) -> None:
-        """Пометить, что гуард отправил синхронный ретрай в этом ходе.
-
-        Переоткрыть DSM (``_reopen_dialogue_for_retry``) — половина дела:
-        родительский ход в своём ``finally`` всё равно пошлёт
-        ``DIALOGUE_END`` и уронит DSM обратно в IDLE ДО того, как ретрай
-        доберётся до ``process_input``. Флаг говорит ``_run_turn``
-        отложить закрытие диалога (issue #1204).
-
-        Каждый ``_check_*_and_retry`` обязан вызвать этот метод рядом со
-        своим одноразовым флагом — иначе ретрай уйдёт в закрытый диалог и
-        вернётся пустым за миллисекунду. Именно так легли шаги
-        tc12_delete_track и tc16_delete_waypoint в e2e 33251879328.
-        """
-        self._retry_dispatched_in_turn = True
-
-    def _consume_synthetic_retry(self, *, guard_name: str) -> bool:
-        """Issue #1881 — попытаться списать один синтетический ретрай.
-
-        Гарантирует, что общий бюджет ``_synthetic_retries_left`` и
-        поимённые одноразовые флаги гуардов синхронны
-        и не разъезжаются. Каждый guard, который собирается
-        задиспатчить ретрай, ОБЯЗАН сначала вызвать этот метод; если
-        он вернул ``False`` — ретрай отменяется, даже если поимённый
-        флаг ещё не взведён.
-
-        Returns:
-            ``True`` — ретрай разрешён (budget декрементнут), guard
-                может диспатчить.
-            ``False`` — budget исчерпан (== 0); guard должен
-                вернуть ``False`` из своего ``_check_*_and_retry``.
-                На этом ЛОГируется предупреждение, чтобы в логе
-                было видно, что цикл оборвали НАМЕРЕННО (не молча).
-        """
-        if self._synthetic_retries_left <= 0:
-            self.get_logger().warning(
-                f"🚦 [issue 1881 retry-budget] исчерпан на turn, отдаю как есть "
-                f"(guard={guard_name})"
-            )
-            # Issue #2874 — «как есть» = первая фраза, не сырой монолог.
-            self._retry_budget_exhausted_in_turn = True
-            return False
-        self._synthetic_retries_left -= 1
-        return True
-
-
     def _retract_rejected_reply(self) -> None:
         """Issue #3145 — убрать из истории ответ, отвергнутый гуардом.
 
-        Раньше отзыв делали только music-гуарды; ретраи Bug D/E,
-        tool-skipped и прочие оставляли плохой ответ в окне, и после ответа
-        ретрая в истории стояли два assistant подряд (живой лог 28.09 — 28
-        мест; «Клубняк в клубе, погнали дальше!» ~10 ходов висел ответом на
-        «ты диджей Снупдог»). Теперь это делает :meth:`_dispatch_turn` для
-        ЛЮБОГО синтетического ретрая.
-
-        ``AgentCore.discard_last_reply`` снимает только ответ последнего
-        хода (повторный вызов и ход без записанного ответа — no-op), поэтому
-        music-гуард, который и сам зовёт отзыв, второй ответ не снесёт.
-        Планируется на loop ДО ретрая — FIFO гарантирует, что ретрай уже не
-        увидит отвергнутый ответ.
+        Зовут фраза кода вместо ответа модели (``music_turn``) и синтетический ход
+        :meth:`_dispatch_turn`. ``AgentCore.discard_last_reply`` снимает только
+        ответ последнего хода (повторный вызов и ход без записанного ответа —
+        no-op).
         """
         core = getattr(self, "_core", None)
         if core is None:
@@ -3667,46 +3258,26 @@ class DialogueNode(DialogueStageMixin, Node):
     # ``_run_turn`` (kwargs + return None) и публичные методы узла
     # остаются без изменений — тесты используют ``node._run_turn(...)``
     # напрямую (см. ``test_dialogue_shell.py``).
-    def _reset_turn_retry_budgets(self, *, is_synthetic: bool) -> None:
-        """Issue #1881 / #2266 / #2631 — сброс retry-флагов на user-turn.
-
-        Делает **ровно** то, что раньше жил в теле ``_run_turn`` в блоке
-        ``if not is_synthetic:`` (issue #1881 ping-pong): сбрасывает
-        поимённые флаги гуардов и ``_synthetic_retries_left``.
-        """
-        if is_synthetic:
-            return
-        self._action_claim_retry_used = False
-        self._universal_action_claim_retry_used = False
-        self._phantom_action_retry_used = False  # Issue #2559
-        self._synthetic_retries_left = self.DEFAULT_SYNTHETIC_RETRIES
 
     def _finalize_turn_dsm(
         self,
         *,
-        guard_retry_pending: bool,
-        tool_retry_dispatched: bool,
         session_handed_over: bool = False,
     ) -> None:
-        """Issue #992 Bug D / S7 — финальный DSM-переход в ``_run_turn``.
+        """Финальный DSM-переход в ``_run_turn``.
 
         Условие штатного закрытия сессии (DIALOGUE → IDLE):
 
         * DSM в ``DIALOGUE`` (нет смысла «закрывать» сессию, которой нет),
-        * ни один guard не запланировал синхронный/отложенный retry
-          (``guard_retry_pending`` / ``tool_retry_dispatched``),
         * ход не отменён новой фразой (``session_handed_over``, issue
           #2939): её приём уже перевёл DSM в DIALOGUE для СЛЕДУЮЩЕГО хода.
 
-        Иначе ретрай/follow-up придёт в ``IDLE`` и короткозамкнётся без
-        LLM (issue #992 Bug D, #1204). После успешного DIALOGUE_END
+        После успешного DIALOGUE_END
         публикуем ROS-стейт через :meth:`_publish_state` — иначе топик
         зависает на старом значении (см. issue #1101).
         """
         if (
             self._dsm.current_state == DialogueStateKind.DIALOGUE
-            and not guard_retry_pending
-            and not tool_retry_dispatched
             and not session_handed_over
         ):
             self._dsm.on_event(DialogueEvent.DIALOGUE_END)
@@ -4052,62 +3623,12 @@ class DialogueNode(DialogueStageMixin, Node):
     def _record_media_turn(
         self, plan: MediaPlan, text: str, phrase: str, done: list
     ) -> None:
-        """Issue #3165 — ход роутера виден модели и гуардам.
-
-        * История модели: пара «реплика → фраза» с тулами в metadata
-          (``AgentCore.record_external_turn``), то есть строка в блоке
-          «выполнено в прошлых ходах».
-        * Журнал для гуардов #2549 / #2559 / #2949
-          (:meth:`_claim_backing_tools`): «я остановил» после стопа
-          роутером — не фантом.
-        """
-        ledger = getattr(self, "_media_actions", None)
-        if ledger is None:
-            ledger = self._media_actions = deque(maxlen=16)
-        ledger.extend(done)
+        """Issue #3165 — ход роутера виден модели: пара «реплика → фраза» с тулами в metadata
+        (``AgentCore.record_external_turn``), то есть строка в блоке «выполнено в прошлых ходах»."""
         # ADR-0148 / #3461: фраза запуска в окне модели — образец, который она копирует в ходе без тула.
         record = history_recorder(getattr(self, "_core", None), plan.command.intent)
         if record is not None:
             record(text, phrase, done)
-
-    def _claim_backing_tools(self, tools_called: Any) -> tuple:
-        """Issue #3165 — тулы хода плюс тулы роутера медиакоманд этой сессии.
-
-        Для широких гуардов «заявил действие без тула» (#2549, #2559,
-        fallback #2949): модель честно пересказывает стоп/громкость/DJ,
-        исполненные роутером, а в её собственном ходе тулов нет. Пересказ
-        сделанного кодом в этой сессии — факт, а не фантом: окна по времени
-        нет (ADR-0150 PR-6, T10), журнал живёт до новой сессии (≤ 16 тулов).
-        """
-        return tuple(tools_called or ()) + tuple(getattr(self, "_media_actions", None) or ())
-
-    def _universal_claim_hit(
-        self,
-        *,
-        spoken: str,
-        tools_called: Any,
-        tool_error_occurred: bool = False,
-    ) -> Optional[UniversalActionClaimHit]:
-        """Issue #2549 + #3165 + #3174 — не подкреплённое заявление действия.
-
-        Журнал роутера (:meth:`_claim_backing_tools`) подкрепляет только
-        ПЕРЕСКАЗ сделанного («я остановил трек», прошедшее время). Обещание
-        в будущем времени («Сейчас поставлю к Элизе!») — это действие ЭТОГО
-        хода, и команда роутера 30 с назад его не выполняет. Живой прогон 29.09 05:00 (issue #3174): журнал роутера
-        заглушил гуард, обещание ушло в TTS с ``tools=[]``.
-        """
-        own = detect_universal_action_claim(
-            spoken=spoken,
-            tools_called=tuple(tools_called or ()),
-            tool_error_occurred=tool_error_occurred,
-        )
-        if own is None or own.tense == "future":
-            return own
-        return detect_universal_action_claim(
-            spoken=spoken,
-            tools_called=self._claim_backing_tools(tools_called),
-            tool_error_occurred=tool_error_occurred,
-        )
 
     async def _execute_media_tool_result(
         self, executor: Any, call: Any
@@ -4136,24 +3657,6 @@ class DialogueNode(DialogueStageMixin, Node):
         return ok, content
 
 
-    # ═══════════════════════════════════════════════════════════════════════
-    #: Issue #1881 — лимит синтетических ретраев на ОДИН user-initiated turn.
-    #:
-    #: Раньше каждый guard (babble / action-claim / code-speech / tool /
-    #: music) имел собственный одноразовый флаг и при ретрае сбрасывал
-    #: чужие через ``if not is_<X>_retry: self._<Y>_retry_used = False``
-    # в ``_run_turn`` — это и был источник ping-pong'a на 8 LLM-вызовов.
-    #:
-    #: Теперь общий budget живёт в ``self._synthetic_retries_left`` и
-    #: декрементится через :meth:`_consume_synthetic_retry`; любой guard
-    #: может выстрелить, пока budget > 0. На свежем user-initiated turn
-    #: ресетится в :meth:`_run_turn`. 2 взято из live-логов:
-    #: babble-retry (1) → если и ретрай babble'нул → ещё 1 (music/babble
-    #: любой) → «растерялся». Больше 2 — уже деградация UX, как раз то,
-    #: что увидели 02.09 на 8 вызовах.
-    DEFAULT_SYNTHETIC_RETRIES: int = 2
-
-
     def _handle_result(
         self,
         result: DialogResult,
@@ -4162,9 +3665,9 @@ class DialogueNode(DialogueStageMixin, Node):
     ) -> None:
         """Publish (or swallow) the LLM response for one turn.
 
-        ``user_input`` is threaded through from :meth:`_run_turn` so the
-        action-claim guards can echo the user request in their retry
-        prompt. Optional for callers that bypass :meth:`_run_turn`.
+        ``user_input`` is threaded through from :meth:`_run_turn` (music
+        phrase of the turn, empty-response fallback). Optional for callers
+        that bypass :meth:`_run_turn`.
 
         ``raw_user_command`` (issue #1204) — оригинальная команда юзера.
         На синтетических ретрай-турах ``user_input`` содержит CRITICAL-
@@ -4252,18 +3755,6 @@ class DialogueNode(DialogueStageMixin, Node):
             )
             spoken = ""
         tools_called = tuple(result.tools_called or ())
-        # Issue #3455 — фраза запуска музыки (шаблон кода) без тула запуска
-        # в этом ходе: наружу честная фраза, неправда снимается из истории.
-        # TEMP(ADR-0148) — #3461.
-        spoken = honest_launch_reply(
-            spoken, tools_called, log=self.get_logger().warning,
-            on_replace=self._retract_rejected_reply,
-        )
-        # Issue #2949 — was any tool THIS TURN called-but-errored (refused /
-        # threw)? A called tool alone does not "back" a spoken claim of
-        # success (``CLAIM_JUSTIFYING_TOOLS`` guards below need this to
-        # not treat a refused ``save_arrangement_preset`` as a done deal).
-        tool_error_occurred = bool(getattr(result, "tool_error_occurred", False))
         # Issue #988 — anti-duplicate: when the LLM already called
         # ``speak_text`` during this cycle, the answer (song / poem /
         # phrase) was voiced directly by the MCP tool via
@@ -4337,75 +3828,10 @@ class DialogueNode(DialogueStageMixin, Node):
         if speak_text_real > 0:
             self.get_logger().info(final_text_skipped_log(spoken, self._verbose_llm))
             return
-        # ADR-0150 PR-7 ч.7d-2 (#3698): ретраи на разметку вызова тула текстом (#2760) и на ``<system>``-шаблон
-        # (#2175) удалены: служебный синтаксис убирает из текста хода ``final_text_for_speech`` (выше), разметку
-        # с известным тулом восстанавливает цикл тулов (``markup_recovery``).
-        # Issue #992 Bug E — «отчитался о действии, но не вызвал тул».
-        # Live 30.08: «Точка сохранена.» / «Точка удалена.» / ««Тисбит»
-        # удалён из медиатеки.» — всё с tools=[]. Один ретрай.
-        #
-        # CC-budget: прямые вызовы здесь +3 (две ``if spoken and ...``
-        # ветки), baseline скорректирован 65 → 68. Заворачивать в
-        # helper нельзя — test_dialogue_retry_flag_wiring
-        # ::test_guard_call_sites_live_in_handle_result требует, чтобы
-        # ВСЕ guard-методы _check_*_and_retry были видны прямо из тела
-        # _handle_result через AST-обход (инцидент 30.08.2026: блок
-        # вызова Bug C′ засунули в __init__, нода не поднималась).
-        if spoken and self._check_unbacked_action_claim_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
-        # Issue #2780 п.3 (память) + #2949 (generic) — общая точка входа
-        # для fallback'ов «ретрай уже потрачен, а claim повторился».
-        # Диспетчер, а не два отдельных ``if`` подряд: ``_handle_result``
-        # грандфазерен в cc_budget_baseline.json на CC=85 с открытой
-        # картой рефакторинга #2556, и растить его ради второй категории
-        # нечестно — ветвление живёт в
-        # ``_publish_action_claim_fallback_if_needed``.
-        if spoken and self._publish_action_claim_fallback_if_needed(
-            spoken=spoken,
-            tools_called=tuple(tools_called or ()),
-            user_input=user_input,
-            raw_user_command=raw_user_command,
-            has_error=result.error is not None,
-            speak_text_real=speak_text_real,
-            tool_error_occurred=tool_error_occurred,
-        ):
-            return
-        # Issue #2549 — широкий anti-hallucination guard для action-claim.
-        # Узкий Bug E guard выше ловит только случаи, где И запрос юзера,
-        # И утверждение LLM попадают в :data:`ACTION_CLAIM_RULES`. LLM часто
-        # отчитывается о действии в свободной форме («проверю состояние и
-        # перезапущу») при пустом ``tools_called``. Это guard-fallback по
-        # action-глаголам в spoken (см. :func:`detect_universal_action_claim`).
-        # На ошибке LLM (``result.error``) не ретраим.
-        if (
-            spoken
-            and result.error is None
-            and self._check_universal_action_claim_and_retry(
-                spoken=spoken,
-                user_input=raw_user_command or user_input,
-                tools_called=tools_called,
-                tool_error_occurred=tool_error_occurred,
-            )
-        ):
-            return
-        # Issue #2559 — phantom-action guard (общий, НЕ music-only).
-        # Round 3 live (15.09.2026, Vision Pi 10.1.1.21): 6 случаев за час
-        # «сейчас перезапущу / сделал / подложу» при ``tools_called=[]``.
-        # Bug E узкий; phantom-action закрывает ОБЩИЙ класс
-        # «обещал действие — но не вызвал тул» (issue #2559, расширение
-        # Bug E на ВСЕ action-verb'ы). CC-budget: +1
-        # прямая ветка в этом catch-site, _handle_result уже в exemptions
-        # cc_budget_baseline.json (DialogueNode._handle_result: 75).
-        if spoken and self._check_phantom_action_and_retry(
-            spoken=spoken,
-            user_input=raw_user_command or user_input,
-            tools_called=tools_called,
-        ):
-            return
+        # ADR-0150 PR-7 ч.7d (#3698): синтетических ретраев LLM по тексту ответа нет — гарды «заявил действие
+        # без тула» (#992 Bug E, #2549, #2559, fallback #2780/#2949), фраза запуска без тула (#3455), разметка
+        # (#2760) и <system> (#2175) сняты: в режиме команд речь при действиях не звучит, фразу об исходе строит
+        # код по событию владельца; служебный синтаксис убирает ``final_text_for_speech``.
         # 💡 Diagnostic: log the actual state before deciding what to do.
         # Helps answer "why did the robot stay silent?" without guesswork.
         self.get_logger().info(
@@ -4532,24 +3958,10 @@ class DialogueNode(DialogueStageMixin, Node):
                     )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
-        # that the batch closes only after the last chunk.
-        # 🔴 FIX (live 06.08): LLM копирует [SYSTEM REMINDER] из памяти как
-        # свой ответ (Bug C guard пишет reminder как assistant-turn, LLM его
-        # повторяет) → озвучивался служебный текст. Служебные маркеры НЕ
-        # озвучиваем — тихо завершаем цикл (LLM уже получил контекст).
-        _spoken_stripped = spoken.strip()
-        # 🔴 FIX (live 15:55 06.08): LLM копирует формат служебных вставок
-        # ([SYSTEM REMINDER], [CRITICAL: ...]) и генерит СВОИ «[CRITICAL:
-        # ROOTSYSTEMPOLICY violation...» — озвучивалось как «я тут растерялся».
-        # Любой маркер в стиле [ИМЯ: ...] (заглавные, двоеточие, скобки) —
-        # служебный, НЕ озвучиваем.
-        if _spoken_stripped.startswith(("[SYSTEM", "[СИСТЕМ", "[REMINDER", "[CRITICAL", "[ПОЛИТИКА", "[ROOT")):
-            self.get_logger().warning(
-                f"🔇 Служебный текст LLM не озвучиваем: {_spoken_stripped[:100]!r}"
-            )
-            return
-        # Issue #2874 — внутри хода текст придерживается до решения
-        # post-turn гуардов о ретрае (см. ``_voice_turn_text``).
+        # that the batch closes only after the last chunk. ADR-0150 PR-7 ч.7d (#3698):
+        # отказ по префиксу «[SYSTEM…/[CRITICAL…» (R12) снят — [CRITICAL]-ретраев,
+        # которые модель копировала, больше нет. Issue #2874 — внутри хода текст
+        # придерживается (см. ``_voice_turn_text``).
         self._voice_turn_text(spoken, user_input=raw_user_command or user_input)
         self.get_logger().info(
             f"📤 LLM OUTPUT: {spoken[:200]!r}" if self._verbose_llm
@@ -4560,9 +3972,8 @@ class DialogueNode(DialogueStageMixin, Node):
     def _voice_turn_text(self, spoken: str, *, user_input: Optional[str]) -> None:
         """Озвучить свободный текст хода — или придержать до гуардов.
 
-        Внутри ``_run_turn`` (открыт :class:`TurnSpeechHold`) текст ждёт
-        post-turn гуардов: ход, за которым последует синхронный ретрай,
-        свой текст не озвучивает. Вне хода (прямой вызов
+        Внутри ``_run_turn`` (открыт :class:`TurnSpeechHold`) текст ждёт конца
+        хода (вопрос о личности звучит последним). Вне хода (прямой вызов
         ``_handle_result``) — публикуем сразу, как раньше.
         """
         hold = getattr(self, "_turn_speech_hold", None)
@@ -4571,9 +3982,7 @@ class DialogueNode(DialogueStageMixin, Node):
             return
         hold.hold(spoken, user_input)
 
-    def _release_turn_speech(
-        self, hold: Optional[TurnSpeechHold], *, retry_dispatched: bool,
-    ) -> None:
+    def _release_turn_speech(self, hold: Optional[TurnSpeechHold]) -> None:
         """Выпустить (или выбросить) придержанный текст хода (issue #2874)."""
         if hold is None:
             return
@@ -4584,7 +3993,6 @@ class DialogueNode(DialogueStageMixin, Node):
         self._publish_turn_text(
             hold.text,
             user_input=hold.user_input,
-            retry_dispatched=retry_dispatched,
             retracted=hold.retracted,
         )
 
@@ -4594,24 +4002,20 @@ class DialogueNode(DialogueStageMixin, Node):
         return bool(snapshot is not None and (snapshot.dj or snapshot.is_playing()))
 
     def _publish_turn_text(
-        self, spoken: str, *, user_input: Optional[str],
-        retry_dispatched: bool = False, retracted: bool = False,
+        self, spoken: str, *, user_input: Optional[str], retracted: bool = False,
     ) -> None:
         """Решить через :func:`decide_turn_speech`, что звучит, и опубликовать."""
         chunks = split_into_chunks(spoken)
         text = decide_turn_speech(
             spoken,
             n_chunks=len(chunks),
-            retry_dispatched=retry_dispatched,
             retracted=retracted,
-            budget_exhausted=getattr(self, "_retry_budget_exhausted_in_turn", False),
             music_context=self._music_reply_context(),
             lyrics_requested=wants_lyrics(user_input),
         )
         if text is None:
             self.get_logger().info(
-                "🔇 [issue 2874] ответ хода не озвучиваю (ретрай/отзыв гуардом, "
-                f"retry={retry_dispatched} retracted={retracted}): {spoken[:120]!r}"
+                f"🔇 [issue 2874] ответ хода не озвучиваю (отозван, retracted={retracted}): {spoken[:120]!r}"
             )
             return
         if text != spoken:
@@ -4852,235 +4256,6 @@ class DialogueNode(DialogueStageMixin, Node):
             self._response_pub.publish(msg)
         return total
 
-    def _publish_action_claim_fallback_if_needed(
-        self,
-        *,
-        spoken: str,
-        tools_called: Tuple[str, ...],
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-        has_error: bool,
-        speak_text_real: int,
-        tool_error_occurred: bool = False,
-    ) -> bool:
-        """Issue #2780 п.3 + #2949 — диспетчер fallback'ов после ретрая.
-
-        Одноразовый ретрай action-claim'а (``_action_claim_retry_used``)
-        тратится на ПЕРВОМ ложном заявлении в ходе. Если модель повторяет
-        заявление второй репликой того же хода, guard уже молчит, и без
-        подмены ``spoken`` юзер услышит уверенное «всё готово» / «всё на
-        месте» про несделанное. Каждая категория
-        :data:`ACTION_CLAIM_RULES`, у которой есть честная констатация на
-        замену, получает свой ``_publish_*_fallback_if_needed``; здесь —
-        единственная точка входа из ``_handle_result``.
-
-        Порядок: память (#2780) → generic anti-hallucination (#2949).
-        Ветки не пересекаются — у каждой свой контекстный гейт (память —
-        «запомни/запиши/сохрани» не про точку и не про трек, generic —
-        любой тул из ``CLAIM_JUSTIFYING_TOOLS`` вызван, но ошибся ИЛИ не
-        вызван вовсе), так что порядок тут даёт стабильность, а не
-        приоритет. Музыкальный fallback (#2548) удалён в ADR-0149 PR-13a.
-
-        Returns:
-            ``True`` — fallback опубликован, вызывающий обязан сделать
-            ``return`` из ``_handle_result`` (оригинальный ``spoken``
-            в TTS НЕ идёт).
-        """
-        kwargs = dict(
-            spoken=spoken,
-            tools_called=tools_called,
-            user_input=user_input,
-            raw_user_command=raw_user_command,
-            has_error=has_error,
-            speak_text_real=speak_text_real,
-        )
-        if self._publish_fact_memory_save_fallback_if_needed(**kwargs):
-            return True
-        return self._publish_universal_action_claim_fallback_if_needed(
-            **kwargs,
-            tool_error_occurred=tool_error_occurred,
-        )
-
-    def _publish_universal_action_claim_fallback_if_needed(
-        self,
-        *,
-        spoken: str,
-        tools_called: Tuple[str, ...],
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-        has_error: bool,
-        speak_text_real: int,
-        tool_error_occurred: bool = False,
-    ) -> bool:
-        """Issue #2949 — fallback после НЕудачного universal-action-claim ретрая.
-
-        Живой лог 24.09: ``save_arrangement_preset`` вернул отказ
-        («недоступен»), LLM ответила «Записала пресет…», один ретрай
-        (:meth:`_check_universal_action_claim_and_retry`) ушёл с
-        CRITICAL-просьбой либо повторить, либо честно сказать о
-        неудаче — а модель СНОВА заявила об успехе («Записала твоё
-        предпочтение…»). Guard уже потратил свой одноразовый ретрай
-        (``_universal_action_claim_retry_used``) и молчит; без подмены
-        ``spoken`` юзер слышит вторую по счёту ложь подряд.
-
-        Условия — ретрай уже потрачен, ход НЕ с ошибкой LLM, и :func:`detect_universal_action_claim` (с той же
-        ``tool_error_occurred``) СНОВА считает заявление непокрытым.
-        Один и тот же детектор для ретрая и для fallback'а — критерий
-        «подкреплено» не может разъехаться между двумя местами.
-        """
-        if has_error or not getattr(self, "_universal_action_claim_retry_used", False):
-            return False
-        hit = self._universal_claim_hit(
-            spoken=spoken,
-            tools_called=tools_called,
-            tool_error_occurred=tool_error_occurred,
-        )
-        if hit is None:
-            return False
-        # Issue #3165 — в ходе ни один тул не исполнялся и не падал:
-        # «Не получилось выполнить» было бы неправдой (попытки не было).
-        fallback = build_action_claim_failure_fallback(
-            hit, nothing_attempted=not tools_called and not tool_error_occurred
-        )
-        self.get_logger().warning(
-            "🛟 [issue 2949 fallback] action-claim повторился после "
-            f"ретрая (tool_error_occurred={tool_error_occurred!r}) — "
-            f"публикую честную неудачу вместо claim'а: spoken={spoken[:80]!r}"
-        )
-        try:
-            self._publish_response(fallback, animation="neutral")
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self.get_logger().warning(
-                    f"⚠️ fallback publish failed: {exc}"
-                )
-            except Exception:
-                pass
-        return True
-
-    @staticmethod
-    def _fact_memory_save_rule():
-        """Issue #2780 п.3 — правило ``fact_memory_save`` из таблицы.
-
-        Единственный источник правды и для гейта по ``user_re``, и для
-        списка закрывающих тулов (``memory_save`` — факт,
-        ``register_speaker`` — имя) лежит в :data:`ACTION_CLAIM_RULES`.
-        Копировать оттуда что-либо сюда нельзя: добавленный в правило
-        тул молча перестанет закрывать заявку, и робот начнёт извиняться
-        за запись, которая на самом деле прошла.
-        """
-        return next(
-            (r for r in ACTION_CLAIM_RULES
-             if r.category == "fact_memory_save"),
-            None,
-        )
-
-    def _fact_memory_save_tools(self) -> frozenset:
-        """Issue #2780 п.3 — тулы, закрывающие заявку ``fact_memory_save``."""
-        rule = self._fact_memory_save_rule()
-        return rule.tools if rule is not None else frozenset()
-
-    def _fact_memory_fallback_eligible(
-        self, user_input: Optional[str],
-    ) -> bool:
-        """Issue #2780 п.3 — юзер в этом ходе правда просил ЗАПОМНИТЬ?
-
-        Гейт — ``user_re`` того же правила («запомни/запиши/сохрани/не забудь/заметь», с
-        negative lookahead на точку/трек — у них свои правила и свои
-        тулы). Без этого гейта потраченный на waypoint-claim ретрай
-        заставил бы «Не получилось точно сохранить факт» звучать в
-        совершенно постороннем ходе.
-        """
-        rule = self._fact_memory_save_rule()
-        if not user_input or rule is None:
-            return False
-        try:
-            return bool(rule.user_re.search(user_input))
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _publish_fact_memory_save_fallback_if_needed(
-        self,
-        *,
-        spoken: str,
-        tools_called: Tuple[str, ...],
-        user_input: Optional[str],
-        raw_user_command: Optional[str],
-        has_error: bool,
-        speak_text_real: int,
-    ) -> bool:
-        """Issue #2780 п.3 — fallback spoken после НЕудачного memory-ретрая.
-
-        Прогон 35734532425, акт «Знакомство», шаг ``n206_boris_memory`` —
-        один ход, три реплики подряд:
-
-        1. «Запомнил: Спартак с 98-го, пицца раз в неделю.» ``tools=[]``
-           → Bug E guard поймал, потратил одноразовый ретрай;
-        2. ретрай честно признался («у меня в памяти сбой, проверь»);
-        3. «Всё на месте, Спартак и пицца в памяти, запись подтверждена.»
-           ``tools=['memory_context']`` — ЧТЕНИЕ памяти, не запись.
-
-        На третьей реплике ``_action_claim_retry_used`` уже True: guard
-        в этом ходе больше не выстрелит, и юзер уходит с верой в запись,
-        которой нет. PR #2782 научил ``claim_re`` ловить формулировку
-        («всё на месте», «запись подтверждена») — эта ветка подменяет
-        такой ``spoken`` честной констатацией ПЕРЕД публикацией в TTS.
-
-        Условия все ОДНОВРЕМЕННО:
-
-        1. ``_action_claim_retry_used == True`` — ретрай уже потрачен
-           в этой user-turn;
-        2. ни один тул из ``rule.tools`` (``memory_save`` /
-           ``register_speaker``) не вызван. ВАЖНО: здесь НЕЛЬЗЯ требовать
-           пустой ``tools_called`` — в живом логе он равен ``['memory_context']``
-           (чтение), и проверка «список пуст» пропустила бы ровно тот
-           случай, ради которого карточка заведена;
-        3. ``speak_text_real == 0`` (как у остальных guard'ов цепочки);
-        4. юзер в этом ходе просил запомнить — ``user_re`` правила
-           (см. :meth:`_fact_memory_fallback_eligible`);
-        5. ``spoken`` всё ещё матчит ``claim_re`` категории
-           ``fact_memory_save``;
-        6. нет ``result.error`` — честное сообщение об ошибке LLM
-           не маскируем.
-
-        Returns:
-            ``True`` — fallback опубликован, вызывающий должен вернуть
-            ``return`` из ``_handle_result``.
-        """
-        if (
-            has_error
-            or speak_text_real != 0
-            or (set(tools_called or ()) & self._fact_memory_save_tools())
-            or not getattr(self, "_action_claim_retry_used", False)
-        ):
-            return False
-        if not self._fact_memory_fallback_eligible(
-            raw_user_command or user_input,
-        ):
-            return False
-        if not spoken_matches_claim_category("fact_memory_save", spoken):
-            return False
-        self._emit_fact_memory_save_fallback(spoken)
-        return True
-
-    def _emit_fact_memory_save_fallback(self, spoken: str) -> None:
-        """Issue #2780 п.3 — публикуем честный fallback + warning в лог."""
-        fallback = build_fact_memory_save_fallback()
-        self.get_logger().warning(
-            f"🛟 [issue 2780 fallback] подтверждение записи в память "
-            f"повторилось после ретрая без memory_save — публикую "
-            f"констатацию вместо claim'а: spoken={spoken[:80]!r}"
-        )
-        try:
-            self._publish_response(fallback, animation="neutral")
-        except Exception as exc:  # noqa: BLE001
-            try:
-                self.get_logger().warning(
-                    f"⚠️ fallback publish failed: {exc}"
-                )
-            except Exception:
-                pass
-
     def _speak_direct(self, text: str, language: str | None = None) -> str:
         """Озвучить текст напрямую (без AgentCore).
 
@@ -5253,8 +4428,6 @@ class DialogueNode(DialogueStageMixin, Node):
         if backlog is not None:
             backlog.clear()
         self._pending_unaddressed = None
-        # 2b. Журнал действий роутера (#3165): пересказ «я остановил» после сброса — уже не этой сессии.
-        self._media_actions = deque(maxlen=16)
         # 3. DSM → IDLE из любого состояния (rescue path).
         try:
             self._dsm.reset(DialogueStateKind.IDLE)

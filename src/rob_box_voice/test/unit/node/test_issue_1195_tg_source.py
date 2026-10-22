@@ -57,7 +57,6 @@ def node():
     # ``object.__new__`` skips ``__init__`` — anything the SUT reads must be
     # pre-seeded explicitly. Without these the wake-gate tests below
     # AttributeError on the next code path that walks into ``_run_turn``.
-    n._action_claim_retry_used = False
     return n
 
 
@@ -139,7 +138,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._dsm.current_state = "idle"  # не DIALOGUE — финальный DIALOGUE_END не нужен
     n._publish_state = MagicMock()
     n._maybe_record_session_end = MagicMock()
-    n._action_claim_retry_used = False
 
     logger = MagicMock()
     n.get_logger = lambda: logger
@@ -152,10 +150,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._core = MagicMock()
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
-    # Issue #992 Bug C' (regression 30.08): новые retry-флаги в __init__
-    # DialogueNode — фикстура через object.__new__ их не получает, задаём вручную.
-    # _action_claim_retry_used живёт в _check_unbacked_action_claim_and_retry.
-    n._action_claim_retry_used = False
 
     await n._run_turn("продолжай", from_tg=True)
 

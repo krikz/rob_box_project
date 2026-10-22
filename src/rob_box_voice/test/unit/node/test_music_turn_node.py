@@ -37,11 +37,8 @@ def _make_node(turn: MusicTurn, set_tracks=None) -> DialogueNode:
         setattr(n, attr, MagicMock())
     n._active_tg_chat_id = None
     n._verbose_llm = False
-    n._action_claim_retry_used = False
-    n._retry_dispatched_in_turn = False
     n._run_task = None
     n._startup_greeting_fired = False
-    n._consume_synthetic_retry = MagicMock(return_value=True)
     n._music_player_state = MusicPlayerState(state="playing", track_id="t1", dj=True)
     n._llm_skipped_counter = new_llm_skip_counter()
     n._tool_executor = SimpleNamespace(music_turn=turn)

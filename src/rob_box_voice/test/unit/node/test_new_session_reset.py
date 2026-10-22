@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import deque
 from unittest.mock import MagicMock
 
 import pytest
@@ -131,9 +130,7 @@ class TestOnSttNewSession:
     )
     def test_voice_phrase_resets_without_llm(self, phrase):
         n = _make_node()
-        n._media_actions = deque(["stop_music"])  # журнал роутера (#3165) прошлой сессии
         _stt(n, phrase)
-        assert not n._media_actions  # ADR-0150 PR-6 (T10): пересказ прошлой сессии больше не подкреплён
         n._dispatch_turn.assert_not_called()
         assert n._llm_skipped_counter["new_session"] == 1
         n._cancel_run.assert_called()

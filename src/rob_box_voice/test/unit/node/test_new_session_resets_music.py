@@ -74,7 +74,6 @@ def _make_turn_node() -> DialogueNode:
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._action_claim_retry_used = False
     return n
 
 

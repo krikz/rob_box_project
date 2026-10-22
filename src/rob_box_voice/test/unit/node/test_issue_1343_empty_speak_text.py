@@ -42,12 +42,6 @@ def _make_node() -> DialogueNode:
     n._verbose_llm = False
     n._memory = MagicMock()
     n._active_tg_chat_id = None
-    # Upstream-regression t_5e06c47d: dialogue_node.py:640 / :678 / :682.
-    # ``_handle_result`` reads ``_code_speech_retry_used`` (line 3495) and
-    # ``_action_claim_retry_used`` (line 3555) — every test that calls it
-    # through ``object.__new__`` needs these seeded explicitly to avoid
-    # AttributeError before we ever get to the assertion.
-    n._action_claim_retry_used = False
     return n
 
 

@@ -29,7 +29,6 @@ import pytest
 
 from rob_box_harness.core.agent_core import DialogResult
 from rob_box_llm.provider import ToolResult
-from rob_box_voice.core.dialogue_guards import ACTION_CLAIM_NOTHING_DONE_TEXT
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
@@ -73,12 +72,9 @@ def _make_node(*, playing: bool) -> DialogueNode:
     n._active_tg_chat_id = None
     n._effects = MagicMock()
     n._verbose_llm = False
-    n._action_claim_retry_used = False
-    n._retry_dispatched_in_turn = False
     n._run_task = None
     n._task_lock = MagicMock()
     n._startup_greeting_fired = False
-    n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._music_player_state = MusicPlayerState(state="playing" if playing else "idle")
     # роутер медиакоманд (#3134)
@@ -161,65 +157,3 @@ def test_fact2_router_stop_backs_the_true_claim(run_plans) -> None:
 
     n._dispatch_turn.assert_not_called()
     assert LIVE_AFTER_STOP_ANSWER in _said(n)
-
-
-def test_same_claim_without_router_action_is_still_phantom() -> None:
-    n = _make_node(playing=False)
-    n._handle_result(
-        _result(LIVE_AFTER_STOP_ANSWER), user_input=LIVE_WHAT_DID_YOU_PLAY
-    )
-
-    n._dispatch_turn.assert_called_once()
-    assert LIVE_AFTER_STOP_ANSWER not in _said(n)
-
-
-def test_router_action_does_not_outlive_the_session(run_plans) -> None:
-    """После новой сессии стоп роутера заявление не подкрепляет (окна по времени нет — ADR-0150 PR-6, T10)."""
-    n = _make_node(playing=True)
-    n._route_media_command("выключи музыку")
-    run_plans()
-    assert "stop_music" in n._claim_backing_tools(())
-    n._media_actions.clear()  # то же, что делает _reset_dialogue_session
-
-    n._music_player_state = MusicPlayerState(state="idle")
-    n._handle_result(
-        _result(LIVE_AFTER_STOP_ANSWER), user_input=LIVE_WHAT_DID_YOU_PLAY
-    )
-
-    n._dispatch_turn.assert_called_once()
-
-
-# ── Пункт 4: фраза-отказ без попытки не звучит ─────────────────────────
-
-
-def test_repeated_claim_without_any_tool_is_not_called_a_failure() -> None:
-    """Ретрай #2549 потрачен, заявление повторилось, тулов в ходе не было."""
-    n = _make_node(playing=False)
-    n._universal_action_claim_retry_used = True
-    n._handle_result(
-        _result("Сейчас тишина, последний трек я остановил."),
-        user_input=LIVE_QUESTION,
-    )
-
-    said = _said(n)
-    assert FAILURE_PHRASE not in said
-    assert ACTION_CLAIM_NOTHING_DONE_TEXT in said
-    assert "я остановил" not in said
-
-
-def test_failed_tool_keeps_honest_failure_phrase() -> None:
-    """Тул упал — «Не получилось выполнить» по-прежнему правда (#2949)."""
-    n = _make_node(playing=False)
-    n._universal_action_claim_retry_used = True
-    published = n._publish_universal_action_claim_fallback_if_needed(
-        spoken="Записала пресет.",
-        tools_called=("save_arrangement_preset",),
-        user_input="сохрани пресет",
-        raw_user_command="сохрани пресет",
-        has_error=False,
-        speak_text_real=0,
-        tool_error_occurred=True,
-    )
-
-    assert published is True
-    assert FAILURE_PHRASE in _said(n)

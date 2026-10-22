@@ -25,9 +25,6 @@ def make_result_node() -> DialogueNode:
     n._active_tg_chat_id = None
     n._effects = MagicMock()
     n._verbose_llm = False
-    # Флаги оставшихся гуардов «заявил без тула» (#992 Bug E и др.).
-    n._action_claim_retry_used = False
-    n._retry_dispatched_in_turn = False
     n._run_task = None
     n._task_lock = MagicMock()
     n._startup_greeting_fired = False

@@ -40,3 +40,18 @@ def test_state_answer_to_performance_word_is_spoken_once():
 
     assert _spoken(n) == ["<speak>Сейчас тишина — ничего не играет.</speak>"]
     n._dispatch_turn.assert_not_called()
+
+
+def test_reply_text_never_starts_a_second_llm_call():
+    """ADR-0150 PR-7 ч.7d-4: гарды «заявил без тула» (#992 Bug E, #2549, #2559) и фраза запуска без тула (#3455)
+    сняты — ни на какой текст ответа нода не диспатчит синтетический ход и не подменяет фразу."""
+    for text, user in (("Точка сохранена.", "запомни эту точку как кухня"),
+                       ("Сейчас перезапущу трек.", "что-то тихо"),
+                       ("Включаю диджей-сет. Тема — космос.", "как дела")):
+        n = make_result_node()
+        n._dispatch_turn = MagicMock()
+
+        n._handle_result(_reply(text), user_input=user)
+
+        n._dispatch_turn.assert_not_called()
+        assert len(_spoken(n)) == 1, (text, _spoken(n))
