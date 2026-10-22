@@ -516,8 +516,7 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         raise _Bad("bad_enum", f"perform.kind={perf.kind}", kn.PERFORM_KINDS)
     if perf.backing not in kn.PERFORM_BACKINGS:
         raise _Bad("bad_enum", f"perform.backing={perf.backing}", kn.PERFORM_BACKINGS)
-    if not kn.SEGMENTS_MIN <= len(perf.segments) <= kn.SEGMENTS_MAX or not all(perf.segments):
-        raise _Bad("bad_segments", f"{len(perf.segments)} сегментов")
+    _check_segments(perf, busy)
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
     for name, per in (("expression_per_segment", perf.expression_per_segment),
@@ -527,6 +526,16 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
     _check_edit(cmd.edit_pending, busy)
+
+
+def _check_segments(perf: Performance, busy: Busy) -> None:
+    """Число сегментов. Во время выступления ``perform`` — правка (MERGE): хватает одного нового куплета, а без
+    куплетов, но с подложкой — «добавь бит» (#993), бит ставит хост выступления. A22 22.10 (#3700): DeepSeek на
+    «Робот, добавь бит» шлёт ``perform{backing: beat, segments: []}`` — раньше ``bad_segments`` и ход провален."""
+    running = busy.active_segment is not None
+    low = (0 if perf.backing in kn.PERFORM_BACKING_MOODS else 1) if running else kn.SEGMENTS_MIN
+    if not low <= len(perf.segments) <= kn.SEGMENTS_MAX or not all(perf.segments):
+        raise _Bad("bad_segments", f"{len(perf.segments)} сегментов")
 
 
 def _check_edit(edit_pending: bool, busy: Busy) -> None:

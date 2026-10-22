@@ -203,11 +203,7 @@ class PerformHost:
         """«Добавь бит» во время чтения (#993): ``True`` — бит заказан выступлению (его ещё не было)."""
         with self._lock:
             block = self.block
-            if block is None or block.ended:
-                return False
-            effects = block.add_backing(backing, self._clock())
-            self._run.apply(effects)
-            return bool(effects)
+            return block is not None and not block.ended and self._add_backing_locked(block, backing)
 
     # -- события владельцев ---------------------------------------------------------------------------------------------
 
@@ -254,12 +250,21 @@ class PerformHost:
         block = self.block
         if block is None or block.ended:
             return {"status": "rejected", "reason": "edit_without_active_perform"}
+        added = perf.backing in kn.PERFORM_BACKING_MOODS and self._add_backing_locked(block, perf.backing)
+        if not perf.segments:  # «добавь бит» командой выступления (#993, A22 #3700): только бит, куплеты прежние
+            return {"status": "done", "backing": True} if added else {"status": "rejected", "reason": "no_backing"}
         perf = Performance(perf.kind, perf.segments, perf.backing, perf.expression_per_segment,
                            (block.active_segment or 0) + 1, perf.voice_per_segment)
         effects = block.edit(perf, self._clock())
         self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
         return {"status": "rejected", "reason": rejected[0].reason} if rejected else {"status": "done"}
+
+    def _add_backing_locked(self, block: PerformBlock, backing: str) -> bool:
+        """Бит выступлению, у которого его нет (#993): ``True`` — заказан; уже есть или решается — ``False``."""
+        effects = block.add_backing(backing, self._clock())
+        self._run.apply(effects)
+        return bool(effects)
 
 
 __all__ = ["AGENT", "EffectRunner", "PerformHost", "TICK_S"]
