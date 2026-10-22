@@ -80,7 +80,11 @@ _REPLAY_CACHE_SIZE = 1024
 #: slice-гарда. После #2132 sender берётся из ``node.get_name()``, и
 #: ``avatar_supervisor`` подписывает свои запросы как
 #: ``avatar_supervisor`` — поэтому он должен быть в whitelist.
-DEFAULT_ALLOWED_SENDERS = frozenset({"dialogue_node", "avatar_supervisor", "harness"})
+#: Имя LLM-личности в MCP: так подписываются запросы и по этому имени выбирается срез в ``slice_policy.yaml``. Не
+#: имя ROS-ноды: личность одна, а нод у неё две (v1 ``dialogue_node``, v2 ``dialog_node``) — одна запись знания (#3853).
+PERSONALITY_SENDER = "dialogue_node"
+
+DEFAULT_ALLOWED_SENDERS = frozenset({PERSONALITY_SENDER, "avatar_supervisor", "harness"})
 
 
 class RequestAuthenticator:

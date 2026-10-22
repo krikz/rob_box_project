@@ -120,8 +120,11 @@ def build_tools(node: Any) -> Any:
     from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
     from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: PLC0415
     from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415
+    from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER  # noqa: PLC0415
 
-    provider = ROSMCPToolProvider(LLMToolCallAdapter(node, turn_context=lambda: {"utterance_id": node.utterance_id}))
+    # Подпись и срез тулов — личности (как у v1), а не по имени ROS-ноды ``dialog_node`` (#3853).
+    adapter = LLMToolCallAdapter(node, sender=PERSONALITY_SENDER, turn_context=lambda: {"utterance_id": node.utterance_id})
+    provider = ROSMCPToolProvider(adapter)
     provider.update_tools([{"type": "function", "function": {"name": s.name, "description": s.description,
                                                              "parameters": dict(s.parameters)}}
                            for s in ToolRegistry().list_tools()])

@@ -73,6 +73,8 @@ def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
     if status not in kn.ACTION_STATUSES:
         status = "rejected" if result.is_error else "done"
     reason = data.get("reason") if isinstance(data.get("reason"), str) else None
+    if reason is None and result.is_error:  # отказ MCP до тула (подпись, срез): причина — в тексте ошибки (#3853)
+        reason = result.content[:200] or None
     return OwnerEvent(request.turn_id, status, reason, {**dict(request.args), **data})
 
 

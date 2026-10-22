@@ -164,6 +164,26 @@ def test_e2e_db_outside_data_only(node, tmp_path):
     events.close()
 
 
+def test_mcp_tools_sign_as_the_personality_not_as_the_ros_node(monkeypatch):
+    """#3853: ``dialog_node`` подписывает MCP-запросы именем личности — иначе mcp_server режет все тулы v2."""
+    import rob_box_mcp_tools.llm_adapter as adapter
+    from rob_box_mcp_tools.mcp_auth import DEFAULT_ALLOWED_SENDERS
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_adapter(node, **kwargs):
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(adapter, "LLMToolCallAdapter", fake_adapter)
+    with pytest.raises(_Stop):
+        dn.build_tools(types.SimpleNamespace(utterance_id=""))
+    assert seen["sender"] in DEFAULT_ALLOWED_SENDERS
+
+
 # -- перебивание по эпохе (PR-9 #3703, ADR-0150 §6.2) ---------------------------------------------------------------
 
 
