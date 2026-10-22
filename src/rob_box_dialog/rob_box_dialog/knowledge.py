@@ -791,12 +791,12 @@ VIOLATION_EMPTY_COMMAND = "empty_command"
 #: Поле аргументов вызова ``command``, которым мост отдаёт исполнителю хода невалидную команду (значение — причина).
 COMMAND_INVALID_FIELD = "invalid"
 #: Провайдеры, отвечающие ОДНОЙ командой, пока конфиг ``llm_command_providers`` не задан (единственное место знания;
-#: yaml-ключ убран из обоих dialogue_node.yaml, параметр объявляет ``dialogue_node``). DeepSeek - провайдер, на котором
-#: режим замерен (ночь 21-22.10, #3698); MiniMax вне списка идёт старым путём v1 (``speak_text``). Решение Шифу 22.10
-#: 05:50Z: «да давай по умолчанию включай». Выключить - ``llm_command_providers: ""`` в yaml. MiniMax в режиме
-#: ``tool_offered`` замерен 22.10 (#3698 ч.7d, docs/research/minimax_command_mode_bench_2026-10-22.md); включать его в
-#: список по умолчанию — решение Шифу.
-COMMAND_PROVIDERS_DEFAULT = "deepseek"
+#: yaml-ключ убран из обоих dialogue_node.yaml, параметр объявляет ``dialogue_node``). DeepSeek - основной, режим
+#: замерен ночью 21-22.10 (#3698); MiniMax-M3 - запасной, режим ``tool_offered`` замерен 22.10 (#3698 ч.7d,
+#: docs/research/minimax_command_mode_bench_2026-10-22.md): при отказе DeepSeek робот отвечает той же командой.
+#: Решения Шифу 22.10: 05:50Z «да давай по умолчанию включай»; после замера ч.7d — «MiniMax как запасной в режиме
+#: команд оправдан по скорости и качеству». Выключить - ``llm_command_providers: ""`` в yaml.
+COMMAND_PROVIDERS_DEFAULT = "deepseek,minimax"
 
 # ---------------------------------------------------------------------------------------------------------------
 # Матрица одновременности (§5.6.2) — данные; читает ``plan.composition.compose``

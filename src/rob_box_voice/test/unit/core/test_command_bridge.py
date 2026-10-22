@@ -346,17 +346,11 @@ def test_command_mode_default_has_one_source_in_knowledge() -> None:
         assert not params.get("llm_command_providers"), f"{path}: второй источник значения (пустая строка - выключатель)"
 
 
-def test_command_mode_is_on_by_default_for_deepseek_only() -> None:
-    """Решение Шифу 22.10 (#3698): без конфига режим команд включён у DeepSeek; MiniMax-фолбек - старый путь v1
-    (включить его - решение Шифу по замеру ч.7d)."""
-    assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek"
+def test_command_mode_is_on_by_default_for_deepseek_and_minimax_fallback() -> None:
+    """Решения Шифу 22.10 (#3698): без конфига командой отвечают DeepSeek (``tool_choice``) и MiniMax-фолбек
+    (``tool_offered``, замер ч.7d); прочие провайдеры — старый путь v1."""
+    assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek,minimax"
     wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
-    deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
-    assert isinstance(wrap(deepseek), cb.CommandModeLLM) and wrap(minimax) is minimax
-
-
-def test_minimax_in_the_list_gets_tool_offered_and_others_stay_v1() -> None:
-    wrap = cb.wrapper_for("deepseek,minimax")
     deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
     mimo = _Inner(ProviderCapabilities(tools=True), [], name="mimo")
     assert wrap(deepseek).mode == "tool_choice" and wrap(minimax).mode == "tool_offered" and wrap(mimo) is mimo
@@ -449,13 +443,13 @@ class _Down(_Inner):
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_minimax_fallback_in_the_list_answers_with_the_same_command(streaming: bool) -> None:
-    """#3698 ч.7d: DeepSeek лёг — MiniMax-фолбек из списка отвечает той же командой (тул ``command`` без
+def test_minimax_fallback_answers_with_the_same_command_by_default(streaming: bool) -> None:
+    """#3698 ч.7d: DeepSeek лёг — MiniMax-фолбек по умолчанию отвечает той же командой (тул ``command`` без
     ``tool_choice``)."""
     down = _Down(DEEPSEEK_CAPS, [])
     minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Привет, я РОББОКС."),))],
                      name="minimax")
-    wrap = cb.wrapper_for("deepseek,minimax")
+    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
     chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
     core = AgentCore(llm=chain, tools=_Spoken().tools, memory=InMemoryStore(), dsm=_dsm(),
                      system_prompt="ты РОББОКС", use_streaming=streaming)
@@ -469,12 +463,12 @@ def test_minimax_fallback_in_the_list_answers_with_the_same_command(streaming: b
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_fallback_to_a_provider_outside_the_list_keeps_the_old_v1_path(streaming: bool) -> None:
-    """Режим команд по умолчанию (#3698): MiniMax-фолбек вне списка - свои тулы и ``speak_text``, без команды."""
+    """Провайдер вне списка ``llm_command_providers`` - свои тулы и ``speak_text``, без команды."""
     down = _Down(DEEPSEEK_CAPS, [])
     say = ToolCall(id="s1", name="speak_text", arguments={"text": "Привет, я РОББОКС."})
     minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(say,)), LLMResponse(content="")], name="minimax")
     spoken = _Spoken()
-    wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
+    wrap = cb.wrapper_for("deepseek")
     chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
     core = AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
                      system_prompt="ты РОББОКС", use_streaming=streaming)
