@@ -135,26 +135,13 @@ def decide_turn_speech(
 
 
 def final_text_for_speech(result: object, warn) -> str:
-    """Issue #3598 — финальный текст хода, который можно отдавать в авто-TTS.
+    """Финальный текст хода для авто-TTS — как есть.
 
-    Ядро (``AgentCore``) помечает ``internal_text_marker``, когда текст
-    цитирует служебное из контекста хода (``<music_state>``) или имя тула
-    (``speak_text``) — это рассуждение модели, не реплика человеку. Такой
-    текст не озвучивается и не уходит дублем в Telegram: возвращается
-    ``""``, и дальше ``_handle_result`` идёт штатным путём пустого ответа
-    (ход без тулов → честная фраза кода :data:`EMPTY_REPLY_PHRASE`, с тулами
-    → тишина, о действии говорит код). ``warn`` — логгер для строки
-    «🤐 [issue 3598] …».
+    ADR-0150 PR-7 ч.7d-3 (#3698): проверка «текст цитирует служебное из контекста хода» (#3598/#3600,
+    ``internal_text_marker`` ядра) удалена: это была временная заплатка по ADR-0148. ``warn`` — логгер (сигнатура
+    вызова сохранена).
     """
-    text = getattr(result, "spoken_text", "") or ""
-    marker = getattr(result, "internal_text_marker", None)
-    if not marker:
-        return text
-    warn(
-        f"🤐 [issue 3598] финальный текст хода — рассуждение модели "
-        f"(цитирует {marker!r}), не озвучиваю: {text[:160]!r}"
-    )
-    return ""
+    return getattr(result, "spoken_text", "") or ""
 
 
 def final_text_skipped_log(text: str, verbose: bool) -> str:

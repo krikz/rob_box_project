@@ -4742,8 +4742,8 @@ class DialogueNode(DialogueStageMixin, Node):
                     except Exception:
                         pass
                 return
-        # Issue #3598 — рассуждение модели (цитирует <music_state>, имена
-        # тулов; пометило ядро) не озвучиваем и в Telegram не дублируем.
+        # Финальный текст хода для авто-TTS (#3598: проверку «цитирует служебное
+        # из контекста» сняли в ADR-0150 PR-7 ч.7d-3, #3698).
         spoken = strip_history_marker(
             final_text_for_speech(result, self.get_logger().warning)
         )
