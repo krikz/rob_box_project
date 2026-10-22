@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from .dialogue_guards import is_system_template_regurgitated_in_ssml, is_tool_call_markup
+
 #: Потолок «первой фразы» для fallback-озвучки (acceptance #2874: ~120).
 FIRST_SENTENCE_LIMIT: int = 120
 
@@ -137,11 +139,30 @@ def decide_turn_speech(
 def final_text_for_speech(result: object, warn) -> str:
     """Финальный текст хода для авто-TTS — как есть.
 
+    Служебный синтаксис вместо речи — разметка вызова тула (#2760) и ``<system>``-шаблон (#2175) — не озвучивается:
+    дальше по тракту ``build_ssml_payload`` снимает теги, и отказ tts_node их уже не узнал бы (робот прочёл бы значения
+    параметров). Ход без тулов получает честную фразу кода :data:`EMPTY_REPLY_PHRASE`. Детекторы — те же, что у
+    tts_node (одна таблица в ``dialogue_guards``); ретрай LLM на такой ответ удалён в ADR-0150 PR-7 ч.7d-2 (#3698),
+    нормализация переезжает в tts_node в PR-15. ``warn`` — логгер.
+
     ADR-0150 PR-7 ч.7d-3 (#3698): проверка «текст цитирует служебное из контекста хода» (#3598/#3600,
-    ``internal_text_marker`` ядра) удалена: это была временная заплатка по ADR-0148. ``warn`` — логгер (сигнатура
-    вызова сохранена).
+    ``internal_text_marker`` ядра) удалена: это была временная заплатка по ADR-0148.
     """
-    return getattr(result, "spoken_text", "") or ""
+    text = getattr(result, "spoken_text", "") or ""
+    service = _service_syntax(text)
+    if service:
+        warn(f"🤐 [{service}] финальный текст хода — служебный синтаксис, не озвучиваю: {text[:160]!r}")
+        return ""
+    return text
+
+
+def _service_syntax(text: str) -> str:
+    """Метка служебного синтаксиса в тексте хода (``issue 2760`` / ``issue 2175``) или ``""``."""
+    if is_tool_call_markup(text):
+        return "issue 2760"
+    if is_system_template_regurgitated_in_ssml(text.strip()):
+        return "issue 2175"
+    return ""
 
 
 def final_text_skipped_log(text: str, verbose: bool) -> str:

@@ -64,7 +64,8 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     for h in sim.heard:
         assert h.start == pytest.approx(h.at) and on_bar(sim, h.start)
     for a, b in zip(sim.heard, sim.heard[1:]):
-        assert a.end - 1e-6 <= b.start < a.end + BAR_S  # не внахлёст и не дольше такта паузы
+        # не внахлёст и не дольше такта паузы сверх хвоста владельца речи (#3700: такт в хвосте пропускается)
+        assert a.end - 1e-6 <= b.start < a.end + kn.SPEECH_RELEASE_TAIL_S + BAR_S
     assert sim.music_stops() == [MusicStop("bar", "perform_end")]  # outro после речи
     last_end = max(h.end for h in sim.heard)
     stop_t = next(t for t, e in sim.music_log if isinstance(e, MusicStop))

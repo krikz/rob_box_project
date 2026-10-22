@@ -28,17 +28,14 @@ from rob_box_voice.core.dialogue_guards import (
     MUSIC_STOP_OVERRIDES,
     PHANTOM_ACTION_NEGATION_RE,  # Issue #2559 phantom-action
     PHANTOM_ACTION_VERBS_RE,  # Issue #2559 phantom-action
-    SYSTEM_TEMPLATE_REGURGITATE_RE,
     build_action_claim_failure_fallback,  # Issue #2949
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
-    build_system_regurgitate_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,  # Issue #2549 / #2949
     detect_phantom_action_claim,  # Issue #2559 phantom-action
     detect_unbacked_action_claim,
     detect_universal_action_claim,  # Issue #2549 universal action-claim guard
     is_music_stop_command,
-    is_system_template_regurgitated,
     is_system_template_regurgitated_in_ssml,
 )
 
@@ -379,93 +376,6 @@ class TestWatchdogStopReachesTheDialogueLive3108:
         )
 
 
-# ---------------------------------------------------------------------------
-# Issue #2175 — MiniMax-M3 regurgitates ``<system>...</system>`` template
-# ---------------------------------------------------------------------------
-
-
-class TestSystemTemplateRegurgitateDetector:
-    """Live 08.09 (Vision Pi, 14:52) — три запроса подряд после ``set_voice``
-    + multi-voice user_input + новая DJ-skill context дали в ``spoken`` ровно
-    regurgitates системного промпта. Детектор должен ловить этот паттерн и
-    НЕ ловить обычные фразы, в которых тег упомянут вскользь.
-    """
-
-    @pytest.mark.parametrize(
-        "spoken",
-        [
-            # Канонический пример из живого лога 08.09 14:52
-            "<system>\n[получатель ответа забыл указать антропоморфные атрибуты]\n</system>",
-            # Минимальный валидный блок
-            "<system>x</system>",
-            # С whitespace вокруг
-            "  <system>\nfoo\n</system>  \n",
-            # Регистр не имеет значения (MiniMax может отдать <SYSTEM>...)
-            "<SYSTEM>foo</SYSTEM>",
-            # Многострочный с markdown-маркерами внутри
-            "<system>\n- line1\n- line2\n</system>",
-        ],
-    )
-    def test_regurgitated_system_block_is_detected(self, spoken: str) -> None:
-        """Полный парный блок ``<system>...</system>`` в extracted
-        spoken (БЕЗ ``<speak>``-обёртки, без серединного текста)."""
-        assert is_system_template_regurgitated(spoken) is True
-
-    @pytest.mark.parametrize(
-        "spoken",
-        [
-            "Привет!",
-            "Говорю голосом надёжного мужчины.",
-            "",  # пустая строка — частый случай empty spoken
-            None,  # type: ignore[list-item]  # noqa: None должен быть безопасным
-            # Серединный встроенный блок — НЕ regurgitates, а обычная фраза,
-            # где LLM упоминает систему в переносном смысле.
-            "Согласно <system>инструкции</system>, отвечу.",
-            # Незакрытый тег — НЕ полный regurgitates
-            "<system>foo",
-            # Закрывающий тег без открывающего — НЕ полный regurgitates
-            "foo</system>",
-            # ``<system_context>`` имеет ДРУГОЙ закрывающий тег — не
-            # матчится (regex ждёт ровно ``</system>`` без ``_context``)
-            "<system_context>foo</system_context>",
-            # SSML-обёртка в extracted spoken — НЕ regurgitates (это
-            # на вход в tts_node, не в dialogue_node). Для SSML есть
-            # отдельный helper ``is_system_template_regurgitated_in_ssml``.
-            "<speak><system>foo</system></speak>",
-        ],
-    )
-    def test_normal_or_partial_strings_pass(self, spoken: Optional[str]) -> None:
-        """Обычные ответы, серединные ссылки, неполные теги и
-        SSML-обёртки НЕ блокируются этим detector'ом.
-
-        Detector для extracted spoken жёстче чем для SSML: ``^...$``
-        ограничивает всю строку, поэтому серединные ссылки и
-        ``<speak>``-обёрнутый текст НЕ regurgitates для dialogue_node.
-        """
-        assert is_system_template_regurgitated(spoken) is False
-
-    def test_regex_is_shared_between_dialogue_and_tts(self) -> None:
-        """``SYSTEM_TEMPLATE_REGURGITATE_RE`` экспортируется для re-use в
-        tts_node — defence-in-depth. Детектор и regex должны давать
-        одинаковый ответ (защита от drift между двумя стражами).
-        """
-        samples = [
-            ("<system>x</system>", True),
-            ("Привет", False),
-            ("", False),
-            ("  <system>\nfoo\n</system>\n", True),
-            # SSML-обёртка НЕ regurgitates для extracted spoken
-            ("<speak><system>foo</system></speak>", False),
-        ]
-        for text, expected in samples:
-            detector = is_system_template_regurgitated(text)
-            regex = bool(SYSTEM_TEMPLATE_REGURGITATE_RE.match(text or ""))
-            assert detector == expected
-            assert detector == regex, (
-                f"drift between detector and regex for {text!r}"
-            )
-
-
 class TestSystemTemplateRegurgitateInSsml:
     """Defence-in-depth для tts_node — отдельный detector для SSML.
 
@@ -509,59 +419,6 @@ class TestSystemTemplateRegurgitateInSsml:
     def test_normal_ssml_passes(self, ssml: Optional[str]) -> None:
         """Серединные ссылки, нормальная речь, неполные теги."""
         assert is_system_template_regurgitated_in_ssml(ssml) is False
-
-
-class TestBuildSystemRegurgitateRetryPrompt:
-    """Issue #2175 — одноразовый CRITICAL-ретрай на regurgitated template."""
-
-    def test_prompt_contains_critical_marker(self) -> None:
-        prompt = build_system_regurgitate_retry_prompt("test user input")
-        assert "[CRITICAL]" in prompt, (
-            "ретрай должен начинаться с [CRITICAL] маркера — тот же контракт, "
-            "что у build_babble_retry_prompt / build_unbacked_action_retry_prompt"
-        )
-
-    def test_prompt_echoes_original_user_input(self) -> None:
-        """Юзер-интент в ретрае — это оригинальная команда (с обрезанным
-        предыдущим [CRITICAL]-блоком, см. _strip_trailing_critical_block)."""
-        prompt = build_system_regurgitate_retry_prompt(
-            "[Spkr:Денчик] продолжай голосом надёжного мужчины"
-        )
-        assert "[Spkr:Денчик] продолжай голосом надёжного мужчины" in prompt
-
-    def test_prompt_forbids_xml_blocks(self) -> None:
-        """Ретрай явно называет ЗАПРЕЩЁННЫЕ XML-теги — модель должна знать,
-        что regurgitates этих блоков = BUG (как и в babble-ретрае про
-        «слушай/погнали»)."""
-        prompt = build_system_regurgitate_retry_prompt("x")
-        forbidden = [
-            "<system>",
-            "<system_context>",
-            "<hardware>",
-        ]
-        for tag in forbidden:
-            assert tag in prompt, (
-                f"ретрай должен явно называть запрещённый тег {tag!r}, "
-                "иначе модель не поймёт, что именно regurgitates"
-            )
-
-    def test_prompt_handles_none_user_input(self) -> None:
-        """None / пустая строка — крайний случай, не должен падать."""
-        prompt = build_system_regurgitate_retry_prompt(None)
-        assert "[CRITICAL]" in prompt
-        prompt2 = build_system_regurgitate_retry_prompt("")
-        assert "[CRITICAL]" in prompt2
-
-    def test_prompt_strips_previous_critical_block(self) -> None:
-        """Если в user_input уже есть предыдущий [CRITICAL]-блок
-        (вложенный ретрай), он обрезается — иначе модель читает
-        противоречивые инструкции. Контракт тот же, что у babble-retry."""
-        prompt = build_system_regurgitate_retry_prompt(
-            "оригинал\n\n[CRITICAL] предыдущий блок"
-        )
-        # Только один [CRITICAL] — свежий, не дубль от прошлого ретрая
-        assert prompt.count("[CRITICAL]") == 1
-        assert "предыдущий блок" not in prompt
 
 
 # ---------------------------------------------------------------------------
