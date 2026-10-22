@@ -101,7 +101,7 @@ class EffectRunner:
         """Запуск/продление подложки; исход запуска — в блок (``started`` с сеткой или ``rejected`` с причиной)."""
         if backing.replace:  # «да» на «выключить и зачитать?»: сначала снять играющую музыку (сет — тоже)
             await self._tool(STOP_MUSIC, {"boundary": "now"})
-        args = {"intent": "backing", "text": "", "mood": backing.mood, "min_seconds": backing.min_s}
+        args = {"intent": kn.BACKING_INTENT, "text": "", "mood": backing.mood, "min_seconds": backing.min_s}
         result = await self._tool(REQUEST_MUSIC, args)
         if backing.extend:
             return

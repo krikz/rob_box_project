@@ -31,7 +31,7 @@ SPEAK_TOOL = kn.SPEECH_CHANNEL_TOOLS[0]
 #: Запуск музыки во время выступления без бита — его бит (#993, ADR-0150 §5.6.4): клубный трек или бит; мелодия по
 #: названию («включи Калинку») — своя музыка, а не бит выступления.
 BACKING_TOOL = "request_music"
-BACKING_INTENTS = ("track", "backing")
+BACKING_INTENTS = ("track",)
 #: Тул вне таблицы классов (служебный, транспорт) идёт без допуска: ресурсов он не занимает.
 _NO_PLAN = "query"
 
@@ -47,6 +47,19 @@ def _plan_refusal(call: ToolCall, status: str, reason: str, event: Optional[Plan
         data["after"] = event.after_resource
     text = {"timeout": f"Не исполнено: {data.get('after', 'занятый ресурс')} не освободился вовремя.",
             "rejected": "Не исполнено: ресурс занят и это действие его не вытесняет."}[status]
+    return ToolResult(tool_call_id=call.id, content=json.dumps({**data, "message": text}, ensure_ascii=False),
+                      is_error=True, data=data)
+
+
+def _code_only_refusal(call: ToolCall) -> Optional[ToolResult]:
+    """Бит выступления заказывает код (:meth:`PlanToolExecutor.execute_owned`), не LLM: ``intent=backing`` из хода —
+    отказ с причиной, а не молчаливый запуск бита без выступления и без outro (#3700, робот 22.10)."""
+    if call.name != BACKING_TOOL or (call.arguments or {}).get("intent") != kn.BACKING_INTENT:
+        return None
+    data = {"status": "rejected", "reason": "backing_code_only", "tool": call.name}
+    text = (f"Не исполнено: intent={kn.BACKING_INTENT} недоступен — бит под выступление ставит код выступления. "
+            "Для музыки по просьбе человека допустимы intent=track и intent=melody.")
+    _LOG.warning(f"issue #3700: refusing {call.name} intent={kn.BACKING_INTENT} — only the performance code orders it")
     return ToolResult(tool_call_id=call.id, content=json.dumps({**data, "message": text}, ensure_ascii=False),
                       is_error=True, data=data)
 
@@ -113,6 +126,9 @@ class PlanToolExecutor:
         return result
 
     async def _execute(self, call: ToolCall) -> ToolResult:
+        refusal = _code_only_refusal(call)
+        if refusal is not None:
+            return refusal
         if call.name == SPEAK_TOOL and not self.music_turn.speech_allowed():
             # ADR-0148: запуск музыки хода не удался или заиграла пьеса — о музыке говорит код (MusicTurn.phrase()).
             piece, library = self.music_turn.piece_playing(), self.music_turn.library_answered()

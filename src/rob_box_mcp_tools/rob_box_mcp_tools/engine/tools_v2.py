@@ -701,21 +701,23 @@ class RequestMusicTool(MCPTool):
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
                 "человека дословно. Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — "
-                "музыка не заиграла. intent=backing — бит под выступление робота, его ставит код выступления.")
+                "музыка не заиграла.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
+            # Схема для LLM — только track/melody. ``backing`` (BACKING_INTENT) заказывает код выступления; enum не
+            # строгий, чтобы тул принял его от кода, а LLM-путь отказывает в ``PlanToolExecutor.execute`` (#3700).
             MCPToolParameter(name="intent", type="string",
-                             description="track — трек, melody — мелодия по названию, backing — бит выступления",
-                             enum=["track", "melody", "backing"]),  # backing = BACKING_INTENT (литерал — каталог)
+                             description="track — трек, melody — мелодия по названию",
+                             enum=["track", "melody"], enum_strict=False),
             MCPToolParameter(name="text", type="string", description="Слова человека дословно, без пересказа"),
             MCPToolParameter(name="mood", type="string", description="Настроение трека", required=False,
                              enum=sorted(kn.MOOD_ENERGY)),
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
                              enum=["auto", "club", "classical", "folk"]),
             MCPToolParameter(name="min_seconds", type="number", required=False,
-                             description="Только для backing: сколько секунд ещё звучать биту"),
+                             description="Служебный аргумент кода выступления, не заполняй"),
         ]
 
     @property

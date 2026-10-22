@@ -186,6 +186,27 @@ def test_performance_speech_goes_to_its_host_and_the_block_holds_the_perform_col
     assert executor.planner.state.busy() == {} and plan_host.perform_busy(node).active_segment is None
 
 
+def test_3700_llm_cannot_order_the_performance_beat():
+    """Робот 22.10: LLM сама позвала ``request_music(intent=backing)`` на «прочитай рэп под бит» — бит заиграл без
+    выступления и без outro. Из хода такой заказ — отказ с причиной, до владельца музыки он не доходит."""
+    executor, under, events, _ = _executor()
+    executor.performer = _BeatHost(takes=True)
+    result = asyncio.run(executor.execute(
+        _call("1", "request_music", intent=kn.BACKING_INTENT, text="", mood="groove", min_seconds=45)))
+    assert result.is_error is True and under.executed == [] and events == []
+    assert (result.data["status"], result.data["reason"]) == ("rejected", "backing_code_only")
+    assert "intent=backing" in result.content and "intent=track" in result.content
+    assert executor.performer.asked == 0  # и «добавь бит» хост по нему не принимает
+
+
+def test_3700_performance_code_still_orders_the_beat_through_the_owned_path():
+    """Код выступления заказывает бит напрямую (``execute_owned``): без допуска плана и без отказа для LLM."""
+    executor, under, events, _ = _executor()
+    result = asyncio.run(executor.execute_owned(
+        _call("p1", "request_music", intent=kn.BACKING_INTENT, text="", mood="groove", min_seconds=45)))
+    assert result.is_error is False and under.executed == ["request_music"] and events == []
+
+
 class _BeatHost:
     def __init__(self, takes: bool) -> None:
         self.takes, self.asked = takes, 0

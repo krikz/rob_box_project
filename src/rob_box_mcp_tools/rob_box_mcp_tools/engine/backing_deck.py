@@ -22,10 +22,10 @@ import math
 import threading
 from typing import Any, Callable, Dict, Mapping, Optional
 
+from rob_box_dialog.knowledge import BACKING_INTENT
 from rob_box_music.model import BEATS_PER_BAR
 
 _LOG = logging.getLogger(__name__)
-BACKING_INTENT = "backing"
 #: Настроение подложки по умолчанию (``rob_box_music.knowledge.MOOD_ENERGY``).
 DEFAULT_MOOD = "groove"
 #: ``nearly_finished`` подложки — за столько долей до конца последнего прохода: вызов тула продления ≪ двух тактов.

@@ -1564,21 +1564,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'трек (темп, тональность и аранжировку решает код), '
                        'intent=melody — известная мелодия по названию из text. text — '
                        'слова человека дословно. Об успехе робот скажет сам, когда '
-                       'музыка реально заиграет; ok=false — музыка не заиграла. '
-                       'intent=backing — бит под выступление робота, его ставит код '
-                       'выступления.',
+                       'музыка реально заиграет; ok=false — музыка не заиграла.',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
                                                           'description': 'track — '
                                                                          'трек, melody '
                                                                          '— мелодия по '
-                                                                         'названию, '
-                                                                         'backing — '
-                                                                         'бит '
-                                                                         'выступления',
-                                                          'enum': [   'track',
-                                                                      'melody',
-                                                                      'backing']},
+                                                                         'названию',
+                                                          'enum': ['track', 'melody']},
                                             'text': {   'type': 'string',
                                                         'description': 'Слова человека '
                                                                        'дословно, без '
@@ -1600,14 +1593,12 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                      'classical',
                                                                      'folk']},
                                             'min_seconds': {   'type': 'number',
-                                                               'description': 'Только '
-                                                                              'для '
-                                                                              'backing: '
-                                                                              'сколько '
-                                                                              'секунд '
-                                                                              'ещё '
-                                                                              'звучать '
-                                                                              'биту'}},
+                                                               'description': 'Служебный '
+                                                                              'аргумент '
+                                                                              'кода '
+                                                                              'выступления, '
+                                                                              'не '
+                                                                              'заполняй'}},
                           'required': ['intent', 'text'],
                           'additionalProperties': False},
         'signature': {   'params': [   'intent',
