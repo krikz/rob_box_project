@@ -33,7 +33,6 @@ senders:
     - core
     - personality
     - operator.speech
-    - operator.control
     - operator.admin
 
   # Агент чата Telegram (PR-12b, ADR-0150 §9.2): права личности плюс озвучка из чата. Подпись и срез - отдельное
@@ -123,16 +122,9 @@ slices:
     - set_tts_provider
     - list_tts_voices
 
-  # ── OPERATOR.CONTROL: управление диалогом / режимом аватара
-  operator.control:
-    # управление диалогом (только оператор)
-    - dialogue_pause
-    - dialogue_resume
-    # управление голосом/речью (shared с личностью, но только
-    # оператор имеет право в ``operator.speech``)
-    - set_voice_preset
-    - set_voice_language
-    - preview_voice
+  # Срез OPERATOR.CONTROL удалён (ADR-0150 D17, PR-13): все пять его имён были призраками без тула в каталоге.
+  # Пауза личности — сервис /dialog/control супервизора, стиль голоса — /avatar/voice_pipeline, предпрослушка —
+  # /avatar/preview_voice. Гард: test_slice_policy_has_no_ghosts.
 
   # ── OPERATOR.ADMIN: диагностика (только ТАРС)
   operator.admin:

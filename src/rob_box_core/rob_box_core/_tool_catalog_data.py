@@ -1678,7 +1678,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'execution_type': 'instant',
+        'execution_type': 'medium',
         'event_source': '/voice/speech/event',
         'name': 'say',
         'description': 'Произнести текст голосом от имени оператора робота. Используй, '

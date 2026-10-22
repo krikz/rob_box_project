@@ -143,11 +143,31 @@ class TestMaxAge(unittest.TestCase):
         clock = _FakeClock()
         return OperatorJournal(max_age_s=max_age_s, clock=clock), clock
 
-    def test_old_entry_not_rendered(self) -> None:
+    def test_old_entry_only_in_day_summary_without_outcome(self) -> None:
+        """ADR-0150 §7.4: старше ttl — только строкой сводки за сутки с датой, исход не повторяется (#3297)."""
         j, clock = self._journal()
         j.record("ответил оператору", outcome="avatar_supervisor не отвечает")
         clock.advance(3 * 3600)
+        text = j.render()
+        self.assertIn("сводка за сутки по ", text)
+        self.assertIn("ответил оператору", text)
+        self.assertNotIn("не отвечает", text)
+
+    def test_older_than_a_day_not_rendered(self) -> None:
+        j, clock = self._journal()
+        j.record("ответил оператору")
+        clock.advance(25 * 3600)
         self.assertEqual(j.render(), "")
+
+    def test_ttl_per_entry(self) -> None:
+        j, clock = self._journal()
+        j.record("короткое", ttl_s=60, outcome="исход")
+        j.record("обычное", outcome="исход2")
+        clock.advance(120)
+        text = j.render()
+        self.assertIn("обычное — исход2", text)
+        self.assertNotIn("короткое — исход", text)
+        self.assertIn("сводка за сутки", text)
 
     def test_fresh_entry_rendered(self) -> None:
         j, clock = self._journal()
@@ -161,7 +181,8 @@ class TestMaxAge(unittest.TestCase):
         clock.advance(1800)
         self.assertIn("a", j.render())
         clock.advance(1)
-        self.assertEqual(j.render(), "")
+        self.assertNotIn("• только что a", j.render())
+        self.assertIn("сводка за сутки", j.render())
 
     def test_mixed_keeps_only_fresh(self) -> None:
         j, clock = self._journal()
@@ -170,7 +191,8 @@ class TestMaxAge(unittest.TestCase):
         j.record("свежее")
         text = j.render()
         self.assertIn("свежее", text)
-        self.assertNotIn("старое", text)
+        self.assertIn("сводка за сутки по ", text)
+        self.assertEqual(text.count("старое"), 1)  # только в сводке
 
     def test_old_entry_kept_in_memory(self) -> None:
         j, clock = self._journal()

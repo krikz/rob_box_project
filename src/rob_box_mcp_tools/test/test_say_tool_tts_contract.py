@@ -30,13 +30,16 @@ except ImportError:
                  "rob_box_mcp_tools.tools.memory", "rob_box_mcp_tools.tools.music"):
         sys.modules.setdefault(_mod, Mock())
 
+from rob_box_mcp_tools.tools import say as say_module  # noqa: E402
 from rob_box_mcp_tools.tools.say import SayTool  # noqa: E402
 
 M = install_dialog_msgs_stub()
+STARTED, REJECTED = 2, 7
 
 
 @pytest.fixture
-def say_tool():
+def say_tool(monkeypatch):
+    monkeypatch.setattr(say_module, "START_WAIT_S", 0.01)  # владельца речи в тесте нет: событие не придёт
     node = MagicMock()
     publisher = MagicMock()
     node.create_publisher.return_value = publisher
@@ -59,6 +62,38 @@ def test_execute_publishes_speech_request_as_operator(say_tool):
     assert req.text == "<speak>Робот, скажи &amp; улыбнись</speak>"
     assert req.agent == "operator"
     assert result.data["speech_id"] == req.speech_id
+    # события нет за срок ожидания начала: обещание (итог придёт позже), а не «озвучил»
+    assert result.data["status"] == "pending" and result.data["event_ref"] == req.speech_id
+
+
+def _with_owner(events):
+    """``say`` с владельцем речи, который на запрос отвечает событиями ``(kind, reason, seconds)`` агента."""
+    node, pub, sub = MagicMock(), MagicMock(), {}
+
+    def publish(req):
+        for kind, reason, seconds in events:
+            sub["cb"](types.SimpleNamespace(kind=kind, speech_id=req.speech_id, agent="operator", reason=reason,
+                                            seconds=seconds))
+
+    pub.publish.side_effect = publish
+    node.create_publisher.return_value = pub
+    node.create_subscription.side_effect = lambda _t, _topic, cb, *_a, **_k: sub.setdefault("cb", cb)
+    stamp = type(M.SpeechRequest().stamp)()
+    node.get_clock.return_value = types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+    return SayTool(node)
+
+
+def test_say_started_is_pending_by_speech_event_not_success_on_publish():
+    """PR-13 (§9.3, В7): исход ``say`` — событие владельца речи; началась — обещание с ``event_ref``."""
+    result = _with_owner([(STARTED, "", 0.0)]).execute(text="Внимание, люди")
+    assert result.success is True
+    assert result.data["status"] == "pending" and result.data["event_ref"] == result.data["speech_id"]
+
+
+def test_say_rejected_by_owner_is_an_honest_failure():
+    result = _with_owner([(REJECTED, "busy", 0.0)]).execute(text="Привет")
+    assert result.success is False
+    assert (result.data["status"], result.data["reason"]) == ("rejected", "busy")
 
 
 def test_execute_empty_text_publishes_nothing(say_tool):

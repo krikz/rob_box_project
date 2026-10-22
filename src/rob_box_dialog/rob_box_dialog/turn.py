@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
+from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
@@ -378,7 +379,9 @@ class TurnEngine:
         if not text or self._stale(turn, "speech"):
             return
         speech_id = self._ports.say(turn.turn_id, turn.epoch, text, voice, emotion)
-        self.log.said(turn.turn_id, speech_id, text, delivered=self.session.snapshot.agent == kn.TEXT_CHANNEL_AGENT)
+        # реплика не в динамики (чат, шлем оператора) — SpeechEvent о ней не придёт: в окне она сразу, как отдана
+        delivered = agent_spec(self.session.snapshot.agent).sink != Sink.SPEAKERS
+        self.log.said(turn.turn_id, speech_id, text, delivered=delivered)
         turn.said.append(speech_id)
         self._event("speech_requested", turn, text=text, data={"speech_id": speech_id, "voice": voice or ""})
 

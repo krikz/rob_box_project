@@ -28,10 +28,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from rob_box_core.speech_client import SPEECH_REQUEST_TOPIC
 from rob_box_supervisor.supervisor_node import (
     GRIP_OFF_PRESETS,
     GRIP_PTT_RESULT_TOPIC,
-    GRIP_TTS_REQUEST_TOPIC,
     GRIP_TTS_SOURCE,
     GRIP_VOICE_PIPELINE_TOPIC,
     VOICE_PRESET_IDS,
@@ -132,8 +132,8 @@ class TestGripPipelineTopology(unittest.TestCase):
 
     def test_tts_request_publisher_declared(self) -> None:
         """Грип публикует в /voice/speech/request — тот же канал, что say (§7.5)."""
-        self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/speech/request")
+        self.assertIn(SPEECH_REQUEST_TOPIC, self.node._publishers)
+        self.assertEqual(SPEECH_REQUEST_TOPIC, "/voice/speech/request")
 
     def test_default_config_is_no_style(self) -> None:
         """До первого /avatar/voice_pipeline грип «без стиля»: LLM выкл."""

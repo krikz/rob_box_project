@@ -93,7 +93,7 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
-    for name in kn.TOOLS_ALWAYS + (kn.ALOUD_TOOL,) + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
+    for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
         if name in kn.MOTION_TOOLS and not drive:
             continue
         if name in allowed and name not in names and len(names) < kn.TOOLS_VISIBLE_MAX:
