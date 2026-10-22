@@ -2768,6 +2768,12 @@ trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db;
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
 if [ -n "$SCENARIO_FILE" ]; then
     isolate_act_start "$SCENARIO_FILE"
+    # Issue #3871 — музыка/DJ-сет не переживают прогон: 22.10 замер акта 1 шёл под сет из
+    # Telegram. Играет — стоп через подписанный /mcp/execute и ожидание idle; не вышло — E2E_FATAL.
+    # Акт, наследующий окно диалога прошлого (inherits_previous_act=true), плеер не трогает.
+    _music_inherits=no
+    scenario_inherits_previous_act "$SCENARIO_FILE" && _music_inherits=yes
+    ensure_music_stopped_for_act "$_music_inherits"
 fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует

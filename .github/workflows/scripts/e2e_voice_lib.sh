@@ -457,55 +457,202 @@ restore_node_params() {
 
 # Код, исполняемый ВНУТРИ контейнера voice-assistant. Передаётся base64-строкой
 # (python3 -c "exec(b64decode(...))"), чтобы в командной строке ssh не было
-# переводов строк и $'…'-квотинга. argv[1] = провайдер. Печатает одну строку
-# JSON — ответ /mcp/result или {"error": ...}.
-_e2e_tts_restore_py() {
-    cat <<'TTSPY'
+# переводов строк и $'…'-квотинга. Печатает одну строку JSON.
+#
+# ОДНА реализация подписанного вызова /mcp/execute (sender=harness, как
+# scripts/music/live_check_mcp_call.py): общая «шапка» _e2e_mcp_client_py + тело
+# под задачу (_e2e_tts_restore_py: set_voice после акта; _e2e_music_stop_py:
+# стоп музыки ПЕРЕД актом, issue #3871). Вторую подпись не писать.
+_e2e_mcp_client_py() {
+    cat <<'MCPPY'
 import json, sys, time, uuid
+from rob_box_mcp_tools.mcp_auth import RequestAuthenticator
+import rclpy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+
+class McpClient:
+    """Подписанные вызовы тулов через /mcp/execute -> /mcp/result (как у LLM)."""
+
+    def __init__(self, node_name, rid_prefix):
+        self.rid_prefix = rid_prefix
+        self.auth = RequestAuthenticator.from_env(sender="harness")
+        self.can_sign = bool(self.auth.can_sign)
+        self.results = {}
+        self.node = None
+        if not self.can_sign:
+            return
+        rclpy.init()
+        self.node = rclpy.create_node(node_name)
+        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.node.create_subscription(String, "/mcp/result", self._on_result, qos)
+        self.pub = self.node.create_publisher(String, "/mcp/execute", qos)
+        self.spin_until(lambda: self.pub.get_subscription_count() > 0, 10.0)
+
+    def _on_result(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(payload, dict) and payload.get("request_id"):
+            self.results[payload["request_id"]] = payload
+
+    def spin_until(self, predicate, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not predicate():
+            rclpy.spin_once(self.node, timeout_sec=0.2)
+        return bool(predicate())
+
+    def call(self, tool_name, parameters, timeout):
+        """Ответ /mcp/result целиком либо None (таймаут)."""
+        rid = self.rid_prefix + uuid.uuid4().hex[:12]
+        request = {"tool_name": tool_name, "parameters": parameters, "request_id": rid}
+        self.auth.sign(request)  # подпись прямо перед публикацией (окно clock_skew)
+        msg = String()
+        msg.data = json.dumps(request, ensure_ascii=False)
+        self.pub.publish(msg)
+        self.spin_until(lambda: rid in self.results, timeout)
+        return self.results.get(rid)
+
+    def close(self):
+        if self.node is not None:
+            self.node.destroy_node()
+            rclpy.shutdown()
+MCPPY
+}
+
+# argv[1] = провайдер. Ответ /mcp/result на set_voice либо {"error": ...}.
+_e2e_tts_restore_py() {
+    _e2e_mcp_client_py
+    cat <<'TTSPY'
 provider = sys.argv[1]
 from rob_box_voice.tts_voice_registry import default_voice_for
 voice = default_voice_for(provider)
 if not voice:
     print(json.dumps({"error": "no default voice for provider %r" % provider}))
     sys.exit(3)
-from rob_box_mcp_tools.mcp_auth import RequestAuthenticator
-auth = RequestAuthenticator.from_env(sender="harness")
-if not auth.can_sign:
+mcp = McpClient("e2e_tts_restore", "e2e-tts-restore-")
+if not mcp.can_sign:
     print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
     sys.exit(3)
-import rclpy
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
-rclpy.init()
-node = rclpy.create_node("e2e_tts_restore")
-qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
-rid = "e2e-tts-restore-" + uuid.uuid4().hex[:12]
-box = {}
-def on_result(msg):
-    try:
-        payload = json.loads(msg.data)
-    except ValueError:
-        return
-    if payload.get("request_id") == rid:
-        box["payload"] = payload
-node.create_subscription(String, "/mcp/result", on_result, qos)
-pub = node.create_publisher(String, "/mcp/execute", qos)
-deadline = time.monotonic() + 10.0
-while time.monotonic() < deadline and pub.get_subscription_count() == 0:
-    rclpy.spin_once(node, timeout_sec=0.2)
-request = {"tool_name": "set_voice", "parameters": {"voice": voice, "provider": provider}, "request_id": rid}
-auth.sign(request)
-msg = String()
-msg.data = json.dumps(request, ensure_ascii=False)
-pub.publish(msg)
-deadline = time.monotonic() + 20.0
-while time.monotonic() < deadline and "payload" not in box:
-    rclpy.spin_once(node, timeout_sec=0.2)
-node.destroy_node()
-rclpy.shutdown()
-print(json.dumps(box.get("payload", {"error": "timeout: no /mcp/result for " + rid}), ensure_ascii=False))
-sys.exit(0 if "payload" in box else 2)
+payload = mcp.call("set_voice", {"voice": voice, "provider": provider}, 20.0)
+mcp.close()
+print(json.dumps(payload if payload is not None else {"error": "timeout: no /mcp/result for set_voice"}, ensure_ascii=False))
+sys.exit(0 if payload is not None else 2)
 TTSPY
+}
+
+# --- issue #3871 — музыка не должна переживать прогон ---------------------------
+# Утечка состояния между актами/прогонами: замер акта 1 (run 39849541397, 22.10) шёл
+# под DJ-сет, запущенный из Telegram за час до того (во всех ходах
+# <music_state>{"playing":"yes",...,"dj":"on"}); харнесс перед актом делал только
+# сброс сессии диалога. Снимок берём у владельца плеера — latched /voice/music/state
+# (парсер и «играет» — rob_box_voice.core.music_player_state, не своя копия), стоп —
+# теми же подписанными тулами, что у голосового «хватит» (dj_set stop + stop_music).
+# Состояние читается маленьким рабочим процессом внутри voice-assistant (rclpy,
+# TRANSIENT_LOCAL), а не `ros2 topic echo` в сервисном контейнере (OOM).
+# argv[1] = сколько секунд ждать idle после стопа. Печатает одну строку JSON:
+# {"verdict": "was_idle"|"stopped"|"stuck", "before": {...}, "after": {...}, "stop_calls": {...}}.
+_e2e_music_stop_py() {
+    _e2e_mcp_client_py
+    cat <<'MUSICPY'
+idle_timeout = float(sys.argv[1])
+from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+mcp = McpClient("e2e_music_precondition", "e2e-music-stop-")
+if not mcp.can_sign:
+    print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
+    sys.exit(3)
+box = {}
+def on_state(msg):
+    snap = parse_music_state(msg.data)
+    if snap is not None:
+        box["snap"] = snap
+state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       history=HistoryPolicy.KEEP_LAST, depth=1)
+mcp.node.create_subscription(String, MUSIC_STATE_TOPIC, on_state, state_qos)
+def busy():
+    snap = box.get("snap")
+    return snap is not None and (snap.is_playing() or bool(snap.dj))
+def describe():
+    snap = box.get("snap")
+    if snap is None:
+        return {"snapshot": False}
+    return {"snapshot": True, "state": snap.state, "playing": snap.is_playing(), "dj": bool(snap.dj), "track_id": snap.track_id}
+mcp.spin_until(lambda: "snap" in box, 5.0)  # latched: у живого плеера снимок приходит сразу
+report = {"before": describe()}
+if not busy():
+    report["verdict"] = "was_idle"
+else:
+    calls = {}
+    for tool, params in (("dj_set", {"action": "stop"}), ("stop_music", {})):
+        answer = mcp.call(tool, params, 8.0)
+        result = answer.get("result") if isinstance(answer, dict) and isinstance(answer.get("result"), dict) else {}
+        calls[tool] = "timeout" if answer is None else ("ok" if result.get("success") is True else "fail:%s" % (result.get("error") or result.get("message") or "success!=true"))
+    t0 = time.monotonic()
+    mcp.spin_until(lambda: not busy(), idle_timeout)
+    report["stop_calls"] = calls
+    report["after"] = describe()
+    report["idle_after_s"] = round(time.monotonic() - t0, 1)
+    report["verdict"] = "stuck" if busy() else "stopped"
+mcp.close()
+print(json.dumps(report, ensure_ascii=False))
+sys.exit(0)
+MUSICPY
+}
+
+# ensure_music_stopped_for_act INHERITS -- предусловие акта (issue #3871).
+# INHERITS=yes -- акт наследует окно диалога прошлого (inherits_previous_act=true): в этом
+# окне музыка может быть частью разговора -- не трогаем, но говорим об этом.
+# Лог ``E2E_PRECONDITION music=stopped|was_idle|skipped``; играет и не гаснет за
+# E2E_MUSIC_IDLE_WAIT (10 с) -- ``E2E_FATAL: перед актом играет музыка``, exit 2 (trap EXIT
+# вернёт узлы на боевые БД). Не удалось даже прочитать -- тоже FATAL: тишину не доказали.
+# Требует: robot_ros(), log().
+ensure_music_stopped_for_act() {
+    local inherits="${1:-no}" wait_s="${E2E_MUSIC_IDLE_WAIT:-10}" code_b64 out result_line parsed verdict detail
+    if [ "$inherits" = "yes" ]; then
+        echo "E2E_PRECONDITION music=skipped"
+        log "🎵 музыка: акт наследует окно диалога (inherits_previous_act=true) — состояние плеера не трогаем"
+        return 0
+    fi
+    code_b64="$(_e2e_music_stop_py | base64 | tr -d '\n\r')"
+    out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${wait_s}'" 2>/dev/null)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1)"
+    parsed="$(printf '%s' "$result_line" | python3 -c 'import json, sys
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    print("error\tнет JSON-ответа"); sys.exit(0)
+if not isinstance(p, dict) or "verdict" not in p:
+    print("error\t%s" % ((p.get("error") if isinstance(p, dict) else None) or "ответ без verdict")); sys.exit(0)
+b, a = p.get("before") or {}, p.get("after") or {}
+def fmt(d):
+    return "snapshot=нет" if not d.get("snapshot", True) else "playing=%s dj=%s track_id=%s" % (d.get("playing"), d.get("dj"), d.get("track_id"))
+print("%s\tбыло: %s; стоп: %s; после (%s с): %s" % (p["verdict"], fmt(b), p.get("stop_calls", {}), p.get("idle_after_s", "-"), fmt(a) if a else "-"))
+' 2>/dev/null)"
+    verdict="$(printf '%s' "$parsed" | cut -f1)"
+    detail="$(printf '%s' "$parsed" | cut -f2-)"
+    case "$verdict" in
+        was_idle)
+            echo "E2E_PRECONDITION music=was_idle"
+            log "🎵 музыка: перед актом тихо (${detail})"
+            return 0
+            ;;
+        stopped)
+            echo "E2E_PRECONDITION music=stopped"
+            log "🎵 музыка: перед актом играла — остановлена через /mcp/execute dj_set stop + stop_music (${detail})"
+            return 0
+            ;;
+        stuck)
+            echo "E2E_FATAL: перед актом играет музыка — стоп отправлен, но плеер не стал idle за ${wait_s} с (${detail}) — замер под музыкой нечитаем (issue #3871)" >&2
+            exit 2
+            ;;
+        *)
+            echo "E2E_FATAL: перед актом не удалось проверить /voice/music/state (${detail:-<пусто>}) — тишину не доказали, замер мог пойти под музыку (issue #3871)" >&2
+            printf '%s\n' "$out" | tail -3 >&2
+            exit 2
+            ;;
+    esac
 }
 
 # Issue #3270: убирает из лога voice-assistant дамп LLM-запроса
