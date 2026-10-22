@@ -258,6 +258,26 @@ def _publish_speaker_result(pub, payload: dict) -> None:
     pub.publish(fill_speaker_result(SpeakerResult(), payload))
 
 
+class _E2EStampedPublisher:
+    """Издатель ``SpeakerResult``, ставящий метку ``e2e_db`` на КАЖДОЕ сообщение (#3876).
+
+    Профили e2e-БД синтетические («Саша», «Борис»); потребители, пишущие имя в
+    постоянное хранилище (галерея лиц), не должны принимать их за живых людей.
+    Метку ставит единственная точка выхода, а не семь мест публикации.
+    """
+
+    def __init__(self, pub, is_e2e) -> None:
+        self._pub = pub
+        self._is_e2e = is_e2e
+
+    def publish(self, msg) -> None:
+        msg.e2e_db = bool(self._is_e2e())
+        self._pub.publish(msg)
+
+    def __getattr__(self, name):
+        return getattr(self._pub, name)
+
+
 class SpeakerIdNode(Node):
     """Voice-based speaker identification node."""
 
@@ -592,7 +612,10 @@ class SpeakerIdNode(Node):
         )
 
         # ── Publishers ────────────────────────────────────────────────────────
-        self._result_pub = self.create_publisher(SpeakerResult, "/voice/speaker/result", reliable_qos)
+        self._result_pub = _E2EStampedPublisher(
+            self.create_publisher(SpeakerResult, "/voice/speaker/result", reliable_qos),
+            lambda: self._e2e_mode_active,
+        )
         # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
         # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
         # работать офлайн), поэтому запрос уходит топиком, а ответ

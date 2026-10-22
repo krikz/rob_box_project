@@ -107,3 +107,18 @@ def test_twin_without_score_is_nan_on_the_wire():
         {"event": "registered", "name": "Б", "speaker_id": "s", "name_twin": {"name": "Б", "speaker_id": "t", "score": None}},
     )
     assert math.isnan(msg.twin_score)
+
+
+def test_e2e_db_flag_roundtrips_and_is_absent_by_default():
+    """#3876: метка «результат из E2E-БД» доезжает до потребителя; боевой результат её не несёт."""
+    payload = {"is_known": True, "speaker_id": "sid-1", "name": "Саша", "confidence": 0.99,
+               "epithet": None, "e2e_db": True}
+    assert _roundtrip(payload) == payload
+    prod = {"is_known": True, "speaker_id": "sid-1", "name": "Денис", "confidence": 0.9,
+            "epithet": None}
+    assert "e2e_db" not in _roundtrip(prod)
+    assert M.SpeakerResult().e2e_db is False
+    # метка не зависит от вида события
+    ack = {"event": "registered", "name": "Саша", "speaker_id": "s", "reused_profile": False,
+           "utterance_id": None, "e2e_db": True}
+    assert _roundtrip(ack)["e2e_db"] is True
