@@ -35,6 +35,7 @@ from rob_box_core.tool_catalog import (
     ToolCatalogEntry,
     llm_visible_tools,
     operator_visible_tools,
+    telegram_visible_tools,
     tools_for_skill,
 )
 from rob_box_harness.tools import ToolHandler, ToolSpec
@@ -85,10 +86,12 @@ class ToolRegistry:
 
     name = "tool_registry"
 
-    def __init__(self, *, for_operator: bool = False) -> None:
+    def __init__(self, *, for_operator: bool = False, for_telegram: bool = False) -> None:
         # ``for_operator`` — реестр ТАРС: llm-видимые ∪ operator_visible
-        # (issue #3305). По умолчанию — только то, что видит личность.
-        source = operator_visible_tools() if for_operator else llm_visible_tools()
+        # (issue #3305); ``for_telegram`` — агент чата: llm-видимые ∪ telegram_visible
+        # (``say_aloud``, PR-12b). По умолчанию — только то, что видит личность.
+        source = (operator_visible_tools() if for_operator
+                  else telegram_visible_tools() if for_telegram else llm_visible_tools())
         self._tools: dict[str, tuple[ToolSpec, ToolHandler]] = {
             entry.name: (spec_from_catalog(entry), _default_handler)
             for entry in source

@@ -30,7 +30,7 @@ Telegram-интерфейс оператора для Rob Box: управлен�
 
 | Топик | Тип | Описание |
 |-------|-----|---------|
-| `/voice/tts/request` | `std_msgs/String` | Запросы Text-to-Speech |
+| `/voice/speech/request` | `rob_box_dialog_msgs/SpeechRequest` | Реплика вслух (`/say`, агент `telegram`); итог - `SpeechEvent` |
 | `/cmd_vel_web` | `geometry_msgs/Twist` | Команды движения (приоритет 50 в twist-mux) |
 | `/mcp/execute` | `std_msgs/String` | Запросы на выполнение MCP инструментов |
 

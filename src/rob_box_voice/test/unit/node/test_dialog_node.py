@@ -65,6 +65,7 @@ def node(monkeypatch):
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
         (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
     monkeypatch.setattr(dn, "build_tools", lambda node: tools)
+    monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: tools)
     made = dn.DialogNode()
     stamp = TIME(sec=1, nanosec=0)
     made.get_clock = lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
@@ -124,6 +125,90 @@ def test_telegram_utterance_is_a_chat_agent_turn_answered_as_dialog_output(node)
     assert node.test_chat_llm.calls == 1 and node.test_llm.calls == 0
     assert _published(node, "/voice/speech/request") == [] and node.last_turn is None
     assert node._chats.engine(42).session.snapshot.session_id == "telegram:42"
+
+
+class _AloudTools:
+    """Исполнитель чата: владелец речи ответил «началось» (``pending`` с ``event_ref``), итог придёт событием."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, call):
+        self.calls.append((call.name, dict(call.arguments)))
+        return ToolResult(tool_call_id=call.id, content="ok", data={"status": "pending", "event_ref": "sp-77"})
+
+
+def _aloud_node(monkeypatch, hold=False):
+    from rob_box_llm.provider import ToolCall
+
+    story = "Жил-был робот."
+    command = ToolCall(id="c1", name="command", arguments={
+        "speech": story, "actions": [{"tool": "say_aloud", "args": {"text": story}}]})
+    llm, chat_llm, chat_tools = _LLM([]), _LLM([LLMResponse(content="", tool_calls=(command,))]), _AloudTools()
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
+        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
+    monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
+    monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: chat_tools)
+    made = dn.DialogNode()
+    made.test_chat_tools = chat_tools
+    if hold:
+        made._session.push_scene("OperatorHold", "operator")
+    return made
+
+
+def _speech_event(kind, speech_id, seconds=0.0, reason="", agent="telegram"):
+    event = M.SpeechEvent()
+    event.kind, event.speech_id, event.agent, event.seconds, event.reason = kind, speech_id, agent, seconds, reason
+    return event
+
+
+def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_request(monkeypatch):
+    """PR-12b (#3707): в чат — текст истории; «Озвучил (N с)» — только когда владелец речи прислал ``finished``."""
+    made = _aloud_node(monkeypatch)
+    try:
+        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
+        made.last_chat_turn.result(timeout=10)
+        assert made.test_chat_tools.calls == [("say_aloud", {"text": "Жил-был робот."})]
+        assert [o.text for o in _published(made, "/dialog/output")] == ["Жил-был робот."]
+        made._on_speech_event(_speech_event(M.SpeechEvent.KIND_STARTED, "sp-77"))
+        assert [o.text for o in _published(made, "/dialog/output")] == ["Жил-был робот."]
+        made._on_speech_event(_speech_event(M.SpeechEvent.KIND_FINISHED, "sp-77", seconds=11.6))
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.1), made._loop).result(5)
+        assert [(o.channel_ref, o.text) for o in _published(made, "/dialog/output")][1:] == [
+            ("telegram:42", "Озвучил (12 с).")]
+        assert _published(made, "/voice/speech/request") == []
+    finally:
+        made.shutdown()
+
+
+def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
+    made = _aloud_node(monkeypatch, hold=True)
+    try:
+        made._on_utterance(_chat_utterance("расскажи историю"))
+        made.last_chat_turn.result(timeout=10)
+        assert made.test_chat_tools.calls == []
+        assert "Не озвучил: оператор занял робота." in [o.text for o in _published(made, "/dialog/output")]
+    finally:
+        made.shutdown()
+
+
+def test_chat_tools_sign_as_the_telegram_agent(monkeypatch):
+    import rob_box_mcp_tools.llm_adapter as adapter
+    from rob_box_mcp_tools.mcp_auth import DEFAULT_ALLOWED_SENDERS, TELEGRAM_SENDER
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_adapter(node, **kwargs):
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(adapter, "LLMToolCallAdapter", fake_adapter)
+    with pytest.raises(_Stop):
+        dn.build_chat_tools(types.SimpleNamespace(utterance_id=""), types.SimpleNamespace(planner=None))
+    assert seen["sender"] == TELEGRAM_SENDER and TELEGRAM_SENDER in DEFAULT_ALLOWED_SENDERS
 
 
 def test_coordinator_call_from_chat_reaches_nobody(node):
@@ -261,6 +346,7 @@ def _hang_node(monkeypatch, llm):
     tools = _Tools()
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
     monkeypatch.setattr(dn, "build_tools", lambda node: tools)
+    monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: tools)
     made = dn.DialogNode()
     stamp = TIME(sec=1, nanosec=0)
     made.get_clock = lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))

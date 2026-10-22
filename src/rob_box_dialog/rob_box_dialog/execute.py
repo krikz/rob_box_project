@@ -23,7 +23,7 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.interrupt import survives
@@ -97,6 +97,30 @@ class Executor:
             requests.append(ActionRequest(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, call.tool,
                                           MappingProxyType(dict(call.args)), cls, deadline_s(cls)))
         return list(await asyncio.gather(*(self._one(r) for r in requests)))
+
+    def expects(self, ref: str) -> bool:
+        """Ждёт ли исполнитель событие с этим ``ref`` (запрос в полёте или обещание ``pending``): хост с несколькими
+        исполнителями (чаты Telegram) отдаёт событие тому, кто его ждёт, а не всем."""
+        return ref in self._waiting or ref in self._requests
+
+    def promised(self) -> Tuple[str, ...]:
+        """``event_ref`` обещаний ``pending``, итог которых ещё не пришёл (хост ставит им срок)."""
+        return tuple(ref for ref in self._requests if ref not in self._waiting)
+
+    def expire(self, ref: str) -> None:
+        """Итог обещания не пришёл в срок: поздний результат ``timeout`` (из любого потока), обещание снимается."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._expire, ref)
+
+    def _expire(self, ref: str) -> None:
+        request = self._requests.pop(ref, None)
+        if request is None:
+            return
+        event = OwnerEvent(ref, "timeout")
+        if not self._stale_epoch(request, event) and self._on_late is not None:
+            self._on_late(_result(request, event))
 
     def on_event(self, event: OwnerEvent) -> None:
         """Событие владельца из любого потока (колбэк ROS); сопоставление — в цикле исполнителя."""

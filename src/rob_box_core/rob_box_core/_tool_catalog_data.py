@@ -1707,6 +1707,40 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['text'],
                          'accepts_kwargs': False},
         'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '/voice/speech/event',
+        'name': 'say_aloud',
+        'telegram_visible': True,
+        'description': 'Озвучить текст динамиками робота, когда человек в чате просит '
+                       'рассказать, прочитать или сказать вслух (например, сочинённую '
+                       'историю). Текст чата ты пишешь в ответе, а сюда передай ту же '
+                       'реплику целиком. Итог «Озвучил» в чат пишет код по событию '
+                       'динамиков, не ты.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'text': {   'type': 'string',
+                                                        'description': 'Что '
+                                                                       'произнести, '
+                                                                       'русским '
+                                                                       'текстом без '
+                                                                       'SSML.'},
+                                            'voice': {   'type': 'string',
+                                                         'description': 'Голос разовой '
+                                                                        'реплики; '
+                                                                        'пусто - '
+                                                                        'текущий голос '
+                                                                        'робота.'}},
+                          'required': ['text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['text', 'voice'],
+                         'required': ['text'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,

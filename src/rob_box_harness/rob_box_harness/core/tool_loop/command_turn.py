@@ -75,7 +75,9 @@ def owner_event(request: ActionRequest, result: ToolResult) -> OwnerEvent:
     reason = data.get("reason") if isinstance(data.get("reason"), str) else None
     if reason is None and result.is_error:  # отказ MCP до тула (подпись, срез): причина — в тексте ошибки (#3853)
         reason = result.content[:200] or None
-    return OwnerEvent(request.turn_id, status, reason, {**dict(request.args), **data})
+    ref = data.get("event_ref")
+    return OwnerEvent(request.turn_id, status, reason, {**dict(request.args), **data},
+                      event_ref=ref if isinstance(ref, str) and ref else None)
 
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:

@@ -119,6 +119,7 @@ from .tools import (
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     ShowMetricsTool,
+    SayAloudTool,
     SayTool,
 )
 
@@ -933,6 +934,8 @@ class MCPServer(Node):
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».
         self.registry.register(SayTool(self))
+        # PR-12b (#3707) — ``say_aloud``: озвучка из чата Telegram, итог по SpeechEvent (срез ``telegram``).
+        self.registry.register(SayAloudTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))

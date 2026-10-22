@@ -93,6 +93,8 @@ speak_aloud.done: ["Озвучил ({seconds} с)."]
 speak_aloud.rejected: ["Не озвучил: динамики заняты."]
 speak_aloud.cancelled: ["Не озвучил: перебили."]
 speak_aloud.rejected.unsupported_script: ["Не озвучил: выбранный голос не читает эти буквы."]
+speak_aloud.rejected.operator_hold: ["Не озвучил: оператор занял робота."]
+speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
 
 perform.backing_started: ["Поехали!"]

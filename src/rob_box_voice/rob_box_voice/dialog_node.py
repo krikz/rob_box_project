@@ -135,26 +135,42 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
     return build_llm_chain(spec), load_system_prompt(spec)
 
 
-def build_tools(node: Any) -> Any:
-    """MCP-тулы под планировщиком ресурсов — как у v1 (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``)."""
+def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
+    """Провайдер MCP-тулов под подписью ``sender`` (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``)."""
     from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
     from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: PLC0415
     from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415
-    from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER  # noqa: PLC0415
 
-    # Подпись и срез тулов — личности (как у v1), а не по имени ROS-ноды ``dialog_node`` (#3853).
-    adapter = LLMToolCallAdapter(node, sender=PERSONALITY_SENDER, turn_context=lambda: {"utterance_id": node.utterance_id})
+    adapter = LLMToolCallAdapter(node, sender=sender, turn_context=lambda: {"utterance_id": node.utterance_id})
     provider = ROSMCPToolProvider(adapter)
     provider.update_tools([{"type": "function", "function": {"name": s.name, "description": s.description,
                                                              "parameters": dict(s.parameters)}}
-                           for s in ToolRegistry().list_tools()])
+                           for s in ToolRegistry(for_telegram=for_telegram).list_tools()])
     if not provider.list_tools():
         raise RuntimeError("dialog_node: каталог MCP-тулов пуст — команды молча не исполнялись бы")
-    return plan_host.make_tool_executor(node, adapt_tool_provider(provider), lambda *_: None)
+    return adapt_tool_provider(provider)
 
 
-def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any) -> ChatTurns:
-    """Телеграм-агент: своя LLM-цепочка, исполнитель — общий с Личностью (те же владельцы), ответ — ``DialogOutput``."""
+def build_tools(node: Any) -> Any:
+    """MCP-тулы Личности под планировщиком ресурсов — как у v1. Подпись и срез — личности, а не по имени ROS-ноды
+    ``dialog_node`` (#3853)."""
+    from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER  # noqa: PLC0415
+
+    return plan_host.make_tool_executor(node, _mcp_provider(node, PERSONALITY_SENDER), lambda *_: None)
+
+
+def build_chat_tools(node: Any, personality_tools: Any) -> Any:
+    """MCP-тулы агента чата: своя подпись (срез ``telegram`` с ``say_aloud``), планировщик ресурсов — общий с
+    Личностью (одни владельцы, одна занятость); хост выступления остаётся у Личности."""
+    from rob_box_mcp_tools.mcp_auth import TELEGRAM_SENDER  # noqa: PLC0415
+    from rob_box_voice.core.plan_tools import PlanToolExecutor  # noqa: PLC0415
+
+    return PlanToolExecutor(_mcp_provider(node, TELEGRAM_SENDER, True), personality_tools.planner)
+
+
+def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = lambda: False) -> ChatTurns:
+    """Телеграм-агент: своя LLM-цепочка, исполнитель — свой под общим планировщиком Личности (те же владельцы),
+    ответ — ``DialogOutput``; ``hold`` — держит ли оператор Личность (отказ ``say_aloud``, §9.2.3)."""
     counter = CallCounter()
     llm, system = build_llm(node, counter, kn.TEXT_CHANNEL_AGENT)
     pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
@@ -165,14 +181,20 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any) -> ChatTurns:
         msg.agent, msg.channel_ref, msg.text, msg.speech_id = kn.TEXT_CHANNEL_AGENT, ref, text, speech_id
         pub.publish(msg)
 
+    chat_tools = build_chat_tools(node, tools)
+
     def make_engine(chat_id: int) -> TurnEngine:
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
-        base = V2Ports(node, llm, counter, tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
+        base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch)
-        return TurnEngine(session, ChatPorts(base, chat_id, send, log), system_prompt=system,
+        ports = ChatPorts(base, chat_id, send, log, hold)
+        base.on_late = ports.late
+        chats.adopt(base.executor)
+        return TurnEngine(session, ports, system_prompt=system, deadline_s=kn.CHAT_TURN_DEADLINE_S,
                           log=_RosLog(node.get_logger()))
 
-    return ChatTurns(make_engine, wake, log)
+    chats = ChatTurns(make_engine, wake, log)
+    return chats
 
 
 class DialogNode(Node):
@@ -203,7 +225,8 @@ class DialogNode(Node):
         llm, system = build_llm(self, counter)
         self._tool_executor = build_tools(self)
         intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", 10)
-        self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake)
+        self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake,
+                                  hold=lambda: self._session.snapshot.top("OperatorHold") is not None)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self))
@@ -214,6 +237,7 @@ class DialogNode(Node):
         self._subscribe()
         self.create_service(DialogControl, "/dialog/control", self._on_control)
         self.create_timer(1.0, self._session.expire)
+        self.create_timer(5.0, self._chats.tick)
         self.create_timer(2.0, self._reporter.tick)
         self.add_on_set_parameters_callback(self._on_params)
         self._thread.start()
@@ -285,6 +309,9 @@ class DialogNode(Node):
         plan_host.on_speech(self, msg)
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
             self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
+            return
+        if msg.agent == kn.TEXT_CHANNEL_AGENT:  # итог say_aloud чата (PR-12b): «Озвучил (N с)» по событию
+            self._chats.on_speech(msg)
             return
         if msg.agent != kn.AGENTS[0]:
             return

@@ -57,6 +57,7 @@ KNOWN_SLICES: FrozenSet[str] = frozenset(
         "operator.speech",
         "operator.control",
         "operator.admin",
+        "telegram",
     }
 )
 
