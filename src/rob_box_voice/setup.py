@@ -47,6 +47,8 @@ setup(
             'led_node = rob_box_voice.led_node:main',
             # Phase 2: Dialogue + TTS
             'dialogue_node = rob_box_voice.dialogue_node:main',
+            # ADR-0150 PR-8 (#3702): хост диалога v2, стартует при dialog_engine: v2
+            'dialog_node = rob_box_voice.dialog_node:main',
             'tts_node = rob_box_voice.tts_node:main',
             # Phase 3: STT (Speech-to-Text)
             'stt_node = rob_box_voice.stt_node:main',

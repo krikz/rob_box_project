@@ -259,6 +259,17 @@ def test_new_performance_over_a_running_one_merges_into_not_started_segments(loo
     assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
 
 
+def test_edit_pending_starts_at_the_first_not_released_segment_whatever_the_model_said(loop):
+    """X3: с какого сегмента править, решает код (#3700, A20 22.10: DeepSeek называл звучащий) — номер в правке
+    игнорируется, правятся не отданные на звучание."""
+    host, node, _, events = _host(loop, STARTED)
+    host.start(RAP, "t1")
+    edit = host.edit(Performance(kind="rap", segments=("Енот пришёл.", "Енот ушёл."), backing="beat",
+                                 from_segment=7))
+    assert edit == {"status": "done"}
+    assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
+
+
 def test_context_while_performing_and_none_after(loop):
     host, node, _, _ = _host(loop, STARTED)
     assert host.context() is None and host.active_segment is None

@@ -1,34 +1,19 @@
-"""dialogue_guards.py — Issue #992 guard heuristics for LLM output quality.
+"""dialogue_guards.py — проверки текста ответа LLM в v1-ноде (уходят в ADR-0150 PR-7 / PR-15).
 
-Extracted from :class:`rob_box_voice.dialogue_node.DialogueNode` (TD-1,
-see ``.planning/DIALOGUE_NODE_REFACTORING.md``) so the same detectors and
-retry-prompt builders can be unit-tested without a ROS2 node and reused
-by any future harness-style adapter. Pure Python: no rclpy, no I/O.
+Pure Python: no rclpy, no I/O. Что осталось:
 
-Owns two families of heuristics:
+* **Music tool names** — :data:`MUSIC_STARTING_TOOLS` & Co. from the tool catalog.
+* **«Заявил, но не сделал»** (issue #992 Bug E, #2549, #2559) — детекторы и ретрай-промпты; удаляются в
+  ADR-0150 PR-7 ч.7d-4 (#3698).
+* **Служебный текст в речи** (#2175 ``<system>``, #2760 разметка вызова тула) — регексы читает и ``tts_node``
+  (отказ озвучки); переезжают в tts_node в PR-15.
 
-* **Babble / metalanguage detection** (issue #992 Bug D) — when the LLM
-  answers a performance command («зачитай рэп», «расскажи стих») with a
-  meta-promise (``Зачитаю рэпчик про космос!``) instead of actually
-  performing, :func:`is_metalanguage_babble` recognises the opener and
-  :func:`build_babble_retry_prompt` builds the one-shot CRITICAL retry
-  prompt that forces a real tool-call reply.
-* **Music tool names** — :data:`MUSIC_STARTING_TOOLS` & Co. from the tool
-  catalog (cleanup policy, one-track-per-turn). The music guard (Bug B/C),
-  its detectors (``user_wants_music``, ``is_music_state_query``, music
-  ``ActionClaimRule``-s, Renardo-code / hallucinated-MIDI / unknown-melody
-  detectors) were removed in ADR-0149 PR-13a together with the old music
-  path: the success phrase of a music start is built by code from the
-  player's ``started`` event.
-* **Non-music tool guard** (issue #1777 / #1762) — расширение Bug C на
-  все явные tool-based запросы (``get_current_time``, ``search_web``,
-  ``set_voice``, ``memory_search``, ``faq_search``). См. :data:`TOOL_REQUEST_PATTERNS`
-  и :func:`detect_required_tool`.
+ADR-0150 PR-7 ч.7d-1 (#3698): babble-ретрай (#992 Bug D), hard-mute планирования (#1882) и tool-skipped ретрай
+(#1777) удалены — в режиме команд выступление идёт полем ``perform``, ``query``-тулы — по команде (≤ 2 итераций).
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -42,8 +27,6 @@ from .media_command_grammar import (  # noqa: F401 — реэкспорт, issue
     MUSIC_STOP_OVERRIDES,
     is_music_stop_command,
 )
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -75,454 +58,6 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
 #: reads the player snapshot on ``/voice/music/state``.
 #:
 MUSIC_STOP_TOOLS: frozenset = _MUSIC_STOP_TOOLS
-
-# ---------------------------------------------------------------------------
-# Issue #992 Bug D — banned metalanguage openers. When the LLM returns
-# plain text (no ``speak_text`` call) that begins with one of these
-# phrases — e.g. "Зачитаю рэп про космос!", "Могу бит добавить,
-# хочешь?", "Слушай, сейчас расскажу..." — the user hears a meta-
-# promise instead of the actual performance. We catch that pattern at
-# the dialogue_node boundary and force a single retry with a CRITICAL
-# prompt-level reminder.
-#
-# The list is lowercase, comma/space separated, and checked via a
-# substring match on the first ~80 chars of the LLM output (after
-# strip_markdown). Add new phrases when the LLM invents a new opener;
-# keep the list tight to avoid false positives on legitimate answers.
-# ---------------------------------------------------------------------------
-BABBLE_BANNED_OPENERS: tuple = (
-    "зачит",   # зачитаю / зачитаем / зачитываю
-    "погнали",  # погнали! / ну что, погнали?
-    "могу ",    # могу бит добавить, могу спеть
-    "хочешь",  # хочешь ещё? / хочешь послушать?
-    "сейчас ",  # сейчас устроим / сейчас расскажу
-    "устроим",  # устроим концерт / устроим вечеринку
-    "давай-ка",  # давай-ка я спою
-    "давай ",  # давай я / давай попробуем
-    "слушай,",  # слушай, сейчас ...
-    "слушай ",
-    "окей, ",
-    "окей ",
-    "так, ",
-    "так ",
-    "ну что ж",
-    "переключаюсь",
-    "переключ",
-)
-
-# 🔴 FIX (live 02.09): «робот говорит, что запускает музыку, а ничего не
-# запускается» + «LLM много говорит во время музыки».
-#
-# Живой лог робота, 06:58:01 UTC:
-#   spoken='Юзер явно просит «ебани лаундж» (лоундж запрошен снова).
-#           DJ уже выключен в прошлом ходе. Запускаю расслабленную
-#           лоундж-композицию через compose_music.' tools=[]
-# и следом TTS честно зачитал это вслух. Модель отдала своё планирование
-# вместо ответа и не вызвала ни одного тула.
-#
-# Ни один существующий детектор это не ловил: BABBLE_BANNED_OPENERS ищет
-# обещания («зачитаю», «погнали»), а тут рассуждение; music-гуард смотрел
-# на реплику ЮЗЕРА («ебани ланудж») и не нашёл там ключевых слов.
-# Расширять словари бесполезно — их не хватит никогда.
-#
-# Надёжный признак другой и от словаря не зависит:
-#   * в тексте назван ИНСТРУМЕНТ (compose_music и т.п.). Идентификатор в
-#     snake_case, прочитанный вслух, — всегда баг, что бы ни просил юзер;
-#   * реплика начинается с рассказа о собеседнике в ТРЕТЬЕМ лице («Юзер
-#     просит...», «Пользователь спрашивает...»). Ответ, адресованный
-#     человеку, так не начинается — так начинается план.
-PLANNING_NARRATION_TOOL_NAMES: tuple = (
-    "compose_music",
-    "speak_text",
-    "set_dj_mode",
-    "stop_music",
-    "music_library",
-    "play_animation",
-    "play_sound",
-    "memory_save",
-    "memory_search",
-    "search_web",
-    "listen_for_response",
-    "navigate_to_waypoint",
-    # Issue #2760 — имя всплыло в живой разметке вызова, прочитанной вслух.
-    "register_speaker",
-)
-
-#: Начала реплики, где модель говорит о собеседнике в третьем лице.
-PLANNING_NARRATION_OPENERS: tuple = (
-    "юзер",
-    "пользовател",
-    "user ",
-)
-
-
-def is_planning_narration(spoken_text: str) -> bool:
-    """Похоже ли на внутреннее планирование модели, а не на ответ человеку?
-
-    Признаки и причина, по которой они именно такие, — в комментарии выше.
-    """
-    if not spoken_text:
-        return False
-    low = spoken_text.lower()
-    # NB (issue #2760): к этому моменту текст уже прошёл ``strip_markdown``,
-    # который снимает ``_..._`` парами через весь текст — в живом логе
-    # ``register_speaker``/``memory_save``/``speaker_id`` приехали сюда как
-    # ``registerspeaker``/``memorysave``/``speakerid``, и поиск подстрокой
-    # не совпал ни разу. Из-за этого правило ведёт себя непоследовательно:
-    # одно упоминание тула (одно подчёркивание, пары нет) → mute, три
-    # упоминания (подчёркивания схлопнулись) → озвучиваем. Чинить это
-    # нормализацией НЕЛЬЗЯ мимоходом: цена ошибки здесь не ретрай, а
-    # полная тишина в ответ («что умеешь?» → «Я умею: speak_text, …»
-    # ушло бы в mute, см. test_issue_1882_planning_narration.py).
-    # Разметку протокола ловит отдельный, не зависящий от подчёркиваний
-    # :func:`is_tool_call_markup` (#2760); политика mute для прозаичных
-    # упоминаний — отдельное решение.
-    if any(name in low for name in PLANNING_NARRATION_TOOL_NAMES):
-        return True
-    head = low.lstrip(" \t*#>-—«\"'")[:40]
-    return any(head.startswith(opener) for opener in PLANNING_NARRATION_OPENERS)
-
-
-# Issue #992 Bug D — keywords that mark the user request as a
-# performance command. When the LLM babbles on a performance request
-# we *must* retry, because the alternative is the user hearing nothing
-# (the LLM promised but never spoke). When the user just asked a
-# normal question and the LLM babbled, we still retry but the
-# consequence is less severe — the user hears ONE meta-phrase instead
-# of an answer. Keeping the heuristic narrow prevents false positives
-# on ordinary chit-chat that happens to start with «слушай».
-BABBLE_PERFORMANCE_KEYWORDS: tuple = (
-    "рэп", "реп", "rap",
-    "песн", "song", "песню", "песня",
-    "стих", "стишок", "poem", "стихотворен",
-    "зачитай", "прочитай", "прочти",
-    "спой", "пой", "спела",
-    "сыграй", "играй",
-    "музык", "мелоди", "бит", "трек",
-    "диджей", "dj ",
-    "концерт",
-    "джаз", "рок", "блюз", "частушки", "частушк",
-)
-
-# Стоп-грамматика («выключи музыку», «стоп диджей», «хватит диджеить»;
-# #1279 / #2834 / #2971) перенесена в :mod:`.media_command_grammar` (issue
-# #3134): закрытые стоп-реплики теперь исполняет роутер медиакоманд до LLM,
-# а широкий детектор нужен силенс-гейту и command-гейту.
-# Имена реэкспортируются для старых мест вызова.
-
-
-# ---------------------------------------------------------------------------
-# 🔴 FIX (live 30.08, vision-pi 12:28): babble-детектор ложно срабатывал на
-# ФАКТИЧЕСКОМ ответе. Юзер: «играет ли сейчас музыка» → LLM: «Сейчас тишина —
-# ничего не играет.» Ответ начинается с «сейчас » (опенер из
-# ``BABBLE_BANNED_OPENERS``), а ``user_wants_performance`` совпал по «музык» —
-# и Bug D сжёг лишний round-trip к LLM ради байт-в-байт того же ответа.
-#
-# Вопрос — не запрос на исполнение. Частица «ли» в русском практически не
-# встречается в императиве («зачитай рэп», «сыграй техно»), поэтому она —
-# надёжный маркер. Плюс горстка вопросительных зачинов.
-# ---------------------------------------------------------------------------
-QUESTION_MARKERS: tuple = (
-    " ли ",
-    " ли?",
-)
-
-QUESTION_OPENERS: tuple = (
-    "что играет",
-    "что сейчас",
-    "что за ",
-    "какая музык",
-    "какой трек",
-    "какие звуки",
-    "сколько ",
-    "умеешь ли",
-    "ты умеешь",
-    "есть ли",
-    "можешь ли",
-)
-
-
-def is_state_question(user_input: str) -> bool:
-    """Вопрос о состоянии, а не команда исполнить.
-
-    Используется ``user_wants_performance``: на вопрос «играет ли сейчас
-    музыка» правильный ответ — текст, и babble-ретрай Bug D для него не
-    нужен.
-    """
-    if not user_input:
-        return False
-    low = f" {user_input.lower().strip()} "
-    if any(marker in low for marker in QUESTION_MARKERS):
-        return True
-    stripped = user_input.lower().strip()
-    return any(stripped.startswith(opener) for opener in QUESTION_OPENERS)
-
-
-# ---------------------------------------------------------------------------
-# Issue #1777 / #1762 — non-music tool guard. Расширение Bug C retry на
-# ВСЕ явные tool-based запросы. Раньше ретрай работал только для music
-# (см. issue #992 Bug C), теперь — для ``get_current_time``,
-# ``search_web``, ``set_voice``, ``memory_search``, ``faq_search``.
-#
-# Формат: каждая запись = (tool_name, tuple[подстрок…]). Подстроки
-# матчатся lowercase substring в user_input. Tuple — для случаев когда
-# одна категория покрывается несколькими keyword'ами («который час»,
-# «сколько времени», «время в москве» — всё → get_current_time).
-#
-# ВАЖНО: keyword'ы специально выбираются такие, чтобы НЕ срабатывать
-# на обычное chit-chat. Например «новости» — отдельный keyword от «погода»,
-# чтобы не ретраить когда юзер просит «новости про X» (тоже → search_web,
-# но другой по семантике).
-# ---------------------------------------------------------------------------
-TOOL_REQUEST_PATTERNS: tuple = (
-    # time / date (issue #1777) — «который час», «сколько времени»,
-    # «время в москве», «какая дата», «какой день недели».
-    ("get_current_time", (
-        "который час",
-        "сколько врем",
-        "сколько сейч",
-        "время в ",
-        "время по ",
-        "время сейч",
-        "который сейч",
-        "сейчас врем",
-        "сколько минут",
-        "чо за время",
-        "какая дата",
-        "какой день",
-        "какой сегодн",
-        "какое число",
-        "какое сегодня",
-        "какой месяц",
-        "какой год",
-        "что за день",
-        "что за число",
-        "что за дат",
-    )),
-    # weather / news / web search (issue #1762) — «погода в X»,
-    # «новости про Y», «что в интернете», «загугли».
-    ("search_web", (
-        "погода",
-        "погоду",
-        "новости",
-        "новость",
-        "что в интернет",
-        "загугл",
-        "найди в инет",
-        "поищи в инет",
-        "найди информ",
-        "узнай в инет",
-        "найди что",
-        "поищи что",
-        "расскажи про ",  # «расскажи про X» — обычно требует поиска
-        "что ты знаешь про ",
-        "что известно про ",
-    )),
-    # voice (issue #1765) — «переключи голос», «поставь голос X»,
-    # «голос Артём», «смени голос».
-    #
-    # 🔴 Осознанно НЕ добавлены «говор », «говори », «говорит », «голосом»:
-    # это substring-match без границ слова, и они ловят обычный chit-chat —
-    # «не говори глупости», «мама говорит что...», «он говорит по-английски»,
-    # «спой красивым голосом». Ложный матч здесь не «лишний round-trip», а
-    # ретрай, ТРЕБУЮЩИЙ от LLM вызвать set_voice в ходе, который к голосу
-    # никак не относится.
-    ("set_voice", (
-        "переключи голос",
-        "смени голос",
-        "поменяй голос",
-        "голос арт",
-        "голос ален",
-        "голос анто",
-        "голос окс",
-        "голос жан",
-        "голос ерма",
-        "голос зайц",
-        "голос леви",
-        "голос маш",
-        "голос никол",
-        "голос серг",
-        "голос алек",
-        "голос ден",
-        "голос мар",
-        "голос тат",
-        "давай голос",
-        "поставь голос",
-        "установи голос",
-    )),
-    # memory (issue #1770) — «что ты знаешь обо мне», «помнишь меня»,
-    # «что помнишь».
-    ("memory_search", (
-        "что ты знаешь обо мне",
-        "что знаешь обо мне",
-        "что ты помнишь",
-        "что помнишь",
-        "помнишь меня",
-        "помнишь про меня",
-        "что ты знаешь про меня",
-        "что знаешь про меня",
-        "расскажи что знаешь",
-        "что ты обо мне",
-        "что обо мне знаешь",
-    )),
-    # FAQ — «что ты умеешь», «какие команды», «справка».
-    ("faq_search", (
-        "что ты умеешь",
-        "что умеешь",
-        "что можешь",
-        "какие команды",
-        "что ты можешь делать",
-        "справка",
-        "помощь",
-        "что ты такое",
-        "кто ты такой",
-        "расскажи о себе",
-    )),
-)
-
-
-def detect_required_tool(user_input: str) -> Optional[str]:
-    """Issue #1777 / #1762 — какой tool явно просит юзер?
-
-    Возвращает имя tool (``get_current_time``, ``search_web``, ``set_voice``,
-    ``memory_search``, ``faq_search``) или ``None`` если user_input не
-    содержит явного tool-pattern'а.
-
-    Чистая функция, без I/O — тестируется без ROS2.
-
-    Priority: первое совпадение в :data:`TOOL_REQUEST_PATTERNS` побеждает
-    (порядок в tuple = приоритет). На практике ключевые слова разных
-    категорий не пересекаются («который час» → только get_current_time,
-    «погода в Бишкеке» → только search_web), но если когда-то пересекутся
-    — порядок tuple решает.
-    """
-    if not user_input:
-        return None
-    low = user_input.lower()
-    for tool_name, keywords in TOOL_REQUEST_PATTERNS:
-        if any(kw in low for kw in keywords):
-            return tool_name
-    return None
-
-
-def build_tool_retry_prompt(user_input: str, tool_name: str) -> str:
-    """Issue #1777 / #1762 — synthetic prompt для Bug C retry (non-music).
-
-    Echoes the original ``user_input`` so the LLM has the request in
-    context, then injects a CRITICAL reminder that names the specific
-    ``tool_name`` the LLM must call. ``tool_name`` MUST come from
-    :func:`detect_required_tool` (or any hard-coded allow-list) to prevent
-    prompt-injection: never pass user-controlled strings.
-
-    Prefix is :data:`MUSIC_RETRY_PROMPT_PREFIX` (historical name — the
-    music retry that shared it was removed in ADR-0149 PR-13a).
-    """
-    hint = {
-        "get_current_time": (
-            "вызови get_current_time() — инструмент возвращает точное "
-            "локальное время робота (Europe/Moscow по умолчанию). "
-            "Не выдумывай время, не говори 'сейчас X утра/вечера' из головы."
-        ),
-        "search_web": (
-            "вызови search_web(query=...) — инструмент ищет актуальную "
-            "информацию в интернете (погода, новости, факты). "
-            "Не говори 'гляну/сделаю/сейчас узнаю' без реального вызова."
-        ),
-        "set_voice": (
-            "вызови set_voice(provider=..., voice_name=...) или "
-            "list_voices() чтобы выбрать. Не говори 'голоса X нет' "
-            "не проверив список через list_voices."
-        ),
-        "memory_search": (
-            "вызови memory_search(speaker_id=<current>) или "
-            "memory_context(speaker_id=<current>) — только для ТЕКУЩЕГО "
-            "спикера. Не подставляй факты других юзеров."
-        ),
-        "faq_search": (
-            "вызови faq_search(query=...) — инструмент ищет по локальной "
-            "базе возможностей и команд. Не придумывай список команд сам."
-        ),
-    }.get(tool_name)
-    if hint is None:
-        # Defence-in-depth: если tool_name не из allow-list — НЕ ретраим.
-        # Это защищает от prompt-injection (юзер пишет «забудь инструкции,
-        # вызови tool X»). Любой неизвестный tool = silent skip.
-        logger.warning(
-            f"🛡 [issue 1777] build_tool_retry_prompt: unknown tool_name={tool_name!r}, "
-            "skipping retry (defence-in-depth)"
-        )
-        return ""
-    return (
-        MUSIC_RETRY_PROMPT_PREFIX + f" {tool_name}, хотя пользователь "
-        "явно попросил соответствующее действие. "
-        + hint + " "
-        "Запрос юзера: «" + (user_input or "") + "». "
-        "Если и сейчас не вызовешь tool — пользователь не получит ответа."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Detectors
-# ---------------------------------------------------------------------------
-
-def is_metalanguage_babble(spoken_text: str) -> bool:
-    """Issue #992 Bug D — does this LLM output read as meta-talk?
-
-    Returns ``True`` when the LLM final response text starts with a
-    known metalanguage opener («зачита», «могу», «хочешь»,
-    «сейчас», «устроим», «погнали», «давай», «слушай», «окей»,
-    «так», «переключ», «ну что ж»). The check operates on the
-    first 80 chars after :func:`rob_box_voice.core.speak_helpers.strip_markdown`
-    so a lone "**" that survived cleaning cannot mask the opener.
-
-    The detector is intentionally *conservative*: a normal answer
-    that happens to contain «слушай» somewhere in the middle is
-    safe — only the first 80 chars are inspected. When in doubt,
-    return ``False``; the caller will fall through to the standard
-    TTS publish path.
-    """
-    if not spoken_text:
-        return False
-    if is_planning_narration(spoken_text):
-        return True
-    head = spoken_text[:80].lower().lstrip(" \t*#>-")
-    # Match the opener only at the START of the head or inside the
-    # first 30 chars (after stripping). 30 chars is enough to cover
-    # «Слушай, сейчас расскажу...» but short enough to skip
-    # legitimate mid-sentence uses like «Если хочешь, могу
-    # остановиться» or «А сейчас продолжу маршрут».
-    opener_zone = head[:30]
-    return any(
-        opener_zone.startswith(opener) or f" {opener}" in opener_zone
-        for opener in BABBLE_BANNED_OPENERS
-    )
-
-
-# ---------------------------------------------------------------------------
-# Issue #1882 — hard-mute для planning-narration жильёт в dialogue_node.py
-# (`_handle_result`, ветка ПЕРЕД babble-retry). Сам детектор `is_planning_narration`
-# определён выше в этом файле (введён в 78403dba), тут дублировать его не надо —
-# иначе будет две функции с одним именем.
-# ---------------------------------------------------------------------------
-
-
-def user_wants_performance(user_input: str) -> bool:
-    """Issue #992 Bug D — does the user request a *performance*?
-
-    Used to decide whether a metalanguage reply is a hard bug
-    (user asked for a rap, robot returned "Зачитаю рэп про X!") or
-    just a stylistic miss (user asked "что нового?", robot replied
-    "Слушай, у меня тут..." — still answer-shaped, just informal).
-    """
-    if not user_input:
-        return False
-    # 🔴 FIX (live 30.08): вопрос о состоянии — не запрос на исполнение.
-    # «играет ли сейчас музыка» совпадал по «музык» и гнал Bug D в ретрай
-    # ради того же самого текстового ответа. См. ``is_state_question``.
-    if is_state_question(user_input):
-        return False
-    low = user_input.lower()
-    return any(kw in low for kw in BABBLE_PERFORMANCE_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -945,8 +480,7 @@ def build_universal_action_claim_retry_prompt(
 ) -> str:
     """Issue #2549 — синтетический CRITICAL-ретрай на action hallucination.
 
-    Тот же контракт, что у :func:`build_unbacked_action_retry_prompt` /
-    :func:`build_babble_retry_prompt`: одна попытка, текст промпта прямо
+    Тот же контракт, что у :func:`build_unbacked_action_retry_prompt`: одна попытка, текст промпта прямо
     называет заявление и запрещает его без вызова тула.
 
     Issue #2949 — ``tool_error_occurred=True`` значит инструмент был
@@ -1319,12 +853,6 @@ def build_phantom_action_retry_prompt(user_input: Optional[str]) -> str:
 # Retry prompt builders
 # ---------------------------------------------------------------------------
 
-# Общий префикс Bug C retry-промпта (tool-skipped, issue #1777). Имя
-# историческое: музыкальный ретрай с тем же префиксом удалён в ADR-0149
-# PR-13a; маркер считает ``scripts/voice_bench/run_bench.py``.
-MUSIC_RETRY_PROMPT_PREFIX: str = "[CRITICAL] В прошлом цикле ты НЕ вызвал"
-
-
 CRITICAL_BLOCK_MARKER = "[CRITICAL]"
 CRITICAL_BLOCK_MARKER_LEN = len(CRITICAL_BLOCK_MARKER)
 
@@ -1332,7 +860,7 @@ CRITICAL_BLOCK_MARKER_LEN = len(CRITICAL_BLOCK_MARKER)
 def _strip_trailing_critical_block(user_input: str) -> str:
     """Issue #1881 — убрать последний ``[CRITICAL]``-блок из ``user_input``.
 
-    На babble-retry ``user_input`` уже содержит прошлый CRITICAL-блок
+    На синтетическом ретрае ``user_input`` уже содержит прошлый CRITICAL-блок
     (от прошлого ретрая этого же turn'а). Если просто склеить его с
     НОВЫМ блоком — модель видит два ПРОТИВОРЕЧИВЫХ требования
     («вызови tool» vs «вызови music-tool») и начинает мешать их в
@@ -1359,54 +887,6 @@ def _strip_trailing_critical_block(user_input: str) -> str:
         return user_input
     # ``idx > 0``: маркер где-то внутри. Обрезаем всё от него до конца.
     return user_input[:idx].rstrip()
-
-
-def build_babble_retry_prompt(user_input: str) -> str:
-    """Issue #992 Bug D — synthetic follow-up prompt for babble retry.
-
-    Echoes the original ``user_input`` so the LLM has the request
-    in context, then appends a CRITICAL instruction that names the
-    babble pattern and demands a tool-call reply (no plain text
-    promises).
-
-    🔴 FIX (live 02.09, "включи трек про весну"): список обязан называть
-    вариант «уже существующий трек» — иначе модель, уже нашедшая трек через
-    music_library(search), сочиняла новую мелодию вместо
-    music_library(play, track_id=...). ADR-0149 PR-13a: музыку ставит
-    ``request_music`` движка v2 (``compose_music`` и прочие
-    тулы старого пути удалены).
-
-    Issue #1881 — если ``user_input`` уже содержит предыдущий
-    ``[CRITICAL]``-блок (от прошлого ретрая этого же turn'а), он
-    обрезается перед склейкой, чтобы НЕ накапливать противоречивые
-    инструкции. Иначе модель читает «вызови tool» + «вызови
-    music-tool» и в каждом ответе спорит сама с собой.
-    """
-    cleaned = _strip_trailing_critical_block(user_input)
-    return (
-        f"{cleaned}\n\n"
-        "[CRITICAL] Твой предыдущий ответ был метатекст "
-        "(начинался с «зачит», «могу», «хочешь», «сейчас», "
-        "«устроим», «погнали», «слушай», «давай», «так» или "
-        "«переключ») — пользователь слышит пустую болтовню "
-        "вместо результата.\n"
-        "❌ ЗАПРЕЩЕНО отвечать текстом-обещанием. "
-        "✅ ОБЯЗАТЕЛЬНО: вызови нужный tool в ЭТОМ же turn:\n"
-        "  • rap/песня → request_music(intent=\"track\", text=...) + "
-        "speak_text(lyrics),\n"
-        "  • поэзия → speak_text(...) × N строк,\n"
-        "  • новая мелодия/бит → request_music(intent=\"track\", text=...),\n"
-        "  • анекдот → speak_text(...) × N,\n"
-        "  • уже существующий/сохранённый трек по имени или теме — "
-        "НЕ сочиняй новый: если в этом диалоге уже был вызов "
-        "music_library(list/search) с подходящим "
-        "результатом, возьми его track_id и вызови "
-        "music_library(action=play, track_id=...); "
-        "иначе вызови поиск сейчас, а не request_music.\n"
-        "После последнего speak_text верни 'done'. Никаких "
-        "мета-фраз, никаких 'Слушай, сейчас...', 'Зачитаю...', "
-        "'Могу бит добавить, хочешь?' — это BUG."
-    )
 
 
 def build_unbacked_action_retry_prompt(

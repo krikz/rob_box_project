@@ -229,6 +229,8 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     (LLMResponse(content='{"speech": "", "passed": true}'), "bad_type"),  # true — не исход из перечисления
     (LLMResponse(content='{"speech": "Привет", "mood": "весело"}'), "unknown_field"),
     (LLMResponse(tool_calls=(_command_call(speech="обре"),), truncated_tool_args=True), "truncated"),
+    (LLMResponse(content='{"expression": {"emotion": "happy"}}'), kn.VIOLATION_EMPTY_COMMAND),
+    (LLMResponse(tool_calls=(_command_call(speech=""),)), kn.VIOLATION_EMPTY_COMMAND),
 ])
 def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMResponse, reason: str) -> None:
     """Повтор ровно один (``COMMAND_RETRIES_MAX``): второй невалидный ответ — вызов ``command`` с пометкой, без речи."""
@@ -569,7 +571,7 @@ def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is
 
     # Узел закрывает ход рефлексом failed (лицо error, earcon fail; кольцо flash_red — в таблице рефлексов) — тем же путём, что провал тула.
     node = _Node()
-    node._stage_finish(result, False, "", False)
+    node._stage_finish(result, False, "")
     assert node.stages.stage_names()[-1] == ("failed", "failed")
     assert (node.stages.requests[-1]["emotion"], node.stages.requests[-1]["earcon"]) == ("error", "fail")
 
@@ -578,3 +580,34 @@ def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is
     core._dsm.on_event(DialogueEvent.STT_RESULT)
     nxt = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
     assert nxt.turn_failure == "" and nxt.spoken_text == "Привет, Шифу."
+
+
+# ── пустая команда — нарушение команды, а не «тихий ответ» v1 (ночной замер #3698 22.10, ход 4) ──────────────────
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_empty_command_is_retried_by_the_bridge_not_by_v1(streaming: bool) -> None:
+    """Пустой ответ → один повтор моста с объяснением → исправленная команда исполнена. Ретрая #1217 (SYSTEM
+    CORRECTION, третий запрос к LLM) нет: ровно 2 запроса."""
+    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "happy"}),))
+    good = LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL, arguments={"actions": SAVE}),))
+    inner = _Inner(DEEPSEEK_CAPS, [empty, good])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "запомни что Саша любит чай", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and len(inner.requests) == 2 and result.turn_failure == ""
+    assert spoken.said == [SAVED]
+    assert kn.VIOLATION_EMPTY_COMMAND in inner.requests[1]["messages"][-1].content
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_agent_core_empty_twice_fails_the_turn_without_a_third_llm_call(streaming: bool) -> None:
+    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "happy"}),))
+    inner = _Inner(DEEPSEEK_CAPS, [empty, empty])
+    spoken = _Spoken()
+    result = asyncio.run(_core(inner, streaming, spoken).process_input(
+        "включи звук радостный", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
+    assert result.turn_failure == f"invalid_command:{kn.VIOLATION_EMPTY_COMMAND}" and result.error is None

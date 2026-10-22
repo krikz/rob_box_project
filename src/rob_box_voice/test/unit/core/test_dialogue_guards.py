@@ -3,10 +3,11 @@
 Covers the Issue #992 guard heuristics that were extracted from
 ``dialogue_node.py``:
 
-* babble / metalanguage detection (Bug D),
-* performance request detection,
 * music stop-command classification,
-* retry prompt builders.
+* action-claim detectors and retry prompt builders.
+
+ADR-0150 PR-7 ч.7d-1 (#3698): babble (Bug D), planning-narration (#1882) and
+tool-skipped (#1777) guards were removed together with their tests.
 
 ADR-0149 PR-13a: music-guard detectors (``user_wants_music``,
 ``is_vocal_request``, ``is_music_state_query``, music ``ActionClaimRule``-s,
@@ -23,110 +24,20 @@ from typing import Optional
 
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
-    BABBLE_BANNED_OPENERS,
-    BABBLE_PERFORMANCE_KEYWORDS,
     CLAIM_JUSTIFYING_TOOLS,  # Issue #2549 universal action-claim guard
-    MUSIC_RETRY_PROMPT_PREFIX,
     MUSIC_STOP_OVERRIDES,
     PHANTOM_ACTION_NEGATION_RE,  # Issue #2559 phantom-action
     PHANTOM_ACTION_VERBS_RE,  # Issue #2559 phantom-action
-    TOOL_REQUEST_PATTERNS,
     build_action_claim_failure_fallback,  # Issue #2949
-    build_babble_retry_prompt,
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
-    build_tool_retry_prompt,
     build_unbacked_action_retry_prompt,
     build_universal_action_claim_retry_prompt,  # Issue #2549 / #2949
     detect_phantom_action_claim,  # Issue #2559 phantom-action
-    detect_required_tool,
     detect_unbacked_action_claim,
     detect_universal_action_claim,  # Issue #2549 universal action-claim guard
-    is_metalanguage_babble,
     is_music_stop_command,
-    is_planning_narration,
-    is_state_question,
     is_system_template_regurgitated_in_ssml,
-    user_wants_performance,
 )
-
-
-# ---------------------------------------------------------------------------
-# is_metalanguage_babble
-# ---------------------------------------------------------------------------
-
-
-class TestIsMetalanguageBabble:
-    def test_detects_zachitayu(self) -> None:
-        assert is_metalanguage_babble("Зачитаю рэпчик про космос!") is True
-        assert is_metalanguage_babble("Зачитаю стих про дождь") is True
-        assert is_metalanguage_babble("зачитаем песенку про кота") is True
-
-    def test_detects_mogu(self) -> None:
-        assert is_metalanguage_babble("Могу бит добавить, хочешь?") is True
-        assert is_metalanguage_babble("могу спеть колыбельную") is True
-
-    def test_detects_pognali(self) -> None:
-        assert is_metalanguage_babble("Погнали!") is True
-        assert is_metalanguage_babble("Ну что, погнали?") is True
-
-    def test_detects_slushai_seichas(self) -> None:
-        assert is_metalanguage_babble("Слушай, сейчас расскажу сказку.") is True
-        assert is_metalanguage_babble("Слушай, у меня есть идея") is True
-
-    def test_detects_pereklyuch(self) -> None:
-        assert is_metalanguage_babble("Переключаюсь на рэп") is True
-        assert is_metalanguage_babble("переключу тему") is True
-
-    def test_mid_sentence_openers_are_safe(self) -> None:
-        # Openers that appear AFTER the 30-char detector window are safe —
-        # this is the pre-existing contract from test_issue_992_babble_guard.
-        text = (
-            "Сначала робот едет вперёд, потом поворачивает. "
-            "Если хочешь, могу остановиться — просто скажи. "
-            "А сейчас продолжу маршрут."
-        )
-        assert is_metalanguage_babble(text) is False
-        # Short strings where the opener sits INSIDE the 30-char window
-        # ARE detected — pin that behaviour too.
-        assert is_metalanguage_babble("Если хочешь, могу остановиться") is True
-
-    def test_markdown_stripped_head(self) -> None:
-        # Leading "**" must not mask the opener
-        assert is_metalanguage_babble("**Зачитаю рэп про космос!**") is True
-
-    def test_empty_text(self) -> None:
-        assert is_metalanguage_babble("") is False
-        assert is_metalanguage_babble(None) is False  # type: ignore[arg-type]
-
-    def test_normal_answers_pass(self) -> None:
-        assert is_metalanguage_babble("Вот твой маршрут: поверни налево") is False
-        assert is_metalanguage_babble("Расскажи анекдот про программиста") is False
-        assert is_metalanguage_babble("Ракета мчится через тьму!") is False
-        assert is_metalanguage_babble("Жил-был енотик, полоски на спинке!") is False
-
-
-# ---------------------------------------------------------------------------
-# user_wants_performance
-# ---------------------------------------------------------------------------
-
-
-class TestUserWantsPerformance:
-    def test_performance_keywords(self) -> None:
-        assert user_wants_performance("зачитай рэп") is True
-        assert user_wants_performance("расскажи стих про осень") is True
-        assert user_wants_performance("спой песню") is True
-        assert user_wants_performance("сыграй джаз") is True
-
-    def test_case_insensitive(self) -> None:
-        assert user_wants_performance("ЗАЧИТАЙ РЭП") is True
-
-    def test_non_performance(self) -> None:
-        assert user_wants_performance("как дела?") is False
-        assert user_wants_performance("что нового") is False
-
-    def test_empty(self) -> None:
-        assert user_wants_performance("") is False
-        assert user_wants_performance(None) is False  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -189,34 +100,11 @@ class TestIsMusicStopCommand:
 
 
 # ---------------------------------------------------------------------------
-# Retry prompt builders
-# ---------------------------------------------------------------------------
-
-
-class TestBuildBabbleRetryPrompt:
-    def test_echoes_user_input(self) -> None:
-        prompt = build_babble_retry_prompt("зачитай рэп про космос")
-        assert "зачитай рэп про космос" in prompt
-
-    def test_demands_tool_call(self) -> None:
-        prompt = build_babble_retry_prompt("x")
-        assert "request_music" in prompt
-        assert "execute_music_code" not in prompt and "compose_music" not in prompt
-        assert "[CRITICAL]" in prompt
-
-    def test_empty_user_input(self) -> None:
-        prompt = build_babble_retry_prompt("")
-        assert "[CRITICAL]" in prompt
-
-
-# ---------------------------------------------------------------------------
 # Smoke — keyword tuples must not silently shrink
 # ---------------------------------------------------------------------------
 
 
 def test_keyword_tuples_non_empty() -> None:
-    assert BABBLE_BANNED_OPENERS
-    assert BABBLE_PERFORMANCE_KEYWORDS
     assert MUSIC_STOP_OVERRIDES
 
 
@@ -229,29 +117,6 @@ def test_stop_overrides_are_caught_by_stop_detector() -> None:
 # ---------------------------------------------------------------------------
 # Live-прогон 30.08 (vision-pi 12:17–12:57) — регрессии, снятые с лога
 # ---------------------------------------------------------------------------
-
-
-class TestStateQuestionLive3008:
-    """«играет ли сейчас музыка» → «Сейчас тишина — ничего не играет.»
-
-    Ответ начинается с «сейчас » (опенер babble) и запрос совпадал по
-    «музык» — Bug D сжигал лишний round-trip к LLM ради байт-в-байт того
-    же ответа (лог 12:28:11 → 12:28:15).
-    """
-
-    def test_li_particle_marks_a_question(self) -> None:
-        assert is_state_question("играет ли сейчас музыка") is True
-
-    def test_question_is_not_a_performance_request(self) -> None:
-        assert user_wants_performance("играет ли сейчас музыка") is False
-
-    def test_imperative_stays_a_performance_request(self) -> None:
-        assert user_wants_performance("зачитай рэп про космос") is True
-        assert user_wants_performance("спой песню про кота") is True
-
-    def test_answer_still_looks_like_babble_in_isolation(self) -> None:
-        """Опенер сам по себе не изменился — фильтрует именно запрос."""
-        assert is_metalanguage_babble("Сейчас тишина — ничего не играет.") is True
 
 
 class TestUnbackedActionClaimLive3008:
@@ -477,175 +342,6 @@ class TestReadOnlyClaimsFromE2e33251879328:
         )
 
 
-# Issue #1777 / #1762 — non-music tool guard
-# ---------------------------------------------------------------------------
-
-
-class TestDetectRequiredTool:
-    """Issue #1777 / #1762 — ``detect_required_tool`` должен правильно
-    определять, какой tool явно просит юзер.
-
-    Главный кейс #1777 — «который час» / «сколько времени» / «время в Москве»
-    → get_current_time (раньше LLM говорил из головы).
-    Кейс #1762 — «погода в Бишкеке» / «новости про X» → search_web.
-    """
-
-    def test_time_phrases(self) -> None:
-        # Главный кейс #1777.
-        assert detect_required_tool("который час") == "get_current_time"
-        assert detect_required_tool("сколько времени") == "get_current_time"
-        assert detect_required_tool("сколько сейчас времени") == "get_current_time"
-        assert detect_required_tool("время в москве") == "get_current_time"
-        assert detect_required_tool("время по москве") == "get_current_time"
-        assert detect_required_tool("какая дата") == "get_current_time"
-        assert detect_required_tool("какой день недели") == "get_current_time"
-        assert detect_required_tool("какое сегодня число") == "get_current_time"
-
-    def test_search_web_phrases(self) -> None:
-        # Главный кейс #1762.
-        assert detect_required_tool("погода в бишкеке") == "search_web"
-        assert detect_required_tool("какая погода") == "search_web"
-        assert detect_required_tool("новости про биткоин") == "search_web"
-        assert detect_required_tool("что в интернете про илон маск") == "search_web"
-        assert detect_required_tool("загугли курс доллара") == "search_web"
-        assert detect_required_tool("расскажи про космос") == "search_web"
-
-    def test_set_voice_phrases(self) -> None:
-        # Кейс #1765.
-        assert detect_required_tool("переключи голос на арт") == "set_voice"
-        assert detect_required_tool("смени голос") == "set_voice"
-        assert detect_required_tool("голос зайцев") == "set_voice"
-        assert detect_required_tool("голос ермак") == "set_voice"
-        assert detect_required_tool("поставь голос окс") == "set_voice"
-
-    def test_memory_search_phrases(self) -> None:
-        # Кейс #1770.
-        assert detect_required_tool("что ты знаешь обо мне") == "memory_search"
-        assert detect_required_tool("помнишь меня") == "memory_search"
-        assert detect_required_tool("что помнишь про меня") == "memory_search"
-
-    def test_faq_search_phrases(self) -> None:
-        assert detect_required_tool("что ты умеешь") == "faq_search"
-        assert detect_required_tool("какие команды") == "faq_search"
-        assert detect_required_tool("справка") == "faq_search"
-        assert detect_required_tool("расскажи о себе") == "faq_search"
-
-    def test_no_match_returns_none(self) -> None:
-        # chit-chat НЕ должен ретраить — иначе спам.
-        assert detect_required_tool("как дела") is None
-        assert detect_required_tool("расскажи анекдот") is None
-        assert detect_required_tool("привет") is None
-        assert detect_required_tool("") is None
-        assert detect_required_tool(None) is None  # type: ignore[arg-type]
-
-    def test_reported_speech_does_not_match_set_voice(self) -> None:
-        """«говор »/«говори »/«говорит »/«голосом» были бы substring-match
-        без границ слова — совпали бы с обычным chit-chat про чужую речь и
-        заставили бы LLM звать set_voice в ходе, никак не связанном с
-        голосом робота."""
-        assert detect_required_tool("не говори глупости") is None
-        assert detect_required_tool("мама говорит что уже пора") is None
-        assert detect_required_tool("он говорит по-английски") is None
-        assert detect_required_tool("спой красивым голосом") is None
-
-    def test_music_phrases_dont_match_tool_guard(self) -> None:
-        """«спой песенку» / «включи музыку» → НЕ должен попадать в tool guard
-        (для них есть отдельный music guard, см. issue #992 Bug C)."""
-        assert detect_required_tool("спой песенку") is None
-        assert detect_required_tool("включи музыку") is None
-        assert detect_required_tool("поставь бит") is None
-
-    def test_all_known_tools_are_in_allow_list(self) -> None:
-        """Sanity-check: TOOL_REQUEST_PATTERNS покрывает 5 основных категорий."""
-        tool_names = {tool for tool, _ in TOOL_REQUEST_PATTERNS}
-        assert tool_names == {
-            "get_current_time",
-            "search_web",
-            "set_voice",
-            "memory_search",
-            "faq_search",
-        }
-
-    def test_keyword_tuples_non_empty_for_all_tools(self) -> None:
-        for tool, kws in TOOL_REQUEST_PATTERNS:
-            assert kws, f"empty keyword list for {tool}"
-
-
-class TestBuildToolRetryPrompt:
-    """Issue #1777 / #1762 — synthetic prompt для Bug C retry
-    (non-music tools)."""
-
-    def test_echoes_user_input(self) -> None:
-        prompt = build_tool_retry_prompt("который час", "get_current_time")
-        assert "который час" in prompt
-
-    def test_uses_critical_prefix(self) -> None:
-        """Тот же [CRITICAL] префикс, что и у music guard — иначе
-        dialogue_node._run_turn сбросит retry budget на синтетическом
-        ретрае и цикл зациклится (см. issue #992 Bug C root cause)."""
-        prompt = build_tool_retry_prompt("любой user input", "get_current_time")
-        assert prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
-
-    def test_names_specific_tool(self) -> None:
-        # «погода в Бишкеке» → search_web.
-        prompt = build_tool_retry_prompt("погода в бишкеке", "search_web")
-        assert "search_web" in prompt
-        assert "get_current_time" not in prompt  # НЕ подменять инструмент
-
-    def test_time_retry_prompts_calls_get_current_time(self) -> None:
-        # Главный кейс #1777.
-        prompt = build_tool_retry_prompt("который час", "get_current_time")
-        assert "get_current_time" in prompt
-        # Предупреждаем LLM не выдумывать время из головы.
-        assert "Не выдумывай" in prompt or "не выдумывай" in prompt.lower()
-
-    def test_search_web_retry_prompts_calls_search_web(self) -> None:
-        prompt = build_tool_retry_prompt("погода в бишкеке", "search_web")
-        assert "search_web" in prompt
-        # Hint для search_web должен явно просить вызвать search_web,
-        # а не говорить «не выдумывай» (как для get_current_time).
-        assert "search_web(query=" in prompt
-
-    def test_set_voice_retry_prompts_calls_set_voice(self) -> None:
-        prompt = build_tool_retry_prompt("переключи голос на арт", "set_voice")
-        assert "set_voice" in prompt
-        assert "list_voices" in prompt  # подсказка проверить список
-
-    def test_memory_search_filters_by_current_speaker(self) -> None:
-        # Кейс #1770 — не подставлять факты чужих юзеров.
-        prompt = build_tool_retry_prompt("что ты знаешь обо мне", "memory_search")
-        assert "memory_search" in prompt
-        assert "speaker_id" in prompt
-        assert "ТЕКУЩЕГО" in prompt or "current" in prompt.lower()
-
-    def test_faq_retry_prompts_calls_faq_search(self) -> None:
-        prompt = build_tool_retry_prompt("что ты умеешь", "faq_search")
-        assert "faq_search" in prompt
-
-    def test_defence_in_depth_unknown_tool_returns_empty(self) -> None:
-        """Prompt-injection защита: неизвестный tool_name → "" → caller
-        пропускает retry. Без этого юзер мог бы через user_input заставитьть
-        LLM «вызвать evil_tool» (или хотя бы попытаться)."""
-        prompt = build_tool_retry_prompt("любой", "evil_tool_name")
-        assert prompt == ""
-
-    def test_tool_prompt_uses_the_shared_critical_prefix(self) -> None:
-        tool_prompt = build_tool_retry_prompt("x", "get_current_time")
-        assert tool_prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX)
-
-
-def test_all_tool_retry_prompts_have_critical_prefix() -> None:
-    """Sanity-check: для всех 5 tool_names prefix должен быть [CRITICAL].
-    Защита от тихой регрессии: добавили новый tool_name, забыли prefix —
-    тест сразу скажет."""
-    for tool_name, _ in TOOL_REQUEST_PATTERNS:
-        prompt = build_tool_retry_prompt("любой user input", tool_name)
-        assert prompt.startswith(MUSIC_RETRY_PROMPT_PREFIX), (
-            f"tool {tool_name!r} retry prompt must start with "
-            f"MUSIC_RETRY_PROMPT_PREFIX, got: {prompt[:80]!r}"
-        )
-
-
 def test_stop_music_is_a_stop_tool() -> None:
     from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
 
@@ -677,67 +373,6 @@ class TestWatchdogStopReachesTheDialogueLive3108:
         assert "MUSIC_STATE_TOPIC, self._on_music_state" in src, (
             "диалог не слушает /voice/music/state — про остановку по "
             "watchdog он не узнает"
-        )
-
-
-class TestPlanningNarration:
-    """🔴 Живой лог робота 02.09 — модель отдавала своё планирование в
-    качестве реплики, TTS зачитывал его вслух, тулов при этом не было.
-
-    Пример из лога (06:58:01 UTC, ``tools=[]``):
-        'Юзер явно просит «ебани лаундж» (лоундж запрошен снова/повторно).
-         DJ уже выключен в прошлом ходе. Запускаю расслабленную
-         лоундж-композицию через compose_music.'
-
-    Юзер слышал «робот говорит, что запускает музыку, но ничего не
-    запускается». Ни ``BABBLE_BANNED_OPENERS`` (там обещания, а не
-    рассуждения), ни ``MUSIC_GUARD_KEYWORDS`` (смотрят на реплику юзера —
-    «ебани ланудж») этот случай не покрывали.
-
-    Тесты для develop-версии `is_planning_narration` (введена в 78403dba).
-    Этот PR (issue #1882) добавляет поверх — **hard-mute guard** в
-    `_handle_result` (см. dialogue_node.py), который закрывает дыру
-    «babble-ретрай уже потрачен, monologue всё равно уходит в TTS».
-    Нода-тесты для hard-mute — в test_issue_1882_planning_narration.py.
-    """
-
-    @pytest.mark.parametrize(
-        "spoken",
-        [
-            "Юзер явно просит «ебани лаундж». Запускаю лоундж-композицию "
-            "через compose_music.",
-            "Пользователь спрашивает «где бит?» — хочет услышать бит. "
-            "Проверю состояние музыки.",
-            "Юзер назначил меня диджеем. Это очевидная просьба про музыку.",
-            "Сначала вызову stop_music, потом заведу новый трек.",
-            "Отвечу через speak_text.",
-        ],
-    )
-    def test_planning_narration_is_detected(self, spoken: str) -> None:
-        assert is_planning_narration(spoken) is True
-
-    @pytest.mark.parametrize(
-        "spoken",
-        [
-            "Бит пошёл — бум-бум, ловлю волну.",
-            "Тебя зовут Саша! Любишь зелёный чай без сахара.",
-            "Вот и всё, вечеринка заканчивается! Спасибо, что были со мной.",
-            "Сейчас пятнадцать семь, вторник, первое сентября.",
-            "",
-        ],
-    )
-    def test_normal_answers_pass(self, spoken: str) -> None:
-        assert is_planning_narration(spoken) is False
-
-    def test_tool_name_alone_is_enough(self) -> None:
-        """Идентификатор в snake_case, прочитанный вслух, — всегда баг,
-        независимо от того, о чём просил юзер."""
-        assert is_planning_narration("Готово, music_library отработал.")
-
-    def test_planning_narration_counts_as_babble(self) -> None:
-        """Ретрай-механика Bug D переиспользуется как есть."""
-        assert is_metalanguage_babble(
-            "Юзер просит музыку. Запускаю через compose_music."
         )
 
 

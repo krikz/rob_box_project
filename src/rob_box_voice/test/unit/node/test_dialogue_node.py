@@ -16,7 +16,6 @@ test_dialogue_node.py — Реальные unit-тесты DialogueNode (FA-5, i
   * batch processing (TTS batch)             → test_publish_response_batch_* / test_tts_batch_registry_*
   * очистка очереди на silence               → test_handle_silence_*
   * llm_processing flag / barge-in           → test_on_vad_*
-  * прочие хелперы (babble, music guard)     → test_babble_* / test_music_guard_*
 
 Не требует ROS2 — rclpy и openai замоканы в conftest.py.
 """
@@ -28,10 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rob_box_voice.core.dialogue_guards import is_metalanguage_babble, user_wants_performance
 from rob_box_voice.dialogue_node import (
-    BABBLE_BANNED_OPENERS,
-    BABBLE_PERFORMANCE_KEYWORDS,
     DialogueNode,
     _LLM_SKIP_REASONS,
 )
@@ -142,8 +138,6 @@ class TestNodeCreation:
         import rob_box_voice.dialogue_node as dn
         assert dn.ASYNCIO_LOOP_DRIVER_MAX_WORKERS == 1
         assert dn.ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S > 0
-        assert BABBLE_BANNED_OPENERS
-        assert BABBLE_PERFORMANCE_KEYWORDS
 
     def test_node_has_dialogue_name_contract(self):
         """Имя ноды — 'dialogue_node' (используется в __init__)."""
@@ -829,30 +823,6 @@ class TestOnVad:
         n.vad_speech_detected = True
         n._on_vad(self._msg(False))
         assert n.vad_speech_detected is False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Babble detector / music guard (issue #992) — новые реальные проверки
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestBabbleDetector:
-    def test_metalanguage_opener_detected(self):
-        n = _make_node()
-        assert is_metalanguage_babble("Зачитаю рэп про космос!")
-        assert is_metalanguage_babble("Сейчас устроим концерт")
-        assert is_metalanguage_babble("Слушай, давай я спою")
-
-    def test_normal_answer_not_babble(self):
-        n = _make_node()
-        assert not is_metalanguage_babble("Черное море находится на юге России.")
-        assert not is_metalanguage_babble("")
-        assert not is_metalanguage_babble(None)
-
-    def test_user_wants_performance(self):
-        n = _make_node()
-        assert user_wants_performance("спой мне песню")
-        assert user_wants_performance("зачитай рэп")
-        assert not user_wants_performance("как дела?")
 
 
 class TestPublishState:

@@ -33,6 +33,7 @@ NODES = {
     "stt_node": ("stt_node.py", ["stt_node.yaml"]),
     "tts_node": ("tts_node.py", ["tts_node.yaml"]),
     "dialogue_node": ("dialogue_node.py", ["dialogue_node.yaml"]),
+    "dialog_node": ("dialog_node.py", ["dialog_node.yaml"]),
     "sound_node": ("sound_node.py", ["sound_node.yaml"]),
     "led_node": ("led_node.py", ["led_node.yaml"]),
     "command_node": ("command_node.py", ["command_node.yaml"]),
