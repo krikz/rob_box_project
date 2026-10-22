@@ -38,6 +38,13 @@ def _position(node: Any) -> Any:
     return {"x": round(pose["x"], 2), "y": round(pose["y"], 2), "theta": round(pose["theta"], 3), "frame": "odom"}
 
 
+def _performance(node: Any) -> Optional[Dict[str, Any]]:
+    """Идущее выступление (хост ``perform_host`` у исполнителя тулов): спетое/звучащее дословно, первый не начатый."""
+    performer = getattr(getattr(node, "_tool_executor", None), "performer", None)
+    block = performer.context() if performer is not None else None
+    return block if isinstance(block, dict) else None  # исполнитель без хоста выступления — раздела нет
+
+
 def context_sections(node: Any, profile: str, recent: Optional[Any] = None,
                      speaker: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Разделы ``knowledge.CONTEXT_SECTIONS`` хода: ``profile`` — строки ``<user_profile>`` (шов собеседника v1),
@@ -53,6 +60,7 @@ def context_sections(node: Any, profile: str, recent: Optional[Any] = None,
         "position": _position(node),
         "providers": reporter_context(getattr(node, "_provider_reporter", None)),
         "music_state": memory().section() if callable(memory) else None,
+        "performance": _performance(node),  # PR-7c: что звучит из выступления (риск §16)
         "recent_unaddressed": recent,
     }
 

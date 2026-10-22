@@ -347,8 +347,11 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
 #: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
 #: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
+#: ``performance`` — идущее выступление (``plan.perform.context_block``): спетое и звучащее дословно, номер первого не
+#: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
 CONTEXT_SECTIONS: Tuple[str, ...] = (
-    "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "recent_unaddressed",
+    "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "performance",
+    "recent_unaddressed",
 )
 
 
@@ -480,7 +483,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
-    *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
+    *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "busy", "error")),
     "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
@@ -900,7 +903,11 @@ PERFORM_BACKING_MOODS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: Подложка не ``started`` за столько секунд — отказ ``timeout`` (дедлайн класса ``action.media``, §5.1).
 PERFORM_BACKING_START_S: float = float(ACTION_CLASSES["action.media"].timeout_s)
 #: Причины отказа подложки со своей фразой ``perform.no_backing.{reason}``; остальные — ``error``.
-PERFORM_NO_BACKING_REASONS: Tuple[str, ...] = ("quota", "network", "timeout")
+PERFORM_NO_BACKING_REASONS: Tuple[str, ...] = ("quota", "network", "timeout", "busy")
+#: Причины, при которых вторая попытка подложки бессмысленна: ``busy`` — играет другая музыка (молча её не вытесняем,
+#: О9 (б)): выступление идёт без бита поверх неё.
+#: до 3в (#3700, О9′): сейчас при ``busy`` сразу «читаю под неё»; 3в сначала спрашивает «выключить и зачитать?».
+PERFORM_NO_RETRY_REASONS: Tuple[str, ...] = ("busy",)
 #: outro подложки: музыка снимается на ближайшем такте после речи — запас на такт при 60 BPM; речь вышла длиннее
 #: подложки — она продлевается по ``nearly_finished``.
 PERFORM_OUTRO_S = 4.0

@@ -112,7 +112,10 @@ class BackingTrack:
 
     def verdict(self, kind: str, track_id: Optional[str], now: float) -> str:
         """Что событие плеера значит для выступления: ``ignore``; ``late`` (наша подложка встала, когда её уже не
-        ждут — снять); ``started``/``rejected`` (исход запроса); ``nearly`` (скоро конец формы); ``ended``."""
+        ждут — снять); ``started``/``rejected`` (исход запроса); ``nearly`` (скоро конец формы); ``ended`` (кончилась
+        или деку заняла другая музыка — тактов нашей подложки больше нет)."""
+        if self.state == "playing" and kind == "started" and track_id and track_id != self.track_id:
+            return "ended"
         if not self.mine(track_id, now):
             return "ignore"
         if self.state in ("stopped", "failed"):

@@ -28,8 +28,9 @@ _SPEECH_LIVE = ("queued", "synthesized", "started", "progress")
 #: Сколько последних законченных реплик помнить: ``reserve`` после их конца не должен «оживить» реплику.
 _ENDED_MEMORY = 64
 _SOUND_END = ("finished", "skipped")
-#: Ресурсы, которые ведёт снимок (переиздаётся), а не пара событий start/end — потерянным не считаются.
-_SNAPSHOT_FED = ("backing", "track")
+#: Ресурсы, которые ведёт снимок (переиздаётся) или владелец блока целиком, а не пара событий start/end одной
+#: реплики, — потерянными не считаются: выступление (``perform``) длится минутами и само снимается по сроку.
+_SNAPSHOT_FED = ("backing", "track", "perform")
 
 
 @dataclass(frozen=True)
@@ -115,14 +116,21 @@ class ResourceState:
             self._blocks.pop("track", None)
             self._blocks.pop("backing", None)
             return
-        col = "backing" if backing else "track"
         self._blocks.pop("track" if backing else "backing", None)
-        current = self._blocks.get(col)
-        if current is not None and current.block_id == track_id:
+        self.on_block("backing" if backing else "track", track_id, True, remaining_s)
+
+    def on_block(self, resource: str, block_id: str, active: bool, remaining_s: Optional[float] = None) -> None:
+        """Блок, который ведёт его владелец целиком (выступление, ``PlanEvent block_start/prediction/block_end``):
+        занят до ``block_end``, конец — по прогнозу владельца."""
+        if not active:
+            self._close(resource, block_id)
+            return
+        current = self._blocks.get(resource)
+        if current is not None and current.block_id == block_id:
             ends = None if remaining_s is None else self._clock() + remaining_s
-            self._blocks[col] = replace(current, ends_at=ends)
+            self._blocks[resource] = replace(current, ends_at=ends)
         else:
-            self._open(col, track_id, remaining_s)
+            self._open(resource, block_id, remaining_s)
 
     def on_motion(self, active: bool, goal_id: str = "", remaining_s: Optional[float] = None) -> None:
         """Nav2: цель принята/едем (``active``, ``estimated_time_remaining`` из feedback) или результат цели."""

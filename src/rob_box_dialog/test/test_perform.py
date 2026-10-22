@@ -362,3 +362,31 @@ def test_segment_voice_and_emotion_reach_the_speech_owner():
     says = [e for e in PerformBlock(perf, "b1", log=lambda _: None).start(0.0) if isinstance(e, Say)]
     assert [(s.text, s.voice, s.emotion, s.commit) for s in says] == [
         ("Жил-был кот.", "", "happy", False), ("А потом пришла лиса.", "Wise_Woman", "", False)]
+
+
+# --- пред-синтез, который уже не прозвучит, отменяется (PR-7c ч.3, Г4) --------------------------------------------
+
+def test_replaced_and_dropped_lines_release_their_presynth():
+    """Правка заменила сегменты, «хватит» снял не начатые: их отмена выбрасывает готовый PCM у владельца речи."""
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    old_tail = {line.speech_id for line in sim.block.lines.lines if line.no >= 3}
+    effects = sim.block.edit(Performance("rap", NEW, backing="beat", from_segment=3), sim.t)
+    released = {e.speech_id for e in effects if isinstance(e, Cancel)}
+    spare = {line.fallback.speech_id for line in sim.block.lines.lines if line.fallback is not None}
+    assert released == old_tail - spare  # готовые прежние версии — запас на границу (О7), остальные — отменены
+    sim.apply(effects)
+    sim.run(200)
+    released_later = {e.speech_id for _, e in sim.effects if isinstance(e, Cancel)}
+    assert spare <= released_later  # запас, уступивший правке на границе, тоже отменён
+
+
+def test_busy_music_is_not_retried_and_reading_goes_over_it():
+    """Играет другая музыка (``busy``): вторая попытка бессмысленна — фраза и чтение без бита поверх неё."""
+    sim = Sim(rap(), music=("rejected:busy", "ok"))
+    sim.start()
+    sim.run(300)
+    assert len(sim.backings()) == 1
+    assert sim.heard[0].text == phrases.text("perform.no_backing.busy")
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)

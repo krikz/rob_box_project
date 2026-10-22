@@ -19,6 +19,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.phrases import text as phrase
 from rob_box_dialog.session import MusicStateRef, SceneFrame, SessionSnapshot
+from rob_box_dialog.words import policy_word
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateKind
 from rob_box_voice.core.command_intent import fill_intent
@@ -101,8 +102,11 @@ class Tier1Runner:
         getattr(self, f"_run_{command.kind}")(command, text)
 
     def _run_stop_all(self, _command: Tier1Command, text: str) -> None:
-        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча."""
+        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча. Идёт выступление
+        (ADR-0150 PR-7c): «хватит» — дочитать предложение, бит выступления снимет оно само на такте (outro); «стой» —
+        всё сразу."""
         node = self._node
+        outro = self._stop_performance(text)
         node._cancel_run("tier1 stop", stop_tts=True)
         pub = getattr(node, "_intent_pub", None)
         if pub is not None:
@@ -110,8 +114,20 @@ class Tier1Runner:
             stop = Command(intent=IntentType.STOP, text=text, entities={}, confidence=1.0)
             pub.publish(fill_intent(IntentMsg(), stop, epoch=gate().current if gate else 0))
         player = getattr(node, "_music_player_state", None)
-        if player is not None and (player.is_playing() or player.dj):
+        if player is not None and (player.is_playing() or player.dj) and not outro:
             self.stop_music()
+
+    def _stop_performance(self, text: str) -> bool:
+        """Остановить выступление по слову (``policy_word``: «стой» — halt, иначе — до конца предложения). ``True`` —
+        музыка, что играет, — бит выступления, и его снимет само выступление (outro на такте)."""
+        performer = getattr(getattr(self._node, "_tool_executor", None), "performer", None)
+        if performer is None:
+            return False
+        if policy_word(text) == "halt":
+            performer.halt()
+            return False
+        owns_music = performer.owns_backing
+        return performer.stop() and owns_music
 
     def stop_music(self) -> bool:
         """Стоп деки/сета и mp3 без фразы (стоп всего; «выключи музыку» в SILENCED, #3696). Нет исполнителя — ``False``."""
@@ -121,7 +137,9 @@ class Tier1Runner:
         self._spawn(self._tools((MediaToolCall(DJ_SET_TOOL, {"action": "stop"}), MediaToolCall("stop_music", {}))))
         return True
 
-    def _run_silence(self, _command: Tier1Command, _text: str) -> None:
+    def _run_silence(self, _command: Tier1Command, text: str) -> None:
+        """«Хватит/замолчи»: тишина; идущее выступление дочитывает предложение и снимает свой бит на такте (X5)."""
+        self._stop_performance(text)
         if self._silenced():
             self._node._cancel_run("tier1 silence (уже тишина)", stop_tts=True)
             return

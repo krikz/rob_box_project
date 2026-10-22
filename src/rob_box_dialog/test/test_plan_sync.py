@@ -103,6 +103,8 @@ def test_verdicts_follow_the_backing_state():
     assert track.verdict("nearly_finished", "other", 3.0) == "ignore"
     assert track.verdict("finished", "t1", 3.0) == "ended"
     assert track.verdict("idle", "t1", 3.0) == "ended"
+    assert track.verdict("started", "t1", 3.0) == "ignore"  # свой started повторно — не новый старт
+    assert track.verdict("started", "users_track", 3.0) == "ended"  # деку заняла другая музыка — тактов нет
 
 
 def test_late_started_is_ours_only_shortly_after_giving_up():

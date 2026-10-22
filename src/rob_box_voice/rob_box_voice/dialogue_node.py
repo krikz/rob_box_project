@@ -123,6 +123,8 @@ from rob_box_voice.core.tools_view_host import apply_tools_view
 from rob_box_voice.core.plan_host import begin_turn as plan_begin_turn
 from rob_box_voice.core.plan_host import make_tool_executor
 from rob_box_voice.core.plan_host import on_music as plan_on_music
+from rob_box_voice.core.plan_host import on_music_event as plan_on_music_event
+from rob_box_voice.core.plan_host import perform_busy
 from rob_box_voice.core.stt_admission import (
     DefaultSttAdmission,
     MediaCommandStep,
@@ -849,10 +851,12 @@ class DialogueNode(DialogueStageMixin, Node):
             ),
             callback_group=cbg)
         # ADR-0149 PR-6: события владельца плеера v2 (started/rejected) — фраза
-        # роутера об успехе запуска только по ``started`` (core/media_plan_run.py).
+        # роутера об успехе запуска только по ``started`` (core/media_plan_run.py);
+        # ADR-0150 PR-7c: nearly_finished/finished подложки — выступлению (plan_host).
         self._music_events = MusicEventLog()
         self.create_subscription(
-            String, MUSIC_EVENT_TOPIC, self._music_events.observe_msg,
+            String, MUSIC_EVENT_TOPIC,
+            lambda msg: (self._music_events.observe_msg(msg), plan_on_music_event(self, msg)),
             QoSProfile(
                 reliability=ReliabilityPolicy.RELIABLE,
                 history=HistoryPolicy.KEEP_LAST,
@@ -1447,7 +1451,8 @@ class DialogueNode(DialogueStageMixin, Node):
             dsm=self._dsm,
             user_id="default",
             wrap_provider=command_bridge.wrapper_for(
-                self.get_parameter("llm_command_providers").value, log=self.get_logger().info),
+                self.get_parameter("llm_command_providers").value, log=self.get_logger().info,
+                busy=lambda: perform_busy(self)),  # PR-7c: edit_pending — по ACTIVE-сегменту выступления
         )
 
     def _on_prompt_stats(self, stats: Any) -> None:

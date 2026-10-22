@@ -34,7 +34,7 @@ from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Optional, 
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.command import Command, Invalid, parse, validate
+from rob_box_dialog.command import Busy, Command, Invalid, parse, validate
 from rob_box_dialog.execute import ActionRequest, Executor, OwnerEvent
 from rob_box_dialog.plan.composition import compose, kind_of
 from rob_box_dialog.plan.plan_events import PlanEvent, queued_phrase
@@ -133,7 +133,8 @@ class CommandTurn:
         """Исполнить команду; ``messages`` дополняется только на ``query`` (данные — обратно LLM)."""
         call = response.tool_calls[0]
         marked = call.arguments.get(kn.COMMAND_INVALID_FIELD)
-        cmd = Invalid(str(marked)) if marked else validate(parse(dict(call.arguments)), self._available)
+        cmd = Invalid(str(marked)) if marked else validate(parse(dict(call.arguments)), self._available,
+                                                           busy=self._busy())
         done: List[Tuple[ToolCall, ToolResult]] = []
         if isinstance(cmd, Invalid):
             self.failure = f"invalid_command:{cmd.reason}"[:60]
@@ -142,7 +143,8 @@ class CommandTurn:
             # первый ответ», v1-ретрай #1217 (второй вызов LLM) не нужен.
             done.append((call, ToolResult(tool_call_id=call.id, content=self.failure, is_error=True)))
             return self._step(done, LLMResponse(content=""))
-        first = self._before_actions(cmd)
+        performed = self._perform(cmd, call, done)
+        first = self._before_actions(cmd, with_segments=not performed)
         if first:
             await self._say(done, first)
         results = await self._execute(self._allowed(cmd), done)
@@ -152,7 +154,7 @@ class CommandTurn:
             messages.append(LLMMessage(role="assistant", content="", tool_calls=(call,)))
             messages.append(LLMMessage(role="tool", content=data.content, tool_call_id=call.id, tool_result=data))
             return self._step(done, await next_response())
-        lines = spoken_lines(cmd, results, content=not first)
+        lines = spoken_lines(cmd, results, content=not (first or performed))
         if not lines and not done:  # нечего исполнить и нечего сказать (query сверх лимита): провал, а не молчаливое «ок»
             self.failure = "nothing_to_do"
         _LOG.info(f"{LOG_MARK} ход окончен: {[(r.tool, r.status, r.reason) for r in results]} "
@@ -160,9 +162,28 @@ class CommandTurn:
         await self._say(done, lines)
         return self._step(done, LLMResponse(content=""))
 
-    def _before_actions(self, cmd: Command) -> List[Line]:
-        """Действия, которые план ставит после речи этой команды (Tier-1 «потом»): до них звучат фраза кода
-        «Поставлю после того, как договорю» и выступление; их речь план видит занятой и ждёт её конца."""
+    def _busy(self) -> Busy:
+        """Что занято для валидатора: ACTIVE-сегмент идущего выступления (``edit_pending``, PR-7c)."""
+        performer = getattr(self._tools, "performer", None)
+        return Busy(active_segment=getattr(performer, "active_segment", None))
+
+    def _perform(self, cmd: Command, call: ToolCall, done: List[Tuple[ToolCall, ToolResult]]) -> bool:
+        """Выступление — владельцу (``PerformBlock`` хоста, ADR-0150 PR-7c): сегменты на тактах, подложка, правка
+        ``edit_pending``. Хоста нет (агент без выступлений) — сегменты звучат репликами, как раньше. Отданное
+        владельцу — исполненный вызов хода (не «тихий ответ», второго вызова LLM нет)."""
+        performer = getattr(self._tools, "performer", None)
+        if performer is None or cmd.perform is None:
+            return False
+        outcome = performer.edit(cmd.perform) if cmd.edit_pending else performer.start(cmd.perform, self._turn)
+        _LOG.info(f"{LOG_MARK} выступление {'правка' if cmd.edit_pending else 'старт'}: {outcome}")
+        done.append((call, ToolResult(tool_call_id=call.id, content=f"perform: {outcome.get('status')}",
+                                      is_error=outcome.get("status") == "rejected", data=outcome)))
+        return True
+
+    def _before_actions(self, cmd: Command, with_segments: bool = True) -> List[Line]:
+        """Действия, которые план ставит после речи этой команды (Tier-1 «потом»): до них звучит фраза кода
+        «Поставлю после того, как договорю» (и выступление, если его не взял владелец); их речь план видит занятой и
+        ждёт её конца."""
         planner = getattr(self._tools, "planner", None)
         if planner is None or cmd.perform is None:
             return []
@@ -173,6 +194,8 @@ class CommandTurn:
         eta_ms = int(chars / planner.state.rate.chars_per_s * 1000)
         phrase = queued_phrase(PlanEvent("queued", later[0].tool, after_resource="speech", eta_ms=eta_ms),
                                kind_of(later[0].tool))
+        if not with_segments:
+            return [(phrase, "")]
         voices = cmd.perform.voice_per_segment or ("",) * len(cmd.perform.segments)
         return [(phrase, ""), *zip(cmd.perform.segments, voices)]
 
