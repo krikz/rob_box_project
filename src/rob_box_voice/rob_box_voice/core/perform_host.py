@@ -178,7 +178,7 @@ class PerformHost:
         """Новое выступление; идёт другое — правка его не начатых сегментов (MERGE, COMPOSITION perform×perform)."""
         with self._lock:
             if self.block is not None and not self.block.ended:
-                return self._edit_locked(perf, merge=True)
+                return self._edit_locked(perf)
             self._run.turn_id, self._run.epoch = turn_id, epoch
             self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
                                       output_latency_ms=self._latency_ms, log=self._run.log)
@@ -187,9 +187,9 @@ class PerformHost:
             return {"status": "pending", "block_id": self.block.block_id}
 
     def edit(self, perf: Performance) -> Dict[str, Any]:
-        """``edit_pending``: правка не начатых сегментов идущего выступления."""
+        """``edit_pending``: правка не начатых сегментов идущего выступления (с какого — :meth:`_edit_locked`)."""
         with self._lock:
-            return self._edit_locked(perf, merge=False)
+            return self._edit_locked(perf)
 
     def stop(self) -> bool:
         """«Хватит»: дочитать предложение, outro бита. Выступления нет — ``False`` (стоп решает общий путь)."""
@@ -248,13 +248,14 @@ class PerformHost:
             self._run.apply(step(block, self._clock()))
             return True
 
-    def _edit_locked(self, perf: Performance, merge: bool) -> Dict[str, Any]:
+    def _edit_locked(self, perf: Performance) -> Dict[str, Any]:
+        """Правка — и ``edit_pending``, и новое выступление поверх идущего (MERGE): с какого сегмента, решает код —
+        с первого ещё не отданного на звучание (ACTIVE+1; ``active_segment`` — последний отданный), #3700."""
         block = self.block
         if block is None or block.ended:
             return {"status": "rejected", "reason": "edit_without_active_perform"}
-        if merge:  # новое выступление поверх идущего: не начатые — с ACTIVE+1
-            perf = Performance(perf.kind, perf.segments, perf.backing, perf.expression_per_segment,
-                               (block.active_segment or 0) + 1, perf.voice_per_segment)
+        perf = Performance(perf.kind, perf.segments, perf.backing, perf.expression_per_segment,
+                           (block.active_segment or 0) + 1, perf.voice_per_segment)
         effects = block.edit(perf, self._clock())
         self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]

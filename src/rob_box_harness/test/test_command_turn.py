@@ -319,13 +319,13 @@ def test_edit_pending_goes_to_the_running_performance() -> None:
     """X3 «и про енота»: правка не начатых сегментов — валидна, пока идёт выступление (ACTIVE от владельца)."""
     tools = _Tools()
     tools.performer = _Performer(active=2)
-    result, _ = _turn(tools, _command(perform={**RAP, "from_segment": 3}, edit_pending=True))
-    (perf,) = tools.performer.edited
-    assert perf.from_segment == 3 and tools.performer.started == [] and not result.turn_failure
+    result, _ = _turn(tools, _command(perform={**RAP, "edit_pending": True, "from_segment": 2}))
+    (perf,) = tools.performer.edited  # A20 22.10: флаг внутри perform, номер = ACTIVE — всё равно правка (#3700)
+    assert perf.from_segment == 0 and tools.performer.started == [] and not result.turn_failure  # номер — у хоста
 
 
 def test_edit_pending_without_a_performance_is_invalid() -> None:
     tools = _Tools()
     tools.performer = _Performer(active=None)
-    result, _ = _turn(tools, _command(perform={**RAP, "from_segment": 3}, edit_pending=True))
+    result, _ = _turn(tools, _command(perform=RAP, edit_pending=True))
     assert tools.performer.edited == [] and result.turn_failure.startswith("invalid_command")
