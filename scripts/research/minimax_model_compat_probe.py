@@ -16,7 +16,7 @@
   c2  stream + те же тулы;
   c3  tool_choice: auto / required (DJ-путь шлёт ``required``, ADR-0143);
   d   картинка на вход (``image_input``);
-  e   рассуждение не попадает в речь (strip/markup_recovery/content_speech);
+  e   рассуждение не попадает в речь (strip/markup_recovery);
   r   повторы (PROBE_REPS, по умолчанию 5 реплик): разброс задержек, доля
       настоящих tool_calls, срабатывания first-chunk-гуарда, ``finish_reason=length``.
 
@@ -265,7 +265,6 @@ def describe_response(resp: Any) -> dict[str, Any]:
     reasoning = extra.get("reasoning_content")
     reasoning = reasoning if isinstance(reasoning, str) else ""
     raw_usage = raw.usage.model_dump() if raw is not None and getattr(raw, "usage", None) else {}
-    from rob_box_harness.core.tool_loop.content_speech import _speakable
     from rob_box_harness.core.tool_loop.text_classify import is_tool_call_markup
 
     cleaned = without_reasoning(resp).content
@@ -273,7 +272,6 @@ def describe_response(resp: Any) -> dict[str, Any]:
         "content": resp.content,
         "content_cleaned_by_without_reasoning": cleaned,
         "markup_detected_by_text_classify": is_tool_call_markup(cleaned),
-        "speakable_after_guards": _speakable(cleaned),
         "finish_reason": resp.finish_reason,
         "usage": dict(resp.usage),
         "raw_usage": raw_usage,
@@ -587,8 +585,7 @@ async def case_r2(model: str, system: str) -> None:
 
 
 def case_e() -> None:
-    """Рассуждение не речь: вырезание, разбор разметки вызова, озвучка content."""
-    from rob_box_harness.core.tool_loop.content_speech import _speakable
+    """Рассуждение не речь: вырезание и разбор разметки вызова (озвучка content удалена, #3698 ч.7d-3)."""
     from rob_box_harness.core.tool_loop.markup_recovery import parse_tool_call_markup
     from rob_box_harness.providers.reasoning import strip_reasoning
 
@@ -605,7 +602,6 @@ def case_e() -> None:
         stripped = strip_reasoning(text)
         out[name] = {
             "stripped": stripped,
-            "speakable": _speakable(stripped),
             "recovered_calls": [(n, dict(a)) for n, a in parse_tool_call_markup(stripped, tools=tools)],
         }
     emit("e_reasoning_not_speech_synthetic", **out)
