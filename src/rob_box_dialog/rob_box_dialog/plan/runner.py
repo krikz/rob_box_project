@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.plan.composition import Decision, compose, kind_of
-from rob_box_dialog.plan.plan_events import PlanEvent, queued, rejected
+from rob_box_dialog.plan.plan_events import PlanEvent, event_line, queued, rejected
 from rob_box_dialog.plan.resources import ResourceState
 from rob_box_dialog.words import policy_word
 
@@ -70,8 +70,7 @@ class PlanRunner:
 
     def emit(self, event: PlanEvent) -> None:
         """Опубликовать событие плана и записать строку лога (её ищет живая проверка)."""
-        self._log(f"{LOG_MARK} PlanEvent {event.kind} block={event.block_id[:12]} after={event.after_resource or '-'}"
-                  f"/{event.after_block[:8] or '-'} eta_ms={event.eta_ms} reason={event.reason or '-'}")
+        self._log(f"{LOG_MARK} {event_line(event)}")
         if self._publish is not None:
             try:
                 self._publish(event)

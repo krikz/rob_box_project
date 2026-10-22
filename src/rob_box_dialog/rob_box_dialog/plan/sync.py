@@ -52,6 +52,17 @@ class BeatGrid:
         return self.beat_at + (float(beat) - self.start_beat) * 60.0 / self.bpm
 
 
+def beat_offset_ms(grid: Optional[BeatGrid], t: float) -> Optional[int]:
+    """На сколько мс момент ``t`` (звучание, секунды ROS-часов) отстоит от ближайшей доли подложки: ``> 0`` — позже
+    доли, ``< 0`` — раньше. Единственная формула смещения старта сегмента для замера A19 (``PlanEvent.offset_ms``);
+    сетки нет — ``None``."""
+    if grid is None:
+        return None
+    beat_s = 60.0 / grid.bpm
+    nearest = grid.beat_at + round((t - grid.beat_at) / beat_s) * beat_s
+    return int(round((t - nearest) * 1000.0))
+
+
 @dataclass(frozen=True)
 class Slot:
     """Момент старта реплики (``SpeechRequest.at``; 0 — сразу за предыдущей) и попал ли он на такт."""
@@ -90,4 +101,5 @@ def layout(durations: Sequence[float], grid: Optional[BeatGrid], first_at: float
     return tuple(starts)
 
 
-__all__ = ["BeatGrid", "Slot", "bar_at_or_after", "beat_heard_at", "earliest", "layout", "next_bar"]
+__all__ = ["BeatGrid", "Slot", "bar_at_or_after", "beat_heard_at", "beat_offset_ms", "earliest", "layout",
+           "next_bar"]

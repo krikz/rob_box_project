@@ -28,7 +28,11 @@ class PlanEvent:
     """Событие плана хода; ``after_block`` и ``eta_ms`` — у ``queued``/``prediction``, ``reason`` — у ``rejected``.
 
     ``after_resource`` — столбец матрицы, после которого (для фразы и LLM); в ``PlanEvent.msg`` его нет — фразу
-    строит агент, который это событие и создал."""
+    строит агент, который это событие и создал.
+
+    ``spoken_chars``/``text_len`` (``segment_finished``: сколько символов сегмента прозвучало из скольких; A20) и
+    ``offset_ms`` (``segment_started``: на сколько мс старт сегмента отстоит от ближайшей доли подложки, со знаком; A19,
+    ``None`` — сетки нет) тоже не едут в ``PlanEvent.msg``: их читает только строка лога (:func:`event_line`)."""
 
     kind: str
     block_id: str
@@ -41,6 +45,9 @@ class PlanEvent:
     eta_ms: int = 0
     synced: bool = False
     reason: str = ""
+    spoken_chars: int = 0
+    text_len: int = 0
+    offset_ms: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.kind not in PLAN_EVENT_KINDS:
@@ -50,6 +57,16 @@ class PlanEvent:
     def code(self) -> int:
         """Константа ``KIND_*`` сообщения."""
         return PLAN_EVENT_KINDS.index(self.kind)
+
+
+def event_line(event: PlanEvent) -> str:
+    """Строка лога события (после метки ``🗓️ [plan]``): всё, что нужно приёмке по ``docker logs`` — вид, блок,
+    номер сегмента, ``synced`` (A20/A22), прозвучало/длина (A20), ETA, смещение старта от доли (A19), причина."""
+    offset = "-" if event.offset_ms is None else str(event.offset_ms)
+    return (f"PlanEvent {event.kind} block={event.block_id[:12]} seg={event.segment_no} "
+            f"synced={str(event.synced).lower()} spoken_chars={event.spoken_chars} text_len={event.text_len} "
+            f"offset_ms={offset} after={event.after_resource or '-'}/{event.after_block[:8] or '-'} "
+            f"eta_ms={event.eta_ms} reason={event.reason or '-'}")
 
 
 def queued(block_id: str, decision: Decision, state: ResourceState, **ids: Any) -> Optional[PlanEvent]:
@@ -92,4 +109,4 @@ def pending_data(event: PlanEvent) -> Dict[str, Any]:
     return data
 
 
-__all__ = ["PLAN_EVENT_KINDS", "PlanEvent", "pending_data", "queued", "queued_phrase", "rejected"]
+__all__ = ["PLAN_EVENT_KINDS", "PlanEvent", "event_line", "pending_data", "queued", "queued_phrase", "rejected"]

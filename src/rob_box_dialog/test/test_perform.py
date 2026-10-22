@@ -11,7 +11,10 @@ from rob_box_dialog import phrases
 from rob_box_dialog.command import Expression, Performance
 from rob_box_dialog.plan.backing import MusicStop
 from rob_box_dialog.plan.perform import Cancel, PerformBlock, Say, context_block
+from rob_box_dialog.plan.runner import LOG_MARK as LOG
+from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog.plan.segments import FIXED
+from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms
 
 SEGS = (
     "Я комар, звеню над ухом всю ночь подряд. Ты не спишь, а я доволен и крылья гудят.",
@@ -159,6 +162,67 @@ def test_x3_edit_pending_replaces_not_started_segments_and_keeps_the_beat():
     assert all(h.outcome == "finished" for h in sim.heard)
     assert sim.music_stops() == [MusicStop("bar", "perform_end")]  # подложка не прерывалась
     assert all(on_bar(sim, h.start) for h in sim.heard)
+
+
+def _log_lines(sim):
+    """Строки лога ``🗓️ [plan] PlanEvent …`` по событиям симуляции — теми же ``PlanRunner.emit``, что в ноде."""
+    lines = []
+    runner = PlanRunner(log=lines.append)
+    for event in sim.plan_events:
+        runner.emit(event)
+    return lines
+
+
+def test_plan_event_log_has_what_the_acceptance_needs_x3():
+    """A20 по ``docker logs``: сегмент 2 дочитан и на такте (``spoken_chars == text_len``, ``synced=true``),
+    ``segment_replaced`` 3–6, старты — на доле (A19: ``offset_ms``)."""
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    sim.apply(sim.block.edit(Performance("rap", NEW, backing="beat", from_segment=3), sim.t))
+    sim.run(300)
+    lines = _log_lines(sim)
+    n = len(SEGS[1])
+    assert any("PlanEvent segment_finished " in ln and " seg=2 synced=true " in ln
+               and f"spoken_chars={n} text_len={n} " in ln for ln in lines), lines
+    replaced = [ln for ln in lines if "PlanEvent segment_replaced " in ln and "reason=edit" in ln]
+    assert [ln.split(" seg=")[1].split()[0] for ln in replaced] == ["3", "4", "5", "6"]
+    starts = [ln for ln in lines if "PlanEvent segment_started " in ln]
+    assert len(starts) == 6 and all("synced=true" in ln for ln in starts)
+    assert all(abs(e.offset_ms) <= 1 for e in sim.events("segment_started"))  # старт на такте = на доле
+    assert all(LOG in ln for ln in lines)
+
+
+def test_plan_event_log_offset_ms_shows_a_late_segment_a19():
+    """Сегмент 3 встал на 0.1 с позже такта (доля 0.5 с — ближайшая своя): его строка ``segment_started`` —
+    ``offset_ms=100``, ``synced=false``; позже 0.25 с смещение считается от следующей доли (минус). Без подложки
+    смещения нет: ``offset_ms=-``."""
+    sim = Sim(rap(), hiccup={SEGS[2]: 0.1})
+    sim.start()
+    sim.run(300)
+    late = [ln for ln in _log_lines(sim) if "PlanEvent segment_started " in ln and " seg=3 " in ln]
+    assert len(late) == 1 and "synced=false" in late[0] and "offset_ms=100 " in late[0]
+    assert beat_offset_ms(BeatGrid(120.0, 0.0, 4.0), 0.3) == -200  # 0.3 с после доли — ближе к следующей
+    bare = Sim(rap(backing="none"))
+    bare.start()
+    bare.run(300)
+    assert all("offset_ms=- " in ln for ln in _log_lines(bare) if "PlanEvent segment_started " in ln)
+
+
+def test_plan_event_log_stop_shows_a_cut_segment_x5():
+    """«Хватит»: сегмент 2 дочитан только до конца предложения — ``spoken_chars < text_len``; ``block_end`` — итог."""
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    sim.run(1.0)
+    sim.apply(sim.block.stop(sim.t))
+    sim.run(60)
+    lines = _log_lines(sim)
+    cut = SEGS[1].index(".") + 1
+    assert any(" seg=2 " in ln and f"spoken_chars={cut} text_len={len(SEGS[1])} " in ln and "reason=cancelled" in ln
+               for ln in lines if "PlanEvent segment_finished " in ln), lines
+    (end,) = [ln for ln in lines if "PlanEvent block_end " in ln]
+    assert "reason=stopped" in end and f"spoken_chars={len(SEGS[0]) + cut} " in end
 
 
 def test_x3_longer_edit_adds_segments():
