@@ -121,9 +121,7 @@ def _node(llm_reply):
 
     n._prepare_user_input_context = prepare
     n._invoke_llm_with_telemetry = invoke_llm
-    n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
-    n._retry_dispatched_in_turn = False
     n._finalize_turn_dsm = MagicMock()
     no_accumulation(n)
     return n

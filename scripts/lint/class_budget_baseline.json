@@ -76,8 +76,8 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {
-      "wmc": 608,
-      "methods": 128
+      "wmc": 525,
+      "methods": 112
     },
     "src/rob_box_voice/rob_box_voice/speaker_id_node.py:SpeakerIdNode": {
       "wmc": 209,

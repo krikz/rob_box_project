@@ -88,12 +88,9 @@ def _turn_node() -> DialogueNode:
     n._active_tg_chat_id = None
     n._effects = MagicMock()
     n._verbose_llm = False
-    n._action_claim_retry_used = False
-    n._retry_dispatched_in_turn = False
     n._run_task = None
     n._task_lock = MagicMock()
     n._startup_greeting_fired = False
-    n._consume_synthetic_retry = MagicMock(return_value=True)
     n._dispatch_turn = MagicMock()
     n._music_player_state = None
     n._llm_skipped_counter = new_llm_skip_counter()

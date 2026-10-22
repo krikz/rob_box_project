@@ -112,10 +112,8 @@ def _turn_node(ack_during_llm=None, ack_after_result=None):
         return _Result()
 
     n._invoke_llm_with_telemetry = invoke_llm
-    n._reset_turn_retry_budgets = MagicMock()
     n._prepare_user_input_context = AsyncMock(side_effect=lambda **kw: (kw["user_input"], "<system_context/>"))
     n._llm = MagicMock()
-    n._retry_dispatched_in_turn = False
     n._finalize_turn_dsm = MagicMock()
     return n
 

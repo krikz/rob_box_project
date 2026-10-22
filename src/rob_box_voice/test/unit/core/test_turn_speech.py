@@ -46,17 +46,8 @@ class TestDecideTurnSpeech:
         text = "Привет! Как дела? Рад тебя слышать."
         assert _decide(text) == text
 
-    def test_retry_dispatched_is_silent(self):
-        assert _decide("Йо, gangsta party!", retry_dispatched=True) is None
-
     def test_retracted_is_silent(self):
         assert _decide("Йо!", retracted=True) is None
-
-    def test_budget_exhausted_gives_first_sentence(self):
-        out = _decide(_MONOLOGUE, budget_exhausted=True)
-        assert out == "Поехали, зал — Still Dre открывает вечер."
-        assert len(split_into_chunks(_MONOLOGUE)) > 10  # было 11+ чанков
-        assert len(split_into_chunks(out)) == 1
 
     def test_long_music_text_trimmed(self):
         assert len(split_into_chunks(_MONOLOGUE)) > MUSIC_MAX_CHUNKS
