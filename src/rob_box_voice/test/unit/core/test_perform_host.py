@@ -130,14 +130,46 @@ def test_segment_goes_on_the_bar_after_synthesis(loop):
     assert commit.at == pytest.approx(1002.0)  # первая доля бита (самый ранний звук 1000 + 0.55 + 0.3 < 1002)
 
 
-def test_busy_music_reads_without_beat_and_says_so_without_a_second_try(loop):
+def test_busy_music_reads_over_it_without_a_second_try(loop):
+    """Музыка встала между вопросом и заказом (``busy`` от движка): второй попытки нет, чтение поверх неё без
+    фразы об отказе бита (музыка звучит — это не тишина)."""
     host, node, tools, _ = _host(loop, {"ok": False, "reason": "busy"})
     host.start(RAP, "t1")
     _settle(loop)
-    assert len(tools.calls) == 1  # вторая попытка бессмысленна: играет другая музыка
-    said = [plain_text(r.text) for r in node.requests() if r.commit]
-    assert said == [phrases.text("perform.no_backing.busy")]
-    assert not host.owns_backing
+    assert len(tools.calls) == 1
+    assert [r for r in node.requests() if r.commit] == [] and not host.owns_backing
+
+
+def _asking(loop: Any, backing: Dict[str, Any]) -> tuple:
+    """Играет чужая музыка: выступление спрашивает «выключить и зачитать?» — бит не заказан, окно — после вопроса."""
+    node, tools, events, opened = _Node(), _Tools(backing), [], []
+    host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
+                       clock=lambda: node.now_s, playing=lambda: "Still Dre", on_ask=opened.append)
+    host.start(RAP, "t1")
+    (question,) = [r for r in node.requests() if r.commit]
+    assert plain_text(question.text) == phrases.text("perform.ask_replace_music", title="Still Dre")
+    _settle(loop)
+    assert tools.calls == [] and opened == []
+    host.on_speech("started", question.speech_id, duration_ms=2500)
+    host.on_speech("finished", question.speech_id)
+    assert opened == ["Still Dre"]  # вопрос прозвучал — окно ответа открыто
+    return host, node, tools
+
+
+def test_yes_stops_the_playing_music_then_orders_the_beat(loop):
+    host, node, tools = _asking(loop, STARTED)
+    assert host.answer(True)
+    _settle(loop)
+    assert [c.name for c in tools.calls] == ["stop_music", "request_music"]
+    assert tools.calls[0].arguments == {"boundary": "now"} and host.owns_backing
+
+
+def test_no_reads_over_the_playing_music(loop):
+    host, node, tools = _asking(loop, STARTED)
+    assert host.answer(False)
+    _settle(loop)
+    assert tools.calls == [] and not host.owns_backing
+    assert not host.answer(True)  # вопрос уже закрыт
 
 
 def test_stop_finishes_the_sentence_halt_cuts_now(loop):

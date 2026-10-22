@@ -25,9 +25,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from rob_box_core import speech_client
 from rob_box_core.utterance import Utterance
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, MusicStop
-from rob_box_dialog.plan.perform import Cancel, PerformBlock, Say, context_block
+from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_llm.provider import ToolCall, ToolResult
 
@@ -42,6 +43,89 @@ REQUEST_MUSIC, STOP_MUSIC = "request_music", "stop_music"
 _TOPIC_EVENTS = ("started", "nearly_finished", "finished", "idle")
 
 RunTool = Callable[[ToolCall], Any]  # корутина → ToolResult
+#: Исход запуска подложки обратно в блок: ``feed(kind, track_id, fields)`` — как событие плеера.
+Feed = Callable[[str, Optional[str], Mapping[str, Any]], None]
+
+
+class EffectRunner:
+    """Исполнитель эффектов блока: речь — ``speech_client``, музыка — тулы в loop ноды, ``PlanEvent`` — в ``emit``.
+    Решений не принимает; исход запуска подложки отдаёт обратно через ``feed``."""
+
+    def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
+                 emit: Callable[[PlanEvent], None], feed: Feed) -> None:
+        self._node = node
+        self._run_tool = run_tool
+        self._loop = loop
+        self._emit = emit
+        self._feed = feed
+        self._ids = itertools.count(1)
+        self.epoch = 0
+        self.turn_id = ""
+        self._asks: Dict[str, str] = {}  # speech_id вопроса «выключить и зачитать?» → название музыки
+        self._handlers: Dict[type, Callable[[Any], None]] = {
+            Say: self._say, Cancel: self._cancel, Backing: lambda b: self._spawn(self._backing(b)),
+            MusicStop: self._music_stop, PlanEvent: self._emit, AskReplace: self._ask,
+        }
+
+    def apply(self, effects: List[Any]) -> None:
+        for effect in effects:
+            self._handlers[type(effect)](effect)
+
+    def asked(self, kind: str, speech_id: str) -> Optional[str]:
+        """Конец реплики-вопроса (О9′): название музыки, если вопрос прозвучал целиком (``finished``), иначе ``None``.
+        Вопрос забывается на любом конце реплики."""
+        title = self._asks.pop(speech_id, None) if kind in ("finished", "cancelled", "rejected") else None
+        return title if kind == "finished" else None
+
+    def log(self, text: str) -> None:
+        self._node.get_logger().info(text)
+
+    def _say(self, say: Say) -> None:
+        utterance = Utterance(text=say.text, voice=say.voice or None, emotion=say.emotion or None,
+                              speech_id=say.speech_id)
+        speech_client.say(self._node, utterance, agent=AGENT, epoch=self.epoch, turn_id=self.turn_id,
+                          at=say.at, commit=say.commit, boundary="sentence")
+
+    def _cancel(self, cancel: Cancel) -> None:
+        """Сегменты просят границу предложения; «стой» (``boundary=none``) — сразу."""
+        speech_client.cancel(self._node, agent=AGENT, speech_id=cancel.speech_id, reason="perform",
+                             boundary="as_requested" if cancel.boundary == "sentence" else "now")
+
+    def _music_stop(self, stop: MusicStop) -> None:
+        self._spawn(self._tool(STOP_MUSIC, {"boundary": "bar" if stop.boundary == "bar" else "now"}))
+
+    def _ask(self, ask: AskReplace) -> None:
+        self._asks[ask.speech_id] = ask.title
+
+    async def _backing(self, backing: Backing) -> None:
+        """Запуск/продление подложки; исход запуска — в блок (``started`` с сеткой или ``rejected`` с причиной)."""
+        if backing.replace:  # «да» на «выключить и зачитать?»: сначала снять играющую музыку (сет — тоже)
+            await self._tool(STOP_MUSIC, {"boundary": "now"})
+        args = {"intent": "backing", "text": "", "mood": backing.mood, "min_seconds": backing.min_s}
+        result = await self._tool(REQUEST_MUSIC, args)
+        if backing.extend:
+            return
+        data = dict((result.data if result is not None else None) or {})
+        if data.get("ok") and data.get("started"):
+            self._feed("started", data.get("track_id"), data)
+        else:
+            self._feed("rejected", None, {"reason": str(data.get("reason") or "error")})
+
+    async def _tool(self, name: str, args: Mapping[str, Any]) -> Optional[ToolResult]:
+        call = ToolCall(id=f"perform-{next(self._ids)}", name=name, arguments=dict(args))
+        try:
+            return await self._run_tool(call)
+        except Exception as exc:  # noqa: BLE001 — сбой транспорта: честный отказ подложки, а не падение ноды
+            self.log(f"⚠️ [perform] {name} не исполнен: {type(exc).__name__}: {exc}")
+            return None
+
+    def _spawn(self, coro: Any) -> None:
+        loop = self._loop()
+        if loop is None or loop.is_closed():
+            coro.close()
+            self.log("⚠️ [perform] loop ноды не готов — тул выступления не исполнен")
+            return
+        asyncio.run_coroutine_threadsafe(coro, loop)
 
 
 class PerformHost:
@@ -49,18 +133,17 @@ class PerformHost:
 
     def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
                  emit: Callable[[PlanEvent], None], output_latency_ms: int,
-                 clock: Callable[[], float] = time.time) -> None:
-        self._node = node
-        self._run_tool = run_tool
-        self._loop = loop
-        self._emit = emit
+                 clock: Callable[[], float] = time.time, playing: Callable[[], str] = str,
+                 on_ask: Callable[[str], None] = lambda title: None) -> None:
         self._latency_ms = int(output_latency_ms)
         self._clock = clock
         self._lock = threading.RLock()
         self._ids = itertools.count(1)
-        self._epoch = 0
-        self._turn_id = ""
         self.block: Optional[PerformBlock] = None
+        #: Что играет чужое (название; ``""`` — тишина или наш бит) и как открыть окно ответа да/нет (О9′).
+        self._playing = playing
+        self._on_ask = on_ask
+        self._run = EffectRunner(node, run_tool, loop, emit, self._fed)
 
     # -- что видят валидатор, LLM и планировщик ---------------------------------------------------------------------
 
@@ -96,10 +179,11 @@ class PerformHost:
         with self._lock:
             if self.block is not None and not self.block.ended:
                 return self._edit_locked(perf, merge=True)
-            self._turn_id, self._epoch = turn_id, epoch
+            self._run.turn_id, self._run.epoch = turn_id, epoch
             self.block = PerformBlock(perf, f"perform-{turn_id or next(self._ids)}", turn_id=turn_id, epoch=epoch,
-                                      output_latency_ms=self._latency_ms, log=self._log)
-            self._apply(self.block.start(self._clock()))
+                                      output_latency_ms=self._latency_ms, log=self._run.log)
+            playing = self._playing() if perf.backing in kn.PERFORM_BACKING_MOODS else ""
+            self._run.apply(self.block.start(self._clock(), playing))
             return {"status": "pending", "block_id": self.block.block_id}
 
     def edit(self, perf: Performance) -> Dict[str, Any]:
@@ -122,30 +206,46 @@ class PerformHost:
             if block is None or block.ended:
                 return False
             effects = block.add_backing(backing, self._clock())
-            self._apply(effects)
+            self._run.apply(effects)
             return bool(effects)
 
     # -- события владельцев ---------------------------------------------------------------------------------------------
 
     def on_speech(self, kind: str, speech_id: str, duration_ms: int = 0, spoken_chars: int = 0) -> None:
+        title = self._run.asked(kind, speech_id)
+        if title is not None:
+            self._on_ask(title)  # вопрос прозвучал — окно ответа да/нет (молчание — «нет» по сроку блока)
         self._command(lambda block, now: block.on_speech(kind, speech_id, now, duration_ms=duration_ms,
                                                          spoken_chars=spoken_chars))
 
+    def answer(self, yes: bool) -> bool:
+        """Ответ человека на «выключить и зачитать?»: ``True`` — выступление его ждало."""
+        with self._lock:
+            block = self.block
+            if block is None or block.ended or block.backing.state != "asking":
+                return False
+            self._run.apply(block.answer(yes, self._clock()))
+            return True
+
     def on_music_event(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
         if kind in _TOPIC_EVENTS:
-            self._command(lambda block, now: block.on_music(kind, track_id, now, fields))
+            self._fed(kind, track_id, fields)
 
     def tick(self) -> None:
         self._command(lambda block, now: block.tick(now))
 
-    # -- исполнение эффектов --------------------------------------------------------------------------------------------
+    # -- исполнение -----------------------------------------------------------------------------------------------------
+
+    def _fed(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
+        """Событие плеера о подложке: из топика или исход запуска из ответа тула."""
+        self._command(lambda block, now: block.on_music(kind, track_id, now, fields))
 
     def _command(self, step: Callable[[PerformBlock, float], List[Any]]) -> bool:
         with self._lock:
             block = self.block
             if block is None or block.ended:
                 return False
-            self._apply(step(block, self._clock()))
+            self._run.apply(step(block, self._clock()))
             return True
 
     def _edit_locked(self, perf: Performance, merge: bool) -> Dict[str, Any]:
@@ -156,61 +256,9 @@ class PerformHost:
             perf = Performance(perf.kind, perf.segments, perf.backing, perf.expression_per_segment,
                                (block.active_segment or 0) + 1, perf.voice_per_segment)
         effects = block.edit(perf, self._clock())
-        self._apply(effects)
+        self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
         return {"status": "rejected", "reason": rejected[0].reason} if rejected else {"status": "done"}
 
-    def _apply(self, effects: List[Any]) -> None:
-        for effect in effects:
-            if isinstance(effect, Say):
-                self._say(effect)
-            elif isinstance(effect, Cancel):  # сегменты просят границу предложения; «стой» (boundary none) — сразу
-                speech_client.cancel(self._node, agent=AGENT, speech_id=effect.speech_id, reason="perform",
-                                     boundary="as_requested" if effect.boundary == "sentence" else "now")
-            elif isinstance(effect, Backing):
-                self._spawn(self._backing(effect))
-            elif isinstance(effect, MusicStop):
-                self._spawn(self._tool(STOP_MUSIC, {"boundary": "bar" if effect.boundary == "bar" else "now"}))
-            elif isinstance(effect, PlanEvent):
-                self._emit(effect)
 
-    def _say(self, say: Say) -> None:
-        utterance = Utterance(text=say.text, voice=say.voice or None, emotion=say.emotion or None,
-                              speech_id=say.speech_id)
-        speech_client.say(self._node, utterance, agent=AGENT, epoch=self._epoch, turn_id=self._turn_id,
-                          at=say.at, commit=say.commit, boundary="sentence")
-
-    async def _backing(self, backing: Backing) -> None:
-        """Запуск/продление подложки; исход запуска — в блок (``started`` с сеткой или ``rejected`` с причиной)."""
-        args = {"intent": "backing", "text": "", "mood": backing.mood, "min_seconds": backing.min_s}
-        result = await self._tool(REQUEST_MUSIC, args)
-        if backing.extend:
-            return
-        data = dict((result.data if result is not None else None) or {})
-        if data.get("ok") and data.get("started"):
-            self._command(lambda block, now: block.on_music("started", data.get("track_id"), now, data))
-        else:
-            reason = str(data.get("reason") or "error")
-            self._command(lambda block, now: block.on_music("rejected", None, now, {"reason": reason}))
-
-    async def _tool(self, name: str, args: Mapping[str, Any]) -> Optional[ToolResult]:
-        call = ToolCall(id=f"perform-{next(self._ids)}", name=name, arguments=dict(args))
-        try:
-            return await self._run_tool(call)
-        except Exception as exc:  # noqa: BLE001 — сбой транспорта: честный отказ подложки, а не падение ноды
-            self._log(f"⚠️ [perform] {name} не исполнен: {type(exc).__name__}: {exc}")
-            return None
-
-    def _spawn(self, coro: Any) -> None:
-        loop = self._loop()
-        if loop is None or loop.is_closed():
-            coro.close()
-            self._log("⚠️ [perform] loop ноды не готов — тул выступления не исполнен")
-            return
-        asyncio.run_coroutine_threadsafe(coro, loop)
-
-    def _log(self, text: str) -> None:
-        self._node.get_logger().info(text)
-
-
-__all__ = ["AGENT", "PerformHost", "TICK_S"]
+__all__ = ["AGENT", "EffectRunner", "PerformHost", "TICK_S"]

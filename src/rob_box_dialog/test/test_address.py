@@ -239,3 +239,55 @@ def test_flag_in_knowledge_turns_the_wakeless_answer_off(monkeypatch):
 def test_merge_question_answer_without_wake(text, t, addressed):
     decision = decide(_heard(text, t=t, doa=90.0), None, DEFAULT_WAKE_WORDS, _question(kind="conflict"))
     assert decision == (Addressed(text, address.IDENTITY_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
+
+
+# --- «выключить и зачитать?» (О9′, PR-7c ч.3в #3700): «да»/«нет» без вейка в окне вопроса выступления ---------------
+
+
+def _ask(asked_at=100.0):
+    from rob_box_dialog.session import SceneFrame
+
+    return SceneFrame("PerformAsk", "code", payload={"asked_at": asked_at, "title": "Still Dre"})
+
+
+@pytest.mark.parametrize("text,t,addressed", [
+    ("да", 105.0, True), ("нет", 110.0, True), ("Да.", 101.0, True),
+    ("да", 99.0, False),  # раньше окна — ещё звучал вопрос
+    ("да", 100.0 + 16, False),  # окно 15 с прошло
+    ("включи что-нибудь весёлое", 105.0, False),  # не ответ — чужой разговор
+])
+def test_perform_question_yes_no_without_wake(text, t, addressed):
+    decision = decide(_heard(text, t=t), None, DEFAULT_WAKE_WORDS, ask=_ask())
+    assert decision == (Addressed(text, address.PERFORM_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
+
+
+def test_no_window_no_wakeless_answer():
+    assert decide(_heard("да", t=105.0), None, DEFAULT_WAKE_WORDS) == NotAddressed(address.NO_WAKE)
+
+
+def test_wake_plus_yes_in_the_window_is_an_answer_not_a_bare_wake():
+    """«Робот, да»: «да» — слово-заполнитель голого вейка, но в окне вопроса выступления это ответ."""
+    assert decide(_heard("Робот, да", t=105.0), None, DEFAULT_WAKE_WORDS, ask=_ask()) == Addressed(
+        "да", address.PERFORM_ANSWER)
+    assert decide(_heard("Робот, да", t=130.0), None, DEFAULT_WAKE_WORDS, ask=_ask()).source == address.BARE_WAKE
+
+
+@pytest.mark.parametrize("ask", [None, _ask(asked_at=100.0)], ids=["no_window", "window_expired"])
+@pytest.mark.parametrize("text", ["Робот", "Робот, да"])
+def test_bare_wake_outside_the_perform_window_still_takes_the_backlog(ask, text):
+    """#3772 (В12″): вне окна вопроса выступления голое «робот» (и «Робот, да» — «да» тут заполнитель) берёт
+    бэклог, как без выступления."""
+    backlog = _backlog_with("покажи анимацию ускорения", t=125.0, doa=90.0)
+    out = decide(_heard(text, t=130.0, doa=270.0), backlog, DEFAULT_WAKE_WORDS, ask=ask)
+    assert (out.text, out.source) == ("покажи анимацию ускорения", BACKLOG_PICKUP)
+    assert backlog.background_phrases(130.0) == 0
+
+
+def test_in_the_perform_window_yes_is_the_answer_and_bare_wake_still_takes_the_backlog():
+    """В окне вопроса: «Робот, да» — ответ, бэклог не трогается; голое «Робот» — по-прежнему бэклог (#3772)."""
+    backlog = _backlog_with("покажи анимацию ускорения", t=103.0, doa=90.0)
+    yes = decide(_heard("Робот, да", t=105.0), backlog, DEFAULT_WAKE_WORDS, ask=_ask())
+    assert yes == Addressed("да", address.PERFORM_ANSWER)
+    assert backlog.background_phrases(105.0) == 1, "ответ на вопрос не съедает бэклог"
+    bare = decide(_heard("Робот", t=106.0, doa=270.0), backlog, DEFAULT_WAKE_WORDS, ask=_ask())
+    assert (bare.text, bare.source) == ("покажи анимацию ускорения", BACKLOG_PICKUP)

@@ -67,7 +67,16 @@ class Cancel:
     boundary: str = "none"
 
 
-Effect = Union[Say, Cancel, Backing, MusicStop, PlanEvent]
+@dataclass(frozen=True)
+class AskReplace:
+    """Эффект: реплика ``speech_id`` — вопрос «Сейчас играет …, выключить и зачитать?» (О9 (б), О9′); когда она
+    прозвучит, хост открывает окно ответа да/нет (``REPLY_WINDOW_S``), ответ — :meth:`PerformBlock.answer`."""
+
+    speech_id: str
+    title: str
+
+
+Effect = Union[Say, Cancel, Backing, MusicStop, PlanEvent, AskReplace]
 EventMaker = Callable[..., PlanEvent]
 
 
@@ -195,15 +204,16 @@ class SpeechSide:
             _LOG.warning(f"{LOG_MARK} реплика {line.no} не прозвучала (rejected) — дальше")
             line.state = "cancelled"
 
-    def phrase(self, key: str) -> Say:
+    def phrase(self, key: str, **slots: Any) -> Say:
         """Фраза кода сразу (не пред-синтез): встаёт в очередь владельца речи перед следующим сегментом."""
-        line = self.lines.insert(Line(0, phrases.text(key), self._new_id(), key=key, state="committed", ready=True))
+        text = phrases.text(key, **slots)
+        line = self.lines.insert(Line(0, text, self._new_id(), key=key, state="committed", ready=True))
         return Say(line.speech_id, line.text, key=key)
 
     def lead_in(self) -> Say:
         """Вступление «Поехали!» перед первым сегментом — пред-синтез; встанет на такт, как сегмент."""
         key = "perform.backing_started"
-        return presynth(self.lines.insert(Line(0, phrases.text(key), self._new_id(), key=key), front=True))
+        return presynth(self.lines.insert(Line(0, phrases.text(key), self._new_id(), key=key)))
 
     def edit(self, perf: Performance) -> Tuple[List[Effect], str]:
         """MERGE в PENDING (:func:`edit_range`): ``(эффекты, причина отказа или "")``."""
@@ -217,6 +227,118 @@ class SpeechSide:
         return out + [self._event("segment_replaced", no, reason="edit") for no in numbers], ""
 
 
+class MusicSide:
+    """Подложка выступления: заказ и попытки, вопрос о смене чужой музыки (О9 (б), О9′), сетка тактов, продление и
+    конец. Данные подложки — :class:`~.backing.BackingTrack`; речь и жизненный цикл — у :class:`PerformBlock`."""
+
+    def __init__(self, kind: str, block: "PerformBlock") -> None:
+        self.track = BackingTrack(kind)
+        self._block = block
+
+    def begin(self, now: float, playing: str) -> List[Effect]:
+        """Старт выступления: бит заказывается сразу; играет чужая музыка ``playing`` — сначала вопрос человеку."""
+        if not self.track.wanted:
+            return []
+        if not playing:
+            return [self.track.request(now, self.need(now))]
+        self.track.ask(now)
+        question = self._block.speech.phrase("perform.ask_replace_music", title=playing)
+        return [question, AskReplace(question.speech_id, playing)]
+
+    def on_music(self, kind: str, track_id: Optional[str], now: float, fields: Mapping[str, Any]) -> List[Effect]:
+        """Событие плеера о нашей подложке (``BackingTrack.verdict``)."""
+        verdict = self.track.verdict(kind, track_id, now)
+        if verdict == "ignore":
+            return []
+        self._block.touch(now)
+        if verdict == "late" or self._block.ended:  # встала, когда её уже не ждут — снять, а не оставить играть
+            return [MusicStop("now", "backing_late")] if verdict == "late" else []
+        handlers: Dict[str, Callable[[], List[Effect]]] = {
+            "started": lambda: self._started(track_id or "", fields, now),
+            "rejected": lambda: self._rejected(str(fields.get("reason") or "error"), now),
+            "nearly": lambda: self._extend(fields, now),
+            "ended": lambda: self._ended(now),
+        }
+        return handlers[verdict]()
+
+    def answer(self, yes: bool, now: float) -> List[Effect]:
+        """Ответ на «выключить и зачитать?»: да — снять играющую музыку и поставить бит; нет (или молчание) — читать
+        без бита поверх неё, без второй попытки. Вопроса не было — ``[]``."""
+        if self._block.ended or self.track.state != "asking":
+            return []
+        self._block.touch(now)
+        self._block.log(f"ответ на смену музыки — {'да' if yes else 'нет'}")
+        if yes:
+            return [self.track.request(now, self.need(now), replace=True), *self._block.pump(now)]
+        return self.failed("busy", now)
+
+    def add(self, kind: str, now: float) -> List[Effect]:
+        """«Добавь бит» во время чтения (#993): подложка без остановки речи; следующий сегмент — на такте."""
+        if self._block.ended or self.track.sounding or self.track.unresolved:
+            return []
+        self.track = BackingTrack(kind if kind in kn.PERFORM_BACKING_MOODS else "beat")
+        return [self.track.request(now, self.need(now))]
+
+    def expired(self, now: float) -> List[Effect]:
+        """Срок вышел: вопрос без ответа — «нет» (без бита поверх играющей музыки); бит не встал за
+        ``PERFORM_BACKING_START_S`` — снять его и читать без."""
+        if not self.track.timed_out(now):
+            return []
+        if self.track.state == "asking":
+            return self.answer(False, now)
+        return [MusicStop("now", "backing_timeout"), *self.failed("timeout", now)]
+
+    def release(self, now: float, boundary: str, reason: str, states: Tuple[str, ...]) -> List[Effect]:
+        """Выступление кончилось или снято: подложку в состояниях ``states`` снять на ``boundary``."""
+        if self.track.state not in states:
+            return []
+        self.track.stopped(now)
+        return [MusicStop(boundary, reason)]
+
+    def failed(self, reason: str, now: float) -> List[Effect]:
+        """Подложки не будет: фраза по причине и чтение без бита (рэп в тишину молча не начинается)."""
+        why = self.track.fail(reason, now)
+        self._block.log(f"подложки нет ({reason} → {why}) — читаю без неё")
+        if why == "busy":  # играет чужая музыка (спросили или успела встать) — читаем под неё, не в тишину
+            return self._block.pump(now)
+        return [self._block.speech.phrase(f"perform.no_backing.{why}"), *self._block.pump(now)]
+
+    def need(self, now: float) -> float:
+        """Сколько секунд подложке звучать от сейчас: оценка речи × запас + outro (координатор 22.10)."""
+        return (self._block.predicted_end(now) - now) * kn.PERFORM_FORM_MARGIN + kn.PERFORM_OUTRO_S
+
+    def _started(self, track_id: str, fields: Mapping[str, Any], now: float) -> List[Effect]:
+        self.track.started(track_id, fields)
+        grid = self.track.grid
+        self._block.log(f"подложка {track_id} started "
+                        + (f"bpm={grid.bpm:g} такт={grid.bar_s:.2f} с" if grid else "без сетки — чтение без тактов"))
+        if self._block.phase != "starting":  # #993: добавили во время чтения — следующий сегмент уже на такте
+            return self._block.pump(now)
+        return [self._block.speech.lead_in(), *self._block.pump(now)]
+
+    def _rejected(self, reason: str, now: float) -> List[Effect]:
+        """Отказ подложки: вторая попытка другим настроением, если в ней есть смысл (``busy`` — нет)."""
+        if self.track.can_retry() and reason not in kn.PERFORM_NO_RETRY_REASONS:
+            self._block.log(f"подложка отказала ({reason}) — вторая попытка")
+            return [self.track.request(now, self.need(now))]
+        return self.failed(reason, now)
+
+    def _extend(self, fields: Mapping[str, Any], now: float) -> List[Effect]:
+        """``nearly_finished``: речь звучит дольше подложки — продлить её проходом формы."""
+        if self._block.phase not in ("starting", "running"):
+            return []
+        extend = self.track.extension(now, fields, self._block.predicted_end(now), self.need(now))
+        return [] if extend is None else [extend]
+
+    def _ended(self, now: float) -> List[Effect]:
+        self.track.ended()
+        self._block.log("подложка кончилась — дальше без тактов (synced=false)")
+        return self._block.pump(now)
+
+
+_SOUNDING = ("requested", "playing")
+
+
 class PerformBlock:
     """Одно выступление: сегменты, подложка, их общее время жизни. ``now`` — секунды ROS-часов хоста (стенные)."""
 
@@ -228,13 +350,18 @@ class PerformBlock:
         self._ids: Dict[str, Any] = {"turn_id": turn_id, "epoch": epoch, "agent": agent}
         self._log = log
         self.lines = SegmentList(segment_rows(perf), new_id, rate if rate is not None else SpeechRate())
-        self.backing = BackingTrack(perf.backing)
+        self.music = MusicSide(perf.backing, self)
         self.speech = SpeechSide(self.lines, output_latency_ms, new_id, self._event, log, lambda: self.backing.grid)
         self.phase = "new"  # new → starting → running → stopping → ended
         self.end_reason = ""
         self._last_event = 0.0
 
     # -- что видят хост, валидатор и LLM ----------------------------------------------------------------------------
+
+    @property
+    def backing(self) -> BackingTrack:
+        """Подложка выступления (данные; поведение — :class:`MusicSide`)."""
+        return self.music.track
 
     @property
     def ended(self) -> bool:
@@ -259,33 +386,30 @@ class PerformBlock:
 
     # -- команды хоста ------------------------------------------------------------------------------------------------
 
-    def start(self, now: float) -> List[Effect]:
-        """Начать: пред-синтез всех сегментов и (если нужна) подложка — параллельно."""
+    def start(self, now: float, playing: str = "") -> List[Effect]:
+        """Начать: пред-синтез всех сегментов и (если нужна) подложка — параллельно. ``playing`` — название чужой
+        музыки, что играет сейчас: тогда бит — только если человек согласится её сменить (О9 (б), О9′)."""
         if self.phase != "new":
             return []
         self.phase, self._last_event = "starting", now
         out: List[Effect] = [self._event("block_start", reason=self.kind)]
         out += [presynth(line) for line in self.lines.lines]
-        if self.backing.wanted:
-            out.append(self.backing.request(now, self._backing_need(now)))
-        self._log(f"{LOG_MARK} {self.block_id[:8]} {self.kind}: сегментов {len(self.lines.lines)}, подложка "
-                  f"{self.backing.mood or 'нет'}")
-        return out + self._pump(now)
+        out += self.music.begin(now, playing)
+        self.log(f"{self.kind}: сегментов {len(self.lines.lines)}, подложка {self.backing.mood or 'нет'}")
+        return out + self.pump(now)
 
     def tick(self, now: float) -> List[Effect]:
-        """Таймер хоста (~0.1–0.2 с): срок подложки, граница сегмента, потерянные события."""
+        """Таймер хоста (~0.1–0.2 с): срок подложки и вопроса, граница сегмента, потерянные события."""
         if self.phase in ("new", "ended"):
             return []
         if now - self._last_event > kn.RESOURCE_STALE_S:
             _LOG.warning(f"{LOG_MARK} {self.block_id[:8]}: нет событий {now - self._last_event:.0f} с — снимаю")
             return self.halt(now, reason="lost")
-        out: List[Effect] = []
-        if self.backing.timed_out(now):
-            out += [MusicStop("now", "backing_timeout"), *self._backing_failed("timeout", now)]
+        out: List[Effect] = list(self.music.expired(now))
         for line in self.lines.overdue(now):
             _LOG.warning(f"{LOG_MARK} {self.block_id[:8]}: нет finished реплики {line.no} — считаю дочитанной")
             out += self.speech.over(line, "done", len(line.text))
-        return out + self._pump(now)
+        return out + self.pump(now)
 
     def on_speech(self, kind: str, speech_id: str, now: float, *, duration_ms: int = 0,
                   spoken_chars: int = 0) -> List[Effect]:
@@ -297,34 +421,22 @@ class PerformBlock:
         self._last_event = now
         out = self.speech.on_event(kind, line, now, duration_ms, spoken_chars)
         if kind == "cancelled" and line.state == "cancelled" and self.phase in ("starting", "running"):
-            self._log(f"{LOG_MARK} {self.block_id[:8]}: реплику {line.no} отменил владелец речи — останавливаю")
+            self.log(f"реплику {line.no} отменил владелец речи — останавливаю")
             return out + self.stop(now)
-        return out + self._pump(now)
+        return out + self.pump(now)
 
     def on_music(self, kind: str, track_id: Optional[str], now: float,
                  fields: Optional[Mapping[str, Any]] = None) -> List[Effect]:
         """Событие плеера (``started``/``rejected``/``nearly_finished``/``finished``/``idle``) — о нашей подложке."""
-        verdict = self.backing.verdict(kind, track_id, now)
-        if verdict == "ignore":
-            return []
-        self._last_event = now
-        if verdict == "late" or self.ended:  # встала, когда её уже не ждут — снять, а не оставить играть
-            return [MusicStop("now", "backing_late")] if verdict == "late" else []
-        fields = fields or {}
-        handlers: Dict[str, Callable[[], List[Effect]]] = {
-            "started": lambda: self._backing_started(track_id or "", fields, now),
-            "rejected": lambda: self._backing_rejected(str(fields.get("reason") or "error"), now),
-            "nearly": lambda: self._extend(fields, now),
-            "ended": lambda: self._backing_ended(now),
-        }
-        return handlers[verdict]()
+        return self.music.on_music(kind, track_id, now, fields or {})
+
+    def answer(self, yes: bool, now: float) -> List[Effect]:
+        """Ответ человека на «выключить и зачитать?» (:meth:`MusicSide.answer`)."""
+        return self.music.answer(yes, now)
 
     def add_backing(self, backing: str, now: float) -> List[Effect]:
-        """«Добавь бит» во время чтения (#993): подложка без остановки речи; следующий сегмент — на такте."""
-        if self.ended or self.backing.sounding:
-            return []
-        self.backing = BackingTrack(backing if backing in kn.PERFORM_BACKING_MOODS else "beat")
-        return [self.backing.request(now, self._backing_need(now))]
+        """«Добавь бит» во время чтения (#993, :meth:`MusicSide.add`)."""
+        return self.music.add(backing, now)
 
     def edit(self, perf: Performance, now: float) -> List[Effect]:
         """MERGE в PENDING (``edit_pending``, X3): сегменты с ``perf.from_segment`` заменяются ``perf.segments``.
@@ -332,7 +444,7 @@ class PerformBlock:
         out, reason = self.speech.edit(perf) if self.phase in ("starting", "running") else ([], "not_running")
         if not reason:
             return out
-        self._log(f"{LOG_MARK} {self.block_id[:8]}: правка с сегмента {perf.from_segment} отклонена ({reason})")
+        self.log(f"правка с сегмента {perf.from_segment} отклонена ({reason})")
         rejected: List[Effect] = [self._event("rejected", perf.from_segment, reason=reason)]
         return rejected + ([self.speech.phrase("perform.edit_rejected")] if reason != "not_running" else [])
 
@@ -342,9 +454,7 @@ class PerformBlock:
             return []
         self.phase = "stopping"
         out: List[Effect] = list(withdraw(self.lines, "sentence"))
-        if self.backing.state == "requested":
-            self.backing.stopped(now)
-            out.append(MusicStop("now", "perform_stop"))
+        out += self.music.release(now, "now", "perform_stop", ("requested",))
         return out + self._maybe_end(now)
 
     def halt(self, now: float, reason: str = "halt") -> List[Effect]:
@@ -354,16 +464,21 @@ class PerformBlock:
         out: List[Effect] = list(withdraw(self.lines, "none"))
         for line in self.lines.lines:
             line.state = "cancelled" if line.state == "active" else line.state
-        if self.backing.sounding:
-            self.backing.stopped(now)
-            out.append(MusicStop("now", reason))
+        out += self.music.release(now, "now", reason, _SOUNDING)
         return out + self._end(reason)
 
     # -- жизненный цикл ----------------------------------------------------------------------------------------------
 
-    def _pump(self, now: float) -> List[Effect]:
+    def touch(self, now: float) -> None:
+        """Пришло событие владельца: выступление живо (срок ``RESOURCE_STALE_S`` — от последнего события)."""
+        self._last_event = now
+
+    def log(self, text: str) -> None:
+        self._log(f"{LOG_MARK} {self.block_id[:8]}: {text}")
+
+    def pump(self, now: float) -> List[Effect]:
         """Начать, когда решилась подложка; на границе отдать следующую реплику на звучание; всё — закончить."""
-        if self.phase == "starting" and self.backing.state != "requested":
+        if self.phase == "starting" and not self.backing.unresolved:
             self.phase = "running"
         out = self.speech.commit(now) if self.phase == "running" else []
         return out or self._maybe_end(now)
@@ -372,62 +487,19 @@ class PerformBlock:
         """Всё прозвучало (или снято): outro подложки на такте и ``block_end``."""
         if self.phase not in ("running", "stopping") or self.lines.live():
             return []
-        out: List[Effect] = []
-        if self.backing.sounding:
-            self.backing.stopped(now)
-            out.append(MusicStop("bar", "perform_end"))
+        out = self.music.release(now, "bar", "perform_end", _SOUNDING)
         return out + self._end("stopped" if self.phase == "stopping" else "done")
 
     def _end(self, reason: str) -> List[Effect]:
         self.phase, self.end_reason = "ended", reason
         done = self.summary()
-        self._log(f"{LOG_MARK} {self.block_id[:8]}: конец ({reason}) сегментов {done['segments_done']}, символов "
-                  f"{done['spoken_chars']}, synced={done['synced']}, подложка {done['backing']}")
+        self.log(f"конец ({reason}) сегментов {done['segments_done']}, символов {done['spoken_chars']}, "
+                 f"synced={done['synced']}, подложка {done['backing']}")
         return [self._event("block_end", done["segments_done"], synced=done["synced"], reason=reason)]
 
     def _event(self, kind: str, no: int = 0, **fields: Any) -> PlanEvent:
         return PlanEvent(kind, self.block_id, segment_no=no, **self._ids, **fields)
 
-    # -- подложка -----------------------------------------------------------------------------------------------------
 
-    def _backing_started(self, track_id: str, fields: Mapping[str, Any], now: float) -> List[Effect]:
-        self.backing.started(track_id, fields)
-        grid = self.backing.grid
-        self._log(f"{LOG_MARK} {self.block_id[:8]}: подложка {track_id} started "
-                  + (f"bpm={grid.bpm:g} такт={grid.bar_s:.2f} с" if grid else "без сетки — чтение без тактов"))
-        if self.phase != "starting":  # #993: добавили во время чтения — следующий сегмент уже на такте
-            return self._pump(now)
-        return [self.speech.lead_in(), *self._pump(now)]
-
-    def _backing_rejected(self, reason: str, now: float) -> List[Effect]:
-        """Отказ подложки: вторая попытка другим настроением, если в ней есть смысл (``busy`` — нет)."""
-        if self.backing.can_retry() and reason not in kn.PERFORM_NO_RETRY_REASONS:
-            self._log(f"{LOG_MARK} {self.block_id[:8]}: подложка отказала ({reason}) — вторая попытка")
-            return [self.backing.request(now, self._backing_need(now))]
-        return self._backing_failed(reason, now)
-
-    def _backing_failed(self, reason: str, now: float) -> List[Effect]:
-        """Подложки не будет: фраза по причине и чтение без бита (рэп в тишину молча не начинается)."""
-        why = self.backing.fail(reason, now)
-        self._log(f"{LOG_MARK} {self.block_id[:8]}: подложки нет ({reason} → {why}) — читаю без неё")
-        return [self.speech.phrase(f"perform.no_backing.{why}"), *self._pump(now)]
-
-    def _extend(self, fields: Mapping[str, Any], now: float) -> List[Effect]:
-        """``nearly_finished``: речь звучит дольше подложки — продлить её проходом формы."""
-        if self.phase not in ("starting", "running"):
-            return []
-        extend = self.backing.extension(now, fields, self.predicted_end(now), self._backing_need(now))
-        return [] if extend is None else [extend]
-
-    def _backing_ended(self, now: float) -> List[Effect]:
-        self.backing.ended()
-        self._log(f"{LOG_MARK} {self.block_id[:8]}: подложка кончилась — дальше без тактов (synced=false)")
-        return self._pump(now)
-
-    def _backing_need(self, now: float) -> float:
-        """Сколько секунд подложке звучать от сейчас: оценка речи × запас + outro (координатор 22.10)."""
-        return (self.predicted_end(now) - now) * kn.PERFORM_FORM_MARGIN + kn.PERFORM_OUTRO_S
-
-
-__all__ = ["Cancel", "Effect", "LOG_MARK", "PerformBlock", "Say", "SpeechSide", "context_block", "edit_range",
-           "presynth", "withdraw"]
+__all__ = ["AskReplace", "Cancel", "Effect", "LOG_MARK", "MusicSide", "PerformBlock", "Say", "SpeechSide",
+           "context_block", "edit_range", "presynth", "withdraw"]

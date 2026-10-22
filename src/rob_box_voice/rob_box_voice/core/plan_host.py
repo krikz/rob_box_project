@@ -22,6 +22,7 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
+from . import perform_ask
 from .music_player_state import parse_music_event
 from .perform_host import TICK_S, PerformHost
 from .plan_tools import PlanToolExecutor
@@ -56,9 +57,19 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
         planner.emit(event)
 
     executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
-                                     perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node))
+                                     perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
+                                     playing=lambda: _foreign_music(node),
+                                     on_ask=lambda title: perform_ask.open_window(node, title))
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
+
+
+def _foreign_music(node: Any) -> str:
+    """Что играет сейчас (трек, сет) — название для вопроса «выключить и зачитать?» (О9′); тишина — ``""``."""
+    player = getattr(node, "_music_player_state", None)
+    if player is None or not (player.is_playing() or player.dj):
+        return ""
+    return str((player.dj_info or {}).get("title") or "музыка")
 
 
 def _now(node: Any) -> float:
