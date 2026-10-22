@@ -111,10 +111,6 @@ def _make_node() -> TTSNode:
     n._active_batch_id = None
     n._pending_speech_queue = []
 
-    # Pre-gen off (issue #2003) — claim_pregen вернёт None, не упадёт.
-    n._prefetch = None
-    n._pregenerate_enabled = False
-
     return n
 
 

@@ -181,22 +181,6 @@ from .core.dialogue_guards import (
 # синтез). Детектор ``search``-овый, поэтому работает и на сыром SSML.
 from .core.dialogue_guards import is_tool_call_markup as _is_tool_call_markup
 
-# Issue #2003 / ADR-0056 — speculative chunk-level pre-generation.
-# Pure-Python package, no rclpy/asyncio in the data-class modules
-# (only :class:`speculative_executor.SpeculativeExecutor` is
-# async-aware). Distinct from the existing scheduler-level
-# :mod:`rob_box_voice.scheduler.pre_gen` (different abstraction
-# layer; see ADR-0056 §4 for the explicit rejection of "thin
-# adapter to SpeculativePreGenerator").
-from .scheduler.pregen import (
-    CONFIDENCE_FLOOR as _PREGEN_CONFIDENCE_FLOOR,
-    Decision as _PreGenDecision,
-    PreGenResult as _PreGenResult,
-    PreGenTask as _PreGenTask,
-    SpeculativeExecutor as _PreGenExecutor,
-    build_pregen_task as _build_pregen_task,
-)
-
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
 # into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
 # provider so conversion utilities remain available even when rob_box_llm is not.
@@ -892,18 +876,6 @@ class TTSNode(Node):
         # (synthesize latency / provider fallback counter). 0 = отключить.
         self.declare_parameter("metrics_port", 9110)
 
-        # Issue #2003 / ADR-0056 — speculative pre-generation (chunk-level).
-        # Default ON so the opt-in happens at the publisher level (via the
-        # ``pregenerate`` field in the chunk payload), not here. The hard
-        # kill-switch is ``pregenerate_enabled=false`` — useful for e2e
-        # baseline comparison. ``pregenerate_confidence_floor`` exposes the
-        # CONFIDENCE_FLOOR constant for operator tuning.
-        self.declare_parameter("pregenerate_enabled", True)
-        self.declare_parameter("pregenerate_confidence_floor", _PREGEN_CONFIDENCE_FLOOR)
-        # Sample-rate the speculative pre-gen uses for the duration_ratio
-        # quality heuristic; defaults to the audio output rate (16 kHz).
-        self.declare_parameter("pregenerate_history_window", 10)
-
         # Per-provider TTS chunking + retry-halve параметры объявлены
         # выше (issue #933 + дополнение #976 для minimax). Дубликат
         # удалён — см. задачу t_20265b43.
@@ -1467,27 +1439,6 @@ class TTSNode(Node):
         # comment block above.)
         self._synthesis_slots = getattr(self, "_synthesis_slots", None)
 
-        # Issue #2003 / ADR-0056 — speculative pre-generation engine.
-        # Created lazily on first ``pregenerate()`` call so nodes that
-        # disable pre-gen (or never receive a ``pregenerate`` payload)
-        # pay zero overhead. The engine owns a single ``SpeculativeExecutor``
-        # (the actual asyncio orchestrator) plus the lightweight book-keeping
-        # ``_last_chunk_finished_at`` for the latency_chunk_to_chunk metric.
-        self._prefetch: Optional[Dict[str, Any]] = None
-        self._last_chunk_finished_at: Optional[float] = None
-        # Read ROS-params into typed locals so the kill-switch is honoured
-        # even before the lazy init runs (e.g. parameter_callback toggles).
-        self._pregenerate_enabled: bool = bool(
-            self.get_parameter("pregenerate_enabled").value
-        )
-        self._pregenerate_confidence_floor: float = max(
-            0.0,
-            min(1.0, float(self.get_parameter("pregenerate_confidence_floor").value)),
-        )
-        self._pregenerate_history_window: int = max(
-            1, int(self.get_parameter("pregenerate_history_window").value)
-        )
-
         self.current_speech_id = None  # ID текущего произношения (для MCP tools)
 
         # Issue #1160 — Prometheus metrics server (этап 1).
@@ -1821,16 +1772,6 @@ class TTSNode(Node):
         """Прервать текущее воспроизведение (helper метод)."""
         self.stop_requested = True
 
-        # Issue #2003 / ADR-0056 — drop every in-flight speculative
-        # chunk. Without this, the dialogue-switch window could let a
-        # pre-gen for the OLD dialogue sneak into the NEW dialogue's
-        # playback (cache-hit with mismatched dialogue_id). Per §3.5
-        # this is the canonical "STOP" cancellation site.
-        try:
-            self.cancel_pregen(reason="interrupt_playback")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().debug(f"cancel_pregen on interrupt failed: {exc!r}")
-
         # Остановить текущий sounddevice stream если есть
         if self.current_stream:
             try:
@@ -1931,20 +1872,6 @@ class TTSNode(Node):
             provider=new_provider,
             voice=(payload.get("voice") or None) or None,
         )
-
-        # Issue #2003 / ADR-0056 §3.5 site #4 — provider REPLACE
-        # also drops any in-flight speculative chunks. The next
-        # chunk will be synthesised against the *new* provider, so
-        # a cached audio from the old provider would either play
-        # wrong (voice mismatch) or skip a legitimate provider
-        # chain fallback. Cheaper to just cancel.
-        if switched:
-            try:
-                self.cancel_pregen(reason="set_provider")
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().debug(
-                    f"cancel_pregen on provider switch failed: {exc!r}"
-                )
 
     # === set_voice helpers (ADR-0080 §2.7 / voice-vr 21) ===================
     #
@@ -2268,8 +2195,7 @@ class TTSNode(Node):
             language = chunk_data.get("language")
             # Issue #1996 / operator-agent step 7a — top-level ``priority``
             # поле /voice/tts/request. Whitelist-нормализация вынесена в
-            # ``_normalize_tts_priority`` (см. её докстринг про 2-значный
-            # набор vs 3-значный ADR-0056 ``pregenerate.priority``).
+            # ``_normalize_tts_priority``.
             priority = _normalize_tts_priority(chunk_data.get("priority"))
 
             self.get_logger().info(
@@ -2284,19 +2210,6 @@ class TTSNode(Node):
             )
             if ssml_attributes:
                 self.get_logger().info(f"🎵 SSML атрибуты: {ssml_attributes}")
-
-            # Issue #2003 / ADR-0056 — speculative pre-gen for the NEXT
-            # chunk. We pass the FULL chunk payload (including the
-            # ``pregenerate`` field if the publisher set one) so the
-            # pre-gen helper can extract the next-chunk hint. Fire-and-
-            # forget — by the time ``batch_complete`` of the current
-            # chunk fires, the speculative audio for the next chunk is
-            # either cached (claimed by the next iteration) or has been
-            # rejected by the quality gate. ``ctx=None``.
-            try:
-                self.pregenerate(chunk_data, ctx=None)
-            except Exception as exc:  # noqa: BLE001 — never crash ROS
-                self.get_logger().debug(f"pregenerate() dispatch failed: {exc!r}")
 
             # Синтез/воспроизведение блокируют сетью и ALSA. Не держим ROS
             # executor callback: control/new-dialogue callbacks должны оставаться
@@ -2317,24 +2230,10 @@ class TTSNode(Node):
             # left (speech_id <- batch_id, batch_id <- batch_index, ...),
             # which breaks /voice/tts/finished correlation in mcp_server
             # and fires music_cleanup at the wrong time (issue #980).
-            # Issue #2003 — the worker ALSO tries to claim a prebaked
-            # result for the CURRENT chunk (the one we are submitting).
-            # If the publisher hinted the same chunk in the previous
-            # iteration's ``pregenerate`` field (and the executor hasn't
-            # been cancelled since), ``prebaked_audio`` will be non-None
-            # and the worker forwards it to ``_synthesize_and_play`` —
-            # the chain is skipped entirely (see ``prebaked_audio`` branch
-            # in ``_synthesize_and_play``).
-            try:
-                # ADR-0150 PR-3 — сперва пред-синтез ``commit=false`` того же speech_id.
-                prebaked_audio = owner_of(self).claim_presynth(speech_id, self.claim_pregen)
-            except Exception as exc:  # noqa: BLE001 — never crash ROS
-                # Bare ``_Stub`` test objects without ``_prefetch`` end
-                # up here; that's fine — treat as no-pregen.
-                self.get_logger().debug(
-                    f"claim_pregen failed (treating as no-pregen): {exc!r}"
-                )
-                prebaked_audio = None
+            # ADR-0150 PR-3 — готовое аудио пред-синтеза ``commit=false`` того же
+            # speech_id: воркер отдаст его в ``_synthesize_and_play`` мимо цепочки
+            # провайдеров (ветка ``prebaked_audio``).
+            prebaked_audio = owner_of(self).claim_presynth(speech_id)
 
             # Issue #2553 — babble-retry / DJ-overlap guard. Если сейчас
             # играет chunk из ДРУГОГО batch_id (babble-retry поверх DJ-сета,
@@ -3096,12 +2995,6 @@ class TTSNode(Node):
             return
         self._synthesis_in_flight += 1
         priority = _normalize_tts_priority(kwargs.get("priority"))
-        if priority in _TTS_PRIORITY_PREEMPTS:
-            # ADR-0056 §3.5 — REPLACE-priority: an operator-priority
-            # request re-orders the FIFO-gate, so any in-flight
-            # speculative pre-gen (which assumed the *old* ordering) is
-            # invalidated. Best-effort / never blocks the submit path.
-            self._cancel_pregen_for_priority_replace(speech_id)
         # 🔴 FIX (12:02 FIFO): выдаём play_seq в порядке submit — это
         # порядок приёма запросов из ROS-callback = порядок LLM tool_calls.
         # Worker будет ждать своей очереди перед play_audio. Issue #1996 —
@@ -3149,6 +3042,8 @@ class TTSNode(Node):
         self._synthesis_in_flight = max(0, self._synthesis_in_flight - 1)
 
     # ── Issue #1996 / operator-agent step 7a — priority-aware FIFO-gate ──
+    # Второй планировщик речи (ADR-0150 PR-7c, #3700): приоритет оператора (Quest PTT → грип) и очередь
+    # ``_pending_speech_queue`` (v1-батчи) удаляются вместе с v1, условие: режим команд по умолчанию.
 
     def _assign_priority_play_seq(self, speech_id: str, priority: str) -> int:
         """Assign a ``play_seq`` slot, honouring ``priority`` (issue #1996).
@@ -3212,34 +3107,6 @@ class TTSNode(Node):
             taken = set(self._pending_seqs.values())
         return target
 
-    def _cancel_pregen_for_priority_replace(self, speech_id: str) -> None:
-        """ADR-0056 §3.5 trigger #4 — REPLACE via the issue #1996 priority flag.
-
-        An ``operator``-priority submit re-orders the FIFO-gate (it can
-        push an already-pregenerated ``normal`` chunk one slot back).
-        Any in-flight speculative pre-gen was kicked off assuming the
-        *old* ordering, so it is cancelled here rather than risking a
-        stale ``prebaked_audio`` downstream. Best-effort: swallow every
-        error so a pre-gen hiccup never blocks an operator interjection
-        from being scheduled — that would defeat the whole point of the
-        priority queue.
-        """
-        # Зовём напрямую, а не через getattr: ``cancel_pregen`` — метод
-        # этого же класса (см. ниже по файлу). Защита через
-        # getattr никогда бы не сработала, зато при переименовании
-        # метода тихо превратила бы триггер ADR-0056 §3.5 в no-op — это
-        # ровно тот fail-open, о котором предупреждает §4.3 хендоффа
-        # (docs/plans/2026-09-05-operator-agent-architecture-handoff.md).
-        try:
-            self.cancel_pregen(reason="REPLACE-priority")
-        except Exception as exc:  # noqa: BLE001 — never block the submit path
-            # warning, а не debug: если триггер сломан, это должно
-            # быть видно в обычных логах робота, а не только под debug.
-            self.get_logger().warning(
-                f"cancel_pregen(REPLACE-priority) failed for "
-                f"speech_id={speech_id[:8] if speech_id else 'None'}: {exc!r}"
-            )
-
     def _run_synthesis_worker(
         self,
         ssml: str,
@@ -3293,11 +3160,9 @@ class TTSNode(Node):
         # /avatar/tts/audio (ТАРС в шлем). Ключевое слово передаётся через
         # kwargs, чтобы не ломать test_speech_id_arg_chain.
         sink = kwargs.get("sink", "speaker")
-        # Issue #2003 / ADR-0056 — forward the prebaked_audio hint
-        # from the producer (``dialogue_callback`` claims it via
-        # ``claim_pregen(speech_id)`` before ``_submit_synthesis``).
-        # ``None`` (legacy path / publisher opted out / quality
-        # rejected) is the default and behaves exactly like before.
+        # ADR-0150 PR-3 — готовое аудио пред-синтеза ``commit=false``
+        # (``dialogue_callback`` берёт его у владельца речи до
+        # ``_submit_synthesis``); ``None`` — обычный синтез.
         prebaked_audio = kwargs.get("prebaked_audio", None)
         self._synthesize_and_play(
             ssml,
@@ -3348,326 +3213,6 @@ class TTSNode(Node):
                     # «TTS idle» и не блокировал следующий chunk.
                     self._active_batch_id = None
                 self._play_order_cond.notify_all()
-
-    # ── Issue #2003 / ADR-0056 — speculative pre-generation API ─────────
-    #
-    # Three public methods (``pregenerate`` / ``claim_pregen`` /
-    # ``cancel_pregen``) plus a lazy-built ``_prefetch`` engine. The
-    # engine wraps :class:`scheduler.pregen.SpeculativeExecutor` and
-    # exposes a small dict with the bits ``dialogue_callback`` and
-    # ``_synthesize_and_play`` poke at directly. The whole block is
-    # no-op when ``pregenerate_enabled=False`` or when the publisher
-    # never sends a ``pregenerate`` field — see ADR-0056 §3.4.
-
-    def _ensure_prefetch(self) -> Dict[str, Any]:
-        """Construct the pre-fetch engine on first use (lazy).
-
-        Returns a small dict containing:
-        * ``executor`` — the live :class:`SpeculativeExecutor`;
-        * ``synth`` — the coroutine-friendly callable that the
-          executor dispatches into the asyncio loop.
-
-        Idempotent: subsequent calls return the same dict.
-        """
-        engine = self._prefetch
-        if engine is not None:
-            return engine
-
-        executor = _PreGenExecutor(
-            synth_callable=self._synthesize_for_pregen,
-            confidence_floor=self._pregenerate_confidence_floor,
-            history_window=self._pregenerate_history_window,
-        )
-        engine = {
-            "executor": executor,
-            "synth": self._synthesize_for_pregen,
-        }
-        self._prefetch = engine
-        return engine
-
-    async def _synthesize_for_pregen(
-        self,
-        *,
-        ssml: str,
-        text: str,
-        ssml_attributes: dict,
-        voice: Optional[str] = None,
-        language: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Async-friendly TTS for speculative tasks (ADR-0056 §3.2).
-
-        Runs the *same* provider chain that ``_synthesize_and_play``
-        uses, but in an async-friendly wrapper. The actual blocking
-        work (Yandex gRPC / Silero / MiniMax HTTP) happens on the
-        asyncio default thread pool via :func:`asyncio.to_thread`,
-        which keeps the rclpy callback responsive.
-
-        Returns ``{"audio_np": ndarray, "sample_rate": int}`` so
-        :func:`scheduler.pregen._dispatch_synthesis` recognises the
-        MiniMax-style return shape and the executor can extract
-        ``sample_rate`` for the ``duration_ratio`` heuristic.
-
-        Failures bubble up as exceptions — the executor treats them
-        as "no pre-gen for this chunk" and does NOT cache anything.
-        """
-        loop = asyncio.get_event_loop()
-        # We can't reuse ``_synthesize_and_play`` (it owns playback).
-        # Instead we replicate the provider-chain *selection* logic and
-        # call the appropriate private synth helper. The chain itself
-        # is dead-cheap (a tuple of provider names).
-        chain = self._effective_provider_chain()
-        last_err: Optional[Exception] = None
-        for provider_name in chain:
-            try:
-                if provider_name == "minimax":
-                    if self.minimax_streaming:
-                        result = await loop.run_in_executor(
-                            None,
-                            self._synthesize_minimax_streaming_publish,
-                            text,
-                            ssml_attributes,
-                            voice or self.minimax_voice,
-                            language,
-                        )
-                    else:
-                        result = await loop.run_in_executor(
-                            None,
-                            self._synthesize_minimax,
-                            text,
-                            ssml_attributes,
-                            voice,
-                            language,
-                        )
-                    return result
-                if provider_name == "yandex":
-                    if not self.yandex_stub:
-                        continue
-                    audio = await loop.run_in_executor(
-                        None,
-                        self._synthesize_yandex,
-                        text,
-                        ssml_attributes,
-                        voice,
-                    )
-                    return {
-                        "audio_np": audio,
-                        "sample_rate": self.audio_output_sample_rate,
-                    }
-                if provider_name == "silero":
-                    audio = await loop.run_in_executor(
-                        None,
-                        self._synthesize_silero,
-                        text,
-                        ssml_attributes,
-                        voice,
-                    )
-                    return {
-                        "audio_np": audio,
-                        "sample_rate": self.silero_sample_rate,
-                    }
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                self.get_logger().debug(
-                    f"pregenerate synth {provider_name} failed: {exc!r} — "
-                    f"trying next in chain"
-                )
-                continue
-        if last_err is not None:
-            raise last_err
-        raise RuntimeError(
-            "pregenerate synth: empty provider chain " f"(effective={chain!r})"
-        )
-
-    def pregenerate(self, current_chunk: dict, ctx: Optional[dict] = None) -> None:
-        """Issue #2003 / ADR-0056 — kick off speculative next-chunk synthesis.
-
-        Fire-and-forget: the caller (``dialogue_callback``) invokes
-        this *before* the canonical ``_submit_synthesis`` for the
-        current chunk. By the time ``batch_complete`` of the current
-        chunk fires, the speculative audio for the next chunk is
-        either already in :attr:`_PrefetchEngine._results` (claim
-        via :meth:`claim_pregen`) or has been rejected by the
-        quality gate (in which case the canonical synthesis runs
-        unchanged — fallback to the legacy path).
-
-        Parameters
-        ----------
-        current_chunk
-            The JSON-decoded chunk dict (the same shape
-            :func:`scheduler.pregen.build_pregen_task` accepts).
-        ctx
-            Reserved for future use (e.g. dialogue_id override).
-            Currently unused — kept in the signature for forward
-            compatibility with the §3.1 contract.
-        """
-        if not self._pregenerate_enabled:
-            return
-        if not isinstance(current_chunk, dict):
-            return
-        # Validate the payload before constructing the executor. This keeps
-        # malformed / opt-out payloads as true no-ops without creating an
-        # engine, while valid hints get the lazy engine immediately.
-        task = _build_pregen_task(
-            current_chunk,
-            fallback_voice=self._prefetch_fallback_voice(),
-            fallback_language=self._prefetch_fallback_language(),
-        )
-        if task is None:
-            return
-
-        engine = self._prefetch
-        if engine is None:
-            engine = {
-                "executor": _PreGenExecutor(
-                    synth_callable=self._synthesize_for_pregen,
-                    confidence_floor=self._pregenerate_confidence_floor,
-                    history_window=self._pregenerate_history_window,
-                ),
-                "synth": self._synthesize_for_pregen,
-            }
-            self._prefetch = engine
-        executor = engine["executor"]
-        loop = None
-        try:
-            loop = self.get_loop()  # rclpy event loop
-        except Exception:  # noqa: BLE001 — unit-test stubs without rclpy
-            loop = None
-
-        async def _run() -> None:
-            try:
-                speech_id = await executor.kickoff(
-                    current_chunk,
-                    fallback_voice=self._prefetch_fallback_voice(),
-                    fallback_language=self._prefetch_fallback_language(),
-                )
-                if speech_id is not None and self._prefetch is None:
-                    self._prefetch = {
-                        "executor": executor,
-                        "synth": self._synthesize_for_pregen,
-                    }
-            except Exception as exc:  # noqa: BLE001 — never crash ROS
-                self.get_logger().warning(f"⚠️ pregenerate kickoff failed: {exc!r}")
-
-        if loop is not None and loop.is_running():
-            # Schedule without blocking the ROS callback.
-            asyncio.run_coroutine_threadsafe(_run(), loop)
-        else:
-            # No live loop (unit tests / standalone) — best effort:
-            # synchronously run the coroutine to completion on the
-            # default loop. The executor handles asyncio internally.
-            try:
-                asyncio.run(_run())
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().debug(f"pregenerate sync fallback failed: {exc!r}")
-
-    def claim_pregen(self, speech_id: str) -> Optional[Dict[str, Any]]:
-        """Atomically pop a cached speculative result for ``speech_id``.
-
-        Returns ``None`` when no result is ready (or when the
-        engine has been disabled). The caller
-        (``_synthesize_and_play``) treats ``None`` as "fall back
-        to the canonical path" — exactly the legacy behaviour.
-        """
-        if not self._pregenerate_enabled or self._prefetch is None:
-            return None
-        result: Optional[_PreGenResult] = self._prefetch["executor"].claim(speech_id)
-        if result is None:
-            return None
-        # Mirror the ``PreGenResult`` shape into a small dict so the
-        # rest of ``tts_node`` does not depend on the pre-gen
-        # package's types.
-        return {
-            "audio_np": result.audio,
-            "sample_rate": result.sample_rate,
-            "decision": result.decision,
-            "confidence": result.confidence,
-            "basis": result.basis,
-            "elapsed_ms": result.elapsed_ms,
-        }
-
-    def cancel_pregen(self, reason: str) -> int:
-        """Cancel every in-flight speculative task (ADR-0056 §3.5).
-
-        Called from the four sites enumerated in §3.5:
-
-        1. ``_interrupt_playback`` (STOP/barge-in, SpeechCancel);
-        2. ``_on_set_provider`` (REPLACE).
-
-        Returns the count of cancelled tasks (for metrics).
-
-        Safe to call before :meth:`pregenerate` has ever been
-        invoked — returns ``0`` in that case.
-        """
-        if self._prefetch is None:
-            return 0
-        executor = self._prefetch["executor"]
-        try:
-            loop = self.get_loop()
-        except Exception:  # noqa: BLE001
-            loop = None
-        if loop is not None and loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(
-                executor.cancel(reason=reason),
-                loop,
-            )
-            try:
-                return int(future.result(timeout=2.0))
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(
-                    f"⚠️ cancel_pregen async future failed: {exc!r}"
-                )
-                return 0
-        # No live loop — best effort synchronous cancel. The
-        # executor handles its own internal state.
-        try:
-            return int(asyncio.run(executor.cancel(reason=reason)))
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().debug(f"cancel_pregen sync fallback failed: {exc!r}")
-            return 0
-
-    def publish_prefetch_metrics(self) -> None:
-        """Publish :class:`PreGenMetrics` snapshot to ``/voice/tts/metrics``.
-
-        Called on a low-frequency cadence from the existing
-        :meth:`publish_state` path) so operators can observe
-        ``latency_chunk_to_chunk_ms_mean`` and the per-kind
-        rejection counters.
-
-        No-op until the pre-fetch engine has been built at least
-        once.
-        """
-        if self._prefetch is None:
-            return
-        snapshot = self._prefetch["executor"].snapshot()
-        try:
-            msg = String()
-            msg.data = json.dumps(snapshot, ensure_ascii=False, default=str)
-            # Lazy-create the publisher so nodes that never pre-gen
-            # don't pay the cost of a topic allocation.
-            if not hasattr(self, "_prefetch_metrics_pub"):
-                self._prefetch_metrics_pub = self.create_publisher(
-                    String, "/voice/tts/metrics", 10
-                )
-            self._prefetch_metrics_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — never crash ROS
-            self.get_logger().debug(f"publish_prefetch_metrics failed: {exc!r}")
-
-    def _prefetch_fallback_voice(self) -> str:
-        """Voice to use when the publisher didn't specify one.
-
-        Returns the *current* effective voice depending on the
-        configured provider. Lives next to the pre-fetch API
-        so the lazy-init order is self-contained.
-        """
-        if self.provider == "minimax":
-            return self.minimax_voice
-        if self.provider == "yandex":
-            return self.yandex_voice
-        return self.silero_speaker
-
-    def _prefetch_fallback_language(self) -> Optional[str]:
-        """Language to use when the publisher didn't specify one."""
-        return getattr(self, "minimax_language", None)
 
     # ── Issue #1083: цепочка приоритетов TTS (minimax → yandex → silero) ────
 
@@ -4154,7 +3699,7 @@ class TTSNode(Node):
         voice: str = None,  # Issue #1219 — запрошенный LLM голос (Q6)
         language: str = None,  # AV-28 — язык произношения этой реплики
         sink: str = "speaker",  # ADR-0055 / issue #1993 — "speaker"|"headset"
-        prebaked_audio: Optional[Dict[str, Any]] = None,  # ADR-0056 — pre-fetched
+        prebaked_audio: Optional[Dict[str, Any]] = None,  # ADR-0150 PR-3 — пред-синтез commit=false
     ):
         """Синтез речи и воспроизведение.
 
@@ -4177,14 +3722,13 @@ class TTSNode(Node):
         (``unsupported_language_notice``), а не кириллический транслит,
         который звучал бы неправильно и молча.
 
-        ``prebaked_audio`` — опциональный dict-результат
-        :meth:`TTSNode.claim_pregen` (ADR-0056, issue #2003). Когда
-        передан, функция ПРОПУСКАЕТ цепочку синтеза и использует
+        ``prebaked_audio`` — готовое аудио пред-синтеза ``commit=false`` того же
+        ``speech_id`` (ADR-0150 PR-3, ``SpeechOwner.claim_presynth``). Когда
+        передано, функция ПРОПУСКАЕТ цепочку синтеза и использует
         ``prebaked_audio["audio_np"]`` / ``prebaked_audio["sample_rate"]``
         как готовый результат. ``used_provider`` помечается как
         ``"prefetch"`` (чтобы provider_state и метрики видели, что
-        чанк пришёл из кэша, а не от провайдера). ``None`` (default)
-        — поведение прежнее, никаких изменений.
+        чанк пришёл не от провайдера). ``None`` (default) — обычный синтез.
 
         Реализация декомпозирована (issue #2078): ``_synthesize_and_play``
         — orchestrator-метод (CC≤15), тяжёлая логика разнесена в приватные
@@ -4260,9 +3804,8 @@ class TTSNode(Node):
             # не даём ему даже достичь цепочки провайдеров, поэтому НИКТО
             # не помечается мёртвым, и следующий (непустой!) запрос от
             # ЛЮБОГО caller'а (включая голос личности ТАРС) не молчит.
-            # ``prebaked_audio`` (ADR-0056) — исключение: pregen-кэш
-            # ключуется по РЕАЛЬНОМУ тексту фразы и уже несёт готовое
-            # аудио, блокировать воспроизведение тут незачем.
+            # ``prebaked_audio`` (пред-синтез) — исключение: аудио уже
+            # готово, блокировать воспроизведение тут незачем.
             if prebaked_audio is None and (not text or not text.strip()):
                 self.get_logger().warn(
                     "⚠️ [issue 2096] TTS: пустой text — provider chain "
@@ -4271,9 +3814,9 @@ class TTSNode(Node):
                 )
                 raise _TTSEmptyTextError("empty_text")
 
-            # 1) Pre-gen cache short-circuit (ADR-0056 / issue #2003).
-            if self._sap_consume_prefetch(prebaked_audio, voice, speech_id, ctx):
-                # Prefetch отработал — цепочка синтеза не нужна, всё остальное
+            # 1) Готовый пред-синтез (ADR-0150 PR-3).
+            if self._sap_consume_presynth(prebaked_audio, voice, speech_id, ctx):
+                # Пред-синтез есть — цепочка синтеза не нужна, всё остальное
                 # как для обычного результата (publish + FIFO + play).
                 pass
             else:
@@ -4386,7 +3929,7 @@ class TTSNode(Node):
     # the orchestrator's call order, so unit-test debug traces read top-to-bottom.
     _SAP_HELPER_NAMES = (
         "_sap_setup_request",
-        "_sap_consume_prefetch",
+        "_sap_consume_presynth",
         "_sap_run_provider_chain",
         "_sap_synthesize_minimax",
         "_sap_synthesize_yandex",
@@ -4432,17 +3975,16 @@ class TTSNode(Node):
         """Сбросить stop-флаг нового запроса (отмену ведёт журнал владельца речи)."""
         self.stop_requested = False
 
-    def _sap_consume_prefetch(
+    def _sap_consume_presynth(
         self,
         prebaked_audio: Optional[Dict[str, Any]],
         voice: Optional[str],
         speech_id: Optional[str],
         ctx: Dict[str, Any],
     ) -> bool:
-        """Issue #2003 / ADR-0056 — пробуем вытащить готовый чанк из
-        pre-gen кэша.  Если пре-ген валиден — заполняем ``ctx`` и возвращаем
-        ``True`` (цепочка синтеза должна быть пропущена).  Иначе возвращаем
-        ``False`` и ``ctx`` остаётся в исходном состоянии (None-результат).
+        """Готовое аудио пред-синтеза ``commit=false`` (ADR-0150 PR-3). Валидно —
+        заполняем ``ctx`` и возвращаем ``True`` (цепочка синтеза пропускается).
+        Иначе ``False`` и ``ctx`` остаётся в исходном состоянии (None-результат).
         """
         if not (prebaked_audio and isinstance(prebaked_audio, dict)):
             return False
@@ -4454,7 +3996,7 @@ class TTSNode(Node):
             and int(getattr(cached_audio, "size", 0)) > 0
         ):
             self.get_logger().warning(
-                "⚠️ [issue 2003] prebaked_audio invalid shape "
+                "⚠️ [presynth] prebaked_audio invalid shape "
                 "— falling back to canonical synthesis"
             )
             return False
@@ -4463,7 +4005,7 @@ class TTSNode(Node):
         ctx["used_provider"] = "prefetch"
         ctx["used_voice"] = voice or self.minimax_voice
         self.get_logger().info(
-            f"⚡ [issue 2003] prebaked_audio used "
+            f"⚡ [presynth] prebaked_audio used "
             f"(speech_id={(speech_id or '')[:8]}, "
             f"decision={prebaked_audio.get('decision')}, "
             f"confidence={prebaked_audio.get('confidence'):.2f}, "
@@ -4471,9 +4013,6 @@ class TTSNode(Node):
         )
         if is_metrics_enabled():
             record_tts_synthesize("prefetch", success=True, duration_s=0.0)
-        # Bump the executor's bypass counter via the public metrics path.
-        if self._prefetch is not None:
-            self._prefetch["executor"].metrics.pregens_bypassed += 1
         return True
 
     def _sap_run_provider_chain(
@@ -5218,9 +4757,7 @@ class TTSNode(Node):
         raw_duration_sec: float,
     ) -> None:
         """После успешного play_audio: чистим white noise, публикуем
-        ``/voice/tts/finished`` (success=True или success=False+stopped),
-        обновляем pre-fetch calibration histogram (#2003) + chunk-to-chunk
-        latency (#2003 DoD #2).
+        ``/voice/tts/finished`` (success=True или success=False+stopped).
         """
         if self.stop_requested or owner_of(self).is_cancelled(speech_id):
             self.publish_state("stopped")
@@ -5264,27 +4801,6 @@ class TTSNode(Node):
                 batch_started_at=batch_started_at,
                 dialogue_id=dialogue_id,
             )
-        # Issue #2003 / ADR-0056 §3.7 — feed the pre-fetch calibration
-        # histogram with this chunk's actual duration vs the heuristic
-        # estimate. Also: latency_chunk_to_chunk_ms for DoD #2.
-        try:
-            if self._prefetch is not None and raw_duration_sec is not None:
-                est_ms = max(1.0, float(len(text)) * 60.0)
-                self._prefetch["executor"].record_synthesis_actual(
-                    actual_duration_ms=float(raw_duration_sec) * 1000.0,
-                    estimated_duration_ms=est_ms,
-                )
-                now_mono = time.monotonic()
-                last = getattr(self, "_last_chunk_finished_at", None)
-                if last is not None:
-                    elapsed_ms = (now_mono - last) * 1000.0
-                    if elapsed_ms > 0:
-                        self._prefetch["executor"].observe_chunk_to_chunk_latency(
-                            elapsed_ms
-                        )
-                self._last_chunk_finished_at = now_mono
-        except Exception as exc:  # noqa: BLE001 — best effort
-            self.get_logger().debug(f"prefetch metric update failed: {exc!r}")
 
     def _sap_handle_synthesis_error(
         self,
@@ -6675,6 +6191,8 @@ class TTSNode(Node):
         self._drain_pending_speech_queue(reason=f"batch_complete:{batch_id[:8]}")
 
     # ── Issue #2553 — pending speech queue (babble-retry / DJ overlap) ────
+    # Удаляется вместе с v1, условие: режим команд по умолчанию (ADR-0150 PR-7c, #3700; живой потребитель —
+    # батчи ``dialogue_node._publish_response_batch``).
 
     #: Жёсткий предел отложенных chunk'ов в очереди. Больше — upstream
     #: спамит (dialogue_node / DJModeController), и лучше залогировать
@@ -6965,35 +6483,6 @@ class TTSNode(Node):
                 self.minimax_streaming = bool(param.value)
                 self.get_logger().info(
                     f"📡 MiniMax streaming → {self.minimax_streaming}"
-                )
-            elif param.name == "pregenerate_enabled":
-                # Kill-switch for the speculative pipeline. When toggled
-                # OFF at runtime, cancel any in-flight pre-gens so they
-                # don't outlive the operator's decision.
-                new_val = bool(param.value)
-                if not new_val and self._prefetch is not None:
-                    self.cancel_pregen(reason="param_disabled")
-                self._pregenerate_enabled = new_val
-                self.get_logger().info(f"🎯 pregenerate_enabled → {new_val}")
-            elif param.name == "pregenerate_confidence_floor":
-                self._pregenerate_confidence_floor = max(
-                    0.0,
-                    min(1.0, float(param.value)),
-                )
-                # Propagate to the live executor if it has been built.
-                if self._prefetch is not None:
-                    self._prefetch["executor"]._confidence_floor = (
-                        self._pregenerate_confidence_floor
-                    )
-                self.get_logger().info(
-                    f"🎯 pregenerate_confidence_floor → "
-                    f"{self._pregenerate_confidence_floor}"
-                )
-            elif param.name == "pregenerate_history_window":
-                self._pregenerate_history_window = max(1, int(param.value))
-                self.get_logger().info(
-                    f"🎯 pregenerate_history_window → "
-                    f"{self._pregenerate_history_window}"
                 )
 
         return SetParametersResult(successful=True)

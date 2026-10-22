@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """TTS chunk-to-chunk latency benchmark for issue #2003 / ADR-0056.
 
+ВАЖНО (ADR-0150 PR-7c ч.4а, #3700): спекулятивный pre-generate и параметр
+``pregenerate_enabled`` удалены из tts_node. Режимов baseline/speculative больше
+нет: скрипт меряет интервал между чанками текущего пайплайна, ``--mode`` — только
+метка в отчёте. Пред-синтез выступления — ``SpeechRequest commit=false``.
+
 Контракт DoD #2 (ADR-0056 §3.7): speculative pre-generate уменьшает
 латентность между последовательными чанками TTS. Этот скрипт измеряет
 разницу «на живом» роботе в двух режимах:
@@ -229,10 +234,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="пауза между репликами, сек")
     ap.add_argument(
         "--mode", default="speculative",
-        help=("метка в JSON-отчёте: speculative|baseline. "
-              "Переключение режима делается через "
-              "`ros2 param set /tts_node pregenerate_enabled {true|false}` "
-              "МЕЖДУ запусками скрипта. Сам скрипт не дёргает параметр."),
+        help=("метка в JSON-отчёте (произвольная). Параметра "
+              "pregenerate_enabled больше нет (ADR-0150 PR-7c ч.4а)."),
     )
     ap.add_argument("--stt-topic", default=DEFAULT_STT_TOPIC)
     ap.add_argument("--audio-topic", default=DEFAULT_AUDIO_TOPIC)

@@ -210,26 +210,3 @@ def _hist_sum(name: str, labels: dict) -> float:
             ):
                 return float(sample.value)
     return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Issue #2561 — record_music_retry_exhausted
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    not is_metrics_enabled(),
-    reason="prometheus_client required for registry-level assertions",
-)
-class TestRecordMusicRetryExhaustedNoop:
-    """Без prometheus_client ``record_music_retry_exhausted`` — no-op."""
-
-    def test_noop_when_disabled(self):
-        if is_metrics_enabled():
-            pytest.skip("prometheus_client installed — no-op path not exercised")
-        # Не должно падать.
-        record_music_retry_exhausted(
-            guard_name="music_user",
-            reason="retry_exhausted",
-            user_input_kind="track_name",
-        )

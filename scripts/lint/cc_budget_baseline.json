@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-21",
-  "base_sha": "11fb60861165ee04e7a93c9fa926ed17be38faa3",
+  "created": "2026-10-22",
+  "base_sha": "e954e41cf3d88b1644bb1850678902676aaf0255",
   "limits": {
     "method": 15,
     "init": 20
@@ -16,9 +16,6 @@
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
       "DialogueNode._handle_result": 58
     },
-    "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
-      "build_pregen_task": 22
-    },
     "src/rob_box_voice/rob_box_voice/stt_node.py": {
       "STTNode._process_audio": 20,
       "STTNode._recognize_yandex_phase": 22
@@ -28,12 +25,12 @@
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py": {
       "TTSNode.__init__": 28,
-      "TTSNode._on_set_provider": 18,
+      "TTSNode._on_set_provider": 16,
       "TTSNode._parse_ssml_attributes": 17,
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 19
+      "TTSNode.dialogue_callback": 17
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._on_avatar_command": 17,
@@ -132,12 +129,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
-      "method": "build_pregen_task",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
       "method": "STTNode._process_audio",
       "cc": 20,
@@ -164,7 +155,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode._on_set_provider",
-      "cc": 18,
+      "cc": 16,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
@@ -194,7 +185,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 19,
+      "cc": 17,
       "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {

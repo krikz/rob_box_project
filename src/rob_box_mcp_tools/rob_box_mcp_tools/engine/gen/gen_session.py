@@ -597,7 +597,7 @@ class BridgeHold:
         return ours
 
     def _then_cut_in(self, prepare: Callable[[], None]) -> None:
-        """Подготовка результата (``SetSession._pregenerate`` ждёт ``deliver``/``fail``) — и сразу вход по такту."""
+        """Подготовка результата (``SetSession._compose_next`` ждёт ``deliver``/``fail``) — и сразу вход по такту."""
         def run() -> None:
             prepare()
             self._cut_in()

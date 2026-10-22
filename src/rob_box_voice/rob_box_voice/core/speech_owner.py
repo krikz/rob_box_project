@@ -347,10 +347,9 @@ class SpeechOwner:
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
         return self.ledger.is_cancelled(speech_id)
 
-    def claim_presynth(self, speech_id: Optional[str], fallback: Callable[[str], Any]) -> Any:
-        """Аудио пред-синтеза ``commit=false`` того же ``speech_id``, иначе ``fallback`` (pregen)."""
-        held = self.presynth.claim(speech_id)
-        return held if held is not None else fallback(speech_id or "")
+    def claim_presynth(self, speech_id: Optional[str]) -> Any:
+        """Аудио пред-синтеза ``commit=false`` того же ``speech_id`` (``None`` — синтез в пути)."""
+        return self.presynth.claim(speech_id)
 
     def tick(self) -> None:
         for rec, chars in self.ledger.due_progress():
@@ -440,8 +439,8 @@ class _NullOwner:
     def started(self, *args: Any) -> bool:
         return True
 
-    def claim_presynth(self, speech_id: Optional[str], fallback: Callable[[str], Any]) -> Any:
-        return fallback(speech_id or "")
+    def claim_presynth(self, speech_id: Optional[str]) -> Any:
+        return None
 
 
 def owner_of(node: Any) -> Any:

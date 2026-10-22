@@ -62,7 +62,9 @@ class PlanToolExecutor:
         self.planner = planner or PlanRunner()
         # ADR-0150 PR-3b (#3690) — стадия хода «executing»: наблюдатель до и после вызова; его ошибка ход не ломает.
         self._on_tool = on_tool
-        self._track_guard = TrackStartGuard()  # issue #2859 — один запуск трека за ход (уходит в PR-7c)
+        # issue #2859 — один запуск трека за ход. Удаляется вместе с v1, условие: режим команд по умолчанию
+        # (ADR-0150 PR-7c #3700, решение координатора В3: защищает живой путь v1).
+        self._track_guard = TrackStartGuard()
         self.music_turn = MusicTurn()  # ADR-0148 — запуски музыки хода и речь о них
         #: Хост выступления ноды (``perform_host.PerformHost``, ADR-0150 PR-7c): ``command_turn`` отдаёт ему ``perform``.
         self.performer: Any = None

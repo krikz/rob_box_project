@@ -175,7 +175,7 @@ def _other_deck(deck: str) -> str:
 
 
 def _start_thread(fn: Callable[[], None]) -> None:
-    threading.Thread(target=fn, name="rbx-set-pregen", daemon=True).start()
+    threading.Thread(target=fn, name="rbx-set-next", daemon=True).start()
 
 
 class SetSession:
@@ -256,7 +256,7 @@ class SetSession:
 
     def replan(self) -> None:
         """План сменился (LLM, PR-10): N+1, ещё не сыгранный, компонуется заново (ADR-0149 §4.2)."""
-        self._pregenerate_soon()
+        self._compose_next_soon()
 
     @property
     def active(self) -> bool:
@@ -334,7 +334,7 @@ class SetSession:
             self._log.info(f"🎧 [set v2] {self.set_id} трек {no} последний — играет форму до конца, следующего нет")
             return
         self._owner.watch(track_id, form_end, self._lead, self._on_nearly_finished)
-        self._pregenerate_soon()
+        self._compose_next_soon()
 
     def _composition_note(self, model: Optional[Track]) -> str:
         """``composition={…}`` одной строкой JSON (+ файл модели, если задан каталог); сбой записи — в лог."""
@@ -347,14 +347,14 @@ class SetSession:
                 self._log.warning(f"⚠️ [set v2] {self.set_id} модель трека не записана: {type(exc).__name__}: {exc}")
         return "composition=" + json.dumps(track_composition(model), ensure_ascii=False, separators=(",", ":"))
 
-    def _pregenerate_soon(self) -> None:
+    def _compose_next_soon(self) -> None:
         with self._lock:
             if self._preparing or not self._active or (self._current or {}).get("no", 0) >= self.tracks:
                 return
             self._preparing = True
-        self._submit(self._pregenerate)
+        self._submit(self._compose_next)
 
-    def _pregenerate(self) -> None:
+    def _compose_next(self) -> None:
         """Фон: N+1 на другой деке → ``queued`` с токеном N."""
         with self._lock:
             current = dict(self._current or {})
@@ -386,7 +386,7 @@ class SetSession:
         if not advanced:
             self._log.warning(f"⚠️ [set v2] {self.set_id} трек {current['no'] + 1} не готов — "
                               f"продлеваю трек {current['no']} ещё на проход формы")
-            self._pregenerate_soon()
+            self._compose_next_soon()
         elif overlap:
             self._log.info(f"🎧 [set v2] {self.set_id} блэнд трек {current['no']}→{current['no'] + 1}: "
                            f"{overlap / BEATS_PER_BAR:g} тактов с доли {form_end - overlap}")
