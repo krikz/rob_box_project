@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from rob_box_core import dialog_engine
 from rob_box_core.speech_client import SPEECH_AGENTS
 from std_msgs.msg import String
 
@@ -55,9 +56,12 @@ def on_control(node: Any, msg: Any) -> None:
     node.publish_state("stopped")
 
 
-def attach_legacy(node: Any, *, avatar_control_topic: str) -> None:
-    """Подписки ``tts_node`` на старые входы речи."""
-    node.create_subscription(String, "/voice/dialogue/response", node.dialogue_callback, 10)
+def attach_legacy(node: Any, *, avatar_control_topic: str, engine: str = dialog_engine.V1) -> None:
+    """Подписки ``tts_node`` на старые входы речи. ``/voice/dialogue/response`` пишет только ``dialogue_node``
+    v1 — при ``dialog_engine=v2`` его не слушаем (PR-8 #3702); внешние писатели ``/voice/tts/request`` и STOP
+    остаются при обоих движках."""
+    if engine == dialog_engine.V1:
+        node.create_subscription(String, "/voice/dialogue/response", node.dialogue_callback, 10)
     node.create_subscription(String, "/voice/tts/request", node.dialogue_callback, 10)
     node.create_subscription(String, "/voice/tts/control", lambda m: on_control(node, m), 10)
     node.create_subscription(String, avatar_control_topic, lambda m: on_control(node, m), 10)

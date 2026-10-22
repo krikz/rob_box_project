@@ -15,10 +15,11 @@ dotted-имена, которые ноды не читали (issue #1004).
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from rob_box_core import dialog_engine
 
 
 def generate_launch_description():
@@ -97,7 +98,7 @@ def generate_launch_description():
     )
 
     # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
-    tts_node = Node(
+    tts_node_args = dict(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
@@ -184,8 +185,7 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        dialogue_node,
-        tts_node,
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[dialogue_node, tts_node_args]),
         stt_node,
         sound_node,
         command_node,

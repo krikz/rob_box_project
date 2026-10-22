@@ -45,9 +45,17 @@ echo "=========================================="
 echo "  Запуск Telegram бота..."
 echo "=========================================="
 
+# ADR-0150 PR-8 (#3702): флаг движка диалога — один файл на все ноды; нет файла — дефолт ноды (v1).
+DIALOG_ENGINE_YAML=/config/voice_assistant/dialog_engine.yaml
+ENGINE_ARGS=()
+if [ -f "${DIALOG_ENGINE_YAML}" ]; then
+    ENGINE_ARGS=(--params-file "${DIALOG_ENGINE_YAML}")
+fi
+
 # Запуск ROS 2 ноды
 exec ros2 run rob_box_telegram telegram_node \
     --ros-args \
     --params-file /config/telegram_bot/telegram_bot.yaml \
+    "${ENGINE_ARGS[@]}" \
     -r __ns:=/ \
     "$@"
