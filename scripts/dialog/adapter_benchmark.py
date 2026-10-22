@@ -45,7 +45,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 _PACKAGES = ("rob_box_dialog", "rob_box_llm", "rob_box_core", "rob_box_harness", "rob_box_voice")
-for _p in (REPO, *(REPO / "src" / p for p in _PACKAGES)):
+for _p in (*(REPO / "src" / p for p in _PACKAGES), REPO):  # REPO первым: у rob_box_voice свой каталог scripts/
     sys.path.insert(0, str(_p))
 
 from rob_box_dialog.command import Command  # noqa: E402
