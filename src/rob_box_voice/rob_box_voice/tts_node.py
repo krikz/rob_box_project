@@ -102,6 +102,7 @@ from .core.speak_helpers import (
 )
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
+from rob_box_dialog.knowledge import SPEECH_OUTPUT_LATENCY_MS
 from .core.provider_health import record_tts_death, tts_provider_states
 from .core.voice_owner import attach_voice_owner
 
@@ -793,8 +794,10 @@ class TTSNode(Node):
         # forward-compat hook. См. ADR-0003 §2.4.
         self.declare_parameter("minimax_streaming", False)
         # ADR-0150 PR-3 (#3688) §5.5.4 — задержка от play_audio до звука в
-        # колонке, мс: t0 огибающей = now + output_latency_ms (замер — PR-3 ч.3).
-        self.declare_parameter("output_latency_ms", 0)
+        # колонке, мс: t0 огибающей = now + output_latency_ms. Число одно —
+        # knowledge.SPEECH_OUTPUT_LATENCY_MS (по нему же выступление ставит
+        # реплику на такт, PR-7c); параметр — только для переопределения.
+        self.declare_parameter("output_latency_ms", SPEECH_OUTPUT_LATENCY_MS)
         # Issue #1780 / issue #1004: дефолтные emotion / pitch / volume /
         # pronunciation_dict для MiniMax T2A v2 (см. minimax_tts.py —
         # ``voice_setting`` принимает ``emotion``, ``pitch`` int semitones,

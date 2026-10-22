@@ -72,9 +72,9 @@ tts_node:
     minimax_retry_backoff_ms: 500
     minimax_streaming: false
     # ADR-0150 PR-3 (#3688) — задержка «SpeechEvent started (перед play_audio)
-    # → первый звук в колонке», мс; t0 огибающей = now + это число. Замер
-    # 20.10.2026 по записи микрофоном katana: 560 / 570 / 520 мс.
-    output_latency_ms: 550
+    # → первый звук в колонке» (замер 20.10.2026 микрофоном katana: 560 / 570 /
+    # 520 мс) — одно место: rob_box_dialog.knowledge.SPEECH_OUTPUT_LATENCY_MS
+    # (PR-7c: по ней же выступление ставит реплику на такт). Здесь не задаётся.
     # Issue #1780 / issue #1004 / issue #1830 — единственный канонический
     # блок MiniMax emotion / pitch / volume / pronunciation_dict. В
     # tts_node.py declare_parameter() ожидает STRING ("" → «не задан»);

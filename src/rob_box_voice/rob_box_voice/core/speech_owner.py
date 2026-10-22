@@ -40,6 +40,8 @@ from . import speech_compat
 from .speech_timing import Presynth, at_delay_s
 
 FRAME_MS = 40
+#: ``SpeechCancel.boundary``: резать по границе из запроса (``boundary=sentence`` — на конце предложения) или сразу.
+CANCEL_AS_REQUESTED, CANCEL_NOW = 0, 1
 #: Шаг таймера владельца: прогресс по предложениям и отмена на границе.
 TICK_S = 0.1
 #: Запись без перехода дольше этого - потерянная (воркер упал до финала).
@@ -276,15 +278,18 @@ class SpeechOwner:
 
     def on_cancel(self, msg: Any) -> None:
         targets = self.ledger.select_cancel(msg.speech_id, int(msg.epoch), msg.agent)
+        dropped = self.presynth.claim(msg.speech_id) is not None if msg.speech_id else False
+        now = int(getattr(msg, "boundary", CANCEL_AS_REQUESTED)) == CANCEL_NOW
         self._log(
             f"🛑 SpeechCancel speech_id={msg.speech_id[:8] or '-'} epoch<={msg.epoch} "
-            f"agent={msg.agent} reason={msg.reason or '-'}: отменено {len(targets)}"
+            f"agent={msg.agent} reason={msg.reason or '-'}{' сразу' if now else ''}: отменено {len(targets)}"
+            + (", пред-синтез выброшен" if dropped else "")
         )
         playing = [rec for rec in targets if rec.state == "playing"]
-        for rec in playing:
-            if rec.meta.boundary == 1:
-                self.ledger.schedule_boundary_stop(rec)  # заглушит tick на границе
-        if any(rec.meta.boundary != 1 for rec in playing):
+        on_boundary = [rec for rec in playing if rec.meta.boundary == 1 and not now]
+        for rec in on_boundary:
+            self.ledger.schedule_boundary_stop(rec)  # заглушит tick на границе
+        if len(on_boundary) < len(playing):
             self._node._interrupt_playback()  # ожидающие снимут FIFO-ворота tts_node
 
     def cancel_all(self, reason: str) -> None:
@@ -355,6 +360,12 @@ class SpeechOwner:
             self._node._interrupt_playback()
 
     def _presynth_done(self, speech_id: str, duration_s: float, ctx: Dict[str, Any]) -> None:
+        if self.ledger.is_cancelled(speech_id):  # отменили, пока синтезировали: PCM не держим (правка выступления)
+            self.presynth.claim(speech_id)
+            rec = self.ledger.close(speech_id)
+            if rec is not None:
+                self._emit("cancelled", rec, spoken_chars=0, reason="cancelled")
+            return
         self.synthesized(speech_id, duration_s, ctx, None)
         self.ledger.close(speech_id)  # реплика ждёт commit=true с тем же speech_id
 

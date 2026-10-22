@@ -43,6 +43,8 @@ EPOCH_ALL = 0xFFFFFFFF
 
 #: ``SpeechRequest.boundary``: где можно резать реплику при отмене.
 BOUNDARIES = {"none": 0, "sentence": 1}
+#: ``SpeechCancel.boundary``: резать звучащую реплику по её границе из запроса или сразу («стой», ADR-0150 PR-7c).
+CANCEL_BOUNDARIES = {"as_requested": 0, "now": 1}
 #: ``SpeechRequest.priority`` (uint8, больше - важнее). ``operator`` -
 #: врезка сразу за играющим чанком (``tts_node._assign_priority_play_seq``).
 PRIORITY_NORMAL = 0
@@ -147,19 +149,24 @@ def cancel(
     speech_id: Optional[str] = None,
     epoch: Optional[int] = None,
     reason: str = "",
+    boundary: str = "as_requested",
 ) -> None:
     """Отменить реплику ``speech_id`` или все реплики агента с эпохой не новее ``epoch``.
 
     ``epoch=None`` - все эпохи агента. ``agent=ANY_AGENT`` - реплики всех
     агентов (STOP оператора); реплики, помеченные непрерываемыми, отмена по
-    эпохе не трогает, отмена по ``speech_id`` - трогает.
+    эпохе не трогает, отмена по ``speech_id`` - трогает. ``boundary="now"`` -
+    звучащую реплику резать сразу, даже если в запросе была граница предложения.
     """
     _check_agent(agent, allow_any=True)
+    if boundary not in CANCEL_BOUNDARIES:
+        raise ValueError(f"boundary {boundary!r} не из {sorted(CANCEL_BOUNDARIES)}")
     msg = _msgs().SpeechCancel()
     msg.speech_id = speech_id or ""
     msg.epoch = EPOCH_ALL if epoch is None else int(epoch)
     msg.agent = agent
     msg.reason = reason
+    msg.boundary = CANCEL_BOUNDARIES[boundary]
     _publisher(node, "cancel").publish(msg)
 
 
@@ -219,6 +226,7 @@ class SpeakingWatch:
 __all__ = [
     "ANY_AGENT",
     "BOUNDARIES",
+    "CANCEL_BOUNDARIES",
     "EPOCH_ALL",
     "EpochWatch",
     "PRIORITY_NORMAL",
