@@ -1015,7 +1015,6 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
                          "items": {"type": "string", "maxLength": SEGMENT_MAX_CHARS}},
             "backing": _enum(PERFORM_BACKINGS),
             "expression_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX, "items": expression},
-            "from_segment": {"type": "integer", "minimum": 0},
             "voice_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX,
                                   "items": {"type": "string", "maxLength": VOICE_MAX_CHARS}},
         }, required=("kind", "segments")),
@@ -1058,7 +1057,10 @@ def prompt_fragment() -> str:
         " actions: ответ по сути (сказка, стих, анекдот), не отчёт о действиях. voice_per_segment — голос на"
         " сегмент (сказка разными голосами); set_voice меняет голос робота насовсем — только когда об этом просят.",
         f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",
-        "- edit_pending: true — заменить ещё не начатые сегменты текущего выступления, начиная с from_segment.",
+        "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты, они заменят"
+        " ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа: {\"edit_pending\": true,"
+        " \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\", \"segments\": [\"А вот и енот — ночной"
+        " бандит…\", \"Комар и енот — два ночных бойца…\"]}}.",
         f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈ {_set(EARCONS)};"
         f" face: {face}; duration_s ≤ {FACE_SCENE_MAX_S:g}.",
         f"- passed ∈ {_set(PASSED)} — честно промолчать.",
