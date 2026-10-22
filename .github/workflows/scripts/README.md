@@ -70,6 +70,20 @@ ssh ros2@10.1.1.249 bash /tmp/e2e_voice_test.sh --scenario /tmp/scenario.json \
 agent-flow — env `E2E_TTS_PROVIDER`. Прочие ручки: `E2E_TTS_PROVIDER_ORDER`,
 `MINIMAX_TTS_MODEL`, `E2E_SILERO_MODEL`, `E2E_SILERO_SAMPLE_RATE`.
 
+#### Синтез фраз: ретраи, пред-синтез, кэш (#3875)
+
+DNS на билд-машине мигает (`NameResolutionError` → `MINIMAX_NETWORKERROR`), робот тут ни при чём:
+
+- **Ретраи.** Сетевой отказ провайдера (`error_class: NetworkError`) повторяется 3 раза с паузами
+  2/5/10 с (`E2E_SYNTH_RETRY_DELAYS`), в логе `STEP <label>: synth retry k/3 (<класс>)`. Auth/Quota/BadRequest не
+  повторяются. Тот же ретрай у пробы провайдера.
+- **Пред-синтез.** Все фразы акта синтезируются до записи, изоляции и первого PLAY. Не вышло, то сразу
+  `E2E_INFRA_FAIL synth`, робот не тронут. `E2E_PRESYNTH=0` выключает (отладка).
+- **Кэш между прогонами.** `$HOME/.cache/rob_box_e2e/synth/` (`E2E_SYNTH_CACHE_DIR`), вне `/tmp/e2e_v2_*`,
+  cleanup прогона его не трогает. Ключ: sha256(провайдер, голос провайдера, текст, модель/скорость/формат),
+  лежит сырой wav до EQ. Файлы старше `E2E_SYNTH_CACHE_TTL_DAYS` (30) удаляются. `E2E_SYNTH_CACHE=0`:
+  кэш только внутри прогона (`OUT_DIR/.synth_cache`).
+
 #### Что прогон оставляет после себя
 
 Харнесс пишет в `OUT_DIR` (`/tmp/e2e_v2_<run_id>`):
