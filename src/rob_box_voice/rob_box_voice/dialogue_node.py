@@ -26,7 +26,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import threading
 import time
@@ -147,12 +146,11 @@ from rob_box_voice.core.llm_skip_reasons import (
     LLMSkipReason,
     new_llm_skip_counter,
 )
+from rob_box_voice.core.tier1_host import runner_of as tier1_runner_of
 from rob_box_voice.core.dialogue_guards import (
     ACTION_CLAIM_RULES,
     BABBLE_BANNED_OPENERS as BABBLE_BANNED_OPENERS,
     BABBLE_PERFORMANCE_KEYWORDS as BABBLE_PERFORMANCE_KEYWORDS,
-    MUSIC_STOP_TOOLS,
-    MUSIC_STARTING_TOOLS,
     build_action_claim_failure_fallback,  # Issue #2949
     build_fact_memory_save_fallback,  # Issue #2780 п.3
     build_phantom_action_retry_prompt,  # Issue #2559 phantom-action
@@ -302,21 +300,6 @@ ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S: float = 2.0
 # Issue #1389 compatibility alias. ``LLMSkipReason`` is now the canonical
 # source; this tuple remains for callers that imported the merged #1395 symbol.
 _LLM_SKIP_REASONS: tuple[str, ...] = tuple(reason.value for reason in LLMSkipReason)
-
-# Issue #992 (live 13.08): BACKING-детектор «2+ speak_text» ложно
-# срабатывал на разговорчивую LLM (приветствие + комментарий) и убивал
-# только что запущенный TRACK сразу после tts_batch_complete
-# («наполни комнату музыкой» → музыка умолкала через ~8с).
-# Теперь BACKING требует ПЕВЧЕСКИЙ интент в тексте юзера.
-_SINGING_INTENT_RE = re.compile(
-    r"\b(?:спо[йюё]\w*|по[йюё]\w*|рэп\w*|реп\w*|песенк\w*|куплет\w*|частушк\w*|напев\w*)\b",
-    re.IGNORECASE,
-)
-
-
-def _has_singing_intent(text: "str | None") -> bool:
-    """True если юзер явно просил петь/рэповать (BACKING), а не просто музыку."""
-    return bool(text) and bool(_SINGING_INTENT_RE.search(text or ""))
 
 # Issue #992 Bug D — banned metalanguage openers + performance keywords
 # live in :mod:`rob_box_voice.core.dialogue_guards` (TD-1 decomposition);
@@ -720,21 +703,6 @@ class DialogueNode(DialogueStageMixin, Node):
         # «громче») — SpeakingWatch, его кормит та же подписка /voice/speech/event, что стадии хода (_on_speech_event).
         self._stop_chooser = stop_chooser_from_env(log=self.get_logger)
         self._identity_dedup = identity_dedup_from_env(log=self.get_logger)
-        # Music safety-net hook (issue #935): when the dialog ends and the
-        # LLM forgot to call stop_music(), we still want playback to stop.
-        # We publish a JSON payload on /mcp/music_cleanup so the MCP server
-        # stops the deck (``MCPServer._stop_deck``: dj_set + player owner) and the mp3 for us.
-        try:
-            self._music_cleanup_pub = self.create_publisher(
-                String, "/mcp/music_cleanup", 10)
-            self.get_logger().info(
-                "🎵 [dialogue_node] Publisher на /mcp/music_cleanup готов (issue #935)"
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._music_cleanup_pub = None
-            self.get_logger().warning(
-                f"⚠️ [dialogue_node] Не удалось создать /mcp/music_cleanup publisher: {exc}"
-            )
         # ADR-0150 PR-2: один типизированный вход реплики (голос и Telegram);
         # id фразы, источник и chat_id - поля, склейки по тексту больше нет.
         self.create_subscription(
@@ -863,13 +831,6 @@ class DialogueNode(DialogueStageMixin, Node):
                 depth=10,
             ),
             callback_group=cbg)
-        # Issue #980 — fire music_cleanup only after the *last* TTS chunk of a
-        # batch (rap, poetry), not after the first. tts_node publishes this
-        # event once ``batch_index == batch_total`` for a given ``batch_id``.
-        self.create_subscription(
-            String, "/voice/tts/batch_complete",
-            self._on_tts_batch_complete, 10,
-            callback_group=cbg)
         self.create_subscription(
             String, "/voice/sound/state", self._on_sound_state, 10,
             callback_group=cbg)
@@ -904,43 +865,6 @@ class DialogueNode(DialogueStageMixin, Node):
                 depth=1,
             ),
             callback_group=cbg)
-
-        # Deferred music cleanup (issue #935 v2 → #980 → #992): music should
-        # keep playing while TTS is still speaking (rap, poetry). Cleanup is
-        # published strictly after the *last* TTS batch of a turn finishes
-        # — see ``_on_tts_batch_complete``.
-        #
-        # Issue #992: a single ``_pending_music_cleanup`` boolean is not
-        # enough when the LLM fires multiple ``speak_text`` tool calls
-        # in one cycle (each call is a separate ``batch_id`` and produces
-        # its own ``/voice/tts/batch_complete``). The first batch's
-        # completion used to wipe music while the second batch was still
-        # playing. ``_active_batches`` tracks every in-flight ``batch_id``
-        # so we only fire cleanup when the registry is empty AND the
-        # LLM actually asked to stop music.
-        self._pending_music_cleanup: bool = False
-        self._active_batches: Dict[str, int] = {}
-
-        # 🔴 FIX (live 30.08 15:56): TRACK-музыка не должна умирать от хода,
-        # который её не трогал.
-        #
-        # Лаунж играл 94 секунды, юзер сказал «продолжай лабать мы летим над
-        # парижем», LLM ответила словами с tools=[] — и ветка «музыка в этом
-        # цикле не запускалась» вооружила cleanup, который остановил трек
-        # через 0.1 с после ответа. Робот сказал «Трек летит над Парижем» и
-        # замолчал.
-        #
-        # Контракт TRACK описан парой десятков строк ниже: «композиция живёт
-        # до segments или явного stop_music». Ветка ниже его нарушала для
-        # ЛЮБОГО следующего хода — включая «который час?» посреди трека.
-        # Флаг помнит, что живая музыка — это TRACK, и cleanup для неё не
-        # вооружается. Потолок остаётся за watchdog'ом (idle TTL 300 s и
-        # segments-дедлайн), явным stop_music и cleanup'ом нового диалога.
-        #
-        # Issue #3133 (ADR-0141): это ТОЛЬКО политика cleanup (TRACK vs
-        # BACKING). Играет ли музыка, флаг не говорит — это знает плеер,
-        # см. ``_music_player_state`` / ``_music_playing_now``.
-        self._track_mode_music_active: bool = False
 
         # 🔴 FIX (live 30.08, e2e 33251879328): один флаг «в этом ходе гуард
         # уже отправил ретрай» на ВСЕ гуарды сразу.
@@ -2343,37 +2267,12 @@ class DialogueNode(DialogueStageMixin, Node):
         )
 
     def _on_tts_finished(self, msg: String) -> None:
-        """Awaiter-release only — cleanup moved to ``_on_tts_batch_complete``.
+        """Освободить ожидающих конца реплики (эффекты хода).
 
-        Issue #980: firing ``music_cleanup`` from the *first* ``/voice/tts/finished``
-        event of a multi-chunk turn cut the playback short (e.g. a 35 s rap
-        only played 10 s). We now trigger cleanup exclusively from
-        ``/voice/tts/batch_complete`` which fires once after the last chunk.
-
-        Issue #992: register the in-flight ``batch_id`` here (idempotent) so
-        ``_on_tts_batch_complete`` can know which batches are still active
-        when the LLM fires multiple ``speak_text`` calls in one cycle. The
-        first chunk of each batch is enough to register — subsequent chunks
-        are no-ops because ``batch_id`` is already in ``_active_batches``.
+        Учёт батчей для уборки музыки (#980/#992) удалён в ADR-0150 PR-7c ч.4б (#3700): музыку снимает её
+        владелец по явному стопу, а не конец речи.
         """
         self._effects.handle_tts_finished(msg.data or "")
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            return
-        batch_id = payload.get("batch_id")
-        batch_total = payload.get("batch_total")
-        if batch_id is None or batch_total is None:
-            return
-        try:
-            self._register_active_batch(str(batch_id), int(batch_total))
-        except (TypeError, ValueError):
-            # Defensive: malformed batch metadata must not break the
-            # awaiter-release path or the batch tracking.
-            self.get_logger().debug(
-                f"⚠️ [issue 992] Skipping batch registration: "
-                f"batch_id={batch_id!r}, batch_total={batch_total!r}"
-            )
 
     def _on_tts_provider_state(self, msg: String) -> None:
         """Issue #1229 — обновить фактический провайдер TTS (от tts_node).
@@ -2416,9 +2315,6 @@ class DialogueNode(DialogueStageMixin, Node):
 
         Единственный источник «играет» для диалога: ``_music_playing_now``,
         гуард #3125 и Bug-C ретрай-промпт читают ``_music_player_state``.
-        При idle гасим и ``_track_mode_music_active`` — это теперь только
-        политика cleanup (TRACK живёт до стопа, BACKING гасится после
-        речи), а не «играет»: взводит его ход диалога, здесь только гасим.
         """
         snapshot = parse_music_state(msg.data)
         if snapshot is None:
@@ -2426,102 +2322,7 @@ class DialogueNode(DialogueStageMixin, Node):
         self._music_player_state = snapshot
         self._music_state_mem().observe_state(snapshot)
         plan_on_music(self, snapshot)
-        if snapshot.state == "idle" and self._track_mode_music_active:
-            self._track_mode_music_active = False
-            self.get_logger().info(
-                "🎵 [track-mode] сервер сообщил idle — снимаю флаг TRACK "
-                f"(finished={snapshot.finished_track_id or '—'}: конец формы/"
-                "watchdog/внешний стоп)"
-            )
 
-
-    def _register_active_batch(self, batch_id: str, chunks_total: int) -> None:
-        """Track an in-flight TTS batch for music-cleanup gating (issue #992).
-
-        Idempotent: re-registering an already-known ``batch_id`` is a no-op
-        so the second/third chunk's ``tts_finished`` doesn't double-count.
-        """
-        if batch_id in self._active_batches:
-            return
-        self._active_batches[batch_id] = chunks_total
-        self.get_logger().debug(
-            f"🎵 [issue 992] Registered active batch {batch_id[:8]}... "
-            f"(chunks_total={chunks_total}, "
-            f"now active={len(self._active_batches)})"
-        )
-
-    def _unregister_active_batch(self, batch_id: str) -> None:
-        """Drop a batch from the in-flight registry (issue #992)."""
-        removed = self._active_batches.pop(batch_id, None)
-        if removed is None:
-            return
-        self.get_logger().debug(
-            f"🎵 [issue 992] Unregistered batch {batch_id[:8]}... "
-            f"(remaining={len(self._active_batches)})"
-        )
-
-    def _on_tts_batch_complete(self, msg: String) -> None:
-        """Fire ``music_cleanup`` once *all* TTS batches have finished (issue #992).
-
-        ``tts_node`` publishes this after the chunk whose ``batch_index ==
-        batch_total`` lands on ``/voice/tts/finished`` (success *or* failure).
-        Single-chunk turns still produce exactly one ``batch_complete`` so the
-        previous behaviour is preserved.
-
-        Issue #992: when the LLM calls ``speak_text`` more than once in a
-        single cycle, each call creates a *separate* ``batch_id`` and
-        therefore a *separate* ``/voice/tts/batch_complete`` event. The
-        previous implementation fired ``/mcp/music_cleanup`` on the first
-        event, which cut music off while the second batch was still
-        playing. We now unregister the completed batch from
-        ``_active_batches`` and only fire cleanup when the registry is
-        empty AND ``_pending_music_cleanup`` is set.
-        """
-        try:
-            payload = json.loads(msg.data or "{}")
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        batch_id_raw = payload.get("batch_id")
-        chunks_total = payload.get("chunks_total")
-        batch_id = str(batch_id_raw) if batch_id_raw is not None else None
-        if batch_id is not None:
-            self._unregister_active_batch(batch_id)
-        if self._active_batches:
-            # At least one batch is still in flight — hold the cleanup
-            # until that one (and any others) finish too.
-            self.get_logger().debug(
-                f"🎵 [issue 992] batch_complete for "
-                f"{batch_id[:8] if batch_id else 'None'}... but "
-                f"{len(self._active_batches)} batch(es) still active — "
-                f"deferring music_cleanup"
-            )
-            return
-        # 🔴 FIX (issue 992 live 09:09): LLM часто делает speak_text(прелюдия)
-        # ПЕРЕД тулом запуска музыки в одном цикле. Прелюдия — короткий batch
-        # (2-5s), его batch_complete приходит ПОКА цикл LLM ещё крутится
-        # (дальше Мурка/зайчики). Если чистить здесь — музыка убивается
-        # через секунды после старта. Откладываем cleanup, пока _run_turn
-        # активен: настоящий cleanup придёт от последнего batch_complete
-        # (или 10s fallback), когда цикл завершится.
-        run_task = self._run_task
-        if run_task is not None and not run_task.done():
-            self.get_logger().debug(
-                f"🎵 [issue 992] batch_complete for {batch_id[:8] if batch_id else 'None'}... "
-                "but LLM turn still active — deferring music_cleanup "
-                "(prelude/pre-talk batch inside a running cycle)"
-            )
-            return
-        if not self._pending_music_cleanup:
-            self.get_logger().debug(
-                "tts_batch_complete received but no pending music_cleanup"
-            )
-            return
-        self._pending_music_cleanup = False
-        self._publish_music_cleanup(reason="tts_batch_complete")
-        self.get_logger().info(
-            "🎵 tts_batch_complete fired music_cleanup "
-            f"(chunks_total={chunks_total}, last_batch={batch_id[:8] if batch_id else 'None'}...)"
-        )
     def _on_sound_state(self, msg: String) -> None:
         self._effects.handle_sound_state(msg.data or "")
     def _on_odom_snapshot(self, msg) -> None:
@@ -2561,17 +2362,6 @@ class DialogueNode(DialogueStageMixin, Node):
             self.get_logger().info(
                 f"🎯 [occasion] started turn occasion={occasion.kind}"
             )
-        if self._pending_music_cleanup and was_idle:
-            # 🔴 FIX (issue 992 live 08:55): music_cleanup reason=new_dialogue
-            # ТОЛЬКО при новом диалоге из IDLE. Продолжение диалога
-            # (barge-in: «ещё спой про зайчиков» во время ответа) — это
-            # тот же диалог: музыка живёт до tts_batch_complete (#968),
-            # LLM сам сменит/оставит трек тулом запуска музыки.
-            # Раньше cleanup слался на ЛЮБОЙ STT → музыка убивалась
-            # в момент продолжения (v08:55:11 music_cleanup new_dialogue).
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="new_dialogue")
-
         # Issue #1160 — Prometheus metrics: новый диалог из IDLE (первый
         # wake-word) открывает сессию; DIALOGUE_END / timeout закроет её
         # histogram'ом voice_session_duration_seconds.
@@ -3536,19 +3326,6 @@ class DialogueNode(DialogueStageMixin, Node):
                     self._run_task = None
                     leftover_identity_question = getattr(self, "_after_turn_question", None)
                     self._after_turn_question = None
-            # Issue #935 v3: if LLM called stop_music(), defer cleanup until
-            # TTS finishes.  Otherwise keep music playing until next dialogue.
-            # Issue #992: a second stop_music() call from a follow-up LLM
-            # turn (while a previous cleanup is still pending) must be
-            # ignored — the flag is already set and the next batch_complete
-            # for any active batch will fire cleanup.
-            # Issue #2631 (ADR-0021 R1) — большая ветка cleanup-policy (CC=13)
-            # вынесена в helper.
-            self._finalize_music_cleanup_policy(
-                result=result,
-                raw_user_command=raw_user_command,
-                user_input=user_input,
-            )
             # Post-turn tool-skipped guard. It may synchronously dispatch
             # a retry turn while we are still inside this turn's
             # ``finally``; ``drive_one_turn`` (and any production loop)
@@ -3689,11 +3466,16 @@ class DialogueNode(DialogueStageMixin, Node):
     def _reset_session_music(self) -> None:
         """Issue #2835 — «новая сессия» гасит музыку прошлой сессии.
 
-        Сет движка v2 гасит ``music_cleanup`` (mcp_server), DJ-контроллера на
-        голосовой стороне больше нет (ADR-0149 PR-13a).
+        ADR-0150 PR-7c ч.4б (#3700): стоп — у владельца плеера (``dj_set(stop)`` + ``stop_music``, как Tier-1
+        «выключи музыку»), а не топиком уборки музыки (удалён).
         """
-        self._pending_music_cleanup = False
-        self._publish_music_cleanup(reason="new_session")
+        self._stop_music_by_owner("new_session")
+
+    def _stop_music_by_owner(self, reason: str) -> bool:
+        """Жёсткий стоп музыки (сет и дека) через владельца плеера; ``False`` — исполнителя тулов нет."""
+        stopped = tier1_runner_of(self).stop_music()
+        self.get_logger().info(f"🔇 [{reason}] стоп музыки владельцем плеера: {stopped}")
+        return stopped
 
     # ── Issue #992 Bug D — metalanguage / babble detection ───────────
 
@@ -4352,140 +4134,6 @@ class DialogueNode(DialogueStageMixin, Node):
             self.DEFAULT_SYNTHETIC_RETRIES
         )
 
-    def _apply_stop_music_deferral(self, result: Optional["DialogResult"]) -> bool:
-        """Issue #935 v3 / #992 — defer cleanup, если LLM звал ``stop_music``.
-
-        Возвращает ``True`` если этот ход — stop_music-команда (т.е. нужно
-        пропустить «стартерскую» ветку cleanup-policy и сразу идти к
-        финальному flush).
-        """
-        if not (result and "stop_music" in (result.tools_called or ())):
-            return False
-        if self._pending_music_cleanup:
-            self.get_logger().debug(
-                "🎵 [issue 992] stop_music deferred — already pending, "
-                "ignoring duplicate"
-            )
-        else:
-            self._pending_music_cleanup = True
-            self.get_logger().info(
-                "🎵 stop_music deferred — will cleanup after TTS finishes"
-            )
-        return True
-
-    def _schedule_music_cleanup(
-        self,
-        *,
-        result: Optional["DialogResult"],
-        raw_user_command: Optional[str],
-        user_input: str,
-    ) -> None:
-        """Issue #992 — выставить ``_track_mode_music_active`` /
-        ``_pending_music_cleanup`` по результатам LLM-тулов.
-
-        Не делает финального flush (это работа :meth:`_flush_music_cleanup_if_idle`).
-        Семантика 1-в-1 с до-рефакторингом — см. комментарии в ``_run_turn``.
-        """
-        tools_now = set(result.tools_called or ()) if result else set()
-        music_starters = MUSIC_STARTING_TOOLS
-        if tools_now & MUSIC_STOP_TOOLS:
-            self._track_mode_music_active = False
-        if tools_now & music_starters:
-            backing_singing = bool(result) and (
-                getattr(result, "speak_text_count", 0) >= 2
-            ) and _has_singing_intent(raw_user_command or user_input)
-            self._track_mode_music_active = not backing_singing
-            if backing_singing:
-                if not self._pending_music_cleanup:
-                    self._pending_music_cleanup = True
-                    self.get_logger().info(
-                        "🎵 [issue 992] backing mode (2+ speak_text) — "
-                        "music_cleanup scheduled at tts_batch_complete"
-                    )
-                else:
-                    self.get_logger().debug(
-                        "🎵 [issue 992] backing mode — cleanup "
-                        "already pending"
-                    )
-            elif self._pending_music_cleanup:
-                self._pending_music_cleanup = False
-                self.get_logger().info(
-                    "🎵 [issue 992] LLM restarted music via "
-                    "a music-launch tool — cancelled pending cleanup"
-                )
-            else:
-                self.get_logger().debug(
-                    "🎵 [issue 992] LLM started music — no cleanup "
-                    "scheduled for this turn"
-                )
-        elif getattr(self, "_track_mode_music_active", False):
-            # Issue #3133: флаг — политика cleanup, а не «играет»; правду
-            # о звуке пишем рядом из снимка плеера.
-            self.get_logger().info(
-                "🎵 [track-mode] TRACK-режим с прошлого хода — "
-                "cleanup НЕ вооружаем (живёт до stop_music/watchdog/конца "
-                f"формы); плеер: playing={self._music_playing_now()}"
-            )
-        else:
-            # Issue #3174 / ADR-0141 + 06.10 15:30 UTC: ход музыку не запускал
-            # (тулов старого пути нет; сет и заказ движка v2 живут до явного
-            # стопа) — стоп после речи не вооружаем. Раньше здесь cleanup
-            # взводился, когда снимок плеера говорил «не играет»: снимок
-            # отставал, и tts_batch_complete гасил идущий сет после ответа
-            # «Сет идёт — 30 минут…» с tools=[].
-            self.get_logger().info(
-                "🎵 ход музыку не запускал — cleanup НЕ вооружаем; "
-                f"плеер: playing={self._music_playing_now()}"
-            )
-
-    def _flush_music_cleanup_if_idle(self) -> None:
-        """Issue #992 — финальный flush, если cleanup вооружён и батчей нет.
-
-        Prelude-deferral catch-up (live 02.09): иначе короткая прелюдия
-        «Слушай Баха!» обрывает музыку через 0.1с вместо ожидания
-        ``tts_batch_complete``.
-        """
-        if self._pending_music_cleanup and not self._active_batches:
-            self._pending_music_cleanup = False
-            self._publish_music_cleanup(reason="tts_batch_complete")
-            self.get_logger().info(
-                "🎵 turn finished, no active batches — fired music_cleanup "
-                "(issue 992 prelude-deferral catch-up)"
-            )
-
-    def _finalize_music_cleanup_policy(
-        self,
-        *,
-        result: Optional["DialogResult"],
-        raw_user_command: Optional[str],
-        user_input: str,
-    ) -> None:
-        """Issue #992 / #935 / #918 / #2565 — тонкий диспетчер cleanup-policy.
-
-        Вынесен из ``_run_turn`` (CC=13 ветка; ADR-0021 R1, issue #2631).
-        Сводит три шага:
-
-        1. :meth:`_apply_stop_music_deferral` — если LLM звал ``stop_music``,
-           вооружить ``_pending_music_cleanup`` и пропустить остальное.
-        2. :meth:`_schedule_music_cleanup` — выставить
-           ``_track_mode_music_active`` / ``_pending_music_cleanup``
-           по результатам tools_called (BACKING ↔ TRACK).
-        3. :meth:`_flush_music_cleanup_if_idle` — финальный flush, если
-           cleanup вооружён и TTS-батчей нет.
-
-        Каждый шаг живёт в собственном helper'е, чтобы уложиться в
-        ADR-0021 R1 (CC≤15) для новых методов.
-        """
-        if self._apply_stop_music_deferral(result):
-            self._flush_music_cleanup_if_idle()
-            return
-        self._schedule_music_cleanup(
-            result=result,
-            raw_user_command=raw_user_command,
-            user_input=user_input,
-        )
-        self._flush_music_cleanup_if_idle()
-
     def _finalize_turn_dsm(
         self,
         *,
@@ -4688,7 +4336,7 @@ class DialogueNode(DialogueStageMixin, Node):
         """Issue #3125 / #3133 — играет ли сейчас музыка, по словам плеера.
 
         Источник — только снимок ``/voice/music/state`` (ADR-0141). До
-        #3133 здесь читался ``_track_mode_music_active``, который ставился
+        #3133 здесь читался флаг TRACK-режима, который ставился
         по ИМЕНАМ тулов (в т.ч. ``set_dj_mode(enabled=false)`` и упавшего
         ``compose_music``) и снимался только по idle, а idle после конечного
         трека приходил через 30 минут: робот говорил «Музыка играет» в
@@ -4823,22 +4471,10 @@ class DialogueNode(DialogueStageMixin, Node):
         # Issue #3178: слова юзера («к элизе»), не архивный title базы
         # («Fur Elise») — юзер и так знает, что просил.
         title = user_phrase_title(plan.play_name)
-        if outcome.status is NamedPlayStatus.PLAYED:
-            self._note_router_track_started()
         phrase = outcome_text(outcome, title)
         self._record_media_turn(plan, text, phrase, list(outcome.tools_done))
         self._speak_direct(phrase)
         self._turn_stages().hold(reopen=False)
-
-    def _note_router_track_started(self) -> None:
-        """Issue #3176 — трек запустил роутер, а не ход LLM: учесть так же.
-
-        Cleanup: трек живёт до stop/конца формы, как у хода LLM с
-        музыкальным тулом (``_schedule_music_cleanup``) — отложенный
-        cleanup прошлого хода не должен погасить заказ после фразы.
-        """
-        self._pending_music_cleanup = False
-        self._track_mode_music_active = True
 
     def _apply_media_plan_side_effects(self, plan: MediaPlan) -> None:
         """Синхронная часть плана: счётчик и отмена идущего хода."""
@@ -5427,12 +5063,11 @@ class DialogueNode(DialogueStageMixin, Node):
                     if _source and is_music_stop_command(_source):
                         self.get_logger().warning(
                             "🎵 [issue 992 Bug C] stop-command + empty LLM "
-                            "response — forcing music_cleanup"
+                            "response — стоп музыки владельцем плеера"
                         )
-                        # Публикуем cleanup — mcp_server остановит музыку
-                        # (MCPServer._on_music_cleanup → _stop_deck).
+                        # ADR-0150 PR-7c ч.4б: dj_set(stop) + stop_music, как Tier-1.
                         try:
-                            self._publish_music_cleanup(reason="user_stop_command")
+                            self._stop_music_by_owner("user_stop_command")
                         except Exception as exc:  # noqa: BLE001
                             self.get_logger().warning(
                                 f"🎵 stop fallback failed: {exc}"
@@ -5511,7 +5146,7 @@ class DialogueNode(DialogueStageMixin, Node):
                     )
                 return
         # Issue #980 — split into chunks and publish as a single TTS batch so
-        # that /voice/tts/batch_complete fires only after the last chunk.
+        # that the batch closes only after the last chunk.
         # 🔴 FIX (live 06.08): LLM копирует [SYSTEM REMINDER] из памяти как
         # свой ответ (Bug C guard пишет reminder как assistant-turn, LLM его
         # повторяет) → озвучивался служебный текст. Служебные маркеры НЕ
@@ -5536,11 +5171,6 @@ class DialogueNode(DialogueStageMixin, Node):
 
     # ── Issue #2874 — свободный текст хода ждёт решения гуардов ─────────
 
-    #: Псевдо-батч в ``_active_batches``, пока текст хода придержан: иначе
-    #: ``_flush_music_cleanup_if_idle`` в ``finally`` хода решит, что TTS
-    #: пуст, и погасит музыку ДО того, как придержанный ответ прозвучит.
-    _HELD_SPEECH_BATCH_ID = "issue-2874-held-turn-speech"
-
     def _voice_turn_text(self, spoken: str, *, user_input: Optional[str]) -> None:
         """Озвучить свободный текст хода — или придержать до гуардов.
 
@@ -5554,7 +5184,6 @@ class DialogueNode(DialogueStageMixin, Node):
             self._publish_turn_text(spoken, user_input=user_input)
             return
         hold.hold(spoken, user_input)
-        self._register_active_batch(self._HELD_SPEECH_BATCH_ID, 0)
 
     def _release_turn_speech(
         self, hold: Optional[TurnSpeechHold], *, retry_dispatched: bool,
@@ -5572,8 +5201,6 @@ class DialogueNode(DialogueStageMixin, Node):
             retry_dispatched=retry_dispatched,
             retracted=hold.retracted,
         )
-        self._unregister_active_batch(self._HELD_SPEECH_BATCH_ID)
-        self._flush_music_cleanup_if_idle()
 
     def _music_reply_context(self) -> bool:
         """Issue #2874 — музыкальный контекст по снимку плеера: идёт сет или играет музыка."""
@@ -5789,8 +5416,8 @@ class DialogueNode(DialogueStageMixin, Node):
         """Single-chunk publish — kept for backwards compatibility. Возвращает ``speech_id`` реплики (#3771).
 
         For multi-chunk turns prefer :meth:`_publish_response_batch` which
-        attaches a shared ``batch_id`` so ``tts_node`` can fire
-        ``/voice/tts/batch_complete`` once the last chunk lands (issue #980).
+        attaches a shared ``batch_id`` so ``tts_node`` can close the batch
+        once the last chunk lands (issue #980).
 
         Issue #1195 — если последний вход пришёл из Telegram-чата,
         кладём ``tg_chat_id`` в payload: telegram_node использует его для
@@ -5816,21 +5443,14 @@ class DialogueNode(DialogueStageMixin, Node):
 
         Each chunk carries the same ``batch_id`` plus 1-based ``batch_index``
         and ``batch_total`` counters. ``tts_node`` echoes those fields on
-        ``/voice/tts/finished`` and publishes ``/voice/tts/batch_complete``
-        after the final chunk. Returns the number of chunks published.
-
-        Issue #992: the batch is registered eagerly on the dialogue_node
-        side so the music-cleanup gate knows about it even if the first
-        ``/voice/tts/finished`` event is lost (e.g. dropped subscription
-        edge case). The registry is idempotent so the matching
-        ``_on_tts_finished`` registration is a safe no-op.
+        ``/voice/tts/finished`` and marks the final one ``batch_complete``.
+        Returns the number of chunks published.
         """
         if not chunks:
             return 0
         self._turn_stages().expect_speech()
         batch_id = str(uuid.uuid4())
         total = len(chunks)
-        self._register_active_batch(batch_id, total)
         for idx, chunk in enumerate(chunks, start=1):
             msg = String()
             msg.data = build_ssml_payload(
@@ -5845,30 +5465,6 @@ class DialogueNode(DialogueStageMixin, Node):
             )
             self._response_pub.publish(msg)
         return total
-
-    def _publish_music_cleanup(self, reason: str = "dialogue_end") -> None:
-        """Issue #935 — signal mcp_server to auto-stop any active music.
-
-        Best-effort: if the publisher was never created (e.g. mcp_server
-        not running in this container), this is a silent no-op. mcp_server
-        decides what to do — currently it logs and stops the deck via ``MCPServer._stop_deck``.
-        """
-        # Что бы ни было причиной — стоп, новый диалог, конец BACKING-хода —
-        # после cleanup живой TRACK-музыки больше нет (live 30.08).
-        self._track_mode_music_active = False
-        if getattr(self, "_music_cleanup_pub", None) is None:
-            self.get_logger().debug("music_cleanup publisher not available")
-            return
-        try:
-            payload = json.dumps({"reason": reason})
-            msg = String()
-            msg.data = payload
-            self._music_cleanup_pub.publish(msg)
-            self.get_logger().info(f"music_cleanup sent: reason={reason}")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось опубликовать /mcp/music_cleanup: {exc}"
-            )
 
     def _publish_action_claim_fallback_if_needed(
         self,

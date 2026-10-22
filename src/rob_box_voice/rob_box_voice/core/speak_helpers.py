@@ -446,12 +446,11 @@ def build_ssml_payload(
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
     Issue #980 — chunked long responses (rap, poetry) publish one TTS request
-    per chunk. To let ``dialogue_node`` know when *all* chunks of a single
-    assistant turn finished (and only then trigger music cleanup), each chunk
-    in a batch carries a shared ``batch_id`` plus 1-based ``batch_index`` and
-    ``batch_total`` counters. tts_node echoes those on ``/voice/tts/finished``
-    and publishes a dedicated ``/voice/tts/batch_complete`` once the last
-    chunk lands. Single-chunk turns simply reuse the chunk as both speech
+    per chunk. To mark when *all* chunks of a single assistant turn finished,
+    each chunk in a batch carries a shared ``batch_id`` plus 1-based
+    ``batch_index`` and ``batch_total`` counters. tts_node echoes those on
+    ``/voice/tts/finished`` and closes the batch with the ``batch_complete=True`` marker on the last ``/voice/tts/finished``
+    (the separate batch topic was removed in ADR-0150 PR-7c ч.4б). Single-chunk turns simply reuse the chunk as both speech
     and batch identifiers — back-compat behaviour.
 
     Issue #1195 — ``tg_chat_id`` (Telegram chat the reply should be echoed

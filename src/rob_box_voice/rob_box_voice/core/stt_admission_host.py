@@ -33,7 +33,7 @@ from rob_box_voice.core import perform_ask
 from rob_box_voice.core.identity_question import question, take_answer
 from rob_box_voice.core.command_intent import fill_intent
 from rob_box_voice.core.command_parser import IntentType
-from rob_box_voice.core.tier1_host import Tier1Runner
+from rob_box_voice.core.tier1_host import Tier1Runner, runner_of
 
 if TYPE_CHECKING:  # pragma: no cover -- avoids a circular import at runtime
     from rob_box_voice.core.stt_admission import SttContext
@@ -173,11 +173,7 @@ class _DialogueSttHost:
             node._publish_state()
 
     def _tier1(self) -> Tier1Runner:
-        node = self._node
-        runner = getattr(node, "_tier1", None)
-        if runner is None:
-            runner = node._tier1 = Tier1Runner(node)
-        return runner
+        return runner_of(self._node)
 
     def tier1_match(self, ctx: "SttContext") -> Optional[Tier1Command]:
         return self._tier1().match(ctx)

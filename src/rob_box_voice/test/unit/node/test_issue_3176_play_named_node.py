@@ -86,8 +86,6 @@ def _make_node(*, playing=False, dj=False, track=None, state_name="IDLE", **exec
     n._speak_direct = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = True  # хвост прошлого хода
-    n._track_mode_music_active = False
     n._music_player_state = MusicPlayerState(
         state="playing" if playing else "idle", dj=dj,
         dj_info={"enabled": dj, "title": track} if track else {"enabled": dj},
@@ -144,9 +142,6 @@ def test_found_melody_plays_without_llm(run_plans, playing):
     n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._cancel_run.assert_called_once()
     assert n._llm_skipped_counter["media_command"] == 1
-    # отложенный cleanup прошлого хода не гасит заказ после фразы
-    assert n._pending_music_cleanup is False
-    assert n._track_mode_music_active is True
 
 
 # ── общее название → LLM, роутер не трогает ────────────────────────────

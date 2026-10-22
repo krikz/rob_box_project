@@ -30,14 +30,11 @@ def _make_node(replies):
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._pending_music_cleanup = False
-    n._track_mode_music_active = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
     n._build_dynamic_system_context = MagicMock(return_value="<ctx/>")
     n._llm = MagicMock()
-    n._active_batches = {}
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()

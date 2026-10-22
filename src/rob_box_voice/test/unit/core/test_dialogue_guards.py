@@ -649,104 +649,16 @@ def test_all_tool_retry_prompts_have_critical_prefix() -> None:
         )
 
 
-class TestStopClearsTheMusicPlayingFlagLive3108:
-    """«Выключи музыку» обязана гасить ``_track_mode_music_active``.
+def test_stop_music_is_a_stop_tool() -> None:
+    from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
 
-    Живой лог 31.08. Флаг ставился в True при запуске музыки и снимался
-    ТОЛЬКО в ``_publish_music_cleanup``; ``stop_music`` его не трогал. После
-    «выключи музыку» он врал, а он выбирает формулировку Bug-C ретрая: при
-    True промпт говорит «музыка СЕЙЧАС ИГРАЕТ, её надо ИЗМЕНИТЬ, а не
-    заводить заново».
-
-    Дальше «сыграй джаз» → модель получает указание менять несуществующий
-    трек → отвечает «Джаз пошёл — лидийский лад, мягкие клавиши» с
-    ``tools=[]`` → оба ретрая выгорают → робот произносит «я растерялся —
-    бит не запустился». mcp_server в те же секунды писал «активной музыки
-    не обнаружено».
-
-    Сам узел требует rclpy, поэтому здесь проверяется проводка в исходнике —
-    так тест идёт в любом окружении, как и остальные текстовые проверки
-    контрактов в этом пакете.
-    """
-
-    def _dialogue_node_source(self) -> str:
-        from pathlib import Path
-
-        here = Path(__file__).resolve()
-        for parent in here.parents:
-            candidate = parent / "rob_box_voice" / "dialogue_node.py"
-            if candidate.is_file():
-                return candidate.read_text(encoding="utf-8")
-        raise AssertionError("dialogue_node.py not found")
-
-    def test_stop_music_is_a_stop_tool(self) -> None:
-        from rob_box_voice.core.dialogue_guards import MUSIC_STOP_TOOLS
-
-        assert "stop_music" in MUSIC_STOP_TOOLS
-
-    def test_node_clears_the_flag_on_stop_tools(self) -> None:
-        # Issue #2631 / ADR-0021 R1 — cleanup-policy вынесен в
-        # ``DialogueNode._schedule_music_cleanup``. Тест ищет подстроки
-        # в определении этого helper'а, а не во всём файле.
-        src = self._schedule_music_cleanup_source()
-        assert "tools_now & MUSIC_STOP_TOOLS" in src, (
-            "dialogue_node не гасит _track_mode_music_active на stop-тулах"
-        )
-        clear_at = src.index("tools_now & MUSIC_STOP_TOOLS")
-        tail = src[clear_at:clear_at + 300]
-        assert "_track_mode_music_active = False" in tail, (
-            "ветка stop-тулов не сбрасывает флаг"
-        )
-
-    def test_flag_is_cleared_before_the_starters_branch_sets_it(self) -> None:
-        """Ход «стоп + сразу играй» должен закончиться True, а не False."""
-        # Issue #2631 / ADR-0021 R1 — cleanup-policy вынесен в
-        # ``_schedule_music_cleanup``.
-        src = self._schedule_music_cleanup_source()
-        stop_branch = src.index("tools_now & MUSIC_STOP_TOOLS")
-        starters_branch = src.index("if tools_now & music_starters")
-        assert stop_branch < starters_branch, (
-            "сброс обязан идти ДО ветки запуска, иначе она будет затёрта"
-        )
-
-    def _schedule_music_cleanup_source(self) -> str:
-        """Извлечь тело ``DialogueNode._schedule_music_cleanup`` для текстовых
-        проверок контракта (issue #2631).
-        """
-        import re
-
-        full = self._dialogue_node_source()
-        # Locate ``def _schedule_music_cleanup(`` and read until the next
-        # ``def `` at the same indent (4 spaces inside class).
-        match = re.search(
-            r"^(    def _schedule_music_cleanup\(.*?\n)(?=    def |\nclass )",
-            full,
-            flags=re.MULTILINE | re.DOTALL,
-        )
-        assert match is not None, (
-            "_schedule_music_cleanup helper not found in dialogue_node.py"
-        )
-        return match.group(1)
+    assert "stop_music" in MUSIC_STOP_TOOLS
 
 
-class TestWatchdogStopClearsTheFlagLive3108:
-    """Музыку останавливает не только диалог — флаг обязан это узнавать.
-
-    Живой лог 31.08::
-
-        1788186658  [watchdog] Авто-стоп 1 паттернов: reason=idle_ttl
-        1788186797  [track-mode] TRACK играет с прошлого хода
-        1788186797  [Bug C] LLM skipped music-launch tool; publishing nudge
-                    TTS: «Я тут растерялся — бит не запустился»
-
-    Через 139 секунд после реальной остановки диалог всё ещё считал, что
-    трек играет. Комментарий в track-mode честно писал «живёт до
-    stop_music/watchdog», но канала для второго не существовало: топик
-    ``/voice/music/state`` слушал только audio_node.
-
-    Отсюда «после нескольких генераций робот начинает тупить»: ретрай-промпт
-    требовал ИЗМЕНИТЬ несуществующий трек, модель отвечала описанием, оба
-    ретрая выгорали.
+class TestWatchdogStopReachesTheDialogueLive3108:
+    """Музыку останавливает не только диалог — он обязан это узнавать (живой лог 31.08: через 139 с после
+    остановки по watchdog диалог считал, что трек играет). Источник «играет» — снимок плеера
+    ``/voice/music/state`` (#3133, ADR-0141); флаг TRACK-режима удалён в ADR-0150 PR-7c ч.4б (#3700).
     """
 
     def _dialogue_node_source(self) -> str:
@@ -768,23 +680,6 @@ class TestWatchdogStopClearsTheFlagLive3108:
         assert "MUSIC_STATE_TOPIC, self._on_music_state" in src, (
             "диалог не слушает /voice/music/state — про остановку по "
             "watchdog он не узнает"
-        )
-
-    def test_handler_clears_the_flag_on_idle(self) -> None:
-        src = self._dialogue_node_source()
-        start = src.index("def _on_music_state")
-        body = src[start:start + 1400]
-        assert "idle" in body
-        assert "_track_mode_music_active = False" in body
-
-    def test_handler_never_sets_the_flag(self) -> None:
-        """Взводит флаг только ход диалога: серверу не видно BACKING/TRACK."""
-        src = self._dialogue_node_source()
-        start = src.index("def _on_music_state")
-        body = src[start:start + 1400]
-        assert "_track_mode_music_active = True" not in body, (
-            "обработчик не должен взводить флаг — сервер не различает "
-            "BACKING (гасится после речи) и TRACK (живёт до стопа)"
         )
 
 

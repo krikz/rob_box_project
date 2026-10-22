@@ -5,12 +5,12 @@
     04:59:36 «Робот ты диджей Снупдог» → роутер: превью club + set_dj_mode
     05:00:12 «Робот поставь к Элизе»
              spoken='Сейчас поставлю к Элизе!' tools=[]
-             music_cleanup sent: reason=tts_batch_complete
+             уборка музыки: reason=tts_batch_complete
              [mcp_server] Авто-стоп … (issue #935) → сет замолчал на 38 с
 
 Две причины, обе здесь:
 
-1. ``_schedule_music_cleanup`` взводил cleanup на любом ходе без
+1. политика уборки хода взводила cleanup на любом ходе без
    музыкальных тулов, хотя по снимку плеера (ADR-0141) играла музыка,
    запущенная НЕ этим ходом (роутер исполняет тулы в обход LLM-хода).
 2. Обещание «поставлю» без тула пропустил гуард #2549: журнал роутера
@@ -20,8 +20,9 @@
    штатно: «поставь к Элизе» не музыкальный запрос для ``user_wants_music``
    (мораторий #3132 — регексы не расширяем).
 
-Сторона ``mcp_server`` (мягкий cleanup не гасит DJ-сет) —
-``rob_box_mcp_tools/test/test_mcp_server.py``.
+ADR-0150 PR-7c ч.4б (#3700): мягкой уборки музыки после речи больше нет вовсе (политика уборки хода,
+топик уборки и его подписчик в ``mcp_server`` удалены) — музыку снимает только явный стоп у владельца плеера.
+Причина 1 закрыта удалением; здесь остаётся проверка, что ход без музыкальных тулов музыку не трогает.
 
 ADR-0149 PR-13a: сет запускает ``dj_set`` движка v2 (без превью
 ``compose_music`` и ``set_dj_mode``), локального DJ-флага у диалога нет —
@@ -73,17 +74,13 @@ def _make_node(snapshot) -> DialogueNode:
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
     n._speech_client_pubs = {"cancel": MagicMock()}
-    n._music_cleanup_pub = MagicMock()
     n._dsm = MagicMock()
     n._dsm.current_state = MagicMock()
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = False
-    n._active_batches = {}
     n._effects = MagicMock()
     n._verbose_llm = False
     n._babble_retry_used = False
     n._action_claim_retry_used = False
-    n._track_mode_music_active = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
     n._task_lock = MagicMock()
@@ -112,21 +109,6 @@ def _result(spoken: str, tools=(), speak_text_count: int = 0) -> DialogResult:
     )
     r.speak_text_count = speak_text_count
     return r
-
-
-def _cleanups(node: DialogueNode) -> list:
-    return [
-        json.loads(c.args[0].data).get("reason")
-        for c in node._music_cleanup_pub.publish.call_args_list
-    ]
-
-
-def _finalize(node: DialogueNode, result, user_input: str) -> None:
-    node._finalize_music_cleanup_policy(
-        result=result,
-        raw_user_command=user_input,
-        user_input=user_input,
-    )
 
 
 def _said(node: DialogueNode) -> str:
@@ -167,64 +149,18 @@ def _start_dj_set_via_router(node: DialogueNode, run_plans) -> None:
     node._music_player_state = _dj_set_snapshot()
 
 
-# ── Причина 1: cleanup после хода без музыкальных тулов ────────────────
+# ── Причина 1: ход без музыкальных тулов музыку не трогает ──────────────
 
 
-def test_router_dj_set_then_turn_without_tools_does_not_arm_cleanup(run_plans):
+def test_turn_without_music_tools_leaves_the_router_dj_set_playing(run_plans):
+    """Ход «как дела» после сета роутера: ни ``stop_music``, ни ``dj_set`` — сет играет дальше."""
     n = _make_node(None)
     _start_dj_set_via_router(n, run_plans)
 
-    _finalize(n, _result(LIVE_PROMISE), LIVE_ELISE)
+    n._handle_result(_result("Всё отлично!"), user_input="[Speaker:unknown] как дела")
+    run_plans()
 
-    assert n._pending_music_cleanup is False
-    assert _cleanups(n) == []
-
-
-def test_foreign_track_playing_without_dj_is_not_stopped_either():
-    """Трек прошлого хода / роутера (не DJ) — тоже не наш, не трогаем."""
-    n = _make_node(MusicPlayerState(state="playing", track_id="t1"))
-
-    _finalize(n, _result("Привет!"), "[Speaker:unknown] как дела")
-
-    assert n._pending_music_cleanup is False
-    assert _cleanups(n) == []
-
-
-@pytest.mark.parametrize(
-    "snapshot", [None, MusicPlayerState(state="idle")], ids=["no_snapshot", "idle"]
-)
-def test_turn_that_did_not_touch_music_never_arms_cleanup(snapshot):
-    """06.10 15:30 UTC: «…замути сэт на 30 минут» → ``tools=[]``, снимок плеера «не играет» (отстал), а
-    профилактический cleanup по ``tts_batch_complete`` погасил идущий сет. Ход музыку не менял — стопа нет."""
-    n = _make_node(snapshot)
-
-    _finalize(n, _result("Сет идёт — 30 минут ретро-ностальгии!"),
-              "ретро 8-бит Mario Tetris Aladdin Contra замути сэт на 30 минут")
-
-    assert n._pending_music_cleanup is False
-    assert _cleanups(n) == []
-
-
-def test_backing_under_rap_is_still_stopped_after_speech():
-    """BACKING этого хода (бит + 2 speak_text под рэп) гасится после речи."""
-    n = _make_node(MusicPlayerState(state="playing", track_id="beat"))
-
-    _finalize(
-        n,
-        _result("", tools=("generate_music", "speak_text"), speak_text_count=2),
-        "[Speaker:unknown] зачитай рэп про котов под бит",
-    )
-
-    assert _cleanups(n) == ["tts_batch_complete"]
-
-
-def test_stop_music_tool_still_defers_cleanup_during_dj_set():
-    n = _make_node(_dj_set_snapshot())
-    n._active_batches = {"b1": object()}
-
-    _finalize(n, _result("Выключаю.", tools=("stop_music",)), "выключи музыку")
-
-    assert n._pending_music_cleanup is True
+    assert n._tool_executor.calls == ["dj_set"]  # только запуск сета роутером
 
 
 # ── Причина 2: обещание «поставлю» без тула ────────────────────────────

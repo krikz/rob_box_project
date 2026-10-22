@@ -20,7 +20,7 @@ shadowed by the earlier ``speech_id=None`` default in
 
 Issue #980 extended the chain with three new positional parameters
 (``batch_id``, ``batch_index``, ``batch_total``) so that ``tts_node``
-can publish ``/voice/tts/batch_complete`` after the last chunk of a
+can close the batch (``batch_complete`` marker) after the last chunk of a
 multi-chunk TTS batch.  This test still enforces:
 
 1. ``dialogue_callback`` invokes ``_submit_synthesis`` with ``speech_id``
@@ -30,7 +30,7 @@ multi-chunk TTS batch.  This test still enforces:
    what actually reaches the worker; without it every following argument
    shifts one slot left (``speech_id <- batch_id``,
    ``batch_id <- batch_index``, ...), breaking finished-event
-   correlation and music_cleanup timing (issue #980).
+   correlation and batch-end timing (issue #980).
 2. ``_run_synthesis_worker``'s signature still terminates in
    ``batch_total=None`` so that, if a caller ever forgets to pass
    it, the default kicks in instead of a TypeError.
@@ -174,7 +174,7 @@ def test_run_synthesis_worker_signature_terminates_in_batch_total() -> None:
     assert isinstance(last_default, ast.Constant) and last_default.value is None, (
         "_run_synthesis_worker's batch_total default must be None (not 0) — "
         "otherwise legacy single-chunk turns would always look like "
-        "\"the last chunk\" and dialogue_node would fire music_cleanup "
+        "\"the last chunk\" and the batch would end "
         "after the first chunk."
     )
 

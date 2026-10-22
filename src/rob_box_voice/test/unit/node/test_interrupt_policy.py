@@ -43,7 +43,6 @@ def node():
     n._run_cancelled = False
     n._effects = MagicMock()
     n._speech_client_pubs = {"cancel": MagicMock()}
-    n._track_mode_music_active = False
     n._action_claim_retry_used = False
     return n
 

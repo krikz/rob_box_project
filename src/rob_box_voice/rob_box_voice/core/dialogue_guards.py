@@ -64,9 +64,8 @@ MUSIC_STARTING_TOOLS: frozenset = frozenset(
     entry.name for entry in TOOL_CATALOG if entry.starts_music
 )
 
-#: Tools that end TRACK-mode — used ONLY to clear the cleanup-policy flag
-#: ``dialogue_node._track_mode_music_active`` (see the 31.08 fix at the
-#: call site).
+#: Stop tools (``stop_music``). The TRACK-mode cleanup-policy flag they used to
+#: clear in dialogue_node was removed with the music cleanup (ADR-0150 PR-7c ч.4б).
 #:
 #: Issue #3133 (ADR-0141): ``set_dj_mode`` removed. It sat here AND in
 #: the starters set at once; the starters branch runs after the stop

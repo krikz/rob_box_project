@@ -1368,13 +1368,6 @@ class TTSNode(Node):
                 durability=_DP.TRANSIENT_LOCAL,
             ),
         )
-        # Issue #980 — single event per multi-chunk TTS batch (rap, poetry).
-        # tts_node publishes one ``/voice/tts/batch_complete`` after the last
-        # chunk lands so dialogue_node can fire ``music_cleanup`` exactly once.
-        self.batch_complete_pub = self.create_publisher(
-            String, "/voice/tts/batch_complete", 10
-        )
-
         # Флаг для остановки воспроизведения
         self.stop_requested = False
         self.current_stream = None  # Текущий sounddevice stream
@@ -2177,11 +2170,9 @@ class TTSNode(Node):
 
             # Issue #980 — carry batch_id/batch_index/batch_total from the
             # dialogue_node publish through to ``/voice/tts/finished`` so
-            # dialogue_node can fire music_cleanup only after the *last*
+            # consumers see the end of the turn only after the *last*
             # chunk of a multi-chunk assistant turn. Missing fields default
-            # to None and treated as a single-chunk (legacy) batch — the
-            # tts_node still fires one ``/voice/tts/batch_complete`` so the
-            # back-compat behaviour is preserved.
+            # to None and treated as a single-chunk (legacy) batch.
             batch_id = chunk_data.get("batch_id")
             batch_index = chunk_data.get("batch_index")
             batch_total = chunk_data.get("batch_total")
@@ -2229,7 +2220,7 @@ class TTSNode(Node):
             # in-*args copy would shift every following argument one slot
             # left (speech_id <- batch_id, batch_id <- batch_index, ...),
             # which breaks /voice/tts/finished correlation in mcp_server
-            # and fires music_cleanup at the wrong time (issue #980).
+            # and the batch end at the wrong time (issue #980).
             # ADR-0150 PR-3 — готовое аудио пред-синтеза ``commit=false`` того же
             # speech_id: воркер отдаст его в ``_synthesize_and_play`` мимо цепочки
             # провайдеров (ветка ``prebaked_audio``).
@@ -2369,7 +2360,7 @@ class TTSNode(Node):
         * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
           для контроля провайдера есть существующий /voice/tts/set_provider.
         * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
-          те же ``speech_id/dialogue_id/batch_*``, метрики и music_cleanup.
+          те же ``speech_id/dialogue_id/batch_*`` и метрики.
         Поведение остаётся backward-compat: WARNING в лог (на каждый вызов,
         удалить вместе с подпиской в следующем релизе), затем старая
         логика как раньше.
@@ -6053,7 +6044,7 @@ class TTSNode(Node):
         dialogue_id: Optional[str] = None,
         queued: bool = False,
     ) -> None:
-        """Publish ``/voice/tts/finished`` (and possibly ``/voice/tts/batch_complete``).
+        """Publish ``/voice/tts/finished`` (the last chunk of a batch carries ``batch_complete``).
 
         Issue #980 — single source of truth for finished-event publishing so
         that batch metadata stays consistent across the success/stopped/error
@@ -6062,7 +6053,7 @@ class TTSNode(Node):
 
         Issue #2553 — ``queued=True`` отмечает finished как «chunk принят в
         ``_pending_speech_queue``, но НЕ проигран и НЕ завершён». В этом
-        режиме НЕ публикуем ``/voice/tts/batch_complete`` side-channel и
+        режиме НЕ закрываем батч (маркер ``batch_complete``) и
         НЕ дреним очередь — реальное завершение придёт ПОСЛЕ drain +
         submit + playback, когда ``_publish_tts_finished`` вызовется от
         имени дренированного chunk'а без ``queued=True``. Это разрывает
@@ -6093,7 +6084,7 @@ class TTSNode(Node):
         self.finished_pub.publish(finished_msg)
 
         # Issue #2553 — queued finished НЕ триггерит batch_complete:
-        # иначе dialogue_node триггерит music_cleanup раньше времени и
+        # иначе конец батча приходит раньше времени и
         # следующий turn услышит обрыв активного chunk'а. Реальное
         # закрытие batch'а придёт ПОСЛЕ drain + реального playback
         # дренированного chunk'а (где ``queued=False``).
@@ -6135,9 +6126,10 @@ class TTSNode(Node):
         payload: Dict[str, Any],
         finished_msg: "String",
     ) -> None:
-        """Опубликовать ``/voice/tts/batch_complete`` + republish finished с
-        маркером closure + дренить pending queue после завершения последнего
-        chunk'а batch'а.
+        """Republish finished с маркером closure (``batch_complete=True``) + дренить
+        pending queue после завершения последнего chunk'а batch'а. Отдельный топик
+        ``/voice/tts/batch_complete`` удалён в ADR-0150 PR-7c ч.4б (#3700): его
+        единственный потребитель — уборка музыки dialogue_node — удалён.
 
         Вынесено из ``_publish_tts_finished`` чтобы удержать CC в ADR-0021
         лимите (=15). Принимает мутируемые ``payload`` / ``finished_msg`` —
@@ -6152,25 +6144,13 @@ class TTSNode(Node):
         duration_ms: Optional[int] = None
         if batch_started_at is not None:
             duration_ms = int((_time.monotonic() - batch_started_at) * 1000)
-        batch_payload: Dict[str, Any] = {
-            "batch_id": batch_id,
-            "chunks_total": int(batch_total),
-            "batch_index": int(batch_index),
-        }
-        if duration_ms is not None:
-            batch_payload["batch_duration_ms"] = duration_ms
-        batch_msg = String()
-        batch_msg.data = json.dumps(batch_payload, ensure_ascii=False)
-        self.batch_complete_pub.publish(batch_msg)
         self.get_logger().info(
-            "📦 [tts_node] /voice/tts/batch_complete published "
-            f"(batch_id={batch_id[:8]}..., chunks_total={batch_total}, "
-            f"batch_duration_ms={duration_ms})"
+            f"📦 [tts_node] batch closed (batch_id={batch_id[:8]}..., "
+            f"chunks_total={batch_total}, batch_duration_ms={duration_ms})"
         )
-        # Echo on finished too so any consumer of ``/voice/tts/finished``
-        # that wants the closure timestamp can grab it without a second
-        # subscription. Kept behind the ``last_chunk`` branch to avoid
-        # spamming every chunk's finished event with the closure marker.
+        # The closure marker rides on ``/voice/tts/finished`` of the last chunk.
+        # Kept behind the ``last_chunk`` branch to avoid spamming every
+        # chunk's finished event with the closure marker.
         payload["batch_complete"] = True
         if duration_ms is not None:
             payload["batch_duration_ms"] = duration_ms

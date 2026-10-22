@@ -74,8 +74,6 @@ def node():
     # Все четыре поля по умолчанию "ничего не играет"; тесты точечно
     # переопределяют нужные куски для проверки каждой ветки.
     n._dj = None  # type: ignore[assignment]
-    n._pending_music_cleanup = False
-    n._active_batches = {}
     # SpeechAccumulator/SchedulerExecutor — реальные инстансы, но
     # ``_build_dynamic_system_context`` лезет через getattr с дефолтом None
     # в каждой ветке, поэтому просто притворимся, что их нет.
@@ -453,7 +451,6 @@ class TestBuildMusicStateSnapshot:
             build_music_state_payload,
         )
 
-        node._track_mode_music_active = False
         payload = build_music_state_payload(**kw)
         node._on_music_state(SimpleNamespace(data=payload))
 
@@ -466,11 +463,9 @@ class TestBuildMusicStateSnapshot:
         snap = _music_section(node)
         assert snap["playing"] == "yes" and snap["track"] == "клубный трек" and snap["dj"] == "on"
 
-    def test_heuristic_flags_no_longer_claim_playing(self, node) -> None:
-        """Cleanup-флаг и TTS-батчи — не «играет»: плеер сказал idle."""
+    def test_idle_snapshot_is_not_playing(self, node) -> None:
+        """Плеер сказал idle — не «играет»."""
         self._feed_state(node, playing=False)
-        node._pending_music_cleanup = True
-        node._active_batches = {"batch-1": 2}
         assert _music_section(node) == {"playing": "no", "dj": "off"}
 
     def test_library_track_is_reported_from_the_deck(self, node) -> None:
@@ -506,7 +501,6 @@ class TestBuildDynamicSystemContextMusicState:
             build_music_state_payload,
         )
 
-        node._track_mode_music_active = False
         node._on_music_state(SimpleNamespace(
             data=build_music_state_payload(playing=True, track_id="t", dj=True)
         ))
@@ -520,7 +514,6 @@ class TestBuildDynamicSystemContextMusicState:
 
         from rob_box_voice.core.music_player_state import build_music_state_payload
 
-        node._track_mode_music_active = False
         node._on_music_state(SimpleNamespace(data=build_music_state_payload(
             playing=True, track_id="gen_abc12345_1", dj={"enabled": False, "title": "AI track"})))
         ctx = node._build_dynamic_system_context()
