@@ -237,6 +237,7 @@ class DialogNode(Node):
         self._subscribe()
         self.create_service(DialogControl, "/dialog/control", self._on_control)
         self.create_timer(1.0, self._session.expire)
+        self.create_timer(5.0, self._chats.tick)
         self.create_timer(2.0, self._reporter.tick)
         self.add_on_set_parameters_callback(self._on_params)
         self._thread.start()

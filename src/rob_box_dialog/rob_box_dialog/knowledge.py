@@ -297,7 +297,7 @@ ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
     # say / say_aloud — только агенты оператора и телеграма; подтверждение — SpeechEvent finished (у say_aloud
     # started — ``pending`` с ``event_ref``, итог «Озвучил (N с)» приходит позже: дедлайн хода речь не ждёт)
     "action.speak_aloud": ActionClass(
-        None, True, "/voice/speech/event", _keys("speak_aloud", "done", "rejected", "cancelled"),
+        None, True, "/voice/speech/event", _keys("speak_aloud", "done", "rejected", "cancelled", timeout="lost"),
         agents=("operator", "telegram"),
     ),
     # выступление (§5.6.3): PlanEvent block_end; подложка started/rejected; прерывается на границе сегмента
@@ -337,15 +337,16 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     "say": "action.speak_aloud",
     "say_aloud": "action.speak_aloud",
 })
-#: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` виден агенту чата только когда человек назвал глагол озвучки
-#: («расскажи», «прочитай», «вслух»); голос робота не включается по догадке LLM (ADR-0148). Матч - по левой границе.
+#: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` всегда в срезе агента чата; КОГДА звать - решает модель по правилу
+#: промпта чата (RULE #ALOUD), а не список слов в коде (решение Шифу 22.10: без костылей под формулировки).
 ALOUD_TOOL = "say_aloud"
-ALOUD_VERB_STEMS: Tuple[str, ...] = (
-    "вслух", "озвуч", "расскаж", "прочита", "прочти", "зачита", "произнес", "проговор", "объяви", "голосом",
-    "динамик", "громк", "продава", "агитир", "крикн", "рекламир",
-)
-#: Бюджет хода чата: текст в чате ждут дольше голоса (сочинить историю - секунды LLM), 12 с (В5) - для разговора вслух.
+#: Бюджет хода чата. Чат - не голос: человек ждёт текст, и сочинить историю LLM-у дольше 12 с (В5 - про разговор
+#: вслух). Решение координатора 22.10: ход чата 40 с, иначе сценарий «сочини и расскажи» упирается в ``understand.timeout``.
 CHAT_TURN_DEADLINE_S = 40
+#: Поздний итог ``pending``-действия речи не пришёл: срок = длительность реплики + запас, не больше потолка; потом
+#: чат получает честное «не знаю, договорил ли» (``speak_aloud.lost``), а не вечную тишину.
+SPEECH_RESULT_SLACK_S = 30.0
+SPEECH_RESULT_CEILING_S = 120.0
 #: Тулы-транспорт речи, а не действия: канал речи выбирает бейк-офф (§4.4), командой как действие не идут.
 SPEECH_CHANNEL_TOOLS: Tuple[str, ...] = ("speak_text",)
 #: Срез тулов хода (§4.2, ``tools_view``): LLM видит ≤ ``TOOLS_VISIBLE_MAX`` схем, а не весь каталог. Всегда —
@@ -502,6 +503,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
+    "speak_aloud.lost",
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",

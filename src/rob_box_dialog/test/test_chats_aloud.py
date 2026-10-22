@@ -16,7 +16,7 @@ from rob_box_dialog.command import Command, Invalid, ToolCall, validate
 from rob_box_dialog.execute import Executor, OwnerEvent
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
-from rob_box_dialog.tools_view import aloud_named, available_tools
+from rob_box_dialog.tools_view import available_tools
 from rob_box_dialog.turn import Answer, TurnEngine
 
 STORY = "Жил-был робот. Он любил стрижей."
@@ -56,7 +56,8 @@ class Host:
         self.base = Base(command, reply)
         self.sent = []
         self.hold = hold
-        self.chats = ChatTurns(self._make, ("робот",))
+        self.now = 0.0
+        self.chats = ChatTurns(self._make, ("робот",), clock=lambda: self.now)
 
     def _make(self, chat_id):
         session = Session("telegram", session_id=channel_ref(chat_id))
@@ -161,18 +162,67 @@ def test_foreign_and_non_final_speech_events_are_ignored():
     assert host.sent == [("telegram:1", STORY)]
 
 
-def test_say_aloud_is_telegram_only_and_visible_only_on_aloud_words():
+def test_say_aloud_is_always_in_the_chat_slice_and_never_in_the_others():
+    """Когда звать, решает модель по правилу промпта; код не гейтит по словам человека (решение Шифу 22.10)."""
     snap = Session("telegram").snapshot
     assert "say_aloud" in tools_for(agent_spec("telegram"))
     assert "say_aloud" not in tools_for(agent_spec("personality"))
     assert "say_aloud" not in tools_for(agent_spec("operator"))
     names = lambda text, agent: {t.name for t in available_tools(snap, agent=agent, text=text)}  # noqa: E731
-    assert "say_aloud" in names("сочини короткую историю про робота и расскажи", "telegram")
-    assert "say_aloud" not in names("какая погода", "telegram")
+    assert "say_aloud" in names("какая погода", "telegram")
     assert "say_aloud" not in names("расскажи вслух", "personality")
-    assert aloud_named("прочитай вслух") and not aloud_named("который час")
-    for phrase in ("агитируй вслух: поступайте на факультет", "продавай слона громко и агрессивно"):
-        assert "say_aloud" in names(phrase, "telegram"), phrase
+
+
+def test_no_answer_event_gives_an_honest_dont_know_after_the_ceiling():
+    host = Host(_story_command())
+
+    async def scenario():
+        await host.ask("расскажи историю")
+        host.chats.tick()  # обещание замечено в момент 0
+        host.now = kn.SPEECH_RESULT_CEILING_S - 1
+        host.chats.tick()
+        await asyncio.sleep(0)
+        before = list(host.sent)
+        host.now = kn.SPEECH_RESULT_CEILING_S + 1
+        host.chats.tick()
+        await asyncio.sleep(0)
+        return before, list(host.sent)
+
+    before, after = _run(scenario())
+
+    assert before == [("telegram:1", STORY)]
+    assert after[-1] == ("telegram:1", "Не знаю, договорил ли: нет события от динамиков.")
+
+
+def test_started_event_with_duration_shortens_the_wait_to_duration_plus_slack():
+    host = Host(_story_command())
+
+    async def scenario():
+        await host.ask("расскажи историю")
+        started = _event(KIND_STARTED)
+        started.duration_ms = 10000
+        host.chats.on_speech(started)
+        host.now = 41
+        host.chats.tick()
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    assert host.sent[-1][1].startswith("Не знаю, договорил ли")
+
+
+def test_finished_event_cancels_the_wait():
+    host = Host(_story_command())
+
+    async def scenario():
+        await host.ask("расскажи историю", then=[_event(KIND_FINISHED, seconds=3)])
+        host.now = 1000
+        host.chats.tick()
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    assert [t for _, t in host.sent] == [STORY, "Озвучил (3 с)."]
 
 
 def test_validator_accepts_say_aloud_from_chat_with_speech_and_rejects_it_for_personality():

@@ -68,12 +68,6 @@ def motion_refusal(tool: str, text: str) -> Optional[str]:
     return phrases.text("motion.rejected.not_asked")
 
 
-def aloud_named(text: str) -> bool:
-    """Назвал ли человек озвучку роботом («расскажи», «прочитай», «вслух»): только тогда агенту чата виден
-    ``say_aloud`` — динамики включает просьба человека, а не догадка LLM."""
-    return has_word(text or "", kn.ALOUD_VERB_STEMS)
-
-
 def _named(text: str, field: str) -> set:
     return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
 
@@ -94,8 +88,7 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
-    aloud = (kn.ALOUD_TOOL,) if aloud_named(text) else ()
-    for name in kn.TOOLS_ALWAYS + aloud + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
+    for name in kn.TOOLS_ALWAYS + (kn.ALOUD_TOOL,) + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
         if name in kn.MOTION_TOOLS and not drive:
             continue
         if name in allowed and name not in names and len(names) < kn.TOOLS_VISIBLE_MAX:
@@ -103,4 +96,4 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["aloud_named", "available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups"]
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups"]

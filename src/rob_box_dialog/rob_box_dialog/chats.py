@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any, Callable, Dict, Optional, Sequence
 
@@ -48,6 +49,14 @@ def chat_of(ref: str) -> Optional[int]:
         return int(ref[len(CHANNEL_PREFIX):])
     except ValueError:
         return None
+
+
+def _result_term_s(duration_ms: Any) -> float:
+    """Срок позднего итога реплики: длительность + запас, не больше потолка; длительность неизвестна - потолок."""
+    seconds = float(duration_ms or 0) / 1000.0
+    if seconds <= 0:
+        return kn.SPEECH_RESULT_CEILING_S
+    return min(kn.SPEECH_RESULT_CEILING_S, seconds + kn.SPEECH_RESULT_SLACK_S)
 
 
 class ChatPorts:
@@ -118,7 +127,9 @@ class ChatTurns:
     """Ходы телеграм-агента: движок на чат (создаётся при первом сообщении чата), ходы одного чата — по очереди."""
 
     def __init__(self, make_engine: Callable[[int], Any], wake_words: Sequence[str] = (),
-                 log: Callable[[str], None] = _LOG.info) -> None:
+                 log: Callable[[str], None] = _LOG.info, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._due: Dict[str, float] = {}  # ``speech_id`` обещания -> срок позднего итога
         self._make = make_engine
         self._wake = tuple(wake_words)
         self._log = log
@@ -151,12 +162,25 @@ class ChatTurns:
         status, reason, seconds = speech_client.event_outcome(event)
         ref = str(getattr(event, "speech_id", "") or "")
         if status == "pending":
+            if any(ex.expects(ref) for ex in self._executors):  # звучит: срок итога - длительность реплики + запас
+                self._due[ref] = self._clock() + _result_term_s(getattr(event, "duration_ms", 0))
             return False
+        self._due.pop(ref, None)
         for executor in self._executors:
             if executor.expects(ref):
                 executor.on_event(OwnerEvent(ref, status, reason, {"seconds": seconds}))
                 return True
         return False
+
+    def tick(self) -> None:
+        """Таймер хоста: обещание без итога дольше срока - поздний ``timeout`` («Не знаю, договорил ли»). Срок
+        обещания без ``started`` - потолок; ``started`` с длительностью сокращает его (:meth:`on_speech`)."""
+        now = self._clock()
+        for executor in self._executors:
+            for ref in executor.promised():
+                if self._due.setdefault(ref, now + _result_term_s(0)) <= now:
+                    self._due.pop(ref, None)
+                    executor.expire(ref)
 
     async def run(self, chat_id: int, addressed: Any) -> Any:
         """Ход чата; новый ход того же чата ждёт конца текущего (другие чаты — не ждут). Упавший ход — громкая
