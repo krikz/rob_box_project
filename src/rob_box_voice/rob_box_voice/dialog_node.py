@@ -8,10 +8,16 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 * подписки: ``/voice/stt/utterance`` (реплика → адресация → ход), ``/voice/speaker/result`` (собеседник),
   ``/voice/speech/event`` (окно озвученного, план, «говорю»), ``/voice/sound/event`` (план), ``/voice/music/state`` и
   ``/voice/music/event`` (снимок плеера, подложка выступления), ``/voice/providers/state`` (доска провайдеров),
-  ``/dialog/interrupt_request`` (ясный стоп рвёт речь эпохи), сервис ``/dialog/control`` (hold/resume/reset);
+  ``/dialog/interrupt_request`` (ясный стоп рвёт речь эпохи и ход в полёте), сервис ``/dialog/control``
+  (hold/resume/reset);
 * публикации: latched ``/dialog/session``, ``/dialog/turn_event`` и рефлексы, ``/dialog/intent``, ``/dialog/plan_event``
   (через ``plan_host``), речь — ``speech_client``; ``ActionRequest`` не публикуется (подписчика нет, см. ports);
 * таймеры: TTL кадров сцен (1 с), переиздание состояния LLM-провайдеров (2 с); дедлайн хода — в ``turn.py``.
+
+Перебивание (PR-9 #3703, ``rob_box_dialog.interrupt``): ясный стоп — с ``/dialog/interrupt_request`` (ранний
+сегмент STT) или с адресованной реплики — отменяет речь эпохи (граница по слову) и все хода в полёте: отмена задачи
+хода доходит до ``await`` LLM-провайдера, HTTP-запрос закрывает его клиент. Ход стопа (Tier-1) кладёт эпоху + 1.
+Не стоп во время хода — новый ход ждёт конца текущего (APPEND), речь не рвётся.
 
 Текст ходов на диск — только в e2e-БД вне ``/data`` (``e2e_mode`` + ``e2e_db_path``, ``rob_box_dialog.e2e_events``).
 """
@@ -20,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -35,14 +43,15 @@ from rob_box_core import dialog_engine, speech_client
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.address import Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
+from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.e2e_events import open_events
+from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
+from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_block, speaker_ref
 from rob_box_dialog.turn import TurnEngine
-from rob_box_dialog.words import STOP_CLEAR, stop_verdict
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
 from rob_box_dialog_msgs.msg import SpeechEvent
@@ -50,6 +59,7 @@ from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt
 from rob_box_llm.provider import LLMSettings
+from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
 from .core import command_bridge, identity_question
 from .core import plan_host
@@ -57,10 +67,14 @@ from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, count
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.utterance_speaker import UtteranceSpeakerRegistry
+from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
 
 #: ``SpeechEvent.kind`` конца реплики: finished / cancelled / rejected.
 _ENDED = (SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED)
+#: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
+_CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
+                    DialogControl.Request.ACTION_RESET: RESET}
 _LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
                       durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -131,9 +145,12 @@ class DialogNode(Node):
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="dialog_v2_loop")
         self._turn_lock = asyncio.Lock()
+        self._turns = TurnsInFlight()
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
         self._session = Session("personality", clock=time.time)
         self._session.subscribe(functools.partial(identity_question.publish, self))
+        self._voice_pub = self.create_publisher(String, VOICE_REQUEST_TOPIC, 10)
+        self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
         self._wake = load_wake_words(str(self.get_parameter("wake_words_path").value))[0]
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
@@ -144,7 +161,8 @@ class DialogNode(Node):
         self._tool_executor = build_tools(self)
         self._ports = V2Ports(self, llm, counter, self._tool_executor,
                               intent_pub=self.create_publisher(IntentMsg, "/dialog/intent", 10),
-                              log=self.get_logger().info)
+                              log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
+                              performer=functools.partial(plan_host.performer, self))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
@@ -179,17 +197,21 @@ class DialogNode(Node):
         heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
         snap = self._session.snapshot
         decision = decide(heard, self._backlog, self._wake, question=snap.top("Identity"),
-                          ask=snap.top("PerformAsk"))
+                          ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
+        if isinstance(decision, NotAddressed) and decision.reason == HELD:
+            self.get_logger().info("[hold] оператор держит личность — реплика не слушается")
+            return
         if isinstance(decision, NotAddressed):
             self._backlog.add(heard)
             self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
                                    f"{self._backlog.background_phrases(now)}")
             return
         self.utterance_id = uid or None
-        self.last_turn = asyncio.run_coroutine_threadsafe(self._turn(decision), self._loop)
+        self._interrupt(decision.text, uid, "utterance")
+        self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(self._turn(decision), self._loop), uid)
 
     async def _turn(self, decision: Addressed) -> None:
-        if self._turn_lock.locked():  # перебивание по эпохе — PR-9; пока ход один за раз, новый ждёт конца старого
+        if self._turn_lock.locked():  # не стоп во время хода — APPEND: новый ждёт конца текущего, речь не рвётся
             self.get_logger().info("🧭 [turn-v2] ход уже идёт — новый ждёт его конца")
         async with self._turn_lock:
             try:
@@ -208,6 +230,9 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
+        if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
+            self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
+            return
         if msg.agent != kn.AGENTS[0]:
             return
         if msg.kind == SpeechEvent.KIND_STARTED:
@@ -224,28 +249,48 @@ class DialogNode(Node):
         plan_host.on_music(self, snap)
         title = str((snap.dj_info or {}).get("title") or "") or None
         self._session.set_music(MusicStateRef("playing" if snap.is_playing() else "idle", track_id=snap.track_id,
-                                              title=title, dj=bool(snap.dj)))
+                                              title=title))
+        self._scenes.on_music(bool(snap.dj), snap.dj_info)
 
     def _on_interrupt(self, msg: Any) -> None:
-        """Ясный стоп во время речи (stt_node): рвём речь текущей эпохи; спорный решит ход (Tier-1/LLM)."""
-        if stop_verdict(msg.text_partial or "", self._wake) == STOP_CLEAR:
-            speech_client.cancel(self, agent=kn.AGENTS[0], epoch=self._session.snapshot.epoch,
-                                 reason=f"interrupt:{msg.utterance_id or '-'}")
+        """Сегмент фразы с вейком во время речи (stt_node): ясный стоп — перебивание; спорный решит ход (Tier-1/LLM)."""
+        self._interrupt(msg.text_partial or "", msg.utterance_id or "", "interrupt_request")
+
+    def _interrupt(self, text: str, uid: str, via: str) -> bool:
+        """Ясный стоп (``interrupt.on_interrupt``): речь эпохи — отмена по границе слова, хода в полёте — отмена до
+        HTTP-клиента LLM. Эпоху +1 кладёт ход стопа (Tier-1). Не стоп — ничего (речь не рвётся)."""
+        started = time.monotonic()
+        snap = self._session.snapshot
+        stop = on_interrupt(text, snap, self._wake)
+        if not stop.interrupts:
+            return False
+        speech_client.cancel(self, agent=kn.AGENTS[0], epoch=snap.epoch, reason=f"interrupt:{uid or '-'}",
+                             boundary=stop.speech_boundary)
+        cancelled = self._turns.cancel(keep_key=uid)
+        self.get_logger().info(f"🛑 [interrupt] {stop.policy} via={via} {text[:60]!r} epoch={snap.epoch} "
+                               f"boundary={stop.speech_boundary} turns_cancelled={cancelled} "
+                               f"за {(time.monotonic() - started) * 1000:.1f} мс utterance={uid or '-'}")
+        return True
 
     def _on_control(self, request: Any, response: Any) -> Any:
-        """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия."""
-        set_by = request.set_by or "operator"
-        if request.action == DialogControl.Request.ACTION_HOLD:
-            self._session.push_scene("OperatorHold", set_by, ttl_s=float(request.ttl_s) or None)
-        elif request.action == DialogControl.Request.ACTION_RESUME:
-            self._session.pop_scene("OperatorHold", set_by)
-        elif request.action == DialogControl.Request.ACTION_RESET:
-            self._session.reset()
+        """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия.
+        Чужой ``set_by`` или неизвестное действие — ``ok=false`` (кадры не тронуты)."""
+        action = _CONTROL_ACTIONS.get(int(request.action), "")
+        response.ok = apply_control(self._session, action, request.set_by or "operator", float(request.ttl_s))
+        if response.ok and action == RESET:
             self._engine.log.reset()
         snap = self._session.snapshot
-        response.ok, response.epoch = True, int(snap.epoch)
+        response.epoch = int(snap.epoch)
         response.scenes = identity_question.session_state(snap).scenes
         return response
+
+    def _restore_voice(self, provider: str, voice: str) -> None:
+        """Вернуть голос (конец персоны сета, ``reset``): просьба владельцу голоса, тот ответит ``voice_changed``."""
+        body = String()
+        body.data = json.dumps({"request_id": uuid.uuid4().hex[:12], "voice": voice, "provider": provider},
+                               ensure_ascii=False)
+        self._voice_pub.publish(body)
+        self.get_logger().info(f"🎭 [scene] голос возвращается: {provider}:{voice}")
 
     # -- выход и служебное ---------------------------------------------------------------------------------------
 

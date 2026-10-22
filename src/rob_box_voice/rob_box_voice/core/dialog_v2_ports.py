@@ -121,7 +121,8 @@ class V2Ports:
 
     def __init__(self, node: Any, llm: Any, counter: CallCounter, tools: Any, *, agent: str = "personality",
                  settings: Optional[LLMSettings] = None, intent_pub: Any = None,
-                 log: Callable[[str], None] = lambda line: None) -> None:
+                 log: Callable[[str], None] = lambda line: None, epoch: Optional[Callable[[], int]] = None,
+                 performer: Callable[[], Any] = lambda: None) -> None:
         self._node = node
         self._llm = llm
         self._counter = counter
@@ -132,7 +133,8 @@ class V2Ports:
         self._log = log
         self._turn = ""
         self._n = 0
-        self.executor = Executor(self._send, on_late=self._late)
+        self._performer = performer
+        self.executor = Executor(self._send, on_late=self._late, epoch=epoch)
 
     async def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Answer:
         """Один ответ LLM (с повтором моста по нарушениям); тайм-аут ставит дедлайн хода снаружи."""
@@ -188,8 +190,17 @@ class V2Ports:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
                                       emotion=plan.emotion, earcon=plan.earcon, ttl_ms=plan.ttl_ms)
 
-    def cancel_speech(self, epoch: int, reason: str) -> None:
-        speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason)
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
+        speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
+
+    def stop_perform(self, how: str) -> bool:
+        """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит."""
+        host = self._performer()
+        if host is None:
+            return False
+        owns = bool(host.owns_backing)
+        stopped = host.halt() if how == "halt" else host.stop()
+        return bool(stopped) and owns
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         """Интент движения для ``command_node`` (сейчас — только ``stop_motion`` Tier-1 стопа)."""

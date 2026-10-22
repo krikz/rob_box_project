@@ -60,8 +60,6 @@ class MusicStateRef:
     track_id: Optional[str] = None
     bpm: Optional[float] = None
     title: Optional[str] = None
-    #: Идёт диджей-сет (поле ``dj`` снимка плеера): кадр ``DJ`` — срез тулов сета (``tools_view``).
-    dj: bool = False
 
 
 @dataclass(frozen=True)
@@ -182,6 +180,12 @@ class Session:
         """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка и провайдеры —
         не трогаются («забудь всё» ≠ «выключи музыку»)."""
         self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None)
+
+    def replace_epoch(self) -> int:
+        """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий
+        прошлой эпохи больше не исполняются; сцены, вопрос и всё остальное — как были (это не новая сессия)."""
+        self._commit("replace_epoch", epoch=self._snap.epoch + 1)
+        return self._snap.epoch
 
     def set_voice(self, requested: Optional[str] = None, applied: Optional[str] = None,
                   provider: Optional[str] = None) -> None:

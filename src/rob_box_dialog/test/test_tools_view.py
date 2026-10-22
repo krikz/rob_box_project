@@ -18,7 +18,7 @@ def _snap(**kw):
 SNAPSHOTS = {
     "idle": _snap(),
     "music": _snap(music=MusicStateRef("playing", title="Still Dre")),
-    "dj": _snap(music=MusicStateRef("playing", dj=True)),
+    "dj": _snap(music=MusicStateRef("playing"), scenes=(SceneFrame("DJ", "code"),)),
     "speaking": _snap(speaking=True),
 }
 #: Реплики, задевающие несколько групп сразу — худший случай размера среза.

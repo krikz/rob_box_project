@@ -10,6 +10,11 @@
 решает планировщик ресурсов у транспорта (``plan.runner``, PR-7b) по ``knowledge.COMPOSITION``. Событие
 ``pending`` (обещание: «Еду к…») закрывает ожидание статусом ``pending``; итог по его ``event_ref`` придёт позже —
 в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS.
+
+Эпоха (PR-9 #3703, §6.2): исполнитель с ``epoch`` (текущая эпоха сессии) отбрасывает исход запроса прошлой эпохи —
+``WARNING stale_epoch``, в ход он приходит ``cancelled{stale_epoch}``, в ``on_late`` не попадает. Отмена хода
+(перебивание) запросы непрерываемых классов (``interrupt.survives``: память, голос, знакомство, движение) не рвёт:
+их отправка доживает до события владельца; остальные отменяются вместе с ходом.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.interrupt import survives
 from rob_box_dialog.respond import ActionResult
 
 if TYPE_CHECKING:  # asyncio тянет socket: импорт пакета остаётся чистым (test_purity), цикл — при исполнении
@@ -58,6 +64,7 @@ class OwnerEvent:
 
 Send = Callable[[ActionRequest], Any]
 OnLate = Callable[[ActionResult], Any]
+Epoch = Callable[[], int]
 
 
 def deadline_s(cls: str) -> float:
@@ -69,9 +76,11 @@ def deadline_s(cls: str) -> float:
 class Executor:
     """Исполнитель одного агента: запросы владельцам и сопоставление их событий с ожиданиями."""
 
-    def __init__(self, send: Send, on_late: Optional[OnLate] = None, log: Optional[logging.Logger] = None) -> None:
+    def __init__(self, send: Send, on_late: Optional[OnLate] = None, log: Optional[logging.Logger] = None,
+                 epoch: Optional[Epoch] = None) -> None:
         self._send = send
         self._on_late = on_late
+        self._epoch = epoch
         self._log = log or _LOG
         self._loop: Optional["asyncio.AbstractEventLoop"] = None
         self._waiting: Dict[str, "asyncio.Future[OwnerEvent]"] = {}
@@ -113,11 +122,15 @@ class Executor:
         future: "asyncio.Future[OwnerEvent]" = self._loop.create_future()
         self._waiting[request.turn_id] = future
         self._requests[request.turn_id] = request
+        survivor = False
         try:
             sent = self._send(request)
             if inspect.isawaitable(sent):
-                await sent
+                await (asyncio.shield(sent) if survives(request.cls) else sent)
             event = await asyncio.wait_for(asyncio.shield(future), request.timeout_s)
+        except asyncio.CancelledError:
+            survivor = survives(request.cls)  # исход начатого непрерываемого дойдёт до _deliver (stale_epoch/on_late)
+            raise
         except asyncio.TimeoutError:
             self._log.warning(f"⏱ [execute] {request.tool} {request.turn_id}: нет события за {request.timeout_s:.0f} с")
             return _result(request, OwnerEvent(request.turn_id, "timeout"))
@@ -126,11 +139,13 @@ class Executor:
             return _result(request, OwnerEvent(request.turn_id, "rejected", "error"))
         finally:
             self._waiting.pop(request.turn_id, None)
-            if not future.done():
+            if not future.done() and not survivor:
                 self._requests.pop(request.turn_id, None)
         if event.status == "pending" and event.event_ref:
             self._requests[event.event_ref] = request
         self._requests.pop(request.turn_id, None)
+        if self._stale_epoch(request, event):
+            return _result(request, OwnerEvent(request.turn_id, "cancelled", "stale_epoch"))
         return _result(request, event)
 
     def _deliver(self, event: OwnerEvent) -> None:
@@ -143,8 +158,17 @@ class Executor:
             self._stale(event)
             return
         self._requests.pop(event.ref, None)
-        if self._on_late is not None:
+        if not self._stale_epoch(request, event) and self._on_late is not None:
             self._on_late(_result(request, event))
+
+    def _stale_epoch(self, request: ActionRequest, event: OwnerEvent) -> bool:
+        """Исход запроса прошлой эпохи (перебили стопом, новая сессия): в ход не идёт, только строка лога."""
+        current = None if self._epoch is None else self._epoch()
+        if current is None or request.epoch >= current:
+            return False
+        self._log.warning(f"⚠️ [execute] stale_epoch {request.tool} {request.turn_id} epoch={request.epoch} "
+                          f"now={current} status={event.status}")
+        return True
 
     def _stale(self, event: OwnerEvent) -> None:
         self._log.warning(f"⚠️ [execute] stale_event ref={event.ref} status={event.status} reason={event.reason}")
