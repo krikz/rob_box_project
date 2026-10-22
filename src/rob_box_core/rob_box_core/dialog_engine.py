@@ -54,18 +54,23 @@ def launch_nodes(context: Any, dialogue_node: Any, tts_node_args: Mapping[str, A
     """``OpaqueFunction`` обоих launch-файлов voice_assistant: ноды, которым важен флаг, в прежнем порядке.
 
     Флаг читается из ``<config_dir>/dialog_engine.yaml``: ``v1`` — ``dialogue_node`` и ``tts_node``; ``v2`` —
-    ``dialogue_node`` не стартует (``dialog_node`` подключает PR-8 ч.8e). ``tts_node`` получает значение флага
-    параметром (файла может не быть в старом каталоге конфигов — тогда ``v1``, и launch не падает на params-file).
+    ``dialog_node`` (свой ``dialog_node.yaml``) на месте ``dialogue_node``, тот не стартует. ``tts_node`` и
+    ``dialog_node`` получают значение флага параметром (файла может не быть в старом каталоге конфигов — тогда ``v1``,
+    и launch не падает на params-file).
     """
     from launch.substitutions import LaunchConfiguration  # noqa: PLC0415 — launch есть только в образе
     from launch_ros.actions import Node  # noqa: PLC0415
 
-    path = os.path.join(LaunchConfiguration("config_dir").perform(context), FILE_NAME)
+    config_dir = LaunchConfiguration("config_dir").perform(context)
+    path = os.path.join(config_dir, FILE_NAME)
     value = from_yaml(path)
     print(f"[voice_assistant launch] {PARAM}={value} ({path})")
-    params = [*tts_node_args["parameters"], {PARAM: value}]
-    tts_node = Node(**{**tts_node_args, "parameters": params})
-    return ([dialogue_node] if value == V1 else []) + [tts_node]
+    tts_node = Node(**{**tts_node_args, "parameters": [*tts_node_args["parameters"], {PARAM: value}]})
+    if value == V1:
+        return [dialogue_node, tts_node]
+    dialog_node = Node(**{**tts_node_args, "executable": "dialog_node", "name": "dialog_node",
+                          "parameters": [os.path.join(config_dir, "dialog_node.yaml"), {PARAM: value}]})
+    return [dialog_node, tts_node]
 
 
 __all__ = ["DEFAULT", "ENGINES", "FILE_NAME", "PARAM", "V1", "V2", "declare", "engine",
