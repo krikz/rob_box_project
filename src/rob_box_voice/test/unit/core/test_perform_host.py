@@ -178,15 +178,29 @@ def test_nearly_finished_extends_the_beat(loop):
     assert len([c for c in tools.calls if c.name == "request_music"]) == 2 and extend.arguments["intent"] == "backing"
 
 
-def test_started_from_the_topic_is_not_delivered_twice(loop):
-    """Исход запуска — из ответа тула; ``started`` из топика блок не получает (иначе второй ``rejected`` съел бы
-    вторую попытку подложки)."""
+def test_rejected_comes_only_from_the_tool_result(loop):
+    """Отказ подложки — из ответа тула; ``rejected`` из топика блок не получает (иначе второй экземпляр того же отказа
+    съел бы вторую попытку)."""
     host, node, tools, _ = _host(loop, {"ok": False, "reason": "compose_error"})
     host.start(RAP, "t1")
     host.on_music_event("rejected", None, {"reason": "compose_error"})
-    host.on_music_event("started", "x", {})
     _settle(loop)
     assert len([c for c in tools.calls if c.name == "request_music"]) == 2  # вторая попытка — по ответу тула
+    said = [plain_text(r.text) for r in node.requests() if r.commit]
+    assert said == [phrases.text("perform.no_backing.error")]
+
+
+def test_own_started_twice_is_one_start_and_foreign_started_ends_the_bars(loop):
+    """Свой ``started`` из топика после ответа тула — повтор (вступление одно); чужой ``started`` — деку заняла другая
+    музыка: тактов бита больше нет, дальше чтение без них (честный ``synced=false``)."""
+    host, node, _, _ = _host(loop, STARTED)
+    host.start(RAP, "t1")
+    _settle(loop)
+    host.on_music_event("started", "trk1", STARTED)
+    leads = [r for r in node.requests() if plain_text(r.text) == phrases.text("perform.backing_started")]
+    assert len(leads) == 1
+    host.on_music_event("started", "someone_elses", {"bpm": 90.0, "beat_at": 1003.0, "bar_beats": 4.0})
+    assert host.block.backing.grid is None and not host.owns_backing
 
 
 def test_new_performance_over_a_running_one_merges_into_not_started_segments(loop):
