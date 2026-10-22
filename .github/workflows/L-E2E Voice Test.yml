@@ -274,7 +274,8 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
           sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py && echo HARNESS_PUSHED"
+          sshpass -e scp -o StrictHostKeyChecking=no .github/workflows/scripts/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')

@@ -47,8 +47,10 @@ done
 #          должен копироваться на 249 scp-командой в workflow.
 # ---------------------------------------------------------------------------
 printf 'CHECK 1: файлы харнесса копируются на билд-машину\n'
-referenced="$(grep -oE '\$SCRIPT_DIR_E2E/[A-Za-z0-9_.-]+' "$HARNESS" \
-    | sed 's#^\$SCRIPT_DIR_E2E/##' | sort -u)"
+# Ссылки ищем во ВСЕХ трёх файлах и в обеих формах: $SCRIPT_DIR_E2E/x и ${SCRIPT_DIR_E2E:-.}/x
+# (либа зовёт e2e_events.py второй формой -- #3857, run 39847097177, файл не копировался).
+referenced="$(grep -hoE '\$\{?SCRIPT_DIR_E2E[^/" ]*/[A-Za-z0-9_.-]+' "$HARNESS" "$LIB" "$WAKE" \
+    | sed -E 's#^.*/##' | sort -u)"
 [ -n "$referenced" ] || fail "в харнессе не нашлось ни одной ссылки \$SCRIPT_DIR_E2E/* — тест сломан?"
 
 while IFS= read -r dep; do
@@ -167,6 +169,24 @@ if grep -q 'merged into existing profile' "$TOOL_MATCH"; then
     fi
 else
     fail "НЕ проверяется склейка профилей: шаг с register_speaker остаётся зелёным, даже когда профиль слился с чужим (run 35667281570)"
+fi
+
+# ---------------------------------------------------------------------------
+# CHECK 6. Нет e2e_events.py рядом с харнессом -- громкий отказ в начале,
+#          а не опрос до потолка (#3857, run 39847097177).
+# ---------------------------------------------------------------------------
+printf 'CHECK 6: без e2e_events.py харнесс падает E2E_FATAL, а не крутит опрос\n'
+tmp_h="$(mktemp -d)"
+cp "$HARNESS" "$LIB" "$WAKE" "$tmp_h/"
+set +e
+out6="$(cd "$tmp_h" && bash ./e2e_voice_test.sh --text probe 2>&1)"
+rc6=$?
+set -e
+rm -rf "$tmp_h"
+if [ "$rc6" -eq 2 ] && printf '%s' "$out6" | grep -q 'E2E_FATAL: нет модуля .*e2e_events\.py'; then
+    ok "харнесс без e2e_events.py: rc=2 и E2E_FATAL: нет модуля"
+else
+    fail "харнесс без e2e_events.py не отказал громко (rc=$rc6): $(printf '%s' "$out6" | tail -3)"
 fi
 
 printf '\n'
