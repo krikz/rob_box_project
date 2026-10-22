@@ -10,9 +10,11 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import respond
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.execute import Executor, OwnerEvent, deadline_s
-from rob_box_dialog.session import Session
+from rob_box_dialog.session import Session, SpeakerRef
 
-SNAP = Session("personality").snapshot
+_SESSION = Session("personality")
+_SESSION.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
+SNAP = _SESSION.snapshot  # собеседник в снимке есть: тулы памяти без него не идут (test_memory.py)
 
 
 def _run(coro):
@@ -40,7 +42,7 @@ def _executor(owner, **kw):
 
 
 def test_done_only_by_owner_event_and_phrase_from_it():
-    owner = Owner(lambda r: OwnerEvent(r.turn_id, "done", data={"fact": "Саша любит зелёный чай"}))
+    owner = Owner(lambda r: OwnerEvent(r.turn_id, "done", data={"fact": "Саша любит зелёный чай", "fact_id": 7}))
     ex = _executor(owner)
     [res] = _run(ex.run([ToolCall("memory_save", {"fact": "Саша любит зелёный чай"})], SNAP, "t1"))
     req = owner.requests[0]
@@ -101,7 +103,7 @@ def test_late_event_after_timeout_is_stale_not_success(monkeypatch, caplog):
 
 
 def test_actions_run_in_command_order_one_request_each():
-    owner = Owner(lambda r: OwnerEvent(r.turn_id, "done", data=dict(r.args)))
+    owner = Owner(lambda r: OwnerEvent(r.turn_id, "done", data={**r.args, "fact_id": 1}))
     ex = _executor(owner)
     calls = [ToolCall("get_current_time", {}), ToolCall("memory_save", {"fact": "a"})]
     res = _run(ex.run(calls, SNAP, "t6"))

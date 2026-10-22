@@ -386,3 +386,30 @@ class TestMemoryContextSpeakerScope:
         assert result.data["speaker_id"] == "denchik"
         fact_texts = [f["fact"] for f in result.data["facts"]]
         assert not any("Саша" in t for t in fact_texts)
+
+
+class TestSavedEventAndOneTable:
+    """PR-11 #3705: ``remember`` отвечает ``saved{fact_id}``; запись и чтение — одна таблица ``voice_facts``."""
+
+    @staticmethod
+    def _node(tmp_path):
+        from rob_box_voice.core.voice_memory import VoiceMemory
+
+        node = _FakeNode()
+        node.voice_memory = VoiceMemory(db_path=str(tmp_path / "e2e_voice_memory.db"))  # отдельная БД, не /data
+        return node
+
+    def test_fact_saved_for_one_person_is_found_only_for_that_person(self, tmp_path):
+        node = self._node(tmp_path)
+        saved = MemorySaveTool(node).execute(fact="Саша любит зелёный чай", speaker_id="spk-sasha")
+        assert saved.success and saved.data["event"] == "saved" and saved.data["fact_id"] >= 1
+        found = MemorySearchTool(node).execute(query="чай", speaker_id="spk-sasha")
+        other = MemorySearchTool(node).execute(query="чай", speaker_id="spk-boris")
+        assert [r["content"] for r in found.data["results"] if r["kind"] == "fact"] == ["Саша любит зелёный чай"]
+        assert [r for r in other.data["results"] if r["kind"] == "fact"] == []
+
+    def test_save_without_row_id_is_not_saved(self):
+        node = _FakeNode()
+        node.voice_memory.save_fact = lambda *a, **k: 0
+        result = MemorySaveTool(node).execute(fact="x", speaker_id="spk-sasha")
+        assert not result.success and result.data is None
