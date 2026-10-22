@@ -1,0 +1,16 @@
+# dialog_node.yaml — хост диалога v2 (ADR-0150 PR-8 #3702), стартует только при dialog_engine: v2
+# (dialog_engine.yaml). Две копии: docker/sound/config/voice_assistant/ (живой) и src/rob_box_voice/config/ —
+# менять синхронно (сверяет src/rob_box_voice/test/test_yaml_param_consistency.py).
+#
+# Ключи API провайдеров — из окружения (как у dialogue_node), в yaml их нет.
+dialog_node:
+  ros__parameters:
+    # Цепочка LLM: первый — основной, дальше — фолбеки; все в режиме команд (command_bridge).
+    llm_providers: "deepseek,minimax"
+    system_prompt_file: "master_prompt_compact.txt"
+    wake_words_path: "/config/wake_words.yaml"
+    temperature: 0.0
+    max_tokens: 0
+    # e2e: текст ходов пишется только при e2e_mode и пути ВНЕ /data (включает харнесс через ros2 param set).
+    e2e_mode: false
+    e2e_db_path: ""
