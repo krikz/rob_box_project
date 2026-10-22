@@ -9,10 +9,10 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.interrupt import (HALT, NO_INTERRUPT, STOP, TurnsInFlight, on_interrupt, stop_music_calls,
                                       survives)
-from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 
 SNAP = Session("personality").snapshot
-DJ = replace(SNAP, music=MusicStateRef("playing", dj=True))
+DJ = replace(SNAP, music=MusicStateRef("playing"), scenes=(SceneFrame("DJ", "code"),))
 TRACK = replace(SNAP, music=MusicStateRef("playing", track_id="t1"))
 
 

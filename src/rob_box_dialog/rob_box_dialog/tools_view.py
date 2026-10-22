@@ -24,7 +24,7 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) 
     """Группы среза: сцены снимка и прямо названные (порядок ``TOOL_GROUPS``), затем названные только общим глаголом;
     ни одной — ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме тех, что только по явной
     просьбе, ``TOOL_GROUPS_EXPLICIT``), иначе по умолчанию."""
-    scene = {"music"} if snapshot.music.dj or snapshot.music.state == "playing" else set()
+    scene = {"music"} if snapshot.top("DJ") is not None or snapshot.music.state == "playing" else set()
     strong = _named(text, "stems") | scene
     weak = _named(text, "weak") - strong
     if not strong | weak:

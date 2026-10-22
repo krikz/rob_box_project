@@ -60,8 +60,6 @@ class MusicStateRef:
     track_id: Optional[str] = None
     bpm: Optional[float] = None
     title: Optional[str] = None
-    #: Идёт диджей-сет (поле ``dj`` снимка плеера): кадр ``DJ`` — срез тулов сета (``tools_view``).
-    dj: bool = False
 
 
 @dataclass(frozen=True)

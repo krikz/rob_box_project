@@ -43,6 +43,8 @@ GREETING_REPLY = "greeting_reply"
 PERFORM_ANSWER = "perform_answer"
 #: ``NotAddressed.reason``.
 NO_WAKE, COORDINATOR, EMPTY = "no_wake", "coordinator", "empty"
+#: Оператор держит личность (``OperatorHold``, ТАРС работает): голос не слушаем и в бэклог не копим (§6.3).
+HELD = "operator_hold"
 #: Запас окна фразы на хвост VAD для направления (тот же, что у stt_node).
 VAD_TAIL_S = 1.5
 
@@ -102,13 +104,21 @@ def _wakeless_reply(text: str, heard: Heard, question: Optional[SceneFrame],
     return NotAddressed(NO_WAKE)
 
 
+def _held(heard: Heard, hold: Optional[SceneFrame]) -> bool:
+    """Оператор держит личность, а реплика — голос с микрофона (Telegram и оператор — другие агенты)."""
+    return hold is not None and heard.source not in (SOURCE_TELEGRAM, SOURCE_OPERATOR)
+
+
 def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
            question: Optional[SceneFrame] = None, greeting: Optional[SceneFrame] = None,
-           ask: Optional[SceneFrame] = None) -> Decision:
+           ask: Optional[SceneFrame] = None, hold: Optional[SceneFrame] = None) -> Decision:
     """Адресована ли реплика роботу и какой у хода текст (§4.2, В12). ``question`` — живой кадр ``Identity``
     (робот спросил имя), `greeting` — окно после приветствия (#3776), ``ask`` — окно вопроса выступления
-    ``PerformAsk`` (О9′): фраза без вейка, похожая на ответ, — ход."""
+    ``PerformAsk`` (О9′): фраза без вейка, похожая на ответ, — ход. ``hold`` — кадр ``OperatorHold``: пока он
+    есть, голос с микрофона не адресован никому (Telegram и оператор — другие агенты, их кадр не касается)."""
     text = (heard.text or "").strip()
+    if _held(heard, hold):
+        return NotAddressed(HELD)
     if heard.source in (SOURCE_TELEGRAM, SOURCE_OPERATOR):
         if heard.source == SOURCE_TELEGRAM and is_coordinator_call(text):
             return NotAddressed(COORDINATOR)

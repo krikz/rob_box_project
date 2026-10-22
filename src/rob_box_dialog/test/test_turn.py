@@ -12,7 +12,7 @@ from rob_box_dialog.address import BARE_WAKE, VOICE, Addressed
 from rob_box_dialog.command import Ask, Command, Invalid, Performance, ToolCall
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
-from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 from rob_box_dialog.turn import RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, tier1_actions
 from rob_box_dialog.grammar import Tier1Command
 
@@ -135,7 +135,8 @@ def test_enough_stops_the_set_and_speech_but_does_not_silence_and_next_command_i
     """Решение Шифу 22.10 (#3700): «хватит» — остановить звуки; режим тишины не включается, следующая реплика идёт."""
     ports = Ports()
     engine = _engine(ports)
-    _with_music(engine, dj=True)
+    _with_music(engine)
+    engine.session.push_scene("DJ", "code")
     _run(engine, "хватит")
     assert ports.cancels == ["tier1 stop_all"]
     assert ports.executed == [[("dj_set", {"action": "stop"}), ("stop_music", {})]]
@@ -164,7 +165,7 @@ def test_shut_up_is_still_silence():
 
 def test_tier1_actions_dj_set_is_stopped_with_set():
     snap = Session("personality").snapshot
-    dj = snap.__class__(**{**vars(snap), "music": MusicStateRef("playing", dj=True)})
+    dj = snap.__class__(**{**vars(snap), "music": MusicStateRef("playing"), "scenes": (SceneFrame("DJ", "code"),)})
     assert [c.tool for c in tier1_actions(Tier1Command("stop_all"), dj)] == ["dj_set", "stop_music"]
     assert tier1_actions(Tier1Command("stop_all"), snap) == ()
 
@@ -307,7 +308,8 @@ def test_empty_text_turn_is_reflex_only(text):
 def test_halt_cuts_speech_now_stops_perform_motion_and_bumps_epoch():
     ports = Ports()
     engine = _engine(ports)
-    _with_music(engine, dj=True)
+    _with_music(engine)
+    engine.session.push_scene("DJ", "code")
     agg = _run(engine, "стой")
     assert ports.boundaries == [(0, "now")] and ports.performs == ["halt"] and ports.intents == ["stop_motion"]
     assert engine.session.snapshot.epoch == 1 and agg.epoch == 1

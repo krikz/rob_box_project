@@ -182,16 +182,21 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
         self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
 
-    def test_v2_has_no_dialogue_control_topic(self) -> None:
-        """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` ``/dialogue/control`` не создаётся, команда — отказ."""
+    def test_v2_has_no_dialogue_control_topic_but_a_service_client(self) -> None:
+        """ADR-0150 PR-10 (#3704): при ``dialog_engine=v2`` ``/dialogue/control`` не создаётся, пауза — сервис
+        ``/dialog/control``; нет сервиса в сети — отказ ``False``, а не тихий успех."""
         from unittest.mock import patch
 
         from rob_box_core import dialog_engine
+        from rob_box_supervisor.supervisor_node import DIALOG_CONTROL_SERVICE, _DialogControlClient
 
         with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
             node = AvatarSupervisor()
         try:
             self.assertNotIn(DIALOGUE_CONTROL_TOPIC, node._publishers)
+            self.assertIsInstance(node._dialogue_control_pub, _DialogControlClient)
+            self.assertEqual(node._dialogue_control_pub._client.srv_name, DIALOG_CONTROL_SERVICE)
+            node._dialogue_control_pub._client.wait_for_service.return_value = False
             self.assertFalse(node._publish_dialogue_control(DIALOGUE_CONTROL_PAUSE, "test"))
         finally:
             node.destroy_node()

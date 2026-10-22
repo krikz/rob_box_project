@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -41,11 +43,12 @@ from rob_box_core import dialog_engine, speech_client
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.address import Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
+from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
+from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_block, speaker_ref
 from rob_box_dialog.turn import TurnEngine
@@ -56,6 +59,7 @@ from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt
 from rob_box_llm.provider import LLMSettings
+from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
 from .core import command_bridge, identity_question
 from .core import plan_host
@@ -63,10 +67,14 @@ from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, count
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.utterance_speaker import UtteranceSpeakerRegistry
+from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
 
 #: ``SpeechEvent.kind`` конца реплики: finished / cancelled / rejected.
 _ENDED = (SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED)
+#: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
+_CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
+                    DialogControl.Request.ACTION_RESET: RESET}
 _LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
                       durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
@@ -138,6 +146,8 @@ class DialogNode(Node):
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
         self._session = Session("personality", clock=time.time)
         self._session.subscribe(functools.partial(identity_question.publish, self))
+        self._voice_pub = self.create_publisher(String, VOICE_REQUEST_TOPIC, 10)
+        self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
         self._wake = load_wake_words(str(self.get_parameter("wake_words_path").value))[0]
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
@@ -184,7 +194,10 @@ class DialogNode(Node):
         heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
         snap = self._session.snapshot
         decision = decide(heard, self._backlog, self._wake, question=snap.top("Identity"),
-                          ask=snap.top("PerformAsk"))
+                          ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
+        if isinstance(decision, NotAddressed) and decision.reason == HELD:
+            self.get_logger().info("[hold] оператор держит личность — реплика не слушается")
+            return
         if isinstance(decision, NotAddressed):
             self._backlog.add(heard)
             self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
@@ -214,6 +227,9 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
+        if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
+            self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
+            return
         if msg.agent != kn.AGENTS[0]:
             return
         if msg.kind == SpeechEvent.KIND_STARTED:
@@ -230,7 +246,8 @@ class DialogNode(Node):
         plan_host.on_music(self, snap)
         title = str((snap.dj_info or {}).get("title") or "") or None
         self._session.set_music(MusicStateRef("playing" if snap.is_playing() else "idle", track_id=snap.track_id,
-                                              title=title, dj=bool(snap.dj)))
+                                              title=title))
+        self._scenes.on_music(bool(snap.dj), snap.dj_info)
 
     def _on_interrupt(self, msg: Any) -> None:
         """Сегмент фразы с вейком во время речи (stt_node): ясный стоп — перебивание; спорный решит ход (Tier-1/LLM)."""
@@ -253,19 +270,24 @@ class DialogNode(Node):
         return True
 
     def _on_control(self, request: Any, response: Any) -> Any:
-        """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия."""
-        set_by = request.set_by or "operator"
-        if request.action == DialogControl.Request.ACTION_HOLD:
-            self._session.push_scene("OperatorHold", set_by, ttl_s=float(request.ttl_s) or None)
-        elif request.action == DialogControl.Request.ACTION_RESUME:
-            self._session.pop_scene("OperatorHold", set_by)
-        elif request.action == DialogControl.Request.ACTION_RESET:
-            self._session.reset()
+        """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия.
+        Чужой ``set_by`` или неизвестное действие — ``ok=false`` (кадры не тронуты)."""
+        action = _CONTROL_ACTIONS.get(int(request.action), "")
+        response.ok = apply_control(self._session, action, request.set_by or "operator", float(request.ttl_s))
+        if response.ok and action == RESET:
             self._engine.log.reset()
         snap = self._session.snapshot
-        response.ok, response.epoch = True, int(snap.epoch)
+        response.epoch = int(snap.epoch)
         response.scenes = identity_question.session_state(snap).scenes
         return response
+
+    def _restore_voice(self, provider: str, voice: str) -> None:
+        """Вернуть голос (конец персоны сета, ``reset``): просьба владельцу голоса, тот ответит ``voice_changed``."""
+        body = String()
+        body.data = json.dumps({"request_id": uuid.uuid4().hex[:12], "voice": voice, "provider": provider},
+                               ensure_ascii=False)
+        self._voice_pub.publish(body)
+        self.get_logger().info(f"🎭 [scene] голос возвращается: {provider}:{voice}")
 
     # -- выход и служебное ---------------------------------------------------------------------------------------
 

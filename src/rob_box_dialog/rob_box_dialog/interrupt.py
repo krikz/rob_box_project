@@ -45,8 +45,9 @@ def survives(cls: str) -> bool:
 
 
 def stop_music_calls(snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
-    """Стоп музыки по снимку плеера: идёт сет — ``dj_set(stop)`` и ``stop_music``, играет трек — ``stop_music``."""
-    if snapshot.music.dj:
+    """Стоп музыки по снимку: идёт сет (кадр ``DJ``) — ``dj_set(stop)`` и ``stop_music``, играет трек —
+    ``stop_music``."""
+    if snapshot.top("DJ") is not None:
         return ToolCall("dj_set", {"action": "stop"}), ToolCall("stop_music", {})
     return (ToolCall("stop_music", {}),) if snapshot.music.state == "playing" else ()
 
