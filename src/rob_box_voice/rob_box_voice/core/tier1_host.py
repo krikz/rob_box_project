@@ -104,7 +104,8 @@ class Tier1Runner:
         getattr(self, f"_run_{command.kind}")(command, text)
 
     def _run_stop_all(self, _command: Tier1Command, text: str) -> None:
-        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча. Идёт выступление
+        """Стоп всего (§4.2): ход и речь, движение (``/dialog/intent stop_motion``), музыка — молча; режим тишины
+        НЕ включается («хватит» — решение Шифу 22.10, #3700; без звуков он ничего не ломает). Идёт выступление
         (ADR-0150 PR-7c): «хватит» — дочитать предложение, бит выступления снимет оно само на такте (outro); «стой» —
         всё сразу."""
         node = self._node
@@ -140,7 +141,7 @@ class Tier1Runner:
         return True
 
     def _run_silence(self, _command: Tier1Command, text: str) -> None:
-        """«Хватит/замолчи»: тишина; идущее выступление дочитывает предложение и снимает свой бит на такте (X5)."""
+        """«Замолчи/помолчи»: тишина (SILENCED); выступление дочитывает предложение и снимает бит на такте (X5)."""
         self._stop_performance(text)
         if self._silenced():
             self._node._cancel_run("tier1 silence (уже тишина)", stop_tts=True)

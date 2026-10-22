@@ -138,7 +138,7 @@ class TestIsSilenceCommand:
             "помолчи",
             "робок помолчи пожалуйста",
             "замолчи уже",
-            "хватит разговаривать",
+            "замолчите, пожалуйста",
         ],
     )
     def test_default_silence_detected(self, text: str) -> None:
@@ -147,13 +147,18 @@ class TestIsSilenceCommand:
     def test_no_silence_command(self) -> None:
         assert is_silence_command("расскажи анекдот", DEFAULT_SILENCE_COMMANDS) is False
 
+    def test_enough_is_not_silence(self) -> None:
+        """Решение Шифу 22.10 (#3700): «хватит» останавливает звуки, режим тишины не включает."""
+        assert is_silence_command("хватит разговаривать") is False
+        assert is_silence_command("робот, хватит") is False
+
     def test_custom_commands(self) -> None:
         assert is_silence_command("тишина!", ["тиш"]) is True
         assert is_silence_command("помолчи", ["тиш"]) is False
 
     def test_silence_matches_whole_word_not_substring(self) -> None:
-        """ADR-0150 PR-1: «хватит» — по границе слова, а не подстрокой (было ``cmd in text``)."""
-        assert is_silence_command("робот, понял, хватит, останавливай") is True
+        """ADR-0150 PR-1: «замолчи» — по границе слова, а не подстрокой (было ``cmd in text``)."""
+        assert is_silence_command("робот, понял, замолчи, останавливай") is True
         assert is_silence_command("нехватка денег") is False
         assert is_silence_command("он захватит флаг") is False
 

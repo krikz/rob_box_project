@@ -482,7 +482,16 @@ class TestTier1Step:
     def test_works_when_silenced(self) -> None:
         host = _RecordingHost()
         out = Tier1Step().apply(_ctx(text="хватит", text_lower="хватит", is_silenced=True), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "stop_all"  # «хватит» — не тишина (#3700)
+        out = Tier1Step().apply(_ctx(text="замолчи", text_lower="замолчи", is_silenced=True), host)
         assert out.kind is SttOutcomeKind.HANDLED and out.reason == "silence"
+
+    def test_enough_is_stop_of_sounds_not_silence(self) -> None:
+        """Решение Шифу 22.10 (#3700): «хватит» — остановить текущие звуки, режим тишины не включается."""
+        host = _RecordingHost()
+        out = Tier1Step().apply(_ctx(text="Робот, хватит", text_lower="робот, хватит"), host)
+        assert out.kind is SttOutcomeKind.HANDLED and out.reason == "stop_all"
+        assert host.tier1_runs == [("stop_all", "Робот, хватит")]
 
     def test_new_session(self) -> None:
         host = _RecordingHost()
