@@ -786,6 +786,12 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+# Issue #3857: ожидание событий робота живёт в e2e_events.py рядом с харнессом. На 249 его кладёт
+# шаг workflow "Push atomic harness"; без файла опрос молча крутился до потолка (run 39847097177).
+if [ "${E2E_EVENT_WAITS:-1}" != "0" ] && [ ! -f "${E2E_EVENTS_PY:-$SCRIPT_DIR_E2E/e2e_events.py}" ]; then
+    echo "E2E_FATAL: нет модуля ${E2E_EVENTS_PY:-$SCRIPT_DIR_E2E/e2e_events.py} -- workflow не скопировал e2e_events.py на билд-машину" >&2
+    exit 2
+fi
 
 # bug(run 35658231116, 22.09.2026): этот блок стоял на строке ~124 — ДО
 # парсинга аргументов (--scenario разбирается ниже, ~300) и ДО source
