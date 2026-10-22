@@ -83,7 +83,6 @@ def test_tool_calls_need_exactly_one_command_or_some_tools():
     ({"perform": {"kind": "rap", "segments": ["раз", 2]}}, "bad_type"),
     ({"perform": {"kind": "rap", "segments": None}}, "bad_segments"),
     ({"actions": [{"tool": "get_current_time", "args": None}], "speech": None}, None),
-    ({"perform": {**_perform(), "from_segment": True}}, "bad_type"),
     ({"expression": "happy"}, "bad_type"),
     (42, "bad_type"),
 ])
@@ -236,13 +235,15 @@ def test_to_args_round_trips_through_parse():
     assert json.loads(json.dumps(cm.to_args(cmd), ensure_ascii=False)) == cm.to_args(cmd)
 
 
-def test_edit_pending_needs_active_perform_and_a_later_segment():
-    edit = {"edit_pending": True, "perform": _perform(4, from_segment=3)}
+def test_edit_pending_needs_active_perform_and_code_picks_the_segment():
+    edit = {"edit_pending": True, "perform": _perform(4)}
     bad(edit, "edit_without_active_perform")
     assert ok(edit, busy=Busy(frozenset({"action.perform"}), active_segment=2)).edit_pending
-    bad(edit, "edit_started_segment", busy=Busy(active_segment=3))
     bad({"edit_pending": True, "speech": "и про енота"}, "edit_without_perform")
-    bad({"perform": _perform(2, from_segment=1)}, "from_segment_without_edit")
+    # номер модели не бракует и не исполняется: с какого править — решает хост выступления (#3700)
+    late = ok({"edit_pending": True, "perform": _perform(4, from_segment=1)}, busy=Busy(active_segment=3))
+    assert late.perform.from_segment == 0 and late.dropped == ("perform.from_segment",)
+    assert ok({"perform": _perform(2, from_segment=1)}).perform.from_segment == 0
 
 
 def test_when_now_is_cut_against_uninterruptible_busy_class():
@@ -298,7 +299,7 @@ def test_schema_fields_match_the_dataclasses():
 
     assert set(schema) == names(cm.Command) - {"dropped", "moved"}
     assert set(schema["ask"]["properties"]) == names(cm.Ask) - {"key"}
-    assert set(schema["perform"]["properties"]) == names(cm.Performance)
+    assert set(schema["perform"]["properties"]) == names(cm.Performance) - {"from_segment"}  # его выбирает код
     assert set(schema["expression"]["properties"]) == names(cm.Expression)
     assert set(schema["expression"]["properties"]["face"]["properties"]) == names(cm.FaceScene)
 
@@ -446,3 +447,18 @@ def test_every_reason_the_validator_raises_has_words_for_the_model():
     source = pathlib.Path(cm.__file__).read_text(encoding="utf-8")
     raised = set(re.findall(r'_Bad\("([a-z_]+)"', source))
     assert raised and raised <= set(cm.HINTS)
+    assert kn.VIOLATION_EMPTY_COMMAND in cm.HINTS  # нарушение моста (#3698) — тоже со словами для модели
+
+
+@pytest.mark.parametrize("raw, empty", [
+    ({"expression": {"emotion": "happy"}}, True),
+    ({"speech": "   "}, True),
+    ({}, True),
+    ({"passed": "nothing_to_say"}, False),
+    ({"speech": "Привет"}, False),
+    ({"ask": {"expects": "name", "text": "Как тебя зовут?"}}, False),
+    ({"actions": [{"tool": "get_current_time", "args": {}}]}, False),
+])
+def test_is_empty_marks_commands_with_nothing_to_do_or_say(raw, empty):
+    """#3698: ответ модели без речи, вопроса, действий и выступления (и не passed) мост считает нарушением."""
+    assert cm.is_empty(ok(raw)) is empty

@@ -197,6 +197,10 @@ class Session:
             raise ValueError(f"set_speaker: name_state must be one of {NAME_STATES}")
         self._commit("set_speaker", speaker=speaker)
 
+    def set_music(self, music: MusicStateRef) -> None:
+        """Копия latched-снимка плеера (его пишет владелец плеера; сессия только помнит последний)."""
+        self._commit("set_music", music=music)
+
     def set_pending_ask(self, ask: Optional[Ask]) -> None:
         self._commit("set_pending_ask", pending_ask=ask)
 
