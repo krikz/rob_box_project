@@ -23,13 +23,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
-from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question
+from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, in_reply_window
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
     DEFAULT_OPERATOR_WAKE_WORDS,
     DEFAULT_WAKE_WORDS,
-    REPLY_WINDOW_S,
     resolve_wake_word_namespaces,
 )
 from rob_box_dialog.words import has_wake_word, strip_wake_word
@@ -81,9 +80,10 @@ def is_bare(rest: str) -> bool:
 
 
 def _yes_no_in_window(frame: Optional[SceneFrame], text: str, t: float) -> bool:
-    """Окно вопроса да/нет открыто (``asked_at`` — после речи и грейса микрофона) и фраза — «да» или «нет»."""
-    asked_at = frame.payload.get("asked_at") if frame is not None else None
-    if asked_at is None or not 0.0 <= float(t or 0.0) - float(asked_at) <= REPLY_WINDOW_S:
+    """Окно вопроса да/нет открыто и фраза — «да» или «нет». Окно — с конца вопроса, грейс микрофона включён
+    (``in_grace``, #3849): целое «да»/«нет» эхом «Сейчас играет …, выключить и зачитать?» не бывает, а кадр
+    открыт только после ``SpeechEvent finished`` вопроса."""
+    if frame is None or not in_reply_window(frame.payload.get("asked_at"), t, in_grace=True):
         return False
     reply = classify_reply(text or "", asks_name=False)
     return reply is not None and reply.kind in (YES, NO)

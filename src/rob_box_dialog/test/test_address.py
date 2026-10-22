@@ -186,6 +186,7 @@ def _question(azimuth=90.0, asked_at=95.0, person="p1", kind="unknown"):
     (dict(t=100.0, doa=None), dict(), True),                        # направление неизвестно — тоже
     (dict(t=111.0, doa=90.0), dict(), False),                       # 16 с — кадр уже не ждёт
     (dict(t=94.0, doa=90.0), dict(), False),                        # фраза раньше вопроса
+    (dict(t=94.975, doa=90.0), dict(), False),                      # в грейсе микрофона — окно имени прежнее (#3849)
     (dict(t=100.0, doa=95.0), dict(azimuth=None), True),            # азимут вопроса неизвестен — не важен
 ])
 def test_answer_to_own_question_without_wake(heard, question, addressed):
@@ -252,13 +253,27 @@ def _ask(asked_at=100.0):
 
 @pytest.mark.parametrize("text,t,addressed", [
     ("да", 105.0, True), ("нет", 110.0, True), ("Да.", 101.0, True),
-    ("да", 99.0, False),  # раньше окна — ещё звучал вопрос
+    ("да", 99.975, True),  # #3849 o9y_2: за 25 мс до asked_at (в грейсе микрофона, вопрос договорён) — ответ
+    ("да", 97.4, False),  # кончилась раньше конца вопроса — ещё звучал вопрос
     ("да", 100.0 + 16, False),  # окно 15 с прошло
     ("включи что-нибудь весёлое", 105.0, False),  # не ответ — чужой разговор
 ])
 def test_perform_question_yes_no_without_wake(text, t, addressed):
     decision = decide(_heard(text, t=t), None, DEFAULT_WAKE_WORDS, ask=_ask())
     assert decision == (Addressed(text, address.PERFORM_ANSWER) if addressed else NotAddressed(address.NO_WAKE))
+
+
+@pytest.mark.parametrize("t, in_grace, inside", [
+    (97.4, True, False), (97.5, True, True), (99.975, True, True), (115.0, True, True), (115.1, True, False),
+    (99.975, False, False), (100.0, False, True), (115.0, False, True), (115.1, False, False),
+])
+def test_reply_window_bounds(t, in_grace, inside):
+    """#3849: окно ответа до ``asked_at`` + 15 с; с ``in_grace`` (да/нет выступления) — от конца вопроса
+    (``asked_at`` − грейс микрофона 2.5 с), без него (окно имени В17, приветствие) — от ``asked_at``, как было."""
+    from rob_box_dialog.speaker_adapter import in_reply_window
+
+    assert in_reply_window(100.0, t, in_grace=in_grace) is inside
+    assert in_reply_window(None, t, in_grace=in_grace) is False
 
 
 def test_no_window_no_wakeless_answer():
