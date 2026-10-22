@@ -15,7 +15,10 @@
 * невалидная команда (после повтора моста) — ход ``failed`` без речи; ``passed`` — тихо;
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций;
-* весь ход — в бюджете ``TURN_DEADLINE_S``: истёк — ``understand.timeout``, строка ``provider_latency``.
+* весь ход — в бюджете ``TURN_DEADLINE_S``: истёк — ``understand.timeout``, строка ``provider_latency``;
+* ясный стоп — перебивание (``interrupt.py``, PR-9): речь и выступление гаснут по слову («стой» — сразу, «хватит» —
+  на границе предложения), эпоха + 1; отменённый ход старой эпохи — ``cancelled``, а доживший до ответа модели —
+  молчит и ничего не исполняет (``stale_epoch``).
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from rob_box_dialog.command import Command, Invalid, Result, ToolCall
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
 from rob_box_dialog.grammar import Tier1Command, match
+from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.tools_view import available_tools
@@ -78,7 +82,12 @@ class Ports(Protocol):
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "",
               cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "") -> None: ...
 
-    def cancel_speech(self, epoch: int, reason: str) -> None: ...
+    def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
+
+    def stop_perform(self, how: str) -> bool:
+        """Выступление: ``halt`` — сразу, ``stop`` — дочитать предложение. ``True`` — играющая музыка — его бит
+        (её снимает само выступление, общий стоп музыки не нужен)."""
+        ...
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None: ...
 
@@ -106,10 +115,8 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
     if command.kind == "set_voice":
         return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
-    dj = snapshot.top("DJ") is not None
-    if command.kind == "stop_all" and (snapshot.music.state == "playing" or dj):
-        stop = (ToolCall("dj_set", {"action": "stop"}), ToolCall("stop_music", {})) if dj else (ToolCall("stop_music", {}),)
-        return stop
+    if command.kind == "stop_all":
+        return stop_music_calls(snapshot)
     return ()
 
 
@@ -180,7 +187,10 @@ class TurnEngine:
         self._log = log or _LOG
 
     async def run(self, addressed: Addressed) -> TurnAggregate:
-        """Один адресованный ход до конца; итог — агрегат без текста (строка лога ``📊 [turn]``)."""
+        """Один адресованный ход до конца; итог — агрегат без текста (строка лога ``📊 [turn]``). Отмена задачи хода
+        (перебивание стопом) — итог ``cancelled`` и ``CancelledError`` дальше, как положено задаче asyncio."""
+        import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
+
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock))
@@ -195,6 +205,11 @@ class TurnEngine:
                 await self._tier1(turn, tier1, snap)
             else:
                 await self._understand(turn, snap)
+        except asyncio.CancelledError:
+            turn.stage, turn.status, turn.reason = "done", "cancelled", "interrupt"
+            self._log.info(f"{LOG_MARK} ход отменён перебиванием turn={turn.turn_id} epoch={turn.epoch}")
+            self._finish(turn)
+            raise
         except DeadlineExpired as expired:
             self._log.warning(latency_line(turn.provider, expired.what.split(":")[0], expired.waited_s * 1000,
                                            "timeout"))
@@ -219,10 +234,11 @@ class TurnEngine:
         """Tier-1 кодом: сессия — здесь, действия — владельцам, речь и движение — через порты. 0 вызовов LLM."""
         self._log.info(f"{LOG_MARK} tier1 kind={command.kind} args={dict(command.args)} turn={turn.turn_id}")
         turn.stage = "done"
-        if command.kind in ("stop_all", "silence"):
-            self._ports.cancel_speech(turn.epoch, f"tier1 {command.kind}")
-        if command.kind == "stop_all":
-            self._ports.intent(turn.turn_id, turn.epoch, "stop_motion")
+        actions = tier1_actions(command, snap)
+        stop = interrupt_for(command, turn.text, snap)
+        if stop.interrupts:
+            snap = self._interrupt(turn, stop)
+            actions = () if self._ports.stop_perform(str(stop.perform)) else stop.music
         if command.kind == "silence" and snap.top("Silence") is None:
             self.session.push_scene("Silence", "user")
         elif command.kind == "unsilence":
@@ -230,10 +246,30 @@ class TurnEngine:
         elif command.kind == "new_session":
             self.session.reset()
             self.log.reset()
-        results = await self._execute(turn, tier1_actions(command, snap), snap)
+        results = await self._execute(turn, actions, snap)
         said = tier1_phrase(command, results)
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
+
+    def _interrupt(self, turn: _Turn, stop: Interrupt) -> SessionSnapshot:
+        """REPLACE (§6.2): речь эпохи хода — отмена (граница по слову), движение — ``stop_motion``, эпоха + 1.
+        Ход сам переходит в новую эпоху: его стоп музыки — действие новой эпохи, а не отброшенное."""
+        self._ports.cancel_speech(turn.epoch, f"tier1 {stop.kind}", stop.speech_boundary)
+        if stop.stop_motion:
+            self._ports.intent(turn.turn_id, turn.epoch, "stop_motion")
+        old, turn.epoch = turn.epoch, self.session.replace_epoch()
+        self._log.info(f"{LOG_MARK} interrupt policy={stop.policy} kind={stop.kind} boundary={stop.speech_boundary} "
+                       f"epoch {old}→{turn.epoch} keep={sorted(stop.keep)} turn={turn.turn_id}")
+        return self.session.snapshot
+
+    def _stale(self, turn: _Turn, what: str) -> bool:
+        """Эпоха сменилась, пока ход ждал (перебили стопом, новая сессия): его ``what`` не исполняется."""
+        now = self.session.snapshot.epoch
+        if now == turn.epoch:
+            return False
+        self._log.warning(f"{LOG_MARK} stale_epoch {what} turn={turn.turn_id} epoch={turn.epoch} now={now} — отброшено")
+        turn.stage, turn.status, turn.reason = "done", "cancelled", "stale_epoch"
+        return True
 
     async def _understand(self, turn: _Turn, snap: SessionSnapshot) -> None:
         """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь."""
@@ -244,6 +280,8 @@ class TurnEngine:
             answer = await turn.deadline.wait(self._ports.ask(messages, tools, turn.deadline.left()), "llm")
             turn.llm_calls += answer.calls
             turn.provider, turn.tokens = answer.provider or turn.provider, turn.tokens + answer.tokens
+            if self._stale(turn, "answer"):
+                return
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
             if not isinstance(answer.result, Command):
@@ -262,6 +300,8 @@ class TurnEngine:
             self._log.info(f"{LOG_MARK} passed={cmd.passed}")
             return None
         results = await self._execute(turn, _runnable(cmd.actions, last), snap)
+        if self._stale(turn, "results"):
+            return None
         if not last and results and all(r.cls == _QUERY for r in results):
             return _query_data(results)
         self._speak(turn, cmd, results)
@@ -307,7 +347,7 @@ class TurnEngine:
         return messages
 
     def _say(self, turn: _Turn, text: str, voice: Optional[str] = None, emotion: Optional[str] = None) -> None:
-        if not text:
+        if not text or self._stale(turn, "speech"):
             return
         speech_id = self._ports.say(turn.turn_id, turn.epoch, text, voice, emotion)
         self.log.said(turn.turn_id, speech_id, text)

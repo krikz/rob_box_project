@@ -20,20 +20,26 @@ from rob_box_dialog.grammar import Tier1Command
 class Ports:
     """Записывающий транспорт: ответы LLM по очереди, исходы действий по имени тула."""
 
-    def __init__(self, answers=(), outcomes=None, ask_delay=0.0):
+    def __init__(self, answers=(), outcomes=None, ask_delay=0.0, perform_owns_music=False):
         self.answers = list(answers)
         self.outcomes = outcomes or {}
         self.ask_delay = ask_delay
+        self.perform_owns_music = perform_owns_music
         self.asked, self.executed, self.said, self.stages, self.cancels, self.intents = [], [], [], [], [], []
+        self.boundaries, self.performs, self.exec_epochs = [], [], []
+        self.gate = None  # asyncio.Event: ask ждёт его (LLM «думает»), пока тест не отпустит
 
     async def ask(self, messages, tools, timeout_s):
         self.asked.append((list(messages), [t.name for t in tools], timeout_s))
         if self.ask_delay:
             await asyncio.sleep(self.ask_delay)
+        if self.gate is not None:
+            await self.gate.wait()
         return self.answers.pop(0)
 
     async def execute(self, actions, snapshot, turn_id):
         self.executed.append([(a.tool, dict(a.args)) for a in actions])
+        self.exec_epochs.append(snapshot.epoch)
         out = []
         for n, a in enumerate(actions):
             status, data = self.outcomes.get(a.tool, ("done", {}))
@@ -48,8 +54,13 @@ class Ports:
     def stage(self, turn_id, epoch, stage, status, reason="", cls=None, llm_calls=0, provider="", source=""):
         self.stages.append((stage, status, reason))
 
-    def cancel_speech(self, epoch, reason):
+    def cancel_speech(self, epoch, reason, boundary="as_requested"):
         self.cancels.append(reason)
+        self.boundaries.append((epoch, boundary))
+
+    def stop_perform(self, how):
+        self.performs.append(how)
+        return self.perform_owns_music
 
     def intent(self, turn_id, epoch, kind):
         self.intents.append(kind)
@@ -289,3 +300,73 @@ def test_empty_text_turn_is_reflex_only(text):
     ports = Ports()
     agg = _run(_engine(ports), text)
     assert ports.asked == [] and agg.llm_calls == 0
+
+
+# -- перебивание по эпохе (PR-9 #3703, ADR-0150 §6.2) ---------------------------------------------------------------
+
+
+def test_halt_cuts_speech_now_stops_perform_motion_and_bumps_epoch():
+    ports = Ports()
+    engine = _engine(ports)
+    _with_music(engine)
+    engine.session.push_scene("DJ", "code")
+    agg = _run(engine, "стой")
+    assert ports.boundaries == [(0, "now")] and ports.performs == ["halt"] and ports.intents == ["stop_motion"]
+    assert engine.session.snapshot.epoch == 1 and agg.epoch == 1
+    assert ports.executed == [[("dj_set", {"action": "stop"}), ("stop_music", {})]]
+    assert ports.exec_epochs == [1], "стоп музыки — действие новой эпохи, не отброшенное"
+
+
+def test_enough_cuts_on_sentence_boundary_and_performance_owns_its_beat():
+    ports = Ports(perform_owns_music=True)
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "хватит")
+    assert ports.boundaries == [(0, "as_requested")] and ports.performs == ["stop"]
+    assert ports.executed == [], "бит выступления снимает само выступление (outro на такте), общий стоп не нужен"
+    assert engine.session.snapshot.epoch == 1 and engine.session.snapshot.top("Silence") is None
+
+
+def test_cancelled_turn_is_finished_as_cancelled_and_says_nothing():
+    ports = Ports(answers=[Answer(Command(speech="Жили-были дед и баба…"), "deepseek")])
+    engine = _engine(ports)
+
+    async def scenario():
+        ports.gate = asyncio.Event()
+        story = asyncio.ensure_future(engine.run(Addressed("расскажи сказку", VOICE)))
+        await asyncio.sleep(0)  # ход дошёл до LLM и ждёт ответа
+        story.cancel()  # хост: «стой» отменяет ход в полёте (TurnsInFlight)
+        with pytest.raises(asyncio.CancelledError):
+            await story
+        return await engine.run(Addressed("стой", VOICE))
+
+    agg = asyncio.run(scenario())
+    assert len(ports.asked) == 1, "отмена пришла, когда ход ждал LLM"
+    assert ports.said == [] and ports.executed == []
+    assert ("done", "cancelled", "interrupt") in ports.stages
+    assert agg.epoch == 1 and ports.boundaries == [(0, "now")]
+
+
+def test_answer_of_old_epoch_is_dropped_without_speech_or_actions():
+    dance = (ToolCall("play_animation", {"name": "happy"}),)
+    ports = Ports(answers=[Answer(Command(speech="Жили-были…", actions=dance), "deepseek")])
+    engine = _engine(ports)
+
+    async def scenario():
+        ports.gate = asyncio.Event()
+        story = asyncio.ensure_future(engine.run(Addressed("расскажи сказку", VOICE)))
+        await asyncio.sleep(0)
+        await engine.run(Addressed("хватит", VOICE))  # эпоха +1, ход сказки не отменили (гонка)
+        ports.gate.set()  # ответ модели старой эпохи пришёл
+        return await story
+
+    agg = asyncio.run(scenario())
+    assert agg.status == "cancelled" and ports.said == [] and ports.executed == []
+    assert ("done", "cancelled", "stale_epoch") in ports.stages
+
+
+def test_not_a_stop_does_not_cancel_speech_or_change_epoch():
+    ports = Ports(answers=[Answer(Command(speech="Сейчас три часа."), "deepseek")])
+    engine = _engine(ports)
+    _run(engine, "а который час")
+    assert ports.cancels == [] and ports.performs == [] and engine.session.snapshot.epoch == 0
