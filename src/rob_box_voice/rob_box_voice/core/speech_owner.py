@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U8
+from rob_box_dialog import knowledge as kn
 from rob_box_core.utterance import Utterance
 
 from . import speech_compat
@@ -204,12 +205,14 @@ class SpeechLedger:
         return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
 
     def schedule_boundary_stop(self, rec: SpeechRecord) -> None:
-        """``boundary=sentence``: заглушить на ближайшем конце предложения."""
+        """``boundary=sentence``: заглушить на ближайшем конце предложения, но слышимо не позже
+        ``SPEECH_STOP_AUDIBLE_MAX_S`` (§5.6.4); срок наступил раньше конца предложения — режется на сроке."""
         spoken = self.spoken_chars(rec)
+        deadline = self._clock() + kn.SPEECH_STOP_AUDIBLE_MAX_S - kn.SPEECH_OUTPUT_LATENCY_MS / 1000.0
         with self._lock:
             rec.stop_chars = next((e for e in rec.ends if e >= spoken), rec.text_len)
             share = rec.stop_chars / rec.text_len if rec.text_len else 0.0
-            rec.stop_at = (rec.started_at or self._clock()) + rec.duration_s * share
+            rec.stop_at = min(deadline, (rec.started_at or self._clock()) + rec.duration_s * share)
 
     def due_stops(self) -> List[SpeechRecord]:
         """Играющие реплики, чья граница отмены уже наступила."""

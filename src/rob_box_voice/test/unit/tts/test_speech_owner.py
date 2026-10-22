@@ -249,6 +249,25 @@ def test_boundary_sentence_cancel_waits_for_sentence_end(setup):
     assert (kind, ev.spoken_chars) == ("cancelled", 8)
 
 
+def test_boundary_sentence_cancel_is_heard_to_stop_within_the_cap(setup):
+    """A21 22.10 (#3700): куплет 149 символов без точки дочитывался 8.3 с после «хватит». Конец предложения дальше
+    срока — глушится на ``SPEECH_STOP_AUDIBLE_MAX_S`` минус задержка вывода (буфер доиграет её сам)."""
+    from rob_box_dialog import knowledge as kn
+    node, owner, clock = setup
+    tick = node.timers[0][1]
+    owner.admit(_chunk(text="ля " * 50, agent="personality", boundary=1), "s")  # 150 символов без точки
+    owner.started("s", np.zeros((16000 * 12, 2), dtype=np.float32), 16000)  # 12 с
+    clock.t += 1.0
+    node.subs["/voice/speech/cancel"](M.SpeechCancel(epoch=0, agent="personality"))
+    cut_s = kn.SPEECH_STOP_AUDIBLE_MAX_S - kn.SPEECH_OUTPUT_LATENCY_MS / 1000.0
+    clock.t += cut_s - 0.05
+    tick()
+    assert node.interrupts == 0
+    clock.t += 0.1
+    tick()
+    assert node.interrupts == 1  # слышимо умолкнет к ≤ 3 с после команды, а не через 11 с в конце куплета
+
+
 def test_output_latency_has_one_source():
     """Задержка вывода — одно число (knowledge): tts_node берёт из него дефолт, yaml его не переписывает (PR-7c)."""
     import pathlib
