@@ -182,3 +182,26 @@ def test_performance_speech_goes_to_its_host_and_the_block_holds_the_perform_col
     assert plan_host.perform_busy(node).active_segment == 0
     host.halt()
     assert executor.planner.state.busy() == {} and plan_host.perform_busy(node).active_segment is None
+
+
+class _BeatHost:
+    def __init__(self, takes: bool) -> None:
+        self.takes, self.asked = takes, 0
+
+    def add_backing(self) -> bool:
+        self.asked += 1
+        return self.takes
+
+
+def test_993_music_during_a_beatless_performance_becomes_its_beat():
+    """«Добавь бит» во время чтения без бита: клубный трек — бит выступления (на такте, речь не рвётся), а не трек
+    поверх; мелодия по названию и музыка вне выступления идут обычным путём."""
+    executor, under, *_ = _executor()
+    executor.performer = _BeatHost(takes=True)
+    result = asyncio.run(executor.execute(_call("1", "request_music", intent="track", text="добавь бит")))
+    assert result.data == {"status": "done", "backing": True} and under.executed == []
+    asyncio.run(executor.execute(_call("2", "request_music", intent="melody", text="калинку")))
+    assert under.executed == ["request_music"] and executor.performer.asked == 1
+    executor.performer = _BeatHost(takes=False)  # выступления нет или бит уже играет
+    asyncio.run(executor.execute(_call("3", "request_music", intent="track", text="поставь трек")))
+    assert under.executed == ["request_music", "request_music"]

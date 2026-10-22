@@ -114,8 +114,14 @@ class PerformHost:
         return self._command(lambda block, now: block.halt(now))
 
     def add_backing(self, backing: str = "beat") -> bool:
-        """«Добавь бит» во время чтения (#993)."""
-        return self._command(lambda block, now: block.add_backing(backing, now))
+        """«Добавь бит» во время чтения (#993): ``True`` — бит заказан выступлению (его ещё не было)."""
+        with self._lock:
+            block = self.block
+            if block is None or block.ended:
+                return False
+            effects = block.add_backing(backing, self._clock())
+            self._apply(effects)
+            return bool(effects)
 
     # -- события владельцев ---------------------------------------------------------------------------------------------
 
