@@ -106,9 +106,10 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
     if command.kind == "set_voice":
         return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
-    if command.kind == "stop_all" and (snapshot.music.state == "playing" or snapshot.music.dj):
-        return (ToolCall("dj_set", {"action": "stop"}), ToolCall("stop_music", {})) if snapshot.music.dj \
-            else (ToolCall("stop_music", {}),)
+    dj = snapshot.top("DJ") is not None
+    if command.kind == "stop_all" and (snapshot.music.state == "playing" or dj):
+        stop = (ToolCall("dj_set", {"action": "stop"}), ToolCall("stop_music", {})) if dj else (ToolCall("stop_music", {}),)
+        return stop
     return ()
 
 

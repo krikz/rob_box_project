@@ -60,9 +60,9 @@ class Tier1Runner:
         watch = getattr(node, "_speaking_watch", None)
         return SessionSnapshot(
             agent="personality", session_id="v1", epoch=0, started_at=0.0,
-            scenes=(SceneFrame("Silence", "user"),) if silenced else (),
-            music=MusicStateRef("playing" if playing else "idle", title=title or None,
-                                dj=bool(player is not None and player.dj)),
+            scenes=((SceneFrame("Silence", "user"),) if silenced else ())
+            + ((SceneFrame("DJ", "code"),) if player is not None and player.dj else ()),
+            music=MusicStateRef("playing" if playing else "idle", title=title or None),
             speaking=bool(watch is not None and watch.speaking), volume_channel=self.volume_channel,
             pending_ask=perform_ask.ASK if perform_ask.window(node) is not None else None)
 
