@@ -457,6 +457,21 @@ TOOL_GROUPS_EXPLICIT: Tuple[str, ...] = ("voice",)
 TOOLS_CODE_ONLY: Tuple[str, ...] = ("lookup_melody", "search_melody", "add_music_material")
 #: Классы, действий которых в одной команде не больше одного (каждого): один трек и одна цель движения за ход.
 SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
+#: Память о людях (ADR-0150 §7.4-7.5, PR-11 #3705): факты привязаны к ``SpeakerRef.person_ref`` СНИМКА, а не к тому,
+#: что написала LLM. Исполнитель подставляет собеседника в эти тулы сам; нет ``person_ref`` - ``rejected{no_person}``
+#: (запомнить «никому» нельзя: раньше такой факт становился общим для всех, #1770). Имя не нужно: у ``person_ref``
+#: может быть лишь кличка (#3858).
+PERSON_SCOPED_TOOLS: Tuple[str, ...] = ("memory_save", "memory_search", "memory_context")
+#: Имя аргумента этих тулов на стороне MCP (``person_ref`` называется так до ADR-0130 этапа 3: голосовой ``speaker_id``).
+PERSON_ARG = "speaker_id"
+#: Агенты с собеседником в снимке; чат Telegram и ТАРС ``person_ref`` не имеют и привязку не получают.
+PERSON_AGENTS: Tuple[str, ...] = ("personality",)
+#: Причина отказа, когда в снимке нет ``person_ref`` (ключ фразы ``local.rejected.no_person``).
+NO_PERSON_REASON = "no_person"
+#: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
+#: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
+DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
+NO_EVIDENCE_REASON = "no_evidence"
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),

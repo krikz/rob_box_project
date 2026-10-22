@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -368,12 +369,22 @@ def _dsm() -> DialogueStateMachine:
     return dsm
 
 
+class _OwnerTools(FakeToolProvider):
+    """Как реальный MCP: успех ``memory_save`` несёт в данных результата ``saved{fact_id}`` владельца памяти."""
+
+    async def execute(self, call):  # type: ignore[no-untyped-def]
+        result = await super().execute(call)
+        if call.name == "memory_save" and not result.is_error:
+            return dataclasses.replace(result, data={"event": "saved", "fact_id": 1})
+        return result
+
+
 class _Spoken:
     """Тулы хода v1: ``memory_save``, ``get_current_time`` и ``speak_text`` с журналом реплик."""
 
     def __init__(self) -> None:
         self.said: List[str] = []
-        self.tools = FakeToolProvider()
+        self.tools = _OwnerTools()
         for name, handler in (("memory_save", lambda a: {"fact_id": 1, "fact": a["fact"]}),
                               ("get_current_time", lambda a: "12:00"), ("speak_text", self._say)):
             self.tools.register(ToolSpec(name=name, description=name, parameters={"type": "object"}), handler)

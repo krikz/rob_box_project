@@ -26,6 +26,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import memory
 from rob_box_dialog.interrupt import survives
 from rob_box_dialog.respond import ActionResult
 
@@ -91,12 +92,20 @@ class Executor:
         import asyncio  # noqa: PLC0415
 
         self._loop = asyncio.get_running_loop()
-        requests = []
-        for n, call in enumerate(actions):
-            cls = kn.TOOL_CLASSES[call.tool]
-            requests.append(ActionRequest(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, call.tool,
-                                          MappingProxyType(dict(call.args)), cls, deadline_s(cls)))
-        return list(await asyncio.gather(*(self._one(r) for r in requests)))
+        planned = [self._request(call, snapshot, f"{turn_id}/{n}") for n, call in enumerate(actions)]
+        sent = iter(await asyncio.gather(*(self._one(r) for r, bound in planned if bound)))
+        return [next(sent) if bound else _result(r, OwnerEvent(r.turn_id, "rejected", kn.NO_PERSON_REASON))
+                for r, bound in planned]
+
+    @staticmethod
+    def _request(call: Any, snapshot: Any, turn_id: str) -> Tuple[ActionRequest, bool]:
+        """Запрос владельцу и «есть ли кому его слать»: тулы памяти получают собеседника из снимка вместо слов LLM,
+        а без ``person_ref`` в снимке запроса нет (``memory.bind_person``)."""
+        cls = kn.TOOL_CLASSES[call.tool]
+        args = memory.bind_person(call, snapshot)
+        request = ActionRequest(turn_id, snapshot.epoch, snapshot.agent, call.tool,
+                                MappingProxyType(dict(call.args if args is None else args)), cls, deadline_s(cls))
+        return request, args is not None
 
     def expects(self, ref: str) -> bool:
         """Ждёт ли исполнитель событие с этим ``ref`` (запрос в полёте или обещание ``pending``): хост с несколькими
@@ -200,9 +209,12 @@ class Executor:
 
 def _result(request: ActionRequest, event: OwnerEvent) -> ActionResult:
     known = event.status in kn.ACTION_STATUSES
+    status, reason = (event.status, event.reason) if known else ("rejected", "bad_event")
+    if status == "done" and not memory.has_evidence(request.tool, event.data):  # успех без доказательства владельца
+        status, reason = "rejected", kn.NO_EVIDENCE_REASON
     return ActionResult(
         turn_id=request.turn_id, epoch=request.epoch, agent=request.agent, tool=request.tool, cls=request.cls,
-        status=event.status if known else "rejected", reason=(event.reason if known else "bad_event") or None,
+        status=status, reason=reason or None,
         data=MappingProxyType(dict(event.data)),
         event_ref=event.event_ref,
     )

@@ -126,12 +126,15 @@ class MemorySaveTool(MCPTool):
 
         try:
             fact_id = memory.save_fact(fact, category=category, speaker_id=speaker_id)
+            if not fact_id:  # saved{fact_id} без id - не запись: «Запомнил» по нему не говорится (ADR-0148)
+                return MCPToolResult(success=False, data=None, message="Память не вернула id записи.")
             self.log_info(
                 f"[memory_save] Saved fact #{fact_id} speaker={speaker_id or 'global'}: {fact[:60]}..."
             )
             return MCPToolResult(
                 success=True,
-                data={"fact_id": fact_id, "fact": fact, "category": category, "speaker_id": speaker_id},
+                data={"event": "saved", "fact_id": fact_id, "fact": fact, "category": category,
+                      "speaker_id": speaker_id},
                 message=f"Факт сохранён (id={fact_id}).",
             )
         except Exception as e:
