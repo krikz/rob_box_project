@@ -9,10 +9,11 @@
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from rob_box_core import dialog_engine
 
 
 def generate_launch_description():
@@ -128,7 +129,7 @@ def generate_launch_description():
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     # Issue #1004: tts_node.yaml первым, launch-override provider — чтобы
     # переключать TTS провайдера одной строкой без правки YAML.
-    tts_node = Node(
+    tts_node_args = dict(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
@@ -242,8 +243,8 @@ def generate_launch_description():
         tool_provider_arg,
         audio_node,
         led_node,
-        dialogue_node,  # ✅ Phase 2: DeepSeek streaming
-        tts_node,       # ✅ Phase 2: Silero TTS (MiniMax opt-in via provider=minimax)
+        # ✅ dialogue_node (v1) + tts_node (Silero/MiniMax opt-in) — по флагу dialog_engine (PR-8 #3702)
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[dialogue_node, tts_node_args]),
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition

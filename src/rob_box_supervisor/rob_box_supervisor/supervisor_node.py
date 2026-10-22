@@ -58,7 +58,7 @@ from rob_box_voice.tts_voice_registry import voices_for as _voices_for
 # AVATAR_COMMAND_TOPIC/AVATAR_COMMAND_RESULT_TOPIC) — это и было причиной
 # регрессии: rob_box_core.avatar_command содержит актуальные значения
 # контракта, а supervisor импортирует старые. Теперь импортируем SoT.
-from rob_box_core import speech_client
+from rob_box_core import dialog_engine, speech_client
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
@@ -203,6 +203,23 @@ DIALOGUE_CONTROL_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
 # (вместо ``DIALOGUE_CONTROL_ACTIONS``-итерации — читаемость).
 DIALOGUE_CONTROL_PAUSE: str = "pause"
 DIALOGUE_CONTROL_RESUME: str = "resume"
+
+
+class _NoDialogueControl:
+    """``/dialogue/control`` при ``dialog_engine=v2`` (ADR-0150 PR-8, #3702): топика нет — слушает его только
+    ``dialogue_node`` v1. Публикация — громкий отказ (``_publish_dialogue_control`` вернёт ``False``), а не тихий
+    успех; пауза личности v2 — DialogControl ``/dialog/control`` (PR-10/PR-13)."""
+
+    def publish(self, _msg: Any) -> None:
+        raise RuntimeError("dialog_engine=v2: /dialogue/control нет (DialogControl — PR-10/PR-13)")
+
+
+def _dialogue_control_publisher(node: Any) -> Any:
+    """Писатель ``/dialogue/control`` по флагу движка: ``v1`` — топик, ``v2`` — :class:`_NoDialogueControl`."""
+    if dialog_engine.declare(node) == dialog_engine.V1:
+        return node.create_publisher(RosString, DIALOGUE_CONTROL_TOPIC, 10)
+    return _NoDialogueControl()
+
 
 # AV-27 / issue #1919 — TTS picker топики (симметрично /avatar/set_voice_mode).
 # Payload — JSON в std_msgs/String, как принято в supervisor_node. См.
@@ -498,9 +515,9 @@ class AvatarSupervisor(Node):
         # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
         # resume в finally) и для обработки явных
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
-        self._dialogue_control_pub = self.create_publisher(
-            RosString, DIALOGUE_CONTROL_TOPIC, 10
-        )
+        # ADR-0150 PR-8 (#3702): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
+        # топика нет (пауза личности v2 — DialogControl ``/dialog/control``, PR-10/PR-13).
+        self._dialogue_control_pub = _dialogue_control_publisher(self)
         # AV-28 §P7 (issue #1920) — voice style preset/language подписки
         # удалены по ADR-0087: канал был «честный no-op» после PR #2255
         # (whitelist + log + ack, без побочного эффекта) и без владельца
