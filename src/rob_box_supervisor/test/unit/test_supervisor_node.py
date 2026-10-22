@@ -182,6 +182,20 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
         self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
 
+    def test_v2_has_no_dialogue_control_topic(self) -> None:
+        """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` ``/dialogue/control`` не создаётся, команда — отказ."""
+        from unittest.mock import patch
+
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = AvatarSupervisor()
+        try:
+            self.assertNotIn(DIALOGUE_CONTROL_TOPIC, node._publishers)
+            self.assertFalse(node._publish_dialogue_control(DIALOGUE_CONTROL_PAUSE, "test"))
+        finally:
+            node.destroy_node()
+
     def test_legacy_mode_mapping(self) -> None:
         """``LEGACY_VOICE_MODE_TO_ACTION`` — маппинг ``respeaker→resume``,
         ``off→pause``. Тест-инвариант: словарь полный, ключи только эти два."""

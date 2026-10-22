@@ -109,6 +109,7 @@ from .core.voice_owner import attach_voice_owner
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
 # огибающая; старые JSON-входы — один адаптер speech_compat.
 from .core import speech_compat
+from rob_box_core import dialog_engine
 from .core.speech_owner import SpeechOwner, owner_of
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -1244,7 +1245,9 @@ class TTSNode(Node):
             self, output_latency_ms=int(self.get_parameter("output_latency_ms").value)
         )
         self._speech.attach()
-        speech_compat.attach_legacy(self, avatar_control_topic=self.avatar_control_topic)
+        # PR-8 (#3702): ответы dialogue_node (/voice/dialogue/response) адаптер слушает только при dialog_engine=v1.
+        speech_compat.attach_legacy(self, avatar_control_topic=self.avatar_control_topic,
+                                    engine=dialog_engine.declare(self))
 
         # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
         # Контракт String JSON повторяет /voice/tts/request (см. dialogue_callback)

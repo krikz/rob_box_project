@@ -37,7 +37,7 @@ from rob_box_core.avatar_command import (
     make_telegram_client_id,
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
-from rob_box_core import speech_client
+from rob_box_core import dialog_engine, speech_client
 from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
@@ -226,13 +226,15 @@ class TelegramNode(Node):
         # duplicated into the active Telegram chat so the operator sees
         # what the robot says (removed in 88cecc91 because of the
         # asyncio-loop bug; reimplemented queue-based, see _on_response).
+        # ADR-0150 PR-8 (#3702): топик пишет только dialogue_node v1 — при dialog_engine=v2 не подписываемся
+        # (эхо ответов v2 в чат — PR-12a).
         self._response_sub = self.create_subscription(
             String,
             "/voice/dialogue/response",
             self._on_response,
             _RE,
             callback_group=g,
-        )
+        ) if dialog_engine.declare(self) == dialog_engine.V1 else None
         # AV-10 — direct publishers оставлены как fallback для Phase 1
         # (монитор-режим). Публикации идут только после успешного
         # AcquireFloor (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
