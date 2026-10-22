@@ -211,6 +211,8 @@ class VisionFaceNode(VisionHailoNode):
         # обрывается ЗДЕСЬ, до вызова note_voice_identification, поэтому
         # recognizer её никогда не видит.
         self._speaker_unknown_total: int = 0
+        #: Результаты из E2E-БД дикторов, не допущенные в галерею (#3876).
+        self._e2e_voice_skip_total: int = 0
         #: Сколько раз уже сработал ``_log_stats`` — троттлинг предупреждения
         #: про мёртвое выравнивание (issue #2777) считает по этому счётчику,
         #: а не по времени: таймер и так тикает с фиксированным периодом
@@ -451,6 +453,16 @@ class VisionFaceNode(VisionHailoNode):
         name = str(msg.name or '')
         if not speaker_id or not name:
             return
+        # Issue #3876 — профиль из E2E-БД дикторов (синтетические «Саша»,
+        # «Борис») не имя живого человека: в боевую галерею /data/faces его
+        # не копируем. Метку ставит единственная точка выхода speaker_id_node.
+        if bool(getattr(msg, 'e2e_db', False)):
+            self._e2e_voice_skip_total += 1
+            self.get_logger().info(
+                f'[face] имя из e2e-голоса не копирую: {name!r} '
+                f'(speaker_id={speaker_id[:8]}, E2E-БД дикторов)'
+            )
+            return
         # Issue #2748 — источник ``source="register"`` (speaker_id_node,
         # момент регистрации) принимается НАРАВНЕ с обычным узнаванием:
         # имя названо самим человеком, доверия к нему больше, чем к
@@ -488,6 +500,7 @@ class VisionFaceNode(VisionHailoNode):
         # которая никому не нужна.
         skip_reasons = (
             ('голос_не_опознан', self._speaker_unknown_total),
+            ('e2e_голос', self._e2e_voice_skip_total),
             ('нет_лица', stats.get('voice_merge_skip_no_face', 0)),
             ('два+_лица', stats.get('voice_merge_skip_multi_face', 0)),
             ('устарело', stats.get('voice_merge_skip_stale', 0)),

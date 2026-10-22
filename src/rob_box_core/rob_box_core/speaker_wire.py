@@ -114,6 +114,13 @@ def _register_error_payload(msg: Any) -> Dict[str, Any]:
 
 def speaker_result_to_payload(msg: Any) -> Dict[str, Any]:
     """Сообщение ``SpeakerResult`` -> словарь, который читают потребители."""
+    payload = _event_payload(msg)
+    if bool(getattr(msg, "e2e_db", False)):  # результат из E2E-БД дикторов (#3876)
+        payload["e2e_db"] = True
+    return payload
+
+
+def _event_payload(msg: Any) -> Dict[str, Any]:
     event = int(msg.event)
     if event == EVENT_MATCH:
         return _match_payload(msg)
@@ -168,6 +175,7 @@ def fill_speaker_result(msg: Any, payload: Mapping[str, Any]) -> Any:
     msg.ok = bool(payload.get("ok", False))
     msg.reused_profile = bool(payload.get("reused_profile", False))
     msg.already_known = bool(payload.get("already_known", False))
+    msg.e2e_db = bool(payload.get("e2e_db", False))
     for key, field in (("confidence", "confidence"), ("tentative_conf", "tentative_conf"),
                        ("duration_s", "duration_s"), ("min_required_s", "min_required_s"),
                        ("candidate_score", "candidate_score")):
