@@ -443,3 +443,22 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 
 Файлы актов **генерируются**. Правка руками переживёт ровно до следующего
 запуска генератора.
+
+
+## Ожидание событий и намеренное перебивание (#3857)
+
+Харнесс (`e2e_voice_test.sh`, разбор лога — `e2e_events.py`) не спит фиксированные 40 с и не ждёт «тишины» 35 с, а каждые 2 с читает лог робота:
+
+- **ответ готов** (v2): `📊 [turn] … stage=done` хода и все `🗣️ SpeechEvent` его реплик закрыты (`finished`/`cancelled`/`rejected` по `speech_id`); v1 — `🔊 TTS: speech_id=X` ↔ `Публикую TTS finished event: speech_id=X`;
+- **робот ещё говорит** — `SpeechEvent started`/`queued` без пары; реплика без событий дольше 60 с считается протухшей; после конца речи ещё 2 с (хвост ReSpeaker);
+- потолок ожидания — прежний `E2E_REACTION_WINDOW` / `E2E_SILENCE_WAIT_MAX`; `E2E_EVENT_WAITS=0` возвращает слепой sleep; в лог шага пишется `reply_after=Ns, silence_after=Ms`.
+
+Поле шага `barge_in` — **намеренное** перебивание (тишину не ждём):
+
+```json
+"barge_in": {"after": "speech_started|llm_request|segment_started", "n": 1, "delay_sec": 3.0}
+```
+
+Якорь считается в логе предыдущей фразы шага (после её `ПРИНЯТО`): N-й `SpeechEvent started` либо N-я `🔎 LLM REQUEST START`; играем через `delay_sec` по часам робота. Предыдущий шаг ждёт не конца ответа, а этого якоря. Не наступил за потолок — `SKIP barge_in_anchor_missing` (не PASS). `segment_started` считает N-й `SpeechEvent started` окна фразы: в строке лога нет `turn_id`/id выступления, отличить куплет от обычной реплики по логу нельзя.
+
+Поле шага `silent_ok: true` (или `expect: "silent_ok"`) — ход без речи допустим (`stage=done`, `SpeechEvent` нет).

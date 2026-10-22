@@ -936,7 +936,7 @@ check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
 import json, os, re, sys
 # «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
-from e2e_tool_match import tool_invoked
+from e2e_tool_match import tool_invoked, strip_llm_request_dump
 # Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
 from e2e_tool_match import (
     first_invocation_position,
@@ -946,7 +946,8 @@ from e2e_tool_match import (
 
 acc_path = os.environ["ACCEPTANCE_FILE"]
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
-    logs = _f.read()
+    # Issue #3860: дамп LLM-запроса (recent_actions с именами тулов прошлых ходов) -- не вызов.
+    logs = strip_llm_request_dump(_f.read())
 
 try:
     acc = json.load(open(acc_path))
@@ -1915,6 +1916,41 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
     #    Ждём пока в логах нет свежих TTS-событий последние E2E_SILENCE_WAIT сек.
+    # issue #3857: v2 -- ждём СОБЫТИЙ (SpeechEvent без пары finished/cancelled), а не 20+15 с по grep
+    # строк синтеза; barge_in шага -- НЕ ждём тишины, а ждём якорь перебивания и играем поверх речи.
+    E2E_STEP_SILENCE_SEC=0
+    local _barge_mode=0 _barge_spec="${E2E_STEP_BARGE_IN:-}" _quiet_done=0 _barge_rc=0
+    if [ -n "$_barge_spec" ]; then
+        _barge_mode=1; _quiet_done=1
+        if [ -n "${E2E_PENDING_ANCHOR_SINCE:-}" ] && [ "${E2E_PENDING_ANCHOR_SPEC:-}" = "$_barge_spec" ]; then
+            :   # предыдущий шаг уже дождался этого якоря (E2E_ANCHOR_*)
+        elif [ -n "${E2E_LAST_PLAY_SINCE:-}" ]; then
+            wait_barge_anchor "$E2E_LAST_PLAY_SINCE" "$_barge_spec"; _barge_rc=$?
+        else
+            _barge_rc=1
+        fi
+        E2E_PENDING_ANCHOR_SINCE=""; E2E_PENDING_ANCHOR_SPEC=""
+        if [ "$_barge_rc" = "2" ]; then
+            log "STEP ${label}: ❌ ${E2E_ANCHOR_ERROR:-barge_in не разобран} -- это дефект СЦЕНАРИЯ"
+            emit_step "${label} FAIL barge_in_invalid"
+            mark_fail_kind infra
+            return 1
+        elif [ "$_barge_rc" != "0" ]; then
+            log "STEP ${label}: ⏭ SKIP -- якорь перебивания ${_barge_spec} не наступил (за ${E2E_REACTION_WINDOW}s нет события в логе предыдущей фразы): перебивать было нечего, шаг НЕ засчитан как PASS"
+            emit_step "${label} SKIP barge_in_anchor_missing"
+            return 4
+        fi
+    elif [ "${E2E_EVENT_WAITS:-1}" != "0" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+        _quiet_done=1
+        if wait_robot_quiet; then
+            log "STEP ${label}: робот молчит -- команду можно играть (silence_after=${E2E_STEP_SILENCE_SEC}s)"
+        else
+            log "STEP ${label}: ⚠️ робот не замолчал за ${E2E_STEP_SILENCE_SEC}s (потолок E2E_SILENCE_WAIT_MAX) -- играю команду поверх. Если шаг упадёт, смотри сюда: возможен SpeechEvent started без finished на роботе, а не регресс в обработке команды."
+            printf 'STEP %s: silence wait exceeded %ss\n' "$label" "$E2E_STEP_SILENCE_SEC" \
+                >> "$OUT_DIR/silence_wait_exceeded.log" 2>/dev/null || true
+        fi
+    fi
+    if [ "$_quiet_done" != "1" ]; then
     E2E_SILENCE_WAIT="${E2E_SILENCE_WAIT:-15}"
     # Абсолютный предел ожидания. Окно тишины СБРАСЫВАЕТСЯ каждый раз, когда
     # робот заговорил, поэтому без такого предела цикл не завершается никогда:
@@ -1947,7 +1983,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         fi
         sleep 5
     done
-    log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть"
+    E2E_STEP_SILENCE_SEC=$(( $(date -u +%s) - loop_start ))
+    log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть (silence_after=${E2E_STEP_SILENCE_SEC}s)"
+    fi
 
     # 3a. Backlog-аккумулятор (ds01/ds02 voice_core_suite_v1.json): фраза
     #     БЕЗ wake-слова копится в SpeechAccumulator, полного TTS-цикла НЕ
@@ -1960,8 +1998,21 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
             pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
-            sleep "$E2E_REACTION_WINDOW"
-            if check_backlog_accumulated "$BEFORE"; then
+            # issue #3857: опрос маркера каждые 2 с до потолка, а не слепой sleep 40 с.
+            local _bt0 _bfound=1
+            _bt0="$(date +%s)"
+            if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
+                sleep "$E2E_REACTION_WINDOW"
+                check_backlog_accumulated "$BEFORE"; _bfound=$?
+            else
+                while :; do
+                    check_backlog_accumulated "$BEFORE" && { _bfound=0; break; }
+                    [ $(( $(date +%s) - _bt0 )) -ge "$E2E_REACTION_WINDOW" ] && break
+                    sleep "${E2E_EVENT_POLL:-2}"
+                done
+                log "STEP ${label}: backlog reply_after=$(( $(date +%s) - _bt0 ))s"
+            fi
+            if [ "$_bfound" = "0" ]; then
                 log "STEP ${label}: ✅ backlog accumulated (no_wake_word)"
                 emit_step "${label} OK backlog"
                 return 0
@@ -2001,7 +2052,13 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             BEFORE="$accepted_before"
             log "STEP ${label}: attempt ${attempt}/${E2E_MAX_ATTEMPTS} — ПРИНЯТО уже было, PLAY пропущен, жду завершения цикла (issue #2933)"
         else
+            if [ "$_barge_mode" = "1" ] && [ "$attempt" = "1" ]; then
+                local _barge_after
+                _barge_after="$(barge_hold "$_barge_spec")"
+                log "STEP ${label}: barge_in after_started=${_barge_after}s (speech_id=${E2E_ANCHOR_ID:--}, якорь $(_barge_field "$_barge_spec" after)#$(_barge_field "$_barge_spec" n), delay_sec=$(_barge_field "$_barge_spec" delay_sec))"
+            fi
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            E2E_LAST_PLAY_SINCE="$BEFORE"
             log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
             # Громкость динамика 100% (по умолчанию; явный >100% доступен через
             # inputs.volume в workflow, e.g. -f volume=120).
@@ -2019,10 +2076,22 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             fi
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         fi
-        sleep "$E2E_REACTION_WINDOW"
+        step_wait_after_play "$BEFORE"
 
-        check_cycle "$BEFORE"
-        rc=$?
+        if [ "$E2E_WAIT_MODE" = "anchor" ]; then
+            # Следующий шаг перебивает: конца ответа не ждём (и не ждём TTS finished, его не будет).
+            # Якорь невозможен без принятой фразы (e2e_events.anchor считает события ПОСЛЕ ПРИНЯТО).
+            log "STEP ${label}: ответ начался -- якорь перебивания следующего шага наступил, конца ответа не ждём (barge_in)"
+            rc=0
+        else
+            check_cycle "$BEFORE"
+            rc=$?
+            if [ "$rc" != "0" ] && [ "$rc" != "2" ] && [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && [ "${E2E_REPLY_NO_SPEECH:-0}" = "1" ]; then
+                log "STEP ${label}: ход завершён без речи (📊 [turn] stage=done, SpeechEvent нет) -- шаг помечен silent_ok"
+                rc=0
+            fi
+        fi
+        log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s, silence_after=${E2E_STEP_SILENCE_SEC:-0}s (wait=${E2E_WAIT_MODE})"
         if [ "$rc" = "0" ]; then
             log "STEP ${label}: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)"
             reaction=1
@@ -2398,7 +2467,7 @@ sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) els
 import json, os, re, sys
 # «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
-from e2e_tool_match import tool_invoked
+from e2e_tool_match import tool_invoked, strip_llm_request_dump
 # Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
 from e2e_tool_match import (
     first_invocation_position,
@@ -2415,7 +2484,8 @@ from e2e_tool_match import (
 )
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
-    logs = _f.read()
+    # Issue #3860: дамп LLM-запроса (в v2 с launch-префиксом ``[dialog_node-3]``) -- не вызов тула.
+    logs = strip_llm_request_dump(_f.read())
 def has(s, frag):
     return tool_invoked(logs, frag)
 expected_call = acc.get("expected_tool_calls", []) or []
@@ -2836,8 +2906,19 @@ if [ -n "$SCENARIO_FILE" ]; then
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             [ -z "$step_window_start" ] && step_window_start="$STEP_BEFORE"
+            # issue #3857: поля шага для ожидания событий. Перебивание -- только на первой попытке
+            # (ретрай после перебивания играется в тишине).
+            E2E_STEP_BARGE_IN="$barge_in_json"
+            [ "$attempt_n" -gt 0 ] && E2E_STEP_BARGE_IN=""
+            E2E_STEP_NEXT_BARGE_IN="$next_barge_in_json"
+            E2E_STEP_SILENT_OK="$silent_ok"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
+            if [ "$rc" = "4" ]; then
+                # SKIP barge_in_anchor_missing (emit_step уже сделан в run_step): не PASS и не FAIL
+                step_skipped=1
+                break
+            fi
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
             parse_transcript "$label" "$STEP_BEFORE" "$text"
             # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start (не fail, не

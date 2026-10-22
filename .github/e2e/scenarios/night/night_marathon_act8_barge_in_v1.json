@@ -32,6 +32,11 @@
       "label": "n803_barge_in_new_topic",
       "voice": "anton",
       "text": "Робот, стоп, лучше скажи, сколько будет семью восемь.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
       "patterns": [
         "ясный стоп|Воспроизведение прервано|SpeechEvent cancelled"
       ],
@@ -54,6 +59,11 @@
       "label": "n805_hard_stop",
       "voice": "anton",
       "text": "Робот, всё, хватит, замолчи.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
       "patterns": [
         "ясный стоп|Воспроизведение прервано|SpeechEvent cancelled"
       ],
@@ -75,6 +85,11 @@
       "label": "n807_merge_addition",
       "voice": "anton",
       "text": "Робот, и после каждого числа добавляй слово шаг.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
       "patterns": [
         "task_delta|speak_text"
       ],
@@ -129,6 +144,11 @@
       "label": "n811_stop_speech_keep_music",
       "voice": "anton",
       "text": "Робот, хватит читать, а музыку оставь.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
       "patterns": [],
       "_why": "Зонд разделения каналов речь/музыка. Ассерта нет: «оставь музыку» робот сегодня понимает нестабильно, а must_not:stop_music здесь сделал бы шаг красным на каждом прогоне без диагностики."
     },
