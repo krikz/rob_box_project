@@ -767,6 +767,10 @@ IDENTITY_ASK_STRANGER_GAP_S = 600.0
 IDENTITY_FACE_RECENT_S = 10.0
 #: Бюджет времени хода (В5): истёк — отмена ожиданий и ``understand.timeout``.
 TURN_DEADLINE_S = 12
+#: Окно истории для LLM (§7.3): не больше стольких ходов и токенов (оценка ``rob_box_core.token_estimate``);
+#: старые ходы выпадают целиком, ход не режется посередине.
+TURN_WINDOW_MAX_TURNS = 12
+TURN_WINDOW_MAX_TOKENS = 3000
 #: Query-цикл (§4.1): не больше двух итераций данных → LLM на ход.
 LLM_QUERY_ITERATIONS_MAX = 2
 #: Невалидная команда LLM возвращается модели перечнем нарушений (tool-результат на её вызов ``command``) — столько
