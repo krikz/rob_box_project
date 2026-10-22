@@ -573,6 +573,44 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/voice/dialogue/response", [s.topic for s in node._created_subscriptions])
         self.assertIsNone(node._response_sub)
 
+    def test_v2_say_is_still_verbatim_one_request_and_no_chat_agent_turn(self) -> None:
+        """#3727 при v2 (PR-12a): /say — ровно один SpeechRequest с введённым текстом, мимо телеграм-агента
+        (в /voice/stt/utterance ничего не уходит, LLM не зовётся)."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        speech = next(p for p in node._created_publishers if p.topic == "/voice/speech/request")
+        stt = next(p for p in node._created_publishers if p.topic == "/voice/stt/utterance")
+        node.publish_tts_with_floor("Ровно этот текст", receipt_chat_id=7)
+        self.assertEqual(speech.publish.call_count, 1)
+        self.assertEqual(speech.publish.call_args.args[0].text, "<speak>Ровно этот текст</speak>")
+        stt.publish.assert_not_called()
+
+    def test_v1_does_not_subscribe_dialog_output(self) -> None:
+        """PR-12a (#3706): при v1 ответ в чат — эхо Личности, ``/dialog/output`` не слушаем (v1 не ломаем)."""
+        self.assertNotIn("/dialog/output", [s.topic for s in self.node._created_subscriptions])
+
+    def test_v2_routes_dialog_output_to_its_chat_only(self) -> None:
+        """PR-12a (#3706): при v2 ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;
+        чужой агент, чужой канал и пустой текст — мимо."""
+        from unittest.mock import MagicMock
+
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        loop, queue = MagicMock(), MagicMock()
+        node._telegram_loop, node._response_queue = loop, queue
+        sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
+        out = types.SimpleNamespace
+        sub.callback(out(agent="personality", channel_ref="telegram:7", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="headset:1", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="", speech_id=""))
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Сейчас 12:30.", speech_id="s1"))
+        loop.call_soon_threadsafe.assert_called_once_with(queue.put_nowait, (7, "Сейчас 12:30."))
+
     async def test_response_echo_pushes_to_queue(self) -> None:
         """``_on_response`` must parse the SSML payload and push
         ``(chat_id, text)`` into the telegram loop's queue.
@@ -785,6 +823,15 @@ class TestMessageDebounce(unittest.IsolatedAsyncioTestCase):
         args, kwargs = node.forward_to_stt.call_args
         self.assertEqual(args[0], "продолжай\nпродолжай")
         self.assertEqual(kwargs.get("chat_id"), 42)
+
+    async def test_every_message_is_logged_as_tg_in_line_before_debounce(self) -> None:
+        """PR-12a (#3706): канал координатора — строка ``[tg-in]`` в логе telegram-bot на каждое сообщение."""
+        update, context, node = self._make_update_and_context("Клод, проверь сборку")
+
+        await self.messages.text_message_handler(update, context)
+
+        node.get_logger.return_value.info.assert_any_call(
+            "📨 [tg-in] chat_id=42 coordinator=true text=Клод, проверь сборку")
 
     async def test_single_message_forwarded_with_chat_id(self) -> None:
         """A single message is forwarded with the [TG:] source chat_id."""

@@ -16,6 +16,11 @@ from rob_box_dialog import knowledge as kn
 
 #: Группы закрытой грамматики Tier-1 (§4.2); разбор — ``grammar.py`` (PR-6).
 GRAMMAR_GROUPS: Tuple[str, ...] = ("stop", "silence", "volume", "voice", "new_session", "dj", "yes_no")
+#: Вид команды Tier-1 (``grammar.match``, ``knowledge.TIER1_KINDS``) → группа грамматики агента.
+TIER1_GROUPS: Mapping[str, str] = MappingProxyType({
+    "stop_all": "stop", "silence": "silence", "unsilence": "silence", "volume": "volume", "set_voice": "voice",
+    "new_session": "new_session", "answer": "yes_no",
+})
 
 _VIEWS: Mapping[str, Callable[[], Tuple[ToolCatalogEntry, ...]]] = MappingProxyType({
     "llm": llm_visible_tools,
@@ -46,6 +51,11 @@ AGENT_SPECS: Mapping[str, AgentSpec] = MappingProxyType({
 def agent_spec(name: str) -> AgentSpec:
     """Спецификация агента по имени (``knowledge.AGENTS``); чужое имя — ``KeyError``."""
     return AGENT_SPECS[name]
+
+
+def allows_tier1(spec: AgentSpec, kind: str) -> bool:
+    """Доступна ли агенту команда Tier-1 этого вида: «замолчи» в чате — не тишина Личности (О2), а слова для LLM."""
+    return TIER1_GROUPS.get(kind) in spec.grammar
 
 
 def tools_for(spec: AgentSpec) -> Tuple[str, ...]:

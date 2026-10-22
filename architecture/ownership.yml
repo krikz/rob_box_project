@@ -133,7 +133,8 @@ topics:
     # telegram_node пишет сообщения чата и кнопки меню (source=telegram|operator);
     # различает писателей поле Utterance.source, не имя топика.
     writers_allowed: [stt_node, telegram_node]
-    readers: [dialogue_node, context_aggregator_node]
+    # v2 (PR-12a #3706): source=telegram читает dialog_node как вход телеграм-агента, не Личности
+    readers: [dialogue_node, dialog_node, context_aggregator_node]
     debt: "context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором (command_node с PR-5 #3694 получает /dialog/intent)"
   /voice/stt/speaker:
     owner: stt_node
@@ -305,13 +306,23 @@ topics:
     # до v2 пишет dialogue_node (CommandIntentGateStep после допуска реплики)
     writers_allowed: [dialog_node, dialogue_node]
     readers: [command_node]
+  /dialog/output:
+    owner: dialog_node
+    type: rob_box_dialog_msgs/DialogOutput
+    status: live
+    introduced_by: "PR-12a (#3706)"
+    # v2: ответ и фразы об исходе телеграм-агента своему чату (channel_ref telegram:<chat_id>); при v1 - эхо
+    # /voice/dialogue/response, его удалит PR-15
+    writers_allowed: [dialog_node]
+    readers: [telegram_node]
   /telegram/session:
-    owner: telegram_node
+    # сессии чатов живут в dialog_node (rob_box_dialog.chats, PR-12a); снимок наружу пока не публикуется
+    owner: dialog_node
     type: rob_box_dialog_msgs/SessionState
     status: planned
     introduced_by: "PR-12a (#3706)"
-    writers_allowed: [telegram_node]
-    readers: [dialog_node]
+    writers_allowed: [dialog_node]
+    readers: []
   /avatar/session:
     # сессию ТАРС ведёт агент оператора в avatar-supervisor (ADR-0150 §2.3), не dialog_node
     owner: supervisor_node

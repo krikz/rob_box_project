@@ -14,6 +14,10 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
   (через ``plan_host``), речь — ``speech_client``; ``ActionRequest`` не публикуется (подписчика нет, см. ports);
 * таймеры: TTL кадров сцен (1 с), переиздание состояния LLM-провайдеров (2 с); дедлайн хода — в ``turn.py``.
 
+Телеграм (PR-12a #3706, ADR-0150 §9.2): реплика ``Utterance source=telegram`` — не вход Личности, а ход
+телеграм-агента своего чата (``rob_box_dialog.chats``: сессия ``telegram:<chat_id>``, своя история и LLM-цепочка
+``telegram_*``); ответ и фразы об исходе — ``DialogOutput`` в ``/dialog/output`` (его читает ``telegram_node``).
+
 Перебивание (PR-9 #3703, ``rob_box_dialog.interrupt``): ясный стоп — с ``/dialog/interrupt_request`` (ранний
 сегмент STT) или с адресованной реплики — отменяет речь эпохи (граница по слову) и все хода в полёте: отмена задачи
 хода доходит до ``await`` LLM-провайдера, HTTP-запрос закрывает его клиент. Ход стопа (Tier-1) кладёт эпоху + 1.
@@ -46,12 +50,14 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
+from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_block, speaker_ref
 from rob_box_dialog.turn import TurnEngine
+from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
 from rob_box_dialog_msgs.msg import SpeechEvent
@@ -88,11 +94,21 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("max_tokens", 0)
     node.declare_parameter("e2e_mode", False)
     node.declare_parameter("e2e_db_path", "")
+    # Телеграм-агент (§9.2, PR-12a): своя цепочка и персона; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27).
+    node.declare_parameter("telegram_llm_providers", "deepseek,minimax")
+    node.declare_parameter("telegram_system_prompt_file", "telegram_chat_prompt.txt")
+    node.declare_parameter("telegram_temperature", 0.7)
+    node.declare_parameter("telegram_max_tokens", 0)
 
 
-def _settings(node: Node) -> Optional[LLMSettings]:
-    temperature = float(node.get_parameter("temperature").value or 0.0)
-    max_tokens = int(node.get_parameter("max_tokens").value or 0)
+def _prefix(agent: str) -> str:
+    """Префикс параметров агента: у Личности его нет (``llm_providers``), у телеграма — ``telegram_``."""
+    return "" if agent == kn.AGENTS[0] else f"{agent}_"
+
+
+def _settings(node: Node, prefix: str = "") -> Optional[LLMSettings]:
+    temperature = float(node.get_parameter(f"{prefix}temperature").value or 0.0)
+    max_tokens = int(node.get_parameter(f"{prefix}max_tokens").value or 0)
     if temperature <= 0 and max_tokens <= 0:
         return None
     return LLMSettings(temperature=temperature or None, max_tokens=max_tokens or None)
@@ -104,14 +120,18 @@ def _prompt_dir() -> Path:
     return Path(get_package_share_directory("rob_box_voice")) / "prompts"
 
 
-def build_llm(node: Any, counter: CallCounter) -> tuple:
-    """LLM-цепочка v2: тот же ``build_llm_chain``, все провайдеры — в режиме команд моста, вызовы считаются."""
-    chain = tuple(p.strip().lower() for p in str(node.get_parameter("llm_providers").value).split(",") if p.strip())
+def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tuple:
+    """LLM-цепочка v2 агента: тот же ``build_llm_chain``, все провайдеры — в режиме команд моста (валидатор знает
+    агента), вызовы считаются. У каждого агента своя цепочка — своё здоровье провайдеров."""
+    prefix = _prefix(agent)
+    raw = str(node.get_parameter(f"{prefix}llm_providers").value)
+    chain = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
     bridge = command_bridge.wrapper_for(command_providers(chain), log=node.get_logger().info,
-                                        busy=lambda: plan_host.perform_busy(node))
-    spec = AgentSpec(name="personality", prompt_dir=_prompt_dir(),
-                     system_prompt_file=str(node.get_parameter("system_prompt_file").value),
-                     provider_chain=chain, settings=_settings(node), wrap_provider=counted_wrapper(bridge, counter))
+                                        busy=lambda: plan_host.perform_busy(node), agent=agent)
+    spec = AgentSpec(name=agent, prompt_dir=_prompt_dir(),
+                     system_prompt_file=str(node.get_parameter(f"{prefix}system_prompt_file").value),
+                     provider_chain=chain, settings=_settings(node, prefix),
+                     wrap_provider=counted_wrapper(bridge, counter))
     return build_llm_chain(spec), load_system_prompt(spec)
 
 
@@ -133,6 +153,28 @@ def build_tools(node: Any) -> Any:
     return plan_host.make_tool_executor(node, adapt_tool_provider(provider), lambda *_: None)
 
 
+def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any) -> ChatTurns:
+    """Телеграм-агент: своя LLM-цепочка, исполнитель — общий с Личностью (те же владельцы), ответ — ``DialogOutput``."""
+    counter = CallCounter()
+    llm, system = build_llm(node, counter, kn.TEXT_CHANNEL_AGENT)
+    pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
+    log = node.get_logger().info
+
+    def send(ref: str, text: str, speech_id: str) -> None:
+        msg = DialogOutput()
+        msg.agent, msg.channel_ref, msg.text, msg.speech_id = kn.TEXT_CHANNEL_AGENT, ref, text, speech_id
+        pub.publish(msg)
+
+    def make_engine(chat_id: int) -> TurnEngine:
+        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
+        base = V2Ports(node, llm, counter, tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
+                       epoch=lambda: session.snapshot.epoch)
+        return TurnEngine(session, ChatPorts(base, chat_id, send, log), system_prompt=system,
+                          log=_RosLog(node.get_logger()))
+
+    return ChatTurns(make_engine, wake, log)
+
+
 class DialogNode(Node):
     """ROS-хост хода v2: подписки → ``TurnEngine``, порты → топики."""
 
@@ -142,6 +184,7 @@ class DialogNode(Node):
         self.engine_flag = dialog_engine.declare(self)
         self.utterance_id: Optional[str] = None
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
+        self.last_chat_turn: Any = None  # то же для хода телеграм-агента
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="dialog_v2_loop")
         self._turn_lock = asyncio.Lock()
@@ -159,8 +202,9 @@ class DialogNode(Node):
         counter = CallCounter()
         llm, system = build_llm(self, counter)
         self._tool_executor = build_tools(self)
-        self._ports = V2Ports(self, llm, counter, self._tool_executor,
-                              intent_pub=self.create_publisher(IntentMsg, "/dialog/intent", 10),
+        intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", 10)
+        self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake)
+        self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
@@ -193,6 +237,9 @@ class DialogNode(Node):
         """Реплика: адресация кодом (вейк, бэклог, окна ответа); адресованная — ход в asyncio-loop ноды."""
         now = time.time()
         self.get_logger().info(f"🎤 STT: {log_label(msg)}")
+        if msg.source == UtteranceMsg.SOURCE_TELEGRAM and msg.chat_id:
+            self._on_chat(int(msg.chat_id), msg.text, now)
+            return
         uid = str(getattr(msg, "utterance_id", "") or "")
         heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
         snap = self._session.snapshot
@@ -209,6 +256,12 @@ class DialogNode(Node):
         self.utterance_id = uid or None
         self._interrupt(decision.text, uid, "utterance")
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(self._turn(decision), self._loop), uid)
+
+    def _on_chat(self, chat_id: int, text: str, now: float) -> None:
+        """Реплика чата — ход телеграм-агента этого чата (не Личности); «Клод …» — никому (координатору)."""
+        decision = self._chats.decide(chat_id, text, now)
+        if isinstance(decision, Addressed):
+            self.last_chat_turn = asyncio.run_coroutine_threadsafe(self._chats.run(chat_id, decision), self._loop)
 
     async def _turn(self, decision: Addressed) -> None:
         if self._turn_lock.locked():  # не стоп во время хода — APPEND: новый ждёт конца текущего, речь не рвётся

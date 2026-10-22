@@ -8,7 +8,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
-from rob_box_dialog_msgs.msg import SpeechEvent
+from rob_box_dialog.chats import chat_of
+from rob_box_dialog_msgs.msg import DialogOutput, SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
 from telegram.ext import (
@@ -114,6 +115,24 @@ def _on_speech_event(receipts, send, msg) -> None:
     receipt = receipts.on_event(int(msg.kind), msg.speech_id, msg.reason, float(msg.seconds))
     if receipt is not None:
         send(*receipt)
+
+
+def _on_dialog_output(send, msg) -> None:
+    """``/dialog/output`` (v2): ответ телеграм-агента своему чату (ADR-0150 §9.2, PR-12a); чужой канал — мимо."""
+    chat_id = chat_of(msg.channel_ref)
+    if msg.agent == "telegram" and chat_id is not None and msg.text:
+        send(chat_id, msg.text)
+
+
+def _subscribe_replies(node, group):
+    """Откуда ответы в чат: v1 — эхо Личности ``/voice/dialogue/response`` (его пишет только dialogue_node v1,
+    PR-8 #3702); v2 — ответ телеграм-агента своего чата ``/dialog/output`` (dialog_node, PR-12a #3706).
+    Подписка v1 и сам v1-путь уходят вместе с v1 (PR-15). Возвращает ``(response_sub, output_sub)``."""
+    if dialog_engine.declare(node) == dialog_engine.V1:
+        return node.create_subscription(String, "/voice/dialogue/response", node._on_response, _RE,
+                                        callback_group=group), None
+    send = functools.partial(_on_dialog_output, functools.partial(_send_chat_text, node))
+    return None, node.create_subscription(DialogOutput, "/dialog/output", send, _RE, callback_group=group)
 
 
 def _flush_expired(receipts, send) -> None:
@@ -226,15 +245,7 @@ class TelegramNode(Node):
         # duplicated into the active Telegram chat so the operator sees
         # what the robot says (removed in 88cecc91 because of the
         # asyncio-loop bug; reimplemented queue-based, see _on_response).
-        # ADR-0150 PR-8 (#3702): топик пишет только dialogue_node v1 — при dialog_engine=v2 не подписываемся
-        # (эхо ответов v2 в чат — PR-12a).
-        self._response_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/response",
-            self._on_response,
-            _RE,
-            callback_group=g,
-        ) if dialog_engine.declare(self) == dialog_engine.V1 else None
+        self._response_sub, self._output_sub = _subscribe_replies(self, g)
         # AV-10 — direct publishers оставлены как fallback для Phase 1
         # (монитор-режим). Публикации идут только после успешного
         # AcquireFloor (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
@@ -350,9 +361,10 @@ class TelegramNode(Node):
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text:
             return
-        # Issue #1195 — источник реплики: source=telegram + chat_id. dialogue_node
+        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialogue_node
         # по ним пропускает wake-word gate (сообщение в чат - явное обращение),
         # запоминает чат для эхо-маршрута и НЕ цепляет метку голосовой биометрии.
+        # v2 (PR-12a #3706): dialog_node отдаёт реплику не Личности, а телеграм-агенту этого чата.
         # chat_id также становится "active chat", чтобы голосовые ответы эхом
         # уходили в тот же чат. Без chat_id (кнопки меню) source=operator.
         m = UtteranceMsg()

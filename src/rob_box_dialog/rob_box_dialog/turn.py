@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
+from rob_box_dialog.agents import agent_spec, allows_tier1
 from rob_box_dialog.command import Command, Invalid, Result, ToolCall
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
@@ -108,6 +109,13 @@ class _Turn:
     said: List[str] = field(default_factory=list)
 
 
+def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Optional[Tier1Command]:
+    """Команда Tier-1 реплики, если она доступна агенту сессии (``AgentSpec.grammar``): «замолчи» в чате — не
+    тишина Личности (решение О2), а слова для LLM телеграм-агента."""
+    command = match(text, snapshot, voices)
+    return command if command is not None and allows_tier1(agent_spec(snapshot.agent), command.kind) else None
+
+
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
     """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп — музыка, если играет."""
     if command.kind == "volume":
@@ -141,11 +149,12 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _content_lines(cmd: Command) -> List[Tuple[str, str]]:
-    """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда."""
+def _content_lines(cmd: Command, agent: str = kn.AGENTS[0]) -> List[Tuple[str, str]]:
+    """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда. У агента с
+    текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
-    if said and not cmd.actions:
+    if said and (not cmd.actions or agent == kn.TEXT_CHANNEL_AGENT):
         lines.append((said, cmd.voice or ""))
     elif said:
         _LOG.info(f"{LOG_MARK} речь при действиях не звучит (§4.1): {said[:120]!r}")
@@ -199,7 +208,7 @@ class TurnEngine:
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
         if addressed.source == BARE_WAKE or not turn.text:
             return self._finish(turn)
-        tier1 = match(turn.text, snap, self._voices())
+        tier1 = tier1_for(turn.text, snap, self._voices())
         try:
             if tier1 is not None and not tier1.disputed:
                 await self._tier1(turn, tier1, snap)
@@ -313,7 +322,7 @@ class TurnEngine:
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
-        lines = _content_lines(cmd)
+        lines = _content_lines(cmd, self.session.snapshot.agent)
         for text, voice in lines:
             self._say(turn, text, voice or None, cmd.expression.emotion)
         if cmd.ask is not None and not cmd.actions:
@@ -350,7 +359,7 @@ class TurnEngine:
         if not text or self._stale(turn, "speech"):
             return
         speech_id = self._ports.say(turn.turn_id, turn.epoch, text, voice, emotion)
-        self.log.said(turn.turn_id, speech_id, text)
+        self.log.said(turn.turn_id, speech_id, text, delivered=self.session.snapshot.agent == kn.TEXT_CHANNEL_AGENT)
         turn.said.append(speech_id)
         self._event("speech_requested", turn, text=text, data={"speech_id": speech_id, "voice": voice or ""})
 
@@ -381,4 +390,4 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "TurnEngine", "outcome_phrase", "tier1_actions",
-           "tier1_phrase"]
+           "tier1_for", "tier1_phrase"]
