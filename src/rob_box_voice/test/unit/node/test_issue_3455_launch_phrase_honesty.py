@@ -83,13 +83,11 @@ def _make_node() -> DialogueNode:
         setattr(n, attr, MagicMock())
     n._active_tg_chat_id = None
     n._verbose_llm = False
-    n._babble_retry_used = False
     n._action_claim_retry_used = False
     n._retry_dispatched_in_turn = False
     n._run_task = None
     n._startup_greeting_fired = False
     n._consume_synthetic_retry = MagicMock(return_value=True)
-    n._check_babble_and_retry = MagicMock(return_value=False)
     n._music_player_state = MusicPlayerState(state="idle")
     n._llm_skipped_counter = new_llm_skip_counter()
     return n

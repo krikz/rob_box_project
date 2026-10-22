@@ -60,13 +60,3 @@ class SessionEpoch:
         изнутри хода (ретрай/дренаж очереди), иначе текущее."""
         parent = TURN_EPOCH.get()
         return self._value if parent is None else parent
-
-    def retries_allowed(
-        self, *, turn_epoch: Optional[int], cancelled: bool
-    ) -> bool:
-        """Можно ли ходу диспатчить post-turn ретраи (tool-гуард).
-
-        Нельзя, если ход отменён (barge-in / сброс — результата нет, «тула
-        не вызвали» тут ложь) или если за время хода сессию сбросили.
-        """
-        return not cancelled and not self.is_stale(turn_epoch)

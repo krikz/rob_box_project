@@ -221,10 +221,11 @@ def test_known_retry_flags_are_all_present() -> None:
     """Smoke: список флагов не должен молча сжаться.
 
     ``is_code_retry`` (Bug C′, Renardo-код в реплике) удалён вместе с
-    гуардом в ADR-0149 PR-13a; остальные guard'ы флаги имеют.
+    гуардом в ADR-0149 PR-13a, ``is_babble_retry`` (Bug D) — в ADR-0150
+    PR-7 ч.7d-1; остальные guard'ы флаги имеют.
     """
     params = _params(_methods()["_run_turn"])
-    for flag in ("is_babble_retry", "is_action_claim_retry"):
+    for flag in ("is_action_claim_retry",):
         assert flag in params, f"{flag} исчез из _run_turn"
 
 
@@ -303,8 +304,7 @@ def test_every_guard_marks_its_retry_as_dispatched() -> None:
 def test_dialogue_end_defers_on_the_shared_flag() -> None:
     """Отсрочка ``DIALOGUE_END`` смотрит на общий флаг, а не на имена гуардов.
 
-    Если условие снова начнёт перечислять ``_babble_retry_used`` и ему
-    подобные, следующий гуард опять окажется забыт.
+    Если условие снова начнёт перечислять поимённые флаги гуардов, следующий гуард опять окажется забыт.
     """
     run_turn = _methods()["_run_turn"]
     reads = {
@@ -315,8 +315,7 @@ def test_dialogue_end_defers_on_the_shared_flag() -> None:
     assert "_retry_dispatched_in_turn" in reads, (
         "_run_turn больше не читает общий флаг — отсрочка DIALOGUE_END сломана"
     )
-    per_guard_flags = {"_babble_retry_used", "_code_speech_retry_used",
-                       "_action_claim_retry_used"}
+    per_guard_flags = {"_code_speech_retry_used", "_action_claim_retry_used"}
     leaked = sorted(per_guard_flags & reads)
     assert not leaked, (
         f"_run_turn снова читает поимённые флаги {leaked} — "

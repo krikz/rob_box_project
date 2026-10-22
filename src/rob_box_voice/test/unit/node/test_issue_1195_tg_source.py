@@ -127,7 +127,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._babble_retry_used = False
     n._speaker_id_enabled = True  # даже при включённой биометрии — TG без неё
     n._active_tg_chat_id = 42  # issue #3598 — chat_id этого TG-сообщения
 

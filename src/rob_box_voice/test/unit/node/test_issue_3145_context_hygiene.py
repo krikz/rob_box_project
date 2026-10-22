@@ -98,7 +98,6 @@ def _setup(loop, replies: list[str]):
     node._retry_dispatched_in_turn = False
     node._synthetic_retries_left = DialogueNode.DEFAULT_SYNTHETIC_RETRIES
     node._action_claim_retry_used = False
-    node._turn_state = None
     retry_done = threading.Event()
 
     async def fake_run_turn(user_input, **kw):
@@ -155,23 +154,6 @@ class TestRejectedReplyLeavesHistory:
         sent = [m.content for m in _retry_prompt_messages(llm)]
         assert "Точка удалена." not in sent[:-1], sent
         assert "удали точку кухня" in sent, sent
-
-    def test_bug_d_babble_retry(self, loop):
-        node, core, llm, done = _setup(
-            loop, ["Погнали, сейчас зачитаю!", "Йо, вот мой куплет."]
-        )
-        _user_turn(loop, core, "зачитай рэп про кота")
-        fired = node._check_babble_and_retry(
-            spoken="Погнали, сейчас зачитаю!",
-            user_input="зачитай рэп про кота",
-            tools_called=(),
-        )
-        assert fired is True, "Bug D должен поймать «Погнали…» без тула"
-        assert done.wait(5)
-        _assert_clean_window(
-            core, rejected="Погнали, сейчас зачитаю!",
-            accepted="Йо, вот мой куплет.", request="зачитай рэп про кота",
-        )
 
     def test_retry_on_unpersisted_turn_keeps_older_reply(self, loop):
         """Ход, который ничего не записал (DJ-переход, тихий ответ), —

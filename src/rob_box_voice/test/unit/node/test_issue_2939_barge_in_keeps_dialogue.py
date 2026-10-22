@@ -82,7 +82,6 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._llm = llm
     n._dsm = DialogueStateMachine()
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = AgentCore(
