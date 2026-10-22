@@ -80,5 +80,17 @@ run "🔎 LLM REQUEST START provider=minimax mode=stream
 Запрос выполнения: stop_music с параметрами {}" 'stop_music'
 [ "$RC" = 0 ] && ok "5: обрезанный дамп, хвост цел" || bad "5: rc=$RC out=$OUT"
 
+# 6. issue #3860: дамп v2 с launch-префиксом ``[dialog_node-3]`` и recent_actions с именем тула
+PREFIXED="[dialog_node-3]   [17] user: '<system_context>\\n  <recent_actions>[{\"tool\":\"register_speaker\",\"status\":\"done\"}]</recent_actions>'
+[dialog_node-3]   tools(2): register_speaker, stop_music"
+run "$PREFIXED" 'register_speaker' '"register_speaker"'
+[ "$RC" = 1 ] && [ "$(printf '%s' "$OUT" | grep -c PATTERN_MISS)" = 2 ] \
+    && ok "6: дамп с launch-префиксом -> MISS (#3860)" || bad "6: rc=$RC out=$OUT"
+
+# 7. тот же дамп + настоящая строка вызова
+run "$PREFIXED
+Запрос выполнения: register_speaker с параметрами {}" 'register_speaker'
+[ "$RC" = 0 ] && ok "7: префиксный дамп + реальный вызов -> OK" || bad "7: rc=$RC out=$OUT"
+
 printf '\nPASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 exit "$FAIL"

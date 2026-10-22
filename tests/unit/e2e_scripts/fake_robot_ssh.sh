@@ -101,7 +101,14 @@ docker() {
     local sub="${1:-}" container="${2:-}"
     case "$sub:$container" in
         logs:voice-assistant)
-            [ -n "${FAKE_ROBOT_LOG:-}" ] && cat "$FAKE_ROBOT_LOG"
+            # #3857: события v2 (``📊 [turn] ... stage=done``, ``🗣️ SpeechEvent started|finished
+            # speech_id=...``). Метка ``{NOW-3.5}`` в логе -- «3.5 с назад» по часам фейк-робота:
+            # харнесс сравнивает ROS-время строки с ``date +%s.%N`` робота.
+            [ -n "${FAKE_ROBOT_LOG:-}" ] && awk -v now="$(date +%s.%N)" '
+                { while (match($0, /\{NOW-[0-9.]+\}/)) {
+                      d = substr($0, RSTART + 5, RLENGTH - 6)
+                      $0 = substr($0, 1, RSTART - 1) sprintf("%.2f", now - d) substr($0, RSTART + RLENGTH) }
+                  print }' "$FAKE_ROBOT_LOG"
             return 0
             ;;
         exec:voice-assistant)

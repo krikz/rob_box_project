@@ -199,7 +199,7 @@ PY2
 # отвечает следующий шаг, и повтор этой реплики проверял бы другое — ретрай
 # запрещается (retry_block_reason в e2e_tool_match.py). Поле ПОСЛЕДНЕЕ:
 # разделитель \x1f сохраняет позиции, прежние поля не сдвигаются.
-E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked'
+E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok'
 
 # parse_scenario_to_tsv() — читает scenario.json, пишет TSV-подобный файл
 # (на самом деле \x1f-separated, не таб — см. ниже) с одной строкой на шаг,
@@ -240,6 +240,25 @@ try:
 except Exception:
     pass
 FS = "\x1f"
+
+
+def norm_barge(raw):
+    """barge_in шага -> компактный JSON {after,n,delay_sec} или '' (поля нет). Неизвестный after
+    остаётся как есть: run_step назовёт его ошибкой сценария, а не подменит молча."""
+    if not isinstance(raw, dict):
+        return ''
+    try:
+        n = max(1, int(raw.get('n', 1) or 1))
+    except (TypeError, ValueError):
+        n = 1
+    try:
+        delay = max(0.0, float(raw.get('delay_sec', 0) or 0))
+    except (TypeError, ValueError):
+        delay = 0.0
+    after = str(raw.get('after') or 'speech_started')
+    return json.dumps({'after': after, 'n': n, 'delay_sec': delay}, ensure_ascii=False, separators=(',', ':'))
+
+
 sc = json.load(open(sys.argv[1], encoding="utf-8"))
 steps = sc.get("steps", [])
 for i, s in enumerate(steps):
@@ -262,9 +281,16 @@ for i, s in enumerate(steps):
         sleep_before = 0.0
     nxt = steps[i + 1] if i + 1 < len(steps) and isinstance(steps[i + 1], dict) else {}
     next_asked = str(nxt.get('when_robot_asked') or '').replace(FS, ' ').replace('\n', ' ')
+    # issue #3857 -- barge_in: намеренное перебивание (JSON after/n/delay_sec). next_barge_in_json --
+    # то же у СЛЕДУЮЩЕГО шага: предыдущий шаг ждёт не конца ответа, а якоря перебивания.
+    # silent_ok -- ход без речи допустим (Tier-1 new_session: llm_calls=0, речи нет).
+    barge = norm_barge(s.get('barge_in'))
+    next_barge = norm_barge(nxt.get('barge_in'))
+    silent_ok = 1 if (s.get('silent_ok') or exp == 'silent_ok') else 0
     fields = [str(i), s.get('label', f's{i+1}'), s.get('text', ''), s.get('voice', 'anton'),
               json.dumps(pats), json.dumps(acc, ensure_ascii=False), exp, str(retry),
-              when_asked, str(required_q), str(sleep_before), next_asked]
+              when_asked, str(required_q), str(sleep_before), next_asked,
+              barge, next_barge, str(silent_ok)]
     print(FS.join(fields))
 PY
 }
@@ -491,7 +517,173 @@ TTSPY
 # блоком START..END: при обрезке --since END может отсутствовать, и блочный
 # фильтр съел бы весь остальной лог.
 strip_llm_request_dump() {
-    grep -vE '(LLM REQUEST (START|END))|^[[:space:]]*\[[0-9]+\] [A-Za-z_]+: |^[[:space:]]*tools\([0-9]+\): ' || true
+    # Issue #3860: в выводе launch у строки дампа есть префикс ``[dialog_node-3]`` --
+    # якорь ``^`` без необязательного префикса не видел ``[17] user: '...<recent_actions>
+    # [{"tool":"register_speaker"...`` и давал ложные ``forbidden tool calls``.
+    # Тот же шаблон держит e2e_tool_match.strip_llm_request_dump (acceptance).
+    grep -vE '(LLM REQUEST (START|END))|^(\[[A-Za-z0-9_]+-[0-9]+\])?[[:space:]]*\[[0-9]+\] [A-Za-z_]+: |^(\[[A-Za-z0-9_]+-[0-9]+\])?[[:space:]]*tools\([0-9]+\): ' || true
+}
+
+# --- issue #3857 (эпик #3683) -- ждём СОБЫТИЙ робота, а не таймеров -----------
+#
+# Раньше: после play -- ``sleep E2E_REACTION_WINDOW`` (40 с) при любом ответе; перед шагом --
+# 20 с окно лога + 15 с «тишины» по grep строк синтеза. Теперь харнесс каждые 2 с читает лог
+# робота и спрашивает e2e_events.py (решает код по маркерам, не оператор по таймеру):
+#   * ответ готов -- v2: ``📊 [turn] ... stage=done`` хода + все ``SpeechEvent`` реплик закрыты
+#     (finished/cancelled/rejected по speech_id); v1: ``Публикую TTS finished event`` по speech_id;
+#   * робот ещё говорит -- ``started`` без парного закрытия; после конца речи +2 с (хвост ReSpeaker);
+#   * потолок ожидания -- прежний E2E_REACTION_WINDOW / E2E_SILENCE_WAIT_MAX: в худшем случае
+#     поведение то же, что было. E2E_EVENT_WAITS=0 возвращает фиксированный sleep.
+_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|TTS finished event|🔊 TTS:'
+_E2E_SPEECH_GREP='SpeechEvent|TTS finished event|🔊 TTS:'
+
+_events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
+
+# Первая строка вывода -- часы робота (date +%s.%N), дальше отфильтрованный docker logs.
+# ``; true``: пустой grep не должен выглядеть как сбой SSH -- сбой виден по отсутствию числа в 1-й строке.
+_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep
+    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1' 2>&1 | grep -aE '$2'; true" 2>/dev/null
+}
+
+_ev_kv() {  # stdin = key=value строки; $1=key
+    sed -n "s/^$1=//p" | head -1 | tr -d '\r'
+}
+
+# wait_reply_done BEFORE -- ждёт «ответ состоялся и робот замолчал». rc=0 -- дождались,
+# rc=1 -- потолок (дальше решает check_cycle, как и раньше). Пишет E2E_REPLY_AFTER (с) и
+# E2E_REPLY_NO_SPEECH=1, если ход закончился без речи (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE).
+wait_reply_done() {
+    local since="$1" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local grace="${E2E_NO_SPEECH_GRACE:-8}" tail_s="${E2E_SPEECH_TAIL:-2}"
+    local t0 now out verdict sig quiet prev_sig="" stable=0 nospeech_at=0 silent_flag=""
+    [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && silent_flag="--silent-ok"
+    E2E_REPLY_NO_SPEECH=0
+    t0="$(date +%s)"
+    while :; do
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag)"
+        verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
+        sig="$(printf '%s\n' "$out" | _ev_kv sig)"
+        quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        now="$(date +%s)"
+        case "$verdict" in
+            done|silent)
+                if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
+                prev_sig="$sig"
+                if awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; then
+                    [ "$verdict" = "silent" ] && E2E_REPLY_NO_SPEECH=1
+                    E2E_REPLY_AFTER=$((now - t0)); return 0
+                fi ;;
+            nospeech)
+                [ "$nospeech_at" = "0" ] && nospeech_at="$now"
+                if [ $((now - nospeech_at)) -ge "$grace" ]; then
+                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_AFTER=$((now - t0)); return 0
+                fi ;;
+            *) stable=0; prev_sig=""; nospeech_at=0 ;;
+        esac
+        if [ $((now - t0)) -ge "$ceiling" ]; then
+            E2E_REPLY_AFTER=$((now - t0)); return 1
+        fi
+        sleep "$poll"
+    done
+}
+
+# wait_robot_quiet -- v2: «робот ещё говорит» = SpeechEvent started/queued без пары finished/
+# cancelled/rejected (по speech_id; «протухшие» без событий > 60 с не считаются). Тихо --
+# +2 с после последнего события речи. Пишет E2E_STEP_SILENCE_SEC. rc=0 тихо, rc=1 потолок.
+wait_robot_quiet() {
+    local poll="${E2E_EVENT_POLL:-2}" max="${E2E_SILENCE_WAIT_MAX:-90}" tail_s="${E2E_SPEECH_TAIL:-2}"
+    local t0 now out nopen sig quiet fetch prev_sig="" stable=0
+    t0="$(date +%s)"
+    while :; do
+        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet --engine "${E2E_DIALOG_ENGINE:-v1}")"
+        fetch="$(printf '%s\n' "$out" | _ev_kv fetch)"
+        nopen="$(printf '%s\n' "$out" | _ev_kv open)"
+        sig="$(printf '%s\n' "$out" | _ev_kv sig)"
+        quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        now="$(date +%s)"
+        if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
+        prev_sig="$sig"
+        if [ "$fetch" = "1" ] && [ "${nopen:-1}" = "0" ] \
+           && { [ "$sig" = "0" ] || awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; }; then
+            E2E_STEP_SILENCE_SEC=$((now - t0)); return 0
+        fi
+        if [ $((now - t0)) -ge "$max" ]; then
+            E2E_STEP_SILENCE_SEC=$((now - t0)); return 1
+        fi
+        sleep "$poll"
+    done
+}
+
+# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started","n":N,"delay_sec":X}.
+_barge_field() {  # $1=json $2=поле
+    BARGE_JSON="$1" python3 -c 'import json, os, sys
+try:
+    print(json.loads(os.environ["BARGE_JSON"]).get(sys.argv[1], ""))
+except Exception:
+    print("")' "$2"
+}
+
+# wait_barge_anchor SINCE JSON -- ждёт якорь перебивания в логе с SINCE (BEFORE фразы, которую
+# перебиваем). rc=0 -- якорь наступил: E2E_ANCHOR_TS (метка лога робота, с), E2E_ANCHOR_ID,
+# E2E_ANCHOR_NOW (часы робота в момент наблюдения). rc=1 -- за потолок не наступил.
+wait_barge_anchor() {
+    local since="$1" spec="$2" after n t0 now out
+    after="$(_barge_field "$spec" after)"; n="$(_barge_field "$spec" n)"
+    case "$after" in
+        speech_started|llm_request|segment_started) ;;
+        *) E2E_ANCHOR_ERROR="неизвестный barge_in.after='${after}'"; return 2 ;;
+    esac
+    t0="$(date +%s)"
+    while :; do
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --engine "${E2E_DIALOG_ENGINE:-v1}" --after "$after" --n "${n:-1}")"
+        if [ "$(printf '%s\n' "$out" | _ev_kv found)" = "1" ]; then
+            E2E_ANCHOR_TS="$(printf '%s\n' "$out" | _ev_kv ts)"
+            E2E_ANCHOR_ID="$(printf '%s\n' "$out" | _ev_kv speech_id)"
+            E2E_ANCHOR_NOW="$(printf '%s\n' "$out" | _ev_kv now)"
+            awk "BEGIN{exit !($E2E_ANCHOR_TS > 0)}" 2>/dev/null || E2E_ANCHOR_TS="$E2E_ANCHOR_NOW"
+            return 0
+        fi
+        now="$(date +%s)"
+        [ $((now - t0)) -ge "${E2E_REACTION_WINDOW:-40}" ] && return 1
+        sleep "${E2E_BARGE_POLL:-1}"
+    done
+}
+
+# step_wait_after_play SINCE -- что делать после play команды. E2E_WAIT_MODE:
+#   fixed  -- E2E_EVENT_WAITS=0 (слепой sleep, как раньше) либо якорь не наступил за потолок;
+#   anchor -- СЛЕДУЮЩИЙ шаг перебивает (barge_in): ждали его якорь, конца ответа не ждём;
+#   event  -- ждали событий (wait_reply_done).
+# E2E_REPLY_AFTER -- сколько секунд ждали (идёт в лог шага ``reply_after=``).
+step_wait_after_play() {  # $1=since
+    E2E_WAIT_MODE="fixed"; E2E_REPLY_AFTER="${E2E_REACTION_WINDOW:-40}"; E2E_REPLY_NO_SPEECH=0
+    if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
+        sleep "${E2E_REACTION_WINDOW:-40}"
+        return 0
+    fi
+    if [ -n "${E2E_STEP_NEXT_BARGE_IN:-}" ]; then
+        local _t0
+        _t0="$(date +%s)"
+        if wait_barge_anchor "$1" "$E2E_STEP_NEXT_BARGE_IN"; then
+            E2E_WAIT_MODE="anchor"; E2E_REPLY_AFTER=$(( $(date +%s) - _t0 ))
+            E2E_PENDING_ANCHOR_SINCE="$1"; E2E_PENDING_ANCHOR_SPEC="$E2E_STEP_NEXT_BARGE_IN"
+        fi
+        return 0   # якорь не наступил: потолок уже выжат; шаг-перебиватель получит SKIP
+    fi
+    wait_reply_done "$1"
+    E2E_WAIT_MODE="event"
+    return 0
+}
+
+# barge_hold SPEC -- выдержать delay_sec от якоря по часам робота (якорь наблюдали раньше, чем
+# дошли до play). Печатает фактическую задержку якорь -> начало play (с).
+barge_hold() {
+    local spec="$1" delay robot_now remaining
+    delay="$(_barge_field "$spec" delay_sec)"
+    robot_now="$(${ROBOT_SSH} "date +%s.%N" 2>/dev/null | tr -d '\r')"
+    case "$robot_now" in ''|*[!0-9.]*) robot_now="$E2E_ANCHOR_NOW" ;; esac
+    remaining="$(awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%.2f", (r>0?r:0)}')"
+    awk "BEGIN{exit !($remaining > 0)}" 2>/dev/null && sleep "$remaining"
+    awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
 }
 
 restore_robot_tts_default() {

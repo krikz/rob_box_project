@@ -70,7 +70,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
+__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_request_dump",
            "first_invocation_position", "VOICE_CYCLE_MARKERS",
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
@@ -91,6 +91,24 @@ VOICE_CYCLE_MARKERS = (
     # TTS ack от yandex_tts / minimax_tts.
     "tts finished",
 )
+
+# Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
+# ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
+# В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+_DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
+_DUMP_LINE_RE = re.compile(
+    r"LLM REQUEST (?:START|END)"
+    r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
+    r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
+)
+
+
+def strip_llm_request_dump(logs: str) -> str:
+    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
+    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
+
 
 #: Как выглядит имя тула. Все 56 зарегистрированных тулов —
 #: snake_case из ``def name(self) -> str`` в rob_box_mcp_tools/tools/*.py.

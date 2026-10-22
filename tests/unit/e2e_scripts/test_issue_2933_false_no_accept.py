@@ -325,6 +325,9 @@ class TestRunStepDoesNotReplayAfterAccept:
                 "E2E_RETRY_PAUSE=0",
                 "E2E_SILENCE_WAIT=0",
                 "E2E_SILENCE_WAIT_MAX=0",
+                # #3857: фейк отдаёт n-й ответ по номеру вызова docker logs -- тест про rc=3 check_cycle,
+                # а не про ожидание; опрос событий съел бы вызовы. Ожидание событий -- test_issue_3857_*.
+                "E2E_EVENT_WAITS=0",
                 'log() { echo ">>> $*"; }',
                 LIB.read_text(encoding="utf-8"),
                 extract_function("ensure_outdir"),

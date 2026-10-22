@@ -137,6 +137,7 @@
       "label": "gp12_merge_addition_midway",
       "voice": "anton",
       "text": "Робот, и после каждого числа добавляй слово шаг",
+      "barge_in": {"after": "speech_started", "n": 1, "delay_sec": 3.0},
       "patterns": ["task_delta"],
       "acceptance": {
         "expected_tool_calls": [],

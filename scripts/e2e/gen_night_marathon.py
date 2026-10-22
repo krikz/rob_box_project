@@ -112,6 +112,10 @@ SILENCE_ANSWER = "тишин|тихо|ничего не играет|не игр
 FALSE_FAILURE_PHRASE = "не получилось выполнить"
 
 
+#: Перебить через 3 с после начала речи робота (первая реплика ответа на предыдущую фразу).
+BARGE_3S: Dict[str, Any] = {"after": "speech_started", "n": 1, "delay_sec": 3.0}
+
+
 def step(
     label: str,
     text: str,
@@ -127,8 +131,14 @@ def step(
     retry: int = 0,
     why: str = "",
     discovery_tools: Optional[List[str]] = None,
+    barge_in: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     s: Dict[str, Any] = {"label": label, "voice": voice, "text": text}
+    # Issue #3857 -- barge_in: НАМЕРЕННОЕ перебивание. Без него харнесс перед шагом ждёт тишины, и
+    # «стой/хватит посреди речи» на деле говорилось в тишину. С ним: ждём якорь в речи предыдущей
+    # фразы, играем поверх через delay_sec. Якорь не наступил -> SKIP barge_in_anchor_missing.
+    if barge_in:
+        s["barge_in"] = barge_in
     s["patterns"] = patterns or []
     acc: Dict[str, Any] = {}
     if expect_tools:
@@ -1401,6 +1411,7 @@ act(
         step(
             "n803_barge_in_new_topic",
             "Робот, стоп, лучше скажи, сколько будет семью восемь.",
+            barge_in=BARGE_3S,
             patterns=["ясный стоп|Воспроизведение прервано|SpeechEvent cancelled"],
             why="Стоп + новая тема (#1280, В19 «всё, хватит, спой другую»): «стоп» первым "
             "словом — ясная стоп-команда, старый ответ рвётся, новый — звучит.",
@@ -1417,6 +1428,7 @@ act(
         step(
             "n805_hard_stop",
             "Робот, всё, хватит, замолчи.",
+            barge_in=BARGE_3S,
             patterns=["ясный стоп|Воспроизведение прервано|SpeechEvent cancelled"],
             why="Чистый STOP без новой темы — другой класс перебивания, чем n803.",
         ),
@@ -1428,6 +1440,7 @@ act(
         step(
             "n807_merge_addition",
             "Робот, и после каждого числа добавляй слово шаг.",
+            barge_in=BARGE_3S,
             patterns=["speak_text"],
             must_not=["ясный стоп", "SpeechEvent cancelled"],
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
@@ -1461,6 +1474,7 @@ act(
         step(
             "n811_stop_speech_keep_music",
             "Робот, хватит читать, а музыку оставь.",
+            barge_in=BARGE_3S,
             why="Зонд разделения каналов речь/музыка. Ассерта нет: «оставь "
             "музыку» робот сегодня понимает нестабильно, а must_not:stop_music "
             "здесь сделал бы шаг красным на каждом прогоне без диагностики.",

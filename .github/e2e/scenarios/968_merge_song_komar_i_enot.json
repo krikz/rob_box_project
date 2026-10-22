@@ -11,6 +11,7 @@
       "text": "Робот, и ещё про енота",
       "voice": "anton",
       "label": "s2_merge_enot",
+      "barge_in": {"after": "speech_started", "n": 1, "delay_sec": 3.0},
       "patterns": []
     }
   ]
