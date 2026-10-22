@@ -39,6 +39,11 @@ def test_owner_event_takes_status_and_reason_from_result_data() -> None:
     assert event.data["sound"] == "robot_happy"  # аргумент вызова — слот фразы
 
 
+def test_owner_event_keeps_mcp_refusal_text_as_reason() -> None:
+    refused = ToolResult("c", "sender 'x' не в списке разрешённых", is_error=True)
+    assert owner_event(_request("get_current_time"), refused).reason == "sender 'x' не в списке разрешённых"
+
+
 def test_plan_outcome_and_missing_status_follows_is_error() -> None:
     waited = ToolResult("c", "{}", is_error=True, data={"status": "timeout", "reason": "plan_wait"})
     assert (owner_event(_request("request_music"), waited).status,
