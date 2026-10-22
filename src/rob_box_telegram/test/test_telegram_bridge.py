@@ -564,6 +564,15 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
         sub = self._subscription_for("/voice/dialogue/response")
         self.assertIsNotNone(sub.callback)
 
+    def test_v2_does_not_subscribe_dialogue_response(self) -> None:
+        """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` топика ``dialogue_node`` v1 нет — нода его не слушает."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        self.assertNotIn("/voice/dialogue/response", [s.topic for s in node._created_subscriptions])
+        self.assertIsNone(node._response_sub)
+
     async def test_response_echo_pushes_to_queue(self) -> None:
         """``_on_response`` must parse the SSML payload and push
         ``(chat_id, text)`` into the telegram loop's queue.
