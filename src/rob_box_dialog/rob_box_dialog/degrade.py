@@ -13,10 +13,12 @@ from typing import Dict, Iterable, List, Literal, Mapping, Optional, Protocol, S
 from . import phrases
 from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_STALE_S, PROVIDER_USABLE_HEALTH
 
-CommandMode = Literal["structured_output", "tool_choice", "json_mode", "json_in_text"]
+CommandMode = Literal["structured_output", "tool_choice", "json_mode", "tool_offered", "json_in_text"]
 
 # Порядок §4.5: от самого строгого к самому слабому. Единственная таблица знания о режимах.
-MODE_ORDER: tuple[CommandMode, ...] = ("structured_output", "tool_choice", "json_mode", "json_in_text")
+# ``tool_offered`` (#3698 ч.7d): тул ``command`` в запросе, ``tool_choice`` не отправляется — схему несёт тул, а не
+# промпт; для адаптера, который умеет тулы, но принуждение не держит (MiniMax, ADR-0143) или думает (400 на required).
+MODE_ORDER: tuple[CommandMode, ...] = ("structured_output", "tool_choice", "json_mode", "tool_offered", "json_in_text")
 
 ProviderKind = Literal["llm", "stt", "tts", "music_gen"]
 ProviderHealth = Literal["ok", "degraded", "quota", "network", "timeout", "auth", "down", "unknown"]
@@ -62,6 +64,10 @@ def select_mode(caps: Capabilities) -> CommandMode:
         return "tool_choice"
     if caps.json_mode:
         return "json_mode"
+    # Тул без принуждения: замер #3698 ч.7d (docs/research/minimax_command_mode_bench_2026-10-22.md) — у MiniMax
+    # схема в тулах даёт больше валидных команд, чем схема словами в промпте; tool_choice модель не исполняет.
+    if caps.tools:
+        return "tool_offered"
     return "json_in_text"
 
 

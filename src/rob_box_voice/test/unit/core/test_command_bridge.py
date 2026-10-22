@@ -99,7 +99,7 @@ def _messages() -> List[LLMMessage]:
 
 def test_mode_follows_adapter_capabilities_not_prompt() -> None:
     assert cb.CommandModeLLM(_Inner(DEEPSEEK_CAPS, [])).mode == "tool_choice"
-    assert cb.CommandModeLLM(_Inner(MINIMAX_CAPS, [], name="minimax")).mode == "json_in_text"
+    assert cb.CommandModeLLM(_Inner(MINIMAX_CAPS, [], name="minimax")).mode == "tool_offered"
     caps = ProviderCapabilities(tools=True, json_mode=True)
     assert cb.CommandModeLLM(_Inner(caps, [])).mode == "json_mode"
 
@@ -119,13 +119,42 @@ def test_tool_choice_request_forces_command_tool_and_hides_speak_text() -> None:
 
 
 def test_json_in_text_request_keeps_native_tools_and_puts_schema_in_prompt() -> None:
-    bridge = cb.CommandModeLLM(_Inner(MINIMAX_CAPS, [], name="minimax"))
+    bridge = cb.CommandModeLLM(_Inner(ProviderCapabilities(text=True), [], name="plain"))
+    assert bridge.mode == "json_in_text"
     msgs, tools, settings = bridge.shape(_messages(), [_tool("speak_text"), _tool("get_current_time")], None)
     assert [t["function"]["name"] for t in tools] == ["get_current_time"]
     assert settings.tool_choice is None and "response_format" not in settings.extra
     note = msgs[0].content
     assert "JSON-схема команды: " + json.dumps(kn.command_schema("json"), ensure_ascii=False) in note
     assert "одним JSON-объектом" in note
+
+
+def test_tool_offered_request_offers_command_tool_without_tool_choice() -> None:
+    """MiniMax (#3698 ч.7d): тул ``command`` со схемой — в ``tools``, ``tool_choice`` не шлётся (ADR-0143), схемы в
+    промпте нет; тул речи скрыт, свои тулы остаются."""
+    bridge = cb.CommandModeLLM(_Inner(MINIMAX_CAPS, [], name="minimax"))
+    msgs, tools, settings = bridge.shape(_messages(), [_tool("speak_text"), _tool("get_current_time")],
+                                         LLMSettings(temperature=0.7))
+    assert [t["function"]["name"] for t in tools] == [kn.COMMAND_TOOL, "get_current_time"]
+    assert tools[0]["function"]["parameters"] == kn.command_schema("json")
+    assert settings.tool_choice is None and settings.temperature == 0.7
+    assert kn.prompt_fragment() in msgs[0].content and "JSON-схема" not in msgs[0].content
+
+
+def test_tool_offered_accepts_command_call_or_json_in_text() -> None:
+    """Без принуждения модель отвечает и вызовом ``command``, и JSON-ом в тексте — оба дают одну команду."""
+    called = _convert(MINIMAX_CAPS, LLMResponse(tool_calls=(_command_call(speech="Привет!"),)))
+    texted = _convert(MINIMAX_CAPS, LLMResponse(content='{"speech": "Привет!"}'))
+    assert called.content == texted.content == "Привет!" and not called.tool_calls and not texted.tool_calls
+
+
+def test_two_command_calls_in_one_answer_are_one_violation_and_go_to_the_retry() -> None:
+    """Два вызова ``command`` в одном ответе — ``command.parse`` → ``several_commands``: повтор с нарушением, а не
+    первая команда молча (что ответила бы модель на втором — неизвестно)."""
+    two = LLMResponse(tool_calls=(_command_call(speech="а"), ToolCall(id="c2", name=kn.COMMAND_TOOL,
+                                                                      arguments={"speech": "б"})))
+    result = cb.judge(two, ["get_current_time"])
+    assert getattr(result, "reason", None) == "several_commands"
 
 
 def test_json_mode_sets_response_format() -> None:
@@ -318,11 +347,19 @@ def test_command_mode_default_has_one_source_in_knowledge() -> None:
 
 
 def test_command_mode_is_on_by_default_for_deepseek_only() -> None:
-    """Решение Шифу 22.10 (#3698): без конфига режим команд включён у DeepSeek; MiniMax-фолбек - старый путь v1."""
+    """Решение Шифу 22.10 (#3698): без конфига режим команд включён у DeepSeek; MiniMax-фолбек - старый путь v1
+    (включить его - решение Шифу по замеру ч.7d)."""
     assert kn.COMMAND_PROVIDERS_DEFAULT == "deepseek"
     wrap = cb.wrapper_for(kn.COMMAND_PROVIDERS_DEFAULT)
     deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
     assert isinstance(wrap(deepseek), cb.CommandModeLLM) and wrap(minimax) is minimax
+
+
+def test_minimax_in_the_list_gets_tool_offered_and_others_stay_v1() -> None:
+    wrap = cb.wrapper_for("deepseek,minimax")
+    deepseek, minimax = _Inner(DEEPSEEK_CAPS, []), _Inner(MINIMAX_CAPS, [], name="minimax")
+    mimo = _Inner(ProviderCapabilities(tools=True), [], name="mimo")
+    assert wrap(deepseek).mode == "tool_choice" and wrap(minimax).mode == "tool_offered" and wrap(mimo) is mimo
 
 
 # ── сквозной ход через v1-цикл AgentCore и цепочку здоровья ────────────────────────────────────────────────
@@ -412,8 +449,27 @@ class _Down(_Inner):
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+def test_minimax_fallback_in_the_list_answers_with_the_same_command(streaming: bool) -> None:
+    """#3698 ч.7d: DeepSeek лёг — MiniMax-фолбек из списка отвечает той же командой (тул ``command`` без
+    ``tool_choice``)."""
+    down = _Down(DEEPSEEK_CAPS, [])
+    minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(_command_call(speech="Привет, я РОББОКС."),))],
+                     name="minimax")
+    wrap = cb.wrapper_for("deepseek,minimax")
+    chain = HealthAwareFallbackLLM([wrap(down), wrap(minimax)], cache=HealthCache())
+    core = AgentCore(llm=chain, tools=_Spoken().tools, memory=InMemoryStore(), dsm=_dsm(),
+                     system_prompt="ты РОББОКС", use_streaming=streaming)
+    result = asyncio.run(core.process_input("привет", preclassified_event=DialogueEvent.STT_RESULT))
+
+    assert result.error is None and down.requests and result.spoken_text == "Привет, я РОББОКС."
+    offered = [t["function"]["name"] for t in minimax.requests[0]["tools"]]
+    assert offered[0] == kn.COMMAND_TOOL and "speak_text" not in offered
+    assert minimax.requests[0]["settings"].tool_choice is None
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 def test_fallback_to_a_provider_outside_the_list_keeps_the_old_v1_path(streaming: bool) -> None:
-    """Режим команд включён по умолчанию (#3698): MiniMax-фолбек вне списка - свои тулы и ``speak_text``, без команды."""
+    """Режим команд по умолчанию (#3698): MiniMax-фолбек вне списка - свои тулы и ``speak_text``, без команды."""
     down = _Down(DEEPSEEK_CAPS, [])
     say = ToolCall(id="s1", name="speak_text", arguments={"text": "Привет, я РОББОКС."})
     minimax = _Inner(MINIMAX_CAPS, [LLMResponse(tool_calls=(say,)), LLMResponse(content="")], name="minimax")

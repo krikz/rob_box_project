@@ -59,7 +59,7 @@ def test_bridge_tool_offered_sends_command_tool_without_tool_choice():
         return LLMResponse(content="", tool_calls=(ToolCall("c1", "command", {"speech": "Привет!"}),))
 
     fake = FakeLLMProvider(on_complete=on_complete, capabilities=ProviderCapabilities(tools=True))
-    row = asyncio.run(ab.bridge_turn(fake, ab.TOOL_OFFERED, {}, _phrase(), [], 0))
+    row = asyncio.run(ab.bridge_turn(fake, "tool_offered", {}, _phrase(), [], 0))
     assert seen == [(("command",), None)]
     assert row["first"]["ok"] and row["final"]["ok"] and not row["retried"]
 

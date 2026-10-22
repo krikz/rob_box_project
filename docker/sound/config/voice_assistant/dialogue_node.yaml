@@ -26,7 +26,7 @@ dialogue_node:
     # первый = primary, остальные = fallbacks
     llm_providers: "deepseek,minimax"
     # ADR-0150 §4.5 (#3696 ч.5): провайдеры, отвечающие ОДНОЙ командой (поле speech, решение О4); форму запроса
-    # выбирает код по capabilities адаптера (DeepSeek → tool_choice, MiniMax → json_in_text) — core/command_bridge.py.
+    # выбирает код по capabilities адаптера (DeepSeek → tool_choice, MiniMax в списке → tool_offered, #3698 ч.7d) — core/command_bridge.py.
     # С 22.10 включено по умолчанию (решение Шифу 22.10 05:50Z, #3698): значение — одно, в коде
     # rob_box_dialog.knowledge.COMMAND_PROVIDERS_DEFAULT ("deepseek"), здесь ключа нет. Провайдер вне списка
     # (MiniMax-фолбек) идёт старым путём v1 на speak_text. Выключить — вернуть ключ: llm_command_providers: ""
@@ -68,7 +68,7 @@ dialogue_node:
     minimax:
       api_key: ""                  # MINIMAX_API_KEY env (или явно)
       base_url: "https://api.minimax.io/v1"
-      temperature: 0.7
+      temperature: 0.7             # MiniMax-M3 и M3.1-Flash его игнорируют (дока: всегда 1.0 / top_p 0.95) — не рычаг точности
       max_tokens: 3000   # см. #1883: 500 режет tool-call пополам
       timeout_s: 90.0
 

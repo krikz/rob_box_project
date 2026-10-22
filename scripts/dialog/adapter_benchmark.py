@@ -237,9 +237,6 @@ def _ms(value: float | None) -> str:
 # Путь моста режима команд (--cells): ход как у робота, метрики бейк-оффа PR-1c
 # ---------------------------------------------------------------------------------------------------------------
 
-#: Режим «тул ``command`` предложен, ``tool_choice`` не отправляется», пока его нет в ``degrade.MODE_ORDER``.
-TOOL_OFFERED = "tool_offered"
-BENCH_MODES: tuple[str, ...] = (*MODE_ORDER, *((TOOL_OFFERED,) if TOOL_OFFERED not in MODE_ORDER else ()))
 #: Поля тела запроса поверх политики адаптера (``robot`` — как у робота: M3 ``thinking: disabled``, Flash ``low``).
 VARIANTS: Mapping[str, Mapping[str, Any]] = {
     "robot": {},
@@ -364,19 +361,15 @@ async def bridge_turn(provider: LLMProvider, mode: str, extra: Mapping[str, Any]
 
     ``system_text`` — системный промпт (пусто — минимальный :data:`BRIDGE_PERSONA`); температура и лимит вывода —
     как в конфиге робота (без ``max_tokens`` MiniMax режет ответ на своём дефолте)."""
-    from dataclasses import replace
-
     from rob_box_harness.providers.reasoning import without_reasoning
     from rob_box_voice.core.command_bridge import CommandModeLLM, judge
 
     wrapped = CommandModeLLM(provider)
-    wrapped.mode = "tool_choice" if mode == TOOL_OFFERED else mode  # type: ignore[assignment]
+    wrapped.mode = mode  # type: ignore[assignment]  # режим ячейки, а не select_mode
     names = ", ".join(t["function"]["name"] for t in tools)
     system = LLMMessage(role="system", content=system_text or BRIDGE_PERSONA.format(tools=names))
     settings = LLMSettings(temperature=ROBOT_TEMPERATURE, max_tokens=ROBOT_MAX_TOKENS, extra=dict(extra))
     msgs, offered, shaped = wrapped.shape([system, LLMMessage(role="user", content=phrase.text)], tools, settings)
-    if mode == TOOL_OFFERED:
-        shaped = replace(shaped, tool_choice=None)
     responses: list[Any] = []
     facts: list[dict[str, Any]] = []
 
@@ -402,8 +395,8 @@ def parse_cell(spec: str) -> tuple[str, str, str]:
     """``адаптер[:модель]/режим[/вариант]`` → (адаптер, режим, вариант); незнакомое — ``ValueError``."""
     parts = spec.split("/")
     adapter, mode, variant = parts[0], parts[1] if len(parts) > 1 else "auto", parts[2] if len(parts) > 2 else "robot"
-    if mode not in ("auto", *BENCH_MODES) or variant not in VARIANTS:
-        raise ValueError(f"ячейка {spec!r}: режим из {BENCH_MODES}, вариант из {tuple(VARIANTS)}")
+    if mode not in ("auto", *MODE_ORDER) or variant not in VARIANTS:
+        raise ValueError(f"ячейка {spec!r}: режим из {MODE_ORDER}, вариант из {tuple(VARIANTS)}")
     return adapter, mode, variant
 
 
