@@ -738,3 +738,12 @@ def test_rejected_perform_leaves_no_started_entry_3973():
     engine = _engine(ports)
     _run(engine, "а теперь второй куплет про кота")
     assert "tool" not in [e.role for e in engine.log.window()], "отказ владельца - не выступление"
+
+
+def test_3974_expression_only_command_finishes_the_turn_without_failure():
+    """«Покажи, как тебе грустно»: команда из одной экспрессии валидна, ход ``finished``, не ``nothing_to_do``."""
+    from rob_box_dialog.command import Expression
+    ports = Ports(answers=[Answer(Command(expression=Expression(emotion="sad")), "deepseek")])
+    agg = _run(_engine(ports), "покажи, как тебе грустно")
+    assert (agg.stage, agg.status) == ("done", "finished")
+    assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []
