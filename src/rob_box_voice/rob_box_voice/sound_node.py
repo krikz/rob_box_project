@@ -14,7 +14,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from audio_common_msgs.msg import AudioData
-from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SoundEvent
+from rob_box_dialog import expression
+from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
 
 import os
 import json
@@ -67,6 +68,11 @@ class SoundNode(SoundRequestsMixin, Node):
         # Earcon рефлексов хода (ADR-0150 §5.5.3): «услышал», «готово», «не вышло».
         self.expression_sub = self.create_subscription(
             ExpressionRequest, "/voice/expression/request", self.expression_callback, 10
+        )
+        # Тишина (#3984): сцена Silence в снимке сессии - «услышал» становится тихим muffled, «готово» молчит.
+        self.session_sub = self.create_subscription(
+            SessionState, "/dialog/session", self.session_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
         # STOP закрывает голосовой стрим рации (PTT Quest/Telegram). mp3 из библиотеки генераций здесь больше не
         # играет — он на деке движка (ADR-0158 PR-2), стоп — stop_music → PlayerOwner.
@@ -216,6 +222,13 @@ class SoundNode(SoundRequestsMixin, Node):
             self.publish_state("ready")
         else:
             self.publish_state("error_no_sounds")
+
+    def session_callback(self, msg: SessionState):
+        """Снимок сессии: есть ли сцена ``Silence`` у личности (чужой агент состояние не меняет)."""
+        silenced = expression.session_silence(msg)
+        if silenced is not None and silenced != self._silenced:
+            self._silenced = silenced
+            self.get_logger().info("🤫 Тишина: earcon'ы приглушены" if silenced else "🔔 Тишина снята: earcon'ы обычные")
 
     def trigger_callback(self, msg: String):
         """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""

@@ -7,7 +7,7 @@ dialogue_node publishes ``DialogueStateKind.name`` as ``std_msgs/String`` on
 name per ADR-0027 #2 and ``arbiter_node.VOICE_DIALOGUE_STATE_TOPIC``.
 
 ADR-0150 PR-3b (#3690): the ring lives by the turn stages (``/dialog/turn_event``,
-``core/ring_reflex.py``); the dialogue state only puts it out in silence.
+``core/ring_reflex.py``); the dialogue state only starts the silence animation (#3984).
 
 ROS2 stubs come from this directory's conftest; ``usb`` (pyusb) is stubbed
 here because the ReSpeaker ring is hardware.
@@ -26,6 +26,7 @@ sys.modules.setdefault("usb.core", _usb.core)
 sys.modules.setdefault("usb.util", _usb.util)
 
 from rob_box_voice import led_node  # noqa: E402
+from rob_box_voice.core.ring_reflex import SILENCE_FRAMES  # noqa: E402
 
 DIALOGUE_STATE_TOPIC = "/voice/dialogue/state"
 TURN_EVENT_TOPIC = "/dialog/turn_event"
@@ -63,7 +64,7 @@ def test_ring_follows_turn_events_not_the_removed_animation_topic():
     assert sub.callback == node.turn_event_callback
 
 
-def test_dialogue_node_payload_only_puts_the_ring_out_in_silence():
+def test_dialogue_node_payload_puts_the_ring_into_the_silence_animation():
     """dialogue_node publishes upper-case enum names; led_node lower-cases them."""
     node = _make_node()
     node.auto_mode = True
@@ -73,7 +74,7 @@ def test_dialogue_node_payload_only_puts_the_ring_out_in_silence():
     assert node.current_mode == "listening"
 
     node.state_callback(types.SimpleNamespace(data="SILENCED"))
-    node.pixel_ring.off.assert_called_once()
+    node.pixel_ring.mono.assert_called_once_with(*SILENCE_FRAMES[0])   # #3984: своя анимация, не погасшее кольцо
 
     node.state_callback(types.SimpleNamespace(data="IDLE"))
     node.pixel_ring.trace.assert_called()

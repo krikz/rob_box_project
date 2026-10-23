@@ -217,3 +217,42 @@ def test_test_pattern_overrides_everything():
     f = d.tick(T0 + 100)
     assert d.key == 'test_pattern'
     assert np.asarray(f.mouth).sum() > 0
+
+
+# -- тишина (#3984, решение Шифу 23.10): рот заклеен, пока в сессии сцена Silence -----------------------------------
+def test_silence_shows_the_taped_mouth_instead_of_idle_and_ends_back_in_idle():
+    d = awake()
+    assert d.set_silenced(True) is True and d.set_silenced(True) is False
+    assert d.silenced and d.choose(T0 + 9.0)[0] == 'taped_mouth'
+    d.voice_seen(T0 + 399.0)
+    assert d.choose(T0 + 400.0)[0] == 'taped_mouth'              # держится, пока Silence не снята (а не 8 с запроса)
+    assert d.set_silenced(False) is True
+    d.voice_seen(T0 + 400.5)
+    assert d.choose(T0 + 401.0)[0] == 'idle_stare'
+
+
+def test_entering_silence_takes_the_requested_scene_and_the_llm_scene_off():
+    d = awake()
+    d.request('listening', 8.0, T0 + 8.0)
+    d.apply_face({'eyes': 'wide'}, 20.0, T0 + 8.0)
+    assert d.choose(T0 + 8.5)[0] == 'face_dsl'
+    d.set_silenced(True)
+    assert d.choose(T0 + 8.6)[0] == 'taped_mouth'
+
+
+def test_music_does_not_beat_the_taped_mouth():
+    d = awake()
+    d.set_silenced(True)
+    d.on_music_state(json.dumps({'state': 'playing', 'dj': {'bpm': 118}}), T0 + 8.0)
+    assert d.choose(T0 + 8.1)[0] == 'taped_mouth'
+
+
+def test_taped_mouth_draws_tape_across_the_mouth_and_is_not_the_listening_face():
+    from rob_box_animations.face.scene import Scene
+    from rob_box_animations.face.states import SCENES
+
+    taped, listening = Scene(SCENES['taped_mouth']).frame(1.0), Scene(SCENES['listening']).frame(1.0)
+    lit = taped.mouth.sum(axis=2) > 0
+    assert lit[1:4, 2:23].all() and not lit[4].any()             # полоса скотча на весь рот
+    assert taped.mouth.max() <= 25 and taped.eye_l.max() <= 25   # уровни драйвера 0..25
+    assert not np.array_equal(taped.mouth, listening.mouth)

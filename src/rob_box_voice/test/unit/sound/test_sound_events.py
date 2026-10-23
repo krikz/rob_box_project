@@ -1,6 +1,7 @@
 """ADR-0150 PR-3b (#3690): звук отвечает событием на каждый запрос - молчаливого пропуска нет (V33, A23)."""
 
 import json
+import shutil
 import types
 from unittest.mock import MagicMock
 
@@ -125,7 +126,7 @@ def _expression_events(node):
 
 
 def test_every_earcon_of_the_table_has_a_sound_file():
-    assert set(EARCON_SOUNDS) == set(kn.EARCONS)
+    assert set(EARCON_SOUNDS) == set(kn.EARCONS) | {v for v in kn.SILENCED_EARCONS.values() if v}
 
 
 def test_earcon_starts_the_sound_and_answers_started(node):
@@ -216,3 +217,111 @@ def test_thread_reports_skipped_error_on_exception_and_frees_the_channel(node):
     last = _sound_events(node)[-1]
     assert (last.kind, last.reason) == (SoundEvent.KIND_SKIPPED, "error")
     assert node.is_playing is False
+
+
+# ── тишина (#3984, решение Шифу 23.10): вместо пик-пик - тихий приглушённый звук ──────────────────────────────
+
+
+def _session(*scene_kinds, agent="personality"):
+    return types.SimpleNamespace(agent=agent, scenes=[types.SimpleNamespace(kind=k) for k in scene_kinds])
+
+
+def _sound_pack():
+    import pathlib
+
+    return next(p for p in pathlib.Path(__file__).resolve().parents if (p / "sound_pack").is_dir()) / "sound_pack"
+
+
+def test_muffled_sound_file_lies_next_to_the_other_earcons_and_is_a_distinct_sound():
+    pack = _sound_pack()
+    assert (pack / "muffled.mp3").is_file() and (pack / "make_muffled.py").is_file()
+    assert kn.SILENCED_EARCONS["heard"] == "muffled" and EARCON_SOUNDS["muffled"] == "muffled"
+    assert EARCON_SOUNDS["muffled"] != EARCON_SOUNDS["heard"]
+    assert "muffled" not in kn.EARCONS                      # не выбор LLM (enum схемы команды)
+    assert set(kn.SILENCED_EARCONS) <= set(kn.EARCONS)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg нужен только чтобы измерить файл")
+def test_muffled_sound_is_short_and_quieter_than_the_heard_click():
+    import re
+    import subprocess
+
+    def probe(name):
+        return subprocess.run(["ffmpeg", "-hide_banner", "-i", str(_sound_pack() / name), "-af", "volumedetect", "-f",
+                               "null", "-"], capture_output=True, text=True).stderr
+
+    def peak(text):
+        return float(re.search(r"max_volume: (-?[\d.]+) dB", text).group(1))
+
+    def seconds(text):
+        h, m, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", text).groups()
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+
+    muffled, click = probe("muffled.mp3"), probe("button_click.mp3")
+    assert seconds(muffled) <= 0.3 and peak(muffled) < peak(click) - 6.0
+
+
+def test_in_silence_heard_plays_the_muffled_sound_not_the_click_and_unsilence_brings_the_click_back(node):
+    node.sounds["muffled"] = _segment()
+    node.session_callback(_session("Silence"))
+    node.expression_callback(_request("heard", "t1"))
+    (thread,) = _Thread.started
+    assert thread.args[:2] == ("muffled", "muffled") and thread.args[2] == "t1"
+    (answer,) = _expression_events(node)
+    assert (answer.kind, answer.reason) == (ExpressionEvent.KIND_STARTED, "")
+    node.release_channel()
+    node.session_callback(_session())                       # «Робот, говори»: сцены Silence больше нет
+    node.expression_callback(_request("heard", "t2"))
+    assert _Thread.started[-1].args[:2] == ("button_click", "button_click")
+
+
+def test_in_silence_done_earcon_is_skipped_with_a_reason_and_fail_is_muffled(node):
+    node.sounds["muffled"] = _segment()
+    node.session_callback(_session("Silence"))
+    node.expression_callback(_request("done", "t1"))
+    assert _Thread.started == []
+    (answer,) = _expression_events(node)
+    assert (answer.kind, answer.reason) == (ExpressionEvent.KIND_SKIPPED, "silenced")
+    node.expression_callback(_request("fail", "t2"))
+    assert _Thread.started[-1].args[:2] == ("muffled", "muffled")
+
+
+def test_foreign_agent_session_does_not_change_the_silence(node):
+    node.session_callback(_session("Silence"))
+    node.session_callback(_session(agent="telegram"))
+    assert node._silenced is True
+
+
+def test_scenario_silence_then_a_phrase_then_robot_speak_ring_and_sound_follow_the_session(node):
+    """Сквозной сценарий #3984 на реальных контрактах: один и тот же ``SessionState`` ведёт кольцо и звук.
+
+    вход в тишину -> анимация кольца «тишина»; реплика («Робби, как дела?» -> ``addressed``) -> звук ``muffled`` и
+    кольцо стадию не показывает; «Робот, говори» (сцена снята) -> кольцо в покое, «услышал» снова обычный."""
+    from rob_box_voice.core import ring_reflex as rr
+
+    class _Ring:
+        calls = []
+
+        def __getattr__(self, name):
+            return lambda *args: (self.calls.append((name, *args)) or True)
+
+    timers = []
+    ring_reflex = rr.RingReflex(_Ring(), lambda delay, fn: timers.append(fn) or types.SimpleNamespace(cancel=lambda: None),
+                                lambda *answer: None)
+
+    def session(msg):
+        node.session_callback(msg)
+        ring_reflex.on_state("silenced" if node._silenced else "idle")
+
+    node.sounds["muffled"] = _segment()
+    session(_session("Silence"))
+    assert _Ring.calls == [("mono", *rr.SILENCE_FRAMES[0])] and ring_reflex.mode == "silence"
+    assert ring_reflex.on_turn_event("t1", "addressed", "started") is None   # стадия кольцо не трогает
+    node.expression_callback(_request("heard", "t1"))
+    assert _Thread.started[-1].args[0] == "muffled" and _Thread.started[-1].args[0] != "button_click"
+    node.release_channel()
+    session(_session())
+    assert _Ring.calls[-1] == ("trace",) and ring_reflex.mode == rr.REST
+    assert ring_reflex.on_turn_event("t2", "addressed", "started") == "doa_sector"
+    node.expression_callback(_request("heard", "t2"))
+    assert _Thread.started[-1].args[0] == "button_click"
