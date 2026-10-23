@@ -192,6 +192,26 @@ def test_perform_shape():
     bad({"perform": _perform(2, expression_per_segment=[{"emotion": "happy"}])}, "bad_segments")
 
 
+def test_quiet_actions_beside_speech_are_valid_loud_ones_are_not_3953():
+    """Шифу 23.10: ``memory_save``/``register_speaker``/``play_animation`` живут рядом со ``speech``; звук - нет."""
+    fact = {"tool": "memory_save", "args": {"fact": "Пользователя зовут Саша"}}
+    sound = {"tool": "play_sound", "args": {"sound": "robot_happy"}}
+    assert ok({"speech": "Привет, Саша!", "actions": [fact]}).speech == "Привет, Саша!"
+    assert ok({"speech": "Привет!", "actions": [{"tool": "register_speaker", "args": {"name": "Борис"}}]}).speech
+    bad({"speech": "Привет, Саша! Вот звук", "actions": [fact, sound]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+
+
+def test_invalid_command_offers_its_individually_valid_actions_for_salvage_3953():
+    fact = {"tool": "memory_save", "args": {"fact": "x"}}
+    sound = {"tool": "play_sound", "args": {"sound": "robot_happy"}}
+    broken = {"tool": "play_animation", "args": {"no_such": 1}}
+    query = {"tool": "get_current_time", "args": {}}
+    res = bad({"speech": "Вот!", "actions": [fact, sound, broken]}, "bad_args")
+    assert [a.tool for a in res.salvage] == ["memory_save", "play_sound"]  # битый по схеме не спасаем
+    res = bad({"speech": "Вот!", "actions": [sound, query]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+    assert [a.tool for a in res.salvage] == ["play_sound"]  # query некому вернуть данные
+
+
 def test_perform_beside_actions_follows_adr_and_excludes_speech():
     """ADR §4.1: ``perform`` взаимоисключает ``speech`` и при действиях; ответ по сути рядом с действием — только
     ``perform`` (правку правила, чтобы невозвучиваемый ``speech`` не валил команду, решает Шифу, #3698 ч.7c)."""

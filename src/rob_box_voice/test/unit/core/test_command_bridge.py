@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Invalid
 from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.dialogue_state_machine import DialogueEvent, DialogueStateMachine
 from rob_box_harness.health import HealthAwareFallbackLLM, HealthCache
@@ -386,7 +387,8 @@ class _Spoken:
         self.said: List[str] = []
         self.tools = _OwnerTools()
         for name, handler in (("memory_save", lambda a: {"fact_id": 1, "fact": a["fact"]}),
-                              ("get_current_time", lambda a: "12:00"), ("speak_text", self._say)):
+                              ("get_current_time", lambda a: "12:00"), ("speak_text", self._say),
+                              ("play_sound", lambda a: {"status": "done"})):
             self.tools.register(ToolSpec(name=name, description=name, parameters={"type": "object"}), handler)
 
     def _say(self, args: Mapping[str, Any]) -> str:
@@ -508,6 +510,8 @@ SOUND = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
 #: Действие, которое есть в стенде ``_core`` (play_sound там нет); фразу об исходе говорит код.
 SAVE = [{"tool": "memory_save", "args": {"fact": "Саша любит чай"}}]
 SAVED = "Запомнил: Саша любит чай."
+#: Громкое действие: ``speech`` рядом с ним не звучит (в отличие от тихого ``memory_save``, #3953).
+SOUND = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
 
 
 def test_invalid_command_goes_back_as_tool_result_and_the_fixed_one_is_executed() -> None:
@@ -596,8 +600,8 @@ def test_joke_in_speech_beside_a_sound_is_retried_into_perform_and_the_sound_sta
     """Живой прогон 7c (#3698, вариант 2): шутка в ``speech`` рядом с ``play_sound`` раньше пропадала молча; теперь
     модель получает нарушение и кладёт шутку в ``perform`` - она звучит, о звуке код молчит."""
     joke = {"kind": "tale", "segments": ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]}
-    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук! Шутка: заходит робот в бар.", actions=SAVE),))
-    good = LLMResponse(tool_calls=(_command_call(perform=joke, actions=SAVE),))
+    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук! Шутка: заходит робот в бар.", actions=SOUND),))
+    good = LLMResponse(tool_calls=(_command_call(perform=joke, actions=SOUND),))
     inner = _Inner(DEEPSEEK_CAPS, [bad, good])
     spoken = _Spoken()
     result = asyncio.run(_core(inner, streaming, spoken).process_input(
@@ -605,19 +609,19 @@ def test_joke_in_speech_beside_a_sound_is_retried_into_perform_and_the_sound_sta
 
     assert result.error is None and len(inner.requests) == 2 and result.turn_failure == ""
     assert "speech_with_actions" in inner.requests[1]["messages"][-1].content
-    assert spoken.said == [SAVED, *joke["segments"]]
+    assert spoken.said == [*joke["segments"]]
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_words_about_the_action_in_speech_are_retried_away_and_never_spoken(streaming: bool) -> None:
-    bad = LLMResponse(tool_calls=(_command_call(speech="Вот запомнил!", actions=SAVE),))
-    good = LLMResponse(tool_calls=(_command_call(actions=SAVE),))
+    bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук!", actions=SOUND),))
+    good = LLMResponse(tool_calls=(_command_call(actions=SOUND),))
     inner = _Inner(DEEPSEEK_CAPS, [bad, good])
     spoken = _Spoken()
     result = asyncio.run(_core(inner, streaming, spoken).process_input(
         "включи звук радостный", preclassified_event=DialogueEvent.STT_RESULT))
 
-    assert result.error is None and len(inner.requests) == 2 and spoken.said == [SAVED]
+    assert result.error is None and len(inner.requests) == 2 and spoken.said == []
     assert "убери speech" in inner.requests[1]["messages"][-1].content
 
 
@@ -679,12 +683,28 @@ def test_agent_core_empty_twice_fails_the_turn_without_a_third_llm_call(streamin
 def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> None:
     """PR-12a (#3706): мост проверяет команду для своего агента — у телеграма ``speech`` при действиях — текст в чат
     (законно), у Личности — нарушение ``speech_with_actions`` (§4.1). Цепочка телеграма — ``wrapper_for(agent=)``."""
-    reply = LLMResponse(tool_calls=(_command_call(speech="Записываю.", actions=SAVE),))
-    assert cb.judge(reply, ["memory_save"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
-    chat = cb.judge(reply, ["memory_save"], agent=kn.TEXT_CHANNEL_AGENT)
-    assert chat.speech == "Записываю." and [a.tool for a in chat.actions] == ["memory_save"]
+    reply = LLMResponse(tool_calls=(_command_call(speech="Включаю.", actions=SOUND),))
+    assert cb.judge(reply, ["play_sound"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
+    chat = cb.judge(reply, ["play_sound"], agent=kn.TEXT_CHANNEL_AGENT)
+    assert chat.speech == "Включаю." and [a.tool for a in chat.actions] == ["play_sound"]
     wrapped = cb.wrapper_for("deepseek", agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
-    assert wrapped._judged(reply, ["memory_save"]).speech == "Записываю."
+    assert wrapped._judged(reply, ["play_sound"]).speech == "Включаю."
+
+
+def test_quiet_action_beside_speech_is_valid_for_personality_3953() -> None:
+    """Шифу 23.10: ``memory_save`` и прочие тихие действия живут рядом со ``speech`` - n701 больше не invalid."""
+    reply = LLMResponse(tool_calls=(_command_call(speech="Привет, Саша!", actions=SAVE),))
+    checked = cb.judge(reply, ["memory_save"])
+    assert checked.speech == "Привет, Саша!" and [a.tool for a in checked.actions] == ["memory_save"]
+
+
+def test_invalid_command_carries_its_valid_actions_through_the_bridge_form_3953() -> None:
+    """Невалидная после повтора команда отдаёт ходу свои допустимые действия: speech при громком + кривое второе."""
+    bad = [*SOUND, {"tool": "memory_save", "args": {}}]
+    res = cb.judge(LLMResponse(tool_calls=(_command_call(speech="Вот!", actions=bad),)), ["play_sound", "memory_save"])
+    assert isinstance(res, Invalid) and [a.tool for a in res.salvage] == ["play_sound"]
+    _, calls, verdict = cb.to_legacy(res)
+    assert verdict.startswith("invalid:") and calls[0].arguments["actions"][0]["tool"] == "play_sound"
 
 
 # ── тул вне среза хода (#3897, ADR-0148) ───────────────────────────────────────────────────────────────────

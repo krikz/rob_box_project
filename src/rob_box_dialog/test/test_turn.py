@@ -268,12 +268,62 @@ def test_3901_edit_pending_goes_to_owner_as_edit_and_rejection_is_said():
     assert ports.said == [(phrases.text("local.rejected"), None, "sad")]
 
 
-def test_invalid_command_fails_turn_without_speech():
+def test_invalid_command_with_nothing_to_run_is_said_by_code_not_silence():
+    """#3953 (Шифу 23.10, В21): невалидная после повтора - не молчащий ``failed``, а честная фраза кода, ход ``done``."""
     ports = Ports(answers=[Answer(Invalid("bad_json"), "minimax", calls=2)])
     agg = _run(_engine(ports), "сделай что-нибудь")
-    assert ports.said == [] and ports.executed == []
-    assert (agg.stage, agg.status, agg.llm_calls) == ("failed", "failed", 2)
-    assert ports.stages[-1] == ("failed", "failed", "invalid_command:bad_json")
+    assert ports.said == [(phrases.text(kn.INVALID_COMMAND_PHRASE), None, "sad")] and ports.executed == []
+    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "done", 2)
+    assert ports.stages[-1] == ("done", "done", "invalid_salvaged:bad_json")
+
+
+def test_two_violations_in_a_row_run_the_valid_actions_and_code_tells_the_outcome():
+    """Два нарушения подряд (громкое действие + speech, ретрай то же): действие исполнено, итог говорит код."""
+    sound = ToolCall("stop_music", {})
+    ports = Ports(answers=[Answer(Invalid(kn.VIOLATION_SPEECH_WITH_ACTIONS, salvage=(sound,)), "deepseek", calls=2)])
+    agg = _run(_engine(ports), "выключи музыку пожалуйста сейчас же")
+    assert ports.executed == [[("stop_music", {})]]
+    assert ports.said == [(phrases.text("music.stop_ok"), None, None)]
+    assert (agg.stage, agg.status) == ("done", "done")
+
+
+def test_salvaged_action_that_failed_is_said_sadly():
+    ports = Ports(answers=[Answer(Invalid("bad_args", salvage=(ToolCall("stop_music", {}),)), "deepseek")],
+                  outcomes={"stop_music": ("rejected", {})})
+    agg = _run(_engine(ports), "выключи музыку пожалуйста сейчас же")
+    assert ports.said == [(phrases.text("music.stop_fail"), None, "sad")] and agg.status == "done"
+
+
+def test_quiet_action_beside_speech_speaks_and_runs_silently_n701():
+    """Акт 2b n701: speech + memory_save - слова звучат, факт сохранён, «Запомнил: …» поверх них не говорится."""
+    cmd = Command(speech="Привет, Саша! Приятно познакомиться.",
+                  actions=(ToolCall("memory_save", {"fact": "Пользователя зовут Саша"}),))
+    ports = Ports(answers=[Answer(cmd, "deepseek")], outcomes={"memory_save": ("done", {"fact_id": "f1"})})
+    agg = _run(_engine(ports), "здравствуй я Саша чиню тут технику")
+    assert ports.executed == [[("memory_save", {"fact": "Пользователя зовут Саша"})]]
+    assert ports.said == [("Привет, Саша! Приятно познакомиться.", None, "neutral")]
+    assert (agg.stage, agg.status) == ("done", "finished")
+
+
+def test_register_speaker_beside_speech_is_one_reply_the_models_n722():
+    """Акт 2c n722: speech + register_speaker - одна реплика (слова модели), регистрация исполнена, код молчит."""
+    cmd = Command(speech="Приятно познакомиться, Борис!", actions=(ToolCall("register_speaker", {"name": "Борис"}),))
+    ports = Ports(answers=[Answer(cmd, "deepseek")], outcomes={"register_speaker": ("done", {"name": "Борис"})})
+    _run(_engine(ports), "меня зовут Борис")
+    assert ports.executed == [[("register_speaker", {"name": "Борис"})]]
+    assert [t for t, _, _ in ports.said] == ["Приятно познакомиться, Борис!"]
+
+
+def test_quiet_action_with_surprising_outcome_or_failure_is_still_said_by_code():
+    """Простой успех молчит, но отказ и успех с причиной (уже знакомы) честно говорит код поверх слов модели."""
+    cmd = Command(speech="Приятно познакомиться, Борис!", actions=(ToolCall("register_speaker", {"name": "Борис"}),))
+    failed = Ports(answers=[Answer(cmd, "deepseek")], outcomes={"register_speaker": ("rejected", {})})
+    _run(_engine(failed), "меня зовут Борис")
+    assert [t for t, _, _ in failed.said] == [phrases.text("identity.rejected"), "Приятно познакомиться, Борис!"]
+    saved = Command(speech="Запомнил!", actions=(ToolCall("memory_save", {"fact": "x"}),))
+    lost = Ports(answers=[Answer(saved, "deepseek")], outcomes={"memory_save": ("rejected", {})})
+    _run(_engine(lost), "запомни что x")
+    assert [t for t, _, _ in lost.said] == [phrases.text("local.rejected"), "Запомнил!"]
 
 
 def test_passed_is_not_a_failure():
@@ -314,13 +364,37 @@ def test_query_data_goes_back_to_llm_once_then_answer():
     assert ports.said == [("Сейчас пять часов.", None, "neutral")] and agg.llm_calls == 2
 
 
-def test_query_beyond_limit_is_not_run_and_turn_fails():
+def test_query_beyond_limit_is_not_run_and_code_speaks_instead_of_silence():
+    """#3953: модель и на последнем вызове просит query (мост не отсёк) — он не исполняется, ход ``done`` с фразой кода."""
     q = Command(actions=(ToolCall("get_current_time", {}),))
     ports = Ports(answers=[Answer(q, "deepseek") for _ in range(kn.LLM_QUERY_ITERATIONS_MAX + 1)])
     agg = _run(_engine(ports), "который час")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
     assert len(ports.executed) == kn.LLM_QUERY_ITERATIONS_MAX
-    assert (agg.stage, agg.status) == ("failed", "failed") and ports.said == []
+    assert (agg.stage, agg.status) == ("done", "done")
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
+    assert ports.stages[-1] == ("done", "done", "query_fallback:ceiling")
+
+
+def test_last_llm_call_has_no_query_tools_and_turn_ends_with_speech():
+    """#3953 (марафон 23.10, n209): цепочка memory_search до потолка — последний вызов без query-тулов, ход говорит."""
+    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
+                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    final = Answer(Command(speech="Помню: болеешь за Спартак и по пятницам ешь пиццу."), "deepseek")
+    ports = Ports(answers=[*search, final], outcomes={"memory_search": ("done", {"results": []})})
+    agg = _run(_engine(ports), "а про меня что помнишь")
+    offered = [tools for _, tools, _ in ports.asked]
+    assert len(offered) == kn.LLM_QUERY_ITERATIONS_MAX + 1
+    assert all("memory_search" in tools for tools in offered[:-1])
+    assert offered[-1] and all(kn.TOOL_CLASSES.get(t) != "query" for t in offered[-1])
+    assert ports.said == [("Помню: болеешь за Спартак и по пятницам ешь пиццу.", None, "neutral")]
+    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 3)
+
+
+def test_first_call_keeps_query_tools():
+    ports = Ports(answers=[Answer(Command(speech="Привет."), "deepseek")])
+    _run(_engine(ports), "расскажи что-нибудь")
+    assert "memory_search" in ports.asked[0][1]
 
 
 def test_ask_sets_pending_question():
@@ -611,10 +685,11 @@ def test_invalid_after_query_of_a_tool_without_phrase_says_generic_phrase():
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and agg.status == "done"
 
 
-def test_invalid_without_query_still_fails_silently_as_before():
+def test_invalid_without_query_is_said_by_code_not_silence():
     ports = Ports(answers=[Answer(Invalid("too_long", "speech"), "deepseek")])
     agg = _run(_engine(ports), "привет")
-    assert ports.said == [] and (agg.stage, agg.status) == ("failed", "failed")
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.INVALID_COMMAND_PHRASE)]
+    assert (agg.stage, agg.status) == ("done", "done")
 
 
 def test_valid_short_answer_after_query_is_said_and_fallback_stays_silent():

@@ -559,9 +559,12 @@ QUERY_RESULTS_FIELD = "query_results"
 QUERY_FALLBACK_PHRASES: Mapping[str, str] = MappingProxyType({"list_tts_voices": "query.voices_summary"})
 #: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
+#: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
+#: исполнены, об исходе говорит код; исполнять нечего - эта честная фраза, а не молчание на адресованную реплику.
+INVALID_COMMAND_PHRASE = "command.invalid_generic"
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
-    "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC,
+    "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     *QUERY_FALLBACK_PHRASES.values(),
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
@@ -873,12 +876,18 @@ TURN_WINDOW_MAX_TOKENS = 3000
 #: Query-цикл (§4.1): не больше двух итераций данных → LLM на ход.
 LLM_QUERY_ITERATIONS_MAX = 2
 #: Невалидная команда LLM возвращается модели перечнем нарушений (tool-результат на её вызов ``command``) — столько
-#: повторов на ответ; дальше невалидна — ход закрывается как ``failed`` без речи (рефлекс ``REFLEXES["failed"]``:
-#: earcon fail, красное кольцо), следующий ход идёт обычно (решения Шифу 21.10 по #3698, ADR-0148 п.2).
+#: повторов на ответ; дальше невалидна — допустимые действия исполняются, об исходе (или о том, что не вышло) говорит
+#: код (``INVALID_COMMAND_PHRASE``), ход ``done`` (#3953, решение Шифу 23.10; раньше 21.10 по #3698 - ``failed`` без речи).
 COMMAND_RETRIES_MAX = 1
 #: Причина нарушения «speech при непустых actions»: такая реплика не звучит (§4.1), ответ по сути пропал бы молча
 #: (живой прогон #3698: 2 из 15). Это нарушение команды — модель получает повтор (решение Шифу 22.10, вариант 2).
 VIOLATION_SPEECH_WITH_ACTIONS = "speech_with_actions"
+#: «Тихие» действия (решение Шифу 23.10, #3953; живой прогон n701: «Привет, Саша!» + ``memory_save`` стали
+#: ``speech_with_actions``, ход молчал, Саша не запомнен): исход не занимает звуковой канал и не конкурирует со
+#: словами модели, поэтому ``speech`` рядом с ними законен и звучит. Успех таких действий молчит (фразу «Запомнил: …»
+#: не добавляем), провал говорит код. Остальные действия (звук, музыка, движение, громкость, голос) - прежнее правило
+#: ``VIOLATION_SPEECH_WITH_ACTIONS``. Единственная таблица: валидатор, фраза хода и промпт читают её.
+QUIET_WITH_SPEECH_TOOLS: Tuple[str, ...] = ("memory_save", "register_speaker", "play_animation")
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
 #: ретрай #1217 мимо команды (ночной замер #3698 22.10, ход 4: звук потерян). Молчать честно — ``passed``.
@@ -1173,7 +1182,8 @@ def prompt_fragment() -> str:
     lines: List[str] = [
         "Ответ — одна команда (JSON-объект) с полями:",
         f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда невалидна):"
-        " о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) — в perform.",
+        " о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) — в perform."
+        f" Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними звучит.",
         "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет.",
         f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}.",
         f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"

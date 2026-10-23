@@ -183,7 +183,9 @@ def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
     от пустого (``Invalid(empty)``, #3859), а так исход доходит до хода как есть."""
     if isinstance(result, Invalid):
         call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
-                        arguments={kn.COMMAND_INVALID_FIELD: result.reason})
+                        arguments={kn.COMMAND_INVALID_FIELD: result.reason,
+                                   **({"actions": [{"tool": a.tool, "args": dict(a.args)} for a in result.salvage]}
+                                      if result.salvage else {})})
         return "", (call,), f"invalid:{result.reason}"
     if result.passed:
         call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL,
