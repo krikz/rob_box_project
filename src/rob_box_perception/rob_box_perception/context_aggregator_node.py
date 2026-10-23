@@ -217,7 +217,7 @@ class ContextAggregatorNode(Node):
             self.on_robot_response,
             10
         )
-        # TEMP(ADR-0148, PR-15 15-0e): dialogue_node v1 пишет JSON с SSML в /voice/dialogue/response; уходит с ним.
+        # Удалит PR-15 #3711: dialogue_node v1 пишет JSON с SSML в /voice/dialogue/response; уходит с ним.
         self.dialogue_response_sub = self.create_subscription(
             String,
             '/voice/dialogue/response',

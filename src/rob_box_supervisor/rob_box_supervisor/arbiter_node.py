@@ -1001,7 +1001,7 @@ class AvatarArbiter(Node):
         self._aggregator.update_device_snapshot(battery_pct=data.get("battery_pct"))
 
     def _on_voice_state_msg(self, msg: RosString) -> None:
-        """TEMP(ADR-0148, PR-15): ``/voice/dialogue/state`` (НЕ /voice/state — ADR-0027 #2), пишет только v1."""
+        """Удалит PR-15 #3711: ``/voice/dialogue/state`` (НЕ /voice/state — ADR-0027 #2), пишет только v1."""
         self._aggregator.update_voice_state(self._voice.on_legacy(msg.data).state)
 
     @staticmethod

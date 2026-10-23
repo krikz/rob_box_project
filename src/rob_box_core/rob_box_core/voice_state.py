@@ -58,7 +58,7 @@ TURN_STAGE_STATE: Mapping[str, str] = {
     "timeout": "idle",
 }
 
-#: TEMP(ADR-0148, PR-15 15-0a): v1-строка ``/voice/dialogue/state`` (``DialogueStateKind.name``) -> (состояние,
+#: Удалит PR-15 #3711: v1-строка ``/voice/dialogue/state`` (``DialogueStateKind.name``) -> (состояние,
 #: ``detail``). Ключи UPPERCASE: чужое регистр-значение не должно прокрасться молча. Удаляется с ``dialogue_node``.
 LEGACY_STATE: Mapping[str, Tuple[str, Optional[str]]] = {
     "IDLE": ("idle", None),
@@ -146,7 +146,7 @@ class VoiceStateTracker:
         return self._changed()
 
     def on_legacy(self, raw: Any) -> VoiceState:
-        """TEMP(ADR-0148, PR-15): строка старого ``/voice/dialogue/state`` (адаптер v1)."""
+        """Удалит PR-15 #3711: строка старого ``/voice/dialogue/state`` (адаптер v1)."""
         self._legacy = legacy_state(raw)
         self._last = self.current
         return self._last

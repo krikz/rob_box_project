@@ -22,7 +22,7 @@ from typing import Optional
 
 from .core.ring_reflex import RingReflex
 
-# TEMP(ADR-0148, PR-15 15-0a): состояние диалога v1 публикует dialogue_node (std_msgs/String, имя
+# Удалит PR-15 #3711: состояние диалога v1 публикует dialogue_node (std_msgs/String, имя
 # DialogueStateKind: IDLE / LISTENING / DIALOGUE / SILENCED); при dialog_engine=v2 тишину даёт сцена ``Silence``
 # в SessionState (``/dialog/session``, issue #3911). Топика ``/voice/state`` на роботе никто не публикует — это
 # старое имя (ADR-0027 #2, arbiter_node.VOICE_DIALOGUE_STATE_TOPIC), issue #3107.
@@ -261,7 +261,7 @@ class LEDNode(Node):
             self.reflex.on_state('silenced' if changed.detail == voice_state.SILENCED_DETAIL else 'idle')
 
     def state_callback(self, msg: String):
-        """TEMP(ADR-0148, PR-15): состояние диалога v1 - кольцо гаснет в тишине (SILENCED), остальное - стадии хода."""
+        """Удалит PR-15 #3711: состояние диалога v1 - кольцо гаснет в тишине (SILENCED), остальное - стадии хода."""
         if not self.auto_mode:
             return
         state = msg.data.lower()

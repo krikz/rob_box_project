@@ -1,7 +1,7 @@
 """Реплика робота из сообщений диалога для памяти контекста восприятия (issue #3911).
 
 dialog_engine=v2: у v2 нет топика «ответ», есть запрос речи - ``SpeechRequest`` агента ``personality`` в
-``/voice/speech/request``. TEMP(ADR-0148, PR-15 15-0e): dialogue_node v1 пишет JSON с SSML в
+``/voice/speech/request``. Удалит PR-15 #3711: dialogue_node v1 пишет JSON с SSML в
 ``/voice/dialogue/response`` (``std_msgs/String``) - тот же разбор, чтобы узел держал один обработчик.
 
 Образ perception (Main Pi) не содержит ``rob_box_core``, поэтому тема и агент - литералы; дрейф держит

@@ -2470,7 +2470,7 @@ class QuestNode(Node):
         self.bridge.publish_map_pose(self._map_pose())
 
     def _on_dialogue_state(self, msg: String) -> None:
-        """TEMP(ADR-0148, PR-15): ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
+        """Удалит PR-15 #3711: ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
         send_voice_state(self, self._voice.on_legacy(msg.data))
 
     def _on_tts_voices(self, msg: String) -> None:
