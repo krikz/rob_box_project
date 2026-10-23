@@ -33,7 +33,7 @@ class AvatarState:
     ts_ms: int
     pose_xy: Optional[tuple] = None  # (x, y) из /odom
     battery_pct: Optional[float] = None  # из /device/snapshot
-    voice_state: Optional[str] = None  # из /voice/dialogue/state
+    voice_state: Optional[str] = None  # rob_box_core.voice_state (idle/listening/...)
     last_event: Dict[str, Any] = field(default_factory=dict)
     dead_man_trips_total: Dict[str, int] = field(default_factory=dict)
 
@@ -87,7 +87,7 @@ class StateAggregator:
             self._battery_pct = float(battery_pct)
 
     def update_voice_state(self, voice_state: Optional[str]) -> None:
-        """Обработать ``/voice/dialogue/state`` (см. ADR-0027 #2)."""
+        """Состояние голоса из ``rob_box_core.voice_state`` (#3911; v1: ``/voice/dialogue/state``, ADR-0027 #2)."""
         self._voice_state = voice_state
 
     # ── dead-man / events ─────────────────────────────────────────────

@@ -345,6 +345,12 @@ class TestAvatarArbiterTopology(unittest.TestCase):
         self.assertIn("/voice/dialogue/state", topics)
         self.assertNotIn("/voice/state", topics)
 
+    def test_voice_state_v2_subscriptions_registered(self) -> None:
+        """issue #3911: при dialog_engine=v2 топик v1 пуст — состояние идёт из TurnEvent/SpeechEvent/SessionState."""
+        topics = [s.topic for s in self.node._subscriptions]
+        for topic in ("/dialog/turn_event", "/voice/speech/event", "/dialog/session"):
+            self.assertIn(topic, topics)
+
     def test_services_registered(self) -> None:
         names = [s.name for s in self.node._services]
         self.assertIn("/avatar_arbiter/acquire_floor", names)
@@ -640,11 +646,48 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
         """Сообщения в /odom, /device/snapshot, /voice/dialogue/state обновляют state."""
         self.node._on_odom_msg(_make_odometry_msg(5.0, -3.0))
         self.node._on_device_snapshot_msg(_make_string_msg(json.dumps({"battery_pct": 73.2})))
-        self.node._on_voice_state_msg(_make_string_msg(json.dumps({"state": "speaking"})))
+        self.node._on_voice_state_msg(_make_string_msg("DIALOGUE"))
         snap = self.node._aggregator.snapshot()
         self.assertEqual(snap.pose_xy, (5.0, -3.0))
         self.assertEqual(snap.battery_pct, 73.2)
         self.assertEqual(snap.voice_state, "speaking")
+
+    def test_voice_state_v1_string_payload_feeds_aggregator(self) -> None:
+        """v1 (TEMP до PR-15): голая строка из dialogue_node (имя ``DialogueStateKind``)."""
+        self.node._on_voice_state_msg(_make_string_msg("LISTENING"))
+        self.assertEqual(self.node._aggregator.snapshot().voice_state, "listening")
+        self.node._on_voice_state_msg(_make_string_msg("SILENCED"))
+        self.assertEqual(self.node._aggregator.snapshot().voice_state, "idle")
+
+    def test_voice_state_v2_events_feed_aggregator(self) -> None:
+        """issue #3911: на v2 арбитр видит ход, речь и тишину через подписки ``watch`` (и пишет смену в лог)."""
+        from rob_box_dialog_msgs.msg import SceneFrame, SessionState, SpeechEvent, TurnEvent
+
+        def deliver(topic: str, msg: Any) -> None:
+            next(s for s in self.node._subscriptions if s.topic == topic).callback(msg)
+
+        def voice() -> Any:
+            return self.node._aggregator.snapshot().voice_state
+
+        self.assertIsNone(voice())
+        deliver("/dialog/turn_event", TurnEvent(agent="personality", stage="thinking", status="started"))
+        self.assertEqual(voice(), "thinking")
+        deliver("/dialog/turn_event", TurnEvent(agent="personality", stage="done", status="finished"))
+        self.assertEqual(voice(), "idle")
+        deliver("/voice/speech/event", SpeechEvent(agent="personality", kind=2, speech_id="s1"))
+        self.assertEqual(voice(), "speaking")
+        deliver("/voice/speech/event", SpeechEvent(agent="personality", kind=4, speech_id="s1"))
+        self.assertEqual(voice(), "idle")
+        deliver("/dialog/session", SessionState(agent="personality", scenes=[SceneFrame(kind="Silence")]))
+        self.assertEqual(voice(), "idle")
+        self.assertEqual(self.node._voice.current.detail, "silenced")
+
+    def test_voice_state_v2_ignores_other_agents(self) -> None:
+        from rob_box_dialog_msgs.msg import TurnEvent
+
+        sub = next(s for s in self.node._subscriptions if s.topic == "/dialog/turn_event")
+        sub.callback(TurnEvent(agent="telegram", stage="thinking", status="started"))
+        self.assertIsNone(self.node._aggregator.snapshot().voice_state)
 
     def test_garbage_subscription_payload_does_not_crash(self) -> None:
         """Битые сообщения в топиках не валят ноду (best-effort parse)."""
