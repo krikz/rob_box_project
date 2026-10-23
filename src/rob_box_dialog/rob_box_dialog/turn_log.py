@@ -203,6 +203,11 @@ class TurnLog:
         self._performs[turn_id] = data["kind"]
         return True
 
+    def performance_ended(self, turn_id: str, end_reason: str, segments_done: int = 0) -> bool:
+        """Выступление хода кончилось (``block_end`` владельца: ``done``/``stopped``/``halt``/``lost``): статус строит
+        код (:func:`perform_status`), а не слова модели (#3973)."""
+        return self.performed(turn_id, "", perform_status(end_reason), segments_done)
+
     def window(self, exclude: str = "") -> Tuple[WindowEntry, ...]:
         """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала.
         ``exclude`` — ход, который сейчас спрашивает модель: он считается в размер, но в окно не выдаётся."""

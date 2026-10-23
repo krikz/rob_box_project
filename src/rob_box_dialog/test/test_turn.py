@@ -718,15 +718,23 @@ def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919()
 
 
 def test_stopped_tale_is_not_an_open_request_for_the_next_turn_3973():
-    """Акт 4→5: сказку остановили, через минуты - «ничего не играет?». Просьба «расскажи сказку» закрыта исходом
-    выступления: в контексте LLM она в ``recent_actions`` как ``stopped_by_user``, а не висящая реплика.
-    Исход пишет ``TurnLog.performed`` (проводка события владельца выступления - вне этого теста)."""
-    ports = Ports(answers=[Answer(Command(speech="Нет, сейчас тихо."), "deepseek")])
+    """Акт 4→5: сказку остановили, через минуты - «ничего не играет?». Ход сам пишет старт выступления, событие
+    владельца (``performance_ended``) - исход: просьба «расскажи сказку» закрыта (``recent_actions``), её не исполняют заново."""
+    ports = Ports(answers=[Answer(Command(perform=RAP), "deepseek"), Answer(Command(speech="Нет, сейчас тихо."), "d")])
+    ports.perform_outcome = {"status": "pending", "block_id": "perform-t1"}
     engine = _engine(ports)
-    engine.log.begin("old", 0, "расскажи сказку про красную шапочку", "Борис")
-    engine.log.performed("old", "tale", "started")
-    engine.log.performed("old", "tale", "stopped_by_user", segments_done=3)
+    _run(engine, "расскажи сказку про красную шапочку")
+    assert ports.said == [] and [e.role for e in engine.log.window()] == ["user", "tool"], "старт - запись в окне"
+    engine.log.performance_ended("t1", "halt", 3)  # block_end владельца: «стой»
     _run(engine, "сейчас же ничего не играет, верно?")
-    snapshot = ports.asked[0][0][-1]["content"]
+    snapshot = ports.asked[1][0][-1]["content"]
     assert RECENT_ACTIONS in snapshot and '"tool":"perform"' in snapshot and '"status":"stopped_by_user"' in snapshot
-    assert ports.performed == [], "вопрос не исполняет сказку заново"
+    assert '"started"' not in snapshot and len(ports.performed) == 1, "вопрос не исполняет сказку заново"
+
+
+def test_rejected_perform_leaves_no_started_entry_3973():
+    ports = Ports(answers=[Answer(Command(perform=RAP, edit_pending=True), "deepseek")])
+    ports.perform_outcome = {"status": "rejected", "reason": "edit_without_active_perform"}
+    engine = _engine(ports)
+    _run(engine, "а теперь второй куплет про кота")
+    assert "tool" not in [e.role for e in engine.log.window()], "отказ владельца - не выступление"
