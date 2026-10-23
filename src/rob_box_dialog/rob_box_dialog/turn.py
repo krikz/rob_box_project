@@ -49,6 +49,7 @@ from rob_box_dialog.agents import agent_spec, allows_tier1
 from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall, loud_actions
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
+from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, audible, join
@@ -385,6 +386,26 @@ async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: S
                          kn.SPEAKER_CHANGED_REASON) if i in changed else next(done) for i, a in enumerate(actions)]
 
 
+def action_term(actions: Sequence[ToolCall]) -> float:
+    """Срок действий хода: дедлайн самого долгого класса + ``ACTION_GRACE_S`` - исполнитель закроет ожидание честным
+    ``timeout`` раньше, чем дедлайн хода (``TurnDeadline.grant``) оборвёт его «долго думаю» (#3960)."""
+    return max(deadline_s(kn.TOOL_CLASSES[a.tool]) for a in actions) + kn.ACTION_GRACE_S
+
+
+def say_late(engine: "TurnEngine", result: ActionResult) -> None:
+    """Итог действия после закрытия его хода (``Executor.on_late``): фраза кода по событию владельца, если класс из
+    ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout`` - «Включаю музыку.»); тихие успехи и чужие классы
+    молчат (#3960)."""
+    text = outcome_phrase([result]) if result.cls in kn.LATE_SPOKEN_CLASSES else None
+    if not text:
+        return
+    turn_id = result.turn_id.split("/")[0]
+    engine._log.info(f"{LOG_MARK} поздний итог {result.tool} {result.status} {result.reason or '-'} turn={turn_id}")
+    speech_id = engine._ports.say(turn_id, result.epoch, text, None, "sad" if result.status in _FAILED else None)
+    engine.log.said(turn_id, speech_id, text)
+    engine._event_raw("speech_requested", turn_id, result.epoch, text, {"speech_id": speech_id, "voice": ""})
+
+
 async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Command, snap: SessionSnapshot) -> None:
     """Ясный стоп с продолжением («хватит, спой другую», ``Tier1Command.rest``, §6.2): стоп — кодом, остаток фразы —
     новая реплика того же хода (Tier-1, если он ею покрыт, иначе LLM), а не потерянные слова (живой прогон 23.10,
@@ -642,6 +663,8 @@ class TurnEngine:
         cls = kn.TOOL_CLASSES[actions[0].tool]
         turn.waiting = cls
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
+        # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
+        turn.deadline.grant(action_term(actions))
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
         results = await turn.deadline.wait(run, "actions")
         for result in results:

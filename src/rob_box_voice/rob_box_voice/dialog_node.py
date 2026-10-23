@@ -62,7 +62,7 @@ from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_ref
-from rob_box_dialog.turn import TurnEngine, host_sections
+from rob_box_dialog.turn import TurnEngine, host_sections, say_late
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
@@ -255,6 +255,7 @@ class DialogNode(Node):
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   events=self._open_events(), log=_RosLog(self.get_logger()))
+        self._ports.on_late = functools.partial(say_late, self._engine)  # поздний старт музыки - фраза кода (#3960)
         self._subscribe()
         # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
         self._tars_status_feeds = parity.start_v2_status_feeds(self, String)

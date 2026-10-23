@@ -65,6 +65,11 @@ class TurnDeadline:
     def expired(self) -> bool:
         return self.left() <= 0.0
 
+    def grant(self, own_s: float) -> None:
+        """Действию владельца - его срок целиком, а не остаток хода: LLM (повтор после невалидной команды) съела бюджет,
+        а музыка честно ещё стартует. Бюджет хода растёт до «сейчас + ``own_s``», не уменьшается."""
+        self.budget_s = max(self.budget_s, self.elapsed() + float(own_s))
+
     def cap(self, provider_timeout_s: Optional[float] = None) -> float:
         """Таймаут ожидания: ``min(provider_timeout, deadline_left)``; у провайдера нет своего — остаток хода."""
         left = self.left()

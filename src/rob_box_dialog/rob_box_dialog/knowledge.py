@@ -190,6 +190,19 @@ class VolumeChannel:
     tool: Optional[str]
 
 
+#: Слова о музыке - ОДИН список: канал громкости («музыку громче») и группа тулов ``music`` (срез хода). «ритм»,
+#: «подложк» - живой прогон 23.10, акт 8 («поставь ровный ритм на виндарда»). «фон» голый не берём («на фоне»,
+#: «фонарь») - см. ``MUSIC_GROUP_EXTRA_STEMS``. Имён движков («на Ренардо») здесь нет: их таблица -
+#: ``rob_box_music.knowledge.MUSIC_ENGINES`` (слот ``engine`` решает тул), а пакет диалога от ``rob_box_music`` не
+#: зависит (образы telegram_bot и led_matrix собирают ``rob_box_dialog`` без него). Модель, позвавшая
+#: ``request_music`` вне среза, получает группу кодом (``tools_view.widen_for``).
+MUSIC_STEMS: Tuple[str, ...] = (
+    "музык", "музон", "трек", "трей", "бит", "песн", "мелоди", "сет", "дидж", "играй", "сыграй", "поиграй",
+    "ритм", "подложк")
+#: Только для группы тулов (на громкость они канал не называют): остальные музыкальные слова и «фоном».
+MUSIC_GROUP_EXTRA_STEMS: Tuple[str, ...] = (
+    "песен", "сыгра", "игра", "спой", "спеть", "споёшь", "споешь", "сочини", "сгенер", "сэт", "библиотек", "композ",
+    "послуша", "рэп", "вечеринк", "танц", "пати", "фоном")
 #: Три канала у трёх владельцев. «Какой канал» решает код: играет музыка → music, звучит речь → tts.
 VOLUME_CHANNELS: Mapping[str, VolumeChannel] = MappingProxyType({
     "tts": VolumeChannel(owner="tts_node", tool="set_volume"),
@@ -198,7 +211,7 @@ VOLUME_CHANNELS: Mapping[str, VolumeChannel] = MappingProxyType({
 })
 #: Слово, которое само называет канал громкости: «музыку громче» — музыка, «говори тише» — голос робота.
 VOLUME_CHANNEL_STEMS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
-    "music": ("музык", "музон", "трек", "трей", "бит", "песн", "мелоди", "сет", "дидж", "играй", "сыграй", "поиграй"),
+    "music": MUSIC_STEMS,
     "tts": ("голос", "говори", "говорить", "разговарива", "себя"),
 })
 #: Слова «про громкость», не меняющие ни намерения, ни канала: «сделай громкость потише», «звук погромче».
@@ -310,13 +323,28 @@ def _keys(prefix: str, *statuses: str, **renamed: str) -> Mapping[str, str]:
     return MappingProxyType(keys)
 
 
+#: Музыка (``request_music``/``dj_set``): тул ждёт ``started`` своего трека не дольше ``MUSIC_START_WAIT_S`` (A2 p100,
+#: ``mcp_server.V2_STARTED_WAIT_S``) ПОСЛЕ подготовки — подбор, компоновка, трек кэша в wav (``MUSIC_PREPARE_S``; первый
+#: заказ после рестарта 4.6 с, #3577). Потолок действия — сумма: дедлайн в 6 с рвал ожидание ровно там, где тул ещё
+#: честно ждал старта (живой прогон 23.10, акт 5: трек заиграл, а ход закрылся «не понял»).
+MUSIC_START_WAIT_S = 6.0
+MUSIC_PREPARE_S = 4.0
+MUSIC_ACTION_DEADLINE_S = MUSIC_START_WAIT_S + MUSIC_PREPARE_S
+#: Запас сверх дедлайна класса: исполнитель (``execute.Executor``) сам закрывает ожидание статусом ``timeout`` в срок
+#: класса, дедлайн хода (``TurnDeadline.grant``) — страховка позже, чтобы честный ``timeout`` не проиграл ему гонку.
+ACTION_GRACE_S = 1.0
+#: Классы, итог которых после закрытия хода (поздний ``done``/``rejected`` после ``timeout``) говорит код: музыка
+#: заиграла позже дедлайна — «Включаю музыку.», а не тишина после «пока не заиграла». Движение, выступление и прочее
+#: свои поздние итоги ведут иначе (обещание ``pending``, PlanEvent).
+LATE_SPOKEN_CLASSES: Tuple[str, ...] = ("action.media",)
+
 ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
     # данные → обратно LLM (≤ LLM_QUERY_ITERATIONS_MAX итераций), фраза — речь LLM; поиск 15 с, прерываемо
     "query": ActionClass(15.0, True, "tool_result", _keys("query", "rejected", "timeout")),
     # remember, set_volume, set_voice: событие владельца ≤ 3 с, мгновенно — не прерывается
     "action.local": ActionClass(3.0, False, "owner_event", _keys("local", "done", "rejected", "timeout")),
-    # request_music, dj_set, play_sound: /voice/music/event started|rejected ≤ 6 с; старт не прерывается
-    "action.media": ActionClass(6.0, False, "/voice/music/event", _keys("media", "done", "rejected", "timeout")),
+    # request_music, dj_set, play_sound: /voice/music/event started|rejected ≤ MUSIC_ACTION_DEADLINE_S; старт не прерывается
+    "action.media": ActionClass(MUSIC_ACTION_DEADLINE_S, False, "/voice/music/event", _keys("media", "done", "rejected", "timeout")),
     # Nav2 до 120 с, непрерываемо (кроме Tier-1 «стой»); «Еду к…» — обещание по pending
     "action.motion": ActionClass(
         120.0, False, "nav2_result",
@@ -443,9 +471,7 @@ MOTION_TOOLS: Tuple[str, ...] = ("move_direction", "navigate_to_waypoint", "navi
 #: только по явной голосовой просьбе (#3744: LLM сама меняла голос посреди сказки, а голос персистентный, PR-4).
 TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "music": ToolGroup(
-        ("музык", "музон", "песн", "песен", "трек", "мелоди", "сыгра", "играй", "игра", "спой", "спеть", "споёшь",
-         "споешь", "сочини", "сгенер", "дидж", "сет", "сэт", "бит", "библиотек", "композ", "послуша",
-         "рэп", "вечеринк", "танц", "пати"),
+        MUSIC_STEMS + MUSIC_GROUP_EXTRA_STEMS,
         # порядок — приоритет при обрезке среза: под играющую музыку рядом с названной группой первыми
         # остаются «стоп» и «что играет» (#3857)
         ("stop_music", "get_music_state", "request_music", "dj_set", "music_library", "generate_music"),
@@ -1084,8 +1110,9 @@ PERFORM_BACKING_MOODS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "beat": ("groove", "bright"),
     "calm": ("calm", "playful"),
 })
-#: Подложка не ``started`` за столько секунд — отказ ``timeout`` (дедлайн класса ``action.media``, §5.1).
-PERFORM_BACKING_START_S: float = float(ACTION_CLASSES["action.media"].timeout_s)
+#: Подложка не ``started`` за столько секунд — отказ ``timeout`` (О10: ожидание старта, без подготовки трека кэша —
+#: подложку собирает код выступления, не подбор; срок остался прежним при росте дедлайна ``action.media``, #3960).
+PERFORM_BACKING_START_S: float = MUSIC_START_WAIT_S
 #: Играет чужая музыка (трек, сет), а выступлению нужен бит: «Сейчас играет …, выключить и зачитать?» (О9 (б), О9′).
 #: «Да» — снять её и поставить бит, «нет» или нет ответа — читать без бита поверх неё. Ждём: фраза вопроса (оценка) +
 #: микрофон после речи + окно ответа ``REPLY_WINDOW_S`` (одно окно с вопросом об имени).

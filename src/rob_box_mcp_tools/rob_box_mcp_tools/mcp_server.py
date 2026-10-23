@@ -33,6 +33,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
+from rob_box_dialog import knowledge as _dialog_kn
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.speaker_wire import speaker_result_to_payload
@@ -204,8 +205,9 @@ def _string_publisher(publisher: Any) -> Any:
     return publish
 
 
-#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14).
-V2_STARTED_WAIT_S = 6.0
+#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14). Одно знание с
+#: дедлайном действия музыки в диалоге (``rob_box_dialog.knowledge.MUSIC_ACTION_DEADLINE_S`` = это + подготовка).
+V2_STARTED_WAIT_S = _dialog_kn.MUSIC_START_WAIT_S
 
 
 def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable[[str], None]:
