@@ -445,7 +445,7 @@ class DryPorts(V2Ports):
 
 
 @dataclass
-class Heard1:
+class HearResult:
     """Итог одной реплики на стенде: адресована ли, агрегат хода, что сказано, что вызвано."""
 
     text: str
@@ -542,7 +542,7 @@ class DryStand:
         return types.SimpleNamespace(text=text, source="respeaker", started_at=stamp(started), ended_at=stamp(ended),
                                      utterance_id=uid, chat_id=0)
 
-    async def hear(self, text: str, voice_id: str = "", *, gap_s: float = STEP_GAP_S) -> Heard1:
+    async def hear(self, text: str, voice_id: str = "", *, gap_s: float = STEP_GAP_S) -> HearResult:
         """Реплика человека голосом ``voice_id``: STT → биометрия → адресация → (ход | бэклог). Как ``_on_utterance``
         и ``_on_speaker`` хоста ``dialog_node``, только с фейковой биометрией и моделью времени."""
         self._log = StepLog()
@@ -571,24 +571,25 @@ class DryStand:
             return self._not_addressed(heard, decision, uid, bio)
         return await self._turn(decision, text, calls_before)
 
-    def _not_addressed(self, heard: Any, decision: NotAddressed, uid: str, bio: Mapping[str, Any]) -> Heard1:
+    def _not_addressed(self, heard: Any, decision: NotAddressed, uid: str, bio: Mapping[str, Any]) -> HearResult:
         self.backlog.add(heard)
         self.backlog.note_voice(uid, voice_tag(bio))
         # dialog_node.py: f"[backlog] accumulated reason={decision.reason} entries={…}"
         self.emit(f"[backlog] accumulated reason={decision.reason} entries="
                   f"{self.backlog.background_phrases(self.clock.now())}")
         self.clock.advance(BACKLOG_GAP_S)
-        return Heard1(heard.text, False, decision.reason, log=self._log.text, touched=set(self.touched))
+        return HearResult(heard.text, False, decision.reason, log=self._log.text, touched=set(self.touched))
 
-    async def _turn(self, decision: Addressed, text: str, calls_before: int) -> Heard1:
+    async def _turn(self, decision: Addressed, text: str, calls_before: int) -> HearResult:
         self.tools.calls.clear()
         self.speech.all.clear()
         agg = await self.engine.run(decision)
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
-        return Heard1(text, True, source=decision.source, aggregate=agg, said=[s.text for s in self.speech.all],
-                      tools=[name for name, _ in self.tools.calls], llm_calls=self.counter.calls - calls_before,
-                      log=self._log.text, touched=set(self.touched), outcomes=self._outcomes(agg.turn_id))
+        return HearResult(text, True, source=decision.source, aggregate=agg,
+                          said=[s.text for s in self.speech.all], tools=[name for name, _ in self.tools.calls],
+                          llm_calls=self.counter.calls - calls_before, log=self._log.text,
+                          touched=set(self.touched), outcomes=self._outcomes(agg.turn_id))
 
     def _outcomes(self, turn_id: str) -> List[Tuple[str, str, Optional[str]]]:
         """Исходы действий хода — читателем e2e-БД, которым пользуются ``turn_metrics`` и ``honesty_audit``."""
@@ -603,5 +604,5 @@ def new_workdir(prefix: str = "dry_marathon_") -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
 
-__all__ = ["DryPorts", "DryStand", "FakeClock", "FakeSpeakers", "FakeSpeech", "FakeTools", "Heard1", "NO_FAKE",
+__all__ = ["DryPorts", "DryStand", "FakeClock", "FakeSpeakers", "FakeSpeech", "FakeTools", "HearResult", "NO_FAKE",
            "StepLog", "TOOL_OWNERS", "ensure_paths", "load_memory_tools", "new_workdir"]
