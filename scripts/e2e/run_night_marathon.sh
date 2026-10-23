@@ -77,6 +77,8 @@ DEADLINE_HOUR="${DEADLINE_HOUR:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=marathon_markers.sh
+. "$SCRIPT_DIR/marathon_markers.sh"
 MANIFEST="$ROOT/.github/e2e/scenarios/night/night_marathon_manifest.json"
 
 if [ ! -f "$MANIFEST" ]; then
@@ -313,7 +315,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_hold; do
     # ровно на фиче — останавливать там марафон было бы ошибкой.
     if [ "$STOP_ON_FOUNDATION_FAIL" = "1" ] && [ "$conclusion" != "success" ] \
        && { [ "$a_n" = "1" ] || [ "$a_n" = "2" ]; }; then
-        if grep -qE 'E2E_NO_REACTION|E2E_INFRA_FAIL' "$act_log" 2>/dev/null; then
+        if marathon_has_marker "$act_log" 'E2E_NO_REACTION|E2E_INFRA_FAIL'; then
             log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra) — останавливаю марафон"
             log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
             break
