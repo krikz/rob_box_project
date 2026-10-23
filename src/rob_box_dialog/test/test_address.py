@@ -332,3 +332,77 @@ def test_decide_in_session_reads_windows_and_hold_from_the_snapshot_frames():
     session.push_scene("OperatorHold", "operator", ttl_s=60.0)
     held = address.decide_in_session(_heard("робот привет", t=101.0), backlog, DEFAULT_WAKE_WORDS, session.snapshot)
     assert held == NotAddressed(address.HELD)
+
+
+# --- #3975: Yandex искажает первое слово «Робот, …»; допуск только для первого токена -----------------------------
+#: Живые фразы с прогонов 23.10 (13:29 и 16:15) и их остаток после вейка.
+SLIPPED_WAKE = [
+    ("роботу дали команду", "дали команду"),
+    ("Роботу, расскажи анекдот", "расскажи анекдот"),
+    ("работа тишина", "тишина"),
+    ("Работа, стоп", "стоп"),
+    ("работу включи музыку", "включи музыку"),
+    ("рада слушай дальше", "слушай дальше"),
+    ("рада, говори", "говори"),
+    ("работа давай поиграем", "давай поиграем"),
+    ("рубот покажи анимацию", "покажи анимацию"),      # близкая форма вне списка: Левенштейн 1
+    ("ребот, что ты видишь", "что ты видишь"),
+    ("роббоксу привет", "привет"),                      # роббокс + 1
+]
+#: Обычная речь мастерской, начинающаяся похожими словами: вейка нет. «провод …» и «ну вот что ты видишь» из лога
+#: не спасаем (слишком далеко от «робот»).
+SLIPPED_NOT_WAKE = [
+    "работа не волк", "работа есть?", "работа закончилась к вечеру", "работу сдал вовремя", "рада тебя видеть",
+    "рады познакомиться", "роботы захватят мир", "роботов собрали вчера", "рокот моторов в мастерской",
+    "ротор вращается", "ворота закрыты", "провод у тебя играет", "ну вот что ты видишь", "робость прошла",
+    "работе нужен паяльник", "рабочий день кончился",
+]
+
+
+@pytest.mark.parametrize("text,rest", SLIPPED_WAKE)
+def test_slipped_first_token_wakes(text, rest):
+    out = decide(_heard(text), Backlog(), WAKES)
+    assert out == Addressed(rest, VOICE), text
+
+
+def test_slipped_wake_corpus_sizes_meet_card():
+    assert len(SLIPPED_WAKE) >= 8 and len(SLIPPED_NOT_WAKE) >= 8
+
+
+@pytest.mark.parametrize("text", SLIPPED_NOT_WAKE)
+def test_ordinary_speech_with_similar_first_word_does_not_wake(text):
+    assert decide(_heard(text), Backlog(), WAKES) == NotAddressed(NO_WAKE), text
+
+
+@pytest.mark.parametrize("text", ["привет роботу дали команду", "ну работа тишина", "скажи рада слушай дальше"])
+def test_only_the_first_token_is_tolerated(text):
+    assert decide(_heard(text), Backlog(), WAKES) == NotAddressed(NO_WAKE), text
+
+
+def test_slip_needs_a_robot_wake_word_in_the_table():
+    assert decide(_heard("роботу дали команду"), None, ["тарс"]) == NotAddressed(NO_WAKE)
+
+
+def test_slipped_bare_wake_is_bare_wake_only_for_unambiguous_forms():
+    assert decide(_heard("роботу"), Backlog(), WAKES) == Addressed("", BARE_WAKE)
+    assert decide(_heard("работа"), Backlog(), WAKES) == NotAddressed(NO_WAKE)
+
+
+@pytest.mark.parametrize("wake", ["рома", "роман"])
+def test_roma_and_roman_still_wake_after_slip_tolerance(wake):
+    assert decide(_heard(f"{wake} покажи анимацию"), Backlog(), WAKES) == Addressed("покажи анимацию", VOICE)
+    assert decide(_heard(f"привет, {wake} включи музыку"), Backlog(), WAKES) == Addressed("привет, включи музыку", VOICE)
+
+
+def test_slipped_wake_does_not_lift_silence():
+    """Решение Шифу: тишину вейк не снимает — искажённый вейк не исключение. «Работа тишина» адресована как обычный
+    вейк, а тишину снимает только «говори» в остатке (Tier-1 ``unsilence``), «тишина» её не трогает."""
+    from rob_box_dialog.grammar import match
+    from rob_box_dialog.session import SceneFrame, SessionSnapshot
+    silenced = SessionSnapshot(agent="personality", session_id="t", epoch=0, started_at=0.0,
+                               scenes=(SceneFrame("Silence", "user"),))
+    out = decide(_heard("работа тишина"), Backlog(), WAKES)
+    assert isinstance(out, Addressed) and out.text == "тишина"
+    assert match(out.text, silenced) is None
+    unsilence = decide(_heard("роботу, говори"), Backlog(), WAKES)
+    assert match(unsilence.text, silenced).kind == "unsilence"
