@@ -2956,6 +2956,8 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     _music_inherits=no
     scenario_inherits_previous_act "$SCENARIO_FILE" && _music_inherits=yes
     ensure_music_stopped_for_act "$_music_inherits"
+    # Issue #3886 — прогрев sink и пауза перед первой фразой v2-акта (потеря «Робот,» в n201).
+    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && warm_act_audio_path "$OUT_DIR"
 fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
