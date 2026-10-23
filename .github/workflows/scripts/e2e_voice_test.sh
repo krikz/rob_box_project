@@ -61,7 +61,9 @@ GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # переигрывать») от «робот действительно не принял» (rc=1) — но лучше
 # в такой сбой вообще не попадать: locale-префикс работает только как
 # литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# ConnectTimeout=10: недостижимый робот не держит харнесс ~127 с до TCP-таймаута
+# на каждом ssh (#3921). BatchMode НЕ добавлять -- sshpass передаёт пароль.
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${ROBOT_USER}@${ROBOT_HOST}"
 # Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
 # используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
 # stub без реального sshpass+robot.
