@@ -607,7 +607,8 @@ def _remember(node, tmp_path, person="spk-boris"):
                  "VALUES ('любит зелёный чай', 'general', ?, 0, 1)", (person,))
     conn.commit()
     conn.close()
-    node._speaker_memory = SpeakerMemory(str(tmp_path / "harness_voice.db"), str(facts), log=node.get_logger())
+    node._speaker_memory = SpeakerMemory(str(tmp_path / "harness_voice.db"), str(facts),
+                                         is_e2e=lambda: node._e2e_follower.applied, log=node.get_logger())
 
 
 def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
@@ -622,6 +623,22 @@ def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
     first, second = (json.dumps(m, ensure_ascii=False, default=str) for m in node.test_llm.messages)
     assert '<speaker_memory>{\\"dialog_count\\":1,\\"facts\\":[\\"любит зелёный чай\\"]}' in first
     assert '\\"dialog_count\\":2' in second
+
+
+def test_e2e_mode_of_the_owner_keeps_the_live_profile_untouched_3919(node, tmp_path, monkeypatch):
+    """#3904 + #3919: владелец режима сказал e2e (`/e2e/mode`) — профиль не в боевую harness_voice.db, факты не боевые."""
+    _remember(node, tmp_path)
+    monkeypatch.setitem(sys.modules, "rclpy.parameter", types.SimpleNamespace(Parameter=lambda name, value: name))
+    node.set_parameters = lambda params: []  # заглушка rclpy: параметр e2e_mode_applied пишется в живой ноде
+    node._e2e_follower.on_mode(types.SimpleNamespace(data=True))
+    assert node._e2e_follower.applied
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-e"}))
+    node._on_utterance(_long("Робот, что скажешь", "u-e"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    assert '<speaker_memory>{\\"dialog_count\\":1}' in blob and "зелёный чай" not in blob
+    assert not (tmp_path / "harness_voice.db").exists()
 
 
 def test_snapshot_has_no_memory_of_unconfirmed_speaker_3919(node, tmp_path):

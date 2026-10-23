@@ -73,6 +73,10 @@ class SpeakerMemory:
             self._seams[e2e] = MemoryIdentitySeam(store)
         return self._seams[e2e]
 
+    def reset_e2e(self) -> None:
+        """Вход в e2e: профили e2e-собеседников прошлого акта забыты (память процесса, не диск)."""
+        self._seams.pop(True, None)
+
     async def _profile(self, person: str, name: Optional[str], e2e: bool) -> Optional[Mapping[str, Any]]:
         seam = await self._seam(e2e)
         return await seam.note_seen(Acquaintance(id=person, name=name)) if seam is not None else None

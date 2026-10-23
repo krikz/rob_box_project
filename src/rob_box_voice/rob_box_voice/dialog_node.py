@@ -46,6 +46,7 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
 
 from rob_box_core import dialog_engine, speech_client
+from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
@@ -240,7 +241,9 @@ class DialogNode(Node):
         self._speaker_memory = SpeakerMemory(
             str(self.get_parameter("sqlite_db_path").value), str(self.get_parameter("voice_facts_db_path").value),
             e2e_facts_db=str(self.get_parameter("e2e_voice_facts_db_path").value),
-            is_e2e=lambda: self._engine_events_state() != "off", log=self.get_logger())
+            is_e2e=lambda: self._e2e_follower.applied, log=self.get_logger())
+        # #3904: режим e2e один - владельца /speaker_id_node; профиль собеседника в e2e не идёт в боевую БД (#3919).
+        self._e2e_follower = E2EModeFollower(self, self._apply_e2e_mode)
         self._turn_memory: Any = (None, None)  # (person_ref, раздел speaker_memory) хода в работе
         self._music_player_state: Any = None
         self._actual_tts_provider: Optional[str] = None  # из /voice/tts/provider_state (plan_host)
@@ -331,6 +334,12 @@ class DialogNode(Node):
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
+
+    def _apply_e2e_mode(self, enabled: bool) -> bool:
+        """Режим владельца применён: на входе в e2e профиль e2e-собеседников начинается с нуля (счёт диалогов акта)."""
+        if enabled:
+            self._speaker_memory.reset_e2e()
+        return True
 
     async def _note_speaker(self, decision: Addressed) -> None:
         """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919)."""
