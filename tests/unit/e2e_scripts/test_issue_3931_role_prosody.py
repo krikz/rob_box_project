@@ -64,10 +64,12 @@ class TestRoleProsodyReachesMinimax:
     @pytest.mark.parametrize(
         "voice,voice_id,pitch,speed",
         [
-            ("anton", "Russian_ReliableMan", 3, 1.12),
-            ("ermil", "Russian_Bad-temperedBoy", 5, 1.2),
-            ("zahar", "Russian_HandsomeChildhoodFriend", -5, 0.85),
-            ("filipp", "Russian_AttractiveGuy", 1, 1.05),
+            ("anton", "Russian_ReliableMan", 0, 1.0),
+            ("ermil", "Russian_Bad-temperedBoy", 2, 1.0),
+            ("zahar", "Russian_HandsomeChildhoodFriend", 0, 1.0),
+            ("filipp", "Russian_AttractiveGuy", 0, 1.0),
+            ("arina", "presenter_female", 0, 1.0),
+            ("rita", "Russian_PessimisticGirl", 0, 1.0),
         ],
     )
     def test_role_pitch_and_speed_are_sent(self, tmp_path, minimax_server, voice, voice_id, pitch, speed):

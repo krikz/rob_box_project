@@ -1,0 +1,32 @@
+== yandex: исходный каталог сценариев, перевод не нужен ==
+OK   yandex   anton    -> anton
+OK   yandex   ermil    -> ermil
+OK   yandex            -> anton
+OK   yandex   четыре голоса сценария → четыре разных голоса
+
+== minimax: таблица 23.10.2026 (#3931), voice:pitch:speed, замер на ЖИВОМ канале (колонка -> ReSpeaker) ==
+OK   minimax  anton    -> Russian_ReliableMan:0:1.0
+OK   minimax  ermil    -> Russian_Bad-temperedBoy:2:1.0
+OK   minimax  madirus  -> Russian_Bad-temperedBoy:2:1.0
+OK   minimax  zahar    -> Russian_HandsomeChildhoodFriend:0:1.0
+OK   minimax  filipp   -> Russian_AttractiveGuy:0:1.0
+OK   minimax  kostya   -> Russian_AttractiveGuy:0:1.0
+OK   minimax  arina    -> presenter_female:0:1.0
+OK   minimax  rita     -> Russian_PessimisticGirl:0:1.0
+OK   minimax           -> Russian_ReliableMan:0:1.0
+OK   minimax  Russian_CrazyQueen -> Russian_CrazyQueen
+OK   minimax  Russian_ReliableMan:-2:0.9 -> Russian_ReliableMan:-2:0.9
+OK   minimax  четыре голоса сценария → четыре разных голоса
+OK   minimax arina  запасной не совпадает с ролью (presenter_female:0:1.0)
+OK   minimax rita   запасной не совпадает с ролью (Russian_PessimisticGirl:0:1.0)
+== silero: zahar переехал с baya на kseniya, худшая пара 0.678 ==
+OK   silero   anton    -> aidar
+OK   silero   ermil    -> eugene
+OK   silero   zahar    -> kseniya
+OK   silero   filipp   -> xenia
+OK   silero   alena    -> baya
+OK   silero   aidar    -> aidar
+OK   silero            -> aidar
+OK   silero   четыре голоса сценария → четыре разных голоса
+
+PASS=26 FAIL=0
