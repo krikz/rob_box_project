@@ -434,6 +434,8 @@ def matrix_entry(name: str, services: dict[str, Any], ctx: BuildContext) -> dict
         "source_hash_spec": _source_hash_spec(svc),
         "pre_build": svc.get("pre_build", "") or "",
         "depends_on": " ".join(svc.get("depends_on") or []),
+        # Образ, который сервис ждёт в registry перед сборкой ("" — не ждёт).
+        "msgs_image": ctx.msgs_image if svc.get("msgs_image") else "",
     }
 
 

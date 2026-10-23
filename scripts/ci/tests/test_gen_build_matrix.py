@@ -677,6 +677,10 @@ def test_services_with_msgs_image_get_the_build_arg_others_do_not():
             args = gen_build_matrix.matrix_entry(name, services, ctx)["build_args"]
             has_arg = f"MSGS_IMAGE={ctx.msgs_image}" in args.splitlines()
             assert has_arg == bool(svc.get("msgs_image")), (pi, name, args)
+            # Тот же тег — в matrix.msgs_image: по нему шаг Wait for msgs image
+            # ждёт образ в registry; у остальных пусто, и они не ждут.
+            waits = gen_build_matrix.matrix_entry(name, services, ctx)["msgs_image"]
+            assert waits == (ctx.msgs_image if svc.get("msgs_image") else ""), name
 
 
 def test_msgs_consumers_copy_from_the_msgs_stage():

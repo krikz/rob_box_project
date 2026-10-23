@@ -187,26 +187,38 @@ def test_build_all_calls_the_one_workflow_for_every_pi():
             name == f"build-{pi}-services"
         ), f"{name}: job id не по шаблону build-<pi>-services"
         # Pi независимы (depends_on — только внутри Pi): ни один вызов не ждёт
-        # другой Pi — только базовые образы и общий образ сообщений, который
-        # собирается один раз на все три Pi.
-        assert jobs[name]["needs"] == ["build-base-images", "build-msgs-image"], (
-            pi,
-            jobs[name]["needs"],
-        )
+        # другой Pi, только базовые образы. Общий образ сообщений needs не
+        # держит — его ждут в registry только сервисы-потребители.
+        assert jobs[name]["needs"] == "build-base-images", (pi, jobs[name]["needs"])
+        assert jobs[name]["with"]["build_msgs_image"] is False, (pi, jobs[name]["with"])
     assert set(called.values()) <= set(jobs["summary"]["needs"])
 
 
-def test_msgs_image_is_built_once_before_every_pi():
-    """Общий образ ROS-сообщений собирает ОДИН job Build All до трёх Pi —
-    иначе при правке .msg три Pi компилировали бы его наперегонки."""
+def test_msgs_image_is_built_once_and_blocks_only_its_consumers():
+    """Общий образ ROS-сообщений собирает ОДИН job Build All, параллельно с
+    Pi (при правке .msg три Pi иначе компилировали бы его наперегонки), и
+    ни один job не висит на нём через needs: — образ в registry ждут только
+    сервисы с msgs_image: true (шаг Wait for msgs image по matrix.msgs_image).
+    """
     msgs_wf = "./.github/workflows/L-Build Msgs Image.yml"
     build_all = _load_yaml(BUILD_ALL_WF)["jobs"]
     callers = [n for n, j in build_all.items() if j.get("uses") == msgs_wf]
     assert callers == ["build-msgs-image"], callers
-    # Прямой запуск Pi тоже обязан иметь образ до первой волны.
-    pi_jobs = _wf()["jobs"]
-    assert pi_jobs["msgs"]["uses"] == msgs_wf
-    assert pi_jobs["build"]["needs"] == ["prepare", "msgs"], pi_jobs["build"]["needs"]
+    for name, job in build_all.items():
+        needs = job.get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        if name != "summary":
+            assert "build-msgs-image" not in needs, (name, needs)
+    data = _wf()
+    assert data["jobs"]["msgs"]["uses"] == msgs_wf
+    assert "inputs.build_msgs_image != false" in data["jobs"]["msgs"]["if"]
+    for name, job in _build_jobs(data).items():
+        names = [st.get("name", "") for st in job["steps"]]
+        wait = job["steps"][names.index("Wait for msgs image")]
+        assert wait["if"] == "matrix.msgs_image != ''", name
+        assert names.index("Wait for msgs image") < names.index(
+            "Build ${{ matrix.name }}"
+        ), name
 
 
 def test_old_per_pi_workflows_are_gone():
@@ -239,8 +251,7 @@ def test_wave_job_reads_its_wave_and_waits_for_the_previous_one():
         assert f"fromJSON(needs.prepare.outputs.waves)[{k}]" in include, (name, include)
         needs = job["needs"]
         needs = [needs] if isinstance(needs, str) else list(needs)
-        # Волна 0 ждёт ещё общий образ сообщений (job msgs), дальше — цепочка.
-        prev = ["msgs"] if k == 0 else ["build" if k == 1 else f"build-wave-{k - 1}"]
+        prev = [] if k == 0 else ["build" if k == 1 else f"build-wave-{k - 1}"]
         assert needs == ["prepare", *prev], (name, needs)
         if k > 0:
             cond = job.get("if", "")

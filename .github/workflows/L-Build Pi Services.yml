@@ -43,6 +43,13 @@ on:
         required: false
         default: true
         type: boolean
+      build_msgs_image:
+        description: >-
+          Собирать общий образ сообщений здесь. "L: Build All Services" передаёт
+          false: он собирает образ один раз на все три Pi сам.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write  # Required for git push of .image-versions files
@@ -205,17 +212,19 @@ jobs:
   # (как было, когда каждый сервис был отдельным job'ом).
   # ======================================================================
 
-  # Общий образ ROS-сообщений (src/rob_box_*_msgs) — до первой волны: сервисы
-  # с `msgs_image: true` берут его build-arg'ом MSGS_IMAGE (тег — хэш пакетов,
-  # тот же, что посчитал prepare). Из "L: Build All Services" сюда приходим,
-  # когда образ уже собран один раз на все три Pi — job видит тег в registry
-  # и пропускает сборку за секунды.
+  # Общий образ ROS-сообщений (src/rob_box_*_msgs) собирается ПАРАЛЛЕЛЬНО с
+  # волнами, без needs: на нём. Ждут его только сервисы с `msgs_image: true`
+  # (шаг "Wait for msgs image" — опрос registry по matrix.msgs_image, тому же
+  # тегу-хэшу), остальные собираются сразу. При вызове из "L: Build All
+  # Services" (build_msgs_image=false) образ собирает он, один раз на три Pi.
+  # Условие `!= false`: при workflow_dispatch входа нет (null) — собираем.
   msgs:
+    if: ${{ inputs.build_msgs_image != false }}
     uses: ./.github/workflows/L-Build Msgs Image.yml
 
   build:
     name: build-${{ matrix.name }}
-    needs: [prepare, msgs]
+    needs: prepare
     runs-on: [self-hosted, rob-box]
     strategy:
       fail-fast: false
@@ -252,6 +261,14 @@ jobs:
         # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Wait for msgs image
+        # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает
+        # параллельный job build-msgs, buildx без него упадёт на FROM.
+        if: matrix.msgs_image != ''
+        env:
+          MSGS_IMAGE: ${{ matrix.msgs_image }}
+        run: bash scripts/ci/wait_for_msgs_image.sh "$LOCAL_REGISTRY" "$MSGS_IMAGE"
 
       - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
@@ -307,6 +324,14 @@ jobs:
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
 
+      - name: Wait for msgs image
+        # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает
+        # параллельный job build-msgs, buildx без него упадёт на FROM.
+        if: matrix.msgs_image != ''
+        env:
+          MSGS_IMAGE: ${{ matrix.msgs_image }}
+        run: bash scripts/ci/wait_for_msgs_image.sh "$LOCAL_REGISTRY" "$MSGS_IMAGE"
+
       - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
         with:
@@ -360,6 +385,14 @@ jobs:
         # (scripts/ci/fetch_hailort_wheel.sh), а не данные.
         if: matrix.pre_build == 'fetch_hailort_wheel'
         run: bash scripts/ci/fetch_hailort_wheel.sh
+
+      - name: Wait for msgs image
+        # Только для сервисов с COPY --from=${MSGS_IMAGE}: образ собирает
+        # параллельный job build-msgs, buildx без него упадёт на FROM.
+        if: matrix.msgs_image != ''
+        env:
+          MSGS_IMAGE: ${{ matrix.msgs_image }}
+        run: bash scripts/ci/wait_for_msgs_image.sh "$LOCAL_REGISTRY" "$MSGS_IMAGE"
 
       - name: Build ${{ matrix.name }}
         uses: ./.github/actions/l-build-service
