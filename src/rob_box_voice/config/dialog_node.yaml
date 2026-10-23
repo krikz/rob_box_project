@@ -17,6 +17,10 @@ dialog_node:
     telegram_system_prompt_file: "telegram_chat_prompt.txt"
     telegram_temperature: 0.7
     telegram_max_tokens: 0
+    # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта, если робот не занят; 0 — выключено.
+    # Пустой startup_greeting_text — случайная из phrases/ru.yaml startup.greeting.
+    startup_greeting_sec: 12.0
+    startup_greeting_text: ""
     # e2e: текст ходов пишется только при e2e_mode и пути ВНЕ /data (включает харнесс через ros2 param set).
     e2e_mode: false
     e2e_db_path: ""

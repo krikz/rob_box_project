@@ -136,12 +136,14 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     return _woken(rest, heard, backlog)
 
 
-def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], snap: Any) -> Decision:
+def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], snap: Any,
+                      greeting: Optional[SceneFrame] = None) -> Decision:
     """:func:`decide` для сессии Личности: окна ответа (``Identity``, ``PerformAsk``) и удержание оператором
-    (``OperatorHold``) — из кадров снимка. Единственная точка, где ROS-хост ``dialog_node`` и сухой стенд
-    (``scripts/dialog/dry_marathon.py``, #3906) решают «адресована ли реплика» одинаково."""
-    return decide(heard, backlog, wake_words, question=snap.top("Identity"), ask=snap.top("PerformAsk"),
-                  hold=snap.top("OperatorHold"))
+    (``OperatorHold``) — из кадров снимка; ``greeting`` — окно после приветствия (живёт у хоста, не в снимке).
+    Единственная точка, где ROS-хост ``dialog_node`` и сухой стенд (``scripts/dialog/dry_marathon.py``, #3906)
+    решают «адресована ли реплика» одинаково."""
+    return decide(heard, backlog, wake_words, question=snap.top("Identity"), greeting=greeting,
+                  ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
 
 
 def _woken(rest: str, heard: Heard, backlog: Optional[Backlog]) -> Addressed:

@@ -341,7 +341,15 @@ class _Utterance:
         self.text = text
 
 
+class _SpeechRequest:
+    def __init__(self, agent: str = '', text: str = '', commit: bool = True):
+        self.agent = agent
+        self.text = text
+        self.commit = commit
+
+
 _dialog_msgs_msg.Utterance = _Utterance
+_dialog_msgs_msg.SpeechRequest = _SpeechRequest
 sys.modules['rob_box_dialog_msgs'] = _dialog_msgs
 sys.modules['rob_box_dialog_msgs.msg'] = _dialog_msgs_msg
 

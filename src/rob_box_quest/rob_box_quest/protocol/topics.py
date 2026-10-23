@@ -138,8 +138,8 @@ def encode_voice_state(
         ``{state: "idle"|"listening"|"thinking"|"speaking",
            ts_ms: int, detail?: str}``
 
-    ``state`` берётся из результата ``normalize_voice_state()``
-    (см. ``streams/voice_state.py``) — здесь никакой маппинг не
+    ``state`` берётся из ``rob_box_core.voice_state.VoiceStateTracker``
+    (issue #3911) — здесь никакой маппинг не
     делаем, только сериализация. ``detail`` — опциональная строка для
     UI-подсказок (``"silenced"`` для ``SILENCED``, ``"thinking"`` если
     позже захотим разделить LLM-фазу и TTS-фазу). Кладём ключ только

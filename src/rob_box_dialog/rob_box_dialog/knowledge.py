@@ -558,6 +558,9 @@ PHRASE_KEYS: Tuple[str, ...] = (
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
     *(f"{channel}.volume.{intent}" for channel in ("music", "voice") for intent in VOLUME_INTENTS),
     "music.volume_fail", "voice.volume_fail",
+    # встреча лицом и стартовая фраза (перенос v1 #3912)
+    "meeting.long_absence", *(f"meeting.tod.{part}" for part in ("morning", "day", "evening", "night")),
+    "startup.greeting",
 )
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -726,6 +729,16 @@ GREETING_REPLIES: Tuple[str, ...] = (
     "ага", "угу", "спасибо", "благодарю", "рад тебя видеть", "и я рад", "я тоже", "тоже рад", "давно не виделись",
 )
 GREETING_REPLY_MAX_WORDS = 6
+#: Встреча лицом (``rob_box_dialog.meeting``, перенос v1 #3912): знакомого по имени, которого не видели столько, робот
+#: приветствует сам — исключение Шифу 21.10 из В12′ («приветствие после 20 ч»). Ниже — тот же день, молчим.
+MEETING_LONG_ABSENCE_S = 20 * 3600.0
+#: Кадры, при которых робот сам не заговаривает (ни приветствие встречи, ни стартовая фраза): тишина «замолчи» и
+#: оператор держит личность — в v1 оба были состоянием SILENCED автомата диалога.
+UNPROMPTED_QUIET_SCENES: Tuple[str, ...] = ("Silence", "OperatorHold")
+#: Стартовая фраза (#1003, перенос v1 #3912): через столько секунд после старта ноды (``startup_greeting_sec``)…
+STARTUP_GREETING_DELAY_S = 12.0
+#: …earcon ``heard`` → пауза → earcon ``done`` → пауза → фраза ``startup.greeting`` (паузы v1: 2 с и 1,5 с).
+STARTUP_GREETING_STEPS_S: Tuple[float, float] = (2.0, 1.5)
 #: Кадр ``Identity`` с таким ``kind`` спрашивает ИМЯ (голое имя в ответ — представление); иначе ответ — да/нет.
 IDENTITY_ASKS_NAME: Tuple[str, ...] = ("unknown", "contested")
 #: Отказ называться (закрывает кадр без регистрации и без повторного вопроса): фраза начинается с одной из этих.

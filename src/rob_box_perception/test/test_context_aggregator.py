@@ -325,7 +325,15 @@ class _Utterance:
         self.text = text
 
 
+class _SpeechRequest:
+    def __init__(self, agent: str = '', text: str = '', commit: bool = True):
+        self.agent = agent
+        self.text = text
+        self.commit = commit
+
+
 _dialog_msgs_msg.Utterance = _Utterance
+_dialog_msgs_msg.SpeechRequest = _SpeechRequest
 sys.modules['rob_box_dialog_msgs'] = _dialog_msgs
 sys.modules['rob_box_dialog_msgs.msg'] = _dialog_msgs_msg
 
@@ -603,6 +611,29 @@ class TestCallbacks(unittest.TestCase):
         self.assertEqual(
             self.node.robot_response_events[-1]['type'], 'robot_response'
         )
+
+    def test_on_speech_request_robot_voice_becomes_robot_response(self):
+        """issue #3911: на dialog_engine=v2 ответ робота - SpeechRequest агента personality (SSML снимается)."""
+        self.node.on_robot_response(_SpeechRequest('personality', '<speak>Привет, я Робби!</speak>'))
+
+        last = self.node.robot_response_events[-1]
+        self.assertEqual(last['type'], 'robot_response')
+        self.assertEqual(last['content'], 'Привет, я Робби!')
+        self.assertTrue(last['important'])
+
+    def test_on_speech_request_ignores_other_agents_and_cache_warmup(self):
+        """ТАРС/Telegram/служебная речь и прогрев кэша (commit=False) - не «ответ робота»."""
+        for agent in ('operator', 'telegram', 'system'):
+            self.node.on_robot_response(_SpeechRequest(agent, 'не моё'))
+        self.node.on_robot_response(_SpeechRequest('personality', 'прогрев', commit=False))
+        self.node.on_robot_response(_SpeechRequest('personality', '   '))
+
+        self.assertEqual(self.node.robot_response_events, [])
+
+    def test_speech_request_subscription_registered_next_to_v1_response(self):
+        """Подписка на запрос речи создана; v1-топик ответа живёт до PR-15 (TEMP)."""
+        self.assertEqual(self.node._subs['/voice/speech/request'], self.node.on_robot_response)
+        self.assertEqual(self.node._subs['/voice/dialogue/response'], self.node.on_robot_response)
 
     def test_on_robot_thought(self):
         """Тест: callback robot_thought (удалён в W10 — пропускаем)."""
