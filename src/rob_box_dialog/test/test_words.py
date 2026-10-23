@@ -30,7 +30,6 @@ NOT_WAKES = [
     "робототехника — наука",
     "супер-робот на экране",
     # В18: рискованные вейки выключены по умолчанию (включаются risky_enabled в wake_words.yaml)
-    "рома покажи анимацию ускорения",
     "бот в телеграме молчит",
     "",
 ]
@@ -38,6 +37,12 @@ NOT_WAKES = [
 
 @pytest.mark.parametrize("text", WAKES)
 def test_wake_corpus_wakes(text):
+    assert has_wake_word(text)
+
+
+@pytest.mark.parametrize("text", ["рома покажи анимацию ускорения", "Роман, включи музыку", "роман расскажи анекдот"])
+def test_roma_and_roman_wake(text):
+    """23.10 Шифу: «рома»/«роман» — обычные вейки (DEFAULT_WAKE_WORDS), не корпус ложных вейков."""
     assert has_wake_word(text)
 
 
