@@ -53,10 +53,10 @@ def test_rendered_prompt_names_only_registry_tools(engine: str) -> None:
 
 
 def test_every_operator_only_tool_is_described() -> None:
-    """``show_metrics``, ``say``, админские тулы — у каждого строка с описанием."""
+    """``show_metrics``, ``say`` — у каждого тула «только у оператора» строка с описанием."""
     prompt = operator_prompt(_rules())
     own = {e.name for e in operator_visible_tools() if not e.llm_visible}
-    assert {"say", "show_metrics", "read_logs"} <= own
+    assert {"say", "show_metrics"} <= own
     for name in own:
         assert f"- {name} — " in prompt
 
