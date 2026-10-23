@@ -8,6 +8,10 @@
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
 
+* :func:`profiled_person` / :func:`speaker_memory_block` - «робот помнит, с кем говорит» (#3919): профиль ведётся только
+  о собеседнике с подтверждённым именем (``name_state == confirmed``: биометрия уверена или голос подтвердило лицо,
+  ADR-0130 §2.6), а раздел снимка ``speaker_memory`` - ``dialog_count`` и его факты, без правил для модели.
+
 Имя собеседника не нужно: у ``person_ref`` может быть лишь кличка (#3858). Ключ памяти - ``person_ref`` как есть; после
 ADR-0130 этапа 3 это ``Acquaintance.id``, смена - в адаптере собеседника, а не здесь.
 """
@@ -15,7 +19,7 @@ ADR-0130 этапа 3 это ``Acquaintance.id``, смена - в адаптер
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
 
@@ -49,4 +53,23 @@ def has_evidence(tool: str, data: Mapping[str, Any]) -> bool:
     return key is None or data.get(key) is not None
 
 
-__all__ = ["bind_person", "has_evidence", "speaker_changed"]
+def profiled_person(speaker: Any) -> Optional[str]:
+    """``person_ref``, о котором код ведёт профиль и кладёт факты в снимок; ``None`` - собеседник не уверен/неизвестен
+    (догадку по голосу в профиль не пишем: счётчик и факты чужого человека - хуже пустого раздела)."""
+    person = getattr(speaker, "person_ref", None)
+    return person if person and getattr(speaker, "name_state", None) == "confirmed" else None
+
+
+def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """Раздел снимка ``speaker_memory``: ``{dialog_count, facts}`` (ключ без данных пропущен), нечего - ``None``.
+    Факты - тексты, свежие первыми: не больше ``SPEAKER_FACTS_MAX`` по ``SPEAKER_FACT_MAX_CHARS`` знаков."""
+    texts = [t[:kn.SPEAKER_FACT_MAX_CHARS] for t in (str(f).strip() for f in facts) if t][:kn.SPEAKER_FACTS_MAX]
+    block: Dict[str, Any] = {}
+    if (profile or {}).get("dialog_count") is not None:
+        block["dialog_count"] = int(profile["dialog_count"])  # type: ignore[index]
+    if texts:
+        block["facts"] = texts
+    return block or None
+
+
+__all__ = ["bind_person", "has_evidence", "profiled_person", "speaker_changed", "speaker_memory_block"]

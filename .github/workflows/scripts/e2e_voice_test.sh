@@ -464,7 +464,7 @@ scenario_writes_memory() {
 # Значения ЧИТАЮТСЯ обратно, а не берутся из exit-кода: ros2cli печатает
 # «Set parameter failed» при отказе колбэка и всё равно может выйти с 0, а
 # цена ошибки — боевые БД мастерской с профилями живых людей.
-E2E_MODE_FOLLOWERS="/mcp_server"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
+E2E_MODE_FOLLOWERS="/mcp_server /dialog_node"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
 E2E_MODE_HELD=0                    # этот прогон держит режим: trap обязан снять или передать
 E2E_HOLD_FOR_NEXT_ACT="${E2E_HOLD_FOR_NEXT_ACT:-0}"
 E2E_HOLD_RELEASE_S="${E2E_HOLD_RELEASE_S:-1800}"

@@ -583,3 +583,16 @@ def test_host_sections_collects_owner_data_for_the_snapshot_of_the_turn():
                         "music_state": {"playing": "unknown", "dj": "unknown"}}
     session.set_speaker(SpeakerRef(person_ref="p1", name="Саша", name_state="tentative"))
     assert host_sections(session.snapshot, MusicStateMemory())["speaker"] == {"name": None, "name_state": "tentative"}
+
+
+def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919():
+    from rob_box_dialog.music_state import MusicStateMemory
+    from rob_box_dialog.turn import host_sections
+
+    session = Session("personality")
+    session.set_speaker(SpeakerRef(person_ref="p1", name="Саша", name_state="confirmed"))
+    noted = ("p1", {"dialog_count": 2, "facts": ["любит чай"]})
+    assert host_sections(session.snapshot, MusicStateMemory(), (), noted)["speaker_memory"] == noted[1]
+    session.set_speaker(SpeakerRef(person_ref="p2", name="Борис", name_state="confirmed"))  # сменился с начала хода
+    assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory(), (), noted)
+    assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory())
