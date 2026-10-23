@@ -257,6 +257,15 @@ jobs:
       # EXPECTED_{MAIN,VISION}_JOBS выводятся из docker/build-manifest.yaml,
       # так что этот шаг заодно повторно проверяет манифест ⇔ workflow
       # (план §6 п.1) без дублирования логики guard'а выше.
+      # #3937: run-блок с `${{` длиннее 21000 байт UTF-8 -> workflow не парсится
+      # (0 джоб, тесты на develop не идут). Гард: tests/unit/test_workflow_run_expression_limit.py.
+      - name: Workflow run-block size guard (#3937)
+        run: |
+          python -m pytest tests/unit/test_workflow_run_expression_limit.py \
+            -v \
+            -o addopts="" \
+            -p no:cacheprovider
+
       - name: Workflow refactor acceptance guard (issue #2280)
         run: |
           python -m pytest tests/unit/test_workflow_refactor_acceptance.py \

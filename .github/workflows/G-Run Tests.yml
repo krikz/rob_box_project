@@ -227,7 +227,7 @@ jobs:
           # voice/music/animations — xdist -n $XDIST_N; telegram/quest — процесс на файл,
           # 4 сразу (pf_run/pf_rc из хелперов).  Шаг run: ≤ ~21000 байт, не раздувать.
           XDIST_N=4
-          source "${{ github.workspace }}/scripts/testing/parallel_pytest_helpers.sh"
+          source "${{ github.workspace }}/test_ws/scripts/testing/parallel_pytest_helpers.sh"
 
           # ── rob_box_voice ───────────────────────────────────────────────────
           # pytest may hang for ~4 min AFTER all tests complete.  Root cause
@@ -241,18 +241,11 @@ jobs:
           # (rc=124) BUT the junitxml report shows 0 failures: treat as
           # green with a warning (the hang is post-test shutdown).
           #
-          # ВАЖНО про бюджет (не срезать его снова!).  Он был опущен до 60s
-          # в 942d850d2 под лозунгом «tests take 8s» — на той версии сьюта
-          # это было правдой.  С тех пор сьют вырос до ~3100 тестов и идёт
-          # ~48s (run 35654649855, attempt 2: «3068 passed, 23 skipped …
-          # in 47.68s»).  Запас был ~20%, и на первой же медленной машине
-          # его не хватило: в attempt 1 того же run pytest прибили на 99%
-          # пройденных тестов.  junitxml пишется в pytest_sessionfinish,
-          # то есть ДО него файла ещё нет — спасательная ветка rc=124 не
-          # срабатывала, и job краснел с «FAILED (rc=124)», хотя ни один
-          # тест не упал (диф PR #2730 не трогал src/rob_box_voice/ вообще).
-          # 240s дают ~5x запаса и совпадают с бюджетом соседних пакетов
-          # (rob_box_core / rob_box_supervisor ниже по файлу).
+          # ВАЖНО про бюджет (не срезать его снова!).  60s (942d850d2) не
+          # хватило: сьют вырос до ~3100 тестов / ~48s, на медленной машине
+          # pytest прибили на 99% (run 35654649855), а junitxml пишется в
+          # pytest_sessionfinish — спасательная ветка rc=124 не срабатывала.
+          # 240s = ~5x запаса, как у соседних пакетов.  Подробности — git log.
           VOICE_TIMEOUT=240
           echo "=== pytest: rob_box_voice (timeout ${VOICE_TIMEOUT}s) ==="
           PYTEST_RC=0
@@ -433,10 +426,8 @@ jobs:
             || { echo "❌ rob_box_supervisor FAILED"; exit 1; }
           echo "✅ rob_box_supervisor passed"
 
-          # rob_box_quest: ~45 файлов / 12k LOC тестов. conftest ставит
-          # расширенные ROS-моки + rob_box_core.* в sys.modules; реальный
-          # ``audio_common_msgs`` приходит из apt-install шага Build
-          # workspace. Per-file прогон, как rob_box_telegram (issue #1196
+          # rob_box_quest: conftest ставит ROS-моки + rob_box_core.* в
+          # sys.modules. Per-file прогон, как rob_box_telegram (issue #1196
           # L1) — единый pytest на пакет ловит cross-file pollution.
           #
           # Exit code: pytest = 0 (passed), 1 (failed), 2 (interrupted),
