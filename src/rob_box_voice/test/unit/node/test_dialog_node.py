@@ -231,6 +231,14 @@ def _background(text, uid):
     return msg
 
 
+def _long(text, uid, ago=0.0, length=3.0):
+    """Фраза длиннее ``VOICE_MIN_PHRASE_S``: голосу верим (``started_at``/``ended_at`` задают длительность)."""
+    msg = _background(text, uid)
+    end = time.time() - ago
+    msg.started_at, msg.ended_at = TIME(sec=int(end - length), nanosec=0), TIME(sec=int(end), nanosec=0)
+    return msg
+
+
 def _voice(payload):
     from rob_box_core.speaker_wire import fill_speaker_result
     return fill_speaker_result(M.SpeakerResult(), payload)
@@ -252,6 +260,25 @@ def test_bare_wake_pickup_gives_llm_background_phrases_with_their_authors_3892(n
     assert "[говорит: Борис] закажи пиццу на вечер" in blob
     assert "[говорит: незнакомый голос] не шумите тут" in blob
     assert node._backlog.background_phrases(time.time()) == 0
+
+
+def test_addressed_turn_sees_only_same_speakers_background_phrase_3894(node):
+    """ADR-0150 §7.3: Борис и Саша говорят без вейка, Саша спрашивает с вейком — в снимке LLM `recent_unaddressed`
+    с фразой Саши и автором; фраза Бориса (другой голос) туда не попадает."""
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-b"}))
+    node._on_utterance(_long("закажи пиццу на вечер", "u-b", 6.0))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
+                             "utterance_id": "u-s"}))
+    node._on_utterance(_long("мне нужна кофемашина", "u-s", 3.0))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
+                             "utterance_id": "u-q"}))
+    node._on_utterance(_long("Робот, что скажешь", "u-q"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    assert "recent_unaddressed" in blob and "мне нужна кофемашина" in blob
+    assert "закажи пиццу" not in blob
+    assert '\\"who\\":\\"Саша\\"' in blob
 
 
 def test_speech_end_puts_spoken_part_into_window(node):

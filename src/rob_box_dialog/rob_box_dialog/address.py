@@ -61,6 +61,8 @@ class Addressed:
     source: str
     pickup: bool = False
     picked: Tuple[Dict[str, Any], ...] = ()
+    #: Адресованный ход с фразой (не подхват): ≤ 1 свежая фоновая фраза того же собеседника (ADR-0150 §7.3, #3894).
+    recent: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,8 +131,14 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     rest = strip_wake_word(text, wake_words)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
+    return _woken(rest, heard, backlog)
+
+
+def _woken(rest: str, heard: Heard, backlog: Optional[Backlog]) -> Addressed:
+    """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12)."""
     if not is_bare(rest):
-        return Addressed(rest, VOICE)
+        recent = backlog.recent_unaddressed(heard) if backlog is not None else None
+        return Addressed(rest, VOICE, recent=(recent,) if recent else ())
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
