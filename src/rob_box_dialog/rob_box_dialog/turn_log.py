@@ -39,12 +39,24 @@ class WindowEntry:
 
     role: str
     content: Any
+    speaker: str = ""  # у ``user``: кто говорил в этот ход (метка кода из снимка, #3881)
 
     def text(self) -> str:
         """Как запись уходит модели (и как считается её размер): данные ``tool`` — компактным JSON."""
         if isinstance(self.content, str):
             return self.content
         return json.dumps(self.content, ensure_ascii=False, separators=(",", ":"), default=_plain)
+
+    def for_llm(self) -> Any:
+        """Как запись уходит модели в истории: реплика человека - с тегом авторства (#3881)."""
+        if self.role == USER and self.speaker:
+            return kn.SPEAKER_TAG.format(who=self.speaker, text=self.content)
+        return self.content
+
+
+def speaker_label(speaker: Any) -> str:
+    """Кто говорит в ход, словами кода: имя/кличка из снимка, нет - «незнакомый голос»."""
+    return (getattr(speaker, "name", None) or kn.UNKNOWN_SPEAKER_LABEL).strip()
 
 
 def _plain(value: Any) -> Any:
@@ -77,6 +89,7 @@ class _Turn:
     turn_id: str
     epoch: int
     user: str
+    speaker: str = ""
     entries: List[WindowEntry] = field(default_factory=list)
 
 
@@ -101,9 +114,9 @@ class TurnLog:
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
 
-    def begin(self, turn_id: str, epoch: int, text: str) -> None:
+    def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "") -> None:
         """Ход начался: ``text`` — реплика человека, как её взял код (пустая — ход без слов, в окно не идёт)."""
-        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip())
+        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip(), speaker)
         self._trim()
 
     def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False) -> None:
@@ -155,7 +168,7 @@ class TurnLog:
         self._speech.clear()
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
-        lead = [WindowEntry(USER, turn.user)] if turn.user else []
+        lead = [WindowEntry(USER, turn.user, turn.speaker)] if turn.user else []
         return lead + list(turn.entries)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
@@ -173,4 +186,4 @@ class TurnLog:
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry"]
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "speaker_label"]

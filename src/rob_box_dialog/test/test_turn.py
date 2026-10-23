@@ -318,7 +318,8 @@ def test_messages_have_window_without_markers_and_actions_as_structure():
     _run(engine, "спасибо")
     messages = ports.asked[1][0]
     assert messages[0] == {"role": "system", "content": "Ты робот."}
-    assert messages[1] == {"role": "user", "content": "выключи музыку пожалуйста сейчас же"}
+    said = f"[говорит: {kn.UNKNOWN_SPEAKER_LABEL}] выключи музыку пожалуйста сейчас же"
+    assert messages[1] == {"role": "user", "content": said}
     assert messages[2] == {"role": "assistant", "content": phrases.text("music.stop_ok")}
     last = messages[-1]["content"]
     assert last.endswith("\n\nспасибо") and f"<{RECENT_ACTIONS}>" in last and '"tool":"stop_music"' in last
@@ -467,6 +468,7 @@ def test_rejected_memory_save_is_absent_from_the_next_speakers_window_3881():
     messages = ports.asked[1][0]
     blob = json.dumps(messages, ensure_ascii=False)
     assert "memory_save" not in blob and "no_person" not in blob and _FACT.args["fact"] not in blob
+    assert f"[говорит: {kn.UNKNOWN_SPEAKER_LABEL}] робот запомни" in blob  # реплика А несёт авторство, не голая
     assert all(m["role"] in ("system", "user", "assistant") for m in messages)  # нет висящих tool без вызова
     assert not [e for e in engine.log.window() if e.role == "tool"]
 
