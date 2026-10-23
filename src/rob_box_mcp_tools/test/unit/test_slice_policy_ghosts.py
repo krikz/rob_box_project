@@ -32,15 +32,10 @@ def test_operator_control_slice_is_gone():
     assert all("operator.control" not in slices for slices in policy["senders"].values())
 
 
-#: В срезе ``operator.admin`` политики, но mcp_server их НЕ регистрирует (классы в ``tools/operator_admin.py`` есть):
-#: оператору не предъявляются — вызов вернул бы «unknown tool». Регистрировать или удалить из политики — решение
-#: вне PR-13b (#3708); тест упадёт, как только список изменится, — тогда и поправить флаги.
-NOT_ON_SERVER = {"read_logs", "ros2_node_status", "container_status"}
-
-
 def test_operator_view_is_the_operator_slices_of_the_policy():
-    """PR-13b: реестр ТАРС = видимые Личности ∪ срезы ``operator.*`` сендера ``avatar_supervisor`` (кроме
-    неисполняемых сервером) — видимость решает срез тула; в 13a ``show_metrics`` был в политике, но не в срезе хода."""
+    """PR-13b: реестр ТАРС = видимые Личности ∪ срезы ``operator.*`` сендера ``avatar_supervisor`` — видимость решает
+    срез тула; в 13a ``show_metrics`` был в политике, но не в срезе хода, а read_logs/ros2_node_status/container_status
+    — в политике, но не на сервере (решение Шифу 23.10 «регаем»)."""
     from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
 
     policy = _policy()
@@ -48,6 +43,16 @@ def test_operator_view_is_the_operator_slices_of_the_policy():
                for t in policy["slices"][s]}
     llm = {e.name for e in llm_visible_tools()}
     view = {e.name for e in operator_visible_tools()}
-    assert "show_metrics" in view and "say" in view
-    assert view == llm | (granted - NOT_ON_SERVER)
-    assert NOT_ON_SERVER <= granted
+    assert {"say", "show_metrics", "read_logs", "ros2_node_status", "container_status"} <= view
+    assert view == llm | granted
+
+
+def test_admin_tools_are_hidden_from_the_personality():
+    from rob_box_core.tool_catalog import llm_visible_tools
+
+    policy = _policy()
+    admin = set(policy["slices"]["operator.admin"])
+    personality = {t for s in policy["senders"]["dialogue_node"] for t in policy["slices"][s]}
+    assert {"read_logs", "ros2_node_status", "container_status", "show_metrics"} <= admin
+    assert not admin & {e.name for e in llm_visible_tools()}
+    assert not admin & personality

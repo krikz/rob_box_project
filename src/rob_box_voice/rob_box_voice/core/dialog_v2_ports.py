@@ -83,7 +83,10 @@ def to_result(response: LLMResponse) -> Result:
     for call in response.tool_calls or ():
         if call.name == kn.COMMAND_TOOL:
             marked = call.arguments.get(kn.COMMAND_INVALID_FIELD)
-            return Invalid(str(marked)) if marked else parse(dict(call.arguments))
+            if not marked:
+                return parse(dict(call.arguments))
+            rest = parse({k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
+            return Invalid(str(marked), salvage=rest.actions if isinstance(rest, Command) else ())
     text = (response.content or "").strip()
     return Command(speech=text) if text else Invalid(EMPTY, "ни речи, ни команды")
 

@@ -118,6 +118,10 @@ from .tools import (
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     ShowMetricsTool,
+    # PR-13b #3708 (решение Шифу 23.10 «регаем, чтобы из ТАРС было доступно»): диагностика operator.admin.
+    ContainerStatusTool,
+    ReadLogsTool,
+    Ros2NodeStatusTool,
     SayAloudTool,
     SayTool,
 )
@@ -926,6 +930,11 @@ class MCPServer(Node):
         # Без этой регистрации mcp_server отвечал бы «unknown tool» на
         # show_metrics — даже если срез-гард пропускал avatar_supervisor.
         self.registry.register(ShowMetricsTool(self))
+        # PR-13b #3708 — диагностика ТАРС (срез operator.admin): статус нод по rclpy, логи контейнеров из Loki,
+        # метрики контейнеров из Prometheus. Без регистрации тулы были в политике, но вызов давал «unknown tool».
+        self.registry.register(Ros2NodeStatusTool(self))
+        self.registry.register(ReadLogsTool(self))
+        self.registry.register(ContainerStatusTool(self))
         # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».

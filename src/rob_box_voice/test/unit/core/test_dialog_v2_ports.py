@@ -93,6 +93,14 @@ def test_bridge_legacy_form_round_trips_to_the_same_command():
     assert back.actions == original.actions
 
 
+def test_invalid_with_salvaged_actions_round_trips_bridge_to_result_3953():
+    """Невалидная после повтора команда несёт допустимые действия через форму моста до хода (#3953)."""
+    original = Invalid("speech_with_actions", salvage=(CommandCall("play_sound", {"sound": "boop"}),))
+    _, calls, verdict = command_bridge.to_legacy(original)
+    assert verdict == "invalid:speech_with_actions"
+    assert to_result(LLMResponse(tool_calls=calls)) == original
+
+
 def test_passed_goes_bridge_to_result_to_engine_as_passed_not_invalid():
     """#3859: «промолчать» моста доходит до TurnEngine как passed: ход finished/passed, не invalid; речь - фраза кода."""
     text, calls, verdict = command_bridge.to_legacy(Command(passed="nothing_to_say"))

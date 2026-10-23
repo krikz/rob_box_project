@@ -14,9 +14,13 @@
   (В12″) — модель получает подхваченные фразы каждую со своим автором (``[говорит: …]`` на момент фразы, не
   того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
 * Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия), спорный стоп (В19) идёт в LLM;
-* невалидная команда (после повтора моста) — ход ``failed`` без речи; ``passed`` — тихо;
+* невалидная команда (после повтора моста) — допустимые действия исполняются, итог (или честное «не понял») говорит
+  код, ход ``done`` (#3953, Шифу 23.10); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``)
+  законен; ``passed`` — тихо;
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
-* ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций;
+* ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций; последний вызов
+  модели идёт без query-тулов в схеме (читать больше нечем — остаётся сказать итог), а если она всё же просит query —
+  ход ``done`` с фразой кода по данным (``query_fallback``), а не молчащий ``failed`` (#3953, В21);
 * весь ход — в бюджете ``TURN_DEADLINE_S``: истёк — ``understand.timeout``, строка ``provider_latency``;
 * ясный стоп — перебивание (``interrupt.py``, PR-9): речь и выступление гаснут по слову («стой» — сразу, «хватит» —
   на границе предложения), эпоха + 1; отменённый ход старой эпохи — ``cancelled``, а доживший до ответа модели —
@@ -39,12 +43,12 @@ from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
-from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall
+from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall, loud_actions
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
-from rob_box_dialog.respond import ActionResult, join
+from rob_box_dialog.respond import ActionResult, audible, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools
@@ -226,13 +230,20 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
+def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str) -> Optional[str]:
+    """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
+    простом успехе (``respond.audible``, #3953)."""
+    speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
+    return outcome_phrase(audible(results, speaks)) if results else None
+
+
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
     """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда. У агента с
     текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно.
     ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
-    if said and (not cmd.actions or agent == kn.TEXT_CHANNEL_AGENT):
+    if said and (not loud_actions(cmd) or agent == kn.TEXT_CHANNEL_AGENT):
         lines.append((said, cmd.voice or ""))
     elif said:
         _LOG.info(f"{LOG_MARK} речь при действиях не звучит (§4.1): {said[:120]!r}")
@@ -262,6 +273,23 @@ def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
     return tuple(a for a in actions if not last or kn.TOOL_CLASSES[a.tool] != _QUERY)
 
 
+def _offered(tools: Sequence[Any], last: bool) -> Tuple[Any, ...]:
+    """Тулы вызова LLM хода. На последнем ``query`` убраны из схемы (#3953): данные ему уже вернули (живой прогон
+    23.10: модель искала память трижды, потолок ``LLM_QUERY_ITERATIONS_MAX`` съел последний вызов, и ход молчал).
+    Выбор сужает структура — читать больше нечем, остаётся сказать итог или сделать действие."""
+    return tuple(t for t in tools if not last or kn.TOOL_CLASSES.get(t.name) != _QUERY)
+
+
+def _close_nothing_to_do(turn: _Turn) -> str:
+    """Команда с действиями, а исполнять и сказать нечего (``query`` сверх лимита). Запрос в ходе был - ход ``done``,
+    говорит код по данным запроса (#3953, В21: на адресованное не молчим); запроса не было - провал без речи (``""``)."""
+    if turn.queried:
+        turn.stage, turn.status, turn.reason = "done", "done", "query_fallback:ceiling"
+        return query_fallback(turn.queried)
+    turn.stage, turn.status, turn.reason = "failed", "failed", "nothing_to_do"
+    return ""
+
+
 def _query_data(results: Sequence[ActionResult]) -> str:
     rows = [{"tool": r.tool, "status": r.status, "reason": r.reason, "data": dict(r.data)} for r in results]
     return json.dumps({kn.QUERY_RESULTS_FIELD: rows}, ensure_ascii=False, default=str)
@@ -280,16 +308,25 @@ def _voices_summary(data: Mapping[str, Any]) -> Optional[str]:
     return ", ".join(f"{name} — {count}" for name, count in pairs if name and isinstance(count, int)) or None
 
 
-def _close_invalid(turn: _Turn, data: Optional[str], log: Any) -> str:
-    """Невалидная команда после повтора. Запроса в ходе не было - провал без речи (``""``); запрос выполнен - ход
-    закрыт как ``done``, а говорит код по данным запроса (#3883): молчать после выполненного запроса нельзя."""
-    if not turn.queried:
-        turn.stage, turn.status, turn.reason = "failed", "failed", f"invalid_command:{data}"[:60]
-        log.warning(f"{LOG_MARK} невалидная команда {data} → ход провален, без речи")
-        return ""
-    log.warning(f"{LOG_MARK} невалидная команда {data} после query → фраза кода по данным запроса")
-    turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{data}"[:60]
-    return query_fallback(turn.queried)
+async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot) -> None:
+    """Невалидная команда после повтора моста: на адресованную реплику не молчим (В21, решение Шифу 23.10, #3953).
+    Запрос в ходе выполнен - говорит код по его данным (#3883). Иначе допустимые действия команды (``Invalid.salvage``)
+    исполняются, об исходе говорит код; исполнять нечего - честная фраза ``INVALID_COMMAND_PHRASE``. Ход ``done``."""
+    log, why = engine._log, invalid.reason
+    if turn.queried:
+        log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
+        turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
+        engine._say(turn, query_fallback(turn.queried), None, "sad")
+        return
+    log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
+    results = await engine._execute(turn, invalid.salvage, snap)
+    if engine._stale(turn, "results"):
+        return
+    turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
+    # исполнено и успех молчит (звук сам себе доказательство) - тишина честна; исполнять было нечего - фраза
+    said = outcome_phrase(results) if results else phrases.text(kn.INVALID_COMMAND_PHRASE)
+    sad = not results or any(r.status in _FAILED for r in results)
+    engine._say(turn, said or "", None, "sad" if sad else None)
 
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
@@ -449,7 +486,9 @@ class TurnEngine:
         tools = available_tools(snap, None, snap.agent, turn.text)
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
-            answer = await turn.deadline.wait(self._ports.ask(messages, tools, turn.deadline.left()), "llm")
+            last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
+            answer = await turn.deadline.wait(self._ports.ask(messages, _offered(tools, last), turn.deadline.left()),
+                                              "llm")
             turn.llm_calls += answer.calls
             turn.provider, turn.tokens = answer.provider or turn.provider, turn.tokens + answer.tokens
             if self._stale(turn, "answer"):
@@ -457,9 +496,9 @@ class TurnEngine:
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
             if not isinstance(answer.result, Command):
-                self._say(turn, _close_invalid(turn, data, self._log))
+                await _close_invalid(self, turn, answer.result, snap)
                 return
-            more = await self._act(turn, answer.result, snap, last=iteration >= kn.LLM_QUERY_ITERATIONS_MAX)
+            more = await self._act(turn, answer.result, snap, last=last)
             if more is None:
                 return
             messages.extend(answer.follow(more))
@@ -486,7 +525,7 @@ class TurnEngine:
 
     def _speak(self, turn: _Turn, cmd: Command, results: Sequence[ActionResult]) -> None:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1)."""
-        outcome = outcome_phrase(results) if results else None
+        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
@@ -497,8 +536,8 @@ class TurnEngine:
             self._say(turn, text, voice or None, cmd.expression.emotion)
         if cmd.ask is not None and not cmd.actions:
             self.session.set_pending_ask(cmd.ask)
-        if cmd.actions and not results and not lines:  # query сверх лимита и сказать нечего: провал, а не «ок»
-            turn.stage, turn.status, turn.reason = "failed", "failed", "nothing_to_do"
+        if cmd.actions and not results and not lines:  # query сверх лимита и сказать нечего
+            self._say(turn, _close_nothing_to_do(turn), None, "sad")
 
     async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
         if not actions:

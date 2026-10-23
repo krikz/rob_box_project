@@ -109,6 +109,9 @@ class Invalid:
     reason: str
     detail: str = ""
     violations: Tuple[Violation, ...] = ()
+    #: Действия отвергнутой команды, допустимые каждое само по себе (не ``query``): после повтора моста ход
+    #: исполняет их и говорит итог кодом, а не молчит (#3953, решение Шифу 23.10).
+    salvage: Tuple[ToolCall, ...] = ()
 
     @property
     def all(self) -> Tuple[Violation, ...]:
@@ -420,8 +423,30 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     outcomes = [_outcome(check) for check in checks]
     found = tuple(v for v in outcomes if isinstance(v, Violation))
     if found:
-        return Invalid(found[0].reason, found[0].detail, violations=found)
+        return Invalid(found[0].reason, found[0].detail, violations=found,
+                       salvage=_salvage(cmd, set(available_tools), agent))
     return outcomes[-1]
+
+
+def loud_actions(cmd: Command) -> Tuple[ToolCall, ...]:
+    """Действия, рядом с которыми ``speech`` не звучит: все, кроме тихих (``knowledge.QUIET_WITH_SPEECH_TOOLS``)."""
+    return tuple(a for a in cmd.actions if a.tool not in kn.QUIET_WITH_SPEECH_TOOLS)
+
+
+def _salvage(cmd: Command, available: Collection[str], agent: str) -> Tuple[ToolCall, ...]:
+    """Действия отвергнутой команды, валидные по одному: тул виден, аргументы по схеме, не ``query`` (данные некому
+    вернуть)."""
+
+    def fine(call: ToolCall) -> bool:
+        if kn.TOOL_CLASSES.get(call.tool) == "query":
+            return False
+        try:
+            _check_actions((call,), available, agent)
+        except _Bad:
+            return False
+        return True
+
+    return tuple(call for call in cmd.actions if fine(call))
 
 
 def _outcome(check: Callable[[], Any]) -> Any:
@@ -461,7 +486,7 @@ def _check_speech(text: Optional[str], limit: int, where: str) -> None:
 def _check_speech_with_actions(cmd: Command, agent: str) -> None:
     """``speech`` рядом с действиями не звучит (§4.1): нарушение, а не молчаливая потеря ответа. Вместе с ``perform``
     его уже ловит ``perform_with_speech``; у телеграм-агента ``speech`` - текст в чат, он законен."""
-    if cmd.speech and cmd.actions and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT:
+    if cmd.speech and loud_actions(cmd) and cmd.perform is None and agent != kn.TEXT_CHANNEL_AGENT:
         raise _Bad(kn.VIOLATION_SPEECH_WITH_ACTIONS)
 
 
@@ -613,7 +638,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "no_command": "нет команды: ответ — один JSON-объект команды",
     "several_commands": "команда в ответе одна",
     "perform_with_speech": "при perform поле speech не пиши — весь текст клади в perform.segments",
-    kn.VIOLATION_SPEECH_WITH_ACTIONS: "speech при actions не звучит: если это ответ по сути (шутка, стих, ответ на "
+    kn.VIOLATION_SPEECH_WITH_ACTIONS: "speech при громких actions не звучит: если это ответ по сути (шутка, стих, ответ на "
                                       "вопрос) — положи его в perform.segments; если это слова про само действие "
                                       "(«вот звук») — убери speech, о результате скажет код",
     kn.VIOLATION_EMPTY_COMMAND: "команда пустая: ответь речью (speech), вопросом (ask), действием (actions) или "

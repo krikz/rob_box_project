@@ -696,39 +696,56 @@ _ev_kv() {  # stdin = key=value строки; $1=key
     sed -n "s/^$1=//p" | head -1 | tr -d '\r'
 }
 
-# wait_reply_done BEFORE -- ждёт «ответ состоялся и робот замолчал». rc=0 -- дождались,
-# rc=1 -- потолок (дальше решает check_cycle, как и раньше). Пишет E2E_REPLY_AFTER (с) и
-# E2E_REPLY_NO_SPEECH=1, если ход закончился без речи (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE).
+# wait_reply_done BEFORE [BARGE] -- ждёт «ответ состоялся и робот замолчал». v2 (#3954): единственный судья
+# шага -- сам e2e_events.py; check_cycle для v2 не зовётся. rc=0 -- дождались (ответ или silent_ok),
+# rc=1 -- потолок при принятой фразе (ход не кончился), rc=2 -- ход кончился сбоем/отменой/без речи (FAIL сразу,
+# E2E_REPLY_REASON), rc=3 -- ПРИНЯТО нет за E2E_ACCEPT_WINDOW (переигрывать сразу, не ждать потолок).
+# Пишет E2E_REPLY_AFTER (с), E2E_REPLY_VERDICT и E2E_REPLY_NO_SPEECH=1, если ход закончился без речи
+# (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
 wait_reply_done() {
-    local since="$1" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local accept_win=0 reason
+    [ "${2:-0}" = "1" ] && barge_flag="--barge"
+    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && accept_win="${E2E_ACCEPT_WINDOW:-15}"
+    E2E_REPLY_VERDICT="wait"; E2E_REPLY_REASON="-"
     local grace="${E2E_NO_SPEECH_GRACE:-8}" tail_s="${E2E_SPEECH_TAIL:-2}"
     local t0 now out verdict sig quiet prev_sig="" stable=0 nospeech_at=0 silent_flag=""
     [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && silent_flag="--silent-ok"
     E2E_REPLY_NO_SPEECH=0
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag)"
+        now="$(date +%s)"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win")"
         verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
         quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        reason="$(printf '%s\n' "$out" | _ev_kv reason)"
         now="$(date +%s)"
         case "$verdict" in
+            failed|cancelled)
+                E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_REASON="$reason"
+                E2E_REPLY_AFTER=$((now - t0)); return 2 ;;
+            no_accept)
+                E2E_REPLY_VERDICT="no_accept"; E2E_REPLY_AFTER=$((now - t0)); return 3 ;;
             done|silent)
                 if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
                 prev_sig="$sig"
                 if awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; then
                     [ "$verdict" = "silent" ] && E2E_REPLY_NO_SPEECH=1
-                    E2E_REPLY_AFTER=$((now - t0)); return 0
+                    E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_AFTER=$((now - t0)); return 0
                 fi ;;
             nospeech)
                 [ "$nospeech_at" = "0" ] && nospeech_at="$now"
                 if [ $((now - nospeech_at)) -ge "$grace" ]; then
-                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_AFTER=$((now - t0)); return 0
+                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_VERDICT="nospeech"; E2E_REPLY_AFTER=$((now - t0))
+                    # v2: ход кончился, речи не было и шаг тишину не разрешал -- FAIL сразу, без повторов.
+                    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && { E2E_REPLY_REASON="no_speech"; return 2; }
+                    return 0
                 fi ;;
             *) stable=0; prev_sig=""; nospeech_at=0 ;;
         esac
         if [ $((now - t0)) -ge "$ceiling" ]; then
-            E2E_REPLY_AFTER=$((now - t0)); return 1
+            E2E_REPLY_VERDICT="ceiling"; E2E_REPLY_AFTER=$((now - t0)); return 1
         fi
         sleep "$poll"
     done
@@ -826,8 +843,9 @@ wait_barge_anchor() {
 #   anchor -- СЛЕДУЮЩИЙ шаг перебивает (barge_in): ждали его якорь, конца ответа не ждём;
 #   event  -- ждали событий (wait_reply_done).
 # E2E_REPLY_AFTER -- сколько секунд ждали (идёт в лог шага ``reply_after=``).
-step_wait_after_play() {  # $1=since
+step_wait_after_play() {  # $1=since $2=1, если шаг сам перебивает (barge_in)
     E2E_WAIT_MODE="fixed"; E2E_REPLY_AFTER="${E2E_REACTION_WINDOW:-40}"; E2E_REPLY_NO_SPEECH=0
+    E2E_REPLY_VERDICT="fixed"; E2E_REPLY_REASON="-"; E2E_WAIT_RC=0
     if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
         sleep "${E2E_REACTION_WINDOW:-40}"
         return 0
@@ -841,7 +859,8 @@ step_wait_after_play() {  # $1=since
         fi
         return 0   # якорь не наступил: потолок уже выжат; шаг-перебиватель получит SKIP
     fi
-    wait_reply_done "$1"
+    wait_reply_done "$1" "${2:-0}"
+    E2E_WAIT_RC=$?
     E2E_WAIT_MODE="event"
     return 0
 }

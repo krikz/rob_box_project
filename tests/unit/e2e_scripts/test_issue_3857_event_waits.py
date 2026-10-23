@@ -234,7 +234,7 @@ class TestWaitReplyDone:
         rc, out, err, took = _run(tmp_path, accept() + turn_done(),
                                   'E2E_REACTION_WINDOW=30; E2E_NO_SPEECH_GRACE=2; wait_reply_done 2026-01-01T00:00:00Z; '
                                   'echo "RC=$? NOSPEECH=$E2E_REPLY_NO_SPEECH"')
-        assert "RC=0 NOSPEECH=1" in out, (out, err)
+        assert "RC=2 NOSPEECH=1" in out, (out, err)  # #3954: v2 -- ход без речи после льготы это FAIL, не «цикл ждём»
         assert took < 12
 
     def test_silent_ok_step_finishes_without_grace(self, tmp_path):

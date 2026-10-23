@@ -168,6 +168,8 @@ def test_operator_sees_telemetry_tools_and_the_personality_does_not():
     snap = Session(ot.OPERATOR).snapshot
     names = {t.name for t in available_tools(snap, None, ot.OPERATOR, "покажи нагрузку процессора")}
     assert "show_metrics" in names
+    logs = {t.name for t in available_tools(snap, None, ot.OPERATOR, "покажи логи контейнера voice-assistant")}
+    assert {"read_logs", "container_status"} <= logs
     personality = {t.name for t in available_tools(Session("personality").snapshot, None, "personality",
                                                    "покажи нагрузку процессора")}
     assert not personality & {"show_metrics", "read_logs", "ros2_node_status", "container_status"}

@@ -34,11 +34,11 @@ from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Optional, 
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.command import Busy, Command, Invalid, parse, validate
+from rob_box_dialog.command import Busy, Command, Invalid, loud_actions, parse, validate
 from rob_box_dialog.execute import ActionRequest, Executor, OwnerEvent
 from rob_box_dialog.plan.composition import compose, kind_of
 from rob_box_dialog.plan.plan_events import PlanEvent, queued_phrase
-from rob_box_dialog.respond import ActionResult, join
+from rob_box_dialog.respond import ActionResult, audible, join
 from rob_box_llm.provider import LLMMessage, LLMResponse, ToolCall, ToolResult
 
 _LOG = logging.getLogger(__name__)
@@ -100,11 +100,11 @@ def spoken_lines(cmd: Command, results: Sequence[ActionResult], content: bool = 
     """Что прозвучит после исполнения: фраза кода об исходе, затем реплика (только без действий) и сегменты
     выступления — ответ по сути звучит и при действиях; ``content=False`` — выступление уже прозвучало до действий."""
     lines: List[Line] = []
-    phrase = outcome_phrase(results)
+    phrase = outcome_phrase(audible(results, bool(cmd.speech)))
     if phrase:
         lines.append((phrase, ""))
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
-    if said and not cmd.actions:
+    if said and not loud_actions(cmd):
         lines.append((said, cmd.voice or ""))
     elif said:
         _LOG.info(f"{LOG_MARK} речь при действиях не звучит (§4.1): {said[:120]!r}")
