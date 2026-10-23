@@ -617,7 +617,7 @@ ensure_music_stopped_for_act() {
     fi
     code_b64="$(_e2e_music_stop_py | base64 | tr -d '\n\r')"
     out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${wait_s}'" 2>/dev/null)"
-    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | sed 's/^[^{]*//; s/}[^}]*$/}/')"
     parsed="$(printf '%s' "$result_line" | python3 -c 'import json, sys
 try:
     p = json.load(sys.stdin)
@@ -882,7 +882,7 @@ restore_robot_tts_default() {
     # как у «ros2 param get '…'» выше) — кавычки ставим сами. В строке только
     # base64-алфавит и имя провайдера из белого списка выше.
     out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${provider}'" 2>/dev/null)"
-    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | sed 's/^[^{]*//; s/}[^}]*$/}/')"
     verdict="$(printf '%s' "$result_line" | python3 -c 'import json, sys
 try:
     p = json.load(sys.stdin)
