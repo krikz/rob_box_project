@@ -3,7 +3,8 @@
 В историю модели попадает только то, что человек услышал, и структурные результаты действий:
 
 * ``user`` — текст хода как его взял код (без вейка и без маркеров ``[Spkr:]``/``[TG]``/``[URGENT_BACKLOG]``: кто
-  говорил и откуда — в снимке сессии, не в тексте);
+  говорил и откуда — в снимке сессии, не в тексте); ход подхвата бэклога (В12″) пишет вместо одной реплики все
+  подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные).
@@ -23,7 +24,7 @@ import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
@@ -59,6 +60,13 @@ def speaker_label(speaker: Any) -> str:
     return (getattr(speaker, "name", None) or kn.UNKNOWN_SPEAKER_LABEL).strip()
 
 
+def phrase_label(speaker: Mapping[str, Any]) -> str:
+    """Кто сказал фразу бэклога (метка ``speaker_adapter.phrase_speaker`` на момент самой фразы, #3892) словами
+    той же схемы, что :func:`speaker_label`: узнан — имя, иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
+    name = speaker.get("name") if speaker.get("identified") else None
+    return (name or kn.UNKNOWN_SPEAKER_LABEL).strip()
+
+
 def _plain(value: Any) -> Any:
     """JSON для неизменяемых данных результата: ``MappingProxyType`` — словарём, остальное — строкой."""
     return dict(value) if isinstance(value, Mapping) else str(value)
@@ -91,6 +99,7 @@ class _Turn:
     user: str
     speaker: str = ""
     entries: List[WindowEntry] = field(default_factory=list)
+    heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода (#3892)
 
 
 def _tool_content(result: Any) -> Mapping[str, Any]:
@@ -114,9 +123,12 @@ class TurnLog:
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
 
-    def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "") -> None:
-        """Ход начался: ``text`` — реплика человека, как её взял код (пустая — ход без слов, в окно не идёт)."""
-        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip(), speaker)
+    def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "",
+              heard: Sequence[Tuple[str, str]] = ()) -> None:
+        """Ход начался: ``text`` — реплика человека, как её взял код (пустая — ход без слов, в окно не идёт).
+        ``heard`` — подхват бэклога ``(кто, фраза)``: в окно идут эти фразы со своими авторами, а не ``text``."""
+        lead = tuple(WindowEntry(USER, t.strip(), who) for who, t in heard if t and t.strip())
+        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip(), speaker, heard=lead)
         self._trim()
 
     def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False) -> None:
@@ -150,13 +162,14 @@ class TurnLog:
             return
         self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
 
-    def window(self) -> Tuple[WindowEntry, ...]:
-        """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала."""
-        turns = [self._entries(t) for t in self._turns.values()]
-        turns = [t for t in turns if t][-self._max_turns:]
-        while len(turns) > 1 and self._tokens(turns) > self._max_tokens:
+    def window(self, exclude: str = "") -> Tuple[WindowEntry, ...]:
+        """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала.
+        ``exclude`` — ход, который сейчас спрашивает модель: он считается в размер, но в окно не выдаётся."""
+        turns = [(t.turn_id, self._entries(t)) for t in self._turns.values()]
+        turns = [t for t in turns if t[1]][-self._max_turns:]
+        while len(turns) > 1 and self._tokens([t[1] for t in turns]) > self._max_tokens:
             turns.pop(0)
-        return tuple(e for t in turns for e in t)
+        return tuple(e for turn_id, t in turns if turn_id != exclude for e in t)
 
     def tokens(self) -> int:
         """Оценка размера окна в токенах (то, что уйдёт модели)."""
@@ -168,7 +181,7 @@ class TurnLog:
         self._speech.clear()
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
-        lead = [WindowEntry(USER, turn.user, turn.speaker)] if turn.user else []
+        lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
         return lead + list(turn.entries)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
@@ -186,4 +199,5 @@ class TurnLog:
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "speaker_label"]
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "phrase_label",
+           "speaker_label"]

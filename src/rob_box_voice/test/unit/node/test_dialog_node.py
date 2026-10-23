@@ -8,6 +8,7 @@ import json
 import socket
 import sys
 import threading
+import time
 import types
 from unittest.mock import MagicMock
 
@@ -40,11 +41,12 @@ TIME = type(M.TurnEvent().stamp)
 
 class _LLM:
     def __init__(self, responses):
-        self.responses, self.calls = list(responses), 0
+        self.responses, self.calls, self.messages = list(responses), 0, []
         self.answered_by = "deepseek"
 
     async def complete(self, messages, tools=(), settings=None):
         self.calls += 1
+        self.messages.append(messages)
         return self.responses.pop(0)
 
 
@@ -221,6 +223,35 @@ def test_unaddressed_utterance_goes_to_backlog_without_turn(node):
     node._on_utterance(_utterance("ну вот покажи анимацию"))
     assert node.last_turn is None and node.test_llm.calls == 0
     assert [e.text for e in node._backlog._entries] == ["ну вот покажи анимацию"]
+
+
+def _background(text, uid):
+    msg = _utterance(text)
+    msg.utterance_id = uid
+    return msg
+
+
+def _voice(payload):
+    from rob_box_core.speaker_wire import fill_speaker_result
+    return fill_speaker_result(M.SpeakerResult(), payload)
+
+
+def test_bare_wake_pickup_gives_llm_background_phrases_with_their_authors_3892(node):
+    """Акт 3 (#3892): Борис и незнакомец говорят без вейка (биометрия до и после STT), Саша — голое «Робот»: в
+    запросе LLM обе фразы с тегами авторов на момент самой фразы, не текущего собеседника."""
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-b"}))
+    node._on_utterance(_background("закажи пиццу на вечер", "u-b"))
+    node._on_utterance(_background("не шумите тут", "u-x"))
+    node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
+                             "utterance_id": "u-r"}))
+    node._on_utterance(_background("Робот", "u-r"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    assert "[говорит: Борис] закажи пиццу на вечер" in blob
+    assert "[говорит: незнакомый голос] не шумите тут" in blob
+    assert node._backlog.background_phrases(time.time()) == 0
 
 
 def test_speech_end_puts_spoken_part_into_window(node):
