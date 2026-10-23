@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Optional
 
@@ -28,6 +29,8 @@ from .perform_host import TICK_S, PerformHost
 from .plan_tools import PlanToolExecutor
 
 PLAN_EVENT_TOPIC = "/dialog/plan_event"
+#: Фактический провайдер TTS (публикует tts_node после старта, фолбека и каждого синтеза).
+TTS_PROVIDER_STATE_TOPIC = "/voice/tts/provider_state"
 _SPEECH_KINDS = {getattr(SpeechEvent, n): n[5:].lower() for n in dir(SpeechEvent) if n.startswith("KIND_")}
 _SOUND_KINDS = {getattr(SoundEvent, n): n[5:].lower() for n in dir(SoundEvent) if n.startswith("KIND_")}
 
@@ -84,6 +87,17 @@ def _tts_provider(node: Any) -> str:
         return str(node.get_parameter("tts_provider").value or "")
     except Exception:  # noqa: BLE001 — параметр не объявлен (тестовая нода): провайдер неизвестен
         return ""
+
+
+def on_tts_provider_state(node: Any, msg: Any) -> None:
+    """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для
+    :func:`_tts_provider`: без него хост v2 не знал провайдера, и паузы MiniMax по сетке строк не включались (#3901)."""
+    try:
+        provider = (json.loads(msg.data or "{}") or {}).get("provider")
+    except (ValueError, TypeError, AttributeError):
+        return
+    if provider:
+        node._actual_tts_provider = str(provider)
 
 
 def _now(node: Any) -> float:
@@ -157,5 +171,5 @@ def perform_busy(node: Any) -> Busy:
     return Busy(active_segment=None if host is None else host.active_segment)
 
 
-__all__ = ["PLAN_EVENT_TOPIC", "begin_turn", "make_tool_executor", "on_music", "on_music_event", "on_sound",
-           "on_speech", "perform_busy", "performer"]
+__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "on_music",
+           "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer"]

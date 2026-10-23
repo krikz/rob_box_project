@@ -39,7 +39,7 @@ from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
-from rob_box_dialog.command import Command, Invalid, Result, ToolCall
+from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
 from rob_box_dialog.grammar import Tier1Command, match
@@ -110,6 +110,12 @@ class Ports(Protocol):
         ...
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None: ...
+
+    def perform(self, turn_id: str, epoch: int, perf: Performance, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Выступление — его владельцу (хост ``PerformBlock``: сегменты на тактах, подложка, паузы по сетке строк);
+        исход владельца (``pending``/``done``/``rejected``). ``None`` — владельца выступлений у агента нет (чат,
+        оператор): сегменты звучат репликами хода."""
+        ...
 
 
 @dataclass
@@ -214,19 +220,35 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _content_lines(cmd: Command, agent: str = kn.AGENTS[0]) -> List[Tuple[str, str]]:
+def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
     """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда. У агента с
-    текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно."""
+    текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно.
+    ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
     if said and (not cmd.actions or agent == kn.TEXT_CHANNEL_AGENT):
         lines.append((said, cmd.voice or ""))
     elif said:
         _LOG.info(f"{LOG_MARK} речь при действиях не звучит (§4.1): {said[:120]!r}")
-    if cmd.perform is not None:
+    if cmd.perform is not None and segments:
         voices = cmd.perform.voice_per_segment or ("",) * len(cmd.perform.segments)
         lines.extend(zip(cmd.perform.segments, voices))
     return lines
+
+
+def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any = _LOG) -> Tuple[bool, str]:
+    """Выступление команды — его владельцу (``Ports.perform``: такты, подложка, паузы по сетке строк). #3901: v2 читал
+    сегменты рэпа репликами хода — без бита и без пауз. ``(взял ли владелец, фраза кода об отказе или "")``; не взял
+    (выступления нет, у агента нет владельца) — сегменты звучат репликами хода."""
+    if cmd.perform is None:
+        return False, ""
+    outcome = ports.perform(turn_id, epoch, cmd.perform, cmd.edit_pending)
+    if outcome is None:
+        return False, ""
+    log.info(f"{LOG_MARK} выступление {'правка' if cmd.edit_pending else 'старт'} kind={cmd.perform.kind} "
+             f"backing={cmd.perform.backing or '-'} segments={len(cmd.perform.segments)} → {dict(outcome)} "
+             f"turn={turn_id}")
+    return True, phrases.text("local.rejected") if outcome.get("status") == "rejected" else ""
 
 
 def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
@@ -426,7 +448,9 @@ class TurnEngine:
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
-        lines = _content_lines(cmd, self.session.snapshot.agent)
+        owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, cmd, self._log)
+        self._say(turn, refusal, None, "sad")  # отказ владельца выступления — фраза кода, а не тишина ("" — нет)
+        lines = _content_lines(cmd, self.session.snapshot.agent, segments=not owned)
         for text, voice in lines:
             self._say(turn, text, voice or None, cmd.expression.emotion)
         if cmd.ask is not None and not cmd.actions:
@@ -499,5 +523,5 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "host_sections", "outcome_phrase", "tier1_actions",
+           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "tier1_actions",
            "tier1_for", "tier1_phrase", "voices_passed"]

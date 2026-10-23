@@ -206,6 +206,14 @@ class V2Ports:
         stopped = host.halt() if how == "halt" else host.stop()
         return bool(stopped) and owns
 
+    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Выступление — хосту ``PerformHost`` (``PerformBlock``: такты, подложка, паузы MiniMax по сетке строк), как
+        у v1 (``command_turn.CommandTurn._perform``); ``edit`` — ``edit_pending``. Хоста нет — ``None``."""
+        host = self._performer()
+        if host is None:
+            return None
+        return host.edit(perf) if edit else host.start(perf, turn_id, epoch)
+
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         """Интент движения для ``command_node`` (сейчас — только ``stop_motion`` Tier-1 стопа)."""
         if self._intent_pub is None or kind != "stop_motion":
