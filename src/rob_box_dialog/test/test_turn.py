@@ -455,17 +455,20 @@ class MemoryPorts(Ports):
 _FACT = ToolCall("memory_save", {"fact": "пьёт только зелёный чай"})
 
 
-def test_rejected_memory_save_is_an_outcome_in_the_window_not_a_debt_3881():
-    """Ход А: собеседник не узнан -> rejected{no_person}; ход Б (Борис): окно несёт пометку «не сохранён», не долг."""
+def test_rejected_memory_save_is_absent_from_the_next_speakers_window_3881():
+    """Ход А: собеседник не узнан -> rejected{no_person}; ход Б (Борис): в запросе к LLM нет ни memory_save, ни
+    текста факта из вызова, ни висящего tool-результата."""
     ports = MemoryPorts([Answer(Command(actions=(_FACT,)), "x"), Answer(Command(speech="Привет, Борис."), "x")])
     engine = _engine(ports)
     _run(engine, "робот запомни я пью только зелёный чай")
     assert ports.requests == []  # в память не ушло
     engine.session.set_speaker(SpeakerRef(person_ref="spk-boris", name="Борис", name_state="confirmed"))
     _run(engine, "продолжаю говорить, чтобы ты привык к моему голосу")
-    recent = ports.asked[1][0][-1]["content"]
-    assert '"tool":"memory_save"' in recent and '"reason":"no_person"' in recent
-    assert kn.REJECT_NOTES["no_person"] in recent and "не сохраняй его за другого" in recent
+    messages = ports.asked[1][0]
+    blob = json.dumps(messages, ensure_ascii=False)
+    assert "memory_save" not in blob and "no_person" not in blob and _FACT.args["fact"] not in blob
+    assert all(m["role"] in ("system", "user", "assistant") for m in messages)  # нет висящих tool без вызова
+    assert not [e for e in engine.log.window() if e.role == "tool"]
 
 
 def test_memory_save_is_rejected_when_the_speaker_changed_during_the_turn_3881():
@@ -479,9 +482,7 @@ def test_memory_save_is_rejected_when_the_speaker_changed_during_the_turn_3881()
     _run(engine, "робот запомни я пью только зелёный чай")
     assert [r.tool for r in ports.requests] == ["get_current_time"]
     assert ports.executed == [[("get_current_time", {})]]
-    [saved] = [e.content for e in engine.log.window() if e.role == "tool" and e.content["tool"] == "memory_save"]
-    assert (saved["status"], saved["reason"]) == ("rejected", kn.SPEAKER_CHANGED_REASON)
-    assert saved["note"] == kn.REJECT_NOTES[kn.SPEAKER_CHANGED_REASON]
+    assert not [e for e in engine.log.window() if e.role == "tool" and e.content["tool"] == "memory_save"]
 
 
 def test_memory_save_goes_to_the_same_speaker_when_nothing_changed():

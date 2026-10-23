@@ -8,7 +8,8 @@
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные).
 
-Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145) — только в агрегат хода. Окно — не больше
+Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145), как и отказ памяти
+``no_person``/``speaker_changed`` (#3881) — только в агрегат хода. Окно — не больше
 ``knowledge.TURN_WINDOW_MAX_TURNS`` ходов и ``TURN_WINDOW_MAX_TOKENS`` токенов, старые ходы выпадают целиком;
 :meth:`TurnLog.reset` (новая сессия) очищает всё, и поздние события речи старой эпохи ничего не добавляют.
 
@@ -84,9 +85,6 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
     if getattr(result, "reason", None):
         out["reason"] = result.reason
-        note = kn.REJECT_NOTES.get(result.reason) if result.status == "rejected" else None
-        if note:  # отказ памяти - исход словами, чтобы модель не несла факт в следующий ход (#3881)
-            out["note"] = note
     if data:
         out["data"] = data
     return MappingProxyType(out)
@@ -133,7 +131,10 @@ class TurnLog:
         return self._speech.get(speech_id)
 
     def result(self, turn_id: str, result: Any) -> None:
-        """Результат действия хода (``ActionResult``) — структурой."""
+        """Результат действия хода (``ActionResult``) — структурой. Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно
+        не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
+        if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
+            return
         self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
 
     def window(self) -> Tuple[WindowEntry, ...]:
