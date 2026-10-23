@@ -724,3 +724,128 @@ def test_3974_expression_only_command_finishes_the_turn_without_failure():
     agg = _run(_engine(ports), "покажи, как тебе грустно")
     assert (agg.stage, agg.status) == ("done", "finished")
     assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []
+
+
+# ── В31 (решение Шифу 23.10): вести запрос до конца, пока провайдер жив; фраза на ~6 с; потолок; стоп всегда ─────
+
+
+class NamedPorts(Ports):
+    """Порт, знающий провайдера в полёте (``V2Ports.provider``); вызов LLM может упасть; действие — с задержкой."""
+
+    def __init__(self, *a, provider="deepseek", fail=None, execute_delay=0.0, **kw):
+        super().__init__(*a, **kw)
+        self._provider, self.fail, self.execute_delay = provider, fail, execute_delay
+
+    def provider(self):
+        return self._provider
+
+    async def ask(self, messages, tools, timeout_s):
+        if self.fail is not None:
+            await asyncio.sleep(0.01)
+            raise self.fail
+        return await super().ask(messages, tools, timeout_s)
+
+    async def execute(self, actions, snapshot, turn_id):
+        await asyncio.sleep(self.execute_delay)
+        return await super().execute(actions, snapshot, turn_id)
+
+
+_MUSIC = ToolCall("request_music", {"intent": "track", "text": "ритм"})
+
+
+def _said(ports):
+    return [t for t, _, _ in ports.said]
+
+
+def test_live_provider_is_waited_past_the_old_12s_with_one_progress_phrase(monkeypatch):
+    """Акт 7 23.10: DeepSeek ответил 200 OK, а ход умер на 12 с. Теперь ход ждёт живого провайдера (потолок 60 с),
+    а тишину закрывает ОДНА промежуточная фраза кода, сколько бы ни думала модель."""
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
+    ports = NamedPorts(answers=[Answer(Command(speech="Вот ещё куплет про комара."), "deepseek")], ask_delay=0.2)
+    agg = _run(_engine(ports), "ещё куплет про комара")
+    said = _said(ports)
+    assert len(said) == 2 and said[0] in phrases.catalog()["understand.progress"]
+    assert said[1] == "Вот ещё куплет про комара." and agg.status == "finished"
+    assert TurnEngine.__init__.__kwdefaults__["deadline_s"] == kn.TURN_CEILING_S
+
+
+def test_fast_answer_has_no_progress_phrase(monkeypatch):
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.05)
+    ports = NamedPorts(answers=[Answer(Command(speech="Привет!"), "deepseek")])
+    _run(_engine(ports), "привет")
+    assert _said(ports) == ["Привет!"]
+
+
+def test_music_start_wait_gets_media_progress_then_outcome(monkeypatch):
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_MUSIC,)), "deepseek")], execute_delay=0.15)
+    _run(_engine(ports), "поставь ровный ритм")
+    assert _said(ports) == [phrases.text("media.progress"), phrases.text("media.done")]
+
+
+def test_progress_is_not_said_in_silence_nor_to_chat_nor_after_speech():
+    from types import SimpleNamespace
+
+    from rob_box_dialog.turn import progress_due
+
+    engine = _engine(Ports())
+    turn = SimpleNamespace(said=[], waiting="llm")
+    assert progress_due(engine, turn) in phrases.catalog()["understand.progress"]
+    assert progress_due(engine, SimpleNamespace(said=["sp1"], waiting="llm")) is None  # ход уже что-то сказал
+    engine.session.push_scene("Silence", "user")
+    assert progress_due(engine, turn) is None  # тишина: робот обязан молчать
+    chat = TurnEngine(Session(kn.TEXT_CHANNEL_AGENT), Ports())
+    assert progress_due(chat, turn) is None  # чат — не динамики
+
+
+def test_ceiling_in_llm_wait_names_the_provider():
+    ports = NamedPorts(answers=[Answer(Command(speech="поздно"), "deepseek")], ask_delay=5)
+    agg = _run(_engine(ports, deadline_s=0.05), "расскажи что-нибудь")
+    assert _said(ports) == [phrases.text("understand.ceiling", provider="deepseek")]
+    assert (agg.stage, agg.status) == ("timeout", "failed")
+
+
+def test_ceiling_while_action_runs_says_its_timeout_not_dont_understand(monkeypatch):
+    """Действие уже стартовало (музыка готовится), а потолок кончился: «Музыка пока не заиграла», а не «не понял».
+    Продление срока под действие (``TurnDeadline.grant``, PR #3970) здесь выключено: проверяется сама фраза потолка."""
+    from rob_box_dialog.deadline import TurnDeadline
+
+    monkeypatch.setattr(TurnDeadline, "grant", lambda self, own_s: None, raising=False)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_MUSIC,)), "deepseek")], execute_delay=5)
+    agg = _run(_engine(ports, deadline_s=0.1), "поставь ровный ритм")
+    assert _said(ports) == [phrases.text("media.timeout")]
+    assert phrases.text("understand.timeout") not in _said(ports) and agg.status == "failed"
+
+
+def test_dead_provider_closes_turn_at_once_without_waiting_ceiling():
+    """Провайдер не жив (цепочка отказала, порт бросил ``ProviderFailed``): фраза с его именем сразу, а не 60 с."""
+    from rob_box_dialog.deadline import ProviderFailed
+
+    ports = NamedPorts(fail=ProviderFailed("minimax", RuntimeError("все провайдеры unavailable")))
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        agg = await _engine(ports).run(Addressed("расскажи что-нибудь", VOICE))
+        return agg, loop.time() - began
+
+    agg, took = asyncio.run(scenario())
+    assert _said(ports) == [phrases.text("understand.provider_failed", provider="minimax")]
+    assert ports.said[0][2] == "sad" and (agg.status, took < 1.0) == ("failed", True)
+
+
+def test_user_stop_interrupts_long_wait_always(monkeypatch):
+    """Стоп человека рвёт ход в любой момент ожидания: ни промежуточной фразы после, ни фразы потолка."""
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.05)
+    ports = NamedPorts(answers=[Answer(Command(speech="поздно"), "deepseek")], ask_delay=5)
+
+    async def scenario():
+        task = asyncio.ensure_future(_engine(ports).run(Addressed("расскажи сказку", VOICE)))
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.1)  # промежуточная фраза отменена вместе с ходом
+
+    asyncio.run(scenario())
+    assert ports.said == [] and ports.stages[-1] == ("done", "cancelled", "interrupt")

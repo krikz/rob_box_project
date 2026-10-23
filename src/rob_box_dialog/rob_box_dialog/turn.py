@@ -21,7 +21,10 @@
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций; последний вызов
   модели идёт без query-тулов в схеме (читать больше нечем — остаётся сказать итог), а если она всё же просит query —
   ход ``done`` с фразой кода по данным (``query_fallback``), а не молчащий ``failed`` (#3953, В21);
-* весь ход — в бюджете ``TURN_DEADLINE_S``: истёк — ``understand.timeout``, строка ``provider_latency``;
+* ход ведётся до конца, пока провайдер жив, но не дольше ``TURN_CEILING_S`` (В31): ~``PROGRESS_AFTER_S`` тишины —
+  одна промежуточная фраза кода (``understand.progress``/``media.progress``); потолок в ожидании LLM — фраза с именем
+  провайдера, в ожидании действия — фраза его класса о таймауте (не «не понял»); цепочка провайдеров отказала —
+  фраза сразу, без ожидания потолка; строка ``provider_latency``;
 * ясный стоп — перебивание (``interrupt.py``, PR-9): речь и выступление гаснут по слову («стой» — сразу, «хватит» —
   на границе предложения), эпоха + 1; отменённый ход старой эпохи — ``cancelled``, а доживший до ответа модели —
   молчит и ничего не исполняет (``stale_epoch``).
@@ -45,7 +48,7 @@ from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
 from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall, loud_actions
 from rob_box_dialog.context import build_context
-from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
+from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, audible, join
@@ -98,7 +101,10 @@ class Answer:
 
 
 class Ports(Protocol):
-    """Транспорт хода (реализует ROS-хост)."""
+    """Транспорт хода (реализует ROS-хост). Необязательный ``provider() -> str`` — провайдер LLM, к которому идёт
+    вызов сейчас (у цепочки — ``answered_by``): его имя называет фраза потолка (В31); без него — без имени.
+    ``ask`` при отказе провайдера (цепочка исчерпана, транспорт оборвал вызов) бросает ``deadline.ProviderFailed`` —
+    ход закрывается сразу, не ждёт потолка; прочие исключения — ошибка кода, ход падает громко."""
 
     def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Awaitable[Answer]: ...
 
@@ -146,6 +152,7 @@ class _Turn:
     background: Tuple[Mapping[str, Any], ...] = ()  # фоновые фразы всех с последнего ответа робота (В23)
     said: List[str] = field(default_factory=list)
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания, #3883)
+    waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -369,6 +376,73 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
         await engine._understand(turn, snap)
 
 
+def provider_in_flight(ports: Any) -> str:
+    """Провайдер, к которому идёт вызов LLM сейчас (необязательный ``Ports.provider``); порт не знает — «»."""
+    current = getattr(ports, "provider", None)
+    return str(current() or "") if callable(current) else ""
+
+
+def progress_due(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
+    """Промежуточная фраза хода (В31) или ``None``: ход ещё молчит, речь идёт в динамики, не тишина. Ключ — по тому,
+    чего ход ждёт (``knowledge.PROGRESS_PHRASES``: ответ LLM, старт музыки)."""
+    snap = engine.session.snapshot
+    if turn.said or agent_spec(snap.agent).sink != Sink.SPEAKERS or snap.top("Silence") is not None:
+        return None
+    return engine._pick(kn.PROGRESS_PHRASES.get(turn.waiting, kn.PROGRESS_LLM_PHRASE))
+
+
+async def _progress(engine: "TurnEngine", turn: _Turn) -> None:
+    import asyncio  # noqa: PLC0415
+
+    await asyncio.sleep(kn.PROGRESS_AFTER_S)
+    text = progress_due(engine, turn)
+    if text:
+        engine._log.info(f"{LOG_MARK} промежуточная фраза: ждём {turn.waiting} {turn.deadline.elapsed():.1f} с "
+                         f"turn={turn.turn_id}")
+        engine._say(turn, text)
+
+
+def ceiling_phrase(turn: _Turn, provider: str) -> str:
+    """Фраза потолка (В31): ждали действие — фраза его класса о таймауте («Музыка пока не заиграла.»), а не «не
+    понял»; ждали LLM — с именем провайдера; провайдер неизвестен — ``understand.timeout``."""
+    action = kn.ACTION_CLASSES.get(turn.waiting)
+    if action is not None:
+        return phrases.text(action.phrases.get("timeout") or TIMEOUT_PHRASE)
+    return phrases.text(kn.CEILING_PHRASE, provider=provider) if provider else phrases.text(TIMEOUT_PHRASE)
+
+
+def _close_ceiling(engine: "TurnEngine", turn: _Turn, expired: DeadlineExpired) -> None:
+    provider = turn.provider or provider_in_flight(engine._ports)
+    engine._log.warning(latency_line(provider, expired.what.split(":")[0], expired.waited_s * 1000, "timeout"))
+    engine._say(turn, ceiling_phrase(turn, provider))
+    turn.stage, turn.status, turn.reason = "timeout", "failed", "deadline"
+
+
+def _close_failed(engine: "TurnEngine", turn: _Turn, failed: ProviderFailed) -> None:
+    engine._log.warning(latency_line(failed.provider, "llm", turn.deadline.elapsed() * 1000, "error"))
+    engine._log.warning(f"{LOG_MARK} провайдер не ответил: {failed} turn={turn.turn_id}")
+    text = phrases.text(kn.PROVIDER_FAILED_PHRASE, provider=failed.provider) if failed.provider else \
+        phrases.text(TIMEOUT_PHRASE)
+    engine._say(turn, text, None, "sad")
+    turn.stage, turn.status, turn.reason = "timeout", "failed", "provider"
+
+
+async def _paced(engine: "TurnEngine", turn: _Turn, work: Awaitable[None]) -> None:
+    """Ход под потолком (В31): промежуточная фраза по таймеру, потолок и отказ провайдера закрывают ход фразой кода.
+    Отмена (стоп человека) проходит насквозь — прерывает всегда."""
+    import asyncio  # noqa: PLC0415
+
+    progress = asyncio.ensure_future(_progress(engine, turn))
+    try:
+        await work
+    except DeadlineExpired as expired:
+        _close_ceiling(engine, turn, expired)
+    except ProviderFailed as failed:
+        _close_failed(engine, turn, failed)
+    finally:
+        progress.cancel()
+
+
 class TurnEngine:
     """Ходы одного агента (личность): владелец сессии и журнала ходов — этот объект, транспорт — :class:`Ports`."""
 
@@ -376,7 +450,7 @@ class TurnEngine:
                  sections: Optional[Callable[[SessionSnapshot, str], Mapping[str, Any]]] = None,
                  voices: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None, turn_log: Optional[TurnLog] = None,
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
-                 clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_DEADLINE_S,
+                 clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
                  log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None) -> None:
         self.session = session
         self._rng = rng
@@ -409,21 +483,15 @@ class TurnEngine:
         if addressed.source == BARE_WAKE or not turn.text:
             return self._finish(turn)
         tier1 = tier1_for(turn.text, snap, self._voices())
+        work = (_tier1_then_rest(self, turn, tier1, snap) if tier1 is not None and not tier1.disputed
+                else self._understand(turn, snap))
         try:
-            if tier1 is not None and not tier1.disputed:
-                await _tier1_then_rest(self, turn, tier1, snap)
-            else:
-                await self._understand(turn, snap)
+            await _paced(self, turn, work)
         except asyncio.CancelledError:
             turn.stage, turn.status, turn.reason = "done", "cancelled", "interrupt"
             self._log.info(f"{LOG_MARK} ход отменён перебиванием turn={turn.turn_id} epoch={turn.epoch}")
             self._finish(turn)
             raise
-        except DeadlineExpired as expired:
-            self._log.warning(latency_line(turn.provider, expired.what.split(":")[0], expired.waited_s * 1000,
-                                           "timeout"))
-            self._say(turn, phrases.text(TIMEOUT_PHRASE))
-            turn.stage, turn.status, turn.reason = "timeout", "failed", "deadline"
         return self._finish(turn)
 
     def speech_started(self, speech_id: str) -> None:
@@ -488,6 +556,7 @@ class TurnEngine:
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
+            turn.waiting = "llm"
             answer = await turn.deadline.wait(self._ports.ask(messages, _offered(tools, last), turn.deadline.left()),
                                               "llm")
             turn.llm_calls += answer.calls
@@ -544,6 +613,7 @@ class TurnEngine:
         if not actions:
             return []
         cls = kn.TOOL_CLASSES[actions[0].tool]
+        turn.waiting = cls
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
         results = await turn.deadline.wait(run, "actions")

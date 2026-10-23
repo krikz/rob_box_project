@@ -185,6 +185,40 @@ def test_owner_rejection_reaches_phrase():
     assert said == ["<speak>Не получилось выключить музыку.</speak>"]
 
 
+class _DeadLLM(_LLM):
+    def __init__(self, error, counter):
+        super().__init__([], counter)
+        self.error = error
+
+    async def complete(self, messages, tools=(), settings=None):
+        raise self.error
+
+
+def test_dead_provider_chain_is_provider_failed_and_turn_says_it_at_once():
+    """В31: цепочка провайдеров отказала — не «провайдер жив», ход закрывается фразой с именем, а не ждёт потолка;
+    ошибка кода (не провайдера) — не маскируется под отказ провайдера, ход падает громко."""
+    import pytest
+    from rob_box_dialog.deadline import ProviderFailed
+    from rob_box_llm.errors import ProviderError
+
+    counter = CallCounter()
+    ports = V2Ports(_Node(), _DeadLLM(ProviderError("chain exhausted"), counter), counter, _Tools())
+    with pytest.raises(ProviderFailed) as failed:
+        asyncio.run(ports.ask([{"role": "user", "content": "x"}], [], 60.0))
+    assert failed.value.provider == "deepseek" and ports.provider() == "deepseek"
+
+    node = _Node()
+    ports = V2Ports(node, _DeadLLM(ProviderError("chain exhausted"), counter), counter, _Tools())
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("расскажи что-нибудь", VOICE)))
+    said = [s.text for s in node.pubs["/voice/speech/request"].sent]
+    assert said == [f"<speak>{phrases.text('understand.provider_failed', provider='deepseek')}</speak>"]
+    assert agg.status == "failed"
+
+    bug = V2Ports(_Node(), _DeadLLM(IndexError("pop from empty list"), counter), counter, _Tools())
+    with pytest.raises(IndexError):
+        asyncio.run(bug.ask([{"role": "user", "content": "x"}], [], 60.0))
+
+
 def test_tier1_stop_publishes_stop_motion_intent_and_cancel():
     ports, node, intent_pub = _ports([])
     asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("стоп", VOICE)))
