@@ -93,6 +93,8 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("wake_words_path", "/config/wake_words.yaml")
     node.declare_parameter("temperature", 0.0)
     node.declare_parameter("max_tokens", 0)
+    # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
+    node.declare_parameter("tts_provider", "minimax")
     node.declare_parameter("e2e_mode", False)
     node.declare_parameter("e2e_db_path", "")
     # Телеграм-агент (§9.2, PR-12a): своя цепочка и персона; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27).
@@ -222,6 +224,7 @@ class DialogNode(Node):
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
         self._music_player_state: Any = None
+        self._actual_tts_provider: Optional[str] = None  # из /voice/tts/provider_state (plan_host)
         counter = CallCounter()
         llm, system = build_llm(self, counter)
         self._tool_executor = build_tools(self)
@@ -252,6 +255,8 @@ class DialogNode(Node):
         self.create_subscription(SoundEvent, "/voice/sound/event", functools.partial(plan_host.on_sound, self), 10)
         self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, _LATCHED)
         self.create_subscription(String, MUSIC_EVENT_TOPIC, functools.partial(plan_host.on_music_event, self), 10)
+        self.create_subscription(String, plan_host.TTS_PROVIDER_STATE_TOPIC,
+                                 functools.partial(plan_host.on_tts_provider_state, self), 10)
         self.create_subscription(ProviderStateArray, "/voice/providers/state",
                                  functools.partial(on_provider_states, self._reporter.board, time.time), _LATCHED)
         self.create_subscription(InterruptRequest, "/dialog/interrupt_request", self._on_interrupt, 10)

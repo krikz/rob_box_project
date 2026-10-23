@@ -31,6 +31,7 @@ class Ports:
         self.perform_owns_music = perform_owns_music
         self.asked, self.executed, self.said, self.stages, self.cancels, self.intents = [], [], [], [], [], []
         self.boundaries, self.performs, self.exec_epochs = [], [], []
+        self.performed, self.perform_outcome = [], None  # None — владельца выступлений нет (сегменты — репликами)
         self.gate = None  # asyncio.Event: ask ждёт его (LLM «думает»), пока тест не отпустит
 
     async def ask(self, messages, tools, timeout_s):
@@ -68,6 +69,10 @@ class Ports:
 
     def intent(self, turn_id, epoch, kind):
         self.intents.append(kind)
+
+    def perform(self, turn_id, epoch, perf, edit):
+        self.performed.append((perf, edit))
+        return self.perform_outcome
 
 
 def _engine(ports, **kw):
@@ -240,6 +245,27 @@ def test_perform_segments_are_said_even_with_actions():
     ports = Ports(answers=[Answer(cmd, "deepseek")])
     _run(_engine(ports), "звук и анекдот")
     assert [(s[0], s[1]) for s in ports.said] == [("Раз анекдот.", None), ("Два анекдот.", "x")]
+    assert [(p.kind, edit) for p, edit in ports.performed] == [("joke", False)]  # владельца нет — читает ход
+
+
+RAP = Performance("rap", ("Йо, енот на крыше.", "Хвост — его визитка."), backing="beat")
+
+
+def test_3901_performance_goes_to_its_owner_and_turn_does_not_read_segments():
+    """#3901: владелец выступления взял рэп — ход сегменты не читает (бит, такты, паузы — у владельца)."""
+    ports = Ports(answers=[Answer(Command(perform=RAP), "deepseek")])
+    ports.perform_outcome = {"status": "pending", "block_id": "perform-t1"}
+    agg = _run(_engine(ports), "зачитай рэп про енота под бит")
+    assert ports.performed == [(RAP, False)]
+    assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
+
+
+def test_3901_edit_pending_goes_to_owner_as_edit_and_rejection_is_said():
+    ports = Ports(answers=[Answer(Command(perform=RAP, edit_pending=True), "deepseek")])
+    ports.perform_outcome = {"status": "rejected", "reason": "edit_without_active_perform"}
+    _run(_engine(ports), "а теперь второй куплет про кота")
+    assert ports.performed == [(RAP, True)]
+    assert ports.said == [(phrases.text("local.rejected"), None, "sad")]
 
 
 def test_invalid_command_fails_turn_without_speech():
