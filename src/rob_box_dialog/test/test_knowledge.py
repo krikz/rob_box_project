@@ -221,22 +221,12 @@ def test_composition_reference_cells(pair, policy, boundary):
     assert (rule.policy, rule.boundary) == (policy, boundary)
 
 
-SOUND_CATALOG = REPO_ROOT / "sound_pack" / "sound_catalog.json"
-
-
-def test_sound_aliases_match_the_sound_catalog():
-    """Русские названия звуков (``SOUND_ALIASES_RU``) сверены с каталогом звуков: чужого триггера нет, у каждого триггера
-    каталога есть название или он назван в ``SOUND_UNNAMED`` (новый звук в каталоге без строки здесь - красный тест)."""
-    import json
-    catalog = json.loads(SOUND_CATALOG.read_text(encoding="utf-8"))
-    triggers = {info["trigger"] for name, info in catalog["sounds"].items() if name.endswith(".mp3")}
-    named = {t for ts, _ in kn.SOUND_ALIASES_RU for t in ts}
-    assert named <= triggers, sorted(named - triggers)
-    assert set(kn.SOUND_UNNAMED) <= triggers, sorted(set(kn.SOUND_UNNAMED) - triggers)
-    assert not named & set(kn.SOUND_UNNAMED)
-    assert triggers - named - set(kn.SOUND_UNNAMED) == set(), sorted(triggers - named - set(kn.SOUND_UNNAMED))
+def test_sound_stems_are_one_table_without_repeats():
+    """Сверка названий звуков с ``sound_pack/sound_catalog.json`` - в ``tests/unit/dialog/test_sound_aliases.py`` (в сборке
+    пакета корня репозитория нет, #3987). Здесь - только согласованность самой таблицы."""
     assert kn.TOOL_GROUPS["sound"].stems == kn.SOUND_STEMS and "звук" in kn.SOUND_STEMS
     assert len(set(kn.SOUND_STEMS)) == len(kn.SOUND_STEMS)
+    assert not {t for ts, _ in kn.SOUND_ALIASES_RU for t in ts} & set(kn.SOUND_UNNAMED)
 
 
 def test_ambiguous_tempo_stems_are_a_subset_of_one_table():
