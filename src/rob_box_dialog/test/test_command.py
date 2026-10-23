@@ -508,3 +508,45 @@ def test_query_data_message_is_recognised_by_the_field_turn_writes():
     row = turn_mod.ActionResult("t/0", 1, "personality", "get_current_time", "query", "done", None, {"time": "17:00"})
     assert cm.is_query_data(turn_mod._query_data([row]))
     assert not cm.is_query_data("invalid arguments: ...") and not cm.is_query_data("")
+
+
+# --- сказка разными голосами (#3959) ---------------------------------------------------------------------------
+
+TALE_SEGMENTS = ["Жила-была девочка.", "Куда идёшь?", "К бабушке."]
+VOICES = ("alena", "zahar", "filipp")
+
+
+def test_tale_without_voices_is_a_violation_with_the_voice_list_and_a_hint_3959():
+    """Марафон 23.10 акт 4: модель опустила voice_per_segment, сказка прозвучала одним голосом."""
+    res = bad({"perform": {"kind": "tale", "segments": TALE_SEGMENTS}}, "tale_without_voices", busy=cm.Busy(voices=VOICES))
+    assert res.violations[0].allowed == VOICES
+    note = cm.explain(res)
+    assert "voice_per_segment обязателен" in note and "реплика одного говорящего" in note
+    assert "Допустимо: alena, zahar, filipp" in note
+
+
+def test_tale_with_voices_is_valid_and_keeps_them_3959():
+    cmd = ok({"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "voice_per_segment": ["", "alena", "zahar"]}},
+             busy=cm.Busy(voices=VOICES))
+    assert cmd.perform.voice_per_segment == ("", "alena", "zahar")
+
+
+def test_tale_voice_outside_the_provider_catalogue_is_a_violation_3959():
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "voice_per_segment": ["", "Wise_Woman", "zahar"]}}
+    res = bad(raw, "bad_enum", busy=cm.Busy(voices=VOICES))
+    assert res.violations[0].allowed == VOICES and "Wise_Woman" in res.violations[0].detail
+    ok(raw)  # каталог неизвестен (Busy без голосов) - имя не сверяется
+
+
+def test_only_tale_needs_voices_and_a_backing_only_edit_does_not_3959():
+    ok({"perform": {"kind": "poem", "segments": TALE_SEGMENTS}})
+    ok({"edit_pending": True, "perform": {"kind": "tale", "backing": "calm", "segments": []}},
+       busy=cm.Busy(active_segment=1))
+
+
+def test_voice_catalogue_goes_into_the_schema_as_an_enum_3959():
+    items = kn.with_voices(kn.command_schema("json"), VOICES)["properties"]["perform"]["properties"][
+        "voice_per_segment"]["items"]
+    assert items["enum"] == ["", "alena", "filipp", "zahar"]
+    assert "enum" not in kn.command_schema("json")["properties"]["perform"]["properties"]["voice_per_segment"]["items"]
+    assert kn.with_voices(kn.command_schema("json"), ()) == kn.command_schema("json")

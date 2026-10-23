@@ -284,7 +284,8 @@ class CommandModeLLM(LLMProvider):
               settings: LLMSettings | None) -> Tuple[List[LLMMessage], List[Mapping[str, Any]], LLMSettings]:
         """Запрос в режиме адаптера: тул/формат от ``FieldChannel``, свои тулы без тула речи, добавка к промпту."""
         tools = list(tools)
-        schema = kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools))
+        schema = kn.with_voices(kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools)),
+                                self._busy().voices)
         request = FieldChannel(schema).build_request(self.mode)
         native = [t for t in tools if _tool_name(t) not in kn.SPEECH_CHANNEL_TOOLS]
         base = settings or LLMSettings()

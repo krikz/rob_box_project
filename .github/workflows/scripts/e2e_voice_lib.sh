@@ -76,7 +76,8 @@ PY
 #     НЕ различимы. На живом роботе та же пара anton/ermil дала 0.846
 #     (микрофонный канал поднимает косинус), и акт 2 склеил Сашу с Борисом
 #     в один профиль — run 35667281570.
-#   minimax, таблица ниже: худшая пара 0.684, anton/ermil = 0.527.
+#   minimax, таблица 22.09: худшая пара 0.684, anton/ermil = 0.527 (но ermil и zahar
+#     оба женские: Гриша ≈ Борис, n210). Таблица ниже — от 23.10, см. #3931.
 #   silero, СТАРАЯ таблица: zahar/filipp (baya/xenia) = 0.722 — ровно на
 #     границе, baya/kseniya = 0.788. Ниже baya отдан alena, а zahar получил
 #     kseniya: худшая пара 0.678 (anton/ermil = aidar/eugene).
@@ -84,12 +85,16 @@ PY
 #     архивная папка, из-за которой падает synth_yandex). Мерить, когда
 #     ключ починят: measure_tts_voice_distinctness.py --provider yandex.
 #
-# Подкрутку питча/темпа как альтернативу смене голосов ПРОВЕРИЛИ И
-# ОТКЛОНИЛИ. Фиксированный сдвиг питча за говорящим действительно разводит
-# эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42, intra-voice не страдает,
-# 0.95+), но ломает распознавание: vosk на тех же файлах даёт WER 0.79 при
-# pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига. Менять голос
-# дешевле, чем менять диагноз с «не различил дикторов» на «не расслышал».
+# Подкрутку питча/темпа как ЗАМЕНУ смены голоса проверили и отклонили (22.09):
+# фиксированный сдвиг питча разводит эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42,
+# intra-voice не страдает), но ломает распознавание: vosk на тех же файлах даёт
+# WER 0.79 при pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига.
+# 23.10 (#3931, решение Шифу: «голоса далеко друг от друга, разные питчи и
+# скорости, как у реальных людей») питч/темп вернулись КАК ДОПОЛНЕНИЕ к смене
+# голоса, в умеренных пределах (питч ±5, темп 0.85-1.2), строкой
+# voice:pitch:speed. Замер (после EQ харнесса и 16 кГц, resemblyzer): худшая
+# пара ролей 0.61-0.66, Гриша/Борис 0.54; своя к своей 0.95-0.96. WER на этих
+# настройках НЕ мерили — смотреть в первом прогоне акта 2.
 #
 # Гендер намеренно НЕ сохраняется: различимость важнее совпадения пола,
 # робот всё равно слышит синтетику. У Silero так было с самого начала,
@@ -103,7 +108,7 @@ PY
 #   map_tts_voice yandex  anton  → anton
 #   map_tts_voice silero  anton  → aidar
 #   map_tts_voice silero  zahar  → kseniya
-#   map_tts_voice minimax ermil  → Russian_PessimisticGirl
+#   map_tts_voice minimax ermil  → Russian_Bad-temperedBoy:5:1.2   (voice:pitch:speed)
 #   map_tts_voice silero  aidar  → aidar      (уже native)
 #   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
 map_tts_voice() {
@@ -131,14 +136,17 @@ map_tts_voice() {
         minimax)
             case "$voice" in
                 Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
-                anton|"")        printf 'Russian_ReliableMan' ;;
-                ermil|madirus)   printf 'Russian_PessimisticGirl' ;;
-                zahar|arina)     printf 'Russian_CrazyQueen' ;;
-                filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
+                # voice:pitch:speed (#3931). Роли разнесены не только голосом, но и
+                # питчем/темпом, как разные люди. Ровно эту строку получают
+                # synth_minimax (разбирает) и ключ кэша (хранит): смена питча/темпа
+                # не вернёт старые wav. Замер: docs/dialog/role_voices_biometrics_2026-10-23.md
+                anton|"")        printf 'Russian_ReliableMan:3:1.12' ;;            # Саша: средний, чуть выше и бодрее
+                ermil|madirus)   printf 'Russian_Bad-temperedBoy:5:1.2' ;;         # Борис: высокий, быстрый
+                zahar|arina)     printf 'Russian_HandsomeChildhoodFriend:-5:0.85' ;; # Гриша: низкий, медленный
+                filipp|kostya)   printf 'Russian_AttractiveGuy:1:1.05' ;;          # Валера: ровный
                 alena)           printf 'Russian_BrightHeroine' ;;
                 jane)            printf 'Russian_AmbitiousWoman' ;;
-                arina)           printf 'Russian_PessimisticGirl' ;;
-                omazh|rush)      printf 'Russian_Bad-temperedBoy' ;;
+                omazh|rush)      printf 'Russian_CrazyQueen' ;;
                 *)               printf 'Russian_ReliableMan' ;;
             esac
             return 0
@@ -696,39 +704,56 @@ _ev_kv() {  # stdin = key=value строки; $1=key
     sed -n "s/^$1=//p" | head -1 | tr -d '\r'
 }
 
-# wait_reply_done BEFORE -- ждёт «ответ состоялся и робот замолчал». rc=0 -- дождались,
-# rc=1 -- потолок (дальше решает check_cycle, как и раньше). Пишет E2E_REPLY_AFTER (с) и
-# E2E_REPLY_NO_SPEECH=1, если ход закончился без речи (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE).
+# wait_reply_done BEFORE [BARGE] -- ждёт «ответ состоялся и робот замолчал». v2 (#3954): единственный судья
+# шага -- сам e2e_events.py; check_cycle для v2 не зовётся. rc=0 -- дождались (ответ или silent_ok),
+# rc=1 -- потолок при принятой фразе (ход не кончился), rc=2 -- ход кончился сбоем/отменой/без речи (FAIL сразу,
+# E2E_REPLY_REASON), rc=3 -- ПРИНЯТО нет за E2E_ACCEPT_WINDOW (переигрывать сразу, не ждать потолок).
+# Пишет E2E_REPLY_AFTER (с), E2E_REPLY_VERDICT и E2E_REPLY_NO_SPEECH=1, если ход закончился без речи
+# (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
 wait_reply_done() {
-    local since="$1" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local accept_win=0 reason
+    [ "${2:-0}" = "1" ] && barge_flag="--barge"
+    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && accept_win="${E2E_ACCEPT_WINDOW:-15}"
+    E2E_REPLY_VERDICT="wait"; E2E_REPLY_REASON="-"
     local grace="${E2E_NO_SPEECH_GRACE:-8}" tail_s="${E2E_SPEECH_TAIL:-2}"
     local t0 now out verdict sig quiet prev_sig="" stable=0 nospeech_at=0 silent_flag=""
     [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && silent_flag="--silent-ok"
     E2E_REPLY_NO_SPEECH=0
     t0="$(date +%s)"
     while :; do
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag)"
+        now="$(date +%s)"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win")"
         verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
         quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        reason="$(printf '%s\n' "$out" | _ev_kv reason)"
         now="$(date +%s)"
         case "$verdict" in
+            failed|cancelled)
+                E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_REASON="$reason"
+                E2E_REPLY_AFTER=$((now - t0)); return 2 ;;
+            no_accept)
+                E2E_REPLY_VERDICT="no_accept"; E2E_REPLY_AFTER=$((now - t0)); return 3 ;;
             done|silent)
                 if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
                 prev_sig="$sig"
                 if awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; then
                     [ "$verdict" = "silent" ] && E2E_REPLY_NO_SPEECH=1
-                    E2E_REPLY_AFTER=$((now - t0)); return 0
+                    E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_AFTER=$((now - t0)); return 0
                 fi ;;
             nospeech)
                 [ "$nospeech_at" = "0" ] && nospeech_at="$now"
                 if [ $((now - nospeech_at)) -ge "$grace" ]; then
-                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_AFTER=$((now - t0)); return 0
+                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_VERDICT="nospeech"; E2E_REPLY_AFTER=$((now - t0))
+                    # v2: ход кончился, речи не было и шаг тишину не разрешал -- FAIL сразу, без повторов.
+                    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && { E2E_REPLY_REASON="no_speech"; return 2; }
+                    return 0
                 fi ;;
             *) stable=0; prev_sig=""; nospeech_at=0 ;;
         esac
         if [ $((now - t0)) -ge "$ceiling" ]; then
-            E2E_REPLY_AFTER=$((now - t0)); return 1
+            E2E_REPLY_VERDICT="ceiling"; E2E_REPLY_AFTER=$((now - t0)); return 1
         fi
         sleep "$poll"
     done
@@ -826,8 +851,9 @@ wait_barge_anchor() {
 #   anchor -- СЛЕДУЮЩИЙ шаг перебивает (barge_in): ждали его якорь, конца ответа не ждём;
 #   event  -- ждали событий (wait_reply_done).
 # E2E_REPLY_AFTER -- сколько секунд ждали (идёт в лог шага ``reply_after=``).
-step_wait_after_play() {  # $1=since
+step_wait_after_play() {  # $1=since $2=1, если шаг сам перебивает (barge_in)
     E2E_WAIT_MODE="fixed"; E2E_REPLY_AFTER="${E2E_REACTION_WINDOW:-40}"; E2E_REPLY_NO_SPEECH=0
+    E2E_REPLY_VERDICT="fixed"; E2E_REPLY_REASON="-"; E2E_WAIT_RC=0
     if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
         sleep "${E2E_REACTION_WINDOW:-40}"
         return 0
@@ -841,7 +867,8 @@ step_wait_after_play() {  # $1=since
         fi
         return 0   # якорь не наступил: потолок уже выжат; шаг-перебиватель получит SKIP
     fi
-    wait_reply_done "$1"
+    wait_reply_done "$1" "${2:-0}"
+    E2E_WAIT_RC=$?
     E2E_WAIT_MODE="event"
     return 0
 }

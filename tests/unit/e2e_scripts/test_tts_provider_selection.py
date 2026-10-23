@@ -107,14 +107,22 @@ class TestMapTtsVoice:
     @pytest.mark.parametrize(
         "voice,expected",
         [
-            ("anton", "Russian_ReliableMan"),
-            ("ermil", "Russian_PessimisticGirl"),
-            ("zahar", "Russian_CrazyQueen"),
-            ("filipp", "Russian_AttractiveGuy"),
+            ("anton", "Russian_ReliableMan:3:1.12"),
+            ("ermil", "Russian_Bad-temperedBoy:5:1.2"),
+            ("zahar", "Russian_HandsomeChildhoodFriend:-5:0.85"),
+            ("filipp", "Russian_AttractiveGuy:1:1.05"),
         ],
     )
     def test_minimax_mapping(self, voice, expected):
         assert map_voice("minimax", voice) == expected
+
+    def test_minimax_roles_differ_in_pitch_and_speed(self):
+        """#3931 (Шифу): роли — как разные люди: у каждой свой голос, питч и темп."""
+        specs = [map_voice("minimax", v).split(":") for v in ("anton", "ermil", "zahar", "filipp")]
+        assert all(len(s) == 3 for s in specs), specs
+        assert len({s[0] for s in specs}) == 4
+        assert len({s[1] for s in specs}) == 4
+        assert len({s[2] for s in specs}) == 4
 
     @pytest.mark.parametrize("provider", ["silero", "minimax"])
     def test_scenario_voices_stay_distinct(self, provider):
@@ -143,7 +151,7 @@ class TestMapTtsVoice:
 
     @pytest.mark.parametrize(
         "provider,default",
-        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan")],
+        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan:3:1.12")],
     )
     def test_empty_voice_falls_back_to_default(self, provider, default):
         assert map_voice(provider, "") == default
@@ -161,7 +169,8 @@ class TestMapTtsVoice:
         for provider in ("silero", "minimax"):
             for voice in SCENARIO_VOICES:
                 mapped = map_voice(provider, voice)
-                assert '"%s"' % mapped in registry, (provider, voice, mapped)
+                # minimax: строка voice:pitch:speed (#3931) -- в каталоге ищем сам голос
+                assert '"%s"' % mapped.split(":")[0] in registry, (provider, voice, mapped)
 
 
 # --- resolve_tts_provider ---------------------------------------------------

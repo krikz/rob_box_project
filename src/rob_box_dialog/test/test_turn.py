@@ -277,6 +277,15 @@ def test_invalid_command_with_nothing_to_run_is_said_by_code_not_silence():
     assert ports.stages[-1] == ("done", "done", "invalid_salvaged:bad_json")
 
 
+def test_too_long_answer_is_said_as_too_long_not_as_not_understood():
+    """#3883/#3953: модель поняла, а ответ не влез в лимит речи - «не понял» было бы неправдой."""
+    ports = Ports(answers=[Answer(Invalid("too_long", "speech: 900 > 600"), "deepseek", calls=2)])
+    agg = _run(_engine(ports), "перечисли все голоса")
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])]
+    assert phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"]) != phrases.text(kn.INVALID_COMMAND_PHRASE)
+    assert ports.stages[-1] == ("done", "done", "invalid_salvaged:too_long") and agg.status == "done"
+
+
 def test_two_violations_in_a_row_run_the_valid_actions_and_code_tells_the_outcome():
     """Два нарушения подряд (громкое действие + speech, ретрай то же): действие исполнено, итог говорит код."""
     sound = ToolCall("stop_music", {})
@@ -686,7 +695,7 @@ def test_invalid_after_query_of_a_tool_without_phrase_says_generic_phrase():
 
 
 def test_invalid_without_query_is_said_by_code_not_silence():
-    ports = Ports(answers=[Answer(Invalid("too_long", "speech"), "deepseek")])
+    ports = Ports(answers=[Answer(Invalid("bad_enum", "emotion"), "deepseek")])
     agg = _run(_engine(ports), "привет")
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.INVALID_COMMAND_PHRASE)]
     assert (agg.stage, agg.status) == ("done", "done")

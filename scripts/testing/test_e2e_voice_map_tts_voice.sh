@@ -84,17 +84,17 @@ assert_voice yandex "" anton "пустой голос → дефолт пров�
 assert_four_distinct yandex
 
 echo
-echo "== minimax: таблица по замеру 22.09.2026, худшая пара 0.684 =="
-# anton/ermil = 0.527 — именно эту пару регистрирует акт 2.
-assert_voice minimax anton Russian_ReliableMan
-assert_voice minimax ermil Russian_PessimisticGirl "старая таблица давала HandsomeChildhoodFriend: cos(anton,ermil)=0.739 (0.846 на роботе)"
-assert_voice minimax zahar Russian_CrazyQueen
-assert_voice minimax filipp Russian_AttractiveGuy
-assert_voice minimax "" Russian_ReliableMan "пустой голос → дефолт провайдера"
+echo "== minimax: таблица 23.10.2026 (#3931), voice:pitch:speed, худшая пара ролей 0.66 =="
+# Борис/Гриша = 0.539 (раньше оба были женскими голосами и сливались, n210).
+assert_voice minimax anton "Russian_ReliableMan:3:1.12"
+assert_voice minimax ermil "Russian_Bad-temperedBoy:5:1.2"
+assert_voice minimax zahar "Russian_HandsomeChildhoodFriend:-5:0.85"
+assert_voice minimax filipp "Russian_AttractiveGuy:1:1.05"
+assert_voice minimax "" "Russian_ReliableMan:3:1.12" "пустой голос → дефолт провайдера"
 assert_voice minimax Russian_CrazyQueen Russian_CrazyQueen "native голос не переводим"
+assert_voice minimax Russian_ReliableMan:-2:0.9 Russian_ReliableMan:-2:0.9 "native со своей просодией не переводим"
 assert_four_distinct minimax
 
-echo
 echo "== silero: zahar переехал с baya на kseniya, худшая пара 0.678 =="
 assert_voice silero anton aidar
 assert_voice silero ermil eugene

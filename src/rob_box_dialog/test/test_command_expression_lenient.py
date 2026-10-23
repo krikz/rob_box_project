@@ -13,7 +13,8 @@ from rob_box_dialog.command import Command, FaceScene, parse, validate
 
 ALL = [t.name for t in TOOL_CATALOG]
 _SOUND = {"tool": "play_sound", "args": {"sound": "robot_happy"}}
-_TALE = {"kind": "tale", "segments": ["Жил-был робот.", "И нашёл он лампочку."], "backing": "none"}
+_TALE = {"kind": "tale", "segments": ["Жил-был робот.", "И нашёл он лампочку."], "backing": "none",
+         "voice_per_segment": ["", "alena"]}
 
 #: (фраза, ответ модели, ожидаемая сцена лица, переложено, отброшено). detail из лога — в комментарии.
 LIVE_7C = [

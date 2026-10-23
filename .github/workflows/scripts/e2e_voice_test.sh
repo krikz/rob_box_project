@@ -28,6 +28,7 @@
 # Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.22 (Sound Pi), SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
 #                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20,
+#                     E2E_ACCEPT_WINDOW=15 (v2: нет ПРИНЯТО за столько секунд -- переиграть фразу, #3954),
 #                     GITHUB_RUN_ID (для OUT_DIR и симлинка
 #                                    /tmp/dialog_e2e_<run_id>.wav —
 #                                    workflow передаёт ${{ github.run_id }})
@@ -1282,11 +1283,17 @@ PY
 # Классификация ошибок зеркалит minimax_tts.py:933-954 и НЕ читается по
 # HTTP-статусу: «план не поддерживает модель» приезжает 500-м, а исчерпанная
 # квота — 200-м с base_resp.status_code=2056. Поэтому проверяем ОБА канала.
-synth_minimax() {  # $1=text $2=voice $3=out_wav
+synth_minimax() {  # $1=text $2=voice[:pitch[:speed]] $3=out_wav
     local text="$1" voice="$2" out="$3"
     python3 - "$text" "$voice" "$out" <<'PY'
 import sys, os, json, time
 text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
+# Голос роли приходит строкой voice:pitch:speed из map_tts_voice (#3931): питч в
+# полутонах (-12..12), темп множится на глобальный YANDEX_SPEED.
+_parts = voice.split(":")
+voice = _parts[0]
+pitch = int(_parts[1]) if len(_parts) > 1 and _parts[1] != "" else 0
+role_speed = float(_parts[2]) if len(_parts) > 2 and _parts[2] != "" else 1.0
 key = os.environ.get("MINIMAX_API_KEY", "")
 start = time.monotonic()
 
@@ -1314,7 +1321,8 @@ payload = {
     "stream": False,
     "voice_setting": {
         "voice_id": voice,
-        "speed": float(os.environ.get("YANDEX_SPEED", "1.0")),
+        "speed": round(role_speed * float(os.environ.get("YANDEX_SPEED", "1.0")), 4),
+        "pitch": pitch,
     },
     "audio_setting": {
         "sample_rate": 32000, "bitrate": 128000, "format": "wav", "channel": 1,
@@ -1606,6 +1614,8 @@ synth_with_retry() {  # $1=provider $2=text $3=native_voice $4=out_wav
 # Кэш синтеза. Кладём СЫРОЙ wav провайдера (до EQ): EQ — ffmpeg после синтеза, дёшев,
 # и зависит только от кода харнесса, поэтому в ключе его нет. Ключ: версия формата,
 # провайдер, голос провайдера, текст и параметры синтеза (модель/скорость/формат).
+# У minimax питч и темп роли живут в самой строке голоса (voice:pitch:speed, #3931),
+# поэтому попадают в ключ вместе с ним: смена питча не вернёт старые wav.
 _synth_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
     else python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; fi
@@ -1726,6 +1736,8 @@ presynth_scenario() {
 }
 
 # Проверка полного цикла в логах робота с момента BEFORE.
+# Судья v1 (и режима E2E_EVENT_WAITS=0): ищет строку ``TTS finished``. В v2-режиме событий run_step её НЕ зовёт --
+# там единственный судья e2e_events.py (#3954).
 # Возвращает: 0 = полный цикл (акцепт+LLM+TTS в ПРАВИЛЬНОМ ПОРЯДКЕ),
 #             1 = нет акцепта (ПРИНЯТО в логах ДЕЙСТВИТЕЛЬНО нет — можно
 #                 переигрывать реплику),
@@ -2304,9 +2316,23 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             fi
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         fi
-        step_wait_after_play "$BEFORE"
+        step_wait_after_play "$BEFORE" "$_barge_mode"
 
-        if [ "$E2E_WAIT_MODE" = "anchor" ]; then
+        if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+            # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
+            # «TTS finished» -- наследие v1: в v2-ходе без речи такой строки нет, и он гонял ещё 2 попытки по 40 с.
+            case "${E2E_WAIT_RC:-0}" in
+                0) rc=0 ;;
+                1) rc=3 ;;   # ПРИНЯТО есть, ход не кончился за потолок: ждём то же окно, PLAY не повторяем (#2933)
+                3) rc=1 ;;   # ПРИНЯТО нет за E2E_ACCEPT_WINDOW: переигрываем сразу
+                *)
+                    log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s (wait=event, verdict=${E2E_REPLY_VERDICT})"
+                    log "STEP ${label}: ❌ ход закончен без ответа: ${E2E_REPLY_REASON:--} -- ПРИНЯТО было, повторов нет"
+                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT} (${E2E_REPLY_REASON:--})"
+                    if [ "$E2E_REPLY_VERDICT" = "failed" ]; then mark_fail_kind llm_error; else mark_fail_kind no_reaction; fi
+                    return 1 ;;
+            esac
+        elif [ "$E2E_WAIT_MODE" = "anchor" ]; then
             # Следующий шаг перебивает: конца ответа не ждём (и не ждём TTS finished, его не будет).
             # Якорь невозможен без принятой фразы (e2e_events.anchor считает события ПОСЛЕ ПРИНЯТО).
             log "STEP ${label}: ответ начался -- якорь перебивания следующего шага наступил, конца ответа не ждём (barge_in)"

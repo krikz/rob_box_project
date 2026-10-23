@@ -32,6 +32,7 @@ import dry_marathon as dm  # noqa: E402
 import dry_stand  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog import memory as dialog_memory  # noqa: E402
+from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog import tools_view  # noqa: E402
 from rob_box_dialog import turn as turn_mod  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # noqa: E402
@@ -321,8 +322,9 @@ def test_3883_long_answer_is_retried_into_a_short_one(make_env):
 def test_3883_long_answer_that_stays_long_is_a_red_step(make_env):
     env = make_env(lambda env, msgs, tools: {"speech": LONG})
     report = env.run(VOICES)
-    assert report.verdict == dm.FAIL and "finished" in report.fail[0]  # слишком длинно дважды: ход провален без речи
-    assert report.said == [] and report.llm_calls == 2
+    assert report.verdict == dm.FAIL and "finished" in report.fail[0]  # слишком длинно дважды: шаг красный (фича не выполнена)
+    # ...но робот не молчит и не врёт «не понял»: честная фраза кода по причине too_long (#3953)
+    assert report.said == [phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])] and report.llm_calls == 2
 
 
 # ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────
