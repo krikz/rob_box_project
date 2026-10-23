@@ -36,12 +36,20 @@ from rob_box_voice.core.speech_owner import SpeechOwner, owner_of  # noqa: E402
 from rob_box_voice.core.speech_timing import Presynth  # noqa: E402
 from rob_box_voice.tts_node import SYNTHESIS_MAX_WORKERS_DEFAULT, TTSNode  # noqa: E402
 
-#: Сколько длится синтез одного сегмента у фейкового провайдера.
+#: Сколько длится синтез одного сегмента у фейкового провайдера (по умолчанию).
 SYNTH_S = 0.3
 #: Сколько «звучит» сегмент в фейковом динамике.
 PLAY_S = 0.05
-#: Порог карточки: от ``commit=true`` с наступившим ``at`` до ``started``.
-STARTED_WITHIN_S = 0.05
+#: Синтез правок в тесте на задержку старта (``node.synth_s`` после готового пред-синтеза seg-3).
+#: Масштабы разведены намеренно: порог на wall-clock в 50 мс падал под ``pytest -n 4`` на 4 vCPU
+#: (CI, #3937: 144 мс из-за планировщика, не из-за кода). Регрессия #3834 - ``commit=true`` в общей
+#: очереди синтеза (``SYNTHESIS_MAX_WORKERS_DEFAULT`` = 2 потока) за шестью правками: FIFO, три «волны»
+#: по 2 правки, ``commit=true`` стартует после ``6 / 2 * SLOW_SYNTH_S`` = 3 с (замерено: 2985 мс).
+#: Исправленный путь стартует за единицы миллисекунд.
+SLOW_SYNTH_S = 1.0
+#: Порог: от ``commit=true`` с наступившим ``at`` до ``started``. Между «сразу» (единицы мс; худший замеренный
+#: джиттер CI - 144 мс) и регрессией (≈ 3 с): запас ≥ 3x с одной стороны и 6x с другой.
+STARTED_WITHIN_S = 0.5
 _KIND = {getattr(M.SpeechEvent, f"KIND_{n.upper()}"): n for n in (
     "queued", "synthesized", "started", "progress", "finished", "cancelled", "voice_changed", "rejected")}
 
@@ -89,6 +97,7 @@ class _Node(TTSNode):
         self.normalize_text, self.minimax_streaming, self.stop_requested = False, False, False
         self.provider_chain, self.minimax_voice = ["minimax"], "male-qn-qingse"
         self.synthesized_texts = []
+        self.synth_s = SYNTH_S
         self.synth_gate = threading.Event()
         self.synth_gate.set()
         self._speech = SpeechOwner(self, output_latency_ms=0)
@@ -109,7 +118,7 @@ class _Node(TTSNode):
 
     def _sap_run_provider_chain(self, voice, language, attrs, text, sink, ctx):
         self.synth_gate.wait(5.0)
-        time.sleep(SYNTH_S)
+        time.sleep(self.synth_s)
         self.synthesized_texts.append(text)
         ctx.update(audio_np=np.zeros(1600, dtype=np.float32), sample_rate=16000, used_provider="minimax")
 
@@ -162,6 +171,7 @@ def _presynth_ready(node, *speech_ids):
 def test_commit_with_due_at_starts_at_once_behind_a_presynth_queue(node):
     """Правка «и про енота»: шесть ``commit=false`` в очереди синтеза — готовый сегмент всё равно звучит сразу."""
     _presynth_ready(node, "seg-3")
+    node.synth_s = SLOW_SYNTH_S  # правки синтезируются долго: их очередь заведомо длиннее порога старта
     for n in range(4, 10):
         _say(node, f"edit-{n}", f"Новый куплет {n} про енота.", commit=False)
     time.sleep(0.02)  # правки разобраны пулом пред-синтеза, синтез идёт
