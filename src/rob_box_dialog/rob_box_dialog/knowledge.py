@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------------------------------------------
 # Адресация (§4.2, решение В2: только по вейк-слову)
@@ -1104,6 +1105,18 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
         "name": COMMAND_TOOL, "description": "Одна команда хода: речь, вопрос, действия, экспрессия.",
         "parameters": schema,
     }}
+
+
+def with_tool_enum(schema: Mapping[str, Any], offered: Iterable[str]) -> Dict[str, Any]:
+    """Схема команды, в которой ``actions[].tool`` — перечень тулов СРЕЗА этого хода (ADR-0148: тул вне среза
+    невозможен по структуре, а не по просьбе в промпте). Из ``offered`` берутся тулы команды: известные
+    ``TOOL_CLASSES`` и тулы речи (модель по привычке кладёт ``speak_text`` в actions — мост переносит его в
+    речь). Пусто — схема без изменений: перечень из ничего отверг бы всё."""
+    names = sorted({n for n in offered if n in TOOL_CLASSES or n in SPEECH_CHANNEL_TOOLS})
+    out = copy.deepcopy(dict(schema))
+    if names:
+        out["properties"]["actions"]["items"]["properties"]["tool"] = _enum(names)
+    return out
 
 
 def prompt_fragment() -> str:

@@ -111,7 +111,7 @@ def test_tool_choice_request_forces_command_tool_and_hides_speak_text() -> None:
     msgs, tools, settings = bridge.shape(original, [_tool("speak_text"), _tool("memory_save")],
                                          LLMSettings(temperature=0.3, extra={"thinking": {"type": "disabled"}}))
     assert [t["function"]["name"] for t in tools] == [kn.COMMAND_TOOL, "memory_save"]
-    assert tools[0]["function"]["parameters"] == kn.command_schema("json")
+    assert tools[0]["function"]["parameters"] == kn.with_tool_enum(kn.command_schema("json"), ["speak_text", "memory_save"])
     assert settings.tool_choice == "required" and settings.temperature == 0.3
     assert settings.extra == {"thinking": {"type": "disabled"}}
     assert msgs[0].content.startswith("ты РОББОКС") and cb.V1_TRANSPORT_NOTE in msgs[0].content
@@ -126,7 +126,7 @@ def test_json_in_text_request_keeps_native_tools_and_puts_schema_in_prompt() -> 
     assert [t["function"]["name"] for t in tools] == ["get_current_time"]
     assert settings.tool_choice is None and "response_format" not in settings.extra
     note = msgs[0].content
-    assert "JSON-схема команды: " + json.dumps(kn.command_schema("json"), ensure_ascii=False) in note
+    assert "JSON-схема команды: " + json.dumps(kn.with_tool_enum(kn.command_schema("json"), ["speak_text", "get_current_time"]), ensure_ascii=False) in note
     assert "одним JSON-объектом" in note
 
 
@@ -137,7 +137,7 @@ def test_tool_offered_request_offers_command_tool_without_tool_choice() -> None:
     msgs, tools, settings = bridge.shape(_messages(), [_tool("speak_text"), _tool("get_current_time")],
                                          LLMSettings(temperature=0.7))
     assert [t["function"]["name"] for t in tools] == [kn.COMMAND_TOOL, "get_current_time"]
-    assert tools[0]["function"]["parameters"] == kn.command_schema("json")
+    assert tools[0]["function"]["parameters"] == kn.with_tool_enum(kn.command_schema("json"), ["speak_text", "get_current_time"])
     assert settings.tool_choice is None and settings.temperature == 0.7
     assert kn.prompt_fragment() in msgs[0].content and "JSON-схема" not in msgs[0].content
 
@@ -685,3 +685,33 @@ def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> N
     assert chat.speech == "Записываю." and [a.tool for a in chat.actions] == ["memory_save"]
     wrapped = cb.wrapper_for("deepseek", agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
     assert wrapped._judged(reply, ["memory_save"]).speech == "Записываю."
+
+
+# ── тул вне среза хода (#3897, ADR-0148) ───────────────────────────────────────────────────────────────────
+
+
+MUSIC_SLICE = [_tool(n) for n in ("request_music", "stop_music", "dj_set", "memory_save", "set_volume")]
+
+
+def test_command_schema_enum_is_the_slice_of_this_turn_not_the_whole_catalog() -> None:
+    bridge = cb.CommandModeLLM(_Inner(DEEPSEEK_CAPS, []))
+    _, tools, _ = bridge.shape(_messages(), [_tool("speak_text"), *MUSIC_SLICE, _tool("not_in_catalog")], None)
+    enum = tools[0]["function"]["parameters"]["properties"]["actions"]["items"]["properties"]["tool"]["enum"]
+    assert enum == sorted(["speak_text", "request_music", "stop_music", "dj_set", "memory_save", "set_volume"])
+    assert "play_sound" not in enum
+    assert "enum" not in kn.command_schema("json")["properties"]["actions"]["items"]["properties"]["tool"]
+
+
+def test_tool_outside_the_slice_is_retried_with_same_class_tools_and_the_fixed_action_runs() -> None:
+    wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "play_sound", "args": {"name": "beat"}}]),))
+    right = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "ровный ритм"}}]),))
+    log: list = []
+    inner = _Inner(DEEPSEEK_CAPS, [wrong, right])
+    out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=MUSIC_SLICE))
+
+    note = inner.requests[1]["messages"][-1].content
+    assert "tool_not_available" in note and "(play_sound)" in note
+    assert "Допустимо: dj_set, request_music, stop_music" in note  # только класс action.media, отсортирован
+    assert "memory_save" not in note and "set_volume" not in note
+    assert _actions(out) == [("request_music", {"intent": "track", "text": "ровный ритм"})]
+    assert "retry=1 violations=['tool_not_available'] → verdict=command" in log[-1]
