@@ -82,9 +82,15 @@ jobs:
       # package.xml или setup.py даёт cache miss и честную полную сборку.
       # Префикс v3-unit-: не пересекается с кэшем integration-tests (v3-…) и
       # со старым v2, у которого restore-keys не совпадал ни с одним ключом.
+      #
+      # restore + отдельный save сразу после сборки, а не один actions/cache:
+      # post-шаг actions/cache сохраняет кэш только при успешном job'е, а job
+      # красный на любом упавшем тесте (на 23.10 develop красный из-за
+      # rob_box_dialog) - кэш не прогревался бы вовсе. Сборка к моменту
+      # save уже прошла, тесты кэш не меняют.
       - name: Cache colcon build
         id: colcon-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ github.workspace }}/test_ws/build
@@ -156,6 +162,15 @@ jobs:
           colcon build --symlink-install \
             --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_quest rob_box_supervisor rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      - name: Save colcon build cache
+        if: steps.colcon-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ github.workspace }}/test_ws/build
+            ${{ github.workspace }}/test_ws/install
+          key: ${{ steps.colcon-cache.outputs.cache-primary-key }}
 
       - name: Run unit tests
         run: |
