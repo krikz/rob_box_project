@@ -715,3 +715,18 @@ def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919()
     session.set_speaker(SpeakerRef(person_ref="p2", name="Борис", name_state="confirmed"))  # сменился с начала хода
     assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory(), (), noted)
     assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory())
+
+
+def test_stopped_tale_is_not_an_open_request_for_the_next_turn_3973():
+    """Акт 4→5: сказку остановили, через минуты - «ничего не играет?». Просьба «расскажи сказку» закрыта исходом
+    выступления: в контексте LLM она в ``recent_actions`` как ``stopped_by_user``, а не висящая реплика.
+    Исход пишет ``TurnLog.performed`` (проводка события владельца выступления - вне этого теста)."""
+    ports = Ports(answers=[Answer(Command(speech="Нет, сейчас тихо."), "deepseek")])
+    engine = _engine(ports)
+    engine.log.begin("old", 0, "расскажи сказку про красную шапочку", "Борис")
+    engine.log.performed("old", "tale", "started")
+    engine.log.performed("old", "tale", "stopped_by_user", segments_done=3)
+    _run(engine, "сейчас же ничего не играет, верно?")
+    snapshot = ports.asked[0][0][-1]["content"]
+    assert RECENT_ACTIONS in snapshot and '"tool":"perform"' in snapshot and '"status":"stopped_by_user"' in snapshot
+    assert ports.performed == [], "вопрос не исполняет сказку заново"

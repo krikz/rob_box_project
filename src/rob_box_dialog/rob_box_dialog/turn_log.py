@@ -7,7 +7,10 @@
   подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
-* ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные).
+* ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные);
+* ``tool`` ``perform`` — исход выступления (:meth:`TurnLog.performed`): сегменты его владельца звучат мимо реплик хода,
+  и без этой записи просьба «расскажи сказку» висит в окне неотвеченной — модель исполняет её заново на чужую реплику
+  (#3973). Статус пишет код из события владельца (:func:`perform_status`), одна запись на выступление.
 
 Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145), как и отказ памяти
 ``no_person``/``speaker_changed`` (#3881) — только в агрегат хода. Окно — не больше
@@ -32,6 +35,20 @@ from rob_box_dialog import knowledge as kn
 #: Строка лога агрегата хода (читает ``scripts/dialog`` для метрик §14 без текста турнов).
 AGGREGATE_MARK = "📊 [turn]"
 USER, ASSISTANT, TOOL = "user", "assistant", "tool"
+#: Тул-запись исхода выступления в окне (``recent_actions``: ``{"tool": "perform", "status": ..., "data": {"kind"}}``).
+PERFORM_TOOL = "perform"
+#: Статус выступления в окне: идёт / досказано / остановил человек («хватит», «стой») / оборвано без его слова.
+PERFORM_STARTED, PERFORM_DONE = "started", "done"
+PERFORM_STOPPED, PERFORM_INTERRUPTED = "stopped_by_user", "interrupted"
+#: ``block_end.reason`` выступления (``plan.perform.PerformBlock``) → статус окна. Причина вне таблицы — «оборвано».
+PERFORM_END_STATUS: Mapping[str, str] = MappingProxyType(
+    {"done": PERFORM_DONE, "stopped": PERFORM_STOPPED, "halt": PERFORM_STOPPED})
+
+
+def perform_status(end_reason: str) -> str:
+    """Статус выступления в окне по причине конца блока: досказано - ``done``, «хватит»/«стой» - ``stopped_by_user``,
+    остальное (потеряна подложка, сбой) - ``interrupted``. Фраза об исходе строится кодом, не словами модели."""
+    return PERFORM_END_STATUS.get(end_reason, PERFORM_INTERRUPTED)
 
 
 @dataclass(frozen=True)
@@ -102,6 +119,10 @@ class _Turn:
     heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода (#3892)
 
 
+def _is_perform(entry: WindowEntry) -> bool:
+    return entry.role == TOOL and isinstance(entry.content, Mapping) and entry.content.get("tool") == PERFORM_TOOL
+
+
 def _tool_content(result: Any) -> Mapping[str, Any]:
     data = dict(getattr(result, "data", None) or {})
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
@@ -122,6 +143,7 @@ class TurnLog:
         self._estimate = estimate
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
+        self._performs: Dict[str, str] = {}  # turn_id → kind выступления, запись которого в окне ещё можно обновить
 
     def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "",
               heard: Sequence[Tuple[str, str]] = ()) -> None:
@@ -162,6 +184,25 @@ class TurnLog:
             return
         self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
 
+    def performed(self, turn_id: str, kind: str, status: str, segments_done: Optional[int] = None) -> bool:
+        """Исход выступления хода (``kind`` - сказка/рэп/..., ``status`` - ``PERFORM_*``): запись ``tool`` ``perform``
+        закрывает просьбу, на которую выступление отвечает (#3973). Одна запись на выступление: старт кладёт её,
+        конец/стоп обновляет на месте. Хода нет в журнале (выпал из окна, новая сессия) - ``False``, не пишется."""
+        turn = self._turns.get(turn_id)
+        if turn is None:
+            return False
+        data: Dict[str, Any] = {"kind": kind or self._performs.get(turn_id, "")}
+        if segments_done is not None:
+            data["segments_done"] = int(segments_done)
+        entry = WindowEntry(TOOL, MappingProxyType({"tool": PERFORM_TOOL, "status": status, "data": data}))
+        slot = next((i for i, e in enumerate(turn.entries) if _is_perform(e)), None)
+        if slot is None:
+            turn.entries.append(entry)
+        else:
+            turn.entries[slot] = entry
+        self._performs[turn_id] = data["kind"]
+        return True
+
     def window(self, exclude: str = "") -> Tuple[WindowEntry, ...]:
         """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала.
         ``exclude`` — ход, который сейчас спрашивает модель: он считается в размер, но в окно не выдаётся."""
@@ -179,6 +220,7 @@ class TurnLog:
         """Новая сессия: окно и ожидающие реплики очищены."""
         self._turns.clear()
         self._speech.clear()
+        self._performs.clear()
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
@@ -197,7 +239,9 @@ class TurnLog:
         while len(self._turns) > self._max_turns:
             gone, _ = self._turns.popitem(last=False)
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
+            self._performs.pop(gone, None)
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "phrase_label",
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "PERFORM_DONE", "PERFORM_INTERRUPTED", "PERFORM_STARTED", "PERFORM_STOPPED",
+           "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "perform_status", "phrase_label",
            "speaker_label"]
