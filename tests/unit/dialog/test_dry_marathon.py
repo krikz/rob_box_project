@@ -391,8 +391,14 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
     pairs = [
         (f"{voice}/tts_node.py", '🔊 TTS: speech_id={speech_id[:8]}, '),
         (f"{voice}/core/speech_owner.py", "🗣️ SpeechEvent {kind} speech_id={rec.speech_id[:8]} "),
+        (f"{voice}/speaker_id_node.py", "✅ Speaker '{name}' registered (id={sid[:8]})"),
+        (f"{voice}/speaker_id_node.py", "👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "),
+        (f"{voice}/speaker_id_node.py", "👤 Speaker: unknown ({elapsed:.0f} ms)"),
         (f"{voice}/dialog_node.py", "[backlog] accumulated reason={decision.reason} entries="),
         (f"{mcp}/llm_adapter.py", "📤 Отправлен запрос {request_id[:8]}: {tool_name}"),
+        (f"{mcp}/mcp_server.py", "📥 Запрос выполнения: {tool_name} с параметрами {parameters}"),
+        (f"{mcp}/mcp_server.py", "📤 Публикую результат для {tool_name} (request_id: {request_id[:8]})"),
+        (f"{mcp}/mcp_server.py", "✅ Инструмент {tool_name} выполнен успешно"),
         (f"{mcp}/tools/dialogue.py", "[set_voice] voice={(outcome.applied or voice_clean)!r}"),
     ]
     for rel, fragment in pairs:

@@ -150,7 +150,7 @@ class FakeSpeakers:
         self._known: Dict[str, Tuple[str, str]] = {}
 
     def register(self, voice_id: str, name: str) -> str:
-        sid = self._known.get(voice_id, (f"sp-{uuid.uuid4().hex[:8]}", name))[0]
+        sid = self._known.get(voice_id, (uuid.uuid4().hex[:8], name))[0]
         self._known[voice_id] = (sid, name)
         return sid
 
@@ -247,9 +247,16 @@ class FakeTools:
     async def execute(self, call: Any) -> ToolResult:
         args = dict(call.arguments)
         self.calls.append((call.name, args))
+        request_id = uuid.uuid4().hex[:8]
         # llm_adapter.py: f"📤 Отправлен запрос {request_id[:8]}: {tool_name}"
-        self._stand.emit(f"📤 Отправлен запрос {uuid.uuid4().hex[:8]}: {call.name}")
+        self._stand.emit(f"📤 Отправлен запрос {request_id}: {call.name}")
+        # mcp_server.py: f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}"
+        self._stand.emit(f"📥 Запрос выполнения: {call.name} с параметрами {args}")
         ok, data = self._dispatch(call.name, args)
+        # mcp_server.py: «Публикую результат» - и при отказе тула; затем «выполнен успешно» либо «завершился с ошибкой»
+        self._stand.emit(f"📤 Публикую результат для {call.name} (request_id: {request_id})")
+        self._stand.emit(f"✅ Инструмент {call.name} выполнен успешно" if ok else
+                         f"❌ Инструмент {call.name} завершился с ошибкой: {data.get('reason')}")
         return ToolResult(tool_call_id=call.id, content=json.dumps(data, ensure_ascii=False, default=str),
                           is_error=not ok, data=data)
 
@@ -312,6 +319,8 @@ class FakeTools:
             return False, {"status": "rejected", "reason": "name_empty", "ask_required": True, "name": None}
         voice = self._stand.current_voice_id
         sid = self._stand.speakers.register(voice, name) if voice else ""
+        # speaker_id_node.py: f"✅ Speaker '{name}' registered (id={sid[:8]})" - исход регистрации у владельца биометрии
+        self._stand.emit(f"✅ Speaker '{name}' registered (id={sid[:8]})")
         return True, {"name": name, "status": "done", "reason": None, "sent_by_robot": False, "speaker_id": sid}
 
     def _t_set_voice(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
@@ -480,6 +489,7 @@ class DryStand:
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
         self.player = FakePlayer(self)
+        self.player.stop()  # плеер при старте публикует latched-снимок «idle»: раздел music_state не «unknown»
         self.tools = FakeTools(self)
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(True, str(self.workdir / "e2e_dialog.db"), "dry-marathon")
@@ -549,6 +559,10 @@ class DryStand:
         bio = self.speakers.result_for(voice_id) if voice_id else {"is_known": False}
         if bio.get("is_known"):
             self.touch("speaker")
+            # speaker_id_node.py: f"👤 Speaker: '{match.name}' confidence={…:.3f} ({elapsed:.0f} ms)"
+            self.emit(f"👤 Speaker: '{bio['name']}' confidence={bio['confidence']:.3f} (400 ms)")
+        else:
+            self.emit("👤 Speaker: unknown (400 ms)")  # speaker_id_node.py: f"👤 Speaker: unknown ({elapsed:.0f} ms)"
         person = str(bio.get("speaker_id") or "") if bio.get("is_known") else ""
         heard = heard_from(msg, now=ended, person_ref=person)
         self.session.set_speaker(speaker_ref(bio, now=ended, prev=self.session.snapshot.speaker))

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -290,6 +291,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 kind, reasons = classify_step(step)
                 print(f"  {step['label']:36} {kind:9} {'; '.join(reasons)}")
         return 0
+    os.environ.setdefault("ROBOT_LLM_VERBOSE", "0")  # дамп запроса провайдера в stderr: на 56 шагов это мегабайты
     workdir = new_workdir()
     stand = build_real_stand([p for p in args.providers.split(",") if p.strip()], workdir, args.deadline_s)
     only = [s.strip() for s in args.only.split(",") if s.strip()] or None
