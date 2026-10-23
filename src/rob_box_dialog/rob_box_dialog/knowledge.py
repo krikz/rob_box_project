@@ -1174,6 +1174,17 @@ def with_tool_enum(schema: Mapping[str, Any], offered: Iterable[str]) -> Dict[st
     return out
 
 
+def with_voices(schema: Mapping[str, Any], voices: Iterable[str]) -> Dict[str, Any]:
+    """Схема команды, в которой ``perform.voice_per_segment[]`` - голоса звучащего провайдера TTS (#3959, ADR-0148:
+    голос вне каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог один - реестр голосов
+    владельца речи, сюда он приходит через ``Busy.voices``. Пусто - схема без изменений."""
+    names = sorted({v for v in voices if v})
+    out = copy.deepcopy(dict(schema))
+    if names:
+        out["properties"]["perform"]["properties"]["voice_per_segment"]["items"] = _enum(["", *names])
+    return out
+
+
 def prompt_fragment() -> str:
     """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную).
 
@@ -1199,7 +1210,7 @@ def prompt_fragment() -> str:
         f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech (speech при нём не"
         " пиши, даже с actions). Звучит и при"
         " actions: ответ по сути (сказка, стих, анекдот), не отчёт о действиях. voice_per_segment — голос на"
-        " сегмент (сказка разными голосами); set_voice меняет голос робота насовсем — только когда об этом просят.",
+        " сегмент, у сказки обязателен (сегмент = реплика одного говорящего, \"\" — рассказчик); set_voice меняет голос робота насовсем — только когда об этом просят.",
         f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",
         "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты, они заменят"
         " ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа: {\"edit_pending\": true,"

@@ -120,10 +120,12 @@ class Invalid:
 
 @dataclass(frozen=True)
 class Busy:
-    """Что занято сейчас — классы действий и ACTIVE-сегмент выступления (заполняет планировщик, PR-7b)."""
+    """Что занято сейчас — классы действий и ACTIVE-сегмент выступления (заполняет планировщик, PR-7b) - и голоса
+    звучащего провайдера TTS (#3959; пусто - каталог неизвестен, голос сегмента тогда не сверяется)."""
 
     classes: FrozenSet[str] = frozenset()
     active_segment: Optional[int] = None
+    voices: Tuple[str, ...] = ()
 
 
 Result = Union[Command, Invalid]
@@ -556,9 +558,19 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
                       ("voice_per_segment", perf.voice_per_segment)):
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
+    _check_voices(perf, busy)
+    _check_edit(cmd.edit_pending, busy)
+
+
+def _check_voices(perf: Performance, busy: Busy) -> None:
+    """Голоса сегментов: из каталога звучащего провайдера (``Busy.voices``, пусто - не сверяется); у сказки обязательны
+    (#3959: без них она звучит одним голосом, а валидатор молчал)."""
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
-    _check_edit(cmd.edit_pending, busy)
+        if voice and busy.voices and voice not in busy.voices:
+            raise _Bad("bad_enum", f"perform.voice_per_segment[{i}]={voice}", busy.voices)
+    if perf.kind == "tale" and perf.segments and perf.voice_per_segment is None:
+        raise _Bad("tale_without_voices", f"{len(perf.segments)} сегментов без voice_per_segment", busy.voices)
 
 
 def _check_segments(perf: Performance, busy: Busy) -> None:
@@ -652,6 +664,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
                     "списки *_per_segment — по числу сегментов",
+    "tale_without_voices": "сказка: voice_per_segment обязателен, на каждый сегмент — голос персонажа из списка "
+                           "голосов (\"\" — рассказчик, текущий голос); сегмент = реплика одного говорящего, "
+                           "повествование и каждая реплика героя — отдельные сегменты",
     "too_long": "слишком длинно",
     "control_chars": "управляющие символы в тексте",
     "passed_with_content": "passed — только без речи и действий",

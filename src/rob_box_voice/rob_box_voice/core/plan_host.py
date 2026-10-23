@@ -23,10 +23,13 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
+from rob_box_voice.tts_voice_registry import voices_for
+
 from . import perform_ask
 from .music_player_state import parse_music_event
 from .perform_host import TICK_S, PerformHost
 from .plan_tools import PlanToolExecutor
+from .turn_context import tts_state
 
 PLAN_EVENT_TOPIC = "/dialog/plan_event"
 #: Фактический провайдер TTS (публикует tts_node после старта, фолбека и каждого синтеза).
@@ -168,7 +171,8 @@ def on_music_event(node: Any, msg: Any) -> None:
 def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление и его ACTIVE-сегмент (``edit_pending``)."""
     host = performer(node)
-    return Busy(active_segment=None if host is None else host.active_segment)
+    return Busy(active_segment=None if host is None else host.active_segment,
+                voices=tuple(voices_for(tts_state(node)[0])))
 
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "on_music",
