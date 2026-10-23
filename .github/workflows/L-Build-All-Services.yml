@@ -154,6 +154,15 @@ jobs:
     with:
       push_to_registry: true
 
+  # Общий образ ROS-сообщений — ОДИН раз до трёх Pi: иначе каждый Pi собирал
+  # бы его сам, и при правке .msg три одинаковые компиляции шли бы наперегонки
+  # (rosidl под qemu — минуты на пакет). Pi-вызовы ниже тоже зовут этот
+  # workflow, но тег уже в registry → их job пропускает сборку.
+  build-msgs-image:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Msgs Image.yml
+
   # Сервисы трёх Pi — один workflow "L-Build Pi Services.yml" с входом `pi`
   # (ADR-0159 PR-3, В4). Три вызова идут ПАРАЛЛЕЛЬНО: depends_on в манифесте
   # допустим только внутри своего Pi (gen_build_matrix.load_manifest), цепочка
@@ -161,8 +170,8 @@ jobs:
   # упорядочена волнами внутри своего вызова. Job id прежние
   # (build-main-services/build-vision-services) — на них смотрят скрипты.
   build-main-services:
-    needs: build-base-images
-    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    needs: [build-base-images, build-msgs-image]
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped') && needs.build-msgs-image.result == 'success'
     uses: ./.github/workflows/L-Build Pi Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
@@ -170,8 +179,8 @@ jobs:
       push_to_registry: true
 
   build-sound-services:
-    needs: build-base-images
-    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    needs: [build-base-images, build-msgs-image]
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped') && needs.build-msgs-image.result == 'success'
     uses: ./.github/workflows/L-Build Pi Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
@@ -179,8 +188,8 @@ jobs:
       push_to_registry: true
 
   build-vision-services:
-    needs: build-base-images
-    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    needs: [build-base-images, build-msgs-image]
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped') && needs.build-msgs-image.result == 'success'
     uses: ./.github/workflows/L-Build Pi Services.yml
     secrets: inherit  # CR_PAT нужен в update-image-versions для ghcr.io login
     with:
@@ -189,7 +198,7 @@ jobs:
 
   # Итоговая сводка
   summary:
-    needs: [build-base-images, build-main-services, build-sound-services, build-vision-services]
+    needs: [build-base-images, build-msgs-image, build-main-services, build-sound-services, build-vision-services]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -204,6 +213,7 @@ jobs:
           echo ""
           echo "📊 Build Results:"
           echo "  Base Images: ${{ needs.build-base-images.result }}"
+          echo "  Msgs Image: ${{ needs.build-msgs-image.result }}"
           echo "  Main Services: ${{ needs.build-main-services.result }}"
           echo "  Sound Services: ${{ needs.build-sound-services.result }}"
           echo "  Vision Services: ${{ needs.build-vision-services.result }}"

@@ -21,6 +21,13 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
 # cache hit. Согласовано с supervisor/Dockerfile (там уже bump по дате).
 ARG BUILD_VERSION=2026-09-09-core-cache-fix
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
@@ -133,44 +140,20 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
     "ddgs>=9.0.0" \
     "duckduckgo-search>=8.0.0"
 
-# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
-# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
-# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
-# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
-# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
-# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
-# инвалидирует только правка самих src/rob_box_*_msgs.
-# Стоит ПОСЛЕ pip-слоя: правка msg не пересобирает resemblyzer/llvmlite.
-#
-# IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
-# rob_box_supervisor, потому что тот на нём зависит.
-# Issue #2279 (arch review): публикуем согласованный colcon-workspace
-# в voice-assistant — supervisor/quest больше НЕ пересобирают
-# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
-# между базой и потребителями, регрессии #2081 / #2089).
-# ADR-0150 PR-2 (#3687): типы диалога v2 (Utterance, SpeakerResult, ...).
-# Пакеты копируем целиком (package.xml, CMakeLists.txt, msg/, srv/) —
-# иначе find_package/rosidl падает на ament_cmake.
-COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
-COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
-COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
-COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
-COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
-COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
-COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    . /ws/install/setup.sh && \
-    rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
-    ldconfig && \
-    colcon build \
-    --packages-select rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs \
-    --cmake-args \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+# IDL-пакеты — готовые из общего образа msgs (stage `msgs` в шапке), а не
+# компиляцией здесь. Стоит ПОСЛЕ pip-слоя: новый MSGS_IMAGE не пересобирает
+# resemblyzer/llvmlite.
+#   - rob_box_supervisor_msgs: avatar_supervisor (AV-12 / AV-5). Issue #2279:
+#     voice-assistant публикует согласованный workspace, supervisor
+#     наследует его FROM и сам типы не пересобирает (#2081 / #2089).
+#   - rob_box_dialog_msgs: типы диалога v2 (ADR-0150 PR-2, #3687).
+#   - rob_box_perception_msgs: события восприятия.
+# Копируем ПО ПАКЕТУ, а не /ws/install целиком: в /ws/install уже лежит
+# audio_common_msgs из voice-base со своими setup-скриптами, их не затираем.
+# Скрипты colcon в /ws/install находят пакеты перебором каталогов.
+COPY --from=msgs /ws/install/rob_box_supervisor_msgs /ws/install/rob_box_supervisor_msgs
+COPY --from=msgs /ws/install/rob_box_dialog_msgs /ws/install/rob_box_dialog_msgs
+COPY --from=msgs /ws/install/rob_box_perception_msgs /ws/install/rob_box_perception_msgs
 
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/

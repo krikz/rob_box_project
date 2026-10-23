@@ -44,6 +44,13 @@ ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 ARG ROS2LEDS_SHA=unknown
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 # ============================================================
 # Stage 1: builder — тулчейн + компиляция colcon workspace
 # ============================================================
@@ -107,21 +114,12 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 WORKDIR /ws
 RUN mkdir -p src
 
-# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
-# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
-# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
-# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
-# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
-# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
-# инвалидирует только правка самих src/rob_box_*_msgs.
-# Стоит ДО кэш-брейкера ros2leds: смена SHA субмодуля сообщения не трогает.
-# Зависимости (ament_cmake, rosidl_default_generators, builtin_interfaces)
-# уже есть в ros:humble-ros-base — rosdep ниже для них не нужен.
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build \
-    --packages-select rob_box_dialog_msgs \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release
+# rob_box_dialog_msgs — готовый из общего образа msgs (stage `msgs` в шапке),
+# а не компиляцией здесь. Стоит ДО кэш-брейкера ros2leds. package.xml в src —
+# для rosdep ниже и чтобы colcon видел зависимость rob_box_dialog; собирать
+# его colcon не будет (нет в --packages-select), возьмёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
+COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым

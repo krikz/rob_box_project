@@ -205,9 +205,17 @@ jobs:
   # (как было, когда каждый сервис был отдельным job'ом).
   # ======================================================================
 
+  # Общий образ ROS-сообщений (src/rob_box_*_msgs) — до первой волны: сервисы
+  # с `msgs_image: true` берут его build-arg'ом MSGS_IMAGE (тег — хэш пакетов,
+  # тот же, что посчитал prepare). Из "L: Build All Services" сюда приходим,
+  # когда образ уже собран один раз на все три Pi — job видит тег в registry
+  # и пропускает сборку за секунды.
+  msgs:
+    uses: ./.github/workflows/L-Build Msgs Image.yml
+
   build:
     name: build-${{ matrix.name }}
-    needs: prepare
+    needs: [prepare, msgs]
     runs-on: [self-hosted, rob-box]
     strategy:
       fail-fast: false
