@@ -179,6 +179,25 @@ def test_shut_up_is_still_silence():
     assert ports.cancels == ["tier1 silence"]
 
 
+def test_enough_with_continuation_stops_then_gives_the_rest_to_the_llm():
+    """Акт 4 n410 (23.10): «ладно, хватит тянуть, теперь наоборот» — стоп кодом, остаток не теряется, а идёт в LLM."""
+    ports = Ports(answers=[Answer(Command(speech="Тараторю!"), "deepseek")])
+    engine = _engine(ports)
+    agg = _run(engine, "ладно хватит тянуть теперь наоборот")
+    assert ports.cancels == ["tier1 stop_all"]
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("тянуть теперь наоборот")
+    assert [t for t, _, _ in ports.said] == ["Тараторю!"] and agg.llm_calls == 1
+    assert engine.session.snapshot.top("Silence") is None
+
+
+def test_enough_with_continuation_runs_tier1_rest_without_llm():
+    ports = Ports()
+    engine = _engine(ports)
+    _run(engine, "хватит, громче")
+    assert ports.cancels == ["tier1 stop_all"] and ports.asked == []
+    assert ports.executed == [[("set_volume", {"action": "louder"})]]
+
+
 def test_tier1_actions_dj_set_is_stopped_with_set():
     snap = Session("personality").snapshot
     dj = snap.__class__(**{**vars(snap), "music": MusicStateRef("playing"), "scenes": (SceneFrame("DJ", "code"),)})

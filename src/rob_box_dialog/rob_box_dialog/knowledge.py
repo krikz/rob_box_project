@@ -423,7 +423,10 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
     "voice": ToolGroup(
         ("голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", "быстр",
-         "побыстр", "медленн", "помедленн", "скорост", "темп реч", "выше", "ниже", "тембр"),
+         "побыстр", "медленн", "помедленн", "скорост", "темп реч", "выше", "ниже", "тембр",
+         # живой прогон 23.10, акт 4 n411: «говори басом» не открывало set_pitch/set_voice — робот ответил «таких
+         # инструментов у меня нет» (они есть, но не в срезе хода)
+         "басом", "басов", "тарато", "ускор", "замедл"),
         ("set_voice", "set_tts_provider", "list_tts_voices", "set_speed", "set_pitch", "estimate_tts_duration"),
     ),
     "navigation": ToolGroup(

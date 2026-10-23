@@ -134,6 +134,13 @@ def test_generic_verb_yields_to_a_named_group():
     assert groups_for(SNAPSHOTS["idle"], "включи голос надежного мужика") == ("voice", "music")
 
 
+def test_pitch_and_pace_requests_open_the_voice_tools():
+    """Акт 4 n411 (23.10): «говори басом» видел срез без set_pitch и отвечал «таких инструментов нет»."""
+    for text in ("Робот, говори басом, как диктор в старом кино", "тараторь", "ускорь речь", "замедлись"):
+        names = _names(available_tools(SNAPSHOTS["idle"], text=text))
+        assert {"set_pitch", "set_speed", "set_voice"} <= set(names), text
+
+
 def test_continuation_keeps_the_previous_groups():
     """«я же просил про стрижей и ежей» сразу после «спой песенку про стрижей» — продолжение, срез прошлого хода."""
     text = "есть страничка робот я же просил про стрижей и ежей"
