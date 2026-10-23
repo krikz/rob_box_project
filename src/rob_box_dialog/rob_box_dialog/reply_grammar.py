@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import strip_wake_word
+from rob_box_dialog.words import introduced_name, strip_wake_word
 
 NAME, YES, NO, REFUSAL = "name", "yes", "no", "refusal"
 _TOKEN = re.compile(r"[\w-]+")
@@ -50,16 +50,8 @@ def _refusal(words: List[str]) -> bool:
 
 
 def _introduced(words: List[str]) -> Optional[str]:
-    """«меня зовут X» (X — любое слово), «я X» (X — имя из словаря) в любом месте фразы."""
-    for phrase in kn.REPLY_INTRO_PHRASES:
-        head = phrase.split()
-        for i in range(len(words) - len(head)):
-            if words[i:i + len(head)] == head and len(words[i + len(head)]) >= 2:
-                return words[i + len(head)]
-    for i in range(len(words) - 1):
-        if words[i] == "я" and words[i + 1] in kn.KNOWN_FIRST_NAMES and (i == 0 or words[i - 1] != "не"):
-            return words[i + 1]
-    return None
+    """«меня зовут X» (X — любое слово), «я X» (X — имя из словаря) в любом месте фразы (одна реализация — ``words``)."""
+    return introduced_name(words)
 
 
 def _bare_name(words: List[str]) -> Optional[str]:

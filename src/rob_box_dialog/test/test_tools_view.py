@@ -179,3 +179,104 @@ def test_named_group_is_not_crowded_out_by_the_music_scene(frame, text, tool):
 def test_music_scene_still_fills_a_neutral_turn():
     assert groups_for(SNAPSHOTS["dj"], "расскажи анекдот") == ("music",)
     assert groups_for(SNAPSHOTS["music"], "сколько у тебя заряда") == ("status", "music")
+
+
+# --- #3976: срез по смыслу, а не по основе слова (разбор марафона 23.10, §1.C) ----------------------------------------
+def _has(snap, text, group):
+    return group in groups_for(snap, text)
+
+
+def test_ambiguous_tempo_word_goes_to_music_while_music_plays():
+    """n506 (23.10 17:46): «ускорь темп, а то мы тут засыпаем» под музыкой → set_speed голоса. Теперь music, без voice."""
+    text = "Робот, ускорь темп, а то мы тут засыпаем"
+    for frame in ("music", "dj"):
+        groups = groups_for(SNAPSHOTS[frame], text)
+        assert groups == ("music",), frame
+        names = _names(available_tools(SNAPSHOTS[frame], text=text))
+        assert "set_speed" not in names and "dj_set" in names
+
+
+@pytest.mark.parametrize("text", [
+    "ускорь темп", "быстрее", "помедленнее пожалуйста", "сделай жёстче", "сделай жестче", "а теперь помягче, мягче",
+    "добавь бас", "басы потяжелее", "замедли темп",
+])
+def test_ambiguous_words_go_to_music_under_music(text):
+    assert groups_for(SNAPSHOTS["music"], text) == ("music",)
+
+
+@pytest.mark.parametrize("text", ["ускорь темп, а то мы тут засыпаем", "быстрее", "помедленнее", "замедлись"])
+def test_ambiguous_words_without_music_stay_with_the_voice(text):
+    """Без музыки таблица не действует: «ускорь/быстрее/помедленнее» - речь робота, как было."""
+    assert _has(SNAPSHOTS["idle"], text, "voice")
+    assert "set_speed" in _names(available_tools(SNAPSHOTS["idle"], text=text))
+
+
+@pytest.mark.parametrize("text", [
+    "говори быстрее", "читай помедленнее", "ускорь речь", "смени голос и ускорь темп", "говори басом",
+    "рассказывай побыстрее",
+])
+def test_speech_owner_words_keep_the_voice_under_music(text):
+    assert _has(SNAPSHOTS["music"], text, "voice")
+    assert "set_speed" in _names(available_tools(SNAPSHOTS["music"], text=text))
+
+
+def test_bass_is_a_word_not_a_stem():
+    """«бас» целым словом: «расскажи басню» под музыкой не уходит в music по основе «бас»."""
+    assert groups_for(SNAPSHOTS["music"], "расскажи басню про лису") == ("music",)  # сцена музыки, а не слово
+    assert groups_for(SNAPSHOTS["idle"], "добавь бас") == kn.TOOL_GROUPS_DEFAULT  # без музыки бас ничего не открывает
+
+
+def test_loud_and_quiet_keep_both_volume_and_music():
+    groups = groups_for(SNAPSHOTS["music"], "сделай громче")
+    assert groups == ("volume", "music")
+    assert {"set_music_volume", "stop_music"} <= set(_names(available_tools(SNAPSHOTS["music"], text="сделай громче")))
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, здравствуй, я Саша, чиню тут технику, запомни меня",  # n701/n721
+    "привет, я Борис",
+    "здравствуй, я Саша",
+    "робот, это я, Валера",
+    "меня зовут Денис",
+    "привет я Аскар",  # незнакомое имя сразу после приветствия
+    "здравствуйте я Дарья",
+    "зови меня Шифу",
+])
+def test_self_introduction_opens_people_with_register_speaker(text):
+    for frame in ("idle", "music"):
+        assert "people" in groups_for(SNAPSHOTS[frame], text), (frame, text)
+        assert "register_speaker" in _names(available_tools(SNAPSHOTS[frame], text=text)), (frame, text)
+
+
+@pytest.mark.parametrize("text", [
+    "я думаю, что это хорошая идея", "я пью зелёный чай", "я устал", "я дома", "привет, я дома", "привет, я думаю",
+    "я рад", "я не Саша", "я иду на кухню", "здравствуй, я голодный", "я Борису сказал", "я хочу чаю",
+    "привет, я уже пришёл", "я тоже так думаю",
+])
+def test_non_introductions_do_not_open_people(text):
+    assert "people" not in groups_for(SNAPSHOTS["idle"], text), text
+    assert "register_speaker" not in _names(available_tools(SNAPSHOTS["idle"], text=text)), text
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, а теперь сирену и мигалку покажи, напугаем Валеру.",  # n903
+    "включи гудок", "дай звонок", "бульк", "вздохни", "включи сигнализацию", "щёлкни как клик",
+])
+def test_sound_group_opens_by_russian_sound_names(text):
+    assert "sound" in groups_for(SNAPSHOTS["idle"], text), text
+    assert "play_sound" in _names(available_tools(SNAPSHOTS["idle"], text=text)), text
+
+
+def test_sound_group_still_opens_by_the_word_sound():
+    assert "sound" in groups_for(SNAPSHOTS["idle"], "какие звуки ты умеешь")
+
+
+@pytest.mark.parametrize("frame, text, group", [
+    ("idle", "Робот, спой куплет про комара", "music"),  # n703
+    ("idle", "поставь ровный ритм на виндарда", "music"),  # n809
+    ("music", "Робот, ускорь темп, а то мы тут засыпаем", "music"),  # n506
+    ("idle", "Робот, здравствуй, я Саша, чиню тут технику", "people"),  # n701/n721
+    ("idle", "Робот, а теперь сирену и мигалку покажи", "sound"),  # n903
+])
+def test_phrases_from_the_marathon_logs_open_their_group(frame, text, group):
+    assert group in groups_for(SNAPSHOTS[frame], text)

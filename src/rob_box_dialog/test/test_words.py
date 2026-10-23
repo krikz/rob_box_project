@@ -6,7 +6,7 @@ from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS,
 )
 from rob_box_dialog.words import (
-    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_wake_word, has_word, stop_verdict, strip_wake_word,
+    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_form, has_wake_word, has_word, introduces_self, stop_verdict, strip_wake_word,
 )
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
@@ -169,3 +169,24 @@ def test_tier1_stop_words_are_stop_words():
         assert word in TIER1_POLICY["stop"].words + TIER1_POLICY["halt"].words + ("стойте",) or has_word(
             word, SILENCE_WORDS), word
     assert not set(STOP_LEAD_WORDS) & set(STOP_WORDS)
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, здравствуй, я Саша, чиню тут технику", "привет, я Борис", "робот это я, Валера", "меня зовут Денис",
+    "привет я Аскар", "зови меня Шифу",
+])
+def test_introduces_self(text):
+    assert introduces_self(text)
+
+
+@pytest.mark.parametrize("text", [
+    "я думаю, что это правда", "я пью зелёный чай", "я устал", "я не Саша", "привет, я дома", "привет, я голодный",
+    "привет", "робот, включи музыку", "как меня зовут", "я Борису сказал", "я Аскар",
+])
+def test_does_not_introduce_self(text):
+    """«я Аскар» без приветствия и вне словаря - честная граница: словарь даёт точность, а не полноту."""
+    assert not introduces_self(text)
+
+
+def test_has_form_is_a_whole_word():
+    assert has_form("добавь бас", ("бас",)) and not has_form("расскажи басню", ("бас",))

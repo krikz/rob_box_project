@@ -13,6 +13,13 @@ from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
+    INTRO_ADJECTIVE_ENDINGS,
+    INTRO_GREETING_WORDS,
+    INTRO_NOT_A_NAME,
+    KNOWN_FIRST_NAMES,
+    REPLY_INTRO_PHRASES,
+    REPLY_NOT_A_NAME,
+    REPLY_VERB_ENDINGS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
     STOP_WORDS,
@@ -105,6 +112,57 @@ def has_word(text: str, stems: Sequence[str]) -> bool:
     if not stems:
         return False
     return bool(_pattern(tuple(stems), r"[\w-]*").search(text or ""))
+
+
+def has_form(text: str, forms: Sequence[str]) -> bool:
+    """Есть ли слово РОВНО одной из форм (не основа: «бас» - не «басня»)."""
+    return bool(forms) and bool(_pattern(tuple(forms), _RIGHT).search(text or ""))
+
+
+def name_tokens(text: str) -> Tuple[str, ...]:
+    """Слова фразы в нижнем регистре, ё → е (как в таблицах имён)."""
+    return tuple(t for t in (w.lower().replace("ё", "е").strip("-") for w in _TOKEN.findall(text or "")) if t)
+
+
+def introduced_name(tokens: Sequence[str]) -> Optional[str]:
+    """Имя, которым человек назвал себя: «меня зовут X» (X - любое слово от двух букв), «я X» (X - из словаря
+    ``KNOWN_FIRST_NAMES``, перед «я» не «не») в любом месте фразы. ``tokens`` - из :func:`name_tokens`.
+    Единственная реализация: ею же пользуется ``reply_grammar`` (ответ на «как тебя зовут?»)."""
+    for phrase in REPLY_INTRO_PHRASES:
+        head = phrase.split()
+        for i in range(len(tokens) - len(head)):
+            if tuple(tokens[i:i + len(head)]) == tuple(head) and len(tokens[i + len(head)]) >= 2:
+                return tokens[i + len(head)]
+    for i in range(len(tokens) - 1):
+        if tokens[i] == "я" and tokens[i + 1] in KNOWN_FIRST_NAMES and (i == 0 or tokens[i - 1] != "не"):
+            return tokens[i + 1]
+    return None
+
+
+def _plausible_name(word: str) -> bool:
+    """Незнакомое слово после «привет, я» похоже на имя: не служебное, не глагол, не прилагательное, не состояние."""
+    return (len(word) >= 3 and word.replace("-", "").isalpha() and word not in REPLY_NOT_A_NAME
+            and word not in INTRO_NOT_A_NAME and not word.endswith(REPLY_VERB_ENDINGS + INTRO_ADJECTIVE_ENDINGS))
+
+
+def _greeted_stranger(tokens: Sequence[str]) -> bool:
+    """«Привет, я Аскар»: «я» сразу после приветствия и за ним правдоподобное незнакомое имя."""
+    return any(tokens[i] == "я" and tokens[i - 1] in INTRO_GREETING_WORDS and _plausible_name(tokens[i + 1])
+               for i in range(1, len(tokens) - 1))
+
+
+def introduces_self(text: str) -> bool:
+    """Назвал ли человек себя в реплике («здравствуй, я Саша», «привет, я Борис», «меня зовут …», «это я, Валера»).
+
+    Граница (ADR-0148, решает код, не LLM): в STT имена пишутся строчно, заглавной нет, поэтому опираться можно на
+    позицию после «я». (1) «меня зовут / зови меня / моё имя» - явный оборот. (2) «я X», где X в словаре имён
+    ``KNOWN_FIRST_NAMES``: «я Саша» - да; «я думаю», «я пью чай», «я устал», «я дома» - нет (глагол и состояние в словарь
+    не входят). (3) «привет/здравствуй, я X» с незнакомым X, если X не служебное слово, не глагол (окончания
+    ``REPLY_VERB_ENDINGS``), не прилагательное и не состояние (``INTRO_NOT_A_NAME``). Редкое имя без приветствия не
+    узнаётся - это остаётся на LLM и на ``tools_view.widen_for`` (``register_speaker`` вне среза), честная граница:
+    словарь даёт точность, а не полноту."""
+    tokens = name_tokens(text)
+    return introduced_name(tokens) is not None or _greeted_stranger(tokens)
 
 
 @dataclass(frozen=True)
