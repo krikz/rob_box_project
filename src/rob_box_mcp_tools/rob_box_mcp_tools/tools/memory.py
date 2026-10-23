@@ -14,6 +14,7 @@ instead of crashing.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
@@ -43,6 +44,25 @@ def _current_encounter_speaker_id(node: object) -> Optional[str]:
     if encounter is None or encounter.who is None:
         return None
     return encounter.who.id
+
+
+#: Подсказка при пустом ответе на многословный запрос (#3890). Тул ничего не
+#: подгоняет под запрос: честно говорит «пусто» и называет общее правило.
+EMPTY_MULTIWORD_HINT = (
+    "Ничего не найдено по запросу из нескольких слов. Ищи 1–2 ключевыми "
+    "словами в начальной форме, без перечислений и описаний; пусто — "
+    "попробуй другое одно слово."
+)
+#: Слово короче этого — не «значимое» (предлоги, частицы), общее правило длины.
+_MIN_SIGNIFICANT_WORD_LEN = 3
+
+
+def _empty_result_hint(query: str, found: int) -> Optional[str]:
+    """Hint для пустой выдачи при запросе из >= 2 значимых слов, иначе None."""
+    if found:
+        return None
+    words = [w for w in re.findall(r"\w+", query) if len(w) >= _MIN_SIGNIFICANT_WORD_LEN]
+    return EMPTY_MULTIWORD_HINT if len(words) >= 2 else None
 
 
 class MemorySaveTool(MCPTool):
@@ -173,7 +193,10 @@ class MemorySearchTool(MCPTool):
             MCPToolParameter(
                 name="query",
                 type="string",
-                description="Поисковый запрос на русском или английском.",
+                description=(
+                    "Поисковый запрос на русском или английском: 1–2 ключевых "
+                    "слова в начальной форме, без перечислений и описаний."
+                ),
                 required=True,
             ),
             MCPToolParameter(
@@ -246,17 +269,21 @@ class MemorySearchTool(MCPTool):
                     entry["category"] = r.get("category")
                 formatted.append(entry)
 
+            data = {
+                "results": formatted,
+                "total": len(formatted),
+                "query": query,
+                "limit": limit,
+                "speaker_id": speaker_id,
+                "has_more": len(formatted) == limit,
+                "next_offset": limit if len(formatted) == limit else None,
+            }
+            hint = _empty_result_hint(query, len(formatted))
+            if hint:
+                data["hint"] = hint
             return MCPToolResult(
                 success=True,
-                data={
-                    "results": formatted,
-                    "total": len(formatted),
-                    "query": query,
-                    "limit": limit,
-                    "speaker_id": speaker_id,
-                    "has_more": len(formatted) == limit,
-                    "next_offset": limit if len(formatted) == limit else None,
-                },
+                data=data,
                 message=f"Найдено {len(formatted)} результатов.",
             )
         except Exception as e:

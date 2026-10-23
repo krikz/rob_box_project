@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-22",
-  "base_sha": "1fceffdca3dc270549d205f669b66728fea54485",
+  "created": "2026-10-23",
+  "base_sha": "ba7301143097b0bb2c96d77ef6b84eae40028335",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -72,7 +72,7 @@
       "methods": 16
     },
     "src/rob_box_voice/rob_box_voice/core/voice_memory.py:VoiceMemory": {
-      "wmc": 153,
+      "wmc": 150,
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py:DialogueNode": {

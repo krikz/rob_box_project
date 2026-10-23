@@ -413,3 +413,42 @@ class TestSavedEventAndOneTable:
         node.voice_memory.save_fact = lambda *a, **k: 0
         result = MemorySaveTool(node).execute(fact="x", speaker_id="spk-sasha")
         assert not result.success and result.data is None
+
+
+# ---------------------------------------------------------------------------
+# #3890 — hint при пустой выдаче на многословный запрос
+# ---------------------------------------------------------------------------
+
+
+def _node_with(turn=None):
+    node = MagicMock()
+    node.voice_memory = _FakeMemory()
+    node._encounter_seam = None
+    if turn:
+        node.voice_memory.save_turn("user", turn, speaker_id="s1")
+    return node
+
+
+def _search(query, turn=None):
+    return MemorySearchTool(_node_with(turn)).execute(query=query, speaker_id="s1")
+
+
+def test_empty_multiword_query_gets_hint():
+    res = _search("первое второе третье")
+    assert res.success and res.data["total"] == 0
+    assert "1–2 ключевыми" in res.data["hint"]
+
+
+def test_empty_single_word_query_has_no_hint():
+    res = _search("отсутствует")
+    assert res.data["total"] == 0 and "hint" not in res.data
+
+
+def test_short_words_are_not_significant():
+    assert "hint" not in _search("и в на").data
+    assert "hint" not in _search("и отсутствует").data
+
+
+def test_nonempty_result_has_no_hint():
+    res = _search("альфа бета", turn="альфа бета")
+    assert res.data["total"] == 1 and "hint" not in res.data
