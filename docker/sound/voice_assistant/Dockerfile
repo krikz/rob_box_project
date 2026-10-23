@@ -21,6 +21,13 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box:voice-base-humble-latest
 # cache hit. Согласовано с supervisor/Dockerfile (там уже bump по дате).
 ARG BUILD_VERSION=2026-09-09-core-cache-fix
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
@@ -47,34 +54,12 @@ RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_v
 # Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
 COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
-COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/package.xml /ws/src/rob_box_music/
 # ADR-0150 PR-1: одна таблица знания диалога (вейк, тишина, громкость) — её импортируют voice и harness
 COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
-# IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
-# rob_box_supervisor, потому что тот на нём зависит.
-COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
-# Issue #2279 (arch review): публикуем согласованный colcon-workspace
-# в voice-assistant — supervisor/quest больше НЕ пересобирают
-# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
-# между базой и потребителями, регрессии #2081 / #2089).
-# COPY идёт ПЕРЕД colcon build — иначе голосасс build
-# падает на ament_cmake (нужны CMakeLists.txt/srv/msg).
-COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
-COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
-# ADR-0150 PR-2 (#3687): типы диалога v2 (Utterance, SpeakerResult, ...).
-# rosidl-пакет собирается в том же colcon build, раньше rob_box_voice /
-# rob_box_mcp_tools (depend в package.xml). Копируем целиком (package.xml,
-# CMakeLists.txt, msg/, srv/) - иначе find_package/rosidl падает так же, как
-# у rob_box_supervisor_msgs выше.
-COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
-COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
 
 # Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
 #
@@ -155,11 +140,25 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
     "ddgs>=9.0.0" \
     "duckduckgo-search>=8.0.0"
 
+# IDL-пакеты — готовые из общего образа msgs (stage `msgs` в шапке), а не
+# компиляцией здесь. Стоит ПОСЛЕ pip-слоя: новый MSGS_IMAGE не пересобирает
+# resemblyzer/llvmlite.
+#   - rob_box_supervisor_msgs: avatar_supervisor (AV-12 / AV-5). Issue #2279:
+#     voice-assistant публикует согласованный workspace, supervisor
+#     наследует его FROM и сам типы не пересобирает (#2081 / #2089).
+#   - rob_box_dialog_msgs: типы диалога v2 (ADR-0150 PR-2, #3687).
+#   - rob_box_perception_msgs: события восприятия.
+# Копируем ПО ПАКЕТУ, а не /ws/install целиком: в /ws/install уже лежит
+# audio_common_msgs из voice-base со своими setup-скриптами, их не затираем.
+# Скрипты colcon в /ws/install находят пакеты перебором каталогов.
+COPY --from=msgs /ws/install/rob_box_supervisor_msgs /ws/install/rob_box_supervisor_msgs
+COPY --from=msgs /ws/install/rob_box_dialog_msgs /ws/install/rob_box_dialog_msgs
+COPY --from=msgs /ws/install/rob_box_perception_msgs /ws/install/rob_box_perception_msgs
+
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
-COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/setup.py /ws/src/rob_box_music/
 COPY src/rob_box_dialog/setup.py /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
@@ -188,9 +187,6 @@ COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
 COPY src/rob_box_voice/prompts /ws/src/rob_box_voice/prompts
-
-# Шаг 6: Копируем message файлы для rob_box_perception_msgs
-COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
 
 
 # ============================================================
@@ -292,7 +288,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
+    --packages-select rob_box_core rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
