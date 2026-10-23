@@ -17,6 +17,11 @@ dialog_node:
     telegram_system_prompt_file: "telegram_chat_prompt.txt"
     telegram_temperature: 0.7
     telegram_max_tokens: 0
+    # «Робот помнит собеседника» (#3919): профиль (счётчик диалогов) - harness_voice.db, как вёл v1; факты - voice_facts
+    # из voice_memory.db, куда пишет memory_save. В e2e факты читаются из e2e-БД MCP (e2e_db_path mcp_server).
+    sqlite_db_path: /data/harness_voice.db
+    voice_facts_db_path: /data/voice_memory.db
+    e2e_voice_facts_db_path: /data/voice_memory.e2e.db
     # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта, если робот не занят; 0 — выключено.
     # Пустой startup_greeting_text — случайная из phrases/ru.yaml startup.greeting.
     startup_greeting_sec: 12.0

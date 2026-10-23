@@ -49,12 +49,14 @@ from rob_box_core import dialog_engine, speech_client
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
+from rob_box_dialog.address import BARE_WAKE, HELD, Addressed, NotAddressed, decide, heard_from, log_label
+from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
+from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_block, speaker_ref
@@ -75,6 +77,7 @@ from .core import plan_host
 from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
+from .core.speaker_memory import SpeakerMemory
 from .core.speaker_turn import note_backlog_voice
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
@@ -108,6 +111,12 @@ def declare_params(node: Any) -> None:
     # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта; 0 — выкл; пустой текст — случайная фраза.
     node.declare_parameter("startup_greeting_sec", kn.STARTUP_GREETING_DELAY_S)
     node.declare_parameter("startup_greeting_text", "")
+    # «Робот помнит собеседника» (#3919, core/speaker_memory.py): профиль - harness_voice.db (шов note_seen, как у v1),
+    # факты - voice_facts из voice_memory.db (куда пишет memory_save); в e2e - e2e-БД фактов (как e2e_db_path MCP).
+    # Пустой путь - этой части нет.
+    node.declare_parameter("sqlite_db_path", "")
+    node.declare_parameter("voice_facts_db_path", "")
+    node.declare_parameter("e2e_voice_facts_db_path", "/data/voice_memory.e2e.db")
 
 
 def _prefix(agent: str) -> str:
@@ -229,6 +238,11 @@ class DialogNode(Node):
         self._backlog = Backlog()
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
+        self._speaker_memory = SpeakerMemory(
+            str(self.get_parameter("sqlite_db_path").value), str(self.get_parameter("voice_facts_db_path").value),
+            e2e_facts_db=str(self.get_parameter("e2e_voice_facts_db_path").value),
+            is_e2e=lambda: self._engine_events_state() != "off", log=self.get_logger())
+        self._turn_memory: Any = (None, None)  # (person_ref, раздел speaker_memory) хода в работе
         self._music_player_state: Any = None
         self._actual_tts_provider: Optional[str] = None  # из /voice/tts/provider_state (plan_host)
         counter = CallCounter()
@@ -314,9 +328,17 @@ class DialogNode(Node):
             self.get_logger().info("🧭 [turn-v2] ход уже идёт — новый ждёт его конца")
         async with self._turn_lock:
             try:
+                await self._note_speaker(decision)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
+
+    async def _note_speaker(self, decision: Addressed) -> None:
+        """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919)."""
+        speaker = self._session.snapshot.speaker
+        counts = decision.source != BARE_WAKE and bool(decision.text.strip())  # пустой ход - не диалог (как у v1)
+        section = await self._speaker_memory.section(speaker) if counts else None
+        self._turn_memory = (profiled_person(speaker), section)
 
     def _on_speaker(self, msg: Any) -> None:
         """Биометрия фразы: реестр по ``utterance_id`` и собеседник сессии (имя — только при ``confirmed``)."""
@@ -400,8 +422,10 @@ class DialogNode(Node):
 
     def _sections(self, snap: Any, _text: str) -> Dict[str, Any]:
         """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила)."""
+        person, memory = self._turn_memory  # собеседник сменился с начала хода - чужой раздел не показываем
         return {"speaker": speaker_block(snap.speaker), "providers": reporter_context(self._reporter),
-                "music_state": self._music.section()}
+                "music_state": self._music.section(),
+                "speaker_memory": memory if person and person == profiled_person(snap.speaker) else None}
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

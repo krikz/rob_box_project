@@ -591,3 +591,43 @@ def test_new_session_returns_default_voice_once(node):
     _hold(node, DialogControl.Request.ACTION_RESET)
     asked = [json.loads(m.data) for m in _published(node, "/voice/tts/voice_request")]
     assert [(a["provider"], a["voice"]) for a in asked] == [tuple(dn.robot_default_voice())]
+
+
+def _remember(node, tmp_path, person="spk-boris"):
+    """Память собеседника на файлах tmp: факт Бориса в ``voice_facts`` (куда пишет ``memory_save``)."""
+    import sqlite3
+
+    from rob_box_voice.core.speaker_memory import SpeakerMemory
+
+    facts = tmp_path / "voice_memory.db"
+    conn = sqlite3.connect(facts)
+    conn.execute("CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
+                 "created_at REAL, updated_at REAL)")
+    conn.execute("INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+                 "VALUES ('любит зелёный чай', 'general', ?, 0, 1)", (person,))
+    conn.commit()
+    conn.close()
+    node._speaker_memory = SpeakerMemory(str(tmp_path / "harness_voice.db"), str(facts), log=node.get_logger())
+
+
+def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
+    """#3919: узнанный Борис — в снимке хода `speaker_memory` с номером диалога и его фактом; второй ход — «2»."""
+    _remember(node, tmp_path)
+    node.test_llm.responses.append(LLMResponse(content="Ещё раз."))
+    for uid in ("u-1", "u-2"):
+        node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                                 "utterance_id": uid}))
+        node._on_utterance(_long("Робот, что скажешь", uid))
+        node.last_turn.result(timeout=10)
+    first, second = (json.dumps(m, ensure_ascii=False, default=str) for m in node.test_llm.messages)
+    assert '<speaker_memory>{\\"dialog_count\\":1,\\"facts\\":[\\"любит зелёный чай\\"]}' in first
+    assert '\\"dialog_count\\":2' in second
+
+
+def test_snapshot_has_no_memory_of_unconfirmed_speaker_3919(node, tmp_path):
+    _remember(node, tmp_path)
+    node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))
+    node._on_utterance(_long("Робот, что скажешь", "u-x"))
+    node.last_turn.result(timeout=10)
+    assert "speaker_memory" not in json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    assert not (tmp_path / "harness_voice.db").exists()
