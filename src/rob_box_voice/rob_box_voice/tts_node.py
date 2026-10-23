@@ -7,7 +7,7 @@ TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + M
 Использует:
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
-  - MiniMax T2A v2 (HTTP, opt-in через provider=minimax)
+  - MiniMax T2A v2 (HTTP или SSE-поток в динамик — ``core.tts_stream``, #3930)
 
 Concurrency
 -----------
@@ -52,6 +52,7 @@ ROS-параметры ноды (см. ``declare_parameter`` в ``__init__``):
 import asyncio
 import atexit
 import concurrent.futures
+import functools
 import io
 import json
 import os
@@ -115,6 +116,7 @@ from .core.voice_owner import attach_voice_owner
 from .core import speech_compat
 from rob_box_core import dialog_engine
 from .core.speech_owner import SpeechOwner, owner_of
+from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
 # (no behaviour change). NOT ``utils/audio_utils.py``: that module does
@@ -773,12 +775,9 @@ class TTSNode(Node):
         self.declare_parameter(
             "minimax_retry_backoff_ms", 500
         )  # ms начальный backoff (удваивается)
-        # Streaming mode: использовать ли provider.stream() вместо synthesize().
-        # Текущий MiniMax провайдер возвращает один буферизованный чанк,
-        # поэтому chunk-per-frame latency win появится только с WebSocket
-        # (M5/M6). Эта настройка сейчас полезна для тестов и как
-        # forward-compat hook. См. ADR-0003 §2.4.
-        self.declare_parameter("minimax_streaming", False)
+        # #3930 — реплика в динамик синтезируется SSE-потоком и звучит с
+        # первых кусков (core.tts_stream); пред-синтез и шлем — HTTP целиком.
+        self.declare_parameter("minimax_streaming", True)
         # ADR-0150 PR-3 (#3688) §5.5.4 — задержка от play_audio до звука в
         # колонке, мс: t0 огибающей = now + output_latency_ms. Число одно —
         # knowledge.SPEECH_OUTPUT_LATENCY_MS (по нему же выступление ставит
@@ -1768,6 +1767,7 @@ class TTSNode(Node):
     def _interrupt_playback(self):
         """Прервать текущее воспроизведение (helper метод)."""
         self.stop_requested = True
+        tts_stream.abort(self)  # #3930 — потоковое воспроизведение
 
         # Остановить текущий sounddevice stream если есть
         if self.current_stream:
@@ -3784,6 +3784,8 @@ class TTSNode(Node):
             "used_provider": None,  # "minimax" | "yandex" | "silero" | "prefetch"
             "used_voice": None,  # issue #1229 — фактический голос
             "result": {},  # последний result от MiniMax (already_published etc.)
+            # #3930 — в динамик можно потоком (пред-синтез, шлем, бурундук — целиком).
+            "stream_ok": tts_stream.allowed(self, sink),
         }
         try:
             # Issue #2096 — единый choke-point: ЛЮБОЙ TTS-путь (dialogue_
@@ -3900,6 +3902,9 @@ class TTSNode(Node):
             )
 
         finally:
+            # #3930 — поток, не дошедший до динамика (FIFO отверг, ошибка), бросаем;
+            # сыгранному/отменённому это no-op.
+            tts_stream.drop(ctx["audio_np"])
             # Issue #1234 — закрываем span ``tts.synthesize``: проставляем
             # фактического провайдера, fallback-флаг и длительность.
             _used_provider = ctx.get("used_provider") or "none"
@@ -3934,6 +3939,7 @@ class TTSNode(Node):
         "_sap_wait_fifo_and_dialogue",
         "_sap_finish_headset",
         "_sap_local_playback",
+        "_sap_stream_playback",
         "_sap_prepare_audio_for_playback",
         "_sap_publish_finished_failure",
         "_sap_finalize_after_playback",
@@ -4150,16 +4156,17 @@ class TTSNode(Node):
                 f"использую дефолтный '{_mm_voice}'"
             )
         try:
-            if self.minimax_streaming:
-                self.get_logger().info(
-                    "🔊 Синтез через MiniMax T2A v2 (streaming mode)..."
-                )
-                result = self._synthesize_minimax_streaming_publish(
+            if ctx.get("stream_ok") and self.minimax_streaming:
+                # #3930 — звук с первых кусков; в ctx["audio_np"] — PcmStream.
+                self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (поток)...")
+                result = tts_stream.open_for_playback(
+                    self,
                     text,
-                    ssml_attributes,
-                    voice=_mm_voice,
-                    language=language,
-                    sink=sink,
+                    TTSNode._minimax_settings(
+                        self, ssml_attributes, _mm_voice, language,
+                        sample_rate=self.audio_output_sample_rate,
+                    ),
+                    budget_deadline,
                 )
             else:
                 self.get_logger().info("🔊 Синтез через MiniMax T2A v2 (HTTP)...")
@@ -4469,17 +4476,17 @@ class TTSNode(Node):
         поэтому полный буфер повторно не отправляем.
         """
         if used_provider == "minimax" and result.get("already_published", False):
-            return
-        topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
-        if sink == "headset":
+            pass  # поток (#3930): куски уже в топике, provider_state — ниже
+        elif sink == "headset":
             # ADR-0078 §4: пробрасываем реальный rate в /avatar/tts/audio,
             # чтобы quest_node передал sample_rate в WS-meta для ручной
             # сборки AudioBuffer в шлеме.  Rate — уже ПОСЛЕ ресэмпла
             # (_prepare_audio_for_topic), а не исходный rate провайдера:
             # иначе PCM 16 кГц подписывается 32 кГц и ТАРС звучит ×2 («хомяк»).
+            topic_audio = self._prepare_audio_for_topic(audio_np, sample_rate)
             self._publish_headset_audio(topic_audio, self.audio_output_sample_rate)
         else:
-            self._publish_audio(topic_audio)
+            self._publish_audio(self._prepare_audio_for_topic(audio_np, sample_rate))
         # Issue #1229 — после успешного синтеза публикуем фактического
         # провайдера и голос: dialogue_node/mcp_server обновят контекст
         # [TTS] и валидацию (LLM увидит голоса РЕАЛЬНОГО провайдера).
@@ -4582,7 +4589,11 @@ class TTSNode(Node):
     ) -> None:
         """Локальное воспроизведение через ALSA: chipmunk/resample → volume →
         mono→stereo → STOP-pre-check → play_audio (with FIFO release) →
-        finished-event (success / stopped / device-unavailable)."""
+        finished-event (success / stopped / device-unavailable).
+        ``audio_np`` — :class:`PcmStream` (#3930): звук идёт по мере синтеза."""
+        if isinstance(audio_np, tts_stream.PcmStream):
+            return self._sap_stream_playback(audio_np, text, voice, play_seq, speech_id, dialogue_id,
+                                             batch_id, batch_index, batch_total, batch_started_at)
         self.publish_state("playing")
         target_rate = 16000  # ReSpeaker: только 16 kHz стерео.
         audio_stereo = self._sap_prepare_audio_for_playback(
@@ -4654,6 +4665,58 @@ class TTSNode(Node):
             batch_started_at,
             raw_duration_sec,
         )
+
+    def _sap_stream_playback(
+        self,
+        stream,
+        text: str,
+        voice: Optional[str],
+        play_seq,
+        speech_id: Optional[str],
+        dialogue_id: Optional[str],
+        batch_id,
+        batch_index,
+        batch_total,
+        batch_started_at,
+    ) -> None:
+        """#3930 — та же дорожка, что ``_sap_local_playback``, но кадры идут из
+        потока MiniMax по мере синтеза (``tts_stream.play_local``)."""
+        self.publish_state("playing")
+        if self.stop_requested:
+            self.get_logger().warn("🔇 STOP: отменено ДО воспроизведения")
+            self.publish_state("stopped")
+            stream.cancel()
+            self._release_play_seq(play_seq, speech_id=speech_id)
+            return
+        if play_seq is not None:
+            with self._play_order_cond:  # Issue #1996 / #2553 — см. _sap_local_playback
+                self._play_active_seq, self._active_batch_id = play_seq, batch_id
+        self.get_logger().info(f"🔊 Воспроизведение потоком: {stream.duration_s:.2f} с в буфере, 16000 Hz")
+        playback = functools.partial(self.playback_manager.play_stream, device_index=self.device_index,
+                                     node_name="tts_node")
+        try:
+            outcome, duration_s = tts_stream.play_local(
+                self, stream, speech_id, self.volume_gain, owner_of(self), playback)
+        finally:
+            self._release_play_seq(play_seq, speech_id=speech_id)
+        if outcome == "failed":
+            self._sap_publish_finished_failure("Device unavailable", text, voice, speech_id, dialogue_id,
+                                               batch_id, batch_index, batch_total, batch_started_at)
+            return
+        if outcome == "cancelled":
+            self.publish_state("stopped")
+            self._publish_tts_finished(speech_id, success=False, error="cancelled")
+            return
+        if outcome == tts_stream.BROKEN:  # хвост не прозвучал — не «finished» (capability-honest)
+            self.publish_state("ready")
+            self._publish_tts_finished(speech_id, success=False, error=outcome, batch_id=batch_id,
+                                       batch_index=batch_index, batch_total=batch_total,
+                                       batch_started_at=batch_started_at, dialogue_id=dialogue_id)
+            return
+        self.cleanup_playback_noise()
+        self.stop_requested = self.stop_requested or outcome == "stopped"
+        self._sap_finalize_after_playback(text, voice, speech_id, dialogue_id, batch_id, batch_index,
+                                          batch_total, batch_started_at, duration_s)
 
     def _sap_prepare_audio_for_playback(
         self,
@@ -5296,6 +5359,46 @@ class TTSNode(Node):
             return normalized
         return ""
 
+    def _minimax_settings(
+        self,
+        ssml_attributes: Optional[dict],
+        voice: Optional[str],
+        language: Optional[str],
+        sample_rate: Optional[int] = None,
+    ) -> "TTSSettings":
+        """``TTSSettings`` реплики MiniMax — одни для HTTP и потока (#3930).
+
+        ``sample_rate`` — поток просит частоту вывода (16 кГц ReSpeaker, без
+        ресэмпла кусков) и PCM (куски декодируются по отдельности).
+        """
+        # Скорость речи: берём из SSML или параметр ноды.
+        speed = (
+            float(ssml_attributes.get("rate", self.minimax_speed))
+            if ssml_attributes
+            else self.minimax_speed
+        )
+        return TTSSettings(
+            voice=voice or self.minimax_voice,
+            model=self.minimax_model,
+            # AV-28: язык этой реплики (language_boost) важнее
+            # статического ROS-параметра — иначе французский текст
+            # синтезировался бы с language_boost=Russian.
+            language=language or self.minimax_language,
+            speed=speed,
+            sample_rate=sample_rate or self.minimax_sample_rate,
+            # PCM — default (ADR-0003 §2.3), WAV/MP3 тоже через transcode.
+            format=TTSFormat.PCM if sample_rate else self.minimax_format,
+            # Issue #1780: forward emotion / pitch / volume /
+            # pronunciation_dict to the provider. Empty string → field
+            # is omitted (no behaviour change vs. pre-#1780).
+            emotion=self.minimax_emotion or None,
+            pitch=_parse_optional_int(self.minimax_pitch_raw),
+            volume=_parse_optional_float(self.minimax_volume_raw),
+            pronunciation_dict=_parse_pronunciation_dict(
+                self.minimax_pronunciation_dict_raw
+            ),
+        )
+
     async def _synthesize_minimax_async(
         self,
         text: str,
@@ -5335,39 +5438,8 @@ class TTSNode(Node):
 
         provider = self._ensure_minimax_provider()
 
-        # Скорость речи: берём из SSML или параметр ноды.
-        speed = (
-            float(ssml_attributes.get("rate", self.minimax_speed))
-            if ssml_attributes
-            else self.minimax_speed
-        )
-
-        # Контейнер MiniMax-ответа. PCM — default (как в ADR-0003 §2.3),
-        # но WAV/MP3 тоже поддерживаются через transcode.
-        fmt = self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM
-        settings = TTSSettings(
-            voice=voice or self.minimax_voice,
-            model=self.minimax_model,
-            # AV-28: язык этой реплики (language_boost) важнее
-            # статического ROS-параметра — иначе французский текст
-            # синтезировался бы с language_boost=Russian.
-            language=language or self.minimax_language,
-            speed=speed,
-            sample_rate=self.minimax_sample_rate,
-            format=fmt,
-            # Issue #1780: forward emotion / pitch / volume /
-            # pronunciation_dict to the provider. Empty string → field
-            # is omitted (no behaviour change vs. pre-#1780). Emotion
-            # has a non-empty default ("neutral") which matches the
-            # API's implicit default — payload gains the ``emotion``
-            # key but the rendered voice is identical.
-            emotion=self.minimax_emotion or None,
-            pitch=_parse_optional_int(self.minimax_pitch_raw),
-            volume=_parse_optional_float(self.minimax_volume_raw),
-            pronunciation_dict=_parse_pronunciation_dict(
-                self.minimax_pronunciation_dict_raw
-            ),
-        )
+        # unbound: тестовые заглушки ноды несут только атрибуты minimax_*
+        settings = TTSNode._minimax_settings(self, ssml_attributes, voice, language)
 
         try:
             tts_audio = await provider.synthesize(text, settings=settings)
@@ -5491,87 +5563,6 @@ class TTSNode(Node):
         assert last_exc is not None
         raise last_exc
 
-    def _synthesize_minimax_streaming_publish(
-        self,
-        text: str,
-        ssml_attributes: dict = None,
-        voice: str = None,
-        language: str = None,
-        sink: str = "speaker",  # ADR-0055 / issue #1993 — headset маршрут
-    ) -> dict:
-        """Sync-обёртка над :meth:`_stream_minimax_chunks` для streaming-режима MiniMax.
-
-        Публикует каждый :class:`TTSChunk` как отдельный ``AudioData`` msg
-        в ``/voice/audio/speech`` и возвращает объединённый буфер downstream
-        для воспроизведения (chunk-per-frame latency win появится с
-        WebSocket; пока провайдер возвращает один чанк — поведение
-        эквивалентно ``_synthesize_minimax``).
-
-        Returns:
-            dict с ключами ``audio_np``, ``sample_rate``.
-        """
-        import asyncio as _asyncio
-
-        chunks = []
-        sample_rate = 0
-
-        async def _consume_and_publish():
-            nonlocal sample_rate
-            async for chunk in self._stream_minimax_chunks(
-                text, ssml_attributes, voice=voice, language=language
-            ):
-                if chunk.finish_reason == "error":
-                    raise Exception(
-                        "MiniMax stream reported error: finish_reason=error"
-                    )
-
-                if chunk.samples:
-                    audio_np, chunk_sample_rate = self._decode_minimax_audio(
-                        chunk.samples,
-                        chunk.format,
-                        chunk.sample_rate,
-                    )
-                    if sample_rate and chunk_sample_rate != sample_rate:
-                        raise Exception(
-                            "MiniMax stream changed sample_rate from "
-                            f"{sample_rate} to {chunk_sample_rate}"
-                        )
-                    sample_rate = sample_rate or chunk_sample_rate
-                    chunks.append(audio_np)
-                    # Publish before requesting the next provider chunk. This is
-                    # the latency-critical invariant of the ROS streaming bridge.
-                    topic_audio = self._prepare_audio_for_topic(
-                        audio_np,
-                        chunk_sample_rate,
-                    )
-                    # ADR-0055 / issue #1993 — headset маршрут: вместо
-                    # /voice/audio/speech публикуем в /avatar/tts/audio.
-                    # ADR-0078 §4: пробрасываем в WS-meta rate ПОДГОТОВЛЕННОГО
-                    # PCM (после ресэмпла), а не chunk_sample_rate провайдера.
-                    if sink == "headset":
-                        self._publish_headset_audio(
-                            topic_audio, self.audio_output_sample_rate
-                        )
-                    else:
-                        self._publish_audio(topic_audio)
-
-                if chunk.finish_reason == "stop":
-                    break
-
-            if not chunks:
-                raise Exception("MiniMax stream yielded no audio chunks")
-
-        # 🔴 FIX (live 16:xx «Event loop is closed»): единый вечный loop —
-        # см. _run_in_tts_loop. asyncio.run() здесь создавал бы новый loop,
-        # закрывая его после, ломая httpx-клиент провайдера.
-        _run_in_tts_loop(_consume_and_publish())
-
-        return {
-            "audio_np": np.concatenate(chunks),
-            "sample_rate": sample_rate,
-            "already_published": True,
-        }
-
     def _synthesize_minimax(
         self,
         text: str,
@@ -5600,55 +5591,6 @@ class TTSNode(Node):
             budget_deadline=budget_deadline,
         )
         return _run_in_tts_loop(coro)
-
-    async def _stream_minimax_chunks(
-        self,
-        text: str,
-        ssml_attributes: dict = None,
-        voice: str = None,
-        language: str = None,
-    ):
-        """Стриминг MiniMax через ``provider.stream()`` для chunk-per-frame.
-
-        Провайдер сейчас возвращает один ``TTSChunk(finish_reason="stop")``
-        (MiniMax SSE буферизуется в провайдере — chunk-per-frame WebSocket
-        отложен в M5/M6, см. ADR-0003 §2.4). Эта обёртка сохраняет контракт
-        ``stream()`` от ``rob_box_llm/tts.py`` — и когда WebSocket появится,
-        переключение будет toggled-флагом, без переписывания вызывающего
-        кода в ``tts_node``.
-
-        Raises:
-            Exception с человекочитаемым сообщением при любой ошибке MiniMax
-            (вызывающий код решает — retry, fallback, или проброс наверх).
-        """
-        provider = self._ensure_minimax_provider()
-
-        speed = (
-            float(ssml_attributes.get("rate", self.minimax_speed))
-            if ssml_attributes
-            else self.minimax_speed
-        )
-        settings = TTSSettings(
-            voice=voice or self.minimax_voice,
-            model=self.minimax_model,
-            # AV-28: язык этой реплики (language_boost) важнее
-            # статического ROS-параметра — иначе французский текст
-            # синтезировался бы с language_boost=Russian.
-            language=language or self.minimax_language,
-            speed=speed,
-            sample_rate=self.minimax_sample_rate,
-            format=self.minimax_format if MINIMAX_AVAILABLE else TTSFormat.PCM,
-        )
-        try:
-            async for chunk in provider.stream(text, settings=settings):
-                yield chunk
-        except MiniMaxTTSError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise MiniMaxTTSError(
-                f"MiniMax stream unexpected error: {exc}",
-                provider="minimax",
-            ) from exc
 
     def _prepare_audio_for_topic(
         self,

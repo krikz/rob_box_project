@@ -8,7 +8,7 @@ AudioPlaybackManager - централизованное управление в�
 
 import threading
 import time
-from typing import Optional
+from typing import Any, Callable, Optional, Tuple
 import numpy as np
 
 # ``sounddevice`` опционален для CI (issue #1133: Unit Tests ROS2 Humble
@@ -49,6 +49,7 @@ class AudioPlaybackManager:
 
         self._playback_lock = threading.Lock()
         self._current_stream = None
+        self._abort_stream = threading.Event()
         self._initialized = True
 
     @classmethod
@@ -168,6 +169,67 @@ class AudioPlaybackManager:
                 # после примерной длительности аудио
                 duration = len(audio_data) / sample_rate
                 threading.Timer(duration + 0.1, self._release_lock).start()
+
+    def play_stream(
+        self,
+        source: Any,
+        sample_rate: int,
+        device_index: Optional[int] = None,
+        *,
+        gain: float = 1.0,
+        poll: Callable[[], None] = lambda: None,
+        should_stop: Callable[[], bool] = lambda: False,
+        timeout: float = 5.0,
+        node_name: str = "unknown",
+    ) -> Tuple[str, int]:
+        """Потоковое воспроизведение (#3930): кадры берутся из ``source.read(n)`` по мере прихода.
+
+        ``source.read(n)`` - до ``n`` кадров mono float32 (меньше - пока нет), ``source.done`` - больше не
+        будет. Нехватка кадров посреди реплики - тишина, её длина в кадрах возвращается (честный учёт
+        провалов); хвост буфера доигрывается. ``poll`` зовётся каждые 20 мс (огибающая рта),
+        ``should_stop()`` или :meth:`abort_stream` - обрыв сразу. Тот же вывод, что у ``play_audio``:
+        ``device_index``, 16 кГц стерео. Исход: ``done`` / ``stopped`` / ``failed``.
+        """
+        if sd is None:
+            print(f"❌ [{node_name}] sounddevice недоступен — невозможно воспроизвести")
+            return "failed", 0
+        if not self._playback_lock.acquire(timeout=timeout):
+            print(f"⚠️  [{node_name}] Аудио устройство занято, пропускаем воспроизведение")
+            return "failed", 0
+        self._abort_stream.clear()
+        underrun = [0]
+        ended = threading.Event()
+
+        def fill(outdata, frames, _time, _status):
+            mono = source.read(frames) * gain
+            outdata[: mono.size, 0] = mono
+            outdata[: mono.size, 1] = mono
+            outdata[mono.size:] = 0.0
+            if mono.size < frames:
+                if source.done:
+                    raise sd.CallbackStop
+                underrun[0] += frames - mono.size
+
+        try:
+            stream = sd.OutputStream(samplerate=sample_rate, channels=2, dtype="float32", device=device_index,
+                                     callback=fill, finished_callback=ended.set)
+            with stream:
+                while not ended.wait(0.02):
+                    poll()
+                    if should_stop() or self._abort_stream.is_set():
+                        stream.abort()
+                        return "stopped", underrun[0]
+            poll()
+            return "done", underrun[0]
+        except Exception as e:  # noqa: BLE001 - устройство занято/пропало: честный failed
+            print(f"❌ [{node_name}] Ошибка потокового воспроизведения: {e}")
+            return "failed", underrun[0]
+        finally:
+            self._playback_lock.release()
+
+    def abort_stream(self) -> None:
+        """Оборвать потоковое воспроизведение (барж-ин / STOP): ``play_stream`` выходит за ≤ 20 мс."""
+        self._abort_stream.set()
 
     def _release_lock(self):
         """Освободить блокировку воспроизведения (внутренний метод)."""

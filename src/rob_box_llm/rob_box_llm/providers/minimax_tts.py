@@ -207,6 +207,33 @@ def _enforce_content_size(
         )
 
 
+async def _sse_lines(resp: httpx.Response, *, provider: str) -> AsyncIterator[str]:
+    """Whole SSE lines of ``resp``: a network read may end mid-event (spike #3930 — a
+    hex event of ~40 KB spans several reads), so the tail waits for the next read.
+
+    BLK-6: the cumulative byte counter fires on raw network bytes (SSE framing + JSON
+    envelope), i.e. BEFORE the decoded audio itself can blow the budget.
+    """
+    bytes_seen = 0
+    pending = b""
+    async for chunk in resp.aiter_bytes():
+        bytes_seen += len(chunk)
+        if bytes_seen > DEFAULT_MAX_CONTENT_SIZE:
+            # BLK-6: HARD POLICY ceiling — always propagates (see ``stream``).
+            raise _ContentSizeExceeded(
+                f"minimax stream too large: read {bytes_seen} bytes "
+                f"exceeds limit={DEFAULT_MAX_CONTENT_SIZE} bytes "
+                f"(provider={provider})",
+                provider=provider,
+            )
+        pending += chunk
+        *lines, pending = pending.split(b"\n")
+        for raw in lines:
+            yield raw.decode("utf-8", errors="replace")
+    if pending:
+        yield pending.decode("utf-8", errors="replace")
+
+
 def _transport_text(exc: Exception, secrets: tuple[str, ...]) -> str:
     """``"<класс httpx>: <текст>"`` — у ``ReadError``/``ReadTimeout`` str() часто пустой, класс и есть причина."""
     text = _redact_sensitive_text(str(exc), secrets=secrets)
@@ -393,6 +420,7 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset(
         "voice_setting",
         "audio_setting",
         "text_normalization",
+        "stream_options",
     }
 )
 
@@ -1223,21 +1251,12 @@ class MiniMaxTTSProvider(BaseTTSProvider):
             default_voice=self._default_voice,
             default_model=self._default_model,
         )
+        # #3930: by default the closing ``status=2`` event repeats the whole utterance as one
+        # aggregated hex blob (platform.minimax.io T2A v2, ``stream_options``) — a streaming
+        # caller would hear it twice. Spike 23.10: concatenated pieces == the aggregate, bit-exact.
+        payload["stream_options"] = {"exclude_aggregated_audio": True}
         yielded_audio = False
         collected_sr = 0
-        # BLK-6: cumulative byte counter for the SSE stream. ``aiter_bytes``
-        # yields raw network bytes (which include the SSE framing + JSON
-        # envelope, not just the decoded audio), so this naturally fires
-        # BEFORE the audio payload itself blows the budget — we get a
-        # cheap, single-comparison OOM guard per chunk.
-        bytes_seen = 0
-        # BLK-6: set when the upstream signals end-of-stream via
-        # ``data: [DONE]``. The outer ``aiter_bytes`` loop must keep
-        # draining the socket so we don't strand half-consumed bytes
-        # in the connection pool; once the inner ``for line`` loop is
-        # done, we break out of the outer loop and fall through to the
-        # terminal ``stop`` chunk yield below.
-        saw_done = False
         try:
             url = f"{self._base_url}/v1/t2a_v2"
             async with self._client.stream(
@@ -1266,97 +1285,73 @@ class MiniMaxTTSProvider(BaseTTSProvider):
                             provider=self.name,
                             secrets=(self._api_key, self._group_id),
                         ) from exc
-                async for chunk in resp.aiter_bytes():
-                    bytes_seen += len(chunk)
-                    if bytes_seen > DEFAULT_MAX_CONTENT_SIZE:
-                        # BLK-6: this is a HARD POLICY ceiling. The outer
-                        # ``except Exception`` (below) converts recoverable
-                        # transport errors into an in-band ``error`` chunk,
-                        # but partial audio + a silent swallow is the wrong
-                        # outcome here — the caller asked for a bounded
-                        # response and we must ALWAYS propagate. ``_ContentSizeExceeded``
-                        # is a :class:`TTSError` subclass so the outer
-                        # handler recognises it and re-raises unchanged.
-                        raise _ContentSizeExceeded(
-                            f"minimax stream too large: read {bytes_seen} bytes "
-                            f"exceeds limit={DEFAULT_MAX_CONTENT_SIZE} bytes "
-                            f"(provider={self.name})",
-                            provider=self.name,
-                        )
-                    try:
-                        text = chunk.decode("utf-8", errors="replace")
-                    except Exception as exc:  # noqa: BLE001
-                        raise TTSError(
-                            f"minimax stream decode error: {exc}",
-                            provider=self.name,
-                        ) from exc
-                    # SSE events are separated by blank lines; ``aiter_bytes``
-                    # hands us raw network bytes, so we split on those. This
-                    # is equivalent to aiter_lines() but interleaved with the
-                    # byte-count guard above.
-                    for line in text.splitlines():
-                        if not line:
-                            continue
-                        # MiniMax SSE payload: "data:{json}\n\n"
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                        if line == "[DONE]":
-                            saw_done = True
-                            continue
-                        try:
-                            evt = json.loads(line)
-                        except json.JSONDecodeError:
-                            diagnostic = _redact_sensitive_text(
-                                line[:80], secrets=(self._api_key, self._group_id)
-                            )
-                            _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
-                            continue
-                        base_resp = evt.get("base_resp") or {}
-                        if base_resp.get("status_code", 0) != 0:
-                            raw_status_msg = str(base_resp.get("status_msg", "unknown"))
-                            status_msg = _redact_sensitive_text(
-                                raw_status_msg,
-                                secrets=(self._api_key, self._group_id),
-                            )
-                            message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
-                            msg_lower = raw_status_msg.lower()
-                            if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
-                                api_error: TTSError = TTSAuthError(message, provider=self.name)
-                            elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
-                                api_error = TTSRateLimitError(message, provider=self.name)
-                            elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
-                                api_error = TTSBadRequestError(message, provider=self.name)
-                            else:
-                                api_error = TTSError(message, provider=self.name)
-                            if yielded_audio:
-                                yield TTSChunk(finish_reason="error")
-                                return
-                            raise api_error
-                        payload_data = evt.get("data") or {}
-                        chunk_hex = payload_data.get("audio")
-                        if chunk_hex:
-                            try:
-                                chunk_samples = bytes.fromhex(chunk_hex)
-                            except ValueError as exc:
-                                raise TTSError(
-                                    f"minimax returned non-hex audio payload: {exc}",
-                                    provider=self.name,
-                                ) from exc
-                            collected_sr = int(
-                                payload_data.get("audio_sample_rate", collected_sr or 32000)
-                            )
-                            yielded_audio = True
-                            actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
-                            yield TTSChunk(
-                                samples=chunk_samples,
-                                sample_rate=collected_sr,
-                                format=actual_format,
-                            )
-                    if saw_done:
-                        # Drain the rest of the socket (if any) so the
-                        # connection returns cleanly to the keep-alive pool,
-                        # then exit the outer byte loop.
+                async for line in _sse_lines(resp, provider=self.name):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # MiniMax SSE payload: "data:{json}" + blank line
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        # BLK-6: upstream signalled end-of-stream — fall through
+                        # to the terminal ``stop`` chunk below.
                         break
+                    try:
+                        evt = json.loads(line)
+                    except json.JSONDecodeError:
+                        diagnostic = _redact_sensitive_text(
+                            line[:80], secrets=(self._api_key, self._group_id)
+                        )
+                        _log.debug("ignoring non-JSON SSE line: %r", diagnostic)
+                        continue
+                    base_resp = evt.get("base_resp") or {}
+                    if base_resp.get("status_code", 0) != 0:
+                        raw_status_msg = str(base_resp.get("status_msg", "unknown"))
+                        status_msg = _redact_sensitive_text(
+                            raw_status_msg,
+                            secrets=(self._api_key, self._group_id),
+                        )
+                        message = f"minimax stream error {base_resp.get('status_code')}: {status_msg}"
+                        msg_lower = raw_status_msg.lower()
+                        if "auth" in msg_lower or "key" in msg_lower or "token" in msg_lower:
+                            api_error: TTSError = TTSAuthError(message, provider=self.name)
+                        elif "quota" in msg_lower or "rate" in msg_lower or "limit" in msg_lower:
+                            api_error = TTSRateLimitError(message, provider=self.name)
+                        elif "invalid" in msg_lower or "param" in msg_lower or "voice" in msg_lower:
+                            api_error = TTSBadRequestError(message, provider=self.name)
+                        else:
+                            api_error = TTSError(message, provider=self.name)
+                        if yielded_audio:
+                            yield TTSChunk(finish_reason="error")
+                            return
+                        raise api_error
+                    payload_data = evt.get("data") or {}
+                    # #3930: ``status=2`` is the closing event; if it still carries audio it is the
+                    # aggregate of everything already yielded (``exclude_aggregated_audio`` ignored).
+                    chunk_hex = payload_data.get("audio") if payload_data.get("status") != 2 else None
+                    if chunk_hex:
+                        try:
+                            chunk_samples = bytes.fromhex(chunk_hex)
+                        except ValueError as exc:
+                            raise TTSError(
+                                f"minimax returned non-hex audio payload: {exc}",
+                                provider=self.name,
+                            ) from exc
+                        # #3930: audio events carry no rate (it is in ``extra_info`` of the closing
+                        # event) — the requested rate is the truth, not a 32 kHz guess.
+                        collected_sr = int(
+                            payload_data.get("audio_sample_rate")
+                            or collected_sr
+                            or s.sample_rate
+                            or 32000
+                        )
+                        yielded_audio = True
+                        actual_format = TTSFormat.MP3 if s.format == TTSFormat.OGG else s.format
+                        yield TTSChunk(
+                            samples=chunk_samples,
+                            sample_rate=collected_sr,
+                            format=actual_format,
+                        )
         except Exception as exc:  # noqa: BLE001
             # Transport/decoder failures after the first audio frame are
             # represented in-band; before that point they must raise.

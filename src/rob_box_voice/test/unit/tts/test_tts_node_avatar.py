@@ -35,7 +35,6 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_voice import tts_node as _tts_node_mod  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
 
 
@@ -703,36 +702,3 @@ def test_sap_publish_for_sink_headset_meta_rate_matches_resampled_pcm():
     )
 
     _assert_meta_matches_pcm(n, len(audio), src_rate)
-
-
-def test_streaming_minimax_headset_meta_rate_matches_resampled_pcm():
-    import asyncio
-
-    from rob_box_llm.tts import TTSChunk, TTSFormat
-
-    n = _make_resampling_node()
-    n._decode_minimax_audio = TTSNode._decode_minimax_audio.__get__(n)
-    n._decoded_audio_to_float32 = TTSNode._decoded_audio_to_float32
-    src_rate = 32000
-    pcm = np.zeros(src_rate, dtype="<i2").tobytes()  # 1 с @ 32 кГц
-
-    async def fake_stream(text, ssml_attrs, voice=None, language=None):
-        yield TTSChunk(
-            samples=pcm,
-            sample_rate=src_rate,
-            format=TTSFormat.PCM,
-            finish_reason="stop",
-        )
-
-    n._stream_minimax_chunks = fake_stream
-
-    async def run():
-        return await asyncio.to_thread(
-            lambda: TTSNode._synthesize_minimax_streaming_publish(
-                n, "hello", {}, sink="headset"
-            )
-        )
-
-    asyncio.run(run())
-
-    _assert_meta_matches_pcm(n, src_rate, src_rate)
