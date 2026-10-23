@@ -77,6 +77,13 @@ class Line:
     heard_at: Optional[float] = None
     spoken_chars: int = 0
     fallback: Optional["Line"] = None
+    #: Текст, ушедший владельцу речи (с паузами MiniMax по сетке, :mod:`.rap_pauses`); ``""`` — ещё не отдан.
+    speak: str = ""
+
+    @property
+    def tts_text(self) -> str:
+        """Что синтезировать: отданный текст (пред-синтез и звучание — одним текстом) или исходный."""
+        return self.speak or self.text
 
     def length_s(self, rate: SpeechRate) -> float:
         """Длительность: синтезированная или оценка по скорости речи."""

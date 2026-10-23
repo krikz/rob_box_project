@@ -106,6 +106,7 @@ from .core.speak_helpers import (
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
 from rob_box_dialog.knowledge import SPEECH_OUTPUT_LATENCY_MS
+from rob_box_dialog.plan.rap_pauses import text_for as _pause_text_for
 from .core.provider_health import record_tts_death, tts_provider_states
 from .core.voice_owner import attach_voice_owner
 
@@ -4073,11 +4074,12 @@ class TTSNode(Node):
                     budget_deadline=cloud_deadline,
                 )
             elif provider_name == "yandex":
+                # #3901 — паузы MiniMax ``<#x#>`` (рэп по сетке строк) Yandex не понимает: метки сняты.
                 self._sap_synthesize_yandex(
                     voice,
                     language,
                     ssml_attributes,
-                    text,
+                    _pause_text_for("yandex", text),
                     ctx,
                 )
             elif provider_name == "silero":
@@ -4347,6 +4349,7 @@ class TTSNode(Node):
         # * warm-load ещё не запущен (тест / нестандартный init)
         #   → событие не set → timeout → skip chunk
         _tts_guard_ensure_readable(text, "silero")  # #3728: не читает письменность - честный unsupported_script
+        text = _pause_text_for("silero", text)  # #3901 — паузы MiniMax ``<#x#>`` Silero не понимает: метки сняты
         _warm_wait_s = 1.5
         # getattr-fallback: стабы (bare ``_Stub`` / ``_playback_node``)
         # не проходят через __init__ и не несут атрибут — считаем

@@ -10,7 +10,9 @@
 Жизненный цикл — ``Parallel(success_count=1)`` (BehaviorTree.CPP):
 
 * все сегменты сразу уходят в пред-синтез (``commit=false``), подложка запрашивается параллельно (решение
-  координатора 22.10: длина — по оценке речи); ``synthesized{duration_ms}`` дают длительности;
+  координатора 22.10: длина — по оценке речи); ``synthesized{duration_ms}`` дают длительности; голос MiniMax и бит —
+  пред-синтез ждёт исхода подложки: куплет размечается паузами ``<#x#>`` по её такту (О11, :mod:`.rap_pauses`),
+  без сетки или не у MiniMax — как есть, причина в логе ``perform: разметка пауз выключена (…)``;
 * первая реплика ждёт исхода подложки: ``started`` — вступление «Поехали!» и сегменты на тактах (:mod:`.sync`);
   отказ — вторая попытка другим настроением (О10), затем фраза по причине ``perform.no_backing.{reason}`` и чтение
   без бита: рэп в тишину молча не начинается;
@@ -38,6 +40,7 @@ from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
 from rob_box_dialog.plan.plan_events import PlanEvent
+from rob_box_dialog.plan.rap_pauses import PAUSE_PROVIDERS, markup
 from rob_box_dialog.plan.segments import FIXED, HEARD, Line, SegmentList, segment_rows
 from rob_box_dialog.plan.sync import BeatGrid, beat_offset_ms, next_bar
 
@@ -86,7 +89,8 @@ def _new_id() -> str:
 
 def presynth(line: Line) -> Say:
     """Пред-синтез реплики: звука нет, владелец речи ответит ``synthesized{duration_ms}``."""
-    return Say(line.speech_id, line.text, False, 0.0, line.voice, line.emotion, line.key)
+    line.speak = line.tts_text
+    return Say(line.speech_id, line.speak, False, 0.0, line.voice, line.emotion, line.key)
 
 
 def withdraw(lines: SegmentList, active_boundary: str) -> List[Cancel]:
@@ -98,7 +102,7 @@ def withdraw(lines: SegmentList, active_boundary: str) -> List[Cancel]:
         if line.state == "active":
             out.append(Cancel(line.speech_id, active_boundary))
         elif line.state in ("committed", "pending"):
-            out.append(Cancel(line.speech_id))
+            out += [Cancel(line.speech_id)] if line.speak or line.state == "committed" else []  # не отданную — молча
             line.state = "cancelled" if line.state == "committed" else "dropped"
     return out
 
@@ -144,6 +148,10 @@ class SpeechSide:
         self._log = log
         self._grid = grid
         self._released = 0
+        #: Пред-синтез сегментов ждёт исхода подложки: от её сетки зависит разметка пауз MiniMax (О11).
+        self.hold = False
+        #: Такт подложки (с), по которому сегменты размечаются паузами; ``None`` — разметка выключена.
+        self.pause_bar_s: Optional[float] = None
 
     def commit(self, now: float) -> List[Effect]:
         """На границе — следующую реплику на звучание: на ближайшем такте подложки (без неё — сразу за предыдущей)."""
@@ -153,7 +161,27 @@ class SpeechSide:
         line, after = due
         slot = next_bar(self._grid(), now, self._latency_ms, after)
         line.state, line.at, line.synced = "committed", slot.at, slot.synced
-        return [*self.release(), Say(line.speech_id, line.text, True, slot.at, line.voice, line.emotion, line.key)]
+        return [*self.release(), Say(line.speech_id, line.tts_text, True, slot.at, line.voice, line.emotion,
+                                     line.key)]
+
+    def presynth(self, lines: List[Line]) -> List[Say]:
+        """Пред-синтез ещё не отданных сегментов; разметка включена — с паузами MiniMax по сетке строк. Пока
+        ``hold`` — ничего: сегменты уйдут по исходу подложки (:meth:`unhold`)."""
+        if self.hold:
+            return []
+        out = []
+        for line in lines:
+            mark = markup(line.text, self.pause_bar_s) if line.no and self.pause_bar_s and not line.speak else None
+            if mark is not None:
+                line.speak = mark.text
+                self._log(f"{LOG_MARK} сегмент {line.no}: тактов на строку {mark.bars_per_line}, паузы {mark.pauses}")
+            out.append(presynth(line))
+        return out
+
+    def unhold(self, bar_s: Optional[float]) -> List[Say]:
+        """Исход подложки известен: пред-синтез отложенных сегментов (с разметкой по такту ``bar_s`` или без)."""
+        self.hold, self.pause_bar_s = False, bar_s
+        return self.presynth([line for line in self.lines.lines if line.state == "pending" and not line.speak])
 
     def release(self) -> List[Cancel]:
         """Версии сегментов, которые уже не прозвучат (заменены правкой, уступили на границе), — отмена: владелец речи
@@ -224,7 +252,7 @@ class SpeechSide:
             return [], reason or "edit_late"
         new, numbers = self.lines.replace_tail(first_no, rows)
         self._log(f"{LOG_MARK} правка — сегменты {numbers} заменены")
-        out: List[Effect] = [*self.release(), *(presynth(line) for line in new)]
+        out: List[Effect] = [*self.release(), *self.presynth(new)]
         return out + [self._event("segment_replaced", no, reason="edit") for no in numbers], ""
 
 
@@ -300,9 +328,11 @@ class MusicSide:
         """Подложки не будет: фраза по причине и чтение без бита (рэп в тишину молча не начинается)."""
         why = self.track.fail(reason, now)
         self._block.log(f"подложки нет ({reason} → {why}) — читаю без неё")
+        held = self._block.speech.hold  # отложенный пред-синтез — первым: фраза отказа синтезируется сама
+        unheld: List[Effect] = list(self._block.pauses_off(f"подложки нет: {reason}")) if held else []
         if why == "busy":  # играет чужая музыка (спросили или успела встать) — читаем под неё, не в тишину
-            return self._block.pump(now)
-        return [self._block.speech.phrase(f"perform.no_backing.{why}"), *self._block.pump(now)]
+            return unheld + self._block.pump(now)
+        return [*unheld, self._block.speech.phrase(f"perform.no_backing.{why}"), *self._block.pump(now)]
 
     def need(self, now: float) -> float:
         """Сколько секунд подложке звучать от сейчас: оценка речи × запас + outro (координатор 22.10)."""
@@ -314,8 +344,9 @@ class MusicSide:
         self._block.log(f"подложка {track_id} started "
                         + (f"bpm={grid.bpm:g} такт={grid.bar_s:.2f} с" if grid else "без сетки — чтение без тактов"))
         if self._block.phase != "starting":  # #993: добавили во время чтения — следующий сегмент уже на такте
+            self._block.pauses_off("бит добавлен посреди чтения — куплеты уже синтезированы")
             return self._block.pump(now)
-        return [self._block.speech.lead_in(), *self._block.pump(now)]
+        return [self._block.speech.lead_in(), *self._block.pauses_on(grid), *self._block.pump(now)]
 
     def _rejected(self, reason: str, now: float) -> List[Effect]:
         """Отказ подложки: вторая попытка другим настроением, если в ней есть смысл (``busy`` — нет)."""
@@ -345,7 +376,8 @@ class PerformBlock:
 
     def __init__(self, perf: Performance, block_id: str, *, turn_id: str = "", epoch: int = 0,
                  agent: str = kn.AGENTS[0], output_latency_ms: int = 0, rate: Optional[SpeechRate] = None,
-                 new_id: Callable[[], str] = _new_id, log: Callable[[str], None] = _LOG.info) -> None:
+                 new_id: Callable[[], str] = _new_id, log: Callable[[str], None] = _LOG.info,
+                 tts_provider: str = "") -> None:
         self.block_id = block_id
         self.kind = perf.kind
         self._ids: Dict[str, Any] = {"turn_id": turn_id, "epoch": epoch, "agent": agent}
@@ -356,6 +388,8 @@ class PerformBlock:
         self.phase = "new"  # new → starting → running → stopping → ended
         self.end_reason = ""
         self._last_event = 0.0
+        #: Провайдер TTS (фактический у хоста): паузы по сетке строк — только у понимающих ``<#x#>`` (О11).
+        self.tts_provider = tts_provider
 
     # -- что видят хост, валидатор и LLM ----------------------------------------------------------------------------
 
@@ -394,7 +428,12 @@ class PerformBlock:
             return []
         self.phase, self._last_event = "starting", now
         out: List[Effect] = [self._event("block_start", reason=self.kind)]
-        out += [presynth(line) for line in self.lines.lines]
+        if self.backing.wanted and self.tts_provider in PAUSE_PROVIDERS:
+            self.speech.hold = True  # разметка пауз — по сетке подложки: пред-синтез ждёт её исхода
+        else:
+            self.pauses_off("нет подложки" if not self.backing.wanted
+                            else f"синтез {self.tts_provider or 'неизвестен'}, не MiniMax")
+        out += self.speech.presynth(self.lines.lines)
         out += self.music.begin(now, playing)
         self.log(f"{self.kind}: сегментов {len(self.lines.lines)}, подложка {self.backing.mood or 'нет'}")
         return out + self.pump(now)
@@ -476,6 +515,20 @@ class PerformBlock:
 
     def log(self, text: str) -> None:
         self._log(f"{LOG_MARK} {self.block_id[:8]}: {text}")
+
+    def pauses_on(self, grid: Optional[BeatGrid]) -> List[Say]:
+        """Подложка встала: отложенные сегменты — в пред-синтез, с паузами по её такту (сетки нет — без них)."""
+        if not self.speech.hold:
+            return []
+        if grid is None:
+            return self.pauses_off("подложка без сетки тактов")
+        self.log(f"perform: разметка пауз MiniMax по сетке строк, такт {grid.bar_s:.2f} с")
+        return self.speech.unhold(grid.bar_s)
+
+    def pauses_off(self, reason: str) -> List[Say]:
+        """Разметки пауз не будет — честно в логе; отложенные сегменты — в пред-синтез как есть."""
+        self.log(f"perform: разметка пауз выключена ({reason})")
+        return self.speech.unhold(None) if self.speech.hold else []
 
     def pump(self, now: float) -> List[Effect]:
         """Начать, когда решилась подложка; на границе отдать следующую реплику на звучание; всё — закончить."""

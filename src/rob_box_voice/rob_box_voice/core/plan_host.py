@@ -59,7 +59,8 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
     executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
-                                     on_ask=lambda title: perform_ask.open_window(node, title))
+                                     on_ask=lambda title: perform_ask.open_window(node, title),
+                                     tts_provider=lambda: _tts_provider(node))
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
 
@@ -70,6 +71,19 @@ def _foreign_music(node: Any) -> str:
     if player is None or not (player.is_playing() or player.dj):
         return ""
     return str((player.dj_info or {}).get("title") or "музыка")
+
+
+def _tts_provider(node: Any) -> str:
+    """Провайдер TTS сейчас: фактический из ``/voice/tts/provider_state`` (после фолбека), иначе номинальный
+    параметр ``tts_provider``; неизвестен — ``""`` (выступление тогда без пауз MiniMax, с причиной в логе).
+    ``prefetch`` — не провайдер: так tts_node метит звучание готового пред-синтеза, кто синтезировал — не сказано."""
+    actual = getattr(node, "_actual_tts_provider", None)
+    if actual and actual != "prefetch":
+        return str(actual)
+    try:
+        return str(node.get_parameter("tts_provider").value or "")
+    except Exception:  # noqa: BLE001 — параметр не объявлен (тестовая нода): провайдер неизвестен
+        return ""
 
 
 def _now(node: Any) -> float:
