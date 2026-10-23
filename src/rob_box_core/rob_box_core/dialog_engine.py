@@ -4,7 +4,8 @@
 диалога стартует (``v1`` - ``dialogue_node``, ``v2`` - ``dialog_node``), ``tts_node`` подключает вход
 ``/voice/dialogue/response`` адаптера ``speech_compat`` только при ``v1``, ``telegram_node`` и ``supervisor_node`` при
 ``v2`` не трогают топики ``dialogue_node`` (их замену дают PR-10/PR-12a/PR-13). Значения и чтение - только здесь
-(``rob_box_core`` есть во всех образах Sound Pi, ``rob_box_dialog`` - не во всех). Дефолт ``v1`` до приёмки PR-14.
+(``rob_box_core`` есть во всех образах Sound Pi, ``rob_box_dialog`` - не во всех).
+Дефолт ``v2`` (решение Шифу 23.10.2026).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Any, List, Mapping, Tuple, Union
 PARAM = "dialog_engine"
 V1, V2 = "v1", "v2"
 ENGINES: Tuple[str, ...] = (V1, V2)
-DEFAULT = V1
+DEFAULT = V2
 #: Имя файла флага в каталоге конфигов ``voice_assistant`` (обе копии сверяет тест).
 FILE_NAME = "dialog_engine.yaml"
 
@@ -37,7 +38,7 @@ def declare(node: Any) -> str:
 
 def from_yaml(path: Union[str, Path]) -> str:
     """Значение из ``dialog_engine.yaml`` (для launch, до старта нод). Файла нет - :data:`DEFAULT`
-    (старые каталоги конфигов без флага ведут себя как раньше); ключа нет или значение чужое - ``ValueError``."""
+    (каталог конфигов без флага ведёт себя как дефолт); ключа нет или значение чужое - ``ValueError``."""
     import yaml  # noqa: PLC0415 — нужен только launch-у
 
     file = Path(path)
@@ -55,8 +56,7 @@ def launch_nodes(context: Any, dialogue_node: Any, tts_node_args: Mapping[str, A
 
     Флаг читается из ``<config_dir>/dialog_engine.yaml``: ``v1`` — ``dialogue_node`` и ``tts_node``; ``v2`` —
     ``dialog_node`` (свой ``dialog_node.yaml``) на месте ``dialogue_node``, тот не стартует. ``tts_node`` и
-    ``dialog_node`` получают значение флага параметром (файла может не быть в старом каталоге конфигов — тогда ``v1``,
-    и launch не падает на params-file).
+    ``dialog_node`` получают значение флага параметром (файла может не быть в старом каталоге конфигов — тогда дефолт).
     """
     from launch.substitutions import LaunchConfiguration  # noqa: PLC0415 — launch есть только в образе
     from launch_ros.actions import Node  # noqa: PLC0415
