@@ -190,30 +190,37 @@ def build_host(node: Any) -> Tuple[Any, Any]:
     import time  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
+    from rob_box_core import dialog_engine  # noqa: PLC0415
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
     from rob_box_dialog.session import Session  # noqa: PLC0415
     from rob_box_dialog.turn import TurnEngine  # noqa: PLC0415
-    from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: PLC0415
+    from rob_box_dialog_msgs.msg import Intent, SpeechEvent  # noqa: PLC0415
     from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt  # noqa: PLC0415
     from rob_box_voice.core import command_bridge  # noqa: PLC0415
     from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper  # noqa
+
+    from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: PLC0415
 
     tools = node._build_operator_tools()
     if tools is None:
         return (None, None)
     log = node.get_logger().info
-    chain = node._parse_provider_chain(node._param_str("llm_providers", "minimax,deepseek"))
+    chain = node._parse_provider_chain(node._param_str("llm_providers", kn.COMMAND_PROVIDERS_DEFAULT))
     counter = CallCounter()
     bridge = command_bridge.wrapper_for(command_providers(chain), log=log, agent=OPERATOR)
     spec = AgentSpec(name=OPERATOR, prompt_dir=node._resolve_prompts_dir() or Path(""),
                      system_prompt_file=node._system_prompt_file, provider_chain=chain,
                      settings=node._build_operator_llm_settings(), wrap_provider=counted_wrapper(bridge, counter))
     session = Session(OPERATOR, clock=time.time)
-    base = V2Ports(node, build_llm_chain(spec), counter, tools, agent=OPERATOR, log=log,
+    # «стой» оператора (Tier-1) гасит и движение: интент ``stop_motion`` владельцу движения (command_node)
+    intent_pub = node.create_publisher(Intent, "/dialog/intent", 10)
+    base = V2Ports(node, build_llm_chain(spec), counter, tools, agent=OPERATOR, intent_pub=intent_pub, log=log,
                    epoch=lambda: session.snapshot.epoch)
     ports = OperatorPorts(base, log)
     base.on_late = ports.late
     node._operator_journal = node._build_operator_journal()
-    engine = TurnEngine(session, ports, system_prompt=load_system_prompt(spec), log=node.get_logger(),
+    engine = TurnEngine(session, ports, system_prompt=operator_prompt(load_system_prompt(spec), dialog_engine.V2),
+                        log=node.get_logger(),
                         sections=lambda _snap, _text: {"operator_journal": node._render_journal_context()})
     host = OperatorHost(engine, ports, base.executor, log)
     ports.on_late = lambda rid, result, text: node._publish_command_result(

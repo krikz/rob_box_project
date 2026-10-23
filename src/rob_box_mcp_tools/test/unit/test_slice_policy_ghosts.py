@@ -30,3 +30,15 @@ def test_operator_control_slice_is_gone():
     policy = _policy()
     assert "operator.control" not in policy["slices"]
     assert all("operator.control" not in slices for slices in policy["senders"].values())
+
+
+def test_operator_view_is_the_operator_slices_of_the_policy():
+    """PR-13b: реестр ТАРС = видимые Личности ∪ срезы ``operator.*`` сендера ``avatar_supervisor`` — одно знание
+    (срез), а не флаг ``operator_visible`` рядом с ним; в 13a ``show_metrics`` был в политике, но не в срезе хода."""
+    from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
+
+    policy = _policy()
+    granted = {t for s in policy["senders"]["avatar_supervisor"] if s.startswith("operator.")
+               for t in policy["slices"][s]}
+    llm = {e.name for e in llm_visible_tools()}
+    assert {e.name for e in operator_visible_tools()} == llm | granted
