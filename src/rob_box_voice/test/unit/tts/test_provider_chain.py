@@ -441,3 +441,70 @@ def test_chain_nonempty_text_after_empty_guard_still_uses_minimax() -> None:
     node._synthesize_minimax.assert_called_once()
     node._synthesize_yandex.assert_not_called()
     assert node._provider_dead_until == {}
+
+
+# ── #3930: поток MiniMax в динамик ───────────────────────────────────────────
+
+
+def _stream_node(monkeypatch, outcome="done"):
+    from rob_box_voice.core import tts_stream
+
+    node = _playback_node()
+    node.minimax_streaming = True
+    node.minimax_timeout = 2.0
+    # всё, что читает ``TTSNode._minimax_settings`` (настройки одни для HTTP и потока)
+    node.minimax_speed, node.minimax_language = 1.0, "ru"
+    node.minimax_sample_rate, node.minimax_format = 32000, tts_node.TTSFormat.PCM
+    node.minimax_emotion = node.minimax_pitch_raw = node.minimax_volume_raw = ""
+    node.minimax_pronunciation_dict_raw = ""
+    node._publish_tts_finished = MagicMock()
+    node._release_play_seq = MagicMock()
+    stream = tts_stream.PcmStream(16000)
+    stream.put(np.full(8000, 0.3, dtype=np.float32))
+    stream.finish(tts_stream.BROKEN if outcome == tts_stream.BROKEN else None)
+    opened = MagicMock(return_value={"audio_np": stream, "sample_rate": 16000,
+                                     "already_published": True, "stream": stream})
+    monkeypatch.setattr(tts_stream, "open_for_playback", opened)
+    node.playback_manager.play_stream.return_value = ("done" if outcome == tts_stream.BROKEN else outcome, 0)
+    return node, opened
+
+
+def test_stream_speaker_reply_plays_through_play_stream_not_play_audio(monkeypatch) -> None:
+    node, opened = _stream_node(monkeypatch)
+    _run_and_play(node)
+    opened.assert_called_once()
+    node._synthesize_minimax.assert_not_called()  # HTTP целиком не ждём
+    node.playback_manager.play_audio.assert_not_called()
+    node.playback_manager.play_stream.assert_called_once()
+    kwargs = node._publish_tts_finished.call_args.kwargs
+    assert kwargs["success"] is True and kwargs["duration_sec"] == 0.5
+
+
+def test_stream_broken_after_sound_closes_reply_with_error(monkeypatch) -> None:
+    from rob_box_voice.core import tts_stream
+
+    node, _ = _stream_node(monkeypatch, outcome=tts_stream.BROKEN)
+    _run_and_play(node)
+    kwargs = node._publish_tts_finished.call_args.kwargs
+    assert kwargs["success"] is False and kwargs["error"] == tts_stream.BROKEN
+
+
+def test_stream_failure_before_sound_falls_back_to_yandex(monkeypatch) -> None:
+    from rob_box_voice.core import tts_stream
+
+    node = _playback_node()
+    node.minimax_streaming = True
+    node.yandex_stub = object()
+    node._synthesize_yandex = MagicMock(return_value=np.zeros(2205, dtype=np.float32))
+    monkeypatch.setattr(tts_stream, "open_for_playback", MagicMock(side_effect=RuntimeError("нет звука")))
+    _run_and_play(node)
+    node._synthesize_yandex.assert_called_once()
+    node.playback_manager.play_audio.assert_called_once()
+
+
+def test_headset_sink_never_streams(monkeypatch) -> None:
+    node, opened = _stream_node(monkeypatch)
+    node._publish_headset_audio = MagicMock()
+    TTSNode._synthesize_and_play(node, "<speak>hello</speak>", "hello", None, {}, None, sink="headset")
+    opened.assert_not_called()
+    node._synthesize_minimax.assert_called_once()

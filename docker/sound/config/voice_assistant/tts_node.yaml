@@ -64,7 +64,8 @@ tts_node:
     minimax_timeout: 30.0
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
-    minimax_streaming: false
+    # #3930 — реплика в динамик SSE-потоком (первый звук ~1 с вместо 2.2–3.6 с HTTP)
+    minimax_streaming: true
     # ADR-0150 PR-3 (#3688) — задержка «SpeechEvent started (перед play_audio)
     # → первый звук в колонке» (замер 20.10.2026 микрофоном katana: 560 / 570 /
     # 520 мс) — одно место: rob_box_dialog.knowledge.SPEECH_OUTPUT_LATENCY_MS
