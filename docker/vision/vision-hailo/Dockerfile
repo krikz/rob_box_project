@@ -174,6 +174,20 @@ RUN pip3 install --retries 5 --timeout 120 --no-cache-dir --prefix=/pyinstall -r
         exit 1; \
     fi
 
+# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
+# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
+# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
+# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
+# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
+# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
+# инвалидирует только правка самих src/rob_box_*_msgs.
+COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build \
+    --packages-select rob_box_perception_msgs rob_box_dialog_msgs \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
 # 4. data_files (resource / prompts / launch из setup.py) — изменяются иногда
 COPY src/rob_box_perception/resource /ws/src/rob_box_perception/resource
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
@@ -183,11 +197,9 @@ COPY src/rob_box_perception/launch /ws/src/rob_box_perception/launch
 # при изменении src/rob_box_perception* (issue #2314 pattern).
 ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 6. сборка (сначала msgs, потом nodes)
+# 6. сборка ноды (msgs уже собраны слоем выше)
 #
 # --symlink-install УБРАН (урок пилота led_matrix, коммит 037d982bf, уточнение
 # к плану §2.2): с этим флагом colcon кладёт в /ws/install не копии, а
@@ -197,7 +209,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # В одностадийном образе это не проявлялось: /ws/src и /ws/build лежали рядом.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_dialog_msgs rob_box_perception \
+    --packages-select rob_box_perception \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # ============================================================

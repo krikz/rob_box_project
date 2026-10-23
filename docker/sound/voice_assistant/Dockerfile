@@ -47,34 +47,12 @@ RUN mkdir -p src/rob_box_music src/rob_box_dialog src/rob_box_core src/rob_box_v
 # Шаг 1: Копируем package.xml для rosdep (зависимости меняются редко)
 COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_voice/package.xml /ws/src/rob_box_voice/
-COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/package.xml /ws/src/rob_box_music/
 # ADR-0150 PR-1: одна таблица знания диалога (вейк, тишина, громкость) — её импортируют voice и harness
 COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/package.xml /ws/src/rob_box_mcp_tools/
 COPY src/rob_box_harness/package.xml /ws/src/rob_box_harness/
 COPY src/rob_box_llm/package.xml /ws/src/rob_box_llm/
-# IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
-# rob_box_supervisor, потому что тот на нём зависит.
-COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
-# Issue #2279 (arch review): публикуем согласованный colcon-workspace
-# в voice-assistant — supervisor/quest больше НЕ пересобирают
-# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
-# между базой и потребителями, регрессии #2081 / #2089).
-# COPY идёт ПЕРЕД colcon build — иначе голосасс build
-# падает на ament_cmake (нужны CMakeLists.txt/srv/msg).
-COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
-COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
-# ADR-0150 PR-2 (#3687): типы диалога v2 (Utterance, SpeakerResult, ...).
-# rosidl-пакет собирается в том же colcon build, раньше rob_box_voice /
-# rob_box_mcp_tools (depend в package.xml). Копируем целиком (package.xml,
-# CMakeLists.txt, msg/, srv/) - иначе find_package/rosidl падает так же, как
-# у rob_box_supervisor_msgs выше.
-COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
-COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
-COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
 
 # Шаг 2: установка ROS зависимостей через rosdep — УДАЛЁН (issue #2378, devops).
 #
@@ -155,11 +133,49 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
     "ddgs>=9.0.0" \
     "duckduckgo-search>=8.0.0"
 
+# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
+# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
+# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
+# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
+# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
+# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
+# инвалидирует только правка самих src/rob_box_*_msgs.
+# Стоит ПОСЛЕ pip-слоя: правка msg не пересобирает resemblyzer/llvmlite.
+#
+# IDL пакет для avatar_supervisor (AV-12 / AV-5): собирается раньше
+# rob_box_supervisor, потому что тот на нём зависит.
+# Issue #2279 (arch review): публикуем согласованный colcon-workspace
+# в voice-assistant — supervisor/quest больше НЕ пересобирают
+# rob_box_supervisor_msgs/rob_box_core (это приводило к version skew
+# между базой и потребителями, регрессии #2081 / #2089).
+# ADR-0150 PR-2 (#3687): типы диалога v2 (Utterance, SpeakerResult, ...).
+# Пакеты копируем целиком (package.xml, CMakeLists.txt, msg/, srv/) —
+# иначе find_package/rosidl падает на ament_cmake.
+COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
+COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
+COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
+COPY src/rob_box_dialog_msgs/package.xml  /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/CMakeLists.txt /ws/src/rob_box_dialog_msgs/
+COPY src/rob_box_dialog_msgs/srv /ws/src/rob_box_dialog_msgs/srv
+COPY src/rob_box_dialog_msgs/msg /ws/src/rob_box_dialog_msgs/msg
+COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
+COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /ws/install/setup.sh && \
+    rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
+    ldconfig && \
+    colcon build \
+    --packages-select rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs \
+    --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
 # Шаг 3: Копируем setup.py и CMakeLists.txt (структура пакета меняется редко)
 COPY src/rob_box_core/setup.py /ws/src/rob_box_core/
 COPY src/rob_box_voice/setup.py /ws/src/rob_box_voice/
 COPY src/rob_box_voice/setup.cfg /ws/src/rob_box_voice/
-COPY src/rob_box_perception_msgs/CMakeLists.txt /ws/src/rob_box_perception_msgs/
 COPY src/rob_box_music/setup.py /ws/src/rob_box_music/
 COPY src/rob_box_dialog/setup.py /ws/src/rob_box_dialog/
 COPY src/rob_box_mcp_tools/setup.py /ws/src/rob_box_mcp_tools/
@@ -188,9 +204,6 @@ COPY src/rob_box_llm/resource /ws/src/rob_box_llm/resource
 COPY src/rob_box_voice/launch /ws/src/rob_box_voice/launch
 COPY src/rob_box_voice/config /ws/src/rob_box_voice/config
 COPY src/rob_box_voice/prompts /ws/src/rob_box_voice/prompts
-
-# Шаг 6: Копируем message файлы для rob_box_perception_msgs
-COPY src/rob_box_perception_msgs/msg /ws/src/rob_box_perception_msgs/msg
 
 
 # ============================================================
@@ -292,7 +305,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rm -rf /opt/ros/${ROS_DISTRO}/share/*/cmake/*.cmake~ && \
     ldconfig && \
     colcon build \
-    --packages-select rob_box_core rob_box_supervisor_msgs rob_box_dialog_msgs rob_box_perception_msgs rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
+    --packages-select rob_box_core rob_box_music rob_box_dialog rob_box_mcp_tools rob_box_llm rob_box_harness rob_box_voice \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

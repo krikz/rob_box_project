@@ -94,15 +94,27 @@ RUN pip3 install --no-cache-dir \
 # None (voice_processor.py:133-140), STT остаётся на одном Yandex.
 
 # Копируем ROS 2 пакеты
+# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
+# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
+# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
+# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
+# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
+# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
+# инвалидирует только правка самих src/rob_box_*_msgs.
+# rosidl-генераторы есть в ros:humble-ros-base.
+WORKDIR /ws
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build --packages-select rob_box_dialog_msgs && \
+    rm -rf /ws/log
+
+WORKDIR /ws/src
 # rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует
 # rob_box_core.avatar_command, без сборки пакета в образе падает
 # ModuleNotFoundError на старте контейнера.
-WORKDIR /ws/src
 COPY src/rob_box_core /ws/src/rob_box_core
 # ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
-# (rob_box_dialog_msgs); rosidl-пакет собирается тем же colcon build, раньше
-# rob_box_telegram (depend в package.xml). rosidl-генераторы есть в ros:humble-ros-base.
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+# (rob_box_dialog_msgs) — пакет уже собран отдельным слоем выше.
 # #3727: квитанция /say берёт тексты из phrases/ru.yaml (rob_box_dialog, python3-yaml есть в ros-base).
 COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
@@ -110,7 +122,7 @@ COPY src/rob_box_telegram /ws/src/rob_box_telegram
 # Собираем ROS 2 пакеты
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --packages-select rob_box_dialog_msgs rob_box_core rob_box_dialog rob_box_telegram && \
+    colcon build --packages-select rob_box_core rob_box_dialog rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws

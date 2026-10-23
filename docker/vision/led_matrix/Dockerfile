@@ -107,6 +107,22 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 WORKDIR /ws
 RUN mkdir -p src
 
+# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
+# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
+# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
+# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
+# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
+# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
+# инвалидирует только правка самих src/rob_box_*_msgs.
+# Стоит ДО кэш-брейкера ros2leds: смена SHA субмодуля сообщения не трогает.
+# Зависимости (ament_cmake, rosidl_default_generators, builtin_interfaces)
+# уже есть в ros:humble-ros-base — rosdep ниже для них не нужен.
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build \
+    --packages-select rob_box_dialog_msgs \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
 # ============================================================
 # ОПТИМИЗАЦИЯ КЭШИРОВАНИЯ: Копируем файлы от наименее к наиболее изменяемым
 # ============================================================
@@ -120,7 +136,6 @@ RUN echo "Building with ros2leds SHA: ${ROS2LEDS_SHA}" && \
 
 # 1. Копируем package.xml (метаданные зависимостей) - изменяются редко
 # ADR-0150 PR-2 (#3687) / PR-3a (#3689): типы диалога v2 и лицо (face_node).
-COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
 COPY src/rob_box_dialog/package.xml /ws/src/rob_box_dialog/
 COPY src/rob_box_animations/package.xml /ws/src/rob_box_animations/
 COPY src/ros2leds/led_matrix_driver/package.xml /ws/src/led_matrix_driver/
@@ -145,7 +160,6 @@ COPY src/ros2leds/led_matrix_driver/setup.py /ws/src/led_matrix_driver/
 COPY src/ros2leds/led_matrix_compositor/setup.py /ws/src/led_matrix_compositor/
 
 # 4. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_animations /ws/src/rob_box_animations
 COPY src/ros2leds/led_matrix_driver /ws/src/led_matrix_driver
@@ -172,7 +186,7 @@ COPY src/ros2leds/led_matrix_compositor /ws/src/led_matrix_compositor
 # не нужен.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_dialog_msgs rob_box_dialog led_matrix_driver led_matrix_compositor rob_box_animations \
+    --packages-select rob_box_dialog led_matrix_driver led_matrix_compositor rob_box_animations \
     --cmake-args \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

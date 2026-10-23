@@ -132,15 +132,27 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         exit 1; \
     fi
 
+# IDL-пакеты — ОТДЕЛЬНЫМ слоем и отдельным colcon build, раньше Python-кода.
+# rosidl под qemu компилирует C/C++ typesupport ~4-14 минут на пакет
+# (run 39939981591: rob_box_dialog_msgs 8-14 мин в каждом из 4 образов,
+# rob_box_supervisor_msgs 7-8 мин, хотя он не менялся с 07.09). В одном RUN
+# с Python-пакетами они пересобирались на каждую правку кода (rob_box_dialog —
+# 94 коммита за 2 недели, rob_box_dialog_msgs — 10). Теперь слой
+# инвалидирует только правка самих src/rob_box_*_msgs.
+COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
+COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    colcon build \
+    --packages-select rob_box_perception_msgs rob_box_dialog_msgs \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
 # 5. Копируем ресурсы (prompts) - изменяются иногда
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 
 # 6. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 7. Сборка пакетов (сначала msgs, потом nodes)
+# 7. Сборка ноды (msgs уже собраны слоем выше)
 #
 # --symlink-install УБРАН (урок пилота led_matrix, план §2.2 уточнён коммитом
 # 037d982bf): с этим флагом colcon кладёт в /ws/install не копии, а symlink'и
@@ -151,7 +163,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # лежали в том же слое.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_dialog_msgs rob_box_perception \
+    --packages-select rob_box_perception \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
 
