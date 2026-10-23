@@ -637,38 +637,12 @@ class ContainerStatusTool(MCPTool):
                 ),
             )
 
-        # Сливаем метрики по имени контейнера.
-        # ``cast(value_raw)`` всегда float; имя ключа в bucket живёт отдельно.
-        by_name: Dict[str, Dict[str, Any]] = {}
-        for metric_key, body in (
+        containers = _containers_from((
             ("restart_count", restart_body),
             ("cpu_rate_per_sec", cpu_body),
             ("memory_bytes", mem_body),
             ("start_time_unix", start_body),
-        ):
-            if body is None:
-                continue
-            for series in body.get("data", {}).get("result", []):
-                metric_name = series["metric"].get("name", "<unknown>")
-                bucket = by_name.setdefault(metric_name, {"name": metric_name})
-                value_raw = series.get("value", [None, "0"])[1]
-                try:
-                    bucket[metric_key] = float(value_raw)
-                except (TypeError, ValueError):
-                    bucket[metric_key] = None
-
-        now = time.time()
-        containers: List[Dict[str, Any]] = []
-        for cname, metrics in by_name.items():
-            start_ts = metrics.get("start_time_unix")
-            uptime_sec = max(0.0, now - start_ts) if start_ts else None
-            containers.append({
-                "name": cname,
-                "restart_count": int(metrics["restart_count"]) if metrics.get("restart_count") is not None else None,
-                "cpu_rate_per_sec": metrics.get("cpu_rate_per_sec"),
-                "memory_bytes": metrics.get("memory_bytes"),
-                "uptime_sec": uptime_sec,
-            })
+        ), time.time())
         containers.sort(key=lambda c: c["name"])
         if not containers:
             # Prometheus ответил, но рядов нет (cAdvisor не скрейпится, профиль monitoring выключен) — не «0 контейнеров»
@@ -690,6 +664,34 @@ class ContainerStatusTool(MCPTool):
                 f"недоступно метрик: {len(unavailable)}"
             ),
         )
+
+
+def _containers_from(bodies: Any, now: float) -> List[Dict[str, Any]]:
+    """Ряды PromQL по контейнерам (``(ключ, тело ответа)``) → записи контейнеров: метрики сливаются по ``name``."""
+    by_name: Dict[str, Dict[str, Any]] = {}
+    for metric_key, body in bodies:
+        if body is None:
+            continue
+        for series in body.get("data", {}).get("result", []):
+            metric_name = series["metric"].get("name", "<unknown>")
+            bucket = by_name.setdefault(metric_name, {"name": metric_name})
+            value_raw = series.get("value", [None, "0"])[1]
+            try:
+                bucket[metric_key] = float(value_raw)
+            except (TypeError, ValueError):
+                bucket[metric_key] = None
+    containers: List[Dict[str, Any]] = []
+    for cname, metrics in by_name.items():
+        start_ts = metrics.get("start_time_unix")
+        restarts = metrics.get("restart_count")
+        containers.append({
+            "name": cname,
+            "restart_count": int(restarts) if restarts is not None else None,
+            "cpu_rate_per_sec": metrics.get("cpu_rate_per_sec"),
+            "memory_bytes": metrics.get("memory_bytes"),
+            "uptime_sec": max(0.0, now - start_ts) if start_ts else None,
+        })
+    return containers
 
 
 # ----------------------------------------------------------------------------
