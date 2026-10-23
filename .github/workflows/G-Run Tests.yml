@@ -171,6 +171,65 @@ jobs:
           # она молча маскировала откат образа.
           python3 -c "import requests, yaml, pytz"
 
+          # ── Параллельный прогон (#3937) ─────────────────────────────────────
+          # У раннера 4 vCPU.  Два приёма, оба сохраняют изоляцию там, где она
+          # нужна:
+          #   * пакеты «один pytest» (voice / music / animations) — pytest-xdist
+          #     ``-n $XDIST_N`` (плагин запечён в образ rob-box-ci:humble).
+          #     Если с -n 4 падает то, что последовательно зелёное, — это
+          #     настоящая зависимость от порядка/общего состояния: чинить её, а
+          #     не возвращать пакет в последовательный режим молча.
+          #   * пофайловые циклы (telegram / quest) — по-прежнему ОДИН
+          #     ПРОЦЕСС НА ФАЙЛ (cross-file pollution, issue #1196 / #2232),
+          #     но 4 процесса одновременно через ``xargs -P``.  ``xdist
+          #     --dist loadfile`` сюда не годится: воркер xdist гоняет много
+          #     файлов в одном интерпретаторе, и загрязнение вернулось бы.
+          #     Вывод каждого файла идёт в свой лог и печатается целиком
+          #     после прогона, в алфавитном порядке, — не перемешан.
+          XDIST_N=4
+          export PF_JOBS=4
+
+          # pf_run_one <файл>: окружение — PF_DIR (cwd для pytest), PF_TIMEOUT,
+          # PF_LOGDIR, PF_PYTEST_ARGS (строка дополнительных флагов pytest).
+          # Всегда возвращает 0: код выхода pytest уходит в <ключ>.rc, чтобы
+          # xargs не прерывал остальные файлы, а решение принималось ниже по
+          # коду выхода (шаг идёт под ``set -e``).
+          pf_run_one() {
+            local f="$1" key rc=0
+            key="${f#"$PF_DIR"/}"; key="${key//\//__}"
+            ( cd "$PF_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout "$PF_TIMEOUT" python3 -m pytest \
+                -p no:launch_testing \
+                -p no:ament_flake8 -p no:ament_pep257 \
+                -p no:ament_copyright -p no:ament_xmllint \
+                -p no:ament_lint -p no:colcon_core \
+                --tb=short --no-header $PF_PYTEST_ARGS \
+                "$f" ) > "$PF_LOGDIR/$key.log" 2>&1 || rc=$?
+            echo "$rc" > "$PF_LOGDIR/$key.rc"
+            return 0
+          }
+          export -f pf_run_one
+
+          # pf_run <метка> <каталог-пакета> <таймаут> <флаги-pytest> <файл>...
+          # Гонит файлы по PF_JOBS штук одновременно, затем печатает логи по
+          # порядку.  Коды выхода остаются в $PF_LOGDIR/*.rc (читает pf_rc).
+          pf_run() {
+            local label="$1"; shift
+            export PF_DIR="$1" PF_TIMEOUT="$2" PF_PYTEST_ARGS="$3"; shift 3
+            PF_LOGDIR="$(mktemp -d)"; export PF_LOGDIR
+            printf '%s\0' "$@" | xargs -r -0 -n 1 -P "$PF_JOBS" bash -c 'pf_run_one "$1"' _
+            local f key
+            for f in "$@"; do
+              key="${f#"$PF_DIR"/}"; key="${key//\//__}"
+              echo "--- $label: $(basename "$f") ---"
+              cat "$PF_LOGDIR/$key.log"
+            done
+          }
+          # pf_rc <файл>: код выхода pytest для файла из последнего pf_run.
+          pf_rc() {
+            local key="${1#"$PF_DIR"/}"
+            cat "$PF_LOGDIR/${key//\//__}.rc"
+          }
+
           # ── rob_box_voice ───────────────────────────────────────────────────
           # pytest may hang for ~4 min AFTER all tests complete.  Root cause
           # is an unresolved daemon-thread / event-loop leak in the suite.
@@ -205,6 +264,7 @@ jobs:
             -p no:ament_lint -p no:colcon_core \
             --rootdir "${{ github.workspace }}/test_ws/src/rob_box_voice" \
             --junitxml "${{ github.workspace }}/test_ws/build/rob_box_voice/pytest.xml" \
+            -n "$XDIST_N" \
             --tb=short --strict-markers -ra -v --no-header \
             "${{ github.workspace }}/test_ws/src/rob_box_voice/test/" \
           || PYTEST_RC=$?
@@ -248,17 +308,14 @@ jobs:
           python3 -c "import aiohttp, telegram"
           TG_DIR="${{ github.workspace }}/test_ws/src/rob_box_telegram"
           TG_FAILED=0
+          TG_FILES=()
           for TG_TEST in "$TG_DIR"/test/test_*.py; do
-            [ -f "$TG_TEST" ] || continue
-            TG_NAME="$(basename "$TG_TEST")"
-            echo "--- rob_box_telegram: $TG_NAME ---"
-            ( cd "$TG_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
-                -p no:launch_testing \
-                -p no:ament_flake8 -p no:ament_pep257 \
-                -p no:ament_copyright -p no:ament_xmllint \
-                -p no:ament_lint -p no:colcon_core \
-                --tb=short --no-header \
-                "$TG_TEST" ) || { echo "❌ rob_box_telegram FAILED: $TG_NAME"; TG_FAILED=1; }
+            [ -f "$TG_TEST" ] && TG_FILES+=("$TG_TEST")
+          done
+          pf_run rob_box_telegram "$TG_DIR" 120 "" "${TG_FILES[@]}"
+          for TG_TEST in "${TG_FILES[@]}"; do
+            [ "$(pf_rc "$TG_TEST")" = "0" ] \
+              || { echo "❌ rob_box_telegram FAILED: $(basename "$TG_TEST")"; TG_FAILED=1; }
           done
           if [ "$TG_FAILED" != "0" ]; then
             echo "❌ rob_box_telegram tests FAILED"
@@ -323,6 +380,7 @@ jobs:
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
               -p no:ament_lint -p no:colcon_core \
+              -n "$XDIST_N" \
               --tb=short --no-header -q \
               --junitxml "${{ github.workspace }}/test_ws/build/rob_box_music/pytest.xml" \
               test/ ) \
@@ -338,6 +396,7 @@ jobs:
               -p no:ament_flake8 -p no:ament_pep257 \
               -p no:ament_copyright -p no:ament_xmllint \
               -p no:ament_lint -p no:colcon_core \
+              -n "$XDIST_N" \
               --tb=short --no-header -q \
               --junitxml "${{ github.workspace }}/test_ws/build/rob_box_animations/pytest.xml" \
               test/ ) \
@@ -388,24 +447,19 @@ jobs:
           # — это ожидаемое поведение на CI-env без части зависимостей.
           echo "=== pytest: rob_box_quest (per-file, issue #2232) ==="
           QUEST_FAILED=0
+          QUEST_FILES=()
           for Q_TEST in "$QUEST_DIR"/test/unit/test_*.py "$QUEST_DIR"/test/unit/*/test_*.py; do
-            [ -f "$Q_TEST" ] || continue
+            [ -f "$Q_TEST" ] && QUEST_FILES+=("$Q_TEST")
+          done
+          pf_run rob_box_quest "$QUEST_DIR" 120 "-q" "${QUEST_FILES[@]}"
+          for Q_TEST in "${QUEST_FILES[@]}"; do
             Q_NAME="$(basename "$Q_TEST")"
-            echo "--- rob_box_quest: $Q_NAME ---"
-            Q_EXIT=0
-            ( cd "$QUEST_DIR" && PYTHONPATH=".:$PYTHONPATH" timeout 120 python3 -m pytest \
-                -p no:launch_testing \
-                -p no:ament_flake8 -p no:ament_pep257 \
-                -p no:ament_copyright -p no:ament_xmllint \
-                -p no:ament_lint -p no:colcon_core \
-                --tb=short --no-header -q \
-                "$Q_TEST" ) || Q_EXIT=$?
-            # ``|| Q_EXIT=$?`` обязательно: шаги GitHub Actions идут под
-            # ``set -e``, и НЕобёрнутая подоболочка с ненулевым кодом рвёт
-            # шаг ДО классификации ниже. Именно так падал прогон на
-            # test_camera_payload.py: файл целиком skip-ается → pytest
-            # отдаёт 5 → ``exit code 5`` у всего job-а, хотя ветка
-            # ``elif [ "$Q_EXIT" -eq 5 ]`` трактует это как норму.
+            Q_EXIT="$(pf_rc "$Q_TEST")"
+            # Код выхода читается из .rc-файла, а не из ``|| Q_EXIT=$?``:
+            # pf_run_one всегда возвращает 0 — шаги GitHub Actions идут под
+            # ``set -e``, и необёрнутый ненулевой код рвёт шаг ДО
+            # классификации ниже (так падал прогон на test_camera_payload.py:
+            # файл целиком skip-ается → pytest отдаёт 5, а 5 — это норма).
             if [ "$Q_EXIT" -eq 1 ] || [ "$Q_EXIT" -eq 3 ] || [ "$Q_EXIT" -eq 4 ]; then
               echo "❌ rob_box_quest FAILED: $Q_NAME (exit=$Q_EXIT)"
               QUEST_FAILED=1
