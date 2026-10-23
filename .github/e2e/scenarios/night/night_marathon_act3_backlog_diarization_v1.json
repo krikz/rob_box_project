@@ -117,11 +117,13 @@
       "silent_ok": true,
       "patterns": [
         "📊 \\[turn\\] .*stage=done status=finished .*llm_calls=[1-9]",
-        "📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
+        "📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)",
+        "✅ Инструмент (request_music|generate_music|music_library|dj_set) выполнен успешно"
       ],
       "acceptance": {
         "must_not_call": [
-          "stop_music"
+          "stop_music",
+          "stage=timeout"
         ],
         "expected_tool_calls": [],
         "_comment": "Во фразе нет своей команды (голое «Робот.», В12′) — робот обязан выполнить последнюю явную команду из бэклога (LRU): ход с LLM и вызов тула музыки (`📤 Отправлен запрос <id>: <tool>`). Конкретный тул не фиксируем: «спокойное» законно ложится и в renardo, и в библиотеку, и в dj_set. silent_ok: речь после запуска музыки не обязательна. v1-паттерн `[backlog] flushed to LLM` убран (в v2 его нет). Без retry: подхват бэклога -- разовое событие, на повторе бэклог уже пуст (голый вейк = рефлекс)."
@@ -139,13 +141,25 @@
       "label": "n312_stop_music",
       "voice": "anton",
       "text": "Робот, всё, спасибо, выключай музыку, курьер уехал.",
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент stop_music выполнен успешно",
+        "🎵 \\[music v2\\] stop track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "stop_music"
         ],
-        "must_not_call": [],
+        "must_not_call": [
+          "stage=timeout"
+        ],
         "_comment": "Закрываем то, что открыли в n310. Никаких «выключи» вслепую: музыка ТОЧНО играет, потому что n310 её запустил."
+      },
+      "_result_markers": {
+        "tools": [
+          "stop_music"
+        ],
+        "music": "stopped"
       }
     },
     {

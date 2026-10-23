@@ -7,7 +7,6 @@
     "а не флейк LLM (тулы здесь однозначные, синонимов у них нет)."
   ],
   "expected_tool_calls": [
-    "get_music_state",
     "request_music",
     "stop_music"
   ],

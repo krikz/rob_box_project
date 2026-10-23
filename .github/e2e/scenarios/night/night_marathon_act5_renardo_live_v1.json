@@ -14,13 +14,17 @@
       "text": "Робот, сейчас же ничего не играет, верно?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "stop_music"
         ],
-        "_comment": "Якорь тишины перед стартом. Именно этого шага не хватало в старых сценариях, где «останови музыку» шло первым."
+        "must_not_say": [
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Якорь тишины перед стартом. Именно этого шага не хватало в старых сценариях, где «останови музыку» шло первым. #3971: ответ -- из снимка `<music_state>` (ADR-0148), вызов get_music_state не требуем; проверяем фразу «тишина» (run 161509: робот пересказал сказку вместо ответа)."
       },
       "expect": "cycle"
     },
@@ -29,18 +33,27 @@
       "voice": "anton",
       "text": "Робот, сыграй на рендардо спокойный ночной бит, что-нибудь под пайку.",
       "patterns": [
-        "request_music"
+        "✅ Инструмент request_music выполнен успешно",
+        "🎵 \\[music v2\\] started track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "expected_tool_calls": [
           "request_music"
         ],
         "must_not_call": [
-          "generate_music"
+          "generate_music",
+          "stage=timeout"
         ],
-        "_comment": "Живой синтез, НЕ нейрогенерация: generate_music здесь — выбор не того тула (коллизия имён, PR #1372)."
+        "_comment": "Живой синтез, НЕ нейрогенерация: generate_music здесь — выбор не того тула (коллизия имён, PR #1372). #3971: PASS только при `Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: трек из кэша + «не понял» давал ложный PASS)."
       },
-      "retry_acceptance": 2
+      "retry_acceptance": 2,
+      "_result_markers": {
+        "tools": [
+          "request_music"
+        ],
+        "music": "started"
+      }
     },
     {
       "label": "n503_confirm_playing",
@@ -48,13 +61,18 @@
       "text": "Робот, что сейчас звучит?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "stop_music"
         ],
-        "_comment": "Подтверждаем, что n502 реально завёл плеер, а не просто ответил «включаю» голосом."
+        "must_not_say": [
+          "тишин|ничего не играет|не играет|не звучит|музыки нет",
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "играет|играю|звучит|звучат|крутится|крутим|идёт|идет|bpm|темп|ритм|бит|рок|трек|мелоди"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Подтверждаем, что n502 реально завёл плеер, а не просто ответил «включаю» голосом. #3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем; «тишина» при играющем плеере -- красный."
       }
     },
     {
@@ -62,15 +80,24 @@
       "voice": "anton",
       "text": "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
       "patterns": [
-        "request_music"
+        "✅ Инструмент (dj_set|request_music|generate_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
-          "generate_music",
-          "stop_music"
+          "stop_music",
+          "stage=timeout"
         ],
         "expected_tool_calls": [],
-        "_comment": "Эволюция трека без перезапуска: stop_music здесь = робот глушит и начинает заново вместо развития."
+        "_comment": "Эволюция трека без перезапуска: stop_music здесь = робот глушит и начинает заново вместо развития. #3971: в v2 тулов живой правки Renardo нет -- честная попытка это dj_set|request_music|generate_music (run 132908: робот звал dj_set, харнесс ждал request_music); успех тула обязателен."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music",
+          "generate_music"
+        ],
+        "music": ""
       }
     },
     {
@@ -78,13 +105,24 @@
       "voice": "anton",
       "text": "Робот, сделай атмосферу помрачнее, как в киберпанке.",
       "patterns": [
-        "request_music"
+        "✅ Инструмент (dj_set|request_music|generate_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
+          "stop_music",
+          "stage=timeout"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "#3971: см. n504 -- любой из dj_set|request_music|generate_music, но с успехом тула."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music",
           "generate_music"
         ],
-        "expected_tool_calls": []
+        "music": ""
       }
     },
     {
@@ -92,13 +130,26 @@
       "voice": "anton",
       "text": "Робот, и ускорь темп, а то мы тут засыпаем оба.",
       "patterns": [
-        "request_music"
+        "✅ Инструмент (dj_set|request_music|generate_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
-          "stop_music"
+          "stop_music",
+          "set_speed",
+          "set_pitch",
+          "stage=timeout"
         ],
-        "expected_tool_calls": []
+        "expected_tool_calls": [],
+        "_comment": "#3976: «ускорь темп» под музыкой -- про музыку, а не про голос робота; set_speed/set_pitch (стем «темп» открывает группу voice) -- реальный баг. Шаг остаётся красным, пока его не починят: запрет и обязательный музыкальный тул держат это честно."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music",
+          "generate_music"
+        ],
+        "music": ""
       }
     },
     {
@@ -122,12 +173,25 @@
       "label": "n511_stop_music",
       "voice": "anton",
       "text": "Робот, всё, глуши музыку, у меня уши в трубочку.",
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент stop_music выполнен успешно",
+        "🎵 \\[music v2\\] stop track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "stop_music"
         ],
-        "must_not_call": []
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "_comment": "#3971: стоп засчитывается по `Инструмент stop_music выполнен успешно` + `[music v2] stop`, а не по слову «выключаю»."
+      },
+      "_result_markers": {
+        "tools": [
+          "stop_music"
+        ],
+        "music": "stopped"
       }
     },
     {
@@ -136,12 +200,17 @@
       "text": "Робот, теперь тишина?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "stop_music"
-        ]
+        ],
+        "must_not_say": [
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       }
     }
   ]
