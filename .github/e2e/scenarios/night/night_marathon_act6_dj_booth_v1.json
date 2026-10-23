@@ -69,7 +69,7 @@
       "voice": "anton",
       "text": "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
       "patterns": [
-        "set_dj_mode|request_music|speak_text"
+        "set_dj_mode|request_music|SpeechEvent started speech_id"
       ],
       "_why": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1."
     },

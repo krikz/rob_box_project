@@ -115,7 +115,8 @@ SPEECH_CANCELLED = r"SpeechEvent cancelled|🛑 \[interrupt\]"
 #: (замена v1-строки `TTS current_voice →`, которой v2 не пишет).
 SPEECH_PROVIDER = r"SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
 #: Сказка разными голосами в v2: `perform` в действиях команды (`🧾 [command] … actions=[…perform…]`, голос сегмента --
-#: `voice_per_segment`) либо смена голоса владельцем речи (`SpeechEvent voice_changed … applied=`). Тула set_voice тут нет.
+#: `voice_per_segment`) либо смена голоса владельцем речи (`SpeechEvent voice_changed … applied=`).
+#: Тула set_voice тут нет.
 TALE_VOICES = r"🧾 \[command\] .*actions=\[[^]]*perform|SpeechEvent voice_changed .*applied="
 #: Тулы музыки, которыми v2 законно отвечает на «поставь что-нибудь»: ``📤 Отправлен запрос <id>: <tool>``.
 MUSIC_DISPATCH = r"📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
@@ -1284,7 +1285,7 @@ act(
         step(
             "n605_dj_set_plan",
             "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
-            patterns=["set_dj_mode|request_music|speak_text"],
+            patterns=["set_dj_mode|request_music|" + SPEECH_STARTED],
             why="Зонд gp01: спека §4.1 обещает «сет заканчивается финальным "
             "треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет "
             "глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение "
@@ -1640,9 +1641,9 @@ act(
         step(
             "n906_anekdot_anim",
             "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
-            patterns=["play_animation"],
-            expect_tools=["speak_text"],
-            why="Комбинация двух каналов в одном ходе: речь + LED.",
+            patterns=["play_animation", SPEECH_STARTED],
+            why="Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула "
+            "`speak_text` -- `SpeechEvent started` (см. n802).",
         ),
         step(
             "n907_search_space",
@@ -1664,15 +1665,16 @@ act(
         step(
             "n909_foreign_language",
             "Робот, скажи по-китайски «всем спокойной ночи».",
-            patterns=["speak_text"],
-            why="Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но "
+            patterns=[SPEECH_STARTED],
+            why="v2 (#3880): `SpeechEvent started` вместо `speak_text`. "
+            "Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но "
             "tts_text_guard режет чанк с >10% «чужой» письменности (#1709). "
             "Красный подтверждает карточку W6-4/W6-5.",
         ),
         step(
             "n910_estimate_duration",
             "Робот, прикинь, сколько секунд ты будешь читать вслух четверостишие?",
-            patterns=["estimate_tts_duration|speak_text"],
+            patterns=["estimate_tts_duration|" + SPEECH_STARTED],
             why="estimate_tts_duration — служебный тул планировщика, LLM зовёт "
             "его редко. Вне gate по той же причине, что в dialogue-coverage-map §3.",
         ),
@@ -1698,7 +1700,7 @@ act(
     "история разговора обязана уйти, а долговременная память о Саше — остаться. "
     "Это два разных хранилища, и сценарий проверяет именно границу между ними.",
     "expected-partially-red",
-    ["memory_search", "speak_text"],
+    ["memory_search", SPEECH_STARTED],
     [
         step(
             "n1001_recall_night",
@@ -1768,13 +1770,13 @@ act(
         step(
             "n1011_goodnight",
             "Робот, спокойной ночи, смена окончена, спасибо за компанию.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
         ),
     ],
     [
         "Акт 10 — expected-partially-red: gp14 (утечка контекста после сброса)",
         "живьём не проверялась, а спека §2.4 обещает «старые тёрны не",
-        "протекают». GATE-1 держит только memory_search и speak_text —",
+        "протекают». GATE-1 держит только memory_search и речь (`SpeechEvent started`) —",
         "то, что обязано работать независимо от исхода зондов.",
     ],
 )
@@ -1929,7 +1931,8 @@ def check() -> int:
         if on_disk != _dump(payload):
             stale.append(name)
     if stale:
-        print("JSON устарели относительно gen_night_marathon.py (перегенерируйте: py -3 scripts/e2e/gen_night_marathon.py):")
+        print("JSON устарели относительно gen_night_marathon.py "
+              "(перегенерируйте: py -3 scripts/e2e/gen_night_marathon.py):")
         for name in stale:
             print("  - " + name)
         return 1
