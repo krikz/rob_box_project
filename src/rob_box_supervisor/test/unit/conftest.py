@@ -497,3 +497,18 @@ except ImportError:
     _srv.DialogControl = type("DialogControl", (), {"Request": _Request})
     sys.modules["rob_box_dialog_msgs.srv"] = _srv
     sys.modules["rob_box_dialog_msgs"].srv = _srv
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _dialog_engine_v1_unless_test_sets_own():
+    """Тесты этого каталога проверяют проводку v1 (``/dialogue/control``); дефолт ``dialog_engine`` теперь v2
+    (Шифу 23.10), поэтому v1 выставлен явно. Тесты v2 патчат ``declare`` сами (вложенный patch перекрывает)."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from rob_box_core import dialog_engine  # noqa: PLC0415
+
+    with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+        yield

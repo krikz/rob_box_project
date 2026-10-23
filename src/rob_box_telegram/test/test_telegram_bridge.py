@@ -558,10 +558,19 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
     def test_node_subscribes_to_dialogue_response(self) -> None:
         """Telegram must consume dialogue/TTS output to echo it to the chat
-        (issue #1195 — echo path restored)."""
+        (issue #1195 — echo path restored). Проводка v1: флаг выставлен явно, дефолт теперь v2."""
+        from rob_box_core import dialog_engine
 
-        sub = self._subscription_for("/voice/dialogue/response")
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+            node = self._node_mod.TelegramNode()
+        sub = next(s for s in node._created_subscriptions if s.topic == "/voice/dialogue/response")
         self.assertIsNotNone(sub.callback)
+
+    def test_default_engine_is_v2_wiring(self) -> None:
+        """Дефолт ``dialog_engine`` = v2 (Шифу 23.10): нет ``/voice/dialogue/response``, есть ``/dialog/output``."""
+        topics = [s.topic for s in self.node._created_subscriptions]
+        self.assertNotIn("/voice/dialogue/response", topics)
+        self.assertIn("/dialog/output", topics)
 
     def test_v2_does_not_subscribe_dialogue_response(self) -> None:
         """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` топика ``dialogue_node`` v1 нет — нода его не слушает."""
@@ -588,7 +597,11 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
     def test_v1_does_not_subscribe_dialog_output(self) -> None:
         """PR-12a (#3706): при v1 ответ в чат — эхо Личности, ``/dialog/output`` не слушаем (v1 не ломаем)."""
-        self.assertNotIn("/dialog/output", [s.topic for s in self.node._created_subscriptions])
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+            node = self._node_mod.TelegramNode()
+        self.assertNotIn("/dialog/output", [s.topic for s in node._created_subscriptions])
 
     def test_v2_routes_dialog_output_to_its_chat_only(self) -> None:
         """PR-12a (#3706): при v2 ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;

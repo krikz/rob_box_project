@@ -100,7 +100,7 @@ def test_wiring_v2_topics_and_no_v1_dialogue_topics(node):
     assert {"/dialog/session", "/dialog/intent"} <= pubs  # /dialog/plan_event — plan_host в build_tools (подменён)
     for legacy in ("/voice/dialogue/response", "/voice/tts/request", "/dialogue/control", "/dialogue/control_ack"):
         assert legacy not in subs | pubs, legacy
-    assert node.engine_flag == "v1"  # параметр есть; какую ноду стартовать, решает launch по dialog_engine.yaml
+    assert node.engine_flag == "v2"  # дефолт v2 (Шифу 23.10); параметр есть; какую ноду стартовать, решает launch по dialog_engine.yaml
 
 
 def test_addressed_utterance_runs_turn_and_speaks(node):
