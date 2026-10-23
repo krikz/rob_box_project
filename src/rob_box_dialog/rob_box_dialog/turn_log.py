@@ -8,7 +8,8 @@
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные).
 
-Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145) — только в агрегат хода. Окно — не больше
+Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145), как и отказ памяти
+``no_person``/``speaker_changed`` (#3881) — только в агрегат хода. Окно — не больше
 ``knowledge.TURN_WINDOW_MAX_TURNS`` ходов и ``TURN_WINDOW_MAX_TOKENS`` токенов, старые ходы выпадают целиком;
 :meth:`TurnLog.reset` (новая сессия) очищает всё, и поздние события речи старой эпохи ничего не добавляют.
 
@@ -38,12 +39,24 @@ class WindowEntry:
 
     role: str
     content: Any
+    speaker: str = ""  # у ``user``: кто говорил в этот ход (метка кода из снимка, #3881)
 
     def text(self) -> str:
         """Как запись уходит модели (и как считается её размер): данные ``tool`` — компактным JSON."""
         if isinstance(self.content, str):
             return self.content
         return json.dumps(self.content, ensure_ascii=False, separators=(",", ":"), default=_plain)
+
+    def for_llm(self) -> Any:
+        """Как запись уходит модели в истории: реплика человека - с тегом авторства (#3881)."""
+        if self.role == USER and self.speaker:
+            return kn.SPEAKER_TAG.format(who=self.speaker, text=self.content)
+        return self.content
+
+
+def speaker_label(speaker: Any) -> str:
+    """Кто говорит в ход, словами кода: имя/кличка из снимка, нет - «незнакомый голос»."""
+    return (getattr(speaker, "name", None) or kn.UNKNOWN_SPEAKER_LABEL).strip()
 
 
 def _plain(value: Any) -> Any:
@@ -76,6 +89,7 @@ class _Turn:
     turn_id: str
     epoch: int
     user: str
+    speaker: str = ""
     entries: List[WindowEntry] = field(default_factory=list)
 
 
@@ -84,9 +98,6 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
     if getattr(result, "reason", None):
         out["reason"] = result.reason
-        note = kn.REJECT_NOTES.get(result.reason) if result.status == "rejected" else None
-        if note:  # отказ памяти - исход словами, чтобы модель не несла факт в следующий ход (#3881)
-            out["note"] = note
     if data:
         out["data"] = data
     return MappingProxyType(out)
@@ -103,9 +114,9 @@ class TurnLog:
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
 
-    def begin(self, turn_id: str, epoch: int, text: str) -> None:
+    def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "") -> None:
         """Ход начался: ``text`` — реплика человека, как её взял код (пустая — ход без слов, в окно не идёт)."""
-        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip())
+        self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip(), speaker)
         self._trim()
 
     def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False) -> None:
@@ -133,7 +144,10 @@ class TurnLog:
         return self._speech.get(speech_id)
 
     def result(self, turn_id: str, result: Any) -> None:
-        """Результат действия хода (``ActionResult``) — структурой."""
+        """Результат действия хода (``ActionResult``) — структурой. Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно
+        не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
+        if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
+            return
         self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
 
     def window(self) -> Tuple[WindowEntry, ...]:
@@ -154,7 +168,7 @@ class TurnLog:
         self._speech.clear()
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
-        lead = [WindowEntry(USER, turn.user)] if turn.user else []
+        lead = [WindowEntry(USER, turn.user, turn.speaker)] if turn.user else []
         return lead + list(turn.entries)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
@@ -172,4 +186,4 @@ class TurnLog:
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry"]
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "speaker_label"]

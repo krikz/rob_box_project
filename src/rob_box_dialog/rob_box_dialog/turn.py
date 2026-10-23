@@ -45,7 +45,7 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.tools_view import available_tools
-from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog
+from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog, speaker_label
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -246,7 +246,7 @@ class TurnEngine:
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup)
-        self.log.begin(turn.turn_id, turn.epoch, turn.text)
+        self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker))
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
         if addressed.source == BARE_WAKE or not turn.text:
@@ -401,7 +401,7 @@ class TurnEngine:
         recent = [dict(e.content) for e in past if e.role == TOOL]
         context = build_context({**sections, RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
-        messages += [{"role": e.role, "content": e.content} for e in history]
+        messages += [{"role": e.role, "content": e.for_llm()} for e in history]
         messages.append({"role": "user", "content": f"{context}\n\n{turn.text}"})
         return messages
 
