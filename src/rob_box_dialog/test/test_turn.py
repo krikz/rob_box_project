@@ -715,3 +715,12 @@ def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919()
     session.set_speaker(SpeakerRef(person_ref="p2", name="Борис", name_state="confirmed"))  # сменился с начала хода
     assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory(), (), noted)
     assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory())
+
+
+def test_3974_expression_only_command_finishes_the_turn_without_failure():
+    """«Покажи, как тебе грустно»: команда из одной экспрессии валидна, ход ``finished``, не ``nothing_to_do``."""
+    from rob_box_dialog.command import Expression
+    ports = Ports(answers=[Answer(Command(expression=Expression(emotion="sad")), "deepseek")])
+    agg = _run(_engine(ports), "покажи, как тебе грустно")
+    assert (agg.stage, agg.status) == ("done", "finished")
+    assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []

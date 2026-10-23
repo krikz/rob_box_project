@@ -33,8 +33,8 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import (NOT_RUN, Busy, Command, Invalid, Result, explain, is_empty, is_query_data, parse,
-                                    to_args, validate)
+from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, is_empty,
+                                    is_query_data, parse, to_args, validate)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -192,7 +192,8 @@ def to_legacy(result: Result) -> Tuple[str, Tuple[ToolCall, ...], str]:
                         arguments={"passed": result.passed})
         return "", (call,), f"passed:{result.passed}"
     cmd = _without_speech_tool(result)
-    if cmd.actions or cmd.perform is not None or (cmd.voice and _spoken(cmd)):
+    face_only = not _spoken(cmd) and cmd.expression != Expression()  # #3974: лицо без слов - тоже команда
+    if cmd.actions or cmd.perform is not None or (cmd.voice and _spoken(cmd)) or face_only:
         call = ToolCall(id=f"{CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}", name=kn.COMMAND_TOOL, arguments=to_args(cmd))
         return "", (call,), "command"
     text = _spoken(cmd)
