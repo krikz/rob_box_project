@@ -20,13 +20,40 @@ on:
       - 'scripts/testing/**'
       - '.github/e2e/scenarios/**'
   pull_request:
+    # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
+    # получает synchronize на каждый push в develop, и проверка гонялась ещё
+    # раз на SHA, который уже прошёл push-прогон. Чеки push-прогона висят на
+    # head-коммите PR, merge-gate их видит.
     branches:
       - develop
-      - main
+    # #3922: docs-only PR не гоняет colcon-прогон на 15 минут. Пропуск
+    # только workflow-level `paths`: job-level `if:` даёт SKIPPED, а merge-gate
+    # ждёт всё, что не SUCCESS. Порядок важен: паттерны применяются по очереди,
+    # побеждает последний совпавший. Возвращены явно файлы, которые читают
+    # тесты: docs/architecture/meta-quest-api.md -
+    # src/rob_box_quest/test/unit/server/test_meta_quest_api_catalog.py:15;
+    # docs/research/jev/scenarios/acceptance.yaml -
+    # src/rob_box_harness/test/test_decision_poc.py:17.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**.md'
+      - 'docs/architecture/meta-quest-api.md'
+      - 'docs/research/jev/scenarios/acceptance.yaml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# #3922: новый push в PR отменяет устаревший прогон этого PR. На push в
+# develop/main и workflow_dispatch группа уникальна (run_id), отмены нет: иначе
+# не видно, какой коммит сломал develop. Именно run_id, а не github.ref: при
+# одной группе на ветку GitHub и без cancel-in-progress выкидывает ранее
+# ожидающие прогоны, то есть промежуточные коммиты develop остались бы без
+# проверки.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ============================================================================

@@ -15,9 +15,12 @@ on:
       - 'docs/development/DOCKER_STANDARDS.md'
       - '.github/workflows/validate-docker-compose.yml'
   pull_request:
+    # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
+    # получает synchronize на каждый push в develop, и проверка гонялась ещё
+    # раз на SHA, который уже прошёл push-прогон. Чеки push-прогона висят на
+    # head-коммите PR, merge-gate их видит.
     branches:
       - develop
-      - main
     paths:
       - 'docker/main/docker-compose.yaml'
       - 'docker/vision/docker-compose.yaml'
