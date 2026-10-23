@@ -72,6 +72,7 @@ from .core import plan_host
 from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
+from .core.speaker_turn import note_backlog_voice
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
@@ -274,6 +275,9 @@ class DialogNode(Node):
             return
         if isinstance(decision, NotAddressed):
             self._backlog.add(heard)
+            voice = self._speakers.peek(uid) if uid else None
+            if voice is not None:  # биометрия успела раньше STT: автор фразы — её голос, не нынешний собеседник
+                note_backlog_voice(self, uid, voice)
             self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
                                    f"{self._backlog.background_phrases(now)}")
             return
@@ -303,6 +307,7 @@ class DialogNode(Node):
             return
         if msg.utterance_id:
             self._speakers.submit(msg.utterance_id, data)
+            note_backlog_voice(self, msg.utterance_id, data)  # фраза в бэклоге: кто сказал её (#3767, #3892)
         self._session.set_speaker(speaker_ref(data, now=time.time(), prev=self._session.snapshot.speaker))
 
     def _on_speech_event(self, msg: Any) -> None:

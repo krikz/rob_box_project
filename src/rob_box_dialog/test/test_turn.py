@@ -2,13 +2,16 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
 
 import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.address import BARE_WAKE, VOICE, Addressed
+from rob_box_dialog.address import BARE_WAKE, VOICE, Addressed, decide
+from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.speaker_adapter import VoiceTag
 from rob_box_dialog.command import Ask, Command, Invalid, Performance, ToolCall
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
@@ -493,3 +496,49 @@ def test_memory_save_goes_to_the_same_speaker_when_nothing_changed():
     engine.session.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
     _run(engine, "робот запомни я пью только зелёный чай")
     assert [r.args[kn.PERSON_ARG] for r in ports.requests] == ["spk-sasha"]
+
+
+def _background_then_bare_wake():
+    """Сцена акта 3 (#3892): Борис и незнакомец говорят на фоне без вейка, потом Саша — голое «робот»."""
+    backlog = Backlog()
+    backlog.add(Heard("закажи пиццу на вечер", t=100.0, voice_s=2.0, utterance_id="u-b"))
+    backlog.note_voice("u-b", VoiceTag("known", person_ref="spk-boris", name="Борис", score=0.86))
+    backlog.add(Heard("не шумите тут", t=104.0, voice_s=1.5, utterance_id="u-x"))
+    backlog.note_voice("u-x", VoiceTag("unknown_voice", candidate="Борис", candidate_score=0.41))
+    return decide(Heard("робот", t=108.0, voice_s=0.6), backlog, ["робот"])
+
+
+def test_backlog_pickup_reaches_llm_with_each_phrase_author_3892():
+    """Голое «робот» подхватывает фразы двух авторов: в запросе модели каждая со своим ``[говорит: …]`` на момент
+    самой фразы — не того, кто сказал «робот» (Саша), и гипотеза голоса незнакомца — не имя (A30)."""
+    addressed = _background_then_bare_wake()
+    assert addressed.pickup and len(addressed.picked) == 2
+    ports = Ports(answers=[Answer(Command(passed=True), "x")])
+    engine = _engine(ports)
+    engine.session.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
+    _run_addressed(engine, addressed)
+    said = ports.asked[0][0][-1]["content"].split("\n\n")[-1]
+    assert said == f"[говорит: Борис] закажи пиццу на вечер\n[говорит: {kn.UNKNOWN_SPEAKER_LABEL}] не шумите тут"
+
+
+def test_picked_phrases_stay_in_window_with_authors_for_the_next_question_3892():
+    """«Кто говорил на фоне?» следующим ходом: подхваченные фразы — прошлые реплики окна, каждая со своим автором."""
+    ports = Ports(answers=[Answer(Command(passed=True), "x"), Answer(Command(speech="Борис и кто-то ещё."), "x")])
+    engine = _engine(ports)
+    engine.session.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
+    _run_addressed(engine, _background_then_bare_wake())
+    _run(engine, "скажи кто сейчас говорил на фоне")
+    messages = ports.asked[1][0]
+    assert messages[1:3] == [
+        {"role": "user", "content": "[говорит: Борис] закажи пиццу на вечер"},
+        {"role": "user", "content": f"[говорит: {kn.UNKNOWN_SPEAKER_LABEL}] не шумите тут"}]
+    assert len(messages) == 4 and messages[-1]["content"].endswith("\n\nскажи кто сейчас говорил на фоне")
+
+
+def test_backlog_pickup_logs_count_speakers_and_turn_3892(caplog):
+    with caplog.at_level(logging.INFO):
+        _run_addressed(_engine(Ports(answers=[Answer(Command(passed=True), "x")])), _background_then_bare_wake())
+        _run(_engine(Ports()), "", BARE_WAKE)
+    lines = [r.getMessage() for r in caplog.records if "[backlog] pickup" in r.getMessage()]
+    assert lines == [f"🗒️ [backlog] pickup n=2 speakers=Борис,{kn.UNKNOWN_SPEAKER_LABEL} turn=t1",
+                     "🗒️ [backlog] pickup n=0 speakers=- turn=t1"]

@@ -10,7 +10,9 @@
 
 Правила хода (ADR-0148: решает код):
 
-* голое «робот» без бэклога — только рефлекс ``addressed``, 0 вызовов LLM, 0 речи (§7.3 п.1);
+* голое «робот» без бэклога — только рефлекс ``addressed``, 0 вызовов LLM, 0 речи (§7.3 п.1); с подхватом бэклога
+  (В12″) — модель получает подхваченные фразы каждую со своим автором (``[говорит: …]`` на момент фразы, не
+  того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
 * Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия), спорный стоп (В19) идёт в LLM;
 * невалидная команда (после повтора моста) — ход ``failed`` без речи; ``passed`` — тихо;
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
@@ -45,13 +47,15 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.tools_view import available_tools
-from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog, speaker_label
+from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
 LOG_MARK = "🧭 [turn-v2]"
 _QUERY = "query"
 _FAILED = ("rejected", "timeout")
+#: Строка лога подхвата бэклога голым «робот» (#3767, #3892).
+PICKUP_MARK = "🗒️ [backlog] pickup"
 #: Раздел снимка с исходами действий прошлых ходов (окно ``turn_log``: ``tool`` — структурой, не в тексте реплик).
 RECENT_ACTIONS = "recent_actions"
 
@@ -110,7 +114,29 @@ class _Turn:
     status: str = "finished"
     reason: str = ""
     pickup: bool = False
+    heard: Tuple[Tuple[str, str], ...] = ()  # подхват бэклога: (кто сказал, фраза) по порядку (#3892)
     said: List[str] = field(default_factory=list)
+
+
+def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
+    """Подхваченные фразы бэклога ``(кто, фраза)``: автор — метка самой фразы (``Backlog.label``), не собеседник
+    хода."""
+    return tuple((phrase_label(p.get("speaker") or {}), str(p.get("text") or "")) for p in addressed.picked)
+
+
+def user_text(turn: "_Turn") -> str:
+    """Реплика человека в запросе хода: подхват — фразы с тегом авторства (#3892), иначе — текст хода."""
+    if not turn.heard:
+        return turn.text
+    return "\n".join(kn.SPEAKER_TAG.format(who=who, text=text) for who, text in turn.heard)
+
+
+def log_pickup(log: Any, addressed: Addressed, turn: "_Turn") -> None:
+    """Голое «робот»: строка подхвата — сколько фраз, чьи, в каком ходе (``n=0`` — бэклог пуст или фразы старше
+    окна, ход — только рефлекс)."""
+    if addressed.pickup or addressed.source == BARE_WAKE:
+        speakers = ",".join(who for who, _ in turn.heard) or "-"
+        log.info(f"{PICKUP_MARK} n={len(turn.heard)} speakers={speakers} turn={turn.turn_id}")
 
 
 def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Optional[Tier1Command]:
@@ -245,8 +271,10 @@ class TurnEngine:
 
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
-                     TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup)
-        self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker))
+                     TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
+                     heard=picked_heard(addressed))
+        self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
+        log_pickup(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
         if addressed.source == BARE_WAKE or not turn.text:
@@ -395,14 +423,14 @@ class TurnEngine:
     def _messages(self, turn: _Turn, snap: SessionSnapshot) -> List[Any]:
         """Запрос: системный промпт, окно озвученного (``user``/``assistant``), снимок хода + реплика человека.
         Исходы прошлых действий — разделом снимка :data:`RECENT_ACTIONS`, а не репликами (§7.3)."""
-        past = self.log.window()[:-1]  # последняя запись — реплика этого хода (журнал начат в run)
+        past = self.log.window(exclude=turn.turn_id)  # реплика этого хода — последним сообщением, со снимком
         history = [e for e in past if e.role != TOOL]
         sections = dict(self._sections(snap, turn.text))
         recent = [dict(e.content) for e in past if e.role == TOOL]
         context = build_context({**sections, RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
         messages += [{"role": e.role, "content": e.for_llm()} for e in history]
-        messages.append({"role": "user", "content": f"{context}\n\n{turn.text}"})
+        messages.append({"role": "user", "content": f"{context}\n\n{user_text(turn)}"})
         return messages
 
     def _say(self, turn: _Turn, text: str, voice: Optional[str] = None, emotion: Optional[str] = None) -> None:
