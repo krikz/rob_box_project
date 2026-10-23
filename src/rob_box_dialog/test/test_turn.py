@@ -784,7 +784,7 @@ def test_live_provider_is_waited_past_the_old_12s_with_one_progress_phrase(monke
     """Акт 7 23.10: DeepSeek ответил 200 OK, а ход умер на 12 с. Теперь ход ждёт живого провайдера (потолок 60 с),
     а тишину закрывает ОДНА промежуточная фраза кода, сколько бы ни думала модель."""
     monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
-    ports = NamedPorts(answers=[Answer(Command(speech="Вот ещё куплет про комара."), "deepseek")], ask_delay=0.2)
+    ports = NamedPorts(answers=[Answer(Command(speech="Вот ещё куплет про комара."), "deepseek")], ask_delay=0.5)
     agg = _run(_engine(ports), "ещё куплет про комара")
     said = _said(ports)
     assert len(said) == 2 and said[0] in phrases.catalog()["understand.progress"]
@@ -801,7 +801,7 @@ def test_fast_answer_has_no_progress_phrase(monkeypatch):
 
 def test_music_start_wait_gets_media_progress_then_outcome(monkeypatch):
     monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
-    ports = NamedPorts(answers=[Answer(Command(actions=(_MUSIC,)), "deepseek")], execute_delay=0.15)
+    ports = NamedPorts(answers=[Answer(Command(actions=(_MUSIC,)), "deepseek")], execute_delay=0.4)
     _run(_engine(ports), "поставь ровный ритм")
     assert _said(ports) == [phrases.text("media.progress"), phrases.text("media.done")]
 
@@ -859,16 +859,17 @@ def test_dead_provider_closes_turn_at_once_without_waiting_ceiling():
 
 def test_user_stop_interrupts_long_wait_always(monkeypatch):
     """Стоп человека рвёт ход в любой момент ожидания: ни промежуточной фразы после, ни фразы потолка."""
-    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.05)
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.3)
     ports = NamedPorts(answers=[Answer(Command(speech="поздно"), "deepseek")], ask_delay=5)
 
     async def scenario():
         task = asyncio.ensure_future(_engine(ports).run(Addressed("расскажи сказку", VOICE)))
-        await asyncio.sleep(0.02)
+        while not ports.asked:  # ход ждёт LLM - стоп приходит посреди ожидания
+            await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.1)  # промежуточная фраза отменена вместе с ходом
+        await asyncio.sleep(0.4)  # срок промежуточной фразы прошёл: она отменена вместе с ходом
 
     asyncio.run(scenario())
     assert ports.said == [] and ports.stages[-1] == ("done", "cancelled", "interrupt")
