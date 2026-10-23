@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -81,6 +82,14 @@ _DEFAULT_PROM_URL = os.environ.get("PROMETHEUS_URL", "http://10.1.1.249:9090")
 # Таймаут HTTP-запросов — на Pi4 локальные сервисы отвечают <200ms,
 # ставим 2s (запас на cold-cache PromQL и медленный Loki).
 _HTTP_TIMEOUT_SEC = float(os.environ.get("OPERATOR_ADMIN_HTTP_TIMEOUT", "2.0"))
+# Объём ``read_logs`` (PR-13b #3708, решение Шифу 23.10 «регаем»): ответ ТАРС уходит в шлем и в Telegram (сообщение
+# ≤ 4096 символов) — не больше ``LOG_LINES_MAX`` строк, строка ≤ ``LOG_LINE_CHARS_MAX``, всего ≤ ``LOG_TOTAL_CHARS_MAX``
+# (при переполнении отбрасываются старые строки).
+LOG_LINES_MAX = 30
+LOG_LINE_CHARS_MAX = 300
+LOG_TOTAL_CHARS_MAX = 3000
+#: Текст строки, когда редактор секретов недоступен: логи без редакции до LLM не уходят (fail closed).
+LOG_REDACTION_UNAVAILABLE = "[строка скрыта: редакция секретов недоступна]"
 
 # Дефолтный список нод — синхронизирован с
 # rob_box_perception/utils/node_monitor.py::NodeAvailabilityMonitor.__init__.
@@ -186,6 +195,11 @@ class Ros2NodeStatusTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
 
     @property
     def description(self) -> str:
@@ -352,6 +366,11 @@ class ReadLogsTool(MCPTool):
         return False
 
     @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
+
+    @property
     def description(self) -> str:
         return (
             "Получить логи конкретной ROS2-ноды или контейнера. "
@@ -372,8 +391,8 @@ class ReadLogsTool(MCPTool):
                 name="source",
                 type="string",
                 description=(
-                    "'rosout' — локальные логи /rosout из health_monitor; "
-                    "'loki' — контейнерные логи через Loki HTTP API."
+                    "'loki' (по умолчанию) — логи контейнера через Loki; "
+                    "'rosout' — локальный кеш /rosout health_monitor'а."
                 ),
                 required=False,
                 enum=["rosout", "loki"],
@@ -381,7 +400,7 @@ class ReadLogsTool(MCPTool):
             MCPToolParameter(
                 name="limit",
                 type="integer",
-                description="Максимум строк (default: 20 для rosout, 50 для loki).",
+                description="Максимум строк (по умолчанию и не больше 30).",
                 required=False,
             ),
         ]
@@ -397,13 +416,17 @@ class ReadLogsTool(MCPTool):
     def execute(
         self,
         node: str,
-        source: str = "rosout",
+        source: str = "loki",
         limit: Optional[int] = None,
     ) -> MCPToolResult:
         self.log_info(f"Чтение логов: node={node} source={source}")
-        if source == "loki":
-            return self._read_loki(node, limit or 50)
-        return self._read_rosout(node, limit or 20)
+        try:
+            lines = max(1, min(int(limit or LOG_LINES_MAX), LOG_LINES_MAX))
+        except (TypeError, ValueError):
+            lines = LOG_LINES_MAX
+        if source == "rosout":
+            return self._read_rosout(node, lines)
+        return self._read_loki(node, lines)
 
     # ------------------------------------------------------------------
 
@@ -416,17 +439,18 @@ class ReadLogsTool(MCPTool):
             monitor = getattr(self.node, "_health_monitor", None)
 
         if monitor is None:
+            # честный отказ, а не «успех без строк»: в mcp_server HealthMonitor никто не регистрирует (PR-13b)
             return MCPToolResult(
-                success=True,
+                success=False,
                 data={
                     "node": node,
                     "source": "rosout",
                     "lines": [],
                     "monitor_unavailable": True,
                 },
-                message=(
-                    f"HealthMonitor не зарегистрирован в ноде — локальные "
-                    f"логи {node} недоступны. Попробуй source=loki."
+                error=(
+                    f"Нет доступа к /rosout на этом узле (HealthMonitor не подключён) — "
+                    f"логи {node} так не прочитать; есть source=loki."
                 ),
             )
 
@@ -439,7 +463,7 @@ class ReadLogsTool(MCPTool):
         lines = filtered[:limit]
         # Санитизация обязательна (§6.3): даже /rosout может нести сообщения
         # от провайдеров LLM, которые любят дампить headers.
-        sanitized = [_sanitize_entry(entry) for entry in lines]
+        sanitized = _fit_entries([_sanitize_entry(entry) for entry in lines], "msg")
         return MCPToolResult(
             success=True,
             data={
@@ -457,8 +481,13 @@ class ReadLogsTool(MCPTool):
         # а не историю за час. Узкое окно держит ответ <100ms.
         end = int(time.time())
         start = end - 300
+        # имя контейнера — только безопасные символы: в LogQL-селектор не попадёт чужой синтаксис
+        name = re.sub(r"[^A-Za-z0-9_.-]", "", service or "")
+        if not name:
+            return MCPToolResult(success=False, data={"service": service, "lines": []},
+                                 error="Не указано имя контейнера для логов")
         params = {
-            "query": f'{{service="{service}"}}',
+            "query": f'{{container=~".*{name}.*"}}',
             "start": str(start * 1_000_000_000),  # ns
             "end": str(end * 1_000_000_000),
             "limit": str(limit),
@@ -480,7 +509,7 @@ class ReadLogsTool(MCPTool):
         for stream in body.get("data", {}).get("result", []):
             stream_labels = stream.get("stream", {})
             container = stream_labels.get("container", service)
-            for ts_ns, raw in stream.get("values", [])[:limit]:
+            for ts_ns, raw in stream.get("values", []):  # срез — после общей сортировки: свежие из всех потоков
                 lines.append(
                     {
                         "ts": ts_ns,
@@ -492,7 +521,7 @@ class ReadLogsTool(MCPTool):
         # Сортируем по ts (Loki streams уже отсортированы в обратном порядке,
         # но мульти-stream может перемешать) и обрезаем.
         lines.sort(key=lambda x: x["ts"], reverse=True)
-        lines = lines[:limit]
+        lines = _fit_entries(lines[:limit], "line")
         return MCPToolResult(
             success=True,
             data={"service": service, "source": "loki", "lines": lines, "count": len(lines)},
@@ -524,6 +553,11 @@ class ContainerStatusTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
 
     @property
     def description(self) -> str:
@@ -636,6 +670,13 @@ class ContainerStatusTool(MCPTool):
                 "uptime_sec": uptime_sec,
             })
         containers.sort(key=lambda c: c["name"])
+        if not containers:
+            # Prometheus ответил, но рядов нет (cAdvisor не скрейпится, профиль monitoring выключен) — не «0 контейнеров»
+            return MCPToolResult(
+                success=False,
+                data={"containers": [], "unavailable_metrics": unavailable},
+                error=f"Prometheus ({_DEFAULT_PROM_URL}) не знает метрик контейнеров{f' {name}' if name else ''}",
+            )
 
         return MCPToolResult(
             success=True,
@@ -680,7 +721,24 @@ def _sanitize_text(text: str) -> str:
         )
         return redact_log_text(redact_upstream_body(text))
     except ImportError:
-        return text
+        # без редактора строка до LLM не уходит: ответ ТАРС читается в шлеме и в Telegram (PR-13b)
+        return LOG_REDACTION_UNAVAILABLE
+
+
+def _fit_entries(entries: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
+    """Строки лога в объём ответа: каждая ≤ ``LOG_LINE_CHARS_MAX``, всего ≤ ``LOG_TOTAL_CHARS_MAX`` (свежие — первые,
+    при переполнении отбрасываются старые)."""
+    out: List[Dict[str, Any]] = []
+    total = 0
+    for entry in entries[:LOG_LINES_MAX]:
+        text = str(entry.get(field, ""))
+        if len(text) > LOG_LINE_CHARS_MAX:
+            text = text[: LOG_LINE_CHARS_MAX - 1] + "…"
+        if total + len(text) > LOG_TOTAL_CHARS_MAX:
+            break
+        total += len(text)
+        out.append({**entry, field: text})
+    return out
 
 
 def _sanitize_entry(entry: Dict[str, Any]) -> Dict[str, Any]:

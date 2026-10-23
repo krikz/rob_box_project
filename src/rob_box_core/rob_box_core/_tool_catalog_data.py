@@ -80,7 +80,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('navigation',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
@@ -1448,7 +1448,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('expression',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
@@ -1466,24 +1466,22 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'для чтения '
                                                                        'логов.'},
                                             'source': {   'type': 'string',
-                                                          'description': "'rosout' — "
-                                                                         'локальные '
-                                                                         'логи /rosout '
-                                                                         'из '
-                                                                         'health_monitor; '
-                                                                         "'loki' — "
-                                                                         'контейнерные '
-                                                                         'логи через '
-                                                                         'Loki HTTP '
-                                                                         'API.',
+                                                          'description': "'loki' (по "
+                                                                         'умолчанию) — '
+                                                                         'логи '
+                                                                         'контейнера '
+                                                                         'через Loki; '
+                                                                         "'rosout' — "
+                                                                         'локальный '
+                                                                         'кеш /rosout '
+                                                                         "health_monitor'а.",
                                                           'enum': ['rosout', 'loki']},
                                             'limit': {   'type': 'integer',
                                                          'description': 'Максимум '
-                                                                        'строк '
-                                                                        '(default: 20 '
-                                                                        'для rosout, '
-                                                                        '50 для '
-                                                                        'loki).'}},
+                                                                        'строк (по '
+                                                                        'умолчанию и '
+                                                                        'не больше '
+                                                                        '30).'}},
                           'required': ['node'],
                           'additionalProperties': False},
         'signature': {   'params': ['node', 'source', 'limit'],
@@ -1619,7 +1617,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('composer', 'dj')},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
