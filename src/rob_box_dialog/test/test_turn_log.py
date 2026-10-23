@@ -2,7 +2,7 @@
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.respond import ActionResult
-from rob_box_dialog.turn_log import ASSISTANT, TOOL, USER, TurnAggregate, TurnLog, WindowEntry
+from rob_box_dialog.turn_log import ASSISTANT, TOOL, USER, TurnAggregate, TurnLog, WindowEntry, perform_status
 
 
 def _result(tool="play_sound", status="done", reason=None, data=None):
@@ -119,3 +119,54 @@ def test_aggregate_line_has_no_text():
                     "llm_calls=1 llm_provider=deepseek tokens=5120")
     assert set(vars(agg)) == {"turn_id", "epoch", "agent", "stage", "status", "latency_ms", "llm_calls",
                               "llm_provider", "tokens"}
+
+
+# -- исход выступления закрывает просьбу (#3973) -------------------------------------------------------------------
+
+def _tale_log():
+    """Акт 4: «расскажи сказку» → выступление стартовало (сегменты звучат у владельца выступлений, не в репликах)."""
+    log = TurnLog()
+    log.begin("t1", 0, "расскажи сказку про красную шапочку", "Борис")
+    return log
+
+
+def test_perform_outcome_closes_the_request_in_window():
+    log = _tale_log()
+    assert [e.role for e in log.window()] == [USER], "без исхода просьба висит одна - её исполнят заново (#3973)"
+    assert log.performed("t1", "tale", "started")
+    assert log.performed("t1", "tale", perform_status("halt"), segments_done=3)
+    window = log.window()
+    assert [e.role for e in window] == [USER, TOOL], "одна запись на выступление, статус обновлён на месте"
+    assert dict(window[1].content) == {"tool": "perform", "status": "stopped_by_user",
+                                       "data": {"kind": "tale", "segments_done": 3}}
+
+
+def test_perform_end_reasons_map_to_honest_statuses():
+    assert perform_status("done") == "done"
+    assert perform_status("stopped") == perform_status("halt") == "stopped_by_user"
+    assert perform_status("lost") == "interrupted"
+    assert perform_status("что-то новое") == "interrupted", "неизвестная причина - не «досказано»"
+
+
+def test_perform_end_keeps_kind_of_the_start_entry():
+    log = _tale_log()
+    log.performed("t1", "rap", "started")
+    log.performed("t1", "", "done")
+    assert dict(log.window()[1].content)["data"]["kind"] == "rap"
+
+
+def test_perform_outcome_of_unknown_or_reset_turn_writes_nothing():
+    log = _tale_log()
+    assert not log.performed("чужой", "tale", "done")
+    log.reset()
+    assert not log.performed("t1", "tale", "done"), "конец выступления прошлой сессии ничего не добавляет"
+    assert log.window() == ()
+
+
+def test_perform_outcome_is_forgotten_with_its_turn():
+    log = TurnLog(max_turns=2)
+    for n in range(1, 4):
+        log.begin(f"t{n}", 0, f"реплика {n}")
+        log.performed(f"t{n}", "tale", "started")
+    assert not log.performed("t1", "tale", "done"), "ход выпал из окна - записывать некуда"
+    assert [dict(e.content)["status"] for e in log.window() if e.role == TOOL] == ["started", "started"]

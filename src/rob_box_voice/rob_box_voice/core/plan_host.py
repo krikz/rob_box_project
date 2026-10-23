@@ -60,6 +60,7 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
         if event.kind in ("block_start", "prediction", "block_end"):
             planner.state.on_block("perform", event.block_id, active, remaining)
             planner.changed()
+        note_perform_end(node, event)
         planner.emit(event)
 
     executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
@@ -69,6 +70,14 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      tts_provider=lambda: _tts_provider(node))
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
+
+
+def note_perform_end(node: Any, event: PlanEvent) -> None:
+    """Конец выступления - журналу ходов движка dialog v2 (#3973): просьба «расскажи сказку» закрыта исходом, и LLM не
+    исполняет её заново на чужую реплику. У ноды без движка (v1) выступления в журнал не пишутся."""
+    engine = getattr(node, "_engine", None)
+    if event.kind == "block_end" and engine is not None:
+        engine.log.performance_ended(event.turn_id, event.reason, event.segment_no)
 
 
 def _foreign_music(node: Any) -> str:
@@ -175,5 +184,5 @@ def perform_busy(node: Any) -> Busy:
                 voices=tuple(voices_for(tts_state(node)[0])))
 
 
-__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "on_music",
-           "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer"]
+__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
+           "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer"]

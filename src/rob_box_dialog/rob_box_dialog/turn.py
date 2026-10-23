@@ -53,7 +53,7 @@ from rob_box_dialog.respond import ActionResult, audible, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools
-from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
+from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -267,6 +267,14 @@ def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any 
              f"backing={cmd.perform.backing or '-'} segments={len(cmd.perform.segments)} → {dict(outcome)} "
              f"turn={turn_id}")
     return True, phrases.text("local.rejected") if outcome.get("status") == "rejected" else ""
+
+
+def note_perform_start(log: TurnLog, turn_id: str, cmd: Command, taken: bool) -> None:
+    """Владелец взял выступление (``taken``): в окне LLM просьба закрыта записью о старте, дальше её обновляет конец
+    выступления (``TurnLog.performance_ended``, #3973). Сегменты звучат у владельца мимо реплик хода - без записи
+    просьба висела бы неотвеченной и исполнялась заново на чужую реплику."""
+    if taken and cmd.perform is not None:
+        log.performed(turn_id, cmd.perform.kind, PERFORM_STARTED)
 
 
 def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
@@ -556,6 +564,7 @@ class TurnEngine:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, cmd, self._log)
+        note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
         self._say(turn, refusal, None, "sad")  # отказ владельца выступления — фраза кода, а не тишина ("" — нет)
         lines = _content_lines(cmd, self.session.snapshot.agent, segments=not owned)
         for text, voice in lines:
