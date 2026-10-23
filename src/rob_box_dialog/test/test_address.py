@@ -28,8 +28,7 @@ CORPUS_WAKE = ([f"{w} {c}" for w in ("робот", "робби", "роббокс
 CORPUS_FALSE = [
     "у меня всё работает", "системный промт для робота-диджея", "он заработал денег", "это ботинок",
     "роботы захватят мир", "робототехника — наука", "супер-робот на экране", "ботаник сидит дома",
-    "заработает к утру", "работа не волк", "рома пришёл с работы", "рома покажи анимацию ускорения",
-    "бот в телеграме молчит", "роб и кирилл ушли", "роботизированный склад", "ботва на грядке",
+    "заработает к утру", "работа не волк", "бот в телеграме молчит", "роб и кирилл ушли", "роботизированный склад", "ботва на грядке",
     "переработать код", "робот-пылесос сломался", "это не мой роботс", "робкий мальчик",
 ]
 
@@ -55,9 +54,21 @@ def test_corpus_size_meets_a15():
 
 
 def test_risky_wake_words_work_only_when_enabled():
-    assert decide(_heard("рома покажи анимацию"), None, WAKES + list(RISKY_WAKE_WORDS)) == Addressed(
+    assert decide(_heard("бот покажи анимацию"), None, WAKES) == NotAddressed(NO_WAKE)
+    assert decide(_heard("роб покажи анимацию"), None, WAKES) == NotAddressed(NO_WAKE)
+    assert decide(_heard("бот покажи анимацию"), None, WAKES + list(RISKY_WAKE_WORDS)) == Addressed(
+        "покажи анимацию", VOICE)
+    assert decide(_heard("роб покажи анимацию"), None, WAKES + list(RISKY_WAKE_WORDS)) == Addressed(
         "покажи анимацию", VOICE)
     assert decide(_heard("у меня всё работает"), None, WAKES + list(RISKY_WAKE_WORDS)) == NotAddressed(NO_WAKE)
+
+
+@pytest.mark.parametrize("wake", ["рома", "роман"])
+def test_roma_and_roman_are_ordinary_wake_words(wake):
+    """23.10 Шифу (коммиты 83fdeb913, 2dae40fee): «рома» и «роман» — обычные вейки, не рискованные (В18)."""
+    assert wake in DEFAULT_WAKE_WORDS and wake not in RISKY_WAKE_WORDS
+    assert decide(_heard(f"{wake} покажи анимацию"), None, WAKES) == Addressed("покажи анимацию", VOICE)
+    assert decide(_heard(f"{wake}, включи музыку"), None, WAKES) == Addressed("включи музыку", VOICE)
 
 
 def test_telegram_and_operator_are_always_addressed():
