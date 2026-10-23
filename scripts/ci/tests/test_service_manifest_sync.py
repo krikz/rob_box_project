@@ -187,9 +187,26 @@ def test_build_all_calls_the_one_workflow_for_every_pi():
             name == f"build-{pi}-services"
         ), f"{name}: job id не по шаблону build-<pi>-services"
         # Pi независимы (depends_on — только внутри Pi): ни один вызов не ждёт
-        # другой Pi, только базовые образы.
-        assert jobs[name]["needs"] == "build-base-images", (pi, jobs[name]["needs"])
+        # другой Pi — только базовые образы и общий образ сообщений, который
+        # собирается один раз на все три Pi.
+        assert jobs[name]["needs"] == ["build-base-images", "build-msgs-image"], (
+            pi,
+            jobs[name]["needs"],
+        )
     assert set(called.values()) <= set(jobs["summary"]["needs"])
+
+
+def test_msgs_image_is_built_once_before_every_pi():
+    """Общий образ ROS-сообщений собирает ОДИН job Build All до трёх Pi —
+    иначе при правке .msg три Pi компилировали бы его наперегонки."""
+    msgs_wf = "./.github/workflows/L-Build Msgs Image.yml"
+    build_all = _load_yaml(BUILD_ALL_WF)["jobs"]
+    callers = [n for n, j in build_all.items() if j.get("uses") == msgs_wf]
+    assert callers == ["build-msgs-image"], callers
+    # Прямой запуск Pi тоже обязан иметь образ до первой волны.
+    pi_jobs = _wf()["jobs"]
+    assert pi_jobs["msgs"]["uses"] == msgs_wf
+    assert pi_jobs["build"]["needs"] == ["prepare", "msgs"], pi_jobs["build"]["needs"]
 
 
 def test_old_per_pi_workflows_are_gone():
@@ -222,7 +239,8 @@ def test_wave_job_reads_its_wave_and_waits_for_the_previous_one():
         assert f"fromJSON(needs.prepare.outputs.waves)[{k}]" in include, (name, include)
         needs = job["needs"]
         needs = [needs] if isinstance(needs, str) else list(needs)
-        prev = [] if k == 0 else ["build" if k == 1 else f"build-wave-{k - 1}"]
+        # Волна 0 ждёт ещё общий образ сообщений (job msgs), дальше — цепочка.
+        prev = ["msgs"] if k == 0 else ["build" if k == 1 else f"build-wave-{k - 1}"]
         assert needs == ["prepare", *prev], (name, needs)
         if k > 0:
             cond = job.get("if", "")
