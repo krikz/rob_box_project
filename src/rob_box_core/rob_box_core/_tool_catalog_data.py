@@ -80,7 +80,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('navigation',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
@@ -1448,7 +1448,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('expression',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
@@ -1619,7 +1619,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('composer', 'dj')},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
@@ -2060,23 +2060,44 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        "'говори громче', 'тише говори', 'максимальная громкость "
                        "голоса', а также для 'громче/тише', когда музыка НЕ играет. "
                        'Если играет трек/бит/DJ-сет и юзер просит громче/тише музыку — '
-                       'вызывай set_music_volume, а не этот тул.',
+                       'вызывай set_music_volume, а не этот тул. Названный уровень в '
+                       "процентах ('громкость 60 %') — action=set и level.",
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
-                                                          'description': 'Действие с '
-                                                                         'громкостью',
+                                                          'description': 'louder — '
+                                                                         'громче на '
+                                                                         'шаг, quieter '
+                                                                         '— тише на '
+                                                                         'шаг, max — '
+                                                                         'на максимум, '
+                                                                         'normal — '
+                                                                         'обычный '
+                                                                         'уровень, set '
+                                                                         '— выставить '
+                                                                         'level',
                                                           'enum': [   'louder',
                                                                       'quieter',
                                                                       'max',
-                                                                      'normal']}},
+                                                                      'normal',
+                                                                      'set']},
+                                            'level': {   'type': 'integer',
+                                                         'description': 'Только для '
+                                                                        'action=set: '
+                                                                        'громкость '
+                                                                        'голоса в '
+                                                                        'процентах, '
+                                                                        '0..100 '
+                                                                        '(значения вне '
+                                                                        'диапазона '
+                                                                        'обрезаются).'}},
                           'required': ['action'],
                           'additionalProperties': False},
-        'signature': {   'params': ['action'],
+        'signature': {   'params': ['action', 'level'],
                          'required': ['action'],
                          'accepts_kwargs': False},
         'skill': ('voice-tts',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,

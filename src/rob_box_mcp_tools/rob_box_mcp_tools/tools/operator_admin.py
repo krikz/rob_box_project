@@ -188,6 +188,11 @@ class Ros2NodeStatusTool(MCPTool):
         return False
 
     @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
+
+    @property
     def description(self) -> str:
         return (
             "Получить статус ROS2-нод робота (active/missing/failed). "
@@ -350,6 +355,11 @@ class ReadLogsTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
 
     @property
     def description(self) -> str:
@@ -524,6 +534,11 @@ class ContainerStatusTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (ADR-0051 §6, #2001): личность эти тулы не видит.
         return False
+
+    @property
+    def slice(self) -> str:
+        # срез ``operator.admin`` (slice_policy.yaml): по нему тул виден оператору (ADR-0150 §9.3, PR-13b)
+        return "operator.admin"
 
     @property
     def description(self) -> str:
