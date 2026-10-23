@@ -260,7 +260,7 @@ def test_minimax_false_passed_and_empty_args_are_not_invalid() -> None:
     (LLMResponse(content='{"speech": "", "passed": true}'), "bad_type"),  # true — не исход из перечисления
     (LLMResponse(content='{"speech": "Привет", "mood": "весело"}'), "unknown_field"),
     (LLMResponse(tool_calls=(_command_call(speech="обре"),), truncated_tool_args=True), "truncated"),
-    (LLMResponse(content='{"expression": {"emotion": "happy"}}'), kn.VIOLATION_EMPTY_COMMAND),
+    (LLMResponse(content='{"expression": {"emotion": "neutral"}}'), kn.VIOLATION_EMPTY_COMMAND),
     (LLMResponse(tool_calls=(_command_call(speech=""),)), kn.VIOLATION_EMPTY_COMMAND),
 ])
 def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMResponse, reason: str) -> None:
@@ -273,6 +273,15 @@ def test_invalid_twice_marks_the_command_invalid_after_one_retry(reply: LLMRespo
     assert call.arguments == {kn.COMMAND_INVALID_FIELD: reason}
     assert f"verdict=invalid:{reason}" in log[0] and f"verdict=invalid:{reason}" in log[1]
     assert log[2].startswith(f"{cb.COMMAND_LOG_MARK} retry=1 violations=['{reason}'] → verdict=invalid:{reason} (")
+
+
+def test_expression_only_command_is_valid_not_empty() -> None:
+    """#3974: «покажи, как тебе грустно» - команда из одного expression (лицо без слов) принимается, не empty_command."""
+    log: list = []
+    out = _convert(DEEPSEEK_CAPS, LLMResponse(tool_calls=(_command_call(expression={"emotion": "sad"}),)), log)
+    (call,) = out.tool_calls
+    assert call.name == kn.COMMAND_TOOL and call.arguments == {"expression": {"emotion": "sad"}}
+    assert "verdict=command" in log[0] and "invalid" not in log[0]
 
 
 def test_passed_is_honest_silence_carried_as_command() -> None:
@@ -656,7 +665,7 @@ def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is
 def test_agent_core_empty_command_is_retried_by_the_bridge_not_by_v1(streaming: bool) -> None:
     """Пустой ответ → один повтор моста с объяснением → исправленная команда исполнена. Ретрая #1217 (SYSTEM
     CORRECTION, третий запрос к LLM) нет: ровно 2 запроса."""
-    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "happy"}),))
+    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "neutral"}),))
     good = LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL, arguments={"actions": SAVE}),))
     inner = _Inner(DEEPSEEK_CAPS, [empty, good])
     spoken = _Spoken()
@@ -670,7 +679,7 @@ def test_agent_core_empty_command_is_retried_by_the_bridge_not_by_v1(streaming: 
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_agent_core_empty_twice_fails_the_turn_without_a_third_llm_call(streaming: bool) -> None:
-    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "happy"}),))
+    empty = LLMResponse(tool_calls=(_command_call(expression={"emotion": "neutral"}),))
     inner = _Inner(DEEPSEEK_CAPS, [empty, empty])
     spoken = _Spoken()
     result = asyncio.run(_core(inner, streaming, spoken).process_input(

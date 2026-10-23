@@ -471,7 +471,9 @@ def test_every_reason_the_validator_raises_has_words_for_the_model():
 
 
 @pytest.mark.parametrize("raw, empty", [
-    ({"expression": {"emotion": "happy"}}, True),
+    ({"expression": {"emotion": "happy"}}, False),  # #3974: «покажи, как тебе грустно» - команда лицом без слов
+    ({"expression": {"gesture": "wink"}}, False),
+    ({"expression": {"emotion": "neutral"}}, True),
     ({"speech": "   "}, True),
     ({}, True),
     ({"passed": "nothing_to_say"}, False),
@@ -550,3 +552,31 @@ def test_voice_catalogue_goes_into_the_schema_as_an_enum_3959():
     assert items["enum"] == ["", "alena", "filipp", "zahar"]
     assert "enum" not in kn.command_schema("json")["properties"]["perform"]["properties"]["voice_per_segment"]["items"]
     assert kn.with_voices(kn.command_schema("json"), ()) == kn.command_schema("json")
+
+
+# --- #3974: вложенные лишние поля аргументов тула дропаются, не отказывают ---------------------------------------
+
+
+def _animation(**face):
+    return {"actions": [{"tool": "play_animation", "args": {"animation": "sad", "face": {"mouth": "frown", **face}}}]}
+
+
+def test_3974_nested_extra_field_in_tool_args_is_dropped_not_rejected():
+    """n905: ``play_animation.face.emotion: лишнее поле`` валило команду. Теперь поле уходит в ``dropped``."""
+    cmd = ok(_animation(emotion="sad"))
+    assert dict(cmd.actions[0].args) == {"animation": "sad", "face": {"mouth": "frown"}}
+    assert cmd.dropped == ("actions[0].play_animation.face.emotion",)
+
+
+def test_3974_dropping_nested_extras_does_not_weaken_the_schema():
+    bad({"actions": [{"tool": "play_animation", "args": {"animation": "sad", "face": {"mouth": "frown",
+                                                                                           "emotion": "sad", "eyes": "?"}}}]},
+        "bad_args")  # лишнее ушло, но enum слота eyes всё ещё проверяется
+    bad({"actions": [{"tool": "play_animation", "args": {"animation": "sad", "face": "грустное"}}]}, "bad_args")  # тип
+    bad({"actions": [{"tool": "set_volume", "args": {"action": "louder", "db": 3}}]}, "bad_args")  # верхний уровень
+    bad({"actions": [{"tool": "set_volume", "args": {"db": 3}}]}, "bad_args")  # обязательное поле
+
+
+def test_3974_clean_args_are_untouched_and_leave_dropped_empty():
+    cmd = ok(_animation())
+    assert cmd.dropped == () and dict(cmd.actions[0].args)["face"] == {"mouth": "frown"}
