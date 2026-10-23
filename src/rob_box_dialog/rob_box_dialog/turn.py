@@ -58,6 +58,8 @@ _FAILED = ("rejected", "timeout")
 PICKUP_MARK = "🗒️ [backlog] pickup"
 #: Раздел снимка с исходами действий прошлых ходов (окно ``turn_log``: ``tool`` — структурой, не в тексте реплик).
 RECENT_ACTIONS = "recent_actions"
+#: Раздел снимка хода с фразой: фоновая фраза того же собеседника (``Backlog.recent_unaddressed``, §7.3, #3894).
+RECENT_UNADDRESSED = "recent_unaddressed"
 
 
 def _follow_as_user(data: str) -> Sequence[Any]:
@@ -115,6 +117,7 @@ class _Turn:
     reason: str = ""
     pickup: bool = False
     heard: Tuple[Tuple[str, str], ...] = ()  # подхват бэклога: (кто сказал, фраза) по порядку (#3892)
+    recent: Tuple[Mapping[str, Any], ...] = ()  # фоновая фраза того же собеседника для снимка (#3894)
     said: List[str] = field(default_factory=list)
 
 
@@ -122,6 +125,12 @@ def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
     """Подхваченные фразы бэклога ``(кто, фраза)``: автор — метка самой фразы (``Backlog.label``), не собеседник
     хода."""
     return tuple((phrase_label(p.get("speaker") or {}), str(p.get("text") or "")) for p in addressed.picked)
+
+
+def recent_section(addressed: Addressed) -> Tuple[Mapping[str, Any], ...]:
+    """Раздел ``recent_unaddressed`` адресованного хода: метка фразы бэклога + ``who`` — автор той же схемой, что
+    тег ``kn.SPEAKER_TAG`` подхвата (:func:`phrase_label`, #3892)."""
+    return tuple({**p, "who": phrase_label(p.get("speaker") or {})} for p in addressed.recent)
 
 
 def user_text(turn: "_Turn") -> str:
@@ -272,7 +281,7 @@ class TurnEngine:
         snap = self.session.snapshot
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
-                     heard=picked_heard(addressed))
+                     heard=picked_heard(addressed), recent=recent_section(addressed))
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
@@ -427,7 +436,8 @@ class TurnEngine:
         history = [e for e in past if e.role != TOOL]
         sections = dict(self._sections(snap, turn.text))
         recent = [dict(e.content) for e in past if e.role == TOOL]
-        context = build_context({**sections, RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
+        context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
+                                 RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
         messages: List[Any] = [{"role": "system", "content": self._system}] if self._system else []
         messages += [{"role": e.role, "content": e.for_llm()} for e in history]
         messages.append({"role": "user", "content": f"{context}\n\n{user_text(turn)}"})
@@ -469,5 +479,6 @@ class TurnEngine:
             self._log.warning(f"{LOG_MARK} e2e-событие {kind} не записано: {exc}")
 
 
-__all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "TurnEngine", "outcome_phrase", "tier1_actions",
+__all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED",
+           "TurnEngine", "outcome_phrase", "tier1_actions",
            "tier1_for", "tier1_phrase", "voices_passed"]
