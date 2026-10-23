@@ -569,9 +569,14 @@ QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
 #: исполнены, об исходе говорит код; исполнять нечего - эта честная фраза, а не молчание на адресованную реплику.
 INVALID_COMMAND_PHRASE = "command.invalid_generic"
+#: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез
+#: (``too_long``: перечисление голосов длиннее лимита речи, #3883). Единственная таблица причина → ключ каталога;
+#: причины вне таблицы говорят ``INVALID_COMMAND_PHRASE``.
+INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long"})
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
+    *INVALID_COMMAND_PHRASES.values(),
     *QUERY_FALLBACK_PHRASES.values(),
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
