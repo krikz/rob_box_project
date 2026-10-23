@@ -14,13 +14,25 @@ on:
       - '**/Dockerfile'   # Dockerfiles
       - '.github/workflows/lint.yml'
   pull_request:
+    # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
+    # получает synchronize на каждый push в develop, и проверка гонялась ещё
+    # раз на SHA, который уже прошёл push-прогон. Чеки push-прогона висят на
+    # head-коммите PR, merge-gate их видит.
+    # Без `paths`: гарды этого workflow проверяют docs/adr и docs/plans, так что
+    # docs-only PR здесь пропускать нельзя.
     branches:
       - develop
-      - main
   workflow_dispatch:  # Ручной запуск
 
 permissions:
   contents: read
+
+# #3922: новый push в PR отменяет устаревший прогон этого PR. На push и
+# workflow_dispatch группа уникальна (run_id), отмены нет - причина та же, что в
+# G-Run Tests.yml: промежуточные коммиты develop должны проверяться все.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ============================================================================
