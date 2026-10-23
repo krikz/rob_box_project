@@ -71,7 +71,7 @@ def synth_markup(tts: MiniMaxTTS, plain: Dict, bpm: float, prev: Dict = None) ->
             text, speed, n = ap.markup_text(VERSES[i], plain[(v, i)]["words"], bpm, fix=fix)
             marked[(v, i)] = tts.synth(v, text, speed)
             got = ap.line_cuts(marked[(v, i)]["words"], VERSES[i])
-            err = [round((b - a - n * ap.bar_s(bpm)) * 1000) for a, b in zip(got[:-1], got[1:])]
+            err = [round((b - a - k * ap.bar_s(bpm)) * 1000) for a, b, k in zip(got[:-1], got[1:], n)]
             info[f"{v}:{i}"] = {"text": text, "speed": speed, "bars_per_line": n, "line_step_err_ms": err,
                                 "fix": list(fix)}
     return marked, info

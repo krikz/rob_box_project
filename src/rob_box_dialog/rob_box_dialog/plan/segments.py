@@ -16,6 +16,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.estimate import SpeechRate
+from rob_box_dialog.plan.rap_pauses import breaks_to_newlines
 from rob_box_dialog.plan.sync import BeatGrid, bar_at_or_after, layout
 
 _LOG = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ class Line:
     @property
     def tts_text(self) -> str:
         """Что синтезировать: отданный текст (пред-синтез и звучание — одним текстом) или исходный."""
-        return self.speak or self.text
+        return self.speak or breaks_to_newlines(self.text)  # <br/> в синтез не уходит (#3924)
 
     def length_s(self, rate: SpeechRate) -> float:
         """Длительность: синтезированная или оценка по скорости речи."""
