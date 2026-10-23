@@ -377,6 +377,24 @@ def test_budget_stops_before_the_step_that_would_overshoot(make_env):
     assert report.verdict == dm.NOT_RUN and env.inner.calls == []
 
 
+def test_voice_owner_speaks_the_outcome_itself_and_the_log_line_is_checkable(make_env):
+    """Смену голоса озвучивает сам тул (``OUTCOME_SPOKEN_ELSEWHERE``): ход не молчит, строка ``[set_voice]`` в логе."""
+    args = {"actions": [{"tool": "set_voice", "args": {"voice": "alena", "provider": "yandex"}}]}
+    env = make_env(lambda env, msgs, tools: args)
+    report = env.run(step("n403", "Робот, говори голосом Алёны.", expect_tools=["set_voice"], voice_changed=True))
+    assert report.verdict == dm.PASS, report.fail
+    assert report.said == ["Говорю голосом alena."]
+    assert "[set_voice] voice='alena' provider=yandex" in report.log and env.stand.voice_provider == "yandex"
+
+
+def test_unknown_voice_is_refused_by_the_owner_and_not_applied(make_env):
+    args = {"actions": [{"tool": "set_voice", "args": {"voice": "no-such-voice"}}]}
+    env = make_env(lambda env, msgs, tools: args)
+    heard = env.hear("Робот, говори голосом без имени.")
+    assert heard.outcomes == [("set_voice", "rejected", "voice_unavailable")] and "недоступен" in heard.said[0]
+    assert env.stand.session.snapshot.voice.applied is None
+
+
 def test_expect_backlog_step_fails_when_the_phrase_is_addressed(make_env):
     env = make_env(lambda env, msgs, tools: {"speech": "Слушаю."})
     ok = env.run(step("n_bg", "Просто разговор без вейка.", expect="backlog", patterns=[r"\[backlog\] accumulated"]))

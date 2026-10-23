@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
+from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
     Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
 )
@@ -60,13 +61,17 @@ from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
 from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
+from rob_box_voice.tts_voice_registry import (  # noqa: E402
+    ROBOT_DEFAULT_PROVIDER, default_voice_for, robot_default_voice, voices_for,
+)
 
 WAKE_WORDS_YAML = REPO / "docker" / "sound" / "config" / "wake_words.yaml"
 #: Скорость речи человека/робота для модели времени, символов в секунду (живой замер ≈ 13–16).
 SPEECH_CPS = 14.0
-#: Пауза харнесса между шагами, с: шаг ждёт конца речи робота + паузу; фраза в бэклог — только маркер бэклога.
+#: Пауза харнесса между шагами, с: шаг ждёт конца речи робота + паузу. Фраза в бэклог ждёт только маркер бэклога: по
+#: живому прогону акта 3 (run 39910805388) шаги ``expect: backlog`` идут с периодом ≈ 18 с при 6–8 с звука фразы.
 STEP_GAP_S = 3.0
-BACKLOG_GAP_S = 1.5
+BACKLOG_GAP_S = 8.0
 #: Ночь, мастерская: точка отсчёта фейковых часов (местное время робота).
 NIGHT_START = datetime(2026, 10, 24, 1, 40, 0)
 
@@ -214,14 +219,14 @@ class FakeSpeech:
 NO_FAKE = "no_fake_owner"
 #: Какой фейковый владелец ответил на тул (для отчёта шага: на чём держится вердикт).
 TOOL_OWNERS: Mapping[str, str] = {
-    "get_current_time": "clock", "get_battery_level": "robot_status", "get_robot_status": "robot_status",
+    "get_current_time": "clock", "get_current_pose": "robot_status", "get_battery_level": "robot_status",
+    "get_robot_status": "robot_status",
     "get_perception_context": "face", "play_animation": "face", "get_sound_info": "sound", "play_sound": "sound",
     "list_tts_voices": "voice", "set_voice": "voice", "set_tts_provider": "voice", "set_speed": "voice",
     "set_pitch": "voice", "set_volume": "volume", "register_speaker": "speaker",
     "get_music_state": "music", "set_music_volume": "music", "request_music": "music", "generate_music": "music",
     "dj_set": "music", "music_library": "music", "stop_music": "music",
 }
-_TTS_VOICES = ("alena", "jane", "zahar", "ermil", "anton", "oksana", "omazh", "filipp", "madirus")
 
 
 class FakeTools:
@@ -302,7 +307,8 @@ class FakeTools:
 
     def _t_list_tts_voices(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         provider = str(args.get("provider") or self._stand.voice_provider)
-        return True, {"provider": provider, "voices": list(_TTS_VOICES), "default_voice": "alena"}
+        return True, {"provider": provider, "voices": voices_for(provider),
+                      "default_voice": default_voice_for(provider)}
 
     def _t_get_music_state(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         deck = self._stand.player.deck()
@@ -323,22 +329,51 @@ class FakeTools:
         self._stand.emit(f"✅ Speaker '{name}' registered (id={sid[:8]})")
         return True, {"name": name, "status": "done", "reason": None, "sent_by_robot": False, "speaker_id": sid}
 
+    def _t_get_current_pose(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        return True, {"x": 1.2, "y": 0.4, "yaw": 0.1, "frame": "map"}
+
+    def _voice_outcome(self, status: str, requested: str, applied: str, provider: str, phrase: str,
+                       ok: bool) -> Tuple[bool, Dict[str, Any]]:
+        """Исход смены голоса: тул сам озвучивает фразу кода новым голосом (``_say_outcome``) и пишет строку лога."""
+        stand = self._stand
+        # dialogue.py (SetVoiceTool): f"[set_voice] voice={…!r} provider={…} default={…} switched=… status=…"
+        stand.emit(f"[set_voice] voice={applied!r} provider={provider} default={default_voice_for(provider)} "
+                   f"switched={provider != stand.voice_provider} status={status}")
+        stand.speech.say("", stand.session.snapshot.epoch, phrase, applied)
+        data = {"status": status, "voice_requested": requested, "voice_applied": applied, "provider": provider,
+                "available": voices_for(provider)}
+        return ok, data if ok else {**data, "reason": f"voice_{status}"}
+
     def _t_set_voice(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        stand = self._stand
         voice = str(args.get("voice") or "").strip()
-        provider = str(args.get("provider") or self._stand.voice_provider)
         if not voice:
             return False, {"status": "rejected", "reason": "voice_empty"}
-        self._stand.voice_provider = provider
-        self._stand.session.set_voice(voice, voice, provider)
-        # dialogue.py (SetVoiceTool): f"[set_voice] voice={…!r} provider={…} default={…} switched=… status=…"
-        self._stand.emit(f"[set_voice] voice={voice!r} provider={provider} default=alena switched=False status=applied")
-        return True, {"status": "applied", "voice_requested": voice, "voice_applied": voice, "provider": provider,
-                      "previous_provider": None, "provider_switched": False, "available": list(_TTS_VOICES)}
+        provider = str(args.get("provider") or stand.voice_provider)
+        if voice.lower() == kn.VOICE_DEFAULT_ARG:  # «обычный голос» - голос робота по умолчанию (#3803)
+            provider, voice = robot_default_voice()
+            if (stand.voice_provider, stand.session.snapshot.voice.applied) in ((provider, voice), (provider, None)):
+                return self._voice_outcome("already_default", voice, voice, provider,
+                                           phrases.text("voice.already_default"), True)
+        current = stand.session.snapshot.voice.applied or default_voice_for(stand.voice_provider)
+        if voice not in voices_for(provider):
+            return self._voice_outcome("unavailable", voice, current, stand.voice_provider,
+                                       phrases.text("voice.unavailable", requested=voice, applied=current), False)
+        outcome = self._voice_outcome("applied", voice, voice, provider, phrases.text("voice.applied", voice=voice),
+                                      True)
+        stand.voice_provider = provider
+        stand.session.set_voice(voice, voice, provider)
+        return outcome
 
     def _t_set_tts_provider(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        stand = self._stand
         provider = str(args.get("provider") or "").strip()
-        self._stand.voice_provider = provider or self._stand.voice_provider
-        return True, {"status": "applied", "provider": self._stand.voice_provider}
+        if provider not in ("minimax", "yandex", "silero"):
+            return False, {"status": "rejected", "reason": "provider_unknown", "requested": provider}
+        stand.voice_provider = provider
+        voice = default_voice_for(provider)
+        stand.session.set_voice(voice, voice, provider)
+        return True, {"status": "applied", "provider": provider, "voice_applied": voice}
 
     def _t_set_volume(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return True, {"old_volume": 70, "new_volume": 80 if str(args.get("action")) == "louder" else 60}
@@ -476,7 +511,7 @@ class DryStand:
         self.system_prompt = system_prompt
         self.wake = list(wake) if wake is not None else wake_words(str(WAKE_WORDS_YAML))[0]
         self.speakers = FakeSpeakers()
-        self.voice_provider = "yandex"
+        self.voice_provider = ROBOT_DEFAULT_PROVIDER
         self.current_voice_id = ""
         self.touched: Set[str] = set()
         self._log = StepLog()
