@@ -49,6 +49,10 @@ def wait_future(future, timeout_sec: float) -> bool:
     return event.wait(timeout=timeout_sec)
 
 
+#: Срезы оператора (ТАРС) в ``slice_policy.yaml``: ``operator.speech``, ``operator.admin``. Тул такого среза виден
+#: оператору (:attr:`MCPTool.operator_visible`) — ADR-0150 §9.3.
+OPERATOR_SLICE_PREFIX = "operator."
+
 # ---------------------------------------------------------------------------
 # Общий publisher на (нода, тип, топик, QoS)
 # ---------------------------------------------------------------------------
@@ -361,12 +365,13 @@ class MCPTool(ABC):
 
         Реестр оператора = ``llm_visible`` ∪ ``operator_visible``. Нужен
         инструментам «ТАРС-только» (``llm_visible=False``, но оператору
-        они нужны), например ``say``. Дефолт ``False``: без явного
-        решения инструмент оператору не предъявляется. Каждый
-        ``operator_visible`` инструмент обязан быть зарегистрирован в
+        они нужны), например ``say``. Решает срез: тул среза
+        ``operator.*`` (``slice``) — оператору виден, иначе нет (ADR-0150
+        §9.3, PR-13b: одно знание — срез, а не второй флаг рядом с ним).
+        Каждый ``operator_visible`` инструмент обязан быть зарегистрирован в
         ``mcp_server`` — иначе вызов вернёт «unknown tool».
         """
-        return False
+        return self.slice.startswith(OPERATOR_SLICE_PREFIX)
 
     @property
     def telegram_visible(self) -> bool:

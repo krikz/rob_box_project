@@ -46,6 +46,9 @@ OUT_FILE = REPO_ROOT / "src" / "rob_box_core" / "rob_box_core" / "_tool_catalog_
 ENGINE_TOOL_SOURCES = (TOOLS_DIR.parent / "engine" / "tools_v2.py",)
 
 DYNAMIC = object()
+#: То же, что ``rob_box_mcp_tools.base.OPERATOR_SLICE_PREFIX`` (генератор не импортирует пакет с ROS; равенство держит
+#: ``test_tool_catalog_is_current``): тул среза ``operator.*`` виден оператору.
+OPERATOR_SLICE_PREFIX = "operator."
 
 
 class ToolSourceError(RuntimeError):
@@ -622,6 +625,7 @@ def extract_tools() -> list[dict[str, Any]]:
             }
             params: list[dict[str, Any]] | None = None
             signature: dict[str, Any] | None = None
+            explicit: set[str] = set()
 
             for fn in [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
                 if fn.name == "name":
@@ -648,6 +652,13 @@ def extract_tools() -> list[dict[str, Any]]:
                             entry["execution_type"] = n.attr.lower()
                 elif fn.name == "execute":
                     signature = _signature(fn)
+                elif fn.name == "slice":
+                    tool_slice = _returned_literal(fn)
+                    if isinstance(tool_slice, str) and "operator_visible" not in explicit:
+                        # MCPTool.operator_visible: тул среза operator.* виден оператору (ADR-0150 §9.3, PR-13b)
+                        entry["operator_visible"] = tool_slice.startswith(OPERATOR_SLICE_PREFIX)
+                if fn.name == "operator_visible":
+                    explicit.add(fn.name)
 
             name = entry.get("name")
             if not isinstance(name, str) or not name:
