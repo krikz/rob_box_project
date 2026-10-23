@@ -14,12 +14,17 @@
       "text": "Робот, сейчас тихо, ничего не играет?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "stop_music"
-        ]
+        ],
+        "must_not_say": [
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       },
       "expect": "cycle"
     },
@@ -27,14 +32,27 @@
       "label": "n602_dj_on",
       "voice": "anton",
       "text": "Робот, вставай за пульт, включай диджей-режим, у нас тут ночная дискотека.",
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент dj_set выполнен успешно",
+        "🎵 \\[music v2\\] started track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
-          "set_dj_mode"
+          "dj_set"
         ],
-        "must_not_call": []
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "_comment": "#3971: v2-тул -- dj_set (action=start), прежний v1-тул режима диджея удалён. PASS только при `Инструмент dj_set выполнен успешно` + `[music v2] started`."
       },
-      "retry_acceptance": 1
+      "retry_acceptance": 1,
+      "_result_markers": {
+        "tools": [
+          "dj_set"
+        ],
+        "music": "started"
+      }
     },
     {
       "label": "n603_confirm_dj_playing",
@@ -42,12 +60,18 @@
       "text": "Робот, что сейчас крутится?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
           "stop_music"
-        ]
+        ],
+        "must_not_say": [
+          "тишин|ничего не играет|не играет|не звучит|музыки нет",
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "играет|играю|звучит|звучат|крутится|крутим|идёт|идет|bpm|темп|ритм|бит|рок|трек|мелоди"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148); «тишина» при играющем сете -- красный."
       }
     },
     {
@@ -55,13 +79,23 @@
       "voice": "anton",
       "text": "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
       "patterns": [
-        "set_dj_mode|request_music"
+        "✅ Инструмент (dj_set|request_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
-          "stop_music"
+          "stop_music",
+          "stage=timeout"
         ],
-        "expected_tool_calls": []
+        "expected_tool_calls": [],
+        "_comment": "#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music"
+        ],
+        "music": ""
       }
     },
     {
@@ -69,9 +103,24 @@
       "voice": "anton",
       "text": "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
       "patterns": [
-        "set_dj_mode|request_music|SpeechEvent started speech_id"
+        "SpeechEvent started speech_id",
+        "✅ Инструмент (dj_set|request_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
-      "_why": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1."
+      "acceptance": {
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1. #3971: просьба -- и действие, и объявление треков вслух: нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music"
+        ],
+        "music": ""
+      }
     },
     {
       "label": "n606_wake_under_dj",
@@ -84,7 +133,7 @@
         ],
         "must_not_call": [
           "stop_music",
-          "set_dj_mode"
+          "dj_set"
         ],
         "_comment": "Вопрос под играющим сетом чужим (зарегистрированным) голосом: ответить и не сбить сет."
       }
@@ -94,13 +143,23 @@
       "voice": "anton",
       "text": "Робот, а теперь помягче, поставь спокойную атмосферу, Валера уснёт за рулём.",
       "patterns": [
-        "set_dj_mode|request_music"
+        "✅ Инструмент (dj_set|request_music) выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
-          "stop_music"
+          "stop_music",
+          "stage=timeout"
         ],
-        "expected_tool_calls": []
+        "expected_tool_calls": [],
+        "_comment": "#3971: см. n604."
+      },
+      "_result_markers": {
+        "tools": [
+          "dj_set",
+          "request_music"
+        ],
+        "music": ""
       }
     },
     {
@@ -108,16 +167,25 @@
       "voice": "anton",
       "text": "Робот, хватит диджеить, выключай.",
       "patterns": [
-        "stop_music|set_dj_mode"
+        "✅ Инструмент (dj_set|stop_music) выполнен успешно",
+        "🎵 \\[music v2\\] stop track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
-        "expected_tool_calls": [
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "«Хватит диджеить» — двусмысленно (`dj_set` action=stop или `stop_music`). #3971: тул не фиксируем (v2 робот гасит сет через dj_set), но звук обязан прекратиться: успех любого из двух тулов + `[music v2] stop`."
+      },
+      "retry_acceptance": 1,
+      "_result_markers": {
+        "tools": [
+          "dj_set",
           "stop_music"
         ],
-        "must_not_call": [],
-        "_comment": "«Хватит диджеить» — двусмысленно (выключить режим или остановить звук). Требуем именно stop_music: звук обязан прекратиться, режим — как решит модель."
-      },
-      "retry_acceptance": 1
+        "music": "stopped"
+      }
     },
     {
       "label": "n609_silence_after_dj",
@@ -125,12 +193,17 @@
       "text": "Робот, тишина настала?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
-        ],
         "must_not_call": [
-          "set_dj_mode"
-        ]
+          "dj_set"
+        ],
+        "must_not_say": [
+          "не получилось выполнить"
+        ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       }
     },
     {
@@ -138,7 +211,7 @@
       "voice": "anton",
       "text": "Робот, диджей-режим у тебя сейчас включён или выключен?",
       "patterns": [],
-      "_why": "Зонд честности состояния: расходится ли ответ робота с тем, что показал get_music_state в n609. Без ассерта — сравниваем transcript n609 и n610 глазами."
+      "_why": "Зонд честности состояния: расходится ли ответ робота с тем, что показал снимок `<music_state>` в n609. Без ассерта — сравниваем transcript n609 и n610 глазами."
     }
   ]
 }
