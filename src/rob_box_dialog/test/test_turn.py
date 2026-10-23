@@ -12,7 +12,8 @@ from rob_box_dialog.address import BARE_WAKE, VOICE, Addressed
 from rob_box_dialog.command import Ask, Command, Invalid, Performance, ToolCall
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
-from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
+from rob_box_dialog.execute import Executor, OwnerEvent
+from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRef
 from rob_box_dialog.turn import RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, tier1_actions
 from rob_box_dialog.grammar import Tier1Command
 
@@ -406,3 +407,67 @@ def test_not_a_stop_does_not_cancel_speech_or_change_epoch():
     engine = _engine(ports)
     _run(engine, "а который час")
     assert ports.cancels == [] and ports.performs == [] and engine.session.snapshot.epoch == 0
+
+
+class MemoryPorts(Ports):
+    """Порты с настоящим исполнителем памяти: запрос владельцу уходит только с ``person_ref`` снимка (#3881)."""
+
+    def __init__(self, answers, on_ask=None):
+        super().__init__(answers)
+        self.requests = []
+        self.on_ask = on_ask
+        self.executor = Executor(self._owner)
+
+    def _owner(self, request):
+        self.requests.append(request)
+        asyncio.get_running_loop().call_soon(
+            self.executor.on_event, OwnerEvent(request.turn_id, "done", data={**request.args, "fact_id": 1}))
+
+    async def ask(self, messages, tools, timeout_s):
+        if self.on_ask:
+            self.on_ask()
+        return await super().ask(messages, tools, timeout_s)
+
+    async def execute(self, actions, snapshot, turn_id):
+        self.executed.append([(a.tool, dict(a.args)) for a in actions])
+        return await self.executor.run(actions, snapshot, turn_id)
+
+
+_FACT = ToolCall("memory_save", {"fact": "пьёт только зелёный чай"})
+
+
+def test_rejected_memory_save_is_an_outcome_in_the_window_not_a_debt_3881():
+    """Ход А: собеседник не узнан -> rejected{no_person}; ход Б (Борис): окно несёт пометку «не сохранён», не долг."""
+    ports = MemoryPorts([Answer(Command(actions=(_FACT,)), "x"), Answer(Command(speech="Привет, Борис."), "x")])
+    engine = _engine(ports)
+    _run(engine, "робот запомни я пью только зелёный чай")
+    assert ports.requests == []  # в память не ушло
+    engine.session.set_speaker(SpeakerRef(person_ref="spk-boris", name="Борис", name_state="confirmed"))
+    _run(engine, "продолжаю говорить, чтобы ты привык к моему голосу")
+    recent = ports.asked[1][0][-1]["content"]
+    assert '"tool":"memory_save"' in recent and '"reason":"no_person"' in recent
+    assert kn.REJECT_NOTES["no_person"] in recent and "не сохраняй его за другого" in recent
+
+
+def test_memory_save_is_rejected_when_the_speaker_changed_during_the_turn_3881():
+    """Ход начат репликой Саши, к исполнению в снимке уже Борис: факт не уходит владельцу ни за кого."""
+    box = {}
+    ports = MemoryPorts([Answer(Command(actions=(_FACT, ToolCall("get_current_time", {}))), "x")],
+                        on_ask=lambda: box["e"].session.set_speaker(
+                            SpeakerRef(person_ref="spk-boris", name="Борис", name_state="confirmed")))
+    engine = box["e"] = _engine(ports)
+    engine.session.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
+    _run(engine, "робот запомни я пью только зелёный чай")
+    assert [r.tool for r in ports.requests] == ["get_current_time"]
+    assert ports.executed == [[("get_current_time", {})]]
+    [saved] = [e.content for e in engine.log.window() if e.role == "tool" and e.content["tool"] == "memory_save"]
+    assert (saved["status"], saved["reason"]) == ("rejected", kn.SPEAKER_CHANGED_REASON)
+    assert saved["note"] == kn.REJECT_NOTES[kn.SPEAKER_CHANGED_REASON]
+
+
+def test_memory_save_goes_to_the_same_speaker_when_nothing_changed():
+    ports = MemoryPorts([Answer(Command(actions=(_FACT,)), "x")])
+    engine = _engine(ports)
+    engine.session.set_speaker(SpeakerRef(person_ref="spk-sasha", name="Саша", name_state="confirmed"))
+    _run(engine, "робот запомни я пью только зелёный чай")
+    assert [r.args[kn.PERSON_ARG] for r in ports.requests] == ["spk-sasha"]

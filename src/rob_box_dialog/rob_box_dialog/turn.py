@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, 
 
 from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
@@ -184,6 +185,17 @@ def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
 def _query_data(results: Sequence[ActionResult]) -> str:
     rows = [{"tool": r.tool, "status": r.status, "reason": r.reason, "data": dict(r.data)} for r in results]
     return json.dumps({"query_results": rows}, ensure_ascii=False, default=str)
+
+
+async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: SessionSnapshot,
+                              now: SessionSnapshot, turn_id: str) -> List[ActionResult]:
+    """Действия владельцам; факт ``memory_save`` при смене собеседника с начала хода — ``rejected{speaker_changed}``
+    без запроса (код решает, чей это факт, #3881). Результаты — в порядке команды."""
+    changed = {i for i, a in enumerate(actions) if memory.speaker_changed(a, snap, now)}
+    sent = [a for i, a in enumerate(actions) if i not in changed]
+    done = iter(await ports.execute(sent, snap, turn_id) if sent else [])
+    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.TOOL_CLASSES[a.tool], "rejected",
+                         kn.SPEAKER_CHANGED_REASON) if i in changed else next(done) for i, a in enumerate(actions)]
 
 
 class TurnEngine:
@@ -355,7 +367,8 @@ class TurnEngine:
             return []
         cls = kn.TOOL_CLASSES[actions[0].tool]
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
-        results = await turn.deadline.wait(self._ports.execute(actions, snap, turn.turn_id), "actions")
+        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
+        results = await turn.deadline.wait(run, "actions")
         for result in results:
             self.log.result(turn.turn_id, result)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,

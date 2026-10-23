@@ -33,10 +33,20 @@ def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
     return MappingProxyType({**call.args, kn.PERSON_ARG: person})
 
 
+def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
+    """Собеседник сменился между началом хода и исполнением: факт мог быть сказан другим человеком, привязывать его к
+    ``person_ref`` начала хода нельзя (#3881). Неузнанное начало хода - уже ``no_person``, здесь не считается."""
+    if call.tool != "memory_save" or turn_snapshot.agent not in kn.PERSON_AGENTS:
+        return False
+    before = getattr(getattr(turn_snapshot, "speaker", None), "person_ref", None)
+    now = getattr(getattr(now_snapshot, "speaker", None), "person_ref", None)
+    return bool(before) and before != now
+
+
 def has_evidence(tool: str, data: Mapping[str, Any]) -> bool:
     """Есть ли в данных события владельца то, без чего ``done`` этого тула не верится (``knowledge.DONE_EVIDENCE``)."""
     key = kn.DONE_EVIDENCE.get(tool)
     return key is None or data.get(key) is not None
 
 
-__all__ = ["bind_person", "has_evidence"]
+__all__ = ["bind_person", "has_evidence", "speaker_changed"]
