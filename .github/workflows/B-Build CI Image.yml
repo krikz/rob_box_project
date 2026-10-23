@@ -76,6 +76,9 @@ jobs:
               set +u; source /opt/ros/humble/setup.bash; set -u
               python3 -c 'import pytest; assert pytest.__version__ >= \"8\"'
               python3 -c 'import openai, httpx; print(\"OK\")'
+              python3 -c 'import cv2, msgpack, aiohttp, telegram, pytz, numpy; print(cv2.__version__, numpy.__version__)'
               ros2 pkg prefix rclpy
+              ros2 pkg prefix audio_common_msgs
+              ros2 pkg prefix nav2_msgs
               echo '=== SMOKE TEST PASSED ==='
             "
