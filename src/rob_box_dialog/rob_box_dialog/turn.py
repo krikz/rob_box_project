@@ -218,6 +218,24 @@ def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
     return phrases.text(f"{prefix}.volume.{command.args['action']}" if ok else f"{prefix}.volume_fail")
 
 
+def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
+    """Тишина (кадр ``Silence``): после Tier-1 ход не идёт к LLM и ничего не говорит (#3982, решение Шифу 23.10: робот
+    молчит, снимает только «Робот, говори»; вейк тишину не снимает). Реплика уже в журнале хода (``TurnLog.begin``), здесь
+    - строка лога с причиной и итог хода ``silenced``/``finished``: не провал и не «не понял»."""
+    if engine.session.snapshot.top("Silence") is None:
+        return False
+    engine._log.info(f"{LOG_MARK} {kn.SILENCED_TURN_REASON}: LLM не зовётся, речи нет text={turn.text[:80]!r} "
+                     f"turn={turn.turn_id}")
+    turn.stage, turn.status, turn.reason = kn.SILENCED_TURN_STAGE, "finished", kn.SILENCED_TURN_REASON
+    return True
+
+
+async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
+    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`)."""
+    if not hold_silence(engine, turn):
+        await engine._understand(turn, snap)
+
+
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     """Фраза кода об исходе действий хода (``respond.join``): без ``query`` и без тулов, которые говорят сами
     (``knowledge.OUTCOME_SPOKEN_ELSEWHERE == "tool"``). Слота нет в данных события — общая фраза ``local.*``."""
@@ -374,7 +392,7 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
     if follow is not None and not follow.disputed:
         await _tier1_then_rest(engine, turn, follow, snap)
     else:
-        await engine._understand(turn, snap)
+        await understand(engine, turn, snap)
 
 
 class TurnEngine:
@@ -421,7 +439,7 @@ class TurnEngine:
             if tier1 is not None and not tier1.disputed:
                 await _tier1_then_rest(self, turn, tier1, snap)
             else:
-                await self._understand(turn, snap)
+                await understand(self, turn, snap)
         except asyncio.CancelledError:
             turn.stage, turn.status, turn.reason = "done", "cancelled", "interrupt"
             self._log.info(f"{LOG_MARK} ход отменён перебиванием turn={turn.turn_id} epoch={turn.epoch}")
