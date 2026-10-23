@@ -10,6 +10,7 @@ from perform_sim import Sim
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan import rap_pauses as rp
 from rob_box_dialog.plan.perform import Say, context_block
+from rob_box_dialog.plan.segments import Line
 
 VERSES = (
     "Я робот Робби, я читаю под бит,\nКолёса крутятся, мотор не молчит.\n"
@@ -38,7 +39,7 @@ def test_pause_fills_the_lines_bars_minus_speech_and_overhead():
     lines = rp.split_lines(VERSES[0])
     got = rp.markup(VERSES[0], bar)
     spans = [rp.syllables(ln) / rp.SYLLABLES_PER_S for ln in lines]
-    assert got.bars_per_line == 1 and max(spans) <= rp.BAR_FILL * bar
+    assert got.bars_per_line == (1, 1, 1, 1) and max(spans) <= rp.BAR_FILL * bar
     want = [round(bar - s - rp.PAUSE_OVERHEAD_S, 2) for s in spans[:-1]]
     assert got.pauses == tuple(want) and pauses(got.text) == want
     # каждая строка кроме последней — с паузой, знак конца строки уступил паузе; последняя — как была
@@ -50,23 +51,60 @@ def test_pause_fills_the_lines_bars_minus_speech_and_overhead():
 def test_line_longer_than_a_bar_takes_two_bars():
     bar = 240.0 / 160  # 160 BPM: такт 1.5 с, строка ~2.2 с — два такта
     got = rp.markup(VERSES[0], bar)
-    assert got.bars_per_line == 2
     spans = [rp.estimate_span(ln) for ln in rp.split_lines(VERSES[0])]
-    assert got.pauses == tuple(round(2 * bar - s - rp.PAUSE_OVERHEAD_S, 2) for s in spans[:-1])
+    assert got.bars_per_line == tuple(1 if s <= rp.BAR_FILL * bar else 2 for s in spans) and 2 in got.bars_per_line
+    assert got.pauses == tuple(round(max(rp.MIN_PAUSE_S, k * bar - s - rp.PAUSE_OVERHEAD_S), 2)
+                               for k, s in zip(got.bars_per_line[:-1], spans[:-1]))
 
 
 def test_limits_clamp_the_pause_and_the_bars():
     long_line = "Очень длинная строка про енота и комара, которые ночью читают рэп у окна"
     fast = rp.markup(f"{long_line},\n{long_line}.", 240.0 / 200)  # такт 1.2 с: строке мало и двух тактов
-    assert fast.bars_per_line == rp.MAX_BARS_PER_LINE and fast.pauses == (rp.MIN_PAUSE_S,)
+    assert fast.bars_per_line == (rp.MAX_BARS_PER_LINE,) * 2 and fast.pauses == (rp.MIN_PAUSE_S,)
     assert rp.pause_tag(500.0) == f"<#{rp.MAX_PAUSE_S:.2f}#>" and rp.pause_tag(-1.0) == "<#0.05#>"
 
 
-def test_one_line_has_nothing_to_mark_and_commas_split_a_flat_segment():
+def test_one_line_has_nothing_to_mark_and_commas_do_not_split_a_flat_segment():
     assert rp.markup("Я робот Робби", 2.0) is None
     assert rp.markup("Я робот Робби,\nя читаю под бит", 0.0) is None
     assert rp.split_lines("Я робот Робби, я читаю под бит. Мотор не молчит!") == [
-        "Я робот Робби,", "я читаю под бит.", "Мотор не молчит!"]
+        "Я робот Робби, я читаю под бит.", "Мотор не молчит!"]
+    assert rp.markup("Я робот Робби, я читаю под бит, мотор не молчит.", 2.0) is None  # запятые не режут
+
+
+def test_br_is_a_line_break_in_any_case_and_spacing():
+    one = "Енот — ночной король помойки,\nв полосатой шубе по двору."
+    for br in ("<br/>", "<br>", "<BR />", "< br/ >", "<Br>"):
+        text = one.replace("\n", br)
+        assert rp.split_lines(text) == rp.split_lines(one) and len(rp.split_lines(text)) == 2
+        got = rp.markup(text, 2.0)
+        assert got is not None and "<br" not in got.text.lower() and len(got.pauses) == 1
+
+
+def test_br_never_reaches_synthesis_on_any_provider():
+    text = "Енот — ночной король помойки,<br/>в полосатой шубе по двору."
+    for provider in ("minimax", "yandex", "silero", ""):
+        assert "<br" not in rp.text_for(provider, text).lower()
+    assert "<br" not in Line(1, text, "s1").tts_text.lower()
+
+
+def test_short_fragments_glue_to_a_neighbour_without_line_breaks():
+    assert rp.split_lines("Йо. Енот! Ночной король помойки гуляет по двору. Эй.") == [
+        "Йо. Енот! Ночной король помойки гуляет по двору. Эй."]
+    got = rp.split_lines("Йо! Ночной король помойки гуляет по двору. Мусор считает и хвост полосатый.")
+    assert got == ["Йо! Ночной король помойки гуляет по двору.", "Мусор считает и хвост полосатый."]
+    assert all(rp.syllables(ln) >= rp.MIN_LINE_SYLLABLES for ln in got)
+
+
+def test_every_line_gets_its_own_bars_and_a_short_line_pauses_at_most_a_bar():
+    bar = 2.0
+    verse = ("Ночной король помойки, в полосатой шубе по двору ходит гордо,\nЕнот.\n"
+             "Моет всё печенье и считает мусор до утра у забора")
+    got = rp.markup(verse, bar)
+    assert len(set(got.bars_per_line)) > 1 and got.bars_per_line[1] == 1  # k разные, короткая — в один такт
+    assert got.pauses[1] <= bar  # пауза короткой строки не длиннее такта
+    for line, k, pause in zip(rp.split_lines(verse), got.bars_per_line, got.pauses):
+        assert rp.estimate_span(line) + pause + rp.PAUSE_OVERHEAD_S <= k * bar + 1e-6 or pause == rp.MIN_PAUSE_S
 
 
 def test_fallback_provider_gets_the_text_without_pause_marks():

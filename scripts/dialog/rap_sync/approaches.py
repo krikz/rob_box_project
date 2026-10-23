@@ -217,7 +217,7 @@ def expected_lines(kind: str, placed: Sequence[Tuple[float, np.ndarray]], cuts: 
 
 # --- 4 ------------------------------------------------------------------------------------------------------------
 def markup_text(verse: str, words: Sequence[dict], bpm: float, max_speed: float = 1.35,
-                fix: Sequence[float] = ()) -> Tuple[str, float, int]:
+                fix: Sequence[float] = ()) -> Tuple[str, float, Tuple[int, ...]]:
     """Текст с паузами MiniMax ``<#x#>`` между строками и скорость: каждая строка — с такта.
 
     Длины строк — по меткам букв первого синтеза; строка влезает в ``n`` тактов (1, если хватает скорости ≤

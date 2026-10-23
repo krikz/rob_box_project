@@ -174,7 +174,7 @@ class SpeechSide:
             mark = markup(line.text, self.pause_bar_s) if line.no and self.pause_bar_s and not line.speak else None
             if mark is not None:
                 line.speak = mark.text
-                self._log(f"{LOG_MARK} сегмент {line.no}: тактов на строку {mark.bars_per_line}, паузы {mark.pauses}")
+                self._log(f"{LOG_MARK} сегмент {line.no}: такты {mark.bars_per_line}, паузы {mark.pauses}")
             out.append(presynth(line))
         return out
 
