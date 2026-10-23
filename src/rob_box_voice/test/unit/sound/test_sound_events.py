@@ -229,7 +229,10 @@ def _session(*scene_kinds, agent="personality"):
 def _sound_pack():
     import pathlib
 
-    return next(p for p in pathlib.Path(__file__).resolve().parents if (p / "sound_pack").is_dir()) / "sound_pack"
+    root = next((p for p in pathlib.Path(__file__).resolve().parents if (p / "sound_pack").is_dir()), None)
+    if root is None:  # CI копирует в test_ws только пакет: звуковой пакет в корне репо, файл держит tests/unit/docker
+        pytest.skip("sound_pack/ нет рядом с тестом (установленный пакет без корня репо)")
+    return root / "sound_pack"
 
 
 def test_muffled_sound_file_lies_next_to_the_other_earcons_and_is_a_distinct_sound():
