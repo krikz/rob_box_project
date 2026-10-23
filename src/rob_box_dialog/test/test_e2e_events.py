@@ -10,11 +10,9 @@ from rob_box_dialog.e2e_events import KINDS, TABLE, inside_robot_data, open_even
 
 
 def test_prod_default_writes_nothing(tmp_path):
-    """Дефолт (прод): e2e_mode выключен или путь пуст — писателя нет, записать текст невозможно."""
-    assert open_events(False, "", "s") is None
-    assert open_events(False, str(tmp_path / "e2e.db"), "s") is None
-    assert open_events(True, "", "s") is None
-    assert open_events(True, "   ", "s") is None
+    """Дефолт (прод): путь пуст — писателя нет, записать текст невозможно."""
+    assert open_events("", "s") is None
+    assert open_events("   ", "s") is None
     assert list(tmp_path.iterdir()) == []
 
 
@@ -23,7 +21,7 @@ def test_prod_default_writes_nothing(tmp_path):
 def test_robot_data_is_refused_loudly(path):
     assert inside_robot_data(path)
     with pytest.raises(ValueError):
-        open_events(True, path, "s")
+        open_events(path, "s")
 
 
 @pytest.mark.parametrize("path", ["/database/x.db", "/tmp/dialog.e2e.db", "/ws/e2e/data/x.db", "data/x.db"])
@@ -33,7 +31,7 @@ def test_other_paths_are_not_robot_data(path):
 
 def test_events_are_written_with_text(tmp_path):
     path = tmp_path / "sub" / "e2e.db"
-    events = open_events(True, str(path), "sess-1", clock=lambda: 1000.5)
+    events = open_events(str(path), "sess-1", clock=lambda: 1000.5)
     events.write("user", turn_id="t1", epoch=2, agent="personality", text="включи музыку")
     events.write("action", turn_id="t1", epoch=2, agent="personality",
                  data={"tool": "music_library", "status": "done"})
@@ -45,14 +43,14 @@ def test_events_are_written_with_text(tmp_path):
 
 
 def test_unknown_kind_is_refused(tmp_path):
-    events = open_events(True, str(tmp_path / "e2e.db"), "s")
+    events = open_events(str(tmp_path / "e2e.db"), "s")
     with pytest.raises(ValueError):
         events.write("thought", turn_id="t", epoch=0, agent="personality")
     events.close()
 
 
 def test_writes_from_threads(tmp_path):
-    events = open_events(True, str(tmp_path / "e2e.db"), "s")
+    events = open_events(str(tmp_path / "e2e.db"), "s")
 
     def write(n):
         events.write("user", turn_id=f"t{n}", epoch=0, agent="personality", text=str(n))

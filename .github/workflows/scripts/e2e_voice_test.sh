@@ -16,6 +16,7 @@
 # Usage:
 #   e2e_voice_test.sh --text "Робот, меня зовут Саша" [--voice anton]
 #   e2e_voice_test.sh --scenario /tmp/scenario.json [--acceptance /tmp/acceptance.json]
+#   e2e_voice_test.sh --scenario ... --hold-e2e-for-next-act   # #3904: следующий акт марафона наследует этот
 #   e2e_voice_test.sh --text "..." --voice ermil --retries 3 --react-window 40
 #
 # ADR-0022 GATE-1 (acceptance.json gate, issue #1428 / t_ba114e5c):
@@ -304,6 +305,8 @@ while [ $# -gt 0 ]; do
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
         --tts-provider) E2E_TTS_PROVIDER="$2"; shift 2 ;;
         --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
+        # #3904 — раннер марафона: следующий акт наследует этот, режим e2e не снимать в trap.
+        --hold-e2e-for-next-act) E2E_HOLD_FOR_NEXT_ACT=1; shift 1 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -410,70 +413,6 @@ scenario_registers_speakers() {
     [ -f "$1" ] || return 1
     grep -q 'register_speaker' "$1"
 }
-E2E_SPEAKER_DB_ACTIVATED=0
-
-# Режим ЧИТАЕТСЯ обратно, а не берётся из exit-кода: ros2cli печатает
-# «Set parameter failed» при отказе parameters_callback и всё равно может
-# выйти с 0, а цена ошибки здесь — боевая БД мастерской с профилями живых
-# людей. Единственное честное подтверждение — значение параметра на узле.
-# Проверять надо ИМЕННО e2e_mode: ``db_path`` не меняется, он остаётся
-# путём боевой базы (узел переключает активное соединение, а не параметр).
-_read_e2e_mode() {
-    robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
-        | grep -aoE 'Boolean value is: (True|False)' | tail -1
-}
-activate_e2e_speaker_db() {
-    # Issue #2890 — узел стирает e2e-базу только на переходе false→true.
-    # Если прошлый прогон не вернул узел на боевую (❌ в его deactivate),
-    # set true стал бы no-op и акт унаследовал бы чужой каст — выключаем
-    # сначала и проверяем, что выключилось.
-    case "$(_read_e2e_mode)" in
-        *True*)
-            log "⚠️ speaker_id_node: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/speakers.e2e.db заново"
-            robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
-            case "$(_read_e2e_mode)" in
-                *False*) ;;
-                *)
-                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-база дикторов не будет стёрта перед актом (issue #2890)" >&2
-                    exit 2
-                    ;;
-            esac
-            ;;
-    esac
-    robot_ros "ros2 param set /speaker_id_node e2e_mode true --no-daemon" >/dev/null 2>&1
-    case "$(_read_e2e_mode)" in
-        *True*)
-            E2E_SPEAKER_DB_ACTIVATED=1
-            log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
-            ;;
-        *)
-            # НЕ предупреждение, а фатал. Акт «Знакомство» регистрирует
-            # настоящие голосовые профили; без изоляции он пишет их в базу,
-            # которой пользуются живые люди в мастерской. Лучше не прогнать
-            # акт совсем, чем прогнать его по боевой базе (issue #2750).
-            echo "E2E_FATAL: не удалось включить e2e_mode у speaker_id_node — акт «Знакомство» писал бы в боевую /data/speakers.db" >&2
-            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon'\"" >&2
-            exit 2
-            ;;
-    esac
-}
-deactivate_e2e_speaker_db() {
-    [ "$E2E_SPEAKER_DB_ACTIVATED" = "1" ] || return 0
-    robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
-    case "$(_read_e2e_mode)" in
-        *False*)
-            log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
-            ;;
-        *)
-            # Робот остался на e2e-базе: в мастерской он перестанет узнавать
-            # живых людей и будет писать их эмбеддинги в тестовую БД. Это
-            # обязано быть видно в отчёте прогона, а не только в логах.
-            log "❌ ВНИМАНИЕ: speaker_id_node НЕ вернулся на боевую speakers.db — робот сейчас на e2e-базе и не узнаёт живых людей!"
-            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /speaker_id_node e2e_mode false --no-daemon'\""
-            ;;
-    esac
-}
-
 # --- issue #2781: изоляция БД долгосрочной памяти (voice_facts) ------------
 # Изоляция дикторов выше (#2750/#2763) накрывает ТОЛЬКО speakers.db. Акт
 # «Знакомство» ночного марафона и регистрирует голоса (register_speaker,
@@ -486,67 +425,163 @@ deactivate_e2e_speaker_db() {
 # Тот же паттерн, что у спикеров: якорь — СОДЕРЖИМОЕ сценария (memory_save
 # упоминается в тексте сценария), не имя файла (issue #2763 — воркфлоу
 # копирует сценарий под фиксированным /tmp/e2e_scenario.json, имя не несёт
-# информации об авторе). Владелец параметра — mcp_server (нода, которая
-# реально исполняет memory_save, см. tools/memory.py:MemorySaveTool),
-# отдельный от speaker_id_node bool-параметр e2e_mode (issue #2781,
-# mcp_server.py:_apply_e2e_mode) — тот же ros2 param set, не топик.
+# информации об авторе). Память переключает mcp_server (нода, которая
+# реально исполняет memory_save, см. tools/memory.py:MemorySaveTool) —
+# с #3904 не своим параметром, а как последователь общего режима e2e ниже.
 scenario_writes_memory() {
     [ -f "$1" ] || return 1
     grep -q 'memory_save' "$1"
 }
-E2E_MEMORY_DB_ACTIVATED=0
 
-# Как и у _read_e2e_mode выше — читаем значение параметра ОБРАТНО, не
-# верим exit-коду ros2cli (может быть 0 даже когда parameters_callback
-# отклонил значение). Цена ошибки — боевая долгосрочная память мастерской.
-_read_mcp_e2e_mode() {
-    robot_ros "ros2 param get /mcp_server e2e_mode --no-daemon" 2>/dev/null \
+# --- issue #3904: ОДИН владелец режима e2e на весь марафон -----------------
+# До #3904 режим жил тремя флагами с тремя временами жизни: e2e_mode у
+# speaker_id_node (включал только сценарий с register_speaker), отдельный
+# e2e_mode у mcp_server (register_speaker ИЛИ memory_save) и e2e_mode у
+# dialog_node, и каждый снимался в trap СВОЕГО акта. Акт 3 марафона
+# (inherits_previous_act=true, run 39910805388) пошёл на БОЕВУЮ speakers.db:
+# trap акта 2 снял режим, а акт 3 его не включал — синтетический «Борис»
+# стал «unknown», а голоса сценария опознались как живые «Дэнчик»/«Михаил».
+#
+# Теперь режим один (rob_box_core/e2e_mode.py): владелец — параметр
+# /speaker_id_node e2e_mode (единственный, который ставит харнесс),
+# последователи (mcp_server — память фактов) получают его из latched
+# /e2e/mode и показывают применённое в e2e_mode_applied (только чтение).
+# Время жизни — марафон, а не акт:
+#   * акт с register_speaker/memory_save, не наследующий — enter_e2e_mode:
+#     выкл/вкл со стиранием e2e-БД (свежий каст);
+#   * наследующий акт — adopt_e2e_mode: режим ОБЯЗАН уже быть включён
+#     прошлым актом; подхватывает его без стирания (каст прошлого акта на
+#     месте) и отменяет таймер снятия; режима нет — E2E_FATAL, а не прогон
+#     по боевой БД;
+#   * trap — leave_e2e_mode: следующий акт марафона наследует этот
+#     (--hold-e2e-for-next-act, решает раннер марафона — он один знает план)
+#     → режим остаётся, владелец снимет его сам через E2E_HOLD_RELEASE_S,
+#     если следующий акт не придёт (обрыв, дедлайн); иначе — выключить сейчас.
+# В начале каждого акта печатается E2E_PRECONDITION speaker_db=e2e|live.
+#
+# Значения ЧИТАЮТСЯ обратно, а не берутся из exit-кода: ros2cli печатает
+# «Set parameter failed» при отказе колбэка и всё равно может выйти с 0, а
+# цена ошибки — боевые БД мастерской с профилями живых людей.
+E2E_MODE_FOLLOWERS="/mcp_server"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
+E2E_MODE_HELD=0                    # этот прогон держит режим: trap обязан снять или передать
+E2E_HOLD_FOR_NEXT_ACT="${E2E_HOLD_FOR_NEXT_ACT:-0}"
+E2E_HOLD_RELEASE_S="${E2E_HOLD_RELEASE_S:-1800}"
+E2E_FOLLOWER_WAIT_S="${E2E_FOLLOWER_WAIT_S:-10}"
+
+_read_e2e_mode() {
+    robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
-activate_e2e_memory_db() {
-    # Issue #2890 — то же, что у activate_e2e_speaker_db: застрявший с
-    # прошлого прогона e2e_mode=true сделал бы включение no-op без стирания.
-    case "$(_read_mcp_e2e_mode)" in
+_set_e2e_mode() {  # $1 = true|false — единственная запись режима в харнессе
+    robot_ros "ros2 param set /speaker_id_node e2e_mode $1 --no-daemon" >/dev/null 2>&1
+}
+_read_e2e_applied() {  # $1 = нода-последователь
+    robot_ros "ros2 param get $1 e2e_mode_applied --no-daemon" 2>/dev/null \
+        | grep -aoE 'Boolean value is: (True|False)' | tail -1
+}
+_wait_e2e_followers() {  # $1 = True|False; rc 1 + имя ноды в stdout — не применила
+    local want="$1" node tries
+    for node in $E2E_MODE_FOLLOWERS; do
+        tries=0
+        until [ "$(_read_e2e_applied "$node")" = "Boolean value is: $want" ]; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge "$E2E_FOLLOWER_WAIT_S" ]; then
+                echo "$node"
+                return 1
+            fi
+            sleep 1
+        done
+    done
+    return 0
+}
+_set_e2e_release_after() {  # $1 = целые секунды (0 — отменить таймер снятия); rc 0 — владелец подтвердил
+    local want="$1.0"
+    robot_ros "ros2 param set /speaker_id_node e2e_release_after_s $want --no-daemon" >/dev/null 2>&1
+    [ "$(robot_ros "ros2 param get /speaker_id_node e2e_release_after_s --no-daemon" 2>/dev/null \
+        | grep -aoE 'Double value is: [0-9.]+' | tail -1)" = "Double value is: $want" ]
+}
+_e2e_followers_or_fatal() {  # $1 = True|False, $2 = что было бы без режима
+    local stuck
+    stuck="$(_wait_e2e_followers "$1")" && return 0
+    echo "E2E_FATAL: $stuck не применил режим e2e владельца (e2e_mode_applied≠$1 за ${E2E_FOLLOWER_WAIT_S} с) — $2 (issue #3904)" >&2
+    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get $stuck e2e_mode_applied --no-daemon'\"" >&2
+    exit 2
+}
+enter_e2e_mode() {
+    # Issue #2890 — узлы стирают e2e-БД только на переходе false→true. Режим,
+    # оставленный прошлым прогоном (или его таймером снятия), сделал бы
+    # включение no-op, и акт унаследовал бы чужой каст — выключаем и проверяем.
+    case "$(_read_e2e_mode)" in
         *True*)
-            log "⚠️ mcp_server: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/voice_memory.e2e.db заново"
-            robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
-            case "$(_read_mcp_e2e_mode)" in
+            log "⚠️ e2e-режим остался включён с прошлого прогона — выключаю, чтобы включение стёрло e2e-БД заново"
+            _set_e2e_mode false
+            case "$(_read_e2e_mode)" in
                 *False*) ;;
                 *)
-                    echo "E2E_FATAL: mcp_server не выключил застрявший e2e_mode — e2e-память фактов не будет стёрта перед актом (issue #2890)" >&2
+                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-БД не будут стёрты перед актом (issue #2890)" >&2
                     exit 2
                     ;;
             esac
             ;;
     esac
-    robot_ros "ros2 param set /mcp_server e2e_mode true --no-daemon" >/dev/null 2>&1
-    case "$(_read_mcp_e2e_mode)" in
-        *True*)
-            E2E_MEMORY_DB_ACTIVATED=1
-            log "🧪 mcp_server: e2e_mode=true — боевая /data/voice_memory.db не тронута"
-            ;;
+    _set_e2e_mode true
+    case "$(_read_e2e_mode)" in
+        *True*) E2E_MODE_HELD=1 ;;
         *)
-            # ФАТАЛ, не предупреждение — как и у изоляции дикторов: лучше не
-            # прогнать акт, чем засорить боевую долгосрочную память
-            # мастерской синтезированными фактами каста марафона.
-            echo "E2E_FATAL: не удалось включить e2e_mode у mcp_server — сценарий писал бы факты memory_save в боевую /data/voice_memory.db" >&2
-            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /mcp_server e2e_mode --no-daemon'\"" >&2
+            # Фатал, не предупреждение: лучше не прогнать акт совсем, чем
+            # прогнать его по боевой базе (issue #2750).
+            echo "E2E_FATAL: не удалось включить e2e_mode у speaker_id_node — сценарий писал бы в боевую /data/speakers.db" >&2
+            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon'\"" >&2
             exit 2
             ;;
     esac
+    _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    log "🧪 e2e-режим включён (владелец /speaker_id_node, последователи: $E2E_MODE_FOLLOWERS) — e2e-БД стёрты, боевые /data/speakers.db и /data/voice_memory.db не тронуты"
 }
-deactivate_e2e_memory_db() {
-    [ "$E2E_MEMORY_DB_ACTIVATED" = "1" ] || return 0
-    robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
-    case "$(_read_mcp_e2e_mode)" in
-        *False*)
-            log "🧪 mcp_server: e2e_mode=false — вернулись на боевую /data/voice_memory.db"
-            ;;
+adopt_e2e_mode() {
+    case "$(_read_e2e_mode)" in
+        *True*) ;;
         *)
-            log "❌ ВНИМАНИЕ: mcp_server НЕ вернулся на боевую voice_memory.db — робот сейчас пишет долгосрочную память в e2e-базу!"
-            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /mcp_server e2e_mode false --no-daemon'\""
+            echo "E2E_PRECONDITION speaker_db=live"
+            echo "E2E_FATAL: акт наследует прошлый (inherits_previous_act=true), а режим e2e снят — голоса сценария опознавались бы по боевой /data/speakers.db как живые люди мастерской. Наследующий акт гоняется только марафоном после своего предшественника (scripts/e2e/run_night_marathon.sh, issue #3904)" >&2
+            exit 2
             ;;
     esac
+    E2E_MODE_HELD=1
+    if ! _set_e2e_release_after 0; then
+        echo "E2E_FATAL: speaker_id_node не подтвердил отмену таймера снятия e2e-режима (e2e_release_after_s≠0.0) — режим снялся бы посреди акта (issue #3904)" >&2
+        exit 2
+    fi
+    _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    log "🔗 e2e-режим подхвачен от прошлого акта: таймер снятия отменён, e2e-БД не стёрты — каст прошлого акта на месте"
+}
+leave_e2e_mode() {
+    [ "$E2E_MODE_HELD" = "1" ] || return 0
+    E2E_MODE_HELD=0
+    if [ "$E2E_HOLD_FOR_NEXT_ACT" = "1" ]; then
+        if _set_e2e_release_after "$E2E_HOLD_RELEASE_S"; then
+            log "🔗 e2e-режим оставлен следующему акту марафона (он наследует этот): снимет последний акт или таймер владельца через ${E2E_HOLD_RELEASE_S} с"
+            echo "E2E_MODE held_for_next_act release_after_s=${E2E_HOLD_RELEASE_S}"
+            return 0
+        fi
+        log "⚠️ speaker_id_node не принял таймер снятия — выключаю e2e-режим сейчас (следующий акт честно упадёт на E2E_PRECONDITION, а не оставит робота на e2e-БД без срока)"
+    fi
+    _set_e2e_mode false
+    case "$(_read_e2e_mode)" in
+        *False*)
+            log "🧪 e2e-режим выключен — вернулись на боевые /data/speakers.db и /data/voice_memory.db"
+            ;;
+        *)
+            # Робот остался на e2e-базе: в мастерской он перестанет узнавать
+            # живых людей. Это обязано быть видно в отчёте прогона.
+            log "❌ ВНИМАНИЕ: speaker_id_node НЕ вышел из e2e-режима — робот сейчас на e2e-БД и не узнаёт живых людей!"
+            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /speaker_id_node e2e_mode false --no-daemon'\""
+            ;;
+    esac
+    local stuck
+    stuck="$(_wait_e2e_followers False)" \
+        || log "❌ ВНИМАНИЕ: $stuck не вернулся на боевую БД (e2e_mode_applied≠False) — долгосрочная память пишется в e2e-базу!"
+    echo "E2E_MODE off"
 }
 
 # --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
@@ -646,45 +681,55 @@ activate_e2e_dialog_db() {
             echo "E2E_FATAL: E2E_DIALOG_DB_PATH=$E2E_DIALOG_DB_PATH внутри боевой /data — e2e-БД ходов только вне неё" >&2
             exit 2 ;;
     esac
-    # Колбэк параметров ноды переоткрывает БД по значениям, которые ещё не
-    # записаны (rclpy пишет их после колбэка): повтор пути после e2e_mode=true
-    # переоткрывает БД с уже записанным e2e_mode.
+    # #3904: журнал ходов включает сам непустой путь (своего e2e_mode у
+    # dialog_node больше нет — режим e2e робота один, у /speaker_id_node).
+    # Колбэк параметров ноды переоткрывает БД по значению, которое ещё не
+    # записано (rclpy пишет его после колбэка): второй set того же пути
+    # переоткрывает БД с уже записанным путём.
     robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
-    robot_ros "ros2 param set /dialog_node e2e_mode true --no-daemon" >/dev/null 2>&1
     robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
-    if [ "$(_read_dialog_param e2e_mode)" = "True" ] && [ "$(_read_dialog_param e2e_db_path)" = "$E2E_DIALOG_DB_PATH" ]; then
+    if [ "$(_read_dialog_param e2e_db_path)" = "$E2E_DIALOG_DB_PATH" ]; then
         E2E_DIALOG_DB_ACTIVATED=1
-        log "🧪 dialog_node: e2e_mode=true — текст ходов пишется в e2e-БД вне /data"
+        log "🧪 dialog_node: e2e_db_path задан — текст ходов пишется в e2e-БД вне /data"
         echo "E2E_DIALOG_DB ${E2E_DIALOG_DB_PATH}"
         return 0
     fi
-    log "⚠️ dialog_node: e2e-БД не включилась (e2e_mode/e2e_db_path не прочитались обратно) — метрик хода по этому акту не будет"
+    log "⚠️ dialog_node: e2e-БД не включилась (e2e_db_path не прочитался обратно) — метрик хода по этому акту не будет"
     echo "E2E_DIALOG_DB off"
 }
 deactivate_e2e_dialog_db() {
     [ "$E2E_DIALOG_DB_ACTIVATED" = "1" ] || return 0
-    robot_ros "ros2 param set /dialog_node e2e_mode false --no-daemon" >/dev/null 2>&1
-    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
-    log "🧪 dialog_node: e2e_mode=$(_read_dialog_param e2e_mode) — запись ходов остановлена, БД осталась в контейнере: $E2E_DIALOG_DB_PATH"
+    robot_ros "ros2 param set /dialog_node e2e_db_path '' --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_db_path '' --no-daemon" >/dev/null 2>&1
+    log "🧪 dialog_node: e2e_db_path='$(_read_dialog_param e2e_db_path)' — запись ходов остановлена, БД осталась в контейнере: $E2E_DIALOG_DB_PATH"
 }
 isolate_act_start() {  # $1 = файл сценария
-    local scenario="$1" inherits=0 registers=1
+    local scenario="$1" inherits=0 registers=1 memory=1
     scenario_inherits_previous_act "$scenario" || inherits=$?
     [ "$inherits" = "2" ] && exit 2
     scenario_registers_speakers "$scenario" && registers=0
+    scenario_writes_memory "$scenario" && memory=0
     if [ "$inherits" = "0" ] && [ "$registers" = "0" ]; then
         echo "E2E_FATAL: сценарий регистрирует дикторов (стирает каст) и при этом inherits_previous_act=true — наследовать разговор о стёртом касте нельзя (issue #2890)" >&2
         exit 2
     fi
-    # Issue #2750 — изолированная БД дикторов ДО первого шага. Якорь —
-    # СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
-    if [ "$registers" = "0" ]; then
-        activate_e2e_speaker_db
-    fi
-    # Issue #2781 — memory_save пишет в e2e-память. Issue #2890 — стёртый
-    # каст дикторов стирает и факты о нём.
-    if [ "$registers" = "0" ] || scenario_writes_memory "$scenario"; then
-        activate_e2e_memory_db
+    # Issue #3904 — режим e2e один (см. enter/adopt/leave_e2e_mode выше), ДО
+    # первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла:
+    # register_speaker (#2750) или memory_save (#2781) — свежий режим со
+    # стиранием e2e-БД; наследующий акт — режим прошлого акта, без стирания.
+    if [ "$inherits" = "0" ]; then
+        adopt_e2e_mode
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    elif [ "$registers" = "0" ] || [ "$memory" = "0" ]; then
+        enter_e2e_mode
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    else
+        case "$(_read_e2e_mode)" in
+            *True*)
+                log "ℹ️ акт без записи в БД дикторов/памяти, а e2e-режим держит таймер прошлого акта — акт идёт на e2e-БД"
+                echo "E2E_PRECONDITION speaker_db=e2e" ;;
+            *) echo "E2E_PRECONDITION speaker_db=live" ;;
+        esac
     fi
     detect_dialog_engine
     if [ "$inherits" = "0" ]; then
@@ -2934,17 +2979,18 @@ fi
 # Keep it in the run artifact so e2e reports expose infrastructure health.
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
-# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
-# боевые БД и восстановление node_params при любом завершении
-# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
-# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
+# Гарантированная остановка записи, выход из режима e2e (или передача его
+# следующему наследующему акту марафона, #3904 — leave_e2e_mode) и
+# восстановление node_params при любом завершении (PASS/FAIL/ошибка). Все
+# хелперы идемпотентны: повторный вызов — noop (пустой REC_PID /
+# E2E_MODE_HELD=0 / E2E_DIALOG_DB_ACTIVATED=0 / пустой node_params_originals).
 # Issue #2890 — trap ставится ДО изоляции акта: E2E_FATAL сброса сессии
 # (или памяти) после уже включённой e2e-БД дикторов обязан вернуть узел
 # на боевую, а не оставить мастерскую на e2e-базе.
 # Issue #3248 — restore_robot_tts_default (e2e_voice_lib.sh): акт, менявший
 # голос/провайдера (mv01 → Yandex alena), возвращает дефолт set_voice в обход
 # LLM; иначе следующий акт и живые люди слышат голос из этого акта.
-trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; deactivate_e2e_dialog_db; stop_recording' EXIT
+trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.

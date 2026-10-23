@@ -13,6 +13,9 @@
 #   * параметр узла лежит файлом $FAKE_ROBOT_STATE/param_<node><name>;
 #   * ``ros2 param set <node> e2e_mode true`` при прежнем false пишет в
 #     $FAKE_ROBOT_STATE/events строку ``WIPE <node>`` (узел стирает e2e-базу);
+#   * #3904: режим e2e один — ``e2e_mode_applied`` последователя (/mcp_server)
+#     повторяет ``e2e_mode`` владельца /speaker_id_node; таймер снятия
+#     ``e2e_release_after_s`` хранится как Double;
 #   * ``ros2 param set /dialogue_node e2e_session_reset_token <t>`` пишет
 #     ``RESET <node> <t>`` и сохраняет токен; при FAKE_DIALOGUE_REJECT=1
 #     значение ОТКЛОНЯЕТСЯ, как отклонил бы parameters_callback при
@@ -91,8 +94,22 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
                 echo "Boolean value is: False"
             fi
             ;;
-        get:e2e_session_reset_token)
+        get:e2e_session_reset_token | get:e2e_db_path)
             echo "String value is: $(cat "$f" 2>/dev/null)"
+            ;;
+        set:e2e_db_path | set:e2e_release_after_s)
+            echo "$value" > "$f"
+            echo "Set parameter successful"
+            ;;
+        get:e2e_release_after_s)
+            echo "Double value is: $(cat "$f" 2>/dev/null || echo 0.0)"
+            ;;
+        get:e2e_mode_applied)
+            if [ "$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)" = "true" ]; then
+                echo "Boolean value is: True"
+            else
+                echo "Boolean value is: False"
+            fi
             ;;
         get:dialog_engine)
             # ADR-0150 PR-8 (#3702): /dialog_node есть только при v2. Фейк —

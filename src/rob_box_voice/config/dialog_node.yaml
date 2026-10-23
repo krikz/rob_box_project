@@ -21,6 +21,6 @@ dialog_node:
     # Пустой startup_greeting_text — случайная из phrases/ru.yaml startup.greeting.
     startup_greeting_sec: 12.0
     startup_greeting_text: ""
-    # e2e: текст ходов пишется только при e2e_mode и пути ВНЕ /data (включает харнесс через ros2 param set).
-    e2e_mode: false
+    # e2e: текст ходов пишется только при непустом пути ВНЕ /data (ставит харнесс через ros2 param set; #3904 —
+    # отдельного e2e_mode у dialog_node нет, режим e2e робота один: /speaker_id_node e2e_mode).
     e2e_db_path: ""

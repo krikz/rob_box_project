@@ -45,9 +45,14 @@ FUNCTIONS = (
     "scenario_writes_memory",
     "scenario_inherits_previous_act",
     "_read_e2e_mode",
-    "_read_mcp_e2e_mode",
-    "activate_e2e_speaker_db",
-    "activate_e2e_memory_db",
+    "_set_e2e_mode",
+    "_read_e2e_applied",
+    "_wait_e2e_followers",
+    "_set_e2e_release_after",
+    "_e2e_followers_or_fatal",
+    "enter_e2e_mode",
+    "adopt_e2e_mode",
+    "leave_e2e_mode",
     "_read_dialogue_reset_token",
     "reset_dialogue_session_for_act",
     "_read_dialog_param",
@@ -83,8 +88,20 @@ robot_ros() {
         set)
             case "$name" in
                 e2e_mode)
+                    # #3904: режим один — владелец /speaker_id_node; последователь
+                    # /mcp_server на том же переходе стирает свою e2e-память.
                     if [ "$(cat "$f" 2>/dev/null || echo false)" = false ] && [ "$value" = true ]; then
                         echo "WIPE $node" >> "$STATE/events"
+                        [ "${FAKE_FOLLOWER_STUCK:-0}" = 1 ] || echo "WIPE /mcp_server" >> "$STATE/events"
+                    fi
+                    echo "$value" > "$f"
+                    ;;
+                e2e_release_after_s)
+                    # Владелец отклоняет таймер снятия, когда режим выключен (E2EModeOwner.on_params).
+                    owner_mode="$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)"
+                    if [ "$value" != 0.0 ] && [ "$owner_mode" != true ]; then
+                        echo "Set parameter failed"
+                        return 0
                     fi
                     echo "$value" > "$f"
                     ;;
@@ -97,12 +114,25 @@ robot_ros() {
                     echo "$value" > "$f"
                     ;;
                 e2e_db_path)
+                    [ "$value" = "''" ] && value=""
                     echo "$value" > "$f"
                     ;;
             esac
             ;;
         get)
             case "$name" in
+                e2e_mode_applied)
+                    # Последователь применяет режим владельца; FAKE_FOLLOWER_STUCK=1 — отказ apply.
+                    if [ "${FAKE_FOLLOWER_STUCK:-0}" != 1 ] \
+                       && [ "$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)" = true ]; then
+                        echo "Boolean value is: True"
+                    else
+                        echo "Boolean value is: False"
+                    fi
+                    ;;
+                e2e_release_after_s)
+                    echo "Double value is: $(cat "$f" 2>/dev/null || echo 0.0)"
+                    ;;
                 e2e_mode)
                     if [ "$(cat "$f" 2>/dev/null || echo false)" = true ]; then
                         echo "Boolean value is: True"
@@ -151,9 +181,10 @@ def _require_bash_sees(path: Path) -> None:
 
 
 def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None, engine=None,
-                   v2_reject=False, db_path="/tmp/e2e_dialog/dialog_events_test.db", tail=""):
+                   v2_reject=False, db_path="/tmp/e2e_dialog/dialog_events_test.db", tail="",
+                   hold=False, follower_stuck=False):
     state = tmp_path / "state"
-    state.mkdir()
+    state.mkdir(exist_ok=True)
     for key, value in (preset or {}).items():
         (state / key).write_text(value + "\n", encoding="utf-8")
     _require_bash_sees(state)
@@ -165,6 +196,8 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
         f'STATE="{_bash_path(state)}"\n'
         f'python3() {{ "{py}" "$@"; }}\n'
         f'E2E_DIALOG_ENGINE=v1\nE2E_DIALOG_DB_PATH="{db_path}"\nE2E_DIALOG_DB_ACTIVATED=0\n'
+        f'E2E_MODE_FOLLOWERS="/mcp_server"\nE2E_MODE_HELD=0\nE2E_HOLD_FOR_NEXT_ACT={1 if hold else 0}\n'
+        'E2E_HOLD_RELEASE_S=1800\nE2E_FOLLOWER_WAIT_S=1\n'
         f"{FAKE_ROBOT}\n{body}\n"
         f'isolate_act_start "{_bash_path(scenario)}"\n'
         f"{tail}\n"
@@ -177,6 +210,8 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
         env["FAKE_ENGINE"] = engine
     if v2_reject:
         env["FAKE_V2_RESET_REJECT"] = "1"
+    if follower_stuck:
+        env["FAKE_FOLLOWER_STUCK"] = "1"
     # Скрипт — через stdin, не ``-c``: на Windows склейка аргумента
     # командной строки для msys-bash портит кавычки в длинном скрипте.
     proc = subprocess.run(
@@ -190,6 +225,8 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
     )
     events_file = state / "events"
     events = events_file.read_text(encoding="utf-8").split("\n") if events_file.exists() else []
+    if events_file.exists():
+        events_file.unlink()  # следующий акт того же марафона начинает свой журнал
     return proc, [e for e in events if e]
 
 
@@ -230,6 +267,7 @@ def test_act2b_resets_dialogue_and_wipes_speakers_and_memory(tmp_path):
         "окно диалога не сброшено — LLM акта 2b увидит ходы акта 2 (issue #2890)"
     )
     assert "окно диалога сброшено перед актом" in proc.stdout
+    assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
 
 
 @bash_required
@@ -239,19 +277,117 @@ def test_plain_act_resets_dialogue_without_touching_dbs(tmp_path):
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert events == ["RESET /dialogue_node"]
+    assert "E2E_PRECONDITION speaker_db=live" in proc.stdout
 
 
 @bash_required
 def test_inheriting_act_keeps_dialogue_window(tmp_path):
     """Акт 3 марафона намеренно продолжает разговор — сброса нет, но в логе
-    это сказано явно."""
+    это сказано явно. Режим e2e держит прошлый акт (#3904)."""
     scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
 
-    proc, events = _run_isolation(tmp_path, scenario)
+    proc, events = _run_isolation(tmp_path, scenario, preset={"_speaker_id_nodee2e_mode": "true"})
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert "RESET /dialogue_node" not in events
     assert "inherits_previous_act=true" in proc.stdout
+
+
+# ── #3904: режим e2e — один владелец на весь марафон ────────────────────────
+
+
+def _owner(tmp_path: Path, name: str) -> str:
+    f = tmp_path / "state" / ("/speaker_id_node" + name).replace("/", "_")
+    return f.read_text(encoding="utf-8").strip() if f.exists() else ""
+
+
+@bash_required
+def test_marathon_act2_then_inheriting_act3_stays_on_e2e_db(tmp_path):
+    """Сам инцидент #3904 (run 39910805388): акт 2 → акт 3 (наследует). Раньше
+    trap акта 2 снимал режим, и акт 3 опознавал голоса по боевой speakers.db.
+    Теперь акт 2 держит режим для следующего, акт 3 подхватывает его без
+    стирания каста, последний акт снимает."""
+    act2 = _copy_real(tmp_path, NIGHT / "night_marathon_act2_acquaintance_v1.json")
+    proc, events = _run_isolation(tmp_path, act2, hold=True, tail="leave_e2e_mode")
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert events == ["WIPE /speaker_id_node", "WIPE /mcp_server", "RESET /dialogue_node"]
+    assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
+    assert "E2E_MODE held_for_next_act release_after_s=1800" in proc.stdout
+    assert _owner(tmp_path, "e2e_mode") == "true", "trap акта 2 снял режим — акт 3 пойдёт на боевую БД"
+    assert _owner(tmp_path, "e2e_release_after_s") == "1800.0", "без таймера обрыв марафона оставил бы робота на e2e"
+
+    act3 = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
+    proc, events = _run_isolation(tmp_path, act3, tail="leave_e2e_mode")
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
+    assert not [e for e in events if e.startswith("WIPE")], "акт 3 стёр каст акта 2 — «Борис» станет незнакомым"
+    assert "E2E_MODE off" in proc.stdout
+    assert _owner(tmp_path, "e2e_mode") == "false", "последний акт марафона обязан вернуть робота на боевые БД"
+
+
+@bash_required
+def test_inheriting_act_without_e2e_mode_is_fatal_not_live(tmp_path):
+    """Наследующий акт без включённого режима (ACTS=3 отдельно, таймер истёк)
+    не идёт по боевой БД дикторов: E2E_PRECONDITION speaker_db=live + фатал."""
+    scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
+
+    proc, events = _run_isolation(tmp_path, scenario)
+
+    assert proc.returncode == 2
+    assert "E2E_PRECONDITION speaker_db=live" in proc.stdout
+    assert "E2E_FATAL" in proc.stderr and "#3904" in proc.stderr
+    assert "EXIT_OK" not in proc.stdout
+    assert events == []
+
+
+@bash_required
+def test_inheriting_act_cancels_release_timer(tmp_path):
+    preset = {"_speaker_id_nodee2e_mode": "true", "_speaker_id_nodee2e_release_after_s": "1800.0"}
+    scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
+
+    proc, _ = _run_isolation(tmp_path, scenario, preset=preset)
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert _owner(tmp_path, "e2e_release_after_s") == "0.0", "таймер снял бы режим посреди акта 3"
+
+
+@bash_required
+def test_act_without_hold_returns_robot_to_live_dbs(tmp_path):
+    """Отдельный прогон (ротация, ручной) — trap выключает режим сразу."""
+    scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act2_acquaintance_v1.json")
+
+    proc, _ = _run_isolation(tmp_path, scenario, tail="leave_e2e_mode")
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "E2E_MODE off" in proc.stdout
+    assert _owner(tmp_path, "e2e_mode") == "false"
+
+
+@bash_required
+def test_memory_save_only_act_turns_on_the_single_mode(tmp_path):
+    """memory_save без register_speaker включает тот же режим (не отдельный
+    флаг памяти): память и дикторы не расходятся (#3904)."""
+    scenario = _scenario(tmp_path, "mem_v1", steps=[
+        {"label": "s1", "text": "запомни", "acceptance": {"expected_tool_calls": ["memory_save"]}}])
+
+    proc, events = _run_isolation(tmp_path, scenario)
+
+    assert "EXIT_OK" in proc.stdout, proc.stderr
+    assert "WIPE /speaker_id_node" in events and "WIPE /mcp_server" in events
+    assert "E2E_PRECONDITION speaker_db=e2e" in proc.stdout
+
+
+@bash_required
+def test_follower_that_did_not_apply_mode_is_fatal(tmp_path):
+    """mcp_server не применил режим владельца — акт не прогоняется: memory_save
+    писал бы в боевую voice_memory.db."""
+    scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act2_acquaintance_v1.json")
+
+    proc, _ = _run_isolation(tmp_path, scenario, follower_stuck=True)
+
+    assert proc.returncode == 2
+    assert "E2E_FATAL" in proc.stderr and "/mcp_server" in proc.stderr
+    assert "EXIT_OK" not in proc.stdout
 
 
 @bash_required
@@ -365,7 +501,7 @@ def test_trap_is_armed_before_act_isolation():
     src = E2E_SCRIPT.read_text(encoding="utf-8")
     # Issue #3248: перед restore_node_params в trap стоит
     # restore_robot_tts_default — ищем по самой связке restore/deactivate.
-    trap_at = src.index("restore_node_params; deactivate_e2e_speaker_db")
+    trap_at = src.index("restore_node_params; leave_e2e_mode")
     assert src.rfind("trap '", 0, trap_at) != -1
     call_at = src.index('isolate_act_start "$SCENARIO_FILE"')
     assert trap_at < call_at
@@ -389,7 +525,7 @@ def test_v1_robot_keeps_v1_path(tmp_path):
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert "E2E_DIALOG_ENGINE v1" in proc.stdout
     assert events == ["RESET /dialogue_node"]
-    assert _param(tmp_path, "/dialog_node", "e2e_mode") == ""
+    assert _param(tmp_path, "/dialog_node", "e2e_db_path") == ""
 
 
 @bash_required
@@ -403,7 +539,7 @@ def test_v2_resets_via_dialog_control_and_opens_e2e_db(tmp_path):
     assert "RESET /dialogue_node" not in events
     assert "epoch=1" in proc.stdout
     assert f"E2E_DIALOG_DB {V2_DB}" in proc.stdout
-    assert _param(tmp_path, "/dialog_node", "e2e_mode") == "true"
+    assert _param(tmp_path, "/dialog_node", "e2e_mode") == "", "#3904: своего e2e_mode у dialog_node нет"
     assert _param(tmp_path, "/dialog_node", "e2e_db_path") == V2_DB
 
 
@@ -422,7 +558,7 @@ def test_v2_rejected_reset_is_fatal(tmp_path):
 def test_v2_inheriting_act_skips_reset_but_records_turns(tmp_path):
     scenario = _copy_real(tmp_path, NIGHT / "night_marathon_act3_backlog_diarization_v1.json")
 
-    proc, events = _run_isolation(tmp_path, scenario, engine="v2")
+    proc, events = _run_isolation(tmp_path, scenario, engine="v2", preset={"_speaker_id_nodee2e_mode": "true"})
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
     assert "RESET /dialog_node" not in events and "RESET /dialogue_node" not in events
@@ -435,7 +571,7 @@ def test_v2_e2e_db_inside_data_is_fatal(tmp_path):
 
     assert proc.returncode == 2
     assert "E2E_FATAL" in proc.stderr and "/data" in proc.stderr
-    assert _param(tmp_path, "/dialog_node", "e2e_mode") == ""
+    assert _param(tmp_path, "/dialog_node", "e2e_db_path") == ""
 
 
 @bash_required
@@ -443,8 +579,8 @@ def test_v2_deactivate_stops_recording(tmp_path):
     proc, _ = _run_isolation(tmp_path, _scenario(tmp_path, "plain_v1"), engine="v2", tail="deactivate_e2e_dialog_db")
 
     assert "EXIT_OK" in proc.stdout, proc.stderr
-    assert _param(tmp_path, "/dialog_node", "e2e_mode") == "false"
-    assert "e2e_mode=False" in proc.stdout
+    assert _param(tmp_path, "/dialog_node", "e2e_db_path") == ""
+    assert "e2e_db_path=''" in proc.stdout
 
 
 def test_trap_returns_dialog_node_from_e2e_db():

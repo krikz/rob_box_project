@@ -357,7 +357,7 @@ def test_messages_have_window_without_markers_and_actions_as_structure():
 
 
 def test_e2e_events_are_written_only_when_writer_given(tmp_path):
-    events = open_events(True, str(tmp_path / "e2e.db"), "s1")
+    events = open_events(str(tmp_path / "e2e.db"), "s1")
     ports = Ports(answers=[Answer(Command(speech="Привет!"), "deepseek")])
     engine = _engine(ports, events=events)
     _run(engine, "привет")

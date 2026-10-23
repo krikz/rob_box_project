@@ -108,27 +108,40 @@ if [ -z "$PY" ]; then
     echo "FATAL: не найден рабочий python3 (пробовал python3/python/py)" >&2
     exit 2
 fi
-plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" <<'PYEOF'
-import json, sys
+plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" "$ROOT" <<'PYEOF'
+import json, os, sys
 # Названия актов кириллические; на Windows-хосте stdout по умолчанию cp1252
 # и print() падает с UnicodeEncodeError ещё до первого диспатча.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
-manifest, flt = sys.argv[1], sys.argv[2]
+manifest, flt, root = sys.argv[1], sys.argv[2], sys.argv[3]
 acts = json.load(open(manifest, encoding="utf-8"))["acts"]
 if flt.strip():
     want = {int(x) for x in flt.replace(" ", "").split(",") if x}
     acts = [a for a in acts if a["act"] in want]
-for a in acts:
+
+
+def inherits(act):
+    with open(os.path.join(root, act["scenario_file"]), encoding="utf-8") as fh:
+        return json.load(fh).get("inherits_previous_act", False) is True
+
+
+# Issue #3904: режим e2e живёт весь марафон. Акт держит его для следующего,
+# только если следующий акт ЭТОГО плана наследует его (inherits_previous_act).
+holds = [i + 1 < len(acts) and inherits(acts[i + 1]) for i in range(len(acts))]
+for a, hold in zip(acts, holds):
     print("\t".join([
         str(a["act"]), a["title"], a["stability"], str(a["steps"]),
-        a["scenario_file"], a["acceptance_file"],
+        a["scenario_file"], a["acceptance_file"], "hold" if hold else "-",
     ]))
 PYEOF
 )"
 
+# Python на Windows-хосте печатает \r\n: \r прилипал к последней колонке плана
+# (a_hold="hold\r" — акт не держал режим e2e для наследующего, #3904).
+plan="$(printf '%s' "$plan" | tr -d '\r')"
 if [ -z "$plan" ]; then
     echo "FATAL: ни один акт не выбран (ACTS=$ACTS_FILTER)" >&2
     exit 2
@@ -136,8 +149,8 @@ fi
 
 n_acts="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
 log "REF=$REF  актов=$n_acts  tts_provider=${TTS_PROVIDER:-auto}  отчёт=$REPORT"
-printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
-    log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)"
+printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_hold; do
+    log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)$([ "$a_hold" = hold ] && echo '  → режим e2e держит для следующего (наследует)')"
 done
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -195,7 +208,7 @@ else
 fi
 
 overall=0
-while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
+while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_hold; do
     [ -z "$a_n" ] && continue
 
     # Дедлайн проверяем ПЕРЕД диспатчем: акт живёт до 45 минут, и стартовать
@@ -209,6 +222,10 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     fi
 
     log "=== АКТ $a_n «$a_title» ($a_steps шагов, $a_stab) ==="
+    # Issue #3904 — следующий акт наследует этот: режим e2e на роботе не
+    # снимать в trap этого акта (снимет последний акт или таймер владельца).
+    HOLD_ARGS=()
+    [ "$a_hold" = "hold" ] && HOLD_ARGS=(-f e2e_hold_for_next_act=true)
 
     # Метка времени ДО диспатча: по ней ищем свой run среди чужих.
     before_iso="$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
@@ -223,6 +240,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
             -f triggered_by_script="run_night_marathon.sh" \
             -f triggered_by_reason="night marathon act $a_n: $a_title" \
             ${TTS_ARGS[@]+"${TTS_ARGS[@]}"} \
+            ${HOLD_ARGS[@]+"${HOLD_ARGS[@]}"} \
             >/dev/null 2>&1; then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
         printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\n' \

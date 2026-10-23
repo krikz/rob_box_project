@@ -353,8 +353,8 @@ def test_clear_stop_interrupt_cancels_speech_of_epoch(node):
 
 
 def test_e2e_db_outside_data_only(node, tmp_path):
-    node._parameters["e2e_mode"] = True
-    node._declared["e2e_mode"].value = True
+    assert "e2e_mode" not in node._declared, "#3904: у dialog_node своего режима e2e нет — включает непустой путь"
+    assert node._open_events() is None
     node._declared["e2e_db_path"].value = "/data/x.db"
     assert node._open_events() is None
     node._declared["e2e_db_path"].value = str(tmp_path / "e2e.db")
