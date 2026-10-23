@@ -152,10 +152,15 @@ jobs:
           # Поднимаем mtime результатов выше исходников. Символические ссылки
           # (--symlink-install) не трогаем: find -type f их не отдаёт, а touch
           # без -h поменял бы mtime у файлов-целей в test_ws/src.
-          echo "DBG3936 pwd=$(pwd) GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          ls -la /__w/rob_box_project/rob_box_project/test_ws 2>&1 | head -20 | sed 's/^/DBG3936 A /'
-          ls -la /home/runner/work/rob_box_project/rob_box_project/test_ws 2>&1 | head -20 | sed 's/^/DBG3936 B /'
-          readlink -f /home/runner/work 2>&1 | sed 's/^/DBG3936 C /'
+          {
+            echo "pwd=$(pwd) GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            ls -la /__w/rob_box_project/rob_box_project/ || true
+            ls -la /home/runner/work/rob_box_project/rob_box_project/test_ws || true
+            du -sh /home/runner/work/rob_box_project/rob_box_project/test_ws/* || true
+            find / -maxdepth 9 -type d -name rob_box_dialog_msgs -not -path '/proc/*' -not -path '*/src/*' || true
+            find / -maxdepth 9 -name colcon_build.rc -not -path '/proc/*' | head -5 || true
+            df -h /__w /home/runner/work 2>&1 || true
+          } 2>&1 | sed 's/^/DBG3936 /'
           if [ "${COLCON_CACHE_HIT}" = "true" ]; then
             echo "colcon cache: exact hit, touching build/ and install/ above sources"
             find build install -type f -exec touch {} +
