@@ -715,3 +715,29 @@ def test_tool_outside_the_slice_is_retried_with_same_class_tools_and_the_fixed_a
     assert "memory_save" not in note and "set_volume" not in note
     assert _actions(out) == [("request_music", {"intent": "track", "text": "ровный ритм"})]
     assert "retry=1 violations=['tool_not_available'] → verdict=command" in log[-1]
+
+
+def _query_followup() -> list:
+    """Запрос второй итерации хода: данные ``query`` вернулись модели (как их возвращает ``turn.py``)."""
+    data = '{"query_results": [{"tool": "list_tts_voices", "status": "done", "reason": null, "data": {}}]}'
+    return [*_messages(), LLMMessage(role="user", content=data)]
+
+
+def test_retry_after_query_says_data_received_not_nothing_done() -> None:
+    """#3883: речь длиннее потолка после выполненного запроса - подсказка повтора «данные получены, сократи до N»."""
+    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_MAX_CHARS + 63)),))
+    good = LLMResponse(tool_calls=(_command_call(speech="Коротко."),))
+    inner = _Inner(DEEPSEEK_CAPS, [long, good])
+    out = _run(cb.CommandModeLLM(inner, [].append).complete(_query_followup(), tools=TOOLS))
+    assert out.content == "Коротко." and len(inner.requests) == 2
+    hint = inner.requests[1]["messages"][-1].content
+    assert "too_long" in hint and str(kn.SPEECH_MAX_CHARS) in hint
+    assert "получены" in hint and "ничего не сделано" not in hint
+
+
+def test_retry_without_query_keeps_the_plain_hint() -> None:
+    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_MAX_CHARS + 1)),))
+    good = LLMResponse(tool_calls=(_command_call(speech="Коротко."),))
+    inner = _Inner(DEEPSEEK_CAPS, [long, good])
+    _run(cb.CommandModeLLM(inner, [].append).complete(_messages(), tools=TOOLS))
+    assert "ничего не сделано" in inner.requests[1]["messages"][-1].content

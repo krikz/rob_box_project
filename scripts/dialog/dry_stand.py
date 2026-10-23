@@ -62,7 +62,7 @@ from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E40
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
 from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
 from rob_box_voice.tts_voice_registry import (  # noqa: E402
-    ROBOT_DEFAULT_PROVIDER, default_voice_for, robot_default_voice, voices_for,
+    ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voices_for,
 )
 
 WAKE_WORDS_YAML = REPO / "docker" / "sound" / "config" / "wake_words.yaml"
@@ -306,7 +306,11 @@ class FakeTools:
                       "all_triggers": triggers}
 
     def _t_list_tts_voices(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        provider = str(args.get("provider") or self._stand.voice_provider)
+        provider = str(args.get("provider") or "")
+        active = provider or self._stand.voice_provider
+        if not provider:  # как у настоящего тула (#3883): обзор по провайдерам, без полного списка ids
+            return True, {"provider": active, "default_voice": default_voice_for(active),
+                          "providers": providers_overview(active)}
         return True, {"provider": provider, "voices": voices_for(provider),
                       "default_voice": default_voice_for(provider)}
 

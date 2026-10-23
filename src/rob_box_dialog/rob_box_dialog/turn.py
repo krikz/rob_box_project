@@ -141,6 +141,7 @@ class _Turn:
     recent: Tuple[Mapping[str, Any], ...] = ()  # фоновая фраза того же собеседника для снимка (#3894)
     background: Tuple[Mapping[str, Any], ...] = ()  # фоновые фразы всех с последнего ответа робота (В23)
     said: List[str] = field(default_factory=list)
+    queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания, #3883)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -263,7 +264,43 @@ def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
 
 def _query_data(results: Sequence[ActionResult]) -> str:
     rows = [{"tool": r.tool, "status": r.status, "reason": r.reason, "data": dict(r.data)} for r in results]
-    return json.dumps({"query_results": rows}, ensure_ascii=False, default=str)
+    return json.dumps({kn.QUERY_RESULTS_FIELD: rows}, ensure_ascii=False, default=str)
+
+
+def _voices_summary(data: Mapping[str, Any]) -> Optional[str]:
+    """«Яндекс — 13, MiniMax — 10» из данных ``list_tts_voices`` (обзор по провайдерам или голоса одного)."""
+    overview = data.get("providers")
+    if isinstance(overview, list):
+        pairs = [(str(p.get("label") or p.get("provider")), p.get("voices_count")) for p in overview
+                 if isinstance(p, Mapping)]
+    elif isinstance(data.get("voices"), list):
+        pairs = [(str(data.get("provider") or ""), len(data["voices"]))]
+    else:
+        return None
+    return ", ".join(f"{name} — {count}" for name, count in pairs if name and isinstance(count, int)) or None
+
+
+def _close_invalid(turn: _Turn, data: Optional[str], log: Any) -> str:
+    """Невалидная команда после повтора. Запроса в ходе не было - провал без речи (``""``); запрос выполнен - ход
+    закрыт как ``done``, а говорит код по данным запроса (#3883): молчать после выполненного запроса нельзя."""
+    if not turn.queried:
+        turn.stage, turn.status, turn.reason = "failed", "failed", f"invalid_command:{data}"[:60]
+        log.warning(f"{LOG_MARK} невалидная команда {data} → ход провален, без речи")
+        return ""
+    log.warning(f"{LOG_MARK} невалидная команда {data} после query → фраза кода по данным запроса")
+    turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{data}"[:60]
+    return query_fallback(turn.queried)
+
+
+def query_fallback(results: Sequence[ActionResult]) -> str:
+    """Фраза кода, когда запрос хода выполнен, а ответ модели не прошёл проверку и после повтора (#3883, решение Шифу
+    23.10): по данным результата тула (``knowledge.QUERY_FALLBACK_PHRASES``), иначе общая честная фраза."""
+    for r in results:
+        key = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
+        summary = _voices_summary(r.data) if key and r.status == "done" else None
+        if key and summary:
+            return phrases.text(key, summary=summary)
+    return phrases.text(kn.QUERY_FALLBACK_GENERIC)
 
 
 async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: SessionSnapshot,
@@ -420,8 +457,7 @@ class TurnEngine:
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
             if not isinstance(answer.result, Command):
-                turn.stage, turn.status, turn.reason = "failed", "failed", f"invalid_command:{data}"[:60]
-                self._log.warning(f"{LOG_MARK} невалидная команда {data} → ход провален, без речи")
+                self._say(turn, _close_invalid(turn, data, self._log))
                 return
             more = await self._act(turn, answer.result, snap, last=iteration >= kn.LLM_QUERY_ITERATIONS_MAX)
             if more is None:
@@ -443,6 +479,7 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if not last and results and all(r.cls == _QUERY for r in results):
+            turn.queried = tuple(results)
             return _query_data(results)
         self._speak(turn, cmd, results)
         return None
@@ -528,5 +565,5 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "tier1_actions",
+           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "query_fallback", "tier1_actions",
            "tier1_for", "tier1_phrase", "voices_passed"]

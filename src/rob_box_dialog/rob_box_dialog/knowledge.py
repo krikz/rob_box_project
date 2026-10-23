@@ -550,9 +550,18 @@ STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
 #: Фразы, которые выбирает код (решения Шифу 22.10): «промолчать» на адресованную реплику и подтверждение «новой сессии».
 PASSED_ADDRESSED_PHRASE = "understand.nothing_to_say"
 NEW_SESSION_PHRASE = "tier1.new_session"
+#: Поле с данными ``query`` в сообщении, которым ход возвращает их модели (``turn._query_data``); по нему мост узнаёт,
+#: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
+QUERY_RESULTS_FIELD = "query_results"
+#: Страховка от молчания (#3883, решение Шифу 23.10): речь невалидна и после повтора, а запрос хода выполнен — код
+#: говорит фразу по данным результата. Тул → ключ каталога; слоты строит код (``turn.query_fallback``).
+QUERY_FALLBACK_PHRASES: Mapping[str, str] = MappingProxyType({"list_tts_voices": "query.voices_summary"})
+#: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
+QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
-    "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE,
+    "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC,
+    *QUERY_FALLBACK_PHRASES.values(),
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
     "speak_aloud.lost",

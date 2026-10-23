@@ -585,6 +585,41 @@ def test_host_sections_collects_owner_data_for_the_snapshot_of_the_turn():
     assert host_sections(session.snapshot, MusicStateMemory())["speaker"] == {"name": None, "name_state": "tentative"}
 
 
+VOICES_DATA = {"provider": "minimax", "default_voice": "x", "providers": [
+    {"provider": "yandex", "label": "Яндекс", "voices_count": 13, "active": False, "samples": []},
+    {"provider": "minimax", "label": "MiniMax", "voices_count": 10, "active": True, "samples": []}]}
+
+
+def _voices_turn(second):
+    q = Command(actions=(ToolCall("list_tts_voices", {}),))
+    ports = Ports(answers=[Answer(q, "deepseek"), Answer(second, "deepseek")],
+                  outcomes={"list_tts_voices": ("done", VOICES_DATA)})
+    return ports, _run(_engine(ports), "какими голосами умеешь")
+
+
+def test_invalid_after_query_is_not_silent_code_says_a_phrase_from_the_data():
+    """#3883: запрос выполнен, ответ модели невалиден и после повтора - говорит код по данным, ход не failed."""
+    ports, agg = _voices_turn(Invalid("too_long", "speech"))
+    assert [t for t, _, _ in ports.said] == ["Голосов у меня так: Яндекс — 13, MiniMax — 10. Назвать какие-нибудь?"]
+    assert (agg.stage, agg.status) == ("done", "done")
+
+
+def test_invalid_after_query_of_a_tool_without_phrase_says_generic_phrase():
+    q = Command(actions=(ToolCall("get_current_time", {}),))
+    ports = Ports(answers=[Answer(q, "deepseek"), Answer(Invalid("too_long", "speech"), "deepseek")])
+    agg = _run(_engine(ports), "который час")
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and agg.status == "done"
+
+
+def test_invalid_without_query_still_fails_silently_as_before():
+    ports = Ports(answers=[Answer(Invalid("too_long", "speech"), "deepseek")])
+    agg = _run(_engine(ports), "привет")
+    assert ports.said == [] and (agg.stage, agg.status) == ("failed", "failed")
+
+
+def test_valid_short_answer_after_query_is_said_and_fallback_stays_silent():
+    ports, agg = _voices_turn(Command(speech="Три провайдера, назвать?"))
+    assert [t for t, _, _ in ports.said] == ["Три провайдера, назвать?"] and agg.status != "failed"
 def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919():
     from rob_box_dialog.music_state import MusicStateMemory
     from rob_box_dialog.turn import host_sections
