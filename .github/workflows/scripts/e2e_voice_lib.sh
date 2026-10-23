@@ -76,7 +76,8 @@ PY
 #     НЕ различимы. На живом роботе та же пара anton/ermil дала 0.846
 #     (микрофонный канал поднимает косинус), и акт 2 склеил Сашу с Борисом
 #     в один профиль — run 35667281570.
-#   minimax, таблица ниже: худшая пара 0.684, anton/ermil = 0.527.
+#   minimax, таблица 22.09: худшая пара 0.684, anton/ermil = 0.527 (но ermil и zahar
+#     оба женские: Гриша ≈ Борис, n210). Таблица ниже — от 23.10, см. #3931.
 #   silero, СТАРАЯ таблица: zahar/filipp (baya/xenia) = 0.722 — ровно на
 #     границе, baya/kseniya = 0.788. Ниже baya отдан alena, а zahar получил
 #     kseniya: худшая пара 0.678 (anton/ermil = aidar/eugene).
@@ -84,12 +85,16 @@ PY
 #     архивная папка, из-за которой падает synth_yandex). Мерить, когда
 #     ключ починят: measure_tts_voice_distinctness.py --provider yandex.
 #
-# Подкрутку питча/темпа как альтернативу смене голосов ПРОВЕРИЛИ И
-# ОТКЛОНИЛИ. Фиксированный сдвиг питча за говорящим действительно разводит
-# эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42, intra-voice не страдает,
-# 0.95+), но ломает распознавание: vosk на тех же файлах даёт WER 0.79 при
-# pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига. Менять голос
-# дешевле, чем менять диагноз с «не различил дикторов» на «не расслышал».
+# Подкрутку питча/темпа как ЗАМЕНУ смены голоса проверили и отклонили (22.09):
+# фиксированный сдвиг питча разводит эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42,
+# intra-voice не страдает), но ломает распознавание: vosk на тех же файлах даёт
+# WER 0.79 при pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига.
+# 23.10 (#3931, решение Шифу: «голоса далеко друг от друга, разные питчи и
+# скорости, как у реальных людей») питч/темп вернулись КАК ДОПОЛНЕНИЕ к смене
+# голоса, в умеренных пределах (питч ±5, темп 0.85-1.2), строкой
+# voice:pitch:speed. Замер (после EQ харнесса и 16 кГц, resemblyzer): худшая
+# пара ролей 0.61-0.66, Гриша/Борис 0.54; своя к своей 0.95-0.96. WER на этих
+# настройках НЕ мерили — смотреть в первом прогоне акта 2.
 #
 # Гендер намеренно НЕ сохраняется: различимость важнее совпадения пола,
 # робот всё равно слышит синтетику. У Silero так было с самого начала,
@@ -103,7 +108,7 @@ PY
 #   map_tts_voice yandex  anton  → anton
 #   map_tts_voice silero  anton  → aidar
 #   map_tts_voice silero  zahar  → kseniya
-#   map_tts_voice minimax ermil  → Russian_PessimisticGirl
+#   map_tts_voice minimax ermil  → Russian_Bad-temperedBoy:5:1.2   (voice:pitch:speed)
 #   map_tts_voice silero  aidar  → aidar      (уже native)
 #   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
 map_tts_voice() {
@@ -131,14 +136,17 @@ map_tts_voice() {
         minimax)
             case "$voice" in
                 Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
-                anton|"")        printf 'Russian_ReliableMan' ;;
-                ermil|madirus)   printf 'Russian_PessimisticGirl' ;;
-                zahar|arina)     printf 'Russian_CrazyQueen' ;;
-                filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
+                # voice:pitch:speed (#3931). Роли разнесены не только голосом, но и
+                # питчем/темпом, как разные люди. Ровно эту строку получают
+                # synth_minimax (разбирает) и ключ кэша (хранит): смена питча/темпа
+                # не вернёт старые wav. Замер: docs/dialog/role_voices_biometrics_2026-10-23.md
+                anton|"")        printf 'Russian_ReliableMan:3:1.12' ;;            # Саша: средний, чуть выше и бодрее
+                ermil|madirus)   printf 'Russian_Bad-temperedBoy:5:1.2' ;;         # Борис: высокий, быстрый
+                zahar|arina)     printf 'Russian_HandsomeChildhoodFriend:-5:0.85' ;; # Гриша: низкий, медленный
+                filipp|kostya)   printf 'Russian_AttractiveGuy:1:1.05' ;;          # Валера: ровный
                 alena)           printf 'Russian_BrightHeroine' ;;
                 jane)            printf 'Russian_AmbitiousWoman' ;;
-                arina)           printf 'Russian_PessimisticGirl' ;;
-                omazh|rush)      printf 'Russian_Bad-temperedBoy' ;;
+                omazh|rush)      printf 'Russian_CrazyQueen' ;;
                 *)               printf 'Russian_ReliableMan' ;;
             esac
             return 0
