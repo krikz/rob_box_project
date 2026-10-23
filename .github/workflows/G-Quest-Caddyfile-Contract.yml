@@ -39,9 +39,12 @@ on:
       - 'local_test/test_quest_caddyfile.py'
       - '.github/workflows/G-Quest-Caddyfile-Contract.yml'
   pull_request:
+    # #3922: PR-триггер только на develop. Вечный PR develop->main (#3713)
+    # получает synchronize на каждый push в develop, и проверка гонялась ещё
+    # раз на SHA, который уже прошёл push-прогон. Чеки push-прогона висят на
+    # head-коммите PR, merge-gate их видит.
     branches:
       - develop
-      - main
       - 'feature/**'
     paths:
       - 'docker/sound/quest/Caddyfile'
