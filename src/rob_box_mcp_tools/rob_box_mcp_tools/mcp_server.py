@@ -13,29 +13,28 @@ ROS 2 интерфейс:
 - Подписывается на: /mcp/execute (String) - JSON запросы на выполнение
 - Публикует: /mcp/result (String) - JSON результаты выполнения
 
-Runtime-параметр (``ros2 param set``, НЕ топик — issue #2781, по образцу
-speaker_id_node.e2e_mode из issue #2750/#2763):
-    e2e_mode (bool) — переключить активную БД долгосрочной памяти
-        (voice_facts, ``memory_save``) боевая ↔ e2e_db_path. Владелец —
-        только E2E-харнесс (``ros2 param set /mcp_server e2e_mode
-        true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
-        Реализовано только для legacy VoiceMemory (``/data/voice_memory.db``,
-        активный бэкенд в проде на 22.09.2026) — при
-        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает
-        (fail-fast, см. docstring ``_apply_e2e_mode``).
+Режим e2e (#3904) — своего переключателя у ноды НЕТ: она последователь
+владельца ``/speaker_id_node e2e_mode`` (``rob_box_core.e2e_mode``) и
+переключает активную БД долгосрочной памяти (voice_facts, ``memory_save``)
+боевая ↔ e2e_db_path по latched ``/e2e/mode``. Применённый режим — в
+параметре ``e2e_mode_applied`` (только чтение, его сверяет харнесс). См.
+``_apply_e2e_mode``. Реализовано только для legacy VoiceMemory
+(``/data/voice_memory.db``, активный бэкенд в проде на 22.09.2026) — при
+``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает (fail-fast),
+``e2e_mode_applied`` остаётся False и харнесс не прогоняет акт.
 
 Parameters:
-    e2e_db_path (str) — изолированная БД памяти для E2E-режима, переключается
-        параметром e2e_mode выше [/data/voice_memory.e2e.db]
+    e2e_db_path (str) — изолированная БД памяти для E2E-режима
+        [/data/voice_memory.e2e.db]
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
 from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.speaker_wire import speaker_result_to_payload
 import asyncio
 import json
@@ -448,12 +447,9 @@ class MCPServer(Node):
         # регистрирует голоса через speaker_id_node (изолирован) И называет
         # LLM факты через memory_save (НЕ изолирован) — 59 из 116 фактов
         # боевой /data/voice_memory.db на 22.09.2026 оказались синтезированным
-        # кастом марафона ("Саша"/"Борис"). См. ``parameters_callback`` /
-        # ``_apply_e2e_mode`` ниже — тот же ``ros2 param set`` паттерн, что у
-        # speaker_id_node (bool-параметр, не топик — синхронный ответ
-        # вызывающему в exit-коде, seam_without_consumer его не видит).
+        # кастом марафона ("Саша"/"Борис"). Режим — не свой параметр, а
+        # владельца /speaker_id_node (#3904, см. E2EModeFollower ниже).
         self.declare_parameter("e2e_db_path", "/data/voice_memory.e2e.db")
-        self.declare_parameter("e2e_mode", False)
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
@@ -474,11 +470,11 @@ class MCPServer(Node):
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
-        # Issue #2781 — единственный побочный эффект в parameters_callback:
-        # e2e_mode. Регистрируется здесь (после _init_voice_memory), чтобы
-        # ``self.voice_memory`` / ``self._voice_memory_prod_db_path`` уже
-        # существовали к моменту первого возможного ``ros2 param set``.
-        self.add_on_set_parameters_callback(self.parameters_callback)
+        # #3904 — режим e2e приходит от владельца (/e2e/mode). Подписка
+        # здесь (после _init_voice_memory), чтобы ``self.voice_memory`` /
+        # ``self._voice_memory_prod_db_path`` уже существовали к первому
+        # сообщению.
+        self._e2e_follower = E2EModeFollower(self, self._apply_e2e_mode)
 
         # FAQ store + event profile (event mode)
         self.faq_store = None
@@ -1105,26 +1101,8 @@ class MCPServer(Node):
 
     # ── E2E isolation for voice_facts (issue #2781) ─────────────────────────
     #
-    # По образцу speaker_id_node.e2e_mode (issue #2750/#2763, ADR-0128 §
-    # "Seam guard"): ``ros2 param set`` вместо топика — синхронный ответ
-    # вызывающему в exit-коде, seam_without_consumer.py (ADR-0021) не видит
-    # паблишера в bash-харнессе как «шов без потребителя».
-
-    def parameters_callback(self, params):
-        """``ros2 param set`` роутер mcp_server (issue #2781).
-
-        Тот же компромисс, что у ``speaker_id_node.parameters_callback``:
-        Humble даёт только валидирующий ``add_on_set_parameters_callback``,
-        и побочный эффект (переоткрыть voice_memory на другом файле) живёт
-        прямо в нём. Только ``e2e_mode`` имеет эффект; ``e2e_db_path``
-        читается один раз в ``__init__`` и не перехватывается здесь.
-        """
-        result_ok = True
-        for param in params:
-            if param.name == "e2e_mode":
-                if not self._apply_e2e_mode(bool(param.value)):
-                    result_ok = False
-        return SetParametersResult(successful=result_ok)
+    # #3904: режим — владельца /speaker_id_node (rob_box_core.e2e_mode);
+    # эта нода только применяет его (E2EModeFollower → _apply_e2e_mode).
 
     def _wipe_e2e_voice_memory_db_file(self) -> None:
         """Стереть файл ``e2e_db_path`` (и -wal/-shm/-journal) перед каждым ON.
@@ -1191,8 +1169,8 @@ class MCPServer(Node):
         (``self._voice_memory_prod_db_path is None`` — harness-адаптер
         ``MCP_USE_HARNESS_VOICE_MEMORY=1`` или ``rob_box_voice`` недоступен,
         ``self.voice_memory is None``), либо переоткрытие файла бросило
-        исключение. Вызывающий (``activate_e2e_voice_memory_db`` в харнессе)
-        обязан относиться к ``False`` как к ФАТАЛУ: лучше не прогнать акт,
+        исключение. ``E2EModeFollower`` тогда не меняет ``e2e_mode_applied``,
+        и харнесс (``enter_e2e_mode``) фейлит акт: лучше не прогнать акт,
         чем засорить боевую память.
         """
         if enabled == self._voice_memory_e2e_mode_active:

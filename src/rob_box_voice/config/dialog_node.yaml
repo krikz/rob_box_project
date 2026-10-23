@@ -17,6 +17,6 @@ dialog_node:
     telegram_system_prompt_file: "telegram_chat_prompt.txt"
     telegram_temperature: 0.7
     telegram_max_tokens: 0
-    # e2e: текст ходов пишется только при e2e_mode и пути ВНЕ /data (включает харнесс через ros2 param set).
-    e2e_mode: false
+    # e2e: текст ходов пишется только при непустом пути ВНЕ /data (ставит харнесс через ros2 param set; #3904 —
+    # отдельного e2e_mode у dialog_node нет, режим e2e робота один: /speaker_id_node e2e_mode).
     e2e_db_path: ""

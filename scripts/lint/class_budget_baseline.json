@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-23",
-  "base_sha": "ba7301143097b0bb2c96d77ef6b84eae40028335",
+  "base_sha": "8178e2809e9a9b17d80e3351f47d3fb7fa984b7e",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,8 +24,8 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 103,
-      "methods": 21
+      "wmc": 99,
+      "methods": 20
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
       "wmc": 81,
