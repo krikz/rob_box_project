@@ -204,8 +204,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
         ports = ChatPorts(base, chat_id, send, log, hold)
         base.on_late = ports.late
         chats.adopt(base.executor)
-        return TurnEngine(session, ports, system_prompt=system, deadline_s=kn.CHAT_TURN_DEADLINE_S,
-                          log=_RosLog(node.get_logger()))
+        return TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()))  # потолок хода (В31)
 
     chats = ChatTurns(make_engine, wake, log)
     return chats

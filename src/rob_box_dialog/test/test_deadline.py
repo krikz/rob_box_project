@@ -18,12 +18,12 @@ class Clock:
 
 
 def test_budget_is_knowledge_value():
-    assert TurnDeadline().budget_s == kn.TURN_DEADLINE_S == 12
+    assert TurnDeadline().budget_s == kn.TURN_CEILING_S == 60  # В31: потолок, а не 12 с (В5)
 
 
 def test_left_and_expired_follow_clock():
     clock = Clock()
-    d = TurnDeadline(clock=clock)
+    d = TurnDeadline(12, clock=clock)
     assert d.left() == 12.0 and not d.expired()
     clock.t += 9.5
     assert d.left() == pytest.approx(2.5)
@@ -33,7 +33,7 @@ def test_left_and_expired_follow_clock():
 
 def test_cap_is_min_of_provider_timeout_and_left():
     clock = Clock()
-    d = TurnDeadline(clock=clock)
+    d = TurnDeadline(12, clock=clock)
     assert d.cap(30.0) == 12.0
     assert d.cap(4.0) == 4.0
     clock.t += 10

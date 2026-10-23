@@ -278,7 +278,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--providers", default="deepseek", help="цепочка LLM (как llm_providers dialog_node)")
     ap.add_argument("--budget", type=int, default=300, help="потолок запросов LLM за прогон")
     ap.add_argument("--max-retries", type=int, default=None, help="потолок повторов шага (по умолчанию как в сценарии)")
-    ap.add_argument("--deadline-s", type=float, default=None, help="бюджет хода, с (по умолчанию TURN_DEADLINE_S)")
+    ap.add_argument("--deadline-s", type=float, default=None, help="потолок хода, с (по умолчанию TURN_CEILING_S)")
     ap.add_argument("--out", default="", help="каталог сырых логов шагов и сводки")
     ap.add_argument("--list", action="store_true", help="только разметка шагов text/acoustic, без LLM")
     args = ap.parse_args(argv)

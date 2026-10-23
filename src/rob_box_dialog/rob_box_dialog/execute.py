@@ -69,9 +69,9 @@ Epoch = Callable[[], int]
 
 
 def deadline_s(cls: str) -> float:
-    """Дедлайн события класса; у классов, где его задаёт владелец (речь, выступление), — бюджет хода."""
+    """Дедлайн события класса; у классов, где его задаёт владелец (речь, выступление), — потолок хода."""
     timeout = kn.ACTION_CLASSES[cls].timeout_s
-    return float(timeout if timeout is not None else kn.TURN_DEADLINE_S)
+    return float(timeout if timeout is not None else kn.TURN_CEILING_S)
 
 
 class Executor:

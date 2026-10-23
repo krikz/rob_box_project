@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence
 
@@ -25,6 +26,7 @@ from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Command, Invalid, Result, ToolCall as CommandCall, parse
 from rob_box_dialog.context import measure
+from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor
 from rob_box_dialog.expression import reflex
 from rob_box_dialog.respond import ActionResult
@@ -32,6 +34,7 @@ from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.turn import Answer
 from rob_box_harness.core.agent_core import answering_provider
 from rob_box_harness.core.tool_loop.command_turn import owner_event
+from rob_box_llm.errors import ProviderError
 from rob_box_llm.provider import LLMMessage, LLMResponse, LLMSettings, ToolCall, ToolResult
 
 from .command_intent import fill_intent
@@ -141,12 +144,21 @@ class V2Ports:
         self.on_late: Optional[Callable[[ActionResult], None]] = None
         self.executor = Executor(self._send, on_late=self._late, epoch=epoch)
 
+    def provider(self) -> str:
+        """Провайдер, к которому идёт вызов сейчас: цепочка ставит ``answered_by`` ДО вызова (фразы потолка, В31).
+        Без цепочки — «» (имя обёртки ``health-aware-fallback`` человеку ничего не говорит)."""
+        return str(getattr(self._llm, "answered_by", None) or "")
+
     async def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Answer:
-        """Один ответ LLM (с повтором моста по нарушениям); тайм-аут ставит дедлайн хода снаружи."""
+        """Один ответ LLM (с повтором моста по нарушениям); потолок ставит ход снаружи. Провайдер не жив (цепочка
+        исчерпана, транспорт оборвал вызов своим таймаутом) — :class:`ProviderFailed`: ход не ждёт потолка (В31)."""
         msgs = [to_message(m) for m in messages]
         schemas = [tool_schema(t) for t in tools]
         before = self._counter.calls
-        response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
+        try:
+            response = await self._llm.complete(msgs, tools=schemas, settings=self._settings)
+        except (ProviderError, OSError, asyncio.TimeoutError) as exc:
+            raise ProviderFailed(self.provider(), exc) from exc
         provider = answering_provider(self._llm)
         usage = dict(response.usage or {})
         tokens = int(usage.get("prompt_tokens") or measure(msgs, schemas).total)

@@ -35,7 +35,7 @@ OPERATOR = "operator"
 LOG_MARK = "🛰 [tars-v2]"
 #: ``summary`` хода без слов (Tier-1 стоп, громкость без фразы): пусто — в шлем не звучит, консоль и чат молчат.
 NO_REPLY = ""
-#: Сколько поток ROS ждёт ход сверх его бюджета (``TURN_DEADLINE_S``): дедлайн хода ставит сам движок.
+#: Сколько поток ROS ждёт ход сверх его потолка (``TURN_CEILING_S``, В31): потолок хода ставит сам движок.
 RUN_SLACK_S = 10.0
 #: Поздний итог действия: ``(request_id команды, результат, фраза кода)``.
 OnLate = Callable[[str, ActionResult, str], None]
@@ -164,7 +164,7 @@ class OperatorHost:
             return {"ok": False, "summary": "empty_input", "tool_calls": [], **meta}
         try:
             reply = self.run(str(payload.get("request_id", "") or ""), text, meta["source"],
-                             kn.TURN_DEADLINE_S + RUN_SLACK_S)
+                             kn.TURN_CEILING_S + RUN_SLACK_S)
         except Exception as exc:  # noqa: BLE001 — упавший ход не роняет супервизор, но громко
             self._log(f"{LOG_MARK} ход упал: {type(exc).__name__}: {exc}")
             return {"ok": False, "summary": f"llm_error: {type(exc).__name__}", "tool_calls": [], "error": str(exc),
