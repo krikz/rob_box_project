@@ -359,7 +359,7 @@ def test_passed_from_backlog_pickup_or_silence_stays_quiet():
     engine = _engine(ports)
     engine.session.push_scene("Silence", "user")
     _run(engine, "что-то")
-    assert ports.said == []
+    assert ports.said == [] and ports.asked == []  # в тишине LLM не зовётся вовсе (#3982)
 
 
 def test_query_data_goes_back_to_llm_once_then_answer():
@@ -787,3 +787,72 @@ def test_3974_expression_only_command_finishes_the_turn_without_failure():
     agg = _run(_engine(ports), "покажи, как тебе грустно")
     assert (agg.stage, agg.status) == ("done", "finished")
     assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []
+
+
+# -- тишина: робот молчит, LLM не зовётся (#3982, решение Шифу 23.10) -------------------------------------------------
+
+def _silenced_engine(ports, **kw):
+    engine = _engine(ports, **kw)
+    _run(engine, "замолчи")
+    assert engine.session.snapshot.top("Silence") is not None
+    return engine
+
+
+def test_silenced_turn_calls_no_llm_says_nothing_and_ends_with_silenced_stage(caplog):
+    """Акт 8 марафона 23.10 13:29: после «замолчи» «посчитай до двадцати» вызывал LLM и звучал. Теперь - ни вызова, ни речи."""
+    ports = Ports(answers=[Answer(Command(speech="Раз, два, три..."), "deepseek")])
+    engine = _silenced_engine(ports)
+    with caplog.at_level(logging.INFO):
+        agg = _run(engine, "посчитай до двадцати")
+    assert ports.asked == [] and ports.said == [] and ports.executed == []
+    assert (agg.stage, agg.status, agg.llm_calls) == (kn.SILENCED_TURN_STAGE, "finished", 0)
+    assert ports.stages[-1] == (kn.SILENCED_TURN_STAGE, "finished", kn.SILENCED_TURN_REASON)
+    assert "thinking" not in [stage for stage, _, _ in ports.stages]
+    assert any(kn.SILENCED_TURN_REASON in r.getMessage() and "посчитай до двадцати" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_silenced_replies_are_recorded_in_turn_log_for_after_unsilence():
+    ports = Ports(answers=[Answer(Command(speech="Считаю."), "deepseek")])
+    engine = _silenced_engine(ports)
+    _run(engine, "посчитай до двадцати")
+    assert any("посчитай до двадцати" in str(e.content) for e in engine.log.window())
+
+
+def test_silenced_stop_and_volume_still_run_quietly():
+    ports = Ports(outcomes={"set_volume": ("done", {})})
+    engine = _silenced_engine(ports)
+    _run(engine, "стоп")
+    _run(engine, "громче")
+    assert ports.executed == [[("set_volume", {"action": "louder"})]]
+    assert ports.asked == [] and ports.said == []
+    assert engine.session.snapshot.top("Silence") is not None
+
+
+def test_silenced_stop_with_rest_does_not_hand_rest_to_llm():
+    """«Хватит, спой другую» в тишине: стоп исполняется, остаток - в тишину, а не в LLM."""
+    ports = Ports(answers=[Answer(Command(speech="Пою."), "deepseek")])
+    engine = _silenced_engine(ports)
+    agg = _run(engine, "хватит, спой другую")
+    assert ports.asked == [] and ports.said == [] and agg.stage == kn.SILENCED_TURN_STAGE
+
+
+def test_unsilence_lifts_silence_and_next_turn_goes_to_llm_normally():
+    ports = Ports(answers=[Answer(Command(speech="Раз, два, три."), "deepseek")])
+    engine = _silenced_engine(ports)
+    _run(engine, "посчитай до двадцати")
+    assert ports.asked == []
+    _run(engine, "говори")
+    assert engine.session.snapshot.top("Silence") is None and ports.asked == [] and ports.said == []
+    agg = _run(engine, "посчитай до трёх")
+    assert len(ports.asked) == 1 and agg.llm_calls == 1 and agg.stage == "done"
+    assert ports.said == [("Раз, два, три.", None, "neutral")]
+
+
+def test_wake_word_does_not_lift_silence():
+    """Вейк тишину не снимает: адресованная вейком реплика без «говори» остаётся без LLM."""
+    ports = Ports(answers=[Answer(Command(speech="Привет!"), "deepseek")])
+    engine = _silenced_engine(ports)
+    agg = _run(engine, "привет как дела")
+    assert ports.asked == [] and ports.said == [] and agg.stage == kn.SILENCED_TURN_STAGE
+    assert engine.session.snapshot.top("Silence") is not None

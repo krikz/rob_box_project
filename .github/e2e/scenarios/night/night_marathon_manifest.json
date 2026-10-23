@@ -88,7 +88,7 @@
       "act": 8,
       "title": "Перебей меня, если сможешь",
       "stability": "expected-partially-red",
-      "steps": 13,
+      "steps": 14,
       "scenario_file": ".github/e2e/scenarios/night/night_marathon_act8_barge_in_v1.json",
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act8_barge_in_acceptance_v1.json"
     },
@@ -109,5 +109,5 @@
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_acceptance_v1.json"
     }
   ],
-  "total_steps": 133
+  "total_steps": 134
 }

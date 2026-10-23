@@ -63,6 +63,16 @@
       "_why": "Чистый STOP без новой темы — другой класс перебивания, чем n803. v2 (#3880, run 39876993047): Tier-1 стоп отвечает молча, речь гасится (`SpeechEvent cancelled reason=stopped` ~170 мс от партиала) -- харнесс ждал TTS и краснел `cycle_unconfirmed_after_accept`. Теперь: `silent_ok` (ход без речи допустим) + ОБЯЗАТЕЛЬНЫЙ паттерн отмены речи: молчание без отмены -- по-прежнему красный."
     },
     {
+      "label": "n805b_unsilence",
+      "voice": "anton",
+      "text": "Робот, говори.",
+      "silent_ok": true,
+      "patterns": [
+        "tier1 kind=unsilence"
+      ],
+      "_why": "Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину (`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот считал в тишине без тулов). Снятие -- Tier-1 без речи (`tier1_phrase` для unsilence пуст), поэтому `silent_ok` + обязательный маркер `tier1 kind=unsilence`; что робот снова отвечает, доказывает следующий шаг (n806: `SpeechEvent started`)."
+    },
+    {
       "label": "n806_long_count_again",
       "voice": "anton",
       "text": "Робот, посчитай вслух от одного до двадцати, спокойно.",
@@ -105,17 +115,28 @@
       "voice": "anton",
       "text": "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
       "silent_ok": true,
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент request_music выполнен успешно",
+        "🎵 \\[music v2\\] started track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "request_music"
         ],
         "must_not_call": [
-          "generate_music"
+          "generate_music",
+          "stage=timeout"
         ],
-        "_comment": "Готовим фон для проверки «речь поверх музыки». v2 (#3880, run 39876993047): запрос музыки может закончиться без речи -- харнесс ждал TTS (reply_after=41s ×3, `cycle_unconfirmed_after_accept`). `silent_ok` допускает ход без речи, а факт действия держит `expect_tools=request_music` (`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему краснеет, если музыку не запросили."
+        "_comment": "Готовим фон для проверки «речь поверх музыки». v2 (#3880, run 39876993047): запрос музыки может закончиться без речи -- харнесс ждал TTS (reply_after=41s ×3, `cycle_unconfirmed_after_accept`). `silent_ok` допускает ход без речи, а факт действия держит `expect_tools=request_music` (`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему краснеет, если музыку не запросили. #3971: «поставлю ритм» без тула больше не PASS -- нужны `Инструмент request_music выполнен успешно` + `[music v2] started`."
       },
-      "retry_acceptance": 1
+      "retry_acceptance": 1,
+      "_result_markers": {
+        "tools": [
+          "request_music"
+        ],
+        "music": "started"
+      }
     },
     {
       "label": "n810_rap_over_music",
@@ -151,12 +172,24 @@
       "label": "n812_stop_music",
       "voice": "anton",
       "text": "Робот, теперь и музыку выключай.",
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент stop_music выполнен успешно",
+        "🎵 \\[music v2\\] stop track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "stop_music"
         ],
-        "must_not_call": []
+        "must_not_call": [
+          "stage=timeout"
+        ]
+      },
+      "_result_markers": {
+        "tools": [
+          "stop_music"
+        ],
+        "music": "stopped"
       }
     },
     {
@@ -165,10 +198,15 @@
       "text": "Робот, тишина?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
+        "must_not_say": [
+          "не получилось выполнить"
         ],
-        "must_not_call": []
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       }
     }
   ]
