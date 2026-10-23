@@ -322,9 +322,9 @@ def test_3883_long_answer_is_retried_into_a_short_one(make_env):
 def test_3883_long_answer_that_stays_long_is_a_red_step(make_env):
     env = make_env(lambda env, msgs, tools: {"speech": LONG})
     report = env.run(VOICES)
-    assert report.verdict == dm.FAIL and "finished" in report.fail[0]  # слишком длинно дважды: шаг красный
-    # В30 (ADR-0150 §18.3, решение Шифу 23.10, #3953): невалидная после повтора команда - не молчание, а фраза кода
-    assert report.said == [phrases.text(kn.INVALID_COMMAND_PHRASE)] and report.llm_calls == 2
+    assert report.verdict == dm.FAIL and "finished" in report.fail[0]  # слишком длинно дважды: шаг красный (фича не выполнена)
+    # ...но робот не молчит и не врёт «не понял»: честная фраза кода по причине too_long (#3953)
+    assert report.said == [phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])] and report.llm_calls == 2
 
 
 # ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────

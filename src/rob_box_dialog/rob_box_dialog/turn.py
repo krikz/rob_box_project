@@ -324,7 +324,8 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
         return
     turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
     # исполнено и успех молчит (звук сам себе доказательство) - тишина честна; исполнять было нечего - фраза
-    said = outcome_phrase(results) if results else phrases.text(kn.INVALID_COMMAND_PHRASE)
+    key = kn.INVALID_COMMAND_PHRASES.get(why, kn.INVALID_COMMAND_PHRASE)
+    said = outcome_phrase(results) if results else phrases.text(key)
     sad = not results or any(r.status in _FAILED for r in results)
     engine._say(turn, said or "", None, "sad" if sad else None)
 
