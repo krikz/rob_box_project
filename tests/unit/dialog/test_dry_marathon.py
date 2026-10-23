@@ -150,6 +150,9 @@ def test_3870_named_group_survives_playing_music(make_env):
 
 def test_3870_regression_music_scene_first_makes_step_red(make_env, monkeypatch):
     monkeypatch.setattr(tools_view, "groups_for", old_groups_for_music_first(tools_view.groups_for))
+    # Страховка #3960 (тул вне среза → код открывает его группу и повторяет) прячет регресс среза: стенд проверяет
+    # сам срез, поэтому откатываем и её — как было до #3960.
+    monkeypatch.setattr(command_bridge, "widen_for", lambda missing, agent, have: ())
     env = make_env(_battery_rule)
     env.stand.player.start("клубный трек")
     report = env.run(BATTERY)

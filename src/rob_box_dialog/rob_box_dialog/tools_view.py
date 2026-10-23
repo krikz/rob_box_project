@@ -73,6 +73,31 @@ def motion_refusal(tool: str, text: str) -> Optional[str]:
     return phrases.text("motion.rejected.not_asked")
 
 
+def widen_for(missing: Sequence[str], agent: str, have: Sequence[str]) -> Tuple[str, ...]:
+    """Тулы, которые код добавляет в запрос, когда модель позвала тул вне среза (``tool_not_available``, #3960): тул
+    есть в реестре агента, а слова человека его группу не открыли («поставь ровный ритм» - живой прогон 23.10, акт 8).
+    Открывается вся группа названного тула - по членству или по имени группы в имени тула (опечатка ``music_stop`` →
+    группа ``music``); тула нет ни в группе, ни в реестре - ничего (выбор сужает код, угадывания по тексту нет).
+    Не открываются: движение (только по глаголу человека, ``motion_named``) и голос (только по явной просьбе, #3744).
+    Уже видимые (``have``) не повторяются; порядок - как в группе, названный тул первым."""
+    allowed = set(tools_for(agent_spec(agent)))
+    opened: List[str] = []
+    for tool in missing:
+        opened.extend(n for n in _group_of(tool, allowed) if n not in have and n not in opened)
+    return tuple(opened)
+
+
+def _group_of(tool: str, allowed: set) -> List[str]:
+    """Тул и его группа (по членству или по имени группы в имени тула), без того, что модель открыть не может."""
+    if tool in kn.MOTION_TOOLS:  # база едет по глаголу человека (``motion_named``), а не по просьбе модели
+        return []
+    groups = [g for g, group in kn.TOOL_GROUPS.items()
+              if g not in kn.TOOL_GROUPS_EXPLICIT and (tool in group.tools or g in tool.lower())]
+    names = [tool] + [t for g in groups for t in kn.TOOL_GROUPS[g].tools]
+    closed = set(kn.MOTION_TOOLS) | set(kn.TOOLS_ALWAYS) | set(kn.TOOL_GROUPS["voice"].tools)
+    return [n for n in names if n in allowed and n not in closed]
+
+
 def _named(text: str, field: str) -> set:
     return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
 
@@ -101,4 +126,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups"]
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups",
+           "widen_for"]

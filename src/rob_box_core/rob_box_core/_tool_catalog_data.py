@@ -1568,7 +1568,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
                        'трек (темп, тональность и аранжировку решает код), '
                        'intent=melody — известная мелодия по названию из text. text — '
-                       'слова человека дословно. Об успехе робот скажет сам, когда '
+                       'слова человека дословно. engine=renardo — человек назвал '
+                       'Ренардо («на Ренардо», искажённо «на индардо»): играет живой '
+                       'синтез, не готовый трек. Об успехе робот скажет сам, когда '
                        'музыка реально заиграет; ok=false — музыка не заиграла.',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
@@ -1597,6 +1599,15 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                      'club',
                                                                      'classical',
                                                                      'folk']},
+                                            'engine': {   'type': 'string',
+                                                          'description': 'Движок: '
+                                                                         'renardo — '
+                                                                         'человек '
+                                                                         'назвал '
+                                                                         'Ренардо; '
+                                                                         'auto — не '
+                                                                         'называл',
+                                                          'enum': ['auto', 'renardo']},
                                             'min_seconds': {   'type': 'number',
                                                                'description': 'Служебный '
                                                                               'аргумент '
@@ -1612,7 +1623,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'genre',
                                        'turn_id',
                                        'heard_text',
-                                       'min_seconds'],
+                                       'min_seconds',
+                                       'engine'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer', 'dj')},

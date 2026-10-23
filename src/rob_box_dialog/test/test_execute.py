@@ -220,3 +220,76 @@ def test_turn_cancel_cuts_interruptible_request_but_motion_send_survives(caplog)
         _run(scenario())
     assert sent == ["navigate_to_waypoint"], "query отменён до владельца, движение доехало"
     assert "stale_epoch navigate_to_waypoint t22/1" in caplog.text
+
+
+# -- срок класса считается от запроса, а не от конца вызова тула (#3960, живой прогон 23.10 акт 5) ------------------
+
+
+def _timed(executor, call, turn_id, settle_s=0.0):
+    """Исполнить одно действие; итог, сколько ждал ход, и дать позднему событию дойти (``settle_s``)."""
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        [res] = await executor.run([call], SNAP, turn_id)
+        took = loop.time() - began
+        await asyncio.sleep(settle_s)
+        return res, took
+
+    return _run(scenario())
+
+
+def test_class_deadline_runs_from_request_while_tool_call_still_works(monkeypatch):
+    """MCP-вызов v2 исполняет тул до конца (ждёт ``started``): срок класса идёт рядом с ним, а не после него."""
+    monkeypatch.setattr("rob_box_dialog.execute.deadline_s", lambda cls: 0.05)
+
+    async def send(request):
+        await asyncio.sleep(0.5)  # тул всё ещё ждёт старта трека
+
+    res, took = _timed(Executor(send), ToolCall("request_music", {"intent": "track"}), "t30")
+    assert res.status == "timeout"
+    assert took < 0.3, f"ход ждал конца вызова ({took:.2f} с), а не срока класса"
+
+
+def test_music_started_after_class_timeout_reaches_on_late(monkeypatch):
+    """Музыка заиграла позже срока ``action.media``: ход получил честный ``timeout``, поздний ``done`` - в ``on_late``
+    (фразу «Включаю музыку.» скажет ``turn.say_late``), а не ``stale_event``."""
+    monkeypatch.setattr("rob_box_dialog.execute.deadline_s", lambda cls: 0.02)
+    late = []
+
+    async def send(request):
+        await asyncio.sleep(0.08)
+        ex.on_event(OwnerEvent(request.turn_id, "done", data={"title": "x"}))
+
+    ex = Executor(send, on_late=late.append)
+    res, _ = _timed(ex, ToolCall("request_music", {"intent": "track"}), "t31", settle_s=0.15)
+    assert res.status == "timeout"
+    assert [(r.tool, r.status, r.cls) for r in late] == [("request_music", "done", "action.media")]
+
+
+def test_late_result_of_other_class_after_timeout_stays_stale(monkeypatch, caplog):
+    """Поздний итог берут только классы ``LATE_SPOKEN_CLASSES``: память после ``timeout`` - ``stale_event``."""
+    monkeypatch.setattr("rob_box_dialog.execute.deadline_s", lambda cls: 0.02)
+    late = []
+
+    async def send(request):
+        await asyncio.sleep(0.06)
+        ex.on_event(OwnerEvent(request.turn_id, "done", data={"fact": "x", "fact_id": 1}))
+
+    ex = Executor(send, on_late=late.append)
+    with caplog.at_level(logging.WARNING):
+        res, _ = _timed(ex, ToolCall("memory_save", {"fact": "x"}), "t32", settle_s=0.1)
+    assert res.status == "timeout" and late == []
+    assert "stale_event ref=t32/0" in caplog.text
+
+
+def test_async_send_failure_is_rejected_at_once_not_after_class_deadline():
+    """Вызов тула упал (транспорт): честный ``rejected{error}`` сразу, а не ожидание события до срока класса."""
+
+    async def send(request):
+        await asyncio.sleep(0.01)
+        raise OSError("MCP недоступен")
+
+    res, took = _timed(Executor(send), ToolCall("request_music", {"intent": "track"}), "t33")
+    assert (res.status, res.reason) == ("rejected", "error")
+    assert took < 1.0, "срок action.media - 10 с: отказ пришёл от упавшего вызова, а не по сроку"

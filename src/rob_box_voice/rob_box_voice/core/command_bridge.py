@@ -38,6 +38,7 @@ from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid,
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
+from rob_box_dialog.tools_view import widen_for
 from rob_box_harness.providers.reasoning import without_reasoning
 from rob_box_llm.provider import (
     LLMChunk,
@@ -69,6 +70,22 @@ Ask = Callable[[List[LLMMessage]], Awaitable[LLMResponse]]
 
 def _no_log(_: str) -> None:
     return None
+
+
+class _Widen(Exception):
+    """Модель позвала тул, который есть у агента, но вне среза хода: запрос повторяется с группой этого тула (#3960)."""
+
+    def __init__(self, names: Tuple[str, ...]) -> None:
+        super().__init__(",".join(names))
+        self.names = names
+
+
+def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
+    """OpenAI-схемы тулов каталога (как их строит порт хода)."""
+    from rob_box_core.tool_catalog import get_tool  # noqa: PLC0415
+
+    return [{"type": "function", "function": {"name": t.name, "description": t.description,
+                                              "parameters": dict(t.parameters)}} for t in map(get_tool, names)]
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:
@@ -279,12 +296,20 @@ class CommandModeLLM(LLMProvider):
         shaped = replace(base, tool_choice=request.tool_choice or base.tool_choice, extra=extra)
         return _with_note(list(messages), mode_note(self.mode, request, schema)), [*request.tools, *native], shaped
 
-    async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]]) -> LLMResponse:
+    async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]],
+                     widen: bool = False) -> LLMResponse:
         """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же
-        запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; строка лога на каждый ответ и на повтор."""
+        запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; строка лога на каждый ответ и на повтор.
+        ``widen`` - первый ответ с тулом вне среза (``tool_not_available``) не повторяется как есть: :class:`_Widen`
+        просит запрос с группой этого тула (#3960)."""
         available = frozenset(_tool_name(t) for t in offered)
         response = without_reasoning(await ask(msgs))
         result = self._judged(response, available)
+        if widen and isinstance(result, Invalid):
+            names = widen_for([v.detail for v in result.all if v.reason == "tool_not_available"], self._agent,
+                              sorted(available))
+            if names:
+                raise _Widen(names)
         for attempt in range(1, kn.COMMAND_RETRIES_MAX + 1):
             if not isinstance(result, Invalid):
                 break
@@ -305,19 +330,36 @@ class CommandModeLLM(LLMProvider):
 
     async def complete(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
                        settings: LLMSettings | None = None) -> LLMResponse:
-        msgs, offered, shaped = self.shape(messages, tools, settings)
-        return await self.answer(lambda m: self._inner.complete(m, tools=offered, settings=shaped), msgs, offered)
+        messages, tools, widen = list(messages), list(tools), True
+        while True:
+            msgs, offered, shaped = self.shape(messages, tools, settings)
+            try:
+                return await self.answer(lambda m: self._inner.complete(m, tools=offered, settings=shaped), msgs,
+                                         offered, widen)
+            except _Widen as wide:
+                tools, widen = [*tools, *_schemas(wide.names)], False
+                self._log(f"{COMMAND_LOG_MARK} tool_not_available → в запрос добавлены тулы {list(wide.names)}")
 
     async def stream(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
                      settings: LLMSettings | None = None) -> AsyncIterator[LLMChunk]:
-        msgs, offered, shaped = self.shape(messages, tools, settings)
-        out = await self.answer(lambda m: _collect(self._inner.stream(m, tools=offered, settings=shaped)),
-                                msgs, offered)
+        out = await self._stream_answer(messages, list(tools), settings)
         if out.content:
             yield LLMChunk(content_delta=out.content)
         for call in out.tool_calls:
             yield LLMChunk(tool_call_delta=call)
         yield LLMChunk(finish_reason=out.finish_reason, usage=out.usage or None)
+
+    async def _stream_answer(self, messages: Iterable[LLMMessage], tools: List[Mapping[str, Any]],
+                             settings: LLMSettings | None) -> LLMResponse:
+        messages, widen = list(messages), True
+        while True:
+            msgs, offered, shaped = self.shape(messages, tools, settings)
+            try:
+                return await self.answer(lambda m: _collect(self._inner.stream(m, tools=offered, settings=shaped)),
+                                         msgs, offered, widen)
+            except _Widen as wide:
+                tools, widen = [*tools, *_schemas(wide.names)], False
+                self._log(f"{COMMAND_LOG_MARK} tool_not_available → в запрос добавлены тулы {list(wide.names)}")
 
     async def aclose(self) -> None:
         await self._inner.aclose()
