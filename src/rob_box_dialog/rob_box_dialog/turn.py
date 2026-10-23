@@ -186,6 +186,23 @@ def _query_data(results: Sequence[ActionResult]) -> str:
     return json.dumps({"query_results": rows}, ensure_ascii=False, default=str)
 
 
+async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Command, snap: SessionSnapshot) -> None:
+    """Ясный стоп с продолжением («хватит, спой другую», ``Tier1Command.rest``, §6.2): стоп — кодом, остаток фразы —
+    новая реплика того же хода (Tier-1, если он ею покрыт, иначе LLM), а не потерянные слова (живой прогон 23.10,
+    акт 4 n410: «ладно, хватит тянуть, теперь наоборот» — стоп, 0 вызовов LLM, тишина)."""
+    await engine._tier1(turn, command, snap)
+    if not command.rest:
+        return
+    turn.text = command.rest
+    snap = engine.session.snapshot
+    engine._log.info(f"{LOG_MARK} остаток после стопа: {turn.text[:80]!r} turn={turn.turn_id}")
+    follow = tier1_for(turn.text, snap, engine._voices())
+    if follow is not None and not follow.disputed:
+        await _tier1_then_rest(engine, turn, follow, snap)
+    else:
+        await engine._understand(turn, snap)
+
+
 class TurnEngine:
     """Ходы одного агента (личность): владелец сессии и журнала ходов — этот объект, транспорт — :class:`Ports`."""
 
@@ -225,7 +242,7 @@ class TurnEngine:
         tier1 = tier1_for(turn.text, snap, self._voices())
         try:
             if tier1 is not None and not tier1.disputed:
-                await self._tier1(turn, tier1, snap)
+                await _tier1_then_rest(self, turn, tier1, snap)
             else:
                 await self._understand(turn, snap)
         except asyncio.CancelledError:
