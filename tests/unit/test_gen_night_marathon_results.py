@@ -141,6 +141,16 @@ def test_speech_without_result_is_not_a_pass():
         assert not _verdict(label, log)["pass"], label
 
 
+def test_n605_needs_both_announcement_and_result():
+    """n605 просит и сет, и объявления вслух: ``SpeechEvent started`` (#3880) И успех тула; одно из двух -- красный."""
+    ended = TURN_LINE % ("done", "finished")
+    speech = "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=20"
+    done = "✅ Инструмент dj_set выполнен успешно"
+    assert _verdict("n605_dj_set_plan", "\n".join([speech, done, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([done, ended]))["pass"]
+    assert not _verdict("n605_dj_set_plan", "\n".join([speech, ended]))["pass"]
+
+
 def test_dj_set_with_result_markers_passes_n602_n604_n608():
     """Робот v2 включил сет, сменил стиль и выключил через ``dj_set`` -- шаги зелёные (run 132908 их краснил)."""
     done = "✅ Инструмент dj_set выполнен успешно"
