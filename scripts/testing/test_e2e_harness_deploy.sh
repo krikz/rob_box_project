@@ -179,7 +179,10 @@ printf 'CHECK 6: без e2e_events.py харнесс падает E2E_FATAL, а 
 tmp_h="$(mktemp -d)"
 cp "$HARNESS" "$LIB" "$WAKE" "$tmp_h/"
 set +e
-out6="$(cd "$tmp_h" && bash ./e2e_voice_test.sh --text probe 2>&1)"
+# ROBOT_SSH_OVERRIDE=false: харнесс делает ssh к роботу (строка с E2E_RUN_BEFORE)
+# ДО проверки e2e_events.py; на раннере sshpass есть, а робот недостижим -- ssh
+# висел бы ~127 с до TCP-таймаута (#3921). Сам гард от ssh не зависит.
+out6="$(cd "$tmp_h" && ROBOT_SSH_OVERRIDE=false bash ./e2e_voice_test.sh --text probe 2>&1)"
 rc6=$?
 set -e
 rm -rf "$tmp_h"
