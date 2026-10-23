@@ -455,10 +455,6 @@ class TurnEngine:
             turn.stage, turn.status, turn.reason = "timeout", "failed", "deadline"
         return self._finish(turn)
 
-    def late(self, result: ActionResult) -> None:
-        """Итог действия, пришедший после закрытия его хода (``Executor.on_late``): :func:`say_late`."""
-        say_late(self, result)
-
     def speech_started(self, speech_id: str) -> None:
         """Владелец речи начал реплику хода (``SpeechEvent started``) — e2e-событие с её текстом."""
         said = self.log.speech(speech_id)

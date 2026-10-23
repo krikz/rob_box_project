@@ -253,7 +253,7 @@ def test_class_deadline_runs_from_request_while_tool_call_still_works(monkeypatc
 
 def test_music_started_after_class_timeout_reaches_on_late(monkeypatch):
     """Музыка заиграла позже срока ``action.media``: ход получил честный ``timeout``, поздний ``done`` - в ``on_late``
-    (фразу «Включаю музыку.» скажет ``TurnEngine.late``), а не ``stale_event``."""
+    (фразу «Включаю музыку.» скажет ``turn.say_late``), а не ``stale_event``."""
     monkeypatch.setattr("rob_box_dialog.execute.deadline_s", lambda cls: 0.02)
     late = []
 

@@ -452,10 +452,12 @@ def _late(tool, status):
 def test_late_music_outcome_is_said_by_code_other_classes_stay_silent():
     """Музыка заиграла после честного ``timeout`` хода: «Включаю музыку.» говорит код (``on_late``), а не тишина
     после «пока не заиграла»; поздние итоги других классов (память) этот путь не озвучивает."""
+    from rob_box_dialog.turn import say_late
+
     ports = Ports()
     engine = _engine(ports)
-    engine.late(_late("request_music", "done"))
-    engine.late(_late("memory_save", "done"))
+    say_late(engine, _late("request_music", "done"))
+    say_late(engine, _late("memory_save", "done"))
     assert ports.said == [(phrases.text("media.done"), None, None)]
 
 
