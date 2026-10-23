@@ -95,9 +95,9 @@ jobs:
           path: |
             ${{ github.workspace }}/test_ws/build
             ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-v3-unit-${{ runner.os }}-${{ hashFiles('src/*_msgs/**', 'src/*/package.xml', 'src/*/CMakeLists.txt', 'src/*/setup.py') }}
+          key: colcon-humble-v4-unit-${{ runner.os }}-${{ hashFiles('src/*_msgs/**', 'src/*/package.xml', 'src/*/CMakeLists.txt', 'src/*/setup.py') }}
           restore-keys: |
-            colcon-humble-v3-unit-${{ runner.os }}-
+            colcon-humble-v4-unit-${{ runner.os }}-
 
       - name: Build workspace
         env:
@@ -171,6 +171,17 @@ jobs:
           colcon build --symlink-install \
             --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_quest rob_box_supervisor rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      - name: DBG3936 before save
+        run: |
+          {
+            ls -la ${{ github.workspace }}/test_ws
+            du -sh ${{ github.workspace }}/test_ws/build ${{ github.workspace }}/test_ws/install
+            ls ${{ github.workspace }}/test_ws/build | head -30
+            find ${{ github.workspace }}/test_ws/build -type f | wc -l
+            find ${{ github.workspace }}/test_ws/install -type f | wc -l
+            find ${{ github.workspace }}/test_ws/install -type l | wc -l
+          } 2>&1 | sed 's/^/DBG3936 /'
 
       - name: Save colcon build cache
         if: steps.colcon-cache.outputs.cache-hit != 'true'
