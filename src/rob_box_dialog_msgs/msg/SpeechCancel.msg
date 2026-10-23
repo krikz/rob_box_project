@@ -1,4 +1,4 @@
-# Отмена реплики (ADR-0150 §10.1). Заменяет /voice/tts/control STOP.
+# Отмена реплики (ADR-0150 §10.1). Заменяет /voice/tts/control STOP. (#3936 negative cache test)
 
 uint8 BOUNDARY_AS_REQUESTED=0
 uint8 BOUNDARY_NOW=1
