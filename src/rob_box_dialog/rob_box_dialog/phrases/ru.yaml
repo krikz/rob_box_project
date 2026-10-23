@@ -45,6 +45,7 @@ local.rejected: ["Не вышло."]
 local.timeout: ["Не дождался подтверждения — не знаю, вышло ли."]
 # память о людях (knowledge.PERSON_SCOPED_TOOLS / DONE_EVIDENCE): отказ без собеседника и успех без saved
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
+local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
 local.rejected.no_evidence: ["Память не подтвердила запись, так что не запомнил."]
 
 media.done: &request_ok ["Включаю музыку."]

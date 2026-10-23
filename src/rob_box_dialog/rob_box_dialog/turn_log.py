@@ -84,6 +84,9 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     out: Dict[str, Any] = {"tool": result.tool, "status": result.status}
     if getattr(result, "reason", None):
         out["reason"] = result.reason
+        note = kn.REJECT_NOTES.get(result.reason) if result.status == "rejected" else None
+        if note:  # отказ памяти - исход словами, чтобы модель не несла факт в следующий ход (#3881)
+            out["note"] = note
     if data:
         out["data"] = data
     return MappingProxyType(out)

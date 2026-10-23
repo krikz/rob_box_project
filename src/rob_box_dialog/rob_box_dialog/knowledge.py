@@ -475,6 +475,13 @@ PERSON_ARG = "speaker_id"
 PERSON_AGENTS: Tuple[str, ...] = ("personality",)
 #: Причина отказа, когда в снимке нет ``person_ref`` (ключ фразы ``local.rejected.no_person``).
 NO_PERSON_REASON = "no_person"
+#: Причина отказа, когда к исполнению собеседник снимка сменился: факт сказан другим человеком (#3881).
+SPEAKER_CHANGED_REASON = "speaker_changed"
+#: Причина -> пометка для окна LLM (``turn_log``): отказ памяти - исход, а не висящий «долг» (#3881).
+REJECT_NOTES: Mapping[str, str] = MappingProxyType({
+    NO_PERSON_REASON: "факт не сохранён: собеседник не узнан — не сохраняй его за другого",
+    SPEAKER_CHANGED_REASON: "факт не сохранён: собеседник сменился — не сохраняй его за другого",
+})
 #: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
 DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
