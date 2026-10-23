@@ -62,3 +62,16 @@ def test_join_collects_turn_phrases_in_order():
     assert said.text == "Готово. Не получилось включить музыку."
     assert said.emotion == "sad"
     assert join([_result("get_current_time", "done")]) is None
+
+
+def test_3974_result_data_named_like_text_parameters_cannot_crash_the_phrase():
+    """n707: у трека gen-библиотеки есть поле ``variant`` -> ``TypeError: text() got multiple values for argument
+    'variant'`` и ход падал без фразы. Данные результата - слоты, а не параметры ``text()``."""
+    said = phrase_from_result(_result("navigate_to_waypoint", "pending", target="кухне", variant="b", key="k", seed=3))
+    assert said.text == "Еду к кухне."
+
+
+def test_3974_phrases_text_takes_any_slot_name():
+    from rob_box_dialog import phrases
+    assert phrases.text("memory.saved", fact="x", variant="v", key="k") == "Запомнил: x."
+    assert phrases.text("memory.saved", 0, fact="x") == "Запомнил: x."

@@ -52,6 +52,7 @@ FUNCTIONS = (
     "_e2e_followers_or_fatal",
     "enter_e2e_mode",
     "adopt_e2e_mode",
+    "marathon_e2e_mode",
     "leave_e2e_mode",
     "_read_dialogue_reset_token",
     "reset_dialogue_session_for_act",
@@ -99,7 +100,7 @@ robot_ros() {
                 e2e_release_after_s)
                     # Владелец отклоняет таймер снятия, когда режим выключен (E2EModeOwner.on_params).
                     owner_mode="$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)"
-                    if [ "$value" != 0.0 ] && [ "$owner_mode" != true ]; then
+                    if [ "$value" != 0.0 ] && { [ "$owner_mode" != true ] || [ "${FAKE_TIMER_REJECT:-0}" = 1 ]; }; then
                         echo "Set parameter failed"
                         return 0
                     fi
@@ -182,7 +183,7 @@ def _require_bash_sees(path: Path) -> None:
 
 def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None, engine=None,
                    v2_reject=False, db_path="/tmp/e2e_dialog/dialog_events_test.db", tail="",
-                   hold=False, follower_stuck=False):
+                   hold=False, follower_stuck=False, phase="", timer_reject=False):
     state = tmp_path / "state"
     state.mkdir(exist_ok=True)
     for key, value in (preset or {}).items():
@@ -198,6 +199,7 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
         f'E2E_DIALOG_ENGINE=v1\nE2E_DIALOG_DB_PATH="{db_path}"\nE2E_DIALOG_DB_ACTIVATED=0\n'
         f'E2E_MODE_FOLLOWERS="/mcp_server"\nE2E_MODE_HELD=0\nE2E_HOLD_FOR_NEXT_ACT={1 if hold else 0}\n'
         'E2E_HOLD_RELEASE_S=1800\nE2E_FOLLOWER_WAIT_S=1\n'
+        f'E2E_MARATHON_PHASE="{phase}"\nE2E_MARATHON_HOLD_S=10800\n'
         f"{FAKE_ROBOT}\n{body}\n"
         f'isolate_act_start "{_bash_path(scenario)}"\n'
         f"{tail}\n"
@@ -212,6 +214,8 @@ def _run_isolation(tmp_path: Path, scenario: Path, *, reject=False, preset=None,
         env["FAKE_V2_RESET_REJECT"] = "1"
     if follower_stuck:
         env["FAKE_FOLLOWER_STUCK"] = "1"
+    if timer_reject:
+        env["FAKE_TIMER_REJECT"] = "1"
     # Скрипт — через stdin, не ``-c``: на Windows склейка аргумента
     # командной строки для msys-bash портит кавычки в длинном скрипте.
     proc = subprocess.run(

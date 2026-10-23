@@ -17,6 +17,7 @@
 #   e2e_voice_test.sh --text "Робот, меня зовут Саша" [--voice anton]
 #   e2e_voice_test.sh --scenario /tmp/scenario.json [--acceptance /tmp/acceptance.json]
 #   e2e_voice_test.sh --scenario ... --hold-e2e-for-next-act   # #3904: следующий акт марафона наследует этот
+#   e2e_voice_test.sh --scenario ... --e2e-marathon-phase first|middle|last  # #3972: режим e2e держит раннер марафона
 #   e2e_voice_test.sh --text "..." --voice ermil --retries 3 --react-window 40
 #
 # ADR-0022 GATE-1 (acceptance.json gate, issue #1428 / t_ba114e5c):
@@ -296,6 +297,7 @@ ACCEPTANCE_SKIP=0
 VOICE=""
 PATTERNS=""
 CHECK_TG_ECHO=0
+E2E_MARATHON_PHASE="${E2E_MARATHON_PHASE:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -310,10 +312,17 @@ while [ $# -gt 0 ]; do
         --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
         # #3904 — раннер марафона: следующий акт наследует этот, режим e2e не снимать в trap.
         --hold-e2e-for-next-act) E2E_HOLD_FOR_NEXT_ACT=1; shift 1 ;;
+        # #3972 — раннер марафона держит режим e2e на ВСЕ акты: first включает (стирает e2e-БД один раз),
+        # middle/last подхватывают без стирания, last выключает. Без флага акт одиночный (как раньше).
+        --e2e-marathon-phase) E2E_MARATHON_PHASE="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
+case "$E2E_MARATHON_PHASE" in
+    ""|first|middle|last) ;;
+    *) echo "E2E_FATAL: --e2e-marathon-phase='$E2E_MARATHON_PHASE' — ожидается first|middle|last (issue #3972)" >&2; exit 2 ;;
+esac
 case "$E2E_TTS_PROVIDER" in
     auto|yandex|minimax|silero) ;;
     *) echo "E2E_FATAL: --tts-provider='$E2E_TTS_PROVIDER' — ожидается auto|yandex|minimax|silero" >&2; exit 2 ;;
@@ -460,6 +469,10 @@ scenario_writes_memory() {
 #     (--hold-e2e-for-next-act, решает раннер марафона — он один знает план)
 #     → режим остаётся, владелец снимет его сам через E2E_HOLD_RELEASE_S,
 #     если следующий акт не придёт (обрыв, дедлайн); иначе — выключить сейчас.
+#   * #3972 - марафон целиком: раннер раздаёт актам --e2e-marathon-phase
+#     first|middle|last (marathon_e2e_mode): стирает e2e-БД ОДИН first, акты 2b/2c
+#     и дальше каст не трогают, режим снимает last; таймер владельца скользящий
+#     (E2E_MARATHON_HOLD_S от начала каждого акта). Без флага - всё как выше.
 # В начале каждого акта печатается E2E_PRECONDITION speaker_db=e2e|live.
 #
 # Значения ЧИТАЮТСЯ обратно, а не берутся из exit-кода: ros2cli печатает
@@ -470,6 +483,9 @@ E2E_MODE_HELD=0                    # этот прогон держит режи
 E2E_HOLD_FOR_NEXT_ACT="${E2E_HOLD_FOR_NEXT_ACT:-0}"
 E2E_HOLD_RELEASE_S="${E2E_HOLD_RELEASE_S:-1800}"
 E2E_FOLLOWER_WAIT_S="${E2E_FOLLOWER_WAIT_S:-10}"
+# #3972: запас владельца на марафонный режим, секунд от НАЧАЛА каждого акта (скользящий): обрыв раннера
+# вернёт робота на боевые БД сам, а акт (до 45 мин) таймер посреди прогона не снимет.
+E2E_MARATHON_HOLD_S="${E2E_MARATHON_HOLD_S:-10800}"
 
 _read_e2e_mode() {
     robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
@@ -557,6 +573,34 @@ adopt_e2e_mode() {
     fi
     _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
     log "🔗 e2e-режим подхвачен от прошлого акта: таймер снятия отменён, e2e-БД не стёрты — каст прошлого акта на месте"
+}
+marathon_e2e_mode() {  # $1 = first|middle|last — режим держит раннер марафона (#3972)
+    # Одно включение на марафон: first стирает e2e-БД (свежий каст), остальные акты каст не трогают —
+    # иначе акты 2b/2c стирали Сашу и Бориса из акта 2, и в акте 3 диктор был unknown (разбор 23.10, §1.B).
+    local phase="$1"
+    if [ "$phase" = "last" ]; then   # режим снимет trap этого акта, а не «передаст» дальше
+        E2E_MODE_HELD=1
+        E2E_HOLD_FOR_NEXT_ACT=0
+    fi
+    if [ "$phase" = "first" ]; then
+        enter_e2e_mode
+    else
+        case "$(_read_e2e_mode)" in
+            *True*) ;;
+            *)
+                echo "E2E_PRECONDITION speaker_db=live"
+                echo "E2E_FATAL: акт марафона (phase=$phase) идёт после first, а режим e2e снят (таймер владельца, перезапуск ноды или акт first не выполнялся) — голоса сценария опознавались бы по боевой /data/speakers.db как живые люди мастерской (issue #3972)" >&2
+                exit 2
+                ;;
+        esac
+        _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    fi
+    if ! _set_e2e_release_after "$E2E_MARATHON_HOLD_S"; then
+        echo "E2E_FATAL: speaker_id_node не принял таймер снятия e2e-режима (${E2E_MARATHON_HOLD_S} с) — оборванный марафон оставил бы робота на e2e-БД без срока (issue #3972)" >&2
+        exit 2
+    fi
+    [ "$phase" = "last" ] || E2E_MODE_HELD=0
+    log "🔗 e2e-режим марафона (phase=$phase): e2e-БД $([ "$phase" = "first" ] && echo 'стёрты один раз' || echo 'НЕ стёрты, каст прошлых актов на месте'); таймер владельца ${E2E_MARATHON_HOLD_S} с, $([ "$phase" = "last" ] && echo 'режим снимет этот акт' || echo 'режим остаётся следующему акту')"
 }
 leave_e2e_mode() {
     [ "$E2E_MODE_HELD" = "1" ] || return 0
@@ -720,7 +764,10 @@ isolate_act_start() {  # $1 = файл сценария
     # первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла:
     # register_speaker (#2750) или memory_save (#2781) — свежий режим со
     # стиранием e2e-БД; наследующий акт — режим прошлого акта, без стирания.
-    if [ "$inherits" = "0" ]; then
+    if [ -n "$E2E_MARATHON_PHASE" ]; then
+        marathon_e2e_mode "$E2E_MARATHON_PHASE"
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    elif [ "$inherits" = "0" ]; then
         adopt_e2e_mode
         echo "E2E_PRECONDITION speaker_db=e2e"
     elif [ "$registers" = "0" ] || [ "$memory" = "0" ]; then

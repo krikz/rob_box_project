@@ -406,10 +406,13 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     enum экспрессии, пределы речи/действий/сегментов, правила ``perform``/``when``/``edit_pending``.
 
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
-    ``busy`` — что занято сейчас. Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9).
+    ``busy`` — что занято сейчас. Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
+    так же лишние поля ВЛОЖЕННЫХ объектов аргументов тула (``play_animation.face.emotion``, #3974): без отказа
+    команды, с записью в ``dropped``. Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
+    cmd = _drop_nested_extras(cmd)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     checks: Tuple[Callable[[], Any], ...] = (
         lambda: _check_passed(cmd),
@@ -428,6 +431,46 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         return Invalid(found[0].reason, found[0].detail, violations=found,
                        salvage=_salvage(cmd, set(available_tools), agent))
     return outcomes[-1]
+
+
+def _drop_extra(schema: Mapping[str, Any], value: Any, path: str, nested: bool) -> Tuple[Any, List[str]]:
+    """Значение без лишних полей вложенных закрытых объектов (``additionalProperties: false``) и список отброшенных
+    путей. Верхний уровень аргументов не трогаем: лишний аргумент тула — по-прежнему ``bad_args``."""
+    if isinstance(value, Mapping):
+        props = schema.get("properties", {})
+        closed = nested and schema.get("additionalProperties") is False
+        dropped = [f"{path}.{k}" for k in value if closed and k not in props]
+        kept: Dict[str, Any] = {}
+        for key, item in value.items():
+            if key in props:
+                kept[key], sub = _drop_extra(props[key], item, f"{path}.{key}", True)
+                dropped += sub
+            elif not closed:
+                kept[key] = item
+        return kept, dropped
+    items = schema.get("items")
+    if isinstance(value, (list, tuple)) and isinstance(items, Mapping):
+        pairs = [_drop_extra(items, item, f"{path}[{i}]", True) for i, item in enumerate(value)]
+        return [v for v, _ in pairs], [d for _, ds in pairs for d in ds]
+    return value, []
+
+
+def _drop_nested_extras(cmd: Command) -> Command:
+    """Аргументы действий без лишних вложенных полей (#3974): «n905: play_animation.face.emotion: лишнее поле» не
+    повод отказывать команде. Отброшенное - в ``dropped`` (лог ``fields_dropped``)."""
+    actions, notes = [], []
+    for i, call in enumerate(cmd.actions):
+        try:
+            schema = get_tool(call.tool).parameters
+        except KeyError:  # тула нет в каталоге - скажет _check_actions
+            actions.append(call)
+            continue
+        args, dropped = _drop_extra(schema, call.args, f"actions[{i}].{call.tool}", False)
+        actions.append(replace(call, args=MappingProxyType(args)) if dropped else call)
+        notes += dropped
+    if not notes:
+        return cmd
+    return replace(cmd, actions=tuple(actions), dropped=cmd.dropped + tuple(notes))
 
 
 def loud_actions(cmd: Command) -> Tuple[ToolCall, ...]:
@@ -469,11 +512,12 @@ def _check_passed(cmd: Command) -> None:
 
 
 def is_empty(cmd: Command) -> bool:
-    """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``.
-
-    Грамматика такую команду допускает (фрагменты в тестах, лицо без слов); ответ МОДЕЛИ так быть не может — мост
-    режима команд считает его нарушением :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698)."""
-    return cmd.passed is None and not (cmd.speech or cmd.ask or cmd.actions or cmd.perform)
+    """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, ни экспрессии, и
+    не ``passed``. Экспрессия сверх нейтрали (эмоция, жест, earcon, сцена лица) - полноценная команда «покажи на лице»
+    без слов (#3974: «покажи, как тебе грустно»); пустой ответ МОДЕЛИ мост режима команд считает нарушением
+    :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698)."""
+    return cmd.passed is None and cmd.expression == Expression() and not (
+        cmd.speech or cmd.ask or cmd.actions or cmd.perform)
 
 
 def _check_speech(text: Optional[str], limit: int, where: str) -> None:
