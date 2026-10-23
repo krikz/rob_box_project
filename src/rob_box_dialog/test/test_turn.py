@@ -568,3 +568,31 @@ def test_backlog_pickup_logs_count_speakers_and_turn_3892(caplog):
     lines = [r.getMessage() for r in caplog.records if "[backlog] pickup" in r.getMessage()]
     assert lines == [f"🗒️ [backlog] pickup n=2 speakers=Борис,{kn.UNKNOWN_SPEAKER_LABEL} turn=t1",
                      "🗒️ [backlog] pickup n=0 speakers=- turn=t1"]
+
+
+def test_host_sections_collects_owner_data_for_the_snapshot_of_the_turn():
+    """#3906: разделы снимка хода Личности одним сборщиком для ROS-хоста и сухого стенда."""
+    from rob_box_dialog.music_state import MusicStateMemory
+    from rob_box_dialog.turn import host_sections
+
+    session = Session("personality")
+    session.set_speaker(SpeakerRef(person_ref="p1", name="Саша", name_state="confirmed"))
+    sections = host_sections(session.snapshot, MusicStateMemory(), [{"kind": "llm", "health": "quota"}])
+    assert sections == {"speaker": {"name": "Саша", "name_state": "confirmed"},
+                        "providers": [{"kind": "llm", "health": "quota"}],
+                        "music_state": {"playing": "unknown", "dj": "unknown"}}
+    session.set_speaker(SpeakerRef(person_ref="p1", name="Саша", name_state="tentative"))
+    assert host_sections(session.snapshot, MusicStateMemory())["speaker"] == {"name": None, "name_state": "tentative"}
+
+
+def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919():
+    from rob_box_dialog.music_state import MusicStateMemory
+    from rob_box_dialog.turn import host_sections
+
+    session = Session("personality")
+    session.set_speaker(SpeakerRef(person_ref="p1", name="Саша", name_state="confirmed"))
+    noted = ("p1", {"dialog_count": 2, "facts": ["любит чай"]})
+    assert host_sections(session.snapshot, MusicStateMemory(), (), noted)["speaker_memory"] == noted[1]
+    session.set_speaker(SpeakerRef(person_ref="p2", name="Борис", name_state="confirmed"))  # сменился с начала хода
+    assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory(), (), noted)
+    assert "speaker_memory" not in host_sections(session.snapshot, MusicStateMemory())

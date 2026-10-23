@@ -12,6 +12,7 @@ from rob_box_dialog.address import (
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.doa import DoaTrack
 from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, RISKY_WAKE_WORDS
+from rob_box_dialog.session import Session
 
 WAKES = list(DEFAULT_WAKE_WORDS)
 COMMANDS = [
@@ -308,3 +309,15 @@ def test_in_the_perform_window_yes_is_the_answer_and_bare_wake_still_takes_the_b
     assert backlog.background_phrases(105.0) == 1, "ответ на вопрос не съедает бэклог"
     bare = decide(_heard("Робот", t=106.0, doa=270.0), backlog, DEFAULT_WAKE_WORDS, ask=_ask())
     assert (bare.text, bare.source) == ("покажи анимацию ускорения", BACKLOG_PICKUP)
+
+
+def test_decide_in_session_reads_windows_and_hold_from_the_snapshot_frames():
+    """#3906: ROS-хост и сухой стенд решают адресацию одной функцией; окна и удержание берутся из кадров снимка."""
+    session = Session("personality", clock=lambda: 100.0)
+    backlog = Backlog()
+    plain = _heard("включи что-нибудь", t=100.0)
+    assert address.decide_in_session(plain, backlog, DEFAULT_WAKE_WORDS, session.snapshot) == decide(
+        plain, backlog, DEFAULT_WAKE_WORDS)
+    session.push_scene("OperatorHold", "operator", ttl_s=60.0)
+    held = address.decide_in_session(_heard("робот привет", t=101.0), backlog, DEFAULT_WAKE_WORDS, session.snapshot)
+    assert held == NotAddressed(address.HELD)

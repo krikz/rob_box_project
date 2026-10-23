@@ -46,6 +46,7 @@ from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, join
 from rob_box_dialog.session import Session, SessionSnapshot
+from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools
 from rob_box_dialog.turn_log import TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
 
@@ -62,6 +63,18 @@ RECENT_ACTIONS = "recent_actions"
 RECENT_UNADDRESSED = "recent_unaddressed"
 #: Раздел снимка хода с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10).
 BACKGROUND_SINCE_REPLY = "background_since_reply"
+
+
+def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = (),
+                  noted: Tuple[Optional[str], Optional[Mapping[str, Any]]] = (None, None)) -> Mapping[str, Any]:
+    """Разделы снимка хода Личности из владельцев: собеседник (``speaker_block``), провайдеры, музыка
+    (``MusicStateMemory.section``) — данные, не правила. Один сборщик для ROS-хоста ``dialog_node`` и сухого стенда
+    (``scripts/dialog/dry_marathon.py``, #3906). ``noted`` — ``(person_ref, speaker_memory)``, взятые на начале хода
+    (#3919): раздел показывается, только если собеседник снимка тот же (сменился — чужого не показываем)."""
+    person, block = noted
+    again = bool(person) and person == memory.profiled_person(snap.speaker)
+    sections = {"speaker": speaker_block(snap.speaker), "providers": list(providers), "music_state": music.section()}
+    return {**sections, "speaker_memory": block} if again and block else sections
 
 
 def _follow_as_user(data: str) -> Sequence[Any]:
@@ -515,5 +528,5 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "hand_perform", "outcome_phrase", "tier1_actions",
+           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "tier1_actions",
            "tier1_for", "tier1_phrase", "voices_passed"]

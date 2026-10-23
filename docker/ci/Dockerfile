@@ -75,6 +75,9 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ── ROS2 test / linting deps ───────────────────────────────────────────
+# audio_common_msgs / nav2_msgs — интерфейсы, которые импортируют юнит-тесты
+# (voice / mcp-tools).  Раньше `G: Run Tests` ставил их apt'ом на каждом
+# прогоне; запекаем в образ (#3923).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ros-humble-ament-cmake-pytest \
@@ -89,6 +92,8 @@ RUN apt-get update && \
         python3-pytest-repeat \
         python3-pytest-rerunfailures \
         ros-dev-tools \
+        ros-humble-audio-common-msgs \
+        ros-humble-nav2-msgs \
         python3-colcon-coveragepy-result \
         python3-colcon-lcov-result \
         python3-colcon-meson \
@@ -97,20 +102,38 @@ RUN apt-get update && \
 
 # ── Python packages (pip) ──────────────────────────────────────────────
 # pytest >= 8 is required — apt ships 6.2.5 which is incompatible.
+# msgpack / aiohttp / pytz / python-telegram-bot / opencv — зависимости юнит-
+# тестов, которые `G: Run Tests` раньше доставлял pip'ом на каждом прогоне
+# (#3923).  opencv-python-headless ровно 4.10.0.84: колесо собрано с
+# поддержкой numpy 1.21 из образа и не тянет апгрейд numpy (см. комментарий
+# перед `colcon test: rob_box_perception` в G-Run Tests.yml); новее — numpy 2.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir \
         'pytest>=8' pytest-asyncio pytest-cov pytest-mock \
-        openai httpx requests pyyaml
+        openai httpx requests pyyaml \
+        msgpack aiohttp pytz \
+        'python-telegram-bot[job-queue]==21.*' \
+        'opencv-python-headless==4.10.0.84'
 
 # ── Verify ─────────────────────────────────────────────────────────────
 # `source setup.bash` под SHELL -u и `ros2 --version` в Humble оба падают —
 # версию берём у dpkg, и отсутствие ros2cli роняет сборку, а не печать.
+# Зависимости тестов (#3923): отсутствие любой роняет сборку, а numpy обязан
+# остаться 1.x — opencv 4.10 не должен был утянуть numpy 2.
+# ROS-окружение подключаем с `set +u` только на source (setup.bash читает
+# $AMENT_TRACE_SETUP_FILES без дефолта), затем -u возвращаем.
+# hadolint ignore=SC1091
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \
+    python3 -c "import cv2, msgpack, aiohttp, telegram, pytz, numpy; assert numpy.__version__.startswith('1.'), f'numpy={numpy.__version__}'" && \
     ros2cli="$(dpkg-query -W -f='${Version}' ros-humble-ros2cli)" && \
+    set +u && . /opt/ros/humble/setup.bash && set -u && \
+    ros2 pkg prefix audio_common_msgs && \
+    ros2 pkg prefix nav2_msgs && \
     echo "=== CI image ready ===" && \
     echo "ROS2: humble, ros2cli ${ros2cli}" && \
     echo "pytest: $(python3 -c 'import pytest; print(pytest.__version__)')" && \
-    echo "openai: $(python3 -c 'import openai; print(openai.__version__)')"
+    echo "openai: $(python3 -c 'import openai; print(openai.__version__)')" && \
+    echo "cv2/numpy: $(python3 -c 'import cv2, numpy; print(cv2.__version__, numpy.__version__)')"
 
 # ── Rosdep already initialized, workspace will be mounted ─────────────
 RUN mkdir -p /ws
