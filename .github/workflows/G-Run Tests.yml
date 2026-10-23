@@ -80,24 +80,29 @@ jobs:
       # #3936: ключ хэширует интерфейсы (*_msgs целиком) и сборочные файлы
       # всех пакетов, а не три package.xml: правка .msg/.srv, CMakeLists.txt,
       # package.xml или setup.py даёт cache miss и честную полную сборку.
-      # Префикс v3-unit-: не пересекается с кэшем integration-tests (v3-…) и
-      # со старым v2, у которого restore-keys не совпадал ни с одним ключом.
+      # Префикс v5-unit-: не пересекается с кэшем integration-tests и со
+      # старыми v2/v3/v4 (v2: restore-keys не совпадал ни с одним ключом;
+      # v3/v4: см. ниже - в записи не было каталога build/).
+      #
+      # Кэшируется один tar-файл в рабочем каталоге, а не каталоги test_ws/
+      # build и test_ws/install напрямую. В job'е с container: test_ws лежит
+      # по пути ${{ github.workspace }} (хостовый /home/runner/work/...), а
+      # рабочий каталог контейнера - /__w/...; actions/cache при таком
+      # раскладе сохранял только install/ (≈0.6 МБ, без build/), и «Cache
+      # hit» ничего не давал (23.10, run 39957136481).
       #
       # restore + отдельный save сразу после сборки, а не один actions/cache:
       # post-шаг actions/cache сохраняет кэш только при успешном job'е, а job
-      # красный на любом упавшем тесте (на 23.10 develop красный из-за
-      # rob_box_dialog) - кэш не прогревался бы вовсе. Сборка к моменту
-      # save уже прошла, тесты кэш не меняют.
+      # красный на любом упавшем тесте - кэш не прогревался бы вовсе. Сборка
+      # к моменту save уже прошла, тесты кэш не меняют.
       - name: Cache colcon build
         id: colcon-cache
         uses: actions/cache/restore@v6
         with:
-          path: |
-            ${{ github.workspace }}/test_ws/build
-            ${{ github.workspace }}/test_ws/install
-          key: colcon-humble-v4-unit-${{ runner.os }}-${{ hashFiles('src/*_msgs/**', 'src/*/package.xml', 'src/*/CMakeLists.txt', 'src/*/setup.py') }}
+          path: colcon-test-ws.tgz
+          key: colcon-humble-v5-unit-${{ runner.os }}-${{ hashFiles('src/*_msgs/**', 'src/*/package.xml', 'src/*/CMakeLists.txt', 'src/*/setup.py') }}
           restore-keys: |
-            colcon-humble-v4-unit-${{ runner.os }}-
+            colcon-humble-v5-unit-${{ runner.os }}-
 
       - name: Build workspace
         env:
@@ -145,51 +150,42 @@ jobs:
           # фейлились на develop при локальном запуске).
           cd ${{ github.workspace }}/test_ws
 
-          # #3936: при точном попадании в кэш сборка ещё свежа (ключ покрывает
-          # все интерфейсы и сборочные файлы), но checkout дал исходникам новый
-          # mtime, а rsync -a его сохранил: make видит «исходник новее
-          # результата» и заново гонит rosidl для трёх *_msgs пакетов (30–64 с).
-          # Поднимаем mtime результатов выше исходников. Символические ссылки
-          # (--symlink-install) не трогаем: find -type f их не отдаёт, а touch
-          # без -h поменял бы mtime у файлов-целей в test_ws/src.
-          {
-            echo "pwd=$(pwd) GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-            ls -la /__w/rob_box_project/rob_box_project/ || true
-            ls -la /home/runner/work/rob_box_project/rob_box_project/test_ws || true
-            du -sh /home/runner/work/rob_box_project/rob_box_project/test_ws/* || true
-            find / -maxdepth 9 -type d -name rob_box_dialog_msgs -not -path '/proc/*' -not -path '*/src/*' || true
-            find / -maxdepth 9 -name colcon_build.rc -not -path '/proc/*' | head -5 || true
-            df -h /__w /home/runner/work 2>&1 || true
-          } 2>&1 | sed 's/^/DBG3936 /'
-          if [ "${COLCON_CACHE_HIT}" = "true" ]; then
-            echo "colcon cache: exact hit, touching build/ and install/ above sources"
-            find build install -type f -exec touch {} +
+          # #3936: распаковываем кэш build/ + install/ в test_ws. При точном
+          # попадании (ключ покрывает все интерфейсы и сборочные файлы) сборка
+          # ещё свежа, но checkout дал исходникам новый mtime, а rsync -a его
+          # сохранил: make видит «исходник новее результата» и заново гонит
+          # rosidl для трёх *_msgs пакетов (30–64 с). Поднимаем mtime
+          # результатов выше исходников. Символические ссылки (--symlink-install)
+          # не трогаем: find -type f их не отдаёт, а touch без -h поменял бы
+          # mtime у файлов-целей в test_ws/src. Частичное попадание по
+          # restore-keys распаковываем, но не touch'им: make сам решит, что
+          # пересобрать.
+          if [ -f "$GITHUB_WORKSPACE/colcon-test-ws.tgz" ]; then
+            tar -xzf "$GITHUB_WORKSPACE/colcon-test-ws.tgz" -C .
+            echo 'colcon cache: restored'; du -sh build install
+            if [ "${COLCON_CACHE_HIT}" = "true" ]; then
+              echo "colcon cache: exact hit, touching build/ and install/ above sources"
+              find build install -type f -exec touch {} +
+            fi
           else
-            echo "colcon cache: no exact hit (cache-hit='${COLCON_CACHE_HIT}'), full build"
+            echo "colcon cache: miss (cache-hit='${COLCON_CACHE_HIT}'), full build"
           fi
 
           colcon build --symlink-install \
             --packages-up-to rob_box_voice rob_box_animations rob_box_perception rob_box_core rob_box_quest rob_box_supervisor rob_box_telegram rob_box_teleop \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
 
-      - name: DBG3936 before save
+      - name: Pack colcon build cache
+        if: steps.colcon-cache.outputs.cache-hit != 'true'
         run: |
-          {
-            ls -la ${{ github.workspace }}/test_ws
-            du -sh ${{ github.workspace }}/test_ws/build ${{ github.workspace }}/test_ws/install
-            ls ${{ github.workspace }}/test_ws/build | head -30
-            find ${{ github.workspace }}/test_ws/build -type f | wc -l
-            find ${{ github.workspace }}/test_ws/install -type f | wc -l
-            find ${{ github.workspace }}/test_ws/install -type l | wc -l
-          } 2>&1 | sed 's/^/DBG3936 /'
+          tar -czf "$GITHUB_WORKSPACE/colcon-test-ws.tgz" -C ${{ github.workspace }}/test_ws build install
+          ls -l "$GITHUB_WORKSPACE/colcon-test-ws.tgz"
 
       - name: Save colcon build cache
         if: steps.colcon-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
-          path: |
-            ${{ github.workspace }}/test_ws/build
-            ${{ github.workspace }}/test_ws/install
+          path: colcon-test-ws.tgz
           key: ${{ steps.colcon-cache.outputs.cache-primary-key }}
 
       - name: Run unit tests
