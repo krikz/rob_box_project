@@ -59,8 +59,9 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         finally:
             node.destroy_node()
 
-    def test_llm_providers_defaults_minimax_deepseek(self) -> None:
-        """Issue #2111: дефолт ``llm_providers`` = ``minimax,deepseek``.
+    def test_llm_providers_default_is_the_command_mode_default(self) -> None:
+        """Issue #2111: дефолт ``llm_providers`` — два провайдера; PR-13b #3708 — тот же, что у режима команд
+        Личности (``knowledge.COMMAND_PROVIDERS_DEFAULT``, DeepSeek первым).
 
         Исторически был ``"deepseek"`` — и supervisor поднимался с одним
         провайдером без API-ключа, agent не отвечал. После фикса дефолт
@@ -76,9 +77,10 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         node = AvatarSupervisor()
         try:
             self.assertTrue(node.has_parameter("llm_providers"))
-            self.assertEqual(
-                node.get_parameter("llm_providers").value, "minimax,deepseek"
-            )
+            from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT
+
+            self.assertEqual(node.get_parameter("llm_providers").value, COMMAND_PROVIDERS_DEFAULT)
+            self.assertEqual(COMMAND_PROVIDERS_DEFAULT.split(",")[0], "deepseek")
         finally:
             node.destroy_node()
 

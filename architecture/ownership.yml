@@ -68,7 +68,8 @@ nodes:
   supervisor_node:
     owner: supervisor
     package: rob_box_supervisor
-    source: [src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py]
+    source: [src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py,
+             src/rob_box_supervisor/rob_box_supervisor/operator_turns.py]
   # Узлы ниже вводятся эпиком #3683 (status planned у их топиков).
   dialog_node:
     owner: dialog-v2
@@ -303,8 +304,9 @@ topics:
     type: rob_box_dialog_msgs/Intent
     status: live
     introduced_by: "PR-5 (#3694)"
-    # до v2 пишет dialogue_node (CommandIntentGateStep после допуска реплики)
-    writers_allowed: [dialog_node, dialogue_node]
+    # до v2 пишет dialogue_node (CommandIntentGateStep после допуска реплики); supervisor_node - «стой» ТАРС v2
+    # (Tier-1 стоп оператора гасит движение, PR-13b #3708)
+    writers_allowed: [dialog_node, dialogue_node, supervisor_node]
     readers: [command_node]
   /dialog/output:
     owner: dialog_node
