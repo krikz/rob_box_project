@@ -134,13 +134,9 @@
       "label": "n1011_goodnight",
       "voice": "anton",
       "text": "Робот, спокойной ночи, смена окончена, спасибо за компанию.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": []
-      }
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ]
     }
   ]
 }

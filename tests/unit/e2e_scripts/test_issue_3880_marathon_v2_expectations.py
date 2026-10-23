@@ -212,3 +212,25 @@ def test_act4_voice_steps_use_v2_markers():
     syn = (ROOT / "src/rob_box_voice/rob_box_voice/core/speech_owner.py").read_text(encoding="utf-8")
     assert 'self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)' in syn
     assert 'f"applied={applied!r} provider={provider} reason={reason}"' in syn
+
+
+def test_no_act_json_expects_speak_tool_anywhere():
+    """Акты 6/7/9/10 (#3880): тула ``speak_text`` в v2 нет -- ни в паттернах шагов, ни в GATE-1 акта."""
+    for path in sorted(NIGHT.glob("night_marathon_act*_v1.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if "acceptance" in path.name:
+            assert "speak_text" not in json.dumps(data.get("expected_tool_calls"), ensure_ascii=False), path.name
+            continue
+        for s in data.get("steps", []):
+            assert "speak_text" not in json.dumps(s.get("patterns"), ensure_ascii=False), (path.name, s["label"])
+
+
+@pytest.mark.parametrize("act_file,label", [
+    ("night_marathon_act9_world_outside_v1.json", "n906_anekdot_anim"),
+    ("night_marathon_act9_world_outside_v1.json", "n909_foreign_language"),
+    ("night_marathon_act10_finale_memory_v1.json", "n1011_goodnight"),
+    ("night_marathon_act6_dj_booth_v1.json", "n605_dj_set_plan"),
+])
+def test_speech_steps_of_acts_6_9_10_wait_for_speech_started(act_file, label):
+    pats = _steps(act_file)[label]["patterns"]
+    assert any("SpeechEvent started" in p for p in pats), pats
