@@ -73,6 +73,26 @@ def motion_refusal(tool: str, text: str) -> Optional[str]:
     return phrases.text("motion.rejected.not_asked")
 
 
+def widen_for(missing: Sequence[str], agent: str, have: Sequence[str]) -> Tuple[str, ...]:
+    """Тулы, которые код добавляет в запрос, когда модель позвала тул вне среза (``tool_not_available``, #3960): тул
+    есть в реестре агента, а слова человека его группу не открыли («поставь ровный ритм» - живой прогон 23.10, акт 8).
+    Открывается вся группа названного тула - по членству или по имени группы в имени тула (опечатка ``music_stop`` →
+    группа ``music``); тула нет ни в группе, ни в реестре - ничего (выбор сужает код, угадывания по тексту нет).
+    Не открываются: движение (только по глаголу человека, ``motion_named``) и голос (только по явной просьбе, #3744).
+    Уже видимые (``have``) не повторяются; порядок - как в группе, названный тул первым."""
+    allowed = set(tools_for(agent_spec(agent)))
+    opened: List[str] = []
+    for tool in missing:
+        if tool in kn.MOTION_TOOLS:  # база едет по глаголу человека (``motion_named``), а не по просьбе модели
+            continue
+        groups = [g for g, group in kn.TOOL_GROUPS.items()
+                  if g not in kn.TOOL_GROUPS_EXPLICIT and (tool in group.tools or g in tool.lower())]
+        names = ([tool] if tool in allowed else []) + [t for g in groups for t in kn.TOOL_GROUPS[g].tools]
+        opened.extend(n for n in names if n in allowed and n not in kn.MOTION_TOOLS and n not in kn.TOOLS_ALWAYS
+                      and n not in kn.TOOL_GROUPS["voice"].tools and n not in have and n not in opened)
+    return tuple(opened)
+
+
 def _named(text: str, field: str) -> set:
     return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
 
@@ -101,4 +121,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups"]
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups",
+           "widen_for"]

@@ -46,6 +46,7 @@ from rob_box_dialog.agents import agent_spec, allows_tier1
 from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall, loud_actions
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, TurnDeadline, latency_line
+from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
 from rob_box_dialog.respond import ActionResult, audible, join
@@ -425,6 +426,18 @@ class TurnEngine:
             turn.stage, turn.status, turn.reason = "timeout", "failed", "deadline"
         return self._finish(turn)
 
+    def late(self, result: ActionResult) -> None:
+        """Итог действия, пришедший после закрытия его хода (``Executor.on_late``): фраза кода по событию владельца,
+        если класс из ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout``); тихие успехи и чужие классы молчат."""
+        text = outcome_phrase([result]) if result.cls in kn.LATE_SPOKEN_CLASSES else None
+        if not text:
+            return
+        turn_id = result.turn_id.split("/")[0]
+        self._log.info(f"{LOG_MARK} поздний итог {result.tool} {result.status} {result.reason or '-'} turn={turn_id}")
+        speech_id = self._ports.say(turn_id, result.epoch, text, None, "sad" if result.status in _FAILED else None)
+        self.log.said(turn_id, speech_id, text)
+        self._event_raw("speech_requested", turn_id, result.epoch, text, {"speech_id": speech_id, "voice": ""})
+
     def speech_started(self, speech_id: str) -> None:
         """Владелец речи начал реплику хода (``SpeechEvent started``) — e2e-событие с её текстом."""
         said = self.log.speech(speech_id)
@@ -544,6 +557,8 @@ class TurnEngine:
             return []
         cls = kn.TOOL_CLASSES[actions[0].tool]
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
+        # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
+        turn.deadline.grant(max(deadline_s(kn.TOOL_CLASSES[a.tool]) for a in actions) + kn.ACTION_GRACE_S)
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
         results = await turn.deadline.wait(run, "actions")
         for result in results:

@@ -2795,6 +2795,29 @@ SOURCE_WEIGHTS: Mapping[str, float] = {"fallback": -2.0, "theme_match": 1.5, "ca
 #: ниже генерации (а без генерации — выше синтеза: сочинённое раньше лучше своего); «спой» — спетое раньше годится.
 SOURCE_CACHE_ASKED: Tuple[Tuple[str, float], ...] = (("fresh", -1.0), ("generated", -0.5), ("own", -0.5),
                                                      ("vocal", 0.5))
+@dataclass(frozen=True)
+class MusicEngine:
+    """Движок музыки, которого человек называет по имени («сыграй на Ренардо»): ключ слота ``engine`` в
+    ``request_music``, имя для фраз и логов, основы слов в речи (с искажениями STT), путь, который он играет."""
+
+    key: str
+    name: str
+    stems: Tuple[str, ...]
+    route: str
+
+
+#: Единственная таблица движков с их произносимыми именами (ADR-0148: слот решает код, не регекс в промпте). Основы
+#: — строчные, без «ё»; сверяются с началом слова речи и с парой соседних слов, склеенных («ре нардо»). Искажения —
+#: живой прогон 23.10 (Yandex STT: «на ренардо» → «на индардо») и вариации написания; новый вариант — строка сюда.
+#: «леонардо» сюда не попадает: основа сверяется с началом слова.
+MUSIC_ENGINES: Mapping[str, MusicEngine] = {
+    "renardo": MusicEngine("renardo", "Ренардо", (
+        "ренард", "рэнард", "рейнард", "рэйнард", "реинард", "рендард", "ринард", "индард", "инард",
+        "renard", "reynard", "rainard"), "synth"),
+}
+#: Значение слота ``engine`` «движок не назван»: путь решает код по ``SOURCE_WEIGHTS``.
+ENGINE_AUTO = "auto"
+
 #: Петь не просили — песня кэша ниже инструментала (добавка к ``asked``).
 SOURCE_CACHE_SONG_PENALTY = -0.25
 #: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
@@ -2860,3 +2883,4 @@ __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STY
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
             "SOURCE_CACHE_ASKED", "SOURCE_CACHE_SONG_PENALTY", "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]
+__all__ += ["ENGINE_AUTO", "MUSIC_ENGINES", "MusicEngine"]

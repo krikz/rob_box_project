@@ -156,15 +156,17 @@ class Executor:
         self._waiting[request.turn_id] = future
         self._requests[request.turn_id] = request
         survivor = False
+        sending: Optional["asyncio.Future[Any]"] = None
         try:
-            sent = self._send(request)
-            if inspect.isawaitable(sent):
-                await (asyncio.shield(sent) if survives(request.cls) else sent)
+            sending = self._start(request, future)
             event = await asyncio.wait_for(asyncio.shield(future), request.timeout_s)
         except asyncio.CancelledError:
             survivor = survives(request.cls)  # исход начатого непрерываемого дойдёт до _deliver (stale_epoch/on_late)
+            if sending is not None and not survivor:
+                sending.cancel()
             raise
         except asyncio.TimeoutError:
+            survivor = request.cls in kn.LATE_SPOKEN_CLASSES  # музыка могла заиграть позже срока: итог дойдёт до on_late
             self._log.warning(f"⏱ [execute] {request.tool} {request.turn_id}: нет события за {request.timeout_s:.0f} с")
             return _result(request, OwnerEvent(request.turn_id, "timeout"))
         except Exception as exc:  # noqa: BLE001 — запрос не ушёл: честный отказ, а не падение хода
@@ -180,6 +182,27 @@ class Executor:
         if self._stale_epoch(request, event):
             return _result(request, OwnerEvent(request.turn_id, "cancelled", "stale_epoch"))
         return _result(request, event)
+
+    def _start(self, request: ActionRequest, future: "asyncio.Future[OwnerEvent]") -> Optional["asyncio.Future[Any]"]:
+        """Отправка запроса владельцу. Отправка, что исполняет тул до конца (MCP-вызов v2), идёт ЗАДАЧЕЙ рядом с
+        ожиданием события: срок класса (``request.timeout_s``) считается от запроса, а не от конца вызова - иначе он
+        не срабатывал бы никогда, а ход обрывал дедлайн (живой прогон 23.10: трек заиграл, робот сказал «повтори»)."""
+        import asyncio  # noqa: PLC0415
+
+        sent = self._send(request)
+        if not inspect.isawaitable(sent):
+            return None
+        task = asyncio.ensure_future(sent)
+        task.add_done_callback(lambda done: self._sent(done, request, future))
+        return task
+
+    def _sent(self, task: "asyncio.Future[Any]", request: ActionRequest, future: "asyncio.Future[OwnerEvent]") -> None:
+        """Отправка закончилась: упала - честный отказ вместо вечного ожидания; отменена или вышла - ждём событие."""
+        if task.cancelled() or task.exception() is None:
+            return
+        self._log.warning(f"⚠️ [execute] {request.tool} {request.turn_id}: запрос не отправлен: {task.exception()}")
+        if not future.done():
+            future.set_result(OwnerEvent(request.turn_id, "rejected", "error"))
 
     def _deliver(self, event: OwnerEvent) -> None:
         future = self._waiting.get(event.ref)

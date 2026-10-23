@@ -723,18 +723,59 @@ def test_command_schema_enum_is_the_slice_of_this_turn_not_the_whole_catalog() -
 
 
 def test_tool_outside_the_slice_is_retried_with_same_class_tools_and_the_fixed_action_runs() -> None:
-    wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "play_sound", "args": {"name": "beat"}}]),))
+    wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "play_beat", "args": {"name": "beat"}}]),))
     right = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "ровный ритм"}}]),))
     log: list = []
     inner = _Inner(DEEPSEEK_CAPS, [wrong, right])
     out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=MUSIC_SLICE))
 
     note = inner.requests[1]["messages"][-1].content
-    assert "tool_not_available" in note and "(play_sound)" in note
-    assert "Допустимо: dj_set, request_music, stop_music" in note  # только класс action.media, отсортирован
-    assert "memory_save" not in note and "set_volume" not in note
+    assert "tool_not_available" in note and "(play_beat)" in note
+    assert "Допустимо: dj_set, memory_save, request_music, set_volume, stop_music" in note  # класс тула неизвестен
     assert _actions(out) == [("request_music", {"intent": "track", "text": "ровный ритм"})]
     assert "retry=1 violations=['tool_not_available'] → verdict=command" in log[-1]
+
+
+# ── тул есть у агента, а срез хода его не открыл: код открывает группу тула и повторяет (#3960) ─────────────────
+
+
+SLICE_WITHOUT_MUSIC = [_tool(n) for n in ("memory_save", "set_volume", "set_music_volume")]
+
+
+def test_real_tool_outside_the_slice_opens_its_group_instead_of_a_lying_retry() -> None:
+    """Акт 8 n809: «поставь ровный ритм» - request_music вне среза, повтор без него дал «Хорошо, поставлю» и тишину.
+    Теперь второй запрос идёт с группой music, и действие исполняется."""
+    wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "ритм"}}]),))
+    right = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "ритм"}}]),))
+    log: list = []
+    inner = _Inner(DEEPSEEK_CAPS, [wrong, right])
+    out = _run(cb.CommandModeLLM(inner, log.append).complete(_messages(), tools=SLICE_WITHOUT_MUSIC))
+
+    assert len(inner.requests) == 2, "ровно один повтор: расширение запроса и есть повтор"
+    names = [t["function"]["name"] for t in inner.requests[1]["tools"]]
+    assert {"request_music", "stop_music", "get_music_state", "dj_set"} <= set(names)
+    assert _actions(out) == [("request_music", {"intent": "track", "text": "ритм"})]
+    assert any("в запрос добавлены тулы" in line and "request_music" in line for line in log)
+
+
+def test_typo_of_tool_name_with_music_in_it_opens_music_group() -> None:
+    """Акт 8 n812: ``music_stop`` вместо ``stop_music`` - имя группы в имени тула открывает ``music``, угадывания нет."""
+    wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "music_stop", "args": {}}]),))
+    right = LLMResponse(tool_calls=(_command_call(actions=[{"tool": "stop_music", "args": {}}]),))
+    inner = _Inner(DEEPSEEK_CAPS, [wrong, right])
+    out = _run(cb.CommandModeLLM(inner, [].append).complete(_messages(), tools=SLICE_WITHOUT_MUSIC))
+    assert [t["function"]["name"] for t in inner.requests[1]["tools"] if t["function"]["name"] == "stop_music"]
+    assert _actions(out) == [("stop_music", {})]
+
+
+def test_widening_is_once_and_never_opens_motion_or_voice() -> None:
+    """Движение и голос открывают только слова человека; расширение один раз - дальше обычный повтор с перечнем."""
+    for tool in ("navigate_to_waypoint", "set_voice", "no_such_tool"):
+        wrong = LLMResponse(tool_calls=(_command_call(actions=[{"tool": tool, "args": {}}]),))
+        inner = _Inner(DEEPSEEK_CAPS, [wrong, wrong])
+        _run(cb.CommandModeLLM(inner, [].append).complete(_messages(), tools=SLICE_WITHOUT_MUSIC))
+        assert len(inner.requests) == 2
+        assert tool not in {t["function"]["name"] for t in inner.requests[1]["tools"]}
 
 
 def _query_followup() -> list:

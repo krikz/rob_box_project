@@ -330,6 +330,11 @@ def _mood_values() -> list[str]:
     return sorted(_knowledge().MOOD_ENERGY)
 
 
+def _engine_values() -> list[str]:
+    """``request_music.engine`` enum — ``auto`` и ключи ``knowledge.MUSIC_ENGINES`` (одна таблица движков)."""
+    return [_knowledge().ENGINE_AUTO, *_knowledge().MUSIC_ENGINES]
+
+
 def _style_values() -> list[str]:
     """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``tools_v2.STYLE_CHOICES``)."""
     return ["auto", *_knowledge().STYLES]
@@ -394,6 +399,7 @@ DYNAMIC_BOUNDS = {
 DYNAMIC_ENUMS = {
     ("play_sound", "sound"): _sound_pack_triggers,
     ("request_music", "mood"): _mood_values,
+    ("request_music", "engine"): _engine_values,
     ("dj_set", "style"): _style_values,
     ("generate_music", "style"): _gen_style_values,
     ("dj_set", "styles[]"): _set_styles_values,  # ``items`` массива: ключ — имя параметра + «[]»

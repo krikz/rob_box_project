@@ -256,6 +256,7 @@ class DialogNode(Node):
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   events=self._open_events(), log=_RosLog(self.get_logger()))
+        self._ports.on_late = self._engine.late  # музыка заиграла после timeout хода: итог скажет код (#3960)
         self._subscribe()
         # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
         self._tars_status_feeds = parity.start_v2_status_feeds(self, String)

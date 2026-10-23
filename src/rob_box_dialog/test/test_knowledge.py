@@ -97,7 +97,8 @@ def test_action_classes_follow_adr_5_1():
         assert set(cls.agents) <= set(kn.AGENTS), name
     motion = kn.ACTION_CLASSES["action.motion"]
     assert (motion.timeout_s, motion.interruptible) == (120.0, False)
-    assert kn.ACTION_CLASSES["action.media"].timeout_s == 6.0
+    assert kn.ACTION_CLASSES["action.media"].timeout_s == kn.MUSIC_START_WAIT_S + kn.MUSIC_PREPARE_S == 10.0
+    assert kn.PERFORM_BACKING_START_S == kn.MUSIC_START_WAIT_S == 6.0  # подложка ждёт старт, как раньше
     assert kn.ACTION_CLASSES["action.local"].timeout_s == 3.0
     assert (kn.ACTION_CLASSES["query"].timeout_s, kn.ACTION_CLASSES["query"].interruptible) == (15.0, True)
     assert kn.ACTION_CLASSES["action.speak_aloud"].agents == ("operator", "telegram")
