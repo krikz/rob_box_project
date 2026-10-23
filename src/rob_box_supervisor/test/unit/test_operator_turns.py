@@ -49,7 +49,7 @@ class FakeBase:
         self.cancelled.append(reason)
 
     def intent(self, turn_id, epoch, kind):
-        pass
+        self.intents = getattr(self, "intents", []) + [kind]
 
 
 def _host(commands, outcome=("pending", None)):
@@ -151,3 +151,29 @@ def test_host_loop_survives_between_commands(stop_hosts):
     stop_hosts.append(host)
     assert host.run_payload({"text": "раз", "request_id": "a"})["summary"] == "Раз."
     assert host.run_payload({"text": "два", "request_id": "b"})["summary"] == "Два."
+
+
+def test_operator_stop_word_stops_motion_too(stop_hosts):
+    """PR-13b: «стой» ТАРС — Tier-1 стоп с интентом ``stop_motion`` владельцу движения (движение в срезе оператора)."""
+    host, base, _late = _host([])
+    stop_hosts.append(host)
+    host.run_payload({"text": "стой", "request_id": "r7"})
+    assert getattr(base, "intents", []) == ["stop_motion"]
+    snap = Session(ot.OPERATOR).snapshot
+    assert "move_direction" in {t.name for t in available_tools(snap, None, ot.OPERATOR, "поезжай вперёд")}
+
+
+def test_operator_sees_telemetry_tools_and_the_personality_does_not():
+    """PR-13b: срез ``operator.admin`` в ходе ТАРС — «покажи CPU» видит ``show_metrics`` (13a не видел)."""
+    snap = Session(ot.OPERATOR).snapshot
+    names = {t.name for t in available_tools(snap, None, ot.OPERATOR, "покажи нагрузку процессора")}
+    assert "show_metrics" in names
+    personality = {t.name for t in available_tools(Session("personality").snapshot, None, "personality",
+                                                   "покажи нагрузку процессора")}
+    assert not personality & {"show_metrics", "read_logs", "ros2_node_status", "container_status"}
+
+
+def test_operator_volume_percent_reaches_set_volume_schema():
+    snap = Session(ot.OPERATOR).snapshot
+    tool = {t.name: t for t in available_tools(snap, None, ot.OPERATOR, "громкость шестьдесят процентов")}["set_volume"]
+    assert "set" in tool.parameters["properties"]["action"]["enum"] and "level" in tool.parameters["properties"]

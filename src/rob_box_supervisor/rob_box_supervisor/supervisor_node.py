@@ -91,7 +91,10 @@ from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
 from rob_box_harness.core.assembly import (  # noqa: E402  — lazy harness import
     AgentSpec,
     build_agent,
+    load_system_prompt,
 )
+from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
+from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: E402
 # ADR-0083 §G — PromptStats для supervisor идут в ту же гистограмму
 # ``voice_llm_prompt_tokens``, что и dialogue_node (issue #2111).
 from rob_box_voice.observability import (  # noqa: E402
@@ -598,7 +601,10 @@ class AvatarSupervisor(Node):
         # health-fallback chain — отдельная карточка позже.
         # ADR-0043 §3.2: runtime yaml (когда он появится для supervisor)
         # должен быть синхронизирован с этим значением в том же коммите.
-        self.declare_parameter("llm_providers", "minimax,deepseek")
+        # PR-13b #3708: порядок — тот же, что у режима команд Личности
+        # (knowledge.COMMAND_PROVIDERS_DEFAULT, DeepSeek первым): на ТАРС v2
+        # MiniMax 3 хода из 8 отвечал прозой без команды → ретрай.
+        self.declare_parameter("llm_providers", COMMAND_PROVIDERS_DEFAULT)
         # issue #2116 — озвучивать ли ответ агента в шлем. Выключается
         # на стенде, где синтез не нужен (тесты тракта по топикам).
         self.declare_parameter("speak_agent_replies", True)
@@ -1976,7 +1982,7 @@ class AvatarSupervisor(Node):
 
         # ── Operator AgentSpec (ADR-0083 §2.3 / §1.2 #A-#B / §2.2 #F/#J) ──
         provider_chain = self._parse_provider_chain(
-            self._param_str("llm_providers", "minimax,deepseek")
+            self._param_str("llm_providers", COMMAND_PROVIDERS_DEFAULT)
         )
         settings = self._build_operator_llm_settings()
         try:
@@ -2004,7 +2010,9 @@ class AvatarSupervisor(Node):
             return (None, None)
 
         try:
-            core = build_agent(spec, tools=tools, memory=memory)
+            # промпт: правила файла + инструменты из реестра (#3298, PR-13b)
+            core = build_agent(spec, tools=tools, memory=memory,
+                               system_prompt=operator_prompt(load_system_prompt(spec), dialog_engine.V1))
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"_build_agent_core_sync: build_agent failed: {exc}")
             return (None, None)

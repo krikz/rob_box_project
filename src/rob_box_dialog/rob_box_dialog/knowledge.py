@@ -467,6 +467,13 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
         ("батар", "заряд", "статус", "видишь", "перед тобой", "слышишь", "как ты", "самочувств", "подожди"),
         ("get_robot_status", "get_battery_level", "get_perception_context", "listen_for_response"),
     ),
+    # тул оператора (срез ``operator.admin``, ADR-0150 §9.3, PR-13b): у Личности его нет в срезе — группа ей ничего
+    # не открывает; без группы ТАРС v2 не видел ``show_metrics`` вовсе («покажи CPU» — без тула)
+    "telemetry": ToolGroup(
+        ("метрик", "телеметр", "график", "панел", "процессор", "cpu", "нагрузк", "задержк", "латенс", "лог",
+         "сервис"),
+        ("show_metrics",),
+    ),
 })
 #: Ни одна группа не совпала со словами — тулы статуса (как раньше «core»-скилл каталога).
 TOOL_GROUPS_DEFAULT: Tuple[str, ...] = ("status",)

@@ -30,3 +30,24 @@ def test_operator_control_slice_is_gone():
     policy = _policy()
     assert "operator.control" not in policy["slices"]
     assert all("operator.control" not in slices for slices in policy["senders"].values())
+
+
+#: В срезе ``operator.admin`` политики, но mcp_server их НЕ регистрирует (классы в ``tools/operator_admin.py`` есть):
+#: оператору не предъявляются — вызов вернул бы «unknown tool». Регистрировать или удалить из политики — решение
+#: вне PR-13b (#3708); тест упадёт, как только список изменится, — тогда и поправить флаги.
+NOT_ON_SERVER = {"read_logs", "ros2_node_status", "container_status"}
+
+
+def test_operator_view_is_the_operator_slices_of_the_policy():
+    """PR-13b: реестр ТАРС = видимые Личности ∪ срезы ``operator.*`` сендера ``avatar_supervisor`` (кроме
+    неисполняемых сервером) — видимость решает срез тула; в 13a ``show_metrics`` был в политике, но не в срезе хода."""
+    from rob_box_core.tool_catalog import llm_visible_tools, operator_visible_tools
+
+    policy = _policy()
+    granted = {t for s in policy["senders"]["avatar_supervisor"] if s.startswith("operator.")
+               for t in policy["slices"][s]}
+    llm = {e.name for e in llm_visible_tools()}
+    view = {e.name for e in operator_visible_tools()}
+    assert "show_metrics" in view and "say" in view
+    assert view == llm | (granted - NOT_ON_SERVER)
+    assert NOT_ON_SERVER <= granted

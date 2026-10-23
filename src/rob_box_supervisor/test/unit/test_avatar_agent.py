@@ -890,10 +890,11 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         """
         captured: dict = {}
 
-        def fake_build_agent(spec, *, tools, memory):  # type: ignore[no-untyped-def]
+        def fake_build_agent(spec, *, tools, memory, system_prompt=None):  # type: ignore[no-untyped-def]
             captured["spec"] = spec
             captured["tools"] = tools
             captured["memory"] = memory
+            captured["system_prompt"] = system_prompt
             return object()
 
         # Подменяем build_agent в модуле, чтобы lazy import внутри
@@ -912,6 +913,9 @@ class TestBuildAgentSpecOperator(unittest.TestCase):
         self.assertIsNotNone(core, "build_agent не вызван — supervisor не собрался")
         spec = captured.get("spec")
         self.assertIsNotNone(spec, "AgentSpec не передан в build_agent")
+        # PR-13b #3708: промпт — правила файла + инструменты из реестра (operator_prompt), а не голый файл
+        from rob_box_supervisor.operator_prompt import TOOLS_HEADER
+        self.assertIn(TOOLS_HEADER, captured["system_prompt"] or "")
         # ADR-0083 §2.3 / §2.4
         self.assertEqual(spec.name, "operator")
         self.assertEqual(spec.memory_namespace, "operator")
