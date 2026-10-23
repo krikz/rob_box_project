@@ -33,7 +33,7 @@ def test_import_pulls_no_forbidden_modules_at_runtime():
         "import rob_box_dialog.address, rob_box_dialog.backlog, rob_box_dialog.grammar, rob_box_dialog.expression\n"
         "import rob_box_dialog.context, rob_box_dialog.music_state, rob_box_dialog.execute\n"
         "import rob_box_dialog.turn_log, rob_box_dialog.deadline, rob_box_dialog.e2e_events\n"
-        "import rob_box_dialog.turn\n"
+        "import rob_box_dialog.turn, rob_box_dialog.meeting, rob_box_dialog.startup, rob_box_dialog.status_feed\n"
         "import rob_box_dialog.plan.composition, rob_box_dialog.plan.resources, rob_box_dialog.plan.plan_events\n"
         "import rob_box_dialog.plan.runner, rob_box_dialog.plan.sync, rob_box_dialog.plan.segments\n"
         "import rob_box_dialog.plan.backing, rob_box_dialog.plan.perform\n"

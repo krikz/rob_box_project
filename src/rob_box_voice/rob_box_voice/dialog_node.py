@@ -9,10 +9,12 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
   ``/voice/speech/event`` (окно озвученного, план, «говорю»), ``/voice/sound/event`` (план), ``/voice/music/state`` и
   ``/voice/music/event`` (снимок плеера, подложка выступления), ``/voice/providers/state`` (доска провайдеров),
   ``/dialog/interrupt_request`` (ясный стоп рвёт речь эпохи и ход в полёте), сервис ``/dialog/control``
-  (hold/resume/reset);
+  (hold/resume/reset), ``/vision/hailo/events`` (встреча лицом, ``core.dialog_v2_parity``, #3912);
 * публикации: latched ``/dialog/session``, ``/dialog/turn_event`` и рефлексы, ``/dialog/intent``, ``/dialog/plan_event``
   (через ``plan_host``), речь — ``speech_client``; ``ActionRequest`` не публикуется (подписчика нет, см. ports);
-* таймеры: TTL кадров сцен (1 с), переиздание состояния LLM-провайдеров (2 с); дедлайн хода — в ``turn.py``.
+* latched ``/voice/llm_status`` и ``/voice/wake_words`` (экран ТАРС, #3912);
+* таймеры: стартовая фраза (один раз), TTL кадров сцен (1 с), переиздание состояния LLM-провайдеров (2 с);
+  дедлайн хода — в ``turn.py``.
 
 Телеграм (PR-12a #3706, ADR-0150 §9.2): реплика ``Utterance source=telegram`` — не вход Личности, а ход
 телеграм-агента своего чата (``rob_box_dialog.chats``: сессия ``telegram:<chat_id>``, своя история и LLM-цепочка
@@ -67,7 +69,8 @@ from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_syste
 from rob_box_llm.provider import LLMSettings
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
-from .core import command_bridge, identity_question
+from .core import command_bridge, greeting_window, identity_question
+from .core import dialog_v2_parity as parity
 from .core import plan_host
 from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
@@ -102,6 +105,9 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("telegram_system_prompt_file", "telegram_chat_prompt.txt")
     node.declare_parameter("telegram_temperature", 0.7)
     node.declare_parameter("telegram_max_tokens", 0)
+    # Стартовая фраза (#1003, перенос v1 #3912): через N с после старта; 0 — выкл; пустой текст — случайная фраза.
+    node.declare_parameter("startup_greeting_sec", kn.STARTUP_GREETING_DELAY_S)
+    node.declare_parameter("startup_greeting_text", "")
 
 
 def _prefix(agent: str) -> str:
@@ -239,6 +245,10 @@ class DialogNode(Node):
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   events=self._open_events(), log=_RosLog(self.get_logger()))
         self._subscribe()
+        # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
+        self._tars_status_feeds = parity.start_v2_status_feeds(self, String)
+        parity.subscribe_meeting(self)
+        self._startup_greeting = parity.arm_startup_greeting(self)
         self.create_service(DialogControl, "/dialog/control", self._on_control)
         self.create_timer(1.0, self._session.expire)
         self.create_timer(5.0, self._chats.tick)
@@ -274,11 +284,13 @@ class DialogNode(Node):
         heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
         snap = self._session.snapshot
         decision = decide(heard, self._backlog, self._wake, question=snap.top("Identity"),
-                          ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
+                          greeting=greeting_window.window(self), ask=snap.top("PerformAsk"),
+                          hold=snap.top("OperatorHold"))
         if isinstance(decision, NotAddressed) and decision.reason == HELD:
             self.get_logger().info("[hold] оператор держит личность — реплика не слушается")
             return
         if isinstance(decision, NotAddressed):
+            greeting_window.not_a_reply(self, heard)  # окно после приветствия открыто, а фраза не ответ (#3776)
             self._backlog.add(heard)
             voice = self._speakers.peek(uid) if uid else None
             if voice is not None:  # биометрия успела раньше STT: автор фразы — её голос, не нынешний собеседник
@@ -286,6 +298,7 @@ class DialogNode(Node):
             self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
                                    f"{self._backlog.background_phrases(now)}")
             return
+        greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
         self.utterance_id = uid or None
         self._interrupt(decision.text, uid, "utterance")
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(self._turn(decision), self._loop), uid)
@@ -317,6 +330,7 @@ class DialogNode(Node):
 
     def _on_speech_event(self, msg: Any) -> None:
         plan_host.on_speech(self, msg)
+        greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent)  # окно ответа (#3776)
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
             self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
             return

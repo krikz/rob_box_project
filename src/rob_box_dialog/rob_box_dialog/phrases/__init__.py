@@ -1,6 +1,6 @@
 """Каталог фраз робота (ADR-0150 §5.4): тексты — ``phrases/ru.yaml``, одна таблица на весь проект.
 
-Ключ ``{класс}.{статус}[.{причина}]`` или особый (``understand.timeout``, ``music.*``); 1–8 вариантов со слотами
+Ключ ``{класс}.{статус}[.{причина}]`` или особый (``understand.timeout``, ``music.*``); 1–10 вариантов со слотами
 ``{name}``. Нет ключа или слота — ``KeyError`` (громко): фраза об исполнении не может молча стать пустой.
 """
 
@@ -14,7 +14,8 @@ from typing import Any, Mapping, Optional, Tuple
 import yaml
 
 CATALOG_PATH = pathlib.Path(__file__).with_name("ru.yaml")
-MAX_VARIANTS = 8
+#: 10 — стартовых фраз 9 (требование #1003 «6–10 вариантов»), остальным хватает 1–8.
+MAX_VARIANTS = 10
 
 
 @functools.lru_cache(maxsize=1)
