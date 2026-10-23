@@ -187,7 +187,7 @@ def test_invalid_face_json_is_dropped_the_rest_still_runs_and_skipped_invalid_fa
     assert node.director._overlay is None and node.director._request[0] == 'happy'
 
 
-def test_error_and_sleep_reflexes_take_the_scene_off_but_a_plain_emotion_does_not():
+def test_error_and_silence_reflexes_take_the_scene_off_but_a_plain_emotion_does_not():
     node = _face_node()
     node._on_expression(_expression(face_json='{"eyes": "wide"}'))
     node._on_expression(_expression(emotion='happy'))
@@ -195,5 +195,5 @@ def test_error_and_sleep_reflexes_take_the_scene_off_but_a_plain_emotion_does_no
     node._on_expression(_expression(emotion='error'))
     assert node.director._overlay is None
     node._on_expression(_expression(face_json='{"eyes": "wide"}'))
-    node._on_expression(_expression(emotion='sleep'))
+    node._on_expression(_expression(emotion='taped_mouth'))
     assert node.director._overlay is None

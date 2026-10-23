@@ -42,8 +42,9 @@ def _make(alive=True):
 
 def test_every_ring_mode_of_the_table_has_hardware():
     modes = {row.ring for row in kn.REFLEXES.values() if row.ring}
-    assert modes <= set(rr.HARDWARE_MODES) | set(rr.FLASHES)
-    assert set(rr.HARDWARE_MODES) | set(rr.FLASHES) <= set(kn.RING_MODES)
+    drawn = set(rr.HARDWARE_MODES) | set(rr.FLASHES) | set(rr.SOFTWARE_MODES)
+    assert modes <= drawn
+    assert drawn <= set(kn.RING_MODES)
 
 
 def test_addressed_lights_the_speaker_sector_and_answers_started():
@@ -103,16 +104,46 @@ def test_stage_without_ring_and_skipped_stage_do_nothing():
     assert ring.calls == [] and answers == []
 
 
-def test_silence_turns_the_ring_off_and_stages_answer_skipped_until_it_ends():
-    reflex, ring, _t, answers = _make()
+def test_silence_starts_its_own_ring_animation_and_stages_answer_skipped_until_it_ends():
+    """#3984: в тишине кольцо не гаснет, а дышит своей анимацией; стадии хода её не перебивают; снятие - покой."""
+    reflex, ring, timers, answers = _make()
     reflex.on_state("SILENCED")
-    assert ring.calls == [("off",)] and reflex.mode == kn.REFLEXES["silenced"].ring
+    assert ring.calls == [("mono", *rr.SILENCE_FRAMES[0])] and reflex.mode == kn.REFLEXES["silenced"].ring == "silence"
+    assert timers.pending[-1].delay == rr.SILENCE_STEP_S
     assert reflex.on_turn_event("t", "addressed", "started") is None
     assert answers == [("t", False, rr.SILENCED)]
-    reflex.on_state("silenced")
-    assert ring.calls == [("off",)]
+    assert ring.calls == [("mono", *rr.SILENCE_FRAMES[0])]   # стадия кольцо не тронула
+    reflex.on_state("silenced")                              # повтор того же состояния ничего не включает
+    assert len(ring.calls) == 1
+    timers.fire_last()                                       # следующий кадр цикла
+    assert ring.calls[-1] == ("mono", *rr.SILENCE_FRAMES[1]) and not timers.pending[-1].cancelled
     reflex.on_state("DIALOGUE")
-    assert ring.calls[-1] == ("trace",)
+    assert ring.calls[-1] == ("trace",) and timers.pending[-1].cancelled and reflex.mode == rr.REST
+
+
+def test_silence_animation_is_a_slow_even_breath_not_a_flash():
+    frames = rr.SILENCE_FRAMES
+    assert len(frames) == rr.SILENCE_STEPS and rr.SILENCE_STEP_S * rr.SILENCE_STEPS >= 4.0
+    levels = [max(f) for f in frames]
+    assert min(levels) > 0 and max(levels) == max(rr.SILENCE_COLOR) and min(levels) < max(levels) / 4
+    assert all(abs(a - b) <= max(rr.SILENCE_COLOR) * 0.25 for a, b in zip(levels, levels[1:] + levels[:1]))
+    assert all(f[1] == 0 and f[2] >= f[0] for f in frames)   # цвет один (холодный), меняется только яркость
+    assert set(rr.FLASHES.values()).isdisjoint(frames)       # не вспышка done/failed
+
+
+def test_silence_animation_stops_when_the_ring_is_missing():
+    reflex, ring, timers, _a = _make(alive=False)
+    reflex.on_state("silenced")
+    assert timers.pending == [] and reflex.mode == rr.REST
+
+
+def test_stage_flash_timer_in_silence_returns_to_the_animation_not_to_trace():
+    reflex, ring, timers, _a = _make()
+    reflex.on_turn_event("t", "done", "finished")            # зелёная вспышка до тишины
+    reflex.on_state("silenced")
+    assert timers.pending[0].cancelled and ring.calls[-1] == ("mono", *rr.SILENCE_FRAMES[0])
+    reflex._rest()
+    assert ring.calls[-1] == ("mono", *rr.SILENCE_FRAMES[0])
 
 
 def test_dialogue_states_other_than_silence_never_touch_the_ring():
@@ -140,7 +171,7 @@ def test_silence_scene_of_session_v2_drives_the_ring_like_led_node_does():
             reflex.on_state("silenced" if changed.detail == voice_state.SILENCED_DETAIL else "idle")
 
     session_callback(msgs.SessionState(agent="personality", scenes=[msgs.SceneFrame(kind="Silence")]))
-    assert ring.calls == [("off",)]
+    assert ring.calls == [("mono", *rr.SILENCE_FRAMES[0])]
     assert reflex.on_turn_event("t", "addressed", "started") is None and answers == [("t", False, rr.SILENCED)]
     session_callback(msgs.SessionState(agent="personality", scenes=[]))
     assert ring.calls[-1] == ("trace",)

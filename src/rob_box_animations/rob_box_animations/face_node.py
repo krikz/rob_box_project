@@ -29,7 +29,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import Bool, Int32, String
 
-from rob_box_dialog import face_scene
+from rob_box_dialog import expression, face_scene
 from rob_box_dialog.knowledge import FACE_SCENE_CANCEL_SCENES as CANCEL_SCENES
 
 from .face.face import FPS, GROUP_OF, GROUP_SIZE, IDLE_MA, SCENE_LIT_LIMIT_MA, frame_ma, to_wire
@@ -42,6 +42,8 @@ VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/voice/tts/state', '/audio/directio
 #: Азимут собеседника из ``/dialog/session`` (ADR-0150 §7.5, #3695) держит взгляд столько секунд: сырой DOA
 #: (``/audio/direction``) в это время взгляд не уводит — собеседник важнее последнего звука в комнате.
 SPEAKER_GAZE_HOLD_S = 4.0
+#: ``ExpressionEvent.reason``, когда лицо в тишине не принимает рефлекс стадии (как у кольца и звука).
+SILENCED_REASON = 'silenced'
 
 
 class PanelPublisher:
@@ -143,6 +145,9 @@ class FaceNode(Node):
 
     def _on_session(self, msg) -> None:
         """Собеседник хода с азимутом его фразы (``SessionState.speaker_azimuth_deg``) — взгляд на него."""
+        silenced = expression.session_silence(msg)
+        if silenced is not None and self.director.set_silenced(silenced):
+            self.get_logger().info(f'тишина: {"рот заклеен" if silenced else "лицо снова живое"}')
         azimuth = float(msg.speaker_azimuth_deg)
         if math.isfinite(azimuth):
             now = time.time()
@@ -173,6 +178,10 @@ class FaceNode(Node):
         ``face_json`` (LLM scene, §5.5.9): valid -> overlay over the reflex for ``duration_s``; invalid -> dropped,
         the rest of the request still runs, ``skipped{invalid_face}``. A failed/silenced reflex takes the overlay off.
         """
+        if self.director.silenced and (msg.emotion or msg.gesture or msg.face_json):
+            # #3984: в тишине рефлекс стадии не меняет лицо - рот заклеен; честный ответ, а не молчаливый пропуск
+            self._answer(msg.turn_id, False, SILENCED_REASON)
+            return
         if msg.emotion in CANCEL_SCENES and self.director.clear_face():
             self.get_logger().info(f'сцена LLM снята рефлексом «{msg.emotion}»')
         name = msg.gesture or msg.emotion

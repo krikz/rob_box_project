@@ -25,11 +25,16 @@ import time
 import uuid
 from typing import Dict, Optional, Tuple
 
+from rob_box_dialog import expression
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SoundEvent
 
 #: Earcon рефлексов (``rob_box_dialog.knowledge.EARCONS``) -> файл звукового пакета; знание о звуках живёт здесь.
-EARCON_SOUNDS: Dict[str, str] = {"heard": "button_click", "done": "ui_confirm", "fail": "error"}
+#: ``muffled`` - звук тишины (#3984, ``knowledge.SILENCED_EARCONS``): короткий низкий приглушённый, тише остальных
+#: (``sound_pack/make_muffled.py``); в каталоге ``play_sound`` его нет - это не выбор LLM.
+EARCON_SOUNDS: Dict[str, str] = {"heard": "button_click", "done": "ui_confirm", "fail": "error", "muffled": "muffled"}
+#: Причина пропуска earcon'а, который в тишине не играет совсем (``SILENCED_EARCONS[...] == ""``).
+SKIP_SILENCED = "silenced"
 #: Причины пропуска звука (``SoundEvent.reason``).
 SKIP_BUSY, SKIP_VOICE_STREAM, SKIP_NOT_FOUND, SKIP_ERROR = "busy", "voice_stream", "not_found", "error"
 SKIP_SUPERSEDED = "superseded"
@@ -55,6 +60,9 @@ def parse_trigger(data: str) -> Tuple[str, str]:
 
 class SoundRequestsMixin:
     """Решение «играть или пропустить» и события исхода."""
+
+    #: Робот в тишине (сцена ``Silence`` в ``/dialog/session``, ставит нода): earcon'ы идут по ``SILENCED_EARCONS``.
+    _silenced = False
 
     def start_sound(self, trigger: str, request_id: str, queue: bool = False) -> str:
         """Запустить звук по триггеру; вернуть ``""`` (играет или ждёт в очереди) или причину пропуска - она же уходит
@@ -117,9 +125,14 @@ class SoundRequestsMixin:
         """Earcon рефлекса хода: звук по ``EARCON_SOUNDS``; исход - ``SoundEvent`` и ``ExpressionEvent{sound}``."""
         if not msg.earcon:
             return
-        self.get_logger().info(f"🔔 Earcon: {msg.earcon} (turn {msg.turn_id[:8]})")
-        sound = EARCON_SOUNDS.get(msg.earcon)
-        reason = self.start_sound(sound, msg.turn_id or uuid.uuid4().hex[:8]) if sound else SKIP_NOT_FOUND
+        earcon = expression.silent_earcon(msg.earcon) if self._silenced else msg.earcon
+        self.get_logger().info(f"🔔 Earcon: {msg.earcon}" + (f" -> {earcon or '-'} (тишина)" if self._silenced else "")
+                               + f" (turn {msg.turn_id[:8]})")
+        sound = EARCON_SOUNDS.get(earcon)
+        if not earcon:
+            reason = SKIP_SILENCED
+        else:
+            reason = self.start_sound(sound, msg.turn_id or uuid.uuid4().hex[:8]) if sound else SKIP_NOT_FOUND
         event = ExpressionEvent()
         event.executor, event.turn_id, event.reason = "sound", msg.turn_id, reason
         event.kind = ExpressionEvent.KIND_SKIPPED if reason else ExpressionEvent.KIND_STARTED

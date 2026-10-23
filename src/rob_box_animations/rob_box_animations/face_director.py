@@ -9,7 +9,7 @@ Priority, highest first: side test frame > ``sleep`` (no voice owner for
 ``voice_timeout_s``) > ``wakeup`` (start / voice is back) > LLM face scene (``apply_face``, slots of
 ``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (TTS) >
 requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
-``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > music > idle. Rear lights outside the scenes
+``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > silence (taped mouth, #3984) > music > idle. Rear lights outside the scenes
 that draw their own: manual ``set_rear`` (for ``duration_s``) > ``rear_theme`` parameter > holiday calendar.
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import FACE_SCENE_MAX_S
 
 from .face import rear as R
@@ -193,6 +194,7 @@ class FaceDirector:
         self._request: Optional[Tuple[str, float]] = None
         self._overlay: Optional[Tuple[Mapping[str, str], float]] = None
         self._replay = False
+        self._silenced = False
         self._idle_since = now
         self.key = ''
         self._cur: Optional[Tuple[Scene, float, FaceContext]] = None
@@ -263,6 +265,21 @@ class FaceDirector:
         self._overlay, self._rear = None, None
         return had
 
+    @property
+    def silenced(self) -> bool:
+        return self._silenced
+
+    def set_silenced(self, silenced: bool) -> bool:
+        """Silence scene is on the session stack (#3984): the face is the taped mouth until it ends; entering it takes
+        the LLM scene and the requested reflex scene off. True if the state changed."""
+        if silenced == self._silenced:
+            return False
+        self._silenced = silenced
+        if silenced:
+            self.clear_face()
+            self._request = None
+        return True
+
     def request(self, name: str, seconds: Optional[float], now: float) -> Optional[str]:
         """Show scene ``name`` (scene or v1 animation name) for ``seconds``; None if unknown."""
         scene = resolve(name, self.mouth_design, self.thinking_design)
@@ -305,6 +322,8 @@ class FaceDirector:
         outside = self.drive.scene(now) or calendar_scene(now, self.tz_offset_h) or self.battery.scene(now)
         if outside:
             return outside, base
+        if self._silenced:
+            return _expression.silent_face(), FaceContext(gaze_deg=gaze, rear_theme=rear)
         music = self.music.scene(now)
         if music:
             name, bpm, beats = music

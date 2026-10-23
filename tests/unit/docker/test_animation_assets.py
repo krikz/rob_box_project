@@ -66,6 +66,7 @@ GOLDEN = {  # name: (sha1 frame t=1.0 seed default, sha1 whole pass)
     'turn_right': ('015636addef9ec9a119f2914103528509b152e17', '49f7a0a9245e46fc2f59d61572bcc7da86b28810'),
     'brake': ('7165a09f211e01449dfe90c917584f5db0e049d9', '4b0858ef73c41fa02b79fa85c8a024f86d71668b'),
     'accelerating': ('8a68299a65fc426cf19122a9e9f95c809798c81d', '61350f2d32db1f25bf46e6afed539371eaa943f3'),
+    'taped_mouth': ('a6a030cac301dd4c0d117182ae9aba2cbd0cd19e', 'df92f7f404a787ba343dc5367a469510d13818d9'),
     'sleep': ('10fc1d17e5bc4f5473a1b4f1544db759054b8ab4', '5cb48db335b5296810d29fefd478f328f1e5aa60'),
     'wakeup': ('ce8359cea53adf2b0c61b461314ba83405659537', 'a01f95f3488203c353ad6fd04513510d641ccdb4'),
     'error': ('08f16a95ae838e418eeafcce366436438f60dfc6', '0501b21857de645ebf523fd67802ca1a7e58926a'),

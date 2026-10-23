@@ -1,9 +1,11 @@
-"""Бюджет времени хода (ADR-0150 §8, решение В5; PR-8 #3702).
+"""Потолок времени хода (ADR-0150 §8; решения В5 и В31; PR-8 #3702, #3960).
 
-У хода один дедлайн ``knowledge.TURN_DEADLINE_S`` от начала. Каждое ожидание хода (вызов LLM, событие владельца)
-ограничено остатком: таймаут провайдера = ``min(provider_timeout, deadline_left)`` (:meth:`TurnDeadline.cap`).
-Истёк — ожидание отменяется (:meth:`TurnDeadline.wait` бросает :class:`DeadlineExpired`), ход закрывается фразой
-``understand.timeout``, а в лог идёт строка :data:`LATENCY_MARK` — кто и сколько ждал (``provider_latency``, §14 A14).
+У хода один потолок ``knowledge.TURN_CEILING_S`` от начала (В31: пока провайдер жив, ход ведётся до конца, но не
+дольше потолка). Каждое ожидание хода (вызов LLM, событие владельца) ограничено остатком: таймаут провайдера =
+``min(provider_timeout, deadline_left)`` (:meth:`TurnDeadline.cap`). Истёк — ожидание отменяется
+(:meth:`TurnDeadline.wait` бросает :class:`DeadlineExpired`), ход закрывается фразой кода, а в лог идёт строка
+:data:`LATENCY_MARK` — кто и сколько ждал (``provider_latency``, §14 A14). Провайдер не жив (цепочка отказала) —
+:class:`ProviderFailed` сразу, потолок не ждётся.
 """
 
 from __future__ import annotations
@@ -30,6 +32,16 @@ class DeadlineExpired(Exception):
         self.waited_s = waited_s
 
 
+class ProviderFailed(Exception):
+    """Вызов LLM упал (цепочка провайдеров исчерпана, транспорт оборвал вызов): провайдер не жив — ход не ждёт
+    потолка (В31). ``provider`` — тот, к кому шёл вызов («» — порт его не знает)."""
+
+    def __init__(self, provider: str, error: BaseException) -> None:
+        super().__init__(f"{provider or '-'}: {type(error).__name__}: {error}")
+        self.provider = provider
+        self.error = error
+
+
 def latency_line(provider: str, kind: str, latency_ms: int, status: str) -> str:
     """Строка лога ``provider_latency``: провайдер, вид (llm/stt/tts/event), мс, исход (ok/timeout/error)."""
     return f"{LATENCY_MARK} provider={provider or '-'} kind={kind} latency_ms={int(latency_ms)} status={status}"
@@ -38,7 +50,7 @@ def latency_line(provider: str, kind: str, latency_ms: int, status: str) -> str:
 class TurnDeadline:
     """Дедлайн одного хода по монотонным часам."""
 
-    def __init__(self, budget_s: float = kn.TURN_DEADLINE_S, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, budget_s: float = kn.TURN_CEILING_S, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self.started = clock()
         self.budget_s = float(budget_s)
@@ -83,4 +95,4 @@ async def _as_coro(awaitable: Awaitable[Any]) -> Any:
     return await awaitable
 
 
-__all__ = ["DeadlineExpired", "LATENCY_MARK", "TIMEOUT_PHRASE", "TurnDeadline", "latency_line"]
+__all__ = ["DeadlineExpired", "LATENCY_MARK", "ProviderFailed", "TIMEOUT_PHRASE", "TurnDeadline", "latency_line"]

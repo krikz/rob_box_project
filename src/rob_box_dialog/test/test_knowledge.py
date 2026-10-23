@@ -158,7 +158,7 @@ def test_outcome_tables_name_action_tools_of_the_catalog():
 
 
 def test_session_budgets():
-    assert kn.TURN_DEADLINE_S == 12
+    assert 60 <= kn.TURN_CEILING_S <= 90 and kn.PROGRESS_AFTER_S == 6.0  # В31: потолок 60–90 с, фраза на ~6 с
     assert kn.SILENCE_TTL_S == 600
     assert kn.IDENTITY_TTL_S == 15
     assert kn.REPLY_WINDOW_S == 15 == kn.IDENTITY_TTL_S  # одна константа окна ответа (Identity и приветствие)

@@ -401,9 +401,6 @@ ALOUD_TOOL = "say_aloud"
 #: Тулы озвучки динамиками (``action.speak_aloud``) — всегда в срезе своего агента: у чата ``say_aloud``, у оператора
 #: (ТАРС) ``say`` (§9.3, PR-13). Чей какой — решает срез каталога агента (``agents.tools_for``), не этот список.
 ALOUD_TOOLS: Tuple[str, ...] = (ALOUD_TOOL, "say")
-#: Бюджет хода чата. Чат - не голос: человек ждёт текст, и сочинить историю LLM-у дольше 12 с (В5 - про разговор
-#: вслух). Решение координатора 22.10: ход чата 40 с, иначе сценарий «сочини и расскажи» упирается в ``understand.timeout``.
-CHAT_TURN_DEADLINE_S = 40
 #: Поздний итог ``pending``-действия речи не пришёл: срок = длительность реплики + запас, не больше потолка; потом
 #: чат получает честное «не знаю, договорил ли» (``speak_aloud.lost``), а не вечную тишину.
 SPEECH_RESULT_SLACK_S = 30.0
@@ -648,7 +645,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
 #: плюс сцены лица ``rob_box_animations/face/states.py:SCENES`` (§5.5.2): ими именуются сцены лица в v1 и v2.
 LAB_SCENES: Tuple[str, ...] = (
     "idle_stare", "idle_bored", "listening", "thinking_teeth", "thinking_orbit", "wink",
-    "music_groove", "music_shades", "music_vibe", "new_year_eve",
+    "music_groove", "music_shades", "music_vibe", "new_year_eve", "taped_mouth",
 )
 #: Эмоция команды → сцена лица. Ключи — enum для LLM; ``neutral`` — покой.
 EMOTIONS: Mapping[str, str] = MappingProxyType({
@@ -692,7 +689,7 @@ FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, бе�
 FACE_SCENE_CANCEL_STAGES: Tuple[str, ...] = ("failed", "silenced")
 
 #: Режимы кольца LED ReSpeaker в рефлексах.
-RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse")
+RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse", "silence")
 
 
 @dataclass(frozen=True)
@@ -723,12 +720,18 @@ REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "done": Reflex(("happy", "wink"), ring="flash", earcon="done", ttl_ms=3000),
     "failed": Reflex(("error",), ring="flash_red", earcon="fail", ttl_ms=4000),
     "timeout": Reflex(("sad",), ring="flash_red", earcon="fail", ttl_ms=4000),
-    "silenced": Reflex(("sleep",), ring="off"),
+    "silenced": Reflex(("taped_mouth",), ring="silence"),
     "music.playing": Reflex(("music_groove", "music_shades", "music_vibe"), ring="beat_pulse"),
     "not_addressed": Reflex(()),
     "battery.low": Reflex(("low_battery",)),
     "charging": Reflex(("charging",)),
 })
+#: Тишина (#3984, решение Шифу 23.10): пока в кадре ``Silence``, рефлекс «silenced» ЗАМЕНЯЕТ рефлексы стадий хода: лицо -
+#: ``REFLEXES["silenced"].face`` (заклеенный рот) вместо «слушаю/думаю», кольцо - ``ring`` (своя анимация), а earcon
+#: стадии - по этой таблице: «услышал» и «не вышло» -> тихий приглушённый ``muffled`` (не пик-пик), «готово» не играет
+#: (``""``): ответом тишины был ``muffled`` на реплике. Ключи - ``EARCONS``; ``muffled`` в ``EARCONS`` нет нарочно -
+#: это не выбор LLM (enum схемы команды), а звук кода. Файл звука - ``rob_box_voice.core.sound_requests.EARCON_SOUNDS``.
+SILENCED_EARCONS: Mapping[str, str] = MappingProxyType({"heard": "muffled", "done": "", "fail": "muffled"})
 #: Сцены рефлексов, которые снимают сцену LLM с лица (выводятся из ``REFLEXES``, второй таблицы нет).
 FACE_SCENE_CANCEL_SCENES: Tuple[str, ...] = tuple(
     scene for stage in FACE_SCENE_CANCEL_STAGES for scene in REFLEXES[stage].face)
@@ -929,8 +932,24 @@ IDENTITY_ASK_MIN_PHRASES_BY_TIME = 2
 IDENTITY_ASK_STRANGER_GAP_S = 600.0
 #: Лицо с именем в кадре за эти секунды — собеседник опознан лицом, «Как тебя зовут?» не нужен.
 IDENTITY_FACE_RECENT_S = 10.0
-#: Бюджет времени хода (В5): истёк — отмена ожиданий и ``understand.timeout``.
-TURN_DEADLINE_S = 12
+#: Потолок хода (В31, решение Шифу 23.10: «вести запрос до конца, пока провайдер жив, промежуточная фраза на ~6 с,
+#: потолок 60–90 с, стоп всегда»). Пока провайдер жив, ход ждёт: вызов LLM в полёте, транспорт не оборвал его своим
+#: таймаутом, цепочка провайдеров не исчерпана (отказ цепочки закрывает ход сразу - ``deadline.ProviderFailed``).
+#: Потолок - жёсткий край для живого, но молчащего провайдера; стоп человека рвёт ход в любой момент (``interrupt``).
+#: Один на всех агентов: голос, чат Telegram (было 40 с), ТАРС. Было 12 с (В5): ход умирал на живом DeepSeek
+#: («ещё куплет про комара» - 200 OK, а робот «долго думаю», живой прогон 23.10, акт 7).
+TURN_CEILING_S = 60
+#: Ход молчит столько секунд - код говорит одну промежуточную фразу (раз за ход, только в динамики, не в тишине).
+PROGRESS_AFTER_S = 6.0
+#: Что ждёт ход → ключ промежуточной фразы: ответа LLM или события владельца действия по классу; нет в таблице -
+#: ``PROGRESS_LLM_PHRASE``.
+PROGRESS_LLM_PHRASE = "understand.progress"
+PROGRESS_PHRASES: Mapping[str, str] = MappingProxyType({"llm": PROGRESS_LLM_PHRASE, "action.media": "media.progress"})
+#: Потолок истёк в ожидании LLM - фраза с именем провайдера; провайдер неизвестен - ``understand.timeout``.
+CEILING_PHRASE = "understand.ceiling"
+#: Цепочка провайдеров отказала (провайдер не жив) - фраза с его именем сразу, а не ожидание потолка.
+PROVIDER_FAILED_PHRASE = "understand.provider_failed"
+PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values())
 #: Окно истории для LLM (§7.3): не больше стольких ходов и токенов (оценка ``rob_box_core.token_estimate``);
 #: старые ходы выпадают целиком, ход не режется посередине.
 TURN_WINDOW_MAX_TURNS = 12
