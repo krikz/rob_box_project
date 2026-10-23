@@ -62,6 +62,16 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
                      emotion="sad" if result.status in _FAILED else None)
 
 
+def audible(results: Sequence[ActionResult], speaks: bool) -> Sequence[ActionResult]:
+    """Исходы к озвучке. Звучит речь модели рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) - их
+    простой успех (``done`` без причины) молчит: «Запомнил тебя, Борис» поверх «Приятно познакомиться, Борис» -
+    две реплики об одном. Провал и успех с причиной (``already_known``, ``renamed``: исход не тот, что мог
+    подразумевать ответ модели) остаются: слова модели не выдают несделанное за сделанное (Шифу 23.10, #3953)."""
+    if not speaks:
+        return results
+    return [r for r in results if not (r.status == "done" and not r.reason and r.tool in kn.QUIET_WITH_SPEECH_TOOLS)]
+
+
 def join(results: Sequence[ActionResult], snapshot: Any = None) -> Optional[Utterance]:
     """Фразы всех действий хода — одной репликой в порядке результатов; провал хоть одного — грустная эмоция."""
     said = [u for u in (phrase_from_result(r, snapshot) for r in results) if u is not None]
