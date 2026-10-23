@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Option
 from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Command, Invalid, Result, ToolCall as CommandCall, parse
+from rob_box_dialog.command import Busy, Command, Invalid, Result, ToolCall as CommandCall, parse
 from rob_box_dialog.context import measure
 from rob_box_dialog.execute import ActionRequest, Executor
 from rob_box_dialog.expression import reflex
@@ -221,5 +221,22 @@ def command_providers(chain: Sequence[str]) -> str:
     return ",".join(n for n in chain if n)
 
 
-__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "command_providers", "counted_wrapper", "follow_for",
-           "to_message", "to_result", "tool_schema"]
+def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any, system_prompt_file: str,
+                 settings: Optional[LLMSettings] = None, agent: str = kn.AGENTS[0],
+                 log: Callable[[str], None] = lambda line: None, busy: Optional[Callable[[], Busy]] = None) -> tuple:
+    """LLM-цепочка v2 агента и его системный промпт: ``build_llm_chain`` с каждым провайдером в режиме команд моста
+    (валидатор знает агента), вызовы считаются в ``counter``. Одна сборка для ROS-хоста ``dialog_node`` и сухого
+    стенда (``scripts/dialog/dry_marathon.py``, #3906): ответ модели строит та же цепочка, что на роботе."""
+    from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt  # noqa: PLC0415
+
+    from . import command_bridge  # noqa: PLC0415
+
+    names = tuple(p.strip().lower() for p in chain if p.strip())
+    bridge = command_bridge.wrapper_for(command_providers(names), log=log, busy=busy or Busy, agent=agent)
+    spec = AgentSpec(name=agent, prompt_dir=prompt_dir, system_prompt_file=system_prompt_file, provider_chain=names,
+                     settings=settings, wrap_provider=counted_wrapper(bridge, counter))
+    return build_llm_chain(spec), load_system_prompt(spec)
+
+
+__all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
+           "follow_for", "to_message", "to_result", "tool_schema"]

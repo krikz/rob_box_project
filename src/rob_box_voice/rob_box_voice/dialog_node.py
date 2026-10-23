@@ -47,7 +47,8 @@ from rob_box_core import dialog_engine, speech_client
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide, heard_from, log_label, person_ref_from
+from rob_box_dialog.address import HELD, Addressed, NotAddressed, decide_in_session, heard_from, log_label
+from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
@@ -55,21 +56,20 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
-from rob_box_dialog.speaker_adapter import speaker_block, speaker_ref
-from rob_box_dialog.turn import TurnEngine
+from rob_box_dialog.speaker_adapter import speaker_ref
+from rob_box_dialog.turn import TurnEngine, host_sections
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
 from rob_box_dialog_msgs.msg import SpeechEvent
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
-from rob_box_harness.core.assembly import AgentSpec, build_llm_chain, load_system_prompt
 from rob_box_llm.provider import LLMSettings
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
 
-from .core import command_bridge, identity_question
+from .core import identity_question
 from .core import plan_host
-from .core.dialog_v2_ports import CallCounter, V2Ports, command_providers, counted_wrapper
+from .core.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.speaker_turn import note_backlog_voice
@@ -126,14 +126,10 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
     агента), вызовы считаются. У каждого агента своя цепочка — своё здоровье провайдеров."""
     prefix = _prefix(agent)
     raw = str(node.get_parameter(f"{prefix}llm_providers").value)
-    chain = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
-    bridge = command_bridge.wrapper_for(command_providers(chain), log=node.get_logger().info,
-                                        busy=lambda: plan_host.perform_busy(node), agent=agent)
-    spec = AgentSpec(name=agent, prompt_dir=_prompt_dir(),
-                     system_prompt_file=str(node.get_parameter(f"{prefix}system_prompt_file").value),
-                     provider_chain=chain, settings=_settings(node, prefix),
-                     wrap_provider=counted_wrapper(bridge, counter))
-    return build_llm_chain(spec), load_system_prompt(spec)
+    return assemble_llm(raw.split(","), counter, prompt_dir=_prompt_dir(),
+                        system_prompt_file=str(node.get_parameter(f"{prefix}system_prompt_file").value),
+                        settings=_settings(node, prefix), agent=agent, log=node.get_logger().info,
+                        busy=lambda: plan_host.perform_busy(node))
 
 
 def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
@@ -268,8 +264,7 @@ class DialogNode(Node):
         uid = str(getattr(msg, "utterance_id", "") or "")
         heard = heard_from(msg, now=now, person_ref=person_ref_from(self._speakers, uid))
         snap = self._session.snapshot
-        decision = decide(heard, self._backlog, self._wake, question=snap.top("Identity"),
-                          ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
+        decision = decide_in_session(heard, self._backlog, self._wake, snap)
         if isinstance(decision, NotAddressed) and decision.reason == HELD:
             self.get_logger().info("[hold] оператор держит личность — реплика не слушается")
             return
@@ -381,8 +376,7 @@ class DialogNode(Node):
 
     def _sections(self, snap: Any, _text: str) -> Dict[str, Any]:
         """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила)."""
-        return {"speaker": speaker_block(snap.speaker), "providers": reporter_context(self._reporter),
-                "music_state": self._music.section()}
+        return host_sections(snap, self._music, reporter_context(self._reporter))
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

@@ -136,6 +136,14 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     return _woken(rest, heard, backlog)
 
 
+def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], snap: Any) -> Decision:
+    """:func:`decide` для сессии Личности: окна ответа (``Identity``, ``PerformAsk``) и удержание оператором
+    (``OperatorHold``) — из кадров снимка. Единственная точка, где ROS-хост ``dialog_node`` и сухой стенд
+    (``scripts/dialog/dry_marathon.py``, #3906) решают «адресована ли реплика» одинаково."""
+    return decide(heard, backlog, wake_words, question=snap.top("Identity"), ask=snap.top("PerformAsk"),
+                  hold=snap.top("OperatorHold"))
+
+
 def _woken(rest: str, heard: Heard, backlog: Optional[Backlog]) -> Addressed:
     """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12)."""
     if not is_bare(rest):

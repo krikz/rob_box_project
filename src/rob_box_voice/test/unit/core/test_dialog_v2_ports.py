@@ -183,3 +183,15 @@ def test_tier1_stop_publishes_stop_motion_intent_and_cancel():
     (intent,) = intent_pub.sent
     assert intent.kind == "stop_motion" and json.loads(intent.args_json)["entities"] == {}
     assert node.pubs["/voice/speech/cancel"].sent
+
+
+def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(monkeypatch, tmp_path):
+    """#3906: одна сборка цепочки для ROS-хоста и сухого стенда: провайдер в режиме команд, промпт из файла."""
+    from rob_box_voice.core.dialog_v2_ports import assemble_llm
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "dry-run-not-a-key")
+    (tmp_path / "prompt.txt").write_text("Ты робот.\n", encoding="utf-8")
+    counter = CallCounter()
+    llm, system = assemble_llm(["deepseek", " "], counter, prompt_dir=tmp_path, system_prompt_file="prompt.txt")
+    assert system == "Ты робот." and llm.name == "deepseek" and llm.mode in ("tool_choice", "json_mode", "tool_offered")
+    assert counter.calls == 0
