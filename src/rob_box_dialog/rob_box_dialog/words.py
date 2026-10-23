@@ -17,6 +17,11 @@ from rob_box_dialog.knowledge import (
     STOP_QUESTION_PARTICLES,
     STOP_WORDS,
     TIER1_POLICY,
+    WAKE_SLIP_AMBIGUOUS,
+    WAKE_SLIP_COMMAND_LEADS,
+    WAKE_SLIP_NEVER,
+    WAKE_SLIP_TARGETS,
+    WAKE_SLIP_VARIANTS,
 )
 
 _LEFT = r"(?<![\w-])"
@@ -49,6 +54,50 @@ def strip_wake_word(text: str, wake_words: Optional[Sequence[str]] = None) -> st
     if not words:
         return (text or "").strip()
     return _pattern(words, _RIGHT + r"[.,!?\s]*").sub("", text or "", count=1).strip()
+
+
+def _distance(a: str, b: str) -> int:
+    """Расстояние Левенштейна (вставка, удаление, замена по 1)."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
+
+
+def _slip_kind(token: str) -> str:
+    """Что за первое слово фразы: ``wake`` (искажённый вейк), ``gated`` (настоящее слово — будит только перед
+    командой) или ``""``. Граница (#3975): «роботу» и неизвестные слова на расстоянии ≤ 1 (до 5 букв) / ≤ 2 от
+    «робот/робокс/роббокс» — вейк; «работа/рада» — только с командой следом; формы «роботы» — никогда."""
+    word = token.lower().replace("ё", "е")
+    if word in WAKE_SLIP_NEVER:
+        return ""
+    if word in WAKE_SLIP_VARIANTS:
+        return "wake"
+    if word in WAKE_SLIP_AMBIGUOUS:
+        return "gated"
+    limit = 1 if len(word) <= 5 else 2
+    near = len(word) >= 5 and word[0] == "р" and any(_distance(word, t) <= limit for t in WAKE_SLIP_TARGETS)
+    return "wake" if near else ""
+
+
+def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
+    """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше»): остаток
+    фразы после него, иначе ``None``. Только первый токен; тишину это не снимает (остаток идёт обычным путём).
+    Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка. Вейков нет в таблице — допуска нет."""
+    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    if not any(t in words for t in WAKE_SLIP_TARGETS):
+        return None
+    match = _TOKEN.search(text or "")
+    if match is None or (text or "")[:match.start()].strip(" ,.!?;:-–—«»\"'"):
+        return None
+    kind = _slip_kind(match.group(0))
+    rest = (text or "")[match.end():].strip(" ,.!?;:-–—")
+    lead = (_TOKEN.search(rest).group(0).lower() if _TOKEN.search(rest) else "")
+    if kind == "wake" or (kind == "gated" and lead in WAKE_SLIP_COMMAND_LEADS):
+        return rest
+    return None
 
 
 def has_word(text: str, stems: Sequence[str]) -> bool:
