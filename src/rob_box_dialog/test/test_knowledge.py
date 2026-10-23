@@ -219,3 +219,17 @@ def test_composition_covers_every_pair_with_known_policy():
 def test_composition_reference_cells(pair, policy, boundary):
     rule = kn.COMPOSITION[pair]
     assert (rule.policy, rule.boundary) == (policy, boundary)
+
+
+def test_sound_stems_are_one_table_without_repeats():
+    """Сверка названий звуков с ``sound_pack/sound_catalog.json`` - в ``tests/unit/dialog/test_sound_aliases.py`` (в сборке
+    пакета корня репозитория нет, #3987). Здесь - только согласованность самой таблицы."""
+    assert kn.TOOL_GROUPS["sound"].stems == kn.SOUND_STEMS and "звук" in kn.SOUND_STEMS
+    assert len(set(kn.SOUND_STEMS)) == len(kn.SOUND_STEMS)
+    assert not {t for ts, _ in kn.SOUND_ALIASES_RU for t in ts} & set(kn.SOUND_UNNAMED)
+
+
+def test_ambiguous_tempo_stems_are_a_subset_of_one_table():
+    """Слова про скорость - одна таблица: голос берёт их из ``VOICE_PACE_STEMS``, музыка - из ``MUSIC_AMBIGUOUS_STEMS``."""
+    assert set(kn.VOICE_PACE_STEMS) <= set(kn.TOOL_GROUPS["voice"].stems)
+    assert set(kn.VOICE_PACE_STEMS) <= set(kn.MUSIC_AMBIGUOUS_STEMS)

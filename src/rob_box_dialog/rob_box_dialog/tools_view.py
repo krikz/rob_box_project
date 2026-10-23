@@ -4,7 +4,9 @@
 ``knowledge.TOOLS_ALWAYS`` (речь, память, время, поиск, анимация); группы ``knowledge.TOOL_GROUPS`` — по словам
 реплики («спой», «голос», «поезжай»…), затем сцены снимка (кадр ``DJ`` и играющая музыка — музыкальные тулы); ни одна
 группа не совпала — группы прошлого хода (продолжение разговора), иначе ``TOOL_GROUPS_DEFAULT``. В SILENCED
-ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Голос (``set_voice`` /
+ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Слова с двумя владельцами («ускорь
+темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
+sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744).
 """
 
@@ -17,7 +19,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import has_word
+from rob_box_dialog.words import has_form, has_word, introduces_self
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) -> Tuple[str, ...]:
@@ -29,13 +31,39 @@ def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) 
     схем + 6 всегда-видимых = 12) иначе вытеснял тулы, о которых человек спросил прямо — «сколько заряда» под музыку
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (#3857, run 39849541397).
     """
-    named = _named(text, "stems")
-    scene = ({"music"} if snapshot.top("DJ") is not None or snapshot.music.state == "playing" else set()) - named
+    named = _under_music(snapshot, text, _named(text, "stems"))
+    scene = ({"music"} if _music_playing(snapshot) else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
         named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
         named = named or set(kn.TOOL_GROUPS_DEFAULT)
     return _ordered(named) + _ordered(scene) + _ordered(weak)
+
+
+def _music_playing(snapshot: SessionSnapshot) -> bool:
+    """Музыка звучит: играющий трек в снимке плеера или кадр диджея."""
+    return snapshot.top("DJ") is not None or snapshot.music.state == "playing"
+
+
+def _under_music(snapshot: SessionSnapshot, text: str, named: set) -> set:
+    """Неоднозначное слово («ускорь темп», «жёстче», «добавь бас») под играющей музыкой - про музыку, а не про голос.
+
+    Сработать должны все три условия: музыка звучит (снимок, а не слова), в реплике слово из ``MUSIC_AMBIGUOUS_*``, и
+    речь робота человек не назвал («говори быстрее», «читай помедленнее» остаются за голосом - ``SPEECH_OWNER_STEMS``).
+    Тогда music попадает в названные группы, а voice уходит, если его открыла только скорость (``VOICE_PACE_STEMS``):
+    «ускорь темп и смени голос» оставляет обе. В тишине таблица не действует - как раньше (n506, 23.10)."""
+    if not _music_playing(snapshot) or has_word(text, kn.SPEECH_OWNER_STEMS):
+        return named
+    if not (has_word(text, kn.MUSIC_AMBIGUOUS_STEMS) or has_form(text, kn.MUSIC_AMBIGUOUS_WORDS)):
+        return named
+    if "voice" in named and not has_word(text, _voice_only_stems()):
+        named = named - {"voice"}
+    return named | {"music"}
+
+
+def _voice_only_stems() -> Tuple[str, ...]:
+    """Основы voice, которые называют голос однозначно (всё, кроме слов про скорость)."""
+    return tuple(s for s in kn.TOOL_GROUPS["voice"].stems if s not in kn.VOICE_PACE_STEMS)
 
 
 def requested_groups(text: str) -> Tuple[str, ...]:
@@ -99,7 +127,10 @@ def _group_of(tool: str, allowed: set) -> List[str]:
 
 
 def _named(text: str, field: str) -> set:
-    return {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
+    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
+    if field == "stems" and introduces_self(text):  # «здравствуй, я Саша»: словом-основой это не поймать
+        names.add(kn.SELF_INTRO_GROUP)
+    return names
 
 
 def _ordered(names: set) -> Tuple[str, ...]:
