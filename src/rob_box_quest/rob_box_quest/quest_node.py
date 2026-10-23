@@ -56,7 +56,7 @@ from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
 
 # issue #1988 — константа топика ответа ТАРС (единый источник правды).
-from rob_box_core import speech_client
+from rob_box_core import speech_client, voice_state
 from rob_box_core.avatar_command import AVATAR_COMMAND_RESULT_TOPIC
 from rob_box_core.speech_segmentation import (
     DEFAULT_ROBOT_VOICE_CONFIG,
@@ -88,11 +88,10 @@ from .streams.provider import CameraFrame, CameraProvider
 from .streams.registry import STREAM_CATALOG
 from .streams.ros_demand import DemandDrivenSubscriptions
 from .streams.status import StatusAggregator
-from .streams.voice_state import normalize_voice_state
+from .streams.voice_state import send_voice_state
 from .streams.voice_picker import pick_voice
 from .streams.wifi import read_wifi_rssi
 from .tars_stage_relay import TarsStageRelay  # noqa: E402
-from .protocol.topics import encode_voice_state
 
 log = logging.getLogger(__name__)
 
@@ -2141,16 +2140,17 @@ class QuestNode(Node):
         self._map_sub = self.create_subscription(
             OccupancyGrid, "/rtabmap/map", self._on_map, _MAP_QOS
         )
-        # voice_state (0x1202): /voice/dialogue/state (std_msgs/String) →
-        # нормализованный msgpack-фрейм → WS-подписчикам. Подписка
-        # RELIABLE — dialogue_node публикует так же (см.
-        # docs/recon/voice-dialogue-state-payload.md §1.1).
+        # voice_state (0x1202): состояние голоса → нормализованный msgpack-фрейм → WS-подписчикам. Источник
+        # одной таблицей — rob_box_core.voice_state (issue #3911): при dialog_engine=v2 это TurnEvent/SpeechEvent/
+        # SessionState (watch), при v1 — строка /voice/dialogue/state (on_legacy; уходит с dialogue_node, PR-15).
+        self._voice = voice_state.VoiceStateTracker()
         self._dialogue_state_sub = self.create_subscription(
             String,
             "/voice/dialogue/state",
             self._on_dialogue_state,
             _RE,
         )
+        voice_state.watch(self, self._voice, lambda state: send_voice_state(self, state))
         # Эх последнего state — для тестов моста без полного ROS-стека.
         self._last_voice_state: dict[str, Any] = {
             "state": "idle",
@@ -2470,29 +2470,8 @@ class QuestNode(Node):
         self.bridge.publish_map_pose(self._map_pose())
 
     def _on_dialogue_state(self, msg: String) -> None:
-        """ROS /voice/dialogue/state → msgpack voice_state (0x1202) → WS.
-
-        Шлём каждый переход FSM (event-driven, drop-newest — см.
-        meta-quest-api.md §4 frequency policy). Тело — простое:
-        нормализация (таблица DialogueStateKind → bridge state),
-        stamp server time, encode_voice_state, broadcast_frame.
-
-        Никаких проверок «не повторять тот же state» — ROS уже сам
-        не публикует дублей при неизменном состоянии, а если
-        upstream пришлёт — безопасно переслать (клиент сам
-        дедуплицирует по ts_ms+state).
-        """
-        normalized = normalize_voice_state(msg)
-        self._last_voice_state = normalized
-        payload = encode_voice_state(
-            state=normalized["state"],
-            ts_ms=int(time.time() * 1000),
-            detail=normalized["detail"],
-        )
-        try:
-            self.bridge.publish_frame("voice_state", payload)
-        except Exception as e:  # noqa: BLE001
-            self.get_logger().debug(f"voice_state publish failed: {e}")
+        """TEMP(ADR-0148, PR-15): ROS /voice/dialogue/state (только dialogue_node v1) → адаптер → шлем."""
+        send_voice_state(self, self._voice.on_legacy(msg.data))
 
     def _on_tts_voices(self, msg: String) -> None:
         """ROS /voice/tts/voices (TRANSIENT_LOCAL, latched) → bridge кэш.

@@ -101,6 +101,8 @@ from rclpy.node import Node
 from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import String as RosString
 
+from rob_box_core import voice_state
+
 from rob_box_supervisor.core.state import (
     AvatarState,
     StateTransportError,
@@ -487,9 +489,13 @@ class AvatarArbiter(Node):
         self.create_subscription(
             RosString, self.DEVICE_SNAPSHOT_TOPIC, self._on_device_snapshot_msg, 10
         )
+        # Состояние голоса — одной таблицей в rob_box_core.voice_state (issue #3911): при dialog_engine=v2
+        # это TurnEvent/SpeechEvent/SessionState (watch), при v1 — строка /voice/dialogue/state (адаптер).
+        self._voice = voice_state.VoiceStateTracker()
         self.create_subscription(
             RosString, self.VOICE_DIALOGUE_STATE_TOPIC, self._on_voice_state_msg, 10
         )
+        voice_state.watch(self, self._voice, lambda state: self._aggregator.update_voice_state(state.state))
 
         # AV-13: подписка на /teleop_heartbeat (ADR-0028 §4.4 S10).
         # QoS best-effort, depth=10 (heartbeat терпит потери — важна
@@ -995,14 +1001,8 @@ class AvatarArbiter(Node):
         self._aggregator.update_device_snapshot(battery_pct=data.get("battery_pct"))
 
     def _on_voice_state_msg(self, msg: RosString) -> None:
-        """Обработать ``/voice/dialogue/state`` (НЕ /voice/state — ADR-0027 #2)."""
-        data = self._try_parse_json(msg.data)
-        if isinstance(data, dict):
-            self._aggregator.update_voice_state(data.get("state"))
-        elif isinstance(data, str):
-            self._aggregator.update_voice_state(data)
-        else:
-            self._aggregator.update_voice_state(msg.data or None)
+        """TEMP(ADR-0148, PR-15): ``/voice/dialogue/state`` (НЕ /voice/state — ADR-0027 #2), пишет только v1."""
+        self._aggregator.update_voice_state(self._voice.on_legacy(msg.data).state)
 
     @staticmethod
     def _try_parse_json(text: Optional[str]) -> Any:

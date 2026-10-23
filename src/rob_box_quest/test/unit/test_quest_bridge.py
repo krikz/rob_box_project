@@ -537,8 +537,11 @@ def _make_node_only_for_callback_test():
     # ``__new__`` обходит ``__init__``, но всё равно пройдёт через
     # метакласс Node'а. На dev-env без rclpy это падает — importorskip
     # выше это уже отфильтровал.
+    from rob_box_core.voice_state import VoiceStateTracker  # noqa: WPS433
+
     node = QuestNode.__new__(QuestNode)
     node._last_voice_state = {"state": "idle", "detail": None}
+    node._voice = VoiceStateTracker()
     node.warnings = []
 
     class _LoggerCapture:
