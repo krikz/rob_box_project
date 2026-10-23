@@ -462,3 +462,13 @@ def test_every_reason_the_validator_raises_has_words_for_the_model():
 def test_is_empty_marks_commands_with_nothing_to_do_or_say(raw, empty):
     """#3698: ответ модели без речи, вопроса, действий и выступления (и не passed) мост считает нарушением."""
     assert cm.is_empty(ok(raw)) is empty
+
+
+def test_tool_outside_the_slice_names_same_class_tools_of_the_slice_first():
+    """#3897: play_sound вне среза → в перечне только тулы среза того же класса (action.media); класс неизвестен — весь срез."""
+    slice_ = ["request_music", "stop_music", "dj_set", "memory_save", "get_current_time"]
+    res = bad({"actions": [{"tool": "play_sound", "args": {}}]}, "tool_not_available", tools=slice_)
+    assert res.all[0].allowed == ("dj_set", "request_music", "stop_music")
+    assert "Допустимо: dj_set, request_music, stop_music" in cm.explain(res)
+    unknown = bad({"actions": [{"tool": "no_such_tool"}]}, "tool_not_available", tools=slice_)
+    assert unknown.all[0].allowed == ("dj_set", "get_current_time", "memory_save", "request_music", "stop_music")

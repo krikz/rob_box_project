@@ -70,13 +70,13 @@ def _no_log(_: str) -> None:
     return None
 
 
-def mode_note(mode: CommandMode, request: ModeRequest) -> str:
+def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:
     """Добавка к системному промпту: форма команды из ``knowledge`` + поправка v1 + схема для JSON-режимов."""
     parts = [kn.prompt_fragment(), V1_TRANSPORT_NOTE]
     if request.instruction:
         parts.append(request.instruction)
     if mode in _SCHEMA_IN_PROMPT:
-        parts.append("JSON-схема команды: " + json.dumps(kn.command_schema("json"), ensure_ascii=False))
+        parts.append("JSON-схема команды: " + json.dumps(schema or kn.command_schema("json"), ensure_ascii=False))
     return "\n".join(parts)
 
 
@@ -238,7 +238,6 @@ class CommandModeLLM(LLMProvider):
         self._agent = agent
         self.name = getattr(inner, "name", type(inner).__name__)
         self.mode: CommandMode = select_mode(inner.capabilities)
-        self._channel = FieldChannel(kn.command_schema("json"))
         self._log = log
 
     def __getattr__(self, item: str) -> Any:
@@ -258,14 +257,16 @@ class CommandModeLLM(LLMProvider):
     def shape(self, messages: Iterable[LLMMessage], tools: Iterable[Mapping[str, Any]],
               settings: LLMSettings | None) -> Tuple[List[LLMMessage], List[Mapping[str, Any]], LLMSettings]:
         """Запрос в режиме адаптера: тул/формат от ``FieldChannel``, свои тулы без тула речи, добавка к промпту."""
-        request = self._channel.build_request(self.mode)
+        tools = list(tools)
+        schema = kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools))
+        request = FieldChannel(schema).build_request(self.mode)
         native = [t for t in tools if _tool_name(t) not in kn.SPEECH_CHANNEL_TOOLS]
         base = settings or LLMSettings()
         extra = dict(base.extra)
         if request.response_format:
             extra["response_format"] = dict(request.response_format)
         shaped = replace(base, tool_choice=request.tool_choice or base.tool_choice, extra=extra)
-        return _with_note(list(messages), mode_note(self.mode, request)), [*request.tools, *native], shaped
+        return _with_note(list(messages), mode_note(self.mode, request, schema)), [*request.tools, *native], shaped
 
     async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]]) -> LLMResponse:
         """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же

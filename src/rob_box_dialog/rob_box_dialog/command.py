@@ -490,12 +490,20 @@ def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], ag
         raise _Bad("single_action_class", ", ".join(crowded))
 
 
+def _same_class_first(tool: str, actionable: Sequence[str]) -> Tuple[str, ...]:
+    """Тулы среза хода, из которых модель выбирает замену тулу вне среза: того же класса действия (``TOOL_CLASSES``,
+    ADR-0148 — выбор сужает код); если таких нет или класс тула неизвестен — весь срез действий."""
+    cls = kn.TOOL_CLASSES.get(tool)
+    same = [t for t in actionable if cls is not None and kn.TOOL_CLASSES.get(t) == cls]
+    return tuple(same or actionable)
+
+
 def _action_class(tool: str, available: Collection[str], agent: str) -> str:
     actionable = sorted(t for t in available if t in kn.TOOL_CLASSES and t not in kn.SPEECH_CHANNEL_TOOLS)
     if tool in kn.SPEECH_CHANNEL_TOOLS:
         raise _Bad("speech_channel_tool", tool)
     if tool not in available:
-        raise _Bad("tool_not_available", tool, actionable)
+        raise _Bad("tool_not_available", tool, _same_class_first(tool, actionable))
     cls = kn.TOOL_CLASSES.get(tool)
     if cls is None:
         raise _Bad("unknown_tool", tool, actionable)
@@ -608,7 +616,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "single_action_class": "в этом классе действий — одно действие за ход",
     "too_many_actions": f"действий не больше {kn.ACTIONS_MAX}",
     "bad_args": "аргументы действия не по схеме тула",
-    "tool_not_available": "этого тула сейчас нет",
+    "tool_not_available": "этого тула в этом ходе нет: возьми из перечня (тулы хода того же класса действия, "
+                          "а если класс неизвестен — все тулы хода)",
     "unknown_tool": "такого тула нет",
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
