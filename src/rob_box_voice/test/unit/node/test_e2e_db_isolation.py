@@ -81,6 +81,8 @@ def node(tmp_path):
     instance._db_lock = threading.Lock()
     instance._db = SpeakerDatabase(prod_path)
     instance.get_logger = MagicMock(return_value=MagicMock())
+    # #3904 — владелец режима e2e всего робота (rob_box_core.e2e_mode).
+    instance._e2e_owner = MagicMock()
 
     yield instance
     instance._db.close()
@@ -139,6 +141,9 @@ def test_disable_returns_to_prod_db(node):
 
     assert result.successful is True
     assert node._e2e_mode_active is False
+    assert node._e2e_owner.mode_changed.call_count == 2, (
+        "#3904: каждое переключение БД дикторов обязано сразу уйти в /e2e/mode — "
+        "иначе mcp_server останется на другой БД, чем speaker_id_node")
     assert node._db._db_path == node._prod_db_path
     # Прод-БД, на которую вернулись, не содержит E2E-регистрации.
     assert node._db.list_speakers() == []
@@ -209,6 +214,7 @@ def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
 
     assert result.successful is False
     assert node._e2e_mode_active is False, "провал не должен был поменять состояние"
+    node._e2e_owner.mode_changed.assert_not_called()
 
 
 def test_e2e_path_pointing_at_prod_never_wipes_prod(node):

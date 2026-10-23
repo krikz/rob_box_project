@@ -25,7 +25,7 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 хода доходит до ``await`` LLM-провайдера, HTTP-запрос закрывает его клиент. Ход стопа (Tier-1) кладёт эпоху + 1.
 Не стоп во время хода — новый ход ждёт конца текущего (APPEND), речь не рвётся.
 
-Текст ходов на диск — только в e2e-БД вне ``/data`` (``e2e_mode`` + ``e2e_db_path``, ``rob_box_dialog.e2e_events``).
+Текст ходов на диск — только в e2e-БД вне ``/data`` (непустой ``e2e_db_path``, ``rob_box_dialog.e2e_events``; #3904).
 """
 
 from __future__ import annotations
@@ -98,7 +98,6 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("max_tokens", 0)
     # Номинальный провайдер TTS, пока tts_node не сказал фактический (паузы MiniMax выступления, #3901).
     node.declare_parameter("tts_provider", "minimax")
-    node.declare_parameter("e2e_mode", False)
     node.declare_parameter("e2e_db_path", "")
     # Телеграм-агент (§9.2, PR-12a): своя цепочка и персона; значения — бывшие мёртвые llm_* telegram_bot.yaml (V27).
     node.declare_parameter("telegram_llm_providers", "deepseek,minimax")
@@ -402,8 +401,7 @@ class DialogNode(Node):
 
     def _open_events(self) -> Any:
         try:
-            return open_events(bool(self.get_parameter("e2e_mode").value), str(self.get_parameter("e2e_db_path").value),
-                               self._session.snapshot.session_id)
+            return open_events(str(self.get_parameter("e2e_db_path").value), self._session.snapshot.session_id)
         except ValueError as exc:
             self.get_logger().error(f"🧪 [e2e] e2e-БД не открыта: {exc}")
             return None
@@ -413,8 +411,8 @@ class DialogNode(Node):
         return getattr(events, "path", "off") if events is not None else "off"
 
     def _on_params(self, params: List[Any]) -> SetParametersResult:
-        """Харнесс включает ``e2e_mode`` на лету (``ros2 param set``): e2e-БД открывается/закрывается сразу."""
-        if any(p.name in ("e2e_mode", "e2e_db_path") for p in params):
+        """Харнесс ставит/очищает ``e2e_db_path`` на лету (``ros2 param set``): e2e-БД открывается/закрывается сразу."""
+        if any(p.name == "e2e_db_path" for p in params):
             self._loop.call_soon_threadsafe(self._reopen_events)
         return SetParametersResult(successful=True)
 
