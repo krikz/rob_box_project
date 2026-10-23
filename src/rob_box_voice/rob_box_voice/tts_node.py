@@ -3784,9 +3784,8 @@ class TTSNode(Node):
             "used_provider": None,  # "minimax" | "yandex" | "silero" | "prefetch"
             "used_voice": None,  # issue #1229 — фактический голос
             "result": {},  # последний result от MiniMax (already_published etc.)
-            # #3930 — в динамик можно потоком (пред-синтез и шлем — целиком).
-            # Бурундук ресэмплит реплику целиком — с ним только HTTP.
-            "stream_ok": sink == "speaker" and not getattr(self, "chipmunk_mode", False),
+            # #3930 — в динамик можно потоком (пред-синтез, шлем, бурундук — целиком).
+            "stream_ok": tts_stream.allowed(self, sink),
         }
         try:
             # Issue #2096 — единый choke-point: ЛЮБОЙ TTS-путь (dialogue_

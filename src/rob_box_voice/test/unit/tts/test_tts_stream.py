@@ -146,7 +146,6 @@ def test_play_local_logs_underrun_honestly():
     assert "100 мс" in node.get_logger().warning.call_args.args[0]
 
 
-
 def test_play_local_stop_flag_of_node_stops_stream():
     """STOP пришёл между проверкой ``stop_requested`` и стартом потока: флаг ноды всё равно режет звук."""
     s = PcmStream(SR)
@@ -169,6 +168,13 @@ def test_drop_cancels_only_streams():
     tts_stream.drop(np.zeros(10, dtype=np.float32))
     tts_stream.drop(None)
     assert s.cancelled
+
+
+def test_allowed_only_for_speaker_without_chipmunk():
+    plain, chip = types.SimpleNamespace(), types.SimpleNamespace(chipmunk_mode=True)
+    assert tts_stream.allowed(plain, "speaker")
+    assert not tts_stream.allowed(plain, "headset")
+    assert not tts_stream.allowed(chip, "speaker")
 
 # -- AudioPlaybackManager.play_stream --------------------------------------------------
 

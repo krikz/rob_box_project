@@ -35,7 +35,6 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_voice import tts_node as _tts_node_mod  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
 
 

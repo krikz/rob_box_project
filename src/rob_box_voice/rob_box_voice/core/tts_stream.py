@@ -235,6 +235,11 @@ def play_local(node: Any, stream: PcmStream, speech_id: Optional[str], gain: flo
     return outcome, round(stream.duration_s, 2)
 
 
+def allowed(node: Any, sink: str) -> bool:
+    """Можно ли реплику играть потоком: только в динамик и без бурундука (он ресэмплит реплику целиком)."""
+    return sink == "speaker" and not getattr(node, "chipmunk_mode", False)
+
+
 def drop(audio: Any) -> None:
     """Реплика не дойдёт до динамика (FIFO отверг, ошибка): поток бросить, чтобы не синтезировать впустую."""
     if isinstance(audio, PcmStream):
