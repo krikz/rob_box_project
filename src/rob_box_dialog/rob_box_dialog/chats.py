@@ -119,6 +119,10 @@ class ChatPorts:
     def stop_perform(self, how: str) -> bool:
         return False
 
+    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> None:
+        """Выступлений у чата нет: сегменты — текстом в чат, как реплики."""
+        return None
+
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         self._base.intent(turn_id, epoch, kind)
 
