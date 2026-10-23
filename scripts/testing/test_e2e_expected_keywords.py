@@ -13,11 +13,10 @@
 при том что робот ответил ровно по делу (run 35699257202, акт 2). Вечно
 красными были три шага: n209 в акте 2, n1002 и n1009 в финальном акте 10.
 
-Тест достаёт живую функцию ``_keyword_hit`` из
-``.github/workflows/scripts/e2e_voice_test.sh`` (она живёт внутри
-python-heredoc, отдельного модуля у харнесса нет) и проверяет её поведение.
-Если кто-то вернёт сравнение целой строкой — тест покраснеет здесь, а не
-через сутки в ночном марафоне.
+Тест гоняет настоящий вердикт шага ``e2e_tool_match.step_verdict`` (с #3906 heredoc ``check_acceptance`` только
+зовёт её, своих копий правил в харнессе нет; сухой стенд ``scripts/dialog/dry_marathon.py`` зовёт ту же функцию) и
+проверяет, что ``expected_keywords`` с альтернацией проходят через неё. Если кто-то вернёт сравнение целой строкой —
+тест покраснеет здесь, а не через сутки в ночном марафоне.
 
 Запуск: python3 scripts/testing/test_e2e_expected_keywords.py
 Exit:   0 = PASS, 1 = есть провалы.
@@ -25,7 +24,6 @@ Exit:   0 = PASS, 1 = есть провалы.
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -41,29 +39,21 @@ LOGS = (
 
 
 def load_keyword_hit(logs_low: str):
-    """Достать ``_keyword_hit`` из харнесса и связать с данным логом."""
+    """``expected_keywords`` шага через ``step_verdict``: ключ найден, если он не в ``missing_keywords``."""
     source = HARNESS.read_text(encoding="utf-8")
-    match = re.search(
-        r"^def _keyword_hit\(kw\):\n(?:[ \t]+.*\n)+", source, re.MULTILINE
-    )
-    if not match:
+    if "from e2e_tool_match import step_verdict" not in source:
         raise SystemExit(
-            f"FATAL: в {HARNESS} не найдена функция _keyword_hit — "
-            "проверку expected_keywords переписали, тест надо обновить"
+            f"FATAL: {HARNESS} не зовёт e2e_tool_match.step_verdict — "
+            "проверку expected_keywords вернули в харнесс, тест надо обновить"
         )
-    # С 8e0f8674 (#2764) тело _keyword_hit — обёртка над
-    # e2e_tool_match.keyword_hit(logs, kw), который харнесс импортирует
-    # в том же heredoc. Даём exec'у те же имена, что видит харнесс.
     sys.path.insert(0, str(HARNESS.parent))
-    from e2e_tool_match import keyword_hit
+    from e2e_tool_match import step_verdict
 
-    namespace: dict = {
-        "logs": logs_low,
-        "logs_low": logs_low,
-        "keyword_hit": keyword_hit,
-    }
-    exec(match.group(0), namespace)  # noqa: S102 — исполняем свой же исходник
-    return namespace["_keyword_hit"]
+    def keyword_hit(kw: str) -> bool:
+        verdict = step_verdict({"expected_keywords": [kw]}, logs_low)
+        return kw in verdict["found_keywords"] and kw not in verdict["missing_keywords"]
+
+    return keyword_hit
 
 
 CASES = [
