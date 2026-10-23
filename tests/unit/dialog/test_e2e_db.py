@@ -32,7 +32,7 @@ class Clock:
 @pytest.fixture()
 def db(tmp_path):
     clock = Clock()
-    ev = open_events(True, str(tmp_path / "e2e.db"), "s1", clock=clock)
+    ev = open_events(str(tmp_path / "e2e.db"), "s1", clock=clock)
     agent = "personality"
     # ход 1: LLM, один ответ, звук сыграл, речь через 1.8 с
     ev.write("user", turn_id="t1", epoch=0, agent=agent, text="покажи анимацию сон")

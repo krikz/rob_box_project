@@ -31,12 +31,17 @@ Publishes:
 
 Runtime-параметр (``ros2 param set``, НЕ топик — issue #2750, см. §"Seam
 guard" в ADR-0128):
-    e2e_mode (bool) — переключить активную БД дикторов db_path ↔
-        e2e_db_path. Владелец — только E2E-харнесс
-        (``ros2 param set /speaker_id_node e2e_mode true|false``, по
-        образцу ``ros2 param set /dialogue_node e2e_session_reset_token …``
-        из E2E-харнесса). См. ``parameters_callback``
-        / ``_apply_e2e_mode``.
+    e2e_mode (bool) — ЕДИНСТВЕННЫЙ переключатель режима e2e на роботе
+        (#3904, ``rob_box_core.e2e_mode``): активная БД дикторов db_path ↔
+        e2e_db_path здесь, а последователи (``mcp_server`` — память фактов)
+        получают режим из latched ``/e2e/mode``, который публикует эта нода.
+        Ставит только E2E-харнесс (``ros2 param set /speaker_id_node
+        e2e_mode true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
+    e2e_release_after_s (float) — снять режим через N с, если следующий акт
+        марафона его не подхватит (``rob_box_core.e2e_mode.E2EModeOwner``).
+
+Publishes (#3904):
+    /e2e/mode (std_msgs/Bool, latched, переиздание 2 с) — режим e2e владельца.
 
 Parameters:
     db_path                    (str)   — path to SQLite DB       [/data/speakers.db]
@@ -94,6 +99,7 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
+from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import fill_speaker_result
 
 from .core import epithets
@@ -616,6 +622,9 @@ class SpeakerIdNode(Node):
             self.create_publisher(SpeakerResult, "/voice/speaker/result", reliable_qos),
             lambda: self._e2e_mode_active,
         )
+        # #3904 — эта нода владеет режимом e2e всего робота: последователи
+        # (mcp_server) читают его из /e2e/mode, своих переключателей у них нет.
+        self._e2e_owner = E2EModeOwner(self, lambda: self._e2e_mode_active)
         # Issue #1787, слой 2 — просьба к dialogue_node придумать кличку
         # через LLM. Сам узел LLM не знает (и не должен: биометрия обязана
         # работать офлайн), поэтому запрос уходит топиком, а ответ
@@ -1670,6 +1679,9 @@ class SpeakerIdNode(Node):
             )
             return False
 
+        # #3904 — режим владельца сразу в /e2e/mode (последователи переключают
+        # свои БД), взведённый таймер снятия больше не действует.
+        self._e2e_owner.mode_changed()
         # WARNING, не info: смена активной БД дикторов — событие, которое
         # обязано быть видно в `docker logs voice-assistant` без фильтров —
         # ровно то, чего не хватало в issue #2750, когда обнуление

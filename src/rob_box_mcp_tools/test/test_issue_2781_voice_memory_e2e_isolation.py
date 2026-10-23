@@ -10,16 +10,15 @@ Issue #2781 — изоляция БД дикторов (#2750, починена 
 упоминающих синтезированный каст марафона ("Саша не ест лук", "Борис
 болеет за Спартак") вперемешку с фактами живых людей мастерской.
 
-Механизм повторяет ``speaker_id_node.e2e_mode``
-(``test_e2e_db_isolation.py`` в ``src/rob_box_voice/test/unit/node/``) один
-в один: bool-параметр узла с валидирующим ``parameters_callback``, синхронно
-переоткрывающим ``self.voice_memory`` на другом SQLite-файле. Владелец узла
-здесь — ``mcp_server`` (единственный процесс, который исполняет
-``memory_save``, см. ``tools/memory.py:MemorySaveTool``), а не
-``speaker_id_node``.
+#3904: своего переключателя у ``mcp_server`` больше нет — он последователь
+владельца режима ``/speaker_id_node e2e_mode`` (``rob_box_core.e2e_mode``):
+``E2EModeFollower`` зовёт ``_apply_e2e_mode`` по сообщению ``/e2e/mode``, и
+тот синхронно переоткрывает ``self.voice_memory`` на другом SQLite-файле.
+``mcp_server`` — единственный процесс, который исполняет ``memory_save``
+(``tools/memory.py:MemorySaveTool``).
 
 Приём тестирования — ``object.__new__(MCPServer)`` + минимальный набор
-полей, которые реально трогают ``parameters_callback``/``_apply_e2e_mode``
+полей, которые реально трогает ``_apply_e2e_mode``
 (тот же приём, что в ``test_e2e_db_isolation.py``). ``mcp_server.py``
 загружается через тот же fake-dependency loader, что и ``test_mcp_server.py``
 (``rclpy``/``std_msgs``/``rcl_interfaces`` — стабы; ``rob_box_voice`` —
@@ -71,18 +70,18 @@ def _load_real_voice_memory_class():
 VoiceMemory = _load_real_voice_memory_class()
 
 
-class _FakeParam:
-    """Заглушка ``rclpy.parameter.Parameter`` — колбэку нужны только
-    ``.name``/``.value`` (см. ``mcp_server.parameters_callback``:
-    ``for param in params: if param.name == "e2e_mode": ...``)."""
+class _Applied:
+    """Итог применения режима владельца: ``successful`` — то, что увидит
+    харнесс в ``e2e_mode_applied`` (``E2EModeFollower`` пишет его только при
+    успехе ``_apply_e2e_mode``)."""
 
-    def __init__(self, name: str, value) -> None:
-        self.name = name
-        self.value = value
+    def __init__(self, successful: bool) -> None:
+        self.successful = successful
 
 
-def _e2e_mode_param(enabled: bool) -> list[_FakeParam]:
-    return [_FakeParam("e2e_mode", enabled)]
+def _owner_says(instance, enabled: bool) -> _Applied:
+    """Владелец опубликовал ``/e2e/mode`` = ``enabled`` (#3904)."""
+    return _Applied(instance._apply_e2e_mode(enabled))
 
 
 def _install_fake_mcp_server_dependencies(monkeypatch) -> None:
@@ -240,7 +239,7 @@ def test_enable_switches_off_prod_db_without_touching_it(node):
     # Переоткрываем узел на боевой (как это делает __init__/_init_voice_memory).
     instance.voice_memory = VoiceMemory(db_path=instance._voice_memory_prod_db_path)
 
-    result = instance.parameters_callback(_e2e_mode_param(True))
+    result = _owner_says(instance, True)
 
     assert result.successful is True
     assert instance._voice_memory_e2e_mode_active is True
@@ -259,7 +258,7 @@ def test_marathon_facts_never_reach_prod_db(node):
     """Регрессия #2781: memory_save во время e2e_mode не должен попадать
     в боевую /data/voice_memory.db."""
     instance, _module = node
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
 
     instance.voice_memory.save_fact("Саша не ест лук, даже жареный")
     instance.voice_memory.save_fact("Борис — друг Саши, приходит раз в неделю с пиццей")
@@ -284,10 +283,10 @@ def test_marathon_facts_never_reach_prod_db(node):
 
 def test_disable_returns_to_prod_db(node):
     instance, _module = node
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
     instance.voice_memory.save_fact("факт только для e2e")
 
-    result = instance.parameters_callback(_e2e_mode_param(False))
+    result = _owner_says(instance, False)
 
     assert result.successful is True
     assert instance._voice_memory_e2e_mode_active is False
@@ -304,7 +303,7 @@ def test_enable_wipes_leftover_e2e_file_from_previous_marathon(node):
     stale.save_fact("призрак с прошлого марафона")
     stale.close()
 
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
 
     assert instance.voice_memory.get_facts() == [], (
         "старый факт пережил включение e2e_mode — гарантия чистой базы не держит"
@@ -316,11 +315,11 @@ def test_repeated_enable_same_value_does_not_wipe_mid_marathon(node):
     включённого true) не должен чистить e2e_db_path второй раз — иначе
     повторный вызов посреди акта обнулил бы уже накопленные факты."""
     instance, _module = node
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
     instance.voice_memory.save_fact("Саша не ест лук")
     memory_after_first = instance.voice_memory
 
-    result = instance.parameters_callback(_e2e_mode_param(True))
+    result = _owner_says(instance, True)
 
     assert result.successful is True
     assert instance.voice_memory is memory_after_first, "повторный True пересоздал соединение — не no-op"
@@ -328,15 +327,16 @@ def test_repeated_enable_same_value_does_not_wipe_mid_marathon(node):
     assert facts == {"Саша не ест лук"}
 
 
-def test_unrelated_param_change_does_not_touch_db(node):
-    instance, _module = node
-    memory_before = instance.voice_memory
+def test_mcp_server_has_no_e2e_switch_of_its_own(node):
+    """#3904 — один владелец режима: ``ros2 param set /mcp_server e2e_mode``
+    больше не переключает память (параметра нет, роутера параметров нет);
+    режим приходит только от ``/speaker_id_node`` через E2EModeFollower."""
+    _instance, module = node
+    src = open(module.__file__, encoding="utf-8").read()
 
-    result = instance.parameters_callback([_FakeParam("tts_provider", "minimax")])
-
-    assert result.successful is True
-    assert instance.voice_memory is memory_before
-    assert instance._voice_memory_e2e_mode_active is False
+    assert not hasattr(module.MCPServer, "parameters_callback")
+    assert 'declare_parameter("e2e_mode"' not in src
+    assert "E2EModeFollower(self, self._apply_e2e_mode)" in src
 
 
 def test_no_prod_path_target_fails_fatally_instead_of_silently_passing(node):
@@ -349,7 +349,7 @@ def test_no_prod_path_target_fails_fatally_instead_of_silently_passing(node):
     instance, _module = node
     instance._voice_memory_prod_db_path = None
 
-    result = instance.parameters_callback(_e2e_mode_param(True))
+    result = _owner_says(instance, True)
 
     assert result.successful is False
     assert instance._voice_memory_e2e_mode_active is False
@@ -363,7 +363,7 @@ def test_search_finds_marathon_fact_only_in_e2e_db_not_prod(node):
     после ``save_fact`` в рамках ОДНОГО активного инстанса, и он не течёт
     в боевую БД, пока e2e_mode включён (та же гарантия, что у get_facts)."""
     instance, _module = node
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
 
     instance.voice_memory.save_fact("Борис любит зелёный чай без сахара")
 
@@ -391,7 +391,7 @@ def test_db_switch_failure_returns_unsuccessful_result(node, monkeypatch):
 
     monkeypatch.setattr(module, "_VoiceMemory", _boom)
 
-    result = instance.parameters_callback(_e2e_mode_param(True))
+    result = _owner_says(instance, True)
 
     assert result.successful is False
     assert instance._voice_memory_e2e_mode_active is False, "провал не должен был поменять состояние"
@@ -404,7 +404,7 @@ def test_e2e_path_pointing_at_prod_never_wipes_prod(node):
     instance.voice_memory.save_fact("живой человек мастерской пьёт кофе без сахара")
     instance._voice_memory_e2e_db_path = instance._voice_memory_prod_db_path
 
-    result = instance.parameters_callback(_e2e_mode_param(True))
+    result = _owner_says(instance, True)
 
     assert result.successful is False
     assert instance._voice_memory_e2e_mode_active is False
@@ -416,7 +416,7 @@ def test_enable_logs_explicit_memory_wipe_line(node):
     """Issue #2890 — сброс e2e-памяти фактов перед актом виден в логе робота."""
     instance, _module = node
 
-    instance.parameters_callback(_e2e_mode_param(True))
+    _owner_says(instance, True)
 
     logger = instance.get_logger.return_value
     lines = [str(c.args[0]) for c in logger.warning.call_args_list if c.args]

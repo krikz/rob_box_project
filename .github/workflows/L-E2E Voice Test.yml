@@ -104,6 +104,11 @@ on:
         required: false
         default: 'false'
         type: boolean
+      e2e_hold_for_next_act:
+        description: 'Issue #3904 — следующий акт марафона наследует этот (inherits_previous_act): режим e2e на роботе не снимать в конце, владелец снимет его сам по таймеру, если следующий акт не придёт. Ставит только run_night_marathon.sh.'
+        required: false
+        default: false
+        type: boolean
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -316,6 +321,7 @@ jobs:
           REACT_WINDOW: ${{ inputs.react_window }}
           CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
           TTS_PROVIDER: ${{ inputs.tts_provider }}
+          E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -364,6 +370,11 @@ jobs:
           # Issue #1196 L2 — полуавтомат-проверка эха telegram↔dialogue.
           if [ "$CHECK_TG_ECHO_CLEAN" = "true" ]; then
             CMD="$CMD --check-tg-echo"
+          fi
+          # Issue #3904 — режим e2e живёт весь марафон: следующий акт наследует этот.
+          E2E_HOLD_CLEAN=$(printf '%s' "$E2E_HOLD_FOR_NEXT_ACT" | tr -d '\r\n')
+          if [ "$E2E_HOLD_CLEAN" = "true" ]; then
+            CMD="$CMD --hold-e2e-for-next-act"
           fi
 
           echo "RUN_CMD: $CMD"

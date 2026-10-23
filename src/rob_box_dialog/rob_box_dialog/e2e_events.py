@@ -1,12 +1,13 @@
 """Текст ходов и речи — только в e2e-БД вне ``/data`` (ADR-0150 §7.4, решение В8; PR-8 #3702).
 
 В проде текст турнов на диск не пишется (директива Шифу 02.09): журнал ходов живёт в памяти, на диск — агрегаты без
-текста (``turn_log.TurnAggregate``). Для приёмки (§14) харнесс включает ``e2e_mode`` и даёт путь ``e2e_db_path`` —
-тогда события хода пишутся в SQLite, таблица :data:`TABLE`; её читают ``scripts/dialog/turn_metrics.py --db`` и
-``honesty_audit.py --db``.
+текста (``turn_log.TurnAggregate``). Для приёмки (§14) харнесс даёт путь ``e2e_db_path`` — тогда события хода
+пишутся в SQLite, таблица :data:`TABLE`; её читают ``scripts/dialog/turn_metrics.py --db`` и ``honesty_audit.py --db``.
+Переключателем служит сам путь: отдельного bool ``e2e_mode`` здесь нет (#3904 — режим e2e у робота один, владелец —
+``rob_box_core.e2e_mode``; журнал ходов не пишет в ``/data`` и режимом БД не является).
 
-:func:`open_events` — единственная дверь: без ``e2e_mode`` или с пустым путём записи нет (``None``), путь внутри
-боевой ``/data`` (общая с живыми людьми, ADR-0128) — громкий отказ ``ValueError``.
+:func:`open_events` — единственная дверь: с пустым путём записи нет (``None``), путь внутри боевой ``/data`` (общая с
+живыми людьми, ADR-0128) — громкий отказ ``ValueError``.
 """
 
 from __future__ import annotations
@@ -84,12 +85,12 @@ class DialogEvents:
             self._db.close()
 
 
-def open_events(e2e_mode: bool, db_path: str, session_id: str,
+def open_events(db_path: str, session_id: str,
                 clock: Callable[[], float] = time.time) -> Optional[DialogEvents]:
-    """Писатель e2e-БД или ``None`` (прод: ``e2e_mode`` выключен или путь пуст — текст на диск не попадает).
+    """Писатель e2e-БД или ``None`` (прод: путь пуст — текст на диск не попадает).
     Путь в боевой ``/data`` — ``ValueError``: харнесс обязан дать отдельный каталог."""
     path = (db_path or "").strip()
-    if not e2e_mode or not path:
+    if not path:
         return None
     if inside_robot_data(path):
         raise ValueError(f"e2e_db_path={path!r} внутри {ROBOT_DATA_DIR}: боевая /data общая с живыми людьми, "
