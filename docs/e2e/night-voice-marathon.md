@@ -469,6 +469,7 @@ tools(56): clear_waypoints, compose_music, ..., stop_music, ...
 - **ответ готов** (v2): `📊 [turn] … stage=done` хода и все `🗣️ SpeechEvent` его реплик закрыты (`finished`/`cancelled`/`rejected` по `speech_id`); v1 — `🔊 TTS: speech_id=X` ↔ `Публикую TTS finished event: speech_id=X`;
 - **робот ещё говорит** — `SpeechEvent started`/`queued` без пары; реплика без событий дольше 60 с считается протухшей; после конца речи ещё 2 с (хвост ReSpeaker);
 - потолок ожидания — прежний `E2E_REACTION_WINDOW` / `E2E_SILENCE_WAIT_MAX`; `E2E_EVENT_WAITS=0` возвращает слепой sleep; в лог шага пишется `reply_after=Ns, silence_after=Ms`.
+- #3954, v2: решение шага принимает один судья — `e2e_events.py`. Конец хода — `📊 [turn] stage=done|failed|cancelled` (`cancelled` не считается у шага-перебивателя); `failed` и ход без речи — FAIL сразу с причиной, без повторов; нет `ПРИНЯТО` за `E2E_ACCEPT_WINDOW` (15 с) — фраза переигрывается, а не ждёт 40 с; `check_cycle` с `TTS finished` — только v1.
 
 Поле шага `barge_in` — **намеренное** перебивание (тишину не ждём):
 

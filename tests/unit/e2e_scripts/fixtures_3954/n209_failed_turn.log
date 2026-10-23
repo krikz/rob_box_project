@@ -1,0 +1,3 @@
+[stt_node-5] [INFO] [1792763089.416584336] [stt_node]: ✅ ПРИНЯТО (respeaker): робот а про меня что помнишь
+[dialog_node-3] [INFO] [1792763091.466727787] [dialog_node]: 🧾 [command] provider=deepseek mode=tool_choice verdict=command actions=['memory_search'] speech_dropped=0
+[dialog_node-3] [INFO] [1792763094.688244308] [dialog_node]: 📊 [turn] turn_id=d5f15cbb4e06 epoch=3 agent=personality stage=failed status=failed latency_ms=5259 llm_calls=3 llm_provider=deepseek tokens=25086
