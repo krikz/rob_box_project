@@ -1,7 +1,8 @@
 """Адресовано ли роботу — решает код по одной таблице (ADR-0150 §4.2, §7.3 ревизия 5; решения В2, В12, В18).
 
 :func:`decide` — единственное место этого решения: вейк по границам слов из таблицы ``knowledge`` (рискованные
-вейки В18 выключены по умолчанию), Telegram и оператор адресованы всегда, кроме обращения к координатору
+вейки В18 выключены по умолчанию; искажённое STT первое слово — ``words.slipped_wake_rest``, #3975), Telegram
+и оператор адресованы всегда, кроме обращения к координатору
 («Клод …» из Telegram, #3518). Голое «робот» после неуслышанной просьбы (В12) берёт все свежие фразы бэклога
 (и куски того же рассказа) как текст хода (``pickup``, #3767 — от кого бы они ни были, кто сказал — метка каждой
 фразы); бэклог пуст — только рефлекс «слушаю», 0 вызовов LLM. Окна
@@ -31,7 +32,7 @@ from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
     resolve_wake_word_namespaces,
 )
-from rob_box_dialog.words import has_wake_word, strip_wake_word
+from rob_box_dialog.words import has_wake_word, slipped_wake_rest, strip_wake_word
 
 #: Источники реплики (значения ``Utterance.SOURCE_*``; тест сверяет с ``.msg``).
 SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "operator"
@@ -128,9 +129,9 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
             return NotAddressed(COORDINATOR)
         rest = strip_wake_word(text, wake_words)
         return Addressed(rest, heard.source) if rest else NotAddressed(EMPTY)
-    if not has_wake_word(text, wake_words):
+    rest = strip_wake_word(text, wake_words) if has_wake_word(text, wake_words) else slipped_wake_rest(text, wake_words)
+    if rest is None:
         return _wakeless_reply(text, heard, question, greeting, ask)
-    rest = strip_wake_word(text, wake_words)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
     return _woken(rest, heard, backlog)
