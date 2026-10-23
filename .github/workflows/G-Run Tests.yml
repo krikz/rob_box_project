@@ -94,13 +94,13 @@ jobs:
           source /opt/ros/humble/setup.bash
 
           # rob_box_quest импортирует ``audio_common_msgs`` на верхнем уровне
-          # (см. src/rob_box_quest/rob_box_quest/quest_node.py:43). В базовом
-          # CI-образе ``rob-box-ci:humble`` его нет (только ``ros-base``),
-          # поэтому без apt-install тесты падают с ModuleNotFoundError ещё
-          # на COLLECTION (issue #2232 — CI не запускал rob_box_quest).
-          apt-get update -qq && apt-get install -y --no-install-recommends \
-            ros-humble-audio-common-msgs \
-          && rm -rf /var/lib/apt/lists/*
+          # (см. src/rob_box_quest/rob_box_quest/quest_node.py:43); без него
+          # тесты падают с ModuleNotFoundError ещё на COLLECTION (issue #2232 —
+          # CI не запускал rob_box_quest). Раньше пакет ставился apt'ом на
+          # каждом прогоне; он запечён в образ rob-box-ci:humble с #3923
+          # (#3929), поэтому здесь только проверка — без установки и без
+          # ``|| true``. Если упало — образ откатился, смотреть B: Build CI Image.
+          python3 -c "import audio_common_msgs.msg"
 
           # Create workspace — exclude vendor submodules (not our code to lint).
           # Also copy sibling directories (docker/, migrations/, docs/...) so
@@ -165,9 +165,11 @@ jobs:
           printf '[tool:pytest]\naddopts = -p no:launch_testing\n' > ${{ github.workspace }}/test_ws/pytest.ini
           python3 -c "import pytest; assert pytest.__version__ >= '8', f'WRONG pytest: {pytest.__version__}'"
 
-          # Ensure runtime deps for unit tests (defensive — Dockerfile already has these,
-          # but a stale image may not. Pinned to known-good versions.)
-          python3 -m pip install --quiet --no-cache-dir requests pyyaml pytz 2>/dev/null || true
+          # Runtime deps for unit tests (requests / pyyaml / pytz): в образе с
+          # #3923 (#3929); если упало — образ откатился, смотреть B: Build CI Image.
+          # Раньше здесь была страховочная доустановка через pip с ``|| true`` —
+          # она молча маскировала откат образа.
+          python3 -c "import requests, yaml, pytz"
 
           # ── rob_box_voice ───────────────────────────────────────────────────
           # pytest may hang for ~4 min AFTER all tests complete.  Root cause
@@ -241,7 +243,9 @@ jobs:
           # re-import. Пофайлово всё зелёное. Поэтому гоняем КАЖДЫЙ файл в
           # отдельном pytest-процессе (для цикле) — изоляция от pollution.
           echo "=== pytest: rob_box_telegram (per-file, issue #1196 L1) ==="
-          python3 -m pip install --quiet --no-cache-dir aiohttp 'python-telegram-bot[job-queue]==21.*' 2>/dev/null || true
+          # aiohttp + python-telegram-bot[job-queue]==21.*: в образе с #3923
+          # (#3929); если упало — образ откатился, смотреть B: Build CI Image.
+          python3 -c "import aiohttp, telegram"
           TG_DIR="${{ github.workspace }}/test_ws/src/rob_box_telegram"
           TG_FAILED=0
           for TG_TEST in "$TG_DIR"/test/test_*.py; do
@@ -288,11 +292,11 @@ jobs:
           # ``timeout 240`` от hung-shutdown + junitxml для надёжного FAIL
           # гейта (а не «silent skipped»).
           #
-          # Runtime deps (НЕ в базовом CI image, apt/python-base-ROS image
-          # их не тянет — проверил: ros-humble-ros-base не зависит от
-          # python3-msgpack / python3-aiohttp, они идут в ros-humble-* рантайм
-          # пакетах, которые мы НЕ ставим для тестов):
-          python3 -m pip install --quiet --no-cache-dir msgpack aiohttp 2>/dev/null || true
+          # Runtime deps msgpack / aiohttp: ros-humble-ros-base их не тянет
+          # (они идут в ros-humble-* рантайм-пакетах, которые мы для тестов не
+          # ставим), поэтому запечены pip'ом в образ rob-box-ci:humble с #3923
+          # (#3929). Если упало — образ откатился, смотреть B: Build CI Image.
+          python3 -c "import msgpack, aiohttp"
 
           CORE_DIR="${{ github.workspace }}/test_ws/src/rob_box_core"
           QUEST_DIR="${{ github.workspace }}/test_ws/src/rob_box_quest"
@@ -448,12 +452,13 @@ jobs:
 
           # rob_box_perception: ворота качества кропа и эмбеддер
           # (face_embedding / face_recognition) считают метрики через cv2 —
-          # на Vision Pi он есть, в CI-образе нет.  Без cv2 ворота честно
+          # на Vision Pi он есть, в CI-образе раньше не было.  Без cv2 ворота честно
           # открываются (degraded), и 7 тестов, проверяющих сами ворота,
-          # падали.  Ставим headless-колесо; 4.10 собрано с поддержкой
-          # numpy 1.21 из образа и не тянет апгрейд numpy.  Без `|| true`:
-          # если cv2 не встал, cv2-тесты ушли бы в skip — лучше красный job.
-          python3 -m pip install --quiet --no-cache-dir 'opencv-python-headless==4.10.0.84'
+          # падали.  headless-колесо 4.10.0.84 запечено в образ rob-box-ci:humble
+          # с #3923 (#3929): оно собрано с поддержкой numpy 1.21 из образа и не
+          # тянет апгрейд numpy (новее — numpy 2).  Без `|| true`: если cv2 нет,
+          # cv2-тесты ушли бы в skip — лучше красный job (образ откатился,
+          # смотреть B: Build CI Image).
           python3 -c "import cv2, numpy; print('cv2', cv2.__version__, 'numpy', numpy.__version__)"
 
           # Стилевые ament-линтеры (test_flake8 / test_pep257, маркер
@@ -713,16 +718,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Install test dependencies
+      - name: "Verify test dependencies (image #3923)"
         run: |
+          # Ничего не ставим: всё запечено в образ rob-box-ci:humble с #3923
+          # (#3929). Если шаг упал — образ откатился, смотреть B: Build CI Image.
           # nav2_msgs: rob_box_mcp_tools.tools.__init__ импортирует
           # navigation.py, а тот — nav2_msgs.action. Без пакета
           # test_animation.py и test_llm_integration.py падают на коллекции.
-          apt-get update -qq && apt-get install -y --no-install-recommends \
-            ros-humble-nav2-msgs \
-          && rm -rf /var/lib/apt/lists/*
-          python3 -m pip install --quiet --no-cache-dir \
-            httpx openai msgpack aiohttp requests pyyaml pytz
+          source /opt/ros/humble/setup.bash
+          ros2 pkg prefix nav2_msgs
+          python3 -c "import httpx, openai, msgpack, aiohttp, requests, yaml, pytz"
 
       - name: Run rob_box_mcp_tools tests
         run: |

@@ -65,11 +65,16 @@ RECENT_UNADDRESSED = "recent_unaddressed"
 BACKGROUND_SINCE_REPLY = "background_since_reply"
 
 
-def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = ()) -> Mapping[str, Any]:
+def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = (),
+                  noted: Tuple[Optional[str], Optional[Mapping[str, Any]]] = (None, None)) -> Mapping[str, Any]:
     """Разделы снимка хода Личности из владельцев: собеседник (``speaker_block``), провайдеры, музыка
     (``MusicStateMemory.section``) — данные, не правила. Один сборщик для ROS-хоста ``dialog_node`` и сухого стенда
-    (``scripts/dialog/dry_marathon.py``, #3906)."""
-    return {"speaker": speaker_block(snap.speaker), "providers": list(providers), "music_state": music.section()}
+    (``scripts/dialog/dry_marathon.py``, #3906). ``noted`` — ``(person_ref, speaker_memory)``, взятые на начале хода
+    (#3919): раздел показывается, только если собеседник снимка тот же (сменился — чужого не показываем)."""
+    person, block = noted
+    again = bool(person) and person == memory.profiled_person(snap.speaker)
+    sections = {"speaker": speaker_block(snap.speaker), "providers": list(providers), "music_state": music.section()}
+    return {**sections, "speaker_memory": block} if again and block else sections
 
 
 def _follow_as_user(data: str) -> Sequence[Any]:

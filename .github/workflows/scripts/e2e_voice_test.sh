@@ -61,7 +61,9 @@ GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # переигрывать») от «робот действительно не принял» (rc=1) — но лучше
 # в такой сбой вообще не попадать: locale-префикс работает только как
 # литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# ConnectTimeout=10: недостижимый робот не держит харнесс ~127 с до TCP-таймаута
+# на каждом ssh (#3921). BatchMode НЕ добавлять -- sshpass передаёт пароль.
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${ROBOT_USER}@${ROBOT_HOST}"
 # Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
 # используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
 # stub без реального sshpass+robot.
@@ -462,7 +464,7 @@ scenario_writes_memory() {
 # Значения ЧИТАЮТСЯ обратно, а не берутся из exit-кода: ros2cli печатает
 # «Set parameter failed» при отказе колбэка и всё равно может выйти с 0, а
 # цена ошибки — боевые БД мастерской с профилями живых людей.
-E2E_MODE_FOLLOWERS="/mcp_server"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
+E2E_MODE_FOLLOWERS="/mcp_server /dialog_node"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
 E2E_MODE_HELD=0                    # этот прогон держит режим: trap обязан снять или передать
 E2E_HOLD_FOR_NEXT_ACT="${E2E_HOLD_FOR_NEXT_ACT:-0}"
 E2E_HOLD_RELEASE_S="${E2E_HOLD_RELEASE_S:-1800}"

@@ -377,6 +377,8 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: Разделы снимка хода ``<system_context>`` в порядке вывода (``context.build_context``): данные, а не правила.
 #: ``user_profile`` — пока строки шва собеседника v1 (``turn_identity``), структурой — с контрактом §7.5 (PR-11).
 #: ``speaker`` — кто сказал реплику (``speaker_adapter.speaker_block``): имя только при ``confirmed`` (§7.5, A30).
+#: ``speaker_memory`` — «робот помнит собеседника» (#3919, решение Шифу 23.10): ``dialog_count`` (какой это ход с ним,
+#: профиль ведёт код при уверенном ``SpeakerRef``) и ``facts`` — его факты из той памяти, куда пишут ``memory_save``.
 #: ``performance`` — идущее выступление (``plan.perform.context_block``): спетое и звучащее дословно, номер первого не
 #: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
 #: ``recent_actions`` — исходы действий прошлых ходов окна v2 структурой (``turn_log``, ``ActionResult``: тул, статус,
@@ -385,8 +387,8 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
 #: ``operator_journal`` — журнал ТАРС (§7.4, #3297): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
-    "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "performance",
-    "recent_unaddressed", "background_since_reply", "recent_actions", "operator_journal",
+    "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
+    "performance", "recent_unaddressed", "background_since_reply", "recent_actions", "operator_journal",
 )
 
 
@@ -480,6 +482,10 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: (запомнить «никому» нельзя: раньше такой факт становился общим для всех, #1770). Имя не нужно: у ``person_ref``
 #: может быть лишь кличка (#3858).
 PERSON_SCOPED_TOOLS: Tuple[str, ...] = ("memory_save", "memory_search", "memory_context")
+#: Раздел снимка ``speaker_memory`` (#3919): факты собеседника - не больше стольких (столько же брал v1,
+#: ``format_speaker_context``), каждый обрезан до ``SPEAKER_FACT_MAX_CHARS`` знаков; свежие первыми.
+SPEAKER_FACTS_MAX = 20
+SPEAKER_FACT_MAX_CHARS = 200
 #: Имя аргумента этих тулов на стороне MCP (``person_ref`` называется так до ADR-0130 этапа 3: голосовой ``speaker_id``).
 PERSON_ARG = "speaker_id"
 #: Агенты с собеседником в снимке; чат Telegram и ТАРС ``person_ref`` не имеют и привязку не получают.

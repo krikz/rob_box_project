@@ -74,3 +74,16 @@ def test_agents_without_interlocutor_keep_their_args():
     owner = Owner()
     [res] = owner.run([ToolCall("memory_save", {"fact": "x"})], _snapshot(agent="telegram", speaker=False))
     assert kn.PERSON_ARG not in owner.requests[0].args and res.status == "done"
+
+
+def test_speaker_memory_block_is_data_capped_by_knowledge():
+    from rob_box_dialog.memory import profiled_person, speaker_memory_block
+
+    assert speaker_memory_block(None, []) is None
+    assert speaker_memory_block({"dialog_count": 0}, []) == {"dialog_count": 0}  # ключ без данных пропущен
+    block = speaker_memory_block({"dialog_count": 3}, [" любит чай ", "", "я" * 999] + ["x"] * 50)
+    assert block["dialog_count"] == 3 and len(block["facts"]) == kn.SPEAKER_FACTS_MAX
+    assert block["facts"][0] == "любит чай" and len(block["facts"][1]) == kn.SPEAKER_FACT_MAX_CHARS
+    assert profiled_person(_snapshot().speaker) == "spk-sasha"
+    assert profiled_person(_snapshot(state="tentative").speaker) is None  # догадка по голосу в профиль не идёт
+    assert profiled_person(_snapshot(person=None).speaker) is None
