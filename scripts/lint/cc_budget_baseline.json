@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-22",
-  "base_sha": "e954e41cf3d88b1644bb1850678902676aaf0255",
+  "created": "2026-10-23",
+  "base_sha": "f43cf6a036a92ffdde3dfd8a7238488009f4570a",
   "limits": {
     "method": 15,
     "init": 20
@@ -79,7 +79,7 @@
     },
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py": {
       "MiniMaxTTSProvider._post": 16,
-      "MiniMaxTTSProvider.stream": 38,
+      "MiniMaxTTSProvider.stream": 37,
       "_build_payload": 21
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py": {
@@ -299,7 +299,7 @@
     {
       "path": "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py",
       "method": "MiniMaxTTSProvider.stream",
-      "cc": 38,
+      "cc": 37,
       "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
     },
     {

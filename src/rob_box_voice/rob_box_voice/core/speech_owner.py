@@ -141,6 +141,7 @@ class SpeechRecord:
     cancelled: bool = False
     stop_at: Optional[float] = None
     stop_chars: Optional[int] = None
+    t0_ns: Optional[int] = None  # момент первого звука (огибающая кусков потока, #3930)
     wake: threading.Event = field(default_factory=threading.Event)
 
 
@@ -203,6 +204,11 @@ class SpeechLedger:
             return 0
         spoken = int(round(rec.text_len * min(1.0, self.elapsed_s(rec) / rec.duration_s)))
         return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
+
+    def set_duration(self, rec: SpeechRecord, duration_s: float) -> None:
+        """Длительность потоковой реплики стала известна (поток кончился) - старт не сдвигается (#3930)."""
+        with self._lock:
+            rec.duration_s = max(0.0, duration_s)
 
     def schedule_boundary_stop(self, rec: SpeechRecord) -> None:
         """``boundary=sentence``: заглушить на ближайшем конце предложения, но слышимо не позже
@@ -328,13 +334,19 @@ class SpeechOwner:
         if rec is None:
             return
         provider, applied = ctx.get("used_provider") or "", ctx.get("used_voice") or ""
+        if (ctx.get("result") or {}).get("stream") is not None:
+            duration_s = 0.0  # поток (#3930): длительность неизвестна до конца синтеза - 0 = «не сообщена»
         self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)
         if voice and applied and applied != voice:
             self._emit("voice_changed", rec, voice_requested=voice, voice_applied=applied,
                        provider=provider, reason="voice_unavailable")
 
-    def started(self, speech_id: Optional[str], audio: Any, sample_rate: int) -> bool:
-        """Дождаться ``at``, огибающая и ``started`` перед ``play_audio``; ``False`` - отменена."""
+    def started(self, speech_id: Optional[str], audio: Any, sample_rate: int,
+                duration_s: Optional[float] = None) -> bool:
+        """Дождаться ``at``, огибающая и ``started`` перед ``play_audio``; ``False`` - отменена.
+
+        ``duration_s`` - длительность реплики, если ``audio`` - не вся она (поток #3930: ``0`` - неизвестна,
+        придёт в :meth:`streamed`)."""
         rec = self.ledger.get(speech_id)
         if rec is None:
             return True
@@ -343,11 +355,24 @@ class SpeechOwner:
             rec.wake.wait(at_delay_s(now_s, rec.meta.at, self.output_latency_ms))
         if rec.cancelled:
             return False
-        duration_s = len(audio) / sample_rate if sample_rate else 0.0
+        if duration_s is None:
+            duration_s = len(audio) / sample_rate if sample_rate else 0.0
         self.ledger.mark(rec.speech_id, "playing", duration_s)
-        self._publish_envelope(rec, audio, sample_rate)
+        rec.t0_ns = self._publish_envelope(rec, audio, sample_rate)
         self._emit("started", rec, duration_ms=int(duration_s * 1000))
         return True
+
+    def streamed(self, speech_id: Optional[str], audio: Any, sample_rate: int, offset_s: float,
+                 total_s: Optional[float] = None) -> None:
+        """Поток (#3930): огибающая куска, пришедшего после ``started`` (``t0`` первого звука + ``offset_s``);
+        ``total_s`` - длительность реплики, когда поток кончился (прогресс по предложениям ждёт её)."""
+        rec = self.ledger.get(speech_id)
+        if rec is None or rec.t0_ns is None:
+            return
+        if audio is not None and len(audio):
+            self._publish_envelope(rec, audio, sample_rate, rec.t0_ns + int(offset_s * 1e9))
+        if total_s is not None:
+            self.ledger.set_duration(rec, total_s)
 
     def terminal(self, speech_id: str, success: bool, error: Optional[str], queued: bool) -> None:
         """Финал реплики из единой воронки ``/voice/tts/finished``."""
@@ -388,13 +413,16 @@ class SpeechOwner:
 
     # -- публикация ---------------------------------------------------------------
 
-    def _publish_envelope(self, rec: SpeechRecord, audio: Any, sample_rate: int) -> None:
+    def _publish_envelope(self, rec: SpeechRecord, audio: Any, sample_rate: int, t0_ns: Optional[int] = None) -> int:
+        """Огибающая с ``t0`` (по умолчанию - сейчас + задержка вывода); возвращает ``t0`` в нс."""
         env = self._msgs.SpeechEnvelope()
         env.speech_id, env.turn_id, env.frame_ms = rec.speech_id, rec.meta.turn_id, FRAME_MS
-        t0_ns = self._node.get_clock().now().nanoseconds + self.output_latency_ms * 1_000_000
+        if t0_ns is None:
+            t0_ns = self._node.get_clock().now().nanoseconds + self.output_latency_ms * 1_000_000
         env.t0.sec, env.t0.nanosec = divmod(int(t0_ns), 1_000_000_000)
         env.levels = envelope_levels(audio, sample_rate)
         self._envelope_pub.publish(env)
+        return int(t0_ns)
 
     def _emit(self, kind: str, rec: SpeechRecord, **fields: Any) -> None:
         ev = self._msgs.SpeechEvent()
@@ -456,6 +484,9 @@ class _NullOwner:
 
     def started(self, *args: Any) -> bool:
         return True
+
+    def streamed(self, *args: Any) -> None:
+        return None
 
     def claim_presynth(self, speech_id: Optional[str]) -> Any:
         return None
