@@ -325,6 +325,71 @@ def test_3883_long_answer_that_stays_long_is_a_red_step(make_env):
     assert report.said == [] and report.llm_calls == 2
 
 
+# ── #3883 (23.10): «какими голосами умеешь» - запрос выполнен, речь длинная, повтор честный, молчать нельзя ─────────
+
+
+def _voices_rule(final_speech):
+    """Модель кладёт ``list_tts_voices``; получив данные, пишет ``final_speech`` (``None`` - короткий ответ по
+    данным, когда подсказка честная; иначе длинный). Старая подсказка («ничего не сделано») - повтор запроса."""
+    def rule(env, msgs, tools):
+        text = str(msgs[-1].content or "")
+        if command_bridge.query_done(msgs):
+            if text.startswith("invalid arguments") and "ничего не сделано" in text:
+                return {"speech": LONG, "actions": [{"tool": "list_tts_voices", "args": {}}]}
+            return {"speech": final_speech or "Голосов три набора: Яндекс, MiniMax и Silero. Назвать какие-нибудь?"}
+        return {"actions": [{"tool": "list_tts_voices", "args": {}}]}
+    return rule
+
+
+VOICES_Q = step("n401", "Робот, какими голосами ты умеешь говорить?", expect_tools=["list_tts_voices"])
+
+
+def test_3883_tool_gives_the_stand_a_brief_overview(make_env):
+    seen = []
+
+    def rule(env, msgs, tools):
+        if command_bridge.query_done(msgs):
+            seen.append(json.loads(msgs[-1].content)["query_results"][0]["data"])
+            return {"speech": "Три провайдера."}
+        return {"actions": [{"tool": "list_tts_voices", "args": {}}]}
+
+    env = make_env(rule)
+    report = env.run(VOICES_Q)
+    assert report.verdict == dm.PASS, report.fail
+    assert {p["provider"] for p in seen[0]["providers"]} == {"yandex", "minimax", "silero"} and "voices" not in seen[0]
+
+
+def test_3883_long_speech_after_query_gets_honest_hint_and_turn_speaks(make_env):
+    """Разворот из run 39878786968: длинная речь после запроса. Подсказка честная -> модель не повторяет запрос."""
+    def long_first(env_, msgs, tools):
+        if command_bridge.query_done(msgs) and "invalid arguments" not in str(msgs[-1].content or ""):
+            return {"speech": LONG}
+        return _voices_rule(None)(env_, msgs, tools)
+
+    env = make_env(long_first)
+    report = env.run(VOICES_Q)
+    assert report.verdict == dm.PASS, report.fail
+    assert report.said and "Назвать какие-нибудь" in report.said[-1]
+    assert not any("speech_with_actions" in line for line in report.log.splitlines())
+    assert any("retry=1" in line and "too_long" in line for line in report.log.splitlines())
+
+
+def test_3883_still_long_after_retry_code_says_summary_not_silence(make_env):
+    """Страховка (c): речь не прошла и после повтора - говорит код: число голосов по провайдерам + «назвать?»."""
+    def rule(env, msgs, tools):
+        if command_bridge.query_done(msgs):
+            return {"speech": LONG}
+        return {"actions": [{"tool": "list_tts_voices", "args": {}}]}
+
+    env = make_env(rule)
+    report = env.run(VOICES_Q)
+    assert report.said, "робот промолчал"
+    spoken = " ".join(report.said)
+    assert "Яндекс — 13" in spoken and "MiniMax — 10" in spoken and "Silero — 5" in spoken
+    assert "Назвать какие-нибудь?" in spoken
+    assert not any("invalid_command" in str(s) for s in env.stand.ports.stages)
+
+
 # ── #3894: фоновая фраза того же собеседника в снимке адресованного хода ──────────────────────────────────────────
 
 

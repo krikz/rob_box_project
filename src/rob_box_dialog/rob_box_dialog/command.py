@@ -596,6 +596,11 @@ def _drop_bad_faces(cmd: Command) -> Command:
 
 #: Первая строка tool-результата невалидной команде.
 INVALID_HEAD = "invalid arguments: команда не исполнена, ничего не сделано. Исправь нарушения и пришли команду заново."
+#: То же, когда запрос хода (``query``) уже выполнен и его данные у модели (#3883): честно, без «ничего не сделано» —
+#: иначе модель кладёт запрос в ``actions`` заново и ход упирается в ``speech_with_actions``.
+INVALID_AFTER_QUERY_HEAD = (f"invalid arguments: данные запроса уже получены, запрос выполнен — повторять его не нужно. "
+                            f"Пришли команду заново: ответ по этим данным в speech, не длиннее {kn.SPEECH_MAX_CHARS} "
+                            f"символов, без actions.")
 #: Tool-результат прочим вызовам того же ответа: команда отклонена целиком.
 NOT_RUN = "не исполнено: команда этого ответа невалидна, пришли всё заново одной командой."
 #: Правило словами по причине нарушения; подробность и перечень допустимого — из :class:`Violation`.
@@ -634,9 +639,15 @@ HINTS: Mapping[str, str] = MappingProxyType({
 })
 
 
-def explain(invalid: Invalid) -> str:
-    """Нарушения невалидной команды словами для модели: причина, правило, где, что допустимо."""
-    lines = [INVALID_HEAD]
+def is_query_data(content: str) -> bool:
+    """Сообщение хода с данными ``query`` (``turn._query_data``): запрос в этом ходе уже выполнен."""
+    return content.lstrip().startswith('{"' + kn.QUERY_RESULTS_FIELD + '"')
+
+
+def explain(invalid: Invalid, after_query: bool = False) -> str:
+    """Нарушения невалидной команды словами для модели: причина, правило, где, что допустимо. ``after_query`` — запрос
+    хода уже выполнен: подсказка говорит, что данные получены, а не что «ничего не сделано» (#3883)."""
+    lines = [INVALID_AFTER_QUERY_HEAD if after_query else INVALID_HEAD]
     for v in invalid.all:
         line = f"- {v.reason}: {HINTS.get(v.reason, 'нарушено правило команды')}"
         line += f" ({v.detail})" if v.detail else ""

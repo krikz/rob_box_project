@@ -252,8 +252,24 @@ class TestListTtsVoicesTool:
         result = tool.execute()
         assert result.success is True
         assert result.data["provider"] == "minimax"
-        assert "Russian_ReliableMan" in result.data["voices"]
         assert result.data["default_voice"] == "male-qn-qingse"
+        assert "voices" not in result.data  # полный список ids — только по provider (#3883)
+
+    def test_no_provider_gives_brief_overview_by_providers(self, mock_node) -> None:
+        """#3883: без аргумента — провайдеры → сколько голосов → по паре характерных (м/ж), активный помечен."""
+        mock_node._declared_params = {"tts_provider": "minimax"}
+        mock_node.get_parameter = lambda n: type(
+            "P", (), {"value": mock_node._declared_params.get(n, "minimax")}
+        )()
+        data = ListTtsVoicesTool(mock_node).execute().data
+        by_name = {p["provider"]: p for p in data["providers"]}
+        assert set(by_name) == set(SUPPORTED_TTS_PROVIDERS)
+        assert [p["provider"] for p in data["providers"] if p["active"]] == ["minimax"]
+        assert by_name["minimax"]["voices_count"] == 10 and by_name["yandex"]["voices_count"] == 13
+        for p in data["providers"]:
+            assert {s["gender"] for s in p["samples"]} == {"male", "female"}
+            assert p["label"] and all(s["name"] and "legacy" not in s["name"] for s in p["samples"])
+        assert len(str(data)) < 1500  # краткая структура, а не список ids
 
     def test_explicit_provider_yandex(self, mock_node) -> None:
         """provider='yandex' → голоса yandex (даже при активном minimax)."""
@@ -296,4 +312,4 @@ class TestListTtsVoicesTool:
         tool = ListTtsVoicesTool(mock_node)
         result = tool.execute()  # no provider → active (= actual = yandex)
         assert result.data["provider"] == "yandex"
-        assert "anton" in result.data["voices"]
+        assert [p["provider"] for p in result.data["providers"] if p["active"]] == ["yandex"]

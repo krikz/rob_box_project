@@ -187,6 +187,32 @@ def default_voice_for(provider: str) -> str:
     return DEFAULT_VOICES.get(provider, "")
 
 
+#: Как провайдера называют вслух (одна запись; латиницу TTS читает криво).
+PROVIDER_LABELS: dict[str, str] = {"yandex": "Яндекс", "minimax": "MiniMax", "silero": "Silero"}
+
+#: Сколько характерных голосов показывать у провайдера в обзоре (по одному на пол) и каких не показывать.
+OVERVIEW_GENDERS: tuple[str, ...] = ("male", "female")
+
+
+def providers_overview(active: str = "") -> list[dict]:
+    """Обзор голосов по провайдерам для ответа «какими голосами умеешь» (#3883): провайдер, сколько у него голосов и по
+    одному характерному русскому мужскому/женскому (без legacy). Единственный источник — ``PROVIDER_VOICES`` и
+    ``VOICE_METADATA``; ``active`` помечает текущего провайдера."""
+    out = []
+    for provider, ids in PROVIDER_VOICES.items():
+        samples = []
+        for gender in OVERVIEW_GENDERS:
+            for vid in ids:
+                meta = VOICE_METADATA.get(f"{provider}:{vid}") or {}
+                if (meta.get("gender") == gender and meta.get("language") == "ru-RU"
+                        and "legacy" not in str(meta.get("display_name", ""))):
+                    samples.append({"voice": vid, "name": meta.get("display_name", vid), "gender": gender})
+                    break
+        out.append({"provider": provider, "label": PROVIDER_LABELS.get(provider, provider), "voices_count": len(ids), "active": provider == active,
+                    "samples": samples})
+    return out
+
+
 def voice_info_for(provider: str, voice_id: str) -> "VoiceInfo | None":
     """Wire-payload ``VoiceInfo`` (meta-quest-api.md §4.1) для одного голоса.
 

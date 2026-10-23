@@ -32,6 +32,7 @@ from ..animations import (
 try:
     from rob_box_voice.tts_voice_registry import (
         default_voice_for,
+        providers_overview,
         resolve_voice,
         robot_default_voice,
         voices_for,
@@ -47,6 +48,9 @@ except ImportError:  # pragma: no cover — fallback для minimal environments
         return (requested or ""), False
 
     def voices_for(provider: str) -> list:
+        return []
+
+    def providers_overview(active: str = "") -> list:
         return []
 
 # Issue #1709 — Unicode-script guard: LLM иногда вставляет в speak_text
@@ -1389,7 +1393,9 @@ class ListTtsVoicesTool(MCPTool):
 
     Контракт:
     ``{"tool": "list_tts_voices"}``
-    → ``{"voices": [...], "provider": "<active>", "default_voice": "<...>"}``
+    → ``{"providers": [{provider, voices_count, active, samples}], "provider": "<active>", "default_voice": ...}``
+    ``{"tool": "list_tts_voices", "provider": "yandex"}``
+    → ``{"voices": [...], "provider": "yandex", "default_voice": "<...>"}``
     """
 
     @property
@@ -1399,9 +1405,9 @@ class ListTtsVoicesTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Список доступных голосов TTS. Без аргументов — голоса "
-            "АКТИВНОГО провайдера (см. [TTS] provider: в контексте). "
-            "С аргументом provider — голоса конкретного провайдера "
+            "Голоса TTS. Без аргументов — обзор: провайдеры, сколько голосов у "
+            "каждого и по паре характерных (отвечай кратко, не перечисляй всё). "
+            "С аргументом provider — полный список голосов конкретного провайдера "
             "(«какие голоса есть на Яндексе?» → provider='yandex'). "
             "Используй когда юзер спрашивает «какие у тебя голоса?» / "
             "«а на yandex какие?»."
@@ -1453,12 +1459,26 @@ class ListTtsVoicesTool(MCPTool):
                     f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
                 ),
             )
+        explicit = target_provider is not None
         if target_provider is None:
             # Пустая строка → активный провайдер.
             target_provider = _active_tts_provider(self.node)
         assert target_provider is not None  # noqa: S101 — invariant
-        voices = voices_for(target_provider)
         default_voice = default_voice_for(target_provider)
+        if not explicit:
+            # Обзор (#3883): провайдеры → сколько голосов → по одному характерному. Полный список ids не отдаём:
+            # из него модель читала речь на 340 символов; нужный провайдер — повторный вызов с provider.
+            overview = providers_overview(target_provider)
+            return MCPToolResult(
+                success=True,
+                data={"provider": target_provider, "default_voice": default_voice, "providers": overview},
+                message=(
+                    "Голоса по провайдерам: "
+                    + "; ".join(f"{o['provider']} — {o['voices_count']}" for o in overview)
+                    + f". Сейчас говорю через '{target_provider}'. Ответь кратко: числа и пару имён из samples."
+                ),
+            )
+        voices = voices_for(target_provider)
         return MCPToolResult(
             success=True,
             data={

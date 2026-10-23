@@ -472,3 +472,19 @@ def test_tool_outside_the_slice_names_same_class_tools_of_the_slice_first():
     assert "Допустимо: dj_set, request_music, stop_music" in cm.explain(res)
     unknown = bad({"actions": [{"tool": "no_such_tool"}]}, "tool_not_available", tools=slice_)
     assert unknown.all[0].allowed == ("dj_set", "get_current_time", "memory_save", "request_music", "stop_music")
+
+
+def test_explain_after_query_says_data_received_not_nothing_done():
+    """#3883: после выполненного запроса подсказка повтора честная: данные получены, речь не длиннее потолка."""
+    invalid = cm.Invalid("too_long", "слишком длинно")
+    plain, after = cm.explain(invalid).splitlines()[0], cm.explain(invalid, after_query=True).splitlines()[0]
+    assert plain == cm.INVALID_HEAD and "ничего не сделано" in plain
+    assert after == cm.INVALID_AFTER_QUERY_HEAD and "ничего не сделано" not in after
+    assert "получены" in after and str(kn.SPEECH_MAX_CHARS) in after and "без actions" in after
+
+
+def test_query_data_message_is_recognised_by_the_field_turn_writes():
+    from rob_box_dialog import turn as turn_mod
+    row = turn_mod.ActionResult("t/0", 1, "personality", "get_current_time", "query", "done", None, {"time": "17:00"})
+    assert cm.is_query_data(turn_mod._query_data([row]))
+    assert not cm.is_query_data("invalid arguments: ...") and not cm.is_query_data("")

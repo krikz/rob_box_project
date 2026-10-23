@@ -33,7 +33,8 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import NOT_RUN, Busy, Command, Invalid, Result, explain, is_empty, parse, to_args, validate
+from rob_box_dialog.command import (NOT_RUN, Busy, Command, Invalid, Result, explain, is_empty, is_query_data, parse,
+                                    to_args, validate)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -128,10 +129,16 @@ def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy(), 
     return checked
 
 
-def retry_messages(response: LLMResponse, invalid: Invalid) -> List[LLMMessage]:
+def query_done(messages: Iterable[LLMMessage]) -> bool:
+    """В запросе есть данные ``query`` этого хода (их вернул ``turn.py`` после выполненного запроса, #3883)."""
+    return any(m.role in ("tool", "user") and is_query_data(m.content or "") for m in messages)
+
+
+def retry_messages(response: LLMResponse, invalid: Invalid, after_query: bool = False) -> List[LLMMessage]:
     """Продолжение запроса после невалидной команды: ответ модели как был и нарушения словами — tool-результатом на
-    её вызовы (``command`` — нарушения, прочие — «не исполнено»), без вызовов — репликой пользователя."""
-    note = explain(invalid)
+    её вызовы (``command`` — нарушения, прочие — «не исполнено»), без вызовов — репликой пользователя. ``after_query`` —
+    запрос хода уже выполнен: подсказка честная, «данные получены» (#3883)."""
+    note = explain(invalid, after_query)
     said = LLMMessage(role="assistant", content=response.content or "", tool_calls=tuple(response.tool_calls))
     if not response.tool_calls:
         return [said, LLMMessage(role="user", content=note)]
@@ -278,7 +285,7 @@ class CommandModeLLM(LLMProvider):
             if not isinstance(result, Invalid):
                 break
             started = time.monotonic()
-            retry = without_reasoning(await ask([*msgs, *retry_messages(response, result)]))
+            retry = without_reasoning(await ask([*msgs, *retry_messages(response, result, query_done(msgs))]))
             fixed = self._judged(retry, available)
             self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in result.all]} "
                       f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
@@ -336,5 +343,5 @@ def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
 
 __all__ = [
     "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE", "command_providers", "judge",
-    "log_line", "mode_note", "reply_command", "retry_messages", "to_legacy", "wrapper_for",
+    "log_line", "mode_note", "query_done", "reply_command", "retry_messages", "to_legacy", "wrapper_for",
 ]
