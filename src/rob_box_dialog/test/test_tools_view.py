@@ -179,3 +179,46 @@ def test_named_group_is_not_crowded_out_by_the_music_scene(frame, text, tool):
 def test_music_scene_still_fills_a_neutral_turn():
     assert groups_for(SNAPSHOTS["dj"], "расскажи анекдот") == ("music",)
     assert groups_for(SNAPSHOTS["music"], "сколько у тебя заряда") == ("status", "music")
+
+
+#: Акт 8 n809 (23.10, run 39888568582): «поставь фоном ровный ритм нариндарда только не громко» - LLM позвала
+#: ``play_sound`` (его в срезе нет) вместо ``request_music``. Музыку открывали лишь «поставь» (общий глагол) и
+#: основы песен/сетов; предметные слова ритма и подложки не значили ничего. Основы теперь - без общего глагола.
+@pytest.mark.parametrize("text", [
+    "Робот, нужен ровный ритм для разминки",
+    "Робот, ровный ритм фоном, только тише",
+    "Робот, дай грув на вечер",
+    "Робот, барабаны какие-нибудь",
+    "Робот, напой что-нибудь весёлое",
+    "Робот, нужен инструментал без слов",
+    "Робот, сделай ремикс",
+    "Робот, подложка под рассказ нужна",
+    "Робот, пианино какое-нибудь",
+])
+def test_music_subject_words_open_music_without_a_generic_verb(text):
+    names = _names(available_tools(SNAPSHOTS["idle"], text=text))
+    assert {"request_music", "stop_music"} <= set(names), text
+    assert groups_for(SNAPSHOTS["idle"], text)[0] == "music"
+
+
+def test_background_rhythm_request_from_n809_sees_request_music():
+    """Дословная STT-реплика n809: музыка названа прямо («ритм», «фоном»), «не громко» - громкость; срез ≤ 12."""
+    text = "поставь фоном ровный ритм нариндарда только не громко"
+    tools = available_tools(SNAPSHOTS["idle"], text=text)
+    assert groups_for(SNAPSHOTS["idle"], text) == ("music", "volume")
+    assert "request_music" in _names(tools)
+    assert len(tools) <= kn.TOOLS_VISIBLE_MAX
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, кто ворчал на фоне?",
+    "Робот, сфотографируй на фоне стены",
+    "Робот, лупа у тебя есть?",
+    "Робот, я мотивирован",
+    "Робот, подложи подушку",
+    "Робот, расскажи сказку",
+])
+def test_look_alike_words_do_not_open_music(text):
+    """Основы матчатся по левой границе слова: «фон», «луп», «мотив», «подлож» без музыкального смысла - не музыка."""
+    names = set(_names(available_tools(SNAPSHOTS["idle"], text=text)))
+    assert not names & set(kn.TOOL_GROUPS["music"].tools), text
