@@ -697,7 +697,6 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
 # фиксированный список файлов (``L-E2E Voice Test.yml``), и новый файл туда бы не доехал.
 
 _VOICE_CHANGED_RE = re.compile(r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)")
-_ACCEPTED_RE = re.compile(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)")
 
 
 def patterns_missing(logs: str, patterns: list) -> list:
@@ -745,7 +744,7 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     response_max_ms = acc.get("response_max_ms", 0) or 0
 
     recognized = ""
-    m = _ACCEPTED_RE.search(logs)
+    m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
     if m:
         recognized = m.group(1).strip()
 

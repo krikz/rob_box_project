@@ -21,6 +21,10 @@ from types import MappingProxyType
 
 import pytest
 
+# Мост команд и порты хода тянут клиент LLM-провайдеров (`openai`) через rob_box_harness.providers: в лёгком окружении
+# «Python Code Quality» его нет, и сбор модуля падал ImportError. Нужен настоящий мост - модуль пропускаем.
+pytest.importorskip("openai", reason="сухому стенду нужен настоящий мост команд, а ему - клиент openai")
+
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "scripts" / "dialog"))
 
