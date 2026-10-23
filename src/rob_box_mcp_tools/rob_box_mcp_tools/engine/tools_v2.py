@@ -51,7 +51,7 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
 from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
-                                  source_ask)
+                                  source_ask, with_engine)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -745,11 +745,11 @@ class RequestMusicTool(MCPTool):
         ``backing`` — подложка выступления (:mod:`.backing_deck`, ADR-0150 PR-7c)."""
         if intent == BACKING_INTENT:
             return tool_result(backing_order(self.backing, mood, min_seconds), "бит не заиграл")
-        return self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine or "")
+        return self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine)
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,
-              ask: Optional[SourceAsk] = None, gen_failed: str = "", engine: str = "") -> MCPToolResult:
+              ask: Optional[SourceAsk] = None, gen_failed: str = "", engine: Optional[str] = None) -> MCPToolResult:
         """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
         синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
@@ -760,9 +760,7 @@ class RequestMusicTool(MCPTool):
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = _NOT_PLAYING[classic]
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
-        ask = ask or source_ask(heard_text or text)
-        if engine in kn.MUSIC_ENGINES and not ask.engine:  # слот схемы дополняет слова: STT мог исказить имя дальше основ
-            ask = replace(ask, engine=engine)
+        ask = with_engine(ask or source_ask(heard_text or text), engine)
         piece = self._stage_piece(text, heard_text) if classic else None
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)

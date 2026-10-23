@@ -122,6 +122,12 @@ def engine_route(engine: str) -> str:
     return known.route if known is not None else ""
 
 
+def with_engine(ask: SourceAsk, engine: Optional[str]) -> SourceAsk:
+    """Слот ``engine`` схемы ``request_music`` дополняет слова: STT мог исказить имя дальше основ. Названное в
+    словах человека главнее; неизвестный ключ и ``auto`` ничего не меняют."""
+    return replace(ask, engine=engine) if engine in kn.MUSIC_ENGINES and not ask.engine else ask
+
+
 def source_ask(text: str) -> SourceAsk:
     """Слоты просьбы о пути из слов человека (код, без LLM)."""
     words = _words(text)
@@ -643,4 +649,4 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "decline_text", "engine_route", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
            "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
-           "theme_cache", "theme_fit", "theme_title"]
+           "theme_cache", "theme_fit", "theme_title", "with_engine"]

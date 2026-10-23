@@ -2795,6 +2795,8 @@ SOURCE_WEIGHTS: Mapping[str, float] = {"fallback": -2.0, "theme_match": 1.5, "ca
 #: ниже генерации (а без генерации — выше синтеза: сочинённое раньше лучше своего); «спой» — спетое раньше годится.
 SOURCE_CACHE_ASKED: Tuple[Tuple[str, float], ...] = (("fresh", -1.0), ("generated", -0.5), ("own", -0.5),
                                                      ("vocal", 0.5))
+
+
 @dataclass(frozen=True)
 class MusicEngine:
     """Движок музыки, которого человек называет по имени («сыграй на Ренардо»): ключ слота ``engine`` в

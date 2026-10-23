@@ -95,3 +95,17 @@ def test_timeout_phrase_exists_in_catalog():
 def test_latency_line():
     assert latency_line("minimax", "llm", 12001.4, "timeout") == (
         "⏱ [provider_latency] provider=minimax kind=llm latency_ms=12001 status=timeout")
+
+
+def test_grant_gives_action_its_own_term_and_never_shrinks_budget():
+    """Действие получает свой срок целиком, даже если LLM съела бюджет хода (#3960); бюджет не уменьшается."""
+    clock = Clock()
+    d = TurnDeadline(12, clock=clock)
+    clock.t += 11.0  # LLM и её повтор
+    d.grant(11.0)
+    assert d.left() == pytest.approx(11.0)
+    d.grant(1.0)  # короткий срок не урезает уже выданный
+    assert d.left() == pytest.approx(11.0)
+    fresh = TurnDeadline(12, clock=Clock())
+    fresh.grant(3.0)
+    assert fresh.budget_s == 12.0

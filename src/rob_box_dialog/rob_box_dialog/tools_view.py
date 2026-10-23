@@ -83,14 +83,19 @@ def widen_for(missing: Sequence[str], agent: str, have: Sequence[str]) -> Tuple[
     allowed = set(tools_for(agent_spec(agent)))
     opened: List[str] = []
     for tool in missing:
-        if tool in kn.MOTION_TOOLS:  # база едет по глаголу человека (``motion_named``), а не по просьбе модели
-            continue
-        groups = [g for g, group in kn.TOOL_GROUPS.items()
-                  if g not in kn.TOOL_GROUPS_EXPLICIT and (tool in group.tools or g in tool.lower())]
-        names = ([tool] if tool in allowed else []) + [t for g in groups for t in kn.TOOL_GROUPS[g].tools]
-        opened.extend(n for n in names if n in allowed and n not in kn.MOTION_TOOLS and n not in kn.TOOLS_ALWAYS
-                      and n not in kn.TOOL_GROUPS["voice"].tools and n not in have and n not in opened)
+        opened.extend(n for n in _group_of(tool, allowed) if n not in have and n not in opened)
     return tuple(opened)
+
+
+def _group_of(tool: str, allowed: set) -> List[str]:
+    """Тул и его группа (по членству или по имени группы в имени тула), без того, что модель открыть не может."""
+    if tool in kn.MOTION_TOOLS:  # база едет по глаголу человека (``motion_named``), а не по просьбе модели
+        return []
+    groups = [g for g, group in kn.TOOL_GROUPS.items()
+              if g not in kn.TOOL_GROUPS_EXPLICIT and (tool in group.tools or g in tool.lower())]
+    names = [tool] + [t for g in groups for t in kn.TOOL_GROUPS[g].tools]
+    closed = set(kn.MOTION_TOOLS) | set(kn.TOOLS_ALWAYS) | set(kn.TOOL_GROUPS["voice"].tools)
+    return [n for n in names if n in allowed and n not in closed]
 
 
 def _named(text: str, field: str) -> set:

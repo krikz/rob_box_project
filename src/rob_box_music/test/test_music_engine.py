@@ -9,7 +9,8 @@ import pytest
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Choice, DeterministicChooser
 from rob_box_music.source import (CacheTrack, SourceAsk, SourceContext, ask_engine, choose_route, decline_text,
-                                  engine_route, route_note, set_candidates, source_ask, source_candidates)
+                                  engine_route, route_note, set_candidates, source_ask, source_candidates,
+                                  with_engine)
 
 #: Кэш как на роботе: свежий инструментал, который без имени движка выиграл бы у синтеза.
 CACHE = (CacheTrack("k", "STAR WARS (RoBBox cover)", "cover", "club", True, rating=0, group="g1"),)
@@ -77,3 +78,14 @@ def test_slot_value_from_schema_extends_words():
     assert list(kn.MUSIC_ENGINES) == ["renardo"] and kn.ENGINE_AUTO == "auto"
     assert SourceAsk(engine="renardo").describe().endswith("engine=renardo")
     assert engine_route("auto") == "" and engine_route("") == "" and engine_route("renardo") == "synth"
+
+
+def test_with_engine_fills_slot_only_when_words_missed_it():
+    """STT исказил имя дальше основ («на виндарда»): слот схемы дополняет; ``auto``/чужое/``None`` ничего не меняют."""
+    garbled = source_ask("поставь ровный ритм на виндарда")
+    assert garbled.engine == ""
+    assert with_engine(garbled, "renardo").engine == "renardo"
+    for slot in ("auto", "leonardo", "", None):
+        assert with_engine(garbled, slot) == garbled
+    named = source_ask("сыграй на ренардо")
+    assert with_engine(named, "auto") is named

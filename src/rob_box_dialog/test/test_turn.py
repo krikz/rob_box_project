@@ -421,6 +421,44 @@ def test_deadline_cancels_llm_and_says_timeout():
     assert (agg.stage, agg.status) == ("timeout", "failed")
 
 
+class SlowOwnerPorts(Ports):
+    """Владелец действия отвечает не сразу (музыка стартует), LLM думает почти весь бюджет хода."""
+
+    def __init__(self, *a, execute_delay=0.0, **kw):
+        super().__init__(*a, **kw)
+        self.execute_delay = execute_delay
+
+    async def execute(self, actions, snapshot, turn_id):
+        await asyncio.sleep(self.execute_delay)
+        return await super().execute(actions, snapshot, turn_id)
+
+
+def test_started_action_gets_its_own_term_not_the_rest_after_llm_3960():
+    """Живой прогон 23.10, акт 5: LLM с повтором съела бюджет, трек заиграл - а ход закрылся «долго думаю».
+    Действие получает срок своего класса целиком (``TurnDeadline.grant``): итог - фраза владельца, не таймаут хода."""
+    music = ToolCall("request_music", {"intent": "track", "text": "ритм"})
+    ports = SlowOwnerPorts(answers=[Answer(Command(actions=(music,)), "deepseek")], ask_delay=0.08,
+                           execute_delay=0.1)
+    agg = _run(_engine(ports, deadline_s=0.1), "робот поставь ровный ритм")
+    said = [t for t, _, _ in ports.said]
+    assert phrases.text("understand.timeout") not in said
+    assert said == [phrases.text("media.done")] and agg.status != "failed"
+
+
+def _late(tool, status):
+    return ActionResult("t9/0", 0, "personality", tool, kn.TOOL_CLASSES[tool], status, None, {})
+
+
+def test_late_music_outcome_is_said_by_code_other_classes_stay_silent():
+    """Музыка заиграла после честного ``timeout`` хода: «Включаю музыку.» говорит код (``on_late``), а не тишина
+    после «пока не заиграла»; поздние итоги других классов (память) этот путь не озвучивает."""
+    ports = Ports()
+    engine = _engine(ports)
+    engine.late(_late("request_music", "done"))
+    engine.late(_late("memory_save", "done"))
+    assert ports.said == [(phrases.text("media.done"), None, None)]
+
+
 def test_messages_have_window_without_markers_and_actions_as_structure():
     ports = Ports(answers=[Answer(Command(actions=(ToolCall("stop_music", {}),)), "deepseek"),
                            Answer(Command(speech="Пожалуйста."), "deepseek")])
