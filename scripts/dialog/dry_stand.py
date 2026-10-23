@@ -527,7 +527,7 @@ class DryStand:
         self.player.stop()  # плеер при старте публикует latched-снимок «idle»: раздел music_state не «unknown»
         self.tools = FakeTools(self)
         self.ports = DryPorts(self, llm, counter, self.tools)
-        self.events = open_events(True, str(self.workdir / "e2e_dialog.db"), "dry-marathon")
+        self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
         self.engine = TurnEngine(self.session, self.ports, system_prompt=system_prompt, sections=self._sections,
                                  events=self.events, log=_EngineLog(self.emit))
 
