@@ -516,7 +516,7 @@ SOUND = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
 
 def test_invalid_command_goes_back_as_tool_result_and_the_fixed_one_is_executed() -> None:
     """Живой прогон 7c: ``speech`` рядом с ``perform`` — модель получает нарушение на свой вызов и исправляется."""
-    tale = {"kind": "tale", "segments": ["Жил-был ёж.", "И жил он долго."]}
+    tale = {"kind": "poem", "segments": ["Жил-был ёж.", "И жил он долго."]}
     bad = LLMResponse(tool_calls=(_command_call(speech="Слушай!", perform=tale, actions=SOUND),))
     fixed = {"perform": tale, "actions": SOUND}
     good = LLMResponse(tool_calls=(ToolCall(id="c2", name=kn.COMMAND_TOOL, arguments=fixed),))
@@ -599,7 +599,7 @@ def test_agent_core_invalid_then_fixed_command_executes_the_action(streaming: bo
 def test_joke_in_speech_beside_a_sound_is_retried_into_perform_and_the_sound_stays_silent(streaming: bool) -> None:
     """Живой прогон 7c (#3698, вариант 2): шутка в ``speech`` рядом с ``play_sound`` раньше пропадала молча; теперь
     модель получает нарушение и кладёт шутку в ``perform`` - она звучит, о звуке код молчит."""
-    joke = {"kind": "tale", "segments": ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]}
+    joke = {"kind": "poem", "segments": ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]}
     bad = LLMResponse(tool_calls=(_command_call(speech="Вот звук! Шутка: заходит робот в бар.", actions=SOUND),))
     good = LLMResponse(tool_calls=(_command_call(perform=joke, actions=SOUND),))
     inner = _Inner(DEEPSEEK_CAPS, [bad, good])
@@ -761,3 +761,26 @@ def test_retry_without_query_keeps_the_plain_hint() -> None:
     inner = _Inner(DEEPSEEK_CAPS, [long, good])
     _run(cb.CommandModeLLM(inner, [].append).complete(_messages(), tools=TOOLS))
     assert "ничего не сделано" in inner.requests[1]["messages"][-1].content
+
+
+def test_tale_without_voices_is_retried_with_the_voice_list_and_the_second_try_performs_3959() -> None:
+    """Марафон 23.10: сказка без voice_per_segment проходила валидатор. Теперь нарушение уходит модели с каталогом
+    голосов, ретрай с голосами - выступление (а не фраза «не понял» запасного пути #3953)."""
+    segments = ["Жила-была девочка.", "Куда идёшь?", "К бабушке."]
+    bad = LLMResponse(tool_calls=(_command_call(perform={"kind": "tale", "backing": "calm", "segments": segments}),))
+    voices = ["", "alena", "zahar"]
+    good = LLMResponse(tool_calls=(_command_call(perform={"kind": "tale", "backing": "calm", "segments": segments,
+                                                          "voice_per_segment": voices}),))
+    inner = _Inner(DEEPSEEK_CAPS, [bad, good])
+    log: list = []
+    busy = lambda: cb.Busy(voices=("alena", "zahar", "filipp"))  # noqa: E731
+    out = _run(cb.CommandModeLLM(inner, log.append, busy).complete(_messages(), tools=TOOLS))
+
+    assert len(inner.requests) == 2
+    note = inner.requests[1]["messages"][-1].content
+    assert "tale_without_voices" in note and "Допустимо: alena, zahar, filipp" in note
+    schema_voices = json.dumps(inner.requests[0]["tools"], ensure_ascii=False)
+    assert '"enum": ["", "alena", "filipp", "zahar"]' in schema_voices
+    assert "verdict=invalid:tale_without_voices" in log[0] and "verdict=command" in log[1]
+    perform = out.tool_calls[0].arguments["perform"]
+    assert perform["voice_per_segment"] == voices and perform["kind"] == "tale"

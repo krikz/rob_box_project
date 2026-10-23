@@ -161,7 +161,7 @@ def test_sound_and_a_joke_the_joke_is_kept_the_sound_report_is_not() -> None:
     tools = _Tools({"play_sound": _sound("done")})
     joke = ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]
     result, _ = _turn(tools, _command(actions=[{"tool": "play_sound", "args": HAPPY}],
-                                      perform={"kind": "tale", "segments": joke}))
+                                      perform={"kind": "poem", "segments": joke}))
     assert tools.acted() == ["play_sound"]
     assert tools.said() == [(joke[0], None), (joke[1], None)]
     assert result.speak_text_real_count == 2
@@ -271,7 +271,7 @@ def test_then_music_code_says_it_will_play_after_the_joke_and_the_joke_goes_firs
                           offered=("speak_text", "request_music"))
     joke = ["Заходит робот в бар.", "А бар ему: опять ты со своими битами!"]
     _turn(tools, _command(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "включи что-нибудь"}}],
-                          perform={"kind": "tale", "segments": joke}))
+                          perform={"kind": "poem", "segments": joke}))
     said = [text for text, _ in tools.said()]
     assert said[0].startswith("Поставлю после того, как договорю")
     assert said[1:3] == joke
@@ -283,7 +283,7 @@ def test_without_then_the_action_is_not_postponed() -> None:
     tools = _PlannedTools("Робот, включи музыку и расскажи анекдот", offered=("speak_text", "request_music"))
     joke = ["Заходит робот в бар.", "Конец."]
     _turn(tools, _command(actions=[{"tool": "request_music", "args": {"intent": "track", "text": "включи что-нибудь"}}],
-                          perform={"kind": "tale", "segments": joke}))
+                          perform={"kind": "poem", "segments": joke}))
     assert [c.name for c in tools.calls][0] == "request_music"
     assert not any(t.startswith("Поставлю") for t, _ in tools.said())
 
