@@ -63,6 +63,8 @@ class Addressed:
     picked: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой (не подхват): ≤ 1 свежая фоновая фраза того же собеседника (ADR-0150 §7.3, #3894).
     recent: Tuple[Dict[str, Any], ...] = ()
+    #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10, #3892).
+    background: Tuple[Dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -138,7 +140,8 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog]) -> Addressed:
     """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12)."""
     if not is_bare(rest):
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
-        return Addressed(rest, VOICE, recent=(recent,) if recent else ())
+        since = backlog.background_since_reply(heard) if backlog is not None else []
+        return Addressed(rest, VOICE, recent=(recent,) if recent else (), background=tuple(since))
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
