@@ -42,12 +42,12 @@ def test_engine_accepts_only_known_values():
             de.engine(bad)
 
 
-def test_both_config_copies_are_identical_and_default_v1():
+def test_both_config_copies_are_identical_and_default_v2():
     texts = [p.read_text(encoding="utf-8") for p in CONFIG_COPIES]
     assert texts[0] == texts[1], "docker/sound и src/rob_box_voice: dialog_engine.yaml разошлись"
     data = yaml.safe_load(texts[0])
     assert data == {"/**": {"ros__parameters": {"dialog_engine": de.DEFAULT}}}
-    assert de.from_yaml(CONFIG_COPIES[0]) == "v1"
+    assert de.from_yaml(CONFIG_COPIES[0]) == "v2"
 
 
 def test_from_yaml_missing_file_is_default(tmp_path):
@@ -76,7 +76,7 @@ def test_declare_reads_node_parameter():
         def get_parameter(self, name):
             return types.SimpleNamespace(value=self.value if self.value is not None else self.declared[name])
 
-    assert de.declare(Node(None)) == "v1"
+    assert de.declare(Node(None)) == "v2"
     assert de.declare(Node("v2")) == "v2"
     with pytest.raises(ValueError):
         de.declare(Node("v9"))
@@ -154,9 +154,9 @@ def test_launch_v1_keeps_node_list_and_order(monkeypatch, tmp_path, which):
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_without_flag_file_is_v1(monkeypatch, tmp_path, which):
+def test_launch_without_flag_file_is_default_v2(monkeypatch, tmp_path, which):
     names, _ = _nodes(monkeypatch, which, tmp_path)
-    assert names == NODES_BEFORE[which]
+    assert names == ["dialog_node" if n == "dialogue_node" else n for n in NODES_BEFORE[which]]
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
