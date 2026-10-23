@@ -48,14 +48,6 @@ class CommandNode(Node):
         # Subscribers: только решённые диалогом намерения (ADR-0150 PR-5)
         self.intent_sub = self.create_subscription(Intent, '/dialog/intent', self.intent_callback, 10)
 
-        # Subscribe to dialogue state (чтобы не мешать диалогу)
-        self.dialogue_state_sub = self.create_subscription(
-            String,
-            '/voice/dialogue/state',
-            self.dialogue_state_callback,
-            10
-        )
-
         # Publishers
         self.intent_pub = self.create_publisher(String, '/voice/command/intent', 10)
         self.feedback_pub = self.create_publisher(String, '/voice/command/feedback', 10)
@@ -64,9 +56,6 @@ class CommandNode(Node):
         # Публикуем на /cmd_vel_voice (priority: 25 в twist_mux)
         # Приоритет ниже чем у оператора (joy:100, web:50) но выше Nav2 (10)
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_voice', 10)
-
-        # State tracking
-        self.dialogue_state = 'IDLE'  # IDLE | LISTENING | DIALOGUE | SILENCED
 
         # Action clients
         if self.enable_navigation:
@@ -82,11 +71,6 @@ class CommandNode(Node):
         self.get_logger().info('✅ CommandNode инициализирован (using CommandParser from core)')
         self.get_logger().info(f'  Navigation: {"✓" if self.enable_navigation else "✗"}')
         self.get_logger().info(f'  Waypoints: динамические (через MCP tools)')
-
-    def dialogue_state_callback(self, msg: String):
-        """Callback для состояния dialogue_node."""
-        self.dialogue_state = msg.data
-        self.get_logger().debug(f'📊 Dialogue state: {self.dialogue_state}')
 
     def intent_callback(self, msg: Intent):
         """Намерение после допуска диалогом (``/dialog/intent``): исполнить."""

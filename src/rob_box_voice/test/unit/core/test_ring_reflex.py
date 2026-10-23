@@ -120,3 +120,27 @@ def test_dialogue_states_other_than_silence_never_touch_the_ring():
     for state in ("LISTENING", "DIALOGUE", "IDLE"):
         reflex.on_state(state)
     assert ring.calls == []
+
+
+def test_silence_scene_of_session_v2_drives_the_ring_like_led_node_does():
+    """issue #3911: цепочка ``led_node.session_callback`` - SessionState -> VoiceStateTracker -> RingReflex.
+
+    На ``dialog_engine=v2`` топик ``/voice/dialogue/state`` пуст, тишину даёт сцена ``Silence``.
+    """
+    from rob_box_core import voice_state
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+    msgs = install_dialog_msgs_stub()
+    reflex, ring, _t, answers = _make()
+    tracker = voice_state.VoiceStateTracker()
+
+    def session_callback(msg):  # тело led_node.LEDNode.session_callback без ROS
+        changed = tracker.on_session(msg)
+        if changed is not None:
+            reflex.on_state("silenced" if changed.detail == voice_state.SILENCED_DETAIL else "idle")
+
+    session_callback(msgs.SessionState(agent="personality", scenes=[msgs.SceneFrame(kind="Silence")]))
+    assert ring.calls == [("off",)]
+    assert reflex.on_turn_event("t", "addressed", "started") is None and answers == [("t", False, rr.SILENCED)]
+    session_callback(msgs.SessionState(agent="personality", scenes=[]))
+    assert ring.calls[-1] == ("trace",)

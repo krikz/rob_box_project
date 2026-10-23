@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-23",
-  "base_sha": "8178e2809e9a9b17d80e3351f47d3fb7fa984b7e",
+  "base_sha": "47f054bbe86021868a8185c3486421dd33ce87d5",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -27,10 +27,6 @@
       "wmc": 99,
       "methods": 20
     },
-    "src/rob_box_perception/rob_box_perception/context_aggregator_node.py:ContextAggregatorNode": {
-      "wmc": 81,
-      "methods": 18
-    },
     "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {
       "wmc": 86,
       "methods": 15
@@ -44,7 +40,7 @@
       "methods": 59
     },
     "src/rob_box_quest/rob_box_quest/quest_node.py:QuestNode": {
-      "wmc": 171,
+      "wmc": 170,
       "methods": 36
     },
     "src/rob_box_quest/rob_box_quest/server/ws_server.py:WSSServer": {
@@ -52,7 +48,7 @@
       "methods": 54
     },
     "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py:AvatarArbiter": {
-      "wmc": 96,
+      "wmc": 93,
       "methods": 34
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {

@@ -123,7 +123,27 @@ class TestLEDNode(unittest.TestCase):
         sub_topics = [name for name, _ in subscriptions]
 
         self.assertIn('/voice/dialogue/state', sub_topics)
+        self.assertIn('/dialog/session', sub_topics)  # issue #3911: тишина на v2 - сцена Silence
         self.assertIn('/audio/direction', sub_topics)
+
+    def test_session_silence_scene_turns_ring_off_and_back(self):
+        """issue #3911: SessionState со сценой Silence гасит кольцо, без неё - возвращает покой."""
+        from rob_box_dialog_msgs.msg import SceneFrame, SessionState
+
+        self.node.reflex = MagicMock()
+        self.node.session_callback(SessionState(agent='personality', scenes=[SceneFrame(kind='Silence')]))
+        self.node.reflex.on_state.assert_called_once_with('silenced')
+
+        self.node.reflex.reset_mock()
+        self.node.session_callback(SessionState(agent='personality', scenes=[]))
+        self.node.reflex.on_state.assert_called_once_with('idle')
+
+    def test_session_of_other_agent_does_not_silence_ring(self):
+        from rob_box_dialog_msgs.msg import SceneFrame, SessionState
+
+        self.node.reflex = MagicMock()
+        self.node.session_callback(SessionState(agent='telegram', scenes=[SceneFrame(kind='Silence')]))
+        self.node.reflex.on_state.assert_not_called()
 
     def test_service_created(self):
         """Тест: сервис управления LED создан."""
