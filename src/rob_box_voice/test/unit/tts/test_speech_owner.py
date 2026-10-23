@@ -445,13 +445,42 @@ def test_presynth_then_commit_true_goes_to_pipeline(setup):
     assert owner.claim_presynth("sid-1")["audio_np"].size == 8000
 
 
-def test_presynth_in_streaming_mode_is_rejected(setup):
+def test_presynth_in_streaming_mode_synthesizes_whole_without_stream(setup):
+    """#3930: поток MiniMax звучит сразу, поэтому пред-синтез его не просит - HTTP целиком, без отказа."""
     node, owner, _ = setup
     _presynth_node(node)
     node.minimax_streaming = True
+    seen = []
+    chain = node._sap_run_provider_chain
+
+    def chain_spy(voice, language, attrs, text, sink, ctx):
+        seen.append(ctx.get("stream_ok"))
+        chain(voice, language, attrs, text, sink, ctx)
+
+    node._sap_run_provider_chain = chain_spy
     node.subs["/voice/speech/request"](_request(commit=False))
-    assert _kinds(node) == ["queued", "rejected"]
-    assert _events(node)[-1][1].reason == "presynth_unavailable"
+    assert _kinds(node) == ["queued", "synthesized"]
+    assert seen == [None]
+    assert owner.claim_presynth("sid-1")["audio_np"].size == 8000
+
+
+def test_streamed_envelope_follows_first_sound_and_duration_arrives_late(setup):
+    """#3930: ``started`` с неизвестной длительностью, огибающая куска - от t0 первого звука + смещение."""
+    node, owner, _ = setup
+    owner.admit(_chunk(), "sid-1")
+    owner.synthesized("sid-1", 0.05, {"used_provider": "minimax", "result": {"stream": object()}}, None)
+    assert dict(_events(node))["synthesized"].duration_ms == 0  # поток: длительность ещё не известна
+    assert owner.started("sid-1", np.full(800, 0.5, dtype=np.float32), 16000, 0.0)
+    assert dict(_events(node))["started"].duration_ms == 0
+    rec = owner.ledger.get("sid-1")
+    assert rec.duration_s == 0.0 and rec.t0_ns is not None
+    owner.streamed("sid-1", np.full(1600, 0.25, dtype=np.float32), 16000, 0.05)
+    owner.streamed("sid-1", None, 16000, 0.0, 2.5)
+    assert rec.duration_s == 2.5
+    first, second = node.pubs["/voice/speech/envelope"].sent
+    t0 = lambda env: env.t0.sec * 1_000_000_000 + env.t0.nanosec  # noqa: E731
+    assert t0(second) - t0(first) == 50_000_000
+    assert len(second.levels) == 3  # 0.1 с по 40 мс
 
 
 # -- адаптер v1 -------------------------------------------------------------------

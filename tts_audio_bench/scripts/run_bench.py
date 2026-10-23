@@ -597,7 +597,7 @@ def _run_streaming_ttfa_scenario(
 ) -> ScenarioResult:
     """Measure time-to-first-AudioData in streaming mode.
 
-    Uses :func:`TTSNode._synthesize_minimax_streaming_publish` so each
+    Uses :func:`rob_box_voice.core.tts_stream.open_for_playback` so each
     TTS chunk is published as a separate AudioData; the time delta
     between ``t0`` and ``sink.first_arrival`` is the streaming TTFA.
 
@@ -621,7 +621,12 @@ def _run_streaming_ttfa_scenario(
     sink.attach(node.audio_pub)
 
     try:
-        node._synthesize_minimax_streaming_publish("hello", ssml_attributes=None)
+        # #3930 — поток в динамик живёт в core.tts_stream; ждём конца продюсера.
+        from rob_box_voice.core import tts_stream
+        from rob_box_voice.tts_node import TTSNode
+
+        settings = TTSNode._minimax_settings(node, None, None, None, sample_rate=output_sample_rate)
+        tts_stream.open_for_playback(node, "hello", settings, None)["stream"].future.result(timeout=30)
     except Exception as exc:
         return ScenarioResult(
             name=f"streaming_ttfa_{fmt}",

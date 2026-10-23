@@ -83,7 +83,8 @@ tts_node:
     minimax_timeout: 30.0
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
-    minimax_streaming: false
+    # #3930 — реплика в динамик SSE-потоком (первый звук ~1 с вместо 2.2–3.6 с HTTP)
+    minimax_streaming: true
     # Issue #1780 / issue #1004 / issue #1830 — единственный канонический блок
     # MiniMax emotion / pitch / volume / pronunciation_dict. tts_node.py
     # declare_parameter() ожидает STRING ("" → «не задан»), при чтении

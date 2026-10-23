@@ -107,9 +107,13 @@ RUN apt-get update && \
 # (#3923).  opencv-python-headless ровно 4.10.0.84: колесо собрано с
 # поддержкой numpy 1.21 из образа и не тянет апгрейд numpy (см. комментарий
 # перед `colcon test: rob_box_perception` в G-Run Tests.yml); новее — numpy 2.
+# pytest-xdist (#3935) — параллельные прогоны юнит-тестов (`pytest -n auto`) в
+# rob_box_music / rob_box_voice / rob_box_animations.  Версия >=3.6, верхней
+# границы нет: pip берёт свежую, совместимую с pytest>=8 из строки выше.
+# Доустановку на прогоне сняли в #3929, поэтому плагин обязан жить в образе.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir \
-        'pytest>=8' pytest-asyncio pytest-cov pytest-mock \
+        'pytest>=8' 'pytest-xdist>=3.6' pytest-asyncio pytest-cov pytest-mock \
         openai httpx requests pyyaml \
         msgpack aiohttp pytz \
         'python-telegram-bot[job-queue]==21.*' \
@@ -120,11 +124,14 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
 # версию берём у dpkg, и отсутствие ros2cli роняет сборку, а не печать.
 # Зависимости тестов (#3923): отсутствие любой роняет сборку, а numpy обязан
 # остаться 1.x — opencv 4.10 не должен был утянуть numpy 2.
+# pytest-xdist (#3935): `import xdist` падает — сборка падает, а не «параллель
+# молча не заработала» на прогоне тестов.
 # ROS-окружение подключаем с `set +u` только на source (setup.bash читает
 # $AMENT_TRACE_SETUP_FILES без дефолта), затем -u возвращаем.
 # hadolint ignore=SC1091
 RUN python3 -c "import pytest; assert pytest.__version__ >= '8', f'pytest={pytest.__version__}'" && \
     python3 -c "import cv2, msgpack, aiohttp, telegram, pytz, numpy; assert numpy.__version__.startswith('1.'), f'numpy={numpy.__version__}'" && \
+    python3 -c "import pytest, xdist; print(pytest.__version__, xdist.__version__)" && \
     ros2cli="$(dpkg-query -W -f='${Version}' ros-humble-ros2cli)" && \
     set +u && . /opt/ros/humble/setup.bash && set -u && \
     ros2 pkg prefix audio_common_msgs && \
