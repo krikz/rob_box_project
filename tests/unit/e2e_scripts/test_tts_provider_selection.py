@@ -107,22 +107,23 @@ class TestMapTtsVoice:
     @pytest.mark.parametrize(
         "voice,expected",
         [
-            ("anton", "Russian_ReliableMan:3:1.12"),
-            ("ermil", "Russian_Bad-temperedBoy:5:1.2"),
-            ("zahar", "Russian_HandsomeChildhoodFriend:-5:0.85"),
-            ("filipp", "Russian_AttractiveGuy:1:1.05"),
+            ("anton", "Russian_ReliableMan:0:1.0"),
+            ("ermil", "Russian_Bad-temperedBoy:2:1.0"),
+            ("zahar", "Russian_HandsomeChildhoodFriend:0:1.0"),
+            ("filipp", "Russian_AttractiveGuy:0:1.0"),
         ],
     )
     def test_minimax_mapping(self, voice, expected):
         assert map_voice("minimax", voice) == expected
 
-    def test_minimax_roles_differ_in_pitch_and_speed(self):
-        """#3931 (Шифу): роли — как разные люди: у каждой свой голос, питч и темп."""
+    def test_minimax_roles_are_four_voices_with_mild_prosody(self):
+        """#3931: четыре разных голоса; просодия малая (замер на живом канале 23.10:
+        питч +5/темп 1.2 ронял вейк «Робот» в 62% фраз, питч +2 и 0 - в 10-15%)."""
         specs = [map_voice("minimax", v).split(":") for v in ("anton", "ermil", "zahar", "filipp")]
         assert all(len(s) == 3 for s in specs), specs
         assert len({s[0] for s in specs}) == 4
-        assert len({s[1] for s in specs}) == 4
-        assert len({s[2] for s in specs}) == 4
+        assert all(abs(int(s[1])) <= 2 for s in specs), specs
+        assert all(0.9 <= float(s[2]) <= 1.1 for s in specs), specs
 
     @pytest.mark.parametrize("provider", ["silero", "minimax"])
     def test_scenario_voices_stay_distinct(self, provider):
@@ -151,7 +152,7 @@ class TestMapTtsVoice:
 
     @pytest.mark.parametrize(
         "provider,default",
-        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan:3:1.12")],
+        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan:0:1.0")],
     )
     def test_empty_voice_falls_back_to_default(self, provider, default):
         assert map_voice(provider, "") == default
