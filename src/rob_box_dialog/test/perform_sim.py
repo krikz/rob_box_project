@@ -46,8 +46,10 @@ class Sim:
     bpm: float = 120.0
     fail_presynth: Tuple[str, ...] = ()     # тексты, чей пред-синтез владелец речи отвергает
     hiccup: Dict[str, float] = field(default_factory=dict)  # текст → задержка старта сверх at (сбой очереди)
+    tts_provider: str = ""                 # провайдер TTS у хоста: паузы по сетке строк — у minimax (О11)
     t: float = 1000.0
     block: PerformBlock = field(init=False)
+    logs: List[str] = field(default_factory=list)
     heard: List[Heard] = field(default_factory=list)
     plan_events: List[PlanEvent] = field(default_factory=list)
     effects: List[Tuple[float, object]] = field(default_factory=list)
@@ -57,7 +59,8 @@ class Sim:
     def __post_init__(self) -> None:
         ids = itertools.count(1)
         self.block = PerformBlock(self.perf, "blk-perform", output_latency_ms=LATENCY_MS,
-                                  new_id=lambda: f"s{next(ids):02d}", log=lambda _: None)
+                                  new_id=lambda: f"s{next(ids):02d}", log=self.logs.append,
+                                  tts_provider=self.tts_provider)
         self._q: List[Tuple[float, int, Callable[[], None]]] = []
         self._seq = itertools.count()
         self._texts: Dict[str, Say] = {}

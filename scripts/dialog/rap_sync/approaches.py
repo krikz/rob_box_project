@@ -14,6 +14,8 @@
 4. ``markup`` — «ритмическая подача» средствами провайдера: у MiniMax/Yandex/Silero нет режима рэпа или пения
    (первоисточники — отчёт), есть только паузы (``<#x#>`` / ``sil<[ms]>`` / ``<break>``) и скорость. Паузы
    между строками считаются по меткам времени первого синтеза так, чтобы каждая строка начиналась на такте.
+   Выбран Шифу (О11, 23.10): формула и лимиты переехали в продукт — ``rob_box_dialog.plan.rap_pauses``; здесь
+   только длины строк по меткам букв (у робота меток нет — там оценка по слогам).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import soundfile as sf
 
 from common import SR, VOWELS, lines
 from metric import resultant
+from rob_box_dialog.plan import rap_pauses
 
 BPM_RANGE = (80.0, 140.0)
 RATIO = (0.6, 1.7)
@@ -226,17 +229,9 @@ def markup_text(verse: str, words: Sequence[dict], bpm: float, max_speed: float 
         k = sum(ch.isalpha() for ch in ln)
         spans.append(letters[i + k - 1]["t1"] - letters[i]["t0"])
         i += k
-    b = bar_s(bpm)
-    longest = max(spans)
-    n = 1 if longest / max_speed <= 0.92 * b else 2
-    speed = round(min(max_speed, max(1.0, longest / (0.92 * n * b))), 2)
-    parts = []
-    for j, (ln, dur) in enumerate(zip(lines(verse), spans)):
-        if j < len(spans) - 1:
-            corr = fix[j] if j < len(fix) else 0.0
-            ln = ln.rstrip(",.;:!?") + f" <#{max(0.05, n * b - dur / speed - corr):.2f}#>"
-        parts.append(ln)
-    return " ".join(parts), speed, n
+    # спайк мерил паузы как есть: поправка на «длиннее заказанной» (PAUSE_OVERHEAD_S) выведена из его же замера
+    pauses, speed, n = rap_pauses.layout(spans, bar_s(bpm), max_speed, fix, overhead_s=0.0)
+    return rap_pauses.mark(lines(verse), pauses), speed, n
 
 
 def vowel_times(words: Sequence[dict]) -> List[float]:

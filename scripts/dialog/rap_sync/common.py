@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Sequence
 
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src" / "rob_box_dialog"))
+from rob_box_dialog.plan.rap_pauses import VOWELS, syllables  # noqa: E402,F401 — слоги: одно знание с продуктом
 
 #: Частота робота: ReSpeaker и jack_rec — 16 кГц (память «Звук робота — 16 кГц»).
 SR = 16000
@@ -30,7 +34,6 @@ VERSES: Sequence[str] = (
 
 #: Голоса реестра (``tts_voice_registry.PROVIDER_VOICES["minimax"]``): текущий голос робота, низкий мужской, женский.
 VOICES: Sequence[str] = ("male-qn-qingse", "Russian_ReliableMan", "Russian_BrightHeroine")
-VOWELS = set("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
 
 
 def lines(verse: str) -> list:
@@ -39,11 +42,6 @@ def lines(verse: str) -> list:
 
 def tts_text(verse: str) -> str:
     return " ".join(lines(verse))
-
-
-def syllables(text: str) -> int:
-    """Слогов в русском тексте = гласных."""
-    return sum(ch in VOWELS for ch in text)
 
 
 def read_mono(path: Path) -> np.ndarray:

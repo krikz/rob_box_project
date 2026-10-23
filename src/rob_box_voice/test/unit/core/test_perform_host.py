@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 import threading
 import types
@@ -16,6 +17,7 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import Performance
+from rob_box_dialog.plan.rap_pauses import markup
 from rob_box_llm.provider import ToolResult
 from rob_box_voice.core.perform_host import PerformHost
 
@@ -304,3 +306,30 @@ def test_context_while_performing_and_none_after(loop):
     ctx = host.context()
     assert ctx["kind"] == "rap" and ctx["first_pending"] == 1 and ctx["segments_total"] == 2
     assert host.active_segment == 0
+
+
+LINED_RAP = Performance(kind="rap", segments=("Я комар, звеню всю ночь,\nТы не спишь, а мне не лень.",
+                                              "Прячусь за шторой,\nЖду темноты."), backing="beat")
+
+
+def test_3901_minimax_verses_go_to_presynth_with_pauses_on_the_beat_grid(loop):
+    """Провайдер TTS MiniMax и бит: куплеты уходят в пред-синтез после ``started`` — с паузами ``<#x#>`` по такту
+    сетки (120 BPM — 2 с), экранированными в SSML."""
+    node, tools, events = _Node(), _Tools(STARTED), []
+    host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
+                       clock=lambda: node.now_s, tts_provider=lambda: "minimax")
+    host.start(LINED_RAP, "t1")
+    assert node.requests() == []  # сетки ещё нет — пред-синтез ждёт бит
+    _settle(loop)
+    texts = [html.unescape(plain_text(r.text)) for r in node.requests() if r.commit is False]
+    assert texts[0] == phrases.text("perform.backing_started")
+    assert texts[1:] == [markup(seg, 2.0).text for seg in LINED_RAP.segments]
+    assert all("&lt;#" in r.text for r in node.requests()[1:])
+    assert any("разметка пауз MiniMax по сетке строк, такт 2.00 с" in line for line in node.logs)
+
+
+def test_3901_not_minimax_reads_as_before_and_says_why(loop):
+    host, node, _, _ = _host(loop, STARTED)
+    host.start(LINED_RAP, "t1")
+    assert [plain_text(r.text) for r in node.requests()] == list(LINED_RAP.segments)  # сразу и без пауз
+    assert any("разметка пауз выключена (синтез неизвестен, не MiniMax)" in line for line in node.logs)
