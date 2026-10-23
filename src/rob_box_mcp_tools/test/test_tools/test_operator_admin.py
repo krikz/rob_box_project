@@ -270,12 +270,13 @@ class TestReadLogsTool:
         source_param = next(p for p in tool.parameters if p.name == "source")
         assert source_param.enum == ["rosout", "loki"]
 
-    def test_rosout_without_monitor_returns_monitor_unavailable(self, mock_node):
-        """HealthMonitor не зарегистрирован → monitor_unavailable=True, lines=[]."""
+    def test_rosout_without_monitor_is_an_honest_no_access(self, mock_node):
+        """HealthMonitor не зарегистрирован → честный отказ «нет доступа», а не успех без строк (PR-13b)."""
         tool = ReadLogsTool(mock_node)
         result = tool.execute(node="/audio_node", source="rosout")
 
-        assert result.success is True
+        assert result.success is False
+        assert "Нет доступа" in result.error
         assert result.data["monitor_unavailable"] is True
         assert result.data["lines"] == []
 
@@ -510,6 +511,79 @@ class TestContainerStatusTool:
         # fail, но мы успели поймать query
         assert result.success is False
         assert any("voice" in q for q in seen_queries), "name filter не дошёл до PromQL"
+
+    def test_prometheus_without_container_series_is_an_honest_failure(self, mock_node):
+        """PR-13b: Prometheus ответил, но рядов cAdvisor нет → отказ с причиной, а не «0 контейнеров»."""
+        with patch("rob_box_mcp_tools.tools.operator_admin._http_get_json",
+                   return_value={"data": {"result": []}}):
+            result = ContainerStatusTool(mock_node).execute(name="voice")
+        assert result.success is False and "не знает метрик контейнеров" in result.error
+
+
+# ----------------------------------------------------------------------------
+# read_logs для ТАРС (PR-13b #3708): секреты вырезаны, объём ограничен, ответ уходит в Telegram
+# ----------------------------------------------------------------------------
+
+
+def _loki(lines):
+    return {"data": {"result": [{"stream": {"container": "voice-assistant"},
+                                 "values": [[str(1_700_000_000_000_000_000 + i), text] for i, text in enumerate(lines)]}]}}
+
+
+@pytest.mark.unit
+class TestReadLogsForOperator:
+    SECRETS = [
+        "SSHPASS=hunter2-ssh",
+        "ROBOT_SSH_PASS=robopass123",
+        "DEEPSEEK_API_KEY=sk-live-abcdef0123456789",
+        "MINIMAX_API_KEY: eyJhbGciOiJIUzI1NiJ9AAAAAAAA.eyJzdWIiOiIxMjM0NTY3ODkwIn0AA.abcdefghijklmnopqrstu",
+        "password: s3cr3t-value",
+        "sshpass -p topsecret ssh pi@10.1.1.22",
+        "Authorization: Bearer abc-def-1234567890",
+        "TELEGRAM_BOT_TOKEN=123456:AAHk-secret-token",
+    ]
+    LEAKS = ["hunter2-ssh", "robopass123", "abcdef0123456789", "eyJzdWIi", "s3cr3t-value", "topsecret",
+             "abc-def-1234567890", "AAHk-secret-token"]
+
+    def test_secrets_are_cut_before_the_llm(self, mock_node):
+        with patch("rob_box_mcp_tools.tools.operator_admin._http_get_json", return_value=_loki(self.SECRETS)):
+            result = ReadLogsTool(mock_node).execute(node="voice-assistant")
+        assert result.success is True and result.data["source"] == "loki"  # loki — по умолчанию
+        text = json.dumps(result.data, ensure_ascii=False)
+        for leak in self.LEAKS:
+            assert leak not in text, leak
+        assert "SSHPASS=***" in text and "sshpass -p ***" in text
+
+    def test_volume_is_capped_for_telegram(self, mock_node):
+        from rob_box_mcp_tools.tools import operator_admin as oa
+
+        many = [f"line {i} " + "x" * 1000 for i in range(200)]
+        with patch("rob_box_mcp_tools.tools.operator_admin._http_get_json", return_value=_loki(many)):
+            result = ReadLogsTool(mock_node).execute(node="voice-assistant", limit=500)
+        lines = [entry["line"] for entry in result.data["lines"]]
+        assert 0 < len(lines) <= oa.LOG_LINES_MAX
+        assert all(len(line) <= oa.LOG_LINE_CHARS_MAX for line in lines)
+        assert sum(map(len, lines)) <= oa.LOG_TOTAL_CHARS_MAX
+        assert lines[0].startswith("line 199")  # свежие — первыми
+
+    def test_container_name_cannot_inject_logql(self, mock_node):
+        seen = []
+
+        def fake_http(url, params=None):
+            seen.append(params["query"])
+            return _loki([])
+
+        with patch("rob_box_mcp_tools.tools.operator_admin._http_get_json", side_effect=fake_http):
+            ReadLogsTool(mock_node).execute(node='voice"} |= "x')
+            empty = ReadLogsTool(mock_node).execute(node='"}{')
+        assert seen == ['{container=~".*voicex.*"}']
+        assert empty.success is False
+
+    def test_without_redactor_lines_are_hidden_not_leaked(self, mock_node, monkeypatch):
+        from rob_box_mcp_tools.tools import operator_admin as oa
+
+        monkeypatch.setitem(sys.modules, "rob_box_voice.utils.redact", None)  # import → ImportError
+        assert oa._sanitize_text("SSHPASS=hunter2") == oa.LOG_REDACTION_UNAVAILABLE
 
 
 # ----------------------------------------------------------------------------
