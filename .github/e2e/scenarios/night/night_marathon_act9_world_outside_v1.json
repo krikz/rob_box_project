@@ -77,15 +77,10 @@
       "voice": "anton",
       "text": "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
       "patterns": [
-        "play_animation"
+        "play_animation",
+        "SpeechEvent started speech_id"
       ],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": [],
-        "_comment": "Комбинация двух каналов в одном ходе: речь + LED."
-      }
+      "_why": "Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (см. n802)."
     },
     {
       "label": "n907_search_space",
@@ -121,16 +116,16 @@
       "voice": "anton",
       "text": "Робот, скажи по-китайски «всем спокойной ночи».",
       "patterns": [
-        "speak_text"
+        "SpeechEvent started speech_id"
       ],
-      "_why": "Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но tts_text_guard режет чанк с >10% «чужой» письменности (#1709). Красный подтверждает карточку W6-4/W6-5."
+      "_why": "v2 (#3880): `SpeechEvent started` вместо `speak_text`. Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но tts_text_guard режет чанк с >10% «чужой» письменности (#1709). Красный подтверждает карточку W6-4/W6-5."
     },
     {
       "label": "n910_estimate_duration",
       "voice": "anton",
       "text": "Робот, прикинь, сколько секунд ты будешь читать вслух четверостишие?",
       "patterns": [
-        "estimate_tts_duration|speak_text"
+        "estimate_tts_duration|SpeechEvent started speech_id"
       ],
       "_why": "estimate_tts_duration — служебный тул планировщика, LLM зовёт его редко. Вне gate по той же причине, что в dialogue-coverage-map §3."
     }
