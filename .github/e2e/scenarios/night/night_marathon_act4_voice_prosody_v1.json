@@ -30,8 +30,9 @@
       "voice": "anton",
       "text": "Робот, а каким голосом ты говоришь прямо сейчас?",
       "patterns": [
-        "current_voice"
-      ]
+        "SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+      ],
+      "_why": "v2 (#3880, run 39878786968): v1-строка `TTS current_voice` не пишется; факт ответа голосом -- `SpeechEvent synthesized … provider=`."
     },
     {
       "label": "n403_set_voice_alena",
@@ -53,8 +54,9 @@
       "voice": "anton",
       "text": "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
       "patterns": [
-        "current_voice"
-      ]
+        "SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+      ],
+      "_why": "v2 (#3880): см. n402 -- `SpeechEvent synthesized … provider=` вместо `current_voice`."
     },
     {
       "label": "n405_set_voice_jane",
@@ -135,27 +137,29 @@
       "label": "n411_pitch_bass",
       "voice": "anton",
       "text": "Робот, говори басом, как диктор в старом кино.",
-      "patterns": [
-        "set_pitch|set_voice"
-      ],
-      "_why": "set_pitch есть не у всех провайдеров TTS — принимаем и деградацию в set_voice, но фиксируем в логе, чем ответил."
+      "patterns": [],
+      "acceptance": {
+        "expected_tool_calls": [
+          "set_pitch"
+        ],
+        "must_not_call": [],
+        "_comment": "v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких инструментов нет» -- проверка была слабой (паттерн `set_pitch|set_voice` матчил список тулов). Теперь нужен реальный вызов set_pitch (`Запрос выполнения: set_pitch`). У провайдера без set_pitch шаг честно красный -- акт flaky-known."
+      }
     },
     {
       "label": "n412_skazka_multivoice",
       "voice": "anton",
       "text": "Робот, расскажи сказку про Красную Шапочку, говори за каждого персонажа своим голосом.",
       "patterns": [
-        "voice_used"
+        "🧾 \\[command\\] .*actions=\\[[^]]*perform|SpeechEvent voice_changed .*applied="
       ],
       "acceptance": {
-        "expected_tool_calls": [
-          "set_voice"
-        ],
         "expected_keywords": [
           "красн"
         ],
+        "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "Сокращено под бюджет VAD 15с (run 35658231116); просьба про Красную Шапочку и смену голоса на персонажа сохранены. #1532: сказка должна быть полной и реально менять голос. Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя."
+        "_comment": "v2 (#3880, run 39878786968): сказку делает `perform kind=tale` с `voice_per_segment`, тула set_voice нет -- ждём `perform` в действиях команды или `SpeechEvent voice_changed` (строка `voice_used` -- v1/MiniMax). Сокращено под бюджет VAD 15с (run 35658231116); просьба про Красную Шапочку и смену голоса на персонажа сохранены. #1532: сказка должна быть полной и реально менять голос. Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя."
       },
       "retry_acceptance": 1
     }

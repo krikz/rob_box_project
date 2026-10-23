@@ -184,3 +184,31 @@ def test_harness_reads_silent_ok_from_the_scenario(tmp_path, label):
               % (lib.as_posix(), (NIGHT / ACT8).as_posix(), out.as_posix(), out.as_posix()))
     p = subprocess.run([bash, "-c", script], capture_output=True, text=True, encoding="utf-8")
     assert "%s|1" % label in p.stdout.splitlines(), (p.stdout, p.stderr)
+
+
+ACT4 = "night_marathon_act4_voice_prosody_v1.json"
+SYNTH_LINE = ("[tts_node-5] [INFO] [1790801812.0]: 🗣️ SpeechEvent synthesized speech_id=91b3cb4b agent=tars "
+              "epoch=1 text_len=40 duration_ms=2100 provider=minimax")
+COMMAND_LINE = ("[dialog_node-4] [INFO] [1790801812.0]: 🧾 [command] provider=minimax mode=tool verdict=ok "
+                "actions=['perform'] speech_dropped=0")
+VOICE_CHANGED_LINE = ("[tts_node-5] [INFO] [1790801812.0]: 🗣️ SpeechEvent voice_changed request=ab12 "
+                      "requested='alena' applied='ermil' provider=yandex reason=")
+
+
+def test_act4_voice_steps_use_v2_markers():
+    g = _gen()
+    steps = _steps(ACT4)
+    for label in ("n402_current_voice", "n404_speak_after_set"):
+        assert steps[label]["patterns"] == [g.SPEECH_PROVIDER], label
+    assert _hit(g.SPEECH_PROVIDER, SYNTH_LINE)
+    assert not _hit(g.SPEECH_PROVIDER, STARTED_LINE)
+    tale = steps["n412_skazka_multivoice"]
+    assert tale["patterns"] == [g.TALE_VOICES]
+    assert "set_voice" not in tale["acceptance"].get("expected_tool_calls", [])
+    assert _hit(g.TALE_VOICES, COMMAND_LINE) and _hit(g.TALE_VOICES, VOICE_CHANGED_LINE)
+    assert not _hit(g.TALE_VOICES, "🧾 [command] provider=minimax mode=tool verdict=ok actions=['set_speed']")
+    pitch = steps["n411_pitch_bass"]
+    assert pitch["acceptance"]["expected_tool_calls"] == ["set_pitch"] and not pitch["patterns"]
+    syn = (ROOT / "src/rob_box_voice/rob_box_voice/core/speech_owner.py").read_text(encoding="utf-8")
+    assert 'self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)' in syn
+    assert 'f"applied={applied!r} provider={provider} reason={reason}"' in syn

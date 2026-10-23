@@ -111,6 +111,12 @@ TURN_WITH_LLM = TURN_DONE + r" .*llm_calls=[1-9]"
 SPEECH_STARTED = r"SpeechEvent started speech_id"
 #: Речь погашена перебиванием: ``SpeechEvent cancelled`` владельца речи или решение ``🛑 [interrupt]`` ноды.
 SPEECH_CANCELLED = r"SpeechEvent cancelled|🛑 \[interrupt\]"
+#: Речь синтезирована провайдером: v2 пишет провайдера в `SpeechEvent synthesized … provider=<имя>`
+#: (замена v1-строки `TTS current_voice →`, которой v2 не пишет).
+SPEECH_PROVIDER = r"SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+#: Сказка разными голосами в v2: `perform` в действиях команды (`🧾 [command] … actions=[…perform…]`, голос сегмента --
+#: `voice_per_segment`) либо смена голоса владельцем речи (`SpeechEvent voice_changed … applied=`). Тула set_voice тут нет.
+TALE_VOICES = r"🧾 \[command\] .*actions=\[[^]]*perform|SpeechEvent voice_changed .*applied="
 #: Тулы музыки, которыми v2 законно отвечает на «поставь что-нибудь»: ``📤 Отправлен запрос <id>: <tool>``.
 MUSIC_DISPATCH = r"📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
 
@@ -1051,7 +1057,9 @@ act(
         step(
             "n402_current_voice",
             "Робот, а каким голосом ты говоришь прямо сейчас?",
-            patterns=["current_voice"],
+            patterns=[SPEECH_PROVIDER],
+            why="v2 (#3880, run 39878786968): v1-строка `TTS current_voice` не пишется; "
+            "факт ответа голосом -- `SpeechEvent synthesized … provider=`.",
         ),
         step(
             "n403_set_voice_alena",
@@ -1065,7 +1073,8 @@ act(
         step(
             "n404_speak_after_set",
             "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
-            patterns=["current_voice"],
+            patterns=[SPEECH_PROVIDER],
+            why="v2 (#3880): см. n402 -- `SpeechEvent synthesized … provider=` вместо `current_voice`.",
         ),
         step(
             "n405_set_voice_jane",
@@ -1104,19 +1113,24 @@ act(
         step(
             "n411_pitch_bass",
             "Робот, говори басом, как диктор в старом кино.",
-            patterns=["set_pitch|set_voice"],
-            why="set_pitch есть не у всех провайдеров TTS — принимаем и "
-            "деградацию в set_voice, но фиксируем в логе, чем ответил.",
+            expect_tools=["set_pitch"],
+            why="v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких "
+            "инструментов нет» -- проверка была слабой (паттерн `set_pitch|set_voice` "
+            "матчил список тулов). Теперь нужен реальный вызов set_pitch "
+            "(`Запрос выполнения: set_pitch`). У провайдера без set_pitch шаг "
+            "честно красный -- акт flaky-known.",
         ),
         step(
             "n412_skazka_multivoice",
             "Робот, расскажи сказку про Красную Шапочку, говори за каждого "
             "персонажа своим голосом.",
-            patterns=["voice_used"],
-            expect_tools=["set_voice"],
+            patterns=[TALE_VOICES],
             keywords=["красн"],
             retry=1,
-            why="Сокращено под бюджет VAD 15с (run 35658231116); просьба про "
+            why="v2 (#3880, run 39878786968): сказку делает `perform kind=tale` с "
+            "`voice_per_segment`, тула set_voice нет -- ждём `perform` в действиях "
+            "команды или `SpeechEvent voice_changed` (строка `voice_used` -- v1/MiniMax). "
+            "Сокращено под бюджет VAD 15с (run 35658231116); просьба про "
             "Красную Шапочку и смену голоса на персонажа сохранены. #1532: "
             "сказка должна быть полной и реально менять голос. Стем «красн» "
             "ловит «красную»/«красная» и запрещает generic «жила-была» без "
