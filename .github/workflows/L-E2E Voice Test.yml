@@ -109,6 +109,11 @@ on:
         required: false
         default: false
         type: boolean
+      e2e_marathon_phase:
+        description: 'Issue #3972 — режим e2e держит раннер марафона: first (включить, стереть e2e-БД один раз) | middle (подхватить без стирания) | last (подхватить и выключить). Пусто — одиночный акт, как раньше. Ставит только run_night_marathon.sh.'
+        required: false
+        default: ''
+        type: string
       # Issue #1527: трейсинг «кто дёрнул workflow». Все скрипты/воркеры
       # используют твой GH_TOKEN, поэтому triggering_actor.login всегда = krikz.
       # Эти опциональные поля заполняются самими скриптами (agent-flow-*),
@@ -322,6 +327,7 @@ jobs:
           CHECK_TG_ECHO: ${{ inputs.check_tg_echo }}
           TTS_PROVIDER: ${{ inputs.tts_provider }}
           E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
+          E2E_MARATHON_PHASE: ${{ inputs.e2e_marathon_phase }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -376,6 +382,13 @@ jobs:
           if [ "$E2E_HOLD_CLEAN" = "true" ]; then
             CMD="$CMD --hold-e2e-for-next-act"
           fi
+          # Issue #3972 — режим e2e держит раннер: одно включение на марафон (значение проверяет харнесс).
+          E2E_PHASE_CLEAN=$(printf '%s' "$E2E_MARATHON_PHASE" | tr -d '\r\n ')
+          case "$E2E_PHASE_CLEAN" in
+            "") ;;
+            first|middle|last) CMD="$CMD --e2e-marathon-phase $E2E_PHASE_CLEAN" ;;
+            *) echo "E2E_FATAL: e2e_marathon_phase='$E2E_PHASE_CLEAN' — ожидается first|middle|last" >&2; exit 2 ;;
+          esac
 
           echo "RUN_CMD: $CMD"
           # Запускаем через SSH: ключ передаём env-переменной (не в cmdline — чтобы не светить в ps).
