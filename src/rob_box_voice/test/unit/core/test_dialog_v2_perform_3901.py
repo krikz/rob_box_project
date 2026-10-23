@@ -180,3 +180,30 @@ def test_tts_provider_state_sets_actual_provider_and_ignores_garbage():
     assert node._actual_tts_provider is None
     plan_host.on_tts_provider_state(node, types.SimpleNamespace(data='{"provider": "minimax", "voice": "x"}'))
     assert node._actual_tts_provider == "minimax" and plan_host._tts_provider(node) == "minimax"
+
+
+def test_3973_block_end_of_owner_closes_the_request_in_the_engine_window(loop):
+    """#3973: выступление стартовало ходом, владелец прислал ``block_end`` - просьба в окне LLM закрыта исходом
+    (``stopped_by_user`` на «хватит»), а не висит неотвеченной."""
+    from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: PLC0415
+
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._tool_executor.performer = PerformHost(node, music.run, lambda: loop, lambda event: None,
+                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
+    llm = CommandModeLLM(_Deepseek(_rap_reply()), log=[].append)
+    ports = V2Ports(node, llm, CallCounter(), node._tool_executor, performer=lambda: plan_host.performer(node))
+    engine = node._engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    asyncio.run(engine.run(Addressed("зачитай рэп про енота под бит", VOICE)))
+    (turn_id,) = [e for e in engine.log._turns]
+    assert [dict(e.content)["status"] for e in engine.log.window() if e.role == "tool"] == ["started"]
+    plan_host.note_perform_end(node, PlanEvent("segment_finished", "b1", turn_id=turn_id))  # не конец - не пишется
+    plan_host.note_perform_end(node, PlanEvent("block_end", "b1", turn_id=turn_id, reason="stopped", segment_no=2))
+    (done,) = [dict(e.content) for e in engine.log.window() if e.role == "tool"]
+    assert done["status"] == "stopped_by_user" and done["data"] == {"kind": "rap", "segments_done": 2}
+
+
+def test_3973_node_without_engine_ignores_block_end():
+    from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: PLC0415
+
+    plan_host.note_perform_end(types.SimpleNamespace(), PlanEvent("block_end", "b1", reason="done"))  # v1: не падает
