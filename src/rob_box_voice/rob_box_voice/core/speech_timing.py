@@ -65,10 +65,6 @@ class Presynth:
         реплику ``rejected`` через воронку ``_publish_tts_finished``.
         """
         speech_id = chunk["speech_id"]
-        if getattr(node, "minimax_streaming", False):
-            # стрим-режим MiniMax публикует PCM в топик по ходу синтеза - это уже звук
-            node._publish_tts_finished(speech_id, success=False, error="presynth_unavailable")
-            return
         try:
             self._pool().submit(self._worker, node, chunk, done, cancelled)
         except RuntimeError:  # пул погашен: нода уходит
@@ -92,6 +88,7 @@ class Presynth:
 
     def _worker(self, node: Any, chunk: Dict[str, Any], done: Done, cancelled: Callable[[str], bool]) -> None:
         speech_id, ssml = chunk["speech_id"], chunk["ssml"]
+        # без ``stream_ok``: пред-синтез - HTTP целиком, поток MiniMax звучит сразу (#3930)
         ctx: Dict[str, Any] = {"audio_np": None, "sample_rate": 16000, "used_provider": None,
                                "used_voice": None, "result": {}}
         if cancelled(speech_id):  # отменили, пока ждал пула: не платим за синтез

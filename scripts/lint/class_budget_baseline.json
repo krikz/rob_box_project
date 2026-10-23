@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created": "2026-10-23",
-  "base_sha": "47f054bbe86021868a8185c3486421dd33ce87d5",
+  "base_sha": "f43cf6a036a92ffdde3dfd8a7238488009f4570a",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -16,7 +16,7 @@
       "methods": 9
     },
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py:MiniMaxTTSProvider": {
-      "wmc": 132,
+      "wmc": 131,
       "methods": 21
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py:RtttlLibrary": {
@@ -84,7 +84,7 @@
       "methods": 40
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
-      "wmc": 606,
+      "wmc": 602,
       "methods": 98
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
