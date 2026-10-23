@@ -622,7 +622,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
 #: плюс сцены лица ``rob_box_animations/face/states.py:SCENES`` (§5.5.2): ими именуются сцены лица в v1 и v2.
 LAB_SCENES: Tuple[str, ...] = (
     "idle_stare", "idle_bored", "listening", "thinking_teeth", "thinking_orbit", "wink",
-    "music_groove", "music_shades", "music_vibe", "new_year_eve",
+    "music_groove", "music_shades", "music_vibe", "new_year_eve", "taped_mouth",
 )
 #: Эмоция команды → сцена лица. Ключи — enum для LLM; ``neutral`` — покой.
 EMOTIONS: Mapping[str, str] = MappingProxyType({
@@ -666,7 +666,7 @@ FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, бе�
 FACE_SCENE_CANCEL_STAGES: Tuple[str, ...] = ("failed", "silenced")
 
 #: Режимы кольца LED ReSpeaker в рефлексах.
-RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse")
+RING_MODES: Tuple[str, ...] = ("off", "breath", "doa_sector", "spin_slow", "flash", "flash_red", "beat_pulse", "silence")
 
 
 @dataclass(frozen=True)
@@ -697,12 +697,18 @@ REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "done": Reflex(("happy", "wink"), ring="flash", earcon="done", ttl_ms=3000),
     "failed": Reflex(("error",), ring="flash_red", earcon="fail", ttl_ms=4000),
     "timeout": Reflex(("sad",), ring="flash_red", earcon="fail", ttl_ms=4000),
-    "silenced": Reflex(("sleep",), ring="off"),
+    "silenced": Reflex(("taped_mouth",), ring="silence"),
     "music.playing": Reflex(("music_groove", "music_shades", "music_vibe"), ring="beat_pulse"),
     "not_addressed": Reflex(()),
     "battery.low": Reflex(("low_battery",)),
     "charging": Reflex(("charging",)),
 })
+#: Тишина (#3984, решение Шифу 23.10): пока в кадре ``Silence``, рефлекс «silenced» ЗАМЕНЯЕТ рефлексы стадий хода: лицо -
+#: ``REFLEXES["silenced"].face`` (заклеенный рот) вместо «слушаю/думаю», кольцо - ``ring`` (своя анимация), а earcon
+#: стадии - по этой таблице: «услышал» и «не вышло» -> тихий приглушённый ``muffled`` (не пик-пик), «готово» не играет
+#: (``""``): ответом тишины был ``muffled`` на реплике. Ключи - ``EARCONS``; ``muffled`` в ``EARCONS`` нет нарочно -
+#: это не выбор LLM (enum схемы команды), а звук кода. Файл звука - ``rob_box_voice.core.sound_requests.EARCON_SOUNDS``.
+SILENCED_EARCONS: Mapping[str, str] = MappingProxyType({"heard": "muffled", "done": "", "fail": "muffled"})
 #: Сцены рефлексов, которые снимают сцену LLM с лица (выводятся из ``REFLEXES``, второй таблицы нет).
 FACE_SCENE_CANCEL_SCENES: Tuple[str, ...] = tuple(
     scene for stage in FACE_SCENE_CANCEL_STAGES for scene in REFLEXES[stage].face)

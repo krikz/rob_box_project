@@ -254,6 +254,38 @@ def wakeup(ticks, seed=13, T=6.0):
         yield f
 
 
+# ============================================================ SILENCE
+#: Скотч на рту: тело, кромки и загнутый уголок справа (уровни 0..25, драйвер на 25/255).
+TAPE, TAPE_EDGE, TAPE_CORNER = col(12, 11, 8), col(17, 16, 12), col(21, 20, 15)
+
+
+def tape_mouth(f, t):
+    """Полоса скотча через весь рот (строки 1..3, колонки 1..23); раз в ~5 с «мм-мм»: полоса дёргается на пиксель."""
+    mm = f.mouth
+    mm[:] = 0
+    shake = 1 if (t % 5.0) < 0.5 and int(t * 12) % 2 else 0     # попытка что-то сказать
+    mm[1:4, 1 + shake:24 + shake] = TAPE
+    mm[1, 1 + shake:24 + shake] = TAPE_EDGE
+    mm[3, 1 + shake:24 + shake] = TAPE_EDGE
+    mm[0, 22 + shake:24 + shake] = TAPE_CORNER                  # уголок скотча отклеился
+    mm[2, 6 + shake:19 + shake] = TAPE * 1.25                   # блик по середине полосы
+
+
+def taped_mouth(ticks, seed=21, T=8.0):
+    """Тишина (#3984): рот заклеен скотчем, глаза тяжёлые и косятся на говорящего; вместо «слушаю»."""
+    rng = random.Random(seed)
+    blinks = schedule_blinks(rng, T, 3.0, 6.0, 0.0)
+    glance = Track(0.0).hold(2.0).to(2.3, -1.5).hold(4.0).to(4.3, 1.5).hold(6.0).to(6.4, 0.0)
+    for t in ticks:
+        gx = round(gaze_px(ticks.ctx.gaze_deg)) if ticks.ctx.gaze_deg is not None else round(glance(t))
+        e = Eye(top=2.2, slant=-0.4, gx=gx, gy=0.6, bright=0.85)
+        f = Frame()
+        draw_eye(f.eye_l, blinked(e, t, blinks, 0.3), 'l')
+        draw_eye(f.eye_r, blinked(e, t, blinks, 0.3), 'r')
+        tape_mouth(f, t)
+        yield f
+
+
 # ============================================================ MUSIC
 def beat_time(ticks, t, bpm):
     """(bpm, beat clock in seconds): live tempo and phase of the playing track
@@ -486,6 +518,8 @@ SCENES = {
     'brake': _s(brake, 4.0, 'driving', 'Торможение', 'стоп-сигнал, прищур'),
     'accelerating': _s(V.accelerating, 5.0, 'driving', 'Разгон', 'прищур, сжатые зубы, дрожь, сзади форсаж'),
     'sleep': _s(sleep, 9.0, 'system', 'Сон', 'веки «︶» дышат, z, похрапывает'),
+    'taped_mouth': _s(taped_mouth, 8.0, 'system', 'Тишина · «рот заклеен»',
+                      'скотч на рту, тяжёлые веки, косится на говорящего, «мм-мм» раз в 5 с'),
     'wakeup': _s(wakeup, 6.0, 'system', 'Пробуждение', 'ЭЛТ-включение, зубы загружаются, зевок'),
     'error': _s(error, 5.0, 'system', 'Ошибка', 'глаза-крестики, глитч'),
     'low_battery': _s(low_battery, 6.0, 'system', 'Батарея садится', 'сонные веки, батарейка во рту'),

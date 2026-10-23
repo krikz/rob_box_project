@@ -110,3 +110,25 @@ def test_session_speaker_azimuth_holds_the_gaze_over_raw_doa():
     assert node.director.gaze._speaker == looked
     node._on_session(types.SimpleNamespace(speaker_azimuth_deg=math.nan))  # собеседник без азимута — взгляд не трогаем
     assert node.director.gaze._speaker == looked
+
+
+def test_silence_scene_of_the_session_holds_the_taped_mouth_and_reflexes_are_answered_skipped():
+    """#3984: сцена Silence в /dialog/session -> рот заклеен; рефлекс стадии (listening) лицо не меняет; снятие - покой."""
+    node = _face_node()
+    node._on_expression(_expression(emotion='listening', ttl_ms=8000))
+    assert node.director._request[0] == 'listening'
+    ns = types.SimpleNamespace
+    nan = float('nan')
+    node._on_session(ns(agent='personality', scenes=[ns(kind='Silence')], speaker_azimuth_deg=nan))
+    assert node.director.silenced and node.director._request is None
+    node._event_pub.sent.clear()
+    node._on_expression(_expression(emotion='listening', ttl_ms=8000, turn_id='t2'))
+    (ev,) = node._event_pub.sent
+    assert (ev.turn_id, ev.kind, ev.reason) == ('t2', 1, 'silenced')
+    assert node.director._request is None
+    node._on_session(ns(agent='telegram', scenes=[], speaker_azimuth_deg=nan))   # чужой агент тишину не снимает
+    assert node.director.silenced
+    node._on_session(ns(agent='personality', scenes=[], speaker_azimuth_deg=nan))
+    assert not node.director.silenced
+    node._on_expression(_expression(emotion='listening', ttl_ms=8000))
+    assert node.director._request[0] == 'listening'              # обычные рефлексы вернулись

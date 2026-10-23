@@ -84,3 +84,28 @@ def test_known_gesture_is_added_unknown_is_dropped():
 
 def test_merge_of_no_plan_is_no_plan():
     assert ex.merge(None, "done", "happy") is None
+
+
+# -- тишина (#3984, решение Шифу 23.10) -------------------------------------------------------------------------
+def test_silenced_reflex_row_is_the_one_place_of_the_taped_face_and_the_ring_animation():
+    row = kn.REFLEXES["silenced"]
+    assert ex.silent_face() == row.face[0] == "taped_mouth" and row.ring == "silence"
+    assert "taped_mouth" in kn.LAB_SCENES and "silence" in kn.RING_MODES
+    assert ex.silent_face() not in {s for st in kn.TURN_STAGES for s in kn.REFLEXES[st].face}
+
+
+def test_in_silence_heard_becomes_the_muffled_sound_done_is_dropped_unknown_earcon_never_passes():
+    assert ex.silent_earcon("heard") == "muffled" and ex.silent_earcon("fail") == "muffled"
+    assert ex.silent_earcon("done") == "" and ex.silent_earcon("") == "" and ex.silent_earcon(None) == ""
+    assert ex.silent_earcon("button_click") == ""
+    assert ex.silent_earcon(ex.reflex("addressed").earcon) != ex.reflex("addressed").earcon
+
+
+def test_session_silence_reads_the_silence_scene_of_the_personality_only():
+    from types import SimpleNamespace as ns
+
+    assert ex.session_silence(ns(agent="personality", scenes=[ns(kind="Persona"), ns(kind="Silence")])) is True
+    assert ex.session_silence(ns(agent="personality", scenes=[ns(kind="Persona")])) is False
+    assert ex.session_silence(ns(agent="personality", scenes=[])) is False
+    assert ex.session_silence(ns(agent="telegram", scenes=[ns(kind="Silence")])) is None
+    assert ex.session_silence(ns(speaker_azimuth_deg=1.0)) is None

@@ -82,4 +82,4 @@ def test_command_uses_the_same_scene_type_and_check():
 
 
 def test_failed_and_silenced_scenes_come_from_the_reflex_table():
-    assert set(kn.FACE_SCENE_CANCEL_SCENES) == {"error", "sleep"}
+    assert set(kn.FACE_SCENE_CANCEL_SCENES) == {"error", "taped_mouth"}

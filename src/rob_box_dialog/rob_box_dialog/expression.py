@@ -74,6 +74,26 @@ def reflex(stage: str, cls: Optional[str] = None, snapshot: Optional[Mapping[str
     return ExpressionPlan(emotion=face, earcon=row.earcon or "", ttl_ms=row.ttl_ms or 0)
 
 
+def silent_face() -> str:
+    """Лицо в тишине (#3984): сцена из ``REFLEXES["silenced"]`` (заклеенный рот) - вместо «слушаю/думаю/радость»."""
+    return kn.REFLEXES["silenced"].face[0]
+
+
+def silent_earcon(earcon: Optional[str]) -> str:
+    """Earcon стадии в тишине (#3984): по ``SILENCED_EARCONS`` - «услышал» становится тихим ``muffled``, «готово» молчит.
+
+    Неизвестный earcon в тишине не играет (``""``): громкий звук нельзя протащить мимо таблицы."""
+    return kn.SILENCED_EARCONS.get(earcon or "", "")
+
+
+def session_silence(state: object) -> Optional[bool]:
+    """Снимок сессии (``SessionState``) -> «в кадрах сцена ``Silence``?» для голоса личности; чужой агент - ``None``
+    (его снимок о голосе не говорит). Одно правило для лица, звука и кольца (как ``rob_box_core.voice_state``)."""
+    if getattr(state, "agent", "") != kn.AGENTS[0]:
+        return None
+    return any(getattr(scene, "kind", "") == "Silence" for scene in getattr(state, "scenes", ()))
+
+
 def command_scene(emotion: Optional[str]) -> str:
     """Сцена лица для эмоции команды: ``EMOTIONS`` переводит эмоцию в сцену, имя сцены проходит как есть."""
     name = (emotion or "").strip().lower()
