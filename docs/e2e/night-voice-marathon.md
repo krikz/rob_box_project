@@ -247,6 +247,23 @@ gh workflow run "L-E2E Voice Test.yml" --ref develop -f environment=test \
   -f acceptance_file=.github/e2e/scenarios/night/night_marathon_act3_backlog_diarization_acceptance_v1.json
 ```
 
+### Сухой прогон без робота (#3906)
+
+Стенд (робот) один, акт идёт 5–15 мин, деплой выбивает его на 15–40 мин. Текст шагов актов можно прогнать без робота:
+
+```bash
+python3 scripts/dialog/dry_marathon.py --acts 1,2,3,4 --list      # разметка шагов text/acoustic, 0 запросов LLM
+DEEPSEEK_API_KEY=... python3 scripts/dialog/dry_marathon.py --acts 1,2,3,4 --budget 300 --out ./out
+```
+
+Ход идёт через `rob_box_dialog.turn.TurnEngine` (настоящие адресация, сессия, бэклог, цепочка LLM с мостом команд,
+срез тулов, исполнитель); владельцы речи, музыки, лица, голоса и диктора — фейки, отвечающие событием сразу, память —
+настоящий `VoiceMemory` во временной e2e-БД. Сверка шага — те же функции, что у `check_acceptance`:
+`e2e_tool_match.step_verdict` и `patterns_missing`, по логу в форматах строк робота (`scripts/dialog/dry_stand.py`).
+Шаг помечен `text` (решает код и LLM — вердикт сухого прогона засчитывается) или `acoustic` (на нём держится STT,
+вейк по звуку, биометрия, TTS-голос, тайминг перебивания — сухой вердикт справочный, засчитывает только робот).
+Потолок запросов LLM — `--budget` (по умолчанию 300), счётчик печатается после каждого акта.
+
 ### Автозапуск по ночам
 
 Марафон зарегистрирован как отдельный ночной раунд:
