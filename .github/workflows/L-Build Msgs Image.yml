@@ -1,0 +1,105 @@
+name: "L: Build Msgs Image"
+
+# Общий образ ROS-сообщений робота (docker/msgs/Dockerfile, секция msgs_image
+# в docker/build-manifest.yaml). Раньше src/rob_box_*_msgs компилировал
+# каждый из 6 образов сам — rosidl под qemu 4-14 минут на пакет, четыре
+# одинаковые компиляции параллельно (run 39939981591). Теперь — один раз:
+# сервисы получают build-arg MSGS_IMAGE и берут готовый /ws/install через
+# COPY --from.
+#
+# Тег — msgs-<ros_distro>-<хэш> (gen_build_matrix.py --mode msgs): хэш по
+# Dockerfile, базе и файлам пакетов. Если такой тег уже есть в локальном
+# registry, сборка пропускается — так job стоит секунды во всех прогонах,
+# где .msg не менялись.
+#
+# Зовут его:
+#   * "L: Build All Services" — ОДИН раз до трёх Pi, чтобы три Pi не
+#     компилировали одно и то же наперегонки;
+#   * "L: Build Pi Services" — перед своими волнами (при прогоне из Build All
+#     образ уже в registry → пропуск; при прямом запуске Pi — собирает).
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      image:
+        description: 'Ссылка на общий образ сообщений (localhost:5000/...:msgs-<distro>-<хэш>)'
+        value: ${{ jobs.build-msgs.outputs.image }}
+
+permissions:
+  contents: read
+
+env:
+  LOCAL_REGISTRY: localhost:5000
+  LOCAL_PREFIX: localhost:5000/krikz/rob_box
+  ROS_DISTRO: humble
+
+jobs:
+  build-msgs:
+    runs-on: [self-hosted, rob-box]
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+    steps:
+      - name: Clean stale submodules
+        run: |
+          rm -rf src/ros2leds src/vesc_nexus 2>/dev/null || true
+          git sparse-checkout disable 2>/dev/null || true
+          git checkout --force HEAD 2>/dev/null || true
+
+      - name: Checkout repository
+        # Субмодули не нужны: в образ идут только src/rob_box_*_msgs.
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          clean: true
+
+      - name: Ensure PyYAML (зависимость scripts/ci/gen_build_matrix.py)
+        run: |
+          python3 -c "import yaml" 2>/dev/null && exit 0
+          python3 -m pip install --quiet --no-cache-dir --user pyyaml \
+            || python3 -m pip install --quiet --no-cache-dir --user --break-system-packages pyyaml \
+            || true
+          python3 -c "import yaml; print('PyYAML', yaml.__version__)"
+
+      - name: Resolve image tag and check registry
+        id: plan
+        run: |
+          ENTRY="$(python3 scripts/ci/gen_build_matrix.py \
+            --manifest docker/build-manifest.yaml \
+            --mode msgs \
+            --ros-distro "$ROS_DISTRO" \
+            --local-prefix "$LOCAL_PREFIX")"
+          field() { python3 -c 'import json, sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$ENTRY" "$1"; }
+          IMAGE="$(field image)"
+          {
+            echo "image=${IMAGE}"
+            echo "dockerfile=$(field dockerfile)"
+            echo "build_context=$(field build_context)"
+            echo "build_args<<EOF"
+            field build_args
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Msgs image: ${IMAGE}"
+          if bash scripts/ci/verify-image-in-registry.sh "$LOCAL_REGISTRY" "${IMAGE##*:}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "✅ уже в registry — сборка не нужна"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "🔨 в registry нет — собираем"
+          fi
+
+      - name: Build msgs image
+        if: steps.plan.outputs.exists != 'true'
+        uses: ./.github/actions/l-build-service
+        with:
+          service-name: msgs
+          dockerfile-path: ${{ steps.plan.outputs.dockerfile }}
+          build-context: ${{ steps.plan.outputs.build_context }}
+          tags: ${{ steps.plan.outputs.image }}
+          build-args: ${{ steps.plan.outputs.build_args }}
+
+      - name: Verify image is in registry
+        # Сервисы возьмут образ FROM registry: если его там нет, они упадут
+        # позже и непонятнее — ловим здесь.
+        env:
+          IMAGE: ${{ steps.plan.outputs.image }}
+        run: bash scripts/ci/verify-image-in-registry.sh "$LOCAL_REGISTRY" "${IMAGE##*:}"

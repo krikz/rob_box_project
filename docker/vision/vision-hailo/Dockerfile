@@ -57,6 +57,13 @@
 ARG ROS_DISTRO=humble
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 # ============================================================
 # Stage 1: builder — тулчейн rosidl-кодогенерации + colcon build
 # ============================================================
@@ -174,6 +181,12 @@ RUN pip3 install --retries 5 --timeout 120 --no-cache-dir --prefix=/pyinstall -r
         exit 1; \
     fi
 
+# IDL-пакеты rob_box_perception_msgs и rob_box_dialog_msgs — готовые из общего
+# образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Их package.xml
+# уже в src (для rosdep выше): colcon видит зависимость, но не собирает её
+# (нет в --packages-select) и берёт из /ws/install.
+COPY --from=msgs /ws/install /ws/install
+
 # 4. data_files (resource / prompts / launch из setup.py) — изменяются иногда
 COPY src/rob_box_perception/resource /ws/src/rob_box_perception/resource
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
@@ -183,11 +196,9 @@ COPY src/rob_box_perception/launch /ws/src/rob_box_perception/launch
 # при изменении src/rob_box_perception* (issue #2314 pattern).
 ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
-COPY src/rob_box_perception_msgs /ws/src/rob_box_perception_msgs
-COPY src/rob_box_dialog_msgs /ws/src/rob_box_dialog_msgs
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
-# 6. сборка (сначала msgs, потом nodes)
+# 6. сборка ноды (msgs уже собраны слоем выше)
 #
 # --symlink-install УБРАН (урок пилота led_matrix, коммит 037d982bf, уточнение
 # к плану §2.2): с этим флагом colcon кладёт в /ws/install не копии, а
@@ -197,7 +208,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # В одностадийном образе это не проявлялось: /ws/src и /ws/build лежали рядом.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception_msgs rob_box_dialog_msgs rob_box_perception \
+    --packages-select rob_box_perception \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # ============================================================

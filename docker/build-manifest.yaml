@@ -57,6 +57,28 @@ base_images:
       dockerfile: docker/base/Dockerfile.pcl
       depends_on: [ros2-zenoh]
 
+# ---------------------------------------------------------------------------
+# Общий образ ROS-сообщений (".github/workflows/L-Build Msgs Image.yml",
+# docker/msgs/Dockerfile). Собирается ОДИН раз за прогон до сервисов: раньше
+# каждый из 6 образов компилировал те же IDL-пакеты сам, rosidl под qemu —
+# 4-14 минут на пакет (run 39939981591). Сервисы с `msgs_image: true`
+# получают build-arg MSGS_IMAGE=<local>:msgs-<ros_distro>-<хэш> и берут готовый
+# /ws/install через COPY --from. Хэш (gen_build_matrix.msgs_image_ref) — по
+# Dockerfile, ссылке на базу и всем файлам src/<пакет>: правка .msg даёт новый
+# тег, без правки образ уже лежит в registry и сборка пропускается.
+# packages — ровно те пакеты, что копирует и собирает docker/msgs/Dockerfile
+# (guard scripts/ci/tests/test_gen_build_matrix.py).
+# ---------------------------------------------------------------------------
+msgs_image:
+  dockerfile: docker/msgs/Dockerfile
+  build_context: "."
+  base:
+    family: ros2-zenoh
+  packages:
+    - rob_box_dialog_msgs
+    - rob_box_perception_msgs
+    - rob_box_supervisor_msgs
+
 pis:
   # ---------------------------------------------------------------------
   # Vision Pi
@@ -74,6 +96,7 @@ pis:
 
       led-matrix:
         dockerfile: docker/vision/led_matrix/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -93,6 +116,7 @@ pis:
 
       vision-hailo:
         dockerfile: docker/vision/vision-hailo/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -152,6 +176,7 @@ pis:
 
       voice-assistant:
         dockerfile: docker/sound/voice_assistant/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           service: voice-base
@@ -191,6 +216,7 @@ pis:
 
       telegram-bot:
         dockerfile: docker/sound/telegram_bot/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -210,6 +236,7 @@ pis:
 
       quest:
         dockerfile: docker/sound/quest/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh
@@ -342,6 +369,7 @@ pis:
 
       perception:
         dockerfile: docker/main/perception/Dockerfile
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh

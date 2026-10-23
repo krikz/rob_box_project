@@ -154,6 +154,16 @@ jobs:
     with:
       push_to_registry: true
 
+  # Общий образ ROS-сообщений — ОДИН раз на три Pi (иначе при правке .msg три
+  # одинаковые компиляции шли бы наперегонки; rosidl под qemu — минуты на
+  # пакет). Идёт ПАРАЛЛЕЛЬНО с Pi: needs на нём нет, его ждут в registry только
+  # сервисы с msgs_image: true, остальные собираются сразу. Pi-вызовы получают
+  # build_msgs_image=false и сами его не собирают.
+  build-msgs-image:
+    needs: build-base-images
+    if: always() && (needs.build-base-images.result == 'success' || needs.build-base-images.result == 'skipped')
+    uses: ./.github/workflows/L-Build Msgs Image.yml
+
   # Сервисы трёх Pi — один workflow "L-Build Pi Services.yml" с входом `pi`
   # (ADR-0159 PR-3, В4). Три вызова идут ПАРАЛЛЕЛЬНО: depends_on в манифесте
   # допустим только внутри своего Pi (gen_build_matrix.load_manifest), цепочка
@@ -168,6 +178,7 @@ jobs:
     with:
       pi: main
       push_to_registry: true
+      build_msgs_image: false
 
   build-sound-services:
     needs: build-base-images
@@ -177,6 +188,7 @@ jobs:
     with:
       pi: sound
       push_to_registry: true
+      build_msgs_image: false
 
   build-vision-services:
     needs: build-base-images
@@ -186,10 +198,11 @@ jobs:
     with:
       pi: vision
       push_to_registry: true
+      build_msgs_image: false
 
   # Итоговая сводка
   summary:
-    needs: [build-base-images, build-main-services, build-sound-services, build-vision-services]
+    needs: [build-base-images, build-msgs-image, build-main-services, build-sound-services, build-vision-services]
     runs-on: [self-hosted, rob-box]
     if: always()
     steps:
@@ -204,6 +217,7 @@ jobs:
           echo ""
           echo "📊 Build Results:"
           echo "  Base Images: ${{ needs.build-base-images.result }}"
+          echo "  Msgs Image: ${{ needs.build-msgs-image.result }}"
           echo "  Main Services: ${{ needs.build-main-services.result }}"
           echo "  Sound Services: ${{ needs.build-sound-services.result }}"
           echo "  Vision Services: ${{ needs.build-vision-services.result }}"

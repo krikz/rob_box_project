@@ -587,3 +587,136 @@ def test_cli_services_shell_format(capsys):
     assert capsys.readouterr().out.split() == sorted(
         gen_build_matrix.services_for_pi(manifest, "vision")
     )
+
+
+# --- общий образ ROS-сообщений (msgs_image) ---------------------------------
+
+
+def _msgs_repo(tmp_path: Path) -> tuple[dict, Path]:
+    """Мини-репо: манифест с msgs_image, Dockerfile и один пакет сообщений."""
+    (tmp_path / "docker" / "msgs").mkdir(parents=True)
+    (tmp_path / "docker" / "msgs" / "Dockerfile").write_text("FROM scratch\n")
+    msg_dir = tmp_path / "src" / "demo_msgs" / "msg"
+    msg_dir.mkdir(parents=True)
+    (msg_dir / "Ping.msg").write_text("string text\n")
+    (tmp_path / "src" / "demo_msgs" / "package.xml").write_text("<package/>\n")
+    manifest = {
+        "defaults": {
+            "registry": {"ghcr": "ghcr.io/x/r", "local": "localhost:5000/x/r"},
+            "base_registry": "localhost:5000/x/r_base",
+            "ros_distro": "humble",
+            "apt_proxy": "http://proxy:3142",
+        },
+        "msgs_image": {
+            "dockerfile": "docker/msgs/Dockerfile",
+            "base": {"family": "ros2-zenoh"},
+            "packages": ["demo_msgs"],
+        },
+        "pis": {},
+    }
+    return manifest, tmp_path
+
+
+def _ref(manifest: dict, root: Path) -> str:
+    return gen_build_matrix.msgs_image_ref(
+        manifest, local_prefix="localhost:5000/x/r", ros_distro="humble", repo_root=root
+    )
+
+
+def test_msgs_tag_is_stable_and_follows_msg_content(tmp_path):
+    manifest, root = _msgs_repo(tmp_path)
+    first = _ref(manifest, root)
+    assert first.startswith("localhost:5000/x/r:msgs-humble-")
+    assert _ref(manifest, root) == first, "тег обязан быть детерминирован"
+
+    (root / "src" / "demo_msgs" / "msg" / "Ping.msg").write_text("string text\nint32 n\n")
+    assert _ref(manifest, root) != first, "правка .msg обязана давать новый тег"
+
+
+def test_msgs_tag_ignores_crlf(tmp_path):
+    """Чекаут на Windows (CRLF) и в CI (LF) обязаны давать один тег."""
+    manifest, root = _msgs_repo(tmp_path)
+    lf = _ref(manifest, root)
+    (root / "src" / "demo_msgs" / "msg" / "Ping.msg").write_bytes(b"string text\r\n")
+    assert _ref(manifest, root) == lf
+
+
+def test_msgs_tag_follows_dockerfile_and_base(tmp_path):
+    manifest, root = _msgs_repo(tmp_path)
+    first = _ref(manifest, root)
+    (root / "docker" / "msgs" / "Dockerfile").write_text("FROM scratch\nLABEL a=b\n")
+    second = _ref(manifest, root)
+    assert second != first
+    manifest["msgs_image"]["base"]["family"] = "rtabmap"
+    assert _ref(manifest, root) != second
+
+
+def test_msgs_image_flag_without_section_is_rejected(tmp_path):
+    manifest_path = _write_manifest(
+        tmp_path,
+        """\
+      needs-msgs:
+        dockerfile: docker/x/Dockerfile
+        build_context: "."
+        base: null
+        msgs_image: true
+        image_versions: false
+""",
+    )
+    with pytest.raises(gen_build_matrix.ManifestError, match="msgs_image"):
+        gen_build_matrix.load_manifest(manifest_path)
+
+
+def test_services_with_msgs_image_get_the_build_arg_others_do_not():
+    manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
+    ctx = gen_build_matrix.build_context(manifest, docker_tag="dev")
+    assert ctx.msgs_image.startswith("localhost:5000/krikz/rob_box:msgs-humble-")
+    for pi in manifest["pis"]:
+        services = gen_build_matrix.services_for_pi(manifest, pi)
+        for name, svc in services.items():
+            args = gen_build_matrix.matrix_entry(name, services, ctx)["build_args"]
+            has_arg = f"MSGS_IMAGE={ctx.msgs_image}" in args.splitlines()
+            assert has_arg == bool(svc.get("msgs_image")), (pi, name, args)
+            # Тот же тег — в matrix.msgs_image: по нему шаг Wait for msgs image
+            # ждёт образ в registry; у остальных пусто, и они не ждут.
+            waits = gen_build_matrix.matrix_entry(name, services, ctx)["msgs_image"]
+            assert waits == (ctx.msgs_image if svc.get("msgs_image") else ""), name
+
+
+def test_msgs_consumers_copy_from_the_msgs_stage():
+    """msgs_image: true в манифесте ⇔ Dockerfile берёт /ws/install из stage
+    `msgs` — иначе build-arg уйдёт в пустоту, а пакеты соберутся заново (или
+    не найдутся вовсе)."""
+    manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
+    for pi in manifest["pis"]:
+        for name, svc in gen_build_matrix.services_for_pi(manifest, pi).items():
+            text = (REPO_ROOT / svc["dockerfile"]).read_text(encoding="utf-8")
+            uses = "FROM ${MSGS_IMAGE} AS msgs" in text and "COPY --from=msgs" in text
+            assert uses == bool(svc.get("msgs_image")), (pi, name)
+
+
+def test_msgs_dockerfile_builds_exactly_the_manifest_packages():
+    manifest = gen_build_matrix.load_manifest(REAL_MANIFEST)
+    section = manifest["msgs_image"]
+    text = (REPO_ROOT / section["dockerfile"]).read_text(encoding="utf-8")
+    copied = {
+        line.split()[1].removeprefix("src/")
+        for line in text.splitlines()
+        if line.startswith("COPY src/")
+    }
+    selected_line = next(
+        line for line in text.splitlines() if line.strip().startswith("--packages-select")
+    )
+    selected = set(selected_line.split()[1:]) - {"\\"}
+    assert copied == set(section["packages"]) == selected, (copied, selected)
+
+
+def test_cli_msgs_mode_prints_build_entry(capsys):
+    assert gen_build_matrix.main(["--manifest", str(REAL_MANIFEST), "--mode", "msgs"]) == 0
+    entry = json.loads(capsys.readouterr().out)
+    assert entry["name"] == "msgs"
+    assert entry["tags"] == entry["image"]
+    assert entry["dockerfile"] == "docker/msgs/Dockerfile"
+    assert "BASE_IMAGE=localhost:5000/krikz/rob_box_base:ros2-zenoh-humble" in (
+        entry["build_args"].splitlines()
+    )

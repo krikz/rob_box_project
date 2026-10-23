@@ -408,9 +408,15 @@ jobs:
           echo "  GHCR Tag: $GHCR_TAG"
           echo "  Local Tag: $LOCAL_TAG"
 
+  # Общий образ ROS-сообщений (src/rob_box_*_msgs, docker/msgs/Dockerfile):
+  # сервисы с COPY --from=${MSGS_IMAGE} без него не соберутся. Тег — хэш
+  # пакетов; уже лежит в registry → job пропускает сборку за секунды.
+  msgs:
+    uses: ./.github/workflows/L-Build Msgs Image.yml
+
   # Сборка выбранного сервиса
   build-service:
-    needs: prepare
+    needs: [prepare, msgs]
     runs-on: [self-hosted, rob-box]
     steps:
       - name: Checkout repository
@@ -459,6 +465,7 @@ jobs:
         env:
           SERVICE_NAME: ${{ needs.prepare.outputs.service_name }}
           BASE_IMAGE: ${{ needs.prepare.outputs.base_image }}
+          MSGS_IMAGE: ${{ needs.msgs.outputs.image }}
         run: |
           {
             echo "build_args<<BUILD_ARGS_EOF"
@@ -466,6 +473,9 @@ jobs:
               echo "BASE_IMAGE=${BASE_IMAGE}"
             fi
             echo "APT_PROXY=http://host.docker.internal:3142"
+            # Всем сервисам: кому общий образ сообщений не нужен, build-arg
+            # просто не используется (docker/build-manifest.yaml msgs_image).
+            echo "MSGS_IMAGE=${MSGS_IMAGE}"
 
             # vision-hailo (ADR-0089 Phase 1.5): совпадает с build_args.
             # HAILO_INSTALL_BINDING в docker/build-manifest.yaml / build-vision-hailo.
