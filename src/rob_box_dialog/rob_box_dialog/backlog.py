@@ -8,7 +8,10 @@
   audio_node режет на куски, #3763), по порядку; они становятся текстом хода и из бэклога уходят (решение Шифу
   21.10, #3767: «бэклог должен уходить по любому всегда»). «Тот же собеседник» не фильтр, а поле метки;
 * :meth:`Backlog.recent_unaddressed` — в снимок адресованного хода с фразой не больше одной записи того же
-  собеседника (:func:`~rob_box_dialog.speaker_adapter.same_interlocutor`) — телевизор туда не попадает.
+  собеседника (:func:`~rob_box_dialog.speaker_adapter.same_interlocutor`) — телевизор туда не попадает;
+* :meth:`Backlog.background_since_reply` — в снимок адресованного хода с фразой отдельным разделом все фоновые
+  фразы всех авторов за последние :data:`~rob_box_dialog.knowledge.BACKGROUND_WINDOW_S` (решение Шифу 23.10, В23: «в
+  бэклоге должна быть инфа кто чего сказал и когда») — чтобы «кто говорил на фоне?» было из чего отвечать.
 
 Каждая отданная фраза — :meth:`Backlog.label`: текст, возраст, длительность, DOA и кто её сказал
 (:func:`~rob_box_dialog.speaker_adapter.phrase_speaker`: узнанный спикер или «неопознанный» + что есть по голосу).
@@ -22,6 +25,9 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence
 
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.knowledge import (
+    BACKGROUND_MAX_PHRASES,
+    BACKGROUND_PHRASE_MAX_CHARS,
+    BACKGROUND_WINDOW_S,
     BACKLOG_MAX_ENTRIES,
     BACKLOG_PICKUP_MAX,
     BACKLOG_PICKUP_S,
@@ -106,6 +112,14 @@ class Backlog:
             if heard.t - entry.t <= BACKLOG_PICKUP_S and same_interlocutor(entry, heard):
                 return self.label(entry, heard)
         return None
+
+    def background_since_reply(self, heard: Heard) -> List[Dict[str, Any]]:
+        """Все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, по порядку, не больше ``BACKGROUND_MAX_PHRASES``
+        последних, текст — до ``BACKGROUND_PHRASE_MAX_CHARS``; каждая — :meth:`label`. Из бэклога не уходят."""
+        self._prune(heard.t)
+        since = [e for e in self._entries if 0.0 <= heard.t - e.t <= BACKGROUND_WINDOW_S]
+        return [{**self.label(e, heard), "text": e.text[:BACKGROUND_PHRASE_MAX_CHARS]}
+                for e in since[-BACKGROUND_MAX_PHRASES:]]
 
     @staticmethod
     def label(entry: Heard, heard: Heard) -> Dict[str, Any]:

@@ -277,8 +277,38 @@ def test_addressed_turn_sees_only_same_speakers_background_phrase_3894(node):
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
     assert "recent_unaddressed" in blob and "мне нужна кофемашина" in blob
-    assert "закажи пиццу" not in blob
+    recent = blob.split("recent_unaddressed")[1].split("background_since_reply")[0]
+    assert "закажи пиццу" not in recent  # раздел по ADR §7.3 — только фраза того же собеседника
     assert '\\"who\\":\\"Саша\\"' in blob
+
+
+def test_addressed_turn_sees_all_background_of_the_last_3_minutes_3892(node):
+    """Решение Шифу 23.10 (В23): Борис и незнакомец говорят без вейка, Саша «Робот, кто говорил на фоне?» — в
+    запросе LLM раздел `background_since_reply` с обеими фразами, авторами и возрастом; ответ робота его не обнуляет, фраза старше окна не попадает."""
+    node.test_llm.responses.append(LLMResponse(content="Ещё раз."))
+    node._on_utterance(_long("совсем давняя фраза", "u-old", 200.0))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-b"}))
+    node._on_utterance(_long("закажи пиццу на вечер", "u-b", 9.0))
+    node._on_utterance(_long("не шумите тут", "u-x", 5.0))
+    node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
+                             "utterance_id": "u-q"}))
+    node._on_utterance(_long("Робот, кто говорил на фоне?", "u-q"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    section = blob.split("background_since_reply")[1]
+    assert "закажи пиццу на вечер" in section and "не шумите тут" in section
+    assert "Борис" in section and "незнакомый голос" in section and "age_s" in section
+    said = _published(node, "/voice/speech/request")[0]
+    event = M.SpeechEvent()
+    event.kind, event.speech_id, event.agent, event.spoken_chars = M.SpeechEvent.KIND_FINISHED, said.speech_id, \
+        "personality", 7
+    node._on_speech_event(event)
+    node._on_utterance(_long("Робот, что ещё", "u-n"))
+    node.last_turn.result(timeout=10)
+    again = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str).split("background_since_reply")[1]
+    assert "закажи пиццу на вечер" in again and "совсем давняя" not in section + again
 
 
 def test_speech_end_puts_spoken_part_into_window(node):

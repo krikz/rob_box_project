@@ -1,7 +1,14 @@
 """Бэклог неадресованных фраз (ADR-0150 §7.3 В12, #3767; приёмка A31: 0 чужих фраз в снимке адресованного хода)."""
 
 from rob_box_dialog.backlog import Backlog, Heard, pickup_summary, same_direction
-from rob_box_dialog.knowledge import BACKLOG_MAX_ENTRIES, BACKLOG_PICKUP_MAX, BACKLOG_TTL_S
+from rob_box_dialog.knowledge import (
+    BACKGROUND_MAX_PHRASES,
+    BACKGROUND_PHRASE_MAX_CHARS,
+    BACKGROUND_WINDOW_S,
+    BACKLOG_MAX_ENTRIES,
+    BACKLOG_PICKUP_MAX,
+    BACKLOG_TTL_S,
+)
 from rob_box_dialog.speaker_adapter import VoiceTag
 
 
@@ -117,3 +124,24 @@ def test_note_voice_labels_the_phrase_with_the_identified_speaker():
         "identified": True, "name": "Борис", "person_ref": "p1", "channels": ["voice"], "score": 0.86,
         "epithet": "Кулибин"}
     assert Backlog.label(entry, heard)["same_as_caller"] is True
+
+
+def test_background_window_gives_every_author_in_order_and_drops_older_phrases():
+    """В23 (23.10): все фоновые фразы за последние 3 мин - кто, что, когда; старше окна нет; бэклог цел."""
+    backlog = Backlog()
+    backlog.add(_h("старше окна", t=100.0 - BACKGROUND_WINDOW_S - 5.0, doa=10.0))
+    backlog.add(_h("закажи пиццу", t=90.0, doa=250.0, person="p1"))
+    backlog.add(_h("не шумите", t=95.0, doa=10.0))
+    section = backlog.background_since_reply(_h("робот кто говорил", t=100.0, doa=80.0))
+    assert [(p["text"], p["age_s"]) for p in section] == [("закажи пиццу", 10.0), ("не шумите", 5.0)]
+    assert all("speaker" in p for p in section)
+    assert backlog.background_phrases(100.0) == 2
+
+
+def test_background_window_is_capped_by_count_and_chars():
+    backlog = Backlog()
+    for i in range(BACKGROUND_MAX_PHRASES + 3):
+        backlog.add(_h(f"ф{i}" + "я" * 500, t=60.0 + i))
+    section = backlog.background_since_reply(_h("робот", t=100.0))
+    assert len(section) == BACKGROUND_MAX_PHRASES and section[-1]["text"].startswith(f"ф{BACKGROUND_MAX_PHRASES + 2}")
+    assert all(len(p["text"]) == BACKGROUND_PHRASE_MAX_CHARS for p in section)

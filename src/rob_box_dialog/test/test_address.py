@@ -120,7 +120,9 @@ def test_bare_wake_with_empty_or_stale_backlog_is_reflex_only():
 
 def test_wake_with_a_phrase_never_takes_the_backlog():
     backlog = _backlog_with("покажи анимацию ускорения", t=95.0, doa=90.0)
-    assert decide(_heard("робот который час", t=100.0, doa=90.0), backlog, WAKES) == Addressed("который час", VOICE)
+    got = decide(_heard("робот который час", t=100.0, doa=90.0), backlog, WAKES)
+    assert (got.text, got.source, got.pickup, got.picked) == ("который час", VOICE, False, ())
+    assert [p["text"] for p in got.background] == ["покажи анимацию ускорения"]  # раздел снимка, не текст хода (В23)
     assert backlog.background_phrases(100.0) == 1
 
 

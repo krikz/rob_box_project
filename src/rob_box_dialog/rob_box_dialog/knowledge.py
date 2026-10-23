@@ -64,7 +64,15 @@ ADDRESS_FILLER_WORDS: Tuple[str, ...] = ("ну", "а", "эй", "слушай", "
 #: (решение Шифу 21.10, #3767: «бэклог должен уходить по любому всегда») вместе с более ранними кусками того же
 #: рассказа (audio_node режет речь по 15 с, #3763): кусок примыкает, если кончился не раньше чем за
 #: ``BACKLOG_STORY_GAP_S`` до начала следующего. Не больше ``BACKLOG_PICKUP_MAX`` фраз за раз.
-BACKLOG_TTL_S = 120.0
+#: Раздел снимка ``background_since_reply`` адресованного хода (В23, Шифу 23.10): все фоновые фразы всех авторов за
+#: последние ``BACKGROUND_WINDOW_S`` (3 минуты; ответ робота раздел не обнуляет) — кто, что, когда. Бэклог живёт не
+#: меньше окна. Потолок: ``BACKGROUND_MAX_PHRASES`` последних фраз по ``BACKGROUND_PHRASE_MAX_CHARS`` знаков: кусок
+#: речи ≤ 15 с (#3763) при ~11 зн/с (``SPEECH_CHARS_PER_S_GUESS``) ≈ 165 знаков; 8 × ~200 знаков ≈ 550 токенов
+#: - в бюджете блока ``snapshot`` (1000) вместе с остальными разделами.
+BACKGROUND_WINDOW_S = 180.0
+BACKGROUND_MAX_PHRASES = 8
+BACKGROUND_PHRASE_MAX_CHARS = 200
+BACKLOG_TTL_S = BACKGROUND_WINDOW_S
 BACKLOG_PICKUP_S = 20.0
 BACKLOG_STORY_GAP_S = 3.0
 BACKLOG_PICKUP_MAX = 6
@@ -372,10 +380,12 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: начатого сегмента — по нему LLM правит «с того места» (``edit_pending``, риск §16).
 #: ``recent_actions`` — исходы действий прошлых ходов окна v2 структурой (``turn_log``, ``ActionResult``: тул, статус,
 #: причина), а не текстом в репликах (§7.3, PR-8 #3702).
+#: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
+#: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
 #: ``operator_journal`` — журнал ТАРС (§7.4, #3297): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "tts_context", "speech_gender", "position", "providers", "music_state", "performance",
-    "recent_unaddressed", "recent_actions", "operator_journal",
+    "recent_unaddressed", "background_since_reply", "recent_actions", "operator_journal",
 )
 
 
