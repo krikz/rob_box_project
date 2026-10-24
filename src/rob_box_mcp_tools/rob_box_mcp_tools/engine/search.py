@@ -457,6 +457,17 @@ def _split(library: Any, theme: str) -> List[str]:
     return [p for p in parts if p and (terms(library, p) or genre_of(p))]
 
 
+def _known(library: Any, part: str) -> bool:
+    """Часть темы называет жанр или мелодию, все слова которой стоят в опознавательных полях одной записи архива
+    (:func:`_identity_words`): «Stranger Things» — да; «денди-стиль», «саундтрек» — нет, это описание сета. Алиасы
+    слов (``Term.alts``: «денди» → Марио, Контра) не в счёт — иначе любое слово-франшиза в голове было бы названием."""
+    if genre_of(part):
+        return True
+    words = set(title_key(part).split())
+    hits = _whole_search(library, part, THEME_HOOKS, found_min=1.0).names
+    return bool(words) and any(words <= _identity_words(library.get(name) or {}) for name in hits)
+
+
 def _span(library: Any, words: List[str], i: int) -> int:
     """Сколько слов с ``i`` покрывает одна запись архива (0 — ни одной), не заходя на слово жанра."""
     room = next((n for n, w in enumerate(words[i:]) if _genre_only(library, w)), len(words) - i)
@@ -494,11 +505,14 @@ def theme_parts(library: Any, theme: str) -> List[str]:
     """Части темы-перечисления (:data:`_PART_RE`) со значимыми словами; части из одних служебных слов
     («мегасет для игроков из RTTTL-мелодий разных игр», «и другие», «ретро 8-бит») выпадают. Перед двоеточием —
     описание сета («денди-стиль: Тетрис, Контра»): после двоеточия перечисление (две части и больше) — части
-    только из него, первая названная франшиза — первая часть (06.10)."""
-    _head, colon, tail = theme.partition(":")
+    из него, первая названная франшиза — первая часть (06.10). Часть головы, которую архив знает целиком
+    (запись покрывает все её слова, :func:`_known`) или жанр, — не описание, а названная мелодия: идёт перед
+    перечислением («Stranger Things: тёмный синтвейв, 80-е» — #4005)."""
+    head, colon, tail = theme.partition(":")
     listed = _split(library, tail) if colon else []
     if len(listed) >= 2:
-        return listed
+        named = [p for p in _split(library, head) if _known(library, p)]
+        return named + [p for p in listed if p not in named]
     split = _split(library, theme)
     return split if len(split) >= 2 else _segment(library, theme) or split
 

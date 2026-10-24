@@ -263,3 +263,25 @@ def test_short_dendy_and_classic(library):
     assert [h in classical for h in hits.names[:4]] == [False, True, False, True], hits.names
     assert theme_parts(library, "денди и классика") == ["денди", "классика"]
     assert theme_parts(library, "денди классическая музыка") == ["денди", "классическая"]
+
+
+# ---------------------------------------------------------------------------
+# Живой сет 24.10 (#4005): «Stranger Things — …: тёмный синтвейв, 80-е, перевёрнутый мир» искал только хвост
+# ---------------------------------------------------------------------------
+
+def test_named_melody_before_colon_stays_the_first_part(library):
+    """Голова до двоеточия, которую архив знает целиком, — названная мелодия, а не описание сета: идёт первой
+    частью. «Give In To Me» — запись архива; на роботе то же с «Stranger Things» (user_stranger_things_intro_*)."""
+    tail = "dark synthwave, 80s, upside down"
+    assert theme_parts(library, f"Give In To Me: {tail}") == ["Give In To Me", "dark synthwave", "80s", "upside down"]
+    assert theme_parts(library, "Give In To Me — саундтрек и атмосфера: тёмный синтвейв, 80-е, перевёрнутый мир") == [
+        "Give In To Me", "тёмный синтвейв", "80-е", "перевёрнутый мир"]
+    hits = theme_search(library, f"Give In To Me: {tail}")
+    assert hits.names[0] == "giveinto" and "dark synthwave" in hits.missing
+
+
+def test_description_before_colon_is_still_dropped(library):
+    """«денди-стиль: Тетрис, Контра» — «денди» знает алиасы (Марио, Контра), но ни одна запись не зовётся «денди-стиль»:
+    голова — описание, части только из перечисления."""
+    assert theme_parts(library, "денди-стиль: Тетрис, Контра") == ["Тетрис", "Контра"]
+    assert theme_parts(library, "ретро 8-бит: Mario, Tetris") == ["Mario", "Tetris"]
