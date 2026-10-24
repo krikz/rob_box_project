@@ -102,7 +102,7 @@ from std_msgs.msg import String
 from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import fill_speaker_result
 
-from .core import epithets
+from .core import epithets, unnamed_voice
 from .core.utterance_id import compute_utterance_id
 from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
@@ -123,6 +123,9 @@ from rob_box_voice.observability import (
 # отдельный топик: старый потребитель просто не видит ключа, а новый
 # топик потребовал бы второго подписчика/publisher'а ради одного флага.
 REGISTER_PURPOSE_GROWTH = "growth"
+# Issue #3858 — ``source`` результата, которым нода сообщает «завёл профиль без имени для этой фразы»
+# (confidence у такого результата 0: сходства ни с кем не было, профиль новый).
+_SOURCE_ENROLL = "enroll"
 # Косинус «эта же фраза уже лежит в галерее» (вектор против самого себя
 # ≈ 1.0): защита от двойной записи, если фразу уже дописала growth-сессия.
 _ALREADY_IN_GALLERY_SCORE = 0.9999
@@ -147,8 +150,8 @@ def _gap_to_other_name(
     """
     best_name = (best.name or "").strip().casefold()
     for cand in candidates:
-        if cand.speaker_id == best.speaker_id:
-            continue
+        if cand.speaker_id == best.speaker_id or not cand.named:
+            continue  # безымянный профиль (#3858) — не человек «с другим именем»: имени у него нет
         cand_name = (cand.name or "").strip().casefold()
         if cand_name != best_name:
             return best.confidence - cand.confidence
@@ -254,6 +257,150 @@ def _candidate_fields(candidate: Optional[SpeakerMatch]) -> dict:
     return {"candidate_name": candidate.name, "candidate_score": round(candidate.confidence, 4)}
 
 
+def _name_decision(node: "SpeakerIdNode", embedding: np.ndarray, match: Optional[SpeakerMatch]) -> Optional[str]:
+    """Issue #2809 — «зона сомнения + разрыв до другого человека» (см. classify_name_confidence/
+    declare_parameter name_confidence_band_high). top_n=5 — с запасом, чтобы найти конкурента с ДРУГИМ именем,
+    даже если в топ-2 попали два дубля-профиля одной и той же личности (issue #2747, "Дэнчик" x2). У безымянного
+    профиля (#3858) решать нечего: имени нет, ``None``."""
+    if match is None or not match.named:
+        return None
+    return classify_name_confidence(
+        match,
+        node._db.identify_candidates(embedding, top_n=5),
+        band_high=getattr(node, "_name_confidence_band_high", 0.80),
+        min_gap=getattr(node, "_name_confidence_min_gap", 0.15),
+    )
+
+
+def _label(match: SpeakerMatch) -> str:
+    """Имя профиля для лога; безымянный (#3858) -- ``∅``."""
+    return match.name or "∅"
+
+
+def _verdict_line(
+    match: Optional[SpeakerMatch],
+    name_decision: Optional[str],
+    elapsed: float,
+    enrolled: Optional[SpeakerMatch] = None,
+) -> str:
+    """Строка-вердикт ``👤 Speaker: ...`` -- ровно то, что опубликовано, а не лучший кандидат биометрии.
+
+    ``👤 Speaker: 'Имя'`` -- имя названо вслух-безопасно (уверенное). Имя в полосе сомнения не публикуется
+    (ADR-0123 §6, #2809), поэтому вердикт -- ``unknown`` с именем кандидата ПОСЛЕ слов (регэксп харнесса его не
+    берёт). Профиль без имени (#3858) -- без кавычек: это не чьё-то имя.
+    """
+    if enrolled is not None:
+        return f"👤 Speaker: безымянный профиль id={enrolled.speaker_id[:8]} (новый, кличка {enrolled.epithet!r}) ({elapsed:.0f} ms)"
+    if match is None:
+        return f"👤 Speaker: unknown ({elapsed:.0f} ms)"
+    if not match.named:
+        return (
+            f"👤 Speaker: безымянный профиль id={match.speaker_id[:8]} (кличка {match.epithet!r}) "
+            f"confidence={match.confidence:.3f} ({elapsed:.0f} ms)"
+        )
+    if name_decision not in (None, NAME_CONFIDENT):
+        return (
+            f"👤 Speaker: unknown ({elapsed:.0f} ms) -- имя не подтверждено ({name_decision}), "
+            f"ближайший кандидат {match.name!r} confidence={match.confidence:.3f}"
+        )
+    return (
+        f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
+        f"({elapsed:.0f} ms)"
+    )
+
+
+def _unnamed_payload(
+    match: SpeakerMatch, utterance_id: Optional[str], source: Optional[str]
+) -> Tuple[dict, str]:
+    """#3858: результат «голос известен, имени нет» -- ``name=None``, кличка и ``speaker_id`` профиля.
+
+    Гипотез имени (``tentative_*``) нет: безымянному профилю предлагать нечего. Диалог видит собеседника с
+    ``speaker_id`` и без имени -- состояние «знаком, не представлялся». Возвращает ``(payload, строка лога)``.
+    """
+    payload = {
+        "is_known": True,
+        "speaker_id": match.speaker_id,
+        "name": None,
+        "confidence": round(match.confidence, 4),
+        "epithet": match.epithet,
+    }
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if source:
+        payload["source"] = source
+    line = (
+        f"📢 Publishing: is_known=true name=None (профиль без имени, #3858) "
+        f"epithet={match.epithet!r} conf={match.confidence:.3f} source={source!r}"
+    )
+    return payload, line
+
+
+def _unknown_payload(
+    utterance_id: Optional[str], inconclusive: Optional[str], candidate: Optional[SpeakerMatch]
+) -> Tuple[dict, str]:
+    """Результат «не узнал» (``is_known=false``) + строка лога; ``inconclusive`` -- «не смог оценить» (#2863)."""
+    payload = {"is_known": False}
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if inconclusive:
+        payload["inconclusive"] = True
+        payload["reason"] = inconclusive
+    payload.update(_candidate_fields(candidate))
+    line = "📢 Publishing: is_known=false" + (
+        f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else ""
+    )
+    return payload, line
+
+
+def _named_payload(
+    match: SpeakerMatch,
+    source: Optional[str],
+    name_decision: Optional[str],
+    utterance_id: Optional[str],
+    *,
+    band_high: float,
+) -> Tuple[dict, str]:
+    """Результат узнанного профиля С именем + строка лога (решение об имени -- см. ``SpeakerIdNode._publish_result``)."""
+    if source:
+        confident = True
+        decision = NAME_CONFIDENT
+    else:
+        decision = name_decision or (
+            NAME_CONFIDENT if match.confidence >= band_high else NAME_TENTATIVE_SINGLE
+        )
+        confident = decision == NAME_CONFIDENT
+    published_name = match.name if confident else None
+    payload = {
+        "is_known": True,
+        "speaker_id": match.speaker_id,
+        "name": published_name,
+        "confidence": round(match.confidence, 4),
+        # Issue #1787 — внутренняя кличка. None до первой реплики
+        # (профиль из старой БД) — потребитель обязан это терпеть.
+        "epithet": match.epithet,
+    }
+    # Issue #2829 (ADR-0131) — id фразы, для которой это результат
+    # биометрии. Добавляем только когда он есть — старые/тестовые
+    # пути без utterance_id получают payload байт-в-байт как
+    # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
+    if utterance_id:
+        payload["utterance_id"] = utterance_id
+    if source:
+        payload["source"] = source
+    if not confident:
+        payload["tentative_conf"] = round(match.confidence, 4)
+        payload["tentative_kind"] = decision
+        if decision == NAME_TENTATIVE_SINGLE:
+            payload["tentative_name"] = match.name
+    line = (
+        f"📢 Publishing: is_known=true name={published_name!r} "
+        f"epithet={match.epithet!r} conf={match.confidence:.3f}"
+        + ("" if confident else f" (name suppressed: {decision}, issue #2809)")
+        + (f" source={source!r}" if source else "")
+    )
+    return payload, line
+
+
 def _publish_speaker_result(pub, payload: dict) -> None:
     """Типизированная публикация ``SpeakerResult`` (ADR-0150 PR-2).
 
@@ -286,6 +433,10 @@ class _E2EStampedPublisher:
 
 class SpeakerIdNode(Node):
     """Voice-based speaker identification node."""
+
+    # #3858: узлы, собранные без __init__ (тесты через object.__new__), безымянных профилей не заводят.
+    _unnamed_profiles_enabled: bool = False
+    _unnamed_profiles_max: int = _se_mod.UNNAMED_PROFILES_MAX
 
     def __init__(self) -> None:
         super().__init__("speaker_id_node")
@@ -409,6 +560,13 @@ class SpeakerIdNode(Node):
         # — переиспользуем существующую калибровку, а не придумываем новое
         # число.
         self.declare_parameter("gallery_growth_session_gap_sec", 30.0)
+        # Issue #3858 (решение Шифу 22.10, «режим мастерской» для голоса) — незнакомому голосу заводим профиль БЕЗ
+        # имени, с кличкой: следующая встреча узнаёт его, а когда человек представится, имя достаётся этому же
+        # профилю. Пороги опознания (0.72) и слияния (0.75) не трогаются. Гейт — речь не короче
+        # MIN_REGISTER_AUDIO_DURATION_SEC (как у регистрации по имени), лимит — старейший безымянный вытесняется
+        # (#2779: не засорять speakers.db). 20 — запас на «день гостей» в мастерской, а не замеренное число.
+        self.declare_parameter("unnamed_profiles_enabled", True)
+        self.declare_parameter("unnamed_profiles_max", _se_mod.UNNAMED_PROFILES_MAX)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("enabled", True)
         # Issue #1160 — Prometheus metrics endpoint. 9112 — speaker_id_node.
@@ -476,6 +634,9 @@ class SpeakerIdNode(Node):
         self._identify_min_voiced_sec: float = float(
             self.get_parameter("identify_min_voiced_sec").value
         )
+        # Issue #3858 -- см. declare_parameter выше.
+        self._unnamed_profiles_enabled: bool = bool(self.get_parameter("unnamed_profiles_enabled").value)
+        self._unnamed_profiles_max: int = int(self.get_parameter("unnamed_profiles_max").value)
         gallery_warmup_size: int = int(self.get_parameter("gallery_warmup_size").value)
         self._growth_session_gap_sec: float = float(
             self.get_parameter("gallery_growth_session_gap_sec").value
@@ -1115,33 +1276,21 @@ class SpeakerIdNode(Node):
         # распределения пересекаются целиком на реальных данных робота).
         # Якорь — непрерывность growth-сессии, открытой в _do_register().
         self._apply_growth_session(embedding, match)
-        if match:
-            self.get_logger().info(
-                f"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} "
-                f"({elapsed:.0f} ms)"
-            )
-        else:
-            self.get_logger().info(f"👤 Speaker: unknown ({elapsed:.0f} ms)")
 
         # Issue #1160 — Prometheus metrics: known/unknown.
         record_speaker_recognize(
             known=bool(match),
             confidence=match.confidence if match else None,
         )
-        # Issue #2809 — «зона сомнения + разрыв до другого человека» (см.
-        # classify_name_confidence/declare_parameter
-        # name_confidence_band_high). top_n=5 — с запасом, чтобы найти
-        # конкурента с ДРУГИМ именем, даже если в топ-2 попали два
-        # дубля-профиля одной и той же личности (issue #2747, "Дэнчик" x2).
-        name_decision: Optional[str] = None
-        if match:
-            candidates = self._db.identify_candidates(embedding, top_n=5)
-            name_decision = classify_name_confidence(
-                match,
-                candidates,
-                band_high=getattr(self, "_name_confidence_band_high", 0.80),
-                min_gap=getattr(self, "_name_confidence_min_gap", 0.15),
-            )
+        name_decision = _name_decision(self, embedding, match)
+        enrolled = unnamed_voice.enroll(self, embedding, match, name_decision, duration_sec)
+        # Issue #3858 -- вердикт в логе строится ПОСЛЕ решения об имени и совпадает с опубликованным: харнесс
+        # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
+        # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.
+        self.get_logger().info(_verdict_line(match, name_decision, elapsed, enrolled))
+        if enrolled is not None:
+            self._publish_result(enrolled, source=_SOURCE_ENROLL, utterance_id=utterance_id)
+            return
         self._publish_result(
             match,
             name_decision=name_decision,
@@ -1323,7 +1472,7 @@ class SpeakerIdNode(Node):
         )
         if not best_is_owner_or_twin:
             return (
-                f"реплика ближе к '{best.name}' score={best.confidence:.3f}, "
+                f"реплика ближе к '{_label(best)}' score={best.confidence:.3f}, "
                 "чем к владельцу сессии"
                 if best
                 else "БД пуста"
@@ -1378,14 +1527,14 @@ class SpeakerIdNode(Node):
             second = candidates[1]
             gap = best.confidence - second.confidence
             self.get_logger().info(
-                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
-                f"score={best.confidence:.3f} | second='{second.name}'"
+                f"🔍 identify candidates: best='{_label(best)}'({best.speaker_id[:8]}) "
+                f"score={best.confidence:.3f} | second='{_label(second)}'"
                 f"({second.speaker_id[:8]}) score={second.confidence:.3f} | "
                 f"gap={gap:.3f}{voiced}"
             )
         else:
             self.get_logger().info(
-                f"🔍 identify candidates: best='{best.name}'({best.speaker_id[:8]}) "
+                f"🔍 identify candidates: best='{_label(best)}'({best.speaker_id[:8]}) "
                 f"score={best.confidence:.3f} | "
                 f"(единственный известный спикер в БД){voiced}"
             )
@@ -1806,7 +1955,12 @@ class SpeakerIdNode(Node):
             )
             return False
         sid, reused = outcome
-        if reused:
+        if outcome.claimed_unnamed:
+            self.get_logger().info(
+                f"🏷️ [issue #3858] '{name}' представился — имя присвоено профилю без имени (id={sid[:8]}), "
+                "дубля нет, кличка и накопленное остались"
+            )
+        elif reused:
             self.get_logger().info(
                 f"🔗 Speaker '{name}' merged into existing profile (id={sid[:8]}) "
                 "— voice matched an already-known speaker, no duplicate created"
@@ -2311,65 +2465,16 @@ class SpeakerIdNode(Node):
         * ``tentative_kind`` — "single" | "contested", см.
           ``classify_name_confidence``.
         """
-        if match:
-            if source:
-                confident = True
-                decision = NAME_CONFIDENT
-            else:
-                decision = name_decision or (
-                    NAME_CONFIDENT
-                    if match.confidence >= getattr(
-                        self, "_name_confidence_band_high", 0.80
-                    )
-                    else NAME_TENTATIVE_SINGLE
-                )
-                confident = decision == NAME_CONFIDENT
-            published_name = match.name if confident else None
-            payload = {
-                "is_known": True,
-                "speaker_id": match.speaker_id,
-                "name": published_name,
-                "confidence": round(match.confidence, 4),
-                # Issue #1787 — внутренняя кличка. None до первой реплики
-                # (профиль из старой БД) — потребитель обязан это терпеть.
-                "epithet": match.epithet,
-            }
-            # Issue #2829 (ADR-0131) — id фразы, для которой это результат
-            # биометрии. Добавляем только когда он есть — старые/тестовые
-            # пути без utterance_id получают payload байт-в-байт как
-            # раньше (см. test_issue_2809_low_confidence_speaker_does_not_leak_name.py).
-            if utterance_id:
-                payload["utterance_id"] = utterance_id
-            if source:
-                payload["source"] = source
-            if not confident:
-                payload["tentative_conf"] = round(match.confidence, 4)
-                payload["tentative_kind"] = decision
-                if decision == NAME_TENTATIVE_SINGLE:
-                    payload["tentative_name"] = match.name
-            self.get_logger().info(
-                f"📢 Publishing: is_known=true name={published_name!r} "
-                f"epithet={match.epithet!r} conf={match.confidence:.3f}"
-                + (
-                    ""
-                    if confident
-                    else f" (name suppressed: {decision}, issue #2809)"
-                )
-                + (f" source={source!r}" if source else "")
-            )
+        if match is None:
+            payload, line = _unknown_payload(utterance_id, inconclusive, candidate)
+        elif not match.named:
+            payload, line = _unnamed_payload(match, utterance_id, source)
         else:
-            payload = {"is_known": False}
-            if utterance_id:
-                payload["utterance_id"] = utterance_id
-            if inconclusive:
-                payload["inconclusive"] = True
-                payload["reason"] = inconclusive
-            payload.update(_candidate_fields(candidate))
-            self.get_logger().info(
-                "📢 Publishing: is_known=false"
-                + (f" (inconclusive: {inconclusive}, issue #2863)" if inconclusive else "")
+            payload, line = _named_payload(
+                match, source, name_decision, utterance_id,
+                band_high=getattr(self, "_name_confidence_band_high", 0.80),
             )
-
+        self.get_logger().info(line)
         _publish_speaker_result(self._result_pub, payload)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

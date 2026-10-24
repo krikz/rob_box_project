@@ -44,6 +44,11 @@ speaker_id_node:
     # похожа на владельца сессии хотя бы на growth_owner_min_score,
     # иначе НЕ дописывается (см. speaker_id_node._apply_growth_session).
     growth_owner_min_score: 0.65
+    # Issue #3858 (решение Шифу 22.10, «режим мастерской» для голоса) — незнакомому голосу заводится профиль без
+    # имени, с кличкой; когда человек представится, имя достаётся этому же профилю. Гейт — речь не короче
+    # MIN_REGISTER_AUDIO_DURATION_SEC (3 с); безымянных не больше unnamed_profiles_max, старейшие вытесняются (#2779).
+    unnamed_profiles_enabled: true
+    unnamed_profiles_max: 20
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
