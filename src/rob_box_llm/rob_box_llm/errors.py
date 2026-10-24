@@ -30,6 +30,14 @@ class RateLimitError(ProviderError):
     """429 / quota exhausted. Caller should back off + retry."""
 
 
+class QuotaExhaustedError(RateLimitError):
+    """Квота/баланс провайдера кончились (длинное окно): не ретраить, переключаться на запасной (ADR-0150 §8).
+
+    Какие ответы вендора это значат, знает только его адаптер (``rob_box_harness.providers.minimax``): ядро и
+    health-кэш видят класс, а не подстроки вроде кодов MiniMax.
+    """
+
+
 class TimeoutError(ProviderError):  # noqa: A001 — intentional shadowing
     """Network or read timeout. Safe to retry with the same prompt."""
 

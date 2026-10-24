@@ -1,0 +1,374 @@
+[stt_node-6] [INFO] [1792499880.514337502] [stt_node]: ✅ ПРИНЯТО (respeaker): робот покажи анимацию сон
+[stt_node-6] [INFO] [1792499880.515851885] [stt_node]: 👤 [issue 1077] Speaker: tag='0' duration=4.57s text='робот покажи анимацию сон'
+[stt_node-6] [INFO] [1792499880.516733288] [stt_node]: 🎯 Wake word detected: "робот покажи анимацию сон" → STOP TTS
+[stt_node-6] [INFO] [1792499880.517932247] [stt_node]: 📤 Опубликовал результат: робот покажи анимацию сон
+[command_node-8] [INFO] [1792499880.518573133] [command_node]: 🎤 STT: робот покажи анимацию сон
+[tts_node-5] [WARN] [1792499880.521084030] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[sound_node-7] [INFO] [1792499880.523310133] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [WARN] [1792499880.524207518] [sound_node]: ⚠️ Звук уже играет (button_click), пропускаю thinking
+[dialogue_node-4] [INFO] [1792499880.525614346] [dialogue_node]: 📥 LLM INPUT: 'покажи анимацию сон'
+[tts_node-5] [WARN] [1792499880.526869026] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[dialogue_node-4] [INFO] [1792499880.533310889] [dialogue_node]: 👤 [issue 1077] Спикер '1ae4b0ac-a048-430f-b2de-82ba10cd0253': диалог #44 — контекст загружен
+[dialogue_node-4] [INFO] [1792499880.535087419] [dialogue_node]: 👤 [issue 2809] identity question hint set: kind=contested (id=1ae4b0ac)
+[dialogue_node-4] [INFO] [1792499880.535778583] [dialogue_node]: 👤 [issue #2888] identity question by robot: kind=contested held_until_turn_end=True
+[dialogue_node-4] [INFO] [1792499880.537908871] [dialogue_node]: 🚀 [turn] calling process_input: user_input='[Speaker:tentative] покажи анимацию сон' speaker_tag='0'
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nСобеседника зовут Литвин.\nЭто 44-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «расскажи страшную историю про полицию»: load_skill, speak_text\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анима
+[dialogue_node-4]   [2] user: '[Spkr:Дэнчик] расскажи страшную историю про полицию'
+[dialogue_node-4]   [3] assistant: 'Ночью на трассе у леса патрульная машина стояла с включёнными проблесковыми маяками. Их было три, а машин — две.\nЛейтенант высунулся из окна и в свете фар увидел третью машину. Пустую. Без номеров. И без единого водителя за стеклом.\nОн потянулся к рации, но рация молчала. Только тихое дыхание — будто кто-то дышал прямо за его плечом.\nКогда он набрал на пульт, диспетчер ответил: 
+[dialogue_node-4]   [4] user: '[Speaker:tentative] ты что дальше была'
+[dialogue_node-4]   [5] assistant: 'Если коротко — история на этом закончилась.'
+[dialogue_node-4]   [6] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «роботы что дальше было»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «что думаеш
+[dialogue_node-4]   [7] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [8] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [9] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [10] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [11] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [12] user: '<system_context>\n  <user_profile>\n    <name>unknown</name>\n    <privacy_note>Текущий собеседник НЕ опознан голосом. НЕ обращайся к нему по имени другого (даже недавнего) диктора и не пересказывай факты/предпочтения, относящиеся к другому диктору — ни из истории этого диалога, ни из долговременной памяти. Отвечай по сути вопроса, не приписывая его чужой личности.</privacy_note>\n    
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[sound_node-7] [INFO] [1792499880.566534831] [sound_node]: ✅ Завершено: button_click
+[dialogue_node-4] [2026-10-20 15:38:02 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nСобеседника зовут Литвин.\nЭто 44-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «расскажи страшную историю про полицию»: load_skill, speak_text\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анима
+[dialogue_node-4]   [2] user: '[Spkr:Дэнчик] расскажи страшную историю про полицию'
+[dialogue_node-4]   [3] assistant: 'Ночью на трассе у леса патрульная машина стояла с включёнными проблесковыми маяками. Их было три, а машин — две.\nЛейтенант высунулся из окна и в свете фар увидел третью машину. Пустую. Без номеров. И без единого водителя за стеклом.\nОн потянулся к рации, но рация молчала. Только тихое дыхание — будто кто-то дышал прямо за его плечом.\nКогда он набрал на пульт, диспетчер ответил: 
+[dialogue_node-4]   [4] user: '[Speaker:tentative] ты что дальше была'
+[dialogue_node-4]   [5] assistant: 'Если коротко — история на этом закончилась.'
+[dialogue_node-4]   [6] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «роботы что дальше было»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «что думаеш
+[dialogue_node-4]   [7] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [8] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [9] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [10] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [11] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [12] user: '<system_context>\n  <user_profile>\n    <name>unknown</name>\n    <privacy_note>Текущий собеседник НЕ опознан голосом. НЕ обращайся к нему по имени другого (даже недавнего) диктора и не пересказывай факты/предпочтения, относящиеся к другому диктору — ни из истории этого диалога, ни из долговременной памяти. Отвечай по сути вопроса, не приписывая его чужой личности.</privacy_note>\n    
+[dialogue_node-4]   [13] assistant: '' tool_calls=(ToolCall(id='call_01a15951996d72968691f593', name='play_animation', arguments=mappingproxy({'animation': 'sleep', 'duration': 10})),)
+[dialogue_node-4]   [14] tool: '{"status": "queued", "task_id": "4b3ff9b3faa04a54a51dc9fa1d13a01b", "tool": "play_animation", "channel": "anim", "deferred_until_voice_drained": false}'
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [INFO] [1792499882.484471246] [dialogue_node]: 📤 Отправлен запрос 4eaa8558: play_animation
+[mcp_server-10] [INFO] [1792499882.486240998] [mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': 'sleep', 'duration': 10}
+[mcp_server-10] [INFO] [1792499882.487182439] [mcp_server]: [play_animation] Запуск анимации: sleep, длительность: 10s
+[mcp_server-10] [INFO] [1792499882.488559915] [mcp_server]: [play_animation] Анимация 'sleep' отправлена
+[animation_player_node.py-3] [INFO] [1792499882.488736747] [voice_animation_player]: 🎨 Получен запрос на анимацию: sleep:10
+[mcp_server-10] [INFO] [1792499882.489304782] [mcp_server]: 📤 Публикую результат для play_animation (request_id: 4eaa8558)
+[animation_player_node.py-3] [INFO] [1792499882.489326597] [voice_animation_player]: 📏 Указана длительность: 10.0s
+[mcp_server-10] [INFO] [1792499882.491840235] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[dialogue_node-4] [INFO] [1792499882.492916953] [dialogue_node]: 📩 on_result вызван для request_id: 4eaa8558
+[mcp_server-10] [INFO] [1792499882.492963157] [mcp_server]: ✅ Инструмент play_animation выполнен успешно
+[dialogue_node-4] [INFO] [1792499882.493541691] [dialogue_node]: 💾 Результат сохранён в кэш для 4eaa8558
+[dialogue_node-4] [INFO] [1792499882.494170967] [dialogue_node]: ✅ Event установлен для 4eaa8558
+[animation_player_node.py-3] [INFO] [1792499882.837912412] [voice_animation_player]: Loaded animation: sleep (5 panels)
+[animation_player_node.py-3] [INFO] [1792499882.841388676] [voice_animation_player]: Started playing: sleep (replaced previous)
+[animation_player_node.py-3] [INFO] [1792499882.842275839] [voice_animation_player]: ✅ Анимация sleep.yaml загружена и запущена (ручной режим)
+[animation_player_node.py-3] [INFO] [1792499882.843079503] [voice_animation_player]: ⏱️  Таймер возврата к idle (из запроса): 10.0s
+[dialogue_node-4] [2026-10-20 15:38:03 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nСобеседника зовут Литвин.\nЭто 44-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «расскажи страшную историю про полицию»: load_skill, speak_text\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анима
+[dialogue_node-4]   [2] user: '[Spkr:Дэнчик] расскажи страшную историю про полицию'
+[dialogue_node-4]   [3] assistant: 'Ночью на трассе у леса патрульная машина стояла с включёнными проблесковыми маяками. Их было три, а машин — две.\nЛейтенант высунулся из окна и в свете фар увидел третью машину. Пустую. Без номеров. И без единого водителя за стеклом.\nОн потянулся к рации, но рация молчала. Только тихое дыхание — будто кто-то дышал прямо за его плечом.\nКогда он набрал на пульт, диспетчер ответил: 
+[dialogue_node-4]   [4] user: '[Speaker:tentative] ты что дальше была'
+[dialogue_node-4]   [5] assistant: 'Если коротко — история на этом закончилась.'
+[dialogue_node-4]   [6] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «роботы что дальше было»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «что думаеш
+[dialogue_node-4]   [7] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [8] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [9] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [10] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [11] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [12] user: '<system_context>\n  <user_profile>\n    <name>unknown</name>\n    <privacy_note>Текущий собеседник НЕ опознан голосом. НЕ обращайся к нему по имени другого (даже недавнего) диктора и не пересказывай факты/предпочтения, относящиеся к другому диктору — ни из истории этого диалога, ни из долговременной памяти. Отвечай по сути вопроса, не приписывая его чужой личности.</privacy_note>\n    
+[dialogue_node-4]   [13] assistant: '' tool_calls=(ToolCall(id='call_01a15951996d72968691f593', name='play_animation', arguments=mappingproxy({'animation': 'sleep', 'duration': 10})),)
+[dialogue_node-4]   [14] tool: '{"status": "queued", "task_id": "4b3ff9b3faa04a54a51dc9fa1d13a01b", "tool": "play_animation", "channel": "anim", "deferred_until_voice_drained": false}'
+[dialogue_node-4]   [15] assistant: '' tool_calls=(ToolCall(id='call_01a159519d4471f49f2df323', name='speak_text', arguments=mappingproxy({'text': 'Показываю анимацию «сон».', 'animation': 'sleep'})),)
+[dialogue_node-4]   [16] tool: '{"status": "queued", "task_id": "99e2d4b7d0dd4cac8caf81b5fe4a1b15", "tool": "speak_text", "channel": "voice", "deferred_until_voice_drained": false}'
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [INFO] [1792499883.462227055] [dialogue_node]: 🔇 [issue #2913] speak_text хода не озвучен — ход отвечает вопросом о личности / просьбой повторить: 'Показываю анимацию «сон».'
+[dialogue_node-4] [2026-10-20 15:38:04 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792499884.652263553] [dialogue_node]: ✅ [turn] process_input returned: spoken='done'[:60] tools=['play_animation', 'speak_text'] finish_reason='stop' truncated_tool_args=False error=None
+[dialogue_node-4] [INFO] [1792499884.653061587] [dialogue_node]: 👥 [issue #2828] ответ хода заменён переспросом про личность: 'done'
+[dialogue_node-4] [INFO] [1792499884.654412304] [dialogue_node]: 🎵 ход музыку не запускал — cleanup НЕ вооружаем; плеер: playing=False
+[dialogue_node-4] [INFO] [1792499884.655277856] [dialogue_node]: 👤 [issue #2914] в ходе задан вопрос о личности — post-turn ретраи (tool) не диспатчим: ждём ответ человека
+[tts_node-5] [INFO] [1792499884.657972345] [tts_node]: 🔊 TTS: speech_id=f59f3d80, dialogue_id=None, batch=None None/None, voice=default, lang=default, text='Как тебя зовут?'
+[audio_node-1] [INFO] [1792499884.661798441] [audio_node]: 🔇 [issue 993] TTS активен — VAD пропускает речь (barge-in через wake-word gate)
+[tts_node-5] [INFO] [1792499884.661961995] [tts_node]: 🔊 Синтез через MiniMax T2A v2 (HTTP)...
+[tts_node-5] [2026-10-20 15:38:07 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/t2a_v2 "HTTP/1.1 200 OK"
+[tts_node-5] [INFO] [1792499887.290855273] [tts_node]: ✅ MiniMax T2A v2 OK: 53128 samples @ 32000 Hz (model=speech-02-hd, voice=male-qn-qingse, voice_used=male-qn-qingse)
+[tts_node-5] [INFO] [1792499887.305233733] [tts_node]: 🎙️ [issue 1229] TTS provider_state → 'minimax' (voice: male-qn-qingse, reason: synthesis_ok)
+[tts_node-5] [INFO] [1792499887.306671227] [tts_node]: 🔄 Resampling: 32000 Hz → 16000 Hz (53128 samples)
+[tts_node-5] [INFO] [1792499887.309276346] [tts_node]: ✅ Resampled to 26564 samples @ 16000 Hz
+[tts_node-5] [INFO] [1792499887.310126824] [tts_node]: 🎵 Нормальная скорость: 26564 samples
+[dialogue_node-4] [INFO] [1792499887.311051617] [dialogue_node]: 🎙️ [issue 1229] TTS actual provider → 'minimax' (voice: male-qn-qingse, reason: synthesis_ok)
+[tts_node-5] [INFO] [1792499887.311704836] [tts_node]: 🔊 Воспроизведение: 26564 frames, 16000 Hz, стерео
+[mcp_server-10] [INFO] [1792499887.312373241] [mcp_server]: 🎙️ [issue 1229] actual TTS provider → 'minimax' (reason: synthesis_ok)
+[tts_node-5] [INFO] [1792499889.269686428] [tts_node]: ✅ Воспроизведение завершено
+[tts_node-5] [INFO] [1792499889.270525147] [tts_node]: 📢 Публикую TTS finished event: speech_id=f59f3d80..., success=True, duration=1.66s, batch=1/1
+[audio_node-1] [INFO] [1792499889.270204537] [audio_node]: 🔇 [issue 989] TTS закончился — grace 2.5s
+[animation_player_node.py-3] [INFO] [1792499889.270295907] [voice_animation_player]: 🔄 Ручной режим завершён, возврат к автопереключению
+[animation_player_node.py-3] [INFO] [1792499892.844338979] [voice_animation_player]: ⏰ Таймер истёк - возврат к idle анимации
+[dialogue_node-4] -- fixture gap --
+[stt_node-6] [INFO] [1792504285.294304325] [stt_node]: 🎯 Wake word detected: "робот включи голос надежного м" → STOP TTS
+[stt_node-6] [INFO] [1792504285.295375117] [stt_node]: 📤 Опубликовал результат: робот включи голос надежного мужика
+[command_node-8] [INFO] [1792504285.296756481] [command_node]: 🎤 STT: робот включи голос надежного мужика
+[tts_node-5] [WARN] [1792504285.296987406] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[dialogue_node-4] [INFO] [1792504285.301193739] [dialogue_node]: 🎛️ [media-router] intent=play_named name='голос надежного мужика' provider=deterministic text='включи голос надежного мужика'
+[dialogue_node-4] [WARN] [1792504285.303743431] [dialogue_node]: 🚦 [stt-admission] handled: step=media_command (media_command) text='робот включи голос надежного мужика'
+[dialogue_node-4] [INFO] [1792504285.305217276] [dialogue_node]: 📤 Отправлен запрос 4ca532e7: lookup_melody
+[mcp_server-10] [INFO] [1792504285.306617325] [mcp_server]: 📥 Запрос выполнения: lookup_melody с параметрами {'name': 'голос надежного мужика'}
+[mcp_server-10] [INFO] [1792504285.547666560] [mcp_server]: 📤 Публикую результат для lookup_melody (request_id: 4ca532e7)
+[mcp_server-10] [INFO] [1792504285.548513223] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-10] [WARN] [1792504285.549452366] [mcp_server]: ❌ Инструмент lookup_melody завершился с ошибкой: Мелодия 'голос надежного мужика' не найдена в библиотеке. Скажи юзеру честно, что не знаешь точных нот, и предложи сыграть что-то в похожем духе — НЕ выдавай импровизацию за оригинал.
+[dialogue_node-4] [INFO] [1792504285.551056952] [dialogue_node]: 📩 on_result вызван для request_id: 4ca532e7
+[dialogue_node-4] [INFO] [1792504285.551716930] [dialogue_node]: 💾 Результат сохранён в кэш для 4ca532e7
+[dialogue_node-4] [INFO] [1792504285.553402626] [dialogue_node]: ✅ Event установлен для 4ca532e7
+[dialogue_node-4] [INFO] [1792504285.554596862] [dialogue_node]: 🎛️ [media-router] lookup_melody({'name': 'голос надежного мужика'}) ok=False result="Мелодия 'голос надежного мужика' не найдена в библиотеке. Скажи юзеру честно, что не знаешь точных нот, и предложи сыграть что-то в похожем духе — НЕ выдавай им"
+[dialogue_node-4] [INFO] [1792504285.555298951] [dialogue_node]: 🎛️ [media-router] play_named 'голос надежного мужика': miss lookup: не найдена
+[dialogue_node-4] [INFO] [1792504285.556046947] [dialogue_node]: 🎛️ [media-router] play_named: мимо базы — реплика в LLM: 'включи голос надежного мужика'
+[dialogue_node-4] [INFO] [1792504285.557460256] [dialogue_node]: 📥 LLM INPUT: 'включи голос надежного мужика'
+[tts_node-5] [WARN] [1792504285.557560441] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[sound_node-7] [INFO] [1792504285.557887550] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [INFO] [1792504285.560926999] [sound_node]: ▶️ Играю: thinking
+[dialogue_node-4] [INFO] [1792504285.569554849] [dialogue_node]: 👤 [issue 1077] Спикер '3103dcf7-0467-4f80-bef9-3277eb858c0f': диалог #6 — контекст загружен
+[dialogue_node-4] [INFO] [1792504285.570676973] [dialogue_node]: 👤 [issue 1077] Speaker: 'Литвин' conf=0.83
+[dialogue_node-4] [INFO] [1792504285.571662191] [dialogue_node]: 🚀 [turn] calling process_input: user_input='[Spkr:Литвин] включи голос надежного мужика' speaker_tag='0'
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nЭто 6-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- load_skill, speak_text\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анимации каждую на десять секунд и по…»: play_animation, speak_text\n- на «по
+[dialogue_node-4]   [2] assistant: 'Ночью на трассе у леса патрульная машина стояла с включёнными проблесковыми маяками. Их было три, а машин — две.\nЛейтенант высунулся из окна и в свете фар увидел третью машину. Пустую. Без номеров. И без единого водителя за стеклом.\nОн потянулся к рации, но рация молчала. Только тихое дыхание — будто кто-то дышал прямо за его плечом.\nКогда он набрал на пульт, диспетчер ответил: 
+[dialogue_node-4]   [3] user: '[Speaker:tentative] ты что дальше была'
+[dialogue_node-4]   [4] assistant: 'Если коротко — история на этом закончилась.'
+[dialogue_node-4]   [5] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «роботы что дальше было»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «что думаеш
+[dialogue_node-4]   [6] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [7] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [8] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [9] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [10] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [11] user: '[Speaker:tentative] покажи анимацию сон'
+[dialogue_node-4]   [12] assistant: 'Показываю анимацию «сон».'
+[dialogue_node-4]   [13] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «ну вот покажи анимацию ускорения»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», 
+[dialogue_node-4]   [14] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [15] user: '[Speaker:tentative] еще раз покажи анимацию ускорения'
+[dialogue_node-4]   [16] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [17] user: '[Spkr:Дэнчик] робот'
+[dialogue_node-4]   [18] assistant: 'Я РОББОКС, Дэнчик. Слушаю тебя.'
+[dialogue_node-4]   [19] user: '[Spkr:Литвин] епта блядь покажи анимацию ускорения\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Литвин: «да похер как меня зовут покажи анимацию ускорения»\n- незнакомец: «скажи анимацию ускорение»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её
+[dialogue_node-4]   [20] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [21] user: '<system_context>\n  <user_profile>\n    <name>Литвин</name>\n    <voice_confidence>0.83</voice_confidence>\n    <speaker_id>3103dcf7-0467-4f80-bef9-3277eb858c0f</speaker_id>\n    <epithet internal="true">Спутник</epithet>\n    <epithet_rule>Внутренняя метка робота для различения тёзок. НИКОГДА не произноси её вслух и не упоминай в ответе — используй только как признак «это тот же челов
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=complete thinking={"type": "disabled"}
+[dialogue_node-4]   [0] user: 'Ты придумываешь ВНУТРЕННЮЮ кличку собеседника для робота. Она нужна, чтобы различать людей с одинаковыми именами, и НИКОГДА не произносится вслух.\n\nОсновная тема собеседника: default.\nПоследние реплики:\n- еще раз покажи анимацию ускорения\n- епта блядь покажи анимацию ускорения\n- включи голос надежного мужика\n\nСлова-ориентиры по теме (можно взять за основу): Странник, Приятель, Н
+[dialogue_node-4]   tools(0): <NONE PASSED>
+[dialogue_node-4] 🔎 LLM REQUEST END
+[sound_node-7] [INFO] [1792504286.569022702] [sound_node]: ✅ Завершено: thinking
+[dialogue_node-4] [2026-10-20 16:51:27 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] 🔎 LLM RESPONSE: content='Торопливый путешественник' finish=stop tool_calls=[]
+[dialogue_node-4] [INFO] [1792504287.211487663] [dialogue_node]: 🔤 [issue 1787] LLM предложила кличку 'Торопливый путешественник' для 3103dcf7 (словарная была 'Спутник')
+[speaker_id_node-9] [INFO] [1792504287.218648352] [speaker_id_node]: 🔤 [issue 1787] LLM переименовала 3103dcf7 → 'Торопливый путешественник'
+[dialogue_node-4] [2026-10-20 16:51:27 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792504287.810513285] [dialogue_node]: 📤 Отправлен запрос c118aef1: set_voice
+[mcp_server-10] [INFO] [1792504287.813168365] [mcp_server]: 📥 Запрос выполнения: set_voice с параметрами {'voice': 'Russian_ReliableMan'}
+[mcp_server-10] [INFO] [1792504287.814680099] [mcp_server]: [set_voice] [set_voice] voice='Russian_ReliableMan' provider=minimax default=male-qn-qingse switched=False
+[mcp_server-10] [INFO] [1792504287.816126741] [mcp_server]: 📤 Публикую результат для set_voice (request_id: c118aef1)
+[mcp_server-10] [INFO] [1792504287.817296939] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-10] [INFO] [1792504287.818199417] [mcp_server]: ✅ Инструмент set_voice выполнен успешно
+[dialogue_node-4] [INFO] [1792504287.821892511] [dialogue_node]: 🎙️ [issue 1219] TTS current_voice → 'Russian_ReliableMan' (provider: minimax)
+[dialogue_node-4] [INFO] [1792504287.823344041] [dialogue_node]: 📩 on_result вызван для request_id: c118aef1
+[dialogue_node-4] [INFO] [1792504287.824021371] [dialogue_node]: 💾 Результат сохранён в кэш для c118aef1
+[dialogue_node-4] [INFO] [1792504287.824805775] [dialogue_node]: ✅ Event установлен для c118aef1
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nЭто 6-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- load_skill, speak_text\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анимации каждую на десять секунд и по…»: play_animation, speak_text\n- на «по
+[dialogue_node-4]   [2] assistant: 'Ночью на трассе у леса патрульная машина стояла с включёнными проблесковыми маяками. Их было три, а машин — две.\nЛейтенант высунулся из окна и в свете фар увидел третью машину. Пустую. Без номеров. И без единого водителя за стеклом.\nОн потянулся к рации, но рация молчала. Только тихое дыхание — будто кто-то дышал прямо за его плечом.\nКогда он набрал на пульт, диспетчер ответил: 
+[dialogue_node-4]   [3] user: '[Speaker:tentative] ты что дальше была'
+[dialogue_node-4]   [4] assistant: 'Если коротко — история на этом закончилась.'
+[dialogue_node-4]   [5] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «роботы что дальше было»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «что думаеш
+[dialogue_node-4]   [6] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [7] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [8] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [9] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [10] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [11] user: '[Speaker:tentative] покажи анимацию сон'
+[dialogue_node-4]   [12] assistant: 'Показываю анимацию «сон».'
+[dialogue_node-4]   [13] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «ну вот покажи анимацию ускорения»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», 
+[dialogue_node-4]   [14] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [15] user: '[Speaker:tentative] еще раз покажи анимацию ускорения'
+[dialogue_node-4]   [16] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [17] user: '[Spkr:Дэнчик] робот'
+[dialogue_node-4]   [18] assistant: 'Я РОББОКС, Дэнчик. Слушаю тебя.'
+[dialogue_node-4]   [19] user: '[Spkr:Литвин] епта блядь покажи анимацию ускорения\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Литвин: «да похер как меня зовут покажи анимацию ускорения»\n- незнакомец: «скажи анимацию ускорение»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её
+[dialogue_node-4]   [20] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [21] user: '<system_context>\n  <user_profile>\n    <name>Литвин</name>\n    <voice_confidence>0.83</voice_confidence>\n    <speaker_id>3103dcf7-0467-4f80-bef9-3277eb858c0f</speaker_id>\n    <epithet internal="true">Спутник</epithet>\n    <epithet_rule>Внутренняя метка робота для различения тёзок. НИКОГДА не произноси её вслух и не упоминай в ответе — используй только как признак «это тот же челов
+[dialogue_node-4]   [22] assistant: '' tool_calls=(ToolCall(id='call_kqMIVsgnKgvI5agjFuZkpLFM', name='set_voice', arguments=mappingproxy({'voice': 'Russian_ReliableMan'})),)
+[dialogue_node-4]   [23] tool: "Голос установлен: 'Russian_ReliableMan' на провайдере 'minimax' (дефолтный: male-qn-qingse)\n{'status': 'ok', 'voice_set': 'Russian_ReliableMan', 'default_voice': 'male-qn-qingse', 'provider': 'minimax', 'previous_provider': None, 'provider_switched': False}"
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [2026-10-20 16:51:29 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792504289.402097828] [dialogue_node]: ✅ [turn] process_input returned: spoken='Говорю голосом надёжного мужика!'[:60] tools=['set_voice'] finish_reason='stop' truncated_tool_args=False error=None
+[dialogue_node-4] [WARN] [1792504289.404059597] [dialogue_node]: 🎛️ [music turn] фраза кода вместо ответа модели: 'Ничего не заиграло — я мелодию не запускал. Назови, что сыграть, ещё раз.'
+[dialogue_node-4] [INFO] [1792504289.405664960] [dialogue_node]: 🎵 ход музыку не запускал — cleanup НЕ вооружаем; плеер: playing=False
+[tts_node-5] [INFO] [1792504289.406921417] [tts_node]: 🔊 TTS: speech_id=ca24ad0d, dialogue_id=None, batch=None None/None, voice=Russian_ReliableMan, lang=default, text='Ничего не заиграло — я мелодию не запускал. Назови, что сыграть, ещё раз.'
+[dialogue_node-4] [INFO] [1792504289.407007269] [dialogue_node]: 🧹 [issue 3145] отвергнутый гуардом ответ убран из истории
+[tts_node-5] [INFO] [1792504289.412507781] [tts_node]: 🔊 Синтез через MiniMax T2A v2 (HTTP)...
+[animation_player_node.py-3] [INFO] [1792504289.412533244] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[animation_player_node.py-3] [INFO] [1792504289.415022936] [voice_animation_player]: Loaded animation: talking (5 panels)
+[animation_player_node.py-3] [INFO] [1792504289.417409592] [voice_animation_player]: Started playing: talking (replaced previous)
+[audio_node-1] [INFO] [1792504289.420758077] [audio_node]: 🔇 [issue 993] TTS активен — VAD пропускает речь (barge-in через wake-word gate)
+[tts_node-5] [2026-10-20 16:51:31 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/t2a_v2 "HTTP/1.1 200 OK"
+[tts_node-5] [INFO] [1792504292.335712499] [tts_node]: ✅ MiniMax T2A v2 OK: 160868 samples @ 32000 Hz (model=speech-02-hd, voice=Russian_ReliableMan, voice_used=Russian_ReliableMan)
+[tts_node-5] [INFO] [1792504292.373192146] [tts_node]: 🎙️ [issue 1229] TTS provider_state → 'minimax' (voice: Russian_ReliableMan, reason: synthesis_ok)
+[dialogue_node-4] -- fixture gap --
+[stt_node-6] [INFO] [1792504389.425873617] [stt_node]: [stt_attempt] yandex:ok(1076ms 'я просил тебя сгенер') -> accepted 'я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был тематика'
+[stt_node-6] [INFO] [1792504389.426716002] [stt_node]: [stt_attempt_metric] provider=yandex reason=ok latency_ms=1076 attempt=0 text='я просил тебя сгенерируй песню'
+[stt_node-6] [INFO] [1792504389.427657776] [stt_node]: 📊 [telemetry] phrase_to_accept_ms=1078 (text='я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был тематика')
+[stt_node-6] [INFO] [1792504389.428409662] [stt_node]: ✅ ПРИНЯТО (respeaker): я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был тематика
+[stt_node-6] [INFO] [1792504389.429815416] [stt_node]: 👤 [issue 1077] Speaker: tag='0' duration=6.88s text='я просил тебя сгенерируй песню про стриж'
+[stt_node-6] [INFO] [1792504389.430710931] [stt_node]: 📤 Опубликовал результат: я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был тематика
+[command_node-8] [INFO] [1792504389.433307939] [command_node]: 🎤 STT: я просил тебя сгенерируй песню про стрижей и ежей как и летом чтобы был тематика
+[dialogue_node-4] [INFO] [1792504389.436974295] [dialogue_node]: robot_log(step=backlog_diag): raw_current_speaker=is_known=True name='Дэнчик' confidence=0.8531 speaker_id_short='1ae4b0ac' speaker_id_full='1ae4b0ac-a048-430f-b2de-82ba10cd0253' tag_in='0' sanitized_name='Дэнчик' text='я просил тебя сгенерируй песню про стрижей и ежей как и лето'
+[dialogue_node-4] [INFO] [1792504389.437834347] [dialogue_node]: 🗒️ [backlog] accumulated (no_wake_word) tag='0' speaker='Дэнчик' text='я просил тебя сгенерируй песню про стрижей и ежей как и лето'
+[dialogue_node-4] [WARN] [1792504389.438485530] [dialogue_node]: 🚦 [stt-admission] handled: step=wake_word (backlog_accumulated) text='я просил тебя сгенерируй песню про стрижей и ежей как и лето'
+[audio_node-1] [INFO] [1792504397.903303696] [audio_node]: 🎙️  VAD: речь
+[audio_node-1] [INFO] [1792504397.904458580] [audio_node]: 🗣️  Начало речи (pre-roll 1500ms из 1500ms)
+[audio_node-1] [INFO] [1792504398.205227594] [audio_node]: 🎙️  VAD: тишина
+[audio_node-1] [INFO] [1792504401.101305231] [audio_node]: ✅ Речь распознана: 4.57с
+[audio_node-1] [INFO] [1792504401.102149265] [audio_node]: 📊 [telemetry] silence_to_phrase_s=3.00 (speech_continuation=3.0)
+[speaker_id_node-9] [INFO] [1792504401.134933654] [speaker_id_node]: 🎤 Received speech audio: 146304 bytes (4.6s) utterance_id=3a6499613be4
+[stt_node-6] [INFO] [1792504401.134956524] [stt_node]: 🎤 Получена фраза: 4.57с (146304 bytes)
+[stt_node-6] [INFO] [1792504401.144031396] [stt_node]: 📊 [issue 1477] audio_rms_dbfs=-30.4 peak_dbfs=-6.2 duration=4.57s samples=73152
+[speaker_id_node-9] [INFO] [1792504401.363496120] [speaker_id_node]: 🔍 identify candidates: best='Дэнчик'(c9e981cb) score=0.872 | second='Литвин'(3103dcf7) score=0.579 | gap=0.293 | речь=0.69s
+[speaker_id_node-9] [INFO] [1792504401.364705838] [speaker_id_node]: 👤 Speaker: 'Дэнчик' confidence=0.872 (225 ms)
+[speaker_id_node-9] [INFO] [1792504401.366419368] [speaker_id_node]: 📢 Publishing: is_known=true name='Дэнчик' epithet='Незнакомец' conf=0.872
+[mcp_server-10] [INFO] [1792504401.371038590] [mcp_server]: 👤 [issue 1770] current_speaker_id: 1ae4b0ac-a048-430f-b2de-82ba10cd0253 → c9e981cb-18f… (name='Дэнчик')
+[stt_node-6] [INFO] [1792504401.538348336] [stt_node]: 🔔 [boop] Ранний сигнал: wake word в тексте 'робот' (boop_latency_ms=402)
+[sound_node-7] [INFO] [1792504401.538904204] [sound_node]: 🔔 Триггер: boop
+[sound_node-7] [INFO] [1792504401.541325491] [sound_node]: ▶️ Играю: button_click
+[sound_node-7] [INFO] [1792504401.995281788] [sound_node]: ✅ Завершено: button_click
+[stt_node-6] [INFO] [1792504402.002488130] [stt_node]: 📊 [#2931] yandex phase=REAL_TIME partials=18 eou=3 segments=1 stream=[P×5'робот'@0-3200 F#0'робот'@0-2050 E F#1''@2050-2050 E F#2''@2050-2050 E] final='робот'
+[stt_node-6] [INFO] [1792504402.003345552] [stt_node]: [stt_attempt] yandex:ok(867ms 'робот') -> accepted 'робот'
+[stt_node-6] [INFO] [1792504402.004111364] [stt_node]: [stt_attempt_metric] provider=yandex reason=ok latency_ms=867 attempt=0 text='робот'
+[stt_node-6] [INFO] [1792504402.005042453] [stt_node]: 📊 [telemetry] phrase_to_accept_ms=869 (text='робот')
+[stt_node-6] [INFO] [1792504402.005767524] [stt_node]: ✅ ПРИНЯТО (respeaker): робот
+[stt_node-6] [INFO] [1792504402.007185685] [stt_node]: 👤 [issue 1077] Speaker: tag='0' duration=4.57s text='робот'
+[stt_node-6] [INFO] [1792504402.007969423] [stt_node]: 🎯 Wake word detected: "робот" → STOP TTS
+[stt_node-6] [INFO] [1792504402.008845568] [stt_node]: 📤 Опубликовал результат: робот
+[command_node-8] [INFO] [1792504402.010862152] [command_node]: 🎤 STT: робот
+[tts_node-5] [WARN] [1792504402.011023800] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[dialogue_node-4] [INFO] [1792504402.015348153] [dialogue_node]: 📥 LLM INPUT: 'робот'
+[dialogue_node-4] [INFO] [1792504402.016483630] [dialogue_node]: 📥 LLM INPUT backlog_pending=true backlog_handled=false (backlog_hint injected later, post speaker-resolution, in _prepare_user_input_context; backlog_handled=true появится при _build_dynamic_system_context)
+[tts_node-5] [WARN] [1792504402.015893392] [tts_node]: 🔇 STOP command received - немедленная остановка TTS
+[sound_node-7] [INFO] [1792504402.016037632] [sound_node]: 🔔 Триггер: thinking
+[sound_node-7] [WARN] [1792504402.016808240] [sound_node]: ⚠️ Звук уже играет (button_click), пропускаю thinking
+[dialogue_node-4] [INFO] [1792504402.027116366] [dialogue_node]: 👤 [issue 1077] Спикер 'c9e981cb-18f2-43ed-b091-c2f5048eb61a': диалог #8 — контекст загружен
+[dialogue_node-4] [INFO] [1792504402.031058887] [dialogue_node]: 👤 [issue 1077] Speaker: 'Дэнчик' conf=0.87
+[dialogue_node-4] [INFO] [1792504402.033454378] [dialogue_node]: 🗒️ [backlog] flushed to LLM backlog_handled=true entries=1 block='<speech_backlog>\n  <instruction>[URGENT_BACKLOG] Ниже — фразы, которые пользователь(и) произнёс(ли) без обращённого wake-слова ДО текущего обращения. Это либо отложенный запрос пользователя, который п'
+[dialogue_node-4] [INFO] [1792504402.035414629] [dialogue_node]: 🚀 [turn] calling process_input: user_input='[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало' speaker_tag='0'
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nЭто 8-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анимации каждую на десять секунд и по…»: play_animation, speak_text\n- на «покажи анимацию сон»: play_a
+[dialogue_node-4]   [2] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [3] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [4] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [5] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [6] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [7] user: '[Speaker:tentative] покажи анимацию сон'
+[dialogue_node-4]   [8] assistant: 'Показываю анимацию «сон».'
+[dialogue_node-4]   [9] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «ну вот покажи анимацию ускорения»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «
+[dialogue_node-4]   [10] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [11] user: '[Speaker:tentative] еще раз покажи анимацию ускорения'
+[dialogue_node-4]   [12] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [13] user: '[Spkr:Дэнчик] робот'
+[dialogue_node-4]   [14] assistant: 'Я РОББОКС, Дэнчик. Слушаю тебя.'
+[dialogue_node-4]   [15] user: '[Spkr:Литвин] епта блядь покажи анимацию ускорения\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Литвин: «да похер как меня зовут покажи анимацию ускорения»\n- незнакомец: «скажи анимацию ускорение»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её
+[dialogue_node-4]   [16] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [17] user: '<system_context>\n  <user_profile>\n    <name>Дэнчик</name>\n    <voice_confidence>0.87</voice_confidence>\n    <speaker_id>c9e981cb-18f2-43ed-b091-c2f5048eb61a</speaker_id>\n    <epithet internal="true">Незнакомец</epithet>\n    <epithet_rule>Внутренняя метка робота для различения тёзок. НИКОГДА не произноси её вслух и не упоминай в ответе — используй только как признак «это тот же че
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [2026-10-20 16:53:25 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792504405.913976770] [dialogue_node]: 📤 Отправлен запрос 5ff4da48: music_library
+[mcp_server-10] [INFO] [1792504405.916855536] [mcp_server]: 📥 Запрос выполнения: music_library с параметрами {'action': 'search', 'query': 'стрижи ежи'}
+[mcp_server-10] [INFO] [1792504405.918991547] [mcp_server]: 📤 Публикую результат для music_library (request_id: 5ff4da48)
+[mcp_server-10] [INFO] [1792504405.920162431] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-10] [INFO] [1792504405.921144187] [mcp_server]: ✅ Инструмент music_library выполнен успешно
+[dialogue_node-4] [INFO] [1792504405.923474863] [dialogue_node]: 📩 on_result вызван для request_id: 5ff4da48
+[dialogue_node-4] [INFO] [1792504405.924332137] [dialogue_node]: 💾 Результат сохранён в кэш для 5ff4da48
+[dialogue_node-4] [INFO] [1792504405.925436170] [dialogue_node]: ✅ Event установлен для 5ff4da48
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nЭто 8-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анимации каждую на десять секунд и по…»: play_animation, speak_text\n- на «покажи анимацию сон»: play_a
+[dialogue_node-4]   [2] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [3] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [4] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [5] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [6] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [7] user: '[Speaker:tentative] покажи анимацию сон'
+[dialogue_node-4]   [8] assistant: 'Показываю анимацию «сон».'
+[dialogue_node-4]   [9] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «ну вот покажи анимацию ускорения»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «
+[dialogue_node-4]   [10] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [11] user: '[Speaker:tentative] еще раз покажи анимацию ускорения'
+[dialogue_node-4]   [12] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [13] user: '[Spkr:Дэнчик] робот'
+[dialogue_node-4]   [14] assistant: 'Я РОББОКС, Дэнчик. Слушаю тебя.'
+[dialogue_node-4]   [15] user: '[Spkr:Литвин] епта блядь покажи анимацию ускорения\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Литвин: «да похер как меня зовут покажи анимацию ускорения»\n- незнакомец: «скажи анимацию ускорение»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её
+[dialogue_node-4]   [16] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [17] user: '<system_context>\n  <user_profile>\n    <name>Дэнчик</name>\n    <voice_confidence>0.87</voice_confidence>\n    <speaker_id>c9e981cb-18f2-43ed-b091-c2f5048eb61a</speaker_id>\n    <epithet internal="true">Незнакомец</epithet>\n    <epithet_rule>Внутренняя метка робота для различения тёзок. НИКОГДА не произноси её вслух и не упоминай в ответе — используй только как признак «это тот же че
+[dialogue_node-4]   [18] assistant: '' tool_calls=(ToolCall(id='call_4rBdu4CKlQGNEjddMMRFwcj4', name='music_library', arguments=mappingproxy({'action': 'search', 'query': 'стрижи ежи'})),)
+[dialogue_node-4]   [19] tool: "По запросу «стрижи ежи» ничего не найдено.\n{'query': 'стрижи ежи', 'tracks': [], 'total': 0}"
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [2026-10-20 16:53:27 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792504407.900841539] [dialogue_node]: 📤 Отправлен запрос 15d7dc67: music_library
+[mcp_server-10] [INFO] [1792504407.903502992] [mcp_server]: 📥 Запрос выполнения: music_library с параметрами {'action': 'search', 'query': 'стриж'}
+[mcp_server-10] [INFO] [1792504407.905500058] [mcp_server]: 📤 Публикую результат для music_library (request_id: 15d7dc67)
+[mcp_server-10] [INFO] [1792504407.906629498] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-10] [INFO] [1792504407.907402347] [mcp_server]: ✅ Инструмент music_library выполнен успешно
+[dialogue_node-4] [INFO] [1792504407.909640042] [dialogue_node]: 📩 on_result вызван для request_id: 15d7dc67
+[dialogue_node-4] [INFO] [1792504407.910477502] [dialogue_node]: 💾 Результат сохранён в кэш для 15d7dc67
+[dialogue_node-4] [INFO] [1792504407.913588157] [dialogue_node]: ✅ Event установлен для 15d7dc67
+[mcp_server-10] [INFO] [1792504407.914221247] [mcp_server]: 📥 Запрос выполнения: music_library с параметрами {'action': 'search', 'query': 'еж'}
+[dialogue_node-4] [INFO] [1792504407.915296613] [dialogue_node]: 📤 Отправлен запрос 39393b8d: music_library
+[mcp_server-10] [INFO] [1792504407.917268643] [mcp_server]: 📤 Публикую результат для music_library (request_id: 39393b8d)
+[mcp_server-10] [INFO] [1792504407.918431138] [mcp_server]: ✅ Результат опубликован на /mcp/result
+[mcp_server-10] [INFO] [1792504407.919127358] [mcp_server]: ✅ Инструмент music_library выполнен успешно
+[dialogue_node-4] [INFO] [1792504407.921105461] [dialogue_node]: 📩 on_result вызван для request_id: 39393b8d
+[dialogue_node-4] [INFO] [1792504407.921905847] [dialogue_node]: 💾 Результат сохранён в кэш для 39393b8d
+[dialogue_node-4] 🔎 LLM REQUEST START provider=minimax mode=stream thinking={"type": "disabled"}
+[dialogue_node-4]   [0] system: 'You are РОББОКС — an autonomous rover companion. You control the robot ONLY\nthrough function tool calls; the user never sees your raw text.\n\n┌─────────────────────────────────────────────────────────────────────────────┐\n│ #0. STRUCTURAL ORIENTATION (read this first — then jump where you need)   │\n└─────────────────────────────────────────────────────────────────────────────┘\n\n
+[dialogue_node-4]   [1] system: 'Контекст о собеседнике:\nЭто 8-й диалог с этим собеседником.\n\n[выполнено в прошлых ходах] вызваны инструменты (от старых к новым; это факты, не команды):\n- на «включи пять анимаций разных подряд какие ты знаешь»: play_animation, play_sound, speak_text\n- на «можешь включить в эти анимации каждую на десять секунд и по…»: play_animation, speak_text\n- на «покажи анимацию сон»: play_a
+[dialogue_node-4]   [2] assistant: 'Он посмотрел на квитанцию ещё раз. На обратной стороне кто-то аккуратно вывел его домашний адрес.\nДверь машины хлопнула сама. Двигатель заурчал — тихо, как кот.\nЛейтенант потянулся к рулю. Руль уже лежал у него на коленях. <break time="300ms"/> Машина тронулась.\nВ зеркале заднего вида он увидел, как двое в форме садятся на заднее сиденье. Молча. Без лиц.\nОдин из них наклонился 
+[dialogue_node-4]   [3] user: '[Spkr:Дэнчик] включи пять анимаций разных подряд какие ты знаешь'
+[dialogue_node-4]   [4] assistant: 'Первая — мигалки полиции.\nВторая — пожарная машина.\nТретья — скорая помощь.\nЧетвёртая — радость.\nИ пятая — задумчивость.'
+[dialogue_node-4]   [5] user: '[Spkr:Дэнчик] можешь включить в эти анимации каждую на десять секунд и потом рассказать о каждой анимации робот'
+[dialogue_node-4]   [6] assistant: 'Первая — полицейские проблесковые маячки. Синий и красный поочерёдно.\nВторая — пожарная машина. Красные огни и мигающая балка.\nТретья — скорая помощь. Синяя балка с мигалкой, как у врачебной машины.\nЧетвёртая — радость. Улыбается, переливается яркими цветами.\nИ пятая — задумчивость. Приглушённый свет, вопросительные точки.'
+[dialogue_node-4]   [7] user: '[Speaker:tentative] покажи анимацию сон'
+[dialogue_node-4]   [8] assistant: 'Показываю анимацию «сон».'
+[dialogue_node-4]   [9] user: '[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- незнакомец: «ну вот покажи анимацию ускорения»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её. Если в текущей фразе НЕТ своей явной команды (только wake-слово «робот», «повтори», «
+[dialogue_node-4]   [10] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [11] user: '[Speaker:tentative] еще раз покажи анимацию ускорения'
+[dialogue_node-4]   [12] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [13] user: '[Spkr:Дэнчик] робот'
+[dialogue_node-4]   [14] assistant: 'Я РОББОКС, Дэнчик. Слушаю тебя.'
+[dialogue_node-4]   [15] user: '[Spkr:Литвин] епта блядь покажи анимацию ускорения\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Литвин: «да похер как меня зовут покажи анимацию ускорения»\n- незнакомец: «скажи анимацию ускорение»\nВАЖНО: backlog ИМЕЕТ ПРИОРИТЕТ над историей диалога. Если в текущей фразе есть своя явная команда («включи X», «поставь Y», «сделай Z») — выполни её
+[dialogue_node-4]   [16] assistant: 'Показываю анимацию «ускорение».'
+[dialogue_node-4]   [17] user: '<system_context>\n  <user_profile>\n    <name>Дэнчик</name>\n    <voice_confidence>0.87</voice_confidence>\n    <speaker_id>c9e981cb-18f2-43ed-b091-c2f5048eb61a</speaker_id>\n    <epithet internal="true">Незнакомец</epithet>\n    <epithet_rule>Внутренняя метка робота для различения тёзок. НИКОГДА не произноси её вслух и не упоминай в ответе — используй только как признак «это тот же че
+[dialogue_node-4]   [18] assistant: '' tool_calls=(ToolCall(id='call_4rBdu4CKlQGNEjddMMRFwcj4', name='music_library', arguments=mappingproxy({'action': 'search', 'query': 'стрижи ежи'})),)
+[dialogue_node-4]   [19] tool: "По запросу «стрижи ежи» ничего не найдено.\n{'query': 'стрижи ежи', 'tracks': [], 'total': 0}"
+[dialogue_node-4]   [20] assistant: '' tool_calls=(ToolCall(id='call_QNCcxI1yzcFHioq3Ni0tQA7m', name='music_library', arguments=mappingproxy({'action': 'search', 'query': 'стриж'})), ToolCall(id='call_TeFTmnJimkabry0qkdzGyHez', name='music_library', arguments=mappingproxy({'action': 'search', 'query': 'еж'})))
+[dialogue_node-4]   [21] tool: "По запросу «стриж» ничего не найдено.\n{'query': 'стриж', 'tracks': [], 'total': 0}"
+[dialogue_node-4]   [22] tool: "По запросу «еж» найдено 1.\n{'query': 'еж', 'tracks': [{'id': '94aa7ddf259847debbf602f573cfb0ee', 'title': 'До первых дней весны', 'kind': '', 'genre': 'indie folk, soft pop, ballad', 'mood': 'нежный, утешающий, тёплый', 'tags': ['весна', 'утешение', 'грусть', 'надежда', 'тёплый вокал', 'фортепиано', 'акустика', 'для души'], 'rating': 0, 'play_count': 3, 'duration_ms': 176666, 'created
+[dialogue_node-4]   tools(48): add_music_material, clear_waypoints, continue_mapping, delete_waypoint, dj_set, estimate_tts_duration, faq_search, finish_mapping, generate_music, get_battery_level, get_current_pose, get_current_time, get_music_state, get_perception_context, get_robot_status, get_sound_info, list_tts_voices, list_waypoints, listen_for_response, load_map, lookup_melody, memory_context, memory_save, memo
+[dialogue_node-4] 🔎 LLM REQUEST END
+[dialogue_node-4] [INFO] [1792504407.929167634] [dialogue_node]: ✅ Event установлен для 39393b8d
+[dialogue_node-4] [2026-10-20 16:53:31 - httpx:1740 - INFO] HTTP Request: POST https://api.minimax.io/v1/chat/completions "HTTP/1.1 200 OK"
+[dialogue_node-4] [INFO] [1792504412.165067720] [dialogue_node]: ✅ [turn] process_input returned: spoken='Сгенерить новый трек облако сейчас не может. Готового про стрижей и ежей в библиотеке нет — есть только «До первых дней весны» про ёжика и весну, инди-фолк. Включить его?'[:60] tools=['music_library'] finish_reason='stop' truncated_tool_args=False error=None
+[dialogue_node-4] [INFO] [1792504412.166632325] [dialogue_node]: 🔍 [handle_result] spoken='Сгенерить новый трек облако сейчас не может. Готового про стрижей и ежей в библиотеке нет — есть только «До первых дней весны» про ёжика и весну, инди-фолк. Включить его?' (len=170) tools=['music_library'] user_input='[Spkr:Дэнчик] робот\n[URGENT_BACKLOG] [ФОНОВЫЙ ЗАПРОС] До этого обращения (без wake-слова) прозвучало:\n- Дэнчи
+[dialogue_node-4] [INFO] [1792504412.167551303] [dialogue_node]: 📤 LLM OUTPUT: 'Сгенерить новый трек облако сейчас не может. Готового про стрижей и ежей в библиотеке нет — есть только «До первых дней весны» про ёжика и весну, инди-фолк. Включить его?'
+[dialogue_node-4] [INFO] [1792504412.169221186] [dialogue_node]: 🎵 ход музыку не запускал — cleanup НЕ вооружаем; плеер: playing=False
+[tts_node-5] [INFO] [1792504412.172289340] [tts_node]: 🔊 TTS: speech_id=a0116604, dialogue_id=None, batch=None None/None, voice=Russian_ReliableMan, lang=default, text='Сгенерить новый трек облако сейчас не может. Готового про стрижей и ежей в библиотеке нет — есть только «До первых дней весны» про ёжика и весну, инди-фолк. Включить его?'
+[tts_node-5] [INFO] [1792504412.176028919] [tts_node]: 🔊 Синтез через MiniMax T2A v2 (HTTP)...
+[audio_node-1] [INFO] [1792504412.177277821] [audio_node]: 🔇 [issue 993] TTS активен — VAD пропускает речь (barge-in через wake-word gate)
+[animation_player_node.py-3] [INFO] [1792504412.179339924] [voice_animation_player]: 🗣️ Робот говорит - переключаюсь на talking анимацию
+[animation_player_node.py-3] [INFO] [1792504413.276035542] [voice_animation_player]: Loaded animation: talking (5 panels)
+[dialogue_node-4] -- fixture gap --

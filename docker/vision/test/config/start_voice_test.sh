@@ -3,7 +3,7 @@
 # (без hardware: нет audio_node, stt_node, led_node)
 #
 # Hardware замоканы:
-#   - STT  → scenario-runner публикует в /voice/stt/result напрямую
+#   - STT  → scenario-runner публикует Utterance в /voice/stt/utterance напрямую
 #   - VAD  → scenario-runner публикует в /audio/vad напрямую
 #   - TTS  → /voice/dialogue/response читает scenario-runner (не tts_node)
 #   - LED  → /voice/animation/request читает scenario-runner (проверка publish)

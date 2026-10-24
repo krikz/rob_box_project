@@ -11,7 +11,7 @@ CI-окружение (Debian без ROS) не имеет rclpy. Этот confte
 - heartbeat трип → ``/avatar/state`` обновляется.
 
 Паттерн скопирован из ``src/rob_box_voice/test/unit/greeting/conftest.py``
-(см. rob_box_voice/test_startup_greeting_node.py), но расширен под
+(см. rob_box_voice/test/ros_stubs.py), но расширен под
 rclpy.qos, std_srvs.srv и Zenoh-сессию.
 """
 
@@ -93,6 +93,14 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             return ""
 
         # ── logger ─────────────────────────────────────────────────────
+        def get_clock(self) -> Any:
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки
+            # rob_box_dialog_msgs, что под рукой (rosidl в CI отвергает MagicMock).
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
         def get_logger(self) -> MagicMock:
             return self._logger
 
@@ -152,7 +160,7 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             self._services.append(svc)
             return svc
 
-        def create_client(self, srv_type: Any, name: str) -> MagicMock:
+        def create_client(self, srv_type: Any, name: str, **_kwargs: Any) -> MagicMock:
             """Подмена create_client (использовался для записи в чужие
             ROS-параметры — voice-vr 21 / ADR-0080 §2.7 запись удалена,
             метод остался для будущих сервисов)."""
@@ -469,3 +477,38 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
 
 
 _install_ros_mocks()
+
+# ADR-0150 PR-3 (#3688): grip/say говорят клиентом речи - нужны rob_box_dialog_msgs
+# (настоящий пакет в CI после colcon build, иначе заглушка из .msg).
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+
+install_dialog_msgs_stub()
+
+try:  # настоящий rosidl-пакет (CI) или заглушка сервиса DialogControl (Windows): v2-путь супервизора (PR-10)
+    import rob_box_dialog_msgs.srv  # noqa: F401, E402
+except ImportError:
+    class _Request:
+        ACTION_HOLD, ACTION_RESUME, ACTION_RESET = 0, 1, 2
+
+        def __init__(self, action: int = 0, set_by: str = "", ttl_s: float = 0.0) -> None:
+            self.action, self.set_by, self.ttl_s = action, set_by, ttl_s
+
+    _srv = types.ModuleType("rob_box_dialog_msgs.srv")
+    _srv.DialogControl = type("DialogControl", (), {"Request": _Request})
+    sys.modules["rob_box_dialog_msgs.srv"] = _srv
+    sys.modules["rob_box_dialog_msgs"].srv = _srv
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _dialog_engine_v1_unless_test_sets_own():
+    """Тесты этого каталога проверяют проводку v1 (``/dialogue/control``); дефолт ``dialog_engine`` теперь v2
+    (Шифу 23.10), поэтому v1 выставлен явно. Тесты v2 патчат ``declare`` сами (вложенный patch перекрывает)."""
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from rob_box_core import dialog_engine  # noqa: PLC0415
+
+    with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+        yield

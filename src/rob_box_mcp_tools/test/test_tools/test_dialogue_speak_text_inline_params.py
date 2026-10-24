@@ -18,7 +18,6 @@ SpeakTextTool.execute() обязан вырезать такой вшитый с
 Mocked ROS2: см. conftest.py MockNode.
 """
 
-import json
 import sys
 from unittest.mock import Mock
 
@@ -41,10 +40,10 @@ from rob_box_mcp_tools.tools.dialogue import SpeakTextTool  # noqa: E402
 
 def _spoken_ssml(mock_node) -> str:
     """Достать SSML первого TTS-запроса, отправленного инструментом."""
-    tts_pub = mock_node.get_publisher("/voice/tts/request")
+    tts_pub = mock_node.get_publisher("/voice/speech/request")
     assert tts_pub is not None
     assert len(tts_pub.published_messages) == 1
-    return json.loads(tts_pub.published_messages[0].data)["ssml"]
+    return tts_pub.published_messages[0].text  # SpeechRequest.text — SSML (ADR-0150 PR-3)
 
 
 @pytest.mark.unit

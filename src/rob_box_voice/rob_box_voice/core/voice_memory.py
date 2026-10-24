@@ -41,6 +41,7 @@ Usage in DialogueNode:
 
 import logging
 import os
+import re
 import sqlite3
 import struct
 import threading
@@ -64,6 +65,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Ollama embeddings (lazy, gracefully degrades)
 # ---------------------------------------------------------------------------
+
+def query_words(query: str) -> List[str]:
+    """Слова запроса: casefold + только буквы/цифры (#3890).
+
+    Знаки препинания не часть слова: ``«чай,»`` раньше искалось как
+    подстрока ``чай,`` и не находило ни факт, ни реплику. Одно общее
+    правило токенизации для поиска по фактам и по FTS5-репликам.
+    """
+    return re.findall(r"\w+", query.casefold())
+
 
 class OllamaEmbedder:
     """
@@ -705,7 +716,7 @@ class VoiceMemory:
         """
         if limit <= 0:
             return []
-        tokens = [t for t in query.casefold().split() if t]
+        tokens = query_words(query)
         if not tokens:
             return []
 
@@ -770,8 +781,7 @@ class VoiceMemory:
         speaker_id: Optional[str] = None,
     ) -> List[Dict]:
         """FTS5 BM25 search using a normalized prefix-OR query."""
-        normalized = query.casefold()
-        tokens = [f'"{w}"*' for w in normalized.split() if w]
+        tokens = [f'"{w}"*' for w in query_words(query)]
         if not tokens:
             return []
         fts_query = " OR ".join(tokens)

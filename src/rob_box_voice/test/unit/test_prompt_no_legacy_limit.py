@@ -75,15 +75,9 @@ def test_master_prompt_has_no_legacy_150_character_limit() -> None:
 def test_master_prompt_documents_200_character_limit() -> None:
     """The prompt must explicitly tell the LLM to use 200 chars as the limit."""
     content = _read(MASTER_PROMPT)
-    # The exact wording introduced by the #1377 fix (two places: BREVITY rule
-    # and the speak_text tool-card section).
-    assert "NO MORE than 200 characters" in content, (
-        "master_prompt_compact.txt missing the BREVITY rule rewrite "
-        "'NO MORE than 200 characters' (see issue #1377)."
-    )
-    assert "Max **200 characters** per speak_text" in content, (
-        "master_prompt_compact.txt missing the speak_text tool-card "
-        "'Max **200 characters** per speak_text' (see issue #1377)."
+    # #3696: the prompt states the cap once, in the turn protocol (tool cards moved to schemas).
+    assert "max 200 characters" in content, (
+        "master_prompt_compact.txt must state the speak_text cap 'max 200 characters' (see issue #1377)."
     )
 
 

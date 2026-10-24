@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """
 LEDNode - управление 12× RGB LED на ReSpeaker Mic Array v2.0
-Подписывается на: /voice/dialogue/state, /audio/direction, /voice/animation/request
-Предоставляет сервис: /voice/set_led_mode
+Подписывается на: /dialog/turn_event, /dialog/session (только тишина; v1: /voice/dialogue/state), /audio/direction
+Публикует: /voice/expression/event (ExpressionEvent{executor=ring})
+Предоставляет сервис: /voice/set_auto_led
 
-Синхронизация с LED-матрицей:
-  Когда LED-матрица играет анимацию (police_lights, ambulance, fire_truck),
-  кольцо ReSpeaker показывает соответствующие цвета.
+Режим кольца на стадии хода (addressed -> thinking -> speaking -> done|failed) задаёт таблица
+rob_box_dialog.knowledge.REFLEXES, исполняет core/ring_reflex.py (ADR-0150 §5.5, PR-3b #3690).
 """
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rob_box_core import voice_state
+from rob_box_dialog_msgs.msg import ExpressionEvent, SessionState, TurnEvent
 from std_msgs.msg import String, Int32
 from std_srvs.srv import SetBool
 import usb.core
 import usb.util
 from typing import Optional
 
-# Состояние диалога публикует dialogue_node (std_msgs/String, имя
-# DialogueStateKind: IDLE / LISTENING / DIALOGUE / SILENCED). Топика
-# ``/voice/state`` на роботе никто не публикует — это старое имя
-# (ADR-0027 #2, arbiter_node.VOICE_DIALOGUE_STATE_TOPIC), issue #3107.
+from .core.ring_reflex import RingReflex
+
+# Удалит PR-15 #3711: состояние диалога v1 публикует dialogue_node (std_msgs/String, имя
+# DialogueStateKind: IDLE / LISTENING / DIALOGUE / SILENCED); при dialog_engine=v2 тишину даёт сцена ``Silence``
+# в SessionState (``/dialog/session``, issue #3911). Топика ``/voice/state`` на роботе никто не публикует — это
+# старое имя (ADR-0027 #2, arbiter_node.VOICE_DIALOGUE_STATE_TOPIC), issue #3107.
 VOICE_STATE_TOPIC = '/voice/dialogue/state'
 
 
@@ -85,37 +90,37 @@ class PixelRingLite:
     def off(self):
         """Выключить LED."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_MONO, data)
+        return self._send_command(self.CMD_MONO, data)
 
     def mono(self, r: int, g: int, b: int):
         """Установить один цвет для всех LED."""
         data = bytes([r, g, b, 0])
-        self._send_command(self.CMD_MONO, data)
+        return self._send_command(self.CMD_MONO, data)
 
     def trace(self):
         """Режим trace (следит за DoA и VAD)."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_TRACE, data)
+        return self._send_command(self.CMD_TRACE, data)
 
     def listen(self):
         """Режим listen (постоянное свечение по направлению)."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_LISTEN, data)
+        return self._send_command(self.CMD_LISTEN, data)
 
     def think(self):
         """Режим think (пульсация)."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_THINK, data)
+        return self._send_command(self.CMD_THINK, data)
 
     def speak(self):
         """Режим speak (вращение)."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_SPEAK, data)
+        return self._send_command(self.CMD_SPEAK, data)
 
     def spin(self):
         """Режим spin (быстрое вращение)."""
         data = bytes([0, 0, 0, 0])
-        self._send_command(self.CMD_SPIN, data)
+        return self._send_command(self.CMD_SPIN, data)
 
     def set_color_palette(self, color1_rgb: tuple, color2_rgb: tuple):
         """Установить цветовую палитру для think/speak режимов."""
@@ -132,7 +137,7 @@ class PixelRingLite:
 
 
 class LEDNode(Node):
-    """Нода для управления LED индикацией ReSpeaker."""
+    """Нода кольца LED ReSpeaker: исполнитель рефлексов хода (ADR-0150 §5.5.2) и тишины."""
 
     def __init__(self):
         super().__init__('led_node')
@@ -149,7 +154,7 @@ class LEDNode(Node):
         self.brightness = self.get_parameter('brightness').value
         self.auto_mode = self.get_parameter('auto_mode').value
 
-        # Цвета
+        # Цвета (палитра think/speak аппаратных режимов кольца)
         self.colors = {
             'idle': self.get_parameter('colors.idle').value,
             'listening': self.get_parameter('colors.listening').value,
@@ -161,7 +166,21 @@ class LEDNode(Node):
         # Pixel Ring
         self.pixel_ring = PixelRingLite()
 
+        # Режим кольца на стадии хода решает таблица REFLEXES; ответ на каждое включение - ExpressionEvent.
+        self._event_pub = self.create_publisher(ExpressionEvent, '/voice/expression/event', 10)
+        self.reflex = RingReflex(self.pixel_ring, self._call_later, self._answer)
+
         # Subscribers
+        # Стадии хода (ADR-0150 §2.3): кольцо живёт по ним; тишина - сцена Silence в /dialog/session (v2) или
+        # строка /voice/dialogue/state (v1, TEMP до PR-15).
+        self.turn_sub = self.create_subscription(TurnEvent, '/dialog/turn_event', self.turn_event_callback, 10)
+        self._voice = voice_state.VoiceStateTracker()
+        self.session_sub = self.create_subscription(
+            SessionState,
+            voice_state.SESSION_TOPIC,
+            self.session_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
         self.state_sub = self.create_subscription(
             String,
             VOICE_STATE_TOPIC,
@@ -176,14 +195,6 @@ class LEDNode(Node):
             10
         )
 
-        # Подписка на запросы анимаций LED-матрицы для синхронизации кольца
-        self.animation_sub = self.create_subscription(
-            String,
-            '/voice/animation/request',
-            self.animation_request_callback,
-            10
-        )
-
         # Service
         self.led_service = self.create_service(
             SetBool,
@@ -194,35 +205,27 @@ class LEDNode(Node):
         # Состояние
         self.current_mode = 'idle'
         self.current_direction = 0
-        self.animation_override = False  # Флаг: кольцо синхронизировано с анимацией
-        self.animation_timer = None  # Таймер для анимации кольца
-        self.animation_return_timer = None  # Таймер возврата к voice state
-        self.ring_animation_phase = 0  # Фаза анимации кольца
-
-        # Маппинг анимаций LED-матрицы → эффекты кольца ReSpeaker
-        # Формат: animation_name → список цветов для чередования
-        self.ring_sync_map = {
-            'police_lights': {
-                'colors': [(0, 0, 255), (255, 0, 0)],  # синий ↔ красный
-                'interval': 0.3,  # секунды между переключениями
-            },
-            'ambulance': {
-                'colors': [(255, 0, 0), (255, 255, 255)],  # красный ↔ белый
-                'interval': 0.25,
-            },
-            'fire_truck': {
-                'colors': [(255, 0, 0), (255, 80, 0)],  # красный ↔ оранжевый
-                'interval': 0.2,
-            },
-            'road_service': {
-                'colors': [(255, 165, 0), (255, 255, 0)],  # оранжевый ↔ жёлтый
-                'interval': 0.35,
-            },
-        }
 
         # Инициализация
         self.get_logger().info('LEDNode инициализирован')
         self.initialize_hardware()
+
+    def _call_later(self, delay_s: float, callback):
+        """Одноразовый таймер для ``RingReflex`` (вспышка, страховка от зависшего режима)."""
+        timer = None
+
+        def fire():
+            timer.cancel()
+            callback()
+
+        timer = self.create_timer(delay_s, fire)
+        return timer
+
+    def _answer(self, turn_id: str, started: bool, reason: str) -> None:
+        ev = ExpressionEvent()
+        ev.executor, ev.turn_id, ev.reason = 'ring', turn_id, reason
+        ev.kind = ExpressionEvent.KIND_STARTED if started else ExpressionEvent.KIND_SKIPPED
+        self._event_pub.publish(ev)
 
     def initialize_hardware(self):
         """Инициализация ReSpeaker LED."""
@@ -241,114 +244,29 @@ class LEDNode(Node):
         else:
             self.get_logger().error('❌ ReSpeaker LED не найден')
 
-    def animation_request_callback(self, msg: String):
-        """Синхронизация кольца ReSpeaker с анимацией LED-матрицы."""
-        request = msg.data.strip()
-
-        # Парсим формат "animation_name" или "animation_name:duration"
-        animation_name = request
-        duration = None
-        if ':' in request:
-            parts = request.split(':', 1)
-            animation_name = parts[0].strip()
-            try:
-                duration = float(parts[1].strip())
-            except ValueError:
-                pass
-
-        # Проверяем, есть ли синхронизация для этой анимации
-        if animation_name in self.ring_sync_map:
-            config = self.ring_sync_map[animation_name]
-            self.get_logger().info(f'🔄 Синхронизация кольца с анимацией: {animation_name}')
-            self._start_ring_animation(config['colors'], config['interval'], duration)
-        else:
-            # Для остальных анимаций — снимаем override, возвращаемся к voice state
-            self._stop_ring_animation()
-
-    def _start_ring_animation(self, colors: list, interval: float, duration: float = None):
-        """Запуск анимации чередования цветов на кольце."""
-        # Останавливаем предыдущую анимацию
-        self._stop_ring_animation(restore=False)
-
-        self.animation_override = True
-        self.ring_animation_phase = 0
-        self._ring_colors = colors
-
-        # Устанавливаем первый цвет
-        r, g, b = colors[0]
-        self.pixel_ring.mono(r, g, b)
-
-        # Таймер чередования цветов
-        self.animation_timer = self.create_timer(interval, self._ring_animation_tick)
-
-        # Таймер возврата (используем duration или дефолт 15 сек)
-        timeout = duration if duration and duration > 0 else 15.0
-        self.animation_return_timer = self.create_timer(timeout, self._stop_ring_animation_callback)
-        self.get_logger().debug(f'⏱️ Таймер возврата кольца: {timeout:.1f}s')
-
-    def _ring_animation_tick(self):
-        """Тик анимации — переключение на следующий цвет."""
-        self.ring_animation_phase = (self.ring_animation_phase + 1) % len(self._ring_colors)
-        r, g, b = self._ring_colors[self.ring_animation_phase]
-        self.pixel_ring.mono(r, g, b)
-
-    def _stop_ring_animation_callback(self):
-        """Callback таймера — останавливает анимацию кольца."""
-        self._stop_ring_animation()
-
-    def _stop_ring_animation(self, restore: bool = True):
-        """Остановка анимации кольца и возврат к voice state."""
-        if self.animation_timer is not None:
-            self.animation_timer.cancel()
-            self.animation_timer = None
-        if self.animation_return_timer is not None:
-            self.animation_return_timer.cancel()
-            self.animation_return_timer = None
-
-        was_overridden = self.animation_override
-        self.animation_override = False
-
-        if restore and was_overridden:
-            self.get_logger().info('🔄 Возврат кольца к voice state')
-            # Восстанавливаем состояние по текущему voice state
-            self._apply_voice_state(self.current_mode)
-
-    def _apply_voice_state(self, state: str):
-        """Применить цвет кольца по voice state."""
-        if state == 'idle':
-            self.pixel_ring.trace()
-        elif state == 'listening':
-            r, g, b = self.colors['listening']
-            self.pixel_ring.mono(r, g, b)
-        elif state in ['thinking', 'generating']:
-            self.pixel_ring.think()
-        elif state == 'speaking':
-            self.pixel_ring.speak()
-        elif state == 'error':
-            r, g, b = self.colors['error']
-            self.pixel_ring.mono(r, g, b)
-        elif state == 'trace':
-            self.pixel_ring.trace()
-        else:
-            self.pixel_ring.trace()
-
-    def state_callback(self, msg: String):
-        """Обработка изменения состояния голосового ассистента."""
+    def turn_event_callback(self, msg: TurnEvent):
+        """Стадия хода -> режим кольца из ``REFLEXES`` (``addressed`` - сторона говорящего, ``failed`` - красная)."""
         if not self.auto_mode:
             return
+        mode = self.reflex.on_turn_event(msg.turn_id, msg.stage, msg.status)
+        if mode is not None:
+            self.get_logger().info(f'кольцо: {msg.stage} -> {mode} (turn {msg.turn_id[:8]})')
 
+    def session_callback(self, msg: SessionState):
+        """Снимок сессии v2: сцена ``Silence`` гасит кольцо, её снятие возвращает покой (остальное - стадии хода)."""
+        if not self.auto_mode:
+            return
+        changed = self._voice.on_session(msg)
+        if changed is not None:
+            self.reflex.on_state('silenced' if changed.detail == voice_state.SILENCED_DETAIL else 'idle')
+
+    def state_callback(self, msg: String):
+        """Удалит PR-15 #3711: состояние диалога v1 - кольцо гаснет в тишине (SILENCED), остальное - стадии хода."""
+        if not self.auto_mode:
+            return
         state = msg.data.lower()
         self.current_mode = state
-
-        self.get_logger().debug(f'State changed: {state}')
-
-        # Если активна анимация кольца — не перебиваем её voice state
-        if self.animation_override:
-            self.get_logger().debug(f'⏸️ Пропуск voice state: активна анимация кольца')
-            return
-
-        # Переключение режима LED
-        self._apply_voice_state(state)
+        self.reflex.on_state(state)
 
     def direction_callback(self, msg: Int32):
         """Обработка изменения направления на источник звука."""
@@ -386,7 +304,6 @@ class LEDNode(Node):
     def shutdown(self):
         """Корректное завершение."""
         self.get_logger().info('Остановка LEDNode...')
-        self._stop_ring_animation(restore=False)
         self.pixel_ring.off()
         self.get_logger().info('✓ LEDNode остановлен')
 

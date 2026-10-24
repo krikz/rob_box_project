@@ -8,15 +8,14 @@ Pure-Python tests that exercise:
    single-chunk path (back-compat).
 2. ``speak_helpers.split_into_chunks`` is the chunker ``dialogue_node``
    uses to decide whether a turn is single- vs multi-chunk.
-3. ``EffectAwaiterRegistry`` still releases ``/voice/tts/finished`` awaiters
-   exactly once per speech_id even when the JSON payload includes the new
-   batch fields.
+3. (снято в ADR-0150 PR-3: регистратор awaiter-ов ``EffectAwaiterRegistry`` без
+   вызывающих удалён, его тест вместе с ним).
 
 The tests do not spin up ROS — they import the helper module directly and
 use ``json.loads`` to verify the on-the-wire contract that ``tts_node`` and
-``dialogue_node`` share. The actual ``/voice/tts/batch_complete`` publication
-logic lives in ``tts_node._publish_tts_finished`` and is exercised via the
-dialogue_shell integration test (separate file).
+``dialogue_node`` share. The batch closure (``batch_complete`` marker on the
+last ``/voice/tts/finished``; the separate topic was removed in ADR-0150 PR-7c ч.4б)
+lives in ``tts_node._publish_tts_finished``.
 
 Run with::
 
@@ -25,12 +24,10 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import json
 import unittest
 
 from rob_box_voice.core.speak_helpers import (
-    EffectAwaiterRegistry,
     build_ssml_payload,
     split_into_chunks,
 )
@@ -106,48 +103,10 @@ class TestSplitIntoChunks(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 2)
 
 
-class _FakeLoop:
-    """Minimal stand-in for an asyncio loop's ``call_soon_threadsafe``."""
-
-    def __init__(self) -> None:
-        self.events: list[asyncio.Event] = []
-
-    def __call__(self, ev: asyncio.Event) -> None:
-        # Immediately release the event; the test then inspects the registry.
-        ev.set()
-        self.events.append(ev)
-
-
-class TestEffectAwaiterRegistryBatch(unittest.TestCase):
-    """``handle_tts_finished`` still releases one awaiter per speech_id."""
-
-    def test_finished_releases_awaiter_with_batch_fields(self):
-        loop = _FakeLoop()
-        reg = EffectAwaiterRegistry(
-            release_tts=loop, release_sound=loop
-        )
-
-        ev = asyncio.Event()
-        reg.register_tts("sid-1", ev)
-        reg.handle_tts_finished(
-            json.dumps(
-                {
-                    "speech_id": "sid-1",
-                    "success": True,
-                    "batch_id": "b-1",
-                    "batch_index": 1,
-                    "batch_total": 3,
-                }
-            )
-        )
-        self.assertTrue(ev.is_set())
-        self.assertIsNone(reg.pop_tts("sid-1"))
-
-
 class TestBatchCompleteFireRule(unittest.TestCase):
     """Document the fire-rule the ``tts_node`` uses (issue #980).
 
-    The rule is: a ``/voice/tts/batch_complete`` is published only when
+    The rule is: the batch is closed (``batch_complete`` marker) only when
     ``batch_index == batch_total`` *and* both are present (not None).
     These tests verify the predicate the ``_publish_tts_finished`` helper
     applies at runtime — encoded as a standalone function so we don't

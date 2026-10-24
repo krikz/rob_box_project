@@ -44,6 +44,8 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import speaker_section  # noqa: E402
+from identity_v17_legacy import no_accumulation  # noqa: E402
 
 SASHA_ID = "5baad325-0000-0000-0000-000000000000"
 GENA_ID = "9c0ffee0-0000-0000-0000-000000000000"
@@ -96,8 +98,6 @@ def _node(llm_reply):
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
     n.tts = []
@@ -112,7 +112,7 @@ def _node(llm_reply):
 
     async def prepare(**kw):
         user_input = await n._apply_speaker_identity(kw["user_input"], None)
-        dynamic = "\n".join(n._pending_identity_hint_lines())
+        dynamic = ""
         n.llm_context.append(dynamic)
         return user_input, dynamic
 
@@ -121,13 +121,9 @@ def _node(llm_reply):
 
     n._prepare_user_input_context = prepare
     n._invoke_llm_with_telemetry = invoke_llm
-    n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
-    n._retry_dispatched_in_turn = False
-    n._drain_pending_user_messages = MagicMock(return_value=False)
-    n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
+    no_accumulation(n)
     return n
 
 
@@ -137,15 +133,14 @@ def _turn(n, text, speaker=None):
 
 
 class TestSingleAsksDeterministically:
-    def test_question_with_name_replaces_reply_with_name_as_fact(self):
-        """Регресс n702: вопрос звучит, «С возвращением, Саша» — нет."""
+    def test_question_never_replaces_the_reply(self):
+        """В17 (#3695, решение Шифу 21.10): вопрос звучит ПОСЛЕ ответа хода и никогда вместо него.
+        До #3695 вопрос заменял ответ (регресс n702) — и так же глотал команды (живой лог 20.10)."""
         n = _node(NAME_AS_FACT)
 
         _turn(n, "Робот, ты меня узнал по голосу?")
 
-        assert n.tts == ["Саша, это ты?"], n.tts
-        assert NAME_AS_FACT not in n.tts
-        n._handle_result.assert_not_called()
+        assert n.tts == [NAME_AS_FACT, "Саша, это ты?"], n.tts
 
     def test_plain_reply_is_kept_and_question_follows(self):
         """Живой случай 30.09 «какой сегодня праздник»: ответ на вопрос
@@ -165,8 +160,10 @@ class TestSingleAsksDeterministically:
 
         _turn(n, "Робот, ты меня узнал по голосу?")
 
-        assert n.llm_context[0], "LLM должна знать, что вопрос задан"
+        # #3695: правил-подсказок о вопросе в снимке больше нет; кто говорит — раздел speaker, имя-гипотеза в нём
+        # не появляется (test_speaker_turn_v17::test_snapshot_speaker_section_names_only_confirmed)
         assert "Саш" not in n.llm_context[0]
+        assert speaker_section(n) == {"name": None, "name_state": "tentative"}
 
     def test_not_asked_again_in_same_session(self):
         n = _node(NAME_AS_FACT)
@@ -175,22 +172,20 @@ class TestSingleAsksDeterministically:
         n.llm_reply = PLAIN_REPLY
         _turn(n, "Робот, ну как у тебя дела?")
 
-        assert n.tts == ["Саша, это ты?", PLAIN_REPLY]
-        assert "это ты" not in " ".join(n.tts[1:])
+        assert n.tts == [NAME_AS_FACT, "Саша, это ты?", PLAIN_REPLY]
+        assert "это ты" not in " ".join(n.tts[2:])
 
     def test_yes_is_read_by_2809_path_not_merged_by_2828(self):
         """«Да» подтверждает имя (#2809); профили не склеиваются (#2828)."""
         n = _node(NAME_AS_FACT)
         _turn(n, "Робот, ты меня узнал по голосу?")
 
-        n._resolve_identity_ack_answer("да, это я")
         n.llm_reply = "Рад тебя слышать, Саша."
         _turn(n, "да, это я")
 
         n._speaker_merge_pub.publish.assert_not_called()
-        assert n._identity_ack_state().pop_hint_lines() == []
         assert n._current_speaker["name"] == "Саша"
-        assert n.tts == ["Саша, это ты?", "Рад тебя слышать, Саша."]
+        assert n.tts == [NAME_AS_FACT, "Саша, это ты?", "Рад тебя слышать, Саша."]
 
 
 class TestContestedAsksWithoutNames:
@@ -199,10 +194,10 @@ class TestContestedAsksWithoutNames:
 
         _turn(n, "Робот, представляться пока не буду.", _contested())
 
-        assert n.tts == ["Как тебя зовут?"], n.tts
-        joined = " ".join(n.tts) + n.llm_context[0]
-        assert "Борис" not in joined
-        assert "Саш" not in joined
+        assert n.tts == ["Привет, Борис! Или ты Саша?", "Как тебя зовут?"], n.tts
+        # Имён кандидатов нет ни в вопросе, ни в контексте LLM (имена в ответе — выдумка LLM, не код).
+        assert "Борис" not in n.tts[1] + n.llm_context[0]
+        assert "Саш" not in n.tts[1] + n.llm_context[0]
 
     def test_not_asked_again_in_same_session(self):
         n = _node("Привет!")
@@ -211,4 +206,4 @@ class TestContestedAsksWithoutNames:
         n.llm_reply = PLAIN_REPLY
         _turn(n, "Робот, это пока не важно.", _contested())
 
-        assert n.tts == ["Как тебя зовут?", PLAIN_REPLY]
+        assert n.tts == ["Привет!", "Как тебя зовут?", PLAIN_REPLY]

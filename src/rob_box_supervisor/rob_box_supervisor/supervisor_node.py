@@ -15,7 +15,7 @@
     ``/avatar/command_result`` + voice-mode swap;
   * пайплайн грипа (issue #1989, шаг 4б): ``/avatar/ptt/result`` +
     ``/avatar/voice_pipeline`` → transform (0|1 LLM, pure-логика в
-    ``grip_pipeline.py``) → ``/voice/tts/request``. Прямоточный путь, НЕ
+    ``grip_pipeline.py``) → ``SpeechRequest`` (ADR-0150 PR-3). Прямоточный путь, НЕ
     агентский цикл: без AgentCore / ToolProvider / памяти (§7.5, инвариант 6c).
 
 Параметр ``mode`` (default ``"monitor"``) остаётся гейтом применения
@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import json
 import os
+import threading
 import time
 import types
 import uuid
@@ -58,25 +59,14 @@ from rob_box_voice.tts_voice_registry import voices_for as _voices_for
 # AVATAR_COMMAND_TOPIC/AVATAR_COMMAND_RESULT_TOPIC) — это и было причиной
 # регрессии: rob_box_core.avatar_command содержит актуальные значения
 # контракта, а supervisor импортирует старые. Теперь импортируем SoT.
+from rob_box_core import dialog_engine, speech_client
 from rob_box_core.avatar_command import (
     AVATAR_COMMAND_RESULT_TOPIC,
     AVATAR_COMMAND_TOPIC,
 )
-# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
-# Issue #2233 — try/except fallback: round-деплои (z-{e2e}/test-round-N)
-# наследуют voice-assistant-humble-*-test из registry, а тот обновляется
-# develop-билдами БЕЗ SHA-tag pinning (issue #1826 anti-loop). Если
-# PR #2218 (utterance) merged в develop ПОСЛЕ последнего push
-# voice-assistant-humble-test → supervisor стартует в base-image без
-# rob_box_core.utterance → ModuleNotFoundError → restart-loop.
-# Fallback держит supervisor живым: monitor-режим публикует /avatar/state,
-# avatar-TTS запросы уходят с минимальной локальной реализацией Sink/Utterance.
-# Удалить этот блок когда round-ветки начнут использовать SHA-pinned теги
-# или develop-build будет триггерить voice-assistant rebuild (TODO issue).
-try:
-    from rob_box_core.utterance import Sink, Utterance  # type: ignore[import-not-found]
-except ImportError:
-    from rob_box_supervisor._utterance_fallback import Sink, Utterance  # noqa: F401
+# voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML. Фолбек #2233 удалён (ADR-0150 D2, PR-13):
+# образ супервизора собирается на базе voice-assistant с тем же rob_box_core.
+from rob_box_core.utterance import Sink, Utterance  # noqa: E402
 # Issue #2240 — ws_server и supervisor больше НЕ держат свои копии
 # whitelist'а AV-28 §P7: single source of truth в rob_box_core.bridge_protocol.
 # Раньше копия тут расходилась с ws_server / YAML (молчаливый отказ на
@@ -89,6 +79,8 @@ from rob_box_core.bridge_protocol import (  # noqa: E402,F401
 # issue #3253 (Ш2) — стадии ТАРС-в-шлем (thinking/idle) в /avatar/tars/stage.
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
+# ADR-0150 PR-13 (#3708) — ТАРС на общем движке при dialog_engine=v2.
+from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
 # ADR-0083 §2.3 — supervisor собирает AgentCore через build_agent(AgentSpec).
 # До этого PR у supervisor был свой ``_build_operator_llm`` (без persist_path),
 # свой ``_load_operator_system_prompt``, своя ``_load_operator_skill_prompts``
@@ -99,7 +91,10 @@ from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 from rob_box_harness.core.assembly import (  # noqa: E402  — lazy harness import
     AgentSpec,
     build_agent,
+    load_system_prompt,
 )
+from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
+from rob_box_supervisor.operator_prompt import operator_prompt  # noqa: E402
 # ADR-0083 §G — PromptStats для supervisor идут в ту же гистограмму
 # ``voice_llm_prompt_tokens``, что и dialogue_node (issue #2111).
 from rob_box_voice.observability import (  # noqa: E402
@@ -167,9 +162,8 @@ REASON_MONITOR = MONITOR_MODE_REASON
 #     использует общий ``~/.rob_box/llm_health.json`` — supervisor и
 #     dialogue делят один кеш.
 #   * §1.3 #3 — supervisor лез в ``rob_box_voice/prompts/skills`` по
-#     относительному пути (протечка в чужой пакет). Теперь спек явно
-#     задаёт ``skill_slice=("operator.speech", "operator.control")``
-#     и больше не открывает ``voice/skills``.
+#     относительному пути (протечка в чужой пакет). Срезов скиллов нет
+#     совсем (ADR-0150 PR-6): ТАРС живёт на одном системном промпте.
 #   * §2.3 #G — supervisor не публиковал PromptStats. ``AgentSpec.on_prompt``
 #     зовёт ``_record_supervisor_prompt_stats``, и ``record_llm_prompt_tokens``
 #     пишет в ту же гистограмму, что и dialogue.
@@ -203,6 +197,58 @@ DIALOGUE_CONTROL_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
 # (вместо ``DIALOGUE_CONTROL_ACTIONS``-итерации — читаемость).
 DIALOGUE_CONTROL_PAUSE: str = "pause"
 DIALOGUE_CONTROL_RESUME: str = "resume"
+
+
+#: Сервис управления диалогом v2 (ADR-0150 §10.1, PR-10 #3704) и сколько ждём ack владельца.
+DIALOG_CONTROL_SERVICE: str = "/dialog/control"
+DIALOG_CONTROL_ACK_TIMEOUT_S: float = 3.0
+#: Страховка ``hold`` на время хода ТАРС: упавший супервизор не оставит личность глухой навсегда (§7.2: «таймаут
+#: супервизора»). Явный ``off`` (legacy ``/avatar/set_voice_mode``) держит до ``resume``.
+OPERATOR_HOLD_TTL_S: float = 300.0
+_HOLD_ACTION = {DIALOGUE_CONTROL_PAUSE: 0, DIALOGUE_CONTROL_RESUME: 1}  # DialogControl.ACTION_HOLD / ACTION_RESUME
+
+
+class _DialogControlClient:
+    """``dialog_engine=v2``: ``pause``/``resume`` супервизора -> ``DialogControl.hold``/``resume`` с ack владельца.
+
+    Тот же вход ``publish(String JSON {action, reason, ttl_s})``, что у топика v1, но исход честный: нет сервиса,
+    нет ответа за срок или ``ok=false`` — исключение (``_publish_dialogue_control`` вернёт ``False``), а не
+    «отправил и забыл»."""
+
+    def __init__(self, client: Any, srv: Any, timeout_s: float = DIALOG_CONTROL_ACK_TIMEOUT_S) -> None:
+        self._client, self._srv, self._timeout_s = client, srv, timeout_s
+
+    def publish(self, msg: Any) -> None:
+        payload = json.loads(msg.data)
+        action = _HOLD_ACTION[payload["action"]]
+        if not self._client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: сервиса нет (dialog_node v2 не запущен?)")
+        request = self._srv.Request()
+        request.action, request.set_by, request.ttl_s = action, "operator", float(payload.get("ttl_s") or 0.0)
+        done = threading.Event()
+        future = self._client.call_async(request)
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(self._timeout_s):
+            raise TimeoutError(f"{DIALOG_CONTROL_SERVICE}: нет ack за {self._timeout_s:g} с")
+        response = future.result()
+        if not response.ok:
+            raise RuntimeError(f"{DIALOG_CONTROL_SERVICE}: владелец отказал action={payload['action']}")
+
+
+def _dialogue_control_publisher(node: Any, engine: str) -> Any:
+    """Писатель управления личностью по флагу движка: ``v1`` — топик ``/dialogue/control``, ``v2`` — сервис
+    ``/dialog/control`` (клиент в своей реентерабельной группе: ответ приходит, пока обработчик команды ждёт)."""
+    if engine == dialog_engine.V1:
+        return node.create_publisher(RosString, DIALOGUE_CONTROL_TOPIC, 10)
+    from rob_box_dialog_msgs.srv import DialogControl  # noqa: PLC0415 - только v2
+
+    try:
+        from rclpy.callback_groups import ReentrantCallbackGroup  # noqa: PLC0415
+        group = {"callback_group": ReentrantCallbackGroup()}
+    except ImportError:  # unit-окружение без rclpy
+        group = {}
+    return _DialogControlClient(node.create_client(DialogControl, DIALOG_CONTROL_SERVICE, **group), DialogControl)
+
 
 # AV-27 / issue #1919 — TTS picker топики (симметрично /avatar/set_voice_mode).
 # Payload — JSON в std_msgs/String, как принято в supervisor_node. См.
@@ -387,21 +433,20 @@ AVATAR_TARS_STAGE_TOPIC: str = "/avatar/tars/stage"
 
 # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5 target-operator-agent-and-dialogue.md) ──
 # Прямоточный путь речи оператора с левого грипа: /avatar/ptt/result + конфиг
-# /avatar/voice_pipeline → transform (0 или 1 вызов LLM) → /voice/tts/request.
+# /avatar/voice_pipeline → transform (0 или 1 вызов LLM) → SpeechRequest (speech_client.say).
 # Оба входа создают другие ноды (ptt/result — stt_node, шаг 05/#1990;
 # voice_pipeline — quest_node/панель); пока их нет — подписки дремлют.
 # Никакого AgentCore / ToolProvider / памяти на этом пути (инвариант 6c).
 GRIP_PTT_RESULT_TOPIC: str = "/avatar/ptt/result"
 GRIP_VOICE_PIPELINE_TOPIC: str = "/avatar/voice_pipeline"
-# Выход пайплайна — динамики робота (тот же топик, что у инструмента say).
-GRIP_TTS_REQUEST_TOPIC: str = "/voice/tts/request"
-# ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Старый grip pipeline
-# публиковал в /voice/tts/request (этот топик оставлен ТОЛЬКО для инструмента
-# ``say``, см. ADR-0055 §Чего не делаем). Все собственные реплики
-# avatar_supervisor'а и грип-пайплайна идут в /avatar/tts/request (sink="headset"),
-# tts_node шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем.
+# Выход пайплайна — динамики робота: SpeechRequest клиентом речи ``speech_client`` (ADR-0150 PR-3), агент
+# ``operator`` — как у инструмента say. Своего имени топика у супервизора нет (PR-13).
+# ADR-0055 / issue #1993 — обратный канал ТАРС в шлем: собственные реплики
+# avatar_supervisor'а идут в /avatar/tts/request (sink="headset"), tts_node
+# шлёт синтез в /avatar/tts/audio, quest_node доставляет в шлем. Грип и
+# инструмент ``say`` говорят в динамики робота SpeechRequest-ом (ADR-0150 PR-3).
 AVATAR_TTS_REQUEST_TOPIC: str = "/avatar/tts/request"
-# source в /voice/tts/request от пайплайна грипа (для метрик tts_node).
+# priority реплики грипа в SpeechRequest (врезка за играющим чанком).
 GRIP_TTS_SOURCE: str = "operator"
 # Значения preset, означающие «без стиля» (0 вызовов LLM) даже при
 # llm_enabled=true — семантика ``preset=none`` из карточки #1989.
@@ -458,7 +503,7 @@ class AvatarSupervisor(Node):
     ``/avatar/set_voice``, preview) и агент оператора ТАРС
     (``/avatar/command`` + ``/avatar/stt/result`` → ``AgentCore``) плюс
     пайплайн грипа (issue #1989: ``/avatar/ptt/result`` +
-    ``/avatar/voice_pipeline`` → ``/voice/tts/request``).
+    ``/avatar/voice_pipeline`` → ``SpeechRequest``).
     Клиент floor-сервисов ходит на ``/avatar_arbiter/*``.
     """
 
@@ -498,9 +543,10 @@ class AvatarSupervisor(Node):
         # для swap-контекста вокруг ``_run_agent_sync`` (pause на входе,
         # resume в finally) и для обработки явных
         # ``/avatar/set_voice_mode``-команд (legacy-контракт).
-        self._dialogue_control_pub = self.create_publisher(
-            RosString, DIALOGUE_CONTROL_TOPIC, 10
-        )
+        # ADR-0150 PR-10 (#3704): ``/dialogue/control`` слушает только dialogue_node v1 — при dialog_engine=v2
+        # пауза личности идёт сервисом DialogControl ``/dialog/control`` (hold/resume с ack).
+        self._dialog_engine = dialog_engine.declare(self)
+        self._dialogue_control_pub = _dialogue_control_publisher(self, self._dialog_engine)
         # AV-28 §P7 (issue #1920) — voice style preset/language подписки
         # удалены по ADR-0087: канал был «честный no-op» после PR #2255
         # (whitelist + log + ack, без побочного эффекта) и без владельца
@@ -555,7 +601,10 @@ class AvatarSupervisor(Node):
         # health-fallback chain — отдельная карточка позже.
         # ADR-0043 §3.2: runtime yaml (когда он появится для supervisor)
         # должен быть синхронизирован с этим значением в том же коммите.
-        self.declare_parameter("llm_providers", "minimax,deepseek")
+        # PR-13b #3708: порядок — тот же, что у режима команд Личности
+        # (knowledge.COMMAND_PROVIDERS_DEFAULT, DeepSeek первым): на ТАРС v2
+        # MiniMax 3 хода из 8 отвечал прозой без команды → ретрай.
+        self.declare_parameter("llm_providers", COMMAND_PROVIDERS_DEFAULT)
         # issue #2116 — озвучивать ли ответ агента в шлем. Выключается
         # на стенде, где синтез не нужен (тесты тракта по топикам).
         self.declare_parameter("speak_agent_replies", True)
@@ -599,6 +648,9 @@ class AvatarSupervisor(Node):
         # каждым входом гоним его в DIALOGUE (см. _run_agent_sync).
         self._agent_core: Any = None
         self._operator_dsm: Any = None
+        # ADR-0150 PR-13 (#3708): при dialog_engine=v2 ТАРС — общий движок rob_box_dialog (operator_turns), при v1 —
+        # AgentCore ниже (удаление — PR-15). Сборка и ход выбираются здесь один раз.
+        self._agent_builder, self._agent_runner = agent_path(self, self._dialog_engine)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -648,7 +700,7 @@ class AvatarSupervisor(Node):
 
         # ── Шаг 4б (issue #1989): пайплайн грипа (§7.5) ──────────────
         # Прямоточный путь, НЕ агентский цикл: ptt/result + конфиг панели →
-        # transform (0|1 LLM) → /voice/tts/request. Состояние конфигурации —
+        # transform (0|1 LLM) → SpeechRequest. Состояние конфигурации —
         # «одна точка правды на ноде оператора»; default — «Без стиля»
         # (llm_enabled=False), пока панель не пришлёт /avatar/voice_pipeline.
         self._pipeline_llm_enabled: bool = False
@@ -657,15 +709,12 @@ class AvatarSupervisor(Node):
         # LLM грипа — лениво, отдельно от агента (см. _grip_transform_once).
         # Грип НЕ строит AgentCore / ToolProvider / Memory.
         self._grip_llm: Any = None
-        self._tts_request_pub = self.create_publisher(
-            RosString, GRIP_TTS_REQUEST_TOPIC, 10
-        )
+        speech_client.prepare(self, "request")
         # ADR-0055 / issue #1993 — обратный канал ТАРС в шлем. Publisher
         # /avatar/tts/request для СОБСТВЕННЫХ реплик supervisor'а и пайплайна
         # грипа. Контракт String JSON (см. ADR-0055 §tts_node):
         # ``{request_id, ssml, sink:\"headset\", voice?, language?}``.
-        # ``/voice/tts/request`` остаётся ТОЛЬКО для инструмента ``say``
-        # (там ALSA-путь + динамики робота, НЕ шлем).
+        # Динамики робота (грип, say) — SpeechRequest клиентом речи, НЕ шлем.
         self._avatar_tts_request_pub = self.create_publisher(
             RosString, AVATAR_TTS_REQUEST_TOPIC, 10
         )
@@ -1217,7 +1266,7 @@ class AvatarSupervisor(Node):
     }
 
     def _publish_dialogue_control(
-        self, action: str, reason: str = ""
+        self, action: str, reason: str = "", ttl_s: float = 0.0
     ) -> bool:
         """Опубликовать ``{action, reason, ts_s}`` в ``/dialogue/control``.
 
@@ -1238,6 +1287,7 @@ class AvatarSupervisor(Node):
                 "action": action,
                 "reason": reason,
                 "ts_s": time.time(),
+                "ttl_s": float(ttl_s),
             }
             msg = RosString()
             msg.data = json.dumps(payload, ensure_ascii=False)
@@ -1819,6 +1869,7 @@ class AvatarSupervisor(Node):
         applied_in = self._publish_dialogue_control(
             DIALOGUE_CONTROL_PAUSE,
             reason="agent_during_command",
+            ttl_s=OPERATOR_HOLD_TTL_S,
         )
         if not applied_in:
             # Если publish упал (нет подписчика / rclpy error) — не валим
@@ -1880,7 +1931,7 @@ class AvatarSupervisor(Node):
         пересобирать AgentCore (там LLM/Tools/Memory init дорого).
         """
         if self._agent_core is None:
-            core, dsm = self._build_agent_core_sync()
+            core, dsm = self._agent_builder()
             if core is not None:
                 self._agent_core = core
                 self._operator_dsm = dsm
@@ -1896,10 +1947,8 @@ class AvatarSupervisor(Node):
         * ``name='operator'``, ``memory_namespace='operator'`` — обе
           ноды пишут в ``/data/harness_voice.db``, фильтрация по
           колонке ``agent`` (миграция 011_agent_namespace.sql).
-        * ``narrow_tools_to_skill=False`` — ТАРС видит все инструменты
-          (ADR-0083 §2.2 #J).
-        * ``use_scheduler=False`` — W7b планировщик живёт только на
-          стороне личности (ADR-0083 §2.2 #F).
+        * среза тулов нет (``set_visible_tools`` не зовётся) — ТАРС видит
+          все инструменты (ADR-0083 §2.2 #J).
         * ``health_cache_persist_path`` — общий ``~/.rob_box/llm_health.json``
           (ADR-0083 §1.3 #1). Если dialogue_node уже туда пишет —
           supervisor и личность делят один HealthCache.
@@ -1933,7 +1982,7 @@ class AvatarSupervisor(Node):
 
         # ── Operator AgentSpec (ADR-0083 §2.3 / §1.2 #A-#B / §2.2 #F/#J) ──
         provider_chain = self._parse_provider_chain(
-            self._param_str("llm_providers", "minimax,deepseek")
+            self._param_str("llm_providers", COMMAND_PROVIDERS_DEFAULT)
         )
         settings = self._build_operator_llm_settings()
         try:
@@ -1943,8 +1992,6 @@ class AvatarSupervisor(Node):
                 name="operator",
                 prompt_dir=self._resolve_prompts_dir() or Path(""),
                 system_prompt_file=self._system_prompt_file,
-                skill_slice=("operator.speech", "operator.control"),
-                use_scheduler=False,
                 memory_namespace="operator",
                 on_prompt=self._record_supervisor_prompt_stats,
                 provider_chain=provider_chain,
@@ -1955,7 +2002,6 @@ class AvatarSupervisor(Node):
                 ).expanduser(),
                 health_balance_checkers={},
                 history_trim_limit=self._param_int("history_max_turns", 10),
-                narrow_tools_to_skill=False,  # ADR-0083 §2.2 #J
                 dsm=DialogueStateMachine(),
                 user_id="operator",
             )
@@ -1964,7 +2010,9 @@ class AvatarSupervisor(Node):
             return (None, None)
 
         try:
-            core = build_agent(spec, tools=tools, memory=memory)
+            # промпт: правила файла + инструменты из реестра (#3298, PR-13b)
+            core = build_agent(spec, tools=tools, memory=memory,
+                               system_prompt=operator_prompt(load_system_prompt(spec), dialog_engine.V1))
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"_build_agent_core_sync: build_agent failed: {exc}")
             return (None, None)
@@ -2173,10 +2221,7 @@ class AvatarSupervisor(Node):
         (colcon symlink / unit-тесты). Возвращает ``Path`` или ``None``.
         Используется в :meth:`_build_agent_core_sync` для построения
         :class:`AgentSpec.prompt_dir` — ``build_agent`` берёт
-        ``system_prompt_file`` и скиллы ``skill_slice`` отсюда.
-        Раньше supervisor ещё читал ``rob_box_voice/prompts/skills``
-        best-effort (протечка ADR-0083 §1.3 #3) — закрыто, теперь
-        ``skill_slice`` строго ``("operator.speech", "operator.control")``.
+        ``system_prompt_file`` отсюда (срезов скиллов нет, ADR-0150 PR-6).
         """
         from pathlib import Path  # noqa: PLC0415
 
@@ -2481,7 +2526,7 @@ class AvatarSupervisor(Node):
         self._tars_stage.thinking(request_id)
         try:
             with self._dialogue_control_swap():
-                result = self._run_agent_sync(core, payload)
+                result = self._agent_runner(core, {**payload, "request_id": request_id})
         except Exception as exc:  # noqa: BLE001 — НЕ ДОЛЖНО сбежать из swap
             # ``_dialogue_control_swap`` имеет try/finally, но защищаемся от
             # ошибок ВНЕ swap (publish, метрики). Сам swap уже
@@ -2555,7 +2600,7 @@ class AvatarSupervisor(Node):
 
     # ── Шаг 4б (issue #1989): пайплайн грипа ─────────────────────────
     # Прямоточный путь (§7.5): /avatar/ptt/result + /avatar/voice_pipeline →
-    # transform(text, preset, language) → /voice/tts/request. Без AgentCore,
+    # transform(text, preset, language) → SpeechRequest. Без AgentCore,
     # ToolProvider, памяти и истории (инвариант 6c). Pure-логика
     # (классификация, загрузка пресетов, сборка сообщений) — в
     # :mod:`rob_box_supervisor.grip_pipeline`.
@@ -2672,7 +2717,7 @@ class AvatarSupervisor(Node):
         """ROS-callback ``/avatar/ptt/result`` — фраза с левого грипа.
 
         Запускает прямоточную трансформацию по текущей конфигурации панели
-        и публикует результат в ``/voice/tts/request`` (динамики робота,
+        и публикует результат как ``SpeechRequest`` (``speech_client.say``, агент operator) (динамики робота,
         §7.5). Целевая аудитория — люди рядом с роботом; оператор слышит
         свою реплику акустически (динамики → воздух → уши) и через
         PTT-гейт клиента, side-tone в шлем не нужен (инвариант 6b §7.4:
@@ -2794,16 +2839,15 @@ class AvatarSupervisor(Node):
     def _publish_grip_tts(
         self, text: str, language: Optional[str] = None
     ) -> None:
-        """Опубликовать текст в ``/voice/tts/request`` (динамики робота, §7.5).
+        """Сказать текст динамиками робота: ``SpeechRequest`` агента operator (§7.5).
 
         Прямоточный пайплайн грипа (issue #1989, §7.5):
         ``/avatar/ptt/result`` → ``/avatar/voice_pipeline`` →
-        ``transform`` → ``/voice/tts/request``. Целевая аудитория —
+        ``transform`` → ``speech_client.say``. Целевая аудитория —
         люди рядом с роботом, поэтому грип говорит голосом робота из
         динамиков (тот же канал, что и инструмент ``say``).
 
-        Payload — JSON ``{ssml, language?, priority: "operator"}``:
-        ``ssml`` обязателен (tts_node читает ssml в dialogue_callback),
+        ``SpeechRequest`` (ADR-0150 PR-3): SSML строит ``Utterance``,
         ``priority="operator"`` (ADR-0056 §3.5, _TTS_PRIORITY_PREEMPTS)
         чтобы voice-планировщик вставил реплику сразу за текущей
         озвучкой и положил её поверх очереди динамика — иначе грип
@@ -2823,7 +2867,7 @@ class AvatarSupervisor(Node):
         Issue #2137 — регресс против §7.5: ``_publish_grip_tts`` ошибочно
         слал в ``/avatar/tts/request`` (sink=headset), и оператор слышал
         «сам себя» в шлеме, а люди рядом — ничего. Фикс: обратно на
-        ``/voice/tts/request`` с ``priority="operator"``.
+        динамики с ``priority="operator"`` (с ADR-0150 PR-3 — ``SpeechRequest``).
         """
         # Issue #2096 — пустой text → DROP (warning). Раньше уходило в
         # /avatar/tts/request, tts_node ловил MiniMax bad-request, лог
@@ -2836,21 +2880,16 @@ class AvatarSupervisor(Node):
             return
 
         # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        # XML-экранирование &, <, > делает сам сборщик. Для ``/voice/tts/request``
-        # ``sink`` НЕ включаем: канал по контракту — динамики робота, шлем
-        # (sink=headset) — это отдельный ``_publish_avatar_tts`` (инвариант 6b).
+        # XML-экранирование &, <, > делает сам сборщик. Канал — динамики робота;
+        # шлем (sink=headset) — отдельный ``_publish_avatar_tts`` (инвариант 6b).
         utterance = Utterance(
             text=text,
             sink=Sink.SPEAKERS,
             priority=GRIP_TTS_SOURCE,  # "operator" — REPLACE-priority
             language=language,
         )
-        payload = utterance.to_request()
-        payload.pop("sink", None)
         try:
-            msg = RosString()
-            msg.data = json.dumps(payload, ensure_ascii=False)
-            self._tts_request_pub.publish(msg)
+            speech_client.say(self, utterance, agent="operator")
         except Exception as exc:  # noqa: BLE001
             self._log.warning(f"GripPipeline: voice_tts_request publish failed: {exc}")
 

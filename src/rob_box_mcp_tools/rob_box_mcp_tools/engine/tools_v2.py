@@ -51,9 +51,10 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
 from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
-                                  source_ask)
+                                  source_ask, with_engine)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
+from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
 from .gen.song import SongStudio
@@ -315,6 +316,8 @@ def music_busy(owner: Any, dj: Any) -> bool:
 #: intent=track, треки сета), пьеса по нотам партитуры, мелодия из архива RTTTL. Слова — ``media_phrases.SOURCE_WORDS``.
 SOURCE_SYNTH, SOURCE_PIECE, SOURCE_MELODY = "synth", "piece", "melody"
 _PIECE_SOURCES = {SCORE: SOURCE_PIECE, RTTTL: SOURCE_MELODY}
+#: Что не заиграло — во фразе отказа заказа: мелодия (пьеса по названию) или музыка.
+_NOT_PLAYING = {True: "мелодия не заиграла", False: "музыка не заиграла"}
 #: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет».
 TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played")
 
@@ -353,6 +356,8 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
 
 class DjSetTool(MCPTool):
     """«Ты диджей» v2: сет без LLM на пути звука; один сет за раз."""
+
+    event_source = "/voice/music/event"
 
     def __init__(self, node: Any, owner: Any, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
@@ -635,6 +640,8 @@ class DjSetTool(MCPTool):
 class RequestMusicTool(MCPTool):
     """«Поставь клубный трек» v2: один club-трек из ``compose``/``render``, без LLM на пути звука."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, owner: Any, dj: DjSetTool, melodies: Optional[MelodyLookup] = None, *,
                  seed: Callable[[], int] = lambda: int(time.time()), confirm: Optional[Confirm] = None,
                  classic: Optional[Callable[..., ClassicPick]] = None, history: Any = None,
@@ -667,6 +674,8 @@ class RequestMusicTool(MCPTool):
         self._instrumental = (InstrumentalOrder(instrumental, play_cached, speak, hold=lambda: self.hold, log=self._log)
                               if instrumental is not None else None)
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
+        #: Подложка выступления (``intent=backing``, ADR-0150 PR-7c): ставит ``mcp_server`` — ей нужен клок адаптера.
+        self.backing: Optional[BackingDeck] = None
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
@@ -691,19 +700,28 @@ class RequestMusicTool(MCPTool):
     def description(self) -> str:
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
-                "человека дословно. Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — "
-                "музыка не заиграла.")
+                "человека дословно. engine=renardo — человек назвал Ренардо («на Ренардо», искажённо «на "
+                "индардо»): играет живой синтез, не готовый трек. Об успехе робот скажет сам, когда музыка "
+                "реально заиграет; ok=false — музыка не заиграла.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [
-            MCPToolParameter(name="intent", type="string", description="track — трек, melody — мелодия по названию",
-                             enum=["track", "melody"]),
+            # Схема для LLM — только track/melody. ``backing`` (BACKING_INTENT) заказывает код выступления; enum не
+            # строгий, чтобы тул принял его от кода, а LLM-путь отказывает в ``PlanToolExecutor.execute`` (#3700).
+            MCPToolParameter(name="intent", type="string",
+                             description="track — трек, melody — мелодия по названию",
+                             enum=["track", "melody"], enum_strict=False),
             MCPToolParameter(name="text", type="string", description="Слова человека дословно, без пересказа"),
             MCPToolParameter(name="mood", type="string", description="Настроение трека", required=False,
                              enum=sorted(kn.MOOD_ENERGY)),
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
                              enum=["auto", "club", "classical", "folk"]),
+            MCPToolParameter(name="engine", type="string", required=False,
+                             description="Движок: renardo — человек назвал Ренардо; auto — не называл",
+                             enum=[kn.ENGINE_AUTO, *kn.MUSIC_ENGINES]),
+            MCPToolParameter(name="min_seconds", type="number", required=False,
+                             description="Служебный аргумент кода выступления, не заполняй"),
         ]
 
     @property
@@ -720,14 +738,18 @@ class RequestMusicTool(MCPTool):
 
     def execute(self, intent: str = "track", text: str = "", mood: Optional[str] = None,
                 genre: Optional[str] = None, turn_id: Optional[str] = None,
-                heard_text: Optional[str] = None) -> MCPToolResult:
+                heard_text: Optional[str] = None, min_seconds: Optional[float] = None,
+                engine: Optional[str] = None) -> MCPToolResult:
         """``turn_id`` и ``heard_text`` — скрытые аргументы хода (``llm_adapter.TURN_CONTEXT_ARGS``): сет этого хода не
-        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает."""
-        return self.order(intent, text, mood, genre, turn_id, heard_text)
+        снимается; инструмент («на балалайке») — из реплики хода (:func:`lead_for`), LLM его не выбирает.
+        ``backing`` — подложка выступления (:mod:`.backing_deck`, ADR-0150 PR-7c)."""
+        if intent == BACKING_INTENT:
+            return tool_result(backing_order(self.backing, mood, min_seconds), "бит не заиграл")
+        return self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine)
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,
-              ask: Optional[SourceAsk] = None, gen_failed: str = "") -> MCPToolResult:
+              ask: Optional[SourceAsk] = None, gen_failed: str = "", engine: Optional[str] = None) -> MCPToolResult:
         """Заказ: путь музыки решает код (ADR-0158 PR-3) по просьбе ``ask`` (нет — слова реплики хода), затем
         синтез/пьеса как раньше, трек кэша (:meth:`_play_cache`) или честный отказ с фразой кода."""
         set_id = self._dj.started_in_turn(turn_id)
@@ -736,9 +758,9 @@ class RequestMusicTool(MCPTool):
                                 "detail": "сет запущен в этом ходе и играет — заказ его не заменяет"},
                                "музыка не заменена")
         classic = intent == "melody" or genre in CLASSIC_GENRES
-        what = "мелодия не заиграла" if classic else "музыка не заиграла"
+        what = _NOT_PLAYING[classic]
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
-        ask = ask or source_ask(heard_text or text)
+        ask = with_engine(ask or source_ask(heard_text or text), engine)
         piece = self._stage_piece(text, heard_text) if classic else None
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
@@ -890,6 +912,8 @@ class GenerateMusicTool(MCPTool):
     своим голосом по ``kind``, жанр по ``style``) и идёт тем же путём, что ``request_music``: денег, лимита или
     исполнителя генерации нет — кандидатов генерации нет, играет своё или сочинённое раньше, либо честный отказ."""
 
+    event_source = "/voice/music/event"
+
     def __init__(self, node: Any, request: RequestMusicTool) -> None:
         super().__init__(node)
         self._request = request
@@ -903,7 +927,8 @@ class GenerateMusicTool(MCPTool):
         return ("Просьба сгенерировать музыку (Suno): kind=instrumental — без слов, song — песня, robot_song — песня "
                 "голосом робота; style — жанр, если назван. Это просьба, а не приказ: что играть (новую генерацию, "
                 "сочинённое раньше или своё) и что сказать — решает робот сам по словам человека; ok=false — "
-                "честный отказ, его фразу робот скажет сам.")
+                "честный отказ, его фразу робот скажет сам. «Спой / сочини песню про X» — kind=robot_song, "
+                "theme=слова человека (не music_library); слов песни не сочиняй и не читай через speak_text.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:

@@ -2,7 +2,7 @@
 # issue #1990). Namespace жёстко привязан к источнику аудио, а не только к тексту:
 #
 #   personality — слышит ТОЛЬКО /audio/speech_audio (ReSpeaker на роботе,
-#                 люди рядом) → маршрут /voice/stt/result (личность).
+#                 люди рядом) → маршрут /voice/stt/utterance (личность).
 #   operator    — слышит ТОЛЬКО /audio/quest_wake (микрофон шлема оператора,
 #                 wake-поток) → маршрут /avatar/stt/result (агент оператора).
 #
@@ -12,10 +12,11 @@
 # Порядок списков ВАЖЕН: strip_wake_word/has_wake_word матчат по \b-словам,
 # длинные/специфичные варианты идут ПЕРВЫМИ, иначе «роб» съест «роб бокс».
 #
-# personality — байт-в-байт копия DEFAULT_WAKE_WORDS в
-# src/rob_box_voice/rob_box_voice/core/dialogue_text.py (кодовая копия =
-# фолбек для dev-env/юнит-тестов без этого файла). При правке списка — менять
-# ОБА места в одном коммите (это инвариант test_wake_word_sync / #1252).
+# personality — байт-в-байт копия DEFAULT_WAKE_WORDS (+ RISKY_WAKE_WORDS как
+# risky: true) в src/rob_box_dialog/rob_box_dialog/knowledge.py (одна таблица знания, ADR-0150;
+# кодовая копия = фолбек для dev-env/юнит-тестов без этого файла). При правке
+# списка — менять ОБА места в одном коммите (держит
+# src/rob_box_dialog/test/test_knowledge.py::test_wake_words_yaml_matches_code).
 
 personality:
   - роб бокс
@@ -53,9 +54,16 @@ personality:
   - рыбок
   - робик
   - робо
+  - роман
   - рома
-  - бот
-  - роб
+  # В18 (ADR-0150 §18.3, PR-5 #3694): рискованные вейки — «бот»/«роб»
+  # короткие. Выключены, пока risky_enabled ниже не true. Порядок значим: «роб»
+  # последним, иначе съест «роб бокс». Список risky — RISKY_WAKE_WORDS в knowledge.py.
+  - {word: бот, risky: true}
+  - {word: роб, risky: true}
+
+# Включить рискованные вейки (В18) — одной строкой: risky_enabled: true
+risky_enabled: false
 
 # Вейк оператора. STT-искажения («тарз», «тас», «target», ...) НЕ придумываем —
 # наполняем по логам e2e, как собирали для «роббокс» (целевая §14.1).

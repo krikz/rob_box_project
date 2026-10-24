@@ -43,7 +43,7 @@ class _SetExecutor(_MelodyExecutor):
 def _set_node(*, persona="Снупдог", started=True, **exec_kw):
     n = _make_node(playing=True, dj=True, track="club #3", state_name="DIALOGUE")
     n._music_player_state.dj_info["persona"] = persona
-    n._scheduler_executor = _SetExecutor(**exec_kw)
+    n._tool_executor = _SetExecutor(**exec_kw)
     n._music_events = MusicEventLog()
     if started:
         n._music_events.observe_json(
@@ -61,7 +61,7 @@ def test_theme_miss_during_set_starts_set_with_theme_and_persona(run_plans):
     n = _set_node()
     _stt(n, "Робот, поставь терминатора")  # без слова «тема» — промах базы (#3400)
     run_plans()
-    assert n._scheduler_executor.calls == [
+    assert n._tool_executor.calls == [
         ("lookup_melody", {"name": "терминатора"}),
         ("dj_set", {"action": "start", "theme": "терминатора", "persona": "Снупдог"}),
     ]
@@ -76,7 +76,7 @@ def test_theme_word_during_set_switches_theme_without_lookup(run_plans):
     n = _set_node()
     _stt(n, "Робот, давай тему терминатора")
     run_plans()
-    assert n._scheduler_executor.calls == [
+    assert n._tool_executor.calls == [
         ("dj_set", {"action": "start", "theme": "терминатора", "persona": "Снупдог"}),
     ]
     n._dispatch_turn.assert_not_called()
@@ -87,7 +87,7 @@ def test_order_without_theme_word_during_set_plays_melody_over_set(run_plans):
     n = _set_node()
     _stt(n, "Робот, поставь терминатора")
     run_plans()
-    assert n._scheduler_executor.calls[0][0] == "lookup_melody"
+    assert n._tool_executor.calls[0][0] == "lookup_melody"
 
 
 def test_grammar_keeps_theme_marker():
@@ -124,14 +124,14 @@ def test_melody_found_during_set_still_plays_over_set(run_plans):
     n = _set_node()
     _stt(n, "Робот, поставь к элизе")
     run_plans()
-    assert [c[0] for c in n._scheduler_executor.calls] == ["lookup_melody", "request_music"]
+    assert [c[0] for c in n._tool_executor.calls] == ["lookup_melody", "request_music"]
 
 
 def test_miss_without_set_still_goes_to_llm(run_plans):
     n = _make_node(playing=True, track="Still Dre", state_name="DIALOGUE")
     _stt(n, "Робот, давай тему терминатора")
     run_plans()
-    assert n._scheduler_executor.calls == [("lookup_melody", {"name": "терминатора"})]
+    assert n._tool_executor.calls == [("lookup_melody", {"name": "терминатора"})]
     n._dispatch_turn.assert_called_once()
     n._speak_direct.assert_not_called()
 

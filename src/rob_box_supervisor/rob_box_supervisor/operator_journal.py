@@ -26,6 +26,10 @@
 ``recent(limit)`` / ``render(limit)`` отдают окно для инжекта в
 ``dynamic_system`` операторского AgentCore (чтобы ТАРС знал, что недавно
 делал).
+
+ADR-0150 §7.4 (PR-13 #3708): у записи есть ``ts`` и ``ttl_s``; в контекст идут записи
+моложе своего ``ttl`` и одна строка сводки за сутки с датой — только действия и
+счётчики, без исходов (старый исход «не отвечает» модель повторяла как свежий факт, #3297).
 """
 
 from __future__ import annotations
@@ -45,6 +49,10 @@ DEFAULT_COLLAPSE_WINDOW_S: float = 3600.0
 DEFAULT_MAX_AGE_S: float = 1800.0
 # Максимум записей в памяти: журнал — bounded-окно, не бесконечный лог.
 DEFAULT_MAX_ENTRIES: int = 500
+# Окно сводки «за сутки» (§7.4): записи старше своего ttl, но моложе суток.
+DAY_S: float = 86400.0
+# Сколько разных действий в строке сводки.
+DAY_SUMMARY_MAX_ACTIONS: int = 6
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,7 @@ class JournalEntry:
     count: int = 1
     outcome: str = ""
     detail: str = ""
+    ttl_s: float = DEFAULT_MAX_AGE_S
 
     def to_dict(self) -> dict[str, Any]:
         """Плоский dict для сериализации (JSONL)."""
@@ -77,6 +86,7 @@ class JournalEntry:
             count=int(data.get("count", 1)),
             outcome=str(data.get("outcome", "") or ""),
             detail=str(data.get("detail", "") or ""),
+            ttl_s=float(data.get("ttl_s", DEFAULT_MAX_AGE_S) or DEFAULT_MAX_AGE_S),
         )
 
 
@@ -128,6 +138,7 @@ class OperatorJournal:
         outcome: str = "",
         detail: str = "",
         ts_ms: Optional[int] = None,
+        ttl_s: Optional[float] = None,
     ) -> JournalEntry:
         """Зафиксировать действие оператора.
 
@@ -143,6 +154,7 @@ class OperatorJournal:
         if not action:
             raise ValueError("OperatorJournal.record: action required")
         ts = int(ts_ms) if ts_ms is not None else self._now_ms()
+        ttl = float(ttl_s) if ttl_s is not None else self._max_age_s
 
         # Ищем последнюю запись с тем же action с конца.
         for idx in range(len(self._entries) - 1, -1, -1):
@@ -158,6 +170,7 @@ class OperatorJournal:
                     count=entry.count + 1,
                     outcome=outcome,
                     detail=detail,
+                    ttl_s=ttl,
                 )
                 self._entries[idx] = collapsed
                 self._save()
@@ -173,6 +186,7 @@ class OperatorJournal:
             count=1,
             outcome=outcome,
             detail=detail,
+            ttl_s=ttl,
         )
         self._entries.append(new_entry)
         # Bounded-окно: вытесняем старейшие.
@@ -199,15 +213,15 @@ class OperatorJournal:
         """Компактный текст для инжекта в ``dynamic_system`` AgentCore.
 
         Строки вида: ``• 14:32 перезапустил voice-assistant ×3 (outcome)``.
-        Записи старше ``max_age_s`` отбрасываются (граница включительно:
-        возраст ровно ``max_age_s`` ещё отдаётся). Пусто после фильтра →
-        пустая строка (ничего не вклеиваем).
+        Записи старше своего ``ttl_s`` отбрасываются (граница включительно:
+        возраст ровно ``ttl_s`` ещё отдаётся) и попадают в строку сводки за
+        сутки с датой — без исходов (§7.4). Пусто → пустая строка.
+        ``max_age_s <= 0`` — без фильтра (и без сводки).
         """
         now = int(now_ms) if now_ms is not None else self._now_ms()
-        entries = _fresh_entries(
-            self.recent(limit=limit), now, self._max_age_s
-        )
-        if not entries:
+        entries = [e for e in self.recent(limit=limit) if self._fresh(e, now)]
+        summary = _day_summary([e for e in self._entries if not self._fresh(e, now)], now)
+        if not entries and not summary:
             return ""
         lines: list[str] = []
         for e in entries:
@@ -215,7 +229,11 @@ class OperatorJournal:
             suffix = f" ×{e.count}" if e.count > 1 else ""
             outcome = f" — {e.outcome}" if e.outcome else ""
             lines.append(f"• {when} {e.action}{suffix}{outcome}")
-        return "[журнал оператора]\n" + "\n".join(lines)
+        return "[журнал оператора]\n" + "\n".join(lines + ([summary] if summary else []))
+
+    def _fresh(self, entry: JournalEntry, now_ms: int) -> bool:
+        """Запись моложе своего ``ttl_s`` (``max_age_s <= 0`` журнала — все свежие)."""
+        return self._max_age_s <= 0 or now_ms - entry.last_ts_ms <= entry.ttl_s * 1000
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -269,14 +287,19 @@ class OperatorJournal:
         return int(self._clock() * 1000)
 
 
-def _fresh_entries(
-    entries: list[JournalEntry], now_ms: int, max_age_s: float
-) -> list[JournalEntry]:
-    """Оставить записи не старше ``max_age_s`` (``<= 0`` — без фильтра)."""
-    if max_age_s <= 0:
-        return entries
-    limit_ms = max_age_s * 1000
-    return [e for e in entries if now_ms - e.last_ts_ms <= limit_ms]
+def _day_summary(stale: list[JournalEntry], now_ms: int) -> str:
+    """Сводка за сутки по устаревшим записям: действия и счётчики (свежие первыми), дата — сегодняшняя."""
+    counts: dict[str, int] = {}
+    for e in sorted(stale, key=lambda e: e.last_ts_ms, reverse=True):
+        if now_ms - e.last_ts_ms <= DAY_S * 1000:
+            counts[e.action] = counts.get(e.action, 0) + e.count
+    if not counts:
+        return ""
+    import datetime
+
+    date = datetime.datetime.fromtimestamp(now_ms / 1000).strftime("%d.%m.%Y")
+    items = [f"{a} ×{n}" if n > 1 else a for a, n in list(counts.items())[:DAY_SUMMARY_MAX_ACTIONS]]
+    return f"• сводка за сутки по {date} (старше получаса, без исходов): " + "; ".join(items)
 
 
 def _fmt_clock(ts_ms: int, now_ms: int) -> str:
@@ -296,6 +319,7 @@ __all__ = [
     "DEFAULT_COLLAPSE_WINDOW_S",
     "DEFAULT_MAX_AGE_S",
     "DEFAULT_MAX_ENTRIES",
+    "DAY_S",
     "JournalEntry",
     "OperatorJournal",
 ]

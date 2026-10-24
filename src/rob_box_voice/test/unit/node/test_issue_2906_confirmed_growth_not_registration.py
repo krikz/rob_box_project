@@ -60,10 +60,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from identity_v17_legacy import finish_turn_after_identity  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
+from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 UTT_ID = "c4a4d9c4772c"
-NOT_HEARD = "Не расслышал"
+#: Просьба повторить после отказа регистрации (#2908, ``phrases`` identity.retry_voice).
+NOT_HEARD = "ещё пару слов"
 
 
 def _embedding(seed: int) -> np.ndarray:
@@ -84,7 +88,7 @@ class _FakePublisher:
         self.messages: list[dict] = []
 
     def publish(self, msg) -> None:
-        self.messages.append(json.loads(msg.data))
+        self.messages.append(speaker_result_to_payload(msg))
 
 
 class _SyncExecutor:
@@ -136,8 +140,6 @@ def dialogue_node():
     n._speaker_lock = threading.Lock()
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._task_lock = threading.Lock()
     n._run_task = MagicMock()
     n._identity_question_session_gap_sec = 120.0
@@ -151,6 +153,7 @@ def dialogue_node():
         return None
 
     n._resolve_speaker_for_utterance = _no_resolve
+    finish_turn_after_identity(n)
     return n
 
 
@@ -193,9 +196,7 @@ def _roundtrip(speaker_node, dialogue_node, payload: dict) -> list:
     acks = list(speaker_node._result_pub.messages)
     for ack in acks:
         if ack.get("event"):
-            dialogue_node._on_speaker_result(
-                type("Msg", (), {"data": json.dumps(ack, ensure_ascii=False)})()
-            )
+            dialogue_node._on_speaker_result(make_speaker_result(ack))
     return acks
 
 
@@ -238,7 +239,8 @@ def test_short_yes_is_silent_and_creates_no_anchor(speaker_node, dialogue_node):
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
     assert NOT_HEARD not in _spoken(dialogue_node)
-    dialogue_node._speak_direct.assert_not_called()
+    assert getattr(dialogue_node, "_after_turn_question", None) is None, "просьба повторить не отложена"
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert not any(a.get("event") == "register_error" for a in acks), acks
     assert len(speaker_node._db.list_speakers()) == 1
     assert speaker_node._db.gallery_size(sid) == 1, "короткую фразу не пишем"
@@ -253,7 +255,7 @@ def test_long_yes_grows_owner_gallery_by_owner_rules(speaker_node, dialogue_node
     payload = _confirm_yes(dialogue_node, sid, "Саша")
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
-    dialogue_node._speak_direct.assert_not_called()
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert acks == [], "служебный рост не публикует ack регистрации"
     assert len(speaker_node._db.list_speakers()) == 1
     assert speaker_node._db.gallery_size(sid) == 2
@@ -269,7 +271,7 @@ def test_long_yes_below_owner_floor_is_not_added(speaker_node, dialogue_node):
     payload = _confirm_yes(dialogue_node, sid, "Саша")
     acks = _roundtrip(speaker_node, dialogue_node, payload)
 
-    dialogue_node._speak_direct.assert_not_called()
+    assert _spoken(dialogue_node) == "Саша, это ты?"  # только сам вопрос (В17: после хода), после «да» — тишина
     assert acks == []
     assert speaker_node._db.gallery_size(sid) == 1
     assert len(speaker_node._db.list_speakers()) == 1
@@ -326,10 +328,11 @@ def test_llm_registration_too_short_still_says_not_heard(
         a.get("event") == "register_error" and a.get("error") == "too_short"
         for a in acks
     ), acks
-    # Фикстура моделирует «ход идёт» (_run_task задан): с #2908 просьба
-    # повторить придерживается и ЗАМЕНИТ ответ хода (_deliver_turn_result).
-    held = dialogue_node._identity_ack_state().take_held()
+    # Фикстура моделирует «ход идёт» (_run_task задан): просьба повторить
+    # отложена до конца хода и прозвучит ПОСЛЕ его ответа (#2908, #3765).
+    held = dialogue_node._after_turn_question
     assert held is not None and NOT_HEARD in held["question"], held
+    assert NOT_HEARD not in _spoken(dialogue_node), "посреди хода не звучит"
     assert speaker_node._db.list_speakers() == []
 
 

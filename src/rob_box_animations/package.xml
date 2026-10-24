@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>rob_box_animations</name>
-  <version>1.0.0</version>
-  <description>LED Matrix animation player and manager for rob_box robot</description>
-  
+  <version>2.0.0</version>
+  <description>Procedural LED face of rob_box (face_node, ADR-0150 §5.5)</description>
+
   <maintainer email="krikz@example.com">krikz</maintainer>
   <license>MIT</license>
 
@@ -14,11 +14,14 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
-  
-  <exec_depend>python3-yaml</exec_depend>
-  <exec_depend>python3-pil</exec_depend>
+  <depend>rob_box_dialog_msgs</depend>
+  <depend>rob_box_dialog</depend>
+  <depend>geometry_msgs</depend>
+
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>led_matrix_compositor</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

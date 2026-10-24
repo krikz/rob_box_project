@@ -44,14 +44,6 @@ _HISTORY_MARKER_RE = re.compile(
 # the reasoning out of every LLM response, and this is the second line of
 # defence right before TTS.
 
-# Strip a leading speaker routing marker (``[Spkr:<имя>]``) that some
-# providers echo back from the voice-channel input format. Internal
-# routing marker — never meant to be voiced. Stripping it also unmasks a
-# following ``[CRITICAL]`` / ``[SYSTEM ...]`` marker so the
-# service-text guard in dialogue_node can catch it. The ``+`` consumes
-# repeated leading tags in one match.
-_SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
-
 # Strip leading meta-markers the LLM occasionally emits in
 # ``spoken`` — internal section headers that were meant for the
 # assistant's own reasoning but leaked past the system prompt. TTS
@@ -76,8 +68,6 @@ _SPEAKER_TAG_RE = re.compile(r"^(?:\s*\[Spkr:[^\]]*\])+", flags=re.IGNORECASE)
 #       ``_check_babble_and_retry`` / service-text guard).
 #     * ``[SYSTEM ...]`` — internal system template regurgitated
 #       (issue #2175, suppressed by ``is_system_template_regurgitated``).
-#     * ``[Spkr:<name>]`` — speaker routing marker (owned by
-#       :func:`strip_speaker_tag` which runs first).
 #
 # * ``**Anything**`` — Markdown-bold section header (``**Итог:**``,
 #   ``**Answer:**``).
@@ -86,7 +76,7 @@ _META_PREFIX_RE = re.compile(
     # Bracketed meta-markers — only when the inner content is NOT one of
     # the reserved service-text prefixes. Case-insensitive (CRITICAL /
     # Critical / critical are all reserved).
-    r"(?!\s*\[(?:CRITICAL|Spkr:[^\]]*|SYSTEM\b)[^\]]*\])"
+    r"(?!\s*\[(?:CRITICAL|SYSTEM\b)[^\]]*\])"
     r"\[[^\]]+\]"
     r"|"
     # Markdown-bold meta-markers. Bold-form of CRITICAL doesn't exist
@@ -121,7 +111,7 @@ _DONE_MARKER_RE = re.compile(
 # ``](`` is excluded so Markdown links ``[text](url)`` survive for
 # ``strip_markdown``. Service markers stay visible to the downstream
 # service-text guard unless the caller is the last line of defence.
-_SERVICE_BRACKET = r"(?!\s*(?:CRITICAL|Spkr:|SYSTEM\b))"
+_SERVICE_BRACKET = r"(?!\s*(?:CRITICAL|SYSTEM\b))"
 _BRACKET_ASIDE_RE = re.compile(
     r"\[" + _SERVICE_BRACKET + r"[^\[\]]*\](?!\()", flags=re.IGNORECASE)
 _BRACKET_ASIDE_ANY_RE = re.compile(r"\[[^\[\]]*\](?!\()")
@@ -135,7 +125,7 @@ def strip_bracket_asides(text: str, *, keep_service: bool = True) -> str:
 
     Single place for the rule «square-bracket insertions are never spoken».
     ``keep_service=True`` (dialogue pipeline) leaves ``[CRITICAL]`` /
-    ``[SYSTEM ...]`` / ``[Spkr:...]`` for the service-text guard;
+    ``[SYSTEM ...]`` for the service-text guard;
     ``keep_service=False`` (TTS node, last line of defence) removes them too.
     """
     if not isinstance(text, str) or "[" not in text:
@@ -162,21 +152,6 @@ def strip_history_marker(text: str) -> str:
     if not text:
         return text
     return _HISTORY_MARKER_RE.sub("", text).strip()
-
-
-def strip_speaker_tag(text: str) -> str:
-    """Strip leading ``[Spkr:<имя>]`` routing markers copied into output.
-
-    The voice channel tags user input as ``[Spkr:<имя>] <текст>``
-    (master prompt RULE #SRC). Some providers copy that marker back into
-    their final reply; it is an internal routing marker and must never
-    reach TTS. Also exposes a following ``[CRITICAL]`` / ``[SYSTEM ...]``
-    marker so the dialogue_node service-text guard fires instead of the
-    internal instruction being spoken aloud.
-    """
-    if not isinstance(text, str):
-        return text
-    return _SPEAKER_TAG_RE.sub("", text, count=1).strip()
 
 
 def strip_thinking_blocks(text: str) -> str:
@@ -213,10 +188,7 @@ def strip_meta_markers(text: str) -> str:
     session; round 3 regression: 193 cases/hour).
 
     Strip is applied BEFORE ``strip_markdown`` so the bold-form prefix
-    (``**…**``) is removed before markdown rules can corrupt it. The
-    bracketed-form prefix (``[Spkr:<имя>]``) is **not** matched here —
-    that one is owned by :func:`strip_speaker_tag` which runs first in
-    the pipeline (``_handle_result``).
+    (``**…**``) is removed before markdown rules can corrupt it.
 
     Rules (anchored at start-of-string, looped to consume stacks):
 
@@ -468,34 +440,39 @@ def build_ssml_payload(
     tg_chat_id: Optional[int] = None,
     voice: Optional[str] = None,
     language: Optional[str] = None,
+    epoch: Optional[int] = None,
+    speech_id: Optional[str] = None,
 ) -> str:
     """Build the JSON string consumed by ``tts_node`` on ``/voice/dialogue/response``.
 
     Issue #980 — chunked long responses (rap, poetry) publish one TTS request
-    per chunk. To let ``dialogue_node`` know when *all* chunks of a single
-    assistant turn finished (and only then trigger music cleanup), each chunk
-    in a batch carries a shared ``batch_id`` plus 1-based ``batch_index`` and
-    ``batch_total`` counters. tts_node echoes those on ``/voice/tts/finished``
-    and publishes a dedicated ``/voice/tts/batch_complete`` once the last
-    chunk lands. Single-chunk turns simply reuse the chunk as both speech
+    per chunk. To mark when *all* chunks of a single assistant turn finished,
+    each chunk in a batch carries a shared ``batch_id`` plus 1-based
+    ``batch_index`` and ``batch_total`` counters. tts_node echoes those on
+    ``/voice/tts/finished`` and closes the batch with the ``batch_complete=True`` marker on the last ``/voice/tts/finished``
+    (the separate batch topic was removed in ADR-0150 PR-7c ч.4б). Single-chunk turns simply reuse the chunk as both speech
     and batch identifiers — back-compat behaviour.
 
     Issue #1195 — ``tg_chat_id`` (Telegram chat the reply should be echoed
     into) is an extra routing hint for telegram_node; tts_node ignores
     unknown fields.
+
+    ADR-0150 PR-3 — ``epoch`` (поколение сессии личности) читает адаптер
+    ``speech_compat``: barge-in отменяет реплики не новее увиденной эпохи.
     """
     payload: Dict[str, Any] = Utterance(
         text=text,
         sink=Sink.SPEAKERS,
         emotion=animation or "neutral",
         extra={
-            "speech_id": str(uuid.uuid4()),
+            "speech_id": speech_id or str(uuid.uuid4()),
             "batch_id": batch_id,
             "batch_index": batch_index,
             "batch_total": batch_total,
             "tg_chat_id": tg_chat_id,
             "voice": voice,
             "language": language,
+            "epoch": epoch,
         },
     ).to_request()
     # ``Utterance.to_request`` ставит ``emotion="neutral"`` по умолчанию и
@@ -508,6 +485,7 @@ def build_ssml_payload(
         "tg_chat_id",
         "voice",
         "language",
+        "epoch",
     ):
         if k in payload and payload[k] is None:
             payload.pop(k)
@@ -546,10 +524,6 @@ class EffectAwaiterRegistry:
         self._release_sound = release_sound
 
     # ── TTS side ────────────────────────────────────────────────────
-
-    def register_tts(self, speech_id: str, event: asyncio.Event) -> None:  # type: ignore[type-arg]
-        with self._tts_lock:
-            self._tts_events[speech_id] = event
 
     @property
     def has_pending_tts(self) -> bool:

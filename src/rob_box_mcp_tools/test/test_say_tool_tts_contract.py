@@ -1,13 +1,10 @@
-"""Инструмент ``say`` публикует запрос, который ``tts_node`` принимает.
+"""Инструмент ``say`` говорит единственным клиентом речи (ADR-0150 PR-3, #3688).
 
 Баг (живой робот, 29.09.2026): ``say`` слал в ``/voice/tts/request``
-``{"text": ..., "source": "operator"}``, ``tts_node.dialogue_callback``
-отбрасывал его с «⚠ Chunk без SSML», а инструмент отвечал success=True.
-
-Контракт приёмника — ``rob_box_core.utterance.missing_tts_request_fields``:
-ей же пользуется ``dialogue_callback`` (см.
-``rob_box_voice/test/unit/tts/test_tts_request_contract.py``), поэтому
-разъехаться продюсер и приёмник больше не могут молча.
+``{"text": ..., "source": "operator"}`` без ``ssml``, ``tts_node`` отбрасывал
+запрос, а инструмент отвечал success=True. Теперь JSON никто не собирает:
+``say`` публикует ``SpeechRequest`` через ``rob_box_core.speech_client.say``
+(SSML строит ``Utterance``), агент — ``operator``.
 
 Запуск:
     PYTHONPATH=src/rob_box_mcp_tools:src/rob_box_core \\
@@ -16,74 +13,87 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
-from rob_box_core.utterance import missing_tts_request_fields
-from rob_box_mcp_tools.tools.say import SayTool, build_say_request
+from rob_box_core.msg_stub import install_dialog_msgs_stub
 
+# Без ROS (Windows/lint): модули, тянущие rclpy через tools/__init__.py.
+try:
+    import rclpy  # noqa: F401
+except ImportError:
+    for _mod in ("rob_box_mcp_tools.tools.navigation", "rob_box_mcp_tools.tools.system",
+                 "rob_box_mcp_tools.tools.perception", "rob_box_mcp_tools.tools.mapping",
+                 "rob_box_mcp_tools.tools.memory", "rob_box_mcp_tools.tools.music"):
+        sys.modules.setdefault(_mod, Mock())
 
-class _String:
-    def __init__(self):
-        self.data = ""
+from rob_box_mcp_tools.tools import say as say_module  # noqa: E402
+from rob_box_mcp_tools.tools.say import SayTool  # noqa: E402
+
+M = install_dialog_msgs_stub()
+STARTED, REJECTED = 2, 7
 
 
 @pytest.fixture
 def say_tool(monkeypatch):
-    """SayTool на фейковой ноде; std_msgs подменён, если ROS нет."""
-    try:
-        import std_msgs.msg  # noqa: F401
-    except ImportError:
-        std_msgs = types.ModuleType("std_msgs")
-        std_msgs_msg = types.ModuleType("std_msgs.msg")
-        std_msgs_msg.String = _String
-        std_msgs.msg = std_msgs_msg
-        monkeypatch.setitem(sys.modules, "std_msgs", std_msgs)
-        monkeypatch.setitem(sys.modules, "std_msgs.msg", std_msgs_msg)
+    monkeypatch.setattr(say_module, "START_WAIT_S", 0.01)  # владельца речи в тесте нет: событие не придёт
     node = MagicMock()
     publisher = MagicMock()
     node.create_publisher.return_value = publisher
+    stamp = type(M.SpeechRequest().stamp)()
+    node.get_clock.return_value = types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
     return SayTool(node), node, publisher
 
 
-def test_build_say_request_is_accepted_by_tts_contract():
-    payload = build_say_request("Всем привет")
-
-    assert missing_tts_request_fields(payload) == []
-    assert payload["ssml"] == "<speak>Всем привет</speak>"
-    assert payload["source"] == "operator"
-
-
-def test_build_say_request_escapes_xml_special_chars():
-    payload = build_say_request("x<y & z>0")
-
-    assert payload["ssml"] == "<speak>x&lt;y &amp; z&gt;0</speak>"
-
-
-def test_legacy_text_only_payload_is_rejected_by_contract():
-    """Регресс-якорь: старый формат ``say`` приёмник отбрасывает."""
-    assert missing_tts_request_fields({"text": "привет", "source": "operator"}) == [
-        "ssml"
-    ]
-
-
-def test_execute_publishes_payload_accepted_by_tts_node(say_tool):
+def test_execute_publishes_speech_request_as_operator(say_tool):
     tool, node, publisher = say_tool
 
     result = tool.execute(text="Робот, скажи & улыбнись")
 
     assert result.success is True
     node.create_publisher.assert_called_once()
-    assert node.create_publisher.call_args.args[1] == "/voice/tts/request"
+    assert node.create_publisher.call_args.args[1] == "/voice/speech/request"
     publisher.publish.assert_called_once()
-    published = json.loads(publisher.publish.call_args.args[0].data)
-    assert missing_tts_request_fields(published) == []
-    assert published["ssml"] == "<speak>Робот, скажи &amp; улыбнись</speak>"
-    assert published["source"] == "operator"
+    req = publisher.publish.call_args.args[0]
+    assert isinstance(req, M.SpeechRequest)
+    assert req.text == "<speak>Робот, скажи &amp; улыбнись</speak>"
+    assert req.agent == "operator"
+    assert result.data["speech_id"] == req.speech_id
+    # события нет за срок ожидания начала: обещание (итог придёт позже), а не «озвучил»
+    assert result.data["status"] == "pending" and result.data["event_ref"] == req.speech_id
+
+
+def _with_owner(events):
+    """``say`` с владельцем речи, который на запрос отвечает событиями ``(kind, reason, seconds)`` агента."""
+    node, pub, sub = MagicMock(), MagicMock(), {}
+
+    def publish(req):
+        for kind, reason, seconds in events:
+            sub["cb"](types.SimpleNamespace(kind=kind, speech_id=req.speech_id, agent="operator", reason=reason,
+                                            seconds=seconds))
+
+    pub.publish.side_effect = publish
+    node.create_publisher.return_value = pub
+    node.create_subscription.side_effect = lambda _t, _topic, cb, *_a, **_k: sub.setdefault("cb", cb)
+    stamp = type(M.SpeechRequest().stamp)()
+    node.get_clock.return_value = types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+    return SayTool(node)
+
+
+def test_say_started_is_pending_by_speech_event_not_success_on_publish():
+    """PR-13 (§9.3, В7): исход ``say`` — событие владельца речи; началась — обещание с ``event_ref``."""
+    result = _with_owner([(STARTED, "", 0.0)]).execute(text="Внимание, люди")
+    assert result.success is True
+    assert result.data["status"] == "pending" and result.data["event_ref"] == result.data["speech_id"]
+
+
+def test_say_rejected_by_owner_is_an_honest_failure():
+    result = _with_owner([(REJECTED, "busy", 0.0)]).execute(text="Привет")
+    assert result.success is False
+    assert (result.data["status"], result.data["reason"]) == ("rejected", "busy")
 
 
 def test_execute_empty_text_publishes_nothing(say_tool):

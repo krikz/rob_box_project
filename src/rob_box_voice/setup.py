@@ -12,9 +12,6 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        # Long-running action protocol and optional HTTP/PASTE adapter.
-        (os.path.join('share', package_name, 'action_server'),
-            glob('rob_box_voice/action_server/*.py')),
         # Launch files
         (os.path.join('share', package_name, 'launch'),
             glob('launch/*.launch.py')),
@@ -29,9 +26,6 @@ setup(
         # Prompts
         (os.path.join('share', package_name, 'prompts'),
             glob('prompts/*.txt') + glob('prompts/*.yaml')),
-        # Skill-specific prompts
-        (os.path.join('share', package_name, 'prompts', 'skills'),
-            glob('prompts/skills/*.txt')),
         # Service definitions
         (os.path.join('share', package_name, 'srv'),
             glob('srv/*.srv')),
@@ -53,6 +47,8 @@ setup(
             'led_node = rob_box_voice.led_node:main',
             # Phase 2: Dialogue + TTS
             'dialogue_node = rob_box_voice.dialogue_node:main',
+            # ADR-0150 PR-8 (#3702): хост диалога v2, стартует при dialog_engine: v2
+            'dialog_node = rob_box_voice.dialog_node:main',
             'tts_node = rob_box_voice.tts_node:main',
             # Phase 3: STT (Speech-to-Text)
             'stt_node = rob_box_voice.stt_node:main',

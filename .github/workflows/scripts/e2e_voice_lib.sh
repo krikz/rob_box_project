@@ -76,7 +76,8 @@ PY
 #     НЕ различимы. На живом роботе та же пара anton/ermil дала 0.846
 #     (микрофонный канал поднимает косинус), и акт 2 склеил Сашу с Борисом
 #     в один профиль — run 35667281570.
-#   minimax, таблица ниже: худшая пара 0.684, anton/ermil = 0.527.
+#   minimax, таблица 22.09: худшая пара 0.684, anton/ermil = 0.527 (но ermil и zahar
+#     оба женские: Гриша ≈ Борис, n210). Таблица ниже — от 23.10, см. #3931.
 #   silero, СТАРАЯ таблица: zahar/filipp (baya/xenia) = 0.722 — ровно на
 #     границе, baya/kseniya = 0.788. Ниже baya отдан alena, а zahar получил
 #     kseniya: худшая пара 0.678 (anton/ermil = aidar/eugene).
@@ -84,16 +85,21 @@ PY
 #     архивная папка, из-за которой падает synth_yandex). Мерить, когда
 #     ключ починят: measure_tts_voice_distinctness.py --provider yandex.
 #
-# Подкрутку питча/темпа как альтернативу смене голосов ПРОВЕРИЛИ И
-# ОТКЛОНИЛИ. Фиксированный сдвиг питча за говорящим действительно разводит
-# эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42, intra-voice не страдает,
-# 0.95+), но ломает распознавание: vosk на тех же файлах даёт WER 0.79 при
-# pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига. Менять голос
-# дешевле, чем менять диагноз с «не различил дикторов» на «не расслышал».
+# Подкрутку питча/темпа как ЗАМЕНУ смены голоса проверили и отклонили (22.09):
+# фиксированный сдвиг питча разводит эмбеддинги (anton[+6] vs ermil: 0.70 → 0.42,
+# intra-voice не страдает), но ломает распознавание: vosk на тех же файлах даёт
+# WER 0.79 при pitch=-6 и 0.26 при pitch=+3 против 0.05-0.16 без сдвига.
+# 23.10 (#3931) питч/темп возвращали («голоса далеко друг от друга, как у реальных людей»):
+# питч +5/темп 1.2 у Бориса, -5/0.85 у Гриши. Замер на ЖИВОМ канале (катана -> воздух ->
+# ReSpeaker -> Yandex STT + resemblyzer, 254 проигрыша) это опроверг:
+#   * вейк «Робот» терялся: RMc 6/8, BTc 3/8 (62% потерь), HCc 6/8 против 16-19 из 18-22 без просодии;
+#   * разводит питч не голоса, а регистр: cos между голосами одного регистра 0.8-0.9 при любом
+#     питче/темпе/сдвиге формант (ReliableMan с формантами +-20% к себе же 0.84-0.91).
+# Итог: просодия снята (0 / 1.0), остался питч +2 у Бориса (высокий регистр, к Саше макс 0.71).
+# Саша/Гриша/Валера - один низкий мужской регистр, между собой 0.9: РОБОТ ИХ НЕ РАЗЛИЧАЕТ, это
+# предел MiniMax (все 4 мужских Russian_*). Подробности и честный список: docs/dialog/role_voices_biometrics_2026-10-23.md
 #
-# Гендер намеренно НЕ сохраняется: различимость важнее совпадения пола,
-# робот всё равно слышит синтетику. У Silero так было с самого начала,
-# теперь так же и у minimax (Борису достался женский голос).
+# Гендер ролей сохраняем там, где тексты родовые («я заскочил» у Гриши): женские голоса - только запасные.
 #
 # Каталоги-источники — src/rob_box_voice/rob_box_voice/tts_voice_registry.py
 # (PROVIDER_VOICES). Голос, который уже native для провайдера, не трогаем:
@@ -103,7 +109,7 @@ PY
 #   map_tts_voice yandex  anton  → anton
 #   map_tts_voice silero  anton  → aidar
 #   map_tts_voice silero  zahar  → kseniya
-#   map_tts_voice minimax ermil  → Russian_PessimisticGirl
+#   map_tts_voice minimax ermil  → Russian_Bad-temperedBoy:2:1.0   (voice:pitch:speed)
 #   map_tts_voice silero  aidar  → aidar      (уже native)
 #   map_tts_voice silero  ""     → aidar      (дефолт провайдера)
 map_tts_voice() {
@@ -131,14 +137,23 @@ map_tts_voice() {
         minimax)
             case "$voice" in
                 Russian_*|male-qn-qingse|female-shaonv) printf '%s' "$voice"; return 0 ;;
-                anton|"")        printf 'Russian_ReliableMan' ;;
-                ermil|madirus)   printf 'Russian_PessimisticGirl' ;;
-                zahar|arina)     printf 'Russian_CrazyQueen' ;;
-                filipp|kostya)   printf 'Russian_AttractiveGuy' ;;
+                # voice:pitch:speed (#3931). Роли разнесены не только голосом, но и
+                # питчем/темпом, как разные люди. Ровно эту строку получают
+                # synth_minimax (разбирает) и ключ кэша (хранит): смена питча/темпа
+                # не вернёт старые wav. Замер: docs/dialog/role_voices_biometrics_2026-10-23.md
+                # Живой канал (колонка -> ReSpeaker), 23.10, #3931: по всем MiniMax cos между
+                # голосами одного регистра 0.8-0.9 (питч/темп/сдвиг формант не разводят), между
+                # низким мужским и высоким 0.65-0.75. Вейк «Робот» без просодии теряется в 10-15%
+                # фраз, с питчем +5/темпом 1.2 - в 38-62%. Поэтому просодия снята, остался +2 у Бориса.
+                anton|"")        printf 'Russian_ReliableMan:0:1.0' ;;            # Саша: низкий мужской (вейк 19/22)
+                ermil|madirus)   printf 'Russian_Bad-temperedBoy:2:1.0' ;;         # Борис: высокий регистр (вейк 16/18; к Саше макс 0.71)
+                zahar)           printf 'Russian_HandsomeChildhoodFriend:0:1.0' ;; # Гриша: низкий мужской (тексты родовые, мужчина); к Саше 0.91 - НЕ различим
+                filipp|kostya)   printf 'Russian_AttractiveGuy:0:1.0' ;;           # Валера: низкий мужской; к Саше 0.91 - НЕ различим
+                arina)           printf 'presenter_female:0:1.0' ;;                # запасной 1: высокий женский (вейк 12/13; Саша 0.66, Валера 0.70, Гриша 0.75)
+                rita)            printf 'Russian_PessimisticGirl:0:1.0' ;;         # запасной 2: женский (вейк 7/8; Саша 0.70, Валера 0.73, Гриша 0.74)
                 alena)           printf 'Russian_BrightHeroine' ;;
                 jane)            printf 'Russian_AmbitiousWoman' ;;
-                arina)           printf 'Russian_PessimisticGirl' ;;
-                omazh|rush)      printf 'Russian_Bad-temperedBoy' ;;
+                omazh|rush)      printf 'Russian_CrazyQueen' ;;
                 *)               printf 'Russian_ReliableMan' ;;
             esac
             return 0
@@ -199,7 +214,7 @@ PY2
 # отвечает следующий шаг, и повтор этой реплики проверял бы другое — ретрай
 # запрещается (retry_block_reason в e2e_tool_match.py). Поле ПОСЛЕДНЕЕ:
 # разделитель \x1f сохраняет позиции, прежние поля не сдвигаются.
-E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked'
+E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok'
 
 # parse_scenario_to_tsv() — читает scenario.json, пишет TSV-подобный файл
 # (на самом деле \x1f-separated, не таб — см. ниже) с одной строкой на шаг,
@@ -240,6 +255,25 @@ try:
 except Exception:
     pass
 FS = "\x1f"
+
+
+def norm_barge(raw):
+    """barge_in шага -> компактный JSON {after,n,delay_sec} или '' (поля нет). Неизвестный after
+    остаётся как есть: run_step назовёт его ошибкой сценария, а не подменит молча."""
+    if not isinstance(raw, dict):
+        return ''
+    try:
+        n = max(1, int(raw.get('n', 1) or 1))
+    except (TypeError, ValueError):
+        n = 1
+    try:
+        delay = max(0.0, float(raw.get('delay_sec', 0) or 0))
+    except (TypeError, ValueError):
+        delay = 0.0
+    after = str(raw.get('after') or 'speech_started')
+    return json.dumps({'after': after, 'n': n, 'delay_sec': delay}, ensure_ascii=False, separators=(',', ':'))
+
+
 sc = json.load(open(sys.argv[1], encoding="utf-8"))
 steps = sc.get("steps", [])
 for i, s in enumerate(steps):
@@ -262,9 +296,16 @@ for i, s in enumerate(steps):
         sleep_before = 0.0
     nxt = steps[i + 1] if i + 1 < len(steps) and isinstance(steps[i + 1], dict) else {}
     next_asked = str(nxt.get('when_robot_asked') or '').replace(FS, ' ').replace('\n', ' ')
+    # issue #3857 -- barge_in: намеренное перебивание (JSON after/n/delay_sec). next_barge_in_json --
+    # то же у СЛЕДУЮЩЕГО шага: предыдущий шаг ждёт не конца ответа, а якоря перебивания.
+    # silent_ok -- ход без речи допустим (Tier-1 new_session: llm_calls=0, речи нет).
+    barge = norm_barge(s.get('barge_in'))
+    next_barge = norm_barge(nxt.get('barge_in'))
+    silent_ok = 1 if (s.get('silent_ok') or exp == 'silent_ok') else 0
     fields = [str(i), s.get('label', f's{i+1}'), s.get('text', ''), s.get('voice', 'anton'),
               json.dumps(pats), json.dumps(acc, ensure_ascii=False), exp, str(retry),
-              when_asked, str(required_q), str(sleep_before), next_asked]
+              when_asked, str(required_q), str(sleep_before), next_asked,
+              barge, next_barge, str(silent_ok)]
     print(FS.join(fields))
 PY
 }
@@ -431,55 +472,202 @@ restore_node_params() {
 
 # Код, исполняемый ВНУТРИ контейнера voice-assistant. Передаётся base64-строкой
 # (python3 -c "exec(b64decode(...))"), чтобы в командной строке ssh не было
-# переводов строк и $'…'-квотинга. argv[1] = провайдер. Печатает одну строку
-# JSON — ответ /mcp/result или {"error": ...}.
-_e2e_tts_restore_py() {
-    cat <<'TTSPY'
+# переводов строк и $'…'-квотинга. Печатает одну строку JSON.
+#
+# ОДНА реализация подписанного вызова /mcp/execute (sender=harness, как
+# scripts/music/live_check_mcp_call.py): общая «шапка» _e2e_mcp_client_py + тело
+# под задачу (_e2e_tts_restore_py: set_voice после акта; _e2e_music_stop_py:
+# стоп музыки ПЕРЕД актом, issue #3871). Вторую подпись не писать.
+_e2e_mcp_client_py() {
+    cat <<'MCPPY'
 import json, sys, time, uuid
+from rob_box_mcp_tools.mcp_auth import RequestAuthenticator
+import rclpy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+
+class McpClient:
+    """Подписанные вызовы тулов через /mcp/execute -> /mcp/result (как у LLM)."""
+
+    def __init__(self, node_name, rid_prefix):
+        self.rid_prefix = rid_prefix
+        self.auth = RequestAuthenticator.from_env(sender="harness")
+        self.can_sign = bool(self.auth.can_sign)
+        self.results = {}
+        self.node = None
+        if not self.can_sign:
+            return
+        rclpy.init()
+        self.node = rclpy.create_node(node_name)
+        qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
+        self.node.create_subscription(String, "/mcp/result", self._on_result, qos)
+        self.pub = self.node.create_publisher(String, "/mcp/execute", qos)
+        self.spin_until(lambda: self.pub.get_subscription_count() > 0, 10.0)
+
+    def _on_result(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(payload, dict) and payload.get("request_id"):
+            self.results[payload["request_id"]] = payload
+
+    def spin_until(self, predicate, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not predicate():
+            rclpy.spin_once(self.node, timeout_sec=0.2)
+        return bool(predicate())
+
+    def call(self, tool_name, parameters, timeout):
+        """Ответ /mcp/result целиком либо None (таймаут)."""
+        rid = self.rid_prefix + uuid.uuid4().hex[:12]
+        request = {"tool_name": tool_name, "parameters": parameters, "request_id": rid}
+        self.auth.sign(request)  # подпись прямо перед публикацией (окно clock_skew)
+        msg = String()
+        msg.data = json.dumps(request, ensure_ascii=False)
+        self.pub.publish(msg)
+        self.spin_until(lambda: rid in self.results, timeout)
+        return self.results.get(rid)
+
+    def close(self):
+        if self.node is not None:
+            self.node.destroy_node()
+            rclpy.shutdown()
+MCPPY
+}
+
+# argv[1] = провайдер. Ответ /mcp/result на set_voice либо {"error": ...}.
+_e2e_tts_restore_py() {
+    _e2e_mcp_client_py
+    cat <<'TTSPY'
 provider = sys.argv[1]
 from rob_box_voice.tts_voice_registry import default_voice_for
 voice = default_voice_for(provider)
 if not voice:
     print(json.dumps({"error": "no default voice for provider %r" % provider}))
     sys.exit(3)
-from rob_box_mcp_tools.mcp_auth import RequestAuthenticator
-auth = RequestAuthenticator.from_env(sender="harness")
-if not auth.can_sign:
+mcp = McpClient("e2e_tts_restore", "e2e-tts-restore-")
+if not mcp.can_sign:
     print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
     sys.exit(3)
-import rclpy
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
-rclpy.init()
-node = rclpy.create_node("e2e_tts_restore")
-qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10)
-rid = "e2e-tts-restore-" + uuid.uuid4().hex[:12]
-box = {}
-def on_result(msg):
-    try:
-        payload = json.loads(msg.data)
-    except ValueError:
-        return
-    if payload.get("request_id") == rid:
-        box["payload"] = payload
-node.create_subscription(String, "/mcp/result", on_result, qos)
-pub = node.create_publisher(String, "/mcp/execute", qos)
-deadline = time.monotonic() + 10.0
-while time.monotonic() < deadline and pub.get_subscription_count() == 0:
-    rclpy.spin_once(node, timeout_sec=0.2)
-request = {"tool_name": "set_voice", "parameters": {"voice": voice, "provider": provider}, "request_id": rid}
-auth.sign(request)
-msg = String()
-msg.data = json.dumps(request, ensure_ascii=False)
-pub.publish(msg)
-deadline = time.monotonic() + 20.0
-while time.monotonic() < deadline and "payload" not in box:
-    rclpy.spin_once(node, timeout_sec=0.2)
-node.destroy_node()
-rclpy.shutdown()
-print(json.dumps(box.get("payload", {"error": "timeout: no /mcp/result for " + rid}), ensure_ascii=False))
-sys.exit(0 if "payload" in box else 2)
+payload = mcp.call("set_voice", {"voice": voice, "provider": provider}, 20.0)
+mcp.close()
+print(json.dumps(payload if payload is not None else {"error": "timeout: no /mcp/result for set_voice"}, ensure_ascii=False))
+sys.exit(0 if payload is not None else 2)
 TTSPY
+}
+
+# --- issue #3871 — музыка не должна переживать прогон ---------------------------
+# Утечка состояния между актами/прогонами: замер акта 1 (run 39849541397, 22.10) шёл
+# под DJ-сет, запущенный из Telegram за час до того (во всех ходах
+# <music_state>{"playing":"yes",...,"dj":"on"}); харнесс перед актом делал только
+# сброс сессии диалога. Снимок берём у владельца плеера — latched /voice/music/state
+# (парсер и «играет» — rob_box_voice.core.music_player_state, не своя копия), стоп —
+# теми же подписанными тулами, что у голосового «хватит» (dj_set stop + stop_music).
+# Состояние читается маленьким рабочим процессом внутри voice-assistant (rclpy,
+# TRANSIENT_LOCAL), а не `ros2 topic echo` в сервисном контейнере (OOM).
+# argv[1] = сколько секунд ждать idle после стопа. Печатает одну строку JSON:
+# {"verdict": "was_idle"|"stopped"|"stuck", "before": {...}, "after": {...}, "stop_calls": {...}}.
+_e2e_music_stop_py() {
+    _e2e_mcp_client_py
+    cat <<'MUSICPY'
+idle_timeout = float(sys.argv[1])
+from rob_box_voice.core.music_player_state import MUSIC_STATE_TOPIC, parse_music_state
+mcp = McpClient("e2e_music_precondition", "e2e-music-stop-")
+if not mcp.can_sign:
+    print(json.dumps({"error": "no /mcp/execute secret to sign with"}))
+    sys.exit(3)
+box = {}
+def on_state(msg):
+    snap = parse_music_state(msg.data)
+    if snap is not None:
+        box["snap"] = snap
+state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       history=HistoryPolicy.KEEP_LAST, depth=1)
+mcp.node.create_subscription(String, MUSIC_STATE_TOPIC, on_state, state_qos)
+def busy():
+    snap = box.get("snap")
+    return snap is not None and (snap.is_playing() or bool(snap.dj))
+def describe():
+    snap = box.get("snap")
+    if snap is None:
+        return {"snapshot": False}
+    return {"snapshot": True, "state": snap.state, "playing": snap.is_playing(), "dj": bool(snap.dj), "track_id": snap.track_id}
+mcp.spin_until(lambda: "snap" in box, 5.0)  # latched: у живого плеера снимок приходит сразу
+report = {"before": describe()}
+if not busy():
+    report["verdict"] = "was_idle"
+else:
+    calls = {}
+    for tool, params in (("dj_set", {"action": "stop"}), ("stop_music", {})):
+        answer = mcp.call(tool, params, 8.0)
+        result = answer.get("result") if isinstance(answer, dict) and isinstance(answer.get("result"), dict) else {}
+        calls[tool] = "timeout" if answer is None else ("ok" if result.get("success") is True else "fail:%s" % (result.get("error") or result.get("message") or "success!=true"))
+    t0 = time.monotonic()
+    mcp.spin_until(lambda: not busy(), idle_timeout)
+    report["stop_calls"] = calls
+    report["after"] = describe()
+    report["idle_after_s"] = round(time.monotonic() - t0, 1)
+    report["verdict"] = "stuck" if busy() else "stopped"
+mcp.close()
+print(json.dumps(report, ensure_ascii=False))
+sys.exit(0)
+MUSICPY
+}
+
+# ensure_music_stopped_for_act INHERITS -- предусловие акта (issue #3871).
+# INHERITS=yes -- акт наследует окно диалога прошлого (inherits_previous_act=true): в этом
+# окне музыка может быть частью разговора -- не трогаем, но говорим об этом.
+# Лог ``E2E_PRECONDITION music=stopped|was_idle|skipped``; играет и не гаснет за
+# E2E_MUSIC_IDLE_WAIT (10 с) -- ``E2E_FATAL: перед актом играет музыка``, exit 2 (trap EXIT
+# вернёт узлы на боевые БД). Не удалось даже прочитать -- тоже FATAL: тишину не доказали.
+# Требует: robot_ros(), log().
+ensure_music_stopped_for_act() {
+    local inherits="${1:-no}" wait_s="${E2E_MUSIC_IDLE_WAIT:-10}" code_b64 out result_line parsed verdict detail
+    if [ "$inherits" = "yes" ]; then
+        echo "E2E_PRECONDITION music=skipped"
+        log "🎵 музыка: акт наследует окно диалога (inherits_previous_act=true) — состояние плеера не трогаем"
+        return 0
+    fi
+    code_b64="$(_e2e_music_stop_py | base64 | tr -d '\n\r')"
+    out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${wait_s}'" 2>/dev/null)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | sed 's/^[^{]*//; s/}[^}]*$/}/')"
+    parsed="$(printf '%s' "$result_line" | python3 -c 'import json, sys
+try:
+    p = json.load(sys.stdin)
+except Exception:
+    print("error\tнет JSON-ответа"); sys.exit(0)
+if not isinstance(p, dict) or "verdict" not in p:
+    print("error\t%s" % ((p.get("error") if isinstance(p, dict) else None) or "ответ без verdict")); sys.exit(0)
+b, a = p.get("before") or {}, p.get("after") or {}
+def fmt(d):
+    return "snapshot=нет" if not d.get("snapshot", True) else "playing=%s dj=%s track_id=%s" % (d.get("playing"), d.get("dj"), d.get("track_id"))
+print("%s\tбыло: %s; стоп: %s; после (%s с): %s" % (p["verdict"], fmt(b), p.get("stop_calls", {}), p.get("idle_after_s", "-"), fmt(a) if a else "-"))
+' 2>/dev/null)"
+    verdict="$(printf '%s' "$parsed" | cut -f1)"
+    detail="$(printf '%s' "$parsed" | cut -f2-)"
+    case "$verdict" in
+        was_idle)
+            echo "E2E_PRECONDITION music=was_idle"
+            log "🎵 музыка: перед актом тихо (${detail})"
+            return 0
+            ;;
+        stopped)
+            echo "E2E_PRECONDITION music=stopped"
+            log "🎵 музыка: перед актом играла — остановлена через /mcp/execute dj_set stop + stop_music (${detail})"
+            return 0
+            ;;
+        stuck)
+            echo "E2E_FATAL: перед актом играет музыка — стоп отправлен, но плеер не стал idle за ${wait_s} с (${detail}) — замер под музыкой нечитаем (issue #3871)" >&2
+            exit 2
+            ;;
+        *)
+            echo "E2E_FATAL: перед актом не удалось проверить /voice/music/state (${detail:-<пусто>}) — тишину не доказали, замер мог пойти под музыку (issue #3871)" >&2
+            printf '%s\n' "$out" | tail -3 >&2
+            exit 2
+            ;;
+    esac
 }
 
 # Issue #3270: убирает из лога voice-assistant дамп LLM-запроса
@@ -491,7 +679,217 @@ TTSPY
 # блоком START..END: при обрезке --since END может отсутствовать, и блочный
 # фильтр съел бы весь остальной лог.
 strip_llm_request_dump() {
-    grep -vE '(LLM REQUEST (START|END))|^[[:space:]]*\[[0-9]+\] [A-Za-z_]+: |^[[:space:]]*tools\([0-9]+\): ' || true
+    # Issue #3860: в выводе launch у строки дампа есть префикс ``[dialog_node-3]`` --
+    # якорь ``^`` без необязательного префикса не видел ``[17] user: '...<recent_actions>
+    # [{"tool":"register_speaker"...`` и давал ложные ``forbidden tool calls``.
+    # Тот же шаблон держит e2e_tool_match.strip_llm_request_dump (acceptance).
+    grep -vE '(LLM REQUEST (START|END))|^(\[[A-Za-z0-9_]+-[0-9]+\])?[[:space:]]*\[[0-9]+\] [A-Za-z_]+: |^(\[[A-Za-z0-9_]+-[0-9]+\])?[[:space:]]*tools\([0-9]+\): ' || true
+}
+
+# --- issue #3857 (эпик #3683) -- ждём СОБЫТИЙ робота, а не таймеров -----------
+#
+# Раньше: после play -- ``sleep E2E_REACTION_WINDOW`` (40 с) при любом ответе; перед шагом --
+# 20 с окно лога + 15 с «тишины» по grep строк синтеза. Теперь харнесс каждые 2 с читает лог
+# робота и спрашивает e2e_events.py (решает код по маркерам, не оператор по таймеру):
+#   * ответ готов -- v2: ``📊 [turn] ... stage=done`` хода + все ``SpeechEvent`` реплик закрыты
+#     (finished/cancelled/rejected по speech_id); v1: ``Публикую TTS finished event`` по speech_id;
+#   * робот ещё говорит -- ``started`` без парного закрытия; после конца речи +2 с (хвост ReSpeaker);
+#   * потолок ожидания -- прежний E2E_REACTION_WINDOW / E2E_SILENCE_WAIT_MAX: в худшем случае
+#     поведение то же, что было. E2E_EVENT_WAITS=0 возвращает фиксированный sleep.
+_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|TTS finished event|🔊 TTS:'
+_E2E_SPEECH_GREP='SpeechEvent|TTS finished event|🔊 TTS:'
+
+_events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
+
+# Первая строка вывода -- часы робота (date +%s.%N), дальше отфильтрованный docker logs.
+# ``; true``: пустой grep не должен выглядеть как сбой SSH -- сбой виден по отсутствию числа в 1-й строке.
+_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep
+    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1' 2>&1 | grep -aE '$2'; true" 2>/dev/null
+}
+
+_ev_kv() {  # stdin = key=value строки; $1=key
+    sed -n "s/^$1=//p" | head -1 | tr -d '\r'
+}
+
+# wait_reply_done BEFORE [BARGE] -- ждёт «ответ состоялся и робот замолчал». v2 (#3954): единственный судья
+# шага -- сам e2e_events.py; check_cycle для v2 не зовётся. rc=0 -- дождались (ответ или silent_ok),
+# rc=1 -- потолок при принятой фразе (ход не кончился), rc=2 -- ход кончился сбоем/отменой/без речи (FAIL сразу,
+# E2E_REPLY_REASON), rc=3 -- ПРИНЯТО нет за E2E_ACCEPT_WINDOW (переигрывать сразу, не ждать потолок).
+# Пишет E2E_REPLY_AFTER (с), E2E_REPLY_VERDICT и E2E_REPLY_NO_SPEECH=1, если ход закончился без речи
+# (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
+wait_reply_done() {
+    local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
+    local accept_win=0 reason
+    [ "${2:-0}" = "1" ] && barge_flag="--barge"
+    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && accept_win="${E2E_ACCEPT_WINDOW:-15}"
+    E2E_REPLY_VERDICT="wait"; E2E_REPLY_REASON="-"
+    local grace="${E2E_NO_SPEECH_GRACE:-8}" tail_s="${E2E_SPEECH_TAIL:-2}"
+    local t0 now out verdict sig quiet prev_sig="" stable=0 nospeech_at=0 silent_flag=""
+    [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && silent_flag="--silent-ok"
+    E2E_REPLY_NO_SPEECH=0
+    t0="$(date +%s)"
+    while :; do
+        now="$(date +%s)"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win")"
+        verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
+        sig="$(printf '%s\n' "$out" | _ev_kv sig)"
+        quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        reason="$(printf '%s\n' "$out" | _ev_kv reason)"
+        now="$(date +%s)"
+        case "$verdict" in
+            failed|cancelled)
+                E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_REASON="$reason"
+                E2E_REPLY_AFTER=$((now - t0)); return 2 ;;
+            no_accept)
+                E2E_REPLY_VERDICT="no_accept"; E2E_REPLY_AFTER=$((now - t0)); return 3 ;;
+            done|silent)
+                if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
+                prev_sig="$sig"
+                if awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; then
+                    [ "$verdict" = "silent" ] && E2E_REPLY_NO_SPEECH=1
+                    E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_AFTER=$((now - t0)); return 0
+                fi ;;
+            nospeech)
+                [ "$nospeech_at" = "0" ] && nospeech_at="$now"
+                if [ $((now - nospeech_at)) -ge "$grace" ]; then
+                    E2E_REPLY_NO_SPEECH=1; E2E_REPLY_VERDICT="nospeech"; E2E_REPLY_AFTER=$((now - t0))
+                    # v2: ход кончился, речи не было и шаг тишину не разрешал -- FAIL сразу, без повторов.
+                    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && { E2E_REPLY_REASON="no_speech"; return 2; }
+                    return 0
+                fi ;;
+            *) stable=0; prev_sig=""; nospeech_at=0 ;;
+        esac
+        if [ $((now - t0)) -ge "$ceiling" ]; then
+            E2E_REPLY_VERDICT="ceiling"; E2E_REPLY_AFTER=$((now - t0)); return 1
+        fi
+        sleep "$poll"
+    done
+}
+
+# warm_act_audio_path -- issue #3886: прогрев звукового тракта перед ПЕРВОЙ фразой акта.
+# Акт 2 марафона (22-23.10) два прогона подряд терял «Робот,» в первой фразе n201: после
+# пред-синтеза (#3875) PLAY идёт через ~2 с после сброса сессии/e2e-БД, а раньше между ними
+# лежали ~20 с живого синтеза. В файле «Робот,» есть (1.1 с речи после 1.5 с adelay), VAD
+# робота его видит; значит режется на пути звук/STT-канал после простоя. Прогрев: 2 с ЧИСТОЙ
+# тишины через тот же sink (будит sink, VAD не триггерит) + пауза E2E_ACT_WARMUP_SEC (по
+# умолчанию 15; 0 = выключено), которую раньше неявно давал синтез. Только v2-акт.
+# Возвращает 0 всегда (прогрев -- не повод ронять акт), в лог пишет что реально сделано.
+warm_act_audio_path() {  # $1=каталог для временного wav
+    local dir="${1:-/tmp}" wait_s="${E2E_ACT_WARMUP_SEC:-15}" wav
+    case "$wait_s" in ''|*[!0-9]*) wait_s=15 ;; esac
+    if [ "$wait_s" = "0" ]; then
+        echo ">>> прогрев звукового тракта: выключен (E2E_ACT_WARMUP_SEC=0)"
+        return 0
+    fi
+    wav="$dir/.warmup_silence.wav"
+    if ffmpeg -nostdin -y -f lavfi -i "anullsrc=r=16000:cl=mono" -t 2 -ac 1 -ar 16000 "$wav" >/dev/null 2>&1         && paplay "$wav" >/dev/null 2>&1; then
+        echo ">>> прогрев звукового тракта: 2 с тишины через sink сыграны, пауза ${wait_s}s"
+    else
+        echo ">>> прогрев звукового тракта: тишину через sink сыграть не вышло (ffmpeg/paplay) -- только пауза ${wait_s}s"
+    fi
+    sleep "$wait_s"
+    return 0
+}
+
+# wait_robot_quiet -- v2: «робот ещё говорит» = SpeechEvent started/queued без пары finished/
+# cancelled/rejected (по speech_id; «протухшие» без событий > 60 с не считаются). Тихо --
+# +2 с после последнего события речи. Пишет E2E_STEP_SILENCE_SEC. rc=0 тихо, rc=1 потолок.
+wait_robot_quiet() {
+    local poll="${E2E_EVENT_POLL:-2}" max="${E2E_SILENCE_WAIT_MAX:-90}" tail_s="${E2E_SPEECH_TAIL:-2}"
+    local t0 now out nopen sig quiet fetch prev_sig="" stable=0
+    t0="$(date +%s)"
+    while :; do
+        out="$(_events_fetch "${E2E_QUIET_LOOKBACK:-600s}" "$_E2E_SPEECH_GREP" | python3 "$(_events_py)" quiet --engine "${E2E_DIALOG_ENGINE:-v1}")"
+        fetch="$(printf '%s\n' "$out" | _ev_kv fetch)"
+        nopen="$(printf '%s\n' "$out" | _ev_kv open)"
+        sig="$(printf '%s\n' "$out" | _ev_kv sig)"
+        quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
+        now="$(date +%s)"
+        if [ "$sig" = "$prev_sig" ]; then stable=$((stable + 1)); else stable=1; fi
+        prev_sig="$sig"
+        if [ "$fetch" = "1" ] && [ "${nopen:-1}" = "0" ] \
+           && { [ "$sig" = "0" ] || awk "BEGIN{exit !(${quiet:--1} >= $tail_s)}" 2>/dev/null || [ "$stable" -ge 2 ]; }; then
+            E2E_STEP_SILENCE_SEC=$((now - t0)); return 0
+        fi
+        if [ $((now - t0)) -ge "$max" ]; then
+            E2E_STEP_SILENCE_SEC=$((now - t0)); return 1
+        fi
+        sleep "$poll"
+    done
+}
+
+# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started","n":N,"delay_sec":X}.
+_barge_field() {  # $1=json $2=поле
+    BARGE_JSON="$1" python3 -c 'import json, os, sys
+try:
+    print(json.loads(os.environ["BARGE_JSON"]).get(sys.argv[1], ""))
+except Exception:
+    print("")' "$2"
+}
+
+# wait_barge_anchor SINCE JSON -- ждёт якорь перебивания в логе с SINCE (BEFORE фразы, которую
+# перебиваем). rc=0 -- якорь наступил: E2E_ANCHOR_TS (метка лога робота, с), E2E_ANCHOR_ID,
+# E2E_ANCHOR_NOW (часы робота в момент наблюдения). rc=1 -- за потолок не наступил.
+wait_barge_anchor() {
+    local since="$1" spec="$2" after n t0 now out
+    after="$(_barge_field "$spec" after)"; n="$(_barge_field "$spec" n)"
+    case "$after" in
+        speech_started|llm_request|segment_started) ;;
+        *) E2E_ANCHOR_ERROR="неизвестный barge_in.after='${after}'"; return 2 ;;
+    esac
+    t0="$(date +%s)"
+    while :; do
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" anchor --engine "${E2E_DIALOG_ENGINE:-v1}" --after "$after" --n "${n:-1}")"
+        if [ "$(printf '%s\n' "$out" | _ev_kv found)" = "1" ]; then
+            E2E_ANCHOR_TS="$(printf '%s\n' "$out" | _ev_kv ts)"
+            E2E_ANCHOR_ID="$(printf '%s\n' "$out" | _ev_kv speech_id)"
+            E2E_ANCHOR_NOW="$(printf '%s\n' "$out" | _ev_kv now)"
+            awk "BEGIN{exit !($E2E_ANCHOR_TS > 0)}" 2>/dev/null || E2E_ANCHOR_TS="$E2E_ANCHOR_NOW"
+            return 0
+        fi
+        now="$(date +%s)"
+        [ $((now - t0)) -ge "${E2E_REACTION_WINDOW:-40}" ] && return 1
+        sleep "${E2E_BARGE_POLL:-1}"
+    done
+}
+
+# step_wait_after_play SINCE -- что делать после play команды. E2E_WAIT_MODE:
+#   fixed  -- E2E_EVENT_WAITS=0 (слепой sleep, как раньше) либо якорь не наступил за потолок;
+#   anchor -- СЛЕДУЮЩИЙ шаг перебивает (barge_in): ждали его якорь, конца ответа не ждём;
+#   event  -- ждали событий (wait_reply_done).
+# E2E_REPLY_AFTER -- сколько секунд ждали (идёт в лог шага ``reply_after=``).
+step_wait_after_play() {  # $1=since $2=1, если шаг сам перебивает (barge_in)
+    E2E_WAIT_MODE="fixed"; E2E_REPLY_AFTER="${E2E_REACTION_WINDOW:-40}"; E2E_REPLY_NO_SPEECH=0
+    E2E_REPLY_VERDICT="fixed"; E2E_REPLY_REASON="-"; E2E_WAIT_RC=0
+    if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
+        sleep "${E2E_REACTION_WINDOW:-40}"
+        return 0
+    fi
+    if [ -n "${E2E_STEP_NEXT_BARGE_IN:-}" ]; then
+        local _t0
+        _t0="$(date +%s)"
+        if wait_barge_anchor "$1" "$E2E_STEP_NEXT_BARGE_IN"; then
+            E2E_WAIT_MODE="anchor"; E2E_REPLY_AFTER=$(( $(date +%s) - _t0 ))
+            E2E_PENDING_ANCHOR_SINCE="$1"; E2E_PENDING_ANCHOR_SPEC="$E2E_STEP_NEXT_BARGE_IN"
+        fi
+        return 0   # якорь не наступил: потолок уже выжат; шаг-перебиватель получит SKIP
+    fi
+    wait_reply_done "$1" "${2:-0}"
+    E2E_WAIT_RC=$?
+    E2E_WAIT_MODE="event"
+    return 0
+}
+
+# barge_hold SPEC -- выдержать delay_sec от якоря по часам робота (якорь наблюдали раньше, чем
+# дошли до play). Печатает фактическую задержку якорь -> начало play (с).
+barge_hold() {
+    local spec="$1" delay robot_now remaining
+    delay="$(_barge_field "$spec" delay_sec)"
+    robot_now="$(${ROBOT_SSH} "date +%s.%N" 2>/dev/null | tr -d '\r')"
+    case "$robot_now" in ''|*[!0-9.]*) robot_now="$E2E_ANCHOR_NOW" ;; esac
+    remaining="$(awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%.2f", (r>0?r:0)}')"
+    awk "BEGIN{exit !($remaining > 0)}" 2>/dev/null && sleep "$remaining"
+    awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
 }
 
 restore_robot_tts_default() {
@@ -518,7 +916,7 @@ restore_robot_tts_default() {
     # как у «ros2 param get '…'» выше) — кавычки ставим сами. В строке только
     # base64-алфавит и имя провайдера из белого списка выше.
     out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" '${provider}'" 2>/dev/null)"
-    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1)"
+    result_line="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | sed 's/^[^{]*//; s/}[^}]*$/}/')"
     verdict="$(printf '%s' "$result_line" | python3 -c 'import json, sys
 try:
     p = json.load(sys.stdin)

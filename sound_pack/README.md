@@ -236,6 +236,8 @@ SOUND_GROUPS = {
 В этой директории:
 - **sound_catalog.json** - полный каталог с метаданными (duration, author, license, usage)
 - **measure_durations.py** - утилита для измерения длительности (mutagen)
+- **muffled.mp3** + **make_muffled.py** - earcon тишины (#3984): короткий низкий приглушённый звук вместо «услышал»,
+  пока робот молчит; сгенерирован кодом (numpy + ffmpeg), в `sound_catalog.json` не входит (звук кода, не выбор LLM)
 - **51 MP3 файла** - все звуки робота
 
 ---

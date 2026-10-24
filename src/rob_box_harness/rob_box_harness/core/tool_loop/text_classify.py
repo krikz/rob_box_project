@@ -13,14 +13,29 @@ from __future__ import annotations
 
 import re
 
-from rob_box_core.tool_catalog import tool_names
-
 #: Pattern matching a tool call the model WROTE as text instead of
 #: emitting through function-calling. The shape is ``"<name>{...}"`` or
 #: ``"<name>(...)"`` — a single angle-bracketed line. Anything else
 #: (paragraphs, prose around the call, ...) is NOT a pseudo-call; the
 #: LLM probably meant it as natural language.
 _PSEUDO_TOOL_CALL_RE: re.Pattern[str] = re.compile(r"^<[^<>]{1,160}>$")
+
+
+#: Маркеры конца хода v1: мастер-промпт учит писать ``done`` ПОСЛЕ последнего ``speak_text``. Ответ целиком из
+#: маркера — не речь (#1217: deepseek первым ответом отдаёт голое «done» — ход молчит и ничего не делает). Одна
+#: таблица на ядро и ноду; в режиме команд маркера нет (``command_bridge.V1_TRANSPORT_NOTE``: «done не пиши»), и
+#: она уходит вместе с контрактом ``speak_text`` v1 (ADR-0150 PR-7 ч.7d / PR-15).
+DONE_MARKERS: frozenset[str] = frozenset({"done", "task complete", "task_complete", "готово", "всё", "выполнено"})
+
+
+def is_done_marker(text: str | None) -> bool:
+    """Текст целиком — маркер конца хода (без учёта регистра и пробелов по краям)."""
+    return (text or "").strip().lower() in DONE_MARKERS
+
+
+def is_silent_text(text: str | None) -> bool:
+    """Человеку нечего сказать: пусто или голый маркер конца хода."""
+    return not (text or "").strip() or is_done_marker(text)
 
 
 def is_pseudo_tool_call(text: str) -> bool:
@@ -73,59 +88,12 @@ def is_tool_call_markup(text: str) -> bool:
     return bool(TOOL_CALL_MARKUP_RE.search(text))
 
 
-#: Issue #3598 — имена тегов, которые код сам положил в контекст хода
-#: (``<system_context>``, ``<user_profile>``, ``<music_state>`` …).
-_CONTEXT_TAG_RE: re.Pattern[str] = re.compile(r"<([A-Za-z][\w-]*)")
-
-
-def _catalog_identifiers() -> tuple[str, ...]:
-    """Имена тулов из единого каталога (``rob_box_core.tool_catalog``) + ``load_skill``.
-
-    Берутся только идентификаторы с ``_``: однословное имя (``say``) — это
-    обычное слово речи, а не служебный идентификатор.
-    """
-    return tuple(n for n in (*tool_names(), "load_skill") if "_" in n)
-
-
-def quoted_turn_context(text: str, context: str | None) -> str | None:
-    """Issue #3598 — финальный текст хода цитирует служебное, что код дал модели.
-
-    TEMP(ADR-0148) — #3600: проверка читает текст ответа. Словарь не
-    рукописный: теги — из ``<system_context>`` ЭТОГО хода (его собрал
-    код), имена тулов — из единого каталога. Убрать вместе с
-    авто-озвучкой финального текста (речь — только ``speak_text``).
-
-    Живой лог 13.10 08:38 UTC: на «[TG] продолжай играть вагнера» модель
-    ответила разбором от третьего лица — «… но ``<music_state>
-    playing="no" …`` … Скажу коротко через ``speak_text`` …» — и авто-TTS
-    прочитал его вслух шестью чанками (плюс дубль в Telegram). Человеку
-    такие идентификаторы не говорят никогда, значит это не реплика.
-
-    Проверяется СЫРОЙ текст модели: ``strip_markdown`` на стороне voice
-    снимает ``_…_`` парами, и ``music_state`` превращается в
-    ``musicstate`` — так #1882 и промахнулся в этом логе.
-
-    Returns:
-        Первый найденный идентификатор (``"<music_state>"`` или
-        ``"speak_text"``) или ``None``.
-    """
-    if not text:
-        return None
-    low = text.lower()
-    tags = sorted({t.lower() for t in _CONTEXT_TAG_RE.findall(context or "")})
-    for tag in tags:
-        if f"<{tag}" in low:
-            return f"<{tag}>"
-    for name in _catalog_identifiers():
-        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", low):
-            return name
-    return None
-
-
 __all__ = [
     "_PSEUDO_TOOL_CALL_RE",
+    "DONE_MARKERS",
     "TOOL_CALL_MARKUP_RE",
+    "is_done_marker",
     "is_pseudo_tool_call",
+    "is_silent_text",
     "is_tool_call_markup",
-    "quoted_turn_context",
 ]

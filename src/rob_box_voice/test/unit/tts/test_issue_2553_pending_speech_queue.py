@@ -99,7 +99,6 @@ def _make_node() -> TTSNode:
     n._logger = logger
     n.get_logger = lambda: logger
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
 
     # FIFO-gate state (issue #1996) + новая очередь (issue #2553).
@@ -110,10 +109,6 @@ def _make_node() -> TTSNode:
     n._play_active_seq = None
     n._active_batch_id = None
     n._pending_speech_queue = []
-
-    # Pre-gen off (issue #2003) — claim_pregen вернёт None, не упадёт.
-    n._prefetch = None
-    n._pregenerate_enabled = False
 
     return n
 
@@ -181,9 +176,8 @@ def test_new_chunk_from_different_batch_is_queued():
     assert finished[0]["success"] is True
     assert finished[0]["queued"] is True
     assert finished[0]["batch_id"] == "babble-retry-M"
-    # batch_complete НЕ публиковался — иначе dialogue_node триггерил бы
-    # music_cleanup раньше времени.
-    assert len(node.batch_complete_pub.messages) == 0
+    # батч НЕ закрыт — иначе конец батча пришёл бы раньше времени.
+    assert not any(p.get("batch_complete") for p in finished)
 
 
 # ── 2. active batch тот же batch_id → submit идёт по-старому (FIFO внутри batch)
@@ -531,8 +525,8 @@ def test_pending_queue_overflow_drops_with_warning():
     assert finished[0]["success"] is False
     assert finished[0]["error"] == "pending_queue_overflow"
     assert finished[0]["queued"] is True
-    # batch_complete НЕ публиковался (queued=True подавляет).
-    assert len(node.batch_complete_pub.messages) == 0
+    # батч НЕ закрыт (queued=True подавляет).
+    assert not any(p.get("batch_complete") for p in finished)
 
 
 # ── 9. AST-страховка: новые методы живут в TTSNode (no orphan import)

@@ -8,16 +8,18 @@ dialogue.py - Инструменты для управления диалого�
 """
 
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
-
-# Ленивый импорт ROS 2 модулей для поддержки unit тестов
-if TYPE_CHECKING:
-    from std_msgs.msg import String
+from typing import List
 
 from rob_box_core.speaker_names import INVALID_SPEAKER_NAMES
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, shared_publisher
-from ..voice_state import VoiceStateStore
+from rob_box_core import speech_client
+
+from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..owner_event import OwnerEvents, owner_events
+from rob_box_dialog import phrases
+from rob_box_dialog.knowledge import VOICE_DEFAULT_ARG
+
+from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
     normalize_animation,
@@ -30,17 +32,25 @@ from ..animations import (
 try:
     from rob_box_voice.tts_voice_registry import (
         default_voice_for,
+        providers_overview,
         resolve_voice,
+        robot_default_voice,
         voices_for,
     )
 except ImportError:  # pragma: no cover — fallback для minimal environments
     def default_voice_for(provider: str) -> str:
         return ""
 
+    def robot_default_voice() -> tuple:
+        return "", ""
+
     def resolve_voice(provider: str, requested) -> tuple:
         return (requested or ""), False
 
     def voices_for(provider: str) -> list:
+        return []
+
+    def providers_overview(active: str = "") -> list:
         return []
 
 # Issue #1709 — Unicode-script guard: LLM иногда вставляет в speak_text
@@ -54,13 +64,13 @@ try:
         should_skip as should_skip_foreign_scripts,
     )
 except ImportError:  # pragma: no cover — fallback для minimal environments
-    def analyze_foreign_scripts(text: str):
+    def analyze_foreign_scripts(text: str, provider=None):
         return None
 
     def describe_foreign_scripts(report) -> str:
         return "guard unavailable"
 
-    def should_skip_foreign_scripts(text: str) -> bool:
+    def should_skip_foreign_scripts(text: str, threshold: float = 0.10, provider=None) -> bool:
         return False
 
 
@@ -87,163 +97,47 @@ def _active_tts_provider(node) -> str:
 class SpeakTextTool(MCPTool):
     """Инструмент для произнесения текста голосом."""
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
+    def __init__(self, node):
         super().__init__(node)
-        # Issue #1219 — общее in-memory хранилище current_voice с
-        # SetVoiceTool (персистентный голос на диалог, Q7/Q11).
-        self._voice_store = voice_store or VoiceStateStore()
         # Динамический импорт во время выполнения
-        from std_msgs.msg import String
+        from rob_box_dialog_msgs.msg import SpeechEvent
 
-        # Publisher для TTS запросов
-        self.tts_pub = node.create_publisher(String, "/voice/tts/request", 10)
-        # Publisher для анимаций (инициализируем сразу, чтобы не создавать дубли в execute())
-        # Issue #3108: общий с PlayAnimationTool publisher на этой ноде.
-        self.animation_pub = shared_publisher(node, String, "/voice/animation/request", 10)
-        # Subscriber для получения завершения произношения
-        self.finished_sub = node.create_subscription(String, "/voice/tts/finished", self._on_tts_finished, 10)
-        # Subscriber для получения текущего dialogue_id от dialogue_node
-        # (чтобы включать его в TTS запросы и tts_node мог отбрасывать старые)
-        self._current_dialogue_id: str | None = None
-        self._dialogue_id_sub = node.create_subscription(
-            String, "/voice/current_dialogue_id", self._on_current_dialogue_id, 1
+        # ADR-0150 PR-3 (#3688): речь — одним клиентом (SpeechRequest), итог
+        # чанка — событием владельца речи (SpeechEvent), а не JSON-эхом.
+        speech_client.prepare(node, "request")
+        # Анимацию лица тул больше не публикует: эмоцию аргумента ``animation`` видит диалог (стадия executing
+        # хода) и красит ею рефлексы speaking/done через ExpressionRequest (ADR-0150 PR-3b, #3690).
+        self.speech_event_sub = node.create_subscription(
+            SpeechEvent, "/voice/speech/event", self._on_speech_event, 10
         )
-        # Publisher для batch_complete — публикуется, когда последний чанк
-        # батча получает /voice/tts/finished (issue #980). Используется
-        # dialogue_node, чтобы не рубить музыку между чанками длинного
-        # speak_text (рэп, стихи): cleanup ждёт batch_complete, а не debounce.
-        self.batch_complete_pub = node.create_publisher(
-            String, "/voice/tts/batch_complete", 10
-        )
-        # Issue #992: a separate "batch registered" prelude so dialogue_node
-        # can learn about every in-flight batch_id BEFORE the first chunk
-        # finishes. This is required for multi-speak_text cycles — when the
-        # LLM fires two ``speak_text`` tool calls in one cycle, each call
-        # creates its own ``batch_id`` and produces its own
-        # ``/voice/tts/batch_complete``. Without the prelude, dialogue_node
-        # only discovers a batch via the first ``tts_finished`` for it,
-        # which means batch #1's ``batch_complete`` fires cleanup while
-        # batch #2 is still pending. The prelude lets dialogue_node register
-        # the batch up front so cleanup is held until the last batch
-        # completes. Payload: ``{"batch_id": str, "chunks_total": int}``.
-        self.batch_registered_pub = node.create_publisher(
-            String, "/voice/tts/batch_registered", 10
-        )
-        # Трекер активных произношений: speech_id -> {batch_id, batch_total};
-        # batch_total == 0 указывает на «одиночный» вызов (без split) —
-        # в этом случае batch_complete публикуется после первого finished,
-        # чтобы не сломать совместимость с уже существующими потребителями.
+        # speech_id -> {text, voice}: текст чанка для лога исхода (issue #1709).
         self.pending_speeches: dict = {}
-        # batch_id -> {"remaining": int, "total": int, "started_at_ms": float,
-        #              "success": bool}; создаётся в execute(), обновляется
-        # и закрывается в _on_tts_finished().
-        self.pending_batches: dict = {}
         import threading
         self.pending_speeches_lock = threading.Lock()
 
-    def _on_current_dialogue_id(self, msg: "String"):
-        """Обновление текущего dialogue_id от dialogue_node."""
-        self._current_dialogue_id = msg.data
+    #: Финальные виды SpeechEvent (``rob_box_dialog_msgs/SpeechEvent.kind``).
+    _FINAL_KINDS = {4: "finished", 5: "cancelled", 7: "rejected"}
 
-    def _on_tts_finished(self, msg: "String"):
-        """Обработка завершения произношения.
+    def _on_speech_event(self, ev) -> None:
+        """Итог нашего чанка от владельца речи: лог с ПОЛНЫМ текстом (issue #1709).
 
-        1. Удаляет запись speech_id из pending_speeches.
-        2. Декрементирует счётчик батча. Когда батч завершён (remaining==0),
-           публикует /voice/tts/batch_complete с chunks_total и
-           batch_duration_ms (issue #980). dialogue_node подписан на этот
-           топик и публикует /mcp/music_cleanup ровно один раз после
-           последнего чанка — музыка играет весь рэп, а не вырубается
-           после 1-го чанка из 4.
+        Чужие реплики (общий топик) и промежуточные события пропускаются.
         """
-        import json
-        try:
-            result = json.loads(msg.data)
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            self.log_error(f"❌ Ошибка парсинга TTS finished: {exc}")
+        kind = self._FINAL_KINDS.get(int(getattr(ev, "kind", -1)))
+        if kind is None:
             return
-        speech_id = result.get("speech_id")
-        finished_success = bool(result.get("success", False))
-        finished_error = result.get("error")
-
-        # Issue #1709 — ПОЛНЫЙ текст чанка в логе. До фикса здесь был только
-        # `speech_id`: когда TTS падал или его прерывали («🔇 Воспроизведение
-        # прервано»), восстановить, ЧТО именно бормотал робот, было
-        # невозможно — юзер слышал странный фрагмент, а в логе пусто.
-        # Текст берём из snapshot'а pending_speeches (регистрируется в
-        # execute() вместе с batch_id).
         with self.pending_speeches_lock:
-            _known = self.pending_speeches.get(speech_id) if speech_id else None
-            chunk_text = (_known or {}).get("text", "")
-            chunk_voice = (_known or {}).get("voice", "")
+            known = self.pending_speeches.pop(ev.speech_id, None)
+        if known is None:
+            return
         self._log_chunk_outcome(
-            speech_id=speech_id,
-            text=chunk_text,
-            voice=chunk_voice,
-            success=finished_success,
-            error=finished_error,
-            known=_known is not None,
+            speech_id=ev.speech_id,
+            text=known["text"],
+            voice=known["voice"],
+            success=kind == "finished",
+            error=None if kind == "finished" else f"{kind}:{ev.reason}",
+            known=True,
         )
-        if not speech_id:
-            return
-
-        with self.pending_speeches_lock:
-            entry = self.pending_speeches.pop(speech_id, None)
-            if entry is None:
-                # 🔴 FIX (issue #776, live 12.08): /voice/tts/finished — общий
-                # топик для ВСЕХ отправителей TTS. tts_node публикует finished
-                # для любого speech_id, включая системные реплики dialogue_node
-                # (триггеры thinking/confused, DJ-прощание и т.п.), которые НЕ
-                # регистрируются в pending_speeches mcp_server. Плюс для
-                # последнего чанка батча tts_node намеренно republish'ит
-                # finished с batch_complete=true (issue #980, контракт
-                # "subscribers are designed to be idempotent"). Оба случая —
-                # штатное поведение общего топика: это не warning, а debug.
-                # Реальная рассинхронизация (entry есть, batch None) ниже
-                # по-прежнему остаётся warning.
-                self.log_debug(
-                    f"ℹ️ Speech {speech_id[:8]}... не найден в pending_speeches "
-                    "(чужой TTS от dialogue_node или повторный finished с "
-                    "batch_complete — игнорируем)"
-                )
-                return
-            batch_id = entry["batch_id"]
-            batch = self.pending_batches.get(batch_id)
-            if batch is None:
-                # Баланс между двумя dict'ами мог разъехаться только при
-                # баге — отмечаем как warning, но не падаем.
-                self.log_warning(
-                    f"⚠️ Batch {batch_id[:8] if batch_id else 'None'}... не "
-                    f"найден при finished для speech {speech_id[:8]}..."
-                )
-                return
-            # Если чанк упал — батч помечаем как unsuccessful, чтобы
-            # dialogue_node мог почистить ресурсы даже при сбое.
-            if not finished_success:
-                batch["success"] = False
-            batch["remaining"] -= 1
-            remaining = batch["remaining"]
-            total = batch["total"]
-            # Берём snapshot до pop(), чтобы не лезть в удалённый dict.
-            batch_success = batch["success"]
-            batch_started_at = batch["started_at_ms"]
-            is_complete = (remaining == 0)
-            if is_complete:
-                # Удаляем батч, чтобы не рос в памяти.
-                self.pending_batches.pop(batch_id, None)
-
-        if is_complete:
-            self._publish_batch_complete(
-                batch_id=batch_id,
-                chunks_total=total,
-                success=batch_success,
-                started_at_ms=batch_started_at,
-            )
-        else:
-            self.log_info(
-                f"⏳ Batch {batch_id[:8]}... "
-                f"{total - remaining}/{total} чанков завершено"
-            )
 
     def _log_chunk_outcome(
         self,
@@ -267,10 +161,8 @@ class SpeakTextTool(MCPTool):
         * успех → INFO;
         * провал/прерывание известного чанка → **WARNING** (это то, что
           диагностика ищет grep'ом);
-        * чужой ``speech_id`` (общий топик ``/voice/tts/finished``, issue
-          #776) → DEBUG, чтобы не засорять лог и не ломать
-          ``test_finished_for_unknown_speech_does_not_publish_batch_complete``,
-          который требует пустой ``warning_messages``.
+        * чужой ``speech_id`` (общий топик, issue #776) → DEBUG, чтобы не
+          засорять лог.
 
         Текст НЕ обрезается: смысл фикса — видеть его целиком.
         """
@@ -408,7 +300,6 @@ class SpeakTextTool(MCPTool):
 
     def execute(self, text: str, animation: str = "neutral", voice: str | None = None) -> MCPToolResult:
         """Произнести текст."""
-        import json
         import re
         import uuid
 
@@ -419,9 +310,8 @@ class SpeakTextTool(MCPTool):
         # Резолв голоса (issue #1219, Q6/Q7): разовый voice= из speak_text
         # важнее установленного set_voice; если оба отсутствуют — дефолт
         # провайдера. Неизвестный голос → дефолт + voice_used в результате.
-        voice_used, voice_fell_back = self._voice_store.resolve(
-            provider, requested=voice
-        )
+        # Без voice= - пусто: реплика звучит текущим голосом tts_node (его выбор хранит владелец голоса, PR-4 ч.3).
+        voice_used, voice_fell_back = resolve_speak_voice(provider, voice)
         if voice and voice_fell_back:
             self.log_warning(
                 f"⚠️ Голос '{voice}' недоступен у провайдера '{provider}' — "
@@ -459,8 +349,9 @@ class SpeakTextTool(MCPTool):
         # букв неподдерживаемых письменностей (>10%, см. tts_text_guard) —
         # НЕ произносим: логируем warning с полным текстом и возвращаем
         # честную ошибку, чтобы LLM переписала фразу транслитом.
-        _guard_report = analyze_foreign_scripts(text)
-        if _guard_report is not None and should_skip_foreign_scripts(text):
+        # #3728: решает возможность активного провайдера (MiniMax читает CJK, Yandex/Silero нет).
+        _guard_report = analyze_foreign_scripts(text, provider)
+        if _guard_report is not None and should_skip_foreign_scripts(text, provider=provider):
             self.log_warning(
                 "🚫 [issue 1709] Чанк не произнесён: слишком много символов "
                 f"неподдерживаемых письменностей — "
@@ -534,106 +425,30 @@ class SpeakTextTool(MCPTool):
         if len(chunks) > 1:
             self.log_info(f"✂️ Текст разбит на {len(chunks)} чанков (длина: {len(text)} символов)")
 
-        # Issue #980: один speak_text(...) может породить несколько чанков
-        # TTS-запросов. dialogue_node должен знать, когда ВСЕ чанки этого
-        # вызова закончили проигрываться, чтобы корректно отложить cleanup
-        # музыки. Генерируем batch_id заранее, до публикации первого чанка,
-        # и регистрируем каждый speech_id с этим batch_id в pending_speeches.
-        import time as _time
-        batch_id = str(uuid.uuid4())
+        from rob_box_core.utterance import Utterance
+
         chunks_total = len(chunks)
-
-        # Issue #992: announce the batch to dialogue_node BEFORE the first
-        # TTS request lands. dialogue_node needs to know how many
-        # ``batch_id``s are in flight so it can hold the music_cleanup
-        # until the last ``batch_complete`` (the LLM may fire several
-        # ``speak_text`` calls in one cycle, each with its own batch).
-        try:
-            from std_msgs.msg import String as _RegMsg
-            _reg_msg = _RegMsg()
-            _reg_msg.data = json.dumps(
-                {"batch_id": batch_id, "chunks_total": chunks_total},
-                ensure_ascii=False,
-            )
-            self.batch_registered_pub.publish(_reg_msg)
-        except Exception as _exc:  # noqa: BLE001
-            # Prelude is best-effort — without it dialogue_node falls back
-            # to discovering the batch via the first tts_finished, which
-            # is correct for single-speak_text cycles but breaks the
-            # multi-speak_text case. Log loudly so operators notice.
-            self.log_warning(
-                f"⚠️ [issue 992] Не удалось опубликовать "
-                f"/voice/tts/batch_registered: {_exc}"
-            )
-
-        from std_msgs.msg import String
         speech_ids = []
         for i, chunk in enumerate(chunks):
             speech_id = str(uuid.uuid4())
             speech_ids.append(speech_id)
-
-            # Анимацию ставим только для первого чанка (чтобы не мигало)
-            if i == 0 and animation and animation != "idle":
-                try:
-                    from std_msgs.msg import String as StringMsg
-                    anim_msg = StringMsg()
-                    anim_msg.data = animation
-                    self.animation_pub.publish(anim_msg)
-                    self.log_info(f"🎨 Установлена анимация '{animation}'")
-                except Exception as e:
-                    self.log_warning(f"⚠️ Не удалось установить анимацию: {e}")
-
-            # Регистрируем ожидание: каждый speech_id знает свой batch_id
-            # и chunks_total. Это нужно _on_tts_finished(), чтобы понять —
-            # последний это чанк или промежуточный.
+            # Issue #1709 — ПОЛНЫЙ текст и голос чанка для лога его исхода.
             with self.pending_speeches_lock:
-                self.pending_speeches[speech_id] = {
-                    "batch_id": batch_id,
-                    "batch_total": chunks_total,
-                    # Issue #1709 — храним ПОЛНЫЙ текст и голос чанка,
-                    # чтобы _on_tts_finished мог их залогировать даже для
-                    # failed/interrupted чанка (раньше был только speech_id).
-                    "text": chunk,
-                    "voice": voice_used,
-                }
-                # Батч создаётся один раз — при обработке первого чанка.
-                if batch_id not in self.pending_batches:
-                    self.pending_batches[batch_id] = {
-                        "remaining": chunks_total,
-                        "total": chunks_total,
-                        "started_at_ms": _time.monotonic() * 1000.0,
-                        "success": True,
-                    }
-
-            tts_request = {
-                "ssml": _make_ssml(chunk),
-                "speech_id": speech_id,
-                # batch_id публикуется в payload запроса — даже если tts_node
-                # его игнорирует, мы не зависим от него: batch_id хранится
-                # и в pending_speeches, и восстанавливается без участия
-                # tts_node. Поле оставлено для трейсинга в логах tts_node.
-                "batch_id": batch_id,
-                # Issue #1219 — LLM voice selection: фактический голос после
-                # валидации. tts_node резолвит его ещё раз по РЕАЛЬНОМУ
-                # провайдеру (фолбек-цепочка) и логирует voice_used.
-                "voice": voice_used,
-            }
-            if self._current_dialogue_id:
-                tts_request["dialogue_id"] = self._current_dialogue_id
-            msg = String()
-            msg.data = json.dumps(tts_request, ensure_ascii=False)
-            self.tts_pub.publish(msg)
+                self.pending_speeches[speech_id] = {"text": chunk, "voice": voice_used}
+            # Issue #1219 — фактический голос после валидации; tts_node резолвит
+            # его ещё раз по РЕАЛЬНОМУ провайдеру и шлёт voice_changed.
+            speech_client.say(
+                self.node,
+                Utterance(text=chunk, voice=voice_used, speech_id=speech_id),
+                agent="personality",
+                ssml=_make_ssml(chunk),
+            )
             self.log_info(
-                f"📤 TTS чанк {i+1}/{len(chunks)}: "
-                f"speech_id={speech_id[:8]} batch_id={batch_id[:8]} "
-                f"dialogue_id={self._current_dialogue_id[:8] if self._current_dialogue_id else 'None'} "
+                f"📤 TTS чанк {i+1}/{len(chunks)}: speech_id={speech_id[:8]} "
                 f"voice={voice_used} text={chunk!r}"
             )
 
-        self.log_info(
-            f"✅ TTS запрос(ов) принято: {chunks_total} "
-            f"(асинхронный режим, batch_id: {batch_id[:8]})"
-        )
+        self.log_info(f"✅ TTS запрос(ов) принято: {chunks_total} (асинхронный режим)")
         return MCPToolResult(
             success=True,
             data={
@@ -641,7 +456,6 @@ class SpeakTextTool(MCPTool):
                 "animation": animation,
                 "chunks": chunks_total,
                 "speech_ids": speech_ids,
-                "batch_id": batch_id,
                 "async": True,
                 # Issue #1219 — LLM voice selection (Q6): фактический голос
                 # после валидации + провайдер, для которого он выбран.
@@ -655,47 +469,6 @@ class SpeakTextTool(MCPTool):
             ),
         )
 
-    def _publish_batch_complete(
-        self,
-        *,
-        batch_id: str,
-        chunks_total: int,
-        success: bool,
-        started_at_ms: float,
-    ) -> None:
-        """Публикует /voice/tts/batch_complete (issue #980).
-
-        Вызывается ровно один раз для каждого батча — когда последний
-        ``tts/finished`` прилетел. ``batch_duration_ms`` — настенное
-        время от первого чанка до последнего; полезно для диагностики
-        раскладки рэпов (issue #949 уже использует duration_sec).
-        """
-        import json as _json
-        import time as _time
-        now_ms = _time.monotonic() * 1000.0
-        batch_duration_ms = max(0.0, now_ms - started_at_ms)
-        payload = {
-            "batch_id": batch_id,
-            "chunks_total": chunks_total,
-            "batch_duration_ms": int(batch_duration_ms),
-            "success": bool(success),
-        }
-        try:
-            from std_msgs.msg import String as _StringMsg
-            msg = _StringMsg()
-            msg.data = _json.dumps(payload, ensure_ascii=False)
-            self.batch_complete_pub.publish(msg)
-            self.log_info(
-                f"🎬 TTS batch_complete: batch_id={batch_id[:8]}... "
-                f"chunks_total={chunks_total} "
-                f"batch_duration_ms={int(batch_duration_ms)} "
-                f"success={success}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Cleanup музыки зависит от batch_complete — не теряем ошибку.
-            self.log_error(
-                f"❌ Не удалось опубликовать /voice/tts/batch_complete: {exc}"
-            )
 
 class ListenForResponseTool(MCPTool):
     """Инструмент для ожидания ответа пользователя."""
@@ -838,6 +611,10 @@ class EstimateTtsDurationTool(MCPTool):
         )
 
 
+#: Топик исходов ``speaker_id_node`` (биометрия фразы и ack регистрации), ``SpeakerResult``.
+SPEAKER_RESULT_TOPIC = "/voice/speaker/result"
+
+
 class RegisterSpeakerTool(MCPTool):
     """Issue #1077 + #1101 — регистрация голоса спикера через LLM tool.
 
@@ -845,9 +622,17 @@ class RegisterSpeakerTool(MCPTool):
     - Пользователь сказал «меня зовут X» (LLM извлёк имя из контекста)
     - LLM хочет спросить имя незнакомца (name=null → publish ask_event)
 
-    Tool публикует в /voice/speaker/register JSON {"name": "..."}
-    speaker_id_node получает d-vector текущей фразы и сохраняет embedding.
+    Tool публикует в /voice/speaker/register JSON {"name": "...", "utterance_id": "..."}
+    speaker_id_node получает d-vector этой фразы и сохраняет embedding.
+
+    #3793 (ADR-0148, ADR-0150 §5.2): исход — не публикация, а ``SpeakerResult``
+    владельца (registered / register_error{too_short|…}) с тем же
+    ``utterance_id``; нет события к дедлайну класса ``action.identity`` —
+    ``timeout``. Фразу исхода строит код (``phrases``), модель её не придумывает.
     """
+
+    #: SpeakerResult registered|register_error от speaker_id_node по utterance_id
+    event_source = SPEAKER_RESULT_TOPIC
 
     def __init__(self, node):
         super().__init__(node)
@@ -862,6 +647,9 @@ class RegisterSpeakerTool(MCPTool):
         self._speaker_rename_pub = node.create_publisher(
             String, "/voice/speaker/rename", 10
         )
+        # #3793: подписка сразу — исход регистрации по представлению
+        # (её шлёт dialogue_node до вызова LLM) приходит раньше вызова тула.
+        register_events(node)
 
     @property
     def name(self) -> str:
@@ -880,8 +668,8 @@ class RegisterSpeakerTool(MCPTool):
             "«зовут-это», «зовут меня» — это шумовые токены из фразы, а не "
             "реальные имена. Извлеки имя из контекста вручную (например, для "
             "фразы «робот меня зовут Денис говорю» — передай name=\"Денис\"). "
-            "Имя сохранится в БД вместе с эмбеддингом голоса, после этого "
-            "пользователя можно будет узнавать по голосу."
+            "Ответ тула — исход: голос записан, не записан (с причиной) или "
+            "ответа не дождались."
         )
 
     @property
@@ -1026,14 +814,6 @@ class RegisterSpeakerTool(MCPTool):
                     'говорю» — передай name="Денис") и вызови тул ещё раз.'
                 ),
             )
-        # Issue #2925 — регистрация согласуется с тем, что человек сказал
-        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
-        gated = self._gate_result(
-            name_clean, self_intro_name, intro_registered, known_speaker_name
-        )
-        if gated is not None:
-            return gated
-        # publish в /voice/speaker/register — speaker_id_node привяжет d-vector
         # Issue #2829 (ADR-0131 PR-2) — utterance_id ТЕКУЩЕГО хода:
         # speaker_id_node регистрирует ИМЕННО фразу, в которой человек
         # представился, а не "следующую фразу кого угодно" (см.
@@ -1047,25 +827,36 @@ class RegisterSpeakerTool(MCPTool):
         # dialogue_node.
         if utterance_id is None:
             utterance_id = getattr(self.node, "_current_turn_utterance_id", None)
-        msg = String()
-        msg.data = json.dumps(
-            {"name": name_clean, "utterance_id": utterance_id},
-            ensure_ascii=False,
+        # Issue #2925 — регистрация согласуется с тем, что человек сказал
+        # о себе в ЭТОЙ реплике (см. register_speaker_gate).
+        gated = self._gate_result(
+            name_clean, self_intro_name, intro_registered, known_speaker_name,
+            utterance_id,
         )
-        self._speaker_register_pub.publish(msg)
-        self.log_info(f"[register_speaker] published name={name_clean!r}")
-        return MCPToolResult(
-            success=True,
-            data={"registered_name": name_clean, "speaker_id": "pending"},
-            # Issue #2863 — честно: тул только ОТПРАВЛЯЕТ запрос, исход решает
-            # speaker_id_node позже (эталон / «уже знаю» / отказ). Прежнее
-            # «Голос зарегистрирован» заявляло результат, которого тул не знает.
-            message=(
-                f"Запрос на запоминание голоса как '{name_clean}' отправлен. "
-                "Если этот человек уже узнан по голосу под этим именем — "
-                "новый эталон не создаётся, повторно вызывать не нужно."
-            ),
-        )
+        if gated is not None:
+            return gated
+        if not utterance_id:
+            # speaker_id_node без фразы откажет всегда (no_utterance_context, #2829) — исход известен без запроса.
+            return self._outcome(name_clean, "rejected", "no_utterance_context", sent_by_robot=False)
+
+        def publish(request_id: str) -> None:
+            msg = String()
+            msg.data = json.dumps({"name": name_clean, "utterance_id": request_id}, ensure_ascii=False)
+            self._speaker_register_pub.publish(msg)
+            self.log_info(f"[register_speaker] published name={name_clean!r} utterance_id={request_id}")
+
+        # #3793: исход — SpeakerResult владельца с тем же utterance_id, а не публикация.
+        _, event = register_events(self.node).ask(publish, register_deadline_s(), request_id=utterance_id)
+        return self._outcome(name_clean, *register_outcome(event), sent_by_robot=False)
+
+    def _outcome(self, name: str, status: str, reason: str | None, sent_by_robot: bool) -> MCPToolResult:
+        """Результат тула по исходу регистрации (#3793): фраза — код (``phrases``), при отказе она же в ``error``
+        (модель при неуспехе видит error)."""
+        phrase = register_phrase(status, reason, name)
+        self.log_info(f"[register_speaker] '{name}': {status} {reason or ''} (sent_by_robot={sent_by_robot})".rstrip())
+        data = {"name": name, "status": status, "reason": reason, "sent_by_robot": sent_by_robot}
+        return MCPToolResult(success=status == "done", data=data, message=phrase,
+                             error=None if status == "done" else phrase)
 
     def _publish_rename(self, old_name: str | None, name: str | None) -> None:
         """Issue #1101 — поправка имени («я не X, я Y»): rename идёт на
@@ -1096,12 +887,15 @@ class RegisterSpeakerTool(MCPTool):
         self_intro_name: str | None,
         intro_registered: bool | None,
         known_speaker_name: str | None,
+        utterance_id: str | None = None,
     ) -> MCPToolResult | None:
         """Issue #2925 — ответ тула без публикации, или ``None`` (публикуем).
 
-        В ответе нет слова ``pending``: по нему ``SchedulerToolExecutor``
-        (issue #2913) решает, что ack регистрации придёт, и держит речь
-        хода. Здесь запрос не уходит — ждать нечего.
+        #3793: регистрацию по представлению уже отправил робот — второй
+        запрос не уходит, но ответ — её исход (``SpeakerResult`` с тем же
+        ``utterance_id``, пришедший до вызова тула или в пределах дедлайна),
+        а не «уже отправлена» (живой прогон 21.10: too_short, а LLM сказала
+        «Записал вас»).
         """
         verdict = register_speaker_gate(
             name, self_intro_name, intro_registered, known_speaker_name
@@ -1112,18 +906,12 @@ class RegisterSpeakerTool(MCPTool):
             self.log_info(
                 f"[register_speaker] #2925: регистрация по представлению "
                 f"'{self_intro_name}' уже отправлена роботом в этом ходе — "
-                f"повторный запрос name={name!r} не публикую"
+                f"повторный запрос name={name!r} не публикую, жду её исход"
             )
-            return MCPToolResult(
-                success=True,
-                data={"registered_name": self_intro_name,
-                      "sent_by_robot": True},
-                message=(
-                    f"Голос уже отправлен на запоминание как "
-                    f"'{self_intro_name}' — человек сам представился. "
-                    "Повторно вызывать не нужно."
-                ),
-            )
+            if not utterance_id:
+                return self._outcome(self_intro_name, "timeout", None, sent_by_robot=True)
+            _, event = register_events(self.node).ask(None, register_deadline_s(), request_id=utterance_id)
+            return self._outcome(self_intro_name, *register_outcome(event), sent_by_robot=True)
         self.log_warning(
             f"[register_speaker] #2925 ОТКАЗ: name={name!r} — в реплике "
             f"человек не представлялся, а голос уверенно узнан как "
@@ -1181,6 +969,46 @@ def register_speaker_gate(
     return "not_self_introduction"
 
 
+def register_events(node) -> OwnerEvents:
+    """Ожидания ack регистрации на ноду (#3793): ``SpeakerResult`` registered/register_error по ``utterance_id``;
+    последние исходы помнятся — регистрацию по представлению шлёт ``dialogue_node`` раньше вызова тула."""
+    from rob_box_dialog_msgs.msg import SpeakerResult
+
+    acks = (SpeakerResult.EVENT_REGISTERED, SpeakerResult.EVENT_REGISTER_ERROR)
+    return owner_events(node, "register_speaker", lambda: OwnerEvents(
+        node, SpeakerResult, SPEAKER_RESULT_TOPIC, key_of=lambda m: m.utterance_id,
+        accept=lambda m: m.event in acks and bool(m.utterance_id), remember=32))
+
+
+def register_deadline_s() -> float:
+    """Дедлайн исхода регистрации — дедлайн класса ``register_speaker`` из ``knowledge`` (одна таблица, §5.1)."""
+    from rob_box_dialog import knowledge as kn
+
+    return float(kn.ACTION_CLASSES[kn.TOOL_CLASSES["register_speaker"]].timeout_s)
+
+
+def register_outcome(event) -> tuple:
+    """``SpeakerResult`` → ``(status, reason)``: registered — ``done`` («уже знаю» — причина ``already_known``),
+    register_error — ``rejected`` с кодом ошибки владельца, нет события — ``timeout``."""
+    if event is None:
+        return "timeout", None
+    if event.event == event.EVENT_REGISTER_ERROR:
+        return "rejected", event.error or "error"
+    return "done", ("already_known" if event.already_known else None)
+
+
+def register_phrase(status: str, reason, name: str):
+    """Фраза исхода — каталог ``phrases/ru.yaml`` тем же ключом, что строит ``respond`` (код, не LLM)."""
+    from rob_box_dialog import knowledge as kn
+    from rob_box_dialog import phrases
+    from rob_box_dialog.respond import ActionResult, phrase_key
+
+    result = ActionResult(turn_id="", epoch=0, agent="personality", tool="register_speaker",
+                          cls=kn.TOOL_CLASSES["register_speaker"], status=status, reason=reason)
+    key = phrase_key(result)
+    return None if key is None else phrases.text(key, name=name)
+
+
 # Список поддерживаемых TTS-провайдеров для переключения (issue #1765).
 # Совпадает с ключами tts_voice_registry.PROVIDER_VOICES и
 # tts_node._default_provider_chain. Используется как enum в ToolSpec и
@@ -1220,9 +1048,9 @@ class SetVoiceTool(MCPTool):
 
     LLM вызывает этот tool когда пользователь просит «говори голосом X»
     или когда хочет сменить голос на диалог (например, рассказывать
-    сказку от разных лиц). Голос хранится in-memory (VoiceStateStore) с
-    привязкой к speaker_id; следующий ``speak_text`` без voice= говорит
-    установленным голосом.
+    сказку от разных лиц). Голос хранит и применяет tts_node (``VoiceOwner``,
+    переживает рестарт); тул просит и ждёт ``SpeechEvent voice_changed``,
+    следующий ``speak_text`` без voice= говорит установленным голосом.
 
     Опциональный параметр ``provider`` (issue #1765): если задан, бот
     СНАЧАЛА переключает активного TTS-провайдера (yandex ↔ minimax ↔
@@ -1244,25 +1072,11 @@ class SetVoiceTool(MCPTool):
        "provider_switched": true, ...}``
     """
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
-        super().__init__(node)
-        self._voice_store = voice_store or VoiceStateStore()
-        # Публикуем изменение, чтобы dialogue_node мог обновить LLM-контекст
-        # ([TTS] current_voice) — payload JSON {"voice": str}.
-        from std_msgs.msg import String
+    #: SpeechEvent voice_changed владельца голоса (voice_request)
+    event_source = "/voice/speech/event"
 
-        self._voice_state_pub = node.create_publisher(
-            String, "/voice/tts/current_voice", 10
-        )
-        # Issue #1765 — переключение TTS-провайдера. tts_node подписан на
-        # этот topic и пересобирает provider_chain (новый провайдер
-        # первым), чистит provider_dead_until для этого провайдера и
-        # публикует provider_state обратно (dialogue_node/mcp_server
-        # увидят нового провайдера в LLM-контексте).
-        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
-        self._set_provider_pub = shared_publisher(
-            node, String, "/voice/tts/set_provider", 10
-        )
+    def __init__(self, node):
+        super().__init__(node)
 
     @property
     def name(self) -> str:
@@ -1271,16 +1085,14 @@ class SetVoiceTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Установить голос TTS на диалог (персистентно, пока не сменят). "
-            "Используй когда: (1) пользователь просит «говори голосом X» — "
-            "передай voice=X; (2) хочешь рассказывать историю от разных лиц "
-            "(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться "
-            "к дефолтному голосу — передай voice=<default_voice>; (4) юзер "
+            "Сменить голос робота НАСОВСЕМ (персистентно, пока не сменят) — только когда человек сам "
+            "просит сменить голос: (1) «говори голосом X» — передай voice=X; (2) «верни обычный голос» "
+            "— передай voice=default (провайдера и голос подставит код); (3) юзер "
             "просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex "
             "anton») — передай voice=... И provider='yandex'. "
             "Доступные голоса перечислены в контексте: [TTS] voices=... "
-            "После set_voice следующий speak_text без voice= говорит "
-            "установленным голосом."
+            "Голоса персонажей сказки — параметр voice у speak_text (только эта реплика), не set_voice. "
+            "Фразу о смене голоса робот говорит сам."
         )
 
     @property
@@ -1333,6 +1145,13 @@ class SetVoiceTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
+    def _already_default(self, provider: str, voice: str) -> bool:
+        """Робот уже говорит голосом по умолчанию (фактическое состояние ``tts_node``, не догадка)."""
+        node = self.node
+        if getattr(node, "actual_tts_provider", None) != provider:
+            return False
+        return (getattr(node, "actual_tts_voice", None) or default_voice_for(provider)) == voice
+
     def execute(self, voice: str, provider: str = "") -> MCPToolResult:
         """Установить голос (опционально — переключить провайдера).
 
@@ -1342,8 +1161,6 @@ class SetVoiceTool(MCPTool):
                 silero). Если задано и отличается от активного — сначала
                 переключает провайдера, потом валидирует voice.
         """
-        import json as _json
-
         voice_clean = (voice or "").strip()
         if not voice_clean:
             return MCPToolResult(
@@ -1356,6 +1173,18 @@ class SetVoiceTool(MCPTool):
         # Валидируем параметр ДО валидации voice: если юзер указал
         # кривое имя провайдера, не сбрасываем его в активного молча —
         # возвращаем provider_unknown, LLM поправит.
+        if voice_clean.lower() == VOICE_DEFAULT_ARG:
+            # «Обычный голос» - голос робота по умолчанию (#3803), а не дефолт ТЕКУЩЕГО провайдера: решает код.
+            provider, voice_clean = robot_default_voice()
+            if self._already_default(provider, voice_clean):
+                phrase = phrases.text("voice.already_default")
+                self.log_info(f"[set_voice] voice={voice_clean!r} provider={provider} status=already_default")
+                _say_outcome(self.node, phrase)
+                return MCPToolResult(
+                    success=True,
+                    data={"status": "already_default", "voice_applied": voice_clean, "provider": provider},
+                    message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
+                )
         requested_provider, prov_err = _validate_provider(provider)
         if prov_err == "provider_empty":
             # Пустая строка — пользовательский «не указывать»; не ошибка.
@@ -1385,91 +1214,29 @@ class SetVoiceTool(MCPTool):
             requested_provider and requested_provider != active_provider
         )
 
-        # Валидация голоса. Делаем ПОСЛЕ вычисления target_provider, чтобы
-        # для cross-provider случая (set_voice(voice="artem", provider="yandex")
-        # при активном minimax) валидировали против yandex-списка, а не
-        # против minimax (где «artem» отсутствует → voice_unavailable).
-        known = voices_for(target_provider)
-        if known and voice_clean not in known:
-            return MCPToolResult(
-                success=False,
-                data={
-                    "error": "voice_unavailable",
-                    "requested": voice_clean,
-                    "provider": target_provider,
-                    "available": known,
-                    "default_voice": default_voice_for(target_provider),
-                },
-                message=(
-                    f"Голос '{voice_clean}' недоступен у провайдера "
-                    f"'{target_provider}'. Доступные: {', '.join(known)}. "
-                    f"Дефолтный: {default_voice_for(target_provider)}. "
-                    f"Выбери голос из списка."
-                ),
-            )
-
-        # Если провайдер переключался — публикуем set_provider ДО
-        # сохранения голоса. tts_node подписан, пересоберёт chain и
-        # переопубликует provider_state → mcp_server/dialogue_node
-        # обновят [TTS] в LLM-контексте до следующего speak_text.
-        if provider_switched:
-            try:
-                from std_msgs.msg import String as _String
-
-                msg = _String()
-                msg.data = _json.dumps(
-                    {
-                        "provider": requested_provider,
-                        "voice": voice_clean,
-                        "source": "set_voice",
-                    },
-                    ensure_ascii=False,
-                )
-                self._set_provider_pub.publish(msg)
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                self.log_warning(
-                    f"⚠️ [set_voice] publish set_provider failed: {exc}"
-                )
-
-        self._voice_store.set_voice(voice_clean)
+        # Голос хранит и применяет tts_node (VoiceOwner): просим и ждём SpeechEvent voice_changed (PR-4 ч.3). Фразу об
+        # исходе («Говорю голосом X» / «Голос X недоступен, остаюсь на Y») строит код по событию, а не LLM.
+        outcome = voice_requests(self.node).request(voice_clean, requested_provider or "")
+        phrase = outcome_phrase(outcome)
+        # Формат строки читают e2e-скрипты (voice_changed: голос != default): голос здесь - ПРИМЕНЁННЫЙ.
+        shown = outcome.provider or target_provider
         self.log_info(
-            f"[set_voice] voice={voice_clean!r} provider={target_provider} "
-            f"default={default_voice_for(target_provider)} "
-            f"switched={provider_switched}"
+            f"[set_voice] voice={(outcome.applied or voice_clean)!r} provider={shown} "
+            f"default={default_voice_for(shown)} switched={provider_switched} status={outcome.status}"
         )
-        # Публикуем смену голоса — dialogue_node обновит [TTS] current_voice.
-        try:
-            from std_msgs.msg import String as _String
-
-            msg = _String()
-            msg.data = _json.dumps(
-                {"voice": voice_clean, "provider": target_provider},
-                ensure_ascii=False,
-            )
-            self._voice_state_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            self.log_warning(f"⚠️ [set_voice] publish voice_state failed: {exc}")
-
+        _say_outcome(self.node, phrase)
         return MCPToolResult(
-            success=True,
+            success=outcome.status == "applied",
             data={
-                "status": "ok",
-                "voice_set": voice_clean,
-                "default_voice": default_voice_for(target_provider),
-                "provider": target_provider,
+                "status": outcome.status,
+                "voice_requested": voice_clean,
+                "voice_applied": outcome.applied,
+                "provider": outcome.provider or target_provider,
                 "previous_provider": active_provider if provider_switched else None,
                 "provider_switched": provider_switched,
+                "available": voices_for(outcome.provider or target_provider),
             },
-            message=(
-                f"Голос установлен: '{voice_clean}' на провайдере "
-                f"'{target_provider}' (дефолтный: "
-                f"{default_voice_for(target_provider)})"
-                + (
-                    f"; переключились с '{active_provider}'"
-                    if provider_switched
-                    else ""
-                )
-            ),
+            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
         )
 
 
@@ -1488,15 +1255,11 @@ class SetTtsProviderTool(MCPTool):
     → ``{"status": "ok", "provider": "yandex", "default_voice": "anton"}``
     """
 
-    def __init__(self, node, voice_store: VoiceStateStore | None = None):
-        super().__init__(node)
-        self._voice_store = voice_store or VoiceStateStore()
-        from std_msgs.msg import String
+    #: SpeechEvent voice_changed владельца голоса (voice_request)
+    event_source = "/voice/speech/event"
 
-        # Issue #3108: SetVoiceTool и SetTtsProviderTool делят один publisher.
-        self._set_provider_pub = shared_publisher(
-            node, String, "/voice/tts/set_provider", 10
-        )
+    def __init__(self, node):
+        super().__init__(node)
 
     @property
     def name(self) -> str:
@@ -1544,8 +1307,6 @@ class SetTtsProviderTool(MCPTool):
         return False
 
     def execute(self, provider: str) -> MCPToolResult:
-        import json as _json
-
         target_provider, prov_err = _validate_provider(provider)
         if prov_err == "provider_empty":
             return MCPToolResult(
@@ -1592,52 +1353,33 @@ class SetTtsProviderTool(MCPTool):
                 ),
             )
 
-        default_voice = default_voice_for(target_provider)
-        # Публикуем set_provider — tts_node пересоберёт chain,
-        # почистит dead_until для нового провайдера и переопубликует
-        # provider_state.
-        try:
-            from std_msgs.msg import String as _String
-
-            msg = _String()
-            msg.data = _json.dumps(
-                {
-                    "provider": target_provider,
-                    "voice": default_voice,
-                    "source": "set_tts_provider",
-                },
-                ensure_ascii=False,
-            )
-            self._set_provider_pub.publish(msg)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            self.log_warning(
-                f"⚠️ [set_tts_provider] publish set_provider failed: {exc}"
-            )
-
-        # Запоминаем дефолтный голос нового провайдера в voice_store,
-        # чтобы следующий speak_text без voice= говорил им (а не
-        # старым голосом от старого провайдера).
-        self._voice_store.set_voice(default_voice)
-
+        # Провайдера переключает владелец голоса (tts_node); пустой голос = дефолт нового провайдера. Исход - событие.
+        outcome = voice_requests(self.node).request("", target_provider)
+        phrase = outcome_phrase(outcome)
         self.log_info(
-            f"[set_tts_provider] provider={target_provider!r} "
-            f"default_voice={default_voice!r} previous={active_provider!r}"
+            f"[set_tts_provider] provider={target_provider!r} -> {outcome.status} "
+            f"applied={outcome.applied!r} previous={active_provider!r}"
         )
-
+        _say_outcome(self.node, phrase)
         return MCPToolResult(
-            success=True,
+            success=outcome.status == "applied",
             data={
-                "status": "ok",
-                "provider": target_provider,
-                "default_voice": default_voice,
+                "status": outcome.status,
+                "provider": outcome.provider or target_provider,
+                "voice_applied": outcome.applied,
                 "previous_provider": active_provider,
                 "provider_switched": True,
             },
-            message=(
-                f"Провайдер переключён: '{active_provider}' → "
-                f"'{target_provider}'. Дефолтный голос: '{default_voice}'."
-            ),
+            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
         )
+
+
+def _say_outcome(node, phrase: str) -> None:
+    """Озвучить фразу исхода смены голоса (новым голосом); сбой озвучки не меняет исход."""
+    try:
+        node.registry.execute("speak_text", text=phrase)
+    except Exception:  # noqa: BLE001 - озвучка best-effort, результат тула уже честный
+        pass
 
 
 class ListTtsVoicesTool(MCPTool):
@@ -1651,7 +1393,9 @@ class ListTtsVoicesTool(MCPTool):
 
     Контракт:
     ``{"tool": "list_tts_voices"}``
-    → ``{"voices": [...], "provider": "<active>", "default_voice": "<...>"}``
+    → ``{"providers": [{provider, voices_count, active, samples}], "provider": "<active>", "default_voice": ...}``
+    ``{"tool": "list_tts_voices", "provider": "yandex"}``
+    → ``{"voices": [...], "provider": "yandex", "default_voice": "<...>"}``
     """
 
     @property
@@ -1661,9 +1405,9 @@ class ListTtsVoicesTool(MCPTool):
     @property
     def description(self) -> str:
         return (
-            "Список доступных голосов TTS. Без аргументов — голоса "
-            "АКТИВНОГО провайдера (см. [TTS] provider: в контексте). "
-            "С аргументом provider — голоса конкретного провайдера "
+            "Голоса TTS. Без аргументов — обзор: провайдеры, сколько голосов у "
+            "каждого и по паре характерных (отвечай кратко, не перечисляй всё). "
+            "С аргументом provider — полный список голосов конкретного провайдера "
             "(«какие голоса есть на Яндексе?» → provider='yandex'). "
             "Используй когда юзер спрашивает «какие у тебя голоса?» / "
             "«а на yandex какие?»."
@@ -1715,12 +1459,26 @@ class ListTtsVoicesTool(MCPTool):
                     f"Допустимые: {', '.join(SUPPORTED_TTS_PROVIDERS)}."
                 ),
             )
+        explicit = target_provider is not None
         if target_provider is None:
             # Пустая строка → активный провайдер.
             target_provider = _active_tts_provider(self.node)
         assert target_provider is not None  # noqa: S101 — invariant
-        voices = voices_for(target_provider)
         default_voice = default_voice_for(target_provider)
+        if not explicit:
+            # Обзор (#3883): провайдеры → сколько голосов → по одному характерному. Полный список ids не отдаём:
+            # из него модель читала речь на 340 символов; нужный провайдер — повторный вызов с provider.
+            overview = providers_overview(target_provider)
+            return MCPToolResult(
+                success=True,
+                data={"provider": target_provider, "default_voice": default_voice, "providers": overview},
+                message=(
+                    "Голоса по провайдерам: "
+                    + "; ".join(f"{o['provider']} — {o['voices_count']}" for o in overview)
+                    + f". Сейчас говорю через '{target_provider}'. Ответь кратко: числа и пару имён из samples."
+                ),
+            )
+        voices = voices_for(target_provider)
         return MCPToolResult(
             success=True,
             data={

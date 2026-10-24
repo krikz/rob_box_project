@@ -90,7 +90,8 @@ class TestStopMusicTool:
     def test_tool_name_and_narrow_schema(self, music_node):
         tool = StopMusicTool(music_node)
         assert tool.name == "stop_music"
-        assert tool.parameters == []  # имени паттерна больше нет: паттернов LLM не пишет (#3614)
+        # имени паттерна больше нет: паттернов LLM не пишет (#3614); boundary — outro бита выступления (PR-7c)
+        assert [(p.name, p.required, p.enum) for p in tool.parameters] == [("boundary", False, ["now", "bar"])]
 
     def test_stops_the_playing_track_through_the_owner(self, music_node):
         owner = music_node._player_owner

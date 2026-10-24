@@ -140,34 +140,30 @@ def test_isolation_anchor_does_not_depend_on_scenario_filename() -> None:
 
 
 def test_mcp_server_e2e_mode_activation_is_fatal_not_a_warning() -> None:
-    """Issue #2781 — отказ включить e2e_mode у mcp_server обязан быть
-    ФАТАЛОМ (``E2E_FATAL`` + ``exit``), как и у speaker_id_node
-    (``activate_e2e_speaker_db``), а не предупреждением: лучше не прогнать
-    акт, чем засорить боевую долгосрочную память."""
-    body = _extract_function("activate_e2e_memory_db")
+    """Issue #2781 — mcp_server, не применивший режим e2e, обязан ВАЛИТЬ
+    прогон (``E2E_FATAL`` + ``exit 2``), а не предупреждать: лучше не прогнать
+    акт, чем засорить боевую долгосрочную память. С #3904 mcp_server —
+    последователь владельца, и проверка — по его ``e2e_mode_applied``."""
+    body = _extract_function("_e2e_followers_or_fatal")
 
-    assert "E2E_FATAL" in body, (
-        "activate_e2e_memory_db обязан фейлить прогон фатально при отказе "
-        "e2e_mode — предупреждение позволило бы сценарию тихо писать факты "
-        "в боевую /data/voice_memory.db"
+    assert "E2E_FATAL" in body and "e2e_mode_applied" in body, (
+        "отказ последователя (mcp_server) применить режим обязан быть "
+        "фатальным — иначе сценарий тихо пишет факты в боевую /data/voice_memory.db"
     )
-    assert re.search(r"exit\s+2", body), (
-        "activate_e2e_memory_db обязан завершать скрипт (exit 2) при отказе, "
-        "по образцу activate_e2e_speaker_db"
-    )
+    assert re.search(r"exit\s+2", body)
+    for fn in ("enter_e2e_mode", "adopt_e2e_mode"):
+        assert "_e2e_followers_or_fatal True" in _extract_function(fn), fn
 
 
-def test_deactivate_memory_db_is_wired_into_exit_trap() -> None:
-    """Возврат mcp_server на боевую БД обязан происходить при ЛЮБОМ
-    завершении прогона (PASS/FAIL/обрыв) — тот же trap EXIT, что уже
-    гарантирует это для speaker_id_node."""
+def test_mcp_server_has_no_own_e2e_switch_in_harness() -> None:
+    """#3904 — один владелец: харнесс не ставит ``/mcp_server e2e_mode`` и
+    не держит отдельных activate/deactivate для памяти."""
     src = E2E_SCRIPT.read_text(encoding="utf-8")
+    assert "/mcp_server e2e_mode " not in src
+    assert "activate_e2e_memory_db" not in src
     trap_lines = [line for line in src.splitlines() if line.strip().startswith("trap ")]
-    assert any(
-        "deactivate_e2e_speaker_db" in line and "deactivate_e2e_memory_db" in line
-        for line in trap_lines
-    ), (
-        "deactivate_e2e_memory_db должен быть в том же `trap ... EXIT`, что "
-        "и deactivate_e2e_speaker_db — иначе робот может остаться на "
-        "e2e-базе памяти после прерванного прогона"
+    assert any("leave_e2e_mode" in line for line in trap_lines), (
+        "выход из режима e2e (или его передача наследующему акту) обязан "
+        "стоять в trap EXIT — иначе робот может остаться на e2e-базе после "
+        "прерванного прогона"
     )

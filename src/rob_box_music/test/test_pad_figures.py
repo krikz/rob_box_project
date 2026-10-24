@@ -45,12 +45,15 @@ def _set_tracks(case):
 
 
 @pytest.fixture(scope="module")
-def sets():
-    """{тема: [треки 30 сетов по 3 трека, с историей сета]}; сеты считаются параллельно (#3504, #3539: по сету, а не
-    по теме — 5 тем на 4 ядра давали два неполных круга)."""
-    cases = [(theme, seed) for theme in THEMES for seed in SEEDS]
+def sets(club_theme_sets):
+    """{тема: [треки 30 сетов по 3 трека, с историей сета]}. Четыре темы из таблицы тембров — общий сессионный каталог
+    (``conftest.club_theme_sets``, #3940); тема вне таблицы строится здесь: её семья тут своя. Сеты считаются
+    параллельно (#3504, #3539: по сету, а не по теме)."""
+    own = [theme for theme in THEMES if theme not in club_theme_sets]
+    cases = [(theme, seed) for theme in own for seed in SEEDS]
     built = pmap(_set_tracks, cases, chunksize=5)
-    return {theme: [t for (th, _s), tracks in zip(cases, built) if th == theme for t in tracks] for theme in THEMES}
+    mine = {theme: [t for (th, _s), tracks in zip(cases, built) if th == theme for t in tracks] for theme in own}
+    return {theme: club_theme_sets[theme] if theme in club_theme_sets else mine[theme] for theme in THEMES}
 
 
 def _figure(track) -> str:

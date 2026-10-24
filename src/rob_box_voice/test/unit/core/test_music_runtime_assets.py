@@ -20,7 +20,8 @@ FOXDOT_INIT_PATH = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "foxdot_
 START_VOICE_ASSISTANT_PATH = REPO_ROOT / "docker" / "sound" / "scripts" / "voice_assistant" / "start_voice_assistant.sh"
 CUSTOM_SYNTHDEF_DIR = REPO_ROOT / "docker" / "sound" / "voice_assistant" / "custom_synthdefs"
 MASTER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "master_prompt_compact.txt"
-COMPOSER_PROMPT_PATH = REPO_ROOT / "src" / "rob_box_voice" / "prompts" / "skills" / "composer.txt"
+#: Музыкальные правила — в мастер-промпте (§5 MUSIC); фрагментов скиллов нет с ADR-0150 PR-6.
+COMPOSER_PROMPT_PATH = MASTER_PROMPT_PATH
 
 
 def test_foxdot_init_uses_distinct_placeholder_guard_and_no_pathname_exists() -> None:
@@ -148,7 +149,7 @@ def test_composer_prompt_names_no_unregistered_tools() -> None:
 
     for phantom in _PHANTOM_TOOL_NAMES:
         assert phantom not in content, (
-            f"composer.txt orders '{phantom}', which is not a "
+            f"master prompt orders '{phantom}', which is not a "
             f"registered MCP tool (see _tool_catalog_data.py). The LLM will "
             f"get a tool-not-found error and fall back to prose or to "
             f"inventing music."

@@ -136,7 +136,7 @@ Pre-flight check через OpaqueFunction запускается ДО ноды 
 **Подписывается:**
 - `/perception/vision_context` (std_msgs/String) - семантический контекст
 - `/rosout` (rcl_interfaces/Log) - **ВСЕ логи системы** для мониторинга
-- `/voice/stt/result`, `/voice/dialogue/response` - диалог с пользователем
+- `/voice/stt/utterance`, `/voice/dialogue/response` - диалог с пользователем
 - `/rtabmap/localization_pose`, `/odom` - навигация
 - `/device/snapshot` - сенсоры ESP32
 
@@ -178,8 +178,8 @@ ros2 run rob_box_perception health_monitor
 - Статус системы (HEALTHY/DEGRADED/CRITICAL)
 - Обновляется каждые 5 секунд
 - `/apriltag/detections` (apriltag_msgs/AprilTagDetectionArray) - AprilTag маркеры
-- `/voice/stt/result` (std_msgs/String) - что сказал пользователь
-- `/voice/dialogue/response` (std_msgs/String) - что ответил робот
+- `/voice/stt/utterance` (rob_box_dialog_msgs/Utterance) - что сказал пользователь
+- `/voice/speech/request` (rob_box_dialog_msgs/SpeechRequest, агент `personality`) - что говорит робот (dialog v2); `/voice/dialogue/response` (std_msgs/String) - то же от dialogue_node v1, до PR-15
 - `/rtabmap/localization_pose` (geometry_msgs/PoseWithCovarianceStamped) - позиция на карте
 - `/odom` (nav_msgs/Odometry) - одометрия
 - `/device/snapshot` (robot_sensor_hub_msg/DeviceSnapshot) - сенсоры ESP32
@@ -224,8 +224,9 @@ ros2 launch rob_box_perception internal_dialogue.launch.py
 |-------|-----|----------|----------|
 | `/perception/vision_context` | String | vision_stub_node | Семантический контекст с камер |
 | `/apriltag/detections` | AprilTagDetectionArray | apriltag_node | AprilTag маркеры |
-| `/voice/stt/result` | String | stt_node | Распознанная речь |
-| `/voice/dialogue/response` | String | dialogue_node | Ответы робота |
+| `/voice/stt/utterance` | Utterance | stt_node | Распознанная речь |
+| `/voice/speech/request` | SpeechRequest | dialog_node (v2) | Ответы робота (агент `personality`) |
+| `/voice/dialogue/response` | String | dialogue_node (v1) | Ответы робота, до PR-15 |
 | `/rtabmap/localization_pose` | PoseWithCovarianceStamped | rtabmap | Позиция на карте |
 | `/odom` | Odometry | ros2_control | Одометрия |
 | `/rosout` | Log | ROS2 Core | **Логи всех нод (ERROR/WARN)** |

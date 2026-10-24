@@ -10,7 +10,8 @@
 Штатный путь лечения — восстановление намерения внутри цикла тулов
 (``rob_box_harness.core.tool_loop.markup_recovery``). Этот guard —
 последний рубеж: если разметка всё-таки доехала до выхода в TTS
-(например, имя тула не опознано), она не звучит, а уходит в ретрай.
+(например, имя тула не опознано), её не озвучивает tts_node (ретрай LLM в
+dialogue_node удалён в ADR-0150 PR-7 ч.7d-2, #3698).
 
 Корпус строк ЗДЕСЬ И в ``rob_box_harness/test/test_issue_2760_tool_call_markup.py``
 намеренно одинаковый: регекс продублирован через границу пакетов (harness
@@ -23,7 +24,6 @@ from __future__ import annotations
 import pytest
 
 from rob_box_voice.core.dialogue_guards import (
-    build_tool_call_markup_retry_prompt,
     is_tool_call_markup,
 )
 
@@ -76,12 +76,3 @@ class TestDetector:
     )
     def test_speech_is_not_markup(self, text) -> None:
         assert is_tool_call_markup(text) is False
-
-
-class TestRetryPrompt:
-    def test_names_the_mistake_and_the_remedy(self) -> None:
-        p = build_tool_call_markup_retry_prompt("запомни про меня: болею за Спартак")
-        assert "CRITICAL" in p
-        assert "tool-calls" in p
-        # Промпт обязан цитировать запрос юзера, иначе ретрай теряет задачу.
-        assert "Спартак" in p

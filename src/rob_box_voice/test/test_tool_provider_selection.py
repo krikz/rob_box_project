@@ -71,7 +71,7 @@ sys.modules.setdefault("rclpy.callback_groups", _mock_cb)
 _mock_qos = types.ModuleType("rclpy.qos")
 _mock_qos.HistoryPolicy = types.SimpleNamespace(KEEP_LAST="KEEP_LAST")
 _mock_qos.ReliabilityPolicy = types.SimpleNamespace(RELIABLE="RELIABLE")
-# Issue #1734 — dialogue_node.__init__ создаёт latched-топик barge_in_policy
+# dialogue_node.__init__ создаёт latched-подписки
 # (QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL)); без атрибута
 # import dialogue_node падает ImportError.
 _mock_qos.DurabilityPolicy = types.SimpleNamespace(

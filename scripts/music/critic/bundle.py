@@ -198,7 +198,7 @@ def md_for(style: dict, mp3_name: str, entries: list[dict], facts: dict) -> str:
         "",
         f"«Робот, включи {style['ru']} сет на тему {style['theme']}»",
         "",
-        f"- инъекция в `/voice/stt/result` (реплика целиком, как от человека): {inject}",
+        f"- инъекция в `/voice/stt/utterance` (реплика целиком, как от человека): {inject}",
         f"  - «{style['ru']}» подтверждён в логе робота строкой `🎤 STT:` — "
         f"{'да' if facts.get('seen_in_log') else 'НЕТ (см. _raw/' + style['key'] + '.full.log)'}",
         f"- старт записи `jack_rec` (jack:out_1/2 суперколлайдера): {facts['record_start']}",
@@ -289,7 +289,7 @@ def index_md(rows: list[dict], run: Path, index: dict[str, dict]) -> str:
         "",
         "- Слух — за критиком: цифры late-бандлов говорят про нагрузку стенда, а не про музыкальность.",
         "- Во время прогона робот слышал постороннюю речь (чужое видео/аудиокнига) — на музыку это не влияет "
-        "(фразы инжектятся прямо в `/voice/stt/result`), но нагрузка стенда была выше обычной.",
+        "(фразы инжектятся прямо в `/voice/stt/utterance`), но нагрузка стенда была выше обычной.",
         "",
         "## Файлы",
         "",

@@ -99,7 +99,7 @@ def test_darya_on_non_intro_phrase_with_confident_boris_not_registered():
 
     assert registered == [], "третий профиль «Дарья» заводиться не должен"
     assert result.get("success") is False, result
-    # Нет слова pending — SchedulerToolExecutor (#2913) не ждёт ack.
+    # Нет слова pending — гейт речи хода (#2913) не ждёт ack.
     assert "pending" not in json.dumps(result, ensure_ascii=False)
     # Отказ — в лог mcp_server, не озвучка «не расслышал».
     assert any("#2925 ОТКАЗ" in line for line in server.node.get_logger().lines)
@@ -122,7 +122,8 @@ def test_unknown_voice_registers_as_before():
     """Незнакомый голос — регистрация идёт (в т.ч. ответ одним именем)."""
     result, registered, _server = _register(_ctx(), {"name": "Дарья"})
     assert registered == [{"name": "Дарья", "utterance_id": UTT}]
-    assert "pending" in json.dumps(result, ensure_ascii=False)
+    # #3793: ответ — исход владельца (registered), а не «отправлено»
+    assert result.get("success") is True, result
 
 
 def test_real_intro_with_other_name_still_registers_adr0127():
@@ -152,13 +153,43 @@ def test_no_turn_context_keeps_old_behaviour():
 # ── Случай 1: робот уже отправил регистрацию по представлению ─────────────
 
 
+def _register_after_intro(outcome: Optional[Dict[str, Any]]):
+    """Робот сам отправил регистрацию по представлению (#2925); ``outcome`` — её ack, пришедший до вызова LLM
+    (как ждёт ``settle_identity``), ``None`` — ack не было."""
+    from rob_box_dialog_msgs.msg import SpeakerResult
+
+    bus = _h._Bus()
+    _h._MCPServer(bus)
+    if outcome is not None:
+        ack = SpeakerResult()
+        ack.utterance_id, ack.name = UTT, "Борис"
+        for key, value in outcome.items():
+            setattr(ack, key, getattr(SpeakerResult, value) if key == "event" else value)
+        for callback in bus.subscribers.get("/voice/speaker/result", []):
+            callback(ack)
+    adapter = _h._production_adapter(_DialogueNode2925(bus, _ctx(intro="Борис", sent=True)))
+    result = adapter.execute_tool_call_sync("register_speaker", {"name": "Борис"}, timeout=1.0)
+    return result, bus.published.get("/voice/speaker/register", [])
+
+
 def test_intro_already_sent_by_robot_is_not_duplicated():
-    result, registered, _server = _register(
-        _ctx(intro="Борис", sent=True), {"name": "Борис"}
-    )
+    result, registered = _register_after_intro({"event": "EVENT_REGISTERED"})
     assert registered == []
     assert result.get("success") is True, result
-    assert "pending" not in json.dumps(result, ensure_ascii=False)
+    assert result["data"]["sent_by_robot"] is True
+
+
+def test_intro_rejected_too_short_is_not_reported_as_saved():
+    """#3793 (живой прогон 21.10): too_short по «я Глеб» — тул не говорит «уже отправлен», а отдаёт отказ."""
+    result, registered = _register_after_intro({"event": "EVENT_REGISTER_ERROR", "error": "too_short"})
+    assert registered == []
+    assert result.get("success") is False, result
+    assert result["data"]["reason"] == "too_short"
+
+
+def test_intro_without_ack_is_timeout_not_success():
+    result, registered = _register_after_intro(None)
+    assert registered == [] and result["data"]["status"] == "timeout", result
 
 
 def test_hidden_args_not_in_llm_schema():

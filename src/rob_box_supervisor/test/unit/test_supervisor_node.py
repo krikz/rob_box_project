@@ -59,8 +59,9 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         finally:
             node.destroy_node()
 
-    def test_llm_providers_defaults_minimax_deepseek(self) -> None:
-        """Issue #2111: дефолт ``llm_providers`` = ``minimax,deepseek``.
+    def test_llm_providers_default_is_the_command_mode_default(self) -> None:
+        """Issue #2111: дефолт ``llm_providers`` — два провайдера; PR-13b #3708 — тот же, что у режима команд
+        Личности (``knowledge.COMMAND_PROVIDERS_DEFAULT``, DeepSeek первым).
 
         Исторически был ``"deepseek"`` — и supervisor поднимался с одним
         провайдером без API-ключа, agent не отвечал. После фикса дефолт
@@ -76,9 +77,10 @@ class TestAvatarSupervisorCreation(unittest.TestCase):
         node = AvatarSupervisor()
         try:
             self.assertTrue(node.has_parameter("llm_providers"))
-            self.assertEqual(
-                node.get_parameter("llm_providers").value, "minimax,deepseek"
-            )
+            from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT
+
+            self.assertEqual(node.get_parameter("llm_providers").value, COMMAND_PROVIDERS_DEFAULT)
+            self.assertEqual(COMMAND_PROVIDERS_DEFAULT.split(",")[0], "deepseek")
         finally:
             node.destroy_node()
 
@@ -114,7 +116,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue_via_pubs(self) -> None:
-        """Нет publisher-ов на /voice/ (кроме /voice/tts/request, шаг 4б, и
+        """Нет publisher-ов на /voice/ (кроме /voice/speech/request — грип/say, ADR-0150 PR-3, и
         /voice/tts/set_voice, voice-vr 21 / ADR-0080 §2.7) +
         в /dialogue/ — только ``/dialogue/control`` (ADR-0066 §6.7,
         pause/resume для личности). Голос-параметры — через топик
@@ -124,7 +126,7 @@ class TestAvatarSupervisorDoesNotMutateExternalState(unittest.TestCase):
         voice_pubs = [t for t in self.node._publishers if t.startswith("/voice/")]
         self.assertEqual(
             sorted(voice_pubs),
-            sorted(["/voice/tts/request", "/voice/tts/set_voice"]),
+            sorted(["/voice/speech/request", "/voice/tts/set_voice"]),
         )
         dialogue_pubs = [
             t for t in self.node._publishers if t.startswith("/dialogue/")
@@ -181,6 +183,25 @@ class TestAvatarSupervisorVoiceMode(unittest.TestCase):
         """ADR-0066 §6.7 — супервизор публикует в ``/dialogue/control``."""
         self.assertIn(DIALOGUE_CONTROL_TOPIC, self.node._publishers)
         self.assertEqual(DIALOGUE_CONTROL_TOPIC, "/dialogue/control")
+
+    def test_v2_has_no_dialogue_control_topic_but_a_service_client(self) -> None:
+        """ADR-0150 PR-10 (#3704): при ``dialog_engine=v2`` ``/dialogue/control`` не создаётся, пауза — сервис
+        ``/dialog/control``; нет сервиса в сети — отказ ``False``, а не тихий успех."""
+        from unittest.mock import patch
+
+        from rob_box_core import dialog_engine
+        from rob_box_supervisor.supervisor_node import DIALOG_CONTROL_SERVICE, _DialogControlClient
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = AvatarSupervisor()
+        try:
+            self.assertNotIn(DIALOGUE_CONTROL_TOPIC, node._publishers)
+            self.assertIsInstance(node._dialogue_control_pub, _DialogControlClient)
+            self.assertEqual(node._dialogue_control_pub._client.srv_name, DIALOG_CONTROL_SERVICE)
+            node._dialogue_control_pub._client.wait_for_service.return_value = False
+            self.assertFalse(node._publish_dialogue_control(DIALOGUE_CONTROL_PAUSE, "test"))
+        finally:
+            node.destroy_node()
 
     def test_legacy_mode_mapping(self) -> None:
         """``LEGACY_VOICE_MODE_TO_ACTION`` — маппинг ``respeaker→resume``,

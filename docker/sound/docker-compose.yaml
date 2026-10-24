@@ -1,5 +1,5 @@
 # Sound Pi (10.1.1.12 eth0 / .22 wlan0) — третий узел робота (ADR-0159).
-# Голосовой стек (voice-assistant, supercollider, voice-action-server) переехал
+# Голосовой стек (voice-assistant, supercollider) переехал
 # сюда с Vision Pi: на этом узле ReSpeaker (микрофон + колонки + LED-кольцо) и
 # TTL-USB конвертер сенсорного хаба. Всё остальное общается с ним топиками
 # через Zenoh и compose-зависимостями с другими узлами не связано.
@@ -280,7 +280,7 @@ services:
     #   - stt_node (Vosk model ~200-500 MB)
     #   - sound_node (sclang + scsynth + FoxDot pipeline ~300-500 MB)
     #   - tts_node (PyTorch + Silero v5 fallback model ~150-200 MB)
-    #   - dialogue_node + mcp_server + animation_player + led + command
+    #   - dialogue_node + mcp_server + led + command
     # 2 GiB was hitting OOM kill (#929) when Silero v5 tried to lazy-load
     # after Yandex gRPC fallback.  Investigated 2026-07-30 in t_42726db6:
     # heap_snapshot_repro confirmed no leak in _synthesize_and_play itself
@@ -323,34 +323,6 @@ services:
       interval: 15s
       timeout: 5s
       start_period: 20s
-      retries: 3
-    labels:
-      logging: "promtail"
-
-  # Phase 4: isolated action/PASTE control plane. The current voice node can
-  # migrate incrementally; this sidecar has an independent health lifecycle.
-  voice-action-server:
-    image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:voice-assistant-${ROS_DISTRO:-humble}-${VOICE_ASSISTANT_TAG:-${IMAGE_TAG}}
-    container_name: voice-action-server
-    pull_policy: if_not_present
-    network_mode: host
-    # mem_limit ADR-0111 (issue #2621): 25 MB RSS замер, даём 128 MB
-    mem_limit: 128m
-    memswap_limit: 128m
-    environment:
-      - PYTHONUNBUFFERED=1
-      - ACTION_SERVER_HOST=127.0.0.1
-      - ACTION_SERVER_PORT=${ACTION_SERVER_PORT:-8765}
-    command: ["/bin/bash", "-lc", "python3 -m rob_box_voice.action_server.http_server"]
-    depends_on:
-      voice-assistant:
-        condition: service_started
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:${ACTION_SERVER_PORT:-8765}/healthz\")'"]
-      interval: 10s
-      timeout: 3s
-      start_period: 10s
       retries: 3
     labels:
       logging: "promtail"
@@ -499,7 +471,7 @@ services:
   #
   # Адрес для шлема сменился с 10.1.1.11 на 10.1.1.12 (eth0 Sound Pi): DNS-запись
   # quest.rob_box.local на роутере надо перевести на новый адрес. Порты host-сети
-  # (443, 8443, 8766) на Sound Pi свободны (ss -ltn, 20.10); 8765 держит voice-action-server.
+  # (443, 8443, 8766) на Sound Pi свободны (ss -ltn, 20.10); 8765 тоже свободен (сайдкар action-сервера удалён, ADR-0150 PR-7c ч.4в).
   # Видео не сырое: quest подписывается на *compressed* топики камер (JPEG/PNG, по запросу
   # шлема, см. rob_box_quest/streams/ros_demand.py) — с Vision Pi это идёт по Zenoh-линку Sound↔Vision.
   #
@@ -538,11 +510,8 @@ services:
       # Сертификат из тома quest-certs НЕ пересоздаётся, если файл уже есть.
       - QUEST_IP=${QUEST_IP:-10.1.1.12}
       - CERT_DAYS=${QUEST_CERT_DAYS:-365}
-      # WS_PORT=8766 чтобы не конфликтовать с voice-action-server,
-      # который по дефолту биндит 127.0.0.1:8765. В host-network оба
-      # порта = 8765 → второй стартующий получает OSError EADDRINUSE
-      # и aiohttp-сабтред падает → Caddy получает 404 на /quest (Phase 1.6).
-      # Меняем только rob-box-quest на 8766, voice-action-server остаётся на 8765.
+      # WS_PORT=8766: исторически 8765 занимал сайдкар action-сервера (EADDRINUSE →
+      # Caddy 404 на /quest, Phase 1.6); сайдкар удалён (ADR-0150 PR-7c ч.4в), порт quest не меняем.
       - WS_PORT=${QUEST_WS_PORT:-8766}
       # Фиксированный PIN для dev-сессий. Если задан — используется вместо
       # случайного из generate_pin(). Чтобы перебить: export QUEST_PIN=XXXXXX

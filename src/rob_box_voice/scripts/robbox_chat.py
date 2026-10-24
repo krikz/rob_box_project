@@ -141,7 +141,7 @@ class RobboxChat:
         """Загружает системный промпт."""
         prompt_path = os.path.join(
             os.path.dirname(__file__),
-            '../prompts/master_prompt.txt'
+            '../prompts/master_prompt_compact.txt'
         )
 
         try:

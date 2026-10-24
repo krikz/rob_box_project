@@ -29,6 +29,7 @@ from rob_box_music.knowledge import GEN_MODELS
 
 from .provider import (
     DEFAULT_MODEL,
+    GEN_HEALTH,
     GenJob,
     GenStatus,
     GenTicket,
@@ -186,12 +187,18 @@ class KieSunoProvider:
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = self._headers({"Content-Type": "application/json"} if payload is not None else None)
         for attempt in (0, 1):
-            status, raw = self._transport(method, url, headers, body, self._timeout)
+            try:
+                status, raw = self._transport(method, url, headers, body, self._timeout)
+            except GenUnavailable as exc:
+                GEN_HEALTH.note_failure(exc.reason)  # сеть упала: provider_down -> health=network
+                raise
             data = self._parse(raw)
             code = self._code(data, status)
             if code == 200:
+                GEN_HEALTH.note_ok()
                 return data
             reason = reason_for_code(code)
+            GEN_HEALTH.note_failure(reason)
             if reason == "rate_limited" and attempt == 0:
                 self._sleep(RATE_LIMIT_RETRY_S)  # 429: один повтор через 10 с
                 continue

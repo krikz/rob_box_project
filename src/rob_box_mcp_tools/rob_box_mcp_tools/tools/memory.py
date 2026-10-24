@@ -14,6 +14,7 @@ instead of crashing.
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
@@ -45,6 +46,25 @@ def _current_encounter_speaker_id(node: object) -> Optional[str]:
     return encounter.who.id
 
 
+#: Подсказка при пустом ответе на многословный запрос (#3890). Тул ничего не
+#: подгоняет под запрос: честно говорит «пусто» и называет общее правило.
+EMPTY_MULTIWORD_HINT = (
+    "Ничего не найдено по запросу из нескольких слов. Ищи 1–2 ключевыми "
+    "словами в начальной форме, без перечислений и описаний; пусто — "
+    "попробуй другое одно слово."
+)
+#: Слово короче этого — не «значимое» (предлоги, частицы), общее правило длины.
+_MIN_SIGNIFICANT_WORD_LEN = 3
+
+
+def _empty_result_hint(query: str, found: int) -> Optional[str]:
+    """Hint для пустой выдачи при запросе из >= 2 значимых слов, иначе None."""
+    if found:
+        return None
+    words = [w for w in re.findall(r"\w+", query) if len(w) >= _MIN_SIGNIFICANT_WORD_LEN]
+    return EMPTY_MULTIWORD_HINT if len(words) >= 2 else None
+
+
 class MemorySaveTool(MCPTool):
     """
     Сохранить факт о пользователе в долгосрочную память.
@@ -52,6 +72,9 @@ class MemorySaveTool(MCPTool):
     Используй, когда узнаёшь что-то важное о пользователе:
     предпочтения, привычки, имена близких, настройки.
     """
+
+    #: saved{fact_id} - ответ VoiceMemory.save_fact
+    event_source = "inproc:voice_memory"
 
     @property
     def name(self) -> str:
@@ -123,12 +146,15 @@ class MemorySaveTool(MCPTool):
 
         try:
             fact_id = memory.save_fact(fact, category=category, speaker_id=speaker_id)
+            if not fact_id:  # saved{fact_id} без id - не запись: «Запомнил» по нему не говорится (ADR-0148)
+                return MCPToolResult(success=False, data=None, message="Память не вернула id записи.")
             self.log_info(
                 f"[memory_save] Saved fact #{fact_id} speaker={speaker_id or 'global'}: {fact[:60]}..."
             )
             return MCPToolResult(
                 success=True,
-                data={"fact_id": fact_id, "fact": fact, "category": category, "speaker_id": speaker_id},
+                data={"event": "saved", "fact_id": fact_id, "fact": fact, "category": category,
+                      "speaker_id": speaker_id},
                 message=f"Факт сохранён (id={fact_id}).",
             )
         except Exception as e:
@@ -167,7 +193,10 @@ class MemorySearchTool(MCPTool):
             MCPToolParameter(
                 name="query",
                 type="string",
-                description="Поисковый запрос на русском или английском.",
+                description=(
+                    "Поисковый запрос на русском или английском: 1–2 ключевых "
+                    "слова в начальной форме, без перечислений и описаний."
+                ),
                 required=True,
             ),
             MCPToolParameter(
@@ -240,17 +269,21 @@ class MemorySearchTool(MCPTool):
                     entry["category"] = r.get("category")
                 formatted.append(entry)
 
+            data = {
+                "results": formatted,
+                "total": len(formatted),
+                "query": query,
+                "limit": limit,
+                "speaker_id": speaker_id,
+                "has_more": len(formatted) == limit,
+                "next_offset": limit if len(formatted) == limit else None,
+            }
+            hint = _empty_result_hint(query, len(formatted))
+            if hint:
+                data["hint"] = hint
             return MCPToolResult(
                 success=True,
-                data={
-                    "results": formatted,
-                    "total": len(formatted),
-                    "query": query,
-                    "limit": limit,
-                    "speaker_id": speaker_id,
-                    "has_more": len(formatted) == limit,
-                    "next_offset": limit if len(formatted) == limit else None,
-                },
+                data=data,
                 message=f"Найдено {len(formatted)} результатов.",
             )
         except Exception as e:

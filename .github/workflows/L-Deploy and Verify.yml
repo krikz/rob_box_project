@@ -563,7 +563,7 @@ jobs:
              exit \$rc"
 
       # ==================== SOUND PI DEPLOYMENT (ADR-0159) ====================
-      # Третий узел: voice-assistant, supercollider, voice-action-server,
+      # Третий узел: voice-assistant, supercollider,
       # avatar-supervisor, zenoh-router-sound и (волна 2, PR-7, В9) avatar-arbiter,
       # rob-box-quest, telegram-bot (+ cadvisor/promtail, profile
       # monitoring; sensor-bridge, profile sensors, по умолчанию выключен).
@@ -1074,7 +1074,7 @@ jobs:
           FINDINGS_FILE="$SOUND_FINDINGS_FILE" \
           ENVIRONMENT="${{ inputs.environment }}" \
           SCOPE=sound \
-          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant voice-action-server avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
+          EXPECTED_CONTAINERS="zenoh-router-sound supercollider voice-assistant avatar-supervisor avatar-arbiter rob-box-quest telegram-bot" \
             bash .github/scripts/check_container_status.sh > /tmp/sound_status.json
 
           touch sound_status_summary.txt
@@ -1270,7 +1270,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           # Топики голосового стека видны из контейнера voice-assistant.
-          # /voice/stt/result публикует stt_node — его присутствие говорит, что
+          # /voice/stt/utterance публикует stt_node — его присутствие говорит, что
           # voice-assistant дошёл до Zenoh-графа (ADR-0159: сквозной путь Sound→Main→Vision).
           # Статус topics_healthy НЕ влияет на deploy_status (как на Vision/Main):
           # это finding, не провал деплоя.
@@ -1295,7 +1295,7 @@ jobs:
             echo "Topics found:"
             echo "$TOPICS" | grep -E "^/voice" || echo "  (no /voice topics)"
 
-            EXPECTED_TOPICS="/voice/stt/result"
+            EXPECTED_TOPICS="/voice/stt/utterance"
             MISSING_TOPICS=""
             for topic in $EXPECTED_TOPICS; do
               if ! echo "$TOPICS" | grep -qx "$topic"; then

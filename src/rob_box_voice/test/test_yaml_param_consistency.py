@@ -33,6 +33,7 @@ NODES = {
     "stt_node": ("stt_node.py", ["stt_node.yaml"]),
     "tts_node": ("tts_node.py", ["tts_node.yaml"]),
     "dialogue_node": ("dialogue_node.py", ["dialogue_node.yaml"]),
+    "dialog_node": ("dialog_node.py", ["dialog_node.yaml"]),
     "sound_node": ("sound_node.py", ["sound_node.yaml"]),
     "led_node": ("led_node.py", ["led_node.yaml"]),
     "command_node": ("command_node.py", ["command_node.yaml"]),
@@ -134,17 +135,17 @@ def test_legacy_voice_assistant_yaml_is_standard_format():
         )
 
 
-def test_dialogue_configs_route_to_minimax():
-    """Both dialogue configs (src + docker) keep MiniMax as primary LLM."""
+def test_dialogue_configs_route_to_deepseek_first():
+    """Both dialogue configs (src + docker) keep DeepSeek as primary LLM, MiniMax fallback (#3746)."""
     for path in (SRC_CONFIG / "dialogue_node.yaml",
                  DOCKER_CONFIG / "dialogue_node.yaml"):
         if not path.exists():
             pytest.skip(f"{path} not found")
         cfg = _load_config(path, "dialogue_node")
         llm_providers = cfg["dialogue_node"]["ros__parameters"]["llm_providers"]
-        assert llm_providers.startswith("minimax"), (
-            f"{path.name}: llm_providers={llm_providers!r} — MiniMax должен "
-            f"быть primary (issue #1004)"
+        assert llm_providers.startswith("deepseek"), (
+            f"{path.name}: llm_providers={llm_providers!r} — DeepSeek должен "
+            f"быть primary (решение О5, #3746)"
         )
 
 

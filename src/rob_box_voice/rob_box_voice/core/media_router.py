@@ -1,7 +1,7 @@
 """media_router.py — детерминированный роутер медиакоманд ДО LLM (issue #3134).
 
 Шаг Ш2 из ``docs/design/2026-09-28-music-dj-systemic-analysis.md``: команды
-«громче / тише / на максимум / стоп / ты диджей X» и заказ мелодии по имени
+«стоп / ты диджей X» и заказ мелодии по имени (громкость — Tier-1 ``rob_box_dialog.grammar``, ADR-0150 PR-6)
 («поставь к элизе», issue #3176) исполняет код, модель их
 не видит (как HA Assist «Prefer handling commands locally», OVOS OCP).
 Причина — ADR-0143: MiniMax игнорирует ``tool_choice``, поэтому «заставить
@@ -46,6 +46,7 @@ from rob_box_harness.decision import (
     DecisionProvider,
     DeterministicProvider,
 )
+from rob_box_dialog.phrases import text as _phrase
 from rob_box_music.dj_line import now_playing_text, plain_fold, when_text
 
 from .media_command_grammar import (
@@ -119,6 +120,8 @@ class MediaPlan:
         confirm_started: ADR-0149 PR-6 — ``say_ok`` только после события
             ``started`` с ``track_id`` из ответа первого тула; ``rejected`` →
             ``say_fail``; события нет — :data:`NOT_STARTED_TEXT` (A14).
+        library: #3696 — ``play``/``list`` из библиотеки генераций: исполняет
+            :mod:`.library_command` (поиск/список → трек выбирает код → ``play``).
     """
 
     command: MediaCommand
@@ -128,14 +131,20 @@ class MediaPlan:
     cancel_inflight: bool = False
     play_name: str = ""
     confirm_started: bool = False
+    library: str = ""
+
+    @property
+    def needs_tools(self) -> bool:
+        """Плану нужен MCP-исполнитель: тулы по порядку или поток библиотеки (#3696)."""
+        return bool(self.tool_calls or self.library)
 
 
-VOLUME_FAIL_TEXT = "Не получилось поменять громкость музыки."
-STOP_OK_TEXT = "Выключил музыку."
-STOP_IDLE_TEXT = "Сейчас ничего не играет — на всякий случай всё остановил."
-STOP_FAIL_TEXT = "Не получилось выключить музыку."
+#: Тексты — ``rob_box_dialog/phrases/ru.yaml`` (ключи ``music.*``, ADR-0150 PR-1).
+STOP_OK_TEXT = _phrase("music.stop_ok")
+STOP_IDLE_TEXT = _phrase("music.stop_idle")
+STOP_FAIL_TEXT = _phrase("music.stop_fail")
 #: Тул ответил, а ``started`` так и не пришло: об успехе не говорим (A14).
-NOT_STARTED_TEXT = "Музыка пока не заиграла."
+NOT_STARTED_TEXT = _phrase("music.not_started")
 
 #: Имена тулов движка v2 (``rob_box_mcp_tools.engine.tools_v2``).
 DJ_SET_TOOL = "dj_set"
@@ -143,23 +152,9 @@ REQUEST_MUSIC_TOOL = "request_music"
 #: Просьба сгенерировать (ADR-0158 PR-3): тот же чойсер пути, что у ``request_music``.
 GENERATE_MUSIC_TOOL = "generate_music"
 
-_VOLUME_ACTIONS: Mapping[MediaIntent, Tuple[str, str]] = {
-    MediaIntent.VOLUME_UP: ("louder", "Сделал музыку громче."),
-    MediaIntent.VOLUME_DOWN: ("quieter", "Сделал музыку тише."),
-    MediaIntent.VOLUME_MAX: ("max", "Музыка на максимуме."),
-}
-
-
 # ---------------------------------------------------------------------------
 # Классификатор за портом DecisionProvider
 # ---------------------------------------------------------------------------
-
-
-def _state_track(state: Any) -> Optional[str]:
-    if isinstance(state, Mapping):
-        track = state.get("track_name")
-        return track if isinstance(track, str) and track else None
-    return None
 
 
 def _state_utterance(state: Any) -> str:
@@ -189,9 +184,7 @@ def media_intent_rules(
     state: Any, questions: Mapping[str, Any]
 ) -> Dict[str, ChoiceAnswer]:
     """``RulesFn`` для :class:`DeterministicProvider`: интент по грамматике."""
-    intent = parse_media_command(
-        _state_utterance(state), track_name=_state_track(state)
-    ).intent.value
+    intent = parse_media_command(_state_utterance(state)).intent.value
     return {
         qid: ChoiceAnswer(answer=intent, probabilities={intent: 1.0}, confidence=1.0)
         for qid in questions
@@ -247,9 +240,8 @@ class MediaRouter:
 
     def classify(self, user_input: str, media: MediaState) -> MediaCommand:
         """Интент — от провайдера, аргументы — от грамматики."""
-        track = media.track_name if media.music_playing else None
-        state = {"utterance": user_input, "track_name": track}
-        parsed = parse_media_command(user_input, track_name=track)
+        state = {"utterance": user_input}
+        parsed = parse_media_command(user_input)
         intent = _decide_now(self._provider, state)
         if intent is None or intent == parsed.intent.value:
             return parsed
@@ -276,20 +268,6 @@ class MediaRouter:
 # ---------------------------------------------------------------------------
 # План по состоянию
 # ---------------------------------------------------------------------------
-
-
-def _volume_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
-    if not media.music_playing:
-        # Живой прогон 28.09: «играй громче» в тишине → LLM «Клубный трек
-        # на полную» без единого тула. Честно и без LLM.
-        return MediaPlan(command=command, say_ok=NOTHING_PLAYING_TEXT)
-    action, ok_text = _VOLUME_ACTIONS[command.intent]
-    return MediaPlan(
-        command=command,
-        tool_calls=(MediaToolCall("set_music_volume", {"action": action}),),
-        say_ok=ok_text,
-        say_fail=VOLUME_FAIL_TEXT,
-    )
 
 
 def _stop_plan(command: MediaCommand, media: MediaState) -> MediaPlan:
@@ -444,12 +422,48 @@ def _request_plan(command: MediaCommand, text: str) -> MediaPlan:
     )
 
 
+def _generate_set_plan(command: MediaCommand) -> MediaPlan:
+    """«сочини новые треки / сет под тему X» → сет генерации ``dj_set(start, theme=X)`` (#3775), а не один трек:
+    путь каждого трека (кэш темы → генерация с темой в заказе → синтез) решает ``dj_set``, фразу — его результат."""
+    from rob_box_mcp_tools.engine.theme_grounding import heard_theme  # одна функция темы с dj_set (07.10)
+
+    theme = heard_theme(command.name) or command.name
+    args: Dict[str, Any] = {"action": "start"}
+    if theme:
+        args["theme"] = theme
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall(DJ_SET_TOOL, args),),
+        say_ok=dj_started_text("", theme),
+        say_fail=DJ_FAIL_TEXT,
+        cancel_inflight=True,
+        confirm_started=True,
+    )
+
+
+def _generate_plan(command: MediaCommand) -> MediaPlan:
+    """«спой песенку про X» → ``generate_music(kind, theme)`` кодом (ADR-0150 §9.1, #3696). Песня пишется десятки
+    секунд: фраза — ``source_message`` результата (ожидание/мост/отказ кода), об успехе — по ``started`` моста.
+    Много треков (``kind=set``) — сет генерации (:func:`_generate_set_plan`)."""
+    if command.kind == "set":
+        return _generate_set_plan(command)
+    args: Dict[str, Any] = {"kind": command.kind}
+    if command.name:
+        args["theme"] = command.name
+    return MediaPlan(
+        command=command,
+        tool_calls=(MediaToolCall(GENERATE_MUSIC_TOOL, args),),
+        say_ok=request_ok_text(""),
+        say_fail=REQUEST_FAIL_TEXT,
+        cancel_inflight=True,
+        confirm_started=True,
+    )
+
+
 def plan_media_command(
     command: MediaCommand, media: MediaState, text: str = ""
 ) -> Optional[MediaPlan]:
     """Тулы и фраза для команды при данном состоянии плеера; ``text`` — слова человека."""
-    if command.intent in _VOLUME_ACTIONS:
-        return _volume_plan(command, media)
     if command.intent is MediaIntent.STOP:
         return _stop_plan(command, media)
     if command.intent is MediaIntent.DJ:
@@ -458,6 +472,10 @@ def plan_media_command(
         return _request_plan(command, text)
     if command.intent is MediaIntent.NOW_PLAYING:
         return _now_playing_plan(command, media)
+    if command.intent is MediaIntent.GENERATE:
+        return _generate_plan(command)
+    if command.intent is MediaIntent.LIBRARY:
+        return MediaPlan(command=command, library=command.kind, cancel_inflight=True)
     if command.intent is MediaIntent.PLAY_NAMED and command.name:
         plan = _play_named_plan(command)
         if command.themed:  # #3410: «давай тему X» посреди сета — смена темы, без lookup

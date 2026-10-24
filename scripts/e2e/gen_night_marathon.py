@@ -29,8 +29,12 @@
     ""          → auto: текст с префиксом «Робот»/«Робокс» → wake-gated
     "cycle"     → явный полный цикл, БЕЗ auto-promote в wake-gated
     "wake-gated"→ SKIP (не FAIL), если cold-start wake-gate не пройден
-    "backlog"   → фраза БЕЗ wake-слова, ждём маркер
-                  «🗒️ [backlog] accumulated (no_wake_word)»
+    "backlog"   → фраза БЕЗ wake-слова, ждём маркер dialog v2
+                  «[backlog] accumulated reason=no_wake entries=N»
+                  (v1-форма «accumulated (no_wake_word)» харнесс ещё понимает, сценарии её не ждут)
+
+``silent_ok`` (bool): ход без речи допустим -- Tier-1 «стоп/хватит» гасит речь и молчит
+(``llm_calls=0``). Сам флаг ничего не доказывает: смысл шагу даёт паттерн отмены речи.
 
 ``patterns`` — grep -E по логам ШАГА, AND-семантика (все должны найтись).
 ``acceptance.expected_tool_calls`` / ``must_not_call`` — подстрочный
@@ -89,19 +93,33 @@ BORIS = "ermil"    # представляется
 GRISHA = "zahar"   # не представляется
 VALERA = "filipp"  # не представляется
 
-# --- маркеры логов (SSoT — код робота) --------------------------------------
-# dialogue_node.py:2185  🗒️ [backlog] accumulated (no_wake_word) tag=... speaker='Борис' text=...
-# dialogue_node.py:3217  🗒️ [backlog] flushed to LLM backlog_handled=true entries=N block=...
-BACKLOG_ACC = r"\[backlog\] accumulated \(no_wake_word\)"
-BACKLOG_FLUSH = r"\[backlog\] flushed to LLM backlog_handled=true"
-
-
-def spk(name_stem: str) -> str:
-    """grep -E по атрибуции говорящего в строке accumulated."""
-    return BACKLOG_ACC + r".*speaker='" + name_stem
-
-
-SPK_UNKNOWN = BACKLOG_ACC + r".*speaker='незнакомец'"
+# --- маркеры логов dialog v2 (SSoT — код робота) -----------------------------
+# PR-14 (#3880, эпик #3683): v2 — диалог по умолчанию, v1 удаляется в PR-15. Ожидания сценариев — только по
+# строкам v2; ожидания v1 (``LLM dispatch skipped``, ``[backlog] flushed to LLM``, тул ``speak_text``,
+# ``speaker='…'`` в строке бэклога) не сохранены.
+#
+# dialog_node.py:277   [backlog] accumulated reason=no_wake entries=N     (диктора в строке НЕТ)
+# turn_log.py          📊 [turn] turn_id=… stage=done status=finished latency_ms=… llm_calls=N …
+# speech_owner.py:411  🗣️ SpeechEvent started|finished|cancelled speech_id=… agent=… epoch=… text_len=…
+# dialog_node.py:350   🛑 [interrupt] <policy> via=… '<текст>' epoch=… boundary=… turns_cancelled=…
+BACKLOG_ACC = r"\[backlog\] accumulated reason=no_wake"
+#: Ход дошёл до конца штатно (``stage=done status=finished``).
+TURN_DONE = r"📊 \[turn\] .*stage=done status=finished"
+#: Ход с обращением к LLM (голый вейк без бэклога — рефлекс «слушаю», ``llm_calls=0``).
+TURN_WITH_LLM = TURN_DONE + r" .*llm_calls=[1-9]"
+#: Робот начал говорить: замена v1-ожидания тула ``speak_text`` (в v2 речь — ``command.speech``, тула нет).
+SPEECH_STARTED = r"SpeechEvent started speech_id"
+#: Речь погашена перебиванием: ``SpeechEvent cancelled`` владельца речи или решение ``🛑 [interrupt]`` ноды.
+SPEECH_CANCELLED = r"SpeechEvent cancelled|🛑 \[interrupt\]"
+#: Речь синтезирована провайдером: v2 пишет провайдера в `SpeechEvent synthesized … provider=<имя>`
+#: (замена v1-строки `TTS current_voice →`, которой v2 не пишет).
+SPEECH_PROVIDER = r"SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+#: Сказка разными голосами в v2: `perform` в действиях команды (`🧾 [command] … actions=[…perform…]`, голос сегмента --
+#: `voice_per_segment`) либо смена голоса владельцем речи (`SpeechEvent voice_changed … applied=`).
+#: Тула set_voice тут нет.
+TALE_VOICES = r"🧾 \[command\] .*actions=\[[^]]*perform|SpeechEvent voice_changed .*applied="
+#: Тулы музыки, которыми v2 законно отвечает на «поставь что-нибудь»: ``📤 Отправлен запрос <id>: <tool>``.
+MUSIC_DISPATCH = r"📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
 
 
 #: Issue #3165 — ответ «тишина» на вопрос о состоянии музыки (n110, n313):
@@ -110,6 +128,38 @@ SILENCE_ANSWER = "тишин|тихо|ничего не играет|не игр
 #: Issue #3165 — «Не получилось выполнить» на вопрос, где ничего не
 #: исполнялось, — ложная фраза-отказ (fallback #2949).
 FALSE_FAILURE_PHRASE = "не получилось выполнить"
+#: Ложное утверждение «тихо» на вопрос, когда музыка играет (n503, n603): запрещённая фраза в РЕЧИ робота.
+SILENCE_CLAIM = "тишин|ничего не играет|не играет|не звучит|музыки нет"
+#: Ответ «играет» (n503, n603): глагол состояния или факт трека (стиль, темп, ритм) -- по снимку ``<music_state>``.
+PLAYING_ANSWER = "играет|играю|звучит|звучат|крутится|крутим|идёт|идет|bpm|темп|ритм|бит|рок|трек|мелоди"
+#: «Музыка выключена» -- ответ на n1005 в формулировке вопроса.
+SILENCE_OR_OFF_ANSWER = SILENCE_ANSWER + "|выключен"
+
+# --- маркеры РЕЗУЛЬТАТА действия (#3971, разбор марафона 23.10 §1.A) -----------------------------------------
+# Харнесс судит по тому, что случилось, а не по имени тула и не по наличию речи: «поставлю ритм» без тула и
+# «Не понял» поверх трека из кэша раньше давали PASS (n502, n703, n711, n809). Маркеры -- строки робота
+# (``mcp_server.py``: ``✅ Инструмент <tool> выполнен успешно``; ``player_owner.py``: ``🎵 [music v2] started|stop``).
+# Идут в ``patterns`` шага (grep -E по логам шага, AND) -- второго механизма acceptance нет.
+#: Музыкальный движок v2 реально поставил трек на деку.
+MUSIC_STARTED = r"🎵 \[music v2\] started track_id="
+#: Музыкальный движок v2 реально снял деку.
+MUSIC_STOPPED = r"🎵 \[music v2\] stop track_id="
+#: Ход упал по дедлайну (``stage=timeout``: «долго думаю» поверх живой речи) -- подстрока для ``must_not_call``.
+TURN_TIMEOUT = "stage=timeout"
+#: Тулы живой правки/сета музыки v2: любой из них -- честная попытка поменять играющее (n504-n506, n604, n607).
+MUSIC_EDIT_TOOLS = ("dj_set", "request_music", "generate_music")
+#: Тулы, которыми v2 законно запускает музыку (n310: «поставь что-нибудь»).
+MUSIC_START_TOOLS = ("request_music", "generate_music", "music_library", "dj_set")
+
+
+def tool_done(*tools: str) -> str:
+    """Паттерн «тул выполнен успешно» (``✅ Инструмент <tool> выполнен успешно``); несколько тулов -- любой из них."""
+    name = tools[0] if len(tools) == 1 else "(" + "|".join(tools) + ")"
+    return "✅ Инструмент " + name + " выполнен успешно"
+
+
+#: Перебить через 3 с после начала речи робота (первая реплика ответа на предыдущую фразу).
+BARGE_3S: Dict[str, Any] = {"after": "speech_started", "n": 1, "delay_sec": 3.0}
 
 
 def step(
@@ -127,8 +177,20 @@ def step(
     retry: int = 0,
     why: str = "",
     discovery_tools: Optional[List[str]] = None,
+    barge_in: Optional[Dict[str, Any]] = None,
+    silent_ok: bool = False,
 ) -> Dict[str, Any]:
     s: Dict[str, Any] = {"label": label, "voice": voice, "text": text}
+    # Issue #3857 -- barge_in: НАМЕРЕННОЕ перебивание. Без него харнесс перед шагом ждёт тишины, и
+    # «стой/хватит посреди речи» на деле говорилось в тишину. С ним: ждём якорь в речи предыдущей
+    # фразы, играем поверх через delay_sec. Якорь не наступил -> SKIP barge_in_anchor_missing.
+    if barge_in:
+        s["barge_in"] = barge_in
+    # Issue #3863/#3880 -- silent_ok: ход без речи допустим (Tier-1 «стоп»/«хватит»: llm_calls=0, речи нет, речь
+    # робота гасится). Харнесс (e2e_voice_lib.sh) читает поле ``silent_ok``; конец хода -- ``📊 [turn] stage=done``.
+    # Само по себе поле молчание не проверяет -- смысл шагу даёт паттерн отмены речи.
+    if silent_ok:
+        s["silent_ok"] = True
     s["patterns"] = patterns or []
     acc: Dict[str, Any] = {}
     if expect_tools:
@@ -173,6 +235,40 @@ def step(
         s["retry_acceptance"] = retry
     if why and "acceptance" not in s:
         s["_why"] = why
+    return s
+
+
+def action_step(
+    label: str,
+    text: str,
+    result_of: Optional[List[str]] = None,
+    *,
+    music: str = "",
+    known_red: str = "",
+    patterns: Optional[List[str]] = None,
+    must_not: Optional[List[str]] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Шаг-действие: PASS только при МАРКЕРЕ РЕЗУЛЬТАТА в логе робота (#3971), а не по речи или имени тула.
+
+    ``result_of`` -- тулы, любой из которых обязан закончиться ``✅ Инструмент <tool> выполнен успешно``;
+    ``music`` -- ``"started"`` (``🎵 [music v2] started``: трек встал на деку) или ``"stopped"``
+    (``🎵 [music v2] stop``: дека снята); всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет
+    ``stage=timeout``. ``known_red`` -- причина, по которой шаг сегодня красный по делу (поле ``_known_red``
+    для людей; харнесс его не читает, шаг остаётся красным честно).
+    """
+    pats = list(patterns or [])
+    if result_of:
+        pats.append(tool_done(*result_of))
+    if music == "started":
+        pats.append(MUSIC_STARTED)
+    elif music == "stopped":
+        pats.append(MUSIC_STOPPED)
+    pats.append(TURN_DONE)
+    s = step(label, text, patterns=pats, must_not=list(must_not or []) + [TURN_TIMEOUT], **kwargs)
+    s["_result_markers"] = {"tools": list(result_of or []), "music": music}
+    if known_red:
+        s["_known_red"] = known_red
     return s
 
 
@@ -424,7 +520,7 @@ def act(
 # =============================================================================
 # АКТ 1 — «Смена началась». Робот просыпается, мы снимаем базовые показания.
 # Смысл порядка: сначала СБРОС сессии (чистый лист для всей ночи), потом
-# опрос состояния. Последний шаг — get_music_state на ТИШИНЕ: мы обязаны
+# опрос состояния. Последний шаг — вопрос о ТИШИНЕ (ответ по снимку): мы обязаны
 # доказать, что музыки нет, ПРЕЖДЕ чем в акте 5 её включать и выключать.
 # «Выключи музыку» вслепую здесь запрещено (must_not_call: stop_music).
 # =============================================================================
@@ -434,7 +530,7 @@ act(
     "Смена началась",
     "Ночь, мастерская, Саша заступает на смену. Базовый прогрев: wake-word, "
     "сброс сессии, паспортные тулы (время/батарея/статус), альтернативное "
-    "wake-слово «Робокс» (#1252), command-intent gate (#1279) и — ключевое — "
+    "wake-слово «Робокс» (#1252), короткий статусный вопрос (#1279) и — ключевое — "
     "ЗАМЕР ТИШИНЫ: доказываем, что музыка не играет, до того как её включать.",
     "stable",
     ["get_current_time", "get_battery_level", "get_robot_status"],
@@ -449,7 +545,7 @@ act(
         step(
             "n102_session_reset",
             "Робот, сбрось всё и начни новую сессию, у нас ночная смена с чистого листа.",
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
         ),
         step("n103_time", "Робот, который сейчас час?", expect_tools=["get_current_time"]),
         step(
@@ -471,8 +567,12 @@ act(
         step(
             "n107_command_intent_gate",
             "Робот, где ты",
-            patterns=["LLM dispatch skipped|command intent"],
-            why="#1279: короткий статусный вопрос не должен уходить в LLM.",
+            patterns=[TURN_DONE],
+            why="#1279: короткий статусный вопрос получает ответ, ход не падает. v1-гейт "
+            "(`LLM dispatch skipped|command intent`) в v2 нет: путь решает Tier-1 / команда "
+            "LLM (#3880, run 39869288905 — ответ был, сценарий ждал строку гейта). Проверяем "
+            "исход: ход дошёл до `stage=done status=finished`, а полный цикл (речь) подтверждает "
+            "харнесс. Что короткий вопрос НЕ ходит в LLM, больше не утверждаем -- v2 этого не обещает.",
         ),
         step(
             "n108_perception",
@@ -528,7 +628,7 @@ act(
     [
         step(
             "n201_sasha_intro_long",
-            "Робот, привет, давай знакомиться как следует. Меня зовут Саша, я твой "
+            "Робот! Привет. Давай знакомиться как следует. Меня зовут Саша, я твой "
             "ночной инженер и механик.",
             voice=SASHA,
             expect="cycle",
@@ -687,7 +787,6 @@ act(
             "Робот, я мимо шёл. Имя своё я тебе называть не буду, я старой "
             "закалки и не доверяю железкам.",
             voice=GRISHA,
-            must_not=["register_speaker"],
             must_not_identify_as=["Борис", "Саша"],
             # Issue #2779 AC3 — имена и факты ДРУГИХ дикторов каста не
             # должны ПРОЗВУЧАТЬ незнакомцу. Это must_not_say (проверяется
@@ -704,12 +803,19 @@ act(
             # пересказал его факты).
             must_not_say=["Борис", "Саш", "Спартак", "пицц"],
             why="Сокращено под бюджет VAD 15с (run 35658231116), отказ "
-            "называть имя сохранён. КОНТРОЛЬНАЯ ГРУППА для акта 3. Робот НЕ "
-            "должен регистрировать профиль без имени: register_speaker с "
-            "пустым/мусорным name засоряет /data/speakers.db (см. "
-            "dialogue.py:1021). Issue #2779: незнакомец не должен получить "
-            "имя/факты чужого (по голосу) диктора — ни из бэклога "
-            "непрошедшей wake-гейт реплики, ни из истории/памяти.",
+            "называть имя сохранён. КОНТРОЛЬНАЯ ГРУППА для акта 3. Решение Шифу "
+            "22.10 (#3858, «режим мастерской» для голоса): незнакомый голос получает "
+            "профиль без имени с кличкой -- поэтому запрет `must_not=[register_speaker]` "
+            "снят (run 39830739928: он краснел по замыслу сценария, а не по ошибке "
+            "робота; профиль заводит владелец биометрии, не LLM-диалог). Остаётся то, "
+            "что #3858 оставил в силе (#2779): незнакомец не получает имя/факты "
+            "чужого (по голосу) диктора -- ни из бэклога непрошедшей wake-гейт "
+            "реплики, ни из истории/памяти. Ожидание под #3858: безымянный профиль "
+            "Гриши с кличкой в speakers.e2e.db -- НОРМА (лишней регистрации тут нет); "
+            "путаница с Борисом/Сашей -- нет: `must_not_identify_as` читает вердикт "
+            "`👤 Speaker: 'Имя'`, а speaker_id_node теперь печатает его ПОСЛЕ решения "
+            "об имени и ровно по опубликованному (в полосе сомнения -- `Speaker: "
+            "unknown -- имя не подтверждено`, безымянный профиль -- без кавычек).",
         ),
         step(
             "n211_who_do_you_know",
@@ -753,7 +859,7 @@ act(
             "n212_session_reset_before_search",
             "Робот, новая сессия, забудь этот разговор.",
             voice=SASHA,
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
             why="Issue #2865: без сброса факт n203 лежит в окне чата, и LLM "
             "отвечает на n213 из истории, не зовя memory_search (run "
             "35886659057, n208: tools=[]). Паттерн — строка "
@@ -790,29 +896,32 @@ act(
 )
 
 # =============================================================================
-# АКТ 3 — «Кто там бубнил на фоне». Главный акт по запросу.
+# АКТ 3 — «Кто там бубнил на фоне». Бэклог фоновой речи на dialog v2 (В12′, #3767).
 #
 # Логика цепочки:
-#   1) четыре человека говорят БЕЗ wake-слова (expect=backlog) — двое
-#      зарегистрированы в акте 2, двое нет;
-#   2) Саша обращается с wake-словом и просит робота сказать, КОГО он
-#      узнал, а кого нет → backlog сливается в LLM вместе с атрибуцией
-#      speaker="имя" / speaker="незнакомец" (speech_accumulator.py:107);
-#   3) дальше в бэклог кладётся ЯВНАЯ КОМАНДА без wake-слова, и робот
-#      обязан её выполнить по правилу LRU из _INSTRUCTION;
-#   4) музыку, которую он включил по бэклогу, мы честно выключаем и
-#      возвращаем систему в тишину.
+#   1) четыре человека говорят БЕЗ wake-слова (expect=backlog) -- v2 копит их в
+#      бэклог: `[backlog] accumulated reason=no_wake entries=N`. Имени диктора в
+#      этой строке НЕТ (v1 писал speaker='…'): кто говорил, проверяется только по
+#      ответу робота, не по строке бэклога;
+#   2) голое «Робот.» отдельной фразой ЗАБИРАЕТ свежий бэклог (BACKLOG_PICKUP_S=20 с
+#      и примыкающие куски одного рассказа): текст хода берёт код из бэклога, ход
+#      идёт в LLM (`📊 [turn] … llm_calls>=1`). Пустой бэклог дал бы рефлекс «слушаю»
+#      с llm_calls=0. Забирается ТОЛЬКО то, что моложе 20 с, поэтому «Робот.» идёт
+#      сразу за последней фоновой репликой -- без sleep_before_sec;
+#   3) вопрос «кто говорил на фоне» -- зонд атрибуции по ответу робота;
+#   4) явные команды в фоне, затем голое «Робот.» -- выполняется ПОСЛЕДНЯЯ (LRU);
+#   5) музыку, которую он включил, честно выключаем и возвращаем тишину.
 # =============================================================================
 act(
     3,
     "backlog_diarization",
     "Кто там бубнил на фоне",
     "Четыре голоса говорят БЕЗ wake-слова: Саша и Борис (зарегистрированы в "
-    "акте 2), дядя Гриша и курьер Валера (не представлялись). Робот обязан "
-    "накопить их в SpeechAccumulator с атрибуцией speaker='<имя>' / "
-    "speaker='незнакомец', а по wake-слову — слить бэклог в LLM и назвать, "
-    "кого узнал, а кого нет. Затем — LRU-правило: явная команда, произнесённая "
-    "в фоне без wake-слова, должна быть выполнена по следующему обращению.",
+    "акте 2), дядя Гриша и курьер Валера (не представлялись). dialog v2 копит их "
+    "в бэклог (`[backlog] accumulated reason=no_wake`), а по голому «Робот.» "
+    "(В12′, #3767) забирает свежий бэклог в ход. Затем -- вопрос, кого робот "
+    "узнал, и LRU-правило: явная команда, произнесённая в фоне без wake-слова, "
+    "выполняется по голому «Робот.».",
     "expected-partially-red",
     ["stop_music"],
     [
@@ -829,11 +938,12 @@ act(
             "и знаю эту ноту наизусть.",
             voice=SASHA,
             expect="backlog",
-            patterns=[spk("Саш")],
+            patterns=[BACKLOG_ACC],
             why="Сокращено под бюджет VAD 15с (run 35658231116, ❌ Речь "
-            "отклонена: 17.37с) — старая реплика тонула ещё в audio_node, до "
-            "STT и бэклога. Зарегистрированный голос №1. Падение паттерна = "
-            "биометрия не узнала Сашу, хотя акт 2 его зарегистрировал.",
+            "отклонена: 17.37с) -- старая реплика тонула ещё в audio_node, до "
+            "STT и бэклога. Зарегистрированный голос №1. v2 (#3880): строка бэклога "
+            "не называет диктора, паттерн проверяет только факт накопления; "
+            "диктор проверяется по ответу робота в n306.",
         ),
         step(
             "n303_bg_boris",
@@ -841,8 +951,8 @@ act(
             "шлейфом через плату.",
             voice=BORIS,
             expect="backlog",
-            patterns=[spk("Борис")],
-            why="Сокращено под бюджет VAD 15с — на run 35658231116 именно этот "
+            patterns=[BACKLOG_ACC],
+            why="Сокращено под бюджет VAD 15с -- на run 35658231116 именно этот "
             "шаг звучал 17.37с и терялся до STT (см. vad_reject_reason в "
             "e2e_voice_test.sh). Зарегистрированный голос №2.",
         ),
@@ -852,9 +962,10 @@ act(
             "свет горит, железка говорит.",
             voice=GRISHA,
             expect="backlog",
-            patterns=[SPK_UNKNOWN],
+            patterns=[BACKLOG_ACC],
             why="Сокращено под бюджет VAD 15с (run 35658231116). "
-            "НЕзарегистрированный голос №1 — должен лечь как «незнакомец».",
+            "НЕзарегистрированный голос №1 (в v2 строка бэклога не помечает его "
+            "«незнакомцем»).",
         ),
         step(
             "n305_bg_valera_unknown",
@@ -862,25 +973,41 @@ act(
             "минут, слушаю ваш спор про землю.",
             voice=VALERA,
             expect="backlog",
-            patterns=[SPK_UNKNOWN],
-            why="Сокращено под бюджет VAD 15с (run 35658231116) — соседний "
+            patterns=[BACKLOG_ACC],
+            why="Сокращено под бюджет VAD 15с (run 35658231116) -- соседний "
             "n305 прошёл на 14.81с при лимите 15.0с, то есть был лотереей с "
-            "зазором 0.19с. НЕзарегистрированный голос №2. Два разных "
-            "незнакомца — проверяем, что робот не склеивает их в один профиль.",
+            "зазором 0.19с. НЕзарегистрированный голос №2. Это ПОСЛЕДНЯЯ "
+            "фоновая реплика перед n305b: голое «Робот.» заберёт её (моложе 20 с).",
+        ),
+        step(
+            "n305b_bare_robot_pickup",
+            "Робот.",
+            voice=SASHA,
+            expect="cycle",
+            silent_ok=True,
+            patterns=[TURN_WITH_LLM],
+            why="В12′ (#3767): голое «Робот» ВСЕГДА забирает свежий бэклог, текст хода "
+            "-- реплика курьера из n305. Доказательство подхвата -- ход с LLM "
+            "(`llm_calls>=1`): без бэклога голый вейк даёт рефлекс «слушаю» без LLM. "
+            "silent_ok: подхваченная болтовня законно может закончиться `passed` без "
+            "речи (turn.py: passed из бэклога -- тихо). Без sleep_before_sec: окно "
+            "подхвата 20 с, пауза его съест. Строки `[backlog] pickup n=… speaker=…` "
+            "(#3767 п.4) в v2-ноде нет -- паттерна на неё нет намеренно.",
         ),
         step(
             "n306_who_was_talking",
             "Робот, скажи, кто сейчас говорил на фоне: кого ты узнал по "
             "голосу, а кого нет?",
             voice=SASHA,
-            patterns=[BACKLOG_FLUSH],
             keywords=["Борис", "незнаком"],
             retry=1,
-            why="Сокращено, чтобы уйти от края окна VAD (было 109 символов, "
-            "запас 0.3с). ЯДРО АКТА. Бэклог обязан слиться (паттерн), а "
-            "ответ — назвать и знакомого (Борис), и факт наличия неопознанных "
-            "(стем «незнаком» ловит «незнакомец»/«незнакомый»/«незнакомых»). "
-            "Ищется по ВСЕМ логам шага, включая LLM OUTPUT / spoken=.",
+            why="ЯДРО АКТА, зонд атрибуции по ОТВЕТУ робота (не по строке бэклога: "
+            "в v2 она диктора не пишет). Ответ должен назвать и знакомого "
+            "(Борис), и факт наличия неопознанных (стем «незнаком» ловит "
+            "«незнакомец»/«незнакомый»/«незнакомых»). Ищется по речи робота. "
+            "ВНИМАНИЕ (#3880): метки `Addressed.picked` (кто сказал) в v2 до LLM "
+            "не доходят (turn.py их не читает), поэтому шаг может краснеть как "
+            "находка, а не как ошибка сценария -- акт expected-partially-red.",
         ),
         step(
             "n307_count_voices",
@@ -895,29 +1022,35 @@ act(
             "Слушай, включи ты уже какую-нибудь музыку, а то тишина давит на уши.",
             voice=BORIS,
             expect="backlog",
-            patterns=[spk("Борис")],
-            why="ЯВНАЯ КОМАНДА в фоне без wake-слова. По _INSTRUCTION бэклога "
-            "она имеет приоритет над историей диалога.",
+            patterns=[BACKLOG_ACC],
+            why="ЯВНАЯ КОМАНДА в фоне без wake-слова. В v2 к моменту голого «Робот.» "
+            "она старше 20 с и подхвачена не будет -- это нормально, LRU-проверка "
+            "ниже про последнюю.",
         ),
         step(
             "n309_bg_command_valera",
             "Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.",
             voice=VALERA,
             expect="backlog",
-            patterns=[SPK_UNKNOWN],
-            why="Вторая команда в бэклоге. По правилу LRU выполниться должна "
-            "ИМЕННО ЭТА (последняя), а не Борисова.",
+            patterns=[BACKLOG_ACC],
+            why="Вторая команда в бэклоге. Выполниться должна ИМЕННО ЭТА "
+            "(последняя, моложе 20 с), а не Борисова.",
         ),
         step(
             "n310_execute_backlog_lru",
-            "Робот, ну ты слышал, что просили. Сделай.",
+            "Робот.",
             voice=SASHA,
-            patterns=[BACKLOG_FLUSH, "request_music|generate_music"],
-            must_not=["stop_music"],
-            retry=1,
-            why="Во фразе нет своей команды — робот обязан выполнить последнюю "
-            "явную команду из бэклога (LRU). Конкретный тул не фиксируем: "
-            "«спокойное» законно ложится и в renardo, и в vibe-preset.",
+            expect="cycle",
+            silent_ok=True,
+            patterns=[TURN_WITH_LLM, MUSIC_DISPATCH, tool_done(*MUSIC_START_TOOLS)],
+            must_not=["stop_music", TURN_TIMEOUT],
+            why="Во фразе нет своей команды (голое «Робот.», В12′) — робот обязан "
+            "выполнить последнюю явную команду из бэклога (LRU): ход с LLM и вызов "
+            "тула музыки (`📤 Отправлен запрос <id>: <tool>`). Конкретный тул не "
+            "фиксируем: «спокойное» законно ложится и в renardo, и в библиотеку, и в "
+            "dj_set. silent_ok: речь после запуска музыки не обязательна. v1-паттерн "
+            "`[backlog] flushed to LLM` убран (в v2 его нет). Без retry: подхват бэклога "
+            "-- разовое событие, на повторе бэклог уже пуст (голый вейк = рефлекс).",
         ),
         step(
             "n311_who_asked",
@@ -927,9 +1060,11 @@ act(
             "просил Борис, а уточнял незнакомый голос. Без ассерта: LLM здесь "
             "часто отвечает по существу, но без имён.",
         ),
-        step(
+        action_step(
             "n312_stop_music",
             "Робот, всё, спасибо, выключай музыку, курьер уехал.",
+            ["stop_music"],
+            music="stopped",
             voice=SASHA,
             expect_tools=["stop_music"],
             why="Закрываем то, что открыли в n310. Никаких «выключи» вслепую: "
@@ -952,10 +1087,11 @@ act(
     [
         "Акт 3 помечен expected-partially-red СОЗНАТЕЛЬНО.",
         "Диаризация (#1077) в voice_core_suite_v1 значится out-of-scope,",
-        "а атрибуция бэклога по говорящему живьём не проверялась ни разу.",
+        "а атрибуция фоновых реплик по говорящему живьём не проверялась ни разу:",
+        "строка бэклога dialog v2 диктора не пишет, метки picked до LLM не доходят.",
         "GATE-1 гейтит только то, что обязано работать при любой погоде:",
-        "stop_music (мы сами включили музыку в n310) и get_music_state.",
-        "Атрибуция speaker='...' проверяется per-step паттернами — их падение",
+        "stop_music (мы сами включили музыку в n310).",
+        "Атрибуция проверяется per-step по ответу робота (n306) — её падение",
         "это НАХОДКА (заводить карточку), а не повод чинить сценарий.",
     ],
 )
@@ -991,7 +1127,9 @@ act(
         step(
             "n402_current_voice",
             "Робот, а каким голосом ты говоришь прямо сейчас?",
-            patterns=["current_voice"],
+            patterns=[SPEECH_PROVIDER],
+            why="v2 (#3880, run 39878786968): v1-строка `TTS current_voice` не пишется; "
+            "факт ответа голосом -- `SpeechEvent synthesized … provider=`.",
         ),
         step(
             "n403_set_voice_alena",
@@ -1005,7 +1143,8 @@ act(
         step(
             "n404_speak_after_set",
             "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
-            patterns=["current_voice"],
+            patterns=[SPEECH_PROVIDER],
+            why="v2 (#3880): см. n402 -- `SpeechEvent synthesized … provider=` вместо `current_voice`.",
         ),
         step(
             "n405_set_voice_jane",
@@ -1044,19 +1183,24 @@ act(
         step(
             "n411_pitch_bass",
             "Робот, говори басом, как диктор в старом кино.",
-            patterns=["set_pitch|set_voice"],
-            why="set_pitch есть не у всех провайдеров TTS — принимаем и "
-            "деградацию в set_voice, но фиксируем в логе, чем ответил.",
+            expect_tools=["set_pitch"],
+            why="v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких "
+            "инструментов нет» -- проверка была слабой (паттерн `set_pitch|set_voice` "
+            "матчил список тулов). Теперь нужен реальный вызов set_pitch "
+            "(`Запрос выполнения: set_pitch`). У провайдера без set_pitch шаг "
+            "честно красный -- акт flaky-known.",
         ),
         step(
             "n412_skazka_multivoice",
             "Робот, расскажи сказку про Красную Шапочку, говори за каждого "
             "персонажа своим голосом.",
-            patterns=["voice_used"],
-            expect_tools=["set_voice"],
+            patterns=[TALE_VOICES],
             keywords=["красн"],
             retry=1,
-            why="Сокращено под бюджет VAD 15с (run 35658231116); просьба про "
+            why="v2 (#3880, run 39878786968): сказку делает `perform kind=tale` с "
+            "`voice_per_segment`, тула set_voice нет -- ждём `perform` в действиях "
+            "команды или `SpeechEvent voice_changed` (строка `voice_used` -- v1/MiniMax). "
+            "Сокращено под бюджет VAD 15с (run 35658231116); просьба про "
             "Красную Шапочку и смену голоса на персонажа сохранены. #1532: "
             "сказка должна быть полной и реально менять голос. Стем «красн» "
             "ловит «красную»/«красная» и запрещает generic «жила-была» без "
@@ -1088,7 +1232,6 @@ act(
     "играть) → stop → подтверждение тишины.",
     "new-unproven",
     [
-        "get_music_state",
         "request_music",
         "stop_music",
     ],
@@ -1097,48 +1240,62 @@ act(
             "n501_silence_check",
             "Робот, сейчас же ничего не играет, верно?",
             expect="cycle",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
             why="Якорь тишины перед стартом. Именно этого шага не хватало в "
-            "старых сценариях, где «останови музыку» шло первым.",
+            "старых сценариях, где «останови музыку» шло первым. #3971: ответ -- из "
+            "снимка `<music_state>` (ADR-0148), вызов get_music_state не требуем; "
+            "проверяем фразу «тишина» (run 161509: робот пересказал сказку вместо ответа).",
         ),
-        step(
+        action_step(
             "n502_start_renardo",
             "Робот, сыграй на рендардо спокойный ночной бит, что-нибудь под пайку.",
-            patterns=["request_music"],
+            ["request_music"],
+            music="started",
             expect_tools=["request_music"],
             must_not=["generate_music"],
             retry=2,
             why="Живой синтез, НЕ нейрогенерация: generate_music здесь — "
-            "выбор не того тула (коллизия имён, PR #1372).",
+            "выбор не того тула (коллизия имён, PR #1372). #3971: PASS только при "
+            "`Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: "
+            "трек из кэша + «не понял» давал ложный PASS).",
         ),
         step(
             "n503_confirm_playing",
             "Робот, что сейчас звучит?",
-            expect_tools=["get_music_state"],
+            keywords=[PLAYING_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[SILENCE_CLAIM, FALSE_FAILURE_PHRASE],
             why="Подтверждаем, что n502 реально завёл плеер, а не просто "
-            "ответил «включаю» голосом.",
+            "ответил «включаю» голосом. #3971: ответ из снимка `<music_state>` (ADR-0148), "
+            "get_music_state не требуем; «тишина» при играющем плеере -- красный.",
         ),
-        step(
+        action_step(
             "n504_add_bass",
             "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
-            patterns=["request_music"],
-            must_not=["generate_music", "stop_music"],
+            list(MUSIC_EDIT_TOOLS),
+            must_not=["stop_music"],
             why="Эволюция трека без перезапуска: stop_music здесь = робот "
-            "глушит и начинает заново вместо развития.",
+            "глушит и начинает заново вместо развития. #3971: в v2 тулов живой правки Renardo "
+            "нет -- честная попытка это dj_set|request_music|generate_music (run 132908: робот "
+            "звал dj_set, харнесс ждал request_music); успех тула обязателен.",
         ),
-        step(
+        action_step(
             "n505_vibe_dark",
             "Робот, сделай атмосферу помрачнее, как в киберпанке.",
-            patterns=["request_music"],
-            must_not=["generate_music"],
+            list(MUSIC_EDIT_TOOLS),
+            must_not=["stop_music"],
+            why="#3971: см. n504 -- любой из dj_set|request_music|generate_music, но с успехом тула.",
         ),
-        step(
+        action_step(
             "n506_faster",
             "Робот, и ускорь темп, а то мы тут засыпаем оба.",
-            patterns=["request_music"],
-            must_not=["stop_music"],
+            list(MUSIC_EDIT_TOOLS),
+            must_not=["stop_music", "set_speed", "set_pitch"],
+            why="#3976: «ускорь темп» под музыкой -- про музыку, а не про голос робота; set_speed/set_pitch "
+            "(стем «темп» открывает группу voice) -- реальный баг. Шаг остаётся красным, пока его не починят: "
+            "запрет и обязательный музыкальный тул держат это честно.",
         ),
         step(
             "n507_wake_under_music",
@@ -1150,16 +1307,22 @@ act(
             "ADR-RT-0068 в статусе proposed). Робот обязан ответить и НЕ "
             "заглушить музыку ради ответа.",
         ),
-        step(
+        action_step(
             "n511_stop_music",
             "Робот, всё, глуши музыку, у меня уши в трубочку.",
+            ["stop_music"],
+            music="stopped",
             expect_tools=["stop_music"],
+            why="#3971: стоп засчитывается по `Инструмент stop_music выполнен успешно` + "
+            "`[music v2] stop`, а не по слову «выключаю».",
         ),
         step(
             "n512_silence_after_stop",
             "Робот, теперь тишина?",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
         ),
     ],
     [
@@ -1180,84 +1343,100 @@ act(
     "с объявлением треков (зонд gp01: тулы save_dj_set_plan в коде нет) → "
     "посторонний вопрос под сетом → выключение → подтверждение тишины.",
     "new-unproven",
-    ["get_music_state", "set_dj_mode", "stop_music"],
+    ["dj_set"],
     [
         step(
             "n601_silence_check",
             "Робот, сейчас тихо, ничего не играет?",
             expect="cycle",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
         ),
-        step(
+        action_step(
             "n602_dj_on",
             "Робот, вставай за пульт, включай диджей-режим, у нас тут ночная дискотека.",
-            expect_tools=["set_dj_mode"],
+            ["dj_set"],
+            music="started",
+            expect_tools=["dj_set"],
             retry=1,
+            why="#3971: v2-тул -- dj_set (action=start), прежний v1-тул режима диджея удалён. PASS только при "
+            "`Инструмент dj_set выполнен успешно` + `[music v2] started`.",
         ),
         step(
             "n603_confirm_dj_playing",
             "Робот, что сейчас крутится?",
-            expect_tools=["get_music_state"],
+            keywords=[PLAYING_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[SILENCE_CLAIM, FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148); «тишина» при играющем сете -- красный.",
         ),
-        step(
+        action_step(
             "n604_dj_rock",
             "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
-            patterns=["set_dj_mode|request_music"],
+            ["dj_set", "request_music"],
             must_not=["stop_music"],
+            why="#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен.",
         ),
-        step(
+        action_step(
             "n605_dj_set_plan",
             "Робот, поставь сет из трёх треков подряд и объявляй каждый перед началом.",
-            patterns=["set_dj_mode|request_music|speak_text"],
+            ["dj_set", "request_music"],
+            patterns=[SPEECH_STARTED],
             why="Зонд gp01: спека §4.1 обещает «сет заканчивается финальным "
             "треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет "
             "глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение "
-            "подтверждает карточку W7-1.",
+            "подтверждает карточку W7-1. #3971: просьба -- и действие, и объявление треков вслух: "
+            "нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS.",
         ),
         step(
             "n606_wake_under_dj",
             "Робот, а сколько у тебя заряда осталось?",
             voice=BORIS,
             expect_tools=["get_battery_level"],
-            must_not=["stop_music", "set_dj_mode"],
+            must_not=["stop_music", "dj_set"],
             why="Вопрос под играющим сетом чужим (зарегистрированным) голосом: "
             "ответить и не сбить сет.",
         ),
-        step(
+        action_step(
             "n607_vibe_chill",
             "Робот, а теперь помягче, поставь спокойную атмосферу, Валера уснёт за рулём.",
-            patterns=["set_dj_mode|request_music"],
+            ["dj_set", "request_music"],
             must_not=["stop_music"],
+            why="#3971: см. n604.",
         ),
-        step(
+        action_step(
             "n608_dj_off",
             "Робот, хватит диджеить, выключай.",
-            patterns=["stop_music|set_dj_mode"],
-            expect_tools=["stop_music"],
+            ["dj_set", "stop_music"],
+            music="stopped",
             retry=1,
-            why="«Хватит диджеить» — двусмысленно (выключить режим или "
-            "остановить звук). Требуем именно stop_music: звук обязан "
-            "прекратиться, режим — как решит модель.",
+            why="«Хватит диджеить» — двусмысленно (`dj_set` action=stop или `stop_music`). #3971: тул не "
+            "фиксируем (v2 робот гасит сет через dj_set), но звук обязан прекратиться: успех любого из "
+            "двух тулов + `[music v2] stop`.",
         ),
         step(
             "n609_silence_after_dj",
             "Робот, тишина настала?",
-            expect_tools=["get_music_state"],
-            must_not=["set_dj_mode"],
+            keywords=[SILENCE_ANSWER],
+            must_not=["dj_set"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
         ),
         step(
             "n610_dj_state_honest",
             "Робот, диджей-режим у тебя сейчас включён или выключен?",
             why="Зонд честности состояния: расходится ли ответ робота с тем, "
-            "что показал get_music_state в n609. Без ассерта — сравниваем "
+            "что показал снимок `<music_state>` в n609. Без ассерта — сравниваем "
             "transcript n609 и n610 глазами.",
         ),
     ],
     [
-        "Акт 6 — DJ. GATE-1 держит вход (set_dj_mode), выход (stop_music) и",
-        "измерение состояния (get_music_state). Сам «сет с объявлениями»",
+        "Акт 6 — DJ. GATE-1 держит вызов dj_set (вход; робот v2 гасит сет тем же dj_set",
+        "action=stop, поэтому stop_music в gate акта не ставим -- выход держит n608 по",
+        "маркеру `[music v2] stop`). Состояние музыки берётся из снимка `<music_state>`,",
+        "get_music_state не требуется (#3971). Сам «сет с объявлениями»",
         "(n605) вне gate: тулы под него в коде нет, красный там — находка.",
     ],
 )
@@ -1286,26 +1465,35 @@ act(
             "n701_silence_check",
             "Робот, тихо у нас сейчас?",
             expect="cycle",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
             must_not=["stop_music"],
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
         ),
-        step(
+        action_step(
             "n702_generate_raccoon",
             "Робот, сочини и спой короткую песню про енота, который по ночам "
             "чинит роботов в мастерской.",
-            patterns=["generate_music"],
+            ["generate_music"],
             expect_tools=["generate_music"],
             retry=1,
+            known_red="квота KIE: при `<providers>` music_gen health != ok (run 132908: health=quota весь "
+            "марафон) честный ответ робота -- `perform song`, а не generate_music. Харнесс условий по "
+            "снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), поэтому шаг "
+            "красный по делу, пока Шифу не пополнит KIE.",
             why="Разводка коллизии имён (PR #1372): «спой песню» — это "
-            "нейрогенерация, а не renardo-код.",
+            "нейрогенерация, а не renardo-код. #3971: PASS только при `Инструмент generate_music "
+            "выполнен успешно`. Под квотой KIE шаг ожидаемо красный (см. _known_red).",
         ),
-        step(
+        action_step(
             "n703_merge_komar",
             "Робот, и ещё куплет добавь, про комара, который еноту мешал.",
             must_not=["STOP command received", "Cancel: new STT input"],
             why="Issue #968 MERGE: добавка к уже поющейся песне не должна "
             "обрывать текущее исполнение. must_not_call используется здесь "
-            "как «этих строк не должно быть в логах шага».",
+            "как «этих строк не должно быть в логах шага». #3971: ход обязан дойти до "
+            "`stage=done status=finished` без `stage=timeout` (run 132908: ход убит на 12 с, "
+            "робот сказал «долго думаю» -- ложный PASS).",
         ),
         step(
             "n704_music_library",
@@ -1327,17 +1515,24 @@ act(
             "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
             expect_tools=["music_library"],
         ),
-        step(
+        action_step(
             "n708_gen_play",
             "Робот, включи эту песню про енота с начала.",
+            ["music_library"],
+            music="started",
             expect_tools=["music_library"],
             retry=1,
+            why="#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + "
+            "`[music v2] started`.",
         ),
-        step(
+        action_step(
             "n709_stop_generated",
             "Робот, останови, Борис уже уснул под неё.",
+            ["stop_music"],
+            music="stopped",
             expect_tools=["stop_music"],
-            why="Опять же: останавливаем ровно то, что сами включили в n708.",
+            why="Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру "
+            "`[music v2] stop`, а не по слову «остановил».",
         ),
         step(
             "n710_gen_delete",
@@ -1347,18 +1542,24 @@ act(
             why="Уборка за собой + проверка, что «последний» робот определяет "
             "через список, а не наугад.",
         ),
-        step(
+        action_step(
             "n711_renardo_not_broken",
             "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
-            patterns=["request_music"],
+            ["request_music"],
+            music="started",
+            expect_tools=["request_music"],
             must_not=["generate_music"],
             retry=1,
             why="Контроль отсутствия регрессии коллизии имён: после серии "
-            "gen_* робот обязан вернуться к живому синтезу.",
+            "gen_* робот обязан вернуться к живому синтезу. #3971: `Инструмент request_music "
+            "выполнен успешно` + `[music v2] started` (run 132908: трек из кэша без Renardo давал ложный "
+            "PASS; кэш от Renardo по логу `started` не отличить -- это известный предел шага).",
         ),
-        step(
+        action_step(
             "n712_stop_all",
             "Робот, всё, глуши.",
+            ["stop_music"],
+            music="stopped",
             expect_tools=["stop_music"],
         ),
     ],
@@ -1372,18 +1573,24 @@ act(
 
 # =============================================================================
 # АКТ 8 — «Перебей меня». Barge-in, STOP, MERGE.
-# ТРЕБУЕТ barge_in_policy=classify (в проде replace). См. docs.
+# ADR-0150 PR-5 (#3694): политика перебивания одна, параметра нет — речь рвёт
+# только ясная стоп-команда (/dialog/interrupt_request → «ясный стоп»), новая
+# тема или добавка без стопа речь не обрывает (ответ — после текущей реплики).
+#
+# Ожидания на dialog v2 (#3880): тула `speak_text` нет -- речь это `command.speech`,
+# её факт -- `SpeechEvent started`; «стоп» -- Tier-1 без речи (`llm_calls=0`), речь
+# гасится (`SpeechEvent cancelled` / `🛑 [interrupt]`), ход кончается молча
+# (silent_ok). Ожидания v1 не сохранены.
 # =============================================================================
 act(
     8,
     "barge_in",
     "Перебей меня, если сможешь",
     "Barge-in, STOP и MERGE — только в логических парах «сначала запусти "
-    "длинную речь, потом перебей». Требует ros2 param set /dialogue_node "
-    "barge_in_policy classify (в проде стоит replace) — иначе классификация "
-    "перебивания не отличит «стоп» от новой темы.",
+    "длинную речь, потом перебей». Политика одна (ADR-0150 PR-5): речь рвёт "
+    "только ясная стоп-команда, новая тема без стопа встаёт после текущей речи.",
     "expected-partially-red",
-    ["speak_text", "request_music", "stop_music"],
+    [SPEECH_STARTED, "request_music", "stop_music"],
     [
         step(
             "n801_wake_open",
@@ -1393,47 +1600,77 @@ act(
         step(
             "n802_long_count",
             "Робот, посчитай вслух от одного до сорока, не торопясь и с выражением.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
             why="Заряжаем длинный ответ, который есть что перебивать. Без "
-            "этого шага n803 проверял бы перебивание тишины.",
+            "этого шага n803 проверял бы перебивание тишины. v2 (#3880): вместо "
+            "тула `speak_text` -- `SpeechEvent started` (конца речи не ждём: "
+            "следующий шаг перебивает, `finished` в окно шага не попадёт).",
         ),
         step(
             "n803_barge_in_new_topic",
             "Робот, стоп, лучше скажи, сколько будет семью восемь.",
-            patterns=["Cancel: new STT input|STOP command received|Воспроизведение прервано"],
-            why="Перебивание новой ТЕМОЙ (#1280): старый ответ обязан "
-            "отмениться, новый — прозвучать.",
+            barge_in=BARGE_3S,
+            patterns=[SPEECH_CANCELLED],
+            why="Стоп + новая тема (#1280, В19 «всё, хватит, спой другую»): «стоп» первым "
+            "словом — ясная стоп-команда, старый ответ рвётся, новый — звучит.",
         ),
         step(
             "n804_long_story",
             "Робот, расскажи историю о том, как ты первый раз в жизни увидел "
             "кота и что подумал.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
             why="Сокращено, чтобы уйти от края окна VAD (было 100 символов, "
             "запас 1.2с, run 35658231116) — реплика лишь просит длинную "
-            "историю, длина сгенерированного ответа не зависит от неё.",
+            "историю, длина сгенерированного ответа не зависит от неё. v2: "
+            "`SpeechEvent started` вместо `speak_text` (см. n802).",
         ),
         step(
             "n805_hard_stop",
             "Робот, всё, хватит, замолчи.",
-            patterns=["STOP command received|Воспроизведение прервано|Cancel"],
-            why="Чистый STOP без новой темы — другой класс перебивания, чем n803.",
+            barge_in=BARGE_3S,
+            silent_ok=True,
+            patterns=[SPEECH_CANCELLED],
+            why="Чистый STOP без новой темы — другой класс перебивания, чем n803. "
+            "v2 (#3880, run 39876993047): Tier-1 стоп отвечает молча, речь гасится "
+            "(`SpeechEvent cancelled reason=stopped` ~170 мс от партиала) -- "
+            "харнесс ждал TTS и краснел `cycle_unconfirmed_after_accept`. Теперь: "
+            "`silent_ok` (ход без речи допустим) + ОБЯЗАТЕЛЬНЫЙ паттерн отмены "
+            "речи: молчание без отмены -- по-прежнему красный.",
+        ),
+        step(
+            "n805b_unsilence",
+            "Робот, говори.",
+            silent_ok=True,
+            patterns=["tier1 kind=unsilence"],
+            why="Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину "
+            "(`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово "
+            "тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот "
+            "считал в тишине без тулов). Снятие -- Tier-1 без речи (`tier1_phrase` для unsilence пуст), "
+            "поэтому `silent_ok` + обязательный маркер `tier1 kind=unsilence`; что робот снова отвечает, "
+            "доказывает следующий шаг (n806: `SpeechEvent started`).",
         ),
         step(
             "n806_long_count_again",
             "Робот, посчитай вслух от одного до двадцати, спокойно.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
+            why="v2: `SpeechEvent started` вместо `speak_text` (см. n802).",
         ),
         step(
             "n807_merge_addition",
             "Робот, и после каждого числа добавляй слово шаг.",
-            patterns=["task_delta|speak_text"],
-            must_not=["STOP command received", "Cancel: new STT input"],
+            barge_in=BARGE_3S,
+            silent_ok=True,
+            patterns=[TURN_DONE],
+            must_not=["🛑 [interrupt]", "SpeechEvent cancelled"],
             why="Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна "
-            "её обрывать. Наиболее вероятный исход — робот не обрывается, но "
-            "добавка приходит обычным ответом, а не правкой сегментов через "
-            "task_delta. Такой полузелёный результат ценен: он разделяет "
-            "«STOP больше не глушит» и «MERGE реально едет».",
+            "её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся, interrupt.py "
+            "NO_INTERRUPT; «Cancel: new STT input» здесь законен — отменяется ход LLM, "
+            "не речь). v2 (#3880): `task_delta|speak_text` убран -- в v2 нет ни "
+            "того, ни другого; вместо него ход дошёл до `stage=done status=finished`. "
+            "Исход -- добавка отвечает после текущей речи (APPEND) либо молча "
+            "(`silent_ok`): в run 39876993047 шаг краснел `cycle_unconfirmed_after_"
+            "accept` при искажённом STT («пять робот и после каждого числа…»). "
+            "Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот.",
         ),
         step(
             "n808_repeat_last",
@@ -1441,47 +1678,65 @@ act(
             why="Зонд: работает ли «повтори» как отдельная команда или "
             "пересказывается заново другими словами.",
         ),
-        step(
+        action_step(
             "n809_music_bed",
             "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
+            ["request_music"],
+            music="started",
             expect_tools=["request_music"],
             must_not=["generate_music"],
+            silent_ok=True,
             retry=1,
-            why="Готовим фон для проверки «речь поверх музыки».",
+            why="Готовим фон для проверки «речь поверх музыки». v2 (#3880, run "
+            "39876993047): запрос музыки может закончиться без речи -- харнесс ждал "
+            "TTS (reply_after=41s ×3, `cycle_unconfirmed_after_accept`). `silent_ok` "
+            "допускает ход без речи, а факт действия держит `expect_tools=request_music` "
+            "(`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему "
+            "краснеет, если музыку не запросили. #3971: «поставлю ритм» без тула больше не PASS -- "
+            "нужны `Инструмент request_music выполнен успешно` + `[music v2] started`.",
         ),
         step(
             "n810_rap_over_music",
             "Робот, а теперь под этот бит зачитай короткий рэп про енотика.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
             must_not=["stop_music"],
             why="Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы "
-            "заговорить (issue #986 — соотношение музыки и речи мастер-гейном).",
+            "заговорить (issue #986 — соотношение музыки и речи мастер-гейном). "
+            "v2: `SpeechEvent started` вместо `speak_text` (см. n802).",
         ),
         step(
             "n811_stop_speech_keep_music",
             "Робот, хватит читать, а музыку оставь.",
-            why="Зонд разделения каналов речь/музыка. Ассерта нет: «оставь "
-            "музыку» робот сегодня понимает нестабильно, а must_not:stop_music "
-            "здесь сделал бы шаг красным на каждом прогоне без диагностики.",
+            barge_in=BARGE_3S,
+            silent_ok=True,
+            patterns=[SPEECH_CANCELLED],
+            why="Зонд разделения каналов речь/музыка. Про музыку ассерта нет: "
+            "«оставь музыку» робот сегодня понимает нестабильно (Tier-1 stop_all "
+            "гасит и музыку по снимку), а must_not:stop_music здесь сделал бы шаг "
+            "красным на каждом прогоне без диагностики. Речь «хватит читать» обязана "
+            "быть погашена (v2, #3880: `silent_ok` + паттерн отмены, как n805).",
         ),
-        step(
+        action_step(
             "n812_stop_music",
             "Робот, теперь и музыку выключай.",
+            ["stop_music"],
+            music="stopped",
             expect_tools=["stop_music"],
         ),
         step(
             "n813_silence_final",
             "Робот, тишина?",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_ANSWER],
+            must_not_say=[FALSE_FAILURE_PHRASE],
+            why="#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем.",
         ),
     ],
     [
-        "Акт 8 — expected-partially-red: четыре хука планировщика",
-        "(set_group_boundary, set_frozen_touch_hook, set_llm_continue_hook,",
-        "set_eta_provider) в dialogue_node ни к чему не подключены, поэтому",
-        "task_delta в n807 скорее всего не вызовется. GATE-1 держит только то,",
-        "что обязано работать: речь, музыка, остановка музыки.",
-        "ВАЖНО: перед прогоном ros2 param set /dialogue_node barge_in_policy classify.",
+        "Акт 8 — expected-partially-red: правки идущего выступления (MERGE в PENDING)",
+        "нет до ADR-0150 PR-7c; планировщик PR-7b ставит новую реплику после текущей.",
+        "GATE-1 держит только то, что обязано работать: речь (`SpeechEvent started`,",
+        "в dialog v2 тула speak_text нет), музыка, остановка музыки.",
+        "Параметра политики перебивания нет (ADR-0150 PR-5) — ничего выставлять не нужно.",
     ],
 )
 
@@ -1531,9 +1786,9 @@ act(
         step(
             "n906_anekdot_anim",
             "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
-            patterns=["play_animation"],
-            expect_tools=["speak_text"],
-            why="Комбинация двух каналов в одном ходе: речь + LED.",
+            patterns=["play_animation", SPEECH_STARTED],
+            why="Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула "
+            "`speak_text` -- `SpeechEvent started` (см. n802).",
         ),
         step(
             "n907_search_space",
@@ -1555,15 +1810,16 @@ act(
         step(
             "n909_foreign_language",
             "Робот, скажи по-китайски «всем спокойной ночи».",
-            patterns=["speak_text"],
-            why="Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но "
+            patterns=[SPEECH_STARTED],
+            why="v2 (#3880): `SpeechEvent started` вместо `speak_text`. "
+            "Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но "
             "tts_text_guard режет чанк с >10% «чужой» письменности (#1709). "
             "Красный подтверждает карточку W6-4/W6-5.",
         ),
         step(
             "n910_estimate_duration",
             "Робот, прикинь, сколько секунд ты будешь читать вслух четверостишие?",
-            patterns=["estimate_tts_duration|speak_text"],
+            patterns=["estimate_tts_duration|" + SPEECH_STARTED],
             why="estimate_tts_duration — служебный тул планировщика, LLM зовёт "
             "его редко. Вне gate по той же причине, что в dialogue-coverage-map §3.",
         ),
@@ -1589,7 +1845,7 @@ act(
     "история разговора обязана уйти, а долговременная память о Саше — остаться. "
     "Это два разных хранилища, и сценарий проверяет именно границу между ними.",
     "expected-partially-red",
-    ["memory_search", "speak_text"],
+    ["memory_search", SPEECH_STARTED],
     [
         step(
             "n1001_recall_night",
@@ -1623,14 +1879,16 @@ act(
         step(
             "n1005_music_state_final",
             "Робот, музыка у тебя сейчас точно выключена?",
-            expect_tools=["get_music_state"],
+            keywords=[SILENCE_OR_OFF_ANSWER],
+            must_not_say=[FALSE_FAILURE_PHRASE],
             why="Финальный якорь тишины: марафон не оставляет играющий плеер "
-            "следующему прогону.",
+            "следующему прогону. #3971: ответ из снимка `<music_state>` (ADR-0148), "
+            "get_music_state не требуем.",
         ),
         step(
             "n1006_session_reset",
             "Робот, новая сессия, забудь этот разговор.",
-            patterns=["session reset|session_reset|Новая сессия|new session"],
+            patterns=["session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"],
         ),
         step(
             "n1007_no_leak",
@@ -1659,13 +1917,13 @@ act(
         step(
             "n1011_goodnight",
             "Робот, спокойной ночи, смена окончена, спасибо за компанию.",
-            expect_tools=["speak_text"],
+            patterns=[SPEECH_STARTED],
         ),
     ],
     [
         "Акт 10 — expected-partially-red: gp14 (утечка контекста после сброса)",
         "живьём не проверялась, а спека §2.4 обещает «старые тёрны не",
-        "протекают». GATE-1 держит только memory_search и speak_text —",
+        "протекают». GATE-1 держит только memory_search и речь (`SpeechEvent started`) —",
         "то, что обязано работать независимо от исхода зондов.",
     ],
 )
@@ -1690,10 +1948,52 @@ INHERITS_REASON = (
 
 
 # =============================================================================
-# Запись файлов
+# Акты, которых НЕТ в SSoT (рукописные JSON). Манифест обязан их знать: раннер идёт по манифесту, а
+# перегенерация без этих записей молча выкидывала 2b/2c из ночи (#3880, расхождение генератор<->JSON).
 # =============================================================================
-def emit() -> None:
-    os.makedirs(OUT_DIR, exist_ok=True)
+MANUAL_ACTS: List[Dict[str, Any]] = [
+    {
+        "after_act": 2,
+        "act": "2b",
+        "title": "Переспрос личности",
+        "stability": "new-unproven",
+        "steps": 10,
+        "slug": "act2b_identity_question",
+        "_manual_not_generated": "issue #2809 -- этот акт НЕ входит в SSoT gen_night_marathon.py. "
+        "Перегенерация манифеста скриптом ЗАТРЁТ эту запись -- см. \"generated_by\" в самом файле сценария.",
+    },
+    {
+        "after_act": 2,
+        "act": "2c",
+        "title": "Вы разные люди?",
+        "stability": "new-unproven",
+        "steps": 3,
+        "slug": "act2c_voice_conflict_question",
+        "_manual_not_generated": "issue #2828 -- этот акт НЕ входит в SSoT gen_night_marathon.py. "
+        "Перегенерация манифеста скриптом ЗАТРЁТ эту запись -- см. \"generated_by\" в самом файле сценария.",
+    },
+]
+
+
+def _manual_entry(m: Dict[str, Any]) -> Dict[str, Any]:
+    base = "night_marathon_" + m["slug"]
+    return {
+        "act": m["act"],
+        "title": m["title"],
+        "stability": m["stability"],
+        "steps": m["steps"],
+        "scenario_file": ".github/e2e/scenarios/night/" + base + "_v1.json",
+        "acceptance_file": ".github/e2e/scenarios/night/" + base + "_acceptance_v1.json",
+        "_manual_not_generated": m["_manual_not_generated"],
+    }
+
+
+# =============================================================================
+# Сборка и запись файлов
+# =============================================================================
+def build() -> Dict[str, Dict[str, Any]]:
+    """Все генерируемые файлы: ``{имя файла: payload}``. Без побочных эффектов (``--check`` сверяет с диском)."""
+    files: Dict[str, Dict[str, Any]] = {}
     manifest: Dict[str, Any] = {
         "name": "night_voice_marathon_v1",
         "_comment": [
@@ -1739,11 +2039,8 @@ def emit() -> None:
                 "llm": "minimax-m3",
             },
         }
-        for name, payload in ((scenario_name, scenario), (acceptance_name, acceptance)):
-            path = os.path.join(OUT_DIR, name)
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                json.dump(payload, fh, ensure_ascii=False, indent=2)
-                fh.write("\n")
+        files[scenario_name] = scenario
+        files[acceptance_name] = acceptance
         total += len(a["steps"])
         manifest["acts"].append(
             {
@@ -1755,16 +2052,60 @@ def emit() -> None:
                 "acceptance_file": ".github/e2e/scenarios/night/" + acceptance_name,
             }
         )
-        print("act %-2d %-22s %2d steps  %s" % (a["n"], a["slug"], len(a["steps"]), a["stability"]))
-
+        for m in MANUAL_ACTS:
+            if m["after_act"] == a["n"]:
+                manifest["acts"].append(_manual_entry(m))
+                total += m["steps"]
     manifest["total_steps"] = total
-    with open(os.path.join(OUT_DIR, "night_marathon_manifest.json"), "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(manifest, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
+    files["night_marathon_manifest.json"] = manifest
+    return files
+
+
+def _dump(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def check() -> int:
+    """``--check``: JSON на диске == то, что соберёт генератор. 0 -- актуальны, 1 -- расходятся (список файлов)."""
+    stale: List[str] = []
+    for name, payload in build().items():
+        path = os.path.join(OUT_DIR, name)
+        try:
+            with open(path, encoding="utf-8", newline="") as fh:
+                on_disk = fh.read().replace("\r\n", "\n")
+        except OSError:
+            on_disk = None
+        if on_disk != _dump(payload):
+            stale.append(name)
+    if stale:
+        print("JSON устарели относительно gen_night_marathon.py "
+              "(перегенерируйте: py -3 scripts/e2e/gen_night_marathon.py):")
+        for name in stale:
+            print("  - " + name)
+        return 1
+    print("JSON актуальны (%d файлов)" % len(build()))
+    return 0
+
+
+def emit() -> None:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    files = build()
+    for name, payload in files.items():
+        with open(os.path.join(OUT_DIR, name), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(_dump(payload))
+    total = 0
+    for a in ACTS:
+        total += len(a["steps"])
+        print("act %-2d %-22s %2d steps  %s" % (a["n"], a["slug"], len(a["steps"]), a["stability"]))
+    total += sum(m["steps"] for m in MANUAL_ACTS)
     print("-" * 52)
-    print("acts: %d   total steps: %d" % (len(ACTS), total))
+    print("acts: %d (+%d рукописных)   total steps: %d" % (len(ACTS), len(MANUAL_ACTS), total))
     print("out:  %s" % OUT_DIR)
 
 
 if __name__ == "__main__":
+    import sys as _sys
+
+    if "--check" in _sys.argv[1:]:
+        raise SystemExit(check())
     emit()

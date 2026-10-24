@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-05",
-  "base_sha": "d54ae3d7bcd2d3da2dd901a6a9e7bb7604a27b15",
+  "created": "2026-10-23",
+  "base_sha": "f43cf6a036a92ffdde3dfd8a7238488009f4570a",
   "limits": {
     "method": 15,
     "init": 20
@@ -14,14 +14,7 @@
       "classify_sclang_log": 19
     },
     "src/rob_box_voice/rob_box_voice/dialogue_node.py": {
-      "DialogueNode._build_dynamic_system_context": 18,
-      "DialogueNode._handle_result": 58
-    },
-    "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py": {
-      "build_pregen_task": 22
-    },
-    "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py": {
-      "TaskScheduler.update": 26
+      "DialogueNode._handle_result": 34
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py": {
       "STTNode._process_audio": 20,
@@ -32,13 +25,12 @@
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py": {
       "TTSNode.__init__": 28,
-      "TTSNode._on_avatar_tts_request": 16,
-      "TTSNode._on_set_provider": 18,
+      "TTSNode._on_set_provider": 16,
       "TTSNode._parse_ssml_attributes": 17,
       "TTSNode._synthesize_and_play": 19,
       "TTSNode._synthesize_silero": 23,
       "TTSNode._synthesize_yandex": 18,
-      "TTSNode.dialogue_callback": 21
+      "TTSNode.dialogue_callback": 17
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py": {
       "AvatarSupervisor._on_avatar_command": 17,
@@ -64,8 +56,7 @@
       "ToolSliceAuthority.from_mapping": 21
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py": {
-      "SpeakTextTool._split_sentences": 18,
-      "SpeakTextTool.execute": 22
+      "SpeakTextTool._split_sentences": 18
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py": {
       "StartMappingTool.execute": 18
@@ -82,16 +73,13 @@
     "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py": {
       "ShowMetricsTool.execute": 18
     },
-    "src/rob_box_core/rob_box_core/prompt_sections.py": {
-      "render_prompt": 16
-    },
     "src/rob_box_llm/rob_box_llm/providers/deepseek.py": {
       "_OpenAICompatibleProvider.complete": 21,
       "_OpenAICompatibleProvider.stream": 21
     },
     "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py": {
       "MiniMaxTTSProvider._post": 16,
-      "MiniMaxTTSProvider.stream": 38,
+      "MiniMaxTTSProvider.stream": 37,
       "_build_payload": 21
     },
     "src/rob_box_perception/rob_box_perception/context_aggregator_node.py": {
@@ -141,24 +129,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_voice/rob_box_voice/dialogue_node.py",
-      "method": "DialogueNode._build_dynamic_system_context",
-      "cc": 18,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/scheduler/pregen/pre_gen.py",
-      "method": "build_pregen_task",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/scheduler/task_scheduler.py",
-      "method": "TaskScheduler.update",
-      "cc": 26,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_voice/rob_box_voice/stt_node.py",
       "method": "STTNode._process_audio",
       "cc": 20,
@@ -184,14 +154,8 @@
     },
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
-      "method": "TTSNode._on_avatar_tts_request",
-      "cc": 16,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
-      "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode._on_set_provider",
-      "cc": 18,
+      "cc": 16,
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
@@ -221,7 +185,7 @@
     {
       "path": "src/rob_box_voice/rob_box_voice/tts_node.py",
       "method": "TTSNode.dialogue_callback",
-      "cc": 21,
+      "cc": 17,
       "since": "Bumped 29->22 after refactor in issue 2626 (CC-budget guard, closed; живая карточка долга: #3291) — decomposed _synthesize_and_play call into a helper. ADR-0021-r1 R-1a/b: legacy-cc cannot be shrunk in place; this entry remains in _legacy_acknowledged so the upstream refactor card can pick it up. Track: PR landed 2026-09-15, baseline refreshed as part of issue 2626 acceptance."
     },
     {
@@ -285,12 +249,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/dialogue.py",
-      "method": "SpeakTextTool.execute",
-      "cc": 22,
-      "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
-    },
-    {
       "path": "src/rob_box_mcp_tools/rob_box_mcp_tools/tools/mapping.py",
       "method": "StartMappingTool.execute",
       "cc": 18,
@@ -321,12 +279,6 @@
       "since": "cc_budget_baseline.json created 2026-09-08; legacy grandfather — parent gate #1984 / #2077 covers decomp backlog"
     },
     {
-      "path": "src/rob_box_core/rob_box_core/prompt_sections.py",
-      "method": "render_prompt",
-      "cc": 16,
-      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
-    },
-    {
       "path": "src/rob_box_llm/rob_box_llm/providers/deepseek.py",
       "method": "_OpenAICompatibleProvider.complete",
       "cc": 21,
@@ -347,7 +299,7 @@
     {
       "path": "src/rob_box_llm/rob_box_llm/providers/minimax_tts.py",
       "method": "MiniMaxTTSProvider.stream",
-      "cc": 38,
+      "cc": 37,
       "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
     },
     {

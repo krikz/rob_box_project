@@ -20,6 +20,7 @@ from rob_box_music.source import CACHE, GENERATE, Route, SourceAsk, gen_kind
 from .gen.gen_session import bridge_style
 from .gen.instrumental import BUSY_TEXT, InstrumentalResult, failed_text, ready_text, wait_text
 from .song_order import DECLINED, bridge_hold
+from .theme_grounding import order_theme
 
 _LOG = logging.getLogger(__name__)
 WHAT = "музыка не заиграла"
@@ -48,9 +49,10 @@ class InstrumentalOrder:
               wrap: Callable[..., Any]) -> Any:
         """``args`` — ``(intent, text, mood, genre, turn_id, heard_text)``; ``wrap`` — ``tools_v2.tool_result``."""
         maker, model, turn = self._maker, route.id.rsplit(":", 1)[-1], args[4]
+        theme = order_theme(args[1], args[5])  # тема просьбы — в заказ Suno и во фразы (#3775)
         if maker.ordered_in(turn):  # тот же ход: трек уже пишется, ответ тот же, что у первого вызова
             return wrap({"ok": True, "pending": "instrumental",
-                         "source_message": wait_text(ask.genre, model, "")}, WHAT)
+                         "source_message": wait_text(ask.genre, model, "", theme)}, WHAT)
         if maker.busy():
             return wrap({"ok": False, "reason": DECLINED, "message": BUSY_TEXT}, WHAT)
         bridge = self._bridge(ask, args, order)
@@ -58,13 +60,13 @@ class InstrumentalOrder:
             return bridge  # мост не встал не из-за «нечем играть» (сет этого хода, движок): генерацию не начинаем
         hold = bridge_hold(self._hold(), bridge)
         data = dict(bridge.data or {}) if bridge.success else {}
-        theme = str(args[5] or args[1] or "")
         if not maker.launch(ask.genre, model, theme, turn, lambda result: self.done(result, ask.genre, hold)):
             return wrap({"ok": False, "reason": DECLINED, "message": BUSY_TEXT}, WHAT)
-        self._log().info(f"🎛️ [gen instr] {route.id} заказан, мост={data.get('track_id') or '—'}")
+        self._log().info(f"🎛️ [gen instr] {route.id} заказан, тема={theme or '—'!r}, "
+                         f"мост={data.get('track_id') or '—'}")
         label = bridge_label(data) if bridge.success else ""
         return wrap({**data, "ok": True, "pending": "instrumental", "route": route.id,
-                     "source_message": wait_text(ask.genre, model, label)}, WHAT)
+                     "source_message": wait_text(ask.genre, model, label, theme)}, WHAT)
 
     @staticmethod
     def _bridge(ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any]) -> Any:

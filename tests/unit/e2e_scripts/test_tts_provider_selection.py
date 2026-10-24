@@ -107,14 +107,23 @@ class TestMapTtsVoice:
     @pytest.mark.parametrize(
         "voice,expected",
         [
-            ("anton", "Russian_ReliableMan"),
-            ("ermil", "Russian_PessimisticGirl"),
-            ("zahar", "Russian_CrazyQueen"),
-            ("filipp", "Russian_AttractiveGuy"),
+            ("anton", "Russian_ReliableMan:0:1.0"),
+            ("ermil", "Russian_Bad-temperedBoy:2:1.0"),
+            ("zahar", "Russian_HandsomeChildhoodFriend:0:1.0"),
+            ("filipp", "Russian_AttractiveGuy:0:1.0"),
         ],
     )
     def test_minimax_mapping(self, voice, expected):
         assert map_voice("minimax", voice) == expected
+
+    def test_minimax_roles_are_four_voices_with_mild_prosody(self):
+        """#3931: четыре разных голоса; просодия малая (замер на живом канале 23.10:
+        питч +5/темп 1.2 ронял вейк «Робот» в 62% фраз, питч +2 и 0 - в 10-15%)."""
+        specs = [map_voice("minimax", v).split(":") for v in ("anton", "ermil", "zahar", "filipp")]
+        assert all(len(s) == 3 for s in specs), specs
+        assert len({s[0] for s in specs}) == 4
+        assert all(abs(int(s[1])) <= 2 for s in specs), specs
+        assert all(0.9 <= float(s[2]) <= 1.1 for s in specs), specs
 
     @pytest.mark.parametrize("provider", ["silero", "minimax"])
     def test_scenario_voices_stay_distinct(self, provider):
@@ -143,7 +152,7 @@ class TestMapTtsVoice:
 
     @pytest.mark.parametrize(
         "provider,default",
-        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan")],
+        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan:0:1.0")],
     )
     def test_empty_voice_falls_back_to_default(self, provider, default):
         assert map_voice(provider, "") == default
@@ -161,7 +170,8 @@ class TestMapTtsVoice:
         for provider in ("silero", "minimax"):
             for voice in SCENARIO_VOICES:
                 mapped = map_voice(provider, voice)
-                assert '"%s"' % mapped in registry, (provider, voice, mapped)
+                # minimax: строка voice:pitch:speed (#3931) -- в каталоге ищем сам голос
+                assert '"%s"' % mapped.split(":")[0] in registry, (provider, voice, mapped)
 
 
 # --- resolve_tts_provider ---------------------------------------------------

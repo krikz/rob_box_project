@@ -5,7 +5,7 @@ Phase 1.2: чистая server-логика без ROS-ноды.
 - SUBSCRIBE → JSON_EVENT{subscribe_ack} c выделенным stream_id
 - heartbeat каждые 200 мс (JSON_EVENT{type:"heartbeat"})
 - watchdog: нет ping > 600 мс → close + GOODBYE{reason:"timeout"}
-- /healthz endpoint (как у voice-action-server)
+- /healthz endpoint
 
 ROS/Zenoh-мост подключается в Phase 1.3 через DI: WSSServer.__init__
 принимает интерфейс `Bridge` (publish/subscribe методы) — это позволяет
@@ -359,7 +359,7 @@ class Bridge(Protocol):
         ...
 
     def publish_voice_barge_in(self) -> None:
-        """PTT start: STOP в /voice/tts/control + /voice/sound/stop (barge-in)."""
+        """PTT start: SpeechCancel речи робота + /voice/sound/stop (barge-in)."""
         ...
 
     def publish_voice_audio(self, payload: bytes) -> None:

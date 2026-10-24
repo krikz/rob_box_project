@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, json, logging, os, re, threading, time, uuid
+import asyncio, functools, json, logging, os, re, threading, time, uuid
 from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
@@ -8,6 +8,9 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from nav_msgs.msg import OccupancyGrid
+from rob_box_dialog.chats import chat_of
+from rob_box_dialog_msgs.msg import DialogOutput, SpeechEvent
+from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from std_msgs.msg import String
 from telegram.ext import (
     Application,
@@ -35,6 +38,7 @@ from rob_box_core.avatar_command import (
     make_telegram_client_id,
 )
 # voice-vr 12 (issue #2197, ADR-0080 §1.3 / §2.3): единый сборщик SSML.
+from rob_box_core import dialog_engine, speech_client
 from rob_box_core.utterance import Sink, Utterance
 
 from .camera_cache import CameraCache
@@ -46,6 +50,7 @@ from .handlers.messages import text_message_handler, voice_message_handler
 # AV-23 (issue #1915, P8): per-chat /radio mode — голосовые из Telegram
 # как рация → /avatar/voice_in. См. radio.py + voice_transcode.py.
 from .radio import RadioPublisher
+from .speech_receipts import SpeechReceipts
 
 # Issue #1160 — Prometheus metrics (этап 1 observability). Telegram-bot —
 # отдельный контейнер, поэтому у него свой лёгкий observability-модуль
@@ -84,8 +89,59 @@ _VOICE_IN_QOS = QoSProfile(
 )
 
 
+
+def _say_with_receipt(node, text: str, chat_id: Optional[int]) -> str:
+    """Сказать ``text`` ровно одним SpeechRequest; квитанцию ждёт ``speech_id``, заведённый ДО публикации."""
+    speech_id = str(uuid.uuid4())
+    if chat_id is not None:
+        node._speech_receipts.expect(speech_id, chat_id)
+    return node.publish_tts(text, speech_id=speech_id)
+
+
+def _send_chat_text(node, chat_id: int, text: str) -> None:
+    """Текст в чат с ROS-потока: через очередь telegram-loop, как эхо диалога (без run_coroutine_threadsafe)."""
+    loop, queue = node._telegram_loop, node._response_queue
+    if not (loop and queue and chat_id):
+        node.get_logger().warning(f"Квитанция не доставлена: бот не готов (chat_id={chat_id!r}): {text!r}")
+        return
+    try:
+        loop.call_soon_threadsafe(queue.put_nowait, (int(chat_id), text))
+    except RuntimeError as exc:
+        node.get_logger().error(f"Не удалось отправить квитанцию (loop закрыт?): {exc!r}")
+
+
+def _on_speech_event(receipts, send, msg) -> None:
+    """``/voice/speech/event`` -> квитанция в чат, если это итог реплики из /say."""
+    receipt = receipts.on_event(int(msg.kind), msg.speech_id, msg.reason, float(msg.seconds))
+    if receipt is not None:
+        send(*receipt)
+
+
+def _on_dialog_output(send, msg) -> None:
+    """``/dialog/output`` (v2): ответ телеграм-агента своему чату (ADR-0150 §9.2, PR-12a); чужой канал — мимо."""
+    chat_id = chat_of(msg.channel_ref)
+    if msg.agent == "telegram" and chat_id is not None and msg.text:
+        send(chat_id, msg.text)
+
+
+def _subscribe_replies(node, group):
+    """Откуда ответы в чат: v1 — эхо Личности ``/voice/dialogue/response`` (его пишет только dialogue_node v1,
+    PR-8 #3702); v2 — ответ телеграм-агента своего чата ``/dialog/output`` (dialog_node, PR-12a #3706).
+    Подписка v1 и сам v1-путь уходят вместе с v1 (PR-15). Возвращает ``(response_sub, output_sub)``."""
+    if dialog_engine.declare(node) == dialog_engine.V1:
+        return node.create_subscription(String, "/voice/dialogue/response", node._on_response, _RE,
+                                        callback_group=group), None
+    send = functools.partial(_on_dialog_output, functools.partial(_send_chat_text, node))
+    return None, node.create_subscription(DialogOutput, "/dialog/output", send, _RE, callback_group=group)
+
+
+def _flush_expired(receipts, send) -> None:
+    for chat_id, text in receipts.expired():
+        send(chat_id, text)
+
+
 class TelegramNode(Node):
-    """Telegram Bot API ↔ /voice/stt/result + /voice/dialogue/response bridge.
+    """Telegram Bot API ↔ /voice/stt/utterance + /voice/dialogue/response bridge.
 
     AV-10 (ADR-0028 §4.4): после рефакторинга эта нода — клиент
     ``avatar_supervisor``. Движение и TTS публикуются только после
@@ -165,10 +221,9 @@ class TelegramNode(Node):
         self.create_subscription(
             OccupancyGrid, "/rtabmap/grid_prob_map", self._on_map, _TL, callback_group=g
         )
-        self._stt_pub = self.create_publisher(String, "/voice/stt/result", _RE)
-        self._response_pub = self.create_publisher(
-            String, "/voice/dialogue/response", _RE
-        )
+        # ADR-0150 PR-2: тот же типизированный топик, что у stt_node; источник
+        # (telegram/operator) и chat_id - поля, а не префикс "[TG:id]" в тексте.
+        self._stt_pub = self.create_publisher(UtteranceMsg, "/voice/stt/utterance", _RE)
         # AV-22 (Issue #1914) — producer /avatar/command для супервизор-агента.
         # Тот же топик, что и quest-нода, единый контракт
         # (worker-brief §3.3, rob_box_core.avatar_command). RELIABLE depth=10 —
@@ -190,20 +245,21 @@ class TelegramNode(Node):
         # duplicated into the active Telegram chat so the operator sees
         # what the robot says (removed in 88cecc91 because of the
         # asyncio-loop bug; reimplemented queue-based, see _on_response).
-        self._response_sub = self.create_subscription(
-            String,
-            "/voice/dialogue/response",
-            self._on_response,
-            _RE,
-            callback_group=g,
-        )
+        self._response_sub, self._output_sub = _subscribe_replies(self, g)
         # AV-10 — direct publishers оставлены как fallback для Phase 1
-        # (монитор-режим). В active-режиме супервизор сам публикует в
-        # ``/cmd_vel_web`` и TTS-канал от имени клиента; здесь
-        # публикации должны идти только после успешного AcquireFloor
-        # (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
+        # (монитор-режим). Публикации идут только после успешного
+        # AcquireFloor (см. ``publish_move_with_floor``/``publish_tts_with_floor``).
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_web", _RE)
-        self.tts_pub = self.create_publisher(String, "/voice/tts/request", _RE)
+        # ADR-0150 PR-3 (#3688): речь из Telegram — клиентом речи (агент telegram).
+        speech_client.prepare(self, "request")
+        # #3727: итог /say - по SpeechEvent той же реплики (finished / rejected{reason} / cancelled / таймаут), а не
+        # «Озвучиваю» до итога. Квитанции уходят в чат через ту же очередь, что эхо диалога.
+        self._speech_receipts = SpeechReceipts()
+        self.create_subscription(
+            SpeechEvent, "/voice/speech/event",
+            functools.partial(_on_speech_event, self._speech_receipts, functools.partial(_send_chat_text, self)), _RE, callback_group=g)
+        self.create_timer(5.0, functools.partial(_flush_expired, self._speech_receipts, functools.partial(_send_chat_text, self)),
+                          callback_group=g)
         # AV-23 (issue #1915, P8) — рация из Telegram в /avatar/voice_in
         # + явный STOP в /voice/sound/stop (закрыть stream после рации,
         # barge-in уже использует тот же канал). best-effort + volatile
@@ -305,19 +361,24 @@ class TelegramNode(Node):
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text:
             return
-        # Issue #1195 — source marker: [TG:chat_id] text. dialogue_node
-        # parses it to skip the wake-word gate (chat messages are explicit
-        # address), remembers the chat for echo routing and does NOT attach
-        # the voice-biometry speaker tag. chat_id also becomes the "active
-        # chat" so voice-initiated replies echo into the same chat.
+        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialogue_node
+        # по ним пропускает wake-word gate (сообщение в чат - явное обращение),
+        # запоминает чат для эхо-маршрута и НЕ цепляет метку голосовой биометрии.
+        # v2 (PR-12a #3706): dialog_node отдаёт реплику не Личности, а телеграм-агенту этого чата.
+        # chat_id также становится "active chat", чтобы голосовые ответы эхом
+        # уходили в тот же чат. Без chat_id (кнопки меню) source=operator.
+        m = UtteranceMsg()
+        m.text = text
+        m.provider = "telegram"
         if chat_id is not None:
             self.set_active_chat(chat_id)
-            text = f"[TG:{chat_id}] {text}"
+            m.source = UtteranceMsg.SOURCE_TELEGRAM
+            m.chat_id = int(chat_id)
+        else:
+            m.source = UtteranceMsg.SOURCE_OPERATOR
         # Issue #1160 — Prometheus metrics: входящее сообщение (текст/команда).
         if is_metrics_enabled():
             record_telegram_message("in", message_type="text")
-        m = String()
-        m.data = text
         self._stt_pub.publish(m)
 
     def publish_avatar_command(self, text: str, chat_id: int) -> Optional[str]:
@@ -350,65 +411,31 @@ class TelegramNode(Node):
         )
         return payload["request_id"]
 
-    def publish_tts(self, text: str) -> None:
-        """AV-10 backward-compat shim.
+    def publish_tts(self, text: str, speech_id: Optional[str] = None) -> str:
+        """Сказать текст роботом (агент ``telegram``, ADR-0150 PR-3); вернуть ``speech_id``.
 
-        Старый код (commands.py:336 say_handler, messages.py:176
-        playvoice) вызывает ``node.publish_tts(text)`` напрямую. Чтобы
-        не ломать существующие интеграции до того, как callers будут
-        переведены на ``publish_tts_with_floor``, мы оставляем
-        ``publish_tts`` как «голую» публикацию в TTS-канал, и
-        дополнительно даём обёртку ``publish_tts_with_floor``, которая
-        сначала просит ``voice_floor`` у супервизора.
+        Старый код (commands.py say_handler, messages.py playvoice) зовёт
+        ``node.publish_tts(text)`` напрямую; ``publish_tts_with_floor`` — то же
+        после AcquireFloor(voice). Раньше реплика шла JSON-ом в
+        ``/voice/dialogue/response`` или старый TTS-топик (по режиму);
+        теперь — один ``SpeechRequest``, итог — ``SpeechEvent`` того же id.
         """
         if is_metrics_enabled():
             record_telegram_message("out", message_type="voice")
-        m = String()
-        # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-        m.data = json.dumps(
-            Utterance(
-                text=text,
-                sink=Sink.SPEAKERS,
-                extra={"speech_id": str(uuid.uuid4())},
-            ).to_request(),
-            ensure_ascii=False,
-        )
-        self._response_pub.publish(m)
+        return speech_client.say(self, Utterance(text=text, sink=Sink.SPEAKERS, speech_id=speech_id), agent="telegram")
 
-    def publish_tts_with_floor(self, text: str):
+    def publish_tts_with_floor(self, text: str, receipt_chat_id: Optional[int] = None):
         """AV-10: publish TTS, обернув в AcquireFloor(voice).
+
+        ``receipt_chat_id`` - чат, которому уйдёт квитанция по ``SpeechEvent`` этой реплики (#3727); ``None`` -
+        квитанции нет (старое поведение остальных вызывающих).
 
         Returns:
             ``AcquireResult`` — вызывающий код решает, что показать
             пользователю (например, погасить кнопки если
             ``granted=False``).
         """
-
-        def _do_publish() -> None:
-            m = String()
-            # voice-vr 12 (issue #2197): единый сборщик SSML — ``Utterance``.
-            m.data = json.dumps(
-                Utterance(
-                    text=text,
-                    sink=Sink.SPEAKERS,
-                    extra={"speech_id": str(uuid.uuid4())},
-                ).to_request(),
-                ensure_ascii=False,
-            )
-            # AV-10: в active-режиме супервизор сам перешлёт
-            # TTS-запрос в dialogue_node, и эта публикация в
-            # /voice/tts/request будет no-op. Поэтому в active
-            # используем _response_pub (который dialogue_node
-            # слушает как «вход для готовых реплик»). В monitor —
-            # оставлена оригинальная семантика.
-            if is_metrics_enabled():
-                record_telegram_message("out", message_type="voice")
-            target = (
-                self.tts_pub if self.supervisor.mode != "active" else self._response_pub
-            )
-            target.publish(m)
-
-        return self.supervisor.with_floor(Floor.VOICE, _do_publish)
+        return self.supervisor.with_floor(Floor.VOICE, lambda: _say_with_receipt(self, text, receipt_chat_id))
 
     def publish_move_with_floor(self, twist):
         """AV-10: publish cmd_vel, обернув в AcquireFloor(teleop).

@@ -7,14 +7,14 @@
 уходила в TTS (робот «говорил лишнее»: «[CRITICAL] В прошлом цикле ты
 НЕ вызвал ни один музыкальный тул...»).
 
-Фикс: ``strip_speaker_tag`` снимает ведущий ``[Spkr:...]`` перед
-проверкой служебных маркеров, поэтому внутренний текст больше не
-озвучивается.
+Фикс: ведущая скобка снимается перед проверкой служебных маркеров, поэтому
+внутренний текст больше не озвучивается. С #3695 префикса собеседника во
+входе модели нет вовсе, отдельной зачистки для него тоже; скобку снимает
+общая зачистка мета-вставок (``strip_meta_markers``).
 
-Покрывает:
-  - ``[Spkr:Эйджик] [CRITICAL] ...`` → НЕ озвучивается (тихо)
-  - обычный ``[CRITICAL] ...`` без тега → по-прежнему НЕ озвучивается
-  - ``[Spkr:Эйджик] Привет...`` → озвучивается БЕЗ маркера спикера
+Покрывает: ``[Spkr:Эйджик] Привет...`` → озвучивается БЕЗ маркера спикера.
+ADR-0150 PR-7 ч.7d-4 (#3698): отказ по префиксу ``[CRITICAL]``/``[SYSTEM…`` (R12) снят — синтетических
+[CRITICAL]-ретраев, которые модель копировала, больше нет; тесты на него удалены.
 """
 
 from unittest.mock import MagicMock
@@ -33,22 +33,13 @@ def _make_node() -> DialogueNode:
     n.animation_pub = MagicMock()
     n.sound_trigger_pub = MagicMock()
     n.state_pub = MagicMock()
-    n.current_dialogue_id = None
     n.available_tools = []
     n.mcp_tools_available = False
     n.internet_available = True
     n.current_time_info = {}
     n._verbose_llm = False
-    n._babble_retry_used = False
     n._memory = MagicMock()
     n._active_tg_chat_id = None
-    # Upstream-regression t_5e06c47d: dialogue_node.py:640 / :678 / :682.
-    # ``_handle_result`` reads ``_code_speech_retry_used`` (line 3495) and
-    # ``_action_claim_retry_used`` (line 3555) — every test that calls it
-    # through ``object.__new__`` needs these seeded explicitly to avoid
-    # AttributeError before we ever get to the assertion.
-    n._track_mode_music_active = False
-    n._action_claim_retry_used = False
     return n
 
 
@@ -72,24 +63,6 @@ _LEAK = (
 
 
 class TestServiceTextLeakViaSpeakerTag:
-    def test_service_text_with_speaker_tag_is_not_voiced(self):
-        n = _make_node()
-        result = _make_result(spoken=_LEAK)
-        n._handle_result(result, user_input="[DJ_AUTO] ...")
-
-        assert _published_texts(n) == [], (
-            f"служебный [CRITICAL] после [Spkr:...] не должен озвучиваться: "
-            f"{_published_texts(n)!r}"
-        )
-
-    def test_plain_service_text_still_suppressed(self):
-        # Регрессия: без спикер-тега служебный текст подавлялся и раньше.
-        n = _make_node()
-        result = _make_result(spoken=_LEAK.removeprefix("[Spkr:Эйджик] "))
-        n._handle_result(result, user_input="[DJ_AUTO] ...")
-
-        assert _published_texts(n) == []
-
     def test_speaker_tag_stripped_from_normal_speech(self):
         n = _make_node()
         result = _make_result(spoken="[Spkr:Эйджик] Привет, как дела?")

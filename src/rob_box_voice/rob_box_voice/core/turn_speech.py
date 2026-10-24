@@ -6,22 +6,20 @@ TTS — юзер услышал три разные фразы подряд, а 
 retry-budget (#1881) кончился, ещё и сырой ответ модели целиком: 11
 TTS-чанков, ~40 с монолога про «нет mp3-библиотеки».
 
-Корень — порядок: ``_handle_result`` публиковал текст СРАЗУ, а post-turn
-гуарды (music Bug B/C, tool-skipped) решали про ретрай уже ПОСЛЕ этого, в
-``finally`` хода. Теперь внутри ``_run_turn`` свободный текст хода
-придерживается в :class:`TurnSpeechHold` и выпускается только когда
-гуарды сказали своё. Что именно выпустить — решает чистая
-:func:`decide_turn_speech`:
+Внутри ``_run_turn`` свободный текст хода придерживается в
+:class:`TurnSpeechHold` и выпускается в конце хода (вопрос о личности звучит
+последним). Что именно выпустить — решает чистая :func:`decide_turn_speech`:
 
-* за ходом последовал синхронный ретрай → молчим: озвучится итог цепочки;
-* гуард отозвал ответ (``discard_last_reply`` + своя короткая
-  fallback-фраза через ``_speak_direct``) → молчим, фраза гуарда уже звучит;
-* retry-budget исчерпан на этом ходе («отдаю как есть») → не сырой ответ, а
-  первая фраза ≤ :data:`FIRST_SENTENCE_LIMIT` символов;
+* ответ отозван (``discard_last_reply`` + фраза кода через ``_speak_direct``)
+  → молчим, фраза кода уже звучит;
 * музыкальный/DJ-контекст и ответ длиннее :data:`MUSIC_MAX_CHUNKS`
   TTS-чанков → первая фраза. Исключение — юзер сам просил текст
   (рэп/стих/песню, :func:`wants_lyrics`): там длинный ответ и есть исполнение
   (issue #980).
+
+ADR-0150 PR-7 ч.7d-4 (#3698): синтетических ретраев LLM больше нет — ветки
+«за ходом ретрай», «бюджет ретраев исчерпан» и отказ по процитированному
+``[CRITICAL]``-промпту (#2999) удалены.
 
 Модуль без ROS2 — тестируется напрямую.
 """
@@ -31,6 +29,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+from .dialogue_guards import is_system_template_regurgitated_in_ssml, is_tool_call_markup
 
 #: Потолок «первой фразы» для fallback-озвучки (acceptance #2874: ~120).
 FIRST_SENTENCE_LIMIT: int = 120
@@ -46,19 +46,6 @@ _LYRICS_KEYWORDS: tuple = (
 )
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?…])\s+")
-
-#: Issue #2999 — маркер синтетического ретрай-промпта гуардов. Живой лог
-#: 24.09 11:43:51: модель слила вставку ретрая в ответ. Если в ответе с
-#: ``tools=[]`` названы тулы, его глушит #1882 (planning-narration), но
-#: ответ, где модель И вызвала тул (например ``set_dj_mode``), И
-#: процитировала «[CRITICAL] …», тот гейт пропускает. В речи человеку этот
-#: маркер не бывает никогда — такой ответ не озвучиваем.
-RETRY_PROMPT_LEAK_MARKER: str = "[critical]"
-
-
-def is_retry_prompt_leak(text: Optional[str]) -> bool:
-    """В ответе процитирован ретрай-промпт гуарда (``[CRITICAL] …``)."""
-    return RETRY_PROMPT_LEAK_MARKER in (text or "").lower()
 
 
 def wants_lyrics(user_input: Optional[str]) -> bool:
@@ -108,9 +95,7 @@ def decide_turn_speech(
     text: Optional[str],
     *,
     n_chunks: int,
-    retry_dispatched: bool = False,
     retracted: bool = False,
-    budget_exhausted: bool = False,
     music_context: bool = False,
     lyrics_requested: bool = False,
 ) -> Optional[str]:
@@ -119,41 +104,43 @@ def decide_turn_speech(
     Args:
         text: свободный текст хода после всех strip'ов ``_handle_result``.
         n_chunks: сколько TTS-чанков из него получится (``split_into_chunks``).
-        retry_dispatched: за ходом последовал синхронный ретрай.
-        retracted: гуард отозвал ответ и озвучил свой fallback.
-        budget_exhausted: на этом ходе кончился общий retry-budget (#1881).
+        retracted: ответ отозван, вместо него звучит фраза кода.
         music_context: DJ-сессия или музыкальный запрос юзера.
         lyrics_requested: юзер просил исполнить текст (:func:`wants_lyrics`).
     """
-    if not text or retry_dispatched or retracted or is_retry_prompt_leak(text):
+    if not text or retracted:
         return None
-    if budget_exhausted:
-        return first_sentence(text) or None
     if music_context and not lyrics_requested and n_chunks > MUSIC_MAX_CHUNKS:
         return first_sentence(text) or None
     return text
 
 
 def final_text_for_speech(result: object, warn) -> str:
-    """Issue #3598 — финальный текст хода, который можно отдавать в авто-TTS.
+    """Финальный текст хода для авто-TTS — как есть.
 
-    Ядро (``AgentCore``) помечает ``internal_text_marker``, когда текст
-    цитирует служебное из контекста хода (``<music_state>``) или имя тула
-    (``speak_text``) — это рассуждение модели, не реплика человеку. Такой
-    текст не озвучивается и не уходит дублем в Telegram: возвращается
-    ``""``, и дальше ``_handle_result`` идёт штатным путём пустого ответа
-    (ход без тулов → честная фраза кода :data:`EMPTY_REPLY_PHRASE`, с тулами
-    → тишина, о действии говорит код). ``warn`` — логгер для строки
-    «🤐 [issue 3598] …».
+    Служебный синтаксис вместо речи — разметка вызова тула (#2760) и ``<system>``-шаблон (#2175) — не озвучивается:
+    дальше по тракту ``build_ssml_payload`` снимает теги, и отказ tts_node их уже не узнал бы (робот прочёл бы значения
+    параметров). Ход без тулов получает честную фразу кода :data:`EMPTY_REPLY_PHRASE`. Детекторы — те же, что у
+    tts_node (одна таблица в ``dialogue_guards``); ретрай LLM на такой ответ удалён в ADR-0150 PR-7 ч.7d-2 (#3698),
+    нормализация переезжает в tts_node в PR-15. ``warn`` — логгер.
+
+    ADR-0150 PR-7 ч.7d-3 (#3698): проверка «текст цитирует служебное из контекста хода» (#3598/#3600,
+    ``internal_text_marker`` ядра) удалена: это была временная заплатка по ADR-0148.
     """
     text = getattr(result, "spoken_text", "") or ""
-    marker = getattr(result, "internal_text_marker", None)
-    if not marker:
-        return text
-    warn(
-        f"🤐 [issue 3598] финальный текст хода — рассуждение модели "
-        f"(цитирует {marker!r}), не озвучиваю: {text[:160]!r}"
-    )
+    service = _service_syntax(text)
+    if service:
+        warn(f"🤐 [{service}] финальный текст хода — служебный синтаксис, не озвучиваю: {text[:160]!r}")
+        return ""
+    return text
+
+
+def _service_syntax(text: str) -> str:
+    """Метка служебного синтаксиса в тексте хода (``issue 2760`` / ``issue 2175``) или ``""``."""
+    if is_tool_call_markup(text):
+        return "issue 2760"
+    if is_system_template_regurgitated_in_ssml(text.strip()):
+        return "issue 2175"
     return ""
 
 
@@ -168,11 +155,9 @@ __all__ = [
     "FIRST_SENTENCE_LIMIT",
     "MUSIC_MAX_CHUNKS",
     "TurnSpeechHold",
-    "RETRY_PROMPT_LEAK_MARKER",
     "decide_turn_speech",
     "final_text_for_speech",
     "final_text_skipped_log",
     "first_sentence",
-    "is_retry_prompt_leak",
     "wants_lyrics",
 ]

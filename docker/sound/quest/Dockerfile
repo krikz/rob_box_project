@@ -48,6 +48,13 @@ ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO:-humble}
 # ============================================================
 # Stage 1: Vite build webxr_client
 # ============================================================
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 FROM ${BUILDER_IMAGE} AS webxr-builder
 
 WORKDIR /build
@@ -177,6 +184,13 @@ RUN pip3 install --no-cache-dir --retries 5 --timeout 300 \
       "msgpack>=1.0.0" \
       "opencv-python-headless>=4.8.0"
 
+# IDL-пакеты rob_box_supervisor_msgs и rob_box_dialog_msgs — готовые из общего
+# образа msgs (stage `msgs` в шапке), а не компиляцией здесь. Нужны оба:
+# #2089 — quest_node импортирует ExecuteCommand/Command, без них restart loop;
+# ADR-0150 PR-2 (#3687) — подписка на типизированный SpeakerResult.
+WORKDIR /ws
+COPY --from=msgs /ws/install /ws/install
+
 # Копируем caddy binary из caddy:2-alpine (45 MB, оффлайн-safe).
 # Положим в /usr/local/bin — в PATH у root в Ubuntu он есть.
 COPY --from=caddy-builder /usr/bin/caddy /usr/local/bin/caddy
@@ -194,6 +208,7 @@ COPY --from=webxr-builder /build/dist /srv/quest_static
 WORKDIR /ws
 RUN mkdir -p \
       src/rob_box_supervisor_msgs \
+      src/rob_box_dialog_msgs \
       src/rob_box_core \
       src/rob_box_quest
 
@@ -218,22 +233,13 @@ RUN mkdir -p \
 # rob_box_supervisor_msgs): rob_box_quest.quest_node импортирует
 #   from rob_box_supervisor_msgs.srv import ExecuteCommand
 #   from rob_box_supervisor_msgs.msg import Command
-# (Bridge.execute(Command), issue #2002, ADR-0051 §2.1). Пакет — ament_cmake,
-# IDL генерируется rosidl_default_generators на colcon build. Если он не
-# скопирован и не пересобран в quest image — quest не получает свежие
-# Python-типы (ExecuteCommand/Command) из локального colcon workspace,
-# и падает на старте с ModuleNotFoundError → Restarting loop.
-#
-# ros2-zenoh база supervisor_msgs НЕ содержит (это не voice-assistant),
-# поэтому ОБЯЗАТЕЛЬНО копируем пакет в образ + пересобираем его из
-# локального src/ — никаких "унаследуется из base" трюков, всё явно.
-# std_msgs и builtin_interfaces ставим через apt в /opt/ros — они нужны
-# rob_box_supervisor_msgs как rosidl-зависимости (см. CMakeLists.txt).
-# Шаг 0: IDL-пакет (ament_cmake) — структура пакета, кешируется отдельно.
-COPY src/rob_box_supervisor_msgs/package.xml  /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/CMakeLists.txt /ws/src/rob_box_supervisor_msgs/
-COPY src/rob_box_supervisor_msgs/srv /ws/src/rob_box_supervisor_msgs/srv
-COPY src/rob_box_supervisor_msgs/msg /ws/src/rob_box_supervisor_msgs/msg
+# (Bridge.execute(Command), issue #2002, ADR-0051 §2.1). Пакет — ament_cmake;
+# если его нет в /ws/install quest image — quest падает на старте с
+# ModuleNotFoundError → Restarting loop. ros2-zenoh база supervisor_msgs НЕ
+# содержит (это не voice-assistant), поэтому /ws/install с ним явно
+# копируется из общего образа msgs (собран из того же коммита, что и quest)
+# — никаких "унаследуется из base" трюков.
+# Шаг 0: IDL-пакеты пришли готовыми из общего образа msgs выше.
 
 # Шаг 1: package.xml + setup.py + setup.cfg (структура, кешируется)
 COPY src/rob_box_quest/package.xml /ws/src/rob_box_quest/
@@ -263,18 +269,15 @@ COPY src/rob_box_quest/rob_box_quest /ws/src/rob_box_quest/rob_box_quest
 # Issue #2081: rob_box_core — иначе avatar_command.py не попадёт в образ.
 COPY src/rob_box_core/rob_box_core /ws/src/rob_box_core/rob_box_core
 
-# Шаг 4: пересборка rob_box_supervisor_msgs (IDL) + rob_box_core +
-# rob_box_quest. ARCH-quest (#2278): теперь это лёгкая сборка поверх
-# ros2-zenoh (~250 MB base), без тяжёлого pytorch/renardo/vosk-слоя —
-# colcon собирает только pure-Python + IDL, время ~30-60 сек.
+# Шаг 4: сборка rob_box_core + rob_box_quest. IDL-пакеты лежат в
+# /ws/install (Шаг 0), но не в src — окружение для них даёт source.
+# ARCH-quest (#2278): лёгкая сборка поверх ros2-zenoh (~250 MB base), без
+# тяжёлого pytorch/renardo/vosk-слоя — только pure-Python, ~30-60 сек.
 # WORKDIR=/ws обязателен — colcon ищет пакеты в $PWD/src.
-# Порядок пакетов в --packages-select важен: supervisor_msgs собирается
-# первым, чтобы его сгенерированные Python-типы были доступны при
-# сборке rob_box_core/rob_box_quest (на практике colcon сам разруливает
-# graph-build-order, но явный порядок оставляем для воспроизводимости).
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
+ && . /ws/install/setup.sh \
  && colcon build \
-        --packages-select rob_box_supervisor_msgs rob_box_core rob_box_quest \
+        --packages-select rob_box_core rob_box_quest \
         --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Caddyfile + entry-script

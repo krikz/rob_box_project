@@ -8,7 +8,7 @@ it to topics. This script is a second shell — a terminal REPL — around
 the *same* core, so what you talk to here is what the robot runs:
 
 * the same system prompt (``src/rob_box_voice/prompts/master_prompt_compact.txt``),
-* the same provider chain and defaults (``llm_providers: "minimax,deepseek"``
+* the same provider chain and defaults (``llm_providers: "deepseek,minimax"``
   → health-aware fallback),
 * the same 51-tool catalog the LLM sees on the robot,
 * the same DSM transitions per turn (WAKE_WORD → STT_RESULT → DIALOGUE_END),
@@ -50,6 +50,7 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 #: you are testing the code in front of you, not last week's wheel.
 _SRC_PACKAGES = (
     "rob_box_core",
+    "rob_box_dialog",  # knowledge table (wake words, silence) for dialogue_text and the harness DSM
     "rob_box_llm",
     "rob_box_harness",
     "rob_box_voice",  # only pure helpers (dialogue_text); never the node
@@ -190,7 +191,7 @@ def say(text: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_PROVIDERS = "minimax,deepseek"  # docker/vision/config/.../dialogue_node.yaml
+DEFAULT_PROVIDERS = "deepseek,minimax"  # docker/vision/config/.../dialogue_node.yaml
 DEFAULT_PROMPT_FILE = "master_prompt_compact.txt"
 DEFAULT_DB = "~/.rob_box/local_chat.db"
 
@@ -261,22 +262,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Отправить фразу и выйти. Можно повторять — получится сценарий.",
     )
     parser.add_argument(
-        "--skills",
+        "--all-tools",
         action="store_true",
         help=(
-            "Включить доменные скиллы (Move A): фрагмент инструкций "
-            "активного домена приезжает последним system-сообщением, "
-            "вплотную к реплике. На роботе это dialogue_node.yaml "
-            "skills_enabled."
-        ),
-    )
-    parser.add_argument(
-        "--narrow-tools",
-        action="store_true",
-        help=(
-            "Move B: показывать LLM только инструменты core + активного "
-            "скилла. Требует --skills. На роботе это dialogue_node.yaml "
-            "skill_tool_narrowing."
+            "Показывать LLM весь каталог, а не срез хода (на роботе срез ≤ 12 схем всегда: "
+            "rob_box_dialog.tools_view, ADR-0150 PR-6)."
         ),
     )
     parser.add_argument("--no-color", action="store_true", help="Без ANSI-цветов.")
@@ -484,14 +474,6 @@ class ChatSession:
         self.tool_count = len(await self.tools.discover())
 
         self.dsm = DialogueStateMachine(silence_timeout=300.0)
-        # Доменные скиллы (change skill-scoped-dialogue-context). Тот же
-        # словарь фрагментов и тот же роутер, что у dialogue_node — REPL
-        # обязан гонять ТУ ЖЕ схему, иначе он проверяет не то, что едет
-        # на робота.
-        self.skill_prompts = (
-            _load_skill_prompts(REPO_ROOT) if getattr(self.args, "skills", False) else {}
-        )
-        self.skill_router = _build_skill_router(tuple(sorted(self.skill_prompts)))
         self.core = AgentCore(
             llm=self.llm,
             tools=self.tools,
@@ -501,8 +483,6 @@ class ChatSession:
             history_trim_limit=self.args.history_max_turns,
             system_prompt=system_prompt,
             use_streaming=not self.args.no_stream,
-            skill_prompts=self.skill_prompts,
-            narrow_tools_to_skill=bool(getattr(self.args, "narrow_tools", False)),
             on_prompt=self._on_prompt_stats,
         )
         self._prompt_sizes: list[tuple[int, bool, str]] = []
@@ -517,20 +497,19 @@ class ChatSession:
         self._prompt_sizes.append(
             (stats.prompt_tokens, stats.estimated, stats.skill)
         )
-        if getattr(self.args, "skills", False):
-            mark = "~" if stats.estimated else "="
-            print(
-                f"   [промпт {mark}{stats.prompt_tokens} ток · "
-                f"скилл={stats.skill}]"
-            )
+        mark = "~" if stats.estimated else "="
+        print(f"   [промпт {mark}{stats.prompt_tokens} ток · срез={stats.skill}]")
 
-    def _route_skill(self, text: str) -> None:
-        """Активировать домен до обращения к LLM (детерминированный путь)."""
-        if self.skill_router is None:
+    def _apply_tools_view(self, text: str) -> None:
+        """Срез тулов хода — та же функция, что у dialogue_node (``rob_box_dialog.tools_view``)."""
+        if getattr(self.args, "all_tools", False):
             return
-        skill = self.skill_router.route(text)
-        if skill:
-            self.core.set_active_skill(skill)
+        from rob_box_dialog.session import SessionSnapshot
+        from rob_box_dialog.tools_view import available_tools, groups_for
+
+        snap = SessionSnapshot(agent="personality", session_id="repl", epoch=0, started_at=0.0)
+        names = [t.name for t in available_tools(snap, text=text)]
+        self.core.set_visible_tools(names, "+".join(groups_for(snap, text)))
 
     async def close(self) -> None:
         for port in (self.tools, self.memory, self.llm):
@@ -608,9 +587,8 @@ class ChatSession:
 
         self.turn_index += 1
         self._spoken = []
-        # Детерминированная активация домена ДО обращения к LLM: фрагмент
-        # попадает уже в первый запрос хода, лишнего round-trip нет.
-        self._route_skill(text)
+        # Срез тулов хода ДО обращения к LLM — как на роботе.
+        self._apply_tools_view(text)
         started = time.monotonic()
         result = await self.core.process_input(
             text,
@@ -742,42 +720,6 @@ async def run(args: argparse.Namespace) -> int:
             await session.send(line)
     finally:
         await session.close()
-
-
-def _load_skill_prompts(repo_root) -> dict:
-    """Прочитать фрагменты скиллов из репозитория.
-
-    На роботе это делает ``dialogue_node._load_skill_prompts`` через
-    ament share-директорию; здесь берём прямо из чекаута, чтобы правки в
-    промптах были видны без пересборки.
-    """
-    from rob_box_core.tool_catalog import skill_names
-
-    skills_dir = repo_root / "src" / "rob_box_voice" / "prompts" / "skills"
-    loaded: dict = {}
-    for skill in skill_names():
-        path = skills_dir / f"{skill}.txt"
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            loaded[skill] = text
-    return loaded
-
-
-def _build_skill_router(known: tuple):
-    """Собрать роутер. ``None``, если скиллы выключены или недоступны."""
-    if not known:
-        return None
-    try:
-        from rob_box_voice.core.command_parser import CommandParser
-        from rob_box_voice.core.skill_router import SkillRouter
-    except Exception:  # noqa: BLE001 — rob_box_voice может быть не на пути
-        return None
-    return SkillRouter(
-        CommandParser(wake_words=["робот", "робокс", "робобокс"], confidence_base=0.8),
-        known_skills=known,
-    )
 
 
 def main(argv: list[str] | None = None) -> int:

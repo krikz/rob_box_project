@@ -26,17 +26,17 @@ does_not_leak_name.py) убрала риск назвать НЕЗНАКОМЦА
   это ты?" завалил бы ту же приёмку).
 * ``DialogueNode._handle_tentative_speaker`` (вызывается из
   ``_apply_speaker_identity``) один раз за сессию (якорь непрерывности --
-  тот же ``..._session_gap_sec``, что у роста галереи в PR #2757) кладёт
-  подсказку-гипотезу в ``_pending_identity_hint``, которую
-  ``_build_dynamic_system_context`` превращает в ``<name_hypothesis>``
-  (``single``) или нейтральный ``<identity_question_rule>``
-  (``contested``, БЕЗ единого имени). Ответ на следующей реплике читает
+  тот же ``..._session_gap_sec``, что у роста галереи в PR #2757) ставит
+  кандидата на вопрос (``_identity_ask_candidate``: «<Имя>, это ты?» у
+  ``single``, нейтральный «Как тебя зовут?» у ``contested``, БЕЗ единого
+  имени); с #3695 подсказок-правил в снимке хода нет, имя-гипотезу LLM не
+  видит (раздел ``speaker``). Ответ на следующей реплике читает
   ``classify_identity_confirmation`` -- простая эвристика по целым словам
   ("да"/"нет" и т.п.), не NLU; неоднозначный ответ = отказ.
 * "Да" -> ``_confirm_tentative_speaker`` мутирует ЛОКАЛЬНЫЙ снимок
   ``_current_speaker`` (не публикует наружу -- vision_face_node,
   ADR-0123 п.6/issue #2771, гипотезу не увидит) и переиспользует
-  confident-путь ``[Spkr:...]`` целиком; плюс один раз просит рост
+  confident-путь целиком (имя в разделе ``speaker``); плюс один раз просит рост
   галереи тем же путём, что PR #2757 (``/voice/speaker/register``).
 * "Нет"/неоднозначно -> остаётся tentative до конца сессии, больше не
   спрашиваем. Не переспрос к PR #2798 (``_ask_identity_if_ambiguous``) --
@@ -73,6 +73,8 @@ from rob_box_voice.dialogue_node import (  # noqa: E402
     DialogueNode,
     classify_identity_confirmation,
 )
+from rob_box_voice.core.speaker_turn import speaker_section, tentative_states  # noqa: E402
+from identity_v17_legacy import finish_turn_after_identity  # noqa: E402
 
 SPEAKER_ID = "1ae4b0ac-0000-0000-0000-000000000000"
 BORIS_ID = "boris-id-0000-0000-0000-000000000000"
@@ -89,8 +91,6 @@ def node():
     n._speaker_lock = threading.Lock()
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     # Issue #2888 -- _apply_speaker_identity зовётся внутри хода: вопрос о
     # личности придерживается до выдачи ответа хода (механизм #2828).
     n._task_lock = threading.Lock()
@@ -98,6 +98,7 @@ def node():
     # Прод-значения из config/dialogue_node.yaml.
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
+    finish_turn_after_identity(n)
     return n
 
 
@@ -201,37 +202,30 @@ class TestSingleHypothesis:
         node._current_speaker = _tentative_single()
 
         result1 = _run(node._apply_speaker_identity("privet", speaker_context=None))
+        result1_sp = speaker_section(node)
         assert "Denchik" not in result1  # имя никогда не идёт в user_input
-        assert "[Speaker:tentative]" in result1
-        assert node._pending_identity_hint == {
-            "kind": "single",
-            "name": "Denchik",
-            "confidence": pytest.approx(0.771),
-        }
-
-        hint_lines = node._pending_identity_hint_lines()
-        # Issue #2888 -- имя-гипотеза в LLM больше не идёт: вопрос с именем
-        # задаёт робот сам (см. test_issue_2888_*).
-        assert hint_lines
-        assert not any("Denchik" in line for line in hint_lines)
-        # Одноразовая: второй вызов подряд (как если бы система собрала
-        # system_context дважды по ошибке) ничего не возвращает.
-        assert node._pending_identity_hint_lines() == []
+        assert result1_sp == {"name": None, "name_state": "tentative"}
+        # вопрос с именем задаёт робот сам (#2888, после хода — В17); LLM имени-гипотезы не видит (раздел speaker)
+        assert node._identity_question_asked_in_turn  # вопрос задан после хода (finish_turn_after_identity)
+        assert tentative_states(node).get(SPEAKER_ID)["asked"] is True
 
         # Следующая реплика, ответ неоднозначный -- считается отказом,
         # больше не переспрашиваем, hint больше не появляется.
         result2 = _run(
             node._apply_speaker_identity("kak dela", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result2
+        result2_sp = speaker_section(node)
+        assert result2_sp == {"name": None, "name_state": "tentative"}
         assert "Denchik" not in result2
-        assert node._pending_identity_hint is None
+        assert not node._identity_question_asked_in_turn
 
         result3 = _run(
             node._apply_speaker_identity("chto novogo", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result3
-        assert node._pending_identity_hint is None
+        assert result3 == "chto novogo"  # текст человека — без префиксов (#3695)
+        result3_sp = speaker_section(node)
+        assert result3_sp == {"name": None, "name_state": "tentative"}
+        assert not node._identity_question_asked_in_turn
 
     def test_confirmed_yes_uses_name_until_end_of_session(self, node):
         node._current_speaker = _tentative_single()
@@ -241,7 +235,9 @@ class TestSingleHypothesis:
         result = _run(
             node._apply_speaker_identity("да, это я", speaker_context=None)
         )
-        assert "[Spkr:Denchik]" in result
+        assert result == "да, это я"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
         assert node._current_speaker["name"] == "Denchik"
         assert "tentative_name" not in node._current_speaker
 
@@ -267,21 +263,23 @@ class TestSingleHypothesis:
         result2 = _run(
             node._apply_speaker_identity("kak pogoda", speaker_context=None)
         )
-        assert "[Spkr:Denchik]" in result2
+        assert result2 == "kak pogoda"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp["name"] == "Denchik"
         assert node._speaker_register_pub.publish.call_count == 1  # не выросло
 
     def test_confirmed_no_stays_silent_until_end_of_session(self, node):
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        node._pending_identity_hint_lines()  # как будто system_context уже собрали
 
         node._current_speaker = _tentative_single()
         result = _run(
             node._apply_speaker_identity("нет, не я", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result
+        result_sp = speaker_section(node)
+        assert result_sp == {"name": None, "name_state": "tentative"}
         assert "Denchik" not in result
-        assert node._pending_identity_hint is None
+        assert not node._identity_question_asked_in_turn
         assert node._speaker_register_pub.publish.call_count == 0
 
         # Ещё одна реплика той же сессии -- по-прежнему тихо, вопрос не
@@ -290,13 +288,17 @@ class TestSingleHypothesis:
         result2 = _run(
             node._apply_speaker_identity("chto tam", speaker_context=None)
         )
-        assert "[Speaker:tentative]" in result2
-        assert node._pending_identity_hint is None
+        assert result2 == "chto tam"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp == {"name": None, "name_state": "tentative"}
+        assert not node._identity_question_asked_in_turn
 
-    def test_new_session_after_gap_allows_asking_again(self, node):
+    def test_after_gap_hint_again_but_question_once_per_speaker(self, node):
+        """В17 (#3695): после паузы состояние #2809 новое (подсказка LLM снова есть), но вопрос вслух —
+        не больше одного раза на собеседника за сессию процесса."""
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        state = node._identity_confirmations[SPEAKER_ID]
+        state = tentative_states(node).get(SPEAKER_ID)
         assert state["asked"] is True
 
         # Отказали, сессия истекла (пауза больше gap).
@@ -305,10 +307,10 @@ class TestSingleHypothesis:
 
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet snova", speaker_context=None))
-        new_state = node._identity_confirmations[SPEAKER_ID]
-        assert new_state["asked"] is True
+        new_state = tentative_states(node).get(SPEAKER_ID)
+        assert new_state["asked"] is False  # второй раз не спросили
         assert new_state["confirmed"] is None  # новая сессия -- решения ещё нет
-        assert node._pending_identity_hint is not None  # спросили заново
+        assert "asked_already" in _logged(node)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -328,29 +330,24 @@ class TestContestedHypothesis:
                 "ya mimo shel, imya svoe ne nazovu", speaker_context=None
             )
         )
+        result_sp = speaker_section(node)
         assert "Boris" not in result
         assert "Sasha" not in result
-        assert "[Speaker:tentative]" in result
+        # contested: гипотезы одного имени нет — для снимка это unknown, имён в снимке нет
+        assert result_sp == {"name": None, "name_state": "unknown"}
 
-        hint_lines = node._pending_identity_hint_lines()
-        assert hint_lines  # вопрос всё же есть -- нейтральный
-        joined = " ".join(hint_lines)
-        assert "Boris" not in joined
-        assert "Sasha" not in joined
-        assert "identity_question_rule" in joined
-        assert "зовут" in joined  # нейтральный "как тебя зовут?"
+        assert node._identity_question_asked_in_turn  # вопрос всё же есть -- нейтральный «Как тебя зовут?»
 
     def test_asks_at_most_once_per_session(self, node):
         node._current_speaker = _tentative_contested()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        assert node._identity_confirmations[BORIS_ID]["asked"] is True
+        assert tentative_states(node).get(BORIS_ID)["asked"] is True
 
-        node._pending_identity_hint = None  # как будто уже собрали контекст
         node._current_speaker = _tentative_contested()
         _run(node._apply_speaker_identity("chto delaesh", speaker_context=None))
         # Второй раз подсказка не появляется -- заданный вопрос уже
         # интерпретируется как (неоднозначный) ответ, не новый повод спросить.
-        assert node._pending_identity_hint is None
+        assert not node._identity_question_asked_in_turn
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -371,30 +368,32 @@ class TestAnswerWindowClock:
         node._identity_question_session_gap_sec = 30.0
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        node._pending_identity_hint_lines()
 
         clock.now += 84.13
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я.", speaker_context=None))
-        assert "[Spkr:Denchik]" in result
-        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
-        assert node._pending_identity_hint is None
+        assert result == "да, это я."  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
+        assert tentative_states(node).get(SPEAKER_ID)["confirmed"] is True
+        assert not node._identity_question_asked_in_turn
 
     def test_answer_after_84s_is_consumed_live_timeline(self, node, clock):
         clock.now = 716.42
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity(
             "ты меня узнал по голосу", speaker_context=None))
-        assert node._pending_identity_hint is not None
-        node._pending_identity_hint_lines()  # system_context собран
+        assert node._identity_question_asked_in_turn
 
         clock.now = 800.55  # +84.13s -- больше прежних 30s
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я.", speaker_context=None))
-        assert "[Spkr:Denchik]" in result
-        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is True
+        assert result == "да, это я."  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] == "Denchik"
+        assert tentative_states(node).get(SPEAKER_ID)["confirmed"] is True
         assert node._speaker_register_pub.publish.call_count == 1
         assert "Speaker confirmed verbally: 'Denchik'" in _logged(node)
 
@@ -402,50 +401,51 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result2 = _run(node._apply_speaker_identity(
             "а что ты обо мне запомнил", speaker_context=None))
-        assert "[Spkr:Denchik]" in result2
-        assert node._pending_identity_hint is None  # не переспрашиваем
+        assert result2 == "а что ты обо мне запомнил"  # текст человека — без префиксов (#3695)
+        result2_sp = speaker_section(node)
+        assert result2_sp["name"] == "Denchik"
+        assert not node._identity_question_asked_in_turn  # не переспрашиваем
         assert node._speaker_register_pub.publish.call_count == 1
         assert "Speaker verbal confirmation reused: 'Denchik'" in _logged(node)
 
     def test_pending_question_expires_after_answer_window(self, node, clock):
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        node._pending_identity_hint_lines()
 
         clock.now += 180.5  # дольше identity_answer_window_sec
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "да, это я", speaker_context=None))
+        assert result == "да, это я"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
         # Вопрос протух: "да" не считается ответом, вопрос задаётся заново.
-        assert "[Spkr:Denchik]" not in result
-        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is None
-        assert node._pending_identity_hint is not None
+        assert result_sp["name"] != "Denchik"
+        assert tentative_states(node).get(SPEAKER_ID)["confirmed"] is None
+        assert "asked_already" in _logged(node)  # кандидат на вопрос снова есть, вслух — раз на собеседника (В17)
         assert node._speaker_register_pub.publish.call_count == 0
 
     def test_declined_survives_harness_step_pause(self, node, clock):
         """n706 "нет" -> n707 через ~65s: не переспрашиваем, имени нет."""
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        node._pending_identity_hint_lines()
 
         clock.now += 65.0
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("нет, не я", speaker_context=None))
-        assert node._identity_confirmations[SPEAKER_ID]["confirmed"] is False
+        assert tentative_states(node).get(SPEAKER_ID)["confirmed"] is False
 
         clock.now += 65.0
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "как меня зовут", speaker_context=None))
         assert "Denchik" not in result
-        assert node._pending_identity_hint is None
+        assert not node._identity_question_asked_in_turn
 
     def test_settled_answer_resets_after_session_gap(self, node, clock):
         """n705: пауза дольше identity_question_session_gap_sec после
         решённого "да" -- новая сессия, вопрос задаётся снова."""
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("privet", speaker_context=None))
-        node._pending_identity_hint_lines()
         clock.now += 60.0
         node._current_speaker = _tentative_single()
         _run(node._apply_speaker_identity("да, это я", speaker_context=None))
@@ -454,5 +454,7 @@ class TestAnswerWindowClock:
         node._current_speaker = _tentative_single()
         result = _run(node._apply_speaker_identity(
             "ты ещё здесь", speaker_context=None))
-        assert "[Spkr:Denchik]" not in result
-        assert node._pending_identity_hint is not None
+        assert result == "ты ещё здесь"  # текст человека — без префиксов (#3695)
+        result_sp = speaker_section(node)
+        assert result_sp["name"] != "Denchik"
+        assert "asked_already" in _logged(node)  # кандидат на вопрос снова есть, вслух — раз на собеседника (В17)

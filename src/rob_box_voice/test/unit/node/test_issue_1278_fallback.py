@@ -44,13 +44,11 @@ def _make_node() -> DialogueNode:
     n.animation_pub = MagicMock()
     n.sound_trigger_pub = MagicMock()
     n.state_pub = MagicMock()
-    n.current_dialogue_id = None
     n.available_tools = []
     n.mcp_tools_available = False
     n.internet_available = True
     n.current_time_info = {}
     n._verbose_llm = False
-    n._babble_retry_used = False
     n._memory = MagicMock()
     # Issue #1195 — _publish_response кладёт tg_chat_id в payload; без
     # атрибута publish падает AttributeError (поглощается try/except).

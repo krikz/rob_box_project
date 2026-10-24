@@ -181,6 +181,17 @@ class STTQuotaError(Exception):
     """
 
 
+def failure_class(error: Optional[str], exc: Optional[BaseException]) -> str:
+    """Класс здоровья отказа для ``ProviderState`` (ADR-0150 §8): quota / auth / timeout / down."""
+    if isinstance(exc, STTQuotaError):
+        return "quota"
+    if isinstance(exc, STTAuthError):
+        return "auth"
+    if isinstance(exc, STTTimeoutError) or (error or "").startswith("timeout"):
+        return "timeout"
+    return "down"
+
+
 def is_permanent_failure(exc: Optional[BaseException]) -> bool:
     """True, если отказ не «рассосётся» сам (квота/ключ) — длинный TTL."""
     return isinstance(exc, (STTAuthError, STTQuotaError))
@@ -241,12 +252,15 @@ class ProviderDeadCache:
         self._lock = threading.Lock()
         self._dead_until: dict[str, float] = {}
         self._reason: dict[str, str] = {}
+        self._health_class: dict[str, str] = {}
         # Issue #2767 — счётчик подряд-идущих PERMANENT-отказов (auth/quota)
         # на провайдера, для лестницы эскалации TTL.
         self._permanent_streak: dict[str, int] = {}
         # Issue #2924 — отдельный счётчик подряд-идущих ТРАНЗИЕНТНЫХ отказов
         # (сеть/таймаут): плоские 30с не спасали серию фраз от таймаута.
         self._transient_streak: dict[str, int] = {}
+        # #3755: транзиентные отказы НА РЕЧИ (фразу приняли другие). Отказ на шуме сюда не попадает.
+        self._speech_strikes: dict[str, int] = {}
 
     # -- запросы ---------------------------------------------------------
 
@@ -265,6 +279,29 @@ class ProviderDeadCache:
         with self._lock:
             return self._reason.get(provider)
 
+    def health_class(self, provider: str) -> str:
+        """Класс отказа для ``ProviderState``; ``ok``, пока провайдер не мёртв.
+
+        ``quota``/``auth`` - сразу. Транзиентный (``timeout``/``down``) - лишь после
+        ``STT_TRANSIENT_STRIKES_TO_DOWN`` отказов подряд на речи (#3755): иначе таймаут фолбека на шуме
+        (фраза всё равно ``rejected``) озвучивался бы как «провайдер не отвечает». Пропуск провайдера в цепочке
+        (``is_dead``) от этого не зависит - он по-прежнему экономит время.
+        """
+        from rob_box_dialog.knowledge import STT_TRANSIENT_STRIKES_TO_DOWN  # noqa: PLC0415 - единая таблица
+
+        with self._lock:
+            if self._clock() >= self._dead_until.get(provider, 0.0):
+                return "ok"
+            cls = self._health_class.get(provider, "down")
+            if cls in ("quota", "auth") or self._speech_strikes.get(provider, 0) >= STT_TRANSIENT_STRIKES_TO_DOWN:
+                return cls
+            return "ok"
+
+    def note_speech_failure(self, provider: str) -> None:
+        """Провайдер отказал на фразе, которую приняли другие (то есть это была речь): +1 к счёту подряд."""
+        with self._lock:
+            self._speech_strikes[provider] = self._speech_strikes.get(provider, 0) + 1
+
     # -- мутации ---------------------------------------------------------
 
     def mark_alive(self, provider: str) -> None:
@@ -272,8 +309,10 @@ class ProviderDeadCache:
         with self._lock:
             self._dead_until.pop(provider, None)
             self._reason.pop(provider, None)
+            self._health_class.pop(provider, None)
             self._permanent_streak.pop(provider, None)
             self._transient_streak.pop(provider, None)
+            self._speech_strikes.pop(provider, None)
 
     def _transient_ttl_for_streak(self, provider: str) -> float:
         """TTL для ОЧЕРЕДНОГО подряд-идущего транзиентного отказа (issue #2924).
@@ -316,6 +355,7 @@ class ProviderDeadCache:
         *,
         transient: bool = True,
         ttl_s: Optional[float] = None,
+        health_class: str = "down",
     ) -> float:
         """Пометить провайдера мёртвым. Возвращает применённый TTL.
 
@@ -339,6 +379,7 @@ class ProviderDeadCache:
                     ttl_s = self._permanent_ttl_for_streak(provider)
             self._dead_until[provider] = self._clock() + float(ttl_s)
             self._reason[provider] = str(reason)[:300]
+            self._health_class[provider] = health_class
         return float(ttl_s)
 
     # -- персистентность (wall-clock, как в tts_node) ---------------------
@@ -417,13 +458,29 @@ class STTAttempt:
 
 
 def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS) -> bool:
-    """Слишком короткая фраза — отклонить.
+    """Фраза непригодна как реплика человека - отклонить («не расслышал»). Единый гейт для ВСЕХ провайдеров.
 
-    ``min_chars`` — порог после ``strip()``. Принимаем None как короткую фразу.
+    1. Короткая: ``min_chars`` считается по буквам и цифрам, а не по длине строки. Пунктуацию добавляет сам
+       провайдер (MiniMax возвращает «Да.» на «да»): с ней двухбуквенный мусор проходил порог 3 (#3724). Ответы
+       из ``knowledge.SHORT_ANSWERS`` («да», «нет», «ага», «ок»...) порог не касается - робот сам задаёт вопросы
+       да/нет, и на develop голое «да» отклонялось (2 символа < 3), проходило лишь «Да.» из-за точки.
+    2. Не по-русски: больше 10% букв вне кириллицы и латиницы (иероглифы, деванагари) - мусор распознавания, а
+       не речь (MiniMax на односложный звук вернул «係啊。», и stt_node отдал его личности, #3724).
+
+    Принимаем None как короткую фразу.
     """
     if text is None:
         return True
-    return len(text.strip()) < min_chars
+    from rob_box_dialog.knowledge import SHORT_ANSWERS  # noqa: PLC0415 - единственная таблица ответов да/нет
+    from .tts_text_guard import should_skip  # noqa: PLC0415 - модуль чистый, ленивый импорт не тянет граф
+
+    if should_skip(text):
+        return True
+    normalized = " ".join("".join(ch for ch in text.lower() if ch.isalnum() or ch.isspace()).split())
+    if normalized in SHORT_ANSWERS:
+        return False
+    letters = normalized.replace(" ", "")
+    return len(letters) < min_chars or len(set(letters)) == 1  # «э», «ммм», «ааа» - междометия, не речь
 
 
 def _measure(
@@ -656,7 +713,19 @@ def _mark_failed(
             provider_name,
             error,
             transient=not is_permanent_failure(exc),
+            health_class=failure_class(error, exc),
         )
+
+
+def _note_speech_failures(dead_cache: Optional[ProviderDeadCache], attempts: Sequence[STTAttempt]) -> None:
+    """Фразу приняли: все, кто на ней упал по таймауту/ошибке, отказали на РЕЧИ - засчитать (#3755).
+
+    Фраза с итогом ``rejected`` сюда не доходит: отказ на шуме/эхе провайдеру в счёт не идёт.
+    """
+    if dead_cache is None:
+        return
+    for name in dict.fromkeys(a.provider for a in attempts if a.reason in ("timeout", "error")):
+        dead_cache.note_speech_failure(name)
 
 
 def _skip_for_budget(
@@ -767,6 +836,7 @@ def select_recognition(
             clock=clock,
         )
         if text is not None:
+            _note_speech_failures(dead_cache, attempts)
             return text, attempts
 
     # Сюда дошли, если ни один провайдер не дал "ok".

@@ -16,7 +16,6 @@ import pytest
 from rob_box_voice.core.dialogue_helpers import (
     EMOTION_TO_ANIMATION,
     detect_pitch_intent,
-    detect_volume_intent,
     format_llm_skipped_summary,
     generate_fallback_response,
     map_emotion_to_animation,
@@ -90,37 +89,6 @@ class TestGenerateFallbackResponse:
 
     def test_case_insensitive(self) -> None:
         assert generate_fallback_response("СПАСИБО") == "Пожалуйста!"
-
-
-# ---------------------------------------------------------------------------
-# detect_volume_intent
-# ---------------------------------------------------------------------------
-
-
-class TestDetectVolumeIntent:
-    def test_max(self) -> None:
-        assert detect_volume_intent("максимальная громкость") == "max"
-        assert detect_volume_intent("максимум громкости") == "max"
-        assert detect_volume_intent("говори громко") == "max"
-
-    def test_normal(self) -> None:
-        assert detect_volume_intent("нормальная громкость") == "normal"
-        assert detect_volume_intent("стандартная громкость") == "normal"
-        assert detect_volume_intent("обычная громкость") == "normal"
-
-    def test_louder_quieter(self) -> None:
-        assert detect_volume_intent("говори громче") == "louder"
-        assert detect_volume_intent("громко") == "louder"
-        assert detect_volume_intent("тише") == "quieter"
-        assert detect_volume_intent("потише") == "quieter"
-
-    def test_no_intent(self) -> None:
-        assert detect_volume_intent("расскажи стих") is None
-        assert detect_volume_intent("") is None
-        assert detect_volume_intent(None) is None  # type: ignore[arg-type]
-
-    def test_case_insensitive(self) -> None:
-        assert detect_volume_intent("ГРОМЧЕ") == "louder"
 
 
 # ---------------------------------------------------------------------------

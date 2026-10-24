@@ -8,12 +8,6 @@
 tts_node:
   ros__parameters:
     provider: minimax
-    # Issue #2003 / ADR-0092 §3.5 — speculative pre-generation (chunk-level).
-    # See ../config/tts_node.yaml for the full comment block. Defaults match
-    # the declare_parameter() defaults in tts_node.py.
-    pregenerate_enabled: true
-    pregenerate_confidence_floor: 0.6
-    pregenerate_history_window: 10
     # Issue #2609 — Silero только аварийный fallback; без этого ключа
     # срабатывал дефолт кода (true) и tts_node грузил torch + модель на
     # каждом старте, хотя в src/rob_box_voice/config он давно выключен.
@@ -70,7 +64,12 @@ tts_node:
     minimax_timeout: 30.0
     minimax_max_retries: 2
     minimax_retry_backoff_ms: 500
-    minimax_streaming: false
+    # #3930 — реплика в динамик SSE-потоком (первый звук ~1 с вместо 2.2–3.6 с HTTP)
+    minimax_streaming: true
+    # ADR-0150 PR-3 (#3688) — задержка «SpeechEvent started (перед play_audio)
+    # → первый звук в колонке» (замер 20.10.2026 микрофоном katana: 560 / 570 /
+    # 520 мс) — одно место: rob_box_dialog.knowledge.SPEECH_OUTPUT_LATENCY_MS
+    # (PR-7c: по ней же выступление ставит реплику на такт). Здесь не задаётся.
     # Issue #1780 / issue #1004 / issue #1830 — единственный канонический
     # блок MiniMax emotion / pitch / volume / pronunciation_dict. В
     # tts_node.py declare_parameter() ожидает STRING ("" → «не задан»);
@@ -95,6 +94,7 @@ tts_node:
     # реального провайдера (не номинального minimax). Пустая строка —
     # отключить персистентность.
     provider_state_file: /data/tts_provider_state.json
+    voice_state_file: /data/tts_voice_state.json  # выбранный голос переживает рестарт (ADR-0150 PR-4 ч.3)
     audio_topic: /voice/audio/speech
     audio_output_sample_rate: 16000
     audio_qos_reliability: best_effort

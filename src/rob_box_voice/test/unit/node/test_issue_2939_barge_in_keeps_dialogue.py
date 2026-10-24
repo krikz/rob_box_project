@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import deque
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -76,18 +75,13 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     n._task_lock = threading.Lock()
     n._run_task = None
     n._run_cancelled = False
-    n._pending_music_cleanup = False
-    n._track_mode_music_active = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
     n._build_dynamic_system_context = MagicMock(return_value="<ctx/>")
     n._llm = llm
-    n._active_batches = {}
     n._dsm = DialogueStateMachine()
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
-    n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = AgentCore(
@@ -98,10 +92,8 @@ def _make_node(llm: _HangThenAnswer) -> DialogueNode:
     )
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._pending_user_messages = deque()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._effects = MagicMock()
-    n._action_claim_retry_used = False
     return n
 
 
@@ -120,7 +112,7 @@ def test_turn_after_barge_in_reaches_llm() -> None:
 
         # Реплика Бориса: то же, что делает приём STT перед диспатчем.
         host = _DialogueSttHost(node)
-        host.cancel_inflight(stop_tts=True)       # BargeInClassifyStep
+        host.take_turn()                          # TakeTurnStep
         host.transition_idle_to_wake()            # DispatchTriggerStep
         host.transition_stt_result()
         await asyncio.gather(first, return_exceptions=True)

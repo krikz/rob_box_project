@@ -178,9 +178,9 @@ verify_topic_check() {  # $1=ip $2=container $3=scope
     echo "actual"; return 0
   fi
   # sound: голосовой стек — смотрим /voice/*, а не камеры (workflow
-  # "[Sound Pi] Check ROS2 Topics" ждёт /voice/stt/result).
+  # "[Sound Pi] Check ROS2 Topics" ждёт /voice/stt/utterance).
   local pattern='camera|rgb|depth|image' what="camera/rgb/depth"
-  if [ "${3:-}" = "sound" ]; then pattern='^/voice/stt/result$'; what="/voice/stt/result"; fi
+  if [ "${3:-}" = "sound" ]; then pattern='^/voice/stt/utterance$'; what="/voice/stt/utterance"; fi
   if printf '%s\n' "$topics" | grep -qE "$pattern"; then
     echo "resolved"
   else

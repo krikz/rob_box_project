@@ -116,6 +116,7 @@ def _load_register_speaker_tool():
 
 
 RegisterSpeakerTool = _load_register_speaker_tool()
+_DIALOGUE = sys.modules[RegisterSpeakerTool.__module__]
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +190,21 @@ class _DialogueNode(_Node):
         return {"utterance_id": self._current_turn_utterance_id}
 
 
+def _speaker_id_owner(bus: _Bus) -> None:
+    """speaker_id_node (#3793): на запрос регистрации с фразой отвечает ``SpeakerResult registered`` с тем же
+    ``utterance_id`` — тул ждёт именно его, а не публикацию."""
+    from rob_box_dialog_msgs.msg import SpeakerResult
+
+    def on_register(msg: Any) -> None:
+        body = json.loads(msg.data)
+        ack = SpeakerResult()
+        ack.event, ack.utterance_id, ack.name = SpeakerResult.EVENT_REGISTERED, body["utterance_id"] or "", body["name"]
+        for callback in bus.subscribers.get("/voice/speaker/result", []):
+            callback(ack)
+
+    bus.subscribers.setdefault("/voice/speaker/register", []).append(on_register)
+
+
 class _MCPServer:
     """Сторона mcp_server: проверка подписи → registry.execute → /mcp/result.
 
@@ -204,6 +220,7 @@ class _MCPServer:
         self.requests: List[Dict[str, Any]] = []
         self._result_pub = self.node.create_publisher(None, "/mcp/result")
         self.node.create_subscription(None, "/mcp/execute", self.on_execute_request)
+        _speaker_id_owner(bus)
 
     def on_execute_request(self, msg: Any) -> None:
         request = json.loads(msg.data)
@@ -243,6 +260,8 @@ def _production_adapter(dialogue: _DialogueNode) -> LLMToolCallAdapter:
 @pytest.fixture(autouse=True)
 def _auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROB_BOX_MCP_TOKEN", _TOKEN)
+    # #3793: тул ждёт исход владельца; молчащий владелец — timeout раньше таймаута адаптера (1 с)
+    monkeypatch.setattr(_DIALOGUE, "register_deadline_s", lambda: 0.2)
 
 
 def _register_via_ros_mcp(
@@ -294,7 +313,9 @@ def test_llm_supplied_utterance_id_is_stripped_without_turn() -> None:
     )
 
     assert "utterance_id" not in server.requests[0]["parameters"]
-    assert registered == [{"name": "Саша", "utterance_id": None}]
+    # #3793: без фразы speaker_id_node откажет всегда — запрос не уходит, исход известен
+    assert registered == []
+    assert _result["data"]["reason"] == "no_utterance_context", _result
 
 
 def test_utterance_id_is_hidden_from_llm_schema() -> None:

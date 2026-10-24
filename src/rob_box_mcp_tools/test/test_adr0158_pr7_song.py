@@ -1,7 +1,7 @@
 """ADR-0158 PR-7 — песня голосом робота: текст от LLM → проверка кода → вокал текущим голосом → Suno → кэш → дека.
 
 Всё на фейках (LLM, TTS-бэкенды, KIE, дека): без сети и денег. G7 (ADR §4): голос песни — тот, что дают
-``/voice/tts/provider_state`` и ``VoiceStateStore`` (3 голоса двух провайдеров), пресет пения идёт в TTS и в Suno.
+``/voice/tts/provider_state`` (3 голоса двух провайдеров), пресет пения идёт в TTS и в Suno.
 """
 
 import threading
@@ -15,7 +15,6 @@ from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenStatus, GenTicket, GenTrack, GenUnavailable
 from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool
-from rob_box_mcp_tools.voice_state import VoiceStateStore
 from rob_box_music.source import CacheTrack, SourceAsk, SourceContext, source_ask, source_candidates
 from rob_box_voice.sing_synth import synth_vocal_to_file
 from rob_box_voice.tts_voice_registry import sing_preset_for
@@ -81,13 +80,11 @@ def test_suno_tags_come_from_the_table_not_from_the_llm():
 
 # ── текущий голос ─────────────────────────────────────────────────────────────
 
-def test_current_voice_is_the_provider_state_plus_voice_store():
-    store = VoiceStateStore()
-    assert sg.current_voice("yandex", store) == ("yandex", "anton")  # дефолт провайдера
-    store.set_voice("alena")
-    assert sg.current_voice("yandex", store) == ("yandex", "alena")  # set_voice
+def test_current_voice_is_the_provider_state():
+    assert sg.current_voice("yandex") == ("yandex", "anton")  # голос ещё не известен - дефолт провайдера
+    assert sg.current_voice("yandex", "alena") == ("yandex", "alena")  # то, что реально звучит (provider_state)
     with pytest.raises(sg.SongFailed) as err:
-        sg.current_voice(None, store)
+        sg.current_voice(None, "alena")
     assert err.value.reason == "no_voice"
 
 

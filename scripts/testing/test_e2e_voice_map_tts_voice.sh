@@ -84,17 +84,32 @@ assert_voice yandex "" anton "пустой голос → дефолт пров�
 assert_four_distinct yandex
 
 echo
-echo "== minimax: таблица по замеру 22.09.2026, худшая пара 0.684 =="
-# anton/ermil = 0.527 — именно эту пару регистрирует акт 2.
-assert_voice minimax anton Russian_ReliableMan
-assert_voice minimax ermil Russian_PessimisticGirl "старая таблица давала HandsomeChildhoodFriend: cos(anton,ermil)=0.739 (0.846 на роботе)"
-assert_voice minimax zahar Russian_CrazyQueen
-assert_voice minimax filipp Russian_AttractiveGuy
-assert_voice minimax "" Russian_ReliableMan "пустой голос → дефолт провайдера"
+echo "== minimax: таблица 23.10.2026 (#3931), voice:pitch:speed, замер на ЖИВОМ канале (колонка -> ReSpeaker) =="
+# Питч/темп сняты (вейк «Робот» на питче +5/темпе 1.2 терялся в 62% фраз), остался один сдвиг +2 у Бориса.
+# Борис высокий регистр (cos к Саше макс 0.71), Саша/Гриша/Валера низкий мужской регистр (между собой 0.9, НЕ различимы). Док: docs/dialog/role_voices_biometrics_2026-10-23.md
+assert_voice minimax anton "Russian_ReliableMan:0:1.0"
+assert_voice minimax ermil "Russian_Bad-temperedBoy:2:1.0"
+assert_voice minimax madirus "Russian_Bad-temperedBoy:2:1.0" "алиас Бориса"
+assert_voice minimax zahar "Russian_HandsomeChildhoodFriend:0:1.0"
+assert_voice minimax filipp "Russian_AttractiveGuy:0:1.0"
+assert_voice minimax kostya "Russian_AttractiveGuy:0:1.0" "алиас Валеры"
+assert_voice minimax arina "presenter_female:0:1.0" "запасной 1"
+assert_voice minimax rita "Russian_PessimisticGirl:0:1.0" "запасной 2"
+assert_voice minimax "" "Russian_ReliableMan:0:1.0" "пустой голос → дефолт провайдера"
 assert_voice minimax Russian_CrazyQueen Russian_CrazyQueen "native голос не переводим"
+assert_voice minimax Russian_ReliableMan:-2:0.9 Russian_ReliableMan:-2:0.9 "native со своей просодией не переводим"
 assert_four_distinct minimax
+# запасные не совпадают ни с одной из четырёх ролей
+for spare in arina rita; do
+    sv="$(map_tts_voice minimax "$spare")"
+    clash=0
+    for v in anton ermil zahar filipp; do [ "$(map_tts_voice minimax "$v")" = "$sv" ] && clash=1; done
+    if [ "$clash" = "0" ]; then PASS=$((PASS + 1)); printf '%sOK%s   minimax %-6s запасной не совпадает с ролью (%s)
+' "$GRN" "$NC" "$spare" "$sv"
+    else FAIL=$((FAIL + 1)); printf '%sFAIL%s minimax %s совпал с ролью (%s)
+' "$RED" "$NC" "$spare" "$sv"; fi
+done
 
-echo
 echo "== silero: zahar переехал с baya на kseniya, худшая пара 0.678 =="
 assert_voice silero anton aidar
 assert_voice silero ermil eugene

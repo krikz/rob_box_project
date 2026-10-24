@@ -13,6 +13,7 @@
   <!-- Core ROS2 dependencies -->
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>rob_box_dialog_msgs</depend>
   <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
   <depend>audio_common_msgs</depend>
@@ -36,6 +37,11 @@
   <exec_depend>rob_box_llm</exec_depend>
   <!-- ADR-0149 PR-3b: dj_set_walk берёт ход тоники из rob_box_music.set_plan (одна реализация) -->
   <exec_depend>rob_box_music</exec_depend>
+  <!-- ADR-0150 PR-1: вейк-слова, тишина, громкость — одна таблица rob_box_dialog.knowledge -->
+  <exec_depend>rob_box_dialog</exec_depend>
+  <!-- ADR-0150 PR-6 (#3696, В19): спорный стоп решает общий ModelChooser (rob_box_mcp_tools.engine.chooser_model).
+       Обратной зависимости в package.xml нет: mcp_tools импортирует rob_box_voice только лениво (цикла colcon нет). -->
+  <exec_depend>rob_box_mcp_tools</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -51,7 +51,7 @@ _CORE_DIR = Path(__file__).resolve().parents[3] / "rob_box_voice" / "core"
 # ActionClaimRule, unknown-melody, Renardo-код, hallucinated MIDI);
 # ``music_guard.py`` удалён целиком.
 _MAX_RE_COMPILE: dict[str, int] = {
-    "dialogue_guards.py": 21,
+    "dialogue_guards.py": 2,
     "media_command_grammar.py": 8,
 }
 

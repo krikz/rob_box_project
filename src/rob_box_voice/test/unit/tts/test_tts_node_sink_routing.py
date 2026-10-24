@@ -76,8 +76,6 @@ def _make_voice_node() -> TTSNode:
     n._dispatch_avatar_tts_sink = MagicMock(return_value=False)
     n._on_avatar_tts_request_preview = MagicMock()
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n._interrupt_playback = MagicMock()
     return n
 

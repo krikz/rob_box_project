@@ -52,11 +52,12 @@ if _yandex_v3 is None or not hasattr(_yandex_v3, "tts_pb2"):
             self.container_audio = container_audio
 
     class _Hints:
-        def __init__(self, voice=None, speed=None, pitch_shift=None, volume=None):
+        def __init__(self, voice=None, speed=None, pitch_shift=None, volume=None, role=None):
             self.voice = voice
             self.speed = speed
             self.pitch_shift = pitch_shift
             self.volume = volume
+            self.role = role
 
     class _UtteranceSynthesisRequest:
         LUFS = 0

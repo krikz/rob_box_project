@@ -70,12 +70,12 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked",
+__all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_request_dump",
            "first_invocation_position", "VOICE_CYCLE_MARKERS",
            "registration_outcome", "registration_expected",
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit",
-           "retry_block_reason"]
+           "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
 # Используются для assertion «discovery tool был вызван ДО голосового ответа»
@@ -91,6 +91,24 @@ VOICE_CYCLE_MARKERS = (
     # TTS ack от yandex_tts / minimax_tts.
     "tts finished",
 )
+
+# Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
+# ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
+# В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+_DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
+_DUMP_LINE_RE = re.compile(
+    r"LLM REQUEST (?:START|END)"
+    r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
+    r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
+)
+
+
+def strip_llm_request_dump(logs: str) -> str:
+    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
+    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
+
 
 #: Как выглядит имя тула. Все 56 зарегистрированных тулов —
 #: snake_case из ``def name(self) -> str`` в rob_box_mcp_tools/tools/*.py.
@@ -669,3 +687,169 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
                 f"(when_robot_asked={pattern!r})"
             )
     return "; ".join(reasons)
+
+
+# ── Вердикт acceptance шага: ОДНА функция для живого харнесса и сухого стенда ──
+#
+# Раньше это был python-heredoc внутри ``check_acceptance`` (e2e_voice_test.sh): сухой прогон марафона
+# (``scripts/dialog/dry_marathon.py``, #3906) не мог звать те же правила и писал бы вторую реализацию. Теперь
+# heredoc — несколько строк, а правила живут здесь; в этот же файл, потому что harness копирует на билд-машину
+# фиксированный список файлов (``L-E2E Voice Test.yml``), и новый файл туда бы не доехал.
+
+_VOICE_CHANGED_RE = re.compile(r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)")
+
+
+def patterns_missing(logs: str, patterns: list) -> list:
+    """Какие из ``patterns`` шага (``grep -E``, регистр важен, как ``check_patterns`` харнесса) в логе не найдены.
+    Битый регэксп считается ненайденным, а не падением проверки."""
+    missing: list = []
+    for pat in patterns or []:
+        try:
+            found = re.search(pat, logs) is not None
+        except re.error:
+            found = False
+        if not found:
+            missing.append(pat)
+    return missing
+
+
+def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
+    """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
+
+    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дамп LLM-запроса режется здесь, #3860),
+    ``timing_path`` — ``timing.json`` харнесса для ``response_max_ms`` (пусто — не проверяется). Результат — словарь
+    ``acceptance.json`` (``pass``, ``reason``, поля диагностики).
+    """
+    import json  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    logs = strip_llm_request_dump(logs)
+    expected_call = acc.get("expected_tool_calls", []) or []
+    must_not = acc.get("must_not_call", []) or []
+    expected_kw = acc.get("expected_keywords", []) or []
+    must_not_say = acc.get("must_not_say", []) or []
+    identification_failures = identify_failures(acc, logs)
+    discovery_tools_raw = acc.get("discovery_tools", []) or []
+    discovery_tools: list = []
+    discovery_tool_errors: list = []
+    for _dt in discovery_tools_raw:
+        if not isinstance(_dt, str) or not TOOL_NAME_RE.match(_dt.lower()):
+            discovery_tool_errors.append(
+                f"discovery_tools entry {repr(_dt)} is not a tool name "
+                f"(must match ^[a-z][a-z0-9_]*$)"
+            )
+            continue
+        discovery_tools.append(_dt)
+    voice_changed_req = bool(acc.get("voice_changed", False))
+    response_max_ms = acc.get("response_max_ms", 0) or 0
+
+    recognized = ""
+    m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
+    if m:
+        recognized = m.group(1).strip()
+
+    actual_calls: list = []
+    for c in (expected_call + must_not):
+        if tool_invoked(logs, c) and c not in actual_calls:
+            actual_calls.append(c)
+    missing_expected = [c for c in expected_call if not tool_invoked(logs, c)]
+    forbidden_called = [c for c in must_not if tool_invoked(logs, c)]
+    found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
+    missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
+    forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
+    robot_said = robot_speech(logs)
+
+    discovery_failures: list = []
+    discovery_records: list = []
+    voice_pos = first_voice_cycle_position(logs) if discovery_tools else None
+    for _dt in discovery_tools:
+        tool_pos = first_invocation_position(logs, _dt)
+        discovery_records.append({"tool": _dt, "first_invocation_pos": tool_pos, "first_voice_pos": voice_pos})
+        if tool_pos is None:
+            discovery_failures.append(
+                f"discovery tool {_dt!r} was NOT invoked at all "
+                f"(issue #2406: LLM bypassed the required tool call)"
+            )
+        elif voice_pos is not None and tool_pos > voice_pos:
+            discovery_failures.append(
+                f"discovery tool {_dt!r} invoked at pos {tool_pos}, "
+                f"AFTER verbal answer at pos {voice_pos} "
+                f"(issue #2406: verbal-only LLM answer before required tool)"
+            )
+
+    voice_change_ok = True
+    voice_change_detail = ""
+    if voice_changed_req:
+        set_voice_matches = _VOICE_CHANGED_RE.findall(logs)
+        if not set_voice_matches:
+            voice_change_ok = False
+            voice_change_detail = (
+                "voice did not change: no successful [set_voice] log "
+                "(set_voice not called or returned voice_unavailable)"
+            )
+        elif not any(v.strip().lower() != d.strip().lower() for v, _p, d in set_voice_matches):
+            voice_change_ok = False
+            voice_change_detail = (
+                "voice did not change from default: "
+                + ", ".join(f"{v}->{d}" for v, _p, d in set_voice_matches)
+            )
+
+    measured_ms = None
+    if timing_path and os.path.exists(timing_path):
+        try:
+            with open(timing_path, encoding="utf-8") as fh:
+                measured_ms = json.load(fh).get("metrics_ms", {}).get("total_latency_ms")
+        except Exception:  # noqa: BLE001 — нет timing.json: response_max_ms не проверяется
+            pass
+
+    failures: list = []
+    if missing_expected:
+        failures.append(f"expected tool calls not invoked: {missing_expected}")
+    if forbidden_called:
+        failures.append(f"forbidden tool calls invoked: {forbidden_called}")
+    if expected_kw and missing_keywords:
+        failures.append(f"expected keywords missing in logs: {missing_keywords}")
+    if forbidden_said:
+        failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
+    if identification_failures:
+        failures.extend(identification_failures)
+    if discovery_tool_errors:
+        failures.extend(discovery_tool_errors)
+    if discovery_failures:
+        failures.extend(discovery_failures)
+    registration = registration_outcome(logs)
+    registration_fail = registration_failures(acc, logs)
+    failures.extend(registration_fail)
+    if not voice_change_ok:
+        failures.append(voice_change_detail)
+    if response_max_ms and measured_ms and measured_ms > response_max_ms:
+        failures.append(f"response time {measured_ms}ms > max {response_max_ms}ms")
+    return {
+        "label": label,
+        "expected_tool_calls": expected_call,
+        "actual_tool_calls": actual_calls,
+        "missing_expected_calls": missing_expected,
+        "forbidden_calls": forbidden_called,
+        "expected_keywords": expected_kw,
+        "robot_speech": robot_said,
+        "recognized": recognized,
+        "found_keywords": found_keywords,
+        "missing_keywords": missing_keywords,
+        "must_not_say": must_not_say,
+        "forbidden_said": forbidden_said,
+        "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
+        "identify_failures": identification_failures,
+        "discovery_tools": discovery_tools,
+        "discovery_records": discovery_records,
+        "discovery_first_voice_pos": voice_pos,
+        "registration_expected": registration_expected(acc),
+        "registration": registration,
+        "registration_failures": registration_fail,
+        "voice_changed": voice_changed_req,
+        "voice_change_ok": voice_change_ok,
+        "voice_change_detail": voice_change_detail,
+        "response_max_ms": response_max_ms,
+        "measured_total_ms": measured_ms,
+        "pass": not failures,
+        "reason": "; ".join(failures) if failures else "all checks passed",
+    }

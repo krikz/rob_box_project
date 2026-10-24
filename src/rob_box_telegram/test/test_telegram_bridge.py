@@ -5,7 +5,7 @@ After W8 ``rob_box_telegram.telegram_node.TelegramNode`` is a thin ROS 2
 input bridge that forwards Telegram messages into the dialogue pipeline and
 keeps camera frames available to Telegram handlers:
 
-    Telegram user --text/voice--> /voice/stt/result         (dialogue in)
+    Telegram user --text/voice--> /voice/stt/utterance         (dialogue in)
     CompressedImage topics      -> in-memory CameraCache     (camera frames)
 
 The node subscribes to ``/voice/dialogue/response`` and duplicates every
@@ -16,7 +16,7 @@ asyncio-loop bug t_aad8e224).
 These tests cover the W9 acceptance criteria from
 ``.planning/phases/06-harness-p0-finalization/06-03-PLAN.md``:
 
-    1. Telegram message -> published to /voice/stt/result (with [TG:chat_id] source marker)
+    1. Telegram message -> published to /voice/stt/utterance (with [TG:chat_id] source marker)
     2. Telegram node subscribes to the dialogue/TTS response topic and echoes to the chat
     3. Camera image -> forwarded to appropriate topic (CameraCache update)
     4. Telegram bot starts (mock Application builder)
@@ -129,6 +129,13 @@ def _install_fake_rclpy() -> None:
             value = self._declared_parameters.get(name)
             return types.SimpleNamespace(value=value)
 
+        def get_clock(self):
+            # stamp SpeechRequest (speech_client.say): тип Time той сборки msgs, что под рукой.
+            from rob_box_dialog_msgs.msg import SpeechRequest
+
+            stamp = type(SpeechRequest().stamp)()
+            return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
         def create_publisher(self, msg_type, topic, qos_profile=None, **_):
             pub = MagicMock(name=f"Pub[{topic}]")
             pub.topic = topic
@@ -214,6 +221,11 @@ def _install_fake_rclpy() -> None:
     std_msgs.msg = std_msgs_msg
     sys.modules["std_msgs"] = std_msgs
     sys.modules["std_msgs.msg"] = std_msgs_msg
+
+    # ADR-0150 PR-2: telegram_node публикует типизированный Utterance;
+    # класс строится из настоящего rob_box_dialog_msgs/msg/Utterance.msg.
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    install_dialog_msgs_stub()
 
     # Expose the stub String class at module scope so tests can build
     # ``std_msgs.msg.String`` messages without re-importing.
@@ -456,12 +468,13 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
                 return sub
         raise AssertionError(f"No subscription registered for {topic}")
 
-    # ── Test 1: Telegram message → /voice/stt/result ──────────────────
+    # ── Test 1: Telegram message → /voice/stt/utterance (Utterance) ───
 
     def test_telegram_message_published_to_stt_topic(self) -> None:
-        """``forward_to_stt`` must publish the raw text on /voice/stt/result."""
+        """Без chat_id ``forward_to_stt`` публикует Utterance с source=operator."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertEqual(pub.publish.call_count, 0)
 
         self.node.forward_to_stt("Привет, робот!")
@@ -469,21 +482,72 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(pub.publish.call_count, 1)
         published = pub.publish.call_args.args[0]
-        self.assertIsInstance(published, _STD_STRING_CLS)
-        self.assertEqual(published.data, "Привет, робот!")
+        self.assertIsInstance(published, Utterance)
+        self.assertEqual(published.text, "Привет, робот!")
+        self.assertEqual(published.source, Utterance.SOURCE_OPERATOR)
+        self.assertEqual(published.chat_id, 0)
+        self.assertEqual(published.utterance_id, "")
 
     def test_forward_to_stt_with_chat_id_adds_source_marker(self) -> None:
-        """``forward_to_stt(text, chat_id=...)`` must add the [TG:chat_id]
-        source marker (issue #1195) and record the active chat."""
+        """``forward_to_stt(text, chat_id=...)`` кладёт источник и chat_id в
+        поля (issue #1195, ADR-0150 PR-2), текст остаётся без префикса
+        ``[TG:id]``, активный чат запоминается."""
+        from rob_box_dialog_msgs.msg import Utterance
 
-        pub = self._publisher_for("/voice/stt/result")
+        pub = self._publisher_for("/voice/stt/utterance")
         self.assertIsNone(self.node._active_chat_id)
 
         self.node.forward_to_stt("продолжай", chat_id=-5269346516)
 
         self.assertEqual(self.node._active_chat_id, -5269346516)
         published = pub.publish.call_args.args[0]
-        self.assertEqual(published.data, "[TG:-5269346516] продолжай")
+        self.assertEqual(published.text, "продолжай")
+        self.assertEqual(published.source, Utterance.SOURCE_TELEGRAM)
+        self.assertEqual(published.chat_id, -5269346516)
+
+    def test_publish_tts_goes_through_speech_client_as_telegram(self) -> None:
+        """ADR-0150 PR-3: реплика из Telegram - один SpeechRequest (агент telegram),
+        а не JSON в старые голосовые топики (``/voice/tts/*``, ``/voice/dialogue/*``)."""
+        topics = [p.topic for p in self.node._created_publishers]
+        self.assertEqual([t for t in topics if t.startswith(("/voice/tts/", "/voice/dialogue/"))], [])
+        pub = self._publisher_for("/voice/speech/request")
+
+        speech_id = self.node.publish_tts("Всем привет & пока")
+
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.speech_id, speech_id)
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "<speak>Всем привет &amp; пока</speak>")
+
+    def test_say_speaks_exactly_the_typed_text_once_and_receipt_follows_the_event(self) -> None:
+        """#3727: /say - ровно один SpeechRequest с введённым текстом (agent=telegram), никаких других реплик и
+        публикаций за ход; итог в чат приходит по SpeechEvent того же speech_id, а не «Озвучиваю» заранее."""
+        from unittest.mock import MagicMock
+
+        pub = self._publisher_for("/voice/speech/request")
+        others = [p for p in self.node._created_publishers if p.topic != "/voice/speech/request"]
+        before = [p.publish.call_count for p in others]
+        loop, queue = MagicMock(), MagicMock()
+        self.node._telegram_loop, self.node._response_queue = loop, queue
+
+        result = self.node.publish_tts_with_floor("Привет, мир & пока", receipt_chat_id=7)
+
+        self.assertTrue(result.granted)
+        self.assertEqual(pub.publish.call_count, 1)
+        req = pub.publish.call_args.args[0]
+        self.assertEqual(req.agent, "telegram")
+        self.assertEqual(req.text, "<speak>Привет, мир &amp; пока</speak>")
+        self.assertEqual([p.publish.call_count for p in others], before)
+        loop.call_soon_threadsafe.assert_not_called()  # до итога чату ничего не говорим
+
+        sub = self._subscription_for("/voice/speech/event")
+        sub.callback(MagicMock(kind=2, speech_id=req.speech_id, reason="", seconds=0.0))  # started
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(MagicMock(kind=7, speech_id=req.speech_id, reason="unsupported_script", seconds=0.0))
+        args = loop.call_soon_threadsafe.call_args.args
+        self.assertEqual(args[0], queue.put_nowait)
+        self.assertEqual(args[1][0], 7)
+        self.assertIn("Не озвучил", args[1][1])
 
     def test_set_active_chat_records_chat(self) -> None:
         """``set_active_chat`` must store the chat for echo routing."""
@@ -494,10 +558,70 @@ class TestTelegramBridge(unittest.IsolatedAsyncioTestCase):
 
     def test_node_subscribes_to_dialogue_response(self) -> None:
         """Telegram must consume dialogue/TTS output to echo it to the chat
-        (issue #1195 — echo path restored)."""
+        (issue #1195 — echo path restored). Проводка v1: флаг выставлен явно, дефолт теперь v2."""
+        from rob_box_core import dialog_engine
 
-        sub = self._subscription_for("/voice/dialogue/response")
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+            node = self._node_mod.TelegramNode()
+        sub = next(s for s in node._created_subscriptions if s.topic == "/voice/dialogue/response")
         self.assertIsNotNone(sub.callback)
+
+    def test_default_engine_is_v2_wiring(self) -> None:
+        """Дефолт ``dialog_engine`` = v2 (Шифу 23.10): нет ``/voice/dialogue/response``, есть ``/dialog/output``."""
+        topics = [s.topic for s in self.node._created_subscriptions]
+        self.assertNotIn("/voice/dialogue/response", topics)
+        self.assertIn("/dialog/output", topics)
+
+    def test_v2_does_not_subscribe_dialogue_response(self) -> None:
+        """ADR-0150 PR-8 (#3702): при ``dialog_engine=v2`` топика ``dialogue_node`` v1 нет — нода его не слушает."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        self.assertNotIn("/voice/dialogue/response", [s.topic for s in node._created_subscriptions])
+        self.assertIsNone(node._response_sub)
+
+    def test_v2_say_is_still_verbatim_one_request_and_no_chat_agent_turn(self) -> None:
+        """#3727 при v2 (PR-12a): /say — ровно один SpeechRequest с введённым текстом, мимо телеграм-агента
+        (в /voice/stt/utterance ничего не уходит, LLM не зовётся)."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        speech = next(p for p in node._created_publishers if p.topic == "/voice/speech/request")
+        stt = next(p for p in node._created_publishers if p.topic == "/voice/stt/utterance")
+        node.publish_tts_with_floor("Ровно этот текст", receipt_chat_id=7)
+        self.assertEqual(speech.publish.call_count, 1)
+        self.assertEqual(speech.publish.call_args.args[0].text, "<speak>Ровно этот текст</speak>")
+        stt.publish.assert_not_called()
+
+    def test_v1_does_not_subscribe_dialog_output(self) -> None:
+        """PR-12a (#3706): при v1 ответ в чат — эхо Личности, ``/dialog/output`` не слушаем (v1 не ломаем)."""
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V1):
+            node = self._node_mod.TelegramNode()
+        self.assertNotIn("/dialog/output", [s.topic for s in node._created_subscriptions])
+
+    def test_v2_routes_dialog_output_to_its_chat_only(self) -> None:
+        """PR-12a (#3706): при v2 ответ телеграм-агента (``DialogOutput``) уходит в чат своего ``channel_ref``;
+        чужой агент, чужой канал и пустой текст — мимо."""
+        from unittest.mock import MagicMock
+
+        from rob_box_core import dialog_engine
+
+        with patch.object(dialog_engine, "declare", return_value=dialog_engine.V2):
+            node = self._node_mod.TelegramNode()
+        loop, queue = MagicMock(), MagicMock()
+        node._telegram_loop, node._response_queue = loop, queue
+        sub = next(s for s in node._created_subscriptions if s.topic == "/dialog/output")
+        out = types.SimpleNamespace
+        sub.callback(out(agent="personality", channel_ref="telegram:7", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="headset:1", text="мимо", speech_id=""))
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="", speech_id=""))
+        loop.call_soon_threadsafe.assert_not_called()
+        sub.callback(out(agent="telegram", channel_ref="telegram:7", text="Сейчас 12:30.", speech_id="s1"))
+        loop.call_soon_threadsafe.assert_called_once_with(queue.put_nowait, (7, "Сейчас 12:30."))
 
     async def test_response_echo_pushes_to_queue(self) -> None:
         """``_on_response`` must parse the SSML payload and push
@@ -711,6 +835,15 @@ class TestMessageDebounce(unittest.IsolatedAsyncioTestCase):
         args, kwargs = node.forward_to_stt.call_args
         self.assertEqual(args[0], "продолжай\nпродолжай")
         self.assertEqual(kwargs.get("chat_id"), 42)
+
+    async def test_every_message_is_logged_as_tg_in_line_before_debounce(self) -> None:
+        """PR-12a (#3706): канал координатора — строка ``[tg-in]`` в логе telegram-bot на каждое сообщение."""
+        update, context, node = self._make_update_and_context("Клод, проверь сборку")
+
+        await self.messages.text_message_handler(update, context)
+
+        node.get_logger.return_value.info.assert_any_call(
+            "📨 [tg-in] chat_id=42 coordinator=true text=Клод, проверь сборку")
 
     async def test_single_message_forwarded_with_chat_id(self) -> None:
         """A single message is forwarded with the [TG:] source chat_id."""

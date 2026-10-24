@@ -4,7 +4,7 @@
 Полный e2e по каналу  чат → бот → LLM → ответ в чат. Отличие от
 голосового e2e (e2e_voice_test.sh): здесь сообщение уходит через реальный
 Telegram Bot API от лица ТЕСТОВОГО USER-аккаунта (MTProto/Telethon), а не
-инъекцией в /voice/stt/result. Ловит разрывы на всём пути:
+инъекцией в /voice/stt/utterance. Ловит разрывы на всём пути:
 Telegram → telegram-bot → dialogue_node → LLM → send_message → чат.
 
 Ограничения (проверено 13.08, issue #1196):

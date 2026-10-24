@@ -21,12 +21,12 @@ CACHE = {"ok": True, "track_id": "gen_c0fe_1", "source": "cache",
          "source_message": "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)»."}
 
 
-def test_generate_verb_goes_to_request_music_without_llm():
-    for text in (LIVE, "сгенерируй музыку", "давай сгенерируй трек про космос"):
-        assert parse_media_command(text).intent is MediaIntent.REQUEST_MUSIC
+def test_generate_verb_goes_to_generate_music_without_llm():
+    # ADR-0150 §9.1 ревизия 5 (#3696): «сгенерируй/спой/сочини» — класс генерации кодом, путь решает generate_music
+    for text in (LIVE, "сгенерируй музыку", "давай сгенерируй трек про космос", "спой песню про кота"):
+        assert parse_media_command(text).intent is MediaIntent.GENERATE
     plan = MediaRouter().route(LIVE, MediaState())
-    assert [(c.name, c.arguments["intent"]) for c in plan.tool_calls] == [("request_music", "track")]
-    assert parse_media_command("спой песню про кота").intent is MediaIntent.NONE  # пение под бит — у LLM
+    assert [(c.name, c.arguments["kind"]) for c in plan.tool_calls] == [("generate_music", "robot_song")]
 
 
 def test_launch_text_takes_the_route_phrase_of_code():

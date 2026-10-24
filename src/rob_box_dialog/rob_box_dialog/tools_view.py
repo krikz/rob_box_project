@@ -1,0 +1,161 @@
+"""Срез тулов хода: LLM видит ≤ 12 схем по снимку, словам человека и агенту (ADR-0150 §4.2, §2.1 п.5; #3696).
+
+Функция, а не правило в промпте и не догадка LLM (подгрузка скиллов моделью удалена): всегда —
+``knowledge.TOOLS_ALWAYS`` (речь, память, время, поиск, анимация); группы ``knowledge.TOOL_GROUPS`` — по словам
+реплики («спой», «голос», «поезжай»…), затем сцены снимка (кадр ``DJ`` и играющая музыка — музыкальные тулы); ни одна
+группа не совпала — группы прошлого хода (продолжение разговора), иначе ``TOOL_GROUPS_DEFAULT``. В SILENCED
+ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Слова с двумя владельцами («ускорь
+темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
+sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
+``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744).
+"""
+
+from __future__ import annotations
+
+from typing import Any, List, Optional, Sequence, Tuple
+
+from rob_box_core.tool_catalog import ToolCatalogEntry, get_tool
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog.agents import agent_spec, tools_for
+from rob_box_dialog.session import SessionSnapshot
+from rob_box_dialog import phrases
+from rob_box_dialog.words import has_form, has_word, introduces_self
+
+
+def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) -> Tuple[str, ...]:
+    """Группы среза: прямо названные словами человека (порядок ``TOOL_GROUPS``), затем сцены снимка, затем названные
+    только общим глаголом; ни одной — ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме
+    тех, что только по явной просьбе, ``TOOL_GROUPS_EXPLICIT``), иначе по умолчанию.
+
+    Сцена идёт ПОСЛЕ названных групп: срез режется по ``TOOLS_VISIBLE_MAX``, и играющий диджей-сет (6 музыкальных
+    схем + 6 всегда-видимых = 12) иначе вытеснял тулы, о которых человек спросил прямо — «сколько заряда» под музыку
+    не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (#3857, run 39849541397).
+    """
+    named = _under_music(snapshot, text, _named(text, "stems"))
+    scene = ({"music"} if _music_playing(snapshot) else set()) - named
+    weak = _named(text, "weak") - named - scene
+    if not named | scene | weak:
+        named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
+        named = named or set(kn.TOOL_GROUPS_DEFAULT)
+    return _ordered(named) + _ordered(scene) + _ordered(weak)
+
+
+def _music_playing(snapshot: SessionSnapshot) -> bool:
+    """Музыка звучит: играющий трек в снимке плеера или кадр диджея."""
+    return snapshot.top("DJ") is not None or snapshot.music.state == "playing"
+
+
+def _under_music(snapshot: SessionSnapshot, text: str, named: set) -> set:
+    """Неоднозначное слово («ускорь темп», «жёстче», «добавь бас») под играющей музыкой - про музыку, а не про голос.
+
+    Сработать должны все три условия: музыка звучит (снимок, а не слова), в реплике слово из ``MUSIC_AMBIGUOUS_*``, и
+    речь робота человек не назвал («говори быстрее», «читай помедленнее» остаются за голосом - ``SPEECH_OWNER_STEMS``).
+    Тогда music попадает в названные группы, а voice уходит, если его открыла только скорость (``VOICE_PACE_STEMS``):
+    «ускорь темп и смени голос» оставляет обе. В тишине таблица не действует - как раньше (n506, 23.10)."""
+    if not _music_playing(snapshot) or has_word(text, kn.SPEECH_OWNER_STEMS):
+        return named
+    if not (has_word(text, kn.MUSIC_AMBIGUOUS_STEMS) or has_form(text, kn.MUSIC_AMBIGUOUS_WORDS)):
+        return named
+    if "voice" in named and not has_word(text, _voice_only_stems()):
+        named = named - {"voice"}
+    return named | {"music"}
+
+
+def _voice_only_stems() -> Tuple[str, ...]:
+    """Основы voice, которые называют голос однозначно (всё, кроме слов про скорость)."""
+    return tuple(s for s in kn.TOOL_GROUPS["voice"].stems if s not in kn.VOICE_PACE_STEMS)
+
+
+def requested_groups(text: str) -> Tuple[str, ...]:
+    """Группы, названные словами человека в ЭТОЙ реплике: без сцен снимка, переноса и умолчания."""
+    return _ordered(_named(text, "stems") | _named(text, "weak"))
+
+
+def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
+    """Исполненная просьба человека: группы, названные его словами, в которых LLM вызвала тул-действие (класс
+    ``TOOL_CLASSES`` не ``query``). Пусто — ход не команда.
+
+    Решает запрос человека, тулы LLM — только подтверждение исполнения: чтение (статус, время, память, поиск,
+    восприятие) и действие, о котором человек не просил (анимация к болтовне), командой ход не делают; слово группы
+    в болтовне («узнал по голосу») без исполнения — тоже (В17, ADR-0148; живой робот 21.10).
+    """
+    actions = {t for t in called if kn.TOOL_CLASSES.get(t, "query") != "query"}
+    return tuple(g for g in requested_groups(text) if actions & set(kn.TOOL_GROUPS[g].tools))
+
+
+def motion_named(text: str) -> bool:
+    """Назвал ли человек движение базы глаголом («поезжай», «двигайся», «повернись»). Восприятие («посмотри налево»)
+    и голые направления движение не открывают; «повернись глазами» — взгляд, а не поворот базы (#3779)."""
+    if has_word(text or "", kn.MOTION_VERB_STEMS):
+        return True
+    return has_word(text or "", kn.MOTION_TURN_STEMS) and not has_word(text or "", kn.MOTION_EYES_STEMS)
+
+
+def motion_refusal(tool: str, text: str) -> Optional[str]:
+    """Честная фраза отказа, если тул движения вызван в ходе, где человек движение не называл; иначе ``None``.
+
+    Страховка исполнителя поверх среза: что бы ни написала LLM, база без глагола движения не поедет. Пустая реплика
+    (вызов не по голосу человека) отказа не даёт — судить не по чему."""
+    if tool not in kn.MOTION_TOOLS or not (text or "").strip() or motion_named(text):
+        return None
+    return phrases.text("motion.rejected.not_asked")
+
+
+def widen_for(missing: Sequence[str], agent: str, have: Sequence[str]) -> Tuple[str, ...]:
+    """Тулы, которые код добавляет в запрос, когда модель позвала тул вне среза (``tool_not_available``, #3960): тул
+    есть в реестре агента, а слова человека его группу не открыли («поставь ровный ритм» - живой прогон 23.10, акт 8).
+    Открывается вся группа названного тула - по членству или по имени группы в имени тула (опечатка ``music_stop`` →
+    группа ``music``); тула нет ни в группе, ни в реестре - ничего (выбор сужает код, угадывания по тексту нет).
+    Не открываются: движение (только по глаголу человека, ``motion_named``) и голос (только по явной просьбе, #3744).
+    Уже видимые (``have``) не повторяются; порядок - как в группе, названный тул первым."""
+    allowed = set(tools_for(agent_spec(agent)))
+    opened: List[str] = []
+    for tool in missing:
+        opened.extend(n for n in _group_of(tool, allowed) if n not in have and n not in opened)
+    return tuple(opened)
+
+
+def _group_of(tool: str, allowed: set) -> List[str]:
+    """Тул и его группа (по членству или по имени группы в имени тула), без того, что модель открыть не может."""
+    if tool in kn.MOTION_TOOLS:  # база едет по глаголу человека (``motion_named``), а не по просьбе модели
+        return []
+    groups = [g for g, group in kn.TOOL_GROUPS.items()
+              if g not in kn.TOOL_GROUPS_EXPLICIT and (tool in group.tools or g in tool.lower())]
+    names = [tool] + [t for g in groups for t in kn.TOOL_GROUPS[g].tools]
+    closed = set(kn.MOTION_TOOLS) | set(kn.TOOLS_ALWAYS) | set(kn.TOOL_GROUPS["voice"].tools)
+    return [n for n in names if n in allowed and n not in closed]
+
+
+def _named(text: str, field: str) -> set:
+    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
+    if field == "stems" and introduces_self(text):  # «здравствуй, я Саша»: словом-основой это не поймать
+        names.add(kn.SELF_INTRO_GROUP)
+    return names
+
+
+def _ordered(names: set) -> Tuple[str, ...]:
+    return tuple(name for name in kn.TOOL_GROUPS if name in names)
+
+
+def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent: str = "personality",
+                    text: str = "", carry: Sequence[str] = ()) -> Tuple[ToolCatalogEntry, ...]:
+    """Тулы хода (≤ ``TOOLS_VISIBLE_MAX``) из среза агента: всегда-видимые, затем группы по приоритету.
+
+    ``caps`` — возможности провайдера (``tools=False`` — тулов нет вовсе); ``None`` — не известны, тулы есть.
+    ``carry`` — группы прошлого хода (см. :func:`groups_for`).
+    """
+    if snapshot.top("Silence") is not None or (caps is not None and not getattr(caps, "tools", True)):
+        return ()
+    allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
+    names: List[str] = []
+    drive = motion_named(text)
+    for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
+        if name in kn.MOTION_TOOLS and not drive:
+            continue
+        if name in allowed and name not in names and len(names) < kn.TOOLS_VISIBLE_MAX:
+            names.append(name)
+    return tuple(get_tool(name) for name in names)
+
+
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups",
+           "widen_for"]

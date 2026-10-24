@@ -6,6 +6,13 @@
 # ВАЖНО: конфиги и скрипты монтируются через volumes, НЕ COPY!
 ARG BASE_IMAGE=ghcr.io/krikz/rob_box_base:ros2-zenoh
 
+# Общий образ ROS-сообщений (docker/msgs/Dockerfile): src/rob_box_*_msgs
+# компилируются ОДИН раз за прогон, а не в каждом образе (rosidl под qemu —
+# 4-14 минут на пакет). Тег по хэшу пакетов вычисляет gen_build_matrix.py и
+# передаёт build-arg'ом; без него сборка падает сразу на имени образа.
+ARG MSGS_IMAGE=MSGS_IMAGE-build-arg-is-required
+FROM ${MSGS_IMAGE} AS msgs
+
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
@@ -94,17 +101,27 @@ RUN pip3 install --no-cache-dir \
 # None (voice_processor.py:133-140), STT остаётся на одном Yandex.
 
 # Копируем ROS 2 пакеты
+# rob_box_dialog_msgs — готовый из общего образа msgs (stage `msgs` в шапке),
+# а не компиляцией здесь.
+WORKDIR /ws
+COPY --from=msgs /ws/install /ws/install
+
+WORKDIR /ws/src
 # rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует
 # rob_box_core.avatar_command, без сборки пакета в образе падает
 # ModuleNotFoundError на старте контейнера.
-WORKDIR /ws/src
 COPY src/rob_box_core /ws/src/rob_box_core
+# ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
+# (rob_box_dialog_msgs) — пакет пришёл из общего образа msgs выше.
+# #3727: квитанция /say берёт тексты из phrases/ru.yaml (rob_box_dialog, python3-yaml есть в ros-base).
+COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
 
 # Собираем ROS 2 пакеты
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build --packages-select rob_box_core rob_box_telegram && \
+    . /ws/install/setup.sh && \
+    colcon build --packages-select rob_box_core rob_box_dialog rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws

@@ -5,22 +5,21 @@
 что и ``session reset``.
 
 Поведения (acceptance issue):
-1. new-session: music_cleanup опубликован, одна фраза подтверждения.
+1. new-session: музыка остановлена владельцем плеера (``dj_set(stop)`` + ``stop_music``, ADR-0150 PR-7c ч.4б —
+   ``test_issue_3700_music_stops_by_owner.py``), одна фраза подтверждения.
 2. Ретраи от хода, отменённого barge-in'ом или сбросом, не запускаются.
 
 ADR-0149 PR-13a: DJ-контроллер старого пути, забор на запоздалый
 ``set_dj_mode(enabled=true)`` и ``MusicGuard`` удалены — их проверки тоже.
 
 DialogueNode собирается через ``object.__new__`` (как в
-test_barge_in_policy.py / test_new_session_reset.py), rclpy замокан в conftest.
+test_interrupt_policy.py / test_new_session_reset.py), rclpy замокан в conftest.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
-from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
@@ -33,7 +32,7 @@ def _make_reset_node() -> DialogueNode:
     n = object.__new__(DialogueNode)
     n.get_logger = lambda: MagicMock()
     n._cancel_run = MagicMock()
-    n._tts_control_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     n._pending_backlog_flush = False
     n._dsm = MagicMock()
     n._speaker_lock = threading.Lock()
@@ -43,15 +42,8 @@ def _make_reset_node() -> DialogueNode:
     n._maybe_record_session_end = MagicMock()
     n._publish_state = MagicMock()
     n._publish_response = MagicMock()
-    n._pending_user_messages = deque()
-    n._music_cleanup_pub = MagicMock()
-    n._pending_music_cleanup = True
-    n._track_mode_music_active = True
+    n._tool_executor = None  # стоп музыки — отдельный тест (test_issue_3700_music_stops_by_owner.py)
     return n
-
-
-def _published(pub: MagicMock) -> list[dict]:
-    return [json.loads(c.args[0].data) for c in pub.publish.call_args_list]
 
 
 class _Result:
@@ -61,12 +53,10 @@ class _Result:
 
 
 def _make_turn_node() -> DialogueNode:
-    """Узел для ``_run_turn`` (форма как в test_barge_in_policy.py)."""
+    """Узел для ``_run_turn`` (форма как в test_interrupt_policy.py)."""
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._babble_retry_used = False
-    n._pending_music_cleanup = False
     n._speaker_id_enabled = False
     n._handle_speaker_turn = MagicMock()
     n._apply_speaker_identity = MagicMock()
@@ -75,21 +65,15 @@ def _make_turn_node() -> DialogueNode:
     )
     n._llm = MagicMock()
     n._speak_direct = MagicMock()
-    n._active_batches = set()
     n._dsm = MagicMock()
     n._dsm.current_state = DialogueStateKind.DIALOGUE
     n._publish_state = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
-    n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
     n.get_logger = lambda: MagicMock()
     n._core = MagicMock()
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
     n._dispatch_turn = MagicMock()
-    n._pending_user_messages = deque()
-    n._track_mode_music_active = False
-    n._action_claim_retry_used = False
     return n
 
 
@@ -108,16 +92,6 @@ class TestNewSessionResetsMusic:
         assert "новую сессию" in n._publish_response.call_args.args[0]
 
 
-    def test_music_cleanup_published(self):
-        n = _make_reset_node()
-
-        n._reset_dialogue_session()
-
-        assert {"reason": "new_session"} in _published(n._music_cleanup_pub)
-        assert n._pending_music_cleanup is False
-        assert n._track_mode_music_active is False
-
-
     def test_reset_advances_session_epoch(self):
         n = _make_reset_node()
         before = n._session_epoch_gate().current
@@ -133,46 +107,10 @@ class TestNewSessionResetsMusic:
 
 
 class TestCancelledTurnDoesNotRetry:
-    def test_normal_turn_still_runs_post_turn_guards(self):
-        """Контроль: без отмены/сброса гуард работает как раньше."""
+    def test_barge_in_cancelled_turn_dispatches_nothing(self):
+        """Отменённый ход приходил в finally с ``result=None`` → Bug C слал
+        [CRITICAL]-ретрай. ADR-0150 PR-7 ч.7d-1: post-turn ретраев нет вовсе."""
         n = _make_turn_node()
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_called_once()
-
-    def test_barge_in_cancelled_turn_dispatches_no_retry(self):
-        """Отменённый ход приходил в finally с ``result=None`` →
-        ``tools_called=()`` → Bug C слал [CRITICAL]-ретрай."""
-        n = _make_turn_node()
-        n._core.process_input = AsyncMock(side_effect=asyncio.CancelledError())
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_not_called()
-
-    def test_turn_outliving_session_reset_dispatches_no_retry(self):
-        n = _make_turn_node()
-
-        async def _llm_while_reset(*_a, **_kw):
-            n._session_epoch_gate().advance()  # «забудь всё» посреди хода
-            return _Result()
-
-        n._core.process_input = AsyncMock(side_effect=_llm_while_reset)
-
-        asyncio.run(n._run_turn("который час", session_epoch=0))
-
-        n._apply_tool_skipped_guard.assert_not_called()
-
-    def test_real_tool_guard_retry_not_dispatched_for_cancelled_turn(self):
-        """Без мока гуарда: реальный tool-skipped гуард на «который час» с
-        пустыми tools отдал бы ретрай. После отмены — ни одного _dispatch_turn."""
-        n = _make_turn_node()
-        del n._apply_tool_skipped_guard
-        n._retry_dispatched_in_turn = False
-        n._tool_retry_used = False
-        n._synthetic_retries_left = 3
-        n._reopen_dialogue_for_retry = MagicMock()
         n._core.process_input = AsyncMock(side_effect=asyncio.CancelledError())
 
         asyncio.run(n._run_turn("который час", session_epoch=0))

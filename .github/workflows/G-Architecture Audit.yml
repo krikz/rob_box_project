@@ -2,6 +2,10 @@ name: "G: Architecture Audit"
 
 on:
   pull_request:
+    # #3922: у pull_request не было `branches` вообще - workflow шёл на PR в любую
+    # ветку, в том числе на вечный PR develop->main (#3713) на каждый push в develop,
+    # хотя push-прогон на develop уже проверил тот же SHA.
+    branches: [develop]
     paths:
       - "src/**"
       - "docker/**"

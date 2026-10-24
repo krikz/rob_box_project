@@ -16,7 +16,6 @@ test_dialogue_node.py — Реальные unit-тесты DialogueNode (FA-5, i
   * batch processing (TTS batch)             → test_publish_response_batch_* / test_tts_batch_registry_*
   * очистка очереди на silence               → test_handle_silence_*
   * llm_processing flag / barge-in           → test_on_vad_*
-  * прочие хелперы (babble, music guard)     → test_babble_* / test_music_guard_*
 
 Не требует ROS2 — rclpy и openai замоканы в conftest.py.
 """
@@ -28,10 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rob_box_voice.core.dialogue_guards import is_metalanguage_babble, user_wants_performance
 from rob_box_voice.dialogue_node import (
-    BABBLE_BANNED_OPENERS,
-    BABBLE_PERFORMANCE_KEYWORDS,
     DialogueNode,
     _LLM_SKIP_REASONS,
 )
@@ -42,6 +38,8 @@ from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
     DialogueStateKind,
 )
+from ros_stubs import make_utterance  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,8 +65,7 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._response_pub = MagicMock()
     n._state_pub = MagicMock()
     n._sound_trigger_pub = MagicMock()
-    n._tts_control_pub = MagicMock()
-    n._music_cleanup_pub = MagicMock()
+    n._speech_client_pubs = {"cancel": MagicMock()}
     # ADR-0066 — pub для /dialogue/control_ack (тест-dialogue_control).
     n._dialogue_control_pub = MagicMock()
 
@@ -103,12 +100,10 @@ def _make_node(parameters: dict | None = None) -> DialogueNode:
     n._effects.handle_tts_finished = MagicMock()
     n._effects.handle_sound_state = MagicMock()
 
-    n._active_batches = {}
     # Telegram echo routing (issue #1195) — `_publish_response` and
     # `_publish_response_batch` read it unconditionally; `__init__` sets it
     # to None and this fixture bypasses `__init__`.
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = False
     n._session_started_at = None
     n._session_end_reason = "success"
 
@@ -143,8 +138,6 @@ class TestNodeCreation:
         import rob_box_voice.dialogue_node as dn
         assert dn.ASYNCIO_LOOP_DRIVER_MAX_WORKERS == 1
         assert dn.ASYNCIO_LOOP_DRIVER_SHUTDOWN_TIMEOUT_S > 0
-        assert BABBLE_BANNED_OPENERS
-        assert BABBLE_PERFORMANCE_KEYWORDS
 
     def test_node_has_dialogue_name_contract(self):
         """Имя ноды — 'dialogue_node' (используется в __init__)."""
@@ -197,36 +190,6 @@ class TestBuildPersonalitySpec:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  barge_in_policy parameter (S1.1, scheduler-segments-merge plan)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestBargeInPolicyParam:
-    def test_declares_default_replace(self):
-        """_declare_params объявляет barge_in_policy с дефолтом 'replace'."""
-        import rob_box_voice.dialogue_node as dn
-        import inspect
-        src = inspect.getsource(dn.DialogueNode._declare_params)
-        assert 'declare_parameter("barge_in_policy", "replace")' in src
-
-    def test_resolve_default_missing_param_is_replace(self):
-        n = _make_node()
-        assert n._resolve_barge_in_policy() == "replace"
-
-    def test_resolve_accepts_replace(self):
-        n = _make_node({"barge_in_policy": "replace"})
-        assert n._resolve_barge_in_policy() == "replace"
-
-    def test_resolve_accepts_classify(self):
-        n = _make_node({"barge_in_policy": "classify"})
-        assert n._resolve_barge_in_policy() == "classify"
-
-    def test_resolve_garbage_value_warns_and_falls_back(self):
-        n = _make_node({"barge_in_policy": "yolo"})
-        assert n._resolve_barge_in_policy() == "replace"
-        n.get_logger().warning.assert_called()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  _cancel_run split: turn-cancel vs tts-stop (S1.2, scheduler-segments-merge)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -250,9 +213,9 @@ class TestCancelRunSplit:
         n._cancel_run("reason", stop_tts=True)
         assert n._run_cancelled is True
         task.cancel.assert_called_once()
-        n._tts_control_pub.publish.assert_called_once()
-        published = n._tts_control_pub.publish.call_args.args[0]
-        assert published.data == "STOP"
+        n._speech_client_pubs["cancel"].publish.assert_called_once()
+        published = n._speech_client_pubs["cancel"].publish.call_args.args[0]
+        assert published.agent == "personality"
         n._effects.release_all_tts.assert_called_once()
         n._effects.clear_sound_event.assert_called_once()
 
@@ -260,7 +223,7 @@ class TestCancelRunSplit:
         """Обратная совместимость: вызов без kwarg ведёт себя как раньше."""
         n, task = self._running_task_node()
         n._cancel_run("reason")
-        n._tts_control_pub.publish.assert_called_once()
+        n._speech_client_pubs["cancel"].publish.assert_called_once()
 
     def test_stop_tts_false_does_not_publish_stop_but_releases_awaiters(self):
         """Ключевой инвариант R1: STOP не уходит, но awaiter'ы всё равно
@@ -270,7 +233,7 @@ class TestCancelRunSplit:
         n._cancel_run("reason", stop_tts=False)
         assert n._run_cancelled is True
         task.cancel.assert_called_once()
-        n._tts_control_pub.publish.assert_not_called()
+        n._speech_client_pubs["cancel"].publish.assert_not_called()
         n._effects.release_all_tts.assert_called_once()
         n._effects.clear_sound_event.assert_called_once()
 
@@ -321,44 +284,15 @@ class TestBuildDynamicSystemContext:
     def test_tts_provider_read_from_parameter(self):
         n = _make_node({"provider": "minimax"})
         ctx = n._build_dynamic_system_context()
-        assert "<tts_provider>minimax</tts_provider>" in ctx
+        # #3696: провайдер — в разделе tts_context (данные), отдельного <hardware><tts_provider> нет.
+        assert "<tts_context>[TTS] provider: minimax |" in ctx and "<hardware>" not in ctx
 
-    # --- S5.2: [SEGMENT PLAN] block --------------------------------------
-
-    def test_no_segment_plan_block_when_idle(self):
-        """No scheduler executor at all → idle, no [SEGMENT PLAN]."""
+    def test_context_has_no_scheduler_blocks(self):
+        """PR-7b (#3699): блоков очереди планировщика v1 в снимке хода нет — статус действия приходит событием."""
         n = _make_node({"provider": "yandex"})
+        n._tool_executor = MagicMock()
         ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" not in ctx
-
-    def test_no_segment_plan_block_when_executor_reports_empty(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.return_value = ""
-        ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" not in ctx
-
-    def test_segment_plan_block_included_when_active_group(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.return_value = (
-            "[SEGMENT PLAN]\n- ACTIVE: seg_0 voice 'куплет' (remaining=?)\n"
-            "- REWRITEABLE_SEGMENTS: []\n- AT_RISK_ON_REPLACE: []"
-        )
-        ctx = n._build_dynamic_system_context()
-        assert "[SEGMENT PLAN]" in ctx
-        assert "seg_0" in ctx
-
-    def test_segment_plan_block_render_error_does_not_crash_context(self):
-        n = _make_node({"provider": "yandex"})
-        n._scheduler_executor = MagicMock()
-        n._scheduler_executor.active_tasks_block.return_value = ""
-        n._scheduler_executor.segment_plan_block.side_effect = RuntimeError("boom")
-        ctx = n._build_dynamic_system_context()  # must not raise
-        assert "<system_context>" in ctx
-        assert "[SEGMENT PLAN]" not in ctx
+        assert "<system_context>" in ctx and "eta=?" not in ctx and "channel=" not in ctx
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -376,7 +310,7 @@ class TestIdentityClarification:
     """
 
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_name_twin_asks_whether_same_person(self):
         """Имя совпало, голос не дотянул — спрашиваем, тот же ли человек.
@@ -465,7 +399,7 @@ class TestIdentityClarification:
 
 class TestOnSpeakerResultRegisterError:
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_registered_event_is_logged_and_not_treated_as_match(self):
         n = _make_node()
@@ -546,7 +480,7 @@ class TestOnSpeakerResultInconclusive:
     """Issue #2863 — «не смог оценить» не сбрасывает узнанного диктора."""
 
     def _msg(self, payload: dict):
-        return type("Msg", (), {"data": json.dumps(payload, ensure_ascii=False)})()
+        return make_speaker_result(payload)
 
     def test_inconclusive_unknown_keeps_current_speaker(self):
         """Живой лог: речь=0.36s, -66.6 dBFS, STT пустой → раньше сброс в ∅."""
@@ -641,9 +575,7 @@ class TestMaybeLogSkipSummary:
 
 class TestOnStt:
     def _msg(self, data: str):
-        msg = MagicMock()
-        msg.data = data
-        return msg
+        return make_utterance(data)
 
     def test_empty_text_ignored(self):
         n = _make_node()
@@ -832,39 +764,6 @@ class TestPublishResponseBatch:
         assert first["batch_id"] == second["batch_id"]
 
 
-class TestTtsBatchRegistry:
-    def test_register_is_idempotent(self):
-        n = _make_node()
-        n._register_active_batch("b1", 2)
-        n._register_active_batch("b1", 2)
-        assert n._active_batches == {"b1": 2}
-
-    def test_unregister_removes(self):
-        n = _make_node()
-        n._register_active_batch("b1", 2)
-        n._unregister_active_batch("b1")
-        assert n._active_batches == {}
-
-    def test_batch_complete_fires_cleanup_when_empty_and_pending(self):
-        n = _make_node()
-        n._pending_music_cleanup = True
-        n._publish_music_cleanup = MagicMock()
-        msg = MagicMock()
-        msg.data = json.dumps({"batch_id": "b1", "chunks_total": 1})
-        n._on_tts_batch_complete(msg)
-        n._publish_music_cleanup.assert_called_once()
-
-    def test_batch_complete_defers_when_batches_active(self):
-        n = _make_node()
-        n._pending_music_cleanup = True
-        n._register_active_batch("b2", 2)
-        n._publish_music_cleanup = MagicMock()
-        msg = MagicMock()
-        msg.data = json.dumps({"batch_id": "b1", "chunks_total": 1})
-        n._on_tts_batch_complete(msg)
-        n._publish_music_cleanup.assert_not_called()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Silence (legacy: test_query_queue_cleared_on_silence)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -924,44 +823,6 @@ class TestOnVad:
         n.vad_speech_detected = True
         n._on_vad(self._msg(False))
         assert n.vad_speech_detected is False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Babble detector / music guard (issue #992) — новые реальные проверки
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestBabbleDetector:
-    def test_metalanguage_opener_detected(self):
-        n = _make_node()
-        assert is_metalanguage_babble("Зачитаю рэп про космос!")
-        assert is_metalanguage_babble("Сейчас устроим концерт")
-        assert is_metalanguage_babble("Слушай, давай я спою")
-
-    def test_normal_answer_not_babble(self):
-        n = _make_node()
-        assert not is_metalanguage_babble("Черное море находится на юге России.")
-        assert not is_metalanguage_babble("")
-        assert not is_metalanguage_babble(None)
-
-    def test_user_wants_performance(self):
-        n = _make_node()
-        assert user_wants_performance("спой мне песню")
-        assert user_wants_performance("зачитай рэп")
-        assert not user_wants_performance("как дела?")
-
-
-class TestMusicCleanup:
-    def test_publish_music_cleanup_noop_without_pub(self):
-        n = _make_node()
-        n._music_cleanup_pub = None
-        n._publish_music_cleanup()  # не должно падать
-
-    def test_publish_music_cleanup_publishes_json(self):
-        n = _make_node()
-        n._music_cleanup_pub = MagicMock()
-        n._publish_music_cleanup(reason="dialogue_end")
-        msg = n._music_cleanup_pub.publish.call_args[0][0]
-        assert json.loads(msg.data) == {"reason": "dialogue_end"}
 
 
 class TestPublishState:

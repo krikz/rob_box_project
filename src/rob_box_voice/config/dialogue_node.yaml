@@ -19,28 +19,25 @@ dialogue_node:
     # TODO(legacy-config): 2026-09-15 — отложенный rollout deepseek primary.
     # Документация (docstring'и в src/rob_box_harness/rob_box_harness/providers/*.py,
     # docs/guides/examples/minimax_llm.yaml) говорит [deepseek, minimax, mimo],
-    # runtime yaml оставлен на legacy [minimax, deepseek] намеренно (см. ADR-0043).
-    # При обновлении — синхронизировать test_both_voice_configs_route_dialogue_to_minimax
+    # решение Шифу О5 (21.10, #3746): runtime = [deepseek, minimax], MiniMax — фолбек (см. ADR-0043).
+    # При обновлении — синхронизировать test_dialogue_configs_route_to_deepseek_first
     # (src/rob_box_voice/test/test_dialogue_shell.py) в том же коммите.
     # issue #1089: первый = primary, остальные = fallbacks
-    llm_providers: "minimax,deepseek"
+    llm_providers: "deepseek,minimax"
+    # ADR-0150 §4.5 (#3696 ч.5): провайдеры, отвечающие ОДНОЙ командой (поле speech, решение О4); форму запроса
+    # выбирает код по capabilities адаптера (DeepSeek → tool_choice, MiniMax-фолбек → tool_offered, #3698 ч.7d) — core/command_bridge.py.
+    # С 22.10 включено по умолчанию (решение Шифу 22.10 05:50Z, #3698): значение — одно, в коде
+    # rob_box_dialog.knowledge.COMMAND_PROVIDERS_DEFAULT ("deepseek,minimax"), здесь ключа нет. Провайдер вне списка
+    # идёт старым путём v1 на speak_text. Выключить — вернуть ключ: llm_command_providers: ""
+    # PR-7 ч.7c (#3698): команду с действиями исполняет код (harness core/tool_loop/command_turn.py) — фраза об исходе
+    # по событию владельца, речь модели при действиях не звучит, ход терминален.
+    # Параметр читается при сборке LLM-цепочки: смена — перезапуском ноды, не ros2 param set.
     # Issue #1219 — активный TTS-провайдер для LLM-контекста [TTS].
     # Должен совпадать с tts_node.yaml provider (minimax).
     tts_provider: minimax
     system_prompt_file: master_prompt_compact.txt
-    # Move A (change skill-scoped-dialogue-context): доменные фрагменты
-    # инструкций приезжают вплотную к текущему ходу, а не лежат на
-    # позиции 0 за двадцатью ходами истории. tools= при этом НЕ меняется,
-    # префикс провайдера остаётся кэшируемым.
-    # ВЫКЛЮЧЕНО: включать после сравнения voice_llm_prompt_tokens с
-    # baseline (Migration Plan change'а, шаг 2).
-    skills_enabled: true
-    # Move B — сузить tools= до core + активный скилл. Ломает
-    # кэшируемый префикс провайдера при каждой смене домена и
-    # добавляет отказ «роутер промахнулся -> LLM не видит нужный
-    # инструмент» (модель выкручивается через load_skill).
-    # ВЫКЛЮЧЕНО до подтверждённого выигрыша по метрикам.
-    skill_tool_narrowing: false
+    # Срез тулов хода (≤ 12 схем) задаёт код по снимку и словам человека — rob_box_dialog.tools_view
+    # (ADR-0150 PR-6); скиллов, их фрагментов и сужения по флагу больше нет.
     history_max_turns: 20
     faq_mode_enabled: false
     faq_event_config_file: ''
@@ -63,7 +60,6 @@ dialogue_node:
     # приходит битым, ход уходит в корректирующий ретрай. На роботе за один
     # вечер — 8 срезов подряд (TRUNCATED_TOOL_ARGS, len=616..704).
     max_tokens: 3000
-    agent_max_turns: 20
     enable_mcp_tools: true
     # Issue #1279 — command-intent gate: фразы-команды (NAVIGATE/STOP/STATUS/
     # MAP) обрабатывает command_node, dialogue_node НЕ дублирует их через
@@ -81,7 +77,6 @@ dialogue_node:
     # new_session_phrases:
     # - новая сессия
     # - сбрось всё
-    llm_timeout_sec: 90.0
     verbose_llm: true
     llm_streaming: true
     # handle_navigation / handle_music — фасады, удалённые вместе со
@@ -121,7 +116,6 @@ dialogue_node:
     speaker_resolve_timeout_sec: 2.5
     # Бэклог-аккумулятор фоновой речи без wake-слова.
     accumulate_no_wake_enabled: true
-    accumulate_window_sec: 180.0
     # ADR-0139 §2.6 / issue #3024 — face→voice hint: свежее наблюдение
     # лица в шов «Знакомый» отменяет голосовой переспрос #2809, если
     # имя лица и имя голосового кандидата совпадают и hint в окне.

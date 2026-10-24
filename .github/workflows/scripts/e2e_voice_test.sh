@@ -16,6 +16,8 @@
 # Usage:
 #   e2e_voice_test.sh --text "Робот, меня зовут Саша" [--voice anton]
 #   e2e_voice_test.sh --scenario /tmp/scenario.json [--acceptance /tmp/acceptance.json]
+#   e2e_voice_test.sh --scenario ... --hold-e2e-for-next-act   # #3904: следующий акт марафона наследует этот
+#   e2e_voice_test.sh --scenario ... --e2e-marathon-phase first|middle|last  # #3972: режим e2e держит раннер марафона
 #   e2e_voice_test.sh --text "..." --voice ermil --retries 3 --react-window 40
 #
 # ADR-0022 GATE-1 (acceptance.json gate, issue #1428 / t_ba114e5c):
@@ -27,6 +29,7 @@
 # Env (обязательные): YANDEX_API_KEY, ROBOT_HOST=10.1.1.22 (Sound Pi), SSHPASS
 # Env (опциональные): E2E_MAX_ATTEMPTS=3, E2E_REACTION_WINDOW=40,
 #                     E2E_RETRY_PAUSE=10, E2E_RECORD_EXTRA=20,
+#                     E2E_ACCEPT_WINDOW=15 (v2: нет ПРИНЯТО за столько секунд -- переиграть фразу, #3954),
 #                     GITHUB_RUN_ID (для OUT_DIR и симлинка
 #                                    /tmp/dialog_e2e_<run_id>.wav —
 #                                    workflow передаёт ${{ github.run_id }})
@@ -60,7 +63,9 @@ GITHUB_RUN_ID="${GITHUB_RUN_ID:-}"
 # переигрывать») от «робот действительно не принял» (rc=1) — но лучше
 # в такой сбой вообще не попадать: locale-префикс работает только как
 # литерал перед командой, не через переменную.
-ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no ${ROBOT_USER}@${ROBOT_HOST}"
+# ConnectTimeout=10: недостижимый робот не держит харнесс ~127 с до TCP-таймаута
+# на каждом ssh (#3921). BatchMode НЕ добавлять -- sshpass передаёт пароль.
+ROBOT_SSH="sshpass -p ${SSHPASS:-open} ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${ROBOT_USER}@${ROBOT_HOST}"
 # Override для локального тестирования (юнит-тесты): если задан ROBOT_SSH_OVERRIDE,
 # используем его вместо ssh-команды. Позволяет bash-юнит-тестам подсунуть
 # stub без реального sshpass+robot.
@@ -116,6 +121,20 @@ E2E_TTS_PROVIDER="${E2E_TTS_PROVIDER:-auto}"
 E2E_TTS_PROVIDER_ORDER="${E2E_TTS_PROVIDER_ORDER:-yandex,minimax,silero}"
 # Результат резолва (заполняется resolve_tts_provider, кэш на весь прогон).
 E2E_TTS_PROVIDER_RESOLVED=""
+# Issue #3875 — синтез фраз на katana падал на мигающем DNS (NameResolutionError →
+# MINIMAX_NETWORKERROR → `E2E_STEP … FAIL synth`, runs 39862350722 и 39863945631).
+#   E2E_SYNTH_RETRY_DELAYS   паузы перед повторами сетевого отказа: 3 повтора через 2/5/10 с;
+#   E2E_SYNTH_CACHE          1 — кэш между прогонами, 0 — только внутри прогона;
+#   E2E_SYNTH_CACHE_DIR      каталог кэша: ВНЕ /tmp/e2e_v2_* (его чистит cleanup прогона);
+#   E2E_SYNTH_CACHE_TTL_DAYS файлы, не бывшие в деле дольше этого срока, удаляются.
+E2E_SYNTH_RETRY_DELAYS="${E2E_SYNTH_RETRY_DELAYS:-2 5 10}"
+E2E_SYNTH_CACHE="${E2E_SYNTH_CACHE:-1}"
+E2E_SYNTH_CACHE_DIR="${E2E_SYNTH_CACHE_DIR:-${HOME:-/tmp}/.cache/rob_box_e2e/synth}"
+E2E_SYNTH_CACHE_TTL_DAYS="${E2E_SYNTH_CACHE_TTL_DAYS:-30}"
+#   E2E_PRESYNTH             0 — не пред-синтезировать акт (отладка; тесты гейтов без TTS).
+# 1 — пред-синтез акта не удался: акт не начинается (E2E_INFRA_FAIL synth).
+E2E_PRESYNTH="${E2E_PRESYNTH:-1}"
+E2E_PRESYNTH_FAILED=0
 # MiniMax T2A v2 — те же дефолты, что у tts_node (config/tts_node.yaml).
 MINIMAX_TTS_MODEL="${MINIMAX_TTS_MODEL:-speech-02-hd}"
 MINIMAX_TTS_BASE_URL="${MINIMAX_TTS_BASE_URL:-https://api.minimax.io}"
@@ -278,6 +297,7 @@ ACCEPTANCE_SKIP=0
 VOICE=""
 PATTERNS=""
 CHECK_TG_ECHO=0
+E2E_MARATHON_PHASE="${E2E_MARATHON_PHASE:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -290,10 +310,19 @@ while [ $# -gt 0 ]; do
         --react-window) E2E_REACTION_WINDOW="$2"; shift 2 ;;
         --tts-provider) E2E_TTS_PROVIDER="$2"; shift 2 ;;
         --check-tg-echo) CHECK_TG_ECHO=1; shift 1 ;;
+        # #3904 — раннер марафона: следующий акт наследует этот, режим e2e не снимать в trap.
+        --hold-e2e-for-next-act) E2E_HOLD_FOR_NEXT_ACT=1; shift 1 ;;
+        # #3972 — раннер марафона держит режим e2e на ВСЕ акты: first включает (стирает e2e-БД один раз),
+        # middle/last подхватывают без стирания, last выключает. Без флага акт одиночный (как раньше).
+        --e2e-marathon-phase) E2E_MARATHON_PHASE="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
+case "$E2E_MARATHON_PHASE" in
+    ""|first|middle|last) ;;
+    *) echo "E2E_FATAL: --e2e-marathon-phase='$E2E_MARATHON_PHASE' — ожидается first|middle|last (issue #3972)" >&2; exit 2 ;;
+esac
 case "$E2E_TTS_PROVIDER" in
     auto|yandex|minimax|silero) ;;
     *) echo "E2E_FATAL: --tts-provider='$E2E_TTS_PROVIDER' — ожидается auto|yandex|minimax|silero" >&2; exit 2 ;;
@@ -396,70 +425,6 @@ scenario_registers_speakers() {
     [ -f "$1" ] || return 1
     grep -q 'register_speaker' "$1"
 }
-E2E_SPEAKER_DB_ACTIVATED=0
-
-# Режим ЧИТАЕТСЯ обратно, а не берётся из exit-кода: ros2cli печатает
-# «Set parameter failed» при отказе parameters_callback и всё равно может
-# выйти с 0, а цена ошибки здесь — боевая БД мастерской с профилями живых
-# людей. Единственное честное подтверждение — значение параметра на узле.
-# Проверять надо ИМЕННО e2e_mode: ``db_path`` не меняется, он остаётся
-# путём боевой базы (узел переключает активное соединение, а не параметр).
-_read_e2e_mode() {
-    robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
-        | grep -aoE 'Boolean value is: (True|False)' | tail -1
-}
-activate_e2e_speaker_db() {
-    # Issue #2890 — узел стирает e2e-базу только на переходе false→true.
-    # Если прошлый прогон не вернул узел на боевую (❌ в его deactivate),
-    # set true стал бы no-op и акт унаследовал бы чужой каст — выключаем
-    # сначала и проверяем, что выключилось.
-    case "$(_read_e2e_mode)" in
-        *True*)
-            log "⚠️ speaker_id_node: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/speakers.e2e.db заново"
-            robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
-            case "$(_read_e2e_mode)" in
-                *False*) ;;
-                *)
-                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-база дикторов не будет стёрта перед актом (issue #2890)" >&2
-                    exit 2
-                    ;;
-            esac
-            ;;
-    esac
-    robot_ros "ros2 param set /speaker_id_node e2e_mode true --no-daemon" >/dev/null 2>&1
-    case "$(_read_e2e_mode)" in
-        *True*)
-            E2E_SPEAKER_DB_ACTIVATED=1
-            log "🧪 speaker_id_node: e2e_mode=true — боевая /data/speakers.db не тронута"
-            ;;
-        *)
-            # НЕ предупреждение, а фатал. Акт «Знакомство» регистрирует
-            # настоящие голосовые профили; без изоляции он пишет их в базу,
-            # которой пользуются живые люди в мастерской. Лучше не прогнать
-            # акт совсем, чем прогнать его по боевой базе (issue #2750).
-            echo "E2E_FATAL: не удалось включить e2e_mode у speaker_id_node — акт «Знакомство» писал бы в боевую /data/speakers.db" >&2
-            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon'\"" >&2
-            exit 2
-            ;;
-    esac
-}
-deactivate_e2e_speaker_db() {
-    [ "$E2E_SPEAKER_DB_ACTIVATED" = "1" ] || return 0
-    robot_ros "ros2 param set /speaker_id_node e2e_mode false --no-daemon" >/dev/null 2>&1
-    case "$(_read_e2e_mode)" in
-        *False*)
-            log "🧪 speaker_id_node: e2e_mode=false — вернулись на боевую /data/speakers.db"
-            ;;
-        *)
-            # Робот остался на e2e-базе: в мастерской он перестанет узнавать
-            # живых людей и будет писать их эмбеддинги в тестовую БД. Это
-            # обязано быть видно в отчёте прогона, а не только в логах.
-            log "❌ ВНИМАНИЕ: speaker_id_node НЕ вернулся на боевую speakers.db — робот сейчас на e2e-базе и не узнаёт живых людей!"
-            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /speaker_id_node e2e_mode false --no-daemon'\""
-            ;;
-    esac
-}
-
 # --- issue #2781: изоляция БД долгосрочной памяти (voice_facts) ------------
 # Изоляция дикторов выше (#2750/#2763) накрывает ТОЛЬКО speakers.db. Акт
 # «Знакомство» ночного марафона и регистрирует голоса (register_speaker,
@@ -472,67 +437,198 @@ deactivate_e2e_speaker_db() {
 # Тот же паттерн, что у спикеров: якорь — СОДЕРЖИМОЕ сценария (memory_save
 # упоминается в тексте сценария), не имя файла (issue #2763 — воркфлоу
 # копирует сценарий под фиксированным /tmp/e2e_scenario.json, имя не несёт
-# информации об авторе). Владелец параметра — mcp_server (нода, которая
-# реально исполняет memory_save, см. tools/memory.py:MemorySaveTool),
-# отдельный от speaker_id_node bool-параметр e2e_mode (issue #2781,
-# mcp_server.py:_apply_e2e_mode) — тот же ros2 param set, не топик.
+# информации об авторе). Память переключает mcp_server (нода, которая
+# реально исполняет memory_save, см. tools/memory.py:MemorySaveTool) —
+# с #3904 не своим параметром, а как последователь общего режима e2e ниже.
 scenario_writes_memory() {
     [ -f "$1" ] || return 1
     grep -q 'memory_save' "$1"
 }
-E2E_MEMORY_DB_ACTIVATED=0
 
-# Как и у _read_e2e_mode выше — читаем значение параметра ОБРАТНО, не
-# верим exit-коду ros2cli (может быть 0 даже когда parameters_callback
-# отклонил значение). Цена ошибки — боевая долгосрочная память мастерской.
-_read_mcp_e2e_mode() {
-    robot_ros "ros2 param get /mcp_server e2e_mode --no-daemon" 2>/dev/null \
+# --- issue #3904: ОДИН владелец режима e2e на весь марафон -----------------
+# До #3904 режим жил тремя флагами с тремя временами жизни: e2e_mode у
+# speaker_id_node (включал только сценарий с register_speaker), отдельный
+# e2e_mode у mcp_server (register_speaker ИЛИ memory_save) и e2e_mode у
+# dialog_node, и каждый снимался в trap СВОЕГО акта. Акт 3 марафона
+# (inherits_previous_act=true, run 39910805388) пошёл на БОЕВУЮ speakers.db:
+# trap акта 2 снял режим, а акт 3 его не включал — синтетический «Борис»
+# стал «unknown», а голоса сценария опознались как живые «Дэнчик»/«Михаил».
+#
+# Теперь режим один (rob_box_core/e2e_mode.py): владелец — параметр
+# /speaker_id_node e2e_mode (единственный, который ставит харнесс),
+# последователи (mcp_server — память фактов) получают его из latched
+# /e2e/mode и показывают применённое в e2e_mode_applied (только чтение).
+# Время жизни — марафон, а не акт:
+#   * акт с register_speaker/memory_save, не наследующий — enter_e2e_mode:
+#     выкл/вкл со стиранием e2e-БД (свежий каст);
+#   * наследующий акт — adopt_e2e_mode: режим ОБЯЗАН уже быть включён
+#     прошлым актом; подхватывает его без стирания (каст прошлого акта на
+#     месте) и отменяет таймер снятия; режима нет — E2E_FATAL, а не прогон
+#     по боевой БД;
+#   * trap — leave_e2e_mode: следующий акт марафона наследует этот
+#     (--hold-e2e-for-next-act, решает раннер марафона — он один знает план)
+#     → режим остаётся, владелец снимет его сам через E2E_HOLD_RELEASE_S,
+#     если следующий акт не придёт (обрыв, дедлайн); иначе — выключить сейчас.
+#   * #3972 - марафон целиком: раннер раздаёт актам --e2e-marathon-phase
+#     first|middle|last (marathon_e2e_mode): стирает e2e-БД ОДИН first, акты 2b/2c
+#     и дальше каст не трогают, режим снимает last; таймер владельца скользящий
+#     (E2E_MARATHON_HOLD_S от начала каждого акта). Без флага - всё как выше.
+# В начале каждого акта печатается E2E_PRECONDITION speaker_db=e2e|live.
+#
+# Значения ЧИТАЮТСЯ обратно, а не берутся из exit-кода: ros2cli печатает
+# «Set parameter failed» при отказе колбэка и всё равно может выйти с 0, а
+# цена ошибки — боевые БД мастерской с профилями живых людей.
+E2E_MODE_FOLLOWERS="/mcp_server /dialog_node"   # ноды с rob_box_core.e2e_mode.E2EModeFollower
+E2E_MODE_HELD=0                    # этот прогон держит режим: trap обязан снять или передать
+E2E_HOLD_FOR_NEXT_ACT="${E2E_HOLD_FOR_NEXT_ACT:-0}"
+E2E_HOLD_RELEASE_S="${E2E_HOLD_RELEASE_S:-1800}"
+E2E_FOLLOWER_WAIT_S="${E2E_FOLLOWER_WAIT_S:-10}"
+# #3972: запас владельца на марафонный режим, секунд от НАЧАЛА каждого акта (скользящий): обрыв раннера
+# вернёт робота на боевые БД сам, а акт (до 45 мин) таймер посреди прогона не снимет.
+E2E_MARATHON_HOLD_S="${E2E_MARATHON_HOLD_S:-10800}"
+
+_read_e2e_mode() {
+    robot_ros "ros2 param get /speaker_id_node e2e_mode --no-daemon" 2>/dev/null \
         | grep -aoE 'Boolean value is: (True|False)' | tail -1
 }
-activate_e2e_memory_db() {
-    # Issue #2890 — то же, что у activate_e2e_speaker_db: застрявший с
-    # прошлого прогона e2e_mode=true сделал бы включение no-op без стирания.
-    case "$(_read_mcp_e2e_mode)" in
+_set_e2e_mode() {  # $1 = true|false — единственная запись режима в харнессе
+    robot_ros "ros2 param set /speaker_id_node e2e_mode $1 --no-daemon" >/dev/null 2>&1
+}
+_read_e2e_applied() {  # $1 = нода-последователь
+    robot_ros "ros2 param get $1 e2e_mode_applied --no-daemon" 2>/dev/null \
+        | grep -aoE 'Boolean value is: (True|False)' | tail -1
+}
+_wait_e2e_followers() {  # $1 = True|False; rc 1 + имя ноды в stdout — не применила
+    local want="$1" node tries
+    for node in $E2E_MODE_FOLLOWERS; do
+        tries=0
+        until [ "$(_read_e2e_applied "$node")" = "Boolean value is: $want" ]; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge "$E2E_FOLLOWER_WAIT_S" ]; then
+                echo "$node"
+                return 1
+            fi
+            sleep 1
+        done
+    done
+    return 0
+}
+_set_e2e_release_after() {  # $1 = целые секунды (0 — отменить таймер снятия); rc 0 — владелец подтвердил
+    local want="$1.0"
+    robot_ros "ros2 param set /speaker_id_node e2e_release_after_s $want --no-daemon" >/dev/null 2>&1
+    [ "$(robot_ros "ros2 param get /speaker_id_node e2e_release_after_s --no-daemon" 2>/dev/null \
+        | grep -aoE 'Double value is: [0-9.]+' | tail -1)" = "Double value is: $want" ]
+}
+_e2e_followers_or_fatal() {  # $1 = True|False, $2 = что было бы без режима
+    local stuck
+    stuck="$(_wait_e2e_followers "$1")" && return 0
+    echo "E2E_FATAL: $stuck не применил режим e2e владельца (e2e_mode_applied≠$1 за ${E2E_FOLLOWER_WAIT_S} с) — $2 (issue #3904)" >&2
+    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get $stuck e2e_mode_applied --no-daemon'\"" >&2
+    exit 2
+}
+enter_e2e_mode() {
+    # Issue #2890 — узлы стирают e2e-БД только на переходе false→true. Режим,
+    # оставленный прошлым прогоном (или его таймером снятия), сделал бы
+    # включение no-op, и акт унаследовал бы чужой каст — выключаем и проверяем.
+    case "$(_read_e2e_mode)" in
         *True*)
-            log "⚠️ mcp_server: e2e_mode остался включён с прошлого прогона — выключаю, чтобы включение стёрло /data/voice_memory.e2e.db заново"
-            robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
-            case "$(_read_mcp_e2e_mode)" in
+            log "⚠️ e2e-режим остался включён с прошлого прогона — выключаю, чтобы включение стёрло e2e-БД заново"
+            _set_e2e_mode false
+            case "$(_read_e2e_mode)" in
                 *False*) ;;
                 *)
-                    echo "E2E_FATAL: mcp_server не выключил застрявший e2e_mode — e2e-память фактов не будет стёрта перед актом (issue #2890)" >&2
+                    echo "E2E_FATAL: speaker_id_node не выключил застрявший e2e_mode — e2e-БД не будут стёрты перед актом (issue #2890)" >&2
                     exit 2
                     ;;
             esac
             ;;
     esac
-    robot_ros "ros2 param set /mcp_server e2e_mode true --no-daemon" >/dev/null 2>&1
-    case "$(_read_mcp_e2e_mode)" in
-        *True*)
-            E2E_MEMORY_DB_ACTIVATED=1
-            log "🧪 mcp_server: e2e_mode=true — боевая /data/voice_memory.db не тронута"
-            ;;
+    _set_e2e_mode true
+    case "$(_read_e2e_mode)" in
+        *True*) E2E_MODE_HELD=1 ;;
         *)
-            # ФАТАЛ, не предупреждение — как и у изоляции дикторов: лучше не
-            # прогнать акт, чем засорить боевую долгосрочную память
-            # мастерской синтезированными фактами каста марафона.
-            echo "E2E_FATAL: не удалось включить e2e_mode у mcp_server — сценарий писал бы факты memory_save в боевую /data/voice_memory.db" >&2
-            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /mcp_server e2e_mode --no-daemon'\"" >&2
+            # Фатал, не предупреждение: лучше не прогнать акт совсем, чем
+            # прогнать его по боевой базе (issue #2750).
+            echo "E2E_FATAL: не удалось включить e2e_mode у speaker_id_node — сценарий писал бы в боевую /data/speakers.db" >&2
+            echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /speaker_id_node e2e_mode --no-daemon'\"" >&2
             exit 2
             ;;
     esac
+    _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    log "🧪 e2e-режим включён (владелец /speaker_id_node, последователи: $E2E_MODE_FOLLOWERS) — e2e-БД стёрты, боевые /data/speakers.db и /data/voice_memory.db не тронуты"
 }
-deactivate_e2e_memory_db() {
-    [ "$E2E_MEMORY_DB_ACTIVATED" = "1" ] || return 0
-    robot_ros "ros2 param set /mcp_server e2e_mode false --no-daemon" >/dev/null 2>&1
-    case "$(_read_mcp_e2e_mode)" in
-        *False*)
-            log "🧪 mcp_server: e2e_mode=false — вернулись на боевую /data/voice_memory.db"
-            ;;
+adopt_e2e_mode() {
+    case "$(_read_e2e_mode)" in
+        *True*) ;;
         *)
-            log "❌ ВНИМАНИЕ: mcp_server НЕ вернулся на боевую voice_memory.db — робот сейчас пишет долгосрочную память в e2e-базу!"
-            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /mcp_server e2e_mode false --no-daemon'\""
+            echo "E2E_PRECONDITION speaker_db=live"
+            echo "E2E_FATAL: акт наследует прошлый (inherits_previous_act=true), а режим e2e снят — голоса сценария опознавались бы по боевой /data/speakers.db как живые люди мастерской. Наследующий акт гоняется только марафоном после своего предшественника (scripts/e2e/run_night_marathon.sh, issue #3904)" >&2
+            exit 2
             ;;
     esac
+    E2E_MODE_HELD=1
+    if ! _set_e2e_release_after 0; then
+        echo "E2E_FATAL: speaker_id_node не подтвердил отмену таймера снятия e2e-режима (e2e_release_after_s≠0.0) — режим снялся бы посреди акта (issue #3904)" >&2
+        exit 2
+    fi
+    _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    log "🔗 e2e-режим подхвачен от прошлого акта: таймер снятия отменён, e2e-БД не стёрты — каст прошлого акта на месте"
+}
+marathon_e2e_mode() {  # $1 = first|middle|last — режим держит раннер марафона (#3972)
+    # Одно включение на марафон: first стирает e2e-БД (свежий каст), остальные акты каст не трогают —
+    # иначе акты 2b/2c стирали Сашу и Бориса из акта 2, и в акте 3 диктор был unknown (разбор 23.10, §1.B).
+    local phase="$1"
+    if [ "$phase" = "last" ]; then   # режим снимет trap этого акта, а не «передаст» дальше
+        E2E_MODE_HELD=1
+        E2E_HOLD_FOR_NEXT_ACT=0
+    fi
+    if [ "$phase" = "first" ]; then
+        enter_e2e_mode
+    else
+        case "$(_read_e2e_mode)" in
+            *True*) ;;
+            *)
+                echo "E2E_PRECONDITION speaker_db=live"
+                echo "E2E_FATAL: акт марафона (phase=$phase) идёт после first, а режим e2e снят (таймер владельца, перезапуск ноды или акт first не выполнялся) — голоса сценария опознавались бы по боевой /data/speakers.db как живые люди мастерской (issue #3972)" >&2
+                exit 2
+                ;;
+        esac
+        _e2e_followers_or_fatal True "сценарий писал бы факты memory_save в боевую /data/voice_memory.db"
+    fi
+    if ! _set_e2e_release_after "$E2E_MARATHON_HOLD_S"; then
+        echo "E2E_FATAL: speaker_id_node не принял таймер снятия e2e-режима (${E2E_MARATHON_HOLD_S} с) — оборванный марафон оставил бы робота на e2e-БД без срока (issue #3972)" >&2
+        exit 2
+    fi
+    [ "$phase" = "last" ] || E2E_MODE_HELD=0
+    log "🔗 e2e-режим марафона (phase=$phase): e2e-БД $([ "$phase" = "first" ] && echo 'стёрты один раз' || echo 'НЕ стёрты, каст прошлых актов на месте'); таймер владельца ${E2E_MARATHON_HOLD_S} с, $([ "$phase" = "last" ] && echo 'режим снимет этот акт' || echo 'режим остаётся следующему акту')"
+}
+leave_e2e_mode() {
+    [ "$E2E_MODE_HELD" = "1" ] || return 0
+    E2E_MODE_HELD=0
+    if [ "$E2E_HOLD_FOR_NEXT_ACT" = "1" ]; then
+        if _set_e2e_release_after "$E2E_HOLD_RELEASE_S"; then
+            log "🔗 e2e-режим оставлен следующему акту марафона (он наследует этот): снимет последний акт или таймер владельца через ${E2E_HOLD_RELEASE_S} с"
+            echo "E2E_MODE held_for_next_act release_after_s=${E2E_HOLD_RELEASE_S}"
+            return 0
+        fi
+        log "⚠️ speaker_id_node не принял таймер снятия — выключаю e2e-режим сейчас (следующий акт честно упадёт на E2E_PRECONDITION, а не оставит робота на e2e-БД без срока)"
+    fi
+    _set_e2e_mode false
+    case "$(_read_e2e_mode)" in
+        *False*)
+            log "🧪 e2e-режим выключен — вернулись на боевые /data/speakers.db и /data/voice_memory.db"
+            ;;
+        *)
+            # Робот остался на e2e-базе: в мастерской он перестанет узнавать
+            # живых людей. Это обязано быть видно в отчёте прогона.
+            log "❌ ВНИМАНИЕ: speaker_id_node НЕ вышел из e2e-режима — робот сейчас на e2e-БД и не узнаёт живых людей!"
+            log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /speaker_id_node e2e_mode false --no-daemon'\""
+            ;;
+    esac
+    local stuck
+    stuck="$(_wait_e2e_followers False)" \
+        || log "❌ ВНИМАНИЕ: $stuck не вернулся на боевую БД (e2e_mode_applied≠False) — долгосрочная память пишется в e2e-базу!"
+    echo "E2E_MODE off"
 }
 
 # --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
@@ -593,29 +689,108 @@ reset_dialogue_session_for_act() {  # $1 = токен (только [A-Za-z0-9_.
     echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
     exit 2
 }
+
+# --- ADR-0150 PR-8 (#3702): движок диалога v1 | v2 --------------------------
+# При ``dialog_engine: v2`` (dialog_engine.yaml на роботе) вместо dialogue_node
+# работает dialog_node: параметра e2e_session_reset_token у него нет, сессию
+# сбрасывает сервис /dialog/control (reset, set_by=tars), а текст ходов для
+# приёмки (turn_metrics.py --db, honesty_audit.py --db) пишется в e2e-БД
+# только при e2e_mode и пути ВНЕ /data (rob_box_dialog.e2e_events).
+# Движок узнаём у самой ноды: значение параметра dialog_engine у /dialog_node.
+# Ноды нет (v1) — путь v1 без изменений.
+E2E_DIALOG_ENGINE="v1"
+E2E_DIALOG_DB_PATH="${E2E_DIALOG_DB_PATH:-/tmp/e2e_dialog/dialog_events_${RUN_ID:-local}.db}"
+E2E_DIALOG_DB_ACTIVATED=0
+_read_dialog_param() {  # $1 = имя параметра /dialog_node → True|False|строка
+    robot_ros "ros2 param get /dialog_node $1 --no-daemon" 2>/dev/null \
+        | grep -aoE '(Boolean|String) value is: .*' | tail -1 | sed -E 's/^(Boolean|String) value is: //'
+}
+detect_dialog_engine() {
+    E2E_DIALOG_ENGINE="v1"
+    [ "$(_read_dialog_param dialog_engine)" = "v2" ] && E2E_DIALOG_ENGINE="v2"
+    echo "E2E_DIALOG_ENGINE ${E2E_DIALOG_ENGINE}"
+    return 0
+}
+reset_dialog_v2_session_for_act() {
+    local out
+    out="$(robot_ros "timeout 30 ros2 service call /dialog/control rob_box_dialog_msgs/srv/DialogControl '{action: 2, set_by: tars}'" 2>&1)"
+    if printf '%s' "$out" | grep -q 'ok=True'; then
+        log "🧹 dialog_node (v2): новая сессия перед актом (/dialog/control reset, $(printf '%s' "$out" | grep -oE 'epoch=[0-9]+' | tail -1)) — ходы прошлых актов LLM не увидит"
+        return 0
+    fi
+    echo "E2E_FATAL: dialog_node (v2) не подтвердил сброс сессии перед актом (/dialog/control reset без ok=True) — акт увидел бы ходы прошлого акта (issue #2890)" >&2
+    printf '%s\n' "$out" | tail -3 >&2
+    exit 2
+}
+activate_e2e_dialog_db() {
+    case "$E2E_DIALOG_DB_PATH" in
+        /data | /data/*)
+            echo "E2E_FATAL: E2E_DIALOG_DB_PATH=$E2E_DIALOG_DB_PATH внутри боевой /data — e2e-БД ходов только вне неё" >&2
+            exit 2 ;;
+    esac
+    # #3904: журнал ходов включает сам непустой путь (своего e2e_mode у
+    # dialog_node больше нет — режим e2e робота один, у /speaker_id_node).
+    # Колбэк параметров ноды переоткрывает БД по значению, которое ещё не
+    # записано (rclpy пишет его после колбэка): второй set того же пути
+    # переоткрывает БД с уже записанным путём.
+    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_db_path $E2E_DIALOG_DB_PATH --no-daemon" >/dev/null 2>&1
+    if [ "$(_read_dialog_param e2e_db_path)" = "$E2E_DIALOG_DB_PATH" ]; then
+        E2E_DIALOG_DB_ACTIVATED=1
+        log "🧪 dialog_node: e2e_db_path задан — текст ходов пишется в e2e-БД вне /data"
+        echo "E2E_DIALOG_DB ${E2E_DIALOG_DB_PATH}"
+        return 0
+    fi
+    log "⚠️ dialog_node: e2e-БД не включилась (e2e_db_path не прочитался обратно) — метрик хода по этому акту не будет"
+    echo "E2E_DIALOG_DB off"
+}
+deactivate_e2e_dialog_db() {
+    [ "$E2E_DIALOG_DB_ACTIVATED" = "1" ] || return 0
+    robot_ros "ros2 param set /dialog_node e2e_db_path '' --no-daemon" >/dev/null 2>&1
+    robot_ros "ros2 param set /dialog_node e2e_db_path '' --no-daemon" >/dev/null 2>&1
+    log "🧪 dialog_node: e2e_db_path='$(_read_dialog_param e2e_db_path)' — запись ходов остановлена, БД осталась в контейнере: $E2E_DIALOG_DB_PATH"
+}
 isolate_act_start() {  # $1 = файл сценария
-    local scenario="$1" inherits=0 registers=1
+    local scenario="$1" inherits=0 registers=1 memory=1
     scenario_inherits_previous_act "$scenario" || inherits=$?
     [ "$inherits" = "2" ] && exit 2
     scenario_registers_speakers "$scenario" && registers=0
+    scenario_writes_memory "$scenario" && memory=0
     if [ "$inherits" = "0" ] && [ "$registers" = "0" ]; then
         echo "E2E_FATAL: сценарий регистрирует дикторов (стирает каст) и при этом inherits_previous_act=true — наследовать разговор о стёртом касте нельзя (issue #2890)" >&2
         exit 2
     fi
-    # Issue #2750 — изолированная БД дикторов ДО первого шага. Якорь —
-    # СОДЕРЖИМОЕ сценария (issue #2763), не имя файла.
-    if [ "$registers" = "0" ]; then
-        activate_e2e_speaker_db
+    # Issue #3904 — режим e2e один (см. enter/adopt/leave_e2e_mode выше), ДО
+    # первого шага. Якорь — СОДЕРЖИМОЕ сценария (issue #2763), не имя файла:
+    # register_speaker (#2750) или memory_save (#2781) — свежий режим со
+    # стиранием e2e-БД; наследующий акт — режим прошлого акта, без стирания.
+    if [ -n "$E2E_MARATHON_PHASE" ]; then
+        marathon_e2e_mode "$E2E_MARATHON_PHASE"
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    elif [ "$inherits" = "0" ]; then
+        adopt_e2e_mode
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    elif [ "$registers" = "0" ] || [ "$memory" = "0" ]; then
+        enter_e2e_mode
+        echo "E2E_PRECONDITION speaker_db=e2e"
+    else
+        case "$(_read_e2e_mode)" in
+            *True*)
+                log "ℹ️ акт без записи в БД дикторов/памяти, а e2e-режим держит таймер прошлого акта — акт идёт на e2e-БД"
+                echo "E2E_PRECONDITION speaker_db=e2e" ;;
+            *) echo "E2E_PRECONDITION speaker_db=live" ;;
+        esac
     fi
-    # Issue #2781 — memory_save пишет в e2e-память. Issue #2890 — стёртый
-    # каст дикторов стирает и факты о нём.
-    if [ "$registers" = "0" ] || scenario_writes_memory "$scenario"; then
-        activate_e2e_memory_db
-    fi
+    detect_dialog_engine
     if [ "$inherits" = "0" ]; then
         log "🔗 акт наследует окно диалога прошлого акта (inherits_previous_act=true) — сброс сессии пропущен намеренно"
+    elif [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
+        reset_dialog_v2_session_for_act
     else
         reset_dialogue_session_for_act "e2e-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
+    if [ "$E2E_DIALOG_ENGINE" = "v2" ]; then
+        activate_e2e_dialog_db
     fi
 }
 
@@ -720,6 +895,12 @@ source "$SCRIPT_DIR_E2E/e2e_voice_lib.sh"
 # only — никакого main flow, никакого чтения ENV.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR_E2E/e2e_voice_wake_gate.sh"
+# Issue #3857: ожидание событий робота живёт в e2e_events.py рядом с харнессом. На 249 его кладёт
+# шаг workflow "Push atomic harness"; без файла опрос молча крутился до потолка (run 39847097177).
+if [ "${E2E_EVENT_WAITS:-1}" != "0" ] && [ ! -f "${E2E_EVENTS_PY:-$SCRIPT_DIR_E2E/e2e_events.py}" ]; then
+    echo "E2E_FATAL: нет модуля ${E2E_EVENTS_PY:-$SCRIPT_DIR_E2E/e2e_events.py} -- workflow не скопировал e2e_events.py на билд-машину" >&2
+    exit 2
+fi
 
 # bug(run 35658231116, 22.09.2026): этот блок стоял на строке ~124 — ДО
 # парсинга аргументов (--scenario разбирается ниже, ~300) и ДО source
@@ -870,7 +1051,7 @@ check_gate1_aggregate() {  # $1=acceptance_file_path $2=before_rfc3339
 import json, os, re, sys
 # «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
 # tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
-from e2e_tool_match import tool_invoked
+from e2e_tool_match import tool_invoked, strip_llm_request_dump
 # Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
 from e2e_tool_match import (
     first_invocation_position,
@@ -880,7 +1061,8 @@ from e2e_tool_match import (
 
 acc_path = os.environ["ACCEPTANCE_FILE"]
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
-    logs = _f.read()
+    # Issue #3860: дамп LLM-запроса (recent_actions с именами тулов прошлых ходов) -- не вызов.
+    logs = strip_llm_request_dump(_f.read())
 
 try:
     acc = json.load(open(acc_path))
@@ -1148,11 +1330,17 @@ PY
 # Классификация ошибок зеркалит minimax_tts.py:933-954 и НЕ читается по
 # HTTP-статусу: «план не поддерживает модель» приезжает 500-м, а исчерпанная
 # квота — 200-м с base_resp.status_code=2056. Поэтому проверяем ОБА канала.
-synth_minimax() {  # $1=text $2=voice $3=out_wav
+synth_minimax() {  # $1=text $2=voice[:pitch[:speed]] $3=out_wav
     local text="$1" voice="$2" out="$3"
     python3 - "$text" "$voice" "$out" <<'PY'
 import sys, os, json, time
 text, voice, out = sys.argv[1], sys.argv[2], sys.argv[3]
+# Голос роли приходит строкой voice:pitch:speed из map_tts_voice (#3931): питч в
+# полутонах (-12..12), темп множится на глобальный YANDEX_SPEED.
+_parts = voice.split(":")
+voice = _parts[0]
+pitch = int(_parts[1]) if len(_parts) > 1 and _parts[1] != "" else 0
+role_speed = float(_parts[2]) if len(_parts) > 2 and _parts[2] != "" else 1.0
 key = os.environ.get("MINIMAX_API_KEY", "")
 start = time.monotonic()
 
@@ -1180,7 +1368,8 @@ payload = {
     "stream": False,
     "voice_setting": {
         "voice_id": voice,
-        "speed": float(os.environ.get("YANDEX_SPEED", "1.0")),
+        "speed": round(role_speed * float(os.environ.get("YANDEX_SPEED", "1.0")), 4),
+        "pitch": pitch,
     },
     "audio_setting": {
         "sample_rate": 32000, "bitrate": 128000, "format": "wav", "channel": 1,
@@ -1360,11 +1549,11 @@ tts_probe_provider() {  # $1=provider
     case "$provider" in
         yandex)
             [ -n "${YANDEX_API_KEY:-}" ] || { log "TTS probe yandex: пропуск — нет YANDEX_API_KEY"; return 1; }
-            synth_yandex "проверка связи" "anton" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            synth_with_retry yandex "проверка связи" "anton" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
             ;;
         minimax)
             [ -n "${MINIMAX_API_KEY:-}" ] || { log "TTS probe minimax: пропуск — нет MINIMAX_API_KEY"; return 1; }
-            synth_minimax "проверка связи" "Russian_ReliableMan" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
+            synth_with_retry minimax "проверка связи" "Russian_ReliableMan" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
             ;;
         silero)
             synth_silero "проверка связи" "aidar" "$probe_wav" > "$probe_log" 2>&1 || rc=$?
@@ -1414,17 +1603,9 @@ resolve_tts_provider() {
     return 1
 }
 
-# synth_command() — единственная точка синтеза команды для run_step.
-# Резолвит провайдера (лениво, один раз), переводит голос сценария в каталог
-# провайдера (map_tts_voice из e2e_voice_lib.sh) и диспатчит.
-synth_command() {  # $1=text $2=voice $3=out_wav
-    local text="$1" voice="$2" out="$3" provider native
-    if ! resolve_tts_provider; then
-        echo '{"provider": "none", "result": "fail", "error_class": "NoProvider", "detail": "ни один TTS-провайдер не доступен"}' >&2
-        return 1
-    fi
-    provider="$E2E_TTS_PROVIDER_RESOLVED"
-    native="$(map_tts_voice "$provider" "$voice")"
+# synth_dispatch() — вызов конкретного провайдера, без ретраев и кэша.
+synth_dispatch() {  # $1=provider $2=text $3=native_voice $4=out_wav
+    local provider="$1" text="$2" native="$3" out="$4"
     case "$provider" in
         yandex)  synth_yandex  "$text" "$native" "$out" ;;
         minimax) synth_minimax "$text" "$native" "$out" ;;
@@ -1433,7 +1614,177 @@ synth_command() {  # $1=text $2=voice $3=out_wav
     esac
 }
 
+# synth_net_error_class() — сетевой ли отказ в stderr провайдера ($1=файл).
+# rc 0 + класс в stdout (самый конкретный из встреченных) — да; rc 1 — нет.
+# Сетевой = ровно то, что провайдеры сами классифицируют `"error_class": "NetworkError"`
+# (minimax: любое исключение requests, в т.ч. NameResolutionError/ConnectionError/таймаут;
+# yandex: UNAVAILABLE/DEADLINE_EXCEEDED/CANCELLED). Auth/Quota/BadRequest/ApiError
+# повторять бессмысленно: ответ тот же, а деньги и время тратятся.
+synth_net_error_class() {
+    local f="$1" c
+    grep -qaE '"error_class": *"NetworkError"|_NETWORKERROR' "$f" 2>/dev/null || return 1
+    for c in NameResolutionError ConnectTimeout ReadTimeout Timeout ConnectionError DEADLINE_EXCEEDED UNAVAILABLE; do
+        if grep -qa "$c" "$f" 2>/dev/null; then printf '%s' "$c"; return 0; fi
+    done
+    printf 'NetworkError'
+    return 0
+}
+
+# synth_with_retry() — провайдер + ретраи сетевых отказов. Поведение и rc те же,
+# что у synth_dispatch; stderr провайдера каждой попытки остаётся в потоке (последняя
+# строка потока — последний отказ, на неё смотрит `tail -1` вызывающих).
+# Лог: `synth retry k/N (<класс>) …` перед каждой паузой.
+synth_with_retry() {  # $1=provider $2=text $3=native_voice $4=out_wav
+    local provider="$1" text="$2" native="$3" out="$4"
+    local -a delays=()
+    read -r -a delays <<< "$E2E_SYNTH_RETRY_DELAYS"
+    local total=${#delays[@]} k=0 rc cls errf
+    errf="$(mktemp 2>/dev/null)" || errf="/tmp/e2e_synth_err_$$"
+    while :; do
+        rc=0
+        synth_dispatch "$provider" "$text" "$native" "$out" 2>"$errf" || rc=$?
+        if [ "$rc" = "0" ]; then cat "$errf" >&2; rm -f "$errf"; return 0; fi
+        if ! cls="$(synth_net_error_class "$errf")"; then
+            cat "$errf" >&2; rm -f "$errf"; return "$rc"
+        fi
+        if [ "$k" -ge "$total" ]; then
+            echo ">>> synth retry исчерпан: ${total} повтор(а) подряд сетевой отказ (${cls}), provider=${provider}"
+            cat "$errf" >&2; rm -f "$errf"; return "$rc"
+        fi
+        cat "$errf" >&2
+        k=$((k + 1))
+        echo ">>> synth retry ${k}/${total} (${cls}) provider=${provider}, повтор через ${delays[$((k - 1))]}s"
+        sleep "${delays[$((k - 1))]}"
+    done
+}
+
+# Кэш синтеза. Кладём СЫРОЙ wav провайдера (до EQ): EQ — ffmpeg после синтеза, дёшев,
+# и зависит только от кода харнесса, поэтому в ключе его нет. Ключ: версия формата,
+# провайдер, голос провайдера, текст и параметры синтеза (модель/скорость/формат).
+# У minimax питч и темп роли живут в самой строке голоса (voice:pitch:speed, #3931),
+# поэтому попадают в ключ вместе с ним: смена питча не вернёт старые wav.
+_synth_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+    else python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; fi
+}
+
+synth_cache_key() {  # $1=provider $2=native_voice $3=text
+    local params
+    case "$1" in
+        minimax) params="model=${MINIMAX_TTS_MODEL:-}|speed=${YANDEX_SPEED:-1.0}|wav32000mono" ;;
+        yandex)  params="speed=${YANDEX_SPEED:-1.0}|wav-lufs" ;;
+        silero)  params="rate=${E2E_SILERO_SAMPLE_RATE:-48000}|model=${E2E_SILERO_MODEL:-}|wav" ;;
+        *)       params="" ;;
+    esac
+    printf 'v1\x1f%s\x1f%s\x1f%s\x1f%s' "$1" "$2" "$3" "$params" | _synth_sha256
+}
+
+# Каталог кэша: постоянный на билд-машине; если выключен/недоступен — на время прогона
+# (в OUT_DIR), чтобы пред-синтез акта всё равно доезжал до шагов.
+synth_cache_dir() {
+    local d
+    if [ "${E2E_SYNTH_CACHE:-1}" = "1" ]; then
+        d="$E2E_SYNTH_CACHE_DIR"
+        if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then printf '%s' "$d"; return 0; fi
+    fi
+    d="${OUT_DIR:-/tmp}/.synth_cache"
+    mkdir -p "$d" 2>/dev/null && printf '%s' "$d"
+}
+
+synth_wav_ok() {  # $1=файл: есть и длиннее заголовка wav
+    [ -f "$1" ] && [ "$(wc -c < "$1" 2>/dev/null || echo 0)" -gt 44 ]
+}
+
+synth_cache_prune() {  # $1=dir
+    [ -d "$1" ] || return 0
+    find "$1" -maxdepth 1 -type f -name '*.wav' -mtime "+${E2E_SYNTH_CACHE_TTL_DAYS:-30}" -delete 2>/dev/null || true
+    find "$1" -maxdepth 1 -type f -name '*.tmp.*' -mmin +60 -delete 2>/dev/null || true
+}
+
+# synth_command() — единственная точка синтеза команды для run_step.
+# Резолвит провайдера (лениво, один раз), переводит голос сценария в каталог
+# провайдера (map_tts_voice из e2e_voice_lib.sh), берёт готовое из кэша либо
+# синтезирует (с ретраями сетевых отказов, #3875) и кладёт результат в кэш.
+synth_command() {  # $1=text $2=voice $3=out_wav
+    local text="$1" voice="$2" out="$3" provider native cdir cfile key tmp
+    if ! resolve_tts_provider; then
+        echo '{"provider": "none", "result": "fail", "error_class": "NoProvider", "detail": "ни один TTS-провайдер не доступен"}' >&2
+        return 1
+    fi
+    provider="$E2E_TTS_PROVIDER_RESOLVED"
+    native="$(map_tts_voice "$provider" "$voice")"
+    case "$provider" in
+        yandex|minimax|silero) ;;
+        *) synth_dispatch "$provider" "$text" "$native" "$out"; return $? ;;
+    esac
+    cdir="$(synth_cache_dir)"
+    key="$(synth_cache_key "$provider" "$native" "$text")"
+    cfile="${cdir:+$cdir/${provider}_${key}.wav}"
+    if [ -n "$cfile" ] && synth_wav_ok "$cfile" && cp -f "$cfile" "$out" 2>/dev/null && synth_wav_ok "$out"; then
+        touch "$cfile" 2>/dev/null || true
+        echo ">>> synth cache hit: ${provider}/${native} key=${key:0:12}"
+        return 0
+    fi
+    synth_with_retry "$provider" "$text" "$native" "$out" || return $?
+    if [ -n "$cfile" ] && synth_wav_ok "$out"; then
+        tmp="${cfile}.tmp.$$"
+        if cp -f "$out" "$tmp" 2>/dev/null && mv -f "$tmp" "$cfile" 2>/dev/null; then :; else rm -f "$tmp"; fi
+    fi
+    return 0
+}
+
+# synth_surface_log() — строки `synth retry`/`synth cache` из лога синтеза шага
+# (stdout синтеза уходит в файл) поднимаем в основной лог прогона. $1=label $2=файл.
+synth_surface_log() {
+    local line
+    [ -f "$2" ] || return 0
+    while IFS= read -r line; do
+        log "STEP ${1}: ${line#>>> }"
+    done < <(grep -aE '^>>> synth (retry|cache)' "$2" 2>/dev/null)
+    return 0
+}
+
+# presynth_scenario() — пред-синтез ВСЕХ фраз акта до первого PLAY (#3875). Сеть
+# мигнула — узнаём это на старте с ретраями, а не на n108 посреди акта, когда
+# робот уже получил половину сценария. Не вышло — `E2E_INFRA_FAIL synth` сразу.
+# Готовые wav лежат в OUT_DIR (и в кэше), run_step берёт их из кэша без сети.
+# $1=scenario_file; rc 0 — все фразы готовы, 1 — отказ (kind=synth уже помечен).
+presynth_scenario() {
+    local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir
+    local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
+    local required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok
+    local row_read="$E2E_SCENARIO_ROW_READ"
+    ensure_outdir
+    parse_scenario_to_tsv "$scenario" "$rows"
+    cdir="$(synth_cache_dir)"
+    synth_cache_prune "$cdir"
+    log "PRESYNTH: синтез фраз акта до первого PLAY (кэш: ${cdir:-нет}, паузы ретраев: ${E2E_SYNTH_RETRY_DELAYS})"
+    while IFS=$'\x1f' eval "$row_read"; do
+        [ -z "$idx" ] && continue
+        [ -n "$text" ] || continue
+        safe="$(safe_label "$label")"
+        slog="$OUT_DIR/synth_${safe}.log"
+        n=$((n + 1))
+        if synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$slog" 2>&1 < /dev/null; then
+            synth_surface_log "$label" "$slog"
+            grep -qa '^>>> synth cache hit' "$slog" && hits=$((hits + 1))
+        else
+            synth_surface_log "$label" "$slog"
+            log "PRESYNTH ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$slog"))"
+            emit_step "${label} FAIL synth"
+            mark_fail_kind synth
+            echo "E2E_INFRA_FAIL synth"
+            log "PRESYNTH: акт не начат — робот ни разу не вызывался, это инфра билд-машины, не регресс робота"
+            return 1
+        fi
+    done < "$rows"
+    log "PRESYNTH: готово ${n} фраз (из кэша ${hits})"
+    return 0
+}
+
 # Проверка полного цикла в логах робота с момента BEFORE.
+# Судья v1 (и режима E2E_EVENT_WAITS=0): ищет строку ``TTS finished``. В v2-режиме событий run_step её НЕ зовёт --
+# там единственный судья e2e_events.py (#3954).
 # Возвращает: 0 = полный цикл (акцепт+LLM+TTS в ПРАВИЛЬНОМ ПОРЯДКЕ),
 #             1 = нет акцепта (ПРИНЯТО в логах ДЕЙСТВИТЕЛЬНО нет — можно
 #                 переигрывать реплику),
@@ -1628,7 +1979,9 @@ check_backlog_accumulated() {  # $1=before_rfc3339
     local before="$1"
     local logs
     logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
-    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated \(no_wake_word\)'
+    # v1 (stt_admission_host): «🗒️ [backlog] accumulated (no_wake_word) …»;
+    # v2 (dialog_node, ADR-0150 PR-8): «[backlog] accumulated reason=no_wake entries=N».
+    printf '%s' "$logs" | grep -qE '\[backlog\] accumulated (\(no_wake_word\)|reason=no_wake)'
 }
 
 # vad_reject_reason() — почему шаг НЕ доехал до STT (issue: ложный диагноз).
@@ -1774,7 +2127,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         # пере-синтезируем, а не падаем с paplay open(): No such file.
         log "STEP ${label}: cmd_${safe}.wav отсутствует — повторный синтез (cleanup-resilience)"
     fi
-    if ! synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1; then
+    synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1
+    local _synth_rc=$?
+    synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"
+    if [ "$_synth_rc" != "0" ]; then
         log "STEP ${label}: FAIL — синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"
         emit_step "${label} FAIL synth"
         mark_fail_kind synth
@@ -1847,6 +2203,41 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     # 2. Ждём тишины: робот не должен говорить перед командой (greeting/
     #    приветствие идёт через 12s после старта и может перебить команду).
     #    Ждём пока в логах нет свежих TTS-событий последние E2E_SILENCE_WAIT сек.
+    # issue #3857: v2 -- ждём СОБЫТИЙ (SpeechEvent без пары finished/cancelled), а не 20+15 с по grep
+    # строк синтеза; barge_in шага -- НЕ ждём тишины, а ждём якорь перебивания и играем поверх речи.
+    E2E_STEP_SILENCE_SEC=0
+    local _barge_mode=0 _barge_spec="${E2E_STEP_BARGE_IN:-}" _quiet_done=0 _barge_rc=0
+    if [ -n "$_barge_spec" ]; then
+        _barge_mode=1; _quiet_done=1
+        if [ -n "${E2E_PENDING_ANCHOR_SINCE:-}" ] && [ "${E2E_PENDING_ANCHOR_SPEC:-}" = "$_barge_spec" ]; then
+            :   # предыдущий шаг уже дождался этого якоря (E2E_ANCHOR_*)
+        elif [ -n "${E2E_LAST_PLAY_SINCE:-}" ]; then
+            wait_barge_anchor "$E2E_LAST_PLAY_SINCE" "$_barge_spec"; _barge_rc=$?
+        else
+            _barge_rc=1
+        fi
+        E2E_PENDING_ANCHOR_SINCE=""; E2E_PENDING_ANCHOR_SPEC=""
+        if [ "$_barge_rc" = "2" ]; then
+            log "STEP ${label}: ❌ ${E2E_ANCHOR_ERROR:-barge_in не разобран} -- это дефект СЦЕНАРИЯ"
+            emit_step "${label} FAIL barge_in_invalid"
+            mark_fail_kind infra
+            return 1
+        elif [ "$_barge_rc" != "0" ]; then
+            log "STEP ${label}: ⏭ SKIP -- якорь перебивания ${_barge_spec} не наступил (за ${E2E_REACTION_WINDOW}s нет события в логе предыдущей фразы): перебивать было нечего, шаг НЕ засчитан как PASS"
+            emit_step "${label} SKIP barge_in_anchor_missing"
+            return 4
+        fi
+    elif [ "${E2E_EVENT_WAITS:-1}" != "0" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+        _quiet_done=1
+        if wait_robot_quiet; then
+            log "STEP ${label}: робот молчит -- команду можно играть (silence_after=${E2E_STEP_SILENCE_SEC}s)"
+        else
+            log "STEP ${label}: ⚠️ робот не замолчал за ${E2E_STEP_SILENCE_SEC}s (потолок E2E_SILENCE_WAIT_MAX) -- играю команду поверх. Если шаг упадёт, смотри сюда: возможен SpeechEvent started без finished на роботе, а не регресс в обработке команды."
+            printf 'STEP %s: silence wait exceeded %ss\n' "$label" "$E2E_STEP_SILENCE_SEC" \
+                >> "$OUT_DIR/silence_wait_exceeded.log" 2>/dev/null || true
+        fi
+    fi
+    if [ "$_quiet_done" != "1" ]; then
     E2E_SILENCE_WAIT="${E2E_SILENCE_WAIT:-15}"
     # Абсолютный предел ожидания. Окно тишины СБРАСЫВАЕТСЯ каждый раз, когда
     # робот заговорил, поэтому без такого предела цикл не завершается никогда:
@@ -1879,7 +2270,9 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         fi
         sleep 5
     done
-    log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть"
+    E2E_STEP_SILENCE_SEC=$(( $(date -u +%s) - loop_start ))
+    log "STEP ${label}: робот молчит ${E2E_SILENCE_WAIT}s — команду можно играть (silence_after=${E2E_STEP_SILENCE_SEC}s)"
+    fi
 
     # 3a. Backlog-аккумулятор (ds01/ds02 voice_core_suite_v1.json): фраза
     #     БЕЗ wake-слова копится в SpeechAccumulator, полного TTS-цикла НЕ
@@ -1892,8 +2285,21 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
             pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
-            sleep "$E2E_REACTION_WINDOW"
-            if check_backlog_accumulated "$BEFORE"; then
+            # issue #3857: опрос маркера каждые 2 с до потолка, а не слепой sleep 40 с.
+            local _bt0 _bfound=1
+            _bt0="$(date +%s)"
+            if [ "${E2E_EVENT_WAITS:-1}" = "0" ]; then
+                sleep "$E2E_REACTION_WINDOW"
+                check_backlog_accumulated "$BEFORE"; _bfound=$?
+            else
+                while :; do
+                    check_backlog_accumulated "$BEFORE" && { _bfound=0; break; }
+                    [ $(( $(date +%s) - _bt0 )) -ge "$E2E_REACTION_WINDOW" ] && break
+                    sleep "${E2E_EVENT_POLL:-2}"
+                done
+                log "STEP ${label}: backlog reply_after=$(( $(date +%s) - _bt0 ))s"
+            fi
+            if [ "$_bfound" = "0" ]; then
                 log "STEP ${label}: ✅ backlog accumulated (no_wake_word)"
                 emit_step "${label} OK backlog"
                 return 0
@@ -1933,7 +2339,13 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             BEFORE="$accepted_before"
             log "STEP ${label}: attempt ${attempt}/${E2E_MAX_ATTEMPTS} — ПРИНЯТО уже было, PLAY пропущен, жду завершения цикла (issue #2933)"
         else
+            if [ "$_barge_mode" = "1" ] && [ "$attempt" = "1" ]; then
+                local _barge_after
+                _barge_after="$(barge_hold "$_barge_spec")"
+                log "STEP ${label}: barge_in after_started=${_barge_after}s (speech_id=${E2E_ANCHOR_ID:--}, якорь $(_barge_field "$_barge_spec" after)#$(_barge_field "$_barge_spec" n), delay_sec=$(_barge_field "$_barge_spec" delay_sec))"
+            fi
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+            E2E_LAST_PLAY_SINCE="$BEFORE"
             log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
             # Громкость динамика 100% (по умолчанию; явный >100% доступен через
             # inputs.volume в workflow, e.g. -f volume=120).
@@ -1945,16 +2357,42 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 log "STEP ${label}: cmd_${safe}_eq.wav отсутствует перед play — пере-синтез (cleanup-resilience)"
                 ensure_outdir
                 synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
-                    || { log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
+                    || { synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"; log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
                 ensure_outdir
                 ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
             fi
             paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
         fi
-        sleep "$E2E_REACTION_WINDOW"
+        step_wait_after_play "$BEFORE" "$_barge_mode"
 
-        check_cycle "$BEFORE"
-        rc=$?
+        if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
+            # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
+            # «TTS finished» -- наследие v1: в v2-ходе без речи такой строки нет, и он гонял ещё 2 попытки по 40 с.
+            case "${E2E_WAIT_RC:-0}" in
+                0) rc=0 ;;
+                1) rc=3 ;;   # ПРИНЯТО есть, ход не кончился за потолок: ждём то же окно, PLAY не повторяем (#2933)
+                3) rc=1 ;;   # ПРИНЯТО нет за E2E_ACCEPT_WINDOW: переигрываем сразу
+                *)
+                    log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s (wait=event, verdict=${E2E_REPLY_VERDICT})"
+                    log "STEP ${label}: ❌ ход закончен без ответа: ${E2E_REPLY_REASON:--} -- ПРИНЯТО было, повторов нет"
+                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT} (${E2E_REPLY_REASON:--})"
+                    if [ "$E2E_REPLY_VERDICT" = "failed" ]; then mark_fail_kind llm_error; else mark_fail_kind no_reaction; fi
+                    return 1 ;;
+            esac
+        elif [ "$E2E_WAIT_MODE" = "anchor" ]; then
+            # Следующий шаг перебивает: конца ответа не ждём (и не ждём TTS finished, его не будет).
+            # Якорь невозможен без принятой фразы (e2e_events.anchor считает события ПОСЛЕ ПРИНЯТО).
+            log "STEP ${label}: ответ начался -- якорь перебивания следующего шага наступил, конца ответа не ждём (barge_in)"
+            rc=0
+        else
+            check_cycle "$BEFORE"
+            rc=$?
+            if [ "$rc" != "0" ] && [ "$rc" != "2" ] && [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && [ "${E2E_REPLY_NO_SPEECH:-0}" = "1" ]; then
+                log "STEP ${label}: ход завершён без речи (📊 [turn] stage=done, SpeechEvent нет) -- шаг помечен silent_ok"
+                rc=0
+            fi
+        fi
+        log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s, silence_after=${E2E_STEP_SILENCE_SEC:-0}s (wait=${E2E_WAIT_MODE})"
         if [ "$rc" = "0" ]; then
             log "STEP ${label}: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)"
             reaction=1
@@ -2327,235 +2765,14 @@ sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) els
     ACC_JSON="$acc_json" LOGS_FILE="$logs_file" \
         PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" \
         python3 - <<'PY' > "$OUT_DIR/acceptance.json"
-import json, os, re, sys
-# «тул вызван» != «тул есть в списке доступных»: dialogue_node печатает
-# tools(56) и системный промпт на каждом ходе (см. e2e_tool_match.py).
-from e2e_tool_match import tool_invoked
-# Issue #2406: для discovery-тул ассерта нужен порядок «tool ДО voice».
-from e2e_tool_match import (
-    first_invocation_position,
-    first_voice_cycle_position,
-    TOOL_NAME_RE,
-)
-# Issue #2764: expected_keywords матчатся по речи робота, не по всему логу.
-from e2e_tool_match import keyword_hit, robot_speech, identify_failures
-# Issue #2846: вызов register_speaker != регистрация принята speaker_id_node.
-from e2e_tool_match import (
-    registration_expected,
-    registration_failures,
-    registration_outcome,
-)
+import json, os, sys
+# Вердикт шага -- одна функция e2e_tool_match.step_verdict (её же зовёт сухой стенд scripts/dialog/dry_marathon.py, #3906).
+from e2e_tool_match import step_verdict
 acc = json.loads(os.environ["ACC_JSON"])
 with open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace") as _f:
     logs = _f.read()
-def has(s, frag):
-    return tool_invoked(logs, frag)
-expected_call = acc.get("expected_tool_calls", []) or []
-must_not = acc.get("must_not_call", []) or []
-expected_kw = acc.get("expected_keywords", []) or []
-# Issue #2779 — must_not_say: отдельное от must_not_call поле для «этого
-# не должно ЗВУЧАТЬ». must_not_call свободным текстом матчит ВЕСЬ лог шага
-# (tool_invoked() fallback), а в этот лог гарантированно попадают строки
-# голосовой биометрии (`identify candidates: best='Борис'...`,
-# `Speaker: 'Борис'`, `[Spkr:Борис]`) независимо от того, что робот
-# ответил — тавтологическое КРАСНОЕ для проверки «незнакомцу не сказали
-# чужое имя» (см. n210_grisha_no_name). must_not_say ищет ТОЛЬКО в
-# robot_speech() — том же канале, что и expected_keywords (issue #2764).
-must_not_say = acc.get("must_not_say", []) or []
-identification_failures = identify_failures(acc, logs)
-# Issue #2406: discovery_tools — список тулов, которые ОБЯЗАНЫ быть вызваны
-# ДО первого голосового ответа. Если в acceptance.json шага есть это поле —
-# ассертим порядок, иначе — старый чек (только факт вызова).
-# Каждый tool должен соответствовать TOOL_NAME_RE (snake_case имя тула),
-# иначе — soft FAIL с подсказкой.
-discovery_tools_raw = acc.get("discovery_tools", []) or []
-discovery_tools = []
-discovery_tool_errors = []
-for _dt in discovery_tools_raw:
-    if not isinstance(_dt, str) or not TOOL_NAME_RE.match(_dt.lower()):
-        discovery_tool_errors.append(
-            f"discovery_tools entry {repr(_dt)} is not a tool name "
-            f"(must match ^[a-z][a-z0-9_]*$)"
-        )
-        continue
-    discovery_tools.append(_dt)
-voice_changed_req = bool(acc.get("voice_changed", False))
-response_max_ms = acc.get("response_max_ms", 0) or 0
-
-recognized = ""
-# stt_node.py:923 печатает `✅ ПРИНЯТО ({source}): {text}` — тег источника
-# добавлен в 6e016325f (#2011), а паттерн остался без него, поэтому recognized
-# был пуст на каждом прогоне (35658231116). Тег опционален — старые логи тоже.
-m = re.search(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(.+)", logs)
-if m:
-    recognized = m.group(1).strip()
-# Ключевые слова ищем в РЕЧИ РОБОТА (TTS text + аргумент speak_text +
-# spoken=), а не по всему логу шага — см. robot_speech/keyword_hit в
-# e2e_tool_match.py и issue #2764.
-#
-# Историю важно не откатить: когда-то ключи искались только в recognised
-# (распознанной фразе), и «Красная» vs STT «красную» давал false-negative
-# при корректно рассказанной сказке (mv03, run 32595628905). Починили это
-# расширением на ВЕСЬ лог — но вместе с ответом робота в поиск попали
-# реплика говорящего и подпись диктора '[Spkr:Саша]', и keyword-проверки
-# стали проходить сами по себе. robot_speech даёт ровно ту область,
-# которую хотел mv03 (LLM OUTPUT / spoken= / то, что ушло в синтез),
-# без пользовательского ввода.
-logs_low = logs.lower()
-
-actual_calls = []
-for c in (expected_call + must_not):
-    if has(logs, c) and c not in actual_calls:
-        actual_calls.append(c)
-
-found_expected = [c for c in expected_call if has(logs, c)]
-missing_expected = [c for c in expected_call if not has(logs, c)]
-forbidden_called = [c for c in must_not if has(logs, c)]
-# Issue #2753 — ключ вида "Борис|Спартак|пицц" сценарии пишут как
-# АЛЬТЕРНАЦИЮ, по аналогии с соседним полем patterns (оно идёт через grep -E).
-# Сравнение целой строкой искало её вместе с палками и не находило никогда:
-# n209_recall_boris в run 35699257202 покраснел при идеальном ответе робота
-# («…приходишь примерно раз в неделю с пиццей. Болеешь за Спартак…»), и так же
-# вечно краснели n1002/n1009 в финальном акте. Разбиваем по "|" и ищем any-of,
-# а НЕ включаем полноценный регэксп: иначе существующие ключи со знаком ?,
-# точкой или скобками молча поменяли бы смысл.
-def _keyword_hit(kw):
-    return keyword_hit(logs, kw)
-
-found_keywords = [k for k in expected_kw if _keyword_hit(k)]
-missing_keywords = [k for k in expected_kw if not _keyword_hit(k)]
-# Issue #2779 — зеркало found/missing_keywords, но для «не должно звучать».
-# _keyword_hit() тот же самый (robot_speech()-scoped), значит фраза
-# засчитывается только если её реально ПРОИЗНЁС робот — служебные строки
-# биометрии (`identify candidates`, `Speaker: 'Борис'`, `[Spkr:Борис]`)
-# в robot_speech() не попадают (см. e2e_tool_match.py:robot_speech).
-forbidden_said = [k for k in must_not_say if _keyword_hit(k)]
-# Диагностика в артефакт: без неё красный keyword-шаг неотличим от
-# «робот вообще молчал» — а это разные починки.
-robot_said = robot_speech(logs)
-
-# Issue #2406: discovery-tools order check. Для каждого discovery-тула:
-# - позиция первого execution-маркера в логе
-# - позиция первого voice-cycle маркера (любого)
-# Требование: tool_pos < voice_pos (тул вызван ДО голосового ответа).
-# Если тул не вызван — отдельный FAIL (подобно missing_expected).
-# Если голосовой цикл уже случился раньше вызова тула — отдельный FAIL
-# с подсказкой про verbal-only LLM answer.
-discovery_failures = []
-discovery_records = []
-voice_pos = first_voice_cycle_position(logs) if discovery_tools else None
-for _dt in discovery_tools:
-    tool_pos = first_invocation_position(logs, _dt)
-    rec = {
-        "tool": _dt,
-        "first_invocation_pos": tool_pos,
-        "first_voice_pos": voice_pos,
-    }
-    if tool_pos is None:
-        discovery_failures.append(
-            f"discovery tool {_dt!r} was NOT invoked at all "
-            f"(issue #2406: LLM bypassed the required tool call)"
-        )
-    elif voice_pos is not None and tool_pos > voice_pos:
-        discovery_failures.append(
-            f"discovery tool {_dt!r} invoked at pos {tool_pos}, "
-            f"AFTER verbal answer at pos {voice_pos} "
-            f"(issue #2406: verbal-only LLM answer before required tool)"
-        )
-    discovery_records.append(rec)
-
-# voice_changed: set_voice был вызван с голосом, отличным от дефолта.
-# Лог: `[set_voice] voice='X' provider=... default=Y`. Если set_voice вернул
-# voice_unavailable — лога не будет, и это честный FAIL (голос не сменился).
-voice_change_ok = True
-voice_change_detail = ""
-if voice_changed_req:
-    set_voice_matches = re.findall(
-        r"\[set_voice\] voice='([^']*)'\s+provider=(\S+)\s+default=(\S+)", logs
-    )
-    if not set_voice_matches:
-        voice_change_ok = False
-        voice_change_detail = (
-            "voice did not change: no successful [set_voice] log "
-            "(set_voice not called or returned voice_unavailable)"
-        )
-    elif not any(v.strip().lower() != d.strip().lower() for v, _p, d in set_voice_matches):
-        voice_change_ok = False
-        voice_change_detail = (
-            "voice did not change from default: "
-            + ", ".join(f"{v}->{d}" for v, _p, d in set_voice_matches)
-        )
-
-# response_max_ms — берём из ранее записанного timing.json если есть
-timing_path = os.environ.get("OUT_DIR", "") + "/timing.json"
-measured_ms = None
-if os.path.exists(timing_path):
-    try:
-        t = json.load(open(timing_path))
-        measured_ms = t.get("metrics_ms", {}).get("total_latency_ms")
-    except Exception:
-        pass
-
-failures = []
-if missing_expected:
-    failures.append(f"expected tool calls not invoked: {missing_expected}")
-if forbidden_called:
-    failures.append(f"forbidden tool calls invoked: {forbidden_called}")
-if expected_kw and missing_keywords:
-    failures.append(f"expected keywords missing in logs: {missing_keywords}")
-if forbidden_said:
-    failures.append(f"forbidden phrases spoken by robot: {forbidden_said}")
-if identification_failures:
-    failures.extend(identification_failures)
-if discovery_tool_errors:
-    failures.extend(discovery_tool_errors)
-if discovery_failures:
-    failures.extend(discovery_failures)
-# Issue #2846: отказ/отсутствие исхода регистрации и склейка профиля — часть
-# ЭТОГО же вердикта (раньше склейку проверял отдельный bash-блок ПОСЛЕ
-# «✅ all checks passed», а отказ не проверял никто).
-registration = registration_outcome(logs)
-registration_fail = registration_failures(acc, logs)
-failures.extend(registration_fail)
-if not voice_change_ok:
-    failures.append(voice_change_detail)
-if response_max_ms and measured_ms and measured_ms > response_max_ms:
-    failures.append(f"response time {measured_ms}ms > max {response_max_ms}ms")
-result = {
-    "label": os.environ.get("STEP_LABEL", ""),
-    "expected_tool_calls": expected_call,
-    "actual_tool_calls": actual_calls,
-    "missing_expected_calls": missing_expected,
-    "forbidden_calls": forbidden_called,
-    "expected_keywords": expected_kw,
-    "robot_speech": robot_said,
-    "recognized": recognized,
-    "found_keywords": found_keywords,
-    "missing_keywords": missing_keywords,
-    # Issue #2779 — must_not_say verdict (robot_speech-scoped, see above).
-    "must_not_say": must_not_say,
-    "forbidden_said": forbidden_said,
-    "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
-    "identify_failures": identification_failures,
-    # Issue #2406: discovery-step enforcement (per-step).
-    # discovery_tools содержит имена тулов, которые ОБЯЗАНЫ быть вызваны
-    # ДО первого голосового ответа. discovery_records — массив позиций
-    # для трассировки (tool_pos vs voice_pos), см. test_issue_2406_*_step_enforcement.py.
-    "discovery_tools": discovery_tools,
-    "discovery_records": discovery_records,
-    "discovery_first_voice_pos": voice_pos,
-    # Issue #2846: исход регистрации голоса по логу speaker_id_node.
-    "registration_expected": registration_expected(acc),
-    "registration": registration,
-    "registration_failures": registration_fail,
-    "voice_changed": voice_changed_req,
-    "voice_change_ok": voice_change_ok,
-    "voice_change_detail": voice_change_detail,
-    "response_max_ms": response_max_ms,
-    "measured_total_ms": measured_ms,
-    "pass": not failures,
-    "reason": "; ".join(failures) if failures else "all checks passed",
-}
+result = step_verdict(acc, logs, label=os.environ.get("STEP_LABEL", ""),
+                      timing_path=os.environ.get("OUT_DIR", "") + "/timing.json")
 print(json.dumps(result, ensure_ascii=False, indent=2))
 PY
     # Итоговый rc — из acceptance.json (pass → 0)
@@ -2599,41 +2816,61 @@ cat > "$OUT_DIR/tts_provider.json" <<TTSJSON
 }
 TTSJSON
 
+# Issue #3875 — пред-синтез всех фраз акта ДО записи, изоляции и первого PLAY: мигнувшая
+# сеть билд-машины выясняется на старте (с ретраями), а не посреди акта. Не вышло —
+# E2E_INFRA_FAIL synth; робот не тронут, акт не начинается (см. ветку PASS=1 ниже).
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH" = "1" ]; then
+    presynth_scenario "$SCENARIO_FILE" || E2E_PRESYNTH_FAILED=1
+fi
+
 # --- сценарий или одиночная команда ----------------------------------------
 # Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
 # попытки). Стартуем до if/else, останавливаем в trap EXIT (см. ниже).
-start_recording
+[ "$E2E_PRESYNTH_FAILED" = "1" ] || start_recording
 
 # Advisory health probe is always collected, but never changes PASS/FAIL.
 # Keep it in the run artifact so e2e reports expose infrastructure health.
 observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/health_snapshot.json" || true
 
-# Гарантированная остановка записи, возврат speaker_id_node/mcp_server на
-# боевые БД и восстановление node_params при любом завершении
-# (PASS/FAIL/ошибка). Все хелперы идемпотентны: повторный вызов — noop
-# (пустой REC_PID / E2E_*_DB_ACTIVATED=0 / пустой node_params_originals).
+# Гарантированная остановка записи, выход из режима e2e (или передача его
+# следующему наследующему акту марафона, #3904 — leave_e2e_mode) и
+# восстановление node_params при любом завершении (PASS/FAIL/ошибка). Все
+# хелперы идемпотентны: повторный вызов — noop (пустой REC_PID /
+# E2E_MODE_HELD=0 / E2E_DIALOG_DB_ACTIVATED=0 / пустой node_params_originals).
 # Issue #2890 — trap ставится ДО изоляции акта: E2E_FATAL сброса сессии
 # (или памяти) после уже включённой e2e-БД дикторов обязан вернуть узел
 # на боевую, а не оставить мастерскую на e2e-базе.
 # Issue #3248 — restore_robot_tts_default (e2e_voice_lib.sh): акт, менявший
 # голос/провайдера (mv01 → Yandex alena), возвращает дефолт set_voice в обход
 # LLM; иначе следующий акт и живые люди слышат голос из этого акта.
-trap 'restore_robot_tts_default; restore_node_params; deactivate_e2e_speaker_db; deactivate_e2e_memory_db; stop_recording' EXIT
+trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
-if [ -n "$SCENARIO_FILE" ]; then
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     isolate_act_start "$SCENARIO_FILE"
+    # Issue #3871 — музыка/DJ-сет не переживают прогон: 22.10 замер акта 1 шёл под сет из
+    # Telegram. Играет — стоп через подписанный /mcp/execute и ожидание idle; не вышло — E2E_FATAL.
+    # Акт, наследующий окно диалога прошлого (inherits_previous_act=true), плеер не трогает.
+    _music_inherits=no
+    scenario_inherits_previous_act "$SCENARIO_FILE" && _music_inherits=yes
+    ensure_music_stopped_for_act "$_music_inherits"
+    # Issue #3886 — прогрев sink и пауза перед первой фразой v2-акта (потеря «Робот,» в n201).
+    [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && warm_act_audio_path "$OUT_DIR"
 fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
 # name_confidence_band_high на время всего прогона.
-if [ -n "$SCENARIO_FILE" ]; then
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     apply_node_params "$SCENARIO_FILE"
 fi
 
 PASS=1
-if [ -n "$SCENARIO_FILE" ]; then
+if [ "$E2E_PRESYNTH_FAILED" = "1" ]; then
+    # Issue #3875: пред-синтез провален (E2E_INFRA_FAIL synth уже выведен) — шаги не играем.
+    PASS=0
+    log "акт не начат: пред-синтез фраз не удался (см. PRESYNTH выше)"
+elif [ -n "$SCENARIO_FILE" ]; then
     # scenario.json: {"steps":[{"text":"...","voice":"anton","label":"s1",
     #           "patterns":["save_speaker_profile"],
     #           "acceptance":{"expected_tool_calls":["generate_music"],
@@ -2768,8 +3005,19 @@ if [ -n "$SCENARIO_FILE" ]; then
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             [ -z "$step_window_start" ] && step_window_start="$STEP_BEFORE"
+            # issue #3857: поля шага для ожидания событий. Перебивание -- только на первой попытке
+            # (ретрай после перебивания играется в тишине).
+            E2E_STEP_BARGE_IN="$barge_in_json"
+            [ "$attempt_n" -gt 0 ] && E2E_STEP_BARGE_IN=""
+            E2E_STEP_NEXT_BARGE_IN="$next_barge_in_json"
+            E2E_STEP_SILENT_OK="$silent_ok"
             run_step "$text" "$voice" "$label" "$expect"
             rc=$?
+            if [ "$rc" = "4" ]; then
+                # SKIP barge_in_anchor_missing (emit_step уже сделан в run_step): не PASS и не FAIL
+                step_skipped=1
+                break
+            fi
             # Пишем transcript (даже при FAIL — для ретро-анализа, что STT услышал)
             parse_transcript "$label" "$STEP_BEFORE" "$text"
             # ADR-0029 §2.3: rc=3 = SKIP wake-gate-cold-start (не fail, не

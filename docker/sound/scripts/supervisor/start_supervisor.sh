@@ -54,6 +54,13 @@ echo "=========================================="
 
 # ros2 run или прямой бинарь — entry point зарегистрирован через
 # setup.py: supervisor_node = rob_box_supervisor.supervisor_node:main
+# ADR-0150 PR-8 (#3702): флаг движка диалога — один файл на все ноды; нет файла — дефолт ноды (v1).
+DIALOG_ENGINE_YAML=/config/voice_assistant/dialog_engine.yaml
+ENGINE_ARGS=()
+if [ -f "${DIALOG_ENGINE_YAML}" ]; then
+    ENGINE_ARGS=(--params-file "${DIALOG_ENGINE_YAML}")
+fi
 exec ros2 run rob_box_supervisor supervisor_node \
     --ros-args \
+    "${ENGINE_ARGS[@]}" \
     -p mode:=${AVATAR_SUPERVISOR_MODE:-monitor}

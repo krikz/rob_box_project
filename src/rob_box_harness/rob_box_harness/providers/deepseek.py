@@ -117,7 +117,7 @@ class HarnessDeepSeekProvider(LLMProvider):  # type: ignore[misc]
         ``DEEPSEEK_API_KEY`` from ``os.environ``. The key is never
         logged.
     model:
-        Default model name. Defaults to ``"deepseek-chat"``.
+        Default model name. Defaults to ``"deepseek-chat"`` (устаревшее имя, API отдаёт deepseek-flash; рантайм диалога берёт rob_box_llm.DeepSeekProvider.DEFAULT_MODEL).
     base_url:
         Endpoint URL. Defaults to ``https://api.deepseek.com``.
     timeout:

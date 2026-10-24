@@ -75,6 +75,19 @@ def heard_theme(text: str) -> str:
     return out if content_stems(out) else ""
 
 
+def order_theme(text: Optional[str], heard_text: Optional[str]) -> str:
+    """Тема заказа генерации (#3775): слова темы просьбы «сочини … про / на тему X» реплики хода (грамматика
+    ``GENERATE``, затем :func:`heard_theme` — без «ты», «сэт», предлогов); в реплике её нет, а ``text`` — не реплика
+    (тема ``generate_music(theme)``) — его значимые слова. Ничего — ``""``: заказ без темы."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    command = parse_media_command(heard_text or "")
+    said = command.name if command.intent is MediaIntent.GENERATE else ""
+    if not said and text and text != heard_text:
+        said = text
+    return heard_theme(said) or (said if content_stems(said) else "")
+
+
 def _names_new_theme(heard_text: Optional[str]) -> bool:
     """В реплике есть слова новой темы. «Тема та же» (``asks_same_theme``) — явная ссылка на прежнюю: остальные слова
     («только техно») — стиль. Глагол смены стиля («переходим на рок», ``asks_to_keep_theme``) новой темы не называет,
@@ -200,4 +213,4 @@ def set_slots(theme: Optional[str], persona: Optional[str], heard_text: Optional
     return slots.theme, persona
 
 
-__all__ = ["SetTheme", "continued", "grounded_theme", "heard_theme", "set_slots", "set_theme"]
+__all__ = ["SetTheme", "continued", "grounded_theme", "heard_theme", "order_theme", "set_slots", "set_theme"]

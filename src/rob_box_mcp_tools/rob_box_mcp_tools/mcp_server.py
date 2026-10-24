@@ -13,28 +13,30 @@ ROS 2 интерфейс:
 - Подписывается на: /mcp/execute (String) - JSON запросы на выполнение
 - Публикует: /mcp/result (String) - JSON результаты выполнения
 
-Runtime-параметр (``ros2 param set``, НЕ топик — issue #2781, по образцу
-speaker_id_node.e2e_mode из issue #2750/#2763):
-    e2e_mode (bool) — переключить активную БД долгосрочной памяти
-        (voice_facts, ``memory_save``) боевая ↔ e2e_db_path. Владелец —
-        только E2E-харнесс (``ros2 param set /mcp_server e2e_mode
-        true|false``). См. ``parameters_callback`` / ``_apply_e2e_mode``.
-        Реализовано только для legacy VoiceMemory (``/data/voice_memory.db``,
-        активный бэкенд в проде на 22.09.2026) — при
-        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает
-        (fail-fast, см. docstring ``_apply_e2e_mode``).
+Режим e2e (#3904) — своего переключателя у ноды НЕТ: она последователь
+владельца ``/speaker_id_node e2e_mode`` (``rob_box_core.e2e_mode``) и
+переключает активную БД долгосрочной памяти (voice_facts, ``memory_save``)
+боевая ↔ e2e_db_path по latched ``/e2e/mode``. Применённый режим — в
+параметре ``e2e_mode_applied`` (только чтение, его сверяет харнесс). См.
+``_apply_e2e_mode``. Реализовано только для legacy VoiceMemory
+(``/data/voice_memory.db``, активный бэкенд в проде на 22.09.2026) — при
+``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает (fail-fast),
+``e2e_mode_applied`` остаётся False и харнесс не прогоняет акт.
 
 Parameters:
-    e2e_db_path (str) — изолированная БД памяти для E2E-режима, переключается
-        параметром e2e_mode выше [/data/voice_memory.e2e.db]
+    e2e_db_path (str) — изолированная БД памяти для E2E-режима
+        [/data/voice_memory.e2e.db]
 """
 
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import String
+from rob_box_dialog import knowledge as _dialog_kn
+from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_core.e2e_mode import E2EModeFollower
+from rob_box_core.speaker_wire import speaker_result_to_payload
 import asyncio
 import json
 import math
@@ -47,6 +49,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from rob_box_harness.encounter import EncounterSeam, EncounterChannel
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
 from rob_box_harness.memory import InMemoryStore
+from rob_box_music import knowledge as music_kn
 from rob_box_music.diversity import MusicHistory
 
 from rob_box_voice.core.music_player_state import (
@@ -55,12 +58,14 @@ from rob_box_voice.core.music_player_state import (
     MusicEventLog,
 )
 
+from .engine.backing_deck import BackingDeck
 from .engine.chooser_model import DEFAULT_MODE as CHOOSER_DEFAULT_MODE
 from .engine.gen.kie_suno import KieSunoProvider
 from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_lyrics_ask
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
+from .engine.speech_duck import SpeechDuck, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
@@ -98,8 +103,6 @@ from .tools import (
     # Issue #1765 — cross-provider TTS switching.
     SetTtsProviderTool,
     ListTtsVoicesTool,
-    # S6.1 — task_delta MCP tool (scheduler segments).
-    TaskDeltaTool,
     MemorySaveTool,
     MemorySearchTool,
     MemoryContextTool,
@@ -116,6 +119,11 @@ from .tools import (
     # запрос в /avatar/tars/panel_request; URL собирает TarsPanelDispatcher
     # в rob_box_supervisor и публикует в /avatar/tars/panel_url.
     ShowMetricsTool,
+    # PR-13b #3708 (решение Шифу 23.10 «регаем, чтобы из ТАРС было доступно»): диагностика operator.admin.
+    ContainerStatusTool,
+    ReadLogsTool,
+    Ros2NodeStatusTool,
+    SayAloudTool,
     SayTool,
 )
 
@@ -138,7 +146,8 @@ from .slice_authority import ToolSliceAuthority, load_default_authority
 from .waypoint_store import WaypointStore
 from .waypoint_adapter import WaypointAdapter
 from .mapping_state import MappingState
-from .voice_state import VoiceStateStore
+from rob_box_core.provider_publisher import ProviderStatePublisher
+from .engine.gen.provider import gen_provider_states
 from .perception_projection import project_perception_event
 
 try:
@@ -187,13 +196,6 @@ except ImportError:
     _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
 
 
-#: Issue #3174 — причины ``/mcp/music_cleanup``, которые означают конец речи
-#: или диалога, а не просьбу остановить музыку. По ним DJ-сет не гасится
-#: (см. ``MCPServer._cleanup_spares_dj_set``); остальные причины — явный стоп.
-SOFT_MUSIC_CLEANUP_REASONS = frozenset(
-    {"tts_batch_complete", "dialogue_end", "new_dialogue"}
-)
-
 def _string_publisher(publisher: Any) -> Any:
     """``text -> publisher.publish(String(data=text))`` — публикация для ``PlayerOwner``."""
     def publish(text: str) -> None:
@@ -203,8 +205,9 @@ def _string_publisher(publisher: Any) -> Any:
     return publish
 
 
-#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14).
-V2_STARTED_WAIT_S = 6.0
+#: Сколько тул v2 ждёт ``started`` своего трека, прежде чем ответить ``ok`` (A2 p100 ≤ 6 с, A14). Одно знание с
+#: дедлайном действия музыки в диалоге (``rob_box_dialog.knowledge.MUSIC_ACTION_DEADLINE_S`` = это + подготовка).
+V2_STARTED_WAIT_S = _dialog_kn.MUSIC_START_WAIT_S
 
 
 def _teed_events(publish: Callable[[str], None], log: MusicEventLog) -> Callable[[str], None]:
@@ -236,13 +239,13 @@ def _tts_provider(node: Any) -> str:
 
 def _song_studio(node: Any, events: Any) -> Optional[SongStudio]:
     """Песня голосом робота (ADR-0158 PR-7): нужны ключ KIE и LLM для текстов; нет — ``None`` (``not_wired`` во фразе).
-    Голос — провайдер из ``/voice/tts/provider_state`` и ``VoiceStateStore`` (ставится позже, читаем лениво)."""
+    Голос - провайдер и голос из ``/voice/tts/provider_state`` (то, что реально звучит; читаем лениво)."""
     provider, lyrics = KieSunoProvider(), harness_lyrics_ask(log=node.get_logger)
     if lyrics is None or not provider.configured:
         node.get_logger().warning("🎤 песня голосом робота выключена: нужны KIE_API и ключ llm_harness")
         return None
     return SongStudio(provider, lambda: getattr(node, "_generated_music_library", None), lyrics,
-                      lambda: current_voice(_tts_provider(node), getattr(node, "_voice_store", None)),
+                      lambda: current_voice(_tts_provider(node), getattr(node, "actual_tts_voice", None)),
                       play=_play_cached(node),
                       speak=_speaker(node), started=lambda track_id: events.wait(track_id, STARTED_WAIT_S), log=node.get_logger)
 
@@ -325,7 +328,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                        history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
                        lines=bool(node.get_parameter("music_v2_dj_lines").value))
     node.registry.register(dj_set)  # PR-5: сет v2 — SetSession поверх владельца
-    node._dj_set_tool = dj_set  # жёсткий /mcp/music_cleanup закрывает сет (MCPServer._stop_deck)
+    node._dj_set_tool = dj_set  # стоп деки закрывает и сет (MCPServer._stop_deck)
     cover = _cover_maker(node)  # PR-4: кавер пьесы; его баланс KIE — и сету из генерации
     dj_set.gen_sets = _gen_set_maker(node, cover)  # ADR-0158 PR-8: рок/гранж-сет — кэш и генерация
     # PR-6: одиночный club-трек v2; PR-11: classic-песня v2 (мелодия по названию)
@@ -341,6 +344,10 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                cover=cover, speak=_speaker(node),  # PR-4: кавер пьесы
                                songs=_song_studio(node, events),  # PR-7: песня голосом робота
                                instrumental=_instrumental_maker(node, cover))  # «сгенерируй рок»
+    # ADR-0150 PR-7c: подложка выступления — request_music(intent=backing); outro — stop_music(boundary=bar)
+    request.backing = BackingDeck(owner, adapter, lambda mood: request._stage_club("", mood),  # noqa: SLF001
+                                  confirm, lambda: music_busy(owner, dj_set), log=node.get_logger())
+    node._backing_deck = request.backing
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
@@ -349,6 +356,30 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
         f"🎵 движок v2: владелец плеера — единственный писатель {MUSIC_STATE_TOPIC} и "
         f"{MUSIC_EVENT_TOPIC}; Clock.latency={latency} (ADR-0149 PR-4)")
     return owner
+
+
+def _attach_speech_duck(node: Any, runtime: Any) -> Optional[SpeechDuck]:
+    """ADR-0150 О8 (а), PR-7d — музыка приглушается, пока робот говорит в динамики.
+
+    ``/voice/speech/event`` (владелец речи ``tts_node``) → :class:`SpeechDuck` → ``/n_set 999 duck 0|1``; таймер
+    снимает реплики с потерянным финалом. Без звукового сервера — нечего приглушать, подписки нет.
+    """
+    if runtime is None:
+        return None
+    from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: PLC0415 — как voice_request.VoiceRequests
+
+    controls = duck_controls(*(float(node.get_parameter(name).value) for name in (
+        "music_duck_db", "music_duck_attack_ms", "music_duck_release_ms")))
+    duck = SpeechDuck(runtime.send_osc, controls, logger=node.get_logger())
+    kinds = {getattr(SpeechEvent, f"KIND_{name.upper()}"): name for name in ("started", "finished", "cancelled",
+                                                                             "rejected")}
+    node.create_subscription(SpeechEvent, "/voice/speech/event",
+                             lambda msg: duck.on_event(kinds.get(int(msg.kind), ""), msg.speech_id,
+                                                       int(msg.duration_ms)), 20)
+    node.create_timer(1.0, duck.tick)
+    node.get_logger().info("🔉 приглушение музыки под речь: /voice/speech/event → /n_set 999 duck "
+                           + " ".join(f"{k}={v:g}" for k, v in controls.items()))
+    return duck
 
 
 def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -389,6 +420,11 @@ class MCPServer(Node):
         # речи: мастер-фейдер ПОСЛЕ лимитера (/n_set 999 gain <v>).
         # Внутренняя динамика микса при этом сохраняется.
         self.declare_parameter("music_master_gain", 0.5)
+        # ADR-0150 О8 (а), В16 (PR-7d): приглушение музыки под речь — отдельный множитель после
+        # лимитера, gain и trim (masterfilter.scd duck*); числа — rob_box_music.knowledge.SPEECH_DUCK.
+        self.declare_parameter("music_duck_db", music_kn.SPEECH_DUCK["duckDb"])
+        self.declare_parameter("music_duck_attack_ms", music_kn.SPEECH_DUCK["duckAttack"] * 1000.0)
+        self.declare_parameter("music_duck_release_ms", music_kn.SPEECH_DUCK["duckRelease"] * 1000.0)
         # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).
@@ -417,12 +453,9 @@ class MCPServer(Node):
         # регистрирует голоса через speaker_id_node (изолирован) И называет
         # LLM факты через memory_save (НЕ изолирован) — 59 из 116 фактов
         # боевой /data/voice_memory.db на 22.09.2026 оказались синтезированным
-        # кастом марафона ("Саша"/"Борис"). См. ``parameters_callback`` /
-        # ``_apply_e2e_mode`` ниже — тот же ``ros2 param set`` паттерн, что у
-        # speaker_id_node (bool-параметр, не топик — синхронный ответ
-        # вызывающему в exit-коде, seam_without_consumer его не видит).
+        # кастом марафона ("Саша"/"Борис"). Режим — не свой параметр, а
+        # владельца /speaker_id_node (#3904, см. E2EModeFollower ниже).
         self.declare_parameter("e2e_db_path", "/data/voice_memory.e2e.db")
-        self.declare_parameter("e2e_mode", False)
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
@@ -443,11 +476,11 @@ class MCPServer(Node):
         # Долгосрочная память (VoiceMemory) — инициализировать ДО регистрации инструментов
         self.voice_memory = None
         self._init_voice_memory()
-        # Issue #2781 — единственный побочный эффект в parameters_callback:
-        # e2e_mode. Регистрируется здесь (после _init_voice_memory), чтобы
-        # ``self.voice_memory`` / ``self._voice_memory_prod_db_path`` уже
-        # существовали к моменту первого возможного ``ros2 param set``.
-        self.add_on_set_parameters_callback(self.parameters_callback)
+        # #3904 — режим e2e приходит от владельца (/e2e/mode). Подписка
+        # здесь (после _init_voice_memory), чтобы ``self.voice_memory`` /
+        # ``self._voice_memory_prod_db_path`` уже существовали к первому
+        # сообщению.
+        self._e2e_follower = E2EModeFollower(self, self._apply_e2e_mode)
 
         # FAQ store + event profile (event mode)
         self.faq_store = None
@@ -511,6 +544,7 @@ class MCPServer(Node):
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
         self._player_owner = _attach_player_owner_v2(self, getattr(self, "_renardo_runtime", None))
+        self._speech_duck = _attach_speech_duck(self, getattr(self, "_renardo_runtime", None))
 
         # Subscriber для запросов на выполнение
         # ReentrantCallbackGroup — критически важно!
@@ -593,7 +627,7 @@ class MCPServer(Node):
         self._encounter_seam = EncounterSeam(MemoryIdentitySeam(InMemoryStore()))
         try:
             self._speaker_result_sub = self.create_subscription(
-                String,
+                SpeakerResult,
                 "/voice/speaker/result",
                 self._on_speaker_result,
                 10,
@@ -611,6 +645,9 @@ class MCPServer(Node):
         # иначе LLM выбирает minimax-голоса, которых нет у yandex после
         # фолбека, и слышит один и тот же дефолтный голос.
         self.actual_tts_provider: str | None = None
+        self.actual_tts_voice: str | None = None
+        # ADR-0150 §8 (PR-4 ч.2): здоровье генерации музыки (kind=music_gen) - переиздание раз в 2 с.
+        self._providers_publisher = ProviderStatePublisher(self, gen_provider_states)
         try:
             self._provider_state_sub = self.create_subscription(
                 String, "/voice/tts/provider_state", self._on_tts_provider_state, 10
@@ -623,27 +660,6 @@ class MCPServer(Node):
 
         # Публикуем каталог инструментов один раз — он latched (см. tools_qos).
         self.publish_tools()
-
-        # --------------------------------------------------------------
-        # Music cleanup — issue #935, ADR-0141
-        # --------------------------------------------------------------
-        # dialogue_node публикует в /mcp/music_cleanup конец речи/диалога и
-        # явные стопы; мягкие причины деку не трогают (_cleanup_spares_deck).
-        # Subscribe to /mcp/music_cleanup — payload is JSON like
-        # {"reason": "dialogue_end"} or {"reason": "shutdown"}. Empty
-        # payload defaults to dialogue_end.
-        try:
-            self._music_cleanup_sub = self.create_subscription(
-                String,
-                "/mcp/music_cleanup",
-                self._on_music_cleanup,
-                qos_profile,
-            )
-            self.get_logger().info("🎵 Подписан на /mcp/music_cleanup (issue #935)")
-        except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                f"⚠️ Не удалось подписаться на /mcp/music_cleanup: {exc}"
-            )
 
         self.get_logger().info(f"🛠️ MCP Server запущен с {len(self.registry)} инструментами")
         self.get_logger().info(f"   Инструменты: {', '.join(self.registry.list_tools())}")
@@ -667,12 +683,13 @@ class MCPServer(Node):
         if not provider:
             return
         self.actual_tts_provider = str(provider)
+        self.actual_tts_voice = payload.get("voice")  # голос, который реально звучит (песня голосом робота, PR-7)
         self.get_logger().info(
             f"🎙️ [issue 1229] actual TTS provider → '{self.actual_tts_provider}' "
             f"(reason: {payload.get('reason')})"
         )
 
-    def _on_speaker_result(self, msg: "String") -> None:
+    def _on_speaker_result(self, msg: "SpeakerResult") -> None:
         """Issue #1770 / #2442 — учесть сигнал голосовой биометрии в ``EncounterSeam``.
 
         Формат: ``{"is_known": true, "speaker_id": "<uuid>",
@@ -702,12 +719,7 @@ class MCPServer(Node):
         ``InMemoryStore`` (без диска), поэтому вызов не блокируется на
         реальном I/O и безопасен внутри ROS executor'а.
         """
-        try:
-            data = json.loads(msg.data or "{}")
-        except (TypeError, ValueError):
-            return
-        if not isinstance(data, dict):
-            return
+        data = speaker_result_to_payload(msg)
         # Issue #2863 — служебные ack и неоценённые фразы не сигнал.
         relevant, new_speaker_id = _speaker_signal(data)
         if not relevant:
@@ -751,53 +763,10 @@ class MCPServer(Node):
             return None
         return current.who.id
 
-    def _on_music_cleanup(self, msg: "String") -> None:
-        """Topic callback: force-stop music on dialogue/shutdown events.
-
-        Triggered by messages on ``/mcp/music_cleanup`` published by
-        :class:`dialogue_node` when the dialogue ends. Payload is JSON;
-        an empty/non-JSON string defaults to ``reason="dialogue_end"``.
-        """
-        try:
-            payload = json.loads(msg.data) if msg.data else {}
-        except (TypeError, ValueError):
-            payload = {}
-        reason = str(payload.get("reason", "dialogue_end")) if isinstance(payload, dict) else "dialogue_end"
-        if self._cleanup_spares_deck(reason):
-            return
-        playing = music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None))
-        self._stop_deck(reason)
-        self.get_logger().info(f"🎵 [{reason}] cleanup: дека {'снята' if playing else 'и так пуста'}")
-
-    def _cleanup_spares_deck(self, reason: str) -> bool:
-        """Issue #3174 / ADR-0141 — мягкий cleanup не гасит играющую деку.
-
-        ``tts_batch_complete`` / ``dialogue_end`` / ``new_dialogue`` — конец
-        речи или диалога, а не просьба остановить. Дека движка (сет или
-        одиночный трек) живёт до явного стопа (``user_stop_command``,
-        ``stop_command_guard``, ``new_session``, ``shutdown`` — они
-        проходят). Играет ли дека — знает её владелец, ``PlayerOwner``.
-        Живой прогон 29.09 05:00: ход «поставь к Элизе» без тулов взвёл
-        cleanup, и сет, запущенный роутером, замолчал на 38 с.
-        06.10 15:30 UTC: ход с ``tools=[]`` взвёл cleanup, и
-        ``tts_batch_complete`` погасил идущий сет — идущий сет (его владелец
-        ``DjSetTool``) мягкий cleanup тоже не трогает, даже если дека в этот
-        миг не отметилась ``started``.
-        """
-        if reason not in SOFT_MUSIC_CLEANUP_REASONS:
-            return False
-        if not music_busy(getattr(self, "_player_owner", None), getattr(self, "_dj_set_tool", None)):
-            return False
-        self.get_logger().info(
-            f"🎧 [{reason}] дека играет — мягкий cleanup музыку не трогает "
-            "(issue #3174, ADR-0141)"
-        )
-        return True
-
     def _stop_deck(self, reason: str) -> None:
         """Жёсткий cleanup: закрыть сет и снять деку через их владельцев.
 
-        Одна точка стопа для ``stop_music`` и ``/mcp/music_cleanup``: глушить
+        Одна точка стопа для ``stop_music``: глушить
         Renardo за спиной ``PlayerOwner`` нельзя — снимок остался бы
         ``playing``, а ``SetSession`` поставила бы следующий трек.
         """
@@ -937,20 +906,17 @@ class MCPServer(Node):
         self.registry.register(FaqSearchTool(self))
 
         # Dialogue tools (критично для агентного диалога!)
-        # Issue #1219 — SpeakTextTool и SetVoiceTool делят VoiceStateStore:
-        # set_voice персистентно меняет голос на диалог, speak_text без
-        # voice= говорит установленным голосом (Q7).
-        voice_store = VoiceStateStore()
-        self._voice_store = voice_store  # песня голосом робота читает установленный голос (ADR-0158 PR-7)
-        self.registry.register(SpeakTextTool(self, voice_store=voice_store))
+        # Голос хранит один владелец - tts_node (VoiceOwner, PR-4 ч.3): speak_text без voice= говорит текущим голосом,
+        # set_voice/set_tts_provider просят через /voice/tts/voice_request и ждут SpeechEvent voice_changed.
+        self.registry.register(SpeakTextTool(self))
         self.registry.register(EstimateTtsDurationTool(self))
         self.registry.register(ListenForResponseTool(self))
-        self.registry.register(SetVoiceTool(self, voice_store=voice_store))
+        self.registry.register(SetVoiceTool(self))
         # Issue #1765 — переключение TTS-провайдера + список голосов
         # по провайдеру (кросс-провайдерный кейс: «Яндекс Артём» при
         # активном minimax). Оба tool'а публикуют /voice/tts/set_provider,
         # tts_node подписан и пересобирает provider_chain.
-        self.registry.register(SetTtsProviderTool(self, voice_store=voice_store))
+        self.registry.register(SetTtsProviderTool(self))
         self.registry.register(ListTtsVoicesTool(self))
         # Issue #1101 — LLM-driven speaker registration (replaces regex NLU).
         # LLM extracts name from user_input and calls register_speaker(name=X)
@@ -966,15 +932,17 @@ class MCPServer(Node):
         # Без этой регистрации mcp_server отвечал бы «unknown tool» на
         # show_metrics — даже если срез-гард пропускал avatar_supervisor.
         self.registry.register(ShowMetricsTool(self))
+        # PR-13b #3708 — диагностика ТАРС (срез operator.admin): статус нод по rclpy, логи контейнеров из Loki,
+        # метрики контейнеров из Prometheus. Без регистрации тулы были в политике, но вызов давал «unknown tool».
+        self.registry.register(Ros2NodeStatusTool(self))
+        self.registry.register(ReadLogsTool(self))
+        self.registry.register(ContainerStatusTool(self))
         # Issue #3305 — ``say``: голос оператора (ТАРС). Публикует SSML в
         # /voice/tts/request (нужен только node.create_publisher). Без
         # регистрации /mcp/execute отвечал «unknown tool».
         self.registry.register(SayTool(self))
-        # Issue #968 (S6) — task_delta: schema-only registration so the
-        # LLM sees the tool. Real execution is intercepted in-process by
-        # SchedulerToolExecutor (rob_box_voice, S6.2) before it ever
-        # reaches mcp_server — see TaskDeltaTool's docstring.
-        self.registry.register(TaskDeltaTool(self))
+        # PR-12b (#3707) — ``say_aloud``: озвучка из чата Telegram, итог по SpeechEvent (срез ``telegram``).
+        self.registry.register(SayAloudTool(self))
 
         # Memory tools (долгосрочная память + семантический поиск)
         self.registry.register(MemorySaveTool(self))
@@ -1144,26 +1112,8 @@ class MCPServer(Node):
 
     # ── E2E isolation for voice_facts (issue #2781) ─────────────────────────
     #
-    # По образцу speaker_id_node.e2e_mode (issue #2750/#2763, ADR-0128 §
-    # "Seam guard"): ``ros2 param set`` вместо топика — синхронный ответ
-    # вызывающему в exit-коде, seam_without_consumer.py (ADR-0021) не видит
-    # паблишера в bash-харнессе как «шов без потребителя».
-
-    def parameters_callback(self, params):
-        """``ros2 param set`` роутер mcp_server (issue #2781).
-
-        Тот же компромисс, что у ``speaker_id_node.parameters_callback``:
-        Humble даёт только валидирующий ``add_on_set_parameters_callback``,
-        и побочный эффект (переоткрыть voice_memory на другом файле) живёт
-        прямо в нём. Только ``e2e_mode`` имеет эффект; ``e2e_db_path``
-        читается один раз в ``__init__`` и не перехватывается здесь.
-        """
-        result_ok = True
-        for param in params:
-            if param.name == "e2e_mode":
-                if not self._apply_e2e_mode(bool(param.value)):
-                    result_ok = False
-        return SetParametersResult(successful=result_ok)
+    # #3904: режим — владельца /speaker_id_node (rob_box_core.e2e_mode);
+    # эта нода только применяет его (E2EModeFollower → _apply_e2e_mode).
 
     def _wipe_e2e_voice_memory_db_file(self) -> None:
         """Стереть файл ``e2e_db_path`` (и -wal/-shm/-journal) перед каждым ON.
@@ -1230,8 +1180,8 @@ class MCPServer(Node):
         (``self._voice_memory_prod_db_path is None`` — harness-адаптер
         ``MCP_USE_HARNESS_VOICE_MEMORY=1`` или ``rob_box_voice`` недоступен,
         ``self.voice_memory is None``), либо переоткрытие файла бросило
-        исключение. Вызывающий (``activate_e2e_voice_memory_db`` в харнессе)
-        обязан относиться к ``False`` как к ФАТАЛУ: лучше не прогнать акт,
+        исключение. ``E2EModeFollower`` тогда не меняет ``e2e_mode_applied``,
+        и харнесс (``enter_e2e_mode``) фейлит акт: лучше не прогнать акт,
         чем засорить боевую память.
         """
         if enabled == self._voice_memory_e2e_mode_active:

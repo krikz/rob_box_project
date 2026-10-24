@@ -25,17 +25,26 @@
 #   REPORT     (default tests/e2e/_artifacts/night_<UTC>/)
 #   POLL_SEC   (default 60)       — период опроса статуса
 #   MAX_WAIT   (default 3600)     — потолок ожидания одного акта, сек
+#   TTS_PROVIDER (default пусто = auto воркфлоу) — кто озвучивает команды на
+#              билд-машине: auto|minimax|silero|yandex. Многодикторные акты —
+#              minimax: auto выбирает неизмеренный Yandex, и Борис звучит как Саша.
+#   E2E_RELEASE_CMD (default пусто) — команда снятия режима e2e на роботе: раннер выполнит её в trap,
+#              если марафон оборвался, не дойдя до последнего акта (#3972). Пусто - режим снимет таймер
+#              владельца speaker_id_node (~3 ч от начала последнего акта).
+#   Режим e2e (БД дикторов e2e) держит раннер, а не акт (#3972): первый акт плана включает его и стирает
+#   e2e-БД ОДИН раз (phase=first), остальные подхватывают без стирания (middle), последний выключает (last).
+#   План из одного акта или начинающийся с наследующего акта идёт по-старому (#3904).
 #   STOP_ON_FOUNDATION_FAIL (default 1) — прервать марафон, если акт 1 или 2
 #              красный: без wake-word и без профилей голосов остальные акты
 #              не диагностичны, они просто утонут в no_accept.
 #
-# ПЕРЕД ПРОГОНОМ (иначе акт 8 не диагностичен):
-#   ROS_ENV='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash;'
-#   ssh <robot> "docker exec voice-assistant bash -lc '$ROS_ENV ros2 param set /dialogue_node barge_in_policy classify --no-daemon'"
-#   ⚠️ именно через docker exec: на ХОСТЕ Vision Pi ros2 нет вообще
-#   (ls /opt/ros → No such file or directory). Форма `ssh <robot> 'ros2 ...'`
-#   молча возвращает rc=127 — из-за этого изоляция БД дикторов из #2759
-#   не срабатывала ни разу с момента мержа, см. issue #2763.
+# ПЕРЕД ПРОГОНОМ для акта 8 ничего выставлять не нужно: политика перебивания
+# одна, параметра нет (ADR-0150 PR-5 #3694).
+#   ⚠️ если нужен ros2 param set — только через docker exec в контейнере
+#   (ROS_ENV='source /opt/ros/humble/setup.bash; source /ws/install/setup.bash;'):
+#   на ХОСТЕ Pi ros2 нет вообще. Форма `ssh <robot> 'ros2 ...'` молча
+#   возвращает rc=127 — из-за этого изоляция БД дикторов из #2759 не
+#   срабатывала ни разу с момента мержа, см. issue #2763.
 # =============================================================================
 set -u
 
@@ -46,6 +55,9 @@ POLL_SEC="${POLL_SEC:-60}"
 MAX_WAIT="${MAX_WAIT:-3600}"
 DRY_RUN="${DRY_RUN:-0}"
 STOP_ON_FOUNDATION_FAIL="${STOP_ON_FOUNDATION_FAIL:-1}"
+TTS_PROVIDER="${TTS_PROVIDER:-}"
+TTS_ARGS=()
+[ -n "$TTS_PROVIDER" ] && TTS_ARGS=(-f tts_provider="$TTS_PROVIDER")
 
 # --- robot-busy sentinel (взаимное исключение с e2e-ротацией) ---------------
 # Робот один: ротация (agent-flow-e2e-process.sh, cron every 20m) и марафон
@@ -71,6 +83,8 @@ DEADLINE_HOUR="${DEADLINE_HOUR:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=marathon_markers.sh
+. "$SCRIPT_DIR/marathon_markers.sh"
 MANIFEST="$ROOT/.github/e2e/scenarios/night/night_marathon_manifest.json"
 
 if [ ! -f "$MANIFEST" ]; then
@@ -102,36 +116,56 @@ if [ -z "$PY" ]; then
     echo "FATAL: не найден рабочий python3 (пробовал python3/python/py)" >&2
     exit 2
 fi
-plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" <<'PYEOF'
-import json, sys
+plan="$("$PY" - "$MANIFEST" "$ACTS_FILTER" "$ROOT" <<'PYEOF'
+import json, os, sys
 # Названия актов кириллические; на Windows-хосте stdout по умолчанию cp1252
 # и print() падает с UnicodeEncodeError ещё до первого диспатча.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
-manifest, flt = sys.argv[1], sys.argv[2]
+manifest, flt, root = sys.argv[1], sys.argv[2], sys.argv[3]
 acts = json.load(open(manifest, encoding="utf-8"))["acts"]
 if flt.strip():
     want = {int(x) for x in flt.replace(" ", "").split(",") if x}
     acts = [a for a in acts if a["act"] in want]
-for a in acts:
+
+
+def inherits(act):
+    with open(os.path.join(root, act["scenario_file"]), encoding="utf-8") as fh:
+        return json.load(fh).get("inherits_previous_act", False) is True
+
+
+# Issue #3972: режим e2e живёт весь марафон и принадлежит раннеру: first включает (стирает e2e-БД один раз),
+# middle подхватывает без стирания, last подхватывает и выключает. Нужны >= 2 актов, и первый не должен
+# наследовать: наследующий акт без режима обязан упасть на E2E_PRECONDITION (ACTS=3,4 отдельно), а не
+# получить свежий пустой каст. Иначе (один акт / план с наследующего) - старое поведение #3904: акт держит
+# режим для следующего, только если следующий акт ЭТОГО плана наследует (inherits_previous_act).
+n = len(acts)
+phased = n >= 2 and not inherits(acts[0])
+holds = [i + 1 < n and inherits(acts[i + 1]) for i in range(n)]
+for i, (a, hold) in enumerate(zip(acts, holds)):
+    phase = ("first" if i == 0 else "last" if i == n - 1 else "middle") if phased else "-"
     print("\t".join([
         str(a["act"]), a["title"], a["stability"], str(a["steps"]),
-        a["scenario_file"], a["acceptance_file"],
+        a["scenario_file"], a["acceptance_file"], phase,
+        "hold" if hold and not phased else "-",
     ]))
 PYEOF
 )"
 
+# Python на Windows-хосте печатает \r\n: \r прилипал к последней колонке плана
+# (a_hold="hold\r" — акт не держал режим e2e для наследующего, #3904).
+plan="$(printf '%s' "$plan" | tr -d '\r')"
 if [ -z "$plan" ]; then
     echo "FATAL: ни один акт не выбран (ACTS=$ACTS_FILTER)" >&2
     exit 2
 fi
 
 n_acts="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
-log "REF=$REF  актов=$n_acts  отчёт=$REPORT"
-printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
-    log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)"
+log "REF=$REF  актов=$n_acts  tts_provider=${TTS_PROVIDER:-auto}  отчёт=$REPORT"
+printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; do
+    log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)$([ "$a_phase" != - ] && echo "  → режим e2e марафона: $a_phase")$([ "$a_hold" = hold ] && echo '  → режим e2e держит для следующего (наследует)')"
 done
 
 if [ "$DRY_RUN" = "1" ]; then
@@ -150,6 +184,32 @@ if [ -n "$DEADLINE_HOUR" ]; then
     [ "$DEADLINE_EPOCH" -gt 0 ] \
         && log "дедлайн: $(date -d "@$DEADLINE_EPOCH" +'%F %H:%M') — после него новые акты не стартуют"
 fi
+
+# --- режим e2e на роботе держит раннер (#3972) ---------------------------------
+# Включает/стирает e2e-БД акт first, снимает акт last (его trap в харнессе). Раннер сам до робота не
+# ходит (он диспатчит workflow), поэтому при обрыве (Ctrl-C, break, дедлайн, dispatch_failed) режим
+# остаётся на таймере владельца speaker_id_node (e2e_release_after_s, скользящий, ~3 ч от начала
+# последнего акта). Здесь - громкая запись об этом и необязательный E2E_RELEASE_CMD (команда снятия
+# режима, например ssh на робота), которую раннер выполнит в trap, если last не отработал.
+PHASE_STARTED=0
+PHASE_RELEASED=0
+E2E_RELEASE_CMD="${E2E_RELEASE_CMD:-}"
+E2E_MARATHON_HOLD_S="${E2E_MARATHON_HOLD_S:-10800}"
+release_e2e_mode_on_exit() {
+    [ "$PHASE_STARTED" = "1" ] && [ "$PHASE_RELEASED" != "1" ] || return 0
+    PHASE_RELEASED=1
+    log "⚠️ марафон закончился, не дойдя до акта last: режим e2e на роботе мог остаться включённым (БД дикторов e2e, живые люди не узнаются)"
+    if [ -n "$E2E_RELEASE_CMD" ]; then
+        log "   снимаю режим: E2E_RELEASE_CMD"
+        bash -c "$E2E_RELEASE_CMD" </dev/null || log "   ❌ E2E_RELEASE_CMD не отработала - режим снимется сам по таймеру владельца (~$((E2E_MARATHON_HOLD_S / 60)) мин от начала последнего акта)"
+    else
+        log "   сам снимется по таймеру владельца (~$((E2E_MARATHON_HOLD_S / 60)) мин от начала последнего акта); сразу: ros2 param set /speaker_id_node e2e_mode false (docker exec voice-assistant на Sound Pi)"
+    fi
+}
+on_exit() { release_e2e_mode_on_exit; release_sentinel; }
+trap 'on_exit' EXIT
+trap 'on_exit; exit 130' INT
+trap 'on_exit; exit 143' TERM
 
 # --- захват робота ----------------------------------------------------------
 SENTINEL_TAKEN=0
@@ -184,12 +244,11 @@ else
     printf 'night-marathon %s %s %s\n' "$(date +%s)" "$_end_epoch" "run_night_marathon.sh acts=$n_acts ref=$REF" \
         > "$ROBOT_BUSY_SENTINEL"
     SENTINEL_TAKEN=1
-    trap 'release_sentinel' EXIT INT TERM
     log "robot-busy sentinel взят до $(date -d "@$_end_epoch" +'%F %H:%M') — ротация будет пропускать тики"
 fi
 
 overall=0
-while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
+while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; do
     [ -z "$a_n" ] && continue
 
     # Дедлайн проверяем ПЕРЕД диспатчем: акт живёт до 45 минут, и стартовать
@@ -203,6 +262,16 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     fi
 
     log "=== АКТ $a_n «$a_title» ($a_steps шагов, $a_stab) ==="
+    # Issue #3904 — следующий акт наследует этот: режим e2e на роботе не
+    # снимать в trap этого акта (снимет последний акт или таймер владельца).
+    HOLD_ARGS=()
+    [ "$a_hold" = "hold" ] && HOLD_ARGS=(-f e2e_hold_for_next_act=true)
+    # Issue #3972 - режим e2e держит раннер: одно включение/стирание на марафон (first), остальные акты
+    # его только подхватывают, last выключает. Без этого акты 2/2b/2c стирали каст друг друга.
+    if [ "$a_phase" != "-" ]; then
+        HOLD_ARGS+=(-f e2e_marathon_phase="$a_phase")
+        PHASE_STARTED=1
+    fi
 
     # Метка времени ДО диспатча: по ней ищем свой run среди чужих.
     before_iso="$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
@@ -216,6 +285,8 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
             -f acceptance_file="$a_acc" \
             -f triggered_by_script="run_night_marathon.sh" \
             -f triggered_by_reason="night marathon act $a_n: $a_title" \
+            ${TTS_ARGS[@]+"${TTS_ARGS[@]}"} \
+            ${HOLD_ARGS[@]+"${HOLD_ARGS[@]}"} \
             >/dev/null 2>&1; then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
         printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\n' \
@@ -227,7 +298,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     # Ищем run_id: свежайший run воркфлоу, созданный после before_iso.
     run_id=""
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 6
+        sleep "${DISPATCH_WAIT_SEC:-6}"
         run_id="$(gh run list --repo "$REPO_SLUG" --workflow "$WORKFLOW" \
                     --limit 5 --json databaseId,createdAt,headBranch \
                     --jq "[.[] | select(.createdAt > \"$before_iso\")] | .[0].databaseId // empty" \
@@ -263,6 +334,8 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
         log "  ⚠️ акт $a_n не завершился за ${MAX_WAIT}s"
     fi
     log "  вердикт акта $a_n: $conclusion"
+    # Акт last отработал до конца: его trap в харнессе вернул робота на боевые БД.
+    [ "$a_phase" = "last" ] && [ "$status" = "completed" ] && PHASE_RELEASED=1
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" >> "$SUMMARY"
@@ -288,7 +361,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc; do
     # ровно на фиче — останавливать там марафон было бы ошибкой.
     if [ "$STOP_ON_FOUNDATION_FAIL" = "1" ] && [ "$conclusion" != "success" ] \
        && { [ "$a_n" = "1" ] || [ "$a_n" = "2" ]; }; then
-        if grep -qE 'E2E_NO_REACTION|E2E_INFRA_FAIL' "$act_log" 2>/dev/null; then
+        if marathon_has_marker "$act_log" 'E2E_NO_REACTION|E2E_INFRA_FAIL'; then
             log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra) — останавливаю марафон"
             log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
             break

@@ -31,6 +31,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:melody_library',
         'name': 'add_music_material',
         'description': 'Принять музыкальный материал, который человек ПРИСЛАЛ в '
                        'сообщении (RTTTL-строка, Strudel/Tidal-код '
@@ -67,6 +68,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'clear_waypoints',
         'description': 'Удалить ВСЕ сохранённые точки на текущей карте. Используй '
                        "когда пользователь говорит 'очисти все точки', 'удали все "
@@ -78,12 +80,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
         'skill': ('navigation',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'container_status',
         'description': 'Получить статус контейнеров (restart-count, CPU, RAM, uptime) '
                        'через Prometheus/cAdvisor. Используй когда нужно проверить '
@@ -107,6 +110,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_mapping',
         'name': 'continue_mapping',
         'description': 'Продолжить картографирование территории (режим SLAM). '
                        'Используй для добавления новых областей к карте.',
@@ -123,6 +127,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': 'inproc:waypoint_store',
         'name': 'delete_waypoint',
         'description': 'Удалить сохранённую точку по имени. Используй когда '
                        "пользователь говорит 'удали зал', 'забудь кухню'.",
@@ -143,6 +148,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'dj_set',
         'description': 'Диджей-сет: action=start — начать сет на тему theme (треки, '
                        'переходы и темп решает код), tracks — сколько треков, только '
@@ -250,6 +256,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'estimate_tts_duration',
         'description': 'Оценить длительность TTS-озвучки для заданного текста в '
                        'секундах. Используется для планирования аранжировки музыки под '
@@ -290,6 +297,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'faq_search',
         'description': 'Поиск по FAQ активного мероприятия. Используй когда '
                        'пользователь спрашивает о программе, локации, поступлении, '
@@ -323,6 +331,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_localization',
         'name': 'finish_mapping',
         'description': 'Завершить картографирование и перейти в режим навигации по '
                        'готовой карте (локализация). Можно указать имя карты (например '
@@ -345,13 +354,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': True,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'generate_music',
         'description': 'Просьба сгенерировать музыку (Suno): kind=instrumental — без '
                        'слов, song — песня, robot_song — песня голосом робота; style — '
                        'жанр, если назван. Это просьба, а не приказ: что играть (новую '
                        'генерацию, сочинённое раньше или своё) и что сказать — решает '
                        'робот сам по словам человека; ok=false — честный отказ, его '
-                       'фразу робот скажет сам.',
+                       'фразу робот скажет сам. «Спой / сочини песню про X» — '
+                       'kind=robot_song, theme=слова человека (не music_library); слов '
+                       'песни не сочиняй и не читай через speak_text.',
         'parameters': {   'type': 'object',
                           'properties': {   'kind': {   'type': 'string',
                                                         'description': 'instrumental, '
@@ -396,6 +408,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_battery_level',
         'description': 'Получить текущий уровень заряда батареи робота в процентах.',
         'parameters': {   'type': 'object',
@@ -411,6 +424,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_current_pose',
         'description': 'Получить текущую позицию робота (x, y, theta) в системе '
                        "координат карты. Используй перед 'миссиями' чтобы запомнить "
@@ -428,10 +442,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '',
         'name': 'get_current_time',
         'description': 'Получить текущее время и дату. Используй когда пользователь '
                        'спрашивает который час, какая дата, какой день недели, какое '
-                       'время суток, сколько сейчас времени.',
+                       'время суток, сколько сейчас времени. Поле formatted_time уже '
+                       'написано русской прописью — озвучивай его дословно, время не '
+                       'выдумывай.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -445,6 +462,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_music_state',
         'description': 'Что сейчас играет: диджей-сет (трек N из M, мелодия), трек или '
                        'пьеса (название, источник, темп, инструмент, сколько играет и '
@@ -462,6 +480,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'get_perception_context',
         'description': 'Что робот сейчас видит камерой и чувствует: лица и объекты в '
                        'кадре (детекции с уверенностью; age_s — сколько секунд назад '
@@ -482,6 +501,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'get_robot_status',
         'description': 'Получить текущий статус робота (позиция, батарея, состояние '
                        'систем).',
@@ -498,6 +518,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'get_sound_info',
         'description': 'Получить информацию о доступных звуковых эффектах. Используй '
                        'этот инструмент чтобы узнать какие звуки доступны, их '
@@ -543,12 +564,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'list_tts_voices',
-        'description': 'Список доступных голосов TTS. Без аргументов — голоса '
-                       'АКТИВНОГО провайдера (см. [TTS] provider: в контексте). С '
-                       'аргументом provider — голоса конкретного провайдера («какие '
-                       "голоса есть на Яндексе?» → provider='yandex'). Используй когда "
-                       'юзер спрашивает «какие у тебя голоса?» / «а на yandex какие?».',
+        'description': 'Голоса TTS. Без аргументов — обзор: провайдеры, сколько '
+                       'голосов у каждого и по паре характерных (отвечай кратко, не '
+                       'перечисляй всё). С аргументом provider — полный список голосов '
+                       'конкретного провайдера («какие голоса есть на Яндексе?» → '
+                       "provider='yandex'). Используй когда юзер спрашивает «какие у "
+                       'тебя голоса?» / «а на yandex какие?».',
         'parameters': {   'type': 'object',
                           'properties': {   'provider': {   'type': 'string',
                                                             'description': 'Опциональный '
@@ -576,6 +599,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '',
         'name': 'list_waypoints',
         'description': 'Получить список всех сохранённых точек (waypoints) для '
                        'навигации на текущей карте.',
@@ -592,6 +616,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'listen_for_response',
         'description': 'Ждать ответ пользователя через речь. Робот активирует микрофон '
                        'и будет ждать ответа (таймаут 30 секунд). ИСПОЛЬЗУЙ когда '
@@ -626,6 +651,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'srv:/rtabmap/rtabmap/load_database',
         'name': 'load_map',
         'description': 'Загрузить сохранённую карту и перейти в режим локализации '
                        '(навигации). Используй когда нужно переключиться на уже '
@@ -653,6 +679,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'lookup_melody',
         'description': 'Найти известную мелодию по имени и вернуть её ТОЧНЫЕ ноты '
                        "сырой RTTTL-строкой в data['rtttl'], НИЧЕГО не играя: "
@@ -715,6 +742,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'memory_context',
         'description': 'Получить контекст памяти из предыдущих сессий: последние '
                        'реплики + известные факты о пользователе. Используй в начале '
@@ -777,6 +805,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'inproc:voice_memory',
         'name': 'memory_save',
         'description': 'Сохранить факт или предпочтение пользователя в долгосрочную '
                        'память. Используй после того как узнал что-то важное: имя, '
@@ -841,6 +870,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'memory_search',
         'description': 'Поиск по долгосрочной памяти: сохранённые факты о пользователе '
                        '(memory_save) И история разговоров со всех сессий. Используй '
@@ -855,7 +885,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'description': 'Поисковый '
                                                                         'запрос на '
                                                                         'русском или '
-                                                                        'английском.'},
+                                                                        'английском: '
+                                                                        '1–2 ключевых '
+                                                                        'слова в '
+                                                                        'начальной '
+                                                                        'форме, без '
+                                                                        'перечислений '
+                                                                        'и описаний.'},
                                             'limit': {   'type': 'integer',
                                                          'description': 'Максимальное '
                                                                         'количество '
@@ -899,6 +935,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'move_direction',
         'description': 'Движение робота в указанном направлении. Используй для команд '
                        "'вперёд', 'назад', 'поверни налево'.",
@@ -933,6 +970,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'music_library',
         'description': 'Библиотека сгенерированной музыки робота '
                        '(/data/music_library). action: list — «что у тебя есть '
@@ -1047,6 +1085,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'navigate_to_coordinates',
         'description': 'Навигация робота к произвольным координатам (x, y, theta) в '
                        'системе координат карты. Используй для возвращения на '
@@ -1077,6 +1116,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'action:/navigate_to_pose',
         'name': 'navigate_to_waypoint',
         'description': 'Навигация робота к именованной точке (waypoint) из базы. '
                        "Используй для команд типа 'иди к кухне', 'поезжай в зал'. "
@@ -1102,6 +1142,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'long',
+        'event_source': 'srv:/rtabmap/rtabmap/detect_more_loop_closures',
         'name': 'optimize_map',
         'description': 'Оптимизировать карту после завершения картографирования: поиск '
                        'дополнительных loop closures, bundle adjustment, очистка '
@@ -1119,6 +1160,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'instant',
+        'event_source': '/voice/expression/event',
         'name': 'play_animation',
         'description': 'Запустить LED анимацию на матрице робота (381 LED) на '
                        'указанное время. ОБЯЗАТЕЛЬНО используй анимации во время '
@@ -1136,7 +1178,10 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                              'description': 'Название '
                                                                             'анимации '
                                                                             'для '
-                                                                            'воспроизведения',
+                                                                            'воспроизведения '
+                                                                            '(можно '
+                                                                            'вместе с '
+                                                                            'face)',
                                                              'enum': [   'accelerating',
                                                                          'ambulance',
                                                                          'angry',
@@ -1170,11 +1215,144 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'диапазона '
                                                                            'будут '
                                                                            'установлены '
-                                                                           'в 2)'}},
-                          'required': ['animation'],
+                                                                           'в 2)'},
+                                            'face': {   'type': 'object',
+                                                        'description': 'Слоты лица; '
+                                                                       'всё, что не '
+                                                                       'задано, '
+                                                                       'берётся из '
+                                                                       'текущей сцены. '
+                                                                       'left/right - '
+                                                                       'со стороны '
+                                                                       'человека '
+                                                                       'напротив '
+                                                                       'робота. Только '
+                                                                       'значения из '
+                                                                       'списков, '
+                                                                       'свободных '
+                                                                       'цветов и форм '
+                                                                       'нет. bg - фон '
+                                                                       'под глазами и '
+                                                                       'ртом; fx - '
+                                                                       'разовый '
+                                                                       'импульс в '
+                                                                       'начале сцены '
+                                                                       '(slash - удар '
+                                                                       'катаной, '
+                                                                       'glitch - сбой, '
+                                                                       'boot - '
+                                                                       'включение, '
+                                                                       'power_down - '
+                                                                       'выключение); '
+                                                                       'feat=loading_eyes '
+                                                                       '- спиннеры '
+                                                                       'вместо глаз '
+                                                                       '(жду, думаю).',
+                                                        'properties': {   'eyes': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«eyes»',
+                                                                                      'enum': [   'open',
+                                                                                                  'half',
+                                                                                                  'squint',
+                                                                                                  'wide',
+                                                                                                  'closed',
+                                                                                                  'shades',
+                                                                                                  'x']},
+                                                                          'gaze': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«gaze»',
+                                                                                      'enum': [   'speaker',
+                                                                                                  'left',
+                                                                                                  'right',
+                                                                                                  'up',
+                                                                                                  'down',
+                                                                                                  'wander']},
+                                                                          'blink': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«blink»',
+                                                                                       'enum': [   'normal',
+                                                                                                   'rapid',
+                                                                                                   'none',
+                                                                                                   'wink_left',
+                                                                                                   'wink_right']},
+                                                                          'mouth': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«mouth»',
+                                                                                       'enum': [   'grin',
+                                                                                                   'frown',
+                                                                                                   'flat',
+                                                                                                   'o',
+                                                                                                   'teeth',
+                                                                                                   'eq',
+                                                                                                   'talk']},
+                                                                          'tint': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«tint»',
+                                                                                      'enum': [   'warm',
+                                                                                                  'cold',
+                                                                                                  'red',
+                                                                                                  'green',
+                                                                                                  'blue',
+                                                                                                  'purple',
+                                                                                                  'rainbow']},
+                                                                          'tempo': {   'type': 'string',
+                                                                                       'description': 'Слот '
+                                                                                                      'лица '
+                                                                                                      '«tempo»',
+                                                                                       'enum': [   'slow',
+                                                                                                   'normal',
+                                                                                                   'fast']},
+                                                                          'rear': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«rear»',
+                                                                                      'enum': [   'off',
+                                                                                                  'markers',
+                                                                                                  'hazard',
+                                                                                                  'party',
+                                                                                                  'new_year',
+                                                                                                  'halloween',
+                                                                                                  'heart',
+                                                                                                  'rocket']},
+                                                                          'bg': {   'type': 'string',
+                                                                                    'description': 'Слот '
+                                                                                                   'лица '
+                                                                                                   '«bg»',
+                                                                                    'enum': [   'none',
+                                                                                                'rainbow',
+                                                                                                'fire',
+                                                                                                'matrix']},
+                                                                          'fx': {   'type': 'string',
+                                                                                    'description': 'Слот '
+                                                                                                   'лица '
+                                                                                                   '«fx»',
+                                                                                    'enum': [   'slash',
+                                                                                                'glitch',
+                                                                                                'boot',
+                                                                                                'power_down']},
+                                                                          'feat': {   'type': 'string',
+                                                                                      'description': 'Слот '
+                                                                                                     'лица '
+                                                                                                     '«feat»',
+                                                                                      'enum': [   'loading_eyes']},
+                                                                          'duration_s': {   'type': 'number',
+                                                                                            'description': 'Сколько '
+                                                                                                           'держать '
+                                                                                                           'сцену, '
+                                                                                                           'секунды',
+                                                                                            'minimum': 0,
+                                                                                            'maximum': 30.0}},
+                                                        'required': [],
+                                                        'additionalProperties': False}},
+                          'required': [],
                           'additionalProperties': False},
-        'signature': {   'params': ['animation', 'duration'],
-                         'required': ['animation'],
+        'signature': {   'params': ['animation', 'duration', 'face'],
+                         'required': [],
                          'accepts_kwargs': False},
         'skill': ('expression',)},
     {   'llm_visible': True,
@@ -1183,7 +1361,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'execution_type': 'instant',
+        'execution_type': 'fast',
+        'event_source': '/voice/sound/event',
         'name': 'play_sound',
         'description': 'Воспроизвести звуковой эффект. ИСПОЛЬЗУЙ АВТОМАТИЧЕСКИ для '
                        'звукового сопровождения эмоций во время разговора.\n'
@@ -1269,12 +1448,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'accepts_kwargs': False},
         'skill': ('expression',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'read_logs',
         'description': 'Получить логи конкретной ROS2-ноды или контейнера. Используй '
                        "когда нужно посмотреть почему нода не работает ('покажи логи "
@@ -1286,24 +1466,22 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'для чтения '
                                                                        'логов.'},
                                             'source': {   'type': 'string',
-                                                          'description': "'rosout' — "
-                                                                         'локальные '
-                                                                         'логи /rosout '
-                                                                         'из '
-                                                                         'health_monitor; '
-                                                                         "'loki' — "
-                                                                         'контейнерные '
-                                                                         'логи через '
-                                                                         'Loki HTTP '
-                                                                         'API.',
+                                                          'description': "'loki' (по "
+                                                                         'умолчанию) — '
+                                                                         'логи '
+                                                                         'контейнера '
+                                                                         'через Loki; '
+                                                                         "'rosout' — "
+                                                                         'локальный '
+                                                                         'кеш /rosout '
+                                                                         "health_monitor'а.",
                                                           'enum': ['rosout', 'loki']},
                                             'limit': {   'type': 'integer',
                                                          'description': 'Максимум '
-                                                                        'строк '
-                                                                        '(default: 20 '
-                                                                        'для rosout, '
-                                                                        '50 для '
-                                                                        'loki).'}},
+                                                                        'строк (по '
+                                                                        'умолчанию и '
+                                                                        'не больше '
+                                                                        '30).'}},
                           'required': ['node'],
                           'additionalProperties': False},
         'signature': {   'params': ['node', 'source', 'limit'],
@@ -1317,6 +1495,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '/voice/speaker/result',
         'name': 'register_speaker',
         'description': 'Зарегистрировать голос текущего собеседника в voice biometric '
                        'DB (resemblyzer d-vector). Вызывай когда: (1) пользователь '
@@ -1328,9 +1507,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        '«зовут-это», «зовут меня» — это шумовые токены из фразы, а не '
                        'реальные имена. Извлеки имя из контекста вручную (например, '
                        'для фразы «робот меня зовут Денис говорю» — передай '
-                       'name="Денис"). Имя сохранится в БД вместе с эмбеддингом '
-                       'голоса, после этого пользователя можно будет узнавать по '
-                       'голосу.',
+                       'name="Денис"). Ответ тула — исход: голос записан, не записан '
+                       '(с причиной) или ответа не дождались.',
         'parameters': {   'type': 'object',
                           'properties': {   'name': {   'type': 'string',
                                                         'description': 'Имя спикера '
@@ -1385,11 +1563,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/music/event',
         'name': 'request_music',
         'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
                        'трек (темп, тональность и аранжировку решает код), '
                        'intent=melody — известная мелодия по названию из text. text — '
-                       'слова человека дословно. Об успехе робот скажет сам, когда '
+                       'слова человека дословно. engine=renardo — человек назвал '
+                       'Ренардо («на Ренардо», искажённо «на индардо»): играет живой '
+                       'синтез, не готовый трек. Об успехе робот скажет сам, когда '
                        'музыка реально заиграет; ok=false — музыка не заиграла.',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
@@ -1417,7 +1598,23 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'enum': [   'auto',
                                                                      'club',
                                                                      'classical',
-                                                                     'folk']}},
+                                                                     'folk']},
+                                            'engine': {   'type': 'string',
+                                                          'description': 'Движок: '
+                                                                         'renardo — '
+                                                                         'человек '
+                                                                         'назвал '
+                                                                         'Ренардо; '
+                                                                         'auto — не '
+                                                                         'называл',
+                                                          'enum': ['auto', 'renardo']},
+                                            'min_seconds': {   'type': 'number',
+                                                               'description': 'Служебный '
+                                                                              'аргумент '
+                                                                              'кода '
+                                                                              'выступления, '
+                                                                              'не '
+                                                                              'заполняй'}},
                           'required': ['intent', 'text'],
                           'additionalProperties': False},
         'signature': {   'params': [   'intent',
@@ -1425,17 +1622,20 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                        'mood',
                                        'genre',
                                        'turn_id',
-                                       'heard_text'],
+                                       'heard_text',
+                                       'min_seconds',
+                                       'engine'],
                          'required': [],
                          'accepts_kwargs': False},
         'skill': ('composer', 'dj')},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'ros2_node_status',
         'description': 'Получить статус ROS2-нод робота (active/missing/failed). '
                        'Используй когда нужно понять, поднялась ли нода (например, '
@@ -1470,6 +1670,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:waypoint_store',
         'name': 'save_waypoint',
         'description': 'Сохранить текущую позицию робота как именованную точку. '
                        "Используй когда пользователь говорит 'запомни это место как "
@@ -1494,7 +1695,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
-        'execution_type': 'instant',
+        'execution_type': 'medium',
+        'event_source': '/voice/speech/event',
         'name': 'say',
         'description': 'Произнести текст голосом от имени оператора робота. Используй, '
                        'когда оператор дал голосовую или текстовую команду произнести '
@@ -1522,6 +1724,40 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                          'required': ['text'],
                          'accepts_kwargs': False},
         'skill': ()},
+    {   'llm_visible': False,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'medium',
+        'event_source': '/voice/speech/event',
+        'name': 'say_aloud',
+        'telegram_visible': True,
+        'description': 'Озвучить текст динамиками робота, когда человек в чате просит '
+                       'рассказать, прочитать или сказать вслух (например, сочинённую '
+                       'историю). Текст чата ты пишешь в ответе, а сюда передай ту же '
+                       'реплику целиком. Итог «Озвучил» в чат пишет код по событию '
+                       'динамиков, не ты.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'text': {   'type': 'string',
+                                                        'description': 'Что '
+                                                                       'произнести, '
+                                                                       'русским '
+                                                                       'текстом без '
+                                                                       'SSML.'},
+                                            'voice': {   'type': 'string',
+                                                         'description': 'Голос разовой '
+                                                                        'реплики; '
+                                                                        'пусто - '
+                                                                        'текущий голос '
+                                                                        'робота.'}},
+                          'required': ['text'],
+                          'additionalProperties': False},
+        'signature': {   'params': ['text', 'voice'],
+                         'required': ['text'],
+                         'accepts_kwargs': False},
+        'skill': ()},
     {   'llm_visible': True,
         'operator_visible': False,
         'read_only': False,
@@ -1529,6 +1765,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'search_melody',
         'description': 'Найти мелодии в RTTTL-библиотеке по названию/жанру/тегу '
                        '(английским или транслитом: «новогодние» → "christmas", «игры» '
@@ -1561,6 +1798,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'search_web',
         'description': 'Поиск в интернете через DuckDuckGo. Возвращает до N сниппетов '
                        '(title, text, url). Используй ОБЯЗАТЕЛЬНО для любых вопросов, '
@@ -1605,6 +1843,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '',
         'name': 'set_music_volume',
         'description': 'Громкость МУЗЫКИ (трек/DJ-сет: request_music, dj_set), а НЕ '
                        'голоса робота. Юзер просит «громче/тише/погромче/потише» и '
@@ -1658,9 +1897,13 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_pitch',
-        'description': "Установить высоту голоса робота. Используй для команд 'говори "
-                       "выше', 'говори ниже'.",
+        'description': 'Высота голоса робота шагом: higher / lower (±0.2, диапазон '
+                       "0.5–2.0), normal — 1.0. Для команд 'говори выше', 'говори "
+                       "ниже'. Абсолютного значения нет; <prosody pitch> в speak_text "
+                       'не работает (MiniMax и Yandex его вырезают, pitch '
+                       'игнорируется) — только этот тул.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Действие с '
@@ -1682,6 +1925,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_speed',
         'description': "Установить скорость речи робота. Используй для команд 'говори "
                        "быстрее', 'говори медленнее'.",
@@ -1706,6 +1950,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/speech/event',
         'name': 'set_tts_provider',
         'description': 'Переключить активного TTS-провайдера (yandex ↔ minimax ↔ '
                        'silero). Используй когда юзер просит СМЕНИТЬ ПРОВАЙДЕРА '
@@ -1737,17 +1982,18 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': '/voice/speech/event',
         'name': 'set_voice',
-        'description': 'Установить голос TTS на диалог (персистентно, пока не сменят). '
-                       'Используй когда: (1) пользователь просит «говори голосом X» — '
-                       'передай voice=X; (2) хочешь рассказывать историю от разных лиц '
-                       '(старик → zahar, девушка → alena и т.п.); (3) хочешь вернуться '
-                       'к дефолтному голосу — передай voice=<default_voice>; (4) юзер '
-                       'просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», «Yandex '
-                       "anton») — передай voice=... И provider='yandex'. Доступные "
-                       'голоса перечислены в контексте: [TTS] voices=... После '
-                       'set_voice следующий speak_text без voice= говорит '
-                       'установленным голосом.',
+        'description': 'Сменить голос робота НАСОВСЕМ (персистентно, пока не сменят) — '
+                       'только когда человек сам просит сменить голос: (1) «говори '
+                       'голосом X» — передай voice=X; (2) «верни обычный голос» — '
+                       'передай voice=default (провайдера и голос подставит код); (3) '
+                       'юзер просит голос с КОНКРЕТНОГО провайдера («Яндекс Артём», '
+                       "«Yandex anton») — передай voice=... И provider='yandex'. "
+                       'Доступные голоса перечислены в контексте: [TTS] voices=... '
+                       'Голоса персонажей сказки — параметр voice у speak_text (только '
+                       'эта реплика), не set_voice. Фразу о смене голоса робот говорит '
+                       'сам.',
         'parameters': {   'type': 'object',
                           'properties': {   'voice': {   'type': 'string',
                                                          'description': 'Имя голоса '
@@ -1818,33 +2064,56 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/tts_node/set_parameters',
         'name': 'set_volume',
         'description': 'Громкость ГОЛОСА робота (речь TTS), НЕ музыки. Используй для '
                        "'говори громче', 'тише говори', 'максимальная громкость "
                        "голоса', а также для 'громче/тише', когда музыка НЕ играет. "
                        'Если играет трек/бит/DJ-сет и юзер просит громче/тише музыку — '
-                       'вызывай set_music_volume, а не этот тул.',
+                       'вызывай set_music_volume, а не этот тул. Названный уровень в '
+                       "процентах ('громкость 60 %') — action=set и level.",
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
-                                                          'description': 'Действие с '
-                                                                         'громкостью',
+                                                          'description': 'louder — '
+                                                                         'громче на '
+                                                                         'шаг, quieter '
+                                                                         '— тише на '
+                                                                         'шаг, max — '
+                                                                         'на максимум, '
+                                                                         'normal — '
+                                                                         'обычный '
+                                                                         'уровень, set '
+                                                                         '— выставить '
+                                                                         'level',
                                                           'enum': [   'louder',
                                                                       'quieter',
                                                                       'max',
-                                                                      'normal']}},
+                                                                      'normal',
+                                                                      'set']},
+                                            'level': {   'type': 'integer',
+                                                         'description': 'Только для '
+                                                                        'action=set: '
+                                                                        'громкость '
+                                                                        'голоса в '
+                                                                        'процентах, '
+                                                                        '0..100 '
+                                                                        '(значения вне '
+                                                                        'диапазона '
+                                                                        'обрезаются).'}},
                           'required': ['action'],
                           'additionalProperties': False},
-        'signature': {   'params': ['action'],
+        'signature': {   'params': ['action', 'level'],
                          'required': ['action'],
                          'accepts_kwargs': False},
         'skill': ('voice-tts',)},
     {   'llm_visible': False,
-        'operator_visible': False,
+        'operator_visible': True,
         'read_only': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'show_metrics',
         'description': 'Показать телеметрию робота на боковом экране TARS 2 (Captain '
                        'Bridge) и получить её значения. Тул выполняет запрос в '
@@ -1896,6 +2165,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': '',
         'name': 'speak_text',
         'description': 'Произнести текст голосом через TTS. ИСПОЛЬЗУЙ ЭТО вместо '
                        'возврата JSON с SSML. ОБЯЗАТЕЛЬНО указывай animation - это '
@@ -2020,6 +2290,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'medium',
+        'event_source': 'srv:/rtabmap/rtabmap/set_mode_mapping',
         'name': 'start_mapping',
         'description': 'Начать физическое сканирование и построение карты помещения '
                        '(SLAM). Вызывай ТОЛЬКО если пользователь явно просит '
@@ -2078,15 +2349,25 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:player_owner',
         'name': 'stop_music',
         'description': 'Выключить всю музыку: диджей-сет, трек или пьесу движка и mp3 '
                        'из библиотеки. Повторный вызов в тишине безопасен. Что '
                        'сказать, вернёт тул.',
         'parameters': {   'type': 'object',
-                          'properties': {},
+                          'properties': {   'boundary': {   'type': 'string',
+                                                            'description': 'now — '
+                                                                           'сразу (по '
+                                                                           'умолчанию); '
+                                                                           'bar — бит '
+                                                                           'выступления '
+                                                                           'на '
+                                                                           'ближайшем '
+                                                                           'такте',
+                                                            'enum': ['now', 'bar']}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
+        'signature': {'params': ['boundary'], 'required': [], 'accepts_kwargs': False},
         'skill': ('composer', 'dj', 'player')},
     {   'llm_visible': True,
         'operator_visible': False,
@@ -2095,6 +2376,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'srv:/navigate_to_pose/_action/cancel_goal',
         'name': 'stop_navigation',
         'description': 'Остановить текущую навигацию робота. Используй для команд '
                        "'стоп', 'остановись', 'отмени движение'.",
@@ -2103,63 +2385,4 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                           'required': [],
                           'additionalProperties': False},
         'signature': {'params': [], 'required': [], 'accepts_kwargs': False},
-        'skill': ('navigation',)},
-    {   'llm_visible': True,
-        'operator_visible': False,
-        'read_only': False,
-        'destructive': False,
-        'idempotent': False,
-        'starts_music': False,
-        'execution_type': 'fast',
-        'name': 'task_delta',
-        'description': 'Изменить PENDING-сегменты активного многочастного выступления '
-                       '(песня/сказка/стих) без перезапуска с начала. Используй когда '
-                       'в контексте есть [SEGMENT PLAN] с REWRITEABLE_SEGMENTS и '
-                       'пользователь попросил что-то добавить/изменить/убрать по ходу '
-                       'исполнения. Операции: rewrite(seg_idx, args) — переписать '
-                       'сегмент; replace(seg_idx, args) — то же; append(args) — '
-                       'добавить новый сегмент в конец; drop(seg_idx) — убрать '
-                       'сегмент. ACTIVE-сегменты (уже играют) трогать нельзя — только '
-                       'те, что перечислены в REWRITEABLE_SEGMENTS.',
-        'parameters': {   'type': 'object',
-                          'properties': {   'group_id': {   'type': 'string',
-                                                            'description': 'Значение '
-                                                                           'GROUP_ID '
-                                                                           'из блока '
-                                                                           '[SEGMENT '
-                                                                           'PLAN] — '
-                                                                           'скопируй '
-                                                                           'его как '
-                                                                           'есть '
-                                                                           '(32-символьная '
-                                                                           'hex-строка). '
-                                                                           'Это НЕ '
-                                                                           'метка '
-                                                                           'сегмента '
-                                                                           '(seg_0, '
-                                                                           'seg_1) и '
-                                                                           'не '
-                                                                           'task_id.'},
-                                            'ops': {   'type': 'array',
-                                                       'description': 'Список '
-                                                                      'операций. '
-                                                                      'Каждая — объект '
-                                                                      '{"kind": '
-                                                                      '"rewrite|replace|append|drop", '
-                                                                      '"seg_idx": int, '
-                                                                      '"args": {...}}. '
-                                                                      '"append" не '
-                                                                      'указывает '
-                                                                      'seg_idx; "drop" '
-                                                                      'не указывает '
-                                                                      'args.',
-                                                       'items': {   'type': 'object',
-                                                                    'description': 'Одна '
-                                                                                   'операция '
-                                                                                   'дельты.'}}},
-                          'required': ['group_id', 'ops'],
-                          'additionalProperties': False},
-        'signature': {   'params': ['group_id', 'ops'],
-                         'required': [],
-                         'accepts_kwargs': False},
-        'skill': ('scheduler',)})
+        'skill': ('navigation',)})

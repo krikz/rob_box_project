@@ -102,8 +102,6 @@ def test_not_play_named(text: str) -> None:
     ("text", "intent"),
     [
         ("выключи музыку", MediaIntent.STOP),
-        ("играй громче", MediaIntent.VOLUME_UP),
-        ("включи погромче", MediaIntent.VOLUME_UP),
         ("ты диджей Снупдог", MediaIntent.DJ),
         ("включи режим диджея", MediaIntent.DJ),
     ],

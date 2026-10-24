@@ -61,7 +61,15 @@ case "$cmd" in
     "${SSH[@]}" "docker inspect -f '{{.Config.Image}} started={{.State.StartedAt}} health={{.State.Health.Status}}' $CONTAINER; docker exec $CONTAINER sh -c 'cat /ws/HOTPATCH 2>/dev/null || echo \"горячих заливок нет (чистый образ)\"'"
     ;;
   revert)
-    "${SSH[@]}" "cd $COMPOSE_DIR && docker compose up -d --force-recreate --no-deps $CONTAINER"
+    # Имя compose-сервиса != имени контейнера (avatar-supervisor → supervisor): берём из метки compose.
+    svc=$("${SSH[@]}" "docker inspect -f '{{index .Config.Labels \"com.docker.compose.service\"}}' $CONTAINER" 2>/dev/null || true)
+    svc="${svc:-$CONTAINER}"
+    # #3795: после рестарта voice-assistant без перезапуска supercollider появляется дубль ноды.
+    if [ "$CONTAINER" = voice-assistant ]; then
+      "${SSH[@]}" "docker restart supercollider >/dev/null"
+      sleep 8
+    fi
+    "${SSH[@]}" "cd $COMPOSE_DIR && docker compose up -d --force-recreate --no-deps $svc"
     wait_healthy
     "${SSH[@]}" "docker exec $CONTAINER sh -c 'test -f /ws/HOTPATCH && echo ❌ метка осталась || echo ✅ контейнер из образа, горячего кода нет'"
     ;;

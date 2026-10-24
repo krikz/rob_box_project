@@ -195,3 +195,25 @@ def test_dod2_each_required_secret_masked_independently(secret_line: str) -> Non
     sanitized = redact_log_text(secret_line)
     assert "PLACEHOLDER_NOT_A_SECRET" not in sanitized
     assert "***" in sanitized
+
+
+# ---------------------------------------------------------------------------
+# PR-13b #3708: пароли в логах для read_logs ТАРС (ответ уходит в Telegram)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw, secret, kept", [
+    ("SSHPASS=hunter2 sshpass -e ssh pi@x", "hunter2", "SSHPASS=***"),
+    ("export ROBOT_SSH_PASS=robopass123", "robopass123", "ROBOT_SSH_PASS=***"),
+    ("password: s3cr3t", "s3cr3t", "password=***"),
+    ("db_passwd=qwerty1", "qwerty1", "db_passwd=***"),
+    ("sshpass -p topsecret ssh pi@10.1.1.22", "topsecret", "sshpass -p ***"),
+])
+def test_passwords_are_masked(raw, secret, kept):
+    out = redact_log_text(raw)
+    assert secret not in out and kept in out
+
+
+def test_password_masking_is_idempotent():
+    once = redact_log_text("SSHPASS=hunter2 and sshpass -p x1")
+    assert redact_log_text(once) == once

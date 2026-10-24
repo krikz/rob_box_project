@@ -74,6 +74,16 @@ DEFAULT_VOICES: dict[str, str] = {
     "silero": "aidar",
 }
 
+#: Голос робота «по умолчанию» (#3803): провайдер, на котором он говорит «обычным голосом». Одна запись; голос
+#: берётся из ``DEFAULT_VOICES``. «Верни свой обычный голос» разворачивает код (``robot_default_voice``), не LLM.
+ROBOT_DEFAULT_PROVIDER = "minimax"
+
+
+def robot_default_voice() -> tuple[str, str]:
+    """``(провайдер, голос)`` обычного голоса робота; не дефолт ТЕКУЩЕГО провайдера."""
+    return ROBOT_DEFAULT_PROVIDER, DEFAULT_VOICES[ROBOT_DEFAULT_PROVIDER]
+
+
 # AV-27 / issue #1919 — метаданные голосов для wire payload
 # (VoiceInfo в messages.ts:125-133). ``voice_id`` — ключ в PROVIDER_VOICES,
 # всё остальное — обогащение для отображения в UI Quest voice-picker.
@@ -175,6 +185,32 @@ def voices_for(provider: str) -> list[str]:
 def default_voice_for(provider: str) -> str:
     """Дефолтный голос провайдера; для неизвестного — пустая строка."""
     return DEFAULT_VOICES.get(provider, "")
+
+
+#: Как провайдера называют вслух (одна запись; латиницу TTS читает криво).
+PROVIDER_LABELS: dict[str, str] = {"yandex": "Яндекс", "minimax": "MiniMax", "silero": "Silero"}
+
+#: Сколько характерных голосов показывать у провайдера в обзоре (по одному на пол) и каких не показывать.
+OVERVIEW_GENDERS: tuple[str, ...] = ("male", "female")
+
+
+def providers_overview(active: str = "") -> list[dict]:
+    """Обзор голосов по провайдерам для ответа «какими голосами умеешь» (#3883): провайдер, сколько у него голосов и по
+    одному характерному русскому мужскому/женскому (без legacy). Единственный источник — ``PROVIDER_VOICES`` и
+    ``VOICE_METADATA``; ``active`` помечает текущего провайдера."""
+    out = []
+    for provider, ids in PROVIDER_VOICES.items():
+        samples = []
+        for gender in OVERVIEW_GENDERS:
+            for vid in ids:
+                meta = VOICE_METADATA.get(f"{provider}:{vid}") or {}
+                if (meta.get("gender") == gender and meta.get("language") == "ru-RU"
+                        and "legacy" not in str(meta.get("display_name", ""))):
+                    samples.append({"voice": vid, "name": meta.get("display_name", vid), "gender": gender})
+                    break
+        out.append({"provider": provider, "label": PROVIDER_LABELS.get(provider, provider), "voices_count": len(ids), "active": provider == active,
+                    "samples": samples})
+    return out
 
 
 def voice_info_for(provider: str, voice_id: str) -> "VoiceInfo | None":

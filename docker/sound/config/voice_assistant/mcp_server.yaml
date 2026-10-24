@@ -22,3 +22,8 @@ mcp_server:
     # deterministic - только код | jev - Jev (900 мс), иначе кубик | chain - Jev (900 мс) → LLM (2 с) → кубик кода.
     # Ключи JEV_API_KEY / DEEPSEEK_API_KEY - из env контейнера; нет ключа - ступень пропущена (строка в лог).
     music_chooser: "chain"
+    # ADR-0150 О8 (а), В16 (PR-7d #3701): музыка под речью робота — минус duck_db за attack_ms, возврат за
+    # release_ms после конца реплики. Стартовые числа, утверждаются на слух по замеру A24.
+    music_duck_db: -9.0
+    music_duck_attack_ms: 80.0
+    music_duck_release_ms: 400.0

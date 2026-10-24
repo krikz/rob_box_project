@@ -9,9 +9,10 @@ The contract under test:
   the only place outside ``core/agent_core.py`` and the test fixtures
   where ``AgentCore(`` may appear in ``src/`` (ADR-0083 §2.1).
 * Two specs (personality + operator) with disjoint ``prompt_dir`` /
-  ``skill_slice`` / ``memory_namespace`` must yield two distinct
-  ``AgentCore`` instances with their prompts, skill slices and memory
-  namespaces intact (ADR-0083 §1.4 DoD bullet #3).
+  ``memory_namespace`` must yield two distinct ``AgentCore`` instances
+  with their prompts and memory namespaces intact (ADR-0083 §1.4 DoD
+  bullet #3). Skills are gone (ADR-0150 PR-6): the per-turn tool view is
+  set by the node via ``AgentCore.set_visible_tools``.
 * ``SQLiteVoiceMemory(..., agent=...)`` keeps namespaces disjoint
   inside a single DB file (ADR-0083 §2.4 / §1.4 DoD bullet #2).
 """
@@ -31,9 +32,7 @@ from rob_box_harness.core.agent_core import AgentCore
 from rob_box_harness.core.assembly import (
     AgentSpec,
     build_agent,
-    load_skill_prompts,
     load_system_prompt,
-    normalize_skill_slice,
 )
 from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
 from rob_box_harness.memory import Fact, SQLiteVoiceMemory
@@ -105,24 +104,17 @@ def _make_tools() -> FakeToolProvider:
 def tmp_prompt_dirs(tmp_path: Path) -> tuple[Path, Path]:
     """Create two prompt directories: personality + operator.
 
-    Each has its own ``<system_prompt_file>`` and a ``skills/``
-    subdirectory with one fragment.
+    Each has its own ``<system_prompt_file>``.
     """
     personality_dir = tmp_path / "personality_prompts"
     operator_dir = tmp_path / "operator_prompts"
     for d in (personality_dir, operator_dir):
-        (d / "skills").mkdir(parents=True)
+        d.mkdir(parents=True)
     (personality_dir / "master.txt").write_text(
         "Ты — личность робота. Добрый, тёплый.", encoding="utf-8"
     )
-    (personality_dir / "skills" / "player.txt").write_text(
-        "Инструкции по скиллу 'player'.", encoding="utf-8"
-    )
     (operator_dir / "operator.txt").write_text(
         "Ты — ТАРС. Деловой, по делу.", encoding="utf-8"
-    )
-    (operator_dir / "skills" / "operator.speech.txt").write_text(
-        "Фрагмент среза 'operator.speech'.", encoding="utf-8"
     )
     return personality_dir, operator_dir
 
@@ -147,8 +139,10 @@ def test_agent_spec_is_frozen(tmp_prompt_dirs: tuple[Path, Path]) -> None:
 def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> None:
     """Pin the field count so accidental additions are caught by CI.
 
-    The ADR-0083 §2.1 spec lists exactly 18 fields; a future ADR must
-    accompany any new field.
+    The ADR-0083 §2.1 spec listed 18 fields; ADR-0150 PR-6 removed
+    ``skill_slice`` and ``narrow_tools_to_skill`` (skills are gone); ADR-0150 §4.5
+    (#3696 ч.5) added ``wrap_provider`` (command mode per provider); PR-7b (#3699)
+    removed the dead ``use_scheduler`` flag. A future ADR must accompany any new field.
     """
     personality_dir, _ = tmp_prompt_dirs
     spec = AgentSpec(
@@ -156,7 +150,7 @@ def test_agent_spec_field_count_is_18(tmp_prompt_dirs: tuple[Path, Path]) -> Non
         prompt_dir=personality_dir,
         system_prompt_file="master.txt",
     )
-    assert len(spec.__dataclass_fields__) == 18
+    assert len(spec.__dataclass_fields__) == 16
 
 
 def test_agent_spec_required_fields_have_no_default(
@@ -175,16 +169,8 @@ def test_agent_spec_required_fields_have_no_default(
     assert fields["system_prompt_file"].default is dataclasses.MISSING
 
 
-def test_normalize_skill_slice_handles_list_and_none() -> None:
-    """Frozen dataclass requires tuple, but YAML gives lists — normalise."""
-    assert normalize_skill_slice(None) == ()
-    assert normalize_skill_slice([]) == ()
-    assert normalize_skill_slice(("a", "b")) == ("a", "b")
-    assert normalize_skill_slice(["a", "b"]) == ("a", "b")
-
-
 # ---------------------------------------------------------------------------
-# Prompt / skill loaders
+# Prompt loader
 # ---------------------------------------------------------------------------
 
 
@@ -217,50 +203,6 @@ def test_load_system_prompt_missing_dir_returns_empty(
         system_prompt_file="master.txt",
     )
     assert load_system_prompt(spec) == ""
-
-
-def test_load_skill_prompts_respects_disjoint_slice(
-    tmp_prompt_dirs: tuple[Path, Path],
-) -> None:
-    """Personality loads only ``player``; operator loads only
-    ``operator.speech`` — never the other side's fragments
-    (ADR-0083 §1.3 #3)."""
-    personality_dir, operator_dir = tmp_prompt_dirs
-    p_spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        skill_slice=("player",),
-    )
-    o_spec = AgentSpec(
-        name="operator",
-        prompt_dir=operator_dir,
-        system_prompt_file="operator.txt",
-        skill_slice=("operator.speech",),
-    )
-    p_skills = load_skill_prompts(p_spec)
-    o_skills = load_skill_prompts(o_spec)
-    assert "player" in p_skills
-    assert "operator.speech" not in p_skills
-    assert "operator.speech" in o_skills
-    assert "player" not in o_skills
-
-
-def test_load_skill_prompts_absent_fragment_is_warning(
-    tmp_prompt_dirs: tuple[Path, Path],
-) -> None:
-    """A missing fragment is a warning, not an error — the slice can
-    keep growing without breaking existing builds."""
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="personality",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        skill_slice=("player", "missing_skill"),
-    )
-    loaded = load_skill_prompts(spec)
-    assert "player" in loaded
-    assert "missing_skill" not in loaded
 
 
 # ---------------------------------------------------------------------------
@@ -329,33 +271,12 @@ async def test_build_agent_passes_system_prompt_to_core(
 
 
 @pytest.mark.asyncio
-async def test_build_agent_keeps_narrow_tools_to_skill(
-    tmp_prompt_dirs: tuple[Path, Path],
-    sqlite_db_path: Path,
-) -> None:
-    """The ``narrow_tools_to_skill`` flag from the spec is forwarded to
-    ``AgentCore`` verbatim (ADR-0083 §2.2 #J — operator used to
-    hardcode ``False``)."""
-    personality_dir, _ = tmp_prompt_dirs
-    spec = AgentSpec(
-        name="operator",
-        prompt_dir=personality_dir,
-        system_prompt_file="master.txt",
-        narrow_tools_to_skill=False,
-    )
-    memory = await _make_memory(sqlite_db_path, agent="operator")
-    core = build_agent(spec, tools=_make_tools(), memory=memory)
-    assert core._narrow_tools_to_skill is False  # type: ignore[attr-defined]
-
-
-@pytest.mark.asyncio
 async def test_build_agent_two_specs_two_cores_disjoint(
     tmp_prompt_dirs: tuple[Path, Path],
     sqlite_db_path: Path,
 ) -> None:
     """ADR-0083 §1.4 DoD bullet #3 — ``build_agent`` for two specs gives
-    two cores with different prompts, different skill slices and
-    different memory namespaces.
+    two cores with different prompts and different memory namespaces.
 
     This is THE acceptance test for the contract."""
     personality_dir, operator_dir = tmp_prompt_dirs
@@ -364,15 +285,11 @@ async def test_build_agent_two_specs_two_cores_disjoint(
         name="personality",
         prompt_dir=personality_dir,
         system_prompt_file="master.txt",
-        skill_slice=("player",),
-        narrow_tools_to_skill=True,
     )
     o_spec = AgentSpec(
         name="operator",
         prompt_dir=operator_dir,
         system_prompt_file="operator.txt",
-        skill_slice=("operator.speech",),
-        narrow_tools_to_skill=False,
     )
 
     # Two distinct memory handles — both pointing at the same SQLite
@@ -392,15 +309,8 @@ async def test_build_agent_two_specs_two_cores_disjoint(
     assert "ТАРС" not in p_core._system_prompt  # type: ignore[attr-defined]
     assert "личность робота" not in o_core._system_prompt  # type: ignore[attr-defined]
 
-    # Different skill slices (forwarded to AgentCore via skill_prompts).
-    assert "player" in p_core._skill_prompts  # type: ignore[attr-defined]
-    assert "operator.speech" not in p_core._skill_prompts  # type: ignore[attr-defined]
-    assert "operator.speech" in o_core._skill_prompts  # type: ignore[attr-defined]
-    assert "player" not in o_core._skill_prompts  # type: ignore[attr-defined]
-
-    # Different ``narrow_tools_to_skill`` values — explicit, not hardcoded.
-    assert p_core._narrow_tools_to_skill is True  # type: ignore[attr-defined]
-    assert o_core._narrow_tools_to_skill is False  # type: ignore[attr-defined]
+    # Tool view is per turn (set by the node), not per spec: both start without one.
+    assert p_core._visible_tools is None and o_core._visible_tools is None  # type: ignore[attr-defined]
 
     # Disjoint memory namespaces in a single SQLite file.
     await p_memory.save_fact(
@@ -549,3 +459,43 @@ async def test_build_agent_without_llm_keeps_backward_compatible_path(
     memory = await _make_memory(sqlite_db_path, agent="personality")
     core = build_agent(spec, tools=_make_tools(), memory=memory)
     assert core._llm is not None  # type: ignore[attr-defined]
+
+
+def test_build_llm_chain_wraps_every_built_provider(
+    tmp_prompt_dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0150 §4.5 (#3696 ч.5): ``wrap_provider`` оборачивает КАЖДЫЙ провайдер цепочки до фолбек-обёртки,
+    поэтому форму запроса выбирают возможности того провайдера, который отвечает, а не primary."""
+    from rob_box_harness.core.assembly import build_llm_chain
+    from rob_box_harness.health import HealthAwareFallbackLLM
+
+    built: list[str] = []
+
+    def _named(name: str, **_kwargs: object) -> DummyLLMProvider:
+        provider = DummyLLMProvider()
+        provider.name = name
+        built.append(name)
+        return provider
+
+    monkeypatch.setattr("rob_box_harness.core.assembly.build_provider", _named)
+    wrapped: list[str] = []
+
+    def _wrap(provider: DummyLLMProvider) -> DummyLLMProvider:
+        wrapped.append(provider.name)
+        return provider
+
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(
+        name="personality", prompt_dir=personality_dir, system_prompt_file="master.txt",
+        provider_chain=("deepseek", "minimax"), wrap_provider=_wrap,
+    )
+    llm = build_llm_chain(spec)
+    assert isinstance(llm, HealthAwareFallbackLLM)
+    assert built == wrapped == ["deepseek", "minimax"]
+
+
+def test_agent_spec_wrap_provider_defaults_to_identity(tmp_prompt_dirs: tuple[Path, Path]) -> None:
+    personality_dir, _ = tmp_prompt_dirs
+    spec = AgentSpec(name="personality", prompt_dir=personality_dir, system_prompt_file="master.txt")
+    sentinel = object()
+    assert spec.wrap_provider(sentinel) is sentinel

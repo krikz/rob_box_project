@@ -6,7 +6,7 @@ STT не ставит «?») роутер медиакоманд (#3134, ``media
 и параллельно ``command_node`` (через ``core.command_parser``) исполнили
 как приказ «стоп»: робот сказал «Останавливаюсь» (command_node,
 ``handle_stop`` — навигационный стоп, независимая подписка на
-``/voice/stt/result``, НЕ гейт stt_admission) и следом «Сейчас ничего не
+``/voice/stt/utterance``, НЕ гейт stt_admission) и следом «Сейчас ничего не
 играет — на всякий случай всё остановил.» (media_router, т.к. музыка и
 так стояла).
 
@@ -36,7 +36,7 @@ from rob_box_voice.core.media_command_grammar import (
 
 # ---------------------------------------------------------------------------
 # command_parser.py — та же нода, что стоит за command_node.py (issue #3169:
-# command_node подписан на /voice/stt/result НАПРЯМУЮ, минуя stt_admission
+# command_node подписан на /voice/stt/utterance НАПРЯМУЮ, минуя stt_admission
 # и media_command_grammar, — «Останавливаюсь» пришло именно отсюда).
 # ---------------------------------------------------------------------------
 

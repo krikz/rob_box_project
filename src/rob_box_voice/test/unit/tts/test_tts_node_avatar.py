@@ -8,9 +8,8 @@
   с ``sink="headset"`` (worker берёт headset-путь).
 * ``_publish_headset_audio`` шлёт AudioData в ``headset_audio_topic``,
   формат — int16 LE PCM (тот же, что ``/voice/audio/speech``).
-* Управляющий топик ``/avatar/tts/control`` идёт через существующий
-  ``control_callback`` (тот же формат команды) — регресс: STOP сбрасывает
-  ``_avatar_tts_request_id``.
+* Управляющий топик ``/avatar/tts/control`` идёт через адаптер
+  ``core/speech_compat.on_control`` (тот же STOP, ADR-0150 PR-3).
 * Параметры ноды: ``headset_audio_topic`` / ``avatar_request_topic`` /
   ``avatar_error_topic`` / ``avatar_control_topic`` объявлены в ``__init__``.
 
@@ -36,7 +35,6 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_voice import tts_node as _tts_node_mod  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
 
 
@@ -75,12 +73,9 @@ def _make_request_node():
     logger = MagicMock()
     n.get_logger = lambda: logger
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._avatar_tts_error_pub = _CapturingPublisher()
     n._avatar_tts_request_id = None
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n._submit_synthesis = MagicMock()
     # dialogue_id-check / interrupt_playback зависимости.
     n._interrupt_playback = MagicMock()
@@ -230,6 +225,7 @@ def test_avatar_tts_request_headset_sink_submits_synthesis():
 def test_avatar_tts_request_emits_finished_with_speech_id_on_unsupported_script():
     """Unicode-script guard (issue 1709) → /avatar/tts/error + finished(Fail)."""
     node = _make_request_node()
+    node.provider_chain = ["yandex", "silero"]  # #3728: Yandex иероглифы не читает
     node._on_avatar_tts_request(
         _msg({
             "request_id": "req-cjk",
@@ -246,26 +242,6 @@ def test_avatar_tts_request_emits_finished_with_speech_id_on_unsupported_script(
     assert finished[0]["success"] is False
     assert finished[0]["error"] == "unsupported_script"
     assert finished[0]["speech_id"] == "sid-cjk-1"
-
-
-def test_avatar_tts_request_stale_dialogue_dropped():
-    """Защита от barge-in: чужой dialogue_id → DROP без синтеза."""
-    node = _make_request_node()
-    node.current_dialogue_id = "dlg-current"
-    node._on_avatar_tts_request(
-        _msg({
-            "request_id": "req-stale",
-            "speech_id": "sid-stale",
-            "ssml": "<speak>устарело</speak>",
-            "text": "устарело",
-            "sink": "headset",
-            "dialogue_id": "dlg-old",
-        })
-    )
-    node._submit_synthesis.assert_not_called()
-    finished = _finished_payloads(node)
-    assert finished[0]["success"] is False
-    assert finished[0]["error"] == "stale_dialogue"
 
 
 def test_avatar_tts_request_bad_json_does_not_crash():
@@ -726,36 +702,3 @@ def test_sap_publish_for_sink_headset_meta_rate_matches_resampled_pcm():
     )
 
     _assert_meta_matches_pcm(n, len(audio), src_rate)
-
-
-def test_streaming_minimax_headset_meta_rate_matches_resampled_pcm():
-    import asyncio
-
-    from rob_box_llm.tts import TTSChunk, TTSFormat
-
-    n = _make_resampling_node()
-    n._decode_minimax_audio = TTSNode._decode_minimax_audio.__get__(n)
-    n._decoded_audio_to_float32 = TTSNode._decoded_audio_to_float32
-    src_rate = 32000
-    pcm = np.zeros(src_rate, dtype="<i2").tobytes()  # 1 с @ 32 кГц
-
-    async def fake_stream(text, ssml_attrs, voice=None, language=None):
-        yield TTSChunk(
-            samples=pcm,
-            sample_rate=src_rate,
-            format=TTSFormat.PCM,
-            finish_reason="stop",
-        )
-
-    n._stream_minimax_chunks = fake_stream
-
-    async def run():
-        return await asyncio.to_thread(
-            lambda: TTSNode._synthesize_minimax_streaming_publish(
-                n, "hello", {}, sink="headset"
-            )
-        )
-
-    asyncio.run(run())
-
-    _assert_meta_matches_pcm(n, src_rate, src_rate)

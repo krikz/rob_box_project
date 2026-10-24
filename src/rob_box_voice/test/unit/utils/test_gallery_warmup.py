@@ -168,6 +168,18 @@ class TestAppendReferenceEmbedding:
         assert grown is True
         assert db.gallery_size(sid) == 2
 
+    def test_growth_keeps_name_after_rename_3801(self, db):
+        """#3801, живой робот 21.10: сессия роста открыта под «Энджик», профиль переименован в «Денчик» — дозапись
+        эмбеддинга имя назад не возвращает."""
+        base = _unit(45)
+        sid = db.register("Энджик", base)
+        assert db.rename(sid, "Денчик")
+
+        assert db.append_reference_embedding(sid, "Энджик", _degraded(base, 0.3, 46)) is True
+
+        assert [s["name"] for s in db.list_speakers()] == ["Денчик"]
+        assert db.gallery_size(sid) == 2
+
     def test_stops_at_cap(self, db):
         base = _unit(50)
         sid = db.register("Деньчик", base)

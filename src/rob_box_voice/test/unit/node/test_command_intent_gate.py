@@ -19,6 +19,7 @@ import pytest
 from rob_box_voice.core.command_parser import CommandParser, IntentType
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 _GATE_CONFIDENCE = 0.7
 
@@ -62,13 +63,12 @@ def _make_node(gate_enabled: bool = True) -> DialogueNode:
     n._dispatch_turn = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
+    n._intent_pub = MagicMock()
     return n
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 class TestCommandIntentGate:
@@ -92,9 +92,23 @@ class TestCommandIntentGate:
         node = _make_node(gate_enabled=True)
         _stt(node, phrase)
         node._dispatch_turn.assert_not_called()
-        # Счётчик command_intent увеличился, LLM-диспатч пропущен.
-        assert node._llm_skipped_counter["command_intent"] == 1
+        # Счётчик command_intent (стоп — Tier-1, ADR-0150 PR-6) увеличился, LLM-диспатч пропущен.
+        key = "tier1" if phrase.endswith("стоп") else "command_intent"
+        assert node._llm_skipped_counter[key] == 1
         assert node._cancel_run.called
+
+    @pytest.mark.parametrize("phrase, kind", [("робот стоп", "stop_motion"), ("робот вперёд", "move")])
+    def test_command_goes_to_executor_as_dialog_intent(self, phrase, kind):
+        """ADR-0150 PR-5: command_node получает решённое намерение по /dialog/intent, реплик не читает."""
+        node = _make_node(gate_enabled=True)
+        _stt(node, phrase)
+        intent = node._intent_pub.publish.call_args.args[0]
+        assert intent.kind == kind
+
+    def test_non_command_publishes_no_intent(self):
+        node = _make_node(gate_enabled=True)
+        _stt(node, "робот расскажи анекдот")
+        node._intent_pub.publish.assert_not_called()
 
     @pytest.mark.parametrize(
         "phrase",

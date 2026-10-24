@@ -32,7 +32,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from rob_box_core.music_tools import MUSIC_AUDIBLE_LYRICS_TOOLS
 from rob_box_core.token_estimate import estimate_prompt_tokens
-from rob_box_core.tool_catalog import tools_for_skill
+from rob_box_dialog.context import ContextBlocks, measure
+from rob_box_dialog.tools_view import motion_refusal
 from rob_box_harness.core.tool_loop import (
     apply_babble_filter,
     build_awaiting_confirmation_result,
@@ -44,11 +45,7 @@ from rob_box_harness.core.tool_loop import (
 from rob_box_harness.core.tool_loop.outcomes import (  # noqa: F401 — re-exported
     _ToolLoopOutcome,
 )
-from rob_box_harness.core.tool_loop.content_speech import (  # Issue #3269
-    ContentSpeech,
-    speak_closing_content,
-    speak_content_beside_set_voice,
-)
+from rob_box_harness.core.tool_loop.command_turn import CommandTurn
 from rob_box_harness.core.confirmation_policy import ConfirmationKind
 from rob_box_harness.core.dialogue_state_machine import (
     DialogueEvent,
@@ -87,55 +84,6 @@ if TYPE_CHECKING:
 _MAX_TOOL_ITERATIONS: int = 8
 
 
-#: Имя инструмента, которым LLM подгружает доменный скилл сама.
-#:
-#: Он НЕ живёт в ``rob_box_core.tool_catalog`` намеренно: каталог
-#: описывает то, что робот УМЕЕТ ДЕЛАТЬ (ехать, играть, говорить), а этот
-#: вызов ничего на роботе не исполняет — он меняет состав промпта внутри
-#: harness'а и возвращает текст. Класть его в каталог значило бы просить
-#: mcp_server исполнять то, до чего он не дотягивается: фрагменты лежат в
-#: rob_box_voice, а MCP-сервер — отдельная нода в отдельном контейнере.
-LOAD_SKILL_TOOL: str = "load_skill"
-
-
-def _load_skill_spec(known: tuple[str, ...]) -> dict[str, Any]:
-    """Схема ``load_skill`` в OpenAI-формате.
-
-    Список доступных имён встроен в enum: модель не должна угадывать
-    строку, а промах по имени становится ошибкой валидации у провайдера,
-    а не тихой загрузкой пустоты.
-    """
-    return {
-        "type": "function",
-        "function": {
-            "name": LOAD_SKILL_TOOL,
-            "description": (
-                "Загрузить инструкции по работе с доменом, когда запрос "
-                "пользователя относится к музыке, навигации, памяти, "
-                "голосу или другому домену из списка. Возвращает текст "
-                "инструкций — прочитай его и продолжай ЭТОТ ЖЕ ход. "
-                "Вызывай ОДИН раз, до первого доменного действия."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill": {
-                        "type": "string",
-                        "enum": list(known),
-                        "description": "Имя домена.",
-                    }
-                },
-                "required": ["skill"],
-            },
-        },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-    }
-
-
 @dataclass(frozen=True)
 class PromptStats:
     """Размер одного запроса к LLM — сырьё для ``voice_llm_prompt_tokens``.
@@ -153,7 +101,19 @@ class PromptStats:
     prompt_tokens: int
     estimated: bool
     provider: str
-    skill: str = "none"
+    #: Срез тулов хода (группы ``rob_box_dialog.tools_view``, ADR-0150 PR-6); ``"all"`` — срез не задан.
+    skill: str = "all"
+    #: Тот же вызов по блокам контекста (``rob_box_dialog.context.measure``, оценка) — A5 по блокам (#3696).
+    blocks: ContextBlocks | None = None
+
+
+def answering_provider(llm: Any) -> str:
+    """Имя провайдера, ответившего на последний вызов: у цепочки с фолбеком — ``answered_by``, иначе ``name`` LLM.
+
+    ``name`` обёртки (``health-aware-fallback``) один на все провайдеры, и метрика A5 по провайдерам по нему не
+    собирается (живая проверка #3696 ч.4, 21.10).
+    """
+    return getattr(llm, "answered_by", None) or getattr(llm, "name", "unknown")
 
 
 #: Тип колбэка, которым shell (ROS2-нода) забирает статистику промпта.
@@ -161,40 +121,13 @@ class PromptStats:
 #: он только сообщает число, а публикует его тот, кто умеет.
 PromptObserver = Callable[[PromptStats], None]
 
-# W7a (issue #968, INSIGHT #1): a single LLM response may carry several
-# tool_calls in one batch (e.g. ``speak_text`` + ``stop_music``). Executing
-# them in the model's raw order fires destructive tools before the voice
-# pipeline has even started — ``stop_music`` used to land on the robot
-# milliseconds after ``speak_text`` was requested, killing the music mid-phrase
-# (e2e v36). The scheduler (W7b) owns cross-batch ordering; this module-level
-# re-ordering fixes the *intra-batch* race:
-#
-# * ordinary tools keep their relative order,
-# * destructive tools (``stop_music`` / ``stop_navigation``) run LAST and are
-#   flagged ``defer_until_voice_drained`` when the same batch also speaks —
-#   the flag tells the scheduler not to fire the side effect until the voice
-#   channel is empty.
-_VOICE_TOOLS: frozenset[str] = frozenset({"speak_text"})
-# Issue #2913 — ``register_speaker`` исполняется до реплик пачки: речь хода
-# ждёт исхода регистрации (dialogue_node ``TurnSpeechGate``), и ожидание
-# взводится только когда тул уже отправил запрос. Иначе в пачке
-# ``[speak_text, <медленный тул>, register_speaker]`` реплика успевала бы
-# уйти в TTS раньше, чем ход узнал, что регистрация вообще будет. Сам тул —
-# публикация в топик (миллисекунды), порядок речи и музыки не меняет.
-_REGISTER_FIRST_TOOLS: frozenset[str] = frozenset({"register_speaker"})
-_RUN_FIRST_TOOLS: frozenset[str] = _REGISTER_FIRST_TOOLS
-_DEFER_TO_END_TOOLS: frozenset[str] = frozenset(
-    {"stop_music", "stop_navigation"}
-)
-
 
 def _compose_current_turn_message(
     dynamic_system: str | None,
-    skill_prompt: str,
     text: str,
 ) -> str:
-    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot and
-    the active skill fragment into the SAME user message as ``text``,
+    """Issue #2817 -- fold the per-turn ``<system_context>`` snapshot
+    into the SAME user message as ``text``,
     instead of appending them as separate ``role=system`` messages right
     before it (see the call site in :meth:`AgentCore.process_input` for
     the live-log regression this fixes). Extracted so the branch count
@@ -203,28 +136,19 @@ def _compose_current_turn_message(
     Order is preserved: context blocks first (freshest info nearest the
     question), then a blank line, then the literal user text.
     """
-    context_blocks = [
-        block for block in (dynamic_system, skill_prompt) if block
-    ]
-    if not context_blocks:
+    if not dynamic_system:
         return text
-    return "\n".join(context_blocks) + "\n\n" + text
+    return dynamic_system + "\n\n" + text
 
 
 #: Issue #2955 — source-tag prefixes dialogue_node glues onto the RAW
 #: STT transcript before it ever reaches :meth:`AgentCore.process_input`
-#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195), and
-#: ``[Spkr:<name>]`` / ``[Speaker:unknown]`` / ``[Speaker:tentative]``
-#: for voice-biometry hints (issue #1077 / #2809). None of these are
-#: words the user said — a praise/vocal-request gate scanning the tag
+#: as ``text``: ``[TG] `` for Telegram-sourced turns (issue #1195). It is
+#: not a word the user said — a praise/vocal-request gate scanning the tag
 #: itself (instead of the utterance after it) would be scanning the
-#: wrong text. Only one tag is ever applied per turn today
-#: (``_prepare_user_input_context`` branches ``if from_tg / elif
-#: speaker_id_enabled``), but the loop below tolerates a hypothetical
-#: stack without special-casing the count.
-_SOURCE_PREFIX_RE = re.compile(
-    r"^(?:\[(?:TG|Spkr:[^\]]*|Speaker:[^\]]*)\]\s*)+"
-)
+#: wrong text. Voice-biometry prefixes are gone (ADR-0150 §7.3, #3695):
+#: the speaker reaches the LLM as the ``speaker`` snapshot section.
+_SOURCE_PREFIX_RE = re.compile(r"^(?:\[TG\]\s*)+")
 
 
 def _raw_user_utterance(text: str) -> str:
@@ -234,8 +158,8 @@ def _raw_user_utterance(text: str) -> str:
     Both gates used to read the LAST ``role=user`` LLMMessage off the
     live ``messages`` list (:meth:`AgentCore._find_last_user_input`) --
     but that message is the COMPOSED turn (``_compose_current_turn_message``):
-    the ``<system_context>`` snapshot (speaker profile, memory, active
-    skill -- issue #2817/#2822) glued in FRONT of the literal user text.
+    the ``<system_context>`` snapshot (speaker profile, memory --
+    issue #2817/#2822) glued in FRONT of the literal user text.
     A word like «нравится» sitting in a speaker's PROFILE inside that
     snapshot then unlocked ``contains_praise`` for a request that carried
     no praise at all (live 24.09.2026, issue #2955).
@@ -312,13 +236,6 @@ def _reply_if_kept(reply: Turn | None, kept: Iterable[Turn]) -> Turn | None:
     return reply if any(turn is reply for turn in kept) else None
 
 
-def _reply_text(spoken: str, internal_marker: str | None) -> str:
-    """Issue #3598 — финальный текст, годный в историю: рассуждение → ``""``."""
-    if internal_marker:
-        return ""
-    return spoken
-
-
 def _merge_tool_names(*groups: Iterable[str]) -> list[str]:
     """Объединить имена тулов без повторов, сохранив порядок."""
     return list(dict.fromkeys(name for group in groups for name in group))
@@ -384,55 +301,6 @@ def _insert_context_system(
     return messages
 
 
-def _order_tool_calls(
-    calls: Iterable[ToolCall],
-) -> tuple[list[ToolCall], set[str]]:
-    """Re-order one LLM batch for safe execution.
-
-    Returns ``(ordered, deferred_call_ids)``:
-
-    * ``ordered`` — stable partition: music prelude tools and
-      ``register_speaker`` (issue #2913) first, then the
-      remaining tools in their original relative order, then destructive
-      tools last.
-    * ``deferred_call_ids`` — ids of destructive calls whose side effect
-      must wait until the voice channel drains (only set when the batch
-      also contains a voice tool such as ``speak_text``).
-
-    The re-ordering changes execution order ONLY. Tool results are still
-    returned to the LLM in the model's original order (see
-    :meth:`AgentCore._run_with_tools`), so the OpenAI-style conversation
-    history stays valid.
-    """
-    ordered = list(calls)
-
-    def _partition_key(call: ToolCall) -> int:
-        if call.name in _DEFER_TO_END_TOOLS:
-            return 2
-        if call.name in _RUN_FIRST_TOOLS:
-            return 0
-        return 1
-
-    ordered.sort(key=_partition_key)
-    has_voice = any(call.name in _VOICE_TOOLS for call in ordered)
-    deferred_call_ids = {
-        call.id
-        for call in ordered
-        if has_voice and call.name in _DEFER_TO_END_TOOLS
-    }
-    return ordered, deferred_call_ids
-
-
-#: Completion markers the master prompt teaches the LLM to return AFTER the
-#: last ``speak_text`` call. They are ONLY valid when the turn actually
-#: performed work (tool calls happened in an earlier iteration). When the
-#: model emits a bare marker as its FIRST response with zero tool calls it
-#: is a silent failure — the user hears nothing and nothing happened
-#: (issue #1217, deepseek-v4-flash intermittently does this).
-_SILENT_DONE_MARKERS: frozenset[str] = frozenset(
-    {"done", "task complete", "task_complete", "готово", "всё", "выполнено"}
-)
-
 #: 🔴 FIX (live 01.09, vision-pi 10:17): MiniMax отдаёт ПСЕВДО-ВЫЗОВ ТЕКСТОМ.
 #: На «переходи в легкий джанго» модель вернула content
 #: ``<compose_music composition here>`` и ``tool_calls=()``. Формально это
@@ -470,8 +338,8 @@ from rob_box_harness.core.tool_loop.markup_recovery import (  # Issue #2760
 from rob_box_harness.core.tool_loop.text_classify import (  # noqa: F401 — back-compat aliases
     _PSEUDO_TOOL_CALL_RE,
     is_pseudo_tool_call as _is_pseudo_tool_call,
+    is_silent_text,  # Issue #1217 — маркеры конца хода v1, одна таблица с нодой
     is_tool_call_markup,  # Issue #2760
-    quoted_turn_context,  # Issue #3598
 )
 
 
@@ -687,12 +555,8 @@ class DialogResult:
     # validation, the retry in the same turn succeeded» looked exactly
     # like a failure to dialogue_node's music guard (#2966 rule).
     succeeded_tools: list[str] = field(default_factory=list)
-    # Issue #3598 — финальный текст хода цитирует служебное из контекста
-    # хода (``"<music_state>"``) или имя тула (``"speak_text"``): это
-    # рассуждение модели, а не реплика человеку. ``None`` — текст чистый.
-    # Ядро такой текст в историю не пишет; оболочка его не озвучивает
-    # (см. :func:`~rob_box_harness.core.tool_loop.text_classify.quoted_turn_context`).
-    internal_text_marker: str | None = None
+    # ADR-0150 PR-7 (#3698) — режим команд: невалидная команда после повтора. Речи нет, стадия хода ``failed``.
+    turn_failure: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -725,8 +589,8 @@ class AgentCore:
     ``AgentCore`` is the generalisation of the former ``DialogCore`` (issue
     #1986, target-arch §5). It is a pure Python orchestrator over the four
     dialogue ports, deliberately carrying NO persona: personality and the
-    skill slice arrive as configuration (``system_prompt`` /
-    ``skill_prompts`` / ``narrow_tools_to_skill``) from the shell. Two
+    tool slice arrive as configuration (``system_prompt`` from the spec,
+    the per-turn tool view via :meth:`set_visible_tools`) from the shell. Two
     agents (личность, оператор/ТАРС) are two configurations of this one
     engine.
 
@@ -756,8 +620,6 @@ class AgentCore:
         system_prompt: str | None = None,
         use_streaming: bool = False,
         on_prompt: "PromptObserver | None" = None,
-        skill_prompts: Mapping[str, str] | None = None,
-        narrow_tools_to_skill: bool = False,
         llm_settings: LLMSettings | None = None,
     ) -> None:
         """Compose the four dialogue ports into a single facade.
@@ -783,22 +645,6 @@ class AgentCore:
                 turns. When the caller passes ``history=None`` to
                 :meth:`process_input`, the core uses its own window
                 (never the memory port) and this value bounds its size.
-            narrow_tools_to_skill: Move B. When ``True`` and a skill is
-                active, the LLM is offered only ``core`` plus that skill's
-                tools instead of the whole catalog. Default ``False`` —
-                the full catalog, byte for byte today's behaviour. Turning
-                it on shrinks the prompt but breaks the provider's cached
-                prefix on every skill switch and introduces a failure mode
-                where a mis-routed turn cannot see the tool it needs; the
-                model can recover via ``load_skill``.
-            skill_prompts: Optional mapping ``skill name -> instruction
-                text``. When a skill is active and present here, its text
-                is appended as the LAST system message of the turn —
-                immediately before the user's line, i.e. AFTER the whole
-                history. That position is the entire point: instructions
-                sitting at index 0 lose to twenty turns of history that
-                demonstrate the opposite behaviour. Empty mapping keeps
-                the pre-skill behaviour byte for byte.
             on_prompt: Optional observer called once per LLM request with
                 a :class:`PromptStats`. Lets the shell publish the prompt
                 size without dragging Prometheus (or rclpy) into the
@@ -858,21 +704,12 @@ class AgentCore:
         self._use_streaming = use_streaming
         self._acceptance_gate = acceptance_gate
         self._on_prompt = on_prompt
-        #: Имя активного скилла. Проставляется активацией (фаза 3);
-        #: "none" — скилл не активирован, поведение как до скиллов.
-        self._active_skill: str = "none"
-        #: Тексты фрагментов: имя скилла -> инструкции. Файлы читает
-        #: shell (ROS2-нода) — harness не ходит в файловую систему.
-        #: Пустой словарь = Move A выключен, вклеивать нечего.
-        self._skill_prompts: dict[str, str] = dict(skill_prompts or {})
-        #: Move B. ``False`` — LLM видит весь каталог, как сегодня.
-        self._narrow_tools_to_skill = narrow_tools_to_skill
-        #: Сколько раз скилл пришлось грузить вызовом LLM вместо
-        #: детерминированного роутера — это и есть «промахи роутера»
-        #: (задача 3.7). Читается нодой для метрики.
-        self._skill_loaded_by_llm: int = 0
-        #: Сколько раз LLM попросила несуществующий домен.
-        self._skill_load_misses: int = 0
+        #: Срез тулов хода (ADR-0150 PR-6, ``rob_box_dialog.tools_view``): имена схем, которые видит LLM, и
+        #: подпись среза для метрики; ``None`` — срез не задан (оператор, тесты): весь каталог провайдера.
+        self._visible_tools: frozenset[str] | None = None
+        self._view_label: str = "all"
+        #: Снимок хода (``<system_context>``) текущего вызова — блок ``snapshot`` в учёте токенов (#3696).
+        self._turn_snapshot: str | None = None
         # 🔴 FIX (issue #1883): per-call knobs (max_tokens / temperature /
         # thinking-policy merge). Forwarded as ``settings=`` to every
         # ``complete()`` / ``stream()`` so YAML-driven configuration
@@ -1072,7 +909,7 @@ class AgentCore:
                 # сообщение перед текущим вопросом» читается моделью как
                 # «на это надо отреагировать», а не как фоновый снапшот.
                 #
-                # Снапшот и skill-фрагмент теперь склеиваются В ОДИН
+                # Снапшот теперь склеивается В ОДИН
                 # user-ход вместе с текстом юзера — единственное сообщение
                 # этого хода, однозначно «то, на что нужно ответить».
                 # Свежесть не теряется: снапшот по-прежнему собирается на
@@ -1083,10 +920,10 @@ class AgentCore:
                 #
                 # ``text`` (что уходит в Turn ниже и в историю) НЕ меняется —
                 # склейка живёт только в исходящем LLMMessage.
-                skill_prompt = self._resolve_skill_prompt()
                 llm_user_content = _compose_current_turn_message(
-                    dynamic_system, skill_prompt, text
+                    dynamic_system, text
                 )
+                self._turn_snapshot = dynamic_system
                 messages.append(
                     LLMMessage(role="user", content=llm_user_content)
                 )
@@ -1157,12 +994,7 @@ class AgentCore:
                 result.music_call_args = outcome.music_call_args
                 result.tool_error_occurred = outcome.tool_error_occurred
                 result.succeeded_tools = list(outcome.succeeded_tools)
-                # Issue #3598 — рассуждение с тегами контекста/именами тулов
-                # не реплика: в историю не ложится (иначе задаёт тон
-                # следующим ходам — живой лог 13.10, ``[3] assistant``).
-                result.internal_text_marker = quoted_turn_context(
-                    outcome.spoken_text, dynamic_system
-                )
+                result.turn_failure = outcome.turn_failure
                 if not is_dj_auto:
                     # Persist an HONEST assistant turn: the text actually
                     # spoken via speak_text (or a real plain-text reply), NOT
@@ -1170,9 +1002,7 @@ class AgentCore:
                     # "done" misleads the model into (a) echoing old topics
                     # and (b) replying "done" itself (silent failures). Silent
                     # turns are dropped entirely — they add no useful context.
-                    assistant_content = outcome.spoken_via_tool or _reply_text(
-                        outcome.spoken_text, result.internal_text_marker
-                    )
+                    assistant_content = outcome.spoken_via_tool or outcome.spoken_text
                     if not self._is_silent_spoken(assistant_content, ()):
                         assistant_metadata = dict(user_metadata)
                         # 🔴 FIX (live 01.09, vision-pi): история хранила
@@ -1235,8 +1065,7 @@ class AgentCore:
         """
         if response.tool_calls:
             return False
-        content = (response.content or "").strip().lower()
-        if (not content) or content in _SILENT_DONE_MARKERS:
+        if is_silent_text(response.content):
             return True
         # live 01.09 — псевдо-вызов текстом (``<compose_music composition
         # here>``) ничего не сделал и озвучен быть не может. Ловим ЗДЕСЬ,
@@ -1259,8 +1088,7 @@ class AgentCore:
         """
         if tools_called:
             return False
-        content = (spoken or "").strip().lower()
-        if (not content) or content in _SILENT_DONE_MARKERS:
+        if is_silent_text(spoken):
             return True
         # live 01.09 — заглушка вида ``<compose_music composition here>``.
         # Юзер её не слышал (ход ничего не сделал), а в истории она работает
@@ -1491,7 +1319,7 @@ class AgentCore:
         that bypass ``process_input``, e.g. tests) falls back to
         :meth:`_find_last_user_input`, which re-derives it from
         ``messages`` the old (pre-#2955) way — good enough when there is
-        no ``dynamic_system``/``skill_prompt`` bleed to worry about.
+        no ``dynamic_system`` bleed to worry about.
 
         The loop terminates when:
 
@@ -1510,26 +1338,15 @@ class AgentCore:
         turn because that's a wiring problem, not a tool problem.
         """
         # Issue #2859 — граница хода для per-turn гардов провайдера
-        # (``SchedulerToolExecutor``: «один трек за ход»). Необязательный
-        # хук, как ``begin_group`` ниже: у простых провайдеров его нет.
+        # (``PlanToolExecutor``: «один трек за ход»). Необязательный хук:
+        # у простых провайдеров его нет.
         begin_turn = getattr(self._tools, "begin_turn", None)
         if begin_turn is not None:
             begin_turn()
         tool_schemas = await self._tools.discover()
         openai_tools = [_tool_spec_to_openai(spec) for spec in tool_schemas]
-        # Полный набор держим отдельно: при включённом сужении список
-        # нужно ПЕРЕСОБИРАТЬ после каждого load_skill, иначе модель,
-        # сменившая домен, до конца хода так и не увидит его инструменты
-        # (поймано тестом test_model_can_reach_another_domain_via_load_skill).
-        all_openai_tools = list(openai_tools)
-        openai_tools = self._narrow_tools(all_openai_tools)
-        tools_built_for_skill = self._active_skill
-        # Модельный путь активации: LLM сама просит домен, если
-        # детерминированный роутер промахнулся. Результат вызова —
-        # tool-сообщение в самом хвосте messages, то есть позиция
-        # максимальной свежести, и модель действует в ТОМ ЖЕ ходу.
-        if self._skill_prompts:
-            openai_tools.append(_load_skill_spec(self.known_skills()))
+        # Срез хода задал код до хода (set_visible_tools, ADR-0150 PR-6): внутри хода он не меняется.
+        openai_tools = self._narrow_tools(openai_tools)
 
         tools_called: list[str] = []
         seen: set[str] = set()
@@ -1547,9 +1364,9 @@ class AgentCore:
         # conversation history (persisting "done" instead of what was really
         # said made the LLM echo old topics; see process_input).
         spoken_texts: list[str] = []
-        # Issue #3269 — реплики, которые модель пишет в content рядом с
-        # set_voice (сказка разными голосами), озвучиваются как speak_text.
-        content_speech = ContentSpeech()
+        # ADR-0150 PR-7 ч.7c — команда LLM (вызов ``command`` от моста режима команд) исполняется кодом:
+        # действия → событие владельца → фраза кода, ход терминален; query — данные обратно LLM (≤ 2 раз).
+        commands = CommandTurn(self._tools, openai_tools)
         # Issue #1253 — any tool that returned ``is_error=True`` this turn.
         # When a tool failed and the LLM answers with ONLY words (no retry
         # tool-call, no speak_text) that is babble, not an answer — the
@@ -1623,13 +1440,19 @@ class AgentCore:
             # здесь, а не платим за ретрай двумя ходами позже (разбор и
             # границы дозволенного — в :mod:`.tool_loop.markup_recovery`).
             response = _recover_written_tool_calls(response, openai_tools)
-            # Issue #3269 — content рядом с set_voice-пачкой — реплика,
-            # а не служебный текст: первым вызовом пачки становится
-            # speak_text(content, voice=голос до этой пачки). См.
-            # :mod:`.tool_loop.content_speech`.
-            response = speak_content_beside_set_voice(
-                response, content_speech, openai_tools
-            )
+            if commands.handles(response):
+                # Речь и действия команды — вызовы тех же тулов: счётчики speak_text и честная история прежние.
+                step = await commands.run(response, messages, lambda: self._stream_response(messages, tools=openai_tools))
+                counts = self._record_tool_calls(step.calls, seen=seen, tools_called=tools_called)
+                speak_text_count += counts[0]
+                speak_text_real_count += counts[1]
+                spoken_texts.extend(counts[2])
+                tool_error_occurred = self._update_tool_error_flag(step.calls, step.results, tool_error_occurred)
+                self._record_succeeded_tools(step.calls, step.results, succeeded_tools)
+                response = step.response
+                continue
+            # ADR-0150 PR-7 ч.7d-3 (#3698): content рядом с set_voice (#3269) речью не считается — §4.4: content вне
+            # канала речи не озвучивается; сказка разными голосами — perform.voice_per_segment режима команд.
             if not response.tool_calls:
                 break
 
@@ -1688,28 +1511,11 @@ class AgentCore:
             # LLM cycle), and the user gets to confirm/reject before the
             # call ever reaches the executor.
             #
-            # S2.3/S2.4 (scheduler-segments-merge, issue #968) — open a
-            # fresh segment group for this batch BEFORE execution starts,
-            # same wiring point as the W7a re-ordering below. Not every
-            # ToolProvider is a SchedulerToolExecutor (e.g. plain
-            # ToolProvider ports in tests), so the call is optional:
-            # begin_group() only exists on the scheduler-backed wrapper.
-            # Skipping it there is exactly today's behaviour
-            # (group_id=None for every task).
-            begin_group = getattr(self._tools, "begin_group", None)
-            if begin_group is not None:
-                begin_group()
-
-            # W7a (issue #968): execution order is re-ordered so music
-            # prelude tools run before voice, and destructive tools
-            # (stop_music / stop_navigation) run last — otherwise a
-            # ``[speak_text, stop_music]`` batch fires stop_music before
-            # TTS even starts (e2e v36). Results are still appended in
-            # the model's ORIGINAL order (keyed by tool_call_id) so the
-            # OpenAI-style history stays valid.
-            execution_order, _deferred = _order_tool_calls(
-                response.tool_calls
-            )
+            # ADR-0150 PR-7b (#3699): порядок исполнения пачки решает планировщик ресурсов исполнителя тулов
+            # (``order_batch``: knowledge.COMPOSITION + Tier-1 хода), а не список тулов здесь. Результаты — в порядке
+            # модели (по tool_call_id), история OpenAI остаётся валидной. Нет хука — порядок модели.
+            order_batch = getattr(self._tools, "order_batch", None)
+            execution_order = list(order_batch(response.tool_calls) if order_batch else response.tool_calls)
             # Issue #1708 — hallucinated-lyrics guard. Resolve the most
             # recent user message so the heuristic can tell a vocal
             # request («спой куплет» — backing mode) apart from a
@@ -1779,12 +1585,6 @@ class AgentCore:
                 response.tool_calls, results_by_call_id, succeeded_tools
             )
 
-            # load_skill мог сменить домен — пересобираем набор, иначе
-            # загрузка скилла была бы бессмысленной: текст пришёл, а
-            # инструменты остались от прошлого домена.
-            if self._active_skill != tools_built_for_skill:
-                openai_tools = self._narrow_tools(all_openai_tools)
-                tools_built_for_skill = self._active_skill
 
             response = await self._stream_response(messages, tools=openai_tools)
 
@@ -1794,15 +1594,6 @@ class AgentCore:
                 "returning the last spoken text as-is.",
                 _MAX_TOOL_ITERATIONS,
             )
-
-        # Issue #3269 — финал сказки, чьи реплики шли из content: цикл его
-        # не исполняет, а dialogue_node после speak_text пропустит его как
-        # дубль (#988) — озвучиваем здесь, тем же голосом.
-        closing = await speak_closing_content(
-            response, content_speech, self._tools, spoken_texts
-        )
-        speak_text_count += closing
-        speak_text_real_count += closing
 
         # Issue #1253 — babble filter on tool error. A tool failed
         # (is_error=True) and the LLM answered with ONLY words: no retry
@@ -1822,7 +1613,7 @@ class AgentCore:
             track_name=track_name,
             music_call_args=music_call_args,
         )
-        return replace(outcome, succeeded_tools=tuple(succeeded_tools))
+        return replace(outcome, succeeded_tools=tuple(succeeded_tools), turn_failure=commands.failure)
 
     def _record_tool_calls(
         self,
@@ -1930,7 +1721,7 @@ class AgentCore:
         (e.g. tests). Live turns from :meth:`process_input` go through
         ``_raw_user_utterance(text)`` instead: the message this method
         would find is the COMPOSED turn (``<system_context>`` snapshot +
-        skill prompt + literal text glued together by
+        literal text glued together by
         ``_compose_current_turn_message``), and a word like «нравится»
         sitting in a speaker's PROFILE inside that snapshot used to
         unlock the praise gate for a request that carried no praise at
@@ -2091,12 +1882,10 @@ class AgentCore:
            LLM-цикл, см. issue #968 §8).
         2. Hallucinated-lyrics guard (issue #1708): ``speak_text`` после
            music-tool подавляется, если текст НЕ vocal-request.
-        3. ``load_skill`` — синхронная обработка через
-           :meth:`_handle_load_skill`.
-        4. ``await self._tools.execute(call)`` — иначе.
+        3. ``await self._tools.execute(call)`` — иначе.
         """
         suppressed_texts: list[str] = []
-        for call in execution_order:
+        for call in _refuse_unasked_motion(execution_order, current_user_input, results_by_call_id):
             if self._acceptance_gate is not None:
                 segment, decision = self._acceptance_gate.submit(
                     tool=call.name,
@@ -2137,10 +1926,6 @@ class AgentCore:
                     text = _extract_speak_text(call.arguments)
                     if text:
                         suppressed_texts.append(text)
-                continue
-
-            if call.name == LOAD_SKILL_TOOL:
-                results_by_call_id[call.id] = self._handle_load_skill(call)
                 continue
 
             results_by_call_id[call.id] = await self._tools.execute(call)
@@ -2246,113 +2031,23 @@ class AgentCore:
             truncated_tool_args=truncated_tool_args,
         ))
 
-    # ---- skills (Move A) -------------------------------------------------
+    # ---- срез тулов хода (ADR-0150 PR-6) -----------------------------------
 
-    @property
-    def active_skill(self) -> str:
-        """Имя активного скилла (``"none"`` — не активирован)."""
-        return self._active_skill
+    def set_visible_tools(self, names: Iterable[str] | None, label: str = "all") -> None:
+        """Срез тулов следующих ходов (``rob_box_dialog.tools_view.available_tools``); ``None`` — весь каталог.
 
-    def set_active_skill(self, skill: str | None) -> None:
-        """Активировать доменный скилл на последующие ходы.
-
-        ``None`` / ``"none"`` снимает активацию. Неизвестное имя НЕ
-        роняет ход: активация приходит из классификатора и из вызова
-        LLM, а ни то ни другое не повод оборвать разговор — скилл просто
-        останется неактивным, и модель увидит полный каталог, как
-        сегодня.
+        Срез задаёт код до хода (по снимку и словам человека), не LLM: тула вне среза модель не видит.
         """
-        self._active_skill = skill or "none"
-
-    @property
-    def skill_load_counters(self) -> tuple[int, int]:
-        """``(загружено вызовом LLM, промахов по имени)``.
-
-        Первое число — метрика промахов детерминированного роутера: если
-        оно растёт, роутер не покрывает реальные формулировки.
-        """
-        return self._skill_loaded_by_llm, self._skill_load_misses
-
-    def known_skills(self) -> tuple[str, ...]:
-        """Скиллы, для которых есть текст фрагмента."""
-        return tuple(sorted(self._skill_prompts))
-
-    def _handle_load_skill(self, call: ToolCall) -> ToolResult:
-        """Исполнить ``load_skill`` внутри harness'а.
-
-        Активирует скилл (он останется активным и на следующих ходах) и
-        возвращает текст инструкций tool-результатом. Ход НЕ прерывается
-        ни при каком исходе: неизвестное имя возвращает ошибку со списком
-        доступных, и модель может исправиться на следующей итерации.
-        """
-        arguments = call.arguments or {}
-        requested = ""
-        if isinstance(arguments, Mapping):
-            requested = str(arguments.get("skill", "") or "").strip()
-
-        text = self._skill_prompts.get(requested)
-        if not text:
-            self._skill_load_misses += 1
-            return ToolResult(
-                tool_call_id=call.id,
-                content=(
-                    f"Неизвестный домен {requested!r}. Доступны: "
-                    + ", ".join(self.known_skills())
-                    + ". Выбери один из них или действуй без загрузки."
-                ),
-                is_error=True,
-            )
-
-        self.set_active_skill(requested)
-        self._skill_loaded_by_llm += 1
-        return ToolResult(
-            tool_call_id=call.id,
-            content=text,
-            is_error=False,
-        )
+        self._visible_tools = None if names is None else frozenset(names)
+        self._view_label = label if names is not None else "all"
 
     def _narrow_tools(
         self, offered: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Сузить каталог до ``core`` + активный скилл (Move B).
-
-        Ничего не делает при выключенном флаге и при неактивном скилле —
-        тогда возвращается ровно то, что пришло.
-
-        Если сужение оставило бы список пустым (скилл не из каталога,
-        рассинхрон манифеста), возвращаем ПОЛНЫЙ набор: пустой tools=
-        доезжает до юзера как «нет такой функции», а это хуже длинного
-        промпта.
-        """
-        if not self._narrow_tools_to_skill:
+        """Оставить только схемы среза хода; среза нет — всё, что пришло от провайдера тулов."""
+        if self._visible_tools is None:
             return offered
-        skill = self._active_skill
-        if skill in ("", "none"):
-            return offered
-        try:
-            allowed = {entry.name for entry in tools_for_skill(skill)}
-        except KeyError:
-            # Неизвестный домен: сузить не по чему — отдаём всё.
-            return offered
-        narrowed = [
-            tool
-            for tool in offered
-            if tool.get("function", {}).get("name") in allowed
-        ]
-        if not narrowed:
-            logging.getLogger(__name__).warning(
-                "AgentCore: narrowing to skill %r left no tools; "
-                "falling back to the full catalog",
-                skill,
-            )
-            return offered
-        return narrowed
-
-    def _resolve_skill_prompt(self) -> str:
-        """Текст активного скилла или пустая строка."""
-        if self._active_skill in ("", "none"):
-            return ""
-        return self._skill_prompts.get(self._active_skill, "")
+        return [tool for tool in offered if tool.get("function", {}).get("name") in self._visible_tools]
 
     def _report_prompt(
         self,
@@ -2375,21 +2070,14 @@ class AgentCore:
             reported = 0
             if usage:
                 reported = int(usage.get("prompt_tokens", 0) or 0)
-            if reported > 0:
-                stats = PromptStats(
-                    prompt_tokens=reported,
-                    estimated=False,
-                    provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._active_skill,
-                )
-            else:
-                stats = PromptStats(
-                    prompt_tokens=estimate_prompt_tokens(messages, tools),
-                    estimated=True,
-                    provider=getattr(self._llm, "name", "unknown"),
-                    skill=self._active_skill,
-                )
-            observer(stats)
+            messages, tools = list(messages), list(tools)
+            observer(PromptStats(
+                prompt_tokens=reported if reported > 0 else estimate_prompt_tokens(messages, tools),
+                estimated=reported <= 0,
+                provider=answering_provider(self._llm),
+                skill=self._view_label,
+                blocks=measure(messages, tools, self._turn_snapshot),
+            ))
         except Exception:  # noqa: BLE001 — телеметрия не роняет ход
             logging.getLogger(__name__).debug(
                 "AgentCore: prompt observer failed", exc_info=True
@@ -2552,6 +2240,26 @@ def _is_hallucinated_speak_text(
     if not text:
         return False  # empty speak_text — issue #1343 path, not us
     return len(text) > _ACCEPT_PHRASE_MAX_CHARS
+
+
+def _refuse_unasked_motion(
+    calls: list[ToolCall], user_input: str, results_by_call_id: dict[str, ToolResult]
+) -> list[ToolCall]:
+    """#3779 — тул движения без глагола движения в реплике не исполняется: отказ честной фразой кода.
+
+    Отказанным вызовам кладёт результат-ошибку с фразой каталога, возвращает остальные."""
+    allowed: list[ToolCall] = []
+    for call in calls:
+        phrase = motion_refusal(call.name, user_input)
+        if phrase is None:
+            allowed.append(call)
+            continue
+        logging.getLogger(__name__).warning(
+            "🚫 [move-guard] %s(%s) отклонён: человек не называл движение, реплика=%r",
+            call.name, dict(call.arguments or {}), user_input[:80],
+        )
+        results_by_call_id[call.id] = ToolResult(tool_call_id=call.id, content=phrase, is_error=True)
+    return allowed
 
 
 def _suppressed_speak_text_result(call: ToolCall) -> ToolResult:

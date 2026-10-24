@@ -1,11 +1,11 @@
 """Словарь состояний ``/voice/tts/state`` — один протокол на четыре ноды.
 
 ``tts_node`` публикует состояния, а слушают их трое: ``stt_node``
-(гейт эха), ``audio_node`` (VAD/grace) и ``animation_player_node``
-(анимация рта). Каждый держит СВОЙ список строк, и списки разъехались:
+(гейт эха), ``audio_node`` (VAD/grace) и лицо ``face_node``
+(``FaceDirector.on_tts_state``). Каждый держит СВОЙ список строк, и списки разъехались:
 
 * ``stt_node`` не знал ``"stopped"`` — а его публикует STOP/barge-in
-  (``tts_node._handle_stop_command``). Флаг ``is_robot_speaking``
+  (STOP адаптера ``speech_compat`` / ``SpeechCancel``). Флаг ``is_robot_speaking``
   оставался ``True``, и в hardware-AEC (это конфиг робота,
   ``docker/sound/config/voice_assistant/stt_node.yaml``) фразы короче
   0.8 с молча отбрасывались — «робот», «стоп», «да».
@@ -30,13 +30,14 @@ _VOICE = Path(__file__).resolve().parents[2] / "rob_box_voice"
 _TTS_NODE = _VOICE / "tts_node.py"
 _STT_NODE = _VOICE / "stt_node.py"
 _AUDIO_NODE = _VOICE / "audio_node.py"
-# Аниматор живёт в другом ROS-пакете, но слушает ТОТ ЖЕ топик и держит
-# СВОЮ копию словаря — именно он давал «рот говорит, робот молчит».
+# Лицо (face_node, ADR-0150 PR-3a) живёт в другом ROS-пакете, но слушает ТОТ ЖЕ
+# топик и держит СВОЮ классификацию — прежний аниматор давал «рот говорит,
+# робот молчит». Классификация — в FaceDirector.on_tts_state.
 _ANIM_NODE = (
     Path(__file__).resolve().parents[3]
     / "rob_box_animations"
-    / "scripts"
-    / "animation_player_node.py"
+    / "rob_box_animations"
+    / "face_director.py"
 )
 
 
@@ -88,7 +89,7 @@ def test_tts_node_publishes_the_states_we_think_it_does() -> None:
     [
         (_STT_NODE, "tts_state_callback"),
         (_AUDIO_NODE, "_on_tts_state"),
-        (_ANIM_NODE, "tts_state_callback"),
+        (_ANIM_NODE, "on_tts_state"),
     ],
 )
 def test_every_published_state_is_classified(path: Path, callback: str) -> None:
@@ -111,9 +112,9 @@ def test_stopped_ends_speech_for_every_consumer() -> None:
     for path, callback in (
         (_STT_NODE, "tts_state_callback"),
         (_AUDIO_NODE, "_on_tts_state"),
-        (_ANIM_NODE, "tts_state_callback"),
+        (_ANIM_NODE, "on_tts_state"),
     ):
         assert "stopped" in _state_literals(path, callback), (
             f"{path.name}:{callback} не знает 'stopped'; его публикует "
-            "tts_node._handle_stop_command на каждый barge-in"
+            "STOP/SpeechCancel на каждый barge-in"
         )

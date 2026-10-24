@@ -101,6 +101,10 @@ def _install_rclpy_stub() -> None:
         std_msgs, std_msgs_msg,
     ]:
         sys.modules[mod.__name__] = mod
+    # ADR-0150 PR-2: /voice/speaker/result типизирован; класс строится из .msg.
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+    install_dialog_msgs_stub()
     sys.modules["std_msgs.msg"] = std_msgs_msg
     sys.modules["rcl_interfaces.msg"] = rcl_interfaces_msg
 
@@ -174,7 +178,6 @@ def _load_mcp_server_module():
         (f"{_PKG_NAME}.mcp_auth", {"RequestAuthenticator": _Auth}),
         (f"{_PKG_NAME}.waypoint_store", {"WaypointStore": type("WaypointStore", (), {})}),
         (f"{_PKG_NAME}.mapping_state", {"MappingState": _MappingState}),
-        (f"{_PKG_NAME}.voice_state", {"VoiceStateStore": type("VoiceStateStore", (), {})}),
         ("rob_box_voice.core.voice_memory", {"VoiceMemory": type("VoiceMemory", (), {})}),
         ("rob_box_voice.core.faq_store", {"FAQStore": type("FAQStore", (), {})}),
         ("rob_box_voice.core.event_profile", {"load_event_profile": lambda *a, **kw: None}),
@@ -230,7 +233,6 @@ _SYS_MODULES_KEYS_TOUCHED_BY_BOOTSTRAP = (
     f"{_PKG_NAME}.mcp_auth",
     f"{_PKG_NAME}.waypoint_store",
     f"{_PKG_NAME}.mapping_state",
-    f"{_PKG_NAME}.voice_state",
     f"{_PKG_NAME}.mcp_server",
     "rob_box_voice.core.voice_memory",
     "rob_box_voice.core.faq_store",
@@ -331,14 +333,11 @@ def _bind_handler(node: _StubNode):
 
 
 def _msg(data: str):
-    """Build a stub std_msgs.msg.String with ``.data``."""
+    """``SpeakerResult`` из JSON-словаря писателя (формат speaker_id_node)."""
+    from rob_box_core.msg_stub import install_dialog_msgs_stub
+    from rob_box_core.speaker_wire import fill_speaker_result
 
-    class _Msg:
-        pass
-
-    m = _Msg()
-    m.data = data
-    return m
+    return fill_speaker_result(install_dialog_msgs_stub().SpeakerResult(), json.loads(data))
 
 
 # ---------------------------------------------------------------------------
@@ -392,21 +391,19 @@ class TestOnSpeakerResult:
         handler(_msg(json.dumps({"event": "registered", "speaker_id": "uuid-new", "name": "Саша"})))
         assert node._current_encounter_speaker_id() == "uuid-new"
 
-    def test_malformed_json_does_not_raise(self) -> None:
-        node = _StubNode()
-        handler = _bind_handler(node)
-        # Bad JSON: silently drop, do not change cache.
-        handler(_msg("not-json-at-all"))
-        assert node._current_encounter_speaker_id() is None
-        # Handler must not log an error (just return): JSON parse failures
-        # from a noisy speaker_id_node would otherwise spam the operator.
-        assert node.logger.errors == []
+    def test_default_message_does_not_raise(self) -> None:
+        """Пустой ``SpeakerResult`` (все поля по умолчанию) - «не знаю», кэш не меняется.
 
-    def test_empty_msg_does_not_raise(self) -> None:
+        Битого JSON у типизированного сообщения нет (ADR-0150 PR-2), остаётся
+        крайний случай - сообщение со значениями по умолчанию.
+        """
+        from rob_box_core.msg_stub import install_dialog_msgs_stub
+
         node = _StubNode()
         handler = _bind_handler(node)
-        handler(_msg(""))
+        handler(install_dialog_msgs_stub().SpeakerResult())
         assert node._current_encounter_speaker_id() is None
+        assert node.logger.errors == []
 
     def test_repeat_same_id_does_not_re_log(self) -> None:
         """Identical speaker_id → silent return (avoid log spam)."""

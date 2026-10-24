@@ -13,8 +13,8 @@ Issue #2914 — повторный вопрос «<Имя>, это ты?» «о�
 ``_resolve_pending_tentative_answer`` из ``_handle_tentative_speaker``,
 то есть на ЛЮБОМ ходе, прошедшем через ``_apply_speaker_identity``.
 Сразу после выдачи вопроса ``_run_turn`` в ``finally`` запускает
-следующий ход без новой реплики человека — дренаж очереди фраз,
-пришедших ПОКА шёл ход (S7, ``_drain_pending_user_messages``), или
+следующий ход без новой реплики человека — тогда это был дренаж очереди
+фраз, пришедших ПОКА шёл ход (S7; удалён в ADR-0150 PR-5), или
 синтетический ретрай гарда. У такого хода ``utterance_id=None``, снимок
 диктора — всё тот же tentative «Саша», и его текст (фраза, сказанная ДО
 вопроса, или служебный промпт ретрая) читался как ответ и закрывал
@@ -55,6 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import rob_box_voice.dialogue_node as dialogue_node_module  # noqa: E402
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import tentative_states  # noqa: E402
+from identity_v17_legacy import no_accumulation  # noqa: E402
 
 SASHA_ID = "3450f4fb-0000-0000-0000-000000000000"
 # Дословно из run 35923951507.
@@ -127,8 +129,6 @@ def _node():
     n._publish_speaker_observation = MagicMock()
     n._speaker_register_pub = MagicMock()
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     # Прод-значения из config/dialogue_node.yaml.
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
@@ -145,7 +145,7 @@ def _node():
         user_input = await n._apply_speaker_identity(
             kw["user_input"], None, kw.get("utterance_id")
         )
-        dynamic = "\n".join(n._pending_identity_hint_lines())
+        dynamic = ""
         return user_input, dynamic
 
     async def invoke_llm(**_kw):
@@ -153,18 +153,14 @@ def _node():
 
     n._prepare_user_input_context = prepare
     n._invoke_llm_with_telemetry = invoke_llm
-    n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
-    n._retry_dispatched_in_turn = False
-    # S7 — настоящий дренаж очереди; следующий ход ловим, а не пускаем.
-    n._pending_user_messages = []
+    # Следующий ход (ретрай гарда) ловим, а не пускаем.
     n.dispatched = []
     n._dispatch_turn = MagicMock(
         side_effect=lambda text, **kw: n.dispatched.append((text, kw))
     )
-    n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
+    no_accumulation(n)
     return n
 
 
@@ -181,7 +177,7 @@ def _answer_lines(n):
 
 
 def _state(n):
-    return n._identity_confirmations[SASHA_ID]
+    return tentative_states(n).get(SASHA_ID)
 
 
 def _second_question_asked(n, clock):
@@ -200,6 +196,8 @@ def _second_question_asked(n, clock):
     _turn(n, "что ты обо мне запомнил", utterance_id="utt-704")
 
     clock.now += 150.0 + 60.0
+    # В17 (#3695): один вопрос на собеседника за сессию — повторный вопрос только в новой сессии (рестарт).
+    no_accumulation(n)
     n.llm_reply = N705_LLM
     _turn(n, N705_TEXT, utterance_id="utt-705")
     assert n.tts[-1] == QUESTION, n.tts
@@ -209,45 +207,6 @@ def _second_question_asked(n, clock):
 
 
 class TestAnswerOnlyFromReplyAfterQuestion:
-    def test_drained_phrase_from_asking_turn_is_not_the_answer(self, clock):
-        """Регресс n705/n706: фраза, пришедшая пока шёл ход n705 (S7),
-        дренируется сразу после вопроса — это не ответ на него."""
-        n = _node()
-        n.llm_reply = "С возвращением!"
-        _turn(n, "робот ты меня узнаешь", utterance_id="utt-702")
-        clock.now += 57.0
-        _turn(n, "да это я", utterance_id="utt-703")
-        clock.now += 66.5
-        _turn(n, "что ты обо мне запомнил", utterance_id="utt-704")
-        clock.now += 210.0
-        # Во время хода n705 STT прислал ещё одну фразу — она в очереди S7.
-        n._pending_user_messages.append((N705_TEXT, clock.now))
-        n.llm_reply = N705_LLM
-        _turn(n, N705_TEXT, utterance_id="utt-705")
-        assert n.tts[-1] == QUESTION
-        # Дренаж сразу после вопроса — ход без utterance_id.
-        assert len(n.dispatched) == 1
-        text, kw = n.dispatched[0]
-        assert kw.get("utterance_id") is None
-
-        clock.now += 0.024
-        n.llm_reply = "Я тут."
-        _turn(n, text, **kw)
-
-        assert len(_answer_lines(n)) == 1, _answer_lines(n)
-        assert _state(n)["confirmed"] is None
-
-        # Настоящий ответ n706 — следующая реплика человека.
-        clock.now += 62.5
-        n.llm_reply = "Понял, извини."
-        _turn(n, N706_TEXT, utterance_id="utt-706")
-
-        lines = _answer_lines(n)
-        assert len(lines) == 2, lines
-        assert "answer=False -> confirmed=False" in lines[-1]
-        assert _state(n)["confirmed"] is False
-        assert n._current_speaker.get("name") is None
-
     def test_synthetic_retry_after_question_is_not_the_answer(self, clock):
         """Синтетический ретрай гарда после вопроса (без новой реплики)."""
         n = _node()
@@ -283,65 +242,19 @@ class TestAnswerOnlyFromReplyAfterQuestion:
 #  Вторая половина #2914: ретрай гарда не говорит поверх вопроса
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Дословно из docker logs voice-assistant, run 35923951507 (комментарий в
-# issue #2914): ретрай #1777/#1762 по memory_search озвучил имя как факт
-# через 4 с после «Саша, это ты?».
-RETRY_LLM = (
-    "Здравствуй! Я здесь, всё в порядке. Помню: ты Саша, "
-    "чинишь технику по вечерам."
-)
+# Лог run 35923951507: ретрай #1777/#1762 по memory_search озвучивал имя как
+# факт через 4 с после «Саша, это ты?». ADR-0150 PR-7 ч.7d-1 (#3698): этот
+# post-turn ретрай удалён целиком — после хода ничего не диспатчится.
 N705_RAW = "ты еще здесь помнишь меня"
 
 
-def _node_with_real_tool_guard():
-    """Как ``_node``, но гард #1777/#1762 настоящий: он сам решает, что
-    «ты еще здесь помнишь меня» требует memory_search, и диспатчит
-    синтетический ретрай (его ловим в ``n.dispatched``)."""
-    n = _node()
-    del n._apply_tool_skipped_guard
-    n._tool_retry_used = False
-    n._synthetic_retries_left = 3
-    n._reopen_dialogue_for_retry = MagicMock()
-    return n
-
-
-def _run_dispatched(n):
-    """Выполнить задиспатченные ходы так, как их выполнил бы loop."""
-    while n.dispatched:
-        text, kw = n.dispatched.pop(0)
-        kw = {k: v for k, v in kw.items() if k != "was_idle"}
-        _turn(n, text, **kw)
-
-
 class TestNoGuardRetryOverIdentityQuestion:
-    def test_memory_search_retry_does_not_speak_over_question(self, clock):
-        """Лог n705: вопрос → ретрай memory_search → «Помню: ты Саша».
-        Ответ хода звучит первым, вопрос -- следом; ретрай молчит."""
-        n = _node_with_real_tool_guard()
+    def test_no_retry_after_turn_with_identity_question(self, clock):
+        """Лог n705: ответ хода звучит первым, вопрос — следом; ретрая нет."""
+        n = _node()
         n.llm_reply = N705_LLM
         _turn(n, N705_TEXT, utterance_id="utt-705", raw_user_command=N705_RAW)
-        first = list(n.tts)
-        assert first[-1] == QUESTION and len(first) == 2, n.tts
-
-        n.llm_reply = RETRY_LLM
-        _run_dispatched(n)
-
-        assert n.tts == first, n.tts
+        assert n.tts[-1] == QUESTION and len(n.tts) == 2, n.tts
+        assert n.dispatched == [], n.dispatched
         # Вопрос по-прежнему ждёт ответа человека.
         assert _state(n)["confirmed"] is None
-
-    def test_tool_retry_still_works_without_identity_question(self, clock):
-        """#1777/#1762 не сломан: без вопроса о личности ретрай идёт."""
-        n = _node_with_real_tool_guard()
-
-        class _Known:
-            async def resolve(self, utterance_id, timeout):
-                return {"is_known": True, "speaker_id": SASHA_ID,
-                        "name": "Саша", "confidence": 0.95}
-
-        n._utterance_speaker = _Known()
-        n.llm_reply = "Да, я здесь."
-        _turn(n, N705_TEXT, utterance_id="utt-705", raw_user_command=N705_RAW)
-        assert n.tts == ["Да, я здесь."], n.tts
-        assert len(n.dispatched) == 1, n.dispatched
-        assert n.dispatched[0][1].get("is_synthetic") is True

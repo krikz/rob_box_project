@@ -98,6 +98,13 @@ _MINIMAX_VISION_NAME_TOKENS: tuple[str, ...] = (
 #: (``reasoning_effort``) instead of ``thinking: disabled``.
 _ALWAYS_THINKING_MODELS: frozenset[str] = frozenset({"minimax-m3.1-flash"})
 
+#: Models that really stop thinking on ``thinking.type=disabled``. Probe
+#: 22.10 (``scripts/research/minimax_tool_choice_probe.py``, 80 requests per
+#: model with the robot's policy): MiniMax-M3 — 0/80 ``<think>`` and 0/80
+#: ``reasoning_content``; M3.1-Flash — ``reasoning_content`` 19/80; M2.7 /
+#: M2.5 (and ``-highspeed``) ignore the field — ``<think>`` in 25-46/80.
+_THINKING_SWITCHABLE_MODELS: frozenset[str] = frozenset({"minimax-m3"})
+
 #: Lowest depth the API takes (``low`` < ``medium`` < ``high`` < ``xhigh`` <
 #: ``max``; ``none`` is a 400, omitted means ``max``). This is what "thinking
 #: off" for the voice path turns into on an always-thinking model.
@@ -329,6 +336,17 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         # теперь агрегирует их в ToolCall.
         streaming_tools=True,
         image_input=True,
+        # ADR-0143: MiniMax silently ignores ``tool_choice`` -> declared False,
+        # so ``degrade.select_mode`` never picks the "required tool" mode.
+        # ``json_mode`` / ``structured_output`` are not measured -> False
+        # (ADR-0150 §4.5; raise them only after ``adapter_benchmark``).
+        tool_choice=False,
+        json_mode=False,
+        structured_output=False,
+        # Upper bound: the model MAY think. What a given instance does is
+        # :meth:`capabilities_for` — M3 with the voice policy ``disabled``
+        # does not think, M3.1-Flash always does (#3698 ч.7d).
+        thinking=True,
     )
 
     def __init__(
@@ -380,6 +398,11 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
 
     # -- capability introspection -----------------------------------------
 
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        """Capabilities of THIS instance: its default model and thinking policy."""
+        return self.capabilities_for(self._default_model)
+
     def capabilities_for(self, model: str | None) -> ProviderCapabilities:
         """Narrow capabilities to a specific model.
 
@@ -387,17 +410,22 @@ class MiniMaxProvider(_OpenAICompatibleProvider):
         everything else we return the base capabilities with ``image_input``
         set to ``False``. This lets the registry / fallback decorator pick
         the right adapter for a multimodal request.
+
+        ``thinking`` is what the request will actually do (#3698 ч.7d): only a
+        model from :data:`_THINKING_SWITCHABLE_MODELS` with the instance
+        policy ``{"type": "disabled"}`` does not think; M3.1-Flash (always
+        thinks) and M2.x (ignore the field) do. ``degrade.select_mode`` reads it.
         """
-        base = self._CAPABILITIES
-        if base.image_input and not _model_supports_vision(model or self._default_model):
-            return ProviderCapabilities(
-                text=base.text,
-                streaming_text=base.streaming_text,
-                tools=base.tools,
-                streaming_tools=base.streaming_tools,
-                image_input=False,
-            )
-        return base
+        name = model or self._default_model
+        caps = self._CAPABILITIES
+        if caps.image_input and not _model_supports_vision(name):
+            caps = dataclasses.replace(caps, image_input=False)
+        return dataclasses.replace(caps, thinking=self._thinks(name))
+
+    def _thinks(self, model: str | None) -> bool:
+        policy = getattr(self, "_thinking", DEFAULT_THINKING_POLICY)
+        disabled = isinstance(policy, Mapping) and policy.get("type") == "disabled"
+        return not (disabled and _normalize_model(model) in _THINKING_SWITCHABLE_MODELS)
 
     # -- pre-flight validation --------------------------------------------
 

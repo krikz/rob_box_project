@@ -21,6 +21,8 @@ source_hash / submodule_sha / pre_build.
     scripts/build/build.py base depthai
     scripts/build/build.py service oak-d            # один сервис (Pi ищется сам)
     scripts/build/build.py pi vision                # все сервисы Vision Pi
+                                                    # (общий образ сообщений — первым,
+                                                    # если он нужен сервисам плана)
     scripts/build/build.py all                      # базы + все три Pi
     scripts/build/build.py service quest --dry-run  # показать BUILD_*, не собирать
 
@@ -89,6 +91,20 @@ def pi_entries(pi: str, docker_tag: str, ros_distro: str | None) -> list[dict]:
     extra = ["--ros-distro", ros_distro] if ros_distro else []
     waves = _gen("--pi", pi, "--docker-tag", docker_tag, *extra, "--mode", "waves")
     return [entry for wave in waves for entry in wave]
+
+
+def msgs_entry(ros_distro: str | None) -> dict:
+    """Общий образ ROS-сообщений — собирать ДО сервисов с MSGS_IMAGE."""
+    extra = ["--ros-distro", ros_distro] if ros_distro else []
+    return _gen("--mode", "msgs", *extra)
+
+
+def with_msgs(plan: list[dict], ros_distro: str | None) -> list[dict]:
+    """Ставит общий образ сообщений первым, если он нужен хоть одному сервису
+    плана (как job msgs перед волнами в CI)."""
+    if any("MSGS_IMAGE=" in e["build_args"] for e in plan):
+        return [msgs_entry(ros_distro), *plan]
+    return plan
 
 
 def registry_up(host: str) -> bool:
@@ -211,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         unknown = set()
     if unknown:
         p.error(f"неизвестные имена: {' '.join(sorted(unknown))} (см. `build.py list`)")
+    plan = with_msgs(plan, args.ros_distro)
 
     do_push = args.push
     if do_push is None:

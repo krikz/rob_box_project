@@ -3,7 +3,7 @@
 Харнесс без ROS2 (``object.__new__``, как ``test_command_intent_gate``):
 реальные ``_on_stt`` → ``SttAdmission`` → ``MediaCommandStep`` →
 ``_route_media_command``; мок — только исполнитель тулов (вместо
-``SchedulerToolExecutor`` → ``/mcp/execute``), ``_dispatch_turn`` (вход
+``PlanToolExecutor`` → ``/mcp/execute``), ``_dispatch_turn`` (вход
 LLM-хода) и ``_speak_direct`` (TTS). Корутина плана перехватывается у
 ``asyncio.run_coroutine_threadsafe`` и прогоняется в тестовом loop'е.
 """
@@ -20,14 +20,15 @@ from rob_box_llm.provider import ToolResult
 
 from rob_box_voice.core.dialogue_text import DEFAULT_WAKE_WORDS
 from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
-from rob_box_voice.core.media_router import NOT_STARTED_TEXT, NOTHING_PLAYING_TEXT
+from rob_box_voice.core.media_router import NOT_STARTED_TEXT
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
+from ros_stubs import make_utterance  # noqa: E402
 
 
 class _FakeExecutor:
-    """Стоит на месте ``SchedulerToolExecutor``: тот же ``execute(ToolCall)``."""
+    """Стоит на месте ``PlanToolExecutor``: тот же ``execute(ToolCall)``."""
 
     def __init__(self, fail: bool = False) -> None:
         self.calls = []
@@ -67,7 +68,7 @@ def _make_node(*, playing=False, dj=False, track=None, fail=False, state_name="I
         state="playing" if playing else "idle", dj=dj,
         dj_info={"enabled": dj, "title": track} if track else {"enabled": dj},
     )
-    n._scheduler_executor = _FakeExecutor(fail=fail)
+    n._tool_executor = _FakeExecutor(fail=fail)
     n._loop = MagicMock()
     return n
 
@@ -97,9 +98,7 @@ def run_plans(monkeypatch):
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 STATES = {
@@ -109,31 +108,39 @@ STATES = {
 }
 
 
-# ── громкость × состояние ──────────────────────────────────────────────
+# ── громкость × состояние: Tier-1, канал по снимку (ADR-0150 PR-6) ──────
 
 
 @pytest.mark.parametrize(
-    ("phrase", "action"),
+    ("phrase", "action", "quiet_tool"),
     [
-        ("Робот, играй громче", "louder"),
-        ("Робот, потише", "quieter"),
-        ("Робот, на максимум", "max"),
+        ("Робот, играй громче", "louder", "set_music_volume"),  # «играй» называет канал музыки
+        ("Робот, потише", "quieter", "set_volume"),  # в тишине — последний канал (голос)
+        ("Робот, на максимум", "max", "set_volume"),
     ],
 )
 @pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
-def test_volume_is_executed_by_code_not_llm(run_plans, phrase, action, state):
+def test_volume_is_executed_by_code_not_llm(run_plans, phrase, action, quiet_tool, state):
     n = _make_node(**STATES[state])
     _stt(n, phrase)
     run_plans()
     n._dispatch_turn.assert_not_called()  # LLM не вызывается
-    assert n._llm_skipped_counter["media_command"] == 1
-    if state == "quiet":
-        assert n._scheduler_executor.calls == []
-        n._speak_direct.assert_called_once_with(NOTHING_PLAYING_TEXT)
-    else:
-        assert n._scheduler_executor.calls == [("set_music_volume", {"action": action})]
-        n._speak_direct.assert_called_once()
+    assert n._llm_skipped_counter["tier1"] == 1
+    tool = quiet_tool if state == "quiet" else "set_music_volume"
+    assert n._tool_executor.calls == [(tool, {"action": action})]
+    n._speak_direct.assert_called_once()
     n._cancel_run.assert_not_called()
+
+
+@pytest.mark.parametrize("state", ["playing", "quiet", "dj"])
+def test_voice_volume_is_tts_channel(run_plans, state):
+    # «говори громче» — канал голоса при любой музыке: set_volume (раньше — LLM).
+    n = _make_node(**STATES[state])
+    _stt(n, "Робот, говори громче")
+    run_plans()
+    n._dispatch_turn.assert_not_called()
+    assert n._tool_executor.calls == [("set_volume", {"action": "louder"})]
+    n._speak_direct.assert_called_once_with("Говорю громче.")
 
 
 def test_track_name_louder_while_that_track_plays(run_plans):
@@ -141,7 +148,7 @@ def test_track_name_louder_while_that_track_plays(run_plans):
     _stt(n, "Робот, горный король погромче")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("set_music_volume", {"action": "louder"})]
+    assert n._tool_executor.calls == [("set_music_volume", {"action": "louder"})]
 
 
 def test_volume_tool_failure_is_said_honestly(run_plans):
@@ -161,7 +168,7 @@ def test_stop_is_executed_by_code(run_plans, state):
     _stt(n, "Робот, выключи музыку")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
+    assert n._tool_executor.calls == [("dj_set", {"action": "stop"}), ("stop_music", {})]
     n._cancel_run.assert_called_once()
     n._speak_direct.assert_called_once()
 
@@ -177,7 +184,7 @@ def test_dj_persona_starts_engine_set_without_llm(run_plans, state):
     _stt(n, "Робот, ты диджей Снупдог, давай сет")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [
+    assert n._tool_executor.calls == [
         ("dj_set", {"action": "start", "persona": "диджей Снупдог"})
     ]
     n._speak_direct.assert_called_once_with(NOT_STARTED_TEXT)
@@ -188,7 +195,7 @@ def test_open_dj_request_goes_to_llm_without_tools(run_plans):
     text = "Робот, ты диджей Пёс, сыграй Still Dre и Next Episode"
     _stt(n, text)
     run_plans()
-    assert n._scheduler_executor.calls == []
+    assert n._tool_executor.calls == []
     n._dispatch_turn.assert_called_once()
     n._speak_direct.assert_not_called()
 
@@ -203,7 +210,7 @@ def test_open_dj_request_goes_to_llm_without_tools(run_plans):
         # «сыграй в пещере горного короля» — заказ по имени (#3176), путь
         # через lookup_melody: test_issue_3176_play_named_node.py.
         "Робот, расскажи анекдот",
-        "Робот, говори громче",
+        "Робот, расскажи анекдот погромче",
     ],
 )
 def test_not_a_media_command_goes_to_llm(run_plans, state, phrase):
@@ -211,7 +218,7 @@ def test_not_a_media_command_goes_to_llm(run_plans, state, phrase):
     _stt(n, phrase)
     run_plans()
     n._dispatch_turn.assert_called_once()
-    assert n._scheduler_executor.calls == []
+    assert n._tool_executor.calls == []
     assert n._llm_skipped_counter["media_command"] == 0
 
 
@@ -223,7 +230,7 @@ def test_router_fires_mid_dialogue(run_plans):
     _stt(n, "Робот, потише")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("set_music_volume", {"action": "quieter"})]
+    assert n._tool_executor.calls == [("set_music_volume", {"action": "quieter"})]
 
 
 def test_router_fires_on_telegram_without_wake_word(run_plans):
@@ -231,12 +238,12 @@ def test_router_fires_on_telegram_without_wake_word(run_plans):
     _stt(n, "[TG:42] громче")
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [("set_music_volume", {"action": "louder"})]
+    assert n._tool_executor.calls == [("set_music_volume", {"action": "louder"})]
 
 
 def test_without_mcp_tools_falls_back_to_llm(run_plans):
     n = _make_node(playing=True)
-    n._scheduler_executor = None  # tool_provider=fake/none
+    n._tool_executor = None  # tool_provider=fake/none
     _stt(n, "Робот, громче")
     run_plans()
     n._dispatch_turn.assert_called_once()

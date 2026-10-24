@@ -2,7 +2,7 @@
 
 Шаг 5б: avatar_supervisor должен публиковать собственные реплики ТАРС
 («принял», «не умею», «камера повёрнута», «не понял») в новый обратный
-канал шлема, а не в /voice/tts/request (там остался только say).
+канал шлема, а не в /voice/speech/request (там остался только say).
 
 Используем mock-rclpy из conftest.py. Тесты:
 
@@ -16,16 +16,16 @@
 4. ``test_avatar_publisher_declared_on_init`` — паблишер заведён в __init__.
 5. ``test_supervisor_does_not_use_voice_tts_request_for_own_lines`` —
    ADR-0055 §C4: для собственных реплик supervisor НЕ идёт в
-   /voice/tts/request (это канал для инструмента say).
+   /voice/speech/request (это канал для инструмента say).
 """
 from __future__ import annotations
 
 import json
 import unittest
 
+from rob_box_core.speech_client import SPEECH_REQUEST_TOPIC
 from rob_box_supervisor.supervisor_node import (
     AVATAR_TTS_REQUEST_TOPIC,
-    GRIP_TTS_REQUEST_TOPIC,
     AvatarSupervisor,
 )
 
@@ -36,10 +36,18 @@ def _published_avatar_tts(node: AvatarSupervisor) -> list[dict]:
     return [json.loads(m.data) for m in pub.published]
 
 
+def _speech_payload(req) -> dict:
+    """``SpeechRequest`` → поля, которые раньше лежали в JSON ``/voice/tts/request``."""
+    out = {"ssml": req.text, "priority": "operator" if req.priority >= 10 else "normal", "agent": req.agent}
+    if req.language:
+        out["language"] = req.language
+    return out
+
+
 def _published_voice_tts(node: AvatarSupervisor) -> list[dict]:
-    """Опубликованные в /voice/tts/request payloads (parsed JSON)."""
-    pub = node._tts_request_pub
-    return [json.loads(m.data) for m in pub.published]
+    """Опубликованные в /voice/speech/request payloads (parsed JSON)."""
+    pub = node._speech_client_pubs["request"]
+    return [_speech_payload(m) for m in pub.published]
 
 
 class TestAvatarTtsPublisherDeclared(unittest.TestCase):
@@ -56,10 +64,10 @@ class TestAvatarTtsPublisherDeclared(unittest.TestCase):
         self.assertEqual(AVATAR_TTS_REQUEST_TOPIC, "/avatar/tts/request")
 
     def test_old_voice_tts_request_publisher_still_declared_for_say(self) -> None:
-        # /voice/tts/request оставлен ТОЛЬКО для инструмента say.
+        # /voice/speech/request оставлен ТОЛЬКО для инструмента say.
         # Грип больше туда не ходит; supervisor для собственных реплик — тоже.
-        self.assertIn(GRIP_TTS_REQUEST_TOPIC, self.node._publishers)
-        self.assertEqual(GRIP_TTS_REQUEST_TOPIC, "/voice/tts/request")
+        self.assertIn(SPEECH_REQUEST_TOPIC, self.node._publishers)
+        self.assertEqual(SPEECH_REQUEST_TOPIC, "/voice/speech/request")
 
 
 class TestPublishAvatarTtsWithDefaults(unittest.TestCase):
@@ -121,7 +129,7 @@ class TestPublishAvatarTtsOptionalArgs(unittest.TestCase):
 
 class TestSupervisorOwnLinesUseAvatarChannel(unittest.TestCase):
     """ADR-0055 §C4: собственные реплики supervisor'а идут в /avatar/tts/request,
-    не в /voice/tts/request.
+    не в /voice/speech/request.
 
     «Собственные реплики» — это прямой вызов ``_publish_avatar_tts``. Тест
     проверяет, что эта функция НЕ трогает ``_tts_request_pub`` (say-канал).
@@ -136,7 +144,7 @@ class TestSupervisorOwnLinesUseAvatarChannel(unittest.TestCase):
     def test_avatar_tts_does_not_publish_to_voice_tts_request(self) -> None:
         self.node._publish_avatar_tts("принял")
         self.assertEqual(len(_published_avatar_tts(self.node)), 1)
-        # /voice/tts/request НЕ должен был получить ничего (say-канал).
+        # /voice/speech/request НЕ должен был получить ничего (say-канал).
         self.assertEqual(_published_voice_tts(self.node), [])
 
 
@@ -167,7 +175,7 @@ class TestPublishAvatarTtsEmptyTextDrop(unittest.TestCase):
         self.assertEqual(_published_avatar_tts(self.node), [])
 
     def test_empty_text_does_not_touch_voice_tts_request(self) -> None:
-        # Дополнительно: drop не должен «утекать» в /voice/tts/request
+        # Дополнительно: drop не должен «утекать» в /voice/speech/request
         # (say-канал) — ни при каких условиях.
         self.node._publish_avatar_tts("")
         self.assertEqual(_published_voice_tts(self.node), [])
@@ -186,8 +194,8 @@ class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
 
     Зеркальная защита к ``_publish_avatar_tts``: пустой text из грип-пайплайна
     (после LLM-transform мог вернуть ``""``) тоже не должен уходить в
-    /voice/tts/request. Также проверяем, что happy-path пишет в
-    ``/voice/tts/request`` (динамики робота, §7.5) с ``priority="operator"``
+    /voice/speech/request. Также проверяем, что happy-path пишет в
+    ``/voice/speech/request`` (динамики робота, §7.5) с ``priority="operator"``
     и без sink=headset (шлем остаётся только для собственных реплик ТАРС,
     инвариант 6b §7.4).
     """
@@ -207,7 +215,7 @@ class TestPublishGripTtsEmptyTextDrop(unittest.TestCase):
         self.assertEqual(_published_voice_tts(self.node), [])
 
     def test_non_empty_text_still_publishes(self) -> None:
-        """Happy-path → /voice/tts/request с priority="operator" (§7.5)."""
+        """Happy-path → /voice/speech/request с priority="operator" (§7.5)."""
         self.node._publish_grip_tts("мы начинаем")
         voice_pub = _published_voice_tts(self.node)
         self.assertEqual(len(voice_pub), 1)

@@ -248,3 +248,20 @@ def test_estimator_counts_tool_calls_in_history() -> None:
     ]
 
     assert estimate_prompt_tokens(with_calls, []) > estimate_prompt_tokens(plain, [])
+
+
+def test_prompt_stats_carry_context_blocks_with_the_turn_snapshot() -> None:
+    """#3696 (ADR-0150 A5): каждый вызов несёт токены по блокам; снимок хода считается отдельно от реплики."""
+    observed: list[PromptStats] = []
+    core = _core(_RecordingProvider({"prompt_tokens": 777}), observed, streaming=False)
+    snapshot = "<system_context>\n  <speech_gender>male</speech_gender>\n</system_context>"
+
+    asyncio.run(core.process_input("который час", dynamic_system=snapshot,
+                                   preclassified_event=DialogueEvent.STT_RESULT))
+
+    blocks = observed[0].blocks
+    assert blocks is not None and observed[0].prompt_tokens == 777
+    assert blocks.tokens["system"] == estimate_tokens("ты робот") + 4
+    assert blocks.tokens["snapshot"] == estimate_tokens(snapshot)
+    assert 0 < blocks.tokens["turn"] < estimate_tokens(snapshot)
+    assert blocks.tokens["window"] == 0 and blocks.tokens["facts"] == 0

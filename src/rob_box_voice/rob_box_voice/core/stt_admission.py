@@ -46,12 +46,9 @@ from typing import (
     runtime_checkable,
 )
 
-from rob_box_voice.core.dialogue_text import (
-    has_wake_word,
-    is_silence_command,
-    is_unsilence_command,
-    strip_wake_word,
-)
+from rob_box_dialog.address import BARE_WAKE, COORDINATOR, NO_WAKE, Addressed, NotAddressed, decide
+from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.grammar import Tier1Command
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +70,7 @@ def parse_tg_prefix(text: str) -> Tuple[str, Optional[int]]:
     so the caller doesn't need to wrap it in a ``try/except``.
 
     Args:
-        text: Raw ``/voice/stt/result`` payload string.
+        text: Raw ``Utterance.text``-like string (legacy ``[TG:id]`` prefix kept for tests only).
 
     Returns:
         ``(cleaned_text, tg_chat_id)`` — ``cleaned_text`` is the original
@@ -169,13 +166,10 @@ class SttContext:
             avoid leaking the FSM enum into ``core/``.
         is_silenced: Convenience flag — ``True`` when state==SILENCED.
         wake_words: Frozen tuple of wake-word strings (snapshot).
-        backlog_pending: ``True`` when the no-wake-word backlog
-            accumulator has buffered phrases to inject as a hint.
-            Computed **once** before admission (the caller owns the
-            accumulator); :class:`BacklogFlushStep` sets the matching
-            flag on the host, :class:`StripWakeWordStep` reads the
-            snapshot to decide whether a bare wake-word preserves the
-            original text instead of dropping with ``empty_after_strip``.
+        heard: Реплика для адресации (источник, время, DOA, ``person_ref``) —
+            ADR-0150 PR-5; ``None`` — собрать из ``text``/``tg_chat_id``.
+        bare: Голое «робот» без свежей фразы в бэклоге (В12) — ставит
+            :class:`AddressStep`, исполняет :class:`BareWakeStep`.
         skip_counter: Mutable dict of skip-reason counters (e.g.
             ``{"no_wake_word": 3}``). Steps increment the counter that
             matches the reason they drop on; orchestrator does not
@@ -191,7 +185,8 @@ class SttContext:
     state_name: str = "IDLE"
     is_silenced: bool = False
     wake_words: Tuple[str, ...] = ()
-    backlog_pending: bool = False
+    heard: Optional[Heard] = None
+    bare: bool = False
     skip_counter: Dict[str, int] = field(default_factory=dict)
 
     def with_text(self, new_text: str) -> "SttContext":
@@ -212,7 +207,7 @@ class SttOutcomeKind(str, Enum):
       The orchestrator increments the matching counter and logs the
       step name. Use for "this text is not for us" (rejected / no wake
       word / empty after strip / silence command / backlog hold /
-      new-session reset / quick_decide IGNORE).
+      new-session reset).
     * ``HANDLED(reason)`` — pipeline stops, but the step ALREADY did
       the side effect (silence FSM transition, reset session, dispatch
       a follow-up). The orchestrator must NOT re-run the side effect.
@@ -285,31 +280,53 @@ class SttAdmissionHost(Protocol):
     the backlog accumulator is not configured).
     """
 
-    def unsilence(self, text_lower: str) -> bool:
-        """Issue #1101 — if ``text_lower`` matches an unsilence phrase,
-        transition out of SILENCED and return ``True``. Otherwise return
-        ``False`` so the step can DROP the text with the
-        ``silenced`` reason.
+    def backlog(self) -> Optional[Backlog]:
+        """Бэклог неадресованных фраз (ADR-0150 §7.3); ``None`` — выключен."""
+        ...
+
+    def remember_unaddressed(self, heard: Heard) -> bool:
+        """Положить фразу без вейка в бэклог. ``False`` — бэклог выключен,
+        реплика отбрасывается с причиной ``no_wake_word``.
         """
         ...
 
-    def accumulate_without_wake(
-        self,
-        speaker_tag: Optional[str],
-        text: str,
-    ) -> bool:
-        """Push the text into the no-wake backlog accumulator. Returns
-        ``True`` when the accumulator accepted the text (i.e. backlog
-        is enabled and the feature is configured), ``False`` when the
-        feature is off — the caller drops with ``no_wake_word`` reason.
+    def addressed(self, decision: Addressed, recent: Optional[List[Dict[str, Any]]], heard: Heard) -> None:
+        """Реплика адресована: запомнить для снимка LLM ``recent_unaddressed``
+        (фразы с метками, кто их сказал) и залогировать подхват из бэклога (В12, #3767).
         """
         ...
 
-    def handle_silence_command(self) -> bool:
-        """Run the «замолчи» command path. The dialogue node adapter
-        publishes the «Хорошо, молчу.» line, mutates the FSM, and
-        cancels the in-flight turn. Returns ``True`` so the step can
-        return ``HANDLED`` (not DROP — the side effect already ran).
+    def identity_question(self) -> Optional[Any]:
+        """Живой кадр ``Identity`` — робот спросил имя (В17(б), #3695); ``None`` — вопроса нет."""
+        ...
+
+    def greeting_window(self) -> Optional[Any]:
+        """Живой кадр ``GreetingReply`` — окно ответа после приветствия при встрече (#3776); ``None`` — окна нет."""
+        ...
+
+    def perform_ask(self) -> Optional[Any]:
+        """Живой кадр ``PerformAsk`` — выступление спросило «выключить и зачитать?» (О9′, #3700); ``None`` — нет."""
+        ...
+
+    def bare_wake(self) -> None:
+        """Голое «робот» без свежей фразы (В12): только рефлекс «слушаю» и
+        кадр ожидания, 0 вызовов LLM.
+        """
+        ...
+
+    def tier1_match(self, ctx: "SttContext") -> Optional[Tier1Command]:
+        """ADR-0150 PR-6 — Tier-1 команда реплики (:func:`rob_box_dialog.grammar.match` по снимку ноды) или
+        ``None``. Работает и в SILENCED (тогда — только незвучащие виды).
+        """
+        ...
+
+    def run_tier1(self, command: Tier1Command, text: str) -> None:
+        """Исполнить Tier-1 команду (стоп, тишина/её снятие, громкость по каналу, голос, новая сессия)."""
+        ...
+
+    def dispute_stop(self, command: Tier1Command, ctx: "SttContext") -> None:
+        """В19 — стоп-слово внутри другой команды: Chooser ``{stop, part_of_command}`` асинхронно; ``stop`` —
+        исполнить, иначе реплика продолжает приём со следующего шага. Речь до решения не рвётся.
         """
         ...
 
@@ -318,10 +335,15 @@ class SttAdmissionHost(Protocol):
         actually a music-stop request («хватит диджеить», «стоп
         музыку»). The adapter wraps
         :func:`rob_box_voice.core.dialogue_text.is_music_stop_command`
-        so the rule lives next to the silence matcher and the
-        :data:`MUSIC_STOP_OVERRIDES` list. ``SilenceCommandStep``
-        consults this to decide whether to drop (genuine silence)
-        or fall through to LLM (music-stop).
+        so the rule lives next to the :data:`MUSIC_STOP_OVERRIDES` list.
+        :class:`Tier1Step` consults this to leave the phrase to the media
+        router (music-stop) instead of the Tier-1 stop/silence.
+        """
+        ...
+
+    def stop_music_quietly(self) -> bool:
+        """ADR-0150 PR-6 (#3696) — стоп музыки и сета в SILENCED без фразы (§6.3: в тишине ничего не звучит).
+        ``False`` — нечем исполнить (нет MCP-исполнителя), реплика идёт дальше по шагам.
         """
         ...
 
@@ -336,19 +358,6 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def reset_session(
-        self,
-        text: str,
-        text_lower: str,
-        tg_chat_id: Optional[int],
-    ) -> bool:
-        """Issue #XXXX — «новая сессия» / «сбрось всё» / TG «/clear».
-        The adapter wraps :meth:`DialogueNode._is_new_session_command`
-        (which depends on ``_new_session_phrases`` — not a core/
-        concern). Returns ``True`` when reset ran.
-        """
-        ...
-
     def handle_media_command(self, text: str) -> bool:
         """Issue #3134 — детерминированный роутер медиакоманд до LLM.
 
@@ -360,35 +369,10 @@ class SttAdmissionHost(Protocol):
         """
         ...
 
-    def flush_pending_backlog(self) -> None:
-        """Set ``_pending_backlog_flush = True`` so the next dispatch
-        prepends the backlog hint. No-op when the backlog is empty.
-        """
-        ...
-
-    def quick_decide_verdict(self, clean: str) -> Tuple[str, bool, bool]:
-        """Run ``quick_decide`` against the cleaned text and return
-        ``(verdict_value, ignored, pending_llm)``.
-
-        ``ignored=True`` means the verdict was ``IGNORE`` — drop the
-        text entirely. ``pending_llm=True`` means ``PENDING_LLM`` —
-        queue the text into ``_pending_user_messages`` and stop. The
-        orchestrator then calls back into :meth:`enqueue_pending` or
-        :meth:`cancel_inflight` depending on the verdict.
-        """
-        ...
-
-    def enqueue_pending(self, clean: str) -> bool:
-        """Append ``(clean, time.monotonic())`` to ``_pending_user_messages``,
-        dropping the oldest entry if the queue is at the limit. Returns
-        ``True`` when the text was queued (orchestrator should DROP).
-        """
-        ...
-
-    def cancel_inflight(self, stop_tts: bool) -> None:
-        """Cancel the in-flight LLM turn (and optionally stop TTS) for
-        a fresh input. Mirrors the legacy ``_cancel_run(reason, stop_tts=...)``
-        path.
+    def take_turn(self) -> None:
+        """ADR-0150 §6.2 (PR-5) — новая адресованная фраза принимает ход: отменить ход в полёте (LLM),
+        речь НЕ трогать — текущая реплика дочитывается, ответ нового хода встаёт после неё.
+        Рвёт речь только ясная стоп-команда (``/dialog/interrupt_request``).
         """
         ...
 
@@ -405,10 +389,6 @@ class SttAdmissionHost(Protocol):
 
     def publish_state(self) -> None:
         """Push the new FSM state to ``/dialogue/state``."""
-        ...
-
-    def trigger_thinking_sfx(self) -> None:
-        """Publish the «thinking» cue to ``/sound/trigger``."""
         ...
 
 
@@ -561,11 +541,6 @@ class SttAdmission:
 # ---------------------------------------------------------------------------
 
 
-#: Default ``barge_in_policy`` value (matches the legacy
-#: ``getattr(self, "_barge_in_policy", "replace")`` default).
-DEFAULT_BARGE_IN_POLICY: str = "replace"
-
-
 @dataclass(frozen=True)
 class EmptyTextStep:
     """Step 1 — empty STT text. Drops with ``empty_text``."""
@@ -600,14 +575,8 @@ class RejectedMarkerStep:
 
 @dataclass(frozen=True)
 class SilencedStateStep:
-    """Step 5 — DSM in SILENCED state.
-
-    Issue #1101 — when the operator has paused the dialogue, only an
-    explicit unsilence command may pass. Everything else is dropped
-    with ``silenced`` reason. ``host.unsilence(...)`` runs the FSM
-    transition if the text matches; we return ``HANDLED`` either way
-    so the orchestrator does not increment a counter for the «unsilence»
-    path (the FSM already logged it).
+    """DSM in SILENCED state (issue #1101): всё, что не взял :class:`Tier1Step` (стоп, громкость, снятие тишины,
+    новая сессия — ADR-0150 PR-6), отбрасывается с причиной ``silenced``.
     """
 
     name: str = "silenced_state"
@@ -615,94 +584,95 @@ class SilencedStateStep:
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
         if not ctx.is_silenced:
             return PASS
-        if is_unsilence_command(ctx.text_lower):
-            host.unsilence(ctx.text_lower)
-            return handled(self.name, "unsilence")
         return drop(self.name, "silenced")
 
 
 @dataclass(frozen=True)
-class WakeWordStep:
-    """Step 6 — wake-word gate (mic path only; TG bypasses).
+class AddressStep:
+    """Адресовано ли роботу — :func:`rob_box_dialog.address.decide` (ADR-0150 §4.2, В12).
 
-    ADR-0066 §6.3 — Telegram input (``tg_chat_id is not None``)
-    bypasses the gate: the user is already in a chat, no wake word
-    needed. Mic input without a wake word either accumulates into the
-    backlog (``host.accumulate_without_wake`` returns True) or is
-    dropped with ``no_wake_word``.
+    Без вейка — в бэклог (или отброс); «Клод …» из Telegram — координатору;
+    адресованная — дальше с текстом хода без вейка (из бэклога — при голом
+    «робот» и свежей фразе того же направления/человека). Голое «робот» без
+    такой фразы помечается ``bare`` — рефлекс решает :class:`BareWakeStep`
+    уже после проверки тишины.
     """
 
-    name: str = "wake_word"
+    name: str = "address"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if ctx.tg_chat_id is not None:
-            return PASS
-        if has_wake_word(ctx.text_lower, list(ctx.wake_words)):
-            return PASS
-        if host.accumulate_without_wake(ctx.speaker_tag, ctx.text):
-            return handled(self.name, "backlog_accumulated")
-        return drop(self.name, "no_wake_word")
-
-
-@dataclass(frozen=True)
-class StripWakeWordStep:
-    """Step 7 — strip the wake word from the text.
-
-    Issue #989 fix + #2346 — the LLM input must not include the wake
-    word itself; the bare wake word with no follow-up drops with
-    ``empty_after_strip`` **unless** a backlog hint is pending (in
-    which case the bare wake word is preserved as a signal — the
-    original ``_on_stt`` behaviour: ``clean = text`` when
-    ``backlog_pending``).
-    """
-
-    name: str = "strip_wake_word"
-
-    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # Issue #2628 fixture evidence — TG path also strips the wake
-        # word (e.g. ``[TG:42] робот привет`` → ``"привет"``). Legacy
-        # ``_on_stt`` ran ``clean = strip_wake_word(text)`` unconditionally
-        # after parse_tg_prefix; the TG-bypass was a refactor regression.
-        clean = strip_wake_word(ctx.text, list(ctx.wake_words))
-        if not clean:
-            # Bare wake-word OR no input: drop unless backlog is
-            # pending. The caller-owned snapshot on ``ctx.backlog_pending``
-            # preserves the legacy byte-for-byte fallback.
-            if ctx.backlog_pending:
-                return SttOutcome(
-                    kind=SttOutcomeKind.PASS,
-                    new_context=ctx.with_text(ctx.raw),
-                )
+        source = "telegram" if ctx.tg_chat_id is not None else "respeaker"
+        heard = replace(ctx.heard or Heard(text=ctx.text, t=0.0, source=source), text=ctx.text)
+        backlog = host.backlog()
+        decision = decide(heard, backlog, ctx.wake_words, host.identity_question(), host.greeting_window(),
+                          host.perform_ask())
+        if isinstance(decision, NotAddressed):
+            if decision.reason == NO_WAKE:
+                if host.remember_unaddressed(heard):
+                    return handled(self.name, "backlog_accumulated")
+                return drop(self.name, "no_wake_word")
+            if decision.reason == COORDINATOR:
+                return handled(self.name, "NotAddressed(coordinator)")
             return drop(self.name, "empty_after_strip")
-        return SttOutcome(
-            kind=SttOutcomeKind.PASS,
-            new_context=ctx.with_text(clean),
-        )
+        host.addressed(decision, _recent_phrases(decision, backlog, heard), heard)
+        bare = decision.source == BARE_WAKE
+        return SttOutcome(kind=SttOutcomeKind.PASS, new_context=replace(ctx.with_text(decision.text), bare=bare))
+
+
+def _recent_phrases(decision: Addressed, backlog: Optional[Backlog], heard: Heard) -> Optional[List[Dict[str, Any]]]:
+    """Раздел ``recent_unaddressed`` снимка: подхваченные голым «робот» фразы с метками (#3767) или ≤ 1 свежая
+    фраза того же собеседника к адресованной реплике; ``None`` — нечего."""
+    if decision.pickup:
+        return list(decision.picked)
+    recent = backlog.recent_unaddressed(heard) if backlog is not None else None
+    return [recent] if recent else None
 
 
 @dataclass(frozen=True)
-class SilenceCommandStep:
-    """Step 8 — «замолчи» / «хватит» command.
+class BareWakeStep:
+    """Голое «робот» без свежей фразы (В12): рефлекс «слушаю», в LLM не идёт."""
 
-    Issue #1279 follow-up — «хватит диджеить» is NOT a silence, it's
-    a music-stop command that must reach LLM. This step only handles
-    the genuine silence phrase; the music-stop detection is delegated
-    to ``host.is_music_stop_command(text_lower)`` — the dialogue node
-    adapter imports ``is_music_stop_command`` from
-    :mod:`rob_box_voice.core.dialogue_text` so the rule stays in core/.
-    """
-
-    name: str = "silence_command"
+    name: str = "bare_wake"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if not is_silence_command(ctx.text_lower):
+        if not ctx.bare:
             return PASS
+        host.bare_wake()
+        return handled(self.name, "bare_wake")
+
+
+@dataclass(frozen=True)
+class Tier1Step:
+    """Tier-1 закрытая грамматика (ADR-0150 PR-6 #3696): стоп, тишина и её снятие, громкость по каналу, голос,
+    новая сессия — кодом, 0 вызовов LLM; стоит ДО :class:`SilencedStateStep`: в SILENCED работает всё незвучащее.
+
+    «хватит диджеить», «стоп музыку» — стоп музыки, его исполняет :class:`MediaCommandStep` (``PASS``); в SILENCED
+    (туда медиакоманды не доходят) — молча здесь же (``host.stop_music_quietly``, #3696). Ясный стоп
+    с продолжением («хватит, спой другую») — стоп и остаток дальше по шагам (тоже Tier-1, если он им покрыт).
+    Спорный стоп (В19, «спой песню про стоп») — ``host.dispute_stop``: Chooser решает асинхронно, реплика пока
+    закрыта (``HANDLED``), при ``part_of_command`` она продолжит приём со следующего шага.
+    """
+
+    name: str = "tier1"
+
+    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
         if host.is_music_stop_command(ctx.text_lower):
-            # Music-stop override — phrase must reach LLM.
+            if ctx.is_silenced and host.stop_music_quietly():
+                return handled(self.name, "music_stop_silenced")
             return PASS
-        if host.handle_silence_command():
-            return handled(self.name, "silence_command")
-        return PASS
+        command = host.tier1_match(ctx)
+        if command is None:
+            return PASS
+        if command.disputed:
+            host.dispute_stop(command, ctx)
+            return handled(self.name, "stop_disputed")
+        host.run_tier1(command, ctx.text)
+        if not command.rest:
+            return handled(self.name, command.kind)
+        rest = ctx.with_text(command.rest)
+        outcome = self.apply(rest, host)
+        return outcome if outcome.kind is not SttOutcomeKind.PASS or outcome.new_context else replace(
+            outcome, new_context=rest)
 
 
 @dataclass(frozen=True)
@@ -729,35 +699,13 @@ class CommandIntentGateStep:
 
 
 @dataclass(frozen=True)
-class NewSessionStep:
-    """Step 10 — «новая сессия» / «сбрось всё» / TG «/clear».
-
-    Issue #XXXX — when the user asks for a fresh session, reset the
-    dialogue context and do NOT dispatch to LLM. ``host.reset_session``
-    runs ``DialogueNode._reset_dialogue_session``.
-    """
-
-    name: str = "new_session"
-
-    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # The host owns the ``_is_new_session_command(...)`` check
-        # (it depends on the ``_new_session_phrases`` parameter, which
-        # is not a core/ concern).
-        if host.reset_session(ctx.text, ctx.text_lower, ctx.tg_chat_id):
-            return handled(self.name, "new_session")
-        return PASS
-
-
-@dataclass(frozen=True)
 class MediaCommandStep:
     """Issue #3134 — медиакоманды исполняет код, до LLM.
 
     Стоит после wake-word, силенс-, command- и new-session-гейтов (фраза
-    уже адресована роботу и очищена) и ДО :class:`BargeInClassifyStep`:
-    иначе при ``barge_in_policy=classify`` команда во время хода ушла бы
-    в очередь ``PENDING_LLM`` и склеилась в следующий LLM-ход — ровно
-    регрессия HA core#139415 (роутер обязан срабатывать на КАЖДОМ ходе,
-    и в продолжении разговора, и посреди DJ-сета). Путь Telegram идёт
+    уже адресована роботу и очищена) и ДО :class:`TakeTurnStep`: роутер
+    обязан срабатывать на КАЖДОМ ходе, и в продолжении разговора, и
+    посреди DJ-сета (регрессия HA core#139415). Путь Telegram идёт
     через этот же шаг.
     """
 
@@ -770,69 +718,19 @@ class MediaCommandStep:
 
 
 @dataclass(frozen=True)
-class BacklogFlushStep:
-    """Step 11 — backlog hint injection.
+class TakeTurnStep:
+    """Step 12 — новая фраза принимает ход (ADR-0150 §6.2, PR-5 #3694).
 
-    When the backlog accumulator has buffered phrases (snapshot on
-    ``ctx.backlog_pending`` is True), the next user-initiated turn
-    prepends them as a hint. ``host.flush_pending_backlog`` sets the
-    ``_pending_backlog_flush`` flag; the dialogue node adapter reads
-    it inside ``_dispatch_turn``. When ``backlog_pending`` is False
-    the step is a no-op — matches legacy L2350-2351 (``if
-    backlog_pending: self._pending_backlog_flush = True``).
+    Ход в полёте отменяется (``host.take_turn``), речь продолжается: одна
+    табличная политика вместо двух прежних (замена речи / классификатор).
+    Рвёт речь только ясная стоп-команда — её решает ``InterruptGate`` по
+    ``/dialog/interrupt_request`` раньше, чем сюда дойдёт реплика.
     """
 
-    name: str = "backlog_flush"
+    name: str = "take_turn"
 
     def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        # Issue #1766 — only set the flush flag when the caller-owned
-        # snapshot on ``ctx.backlog_pending`` is True. Mirrors the
-        # legacy ``if backlog_pending: self._pending_backlog_flush = True``
-        # at L2350-2351.
-        if ctx.backlog_pending:
-            host.flush_pending_backlog()
-        return PASS
-
-
-@dataclass(frozen=True)
-class BargeInClassifyStep:
-    """Step 12 — barge-in classifier (issue #968 / S4.2).
-
-    When ``barge_in_policy == "classify"``, route the new input through
-    :func:`quick_decide`:
-
-    * ``IGNORE`` → DROP with ``quick_decide_ignore``.
-    * ``PENDING_LLM`` + live turn → ``host.enqueue_pending(...)``
-      then DROP with ``pending_llm`` (the text reaches LLM as a
-      follow-up turn, not a fresh dispatch).
-    * otherwise (REPLACE / PENDING_LLM with no live turn) → cancel
-      the in-flight turn via ``host.cancel_inflight(stop_tts=...)``
-      and PASS.
-    """
-
-    name: str = "barge_in_classify"
-    policy: str = DEFAULT_BARGE_IN_POLICY
-
-    def apply(self, ctx: SttContext, host: SttAdmissionHost) -> SttOutcome:
-        if self.policy != "classify":
-            # REPLACE / OFF — legacy unconditional cancel. The host
-            # owns the cancel call; we just signal PASS.
-            host.cancel_inflight(stop_tts=True)
-            return PASS
-        verdict, ignored, pending_llm = host.quick_decide_verdict(ctx.text)
-        if ignored:
-            return drop(self.name, "quick_decide_ignore")
-        if pending_llm:
-            if host.enqueue_pending(ctx.text):
-                return handled(self.name, "pending_llm")
-            # No slot to queue → fall through to REPLACE-style cancel.
-        # REPLACE-style: cancel the in-flight turn (stop_tts depends
-        # on the verdict — only REPLACE stops TTS; PENDING_LLM with
-        # no queue should not cut an already-playing segment).
-        # ``quick_decide_verdict`` returns the uppercase string form
-        # (``verdict.value`` — see :class:`QuickVerdict`) — case-fold
-        # here so the comparison is unambiguous.
-        host.cancel_inflight(stop_tts=(verdict.lower() == "replace"))
+        host.take_turn()
         return PASS
 
 
@@ -845,7 +743,9 @@ class DispatchTriggerStep:
     * IDLE → WAKE_WORD transition (handled via host).
     * STT_RESULT transition.
     * Publish state.
-    * Publish the «thinking» SFX.
+
+    «Услышал» (лицо, кольцо, earcon) - рефлекс ``addressed`` на допуске реплики (``AddressStep`` ->
+    ``host.addressed``), «думаю» - рефлекс ``thinking`` перед вызовом LLM (ADR-0150 PR-3b); отдельного звука здесь нет.
     """
 
     name: str = "dispatch_trigger"
@@ -854,7 +754,6 @@ class DispatchTriggerStep:
         host.transition_idle_to_wake()
         host.transition_stt_result()
         host.publish_state()
-        host.trigger_thinking_sfx()
         return PASS
 
 
@@ -863,61 +762,50 @@ class DispatchTriggerStep:
 # ---------------------------------------------------------------------------
 
 
-def default_steps(
-    *,
-    barge_in_policy: str = DEFAULT_BARGE_IN_POLICY,
-) -> List[Any]:
+def default_steps() -> List[Any]:
     """Return the canonical step order for ``DialogueNode._on_stt``.
 
     Order matches the inline if-chain at
     ``dialogue_node.py:2159-2445`` (issue #2628 refactor):
 
     1. :class:`EmptyTextStep` — short-circuit empty payload.
-    2. TG prefix parsing — handled **before** admission by the caller
-       (``parse_tg_prefix`` is a pure helper, not a step). Skipped here.
-    3. speaker event parsing — same: handled by the caller via
-       :func:`parse_speaker_event` before admission. Skipped here.
-    4. :class:`RejectedMarkerStep` — STT echoed a rejected marker.
-    5. :class:`SilencedStateStep` — DSM in SILENCED.
-    6. :class:`WakeWordStep` — wake-word gate (mic path).
-    7. :class:`StripWakeWordStep` — strip the wake word.
-    8. :class:`SilenceCommandStep` — «замолчи».
-    9. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
-    10. :class:`NewSessionStep` — «новая сессия» / «/clear».
-    11. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
-    12. :class:`BacklogFlushStep` — backlog hint injection.
-    13. :class:`BargeInClassifyStep` — barge_in_policy="classify".
-    14. :class:`DispatchTriggerStep` — FSM transition + dispatch.
+    2. :class:`RejectedMarkerStep` — STT echoed a rejected marker.
+    3. :class:`AddressStep` — адресация кодом (ADR-0150 PR-5): вейк,
+       Telegram/оператор, координатор, бэклог (В12). Раньше тишины: в
+       SILENCED «говори» тоже нужно с вейком (§6.3).
+    4. :class:`Tier1Step` — закрытая грамматика (ADR-0150 PR-6): стоп,
+       тишина/её снятие, громкость, голос, новая сессия; в SILENCED тоже.
+    5. :class:`SilencedStateStep` — DSM in SILENCED: остальное отбрасывается.
+    6. :class:`BareWakeStep` — голое «робот»: рефлекс, 0 LLM.
+    7. :class:`CommandIntentGateStep` — command_intent gate (issue #1279).
+    8. :class:`MediaCommandStep` — медиакоманды кодом (issue #3134).
+    9. :class:`TakeTurnStep` — ход в полёте отменяется, речь — нет.
+    10. :class:`DispatchTriggerStep` — FSM transition + dispatch.
     """
     return [
         EmptyTextStep(),
         RejectedMarkerStep(),
+        AddressStep(),
+        Tier1Step(),
         SilencedStateStep(),
-        WakeWordStep(),
-        StripWakeWordStep(),
-        SilenceCommandStep(),
+        BareWakeStep(),
         CommandIntentGateStep(),
-        NewSessionStep(),
         MediaCommandStep(),
-        BacklogFlushStep(),
-        BargeInClassifyStep(policy=barge_in_policy),
+        TakeTurnStep(),
         DispatchTriggerStep(),
     ]
 
 
 __all__ = [
-    "BargeInClassifyStep",
-    "BacklogFlushStep",
+    "AddressStep",
+    "BareWakeStep",
     "CommandIntentGateStep",
-    "DEFAULT_BARGE_IN_POLICY",
     "DefaultSttAdmission",
     "DispatchTriggerStep",
     "EmptyTextStep",
     "MediaCommandStep",
-    "NewSessionStep",
     "PASS",
     "RejectedMarkerStep",
-    "SilenceCommandStep",
     "SilencedStateStep",
     "SttAdmission",
     "SttAdmissionHost",
@@ -925,8 +813,8 @@ __all__ = [
     "SttOutcome",
     "SttOutcomeKind",
     "SttStep",
-    "StripWakeWordStep",
-    "WakeWordStep",
+    "TakeTurnStep",
+    "Tier1Step",
     "default_steps",
     "drop",
     "handled",
@@ -937,7 +825,6 @@ __all__ = [
 
 def DefaultSttAdmission(
     *,
-    barge_in_policy: str = DEFAULT_BARGE_IN_POLICY,
     logger: Optional[Any] = None,
 ) -> SttAdmission:
     """Convenience constructor: the canonical pipeline for ``_on_stt``.
@@ -948,6 +835,6 @@ def DefaultSttAdmission(
     list by hand.
     """
     return SttAdmission(
-        steps=default_steps(barge_in_policy=barge_in_policy),
+        steps=default_steps(),
         logger=logger,
     )

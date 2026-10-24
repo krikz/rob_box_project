@@ -31,9 +31,22 @@ import threading
 import time
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
+from rob_box_dialog.plan.sync import beat_heard_at
+from rob_box_music.model import BEATS_PER_BAR
 from rob_box_voice.core.music_player_state import build_music_event_payload, build_music_state_payload
 
 _LOG = logging.getLogger(__name__)
+
+
+def beat_fields(snap: Mapping[str, Any], ts: float) -> Dict[str, Any]:
+    """Сетка тактов для ``started`` (ADR-0150 §5.6.3, PR-7c ч.2): когда доля старта трека **звучит** (``beat_at``,
+    одна формула — :func:`rob_box_dialog.plan.sync.beat_heard_at`) и длина такта в долях. Темпа нет — пусто:
+    выступление честно читает без тактов."""
+    bpm = float(snap.get("bpm") or 0.0)
+    if bpm <= 0:
+        return {}
+    heard = beat_heard_at(ts, float(snap.get("late_beats") or 0.0), bpm, float(snap.get("latency_s") or 0.0))
+    return {"beat_at": round(heard, 4), "bar_beats": float(BEATS_PER_BAR)}
 
 
 def _missing_synth_fail(detail: str) -> bool:
@@ -135,20 +148,23 @@ class PlayerOwner:
         if stale:
             self._log.warning(f"⚠️ [music v2] started track_id={track_id} устарел — заменён до старта")
             return
+        now = self._clock()
         fields = {k: snap.get(k) for k in ("clock_beat", "start_beat", "phase_in_form", "late_beats",
                                            "bpm", "deck", "form_beats", "players_aligned", "latency_s")}
+        fields.update(beat_fields(snap, now))
         _log_started(self._log, snap, f"🎵 [music v2] started track_id={track_id} "
                      + " ".join(f"{k}={v}" for k, v in fields.items()))
-        self._publish_event(build_music_event_payload("started", track_id, ts=self._clock(), **fields))
+        self._publish_event(build_music_event_payload("started", track_id, ts=now, **fields))
         self.publish_state()
         listener = self.on_started
         if listener is not None:
             listener(dict(snap))
         if track_id == self._once:
-            self._adapter.at(float(snap["start_beat"]) + float(snap["form_beats"]), lambda: self._finish(track_id))
+            self._adapter.at(float(snap["start_beat"]) + float(snap["form_beats"]), lambda: self.finish(track_id))
 
-    def _finish(self, track_id: str) -> None:
-        """Поток клока: конечный трек доиграл форму — дека свободна, ``finished`` и ``idle``."""
+    def finish(self, track_id: str) -> None:
+        """Трек доиграл (поток клока): конечный — свою форму, подложка выступления — свои проходы или outro на такте
+        (``BackingDeck``). Дека свободна, ``finished`` и ``idle``; играет уже другой трек — ничего."""
         with self._lock:
             if (self._current or {}).get("track_id") != track_id:
                 return

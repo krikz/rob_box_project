@@ -3,7 +3,7 @@
 Харнесс как в ``test_issue_3134_media_router_node`` (без ROS2,
 ``object.__new__``): реальные ``_on_stt`` → ``SttAdmission`` →
 ``MediaCommandStep`` → ``_route_media_command`` → ``_execute_play_named``;
-мок — исполнитель тулов (вместо ``SchedulerToolExecutor`` →
+мок — исполнитель тулов (вместо ``PlanToolExecutor`` →
 ``/mcp/execute``), ``_dispatch_turn`` (вход LLM-хода), ``_speak_direct``
 (TTS). Ответ ``lookup_melody`` — в формате адаптера
 (``message`` + ``repr(data)``, ``core_adapter._result_content``). Играет
@@ -24,6 +24,7 @@ from rob_box_voice.core.llm_skip_reasons import new_llm_skip_counter
 from rob_box_voice.core.music_player_state import MusicPlayerState
 from rob_box_voice.dialogue_node import DialogueNode
 import rob_box_voice.dialogue_node as dialogue_node_module
+from ros_stubs import make_utterance  # noqa: E402
 
 _FUR_ELISE = {
     "name": "furelise",
@@ -85,13 +86,11 @@ def _make_node(*, playing=False, dj=False, track=None, state_name="IDLE", **exec
     n._speak_direct = MagicMock()
     n._verbose_llm = False
     n._active_tg_chat_id = None
-    n._pending_music_cleanup = True  # хвост прошлого хода
-    n._track_mode_music_active = False
     n._music_player_state = MusicPlayerState(
         state="playing" if playing else "idle", dj=dj,
         dj_info={"enabled": dj, "title": track} if track else {"enabled": dj},
     )
-    n._scheduler_executor = _MelodyExecutor(**exec_kw)
+    n._tool_executor = _MelodyExecutor(**exec_kw)
     n._loop = MagicMock()
     return n
 
@@ -121,9 +120,7 @@ def run_plans(monkeypatch):
 
 
 def _stt(node: DialogueNode, text: str) -> None:
-    msg = MagicMock()
-    msg.data = text
-    node._on_stt(msg)
+    node._on_stt(make_utterance(text))
 
 
 # ── найдена → request_music без LLM ──────────────────────────────────────────
@@ -137,17 +134,14 @@ def test_found_melody_plays_without_llm(run_plans, playing):
     n._dispatch_turn.assert_not_called()
     run_plans()
     n._dispatch_turn.assert_not_called()
-    assert n._scheduler_executor.calls == [
+    assert n._tool_executor.calls == [
         ("lookup_melody", {"name": "к элизе"}),
         ("request_music", {"intent": "melody", "text": "к элизе"}),
     ]
-    assert n._scheduler_executor.turns_begun == 1  # лимит #2859 снят
+    assert n._tool_executor.turns_begun == 1  # лимит #2859 снят
     n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._cancel_run.assert_called_once()
     assert n._llm_skipped_counter["media_command"] == 1
-    # отложенный cleanup прошлого хода не гасит заказ после фразы
-    assert n._pending_music_cleanup is False
-    assert n._track_mode_music_active is True
 
 
 # ── общее название → LLM, роутер не трогает ────────────────────────────
@@ -158,7 +152,7 @@ def test_generic_request_goes_to_llm(run_plans):
     _stt(n, "Робот, сыграй что-нибудь весёлое")
     run_plans()
     n._dispatch_turn.assert_called_once()
-    assert n._scheduler_executor.calls == []
+    assert n._tool_executor.calls == []
     n._speak_direct.assert_not_called()
 
 
@@ -171,7 +165,7 @@ def test_unknown_melody_goes_to_llm_silently(run_plans, state_name):
     _stt(n, "Робот, поставь абракадабра")
     n._dispatch_turn.assert_not_called()  # пока база не ответила
     run_plans()
-    assert n._scheduler_executor.calls == [("lookup_melody", {"name": "абракадабра"})]
+    assert n._tool_executor.calls == [("lookup_melody", {"name": "абракадабра"})]
     n._dispatch_turn.assert_called_once()
     args, kwargs = n._dispatch_turn.call_args
     assert args[0] == "поставь абракадабра"  # реплика без wake-слова
@@ -196,9 +190,9 @@ def test_order_mid_dj_set_does_not_stop_set(run_plans):
     n = _make_node(playing=True, dj=True, track="club #3", state_name="DIALOGUE")
     _stt(n, "Робот, поставь к элизе")
     run_plans()
-    assert [c[0] for c in n._scheduler_executor.calls] == ["lookup_melody", "request_music"]
-    assert "stop_music" not in [c[0] for c in n._scheduler_executor.calls]
-    assert "dj_set" not in [c[0] for c in n._scheduler_executor.calls]
+    assert [c[0] for c in n._tool_executor.calls] == ["lookup_melody", "request_music"]
+    assert "stop_music" not in [c[0] for c in n._tool_executor.calls]
+    assert "dj_set" not in [c[0] for c in n._tool_executor.calls]
     n._speak_direct.assert_called_once_with("Ставлю «К элизе».")
     n._dispatch_turn.assert_not_called()
 
@@ -207,7 +201,7 @@ def test_route_without_resume_path_leaves_order_to_llm():
     """Без пути назад в приём (``on_miss``) роутер заказ не забирает."""
     n = _make_node()
     assert n._route_media_command("поставь к элизе") is False
-    assert n._scheduler_executor.calls == []
+    assert n._tool_executor.calls == []
 
 
 # ── #3525: каждая реплика — свой turn_id ─────────────────────────────────
@@ -233,14 +227,14 @@ def test_named_play_after_router_set_gets_a_new_turn_id(run_plans):
     ref = []
     n = _make_node()
     ref.append(n)
-    n._scheduler_executor = _TurnRecordingExecutor(ref)
+    n._tool_executor = _TurnRecordingExecutor(ref)
     n._turn_id = "llm-turn-0"
     n._confident_speaker_name = lambda uid: None
     _stt(n, "Робот, включи сэт на тему тетрис")  # команда роутера: cancel_inflight
     run_plans()
     _stt(n, "Робот, поставь к Элизе")  # заказ по имени: cancel_inflight=False до находки
     run_plans()
-    turns = n._scheduler_executor.turns
+    turns = n._tool_executor.turns
     set_turns = [t for name, t in turns if name == "dj_set"]
     play_turns = [t for name, t in turns if name == "request_music"]
     assert set_turns and play_turns, turns

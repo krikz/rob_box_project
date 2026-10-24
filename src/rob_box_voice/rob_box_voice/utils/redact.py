@@ -286,7 +286,18 @@ def redact_log_text(text: str) -> str:
     text = _BARE_JWT_RE.sub(_MASK, text)
     text = _VENDOR_PREFIX_RE.sub(_MASK, text)
 
+    # Пароли (PR-13b #3708: read_logs ТАРС уходит в Telegram): ``SSHPASS=…``, ``ROBOT_SSH_PASS=…``, ``password: …`` —
+    # имя с PASS в любом месте, а не только суффиксом; ``sshpass -p <пароль>`` — пароль в командной строке.
+    text = _PASS_NAME_RE.sub(lambda m: f"{m.group('name')}={_MASK}", text)
+    text = _SSHPASS_FLAG_RE.sub(lambda m: f"{m.group('cmd')} {_MASK}", text)
+
     return text
+
+
+_PASS_NAME_RE = re.compile(
+    r"(?P<name>\b[A-Za-z0-9_]*(?:PASS|pass|Pass)[A-Za-z0-9_]*)\s*[=:]\s*(?P<value>(?!\*\*\*)[^\s'\"\])},]+)"
+)
+_SSHPASS_FLAG_RE = re.compile(r"(?P<cmd>\bsshpass\s+-p)\s*(?!\*\*\*)[^\s'\"]+")
 
 
 # Internal alias preserved for documentation/comments that reference the

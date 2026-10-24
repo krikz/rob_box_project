@@ -21,6 +21,7 @@ import pytest
 
 from rob_box_voice.core.speak_helpers import build_ssml_payload
 from rob_box_voice.dialogue_node import DialogueNode
+from ros_stubs import make_utterance  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -56,15 +57,11 @@ def node():
     # ``object.__new__`` skips ``__init__`` — anything the SUT reads must be
     # pre-seeded explicitly. Without these the wake-gate tests below
     # AttributeError on the next code path that walks into ``_run_turn``.
-    n._track_mode_music_active = False
-    n._action_claim_retry_used = False
     return n
 
 
 def _make_stt_msg(data: str):
-    msg = MagicMock()
-    msg.data = data
-    return msg
+    return make_utterance(data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,8 +126,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n = object.__new__(DialogueNode)
     n._task_lock = threading.Lock()
     n._run_cancelled = False
-    n._babble_retry_used = False
-    n._pending_music_cleanup = False
     n._speaker_id_enabled = True  # даже при включённой биометрии — TG без неё
     n._active_tg_chat_id = 42  # issue #3598 — chat_id этого TG-сообщения
 
@@ -139,14 +134,10 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._build_dynamic_system_context = MagicMock(return_value="<system_context/>")
     n._llm = MagicMock()
     n._speak_direct = MagicMock()
-    n._active_batches = set()
     n._dsm = MagicMock()
     n._dsm.current_state = "idle"  # не DIALOGUE — финальный DIALOGUE_END не нужен
     n._publish_state = MagicMock()
-    n._publish_music_cleanup = MagicMock()
     n._maybe_record_session_end = MagicMock()
-    n._track_mode_music_active = False
-    n._action_claim_retry_used = False
 
     logger = MagicMock()
     n.get_logger = lambda: logger
@@ -159,11 +150,6 @@ async def test_run_turn_from_tg_skips_speaker_identity_and_prefixes():
     n._core = MagicMock()
     n._core.process_input = AsyncMock(return_value=_Result())
     n._handle_result = MagicMock()
-    # Issue #992 Bug C' (regression 30.08): новые retry-флаги в __init__
-    # DialogueNode — фикстура через object.__new__ их не получает, задаём вручную.
-    # _action_claim_retry_used живёт в _check_unbacked_action_claim_and_retry.
-    n._track_mode_music_active = False
-    n._action_claim_retry_used = False
 
     await n._run_turn("продолжай", from_tg=True)
 
@@ -211,3 +197,46 @@ class TestTgChatIdInPayload:
         published = n._response_pub.publish.call_args.args[0]
         payload = json.loads(published.data)
         assert "tg_chat_id" not in payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ADR-0150 PR-2: источник, chat_id и utterance_id приходят ПОЛЯМИ Utterance
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUtteranceFields:
+    def _utt(self, text, **fields):
+        from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+        return install_dialog_msgs_stub().Utterance(text=text, **fields)
+
+    def test_telegram_fields_replace_text_prefix(self, node):
+        """source=telegram + chat_id: wake-gate пропущен, префикса в тексте нет."""
+        node._on_stt(self._utt("продолжай", source="telegram", chat_id=42))
+
+        assert node._active_tg_chat_id == 42
+        assert node._dispatch_turn.call_args.args[0] == "продолжай"
+        assert node._dispatch_turn.call_args.kwargs.get("from_tg") is True
+
+    def test_literal_tg_prefix_in_text_is_not_parsed_anymore(self, node):
+        """Текст «[TG:42] привет» из голоса - это просто текст, чат не выставляется."""
+        node._on_stt(self._utt("[TG:42] привет", source="respeaker"))
+
+        assert node._active_tg_chat_id is None
+        node._dispatch_turn.assert_not_called()  # нет вейка - gate закрыт
+
+    def test_operator_source_is_not_a_telegram_chat(self, node):
+        """Кнопки меню бота (source=operator, chat_id=0): чат не запоминается."""
+        node._on_stt(self._utt("робот привет", source="operator"))
+
+        assert node._active_tg_chat_id is None
+        assert node._dispatch_turn.call_args.kwargs.get("from_tg") is False
+
+    def test_utterance_id_comes_from_the_message(self, node):
+        node._on_stt(self._utt("робот привет", source="respeaker", utterance_id="a5d8a1212530"))
+
+        assert node._dispatch_turn.call_args.kwargs.get("utterance_id") == "a5d8a1212530"
+
+    def test_telegram_has_no_utterance_id(self, node):
+        node._on_stt(self._utt("привет", source="telegram", chat_id=7))
+
+        assert node._dispatch_turn.call_args.kwargs.get("utterance_id") is None

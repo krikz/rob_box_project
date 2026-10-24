@@ -72,11 +72,15 @@
       "text": "Робот, музыка у тебя сейчас точно выключена?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
+        "must_not_say": [
+          "не получилось выполнить"
         ],
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет|выключен"
+        ],
+        "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "Финальный якорь тишины: марафон не оставляет играющий плеер следующему прогону."
+        "_comment": "Финальный якорь тишины: марафон не оставляет играющий плеер следующему прогону. #3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       }
     },
     {
@@ -84,7 +88,7 @@
       "voice": "anton",
       "text": "Робот, новая сессия, забудь этот разговор.",
       "patterns": [
-        "session reset|session_reset|Новая сессия|new session"
+        "session reset|session_reset|Новая сессия|new session|tier1 kind=new_session"
       ]
     },
     {
@@ -134,13 +138,9 @@
       "label": "n1011_goodnight",
       "voice": "anton",
       "text": "Робот, спокойной ночи, смена окончена, спасибо за компанию.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": []
-      }
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ]
     }
   ]
 }

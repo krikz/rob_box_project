@@ -9,10 +9,11 @@
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from rob_box_core import dialog_engine
 
 
 def generate_launch_description():
@@ -105,21 +106,7 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Animation Player Node ===
-    animation_node = Node(
-        package='rob_box_animations',
-        executable='animation_player_node.py',
-        name='voice_animation_player',
-        namespace=namespace,
-        parameters=[{
-            'animations_dir': '/ws/install/rob_box_animations/share/rob_box_animations/animations',
-            'autostart_animation': 'idle',
-            'loop': True
-        }],
-        output='screen',
-        respawn=True,
-        respawn_delay=3.0
-    )
+    # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
     # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
     # Issue #1004: dialog_node.yaml грузится первым, потом launch-override
@@ -142,7 +129,7 @@ def generate_launch_description():
     # === TTS Node (Yandex/Silero + opt-in MiniMax) ===
     # Issue #1004: tts_node.yaml первым, launch-override provider — чтобы
     # переключать TTS провайдера одной строкой без правки YAML.
-    tts_node = Node(
+    tts_node_args = dict(
         package='rob_box_voice',
         executable='tts_node',
         name='tts_node',
@@ -194,7 +181,7 @@ def generate_launch_description():
     )
 
     # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
-    # Отдельная startup_greeting_node убрана — страдала гонкой с
+    # Отдельная нода приветствия убрана — страдала гонкой с
     # инициализацией tts_node (фраза терялась). dialogue_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
@@ -256,9 +243,8 @@ def generate_launch_description():
         tool_provider_arg,
         audio_node,
         led_node,
-        animation_node,
-        dialogue_node,  # ✅ Phase 2: DeepSeek streaming
-        tts_node,       # ✅ Phase 2: Silero TTS (MiniMax opt-in via provider=minimax)
+        # ✅ dialogue_node (v1) + tts_node (Silero/MiniMax opt-in) — по флагу dialog_engine (PR-8 #3702)
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[dialogue_node, tts_node_args]),
         stt_node,       # ✅ Phase 3: Vosk STT
         sound_node,     # ✅ Phase 4: Sound Effects
         command_node,   # ✅ Phase 5: Command Recognition

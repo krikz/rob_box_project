@@ -35,7 +35,21 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, 
 
 
 class SetVolumeTool(MCPTool):
-    """Инструмент для управления громкостью TTS."""
+    """Инструмент для управления громкостью TTS.
+
+    Уровень — ``volume_db`` у ``tts_node``; проценты (``action=set``, ``level``) ложатся линейно на шкалу
+    ``MIN_DB..MAX_DB`` — та же шкала, что у шагов: «громкость 60 %» — абсолютный уровень, а не ``normal``
+    (живой ТАРС v2 23.10: «громкость 60 %» → ``set_volume{action: normal}``, PR-13b #3708).
+    """
+
+    event_source = "srv:/tts_node/set_parameters"
+    #: Шкала громкости голоса, дБ: тише ``MIN_DB`` шаг не уводит, громче ``MAX_DB`` — нет.
+    MIN_DB: float = -20.0
+    MAX_DB: float = 6.0
+    NORMAL_DB: float = -3.0
+    STEP_DB: float = 3.0
+    _MESSAGES = {"louder": "Делаю громче", "quieter": "Делаю тише", "max": "Максимальная громкость",
+                 "normal": "Нормальная громкость"}
 
     def __init__(self, node):
         super().__init__(node)
@@ -58,7 +72,8 @@ class SetVolumeTool(MCPTool):
             "'говори громче', 'тише говори', 'максимальная громкость голоса', "
             "а также для 'громче/тише', когда музыка НЕ играет. Если играет "
             "трек/бит/DJ-сет и юзер просит громче/тише музыку — вызывай "
-            "set_music_volume, а не этот тул."
+            "set_music_volume, а не этот тул. Названный уровень в процентах "
+            "('громкость 60 %') — action=set и level."
         )
 
     @property
@@ -67,10 +82,22 @@ class SetVolumeTool(MCPTool):
             MCPToolParameter(
                 name="action",
                 type="string",
-                description="Действие с громкостью",
+                description=(
+                    "louder — громче на шаг, quieter — тише на шаг, max — на "
+                    "максимум, normal — обычный уровень, set — выставить level"
+                ),
                 required=True,
-                enum=["louder", "quieter", "max", "normal"],
-            )
+                enum=["louder", "quieter", "max", "normal", "set"],
+            ),
+            MCPToolParameter(
+                name="level",
+                type="integer",
+                description=(
+                    "Только для action=set: громкость голоса в процентах, "
+                    "0..100 (значения вне диапазона обрезаются)."
+                ),
+                required=False,
+            ),
         ]
 
     @property
@@ -83,77 +110,85 @@ class SetVolumeTool(MCPTool):
         """Set volume - FAST операция < 2s (ROS service call)."""
         return ToolExecutionType.FAST
 
-    def execute(self, action: str) -> MCPToolResult:
-        """Установить громкость."""
-        # Динамический импорт во время выполнения
-        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-        from rcl_interfaces.srv import GetParameters, SetParameters
+    @classmethod
+    def percent(cls, volume_db: float) -> int:
+        """Уровень голоса в процентах шкалы ``MIN_DB..MAX_DB``."""
+        span = cls.MAX_DB - cls.MIN_DB
+        return round(max(0.0, min(1.0, (volume_db - cls.MIN_DB) / span)) * 100)
 
-        self.log_info(f"Изменение громкости: {action}")
+    @classmethod
+    def target_db(cls, action: str, level: Optional[float], current: float):
+        """Целевой уровень, дБ, для ``action`` — или ``(None, ошибка)``."""
+        if action == "set":
+            try:
+                pct = max(0.0, min(100.0, float(level)))
+            except (TypeError, ValueError):
+                return None, f"action=set требует level 0..100, получено {level!r}"
+            return cls.MIN_DB + pct / 100.0 * (cls.MAX_DB - cls.MIN_DB), None
+        steps = {"louder": min(current + cls.STEP_DB, cls.MAX_DB), "quieter": max(current - cls.STEP_DB, cls.MIN_DB),
+                 "max": cls.MAX_DB, "normal": cls.NORMAL_DB}
+        if action not in steps:
+            return None, f"Неизвестное действие: {action}"
+        return steps[action], None
 
-        if not self.get_params_client.wait_for_service(timeout_sec=1.0):
-            return MCPToolResult(success=False, error="TTS параметры недоступны")
+    def _current_db(self) -> Optional[float]:
+        from rcl_interfaces.srv import GetParameters
 
-        # Получить текущую громкость
         get_request = GetParameters.Request()
         get_request.names = ["volume_db"]
         future = self.get_params_client.call_async(get_request)
-        if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
+        if not wait_future(future, timeout_sec=2.0) or future.result() is None:
+            return None
+        return future.result().values[0].double_value
 
-        if future.result() is None:
-            return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
+    def _apply_db(self, volume_db: float) -> Optional[str]:
+        """Записать ``volume_db`` в ``tts_node``; ошибка — текстом, успех — ``None``."""
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import SetParameters
 
-        current_volume = future.result().values[0].double_value
-
-        # Вычислить новую громкость
-        if action == "louder":
-            new_volume = min(current_volume + 3.0, 6.0)
-            message = "Делаю громче"
-        elif action == "quieter":
-            new_volume = max(current_volume - 3.0, -20.0)
-            message = "Делаю тише"
-        elif action == "max":
-            new_volume = 6.0
-            message = "Максимальная громкость"
-        elif action == "normal":
-            new_volume = -3.0
-            message = "Нормальная громкость"
-        else:
-            return MCPToolResult(success=False, error=f"Неизвестное действие: {action}")
-
-        # Проверка на пределы
-        if abs(new_volume - current_volume) < 0.1:
-            if action == "louder":
-                return MCPToolResult(success=True, message="Громкость уже максимальная")
-            elif action == "quieter":
-                return MCPToolResult(success=True, message="Громкость уже минимальная")
-
-        # Установить новую громкость
         set_request = SetParameters.Request()
         param = Parameter()
         param.name = "volume_db"
         param.value = ParameterValue()
         param.value.type = ParameterType.PARAMETER_DOUBLE
-        param.value.double_value = new_volume
+        param.value.double_value = volume_db
         set_request.parameters = [param]
-
         future = self.set_params_client.call_async(set_request)
         if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось установить громкость (timeout)")
-
+            return "Не удалось установить громкость (timeout)"
         if future.result() is None or not future.result().results[0].successful:
-            return MCPToolResult(success=False, error="Не удалось установить громкость")
+            return "Не удалось установить громкость"
+        return None
 
-        self.log_info(f"Громкость: {current_volume:.1f} → {new_volume:.1f} dB")
-
-        return MCPToolResult(
-            success=True, data={"old_volume": current_volume, "new_volume": new_volume}, message=message
-        )
+    def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
+        """Установить громкость голоса: шагом, на максимум, обычную или ``level`` процентов."""
+        self.log_info(f"Изменение громкости: {action} level={level}")
+        if not self.get_params_client.wait_for_service(timeout_sec=1.0):
+            return MCPToolResult(success=False, error="TTS параметры недоступны")
+        current_volume = self._current_db()
+        if current_volume is None:
+            return MCPToolResult(success=False, error="Не удалось получить текущую громкость")
+        new_volume, error = self.target_db(action, level, current_volume)
+        if error is not None:
+            return MCPToolResult(success=False, error=error)
+        old_pct, new_pct = self.percent(current_volume), self.percent(new_volume)
+        data = {"old_volume": current_volume, "new_volume": new_volume, "percent": new_pct}
+        if abs(new_volume - current_volume) < 0.1:
+            edge = {"louder": "Громкость уже максимальная", "quieter": "Громкость уже минимальная"}
+            return MCPToolResult(success=True, data=data,
+                                 message=edge.get(action, f"Громкость голоса уже {new_pct}%"))
+        error = self._apply_db(new_volume)
+        if error is not None:
+            return MCPToolResult(success=False, error=error)
+        self.log_info(f"Громкость: {current_volume:.1f} → {new_volume:.1f} dB ({old_pct}% → {new_pct}%)")
+        message = self._MESSAGES.get(action, f"Громкость голоса: {old_pct}% → {new_pct}%")
+        return MCPToolResult(success=True, data=data, message=message)
 
 
 class SetPitchTool(MCPTool):
     """Инструмент для управления высотой голоса."""
+
+    event_source = "srv:/tts_node/set_parameters"
 
     def __init__(self, node):
         super().__init__(node)
@@ -169,7 +204,9 @@ class SetPitchTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return "Установить высоту голоса робота. Используй для команд 'говори выше', 'говори ниже'."
+        return ("Высота голоса робота шагом: higher / lower (±0.2, диапазон 0.5–2.0), normal — 1.0. Для команд "
+                "'говори выше', 'говори ниже'. Абсолютного значения нет; <prosody pitch> в speak_text не "
+                "работает (MiniMax и Yandex его вырезают, pitch игнорируется) — только этот тул.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -259,6 +296,8 @@ class SetPitchTool(MCPTool):
 
 class SetSpeedTool(MCPTool):
     """Инструмент для управления скоростью речи."""
+
+    event_source = "srv:/tts_node/set_parameters"
 
     def __init__(self, node):
         super().__init__(node)
@@ -509,7 +548,8 @@ class GetCurrentTimeTool(MCPTool):
     def description(self) -> str:
         return (
             "Получить текущее время и дату. Используй когда пользователь спрашивает "
-            "который час, какая дата, какой день недели, какое время суток, сколько сейчас времени."
+            "который час, какая дата, какой день недели, какое время суток, сколько сейчас времени. "
+            "Поле formatted_time уже написано русской прописью — озвучивай его дословно, время не выдумывай."
         )
 
     @property

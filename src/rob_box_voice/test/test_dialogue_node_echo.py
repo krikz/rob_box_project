@@ -3,7 +3,7 @@
 test_dialogue_node_echo.py — Unit-тесты Fix A (issue 989) для DialogueNode.
 
 Проверяет, что dialogue_node НЕ реагирует на rejected(empty)/маркеры
-отклонения в /voice/stt/result: молчит, не запускает диалог, не дёргает
+отклонения в /voice/stt/utterance: молчит, не запускает диалог, не дёргает
 TTS/LLM. Тест НЕ требует rclpy: DialogueNode._on_stt тестируется через
 __new__ + ручные моки (как в test_stt_node_fallback).
 """
@@ -100,8 +100,8 @@ def _ensure_rclpy_mock(monkeypatch):
         QoSProfile = MagicMock()
         ReliabilityPolicy = MagicMock()
         HistoryPolicy = MagicMock()
-        # Issue #1734 — dialogue_node.__init__ создаёт latched-топик
-        # barge_in_policy (QoSProfile(durability=DurabilityPolicy.
+        # dialogue_node.__init__ создаёт latched-подписки
+        # (QoSProfile(durability=DurabilityPolicy.
         # TRANSIENT_LOCAL)); без атрибута import dialogue_node падает
         # ImportError.
         DurabilityPolicy = MagicMock()

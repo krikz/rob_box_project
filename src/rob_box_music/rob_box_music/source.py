@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Set, Tuple
 
 from . import knowledge as kn
 from .choice import Choice, ChoiceQuestion, Chooser, Option
@@ -61,6 +61,8 @@ REASON_WORDS = {
     "rejected": "сервис генерации отклонил заказ",
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
+    "theme_cache": "под тему хватает сочинённого раньше",
+    "engine_cannot": "названный движок так не играет",
 }
 INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
                 "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
@@ -78,7 +80,8 @@ def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
 @dataclass(frozen=True)
 class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
-    голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «»."""
+    голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
+    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»."""
 
     generated: bool = False
     vocal: bool = False
@@ -86,10 +89,11 @@ class SourceAsk:
     fresh: bool = False
     own: bool = False
     genre: str = ""
+    engine: str = ""
 
     def describe(self) -> str:
         flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own") if getattr(self, name)]
-        return f"asked=[{','.join(flags)}] genre={self.genre or '—'}"
+        return f"asked=[{','.join(flags)}] genre={self.genre or '—'}" + (f" engine={self.engine}" if self.engine else "")
 
 
 def ask_genre(text: str) -> str:
@@ -103,6 +107,27 @@ def ask_genre(text: str) -> str:
     return style if style in kn.GEN_STYLES else ""
 
 
+def ask_engine(text: str) -> str:
+    """Движок, названный в речи (``MUSIC_ENGINES``: «на Ренардо» и искажения STT, в том числе слитые из двух слов); не
+    назван — «»."""
+    words = _words(text)
+    glued = [a + b for a, b in zip(words, words[1:])]
+    return next((key for key, engine in kn.MUSIC_ENGINES.items()
+                 if _has(words, engine.stems) or _has(glued, engine.stems)), "")
+
+
+def engine_route(engine: str) -> str:
+    """Путь, который играет названный движок (``SYNTH`` у Ренардо); движок не назван — «»."""
+    known = kn.MUSIC_ENGINES.get(engine)
+    return known.route if known is not None else ""
+
+
+def with_engine(ask: SourceAsk, engine: Optional[str]) -> SourceAsk:
+    """Слот ``engine`` схемы ``request_music`` дополняет слова: STT мог исказить имя дальше основ. Названное в
+    словах человека главнее; неизвестный ключ и ``auto`` ничего не меняют."""
+    return replace(ask, engine=engine) if engine in kn.MUSIC_ENGINES and not ask.engine else ask
+
+
 def source_ask(text: str) -> SourceAsk:
     """Слоты просьбы о пути из слов человека (код, без LLM)."""
     words = _words(text)
@@ -111,7 +136,8 @@ def source_ask(text: str) -> SourceAsk:
                       for i, w in enumerate(words) if i)
     vocal = (_has(words, kn.SOURCE_ASK_STEMS["vocal"]) or robot_voice
              or (_has(words, kn.SONG_STEMS) and (generated or own)))
-    return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text))
+    return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text),
+                     ask_engine(text))
 
 
 def synth_style(genre: str) -> Optional[str]:
@@ -197,12 +223,14 @@ def gen_block(ctx: SourceContext, cost: float) -> str:
 
 
 def _synth_option(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[Option]:
-    fit = 1.0 if piece else synth_fit(ask.genre)
+    named = engine_route(ask.engine) == SYNTH  # «на Ренардо»: годность стиля не отговорка, играет синтез
+    fit = 1.0 if piece or named else synth_fit(ask.genre)
     if ask.vocal or ctx.mode == "generate" or fit < kn.SYNTH_FIT_MIN:
         return None
-    key = PIECE if piece else synth_style(ask.genre)
+    key = PIECE if piece else synth_style(ask.genre) if synth_fit(ask.genre) >= kn.SYNTH_FIT_MIN else kn.DEFAULT_STYLE
     return Option(f"{SYNTH}:{key}", {"fallback": 1.0, "theme_match": 1.0 if ask.genre else 0.0,
-                                     "asked": -1.0 if ask.generated else 0.0, "wait_s": kn.INSTANT_WAIT_S},
+                                     "asked": 1.0 if named else -1.0 if ask.generated else 0.0,
+                                     "wait_s": kn.INSTANT_WAIT_S},
                   "своё: синтез" + ("" if piece else f" «{kn.GEN_STYLES.get(str(key), kn.GEN_STYLES['club']).name}»"))
 
 
@@ -274,10 +302,57 @@ def set_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str = "") -> List[
     return sorted(usable, key=order)
 
 
+def _theme_stems(text: str) -> Set[str]:
+    return {w[:kn.THEME_STEM_LEN] for w in _words(text)
+            if len(w) >= kn.THEME_WORD_MIN and not w.startswith(kn.THEME_FIT_STOP)}
+
+
+def theme_fit(theme_tags: str, track: CacheTrack) -> float:
+    """Насколько трек кэша по теме сета (#3775, решение Шифу 21.10 «подогнать под тему что есть»): метка темы целиком
+    в ``prompt`` — 1; иначе доля основ слов темы (``theme_tags``), которые есть в ``prompt``, названии и имени стиля
+    трека. Темы нет — 0. По теме — от ``THEME_FIT_MIN``."""
+    if not theme_tags:
+        return 0.0
+    if theme_tags in track.prompt:
+        return 1.0
+    want = _theme_stems(theme_tags)
+    style = kn.GEN_STYLES.get(track.style_key)
+    have = _theme_stems(" ".join((track.prompt, track.title, style.name if style else "")))
+    return len(want & have) / len(want) if want else 0.0
+
+
+def theme_cache(ask: SourceAsk, ctx: SourceContext, theme_tags: str) -> List[CacheTrack]:
+    """Треки кэша сета (:func:`set_cache` без фильтра темы) по теме (:func:`theme_fit` ≥ ``THEME_FIT_MIN``): ближе к
+    теме — раньше, при равных — порядок :func:`set_cache`."""
+    fits = [(theme_fit(theme_tags, t), t) for t in set_cache(ask, ctx)]
+    ranked = sorted(((f, i, t) for i, (f, t) in enumerate(fits) if f >= kn.THEME_FIT_MIN), key=lambda x: (-x[0], x[1]))
+    return [t for _f, _i, t in ranked]
+
+
+def _clip(text: str) -> str:
+    """Слова ``text`` через пробел, не длиннее ``GEN_THEME_MAX_CHARS`` (режется по слову)."""
+    out = ""
+    for word in text.split():
+        if len(out) + len(word) + (1 if out else 0) > kn.GEN_THEME_MAX_CHARS:
+            break
+        out = f"{out} {word}" if out else word
+    return out
+
+
 def theme_tags(theme: str) -> str:
-    """EN-теги генерации темы сета (``GEN_THEME_TAGS``: «патриотический» → patriotic, anthemic…); нет строки — «»."""
+    """Тема в тегах заказа Suno и её метка в кэше (``CacheTrack.prompt``, фильтр :func:`set_cache`): EN-теги строки
+    ``GEN_THEME_TAGS`` («патриотический» → patriotic, anthemic…); строки нет — слова темы как есть («пленников
+    прибывших эскобар», #3775: без них сет на свою тему брал любой кэш стиля, а заказ уходил без темы).
+    Темы нет — «»."""
     words = _words(theme)
-    return next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    found = next((tags for stems, tags in kn.GEN_THEME_TAGS.items() if _has(words, stems)), "")
+    return found or _clip(" ".join(words))
+
+
+def theme_title(theme: str) -> str:
+    """Название заказа по теме человека («Пленников прибывших эскобар»); темы нет — «» (название решает заказ)."""
+    text = _clip(" ".join(re.findall(r"[^\W_]+", theme or "")))
+    return text[:1].upper() + text[1:]
 
 
 def _slot_genre(token: str, mark: Optional[str]) -> str:
@@ -360,6 +435,8 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``.
     Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4)."""
     synth = _synth_option(ask, ctx, piece)
+    if engine_route(ask.engine) == SYNTH:  # движок назван: кэш и генерация не кандидаты, молчаливой подмены нет
+        return ((synth,), "") if synth else ((Option(f"{DECLINE}:engine_cannot", {}, "честный отказ"),), "engine_cannot")
     if piece and work is not None and not ask.vocal:
         covers, reason = _cover_options(ask, ctx, work)
         options = [o for o in [synth, *covers] if o is not None]
@@ -387,7 +464,7 @@ def set_candidates(ask: SourceAsk, ctx: SourceContext,
     кандидат: узнаваемость в приоритете (Шифу 14.10: «кавер в приоритете»). Иначе — как у трека без материала.
     Недавно игранный кэш при новом заказе — не кандидат (:func:`_not_replayed`)."""
     options, reason = source_candidates(ask, ctx)
-    if work is None or ask.vocal:
+    if work is None or ask.vocal or ask.engine:
         return _not_replayed(options, ctx), reason
     covers, why = _cover_options(ask, ctx, work)
     if not covers:
@@ -568,7 +645,8 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "cover_rejected_text",
            "cover_ready_text", "cover_slot", "cover_style_key", "slot_style", "GENERATE", "INSTRUCTIONS", "PIECE",
            "REASON_WORDS", "Route", "SYNTH",
-           "SourceAsk", "SourceContext", "ask_genre", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
+           "SourceAsk", "SourceContext", "ask_genre", "ask_engine", "cache_text", "choose_route", "choose_with_fallback",
+           "decline_text", "engine_route", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
-           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags"]
+           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
+           "theme_cache", "theme_fit", "theme_title", "with_engine"]

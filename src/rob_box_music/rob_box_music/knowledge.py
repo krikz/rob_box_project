@@ -971,6 +971,11 @@ DJ_LEVELER: Mapping[str, float] = {"lvlRatio": 1.5, "lvlUp": 8.0}
 SET_LEVELER: Mapping[str, float] = {}
 #: ``trimLag`` при старте трека встык, с; в блэнде громкость переезжает за длину блэнда.
 TRIM_LAG_S = 0.5
+#: Приглушение музыки под речь робота (ADR-0150 О8 (а), В16, PR-7d #3701): ручки ``duck*`` мастер-шины — ровно дефолты
+#: SynthDef (сверяет ``test_speech_duck.py``). −9 дБ, атака 80 мс, отпуск 400 мс — стартовые, утверждаются на слух
+#: Шифу по замеру A24; ROS-параметры ``music_duck_*`` ``mcp_server`` их перекрывают. Ручку ``duck`` 0/1 держит
+#: только ``engine.speech_duck.SpeechDuck``: в :data:`MASTER_DEFAULTS` её нет — старт трека не снимает приглушение.
+SPEECH_DUCK: Mapping[str, float] = {"duckDb": -9.0, "duckAttack": 0.08, "duckRelease": 0.4}
 #: Дуга громкости трека: секция → (смещение ``trim`` относительно ``trim`` трека, дБ; подъём на всю секцию?).
 #: Приёмка 02.10: брейк без бочки и баса был лишь на 1.8 дБ тише дропа — выравниватель мастер-шины (``lvlRatio 3``)
 #: поднимал его, и трек звучал ровной полкой (отзыв эксперта 05.10: «нет восхождения, кульминации»). ``trim`` стоит
@@ -1310,7 +1315,7 @@ __all__ += [
     "AMP_EXPONENT", "DJ_LEVELER", "DRUM_LOUDNESS_KEY", "KICK_SOUNDS", "kick_of",
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "HPF_IN_HZ", "HPF_OPEN",
-    "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "TRIM_LAG_S",
+    "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "SPEECH_DUCK", "TRIM_LAG_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "SYNTH_STEREO",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "BASS_ROBOT_DB", "BASS_ROBOT_LOW", "BASS_MIN_LOW", "bass_low_on_robot",
@@ -2714,7 +2719,8 @@ SET_STYLE_LIST_STOP: Tuple[str, ...] = ("хочу", "хотим", "на", "пр�
                                         "минуты", "трек", "трека", "треков", "чтобы", "давай", "пожалуйста", "сет",
                                         "сэт", "музык")
 #: Тема сета → EN-теги генерации (решение Шифу 14.10: тема при Suno — в теги трека). Ключ — основы слов темы; тема
-#: без строки — теги только стиля. Правит Шифу; на слух теги тем не проверены.
+#: без строки — её слова как есть, не длиннее ``GEN_THEME_MAX_CHARS`` (#3775: «сет для пленников, прибывших в Эскобар»
+#: уходил в Suno обычным «club house»). Правит Шифу; на слух теги тем не проверены.
 GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
     ("патриот", "родин", "отечеств", "гимн", "побед"): "patriotic, anthemic, heroic, marching snare",
     ("косм", "звезд", "галакт", "планет"): "cosmic, spacey, wide pads",
@@ -2723,6 +2729,25 @@ GEN_THEME_TAGS: Mapping[Tuple[str, ...], str] = {
     ("детск", "дети", "мульт"): "playful, cheerful, cartoon",
     ("праздн", "рожден", "вечеринк"): "festive, celebratory, party",
 }
+#: Потолок темы в заказе Suno (style/title) — как у ``generate_music(theme ≤ 60)`` (ADR-0158 §3.3).
+GEN_THEME_MAX_CHARS = 60
+# ── Кэш под тему сета (#3775, решение Шифу 21.10: «надо сет 10 треков по теме, есть 2 — дозаказываем недостающие и
+# сразу ставим что есть; нечего поставить — фоном тихо что-то включить и сказать, что готовим сет») ──────────────
+#: Трек кэша «по теме», если в его ``prompt``/названии/имени стиля есть не меньше этой доли слов темы
+#: (``source.theme_fit``). Треть: из темы в три слова («пленников прибывших эскобар») хватает одного — «Эскобар»;
+#: из одного слова — нужно оно само; из EN-тегов строки таблицы (4 слова) — два: одно общее «festive» у зимы и
+#: праздника темы не делает.
+THEME_FIT_MIN = 1.0 / 3.0
+#: Основа слова темы — первые 5 букв (падежи: «эскобар»/«эскобара», «пленников»/«пленные»); короче 4 букв — служебные.
+THEME_STEM_LEN, THEME_WORD_MIN = 5, 4
+#: Основы, которые есть почти в любом названии/просьбе и тему не несут («RoBBox club set», «музыка для…»).
+THEME_FIT_STOP: Tuple[str, ...] = ("музык", "трек", "песн", "мелод", "компози", "robbox", "тем", "сэт", "сет", "set",
+                                   "track", "music", "song")
+#: Фон, пока пишется первый трек темы, когда в кэше по теме нет ничего (K = 0): трек кэша стиля сета тише обычного —
+#: громкость ``amp`` ноты файла (0.35 ≈ −9 дБ; на слух не проверено) — и не длиннее ``SET_BACKGROUND_S`` за проход
+#: (первая задача V6_MINI — типично 30 с, ``GEN_MODELS``; не готова — сет продлевает фон ещё проходом).
+SET_BACKGROUND_GAIN = 0.35
+SET_BACKGROUND_S = 60.0
 #: Стили генерации (ADR-0158 §3.2). Правит Шифу; на слух проверены только теги «synthwave» и «grunge» (§1.3).
 GEN_STYLES: Mapping[str, GenStyle] = {
     "club": GenStyle("club house, four on the floor, punchy kick, warm bass", "клуб", "club"),
@@ -2770,6 +2795,31 @@ SOURCE_WEIGHTS: Mapping[str, float] = {"fallback": -2.0, "theme_match": 1.5, "ca
 #: ниже генерации (а без генерации — выше синтеза: сочинённое раньше лучше своего); «спой» — спетое раньше годится.
 SOURCE_CACHE_ASKED: Tuple[Tuple[str, float], ...] = (("fresh", -1.0), ("generated", -0.5), ("own", -0.5),
                                                      ("vocal", 0.5))
+
+
+@dataclass(frozen=True)
+class MusicEngine:
+    """Движок музыки, которого человек называет по имени («сыграй на Ренардо»): ключ слота ``engine`` в
+    ``request_music``, имя для фраз и логов, основы слов в речи (с искажениями STT), путь, который он играет."""
+
+    key: str
+    name: str
+    stems: Tuple[str, ...]
+    route: str
+
+
+#: Единственная таблица движков с их произносимыми именами (ADR-0148: слот решает код, не регекс в промпте). Основы
+#: — строчные, без «ё»; сверяются с началом слова речи и с парой соседних слов, склеенных («ре нардо»). Искажения —
+#: живой прогон 23.10 (Yandex STT: «на ренардо» → «на индардо») и вариации написания; новый вариант — строка сюда.
+#: «леонардо» сюда не попадает: основа сверяется с началом слова.
+MUSIC_ENGINES: Mapping[str, MusicEngine] = {
+    "renardo": MusicEngine("renardo", "Ренардо", (
+        "ренард", "рэнард", "рейнард", "рэйнард", "реинард", "рендард", "ринард", "индард", "инард",
+        "renard", "reynard", "rainard"), "synth"),
+}
+#: Значение слота ``engine`` «движок не назван»: путь решает код по ``SOURCE_WEIGHTS``.
+ENGINE_AUTO = "auto"
+
 #: Петь не просили — песня кэша ниже инструментала (добавка к ``asked``).
 SOURCE_CACHE_SONG_PENALTY = -0.25
 #: Трек кэша, игранный ближе этого, не «свежий» (признак ``fresh``).
@@ -2828,8 +2878,11 @@ __all__ += ["SET_FILL_SLACK_S", "GEN_BRIDGE_STYLES", "GEN_SET_DURATION_S", "GEN_
             "GEN_XFADE_S"]
 
 __all__ += ["GEN_LIBRARY_QUOTA_MB", "RATING_DISLIKE", "RATING_LIKE"]
+__all__ += ["GEN_THEME_MAX_CHARS", "SET_BACKGROUND_GAIN", "SET_BACKGROUND_S", "THEME_FIT_MIN", "THEME_FIT_STOP",
+            "THEME_STEM_LEN", "THEME_WORD_MIN"]
 __all__ += ["GEN_THEME_TAGS", "SET_STYLE_EXACT", "SET_STYLE_LIST_JOIN", "SET_STYLE_LIST_STEMS", "SET_STYLE_LIST_STOP"]
 
 __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODELS", "GEN_STYLES", "GenModel",
             "GenStyle", "INSTANT_WAIT_S", "ROBOT_VOICE_OWNERS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES",
             "SOURCE_CACHE_ASKED", "SOURCE_CACHE_SONG_PENALTY", "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]
+__all__ += ["ENGINE_AUTO", "MUSIC_ENGINES", "MusicEngine"]

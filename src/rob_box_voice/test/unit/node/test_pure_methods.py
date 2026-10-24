@@ -4,9 +4,7 @@ test_pure_methods.py — Unit-тесты «лёгких» методов Dialogu
 Покрывает:
   - _map_emotion_to_animation    (чистый dict lookup)
   - _generate_fallback_response  (чистый string matching)
-  - _detect_volume_intent        (regex, без ROS)
   - _detect_pitch_intent         (regex, без ROS)
-  - _speak_simple                (publish + json)
   - _trigger_sound               (publish)
   - _on_mcp_tools_update         (JSON parse → attributes)
   - _on_perception_update        (attribute update)
@@ -42,7 +40,6 @@ def node():
     n.state_pub = MagicMock()
 
     # State attrs
-    n.current_dialogue_id = None
     n.available_tools = []
     n.mcp_tools_available = False
     n.internet_available = True
@@ -77,15 +74,13 @@ def node():
     # Все четыре поля по умолчанию "ничего не играет"; тесты точечно
     # переопределяют нужные куски для проверки каждой ветки.
     n._dj = None  # type: ignore[assignment]
-    n._pending_music_cleanup = False
-    n._active_batches = {}
     # SpeechAccumulator/SchedulerExecutor — реальные инстансы, но
     # ``_build_dynamic_system_context`` лезет через getattr с дефолтом None
     # в каждой ветке, поэтому просто притворимся, что их нет.
     setattr(n, "_speech_accumulator", None)
     setattr(n, "_accumulate_no_wake_enabled", False)
     setattr(n, "_pending_backlog_flush", False)
-    setattr(n, "_scheduler_executor", None)
+    setattr(n, "_tool_executor", None)
 
     return n
 
@@ -156,38 +151,6 @@ class TestGenerateFallbackResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  _detect_volume_intent
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestDetectVolumeIntent:
-    def test_louder(self, node):
-        assert node._detect_volume_intent("громче пожалуйста") == "louder"
-        assert node._detect_volume_intent("сделай громко") == "louder"
-
-    def test_quieter(self, node):
-        assert node._detect_volume_intent("говори тише") == "quieter"
-        assert node._detect_volume_intent("потише пожалуйста") == "quieter"
-
-    def test_volume_max(self, node):
-        # "говори громко" → специфичный паттерн max, не louder
-        assert node._detect_volume_intent("говори громко") == "max"
-        assert node._detect_volume_intent("максимальная громкость") == "max"
-
-    def test_volume_normal(self, node):
-        # max/normal проверяются до louder — "громкость" не перехватывается r"громко"
-        assert node._detect_volume_intent("нормальная громкость") == "normal"
-        assert node._detect_volume_intent("стандартная громкость") == "normal"
-        assert node._detect_volume_intent("обычная громкость") == "normal"
-
-    def test_no_match_returns_none(self, node):
-        assert node._detect_volume_intent("расскажи анекдот") is None
-        assert node._detect_volume_intent("") is None
-
-    def test_case_insensitive_via_lower(self, node):
-        assert node._detect_volume_intent("ТИШЕ") == "quieter"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  _detect_pitch_intent
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -208,60 +171,6 @@ class TestDetectPitchIntent:
     def test_no_match_returns_none(self, node):
         assert node._detect_pitch_intent("расскажи сказку") is None
         assert node._detect_pitch_intent("") is None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _speak_simple
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSpeakSimple:
-    def test_publishes_ssml_json(self, node):
-        node._speak_simple("Привет мир")
-
-        node.response_pub.publish.assert_called_once()
-        published = node.response_pub.publish.call_args[0][0]
-        data = json.loads(published.data)
-        assert "<speak>Привет мир</speak>" in data["ssml"]
-        assert "dialogue_id" in data
-
-    def test_sets_current_dialogue_id(self, node):
-        node._speak_simple("Тест")
-        assert node.current_dialogue_id is not None
-
-    def test_without_error_animation_no_anim_publish(self, node):
-        node._speak_simple("Тест", show_error_animation=False)
-        node.animation_pub.publish.assert_not_called()
-
-    def test_with_error_animation_publishes_error(self, node):
-        node._speak_simple("Ошибка", show_error_animation=True)
-        node.animation_pub.publish.assert_called_once()
-        anim_data = node.animation_pub.publish.call_args[0][0].data
-        assert "error" in anim_data
-
-    def test_dialogue_id_unique_per_call(self, node):
-        node._speak_simple("раз")
-        id1 = node.current_dialogue_id
-        node._speak_simple("два")
-        id2 = node.current_dialogue_id
-        assert id1 != id2
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _trigger_sound
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestTriggerSound:
-    def test_publishes_sound_name(self, node):
-        node._trigger_sound("startup")
-
-        node.sound_trigger_pub.publish.assert_called_once()
-        msg = node.sound_trigger_pub.publish.call_args[0][0]
-        assert msg.data == "startup"
-
-    def test_no_crash_on_publish_exception(self, node):
-        node.sound_trigger_pub.publish.side_effect = RuntimeError("bus error")
-        # Должен поглотить ошибку без краша
-        node._trigger_sound("startup")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,14 +372,12 @@ class TestBuildDynamicSystemContextTtsProvider:
     def test_nominal_provider_without_state(self, node):
         """Нет provider_state → параметр tts_provider (minimax)."""
         ctx = node._build_dynamic_system_context()
-        assert "<tts_provider>minimax</tts_provider>" in ctx
         assert "provider: minimax" in ctx
 
     def test_actual_provider_overrides_param(self, node):
         """Фолбек minimax→yandex: context показывает yandex + его голоса."""
         node._actual_tts_provider = "yandex"
         ctx = node._build_dynamic_system_context()
-        assert "<tts_provider>yandex</tts_provider>" in ctx
         assert "provider: yandex" in ctx
         # голоса РЕАЛЬНОГО провайдера (yandex), а не minimax
         assert "anton" in ctx
@@ -493,40 +400,42 @@ class TestBuildDynamicSystemContextTtsProvider:
 
 
 class TestBuildDynamicSystemContextTtsVoiceTag(object):
-    """Issue #2817 -- <tts_voice> otражает ФАКТИЧЕСКИЙ голос, а не
-    захардкоженный "Yandex_Maxim" (живой лог 23.09: реально говорил
-    MiniMax male-qn-qingse, а тег показывал Yandex-имя)."""
+    """Issue #2817 -- голос в снимке -- ФАКТИЧЕСКИЙ, а не захардкоженный "Yandex_Maxim" (живой лог 23.09: реально
+    говорил MiniMax male-qn-qingse, а тег показывал Yandex-имя). #3696: голос -- ``current_voice`` в ``tts_context``,
+    род речи (``speech_gender``) считает код по метаданным этого голоса."""
 
     def test_default_voice_of_active_provider_without_state(self, node):
         """Нет provider_state / current_voice -- дефолт АКТИВНОГО
         провайдера (minimax), а не Yandex."""
         ctx = node._build_dynamic_system_context()
-        assert "<tts_voice>male-qn-qingse</tts_voice>" in ctx
+        assert "current_voice: male-qn-qingse" in ctx
+        assert "<speech_gender>male</speech_gender>" in ctx
         assert "Yandex_Maxim" not in ctx
-
-    def test_current_voice_set_via_set_voice(self, node):
-        """set_voice выставил ``_current_tts_voice`` -- тег его отражает."""
-        node._current_tts_voice = "Russian_ReliableMan"
-        ctx = node._build_dynamic_system_context()
-        assert "<tts_voice>Russian_ReliableMan</tts_voice>" in ctx
 
     def test_actual_voice_after_fallback_wins(self, node):
         """Фолбек minimax->yandex сообщил фактический голос (issue #1229) --
-        тег показывает его, а не номинальный provider'а/set_voice."""
+        снимок показывает его и его род, а не номинальный provider'а/set_voice."""
         node._actual_tts_provider = "yandex"
-        node._actual_tts_voice = "anton"
+        node._actual_tts_voice = "alena"
         ctx = node._build_dynamic_system_context()
-        assert "<tts_voice>anton</tts_voice>" in ctx
+        assert "current_voice: alena" in ctx
+        assert "<speech_gender>female</speech_gender>" in ctx
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  _build_music_state_snapshot — issue #1544
+#  music_state — issue #1544
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _music_section(node) -> dict:
+    """Раздел ``music_state`` снимка хода (#3696: данные JSON) — из настоящего ``_build_dynamic_system_context``."""
+    ctx = node._build_dynamic_system_context()
+    return json.loads(ctx.split("<music_state>", 1)[1].split("</music_state>", 1)[0])
+
 
 class TestBuildMusicStateSnapshot:
-    """Единый <music_state> snapshot для LLM (issue #1544, #3161).
+    """Единый music_state для LLM (issue #1544, #3161).
 
-    С #3161 тег строится ТОЛЬКО из того, что публикует плеер: снимок
+    С #3161 раздел строится ТОЛЬКО из того, что публикует плеер: снимок
     ``/voice/music/state`` (+ имя темы из ``/voice/music/form``); трек
     библиотеки генераций — тоже на деке (ADR-0158 PR-2). Эвристики
     ``beat``/``cleanup`` (cleanup-флаг, живые TTS-батчи) больше нет —
@@ -542,46 +451,31 @@ class TestBuildMusicStateSnapshot:
             build_music_state_payload,
         )
 
-        node._track_mode_music_active = False
         payload = build_music_state_payload(**kw)
         node._on_music_state(SimpleNamespace(data=payload))
 
     def test_unknown_until_player_reports(self, node) -> None:
-        snap = node._build_music_state_snapshot()
-        assert 'playing="unknown"' in snap
-        assert "ai=" not in snap
-        assert snap.count("<music_state") == 1
-        assert snap.count("/>") == 1
+        assert _music_section(node) == {"playing": "unknown", "dj": "unknown"}
 
     def test_playing_from_snapshot_with_name(self, node) -> None:
         self._feed_state(node, playing=True, track_id="t-1", dj=True)
         node._music_state_mem().observe_track_name("клубный трек")
-        snap = node._build_music_state_snapshot()
-        assert 'playing="yes"' in snap
-        assert 'track="клубный трек"' in snap
-        assert 'dj="on"' in snap
+        snap = _music_section(node)
+        assert snap["playing"] == "yes" and snap["track"] == "клубный трек" and snap["dj"] == "on"
 
-    def test_heuristic_flags_no_longer_claim_playing(self, node) -> None:
-        """Cleanup-флаг и TTS-батчи — не «играет»: плеер сказал idle."""
+    def test_idle_snapshot_is_not_playing(self, node) -> None:
+        """Плеер сказал idle — не «играет»."""
         self._feed_state(node, playing=False)
-        node._pending_music_cleanup = True
-        node._active_batches = {"batch-1": 2}
-        snap = node._build_music_state_snapshot()
-        assert 'playing="no"' in snap
-        assert "beat=" not in snap
-        assert "cleanup=" not in snap
+        assert _music_section(node) == {"playing": "no", "dj": "off"}
 
     def test_library_track_is_reported_from_the_deck(self, node) -> None:
         """ADR-0158 PR-2: трек библиотеки генераций играет на деке — название из снимка владельца, без ``ai=``;
-        кавычки и амперсанды названия НЕ ломают XML атрибут."""
+        кавычки и амперсанды названия — данные JSON, разметку снимка не ломают."""
         self._feed_state(node, playing=True, track_id="gen_abc12345_1",
                          dj={"enabled": False, "title": 'Techno "rave" & more', "source": "generated"})
-        snap = node._build_music_state_snapshot()
-        assert 'playing="yes"' in snap
-        assert "&quot;rave&quot;" in snap
-        assert "&amp; more" in snap
-        assert 'Techno "rave"' not in snap
-        assert "ai=" not in snap
+        snap = _music_section(node)
+        assert snap["playing"] == "yes" and snap["track"] == 'Techno "rave" & more'
+        assert "ai" not in snap
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -607,13 +501,11 @@ class TestBuildDynamicSystemContextMusicState:
             build_music_state_payload,
         )
 
-        node._track_mode_music_active = False
         node._on_music_state(SimpleNamespace(
             data=build_music_state_payload(playing=True, track_id="t", dj=True)
         ))
-        ctx = node._build_dynamic_system_context()
-        assert 'playing="yes"' in ctx
-        assert 'dj="on"' in ctx
+        snap = _music_section(node)
+        assert snap["playing"] == "yes" and snap["dj"] == "on"
 
     def test_legacy_generated_music_tag_replaced(self, node) -> None:
         """Issue #1392 follow-up: <generated_music> тег УДАЛЁН; ADR-0158 PR-2: и ``ai=`` тоже — трек библиотеки
@@ -622,9 +514,8 @@ class TestBuildDynamicSystemContextMusicState:
 
         from rob_box_voice.core.music_player_state import build_music_state_payload
 
-        node._track_mode_music_active = False
         node._on_music_state(SimpleNamespace(data=build_music_state_payload(
             playing=True, track_id="gen_abc12345_1", dj={"enabled": False, "title": "AI track"})))
         ctx = node._build_dynamic_system_context()
         assert "<generated_music>" not in ctx and "ai=" not in ctx
-        assert 'track="AI track"' in ctx
+        assert _music_section(node)["track"] == "AI track"

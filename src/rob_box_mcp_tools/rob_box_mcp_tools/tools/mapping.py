@@ -36,6 +36,8 @@ def _create_service_client(node, srv_type, srv_name, callback_group):
 class StartMappingTool(MCPTool):
     """Инструмент для начала нового картографирования."""
 
+    event_source = "srv:/rtabmap/rtabmap/set_mode_mapping"
+
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
@@ -186,6 +188,8 @@ class StartMappingTool(MCPTool):
 class ContinueMappingTool(MCPTool):
     """Инструмент для продолжения картографирования."""
 
+    event_source = "srv:/rtabmap/rtabmap/set_mode_mapping"
+
     def __init__(self, node):
         super().__init__(node)
         self._service_cb_group = ReentrantCallbackGroup() if ReentrantCallbackGroup is not None else None
@@ -235,6 +239,8 @@ class ContinueMappingTool(MCPTool):
 
 class FinishMappingTool(MCPTool):
     """Инструмент для завершения картографирования."""
+
+    event_source = "srv:/rtabmap/rtabmap/set_mode_localization"
 
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)
@@ -341,6 +347,8 @@ class FinishMappingTool(MCPTool):
 
 class OptimizeMapTool(MCPTool):
     """Постобработка карты: loop closures + bundle adjustment + cleanup + backup."""
+
+    event_source = "srv:/rtabmap/rtabmap/detect_more_loop_closures"
 
     def __init__(self, node):
         super().__init__(node)
@@ -489,6 +497,8 @@ class OptimizeMapTool(MCPTool):
 
 class LoadMapTool(MCPTool):
     """Загрузить существующую карту и перейти в режим локализации."""
+
+    event_source = "srv:/rtabmap/rtabmap/load_database"
 
     def __init__(self, node, waypoint_store: Optional["WaypointAdapter"] = None, mapping_state=None):
         super().__init__(node)

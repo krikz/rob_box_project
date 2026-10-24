@@ -562,7 +562,7 @@ def test_dj_set_status_tells_the_set_ended_and_stop_after_the_end_is_idle():
     while rig.clock.beat < end:  # тул компонует N+1 в фоновом потоке: шаг клока — после его конца
         rig.clock.run_until(rig.clock.beat + 4)
         for thread in threading.enumerate():
-            if thread.name == "rbx-set-pregen":
+            if thread.name == "rbx-set-next":
                 thread.join(30)
     status = tool.status()
     assert status["ended"] is True and status["active"] is False and status["tracks"] == 2

@@ -17,8 +17,8 @@ ADR-0083 фиксирует контракт сборки :class:`AgentCore`. Д
 ADR-0080 §1.6 раскладываются по полям спека:
 
 * ``prompt_dir`` / ``system_prompt_file`` — где лежит system_prompt.
-* ``skill_slice`` — какие фрагменты скиллов читать
-  (:func:`load_skill_prompts`).
+* срез тулов хода — не здесь: его задаёт нода до хода
+  (``AgentCore.set_visible_tools``, ``rob_box_dialog.tools_view``, ADR-0150 PR-6).
 * ``tools`` — готовый ``ToolProvider`` от ноды (нужен rclpy для
   ``ROSMCPToolProvider``).
 * ``provider_chain`` / ``settings`` / ``per_provider_settings`` — LLM.
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -71,6 +71,11 @@ _logger = logging.getLogger(__name__)
 # ── Spec ────────────────────────────────────────────────────────────
 
 
+def _same_provider(provider: Any) -> Any:
+    """Обёртка провайдера по умолчанию: без изменений."""
+    return provider
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     """Декларативная конфигурация одного агента.
@@ -90,20 +95,10 @@ class AgentSpec:
     """``"personality"`` или ``"operator"`` — значение колонки ``agent``."""
 
     prompt_dir: Path
-    """Каталог, где лежат ``<system_prompt_file>`` и ``skills/``."""
+    """Каталог, где лежит ``<system_prompt_file>``."""
 
     system_prompt_file: str
     """Имя ``.txt`` внутри ``prompt_dir`` (system_prompt)."""
-
-    skill_slice: tuple[str, ...] = ()
-    """Имена фрагментов из ``prompt_dir/skills/<name>.txt`` для загрузки.
-    Пустой tuple = секция скиллов выключена (Move A, ADR-0080 §3.5).
-    """
-
-    use_scheduler: bool = False
-    """Пока W7b планировщик (issue #968) живёт только на стороне
-    личности. Supervisor собирает агента ``use_scheduler=False`` —
-    явное значение через спек, а не хардкод в supervisor'е."""
 
     memory_namespace: str = "personality"
     """Значение колонки ``agent`` в ``facts`` (ADR-0083 §2.4)."""
@@ -146,19 +141,20 @@ class AgentSpec:
     """``{provider_name: async_callable}``. Personality регистрирует
     deepseek-пробер (есть balance API); supervisor — пусто."""
 
+    wrap_provider: Callable[[Any], Any] = _same_provider
+    """Обёртка каждого собранного провайдера цепочки ДО ``HealthAwareFallbackLLM`` (имя кэша здоровья — у
+    обёрнутого). Personality так включает режим команд по capabilities провайдера (ADR-0150 §4.5,
+    ``rob_box_voice.core.command_bridge``); по умолчанию провайдер как есть."""
+
     # ── обязательно общее ────────────────────────────────────────
     history_trim_limit: int = 10
-
-    narrow_tools_to_skill: bool = False
-    """ТАРС видит все инструменты без сужения — это явное значение,
-    а не хардкод supervisor'а (ADR-0083 §2.2 #J)."""
 
     dsm: DialogueStateMachine = field(default_factory=DialogueStateMachine)
 
     user_id: str = "default"
 
 
-# ── Prompt / skill loaders ──────────────────────────────────────────
+# ── Prompt loader ───────────────────────────────────────────────────
 
 
 def load_system_prompt(spec: AgentSpec) -> str:
@@ -187,62 +183,6 @@ def load_system_prompt(spec: AgentSpec) -> str:
             spec.name, path, exc,
         )
         return ""
-
-
-def load_skill_prompts(spec: AgentSpec) -> dict[str, str]:
-    """Прочитать фрагменты скиллов из ``prompt_dir/skills/``.
-
-    Возвращает ``{skill_name: text}`` для каждого имени из
-    ``spec.skill_slice``. Отсутствие файла для объявленного скилла
-    **не** считается ошибкой — скилл просто остаётся без текста, а
-    его инструменты продолжают работать.
-
-    В отличие от supervisor_node, эта функция **никогда** не лезет в
-    ``rob_box_voice/prompts/skills`` — ADR-0083 §1.3 #3 фиксирует
-    эту протечку как класс регрессии, который этот модуль закрывает.
-    Если ТАРСу нужны personality-фрагменты, они должны быть
-    опубликованы через ``tool_catalog`` (ADR-0051 §6) или явно
-    включены в ``skill_slice`` со ссылкой на нужный пакет — но не
-    здесь.
-    """
-    if not spec.skill_slice:
-        return {}
-    if not spec.prompt_dir or not spec.prompt_dir.is_dir():
-        _logger.info(
-            "[assembly] %s: skills disabled (prompt_dir missing or empty "
-            "skill_slice)",
-            spec.name,
-        )
-        return {}
-    skills_dir = spec.prompt_dir / "skills"
-    loaded: dict[str, str] = {}
-    absent: list[str] = []
-    for skill in spec.skill_slice:
-        path = skills_dir / f"{skill}.txt"
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            absent.append(skill)
-            continue
-        if text:
-            loaded[skill] = text
-        else:
-            absent.append(skill)
-    if loaded:
-        _logger.info(
-            "[assembly] %s: loaded %d skill fragment(s) — %s",
-            spec.name, len(loaded), ", ".join(sorted(loaded)),
-        )
-    if absent:
-        _logger.warning(
-            "[assembly] %s: %d skill fragment(s) had no usable text: %s "
-            "(tools remain registered; LLM runs without domain instructions)",
-            spec.name, len(absent), ", ".join(sorted(absent)),
-        )
-    return loaded
-
-
-# ── LLM chain builder ───────────────────────────────────────────────
 
 
 def _resolve_provider_settings(
@@ -334,7 +274,7 @@ def _build_llm_chain(
                 spec.name, name, exc,
             )
             continue
-        built.append(provider)
+        built.append(spec.wrap_provider(provider))
 
     if not built:
         raise RuntimeError(
@@ -394,7 +334,6 @@ def build_agent(
     memory: "MemoryStore",
     llm: Any = None,
     system_prompt: str | None = None,
-    skill_prompts: Mapping[str, str] | None = None,
 ) -> AgentCore:
     """Собрать :class:`AgentCore` по спеке (ADR-0083 §2.1).
 
@@ -424,14 +363,7 @@ def build_agent(
       (ADR-0083 §2.3 follow-up). По умолчанию ``None`` — текст читается
       из ``spec.prompt_dir / spec.system_prompt_file``. Если нода
       применила к прочитанному тексту post-processing
-      (``_split_skill_sections`` dialogue_node — раскол §5/§6
-      мастер-промпта по фрагментам скиллов), она передаёт результат
-      сюда, иначе сборка не увидит pre-split текст.
-    * ``skill_prompts`` — опциональная ЗАМЕНА фрагментов скиллов
-      (ADR-0083 §2.3 follow-up). По умолчанию ``None`` — фрагменты
-      читаются из ``spec.prompt_dir/skills/`` по ``spec.skill_slice``.
-      Нода может передать сюда post-processed словарь (после
-      ``_split_skill_sections`` + ``merge_skill_prompts``).
+      (например, правила разметки ADR-0056), она передаёт результат сюда.
 
     Контракт:
 
@@ -478,13 +410,10 @@ def build_agent(
             effective_spec = _with_checkers(spec, checkers)
         llm = _build_llm_chain(effective_spec, settings_for=settings_for)
 
-    # ADR-0083 §2.3 follow-up: caller may post-process the prompt /
-    # skill fragments (dialogue_node applies ``_split_skill_sections``
-    # before core starts). When overrides are None we read from disk.
+    # ADR-0083 §2.3 follow-up: caller may post-process the prompt before core starts.
+    # When the override is None we read from disk.
     if system_prompt is None:
         system_prompt = load_system_prompt(spec)
-    if skill_prompts is None:
-        skill_prompts = load_skill_prompts(spec)
 
     core = AgentCore(
         llm=llm,
@@ -496,20 +425,15 @@ def build_agent(
         system_prompt=system_prompt,
         use_streaming=spec.use_streaming,
         on_prompt=spec.on_prompt,
-        skill_prompts=skill_prompts,
-        narrow_tools_to_skill=spec.narrow_tools_to_skill,
         llm_settings=primary_settings,
     )
     _logger.info(
         "[assembly] built AgentCore for %s "
-        "(providers=%s, prompt=%d chars, skills=%s, memory_namespace=%s, "
-        "scheduler=%s)",
+        "(providers=%s, prompt=%d chars, memory_namespace=%s)",
         spec.name,
         list(spec.provider_chain),
         len(system_prompt),
-        sorted(skill_prompts.keys()),
         spec.memory_namespace,
-        spec.use_scheduler,
     )
     return core
 
@@ -529,23 +453,9 @@ def _with_checkers(
     return replace(spec, health_balance_checkers=dict(checkers))
 
 
-def normalize_skill_slice(slice_: Iterable[str] | None) -> tuple[str, ...]:
-    """Превратить произвольный iterable в frozen-совместимый tuple.
-
-    Используется нодами при чтении ``skill_slice`` из YAML, где
-    ожидается list — frozen-контракт требует tuple, иначе
-    ``dataclasses.replace`` в тестах выдаёт ``TypeError``.
-    """
-    if not slice_:
-        return ()
-    return tuple(slice_)
-
-
 __all__ = [
     "AgentSpec",
     "build_agent",
     "build_llm_chain",
     "load_system_prompt",
-    "load_skill_prompts",
-    "normalize_skill_slice",
 ]

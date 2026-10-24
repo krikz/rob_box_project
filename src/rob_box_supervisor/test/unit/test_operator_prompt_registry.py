@@ -1,15 +1,9 @@
 """Гард #3298: промпт ТАРС не расходится с реальным реестром инструментов.
 
-Промпт велел звать ``say`` и ``set_voice_preset``, которых в реестре
-оператора нет (``say`` скрыт от LLM: ``llm_visible=False``), и молчал про
-``show_metrics`` / ``get_perception_context``. Модель либо вызывала
-несуществующее, либо отвечала «инструмента нет» про существующее.
-
-Каталог берём там же, где реестр оператора: ``operator_visible_tools()``
-из ``rob_box_core.tool_catalog`` (llm-видимые + ``operator_visible``, в т.ч.
-``say``; их же предзаполняет ``ToolRegistry(for_operator=True)``) плюс
-два инструмента, которые добавляются не из каталога: ``show_metrics``
-(``TarsPanelDispatcher.register_tool``) и ``load_skill`` (``AgentCore``).
+Промпт велел звать ``say`` и ``set_voice_preset``, которых в реестре не было, и молчал про ``show_metrics`` /
+``get_perception_context``. С PR-13b (#3708) список инструментов в промпте строит код
+(:mod:`rob_box_supervisor.operator_prompt`) из реестра оператора ``operator_visible_tools()``; файл промпта держит
+только правила и ни одного имени тула — второй копии знания нет.
 """
 
 from __future__ import annotations
@@ -25,67 +19,62 @@ from rob_box_supervisor.metrics_source import (
     QUERY_ALIASES,
     metric_dictionary_text,
 )
+from rob_box_supervisor.operator_prompt import CONFIRM_RULE, TOOLS_HEADER, operator_prompt
 
 _PROMPT = (
     Path(__file__).resolve().parents[2] / "prompts" / "operator_system_prompt.txt"
 )
-
-#: Не из каталога: регистрируются кодом супервизора / ядра агента.
-_EXTRA_OPERATOR_TOOLS = {"show_metrics", "load_skill"}
-
-_DOUBLE_BACKTICK_RE = re.compile(r"``([^`]+)``")
-_TOOL_NAME_RE = re.compile(r"([a-z][a-z0-9_]*)(?:\(.*\))?")
+_WORD_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
-def _operator_registry() -> set[str]:
-    return {e.name for e in operator_visible_tools()} | _EXTRA_OPERATOR_TOOLS
+def _rules() -> str:
+    return _PROMPT.read_text(encoding="utf-8")
 
 
-def _prompt_tool_names() -> set[str]:
-    """Имена в двойных бэктиках; ``operator.admin`` и т.п. (с точкой) — не тулы."""
-    names: set[str] = set()
-    for token in _DOUBLE_BACKTICK_RE.findall(_PROMPT.read_text(encoding="utf-8")):
-        match = _TOOL_NAME_RE.fullmatch(token.strip())
-        if match:
-            names.add(match.group(1))
-    return names
+def _registry() -> set[str]:
+    return {e.name for e in operator_visible_tools()}
 
 
-def test_prompt_mentions_tools() -> None:
-    """Гард не вырождается: в промпте есть что проверять."""
-    assert {"show_metrics", "get_perception_context"} <= _prompt_tool_names()
+def _named(text: str) -> set[str]:
+    return set(_WORD_RE.findall(text)) & set(tool_names())
 
 
-def test_every_tool_named_in_prompt_is_in_operator_registry() -> None:
-    missing = _prompt_tool_names() - _operator_registry()
-    assert not missing, (
-        f"промпт ТАРС называет инструменты, которых нет в реестре оператора: "
-        f"{sorted(missing)}"
-    )
+def test_rules_file_names_no_tool() -> None:
+    """Имена тулов — только в разделе, который строит код."""
+    assert _named(_rules()) == set()
 
 
-def test_prompt_names_no_hidden_or_gone_tools() -> None:
-    """Инструменты вне реестра оператора и удалённые — не упоминаются."""
-    named = _prompt_tool_names()
-    hidden = {n for n in tool_names() if n not in _operator_registry()}
-    assert not (named & hidden)
-    for gone in ("set_voice_preset", "set_voice_language", "preview_voice"):
-        assert gone not in named
+@pytest.mark.parametrize("engine", ["v1", "v2"])
+def test_rendered_prompt_names_only_registry_tools(engine: str) -> None:
+    prompt = operator_prompt(_rules(), engine)
+    assert prompt.startswith(_rules().strip()) and TOOLS_HEADER in prompt
+    assert _named(prompt) <= _registry()
+    assert CONFIRM_RULE[engine] in prompt
 
 
-def test_say_is_in_prompt_and_in_operator_registry() -> None:
-    """#3305: ``say`` теперь и в промпте, и в реестре оператора."""
-    assert "say" in _prompt_tool_names()
-    assert "say" in _operator_registry()
-    text = _PROMPT.read_text(encoding="utf-8")
-    assert "этого не умеешь" not in text
+def test_every_operator_only_tool_is_described() -> None:
+    """``show_metrics``, ``say`` — у каждого тула «только у оператора» строка с описанием."""
+    prompt = operator_prompt(_rules())
+    own = {e.name for e in operator_visible_tools() if not e.llm_visible}
+    assert {"say", "show_metrics", "read_logs", "ros2_node_status", "container_status"} <= own
+    for name in own:
+        assert f"- {name} — " in prompt
 
 
-def test_prompt_keeps_speak_text_ban_and_stale_failure_rule() -> None:
-    text = _PROMPT.read_text(encoding="utf-8")
-    assert "Никогда не вызывай ``speak_text``" in text
-    assert "в этом ходе" in text.lower()
-    assert "журнал" in text.lower()
+def test_say_is_the_aloud_tool_and_speak_text_is_banned() -> None:
+    prompt = operator_prompt(_rules())
+    assert "вслух людям рядом — say" in prompt
+    assert "speak_text — инструмент личности, его не вызывай" in prompt
+
+
+def test_prompt_carries_metric_dictionary_and_stale_failure_rule() -> None:
+    prompt = operator_prompt(_rules())
+    assert metric_dictionary_text() in prompt
+    assert "в этом ходе" in prompt.lower() and "журнал" in prompt.lower()
+
+
+def test_empty_rules_give_no_prompt() -> None:
+    assert operator_prompt("  ") == ""
 
 
 @pytest.mark.parametrize(

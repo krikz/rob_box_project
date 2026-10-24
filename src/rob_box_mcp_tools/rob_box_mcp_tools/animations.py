@@ -1,9 +1,10 @@
 """LED animation vocabulary — one declaration for every tool that uses it.
 
-The robot's animations are defined by the manifests in
-``src/rob_box_animations/animations/manifests/*.yaml``; that directory is
-the source of truth, and ``test_animation_catalog_matches_manifests``
-fails the build when this list drifts from it.
+The robot's face draws procedural scenes (``face_node``, ADR-0150 §5.5):
+every name here resolves to a scene of ``rob_box_animations.face.states``
+(``SCENES`` / ``LEGACY``), and ``tests/unit/docker/test_animation_assets.py``
+fails the build when a name has nothing behind it. The scene catalogue is
+wider than this list; extending the tool vocabulary is PR-3c (#3691).
 
 Before this module the same vocabulary existed three times and disagreed:
 
@@ -29,10 +30,16 @@ from __future__ import annotations
 __all__ = [
     "ANIMATION_ALIASES",
     "KNOWN_ANIMATIONS",
+    "SHOW_MAX_S",
+    "SHOW_MIN_S",
+    "clamp_show_seconds",
     "normalize_animation",
 ]
 
-#: Every animation with a manifest, i.e. every name the player can render.
+#: ``play_animation``: допустимая длительность показа, секунды; вне диапазона - ``SHOW_MIN_S``.
+SHOW_MIN_S, SHOW_MAX_S = 2.0, 30.0
+
+#: Every name the ``play_animation`` tool offers; each resolves to a face scene.
 KNOWN_ANIMATIONS: tuple[str, ...] = (
     "accelerating",
     "ambulance",
@@ -105,3 +112,14 @@ def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str
     candidate = str(animation).strip().lower()
     candidate = ANIMATION_ALIASES.get(candidate, candidate)
     return candidate if candidate in KNOWN_ANIMATIONS else fallback
+
+
+def clamp_show_seconds(duration: float | None) -> float | None:
+    """Длительность показа ``play_animation``: ``None`` - по умолчанию лица; вне ``[SHOW_MIN_S, SHOW_MAX_S]`` - минимум.
+
+    Единственное правило: его применяют и тул (ответ модели), и диалог (ExpressionRequest.ttl_ms).
+    """
+    if duration is None:
+        return None
+    seconds = float(duration)
+    return seconds if SHOW_MIN_S <= seconds <= SHOW_MAX_S else SHOW_MIN_S

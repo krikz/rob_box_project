@@ -5,7 +5,7 @@ scenario_runner/runner.py — Исполнитель интеграционны�
 Логика:
   1. Читает все *.yaml файлы из SCENARIOS_DIR
   2. Для каждого сценария выполняет шаги:
-     - inject_stt      → публикует строку в /voice/stt/result
+     - inject_stt      → публикует Utterance в /voice/stt/utterance
      - inject_vad      → публикует bool в /audio/vad
      - wait_ms         → пауза без публикации
   3. После каждого inject_stt ждёт ответ на /voice/dialogue/response
@@ -16,12 +16,9 @@ scenario_runner/runner.py — Исполнитель интеграционны�
        assert_response_has_key     — JSON ответ содержит ключ
        assert_animation            — last animation содержит строку
        assert_no_response          — ответа быть не должно
-       assert_tool_called          — MCP тул был вызван (S8: task_delta НЕ
-                                      проходит через MCP — см. assert_task_event)
+       assert_tool_called          — MCP тул был вызван
        assert_tts_not_stopped      — S8: "STOP" не публиковался в
                                       /voice/tts/control с последнего clear_received()
-       assert_task_event           — S8: событие (напр. "task.updated") пришло
-                                      в /harness/task_events
   5. Выводит результаты и записывает results.json
   6. Выход с кодом 0 (все прошли) или 1 (есть провалы)
 
@@ -44,6 +41,7 @@ import yaml
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import Bool, String
 
 
@@ -54,7 +52,7 @@ SCENARIO_PATTERN = os.getenv("SCENARIO_PATTERN", "*.yaml")
 RESULTS_FILE = os.getenv("RESULTS_FILE", "/results/test_results.json")
 DEFAULT_SCENARIO_TIMEOUT = int(os.getenv("DEFAULT_SCENARIO_TIMEOUT", "90"))
 
-TOPIC_STT = "/voice/stt/result"
+TOPIC_STT = "/voice/stt/utterance"
 TOPIC_VAD = "/audio/vad"
 TOPIC_RESPONSE = "/voice/dialogue/response"
 TOPIC_ANIMATION = "/voice/animation/request"
@@ -64,14 +62,9 @@ TOPIC_DIALOGUE_STATE = "/voice/dialogue/state"
 
 # S8 (scheduler-segments-merge, issue #968) — MERGE assertions.
 # /voice/tts/control carries "STOP" when dialogue_node cuts TTS off
-# (dialogue_node.py:_cancel_run, stop_tts=True); with barge_in_policy=
-# classify a PENDING_LLM verdict must NOT publish it (S1/S7).
-# /harness/task_events carries scheduler lifecycle events (W7c
-# publisher, dialogue_node.py:_on_task_event) — "task.updated" is what
-# TaskScheduler.update() emits when a MERGE delta actually rewrote a
-# PENDING segment (S3.2/S6.2).
+# (dialogue_node.py:_cancel_run, stop_tts=True); since ADR-0150 PR-5 a
+# non-stop addressed phrase must NOT publish it (one interrupt policy).
 TOPIC_TTS_CONTROL = "/voice/tts/control"
-TOPIC_TASK_EVENTS = "/harness/task_events"
 
 TOPIC_MCP_TOOLS = "/mcp/tools"
 TOPIC_MCP_EXECUTE = "/mcp/execute"
@@ -188,45 +181,6 @@ MOCK_MCP_TOOLS = [
         },
     },
     {
-        # S8 (scheduler-segments-merge, issue #968) — mirrors
-        # TaskDeltaTool's schema (rob_box_mcp_tools/tools/scheduler.py,
-        # S6.1). The mock never actually executes this: SchedulerToolExecutor
-        # intercepts "task_delta" in-process (S6.2) before any call would
-        # reach /mcp/execute — so unlike every other tool here, there is
-        # deliberately NO entry for it in mock_results below. Its only job
-        # in this mock is to make the LLM AWARE the tool exists, so it can
-        # choose to call it when [SEGMENT PLAN] shows REWRITEABLE_SEGMENTS.
-        "type": "function",
-        "function": {
-            "name": "task_delta",
-            "description": (
-                "Изменить PENDING-сегменты активного многочастного "
-                "выступления (песня/сказка/стих) без перезапуска с начала. "
-                "Используй когда в контексте есть [SEGMENT PLAN] с "
-                "REWRITEABLE_SEGMENTS и пользователь попросил что-то "
-                "добавить/изменить по ходу исполнения."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "group_id": {
-                        "type": "string",
-                        "description": "task_id активной группы сегментов из [SEGMENT PLAN].",
-                    },
-                    "ops": {
-                        "type": "array",
-                        "description": (
-                            'Список операций {"kind": "rewrite|replace|append|drop", '
-                            '"seg_idx": int, "args": {...}}.'
-                        ),
-                        "items": {"type": "object"},
-                    },
-                },
-                "required": ["group_id", "ops"],
-            },
-        },
-    },
-    {
         "type": "function",
         "function": {
             "name": "memory_context",
@@ -265,7 +219,7 @@ class ScenarioRunner(Node):
         super().__init__("scenario_runner")
 
         # Publishers
-        self.stt_pub = self.create_publisher(String, TOPIC_STT, 10)
+        self.stt_pub = self.create_publisher(Utterance, TOPIC_STT, 10)
         self.vad_pub = self.create_publisher(Bool, TOPIC_VAD, 10)
 
         # ── Mock MCP Server ──────────────────────────────────────────────────
@@ -303,11 +257,9 @@ class ScenarioRunner(Node):
         self.create_subscription(String, TOPIC_SOUND, self._on_sound, 10)
         self.create_subscription(String, TOPIC_DIALOGUE_STATE, self._on_dialogue_state, 10)
 
-        # S8 — MERGE assertions (assert_tts_not_stopped / assert_task_event).
+        # S8 — assert_tts_not_stopped.
         self._tts_control_events: list[str] = []
-        self._task_events: list[dict] = []
         self.create_subscription(String, TOPIC_TTS_CONTROL, self._on_tts_control, 10)
-        self.create_subscription(String, TOPIC_TASK_EVENTS, self._on_task_events, QOS_RELIABLE)
 
         self.get_logger().info("ScenarioRunner ready (mock MCP enabled)")
 
@@ -333,17 +285,6 @@ class ScenarioRunner(Node):
         # (or "IGNORE_STOP_MS:<ms>") as plain text, no JSON envelope.
         self._tts_control_events.append(msg.data)
         self.get_logger().info(f"[tts_control] {msg.data}")
-
-    def _on_task_events(self, msg: String):
-        # S8 — assert_task_event. Payload: {"event": "task.updated", ...}
-        # (dialogue_node.py:_on_task_event, W7c publisher).
-        try:
-            payload = json.loads(msg.data)
-        except json.JSONDecodeError:
-            self.get_logger().warning(f"[task_events] Bad payload: {msg.data[:80]}")
-            return
-        self._task_events.append(payload)
-        self.get_logger().info(f"[task_events] {payload.get('event')}: {payload}")
 
     # ── Mock MCP ─────────────────────────────────────────────────────────────
 
@@ -477,8 +418,9 @@ class ScenarioRunner(Node):
     # ── Actions ──────────────────────────────────────────────────────────────
 
     def inject_stt(self, text: str):
-        msg = String()
-        msg.data = text
+        msg = Utterance()
+        msg.text = text
+        msg.source = Utterance.SOURCE_RESPEAKER
         self.stt_pub.publish(msg)
         self.get_logger().info(f"[inject_stt] {text!r}")
 
@@ -495,18 +437,16 @@ class ScenarioRunner(Node):
         self._response_ts = 0.0
         self._response_event.clear()
         self._mcp_calls.clear()
-        # S8 — сбрасываем ПЕРЕД инъекцией, чтобы assert_tts_not_stopped /
-        # assert_task_event видели только то, что случилось В ЭТОМ шаге,
+        # S8 — сбрасываем ПЕРЕД инъекцией, чтобы assert_tts_not_stopped
+        # видел только то, что случилось В ЭТОМ шаге,
         # а не накопленный шум от предыдущих шагов сценария.
         self._tts_control_events.clear()
-        self._task_events.clear()
         # Drain: ждём 200ms, затем очищаем снова чтобы отброшить in-flight stale
         # responses от предыдущего сценария (защита от race condition).
         time.sleep(0.2)
         self._last_response = None
         self._response_event.clear()
         self._tts_control_events.clear()
-        self._task_events.clear()
 
     def wait_for_quiet(self, quiet_s: float = 2.5, timeout_s: float = 25.0):
         """Ждать пока LLM закончит отвечать: нет response в TOPIC_RESPONSE в течение quiet_s.
@@ -688,8 +628,8 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
 
         # assert_tts_not_stopped — S8 (scheduler-segments-merge, issue #968).
         # No "STOP" must have reached /voice/tts/control since this step's
-        # clear_received() — with barge_in_policy=classify a PENDING_LLM
-        # verdict lets the currently-speaking segment finish (S1/S7),
+        # clear_received() — since ADR-0150 PR-5 a non-stop addressed phrase
+        # lets the currently-speaking segment finish,
         # unlike the legacy REPLACE-everywhere behaviour this replaces.
         if step.get("assert_tts_not_stopped"):
             stops = [e for e in node._tts_control_events if e == "STOP"]
@@ -698,27 +638,6 @@ def run_step(node: ScenarioRunner, step: dict) -> tuple[bool, str]:
                     f"TTS was stopped ({len(stops)}x STOP on "
                     f"{TOPIC_TTS_CONTROL}) — MERGE must let the active "
                     f"segment finish, not cut it off"
-                )
-
-        # assert_task_event — S8. The scheduler emits the event
-        # asynchronously (task_delta lands after the LLM call, which is
-        # itself async) — poll like assert_tool_called rather than a
-        # single immediate check.
-        if "assert_task_event" in step:
-            expected_event = step["assert_task_event"]
-            event_wait_s = step.get("assert_task_event_wait_s", 15.0)
-            deadline = time.time() + event_wait_s
-            while time.time() < deadline:
-                events = [e.get("event") for e in node._task_events]
-                if expected_event in events:
-                    break
-                time.sleep(0.3)
-            events = [e.get("event") for e in node._task_events]
-            if expected_event not in events:
-                return False, (
-                    f"Task event {expected_event!r} not seen on "
-                    f"{TOPIC_TASK_EVENTS} within {event_wait_s}s. "
-                    f"Seen: {events}"
                 )
 
         return True, f"OK: {response_text[:60]}"

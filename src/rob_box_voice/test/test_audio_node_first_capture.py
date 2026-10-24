@@ -218,7 +218,6 @@ def _make_audio_node_stub(**param_overrides):
     node.vad_pub = MagicMock()
     node.direction_pub = MagicMock()
     node.state_pub = MagicMock()
-    node.tts_control_pub = MagicMock()
     return node
 
 
@@ -522,3 +521,32 @@ class TestSpeechStoppedTimeInit:
         audio_node.audio_callback(chunk, 4096, {}, 0)
         assert audio_node.speech_audio_buffer.startswith(prefetch_before)
         assert audio_node.speech_audio_buffer.endswith(chunk)
+
+
+class TestLongSpeechIsSplitNotDropped:
+    """Issue #3762: речь длиннее speech_max_duration режется, а не выбрасывается."""
+
+    @staticmethod
+    def _finish_speech(audio_node, seconds: float) -> None:
+        audio_node.sample_rate = 16000
+        audio_node.speech_max_duration = 15.0
+        audio_node.speech_continuation = 3.0
+        audio_node.is_speeching = True
+        audio_node.speech_audio_buffer = b"\x10\x00" * int(16000 * seconds)
+        _install_fake_clock(audio_node, start_ns=10 * 10**9)
+        audio_node.speech_stopped_time = _FakeTime(0)
+        audio_node._tts_ended_at = 0.0
+        audio_node.music_active = False
+        audio_node.respeaker.is_connected = MagicMock(return_value=True)
+        audio_node.respeaker.get_vad = MagicMock(return_value=False)
+        audio_node.respeaker.get_doa = MagicMock(return_value=None)
+        audio_node.check_vad_and_doa()
+
+    def test_20s_speech_reaches_stt_in_chunks_within_max(self, audio_node):
+        self._finish_speech(audio_node, 20.0)
+        calls = audio_node.speech_audio_pub.publish.call_args_list
+        assert len(calls) >= 2, "20 с речи должны уйти в STT кусками, а не потеряться"
+
+    def test_short_speech_is_one_message(self, audio_node):
+        self._finish_speech(audio_node, 5.0)
+        assert audio_node.speech_audio_pub.publish.call_count == 1

@@ -102,6 +102,7 @@ class _FakeNode:
         self._recognizer = MagicMock()
         self._recognizer.stats.return_value = stats
         self._speaker_unknown_total = 0
+        self._e2e_voice_skip_total = 0
         self._log_stats_calls = 0
         self._logger = _FakeLogger()
 

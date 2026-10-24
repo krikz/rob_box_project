@@ -14,15 +14,11 @@ TTS озвучивал эту метаинструкцию через Yandex→M
 слышал «получатель ответа забыл указать антропоморфные атрибуты»
 поверх только что сменённого голоса.
 
-Первая линия защиты — ``dialogue_node._check_system_template_regurgitate_and_retry``
-(см. test_issue_2175_dialogue_node_system_regurgitate_guard.py). Она
-отправляет ОДИН CRITICAL-ретрай и обычно спасает.
-
-Вторая линия защиты (defense-in-depth, эти тесты) — ``TTSNode.dialogue_callback``
-ОТКАЗЫВАЕТСЯ синтезировать regurgitated template даже если dialogue_node
-guard почему-то пропустил (например, пришёл запрос от MCP ``speak_text``
-напрямую, минуя dialogue_node; или fallback-цепочка dialogue_node→LLM
-проскочила guard в нестандартной ситуации). Результат:
+Ретрай LLM в dialogue_node (``_check_system_template_regurgitate_and_retry``)
+удалён в ADR-0150 PR-7 ч.7d-2 (#3698). Защита одна (эти тесты) —
+``TTSNode.dialogue_callback`` ОТКАЗЫВАЕТСЯ синтезировать regurgitated
+template, откуда бы ни пришёл запрос (ответ хода dialogue_node или MCP
+``speak_text``). Результат:
 
 * ``_submit_synthesis`` НЕ вызывается;
 * публикуется ``/voice/tts/finished`` с ``success=False`` и
@@ -163,10 +159,7 @@ def _make_node(tts_node_cls):
     n._logger = logger
     n.get_logger = lambda: logger
     n.current_speech_id = None
-    n.current_dialogue_id = None
-    n.processing_dialogue_id = None
     n.finished_pub = _CapturingPublisher()
-    n.batch_complete_pub = _CapturingPublisher()
     n._submit_synthesis = MagicMock()
     # Issue #2553 — babble-retry / DJ-overlap guard. Эти конкретные тесты
     # про regurgitate-guard не трогают overlap-ветку (chunk'и скипаются ДО

@@ -3,7 +3,7 @@
   "stability": "expected-partially-red",
   "act": 8,
   "title": "Перебей меня, если сможешь",
-  "description": "Barge-in, STOP и MERGE — только в логических парах «сначала запусти длинную речь, потом перебей». Требует ros2 param set /dialogue_node barge_in_policy classify (в проде стоит replace) — иначе классификация перебивания не отличит «стоп» от новой темы.",
+  "description": "Barge-in, STOP и MERGE — только в логических парах «сначала запусти длинную речь, потом перебей». Политика одна (ADR-0150 PR-5): речь рвёт только ясная стоп-команда, новая тема без стопа встаёт после текущей речи.",
   "generated_by": "scripts/e2e/gen_night_marathon.py",
   "inherits_previous_act": true,
   "_inherits_previous_act_reason": "issue #2890: ночной марафон — одна история; акт продолжает разговор предыдущих актов (манифест: акт N опирается на состояние актов < N), поэтому харнесс НЕ сбрасывает окно диалога перед ним",
@@ -19,72 +19,88 @@
       "label": "n802_long_count",
       "voice": "anton",
       "text": "Робот, посчитай вслух от одного до сорока, не торопясь и с выражением.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": [],
-        "_comment": "Заряжаем длинный ответ, который есть что перебивать. Без этого шага n803 проверял бы перебивание тишины."
-      }
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ],
+      "_why": "Заряжаем длинный ответ, который есть что перебивать. Без этого шага n803 проверял бы перебивание тишины. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (конца речи не ждём: следующий шаг перебивает, `finished` в окно шага не попадёт)."
     },
     {
       "label": "n803_barge_in_new_topic",
       "voice": "anton",
       "text": "Робот, стоп, лучше скажи, сколько будет семью восемь.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
       "patterns": [
-        "Cancel: new STT input|STOP command received|Воспроизведение прервано"
+        "SpeechEvent cancelled|🛑 \\[interrupt\\]"
       ],
-      "_why": "Перебивание новой ТЕМОЙ (#1280): старый ответ обязан отмениться, новый — прозвучать."
+      "_why": "Стоп + новая тема (#1280, В19 «всё, хватит, спой другую»): «стоп» первым словом — ясная стоп-команда, старый ответ рвётся, новый — звучит."
     },
     {
       "label": "n804_long_story",
       "voice": "anton",
       "text": "Робот, расскажи историю о том, как ты первый раз в жизни увидел кота и что подумал.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": [],
-        "_comment": "Сокращено, чтобы уйти от края окна VAD (было 100 символов, запас 1.2с, run 35658231116) — реплика лишь просит длинную историю, длина сгенерированного ответа не зависит от неё."
-      }
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ],
+      "_why": "Сокращено, чтобы уйти от края окна VAD (было 100 символов, запас 1.2с, run 35658231116) — реплика лишь просит длинную историю, длина сгенерированного ответа не зависит от неё. v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
     },
     {
       "label": "n805_hard_stop",
       "voice": "anton",
       "text": "Робот, всё, хватит, замолчи.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
+      "silent_ok": true,
       "patterns": [
-        "STOP command received|Воспроизведение прервано|Cancel"
+        "SpeechEvent cancelled|🛑 \\[interrupt\\]"
       ],
-      "_why": "Чистый STOP без новой темы — другой класс перебивания, чем n803."
+      "_why": "Чистый STOP без новой темы — другой класс перебивания, чем n803. v2 (#3880, run 39876993047): Tier-1 стоп отвечает молча, речь гасится (`SpeechEvent cancelled reason=stopped` ~170 мс от партиала) -- харнесс ждал TTS и краснел `cycle_unconfirmed_after_accept`. Теперь: `silent_ok` (ход без речи допустим) + ОБЯЗАТЕЛЬНЫЙ паттерн отмены речи: молчание без отмены -- по-прежнему красный."
+    },
+    {
+      "label": "n805b_unsilence",
+      "voice": "anton",
+      "text": "Робот, говори.",
+      "silent_ok": true,
+      "patterns": [
+        "tier1 kind=unsilence"
+      ],
+      "_why": "Решение Шифу 23.10: «всё, хватит, замолчи» (n805, `tier1 kind=silence`) включает тишину (`SILENCE_TTL_S` = 600 с), и снимает её только явное «говори» (`UNSILENCE_WORDS`) -- вейк-слово тишину НЕ снимает. Без этого шага n806 «посчитай» уходит в молчащего робота (run 132908: робот считал в тишине без тулов). Снятие -- Tier-1 без речи (`tier1_phrase` для unsilence пуст), поэтому `silent_ok` + обязательный маркер `tier1 kind=unsilence`; что робот снова отвечает, доказывает следующий шаг (n806: `SpeechEvent started`)."
     },
     {
       "label": "n806_long_count_again",
       "voice": "anton",
       "text": "Робот, посчитай вслух от одного до двадцати, спокойно.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
-        "must_not_call": []
-      }
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ],
+      "_why": "v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
     },
     {
       "label": "n807_merge_addition",
       "voice": "anton",
       "text": "Робот, и после каждого числа добавляй слово шаг.",
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
+      "silent_ok": true,
       "patterns": [
-        "task_delta|speak_text"
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "must_not_call": [
-          "STOP command received",
-          "Cancel: new STT input"
+          "🛑 [interrupt]",
+          "SpeechEvent cancelled"
         ],
         "expected_tool_calls": [],
-        "_comment": "Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна её обрывать. Наиболее вероятный исход — робот не обрывается, но добавка приходит обычным ответом, а не правкой сегментов через task_delta. Такой полузелёный результат ценен: он разделяет «STOP больше не глушит» и «MERGE реально едет»."
+        "_comment": "Зонд gp12: MERGE вне песни. Добавка к ИДУЩЕЙ задаче не должна её обрывать (ADR-0150 PR-5: не стоп — речь не рвётся, interrupt.py NO_INTERRUPT; «Cancel: new STT input» здесь законен — отменяется ход LLM, не речь). v2 (#3880): `task_delta|speak_text` убран -- в v2 нет ни того, ни другого; вместо него ход дошёл до `stage=done status=finished`. Исход -- добавка отвечает после текущей речи (APPEND) либо молча (`silent_ok`): в run 39876993047 шаг краснел `cycle_unconfirmed_after_accept` при искажённом STT («пять робот и после каждого числа…»). Это НЕ стоп-шаг: паттерн отмены речи здесь не ставим, наоборот."
       }
     },
     {
@@ -98,50 +114,82 @@
       "label": "n809_music_bed",
       "voice": "anton",
       "text": "Робот, поставь фоном ровный ритм на рендардо, только негромко.",
-      "patterns": [],
+      "silent_ok": true,
+      "patterns": [
+        "✅ Инструмент request_music выполнен успешно",
+        "🎵 \\[music v2\\] started track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "request_music"
         ],
         "must_not_call": [
-          "generate_music"
+          "generate_music",
+          "stage=timeout"
         ],
-        "_comment": "Готовим фон для проверки «речь поверх музыки»."
+        "_comment": "Готовим фон для проверки «речь поверх музыки». v2 (#3880, run 39876993047): запрос музыки может закончиться без речи -- харнесс ждал TTS (reply_after=41s ×3, `cycle_unconfirmed_after_accept`). `silent_ok` допускает ход без речи, а факт действия держит `expect_tools=request_music` (`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему краснеет, если музыку не запросили. #3971: «поставлю ритм» без тула больше не PASS -- нужны `Инструмент request_music выполнен успешно` + `[music v2] started`."
       },
-      "retry_acceptance": 1
+      "retry_acceptance": 1,
+      "_result_markers": {
+        "tools": [
+          "request_music"
+        ],
+        "music": "started"
+      }
     },
     {
       "label": "n810_rap_over_music",
       "voice": "anton",
       "text": "Робот, а теперь под этот бит зачитай короткий рэп про енотика.",
-      "patterns": [],
+      "patterns": [
+        "SpeechEvent started speech_id"
+      ],
       "acceptance": {
-        "expected_tool_calls": [
-          "speak_text"
-        ],
         "must_not_call": [
           "stop_music"
         ],
-        "_comment": "Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы заговорить (issue #986 — соотношение музыки и речи мастер-гейном)."
+        "expected_tool_calls": [],
+        "_comment": "Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы заговорить (issue #986 — соотношение музыки и речи мастер-гейном). v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
       }
     },
     {
       "label": "n811_stop_speech_keep_music",
       "voice": "anton",
       "text": "Робот, хватит читать, а музыку оставь.",
-      "patterns": [],
-      "_why": "Зонд разделения каналов речь/музыка. Ассерта нет: «оставь музыку» робот сегодня понимает нестабильно, а must_not:stop_music здесь сделал бы шаг красным на каждом прогоне без диагностики."
+      "barge_in": {
+        "after": "speech_started",
+        "n": 1,
+        "delay_sec": 3.0
+      },
+      "silent_ok": true,
+      "patterns": [
+        "SpeechEvent cancelled|🛑 \\[interrupt\\]"
+      ],
+      "_why": "Зонд разделения каналов речь/музыка. Про музыку ассерта нет: «оставь музыку» робот сегодня понимает нестабильно (Tier-1 stop_all гасит и музыку по снимку), а must_not:stop_music здесь сделал бы шаг красным на каждом прогоне без диагностики. Речь «хватит читать» обязана быть погашена (v2, #3880: `silent_ok` + паттерн отмены, как n805)."
     },
     {
       "label": "n812_stop_music",
       "voice": "anton",
       "text": "Робот, теперь и музыку выключай.",
-      "patterns": [],
+      "patterns": [
+        "✅ Инструмент stop_music выполнен успешно",
+        "🎵 \\[music v2\\] stop track_id=",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
         "expected_tool_calls": [
           "stop_music"
         ],
-        "must_not_call": []
+        "must_not_call": [
+          "stage=timeout"
+        ]
+      },
+      "_result_markers": {
+        "tools": [
+          "stop_music"
+        ],
+        "music": "stopped"
       }
     },
     {
@@ -150,10 +198,15 @@
       "text": "Робот, тишина?",
       "patterns": [],
       "acceptance": {
-        "expected_tool_calls": [
-          "get_music_state"
+        "must_not_say": [
+          "не получилось выполнить"
         ],
-        "must_not_call": []
+        "expected_keywords": [
+          "тишин|тихо|ничего не играет|не играет|не звучит|музыки нет"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "#3971: ответ из снимка `<music_state>` (ADR-0148), get_music_state не требуем."
       }
     }
   ]

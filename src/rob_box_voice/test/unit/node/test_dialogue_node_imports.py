@@ -8,13 +8,12 @@ test_dialogue_node_imports.py — регресс-тест для #1413 (lazy-imp
 
 Проверяем:
   1. Парсим dialogue_node.py через ast, считаем lazy imports.
-  2. Белый список justified: skills.*, ament_index_python, rob_box_mcp_tools,
-     rob_box_voice.scheduler.tool_executor.
+  2. Белый список justified: skills.*, ament_index_python, rob_box_mcp_tools.
   3. ``yaml``/``traceback``/``uuid``/``concurrent.futures``/``os``/``tts_voice_registry``
      /``rob_box_harness.health``/``rob_box_harness.core.dialogue_state_machine``
      НЕ должны встречаться как lazy imports внутри функций.
   4. Smoke: top-of-file содержит обязательные модули (yaml, traceback, uuid,
-     concurrent.futures, tts_voice_registry, rob_box_harness.health).
+     concurrent.futures, rob_box_harness.health).
 
 Не требует ROS2/harness в dev (статический анализ).
 """
@@ -39,17 +38,13 @@ LAZY_WHITELIST = frozenset({
     # <exec_depend> нашему пакету; оставлен lazy, чтобы dev-юниты без
     # ROS2 не падали. Используется в try/except с probe-fallback.
     "ament_index_python.packages",
-    # rob_box_mcp_tools — optional, явно сказано «no <exec_depend>» в
-    # комментариях вокруг импорта; грузится только при
+    # rob_box_mcp_tools — с ADR-0150 PR-6 (#3696) объявлен <exec_depend>
+    # (общий ModelChooser спорного стопа, core/stop_chooser.py); адаптер
+    # тулов llm_adapter по-прежнему грузится лениво, только при
     # tool_provider='ros_mcp'.
     "rob_box_mcp_tools.llm_adapter",
-    # rob_box_voice.scheduler.tool_executor — W7b fail-open: если
-    # scheduler не стартует, адаптер возвращается unwrapped, voice не
-    # ломается. Lazy — чтобы unit-тесты, не поднимающие scheduler, не
-    # зависели от опциональной инфраструктуры.
-    "rob_box_voice.scheduler",
     # rob_box_perception_msgs.msg — лицевой повод «Встреча» (issue #2599
-    # PR-C). Того же рода optional, что rob_box_mcp_tools выше: в
+    # PR-C). Optional (как llm_adapter выше): в
     # package.xml у rob_box_voice этой зависимости НЕТ и быть не должно —
     # dialogue_node ездит и на Main Pi, где лицевой ноды нет вовсе, а
     # голосовой диалог обязан работать без лица. Импорт стоит в
@@ -64,8 +59,8 @@ TOP_OF_FILE_MUST_CONTAIN = frozenset({
     "traceback",                           # stdlib
     "concurrent.futures",                  # stdlib
     "uuid",                                # stdlib
-    "rob_box_voice.tts_voice_registry",    # same package
     "rob_box_harness.health",              # declared <exec_depend>
+    # tts_voice_registry ушёл из ноды в core/turn_context.py (#3696): lazy-импорт его в ноде по-прежнему запрещён.
 })
 
 
@@ -78,8 +73,8 @@ def _load_ast():
 def _module_name(node: ast.Import | ast.ImportFrom) -> str:
     """Извлекает dotted name (top-2 segments) из Import/ImportFrom node.
 
-    ``from rob_box_voice.scheduler.tool_executor import SchedulerToolExecutor``
-    → ``rob_box_voice.scheduler`` — этого достаточно для классификации
+    ``from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter``
+    → ``rob_box_mcp_tools.llm_adapter`` — этого достаточно для классификации
     (package boundary).
     """
     if isinstance(node, ast.Import):
@@ -133,8 +128,8 @@ def test_dialogue_node_parses():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_top_of_file_has_required_imports():
-    """yaml, traceback, uuid, concurrent.futures, tts_voice_registry,
-    rob_box_harness.health — обязаны быть top-of-file (depth=0)."""
+    """yaml, traceback, uuid, concurrent.futures, rob_box_harness.health —
+    обязаны быть top-of-file (depth=0)."""
     tree, src_lines = _load_ast()
 
     top_level_modules = set()
@@ -205,8 +200,8 @@ def test_lazy_import_ceiling_count():
     Гибкая проверка: ловим регрессию, если кто-то добавит новые."""
     tree, _ = _load_ast()
     lazy = _iter_lazy_imports(tree)
-    # Сейчас в whitelist 10 модулей: 6 skills + 2 ament_index_python + 1
-    # rob_box_mcp_tools + 1 rob_box_voice.scheduler.tool_executor.
+    # Сейчас в whitelist: 6 skills + 2 ament_index_python + 1
+    # rob_box_mcp_tools (ленивый импорт планировщика тулов убран в PR-7b).
     # Лимит — 12 с запасом на будущее. Главное — чтобы число не
     # подскочило обратно к 18.
     assert len(lazy) <= 12, (

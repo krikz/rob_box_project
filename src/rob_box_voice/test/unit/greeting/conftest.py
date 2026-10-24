@@ -1,9 +1,9 @@
 """
-conftest.py — Mock ROS2/rclpy для test_startup_greeting_node.py.
+conftest.py — Mock ROS2/rclpy для тестов ноды приветствия (нода удалена в #3684; заглушки оставлены до удаления каталога).
 
 Pytest автоматически подхватывает этот conftest.py для тестов в той же
 директории. Реальный rclpy не установлен в этом окружении (Debian, без
-ROS), поэтому startup_greeting_node импортируется через заглушки.
+ROS), поэтому нода приветствия импортировалась через заглушки.
 
 Подмены:
 - rclpy.node.Node — FakeNode с параметрами-по-default из declare_parameter

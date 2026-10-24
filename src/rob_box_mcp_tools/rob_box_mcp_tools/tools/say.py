@@ -16,56 +16,70 @@ say.py - Инструмент «say» для супервизор-агента (
   без эмоций. Личность в этот момент МОЛЧИТ (ADR-0028 S5, voice-mode
   swap «off»), и ``say`` отвечает за «голос в тишине».
 
-Это каркас (AV-21), не финальная интеграция. Полный TTS через
-voice-floor — карточка AV-27; в этом PR ``say`` публикует в
-``/voice/tts/request`` (тот же топик, что и ``speak_text``), и
-``tts_node`` синтезирует независимо от dialogue_node state.
+ADR-0150 PR-3 (#3688): реплика уходит единственным клиентом речи
+``rob_box_core.speech_client.say`` (``SpeechRequest``, агент ``operator``);
+``tts_node`` синтезирует независимо от состояния dialogue_node.
+
+ADR-0150 PR-13 (#3708, §9.3, решение В7 «да, а»): ``say`` — действие класса ``action.speak_aloud``, как ``say_aloud``
+чата. Успех — событие владельца речи, а не публикация: началась — ``pending`` с ``event_ref=speech_id`` (итог
+«Озвучил (N с)» приходит позже событием ``finished``), отказ — ``rejected{reason}``.
 """
 
-import json
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import uuid
+from typing import List, Optional
 
-if TYPE_CHECKING:
-    from std_msgs.msg import String
+from rob_box_core import speech_client
+from rob_box_core.utterance import Sink, Utterance
+
+from ..base import MCPTool, MCPToolParameter, MCPToolResult
+from ..owner_event import OwnerEvents, owner_events
+
+#: Сколько тул ждёт начала реплики. Дольше - реплика стоит в очереди владельца речи за чужой: итог придёт позже
+#: событием по ``speech_id`` (``pending``), а не «не озвучено».
+START_WAIT_S = 8.0
 
 
-from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
+def speak_and_wait(tool: MCPTool, text: str, voice: Optional[str], agent: str, **request: object) -> MCPToolResult:
+    """Отдать реплику агента ``agent`` владельцу речи и дождаться её начала (или отказа): исход — по ``SpeechEvent``.
+
+    ``pending`` (звучит) — успех с ``event_ref``: итог хост агента получит позже событием с тем же ``speech_id``."""
+    if not text or not text.strip():
+        return MCPToolResult(success=False, error="empty_text", message="Текст для озвучки пустой",
+                             data={"status": "rejected", "reason": "empty_text"})
+    speech_id = str(uuid.uuid4())
+
+    def publish(rid: str) -> None:
+        utterance = Utterance(text=text, sink=Sink.SPEAKERS, voice=voice or None, speech_id=rid)
+        speech_client.say(tool.node, utterance, agent=agent, **request)
+
+    _rid, event = _events(tool, agent).ask(publish, START_WAIT_S, request_id=speech_id)
+    status, reason, seconds = speech_client.event_outcome(event) if event is not None else ("pending", None, 0)
+    data = {"status": status, "reason": reason, "seconds": seconds, "speech_id": speech_id}
+    if status == "pending":
+        data["event_ref"] = speech_id
+    tool.log_info(f"{tool.name} {speech_id[:8]}: {status} {reason or ''}".rstrip())
+    ok = status in ("done", "pending")
+    return MCPToolResult(success=ok, data=data, error=None if ok else f"Не озвучено: {reason or status}",
+                         message=f"{tool.name}: {status}")
 
 
-def build_say_request(text: str) -> Dict[str, Any]:
-    """Payload ``/voice/tts/request`` для реплики оператора.
+def _events(tool: MCPTool, agent: str) -> OwnerEvents:
+    from rob_box_dialog_msgs.msg import SpeechEvent
 
-    ``tts_node.dialogue_callback`` принимает только запросы с полем ``ssml``
-    (контракт — ``rob_box_core.utterance.missing_tts_request_fields``);
-    голый ``{"text": ...}`` он отбрасывал с «⚠ Chunk без SSML», а ``say``
-    при этом отвечал success=True (живой робот, 29.09.2026). Поэтому SSML
-    собирает общий сборщик ``Utterance`` — с XML-экранированием ``&<>``.
-    ``source`` — маркер для метрик (avatar_agent_tool_calls_total).
-    """
-    from rob_box_core.utterance import Sink, Utterance
-
-    return Utterance(
-        text=text,
-        sink=Sink.SPEAKERS,
-        extra={"source": "operator"},
-    ).to_request()
+    wanted = (speech_client.KIND_STARTED, *speech_client.KIND_STATUS)
+    return owner_events(tool.node, tool.name, lambda: OwnerEvents(
+        tool.node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
+        accept=lambda m: m.agent == agent and int(m.kind) in wanted))
 
 
 class SayTool(MCPTool):
     """Произнести текст голосом оператора через TTS-канал (AV-21)."""
 
-    #: Канонический ROS-топик, который уже слушает ``tts_node``.
-    #: Совпадает с ``speak_text`` — это умышленно: ``tts_node`` не знает,
-    #: от кого пришёл запрос, и ему не нужно (пол отправителя определяется
-    #: на уровне супервизора через voice_floor).
-    TTS_REQUEST_TOPIC: str = "/voice/tts/request"
+    event_source = "/voice/speech/event"
 
     def __init__(self, node) -> None:
         super().__init__(node)
-        # Динамический импорт, чтобы unit-тесты могли работать без ROS 2.
-        from std_msgs.msg import String
-
-        self._tts_pub = node.create_publisher(String, self.TTS_REQUEST_TOPIC, 10)
+        speech_client.prepare(node, "request")
 
     @property
     def name(self) -> str:
@@ -75,11 +89,6 @@ class SayTool(MCPTool):
     def llm_visible(self) -> bool:
         # ТАРС-только (operator.speech): личность использует speak_text.
         return False
-
-    @property
-    def operator_visible(self) -> bool:
-        # Оператор (ТАРС) её зовёт, личность — нет (issue #3305).
-        return True
 
     @property
     def description(self) -> str:
@@ -108,44 +117,66 @@ class SayTool(MCPTool):
         ]
 
     @property
-    def execution_type(self) -> ToolExecutionType:
-        """Fire-and-forget: текст ушёл в топик — LLM может продолжать."""
-        return ToolExecutionType.INSTANT
-
-    @property
     def slice(self) -> str:
-        # ADR-0052 / issue #1998 §6.2: ``say`` — это голосовой канал
-        # оператора (ТАРС), LLM-личность его НЕ зовёт. Срез фиксируется
-        # тут, в slice_policy.yaml — список для ``operator.speech``
-        # (один из четырёх operator-тулов, которые dialogue_node не может
-        # звать, даже если бы LLM попросил).
+        # ADR-0052 / issue #1998 §6.2: ``say`` — голосовой канал оператора (ТАРС), LLM-личность его НЕ зовёт.
         return "operator.speech"
 
     def execute(self, text: str) -> MCPToolResult:
-        """Опубликовать текст в TTS-канал.
+        """Реплика оператора динамиками; исход — событие владельца речи (``action.speak_aloud``, PR-13)."""
+        return speak_and_wait(self, text, None, "operator")
 
-        Каркас (AV-21): не ждём подтверждения от ``tts_node``. Это
-        согласовано с INSTANT-семантикой выше. Полная интеграция с
-        voice-floor и barge-in — карточка AV-27.
-        """
-        if not text or not text.strip():
-            return MCPToolResult(
-                success=False,
-                error="empty_text",
-                message="Текст для произнесения пустой",
-            )
 
-        from std_msgs.msg import String
+class SayAloudTool(MCPTool):
+    """Озвучить текст из чата Telegram динамиками робота (ADR-0150 §5.1, §9.2.3; PR-12b #3707).
 
-        msg = String()
-        msg.data = json.dumps(build_say_request(text), ensure_ascii=False)
-        self._tts_pub.publish(msg)
+    ``SpeechRequest(agent=telegram, sink=speakers, interruptible=false)``: реплики разных агентов очередь ``tts_node``
+    не перебивает, тишина Личности (решение О2) и её «хватит» чата не касаются. Успех - не публикация запроса, а
+    событие владельца речи: началась - ``pending`` с ``event_ref=speech_id`` (итог «Озвучил (12 с)» придёт позже
+    событием ``finished``), отказ - ``rejected{reason}``. Отказ ``operator_hold`` решает хост чата до вызова.
+    """
 
-        return MCPToolResult(
-            success=True,
-            data={"text": text, "source": "operator"},
-            message=f"say: опубликовано {len(text)} символов в TTS-канал",
+    event_source = "/voice/speech/event"
+
+    def __init__(self, node) -> None:
+        super().__init__(node)
+        speech_client.prepare(node, "request")
+
+    @property
+    def name(self) -> str:
+        return "say_aloud"
+
+    @property
+    def llm_visible(self) -> bool:
+        return False  # агент чата видит его через telegram_visible; Личность и оператор - нет
+
+    @property
+    def telegram_visible(self) -> bool:
+        return True
+
+    @property
+    def description(self) -> str:
+        return (
+            "Озвучить текст динамиками робота, когда человек в чате просит рассказать, прочитать или сказать "
+            "вслух (например, сочинённую историю). Текст чата ты пишешь в ответе, а сюда передай ту же "
+            "реплику целиком. Итог «Озвучил» в чат пишет код по событию динамиков, не ты."
         )
 
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="text", type="string", description="Что произнести, русским текстом без SSML.",
+                             required=True),
+            MCPToolParameter(name="voice", type="string", required=False,
+                             description="Голос разовой реплики; пусто - текущий голос робота."),
+        ]
 
-__all__ = ["SayTool", "build_say_request"]
+    @property
+    def slice(self) -> str:
+        return "telegram"
+
+    def execute(self, text: str, voice: Optional[str] = None) -> MCPToolResult:
+        """Отдать реплику владельцу речи и дождаться начала (или отказа)."""
+        return speak_and_wait(self, text, voice, "telegram", interruptible=False)
+
+
+__all__ = ["SayAloudTool", "SayTool", "speak_and_wait"]

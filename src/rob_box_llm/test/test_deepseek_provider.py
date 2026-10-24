@@ -239,7 +239,7 @@ def test_complete_passes_model_and_messages_to_sdk():
         )
     )
     kwargs = c.chat.completions.calls[0]
-    assert kwargs["model"] == "deepseek-chat"
+    assert kwargs["model"] == "deepseek-v4-flash"
     assert kwargs["stream"] is False
     assert kwargs["messages"][0]["role"] == "system"
     assert kwargs["messages"][1]["role"] == "user"
@@ -689,7 +689,7 @@ def test_stream_raises_before_yielding_when_initial_request_fails():
 
 def test_deepseek_default_base_url_and_model():
     assert DeepSeekProvider.DEFAULT_BASE_URL == "https://api.deepseek.com"
-    assert DeepSeekProvider.DEFAULT_MODEL == "deepseek-chat"
+    assert DeepSeekProvider.DEFAULT_MODEL == "deepseek-v4-flash"
 
 
 def test_mimo_default_base_url_and_model():

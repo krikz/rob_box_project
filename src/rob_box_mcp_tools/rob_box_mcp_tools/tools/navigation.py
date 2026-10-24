@@ -84,6 +84,8 @@ def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
 class NavigateToWaypointTool(MCPTool):
     """Навигация к именованной точке из базы данных вейпоинтов."""
 
+    event_source = "action:/navigate_to_pose"
+
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
@@ -154,6 +156,8 @@ class NavigateToWaypointTool(MCPTool):
 class NavigateToCoordinatesTool(MCPTool):
     """Навигация к произвольным координатам в map frame."""
 
+    event_source = "action:/navigate_to_pose"
+
     def __init__(self, node):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
@@ -210,6 +214,8 @@ class NavigateToCoordinatesTool(MCPTool):
 
 class MoveDirectionTool(MCPTool):
     """Инструмент для движения в направлении."""
+
+    event_source = "action:/navigate_to_pose"
 
     DIRECTIONS = {
         "вперёд": {"x": 1.0, "y": 0.0, "theta": 0.0},
@@ -286,6 +292,8 @@ class MoveDirectionTool(MCPTool):
 
 class StopNavigationTool(MCPTool):
     """Инструмент для остановки навигации."""
+
+    event_source = "srv:/navigate_to_pose/_action/cancel_goal"
 
     def __init__(self, node):
         super().__init__(node)
@@ -381,6 +389,8 @@ class ListWaypointsTool(MCPTool):
 class SaveWaypointTool(MCPTool):
     """Сохранить текущую позицию робота как именованную точку."""
 
+    event_source = "inproc:waypoint_store"
+
     def __init__(self, node, waypoint_store: "WaypointAdapter", pose_getter, mapping_state=None):
         super().__init__(node)
         self.waypoint_store = waypoint_store
@@ -456,6 +466,8 @@ class SaveWaypointTool(MCPTool):
 class DeleteWaypointTool(MCPTool):
     """Удалить именованную точку."""
 
+    event_source = "inproc:waypoint_store"
+
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.waypoint_store = waypoint_store
@@ -511,6 +523,8 @@ class DeleteWaypointTool(MCPTool):
 
 class ClearWaypointsTool(MCPTool):
     """Удалить все точки текущей карты."""
+
+    event_source = "inproc:waypoint_store"
 
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)

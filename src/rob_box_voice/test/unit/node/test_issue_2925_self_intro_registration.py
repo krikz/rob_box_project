@@ -43,6 +43,8 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice.dialogue_node import DialogueNode  # noqa: E402
+from rob_box_voice.core.speaker_turn import tentative_states  # noqa: E402
+from ros_stubs import make_speaker_result  # noqa: E402
 
 SASHA_ID = "d8844740-0000-0000-0000-000000000000"
 BORIS_ID = "4de3d7cc-0000-0000-0000-000000000000"
@@ -115,14 +117,11 @@ def _node():
         if n.ack is not None:
             ack = dict(n.ack, name=payload["name"],
                        utterance_id=payload.get("utterance_id"))
-            n._on_speaker_result(types.SimpleNamespace(
-                data=json.dumps(ack, ensure_ascii=False)))
+            n._on_speaker_result(make_speaker_result(ack))
 
     n._speaker_register_pub = MagicMock()
     n._speaker_register_pub.publish.side_effect = _publish_register
     n._speaker_merge_pub = MagicMock()
-    n._identity_confirmations = {}
-    n._pending_identity_hint = None
     n._identity_question_session_gap_sec = 120.0
     n._identity_answer_window_sec = 180.0
     n.tts = []
@@ -134,9 +133,7 @@ def _node():
     n._handle_result = MagicMock(
         side_effect=lambda result, **_kw: n.tts.append(result.spoken_text)
     )
-    n._build_dynamic_system_context = lambda tg_chat_id=None: "\n".join(
-        n._pending_identity_hint_lines()
-    )
+    n._build_dynamic_system_context = lambda tg_chat_id=None: ""
 
     async def invoke_llm(**_kw):
         # Контекст хода, который получил бы register_speaker (#2842).
@@ -144,12 +141,7 @@ def _node():
         return _Result(n.llm_reply)
 
     n._invoke_llm_with_telemetry = invoke_llm
-    n._reset_turn_retry_budgets = MagicMock()
     n._llm = MagicMock()
-    n._retry_dispatched_in_turn = False
-    n._drain_pending_user_messages = MagicMock(return_value=False)
-    n._finalize_music_cleanup_policy = MagicMock()
-    n._apply_tool_skipped_guard = MagicMock(return_value=False)
     n._finalize_turn_dsm = MagicMock()
     return n
 
@@ -188,12 +180,6 @@ class TestCase1IntroRegistersWithoutTool:
         assert ctx["self_intro_name"] == "Борис"
         assert ctx["intro_registered"] is True
 
-    def test_speech_gate_waits_for_ack_of_robot_registration(self):
-        """#2913: речь хода ждёт исход и авто-регистрации тоже."""
-        n = _node()  # ack не приходит
-        _turn(n, N708_TEXT, _unknown(), "utt-708a")
-        assert n._turn_speech_gate().ticket().pending == 1
-
     def test_already_known_under_same_name_is_not_reregistered(self):
         """#2863: «я Борис» от уверенно узнанного Бориса — не регистрация."""
         n = _node()
@@ -229,11 +215,11 @@ class TestCase2NoHypothesisQuestionOnOtherName:
         assert "Саша, это ты?" not in n.tts, n.tts
         assert n.registered == [{"name": "Борис", "utterance_id": "utt-708b"}]
         assert n.tts == [N708_LLM]
-        assert n._identity_confirmations[SASHA_ID]["asked"] is False
+        assert tentative_states(n).get(SASHA_ID)["asked"] is False
 
     def test_similar_voice_goes_to_2828_conflict_question(self):
         """Голос выше порога слияния — ADR-0127 заводит отдельный профиль,
-        ack с voice_conflict → вопрос #2828 заменяет ответ хода."""
+        ack с voice_conflict → вопрос #2828 звучит ПОСЛЕ ответа хода (#3765)."""
         n = _node()
         n.ack = {"event": "registered", "speaker_id": NEW_ID,
                  "reused_profile": False,
@@ -242,10 +228,10 @@ class TestCase2NoHypothesisQuestionOnOtherName:
 
         _turn(n, N708_TEXT, _tentative_sasha(), "utt-708b")
 
-        assert len(n.tts) == 1, n.tts
+        assert len(n.tts) == 2, n.tts
         assert "Саша, это ты?" not in n.tts
-        assert "Вы разные люди" in n.tts[0]
-        assert N708_LLM not in n.tts
+        assert n.tts[0] == N708_LLM
+        assert "Вы разные люди" in n.tts[1]
 
     def test_same_name_intro_confirms_hypothesis_without_question(self):
         """«я Саша» при гипотезе «Саша» — подтверждение (#2809), вопрос
@@ -262,11 +248,12 @@ class TestCase2NoHypothesisQuestionOnOtherName:
                                  "utterance_id": "utt-3"}]
 
     def test_no_intro_still_asks_2888(self):
-        """#2888 не сломан: без представления вопрос звучит."""
+        """#2888 не сломан: без представления вопрос звучит — третьей фразой (В17 #3695), после ответа хода."""
         n = _node()
-        _turn(n, "робот ты меня узнал", _tentative_sasha(), "utt-4")
+        for i in range(3):
+            _turn(n, "робот ты меня узнал", _tentative_sasha(), f"utt-4{i}")
         assert n.tts[-1] == "Саша, это ты?"
-        assert len(n.tts) == 2, n.tts
+        assert n.tts.count("Саша, это ты?") == 1 and len(n.tts) == 4, n.tts
         assert n.registered == []
 
 

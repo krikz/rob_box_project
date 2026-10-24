@@ -33,8 +33,14 @@ senders:
     - core
     - personality
     - operator.speech
-    - operator.control
     - operator.admin
+
+  # Агент чата Telegram (PR-12b, ADR-0150 §9.2): права личности плюс озвучка из чата. Подпись и срез - отдельное
+  # имя, чтобы ``say_aloud`` не открывался личности и оператору (они его не видят и не могут вызвать).
+  telegram_agent:
+    - core
+    - personality
+    - telegram
 
   # Harness (AgentCore) — LLM-каркас в тестовой/дебаг-ноде. По правам
   # совпадает с личностью (карта та же); отдельный sender — чтобы
@@ -103,8 +109,6 @@ slices:
     - finish_mapping
     - optimize_map
     - load_map
-    # планировщик
-    - task_delta
 
   # ── OPERATOR.SPEECH: речевой канал оператора (через ТАРС).
   # ``set_voice`` / ``set_tts_provider`` / ``list_tts_voices`` уже
@@ -118,16 +122,9 @@ slices:
     - set_tts_provider
     - list_tts_voices
 
-  # ── OPERATOR.CONTROL: управление диалогом / режимом аватара
-  operator.control:
-    # управление диалогом (только оператор)
-    - dialogue_pause
-    - dialogue_resume
-    # управление голосом/речью (shared с личностью, но только
-    # оператор имеет право в ``operator.speech``)
-    - set_voice_preset
-    - set_voice_language
-    - preview_voice
+  # Срез OPERATOR.CONTROL удалён (ADR-0150 D17, PR-13): все пять его имён были призраками без тула в каталоге.
+  # Пауза личности — сервис /dialog/control супервизора, стиль голоса — /avatar/voice_pipeline, предпрослушка —
+  # /avatar/preview_voice. Гард: test_slice_policy_has_no_ghosts.
 
   # ── OPERATOR.ADMIN: диагностика (только ТАРС)
   operator.admin:
@@ -142,3 +139,7 @@ slices:
     # (тот же ToolSpec, но handler иной), поэтому добавление сюда
     # открывает операторский send'ер на MCP-путь ``/mcp/execute``.
     - show_metrics
+
+  # ── TELEGRAM: озвучка динамиками из чата (ADR-0150 §9.2.3). Тишина Личности ей не мешает (решение О2).
+  telegram:
+    - say_aloud

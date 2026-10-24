@@ -36,7 +36,7 @@ This module proves the runtime + structural invariants of the fix:
      fallback branch doesn't pay the cold-load latency (the model
      attribute is already populated when we enter the branch).
   7. The hot-path skip-on-timeout publishes ``silero_warming:<id>``
-     on ``/voice/tts/finished`` and clears ``processing_dialogue_id``
+     on ``/voice/tts/finished``
      so barge-in state stays consistent.
 
 The tests use ``conftest.py``'s rclpy/grpc/torch stubs so
@@ -507,7 +507,7 @@ def test_warm_load_disabled_hot_path_lazy_loads(tts_node_module) -> None:
                 f"warm-load-disabled path must NOT publish silero_warming skip "
                 f"marker; got publishes: {published}"
             )
-            # NOTE: processing_dialogue_id is intentionally NOT asserted
+            # NOTE: dialogue bookkeeping is intentionally NOT asserted
             # here — it is cleared at the very end of _synthesize_and_play
             # (playback completion / barge-in bookkeeping), which is
             # orthogonal to the warm-load-disabled lazy-load path.
@@ -619,12 +619,6 @@ def test_hot_path_skips_on_timeout_and_publishes_marker(tts_node_module) -> None
             f"got publishes: {published}"
         )
 
-        # processing_dialogue_id is cleared so barge-in bookkeeping
-        # stays consistent (next dialogue can start cleanly).
-        assert node.processing_dialogue_id is None, (
-            "hot-path skip-on-timeout must clear processing_dialogue_id "
-            "so downstream barge-in state isn't poisoned"
-        )
     finally:
         # Wait for the slow thread to finish (or daemonize out).
         slow_done.wait(timeout=5.0)
