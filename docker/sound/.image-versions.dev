@@ -4,8 +4,8 @@
 # quest тега здесь нет (манифест: image_versions: false) — compose берёт quest-${ROS_DISTRO}-${IMAGE_TAG}.
 # PERCEPTION_TAG — для sensor-bridge (profile sensors); образ perception собирает Main-сборка.
 
-VOICE_ASSISTANT_TAG=dev-42028a8
-TELEGRAM_BOT_TAG=dev-42028a8
-SUPERVISOR_TAG=dev-42028a8
+VOICE_ASSISTANT_TAG=dev-5aa6528
+TELEGRAM_BOT_TAG=dev-5aa6528
+SUPERVISOR_TAG=dev-5aa6528
 # ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
 PERCEPTION_TAG=dev-42028a8
