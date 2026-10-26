@@ -17,7 +17,8 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.execute import Executor, OwnerEvent
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRef
-from rob_box_dialog.turn import RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, stop_performance, tier1_actions
+from rob_box_dialog.turn import (RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, stop_performance, tier1_actions,
+                                 words_owed)
 from rob_box_dialog.grammar import Tier1Command
 
 
@@ -485,6 +486,114 @@ def test_passed_from_backlog_pickup_or_silence_stays_quiet():
     engine.session.push_scene("Silence", "user")
     _run(engine, "что-то")
     assert ports.said == [] and ports.asked == []  # в тишине LLM не зовётся вовсе (#3982)
+
+
+# -- ответ без слов на вопрос (#3995, марафон 23.10: n101 21:09:09 happy, n1011 23:20:19 sleep) -----------------------
+
+N101 = "ты меня слышишь ответь коротко я только что зашел в мастерскую"  # текст хода из лога
+N1011 = "спокойной ночи смена окончена спасибо за компанию"
+HAPPY = ToolCall("play_animation", {"animation": "happy", "duration": 3, "face": {"tint": "warm"}})
+SLEEP = ToolCall("play_animation", {"animation": "sleep", "duration": 4})
+
+
+def _bare(call):
+    return Answer(Command(actions=(call,)), "deepseek")
+
+
+def test_3995_n101_bare_animation_is_returned_to_the_model_and_the_answer_is_spoken():
+    """n101: голый ``play_animation`` на «ты меня слышишь?» не исполняется — модель получает нарушение
+    ``silent_answer`` (форма ``command.explain``), вторая итерация отвечает словами рядом с анимацией: речь звучит."""
+    fixed = Command(speech="Слышу тебя, привет!", actions=(HAPPY,))
+    ports = Ports(answers=[_bare(HAPPY), Answer(fixed, "deepseek")])
+    agg = _run(_engine(ports), N101)
+    assert len(ports.asked) == 2 and agg.llm_calls == 2
+    note = ports.asked[1][0][-1]["content"]
+    assert note.startswith("invalid arguments") and kn.VIOLATION_SILENT_ANSWER in note and kn.SILENT_ANSWER_HINT in note
+    assert ports.executed == [[("play_animation", dict(HAPPY.args))]], "голая анимация первого ответа не исполнена"
+    assert ports.said == [("Слышу тебя, привет!", None, "neutral")]
+    assert (agg.stage, agg.status) == ("done", "finished")
+
+
+def test_3995_n1011_good_night_gets_words():
+    fixed = Command(speech="Спокойной ночи! Спасибо за смену.", actions=(SLEEP,))
+    ports = Ports(answers=[_bare(SLEEP), Answer(fixed, "deepseek")])
+    _run(_engine(ports), N1011)
+    assert [t for t, _, _ in ports.said] == ["Спокойной ночи! Спасибо за смену."]
+    assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
+
+
+def test_3995_bare_animation_twice_runs_it_and_code_speaks_not_silence():
+    """Обе итерации голые: повтора больше нет — анимация исполнена, а говорит код (фраза причины), ход ``done``."""
+    ports = Ports(answers=[_bare(SLEEP), _bare(SLEEP)])
+    agg = _run(_engine(ports), N1011)
+    assert len(ports.asked) == 2 and agg.llm_calls == 2
+    assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
+    assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.SILENT_ANSWER_PHRASE]
+    assert ports.said[0][2] is None, "анимация исполнена — фраза не грустная"
+    assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
+
+
+def test_3995_last_iteration_never_asks_again():
+    """Бюджет итераций (``LLM_QUERY_ITERATIONS_MAX``): после двух запросов голая анимация на последней итерации не
+    повторяется — говорит код (запрос в ходе был — по его данным), а не тишина."""
+    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
+                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    ports = Ports(answers=[*search, _bare(HAPPY)], outcomes={"memory_search": ("done", {"results": []})})
+    agg = _run(_engine(ports), "а ты меня помнишь")
+    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
+
+
+def test_3995_retry_after_query_says_the_data_is_already_there():
+    """Запрос в ходе выполнен, затем голая анимация: подсказка повтора — «данные уже получены», а не «ничего не
+    сделано»."""
+    search = Answer(Command(actions=(ToolCall("memory_search", {"query": "Борис"}),)), "deepseek",
+                    follow=lambda data: ({"role": "tool", "content": data},))
+    ports = Ports(answers=[search, _bare(HAPPY), Answer(Command(speech="Помню тебя, Борис."), "deepseek")],
+                  outcomes={"memory_search": ("done", {"results": []})})
+    _run(_engine(ports), "а ты меня помнишь")
+    note = ports.asked[2][0][-1]["content"]
+    assert "данные запроса уже получены" in note and kn.VIOLATION_SILENT_ANSWER in note
+    assert [t for t, _, _ in ports.said] == ["Помню тебя, Борис."]
+
+
+@pytest.mark.parametrize("text", ["покажи анимацию радости", "посмотри налево"])
+def test_3995_animation_asked_in_words_runs_silently_without_retry(text):
+    """Решение Шифу 26.10: анимация по прямой просьбе без слов — норма: исполнена сразу, повтора и фразы нет."""
+    ports = Ports(answers=[_bare(HAPPY)])
+    agg = _run(_engine(ports), text)
+    assert len(ports.asked) == 1 and ports.executed == [[("play_animation", dict(HAPPY.args))]]
+    assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
+
+
+def test_3995_backlog_pickup_bare_animation_runs_without_retry():
+    ports = Ports(answers=[_bare(HAPPY)])
+    _run_addressed(_engine(ports), Addressed("ты меня слышишь", "backlog_pickup", True, ()))
+    assert len(ports.asked) == 1 and ports.executed == [[("play_animation", dict(HAPPY.args))]] and ports.said == []
+
+
+def test_3995_words_owed_only_for_speakers_addressed_and_not_silenced():
+    """Правило — только у Личности (речь в динамики), на адресованную реплику: не подхват бэклога, не тишина."""
+    bare = Command(actions=(HAPPY,))
+    personality = Session("personality")
+    assert words_owed(personality.snapshot, False, N101, bare)
+    assert not words_owed(personality.snapshot, True, N101, bare), "подхват бэклога"
+    assert not words_owed(Session("operator").snapshot, False, N101, bare), "шлем оператора — не динамики"
+    personality.push_scene("Silence", "user")
+    assert not words_owed(personality.snapshot, False, N101, bare), "тишина"
+
+
+def test_3995_invalid_command_with_only_animation_salvaged_still_speaks():
+    """Невалидная после повтора моста, из действий исполнима только анимация: её не слышно — код говорит фразу
+    причины, а не молчит; исполненный звук (сам себе доказательство) по-прежнему молчит."""
+    ports = Ports(answers=[Answer(Invalid("bad_enum", "emotion=joy", salvage=(HAPPY,)), "deepseek", calls=2)])
+    _run(_engine(ports), N101)
+    assert ports.executed == [[("play_animation", dict(HAPPY.args))]]
+    assert ports.said == [(phrases.text(kn.INVALID_COMMAND_PHRASE), None, None)]
+    sound = ToolCall("play_sound", {"sound": "siren"})
+    quiet = Ports(answers=[Answer(Invalid("bad_enum", "emotion=joy", salvage=(sound,)), "deepseek", calls=2)])
+    _run(_engine(quiet), "включи сирену")
+    assert quiet.executed == [[("play_sound", {"sound": "siren"})]] and quiet.said == []
 
 
 def test_query_data_goes_back_to_llm_once_then_answer():

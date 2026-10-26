@@ -7,8 +7,9 @@ import pytest
 
 from rob_box_core.tool_catalog import TOOL_CATALOG, llm_visible_tools
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.command import Ask, Command, Performance, ToolCall
 from rob_box_dialog.session import MusicStateRef, SceneFrame, SessionSnapshot
-from rob_box_dialog.tools_view import available_tools, groups_for
+from rob_box_dialog.tools_view import available_tools, groups_for, needs_words, requested_groups
 
 
 def _snap(**kw):
@@ -280,3 +281,49 @@ def test_sound_group_still_opens_by_the_word_sound():
 ])
 def test_phrases_from_the_marathon_logs_open_their_group(frame, text, group):
     assert group in groups_for(SNAPSHOTS[frame], text)
+
+
+# -- ответ без слов на вопрос (#3995, марафон 23.10 n101/n1011) -------------------------------------------------------
+
+N101 = "ты меня слышишь ответь коротко я только что зашел в мастерскую"  # текст хода из лога 21:09:07
+N1011 = "спокойной ночи смена окончена спасибо за компанию"  # текст хода из лога 23:20:18
+HAPPY = ToolCall("play_animation", {"animation": "happy", "duration": 3, "face": {"tint": "warm"}})
+SLEEP = ToolCall("play_animation", {"animation": "sleep", "duration": 4})
+
+
+@pytest.mark.parametrize("text, call", [(N101, HAPPY), (N1011, SLEEP), ("как дела", HAPPY)])
+def test_bare_animation_on_a_question_or_farewell_needs_words(text, call):
+    assert needs_words(text, Command(actions=(call,)))
+    assert needs_words(text, Command(actions=(call, SLEEP)))
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, покажи анимацию радости", "Робот, покажи грустную анимацию", "изобрази удивление",
+    "Робот, посмотри налево",  # взгляд лица — тоже play_animation по прямой просьбе
+])
+def test_animation_asked_in_words_may_stay_silent(text):
+    """Решение Шифу 26.10: анимация по прямой просьбе без слов — норма."""
+    assert "animation" in requested_groups(text)
+    assert not needs_words(text, Command(actions=(HAPPY,)))
+
+
+@pytest.mark.parametrize("cmd", [
+    Command(speech="Слышу тебя!", actions=(HAPPY,)),
+    Command(ask=Ask("yes_no", "Ты меня слышишь?"), actions=(HAPPY,)),
+    Command(perform=Performance("poem", ("Раз", "Два")), actions=(HAPPY,)),
+    Command(passed="nothing_to_say"),
+    Command(actions=(ToolCall("play_sound", {"sound": "siren"}),)),  # звук звучит сам
+    Command(actions=(HAPPY, ToolCall("play_sound", {"sound": "siren"}))),
+    Command(actions=(ToolCall("memory_save", {"fact": "x"}),)),
+    Command(),  # пустую команду ловит мост (``empty_command``), лицо без действий — #3974
+])
+def test_answers_with_words_sound_or_other_actions_do_not_need_words(cmd):
+    assert not needs_words(N101, cmd)
+
+
+def test_inaudible_tools_are_quiet_beside_speech_so_the_hint_is_true():
+    """Подсказка нарушения обещает модели: speech рядом с анимацией звучит. Это правда, только пока неслышимые тулы
+    входят в тихие (``QUIET_WITH_SPEECH_TOOLS``); звук сам себе доказательство и в неслышимые не входит."""
+    assert set(kn.INAUDIBLE_TOOLS) <= set(kn.QUIET_WITH_SPEECH_TOOLS)
+    assert "play_sound" not in kn.INAUDIBLE_TOOLS and set(kn.INAUDIBLE_TOOLS) <= set(kn.SILENT_DONE_TOOLS)
+    assert all(tool in kn.SILENT_ANSWER_HINT for tool in kn.INAUDIBLE_TOOLS) and "speech" in kn.SILENT_ANSWER_HINT
