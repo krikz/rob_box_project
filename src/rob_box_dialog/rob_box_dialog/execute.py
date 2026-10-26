@@ -9,7 +9,8 @@
 Действия хода уходят владельцам разом (§5.2: совместимые — параллельно): ждать ли занятый ресурс и что после чего —
 решает планировщик ресурсов у транспорта (``plan.runner``, PR-7b) по ``knowledge.COMPOSITION``. Событие
 ``pending`` (обещание: «Еду к…») закрывает ожидание статусом ``pending``; итог по его ``event_ref`` придёт позже —
-в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS.
+в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS; сколько транспорт ждёт итог тула с
+поздним итогом, решает :func:`transport_timeouts` (дольше срока класса, #3960).
 
 Эпоха (PR-9 #3703, §6.2): исполнитель с ``epoch`` (текущая эпоха сессии) отбрасывает исход запроса прошлой эпохи —
 ``WARNING stale_epoch``, в ход он приходит ``cancelled{stale_epoch}``, в ``on_late`` не попадает. Отмена хода
@@ -72,6 +73,17 @@ def deadline_s(cls: str) -> float:
     """Дедлайн события класса; у классов, где его задаёт владелец (речь, выступление), — потолок хода."""
     timeout = kn.ACTION_CLASSES[cls].timeout_s
     return float(timeout if timeout is not None else kn.TURN_CEILING_S)
+
+
+def transport_timeouts() -> Mapping[str, float]:
+    """Сколько транспорт тула (MCP-вызов v2, ``ROSMCPToolProvider``) ждёт его итог, по тулам классов с поздним итогом
+    (``LATE_SPOKEN_CLASSES``): дольше срока класса — до потолка хода. Срок класса закрывает ожидание хода честным
+    ``timeout``, а итог, пришедший позже, транспорт ещё несёт исполнителю — в ``on_late``. Транспорт со сроком, равным
+    сроку класса, бросал итог вместе с ходом (n809, #3960: трек заиграл через 1,4 с после срока, мост вернул «Timeout
+    ожидания результата», «Включаю музыку.» не прозвучало). Поздний итог исполнитель держит только у этих классов,
+    поэтому тулам остальных транспорт ждёт как раньше (``default_timeout``)."""
+    return MappingProxyType({tool: max(deadline_s(cls) + kn.ACTION_GRACE_S, float(kn.TURN_CEILING_S))
+                             for tool, cls in kn.TOOL_CLASSES.items() if cls in kn.LATE_SPOKEN_CLASSES})
 
 
 class Executor:
@@ -166,9 +178,13 @@ class Executor:
                 sending.cancel()
             raise
         except asyncio.TimeoutError:
-            survivor = request.cls in kn.LATE_SPOKEN_CLASSES  # музыка могла заиграть позже срока: итог дойдёт до on_late
-            self._log.warning(f"⏱ [execute] {request.tool} {request.turn_id}: нет события за {request.timeout_s:.0f} с")
-            return _result(request, OwnerEvent(request.turn_id, "timeout"))
+            if not future.done():
+                survivor = request.cls in kn.LATE_SPOKEN_CLASSES  # музыка заиграет позже срока: итог - в on_late
+                self._log.warning(f"⏱ [execute] {request.tool} {request.turn_id}: нет события за "
+                                  f"{request.timeout_s:.0f} с")
+                return _result(request, OwnerEvent(request.turn_id, "timeout"))
+            event = future.result()  # итог лёг в ожидание в такте срока (n809, #3960): он - ходу, а не в никуда
+            self._log.info(f"⏱ [execute] {request.tool} {request.turn_id}: событие {event.status} - на сроке класса")
         except Exception as exc:  # noqa: BLE001 — запрос не ушёл: честный отказ, а не падение хода
             self._log.warning(f"⚠️ [execute] {request.tool} {request.turn_id}: запрос не отправлен: {exc}")
             return _result(request, OwnerEvent(request.turn_id, "rejected", "error"))
@@ -205,11 +221,15 @@ class Executor:
             future.set_result(OwnerEvent(request.turn_id, "rejected", "error"))
 
     def _deliver(self, event: OwnerEvent) -> None:
+        """Событие владельца в цикле исполнителя: ожидание хода, поздний итог (``on_late``) или ``stale_event``.
+        Строка лога на входе - всегда: в n809 (#3960) нельзя было понять, дошёл ли итог до исполнителя вообще."""
+        request = self._requests.get(event.ref)
+        self._log.info(f"📨 [execute] событие {request.tool if request else '?'} {event.ref} {event.status} "
+                       f"{event.reason or '-'} ход_ждёт={event.ref in self._waiting} запрос={request is not None}")
         future = self._waiting.get(event.ref)
         if future is not None and not future.done():
             future.set_result(event)
             return
-        request = self._requests.get(event.ref)
         if request is None or event.status not in _FINAL:
             self._stale(event)
             return
@@ -243,4 +263,4 @@ def _result(request: ActionRequest, event: OwnerEvent) -> ActionResult:
     )
 
 
-__all__ = ["ActionRequest", "Executor", "OwnerEvent", "deadline_s"]
+__all__ = ["ActionRequest", "Executor", "OwnerEvent", "deadline_s", "transport_timeouts"]

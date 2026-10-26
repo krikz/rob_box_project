@@ -7,7 +7,9 @@
   подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
-* ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные);
+* ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные); поздний итог
+  действия (:meth:`TurnLog.late`) заменяет его запись на месте, а фраза кода об опровергнутом ``timeout`` из окна
+  уходит (#3960: «Музыка пока не заиграла.», а трек заиграл через 1,4 с);
 * ``tool`` ``perform`` — исход выступления (:meth:`TurnLog.performed`): сегменты его владельца звучат мимо реплик хода,
   и без этой записи просьба «расскажи сказку» висит в окне неотвеченной — модель исполняет её заново на чужую реплику
   (#3973). Статус пишет код из события владельца (:func:`perform_status`), одна запись на выступление.
@@ -117,10 +119,23 @@ class _Turn:
     speaker: str = ""
     entries: List[WindowEntry] = field(default_factory=list)
     heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода (#3892)
+    superseded: Tuple[str, ...] = ()  # фразы кода об исходе, которые опроверг поздний итог (:meth:`TurnLog.late`)
 
 
 def _is_perform(entry: WindowEntry) -> bool:
     return entry.role == TOOL and isinstance(entry.content, Mapping) and entry.content.get("tool") == PERFORM_TOOL
+
+
+def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEntry]:
+    """Реплика робота без фраз кода, которые опроверг поздний итог (#3960); от неё ничего не осталось - ``None``.
+    Чужие записи и реплики без этих фраз - как есть."""
+    if entry.role != ASSISTANT or not any(said in entry.content for said in superseded):
+        return entry
+    rest = entry.content
+    for said in superseded:
+        rest = rest.replace(said, " ")
+    rest = " ".join(rest.split())
+    return WindowEntry(ASSISTANT, rest) if rest else None
 
 
 def _tool_content(result: Any) -> Mapping[str, Any]:
@@ -144,6 +159,8 @@ class TurnLog:
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
         self._performs: Dict[str, str] = {}  # turn_id → kind выступления, запись которого в окне ещё можно обновить
+        #: ``ActionResult.turn_id`` действия (``<ход>/<n>``) → (ход, его запись в окне, исход) — для :meth:`late`.
+        self._actions: Dict[str, Tuple[str, WindowEntry, Any]] = {}
 
     def begin(self, turn_id: str, epoch: int, text: str, speaker: str = "",
               heard: Sequence[Tuple[str, str]] = ()) -> None:
@@ -182,7 +199,29 @@ class TurnLog:
         не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
         if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
             return
-        self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
+        entry = self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
+        if entry is not None:
+            self._actions[result.turn_id] = (turn_id, entry, result)
+
+    def late(self, result: Any, phrase_of: Callable[[Any], Optional[str]]) -> bool:
+        """Поздний итог действия (``Executor.on_late``: ``done``/``rejected`` после ``timeout`` или ``pending``):
+        запись его исхода в окне заменяется итогом владельца на месте. Фраза кода о прежнем ``timeout`` («Музыка пока
+        не заиграла.», ``phrase_of`` — как её строит ход) из окна уходит — и прозвучавшая, и та, что ещё звучит: модель
+        на следующем ходу видит правду, а не таймаут (n809, #3960). Фраза позднего итога входит в окно обычным путём
+        (:meth:`said` → :meth:`spoken`). Действия нет в журнале (ход выпал из окна, новая сессия) — ``False``."""
+        known = self._actions.get(result.turn_id)
+        turn = self._turns.get(known[0]) if known is not None else None
+        if turn is None:
+            return False
+        _, entry, before = known
+        fresh = WindowEntry(TOOL, _tool_content(result))
+        turn.entries = [fresh if e is entry else e for e in turn.entries]
+        self._actions[result.turn_id] = (turn.turn_id, fresh, result)
+        said = phrase_of(before) if before.status == "timeout" else None
+        if said:
+            turn.superseded += (said,)
+            turn.entries = [e for e in (_unsaid(e, turn.superseded) for e in turn.entries) if e is not None]
+        return True
 
     def performed(self, turn_id: str, kind: str, status: str, segments_done: Optional[int] = None) -> bool:
         """Исход выступления хода (``kind`` - сказка/рэп/..., ``status`` - ``PERFORM_*``): запись ``tool`` ``perform``
@@ -226,6 +265,7 @@ class TurnLog:
         self._turns.clear()
         self._speech.clear()
         self._performs.clear()
+        self._actions.clear()
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
@@ -234,16 +274,20 @@ class TurnLog:
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
         return sum(self._estimate(e.text()) for t in turns for e in t)
 
-    def _add(self, turn_id: str, entry: WindowEntry) -> None:
+    def _add(self, turn_id: str, entry: WindowEntry) -> Optional[WindowEntry]:
+        """Запись в окно хода; реплика робота — без фраз, опровергнутых поздним итогом. Что легло — или ``None``."""
         turn = self._turns.get(turn_id)
-        if turn is not None:
-            turn.entries.append(entry)
+        kept = _unsaid(entry, turn.superseded) if turn is not None else None
+        if turn is not None and kept is not None:
+            turn.entries.append(kept)
+        return kept
 
     def _trim(self) -> None:
         """Память журнала ограничена окном: старше ``max_turns`` ходов не хранится (и их реплики — тоже)."""
         while len(self._turns) > self._max_turns:
             gone, _ = self._turns.popitem(last=False)
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
+            self._actions = {ref: v for ref, v in self._actions.items() if v[0] != gone}
             self._performs.pop(gone, None)
 
 

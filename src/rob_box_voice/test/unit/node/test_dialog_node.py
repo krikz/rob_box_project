@@ -183,6 +183,22 @@ def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_re
         made.shutdown()
 
 
+def test_late_outcome_of_a_chat_action_fixes_the_chat_window_3960(monkeypatch):
+    """Поздний итог правит журнал хода у любого агента, не только у Личности: обещание ``say_aloud`` (``pending``) в
+    окне чата сменяется итогом владельца речи - модель следующего хода чата не видит «ещё звучит»."""
+    made = _aloud_node(monkeypatch)
+    try:
+        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
+        made.last_chat_turn.result(timeout=10)
+        window = made._chats.engine(42).log.window
+        assert [dict(e.content)["status"] for e in window() if e.role == "tool"] == ["pending"]
+        made._on_speech_event(_speech_event(M.SpeechEvent.KIND_FINISHED, "sp-77", seconds=11.6))
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.1), made._loop).result(5)
+        assert [dict(e.content)["status"] for e in window() if e.role == "tool"] == ["done"]
+    finally:
+        made.shutdown()
+
+
 def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
     made = _aloud_node(monkeypatch, hold=True)
     try:
@@ -648,3 +664,126 @@ def test_snapshot_has_no_memory_of_unconfirmed_speaker_3919(node, tmp_path):
     node.last_turn.result(timeout=10)
     assert "speaker_memory" not in json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
     assert not (tmp_path / "harness_voice.db").exists()
+
+
+# -- MCP-тулы v2 настоящим транспортом: поздний итог (#3960 п.2) и реплика хода в тул (#4013) ------------------------
+
+N809 = "поставь фоном ровный ритм на Ренардо, только не громко"
+#: Время тестов транспорта сжато в 10 раз: срок класса, ожидание моста и задержка итога тула — все в одном масштабе.
+SCALE = 0.1
+
+
+class _Bridge:
+    """``LLMToolCallAdapter`` по поведению (время - в масштабе :data:`SCALE`): контекст хода читает в момент отправки
+    (``_prepare_parameters``), итог тула ждёт не дольше ``timeout`` - иначе «Timeout ожидания результата инструмента»,
+    а настоящий итог, пришедший позже, уходит в кэш никому (n809: ``on_result`` через 1,4 с после срока)."""
+
+    def __init__(self, turn_context, delay):
+        self.turn_context, self.delay, self.calls = turn_context, delay, []
+
+    def execute_tool_call_sync(self, name, params, timeout=None):
+        self.calls.append((name, dict(params), timeout, dict(self.turn_context())))
+        if self.delay > timeout * SCALE:
+            time.sleep(timeout * SCALE)
+            return {"success": False, "error": "Timeout ожидания результата инструмента"}
+        time.sleep(self.delay)
+        return {"success": True, "data": {"status": "done", "track_id": "req95964:01:A"}}
+
+
+def _music_node(monkeypatch, delay):
+    """Нода с настоящими ``build_tools``/``build_chat_tools`` (``ROSMCPToolProvider`` под планировщиком) и мостом
+    :class:`_Bridge`; LLM заказывает ``request_music``."""
+    import rob_box_mcp_tools.llm_adapter as adapter
+    from rob_box_llm.provider import ToolCall
+
+    bridges = []
+    monkeypatch.setattr(adapter, "LLMToolCallAdapter", lambda node, sender=None, turn_context=None: (
+        bridges.append(_Bridge(turn_context, delay)) or bridges[-1]))
+    order = ToolCall(id="c1", name="command", arguments={
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": N809}}]})
+    llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
+    made = dn.DialogNode()
+    stamp = TIME(sec=1, nanosec=0)
+    made.get_clock = lambda: types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+    made.test_bridge = bridges[0]  # первый - Личности (build_tools), второй - чата
+    return made
+
+
+def _said_texts(made):
+    return [(s.text, s.speech_id) for s in _published(made, "/voice/speech/request")]
+
+
+def test_request_music_gets_the_heard_text_of_its_turn_4013(monkeypatch):
+    """#4013: в v2 тул получал только ``utterance_id`` - опору движка ``request_music`` сверял с пересказом LLM. Теперь
+    скрытый ``heard_text`` - реплика хода, как в v1 (``_mcp_turn_context``), вместе с её ``utterance_id``."""
+    made = _music_node(monkeypatch, delay=0.0)
+    try:
+        made._on_utterance(_said(f"Робот, {N809}", "u809"))
+        made.last_turn.result(timeout=10)
+        [(tool, _, _, context)] = made.test_bridge.calls
+        assert tool == "request_music"
+        assert context == {"utterance_id": "u809", "heard_text": N809}
+        assert dn.tool_turn_context() == {}, "вне хода контекста нет: чужой вызов не получит чужую реплику"
+    finally:
+        made.shutdown()
+
+
+def test_chat_tool_call_gets_the_chat_text_not_the_voice_turn(monkeypatch):
+    """#4013 (заказы из Telegram 24.10): тул хода чата видит реплику чата, а не последнюю реплику голосом."""
+    seen = []
+
+    class _ChatTools:
+        async def execute(self, call):
+            seen.append(dict(dn.tool_turn_context()))
+            return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
+
+    from rob_box_llm.provider import ToolCall
+
+    order = ToolCall(id="c1", name="command", arguments={
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]})
+    chat_llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
+        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
+    monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
+    monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: _ChatTools())
+    made = dn.DialogNode()
+    try:
+        made._on_utterance(_chat_utterance("сыграй Running Up That Hill на балалайке"))
+        made.last_chat_turn.result(timeout=10)
+        assert seen == [{"heard_text": "сыграй Running Up That Hill на балалайке"}]
+    finally:
+        made.shutdown()
+
+
+def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_window_3960(monkeypatch):
+    """n809 (марафон 23.10): срок ``action.media`` (10 с) истёк - «Музыка пока не заиграла.»; трек заиграл через 1,4 с.
+    Мост ``ROSMCPToolProvider`` ждал итог тула свои 10 с по умолчанию - ровно срок класса - и вернул «Timeout ожидания
+    результата», настоящий итог ушёл в кэш никому, «Включаю музыку.» не прозвучало. Теперь итог доходит настоящим
+    транспортом до ``say_late``, а окно следующего хода видит ``done``, а не таймаут. Время сжато (:data:`SCALE`)."""
+    import dataclasses
+
+    from rob_box_dialog import knowledge as kn
+
+    deadline = kn.ACTION_CLASSES["action.media"].timeout_s
+    media = dataclasses.replace(kn.ACTION_CLASSES["action.media"], timeout_s=deadline * SCALE)
+    monkeypatch.setattr(kn, "ACTION_CLASSES", types.MappingProxyType({**kn.ACTION_CLASSES, "action.media": media}))
+    made = _music_node(monkeypatch, delay=(deadline + 1.4) * SCALE)
+    try:
+        made._on_utterance(_said(f"Робот, {N809}", "u809"))
+        made.last_turn.result(timeout=10)
+        until = time.monotonic() + 5.0
+        while len(_said_texts(made)) < 2 and time.monotonic() < until:  # поздний итог - через 1,4 с (×SCALE) после хода
+            time.sleep(0.05)
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), made._loop).result(5)  # say_late дописал журнал
+        said = _said_texts(made)
+        assert [t for t, _ in said] == ["<speak>Музыка пока не заиграла.</speak>", "<speak>Включаю музыку.</speak>"]
+        for _, speech_id in said:  # обе фразы отзвучали целиком
+            made._engine.speech_ended(speech_id, 100)
+        window = made._engine.log.window()
+        assert [e.content for e in window if e.role == "assistant"] == ["Включаю музыку."]
+        assert [dict(e.content)["status"] for e in window if e.role == "tool"] == ["done"]
+        [(_, _, waited, _)] = made.test_bridge.calls
+        assert waited >= kn.TURN_CEILING_S, "транспорт ждёт итог тула с поздним итогом дольше срока класса"
+    finally:
+        made.shutdown()
