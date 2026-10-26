@@ -86,6 +86,32 @@ def test_merge_of_no_plan_is_no_plan():
     assert ex.merge(None, "done", "happy") is None
 
 
+# -- экспрессия команды v2 на итоге хода (#3997) ----------------------------------------------------------------------
+FROWN = {"eyes": "half", "mouth": "frown", "duration_s": 6}
+
+
+def test_command_face_scene_colours_done_with_the_emotion():
+    """Команда ``{emotion: sad, face}`` красит рефлекс ``done``: сцена ``sad``, сцена лица LLM — в том же плане; earcon
+    и время жизни остаются от рефлекса."""
+    plan = ex.merge(ex.reflex("done"), "done", "sad", "wink", FROWN)
+    assert (plan.emotion, plan.gesture, plan.face) == ("sad", "wink", FROWN)
+    assert (plan.earcon, plan.ttl_ms) == (ex.reflex("done").earcon, ex.reflex("done").ttl_ms)
+
+
+def test_command_face_scene_never_beats_failure_or_other_stages():
+    for stage in ("failed", "timeout", "addressed", "thinking"):
+        assert ex.merge(ex.reflex(stage), stage, "happy", face=FROWN) == ex.reflex(stage), stage
+
+
+@pytest.mark.parametrize("emotion, gesture, face, shown", [
+    ("neutral", None, None, False), ("idle", None, None, False), ("", None, None, False),
+    ("sad", None, None, True), ("victory", None, None, True), ("neutral", "wink", None, True),
+    ("neutral", "moonwalk", None, False), ("neutral", None, FROWN, True),
+])
+def test_shows_says_whether_the_command_has_anything_for_the_face(emotion, gesture, face, shown):
+    assert ex.shows(emotion, gesture, face) is shown
+
+
 # -- тишина (#3984, решение Шифу 23.10) -------------------------------------------------------------------------
 def test_silenced_reflex_row_is_the_one_place_of_the_taped_face_and_the_ring_animation():
     row = kn.REFLEXES["silenced"]

@@ -1,9 +1,9 @@
 """Рефлексы: стадия хода -> экспрессия без LLM (ADR-0150 §5.5.1-5.5.3; ADR-0148 «код решает»).
 
 :func:`reflex` читает таблицу :data:`.knowledge.REFLEXES` и отдаёт :class:`ExpressionPlan` - что показать лицу и какой
-earcon сыграть на этой стадии. :func:`merge` накладывает эмоцию команды (в v1 - аргумент ``animation`` тулов речи): на
-``speaking`` и ``done`` она красит рефлекс, на ``failed`` и ``timeout`` рефлекс побеждает -
-«радостно» о провале не бывает.
+earcon сыграть на этой стадии. :func:`merge` накладывает эмоцию, жест и сцену лица команды (в v1 - аргумент
+``animation`` тулов речи, в v2 - ``command.expression``, #3997): на ``speaking`` и ``done`` она красит рефлекс, на
+``failed`` и ``timeout`` рефлекс побеждает - «радостно» о провале не бывает.
 Кольцо LED в план не входит: его режим исполнитель берёт из ``REFLEXES[stage].ring`` по событию стадии.
 
 Чистый модуль, без ROS: план превращается в ``ExpressionRequest`` клиентом ``rob_box_core.expression_client``.
@@ -102,9 +102,16 @@ def command_scene(emotion: Optional[str]) -> str:
     return kn.EMOTIONS.get(name, name)
 
 
-def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = None,
-          gesture: Optional[str] = None) -> Optional[ExpressionPlan]:
-    """Наложить эмоцию и жест команды на рефлекс; на ``failed``/``timeout`` и вне ``EMOTION_STAGES`` рефлекс как есть."""
+def shows(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None) -> bool:
+    """Покажет ли экспрессия команды что-то на лице: эмоция сверх ``NO_EMOTION``, жест из ``GESTURES`` или сцена LLM.
+    Нейтраль без жеста и сцены - нечего показать (команда из неё - пустая, а не «лицо без слов», #3997)."""
+    return bool(command_scene(emotion) or (gesture and gesture in kn.GESTURES) or face)
+
+
+def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = None, gesture: Optional[str] = None,
+          face: Optional[Mapping[str, object]] = None) -> Optional[ExpressionPlan]:
+    """Наложить эмоцию, жест и сцену лица команды (``FaceScene.to_dict()``, уже проверенная) на рефлекс; на
+    ``failed``/``timeout`` и вне ``EMOTION_STAGES`` рефлекс как есть."""
     if plan is None or stage not in EMOTION_STAGES:
         return plan
     scene = command_scene(emotion)
@@ -112,4 +119,6 @@ def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = N
         plan = replace(plan, emotion=scene)
     if gesture and gesture in kn.GESTURES:
         plan = replace(plan, gesture=gesture)
+    if face:
+        plan = replace(plan, face=dict(face))
     return plan

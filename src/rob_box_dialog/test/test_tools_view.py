@@ -7,9 +7,9 @@ import pytest
 
 from rob_box_core.tool_catalog import TOOL_CATALOG, llm_visible_tools
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Ask, Command, Performance, ToolCall
+from rob_box_dialog.command import Ask, Command, Expression, Performance, ToolCall
 from rob_box_dialog.session import MusicStateRef, SceneFrame, SessionSnapshot
-from rob_box_dialog.tools_view import available_tools, groups_for, needs_words, requested_groups
+from rob_box_dialog.tools_view import available_tools, face_asked, groups_for, needs_words, requested_groups
 
 
 def _snap(**kw):
@@ -321,9 +321,46 @@ def test_answers_with_words_sound_or_other_actions_do_not_need_words(cmd):
     assert not needs_words(N101, cmd)
 
 
+# -- команда из одной expression (#3997, n904 23.10) ------------------------------------------------------------------
+
+SAD = Command(expression=Expression(emotion="sad"))
+
+
+@pytest.mark.parametrize("text", [
+    "покажи как тебе грустно что смена такая длинная",  # n904, текст хода из лога 23:01:09
+    "Робот, покажи, как тебе грустно", "покажи грусть", "покажи победу", "покажи эмоцию", "покажи свою радость",
+    "покажи весёлое лицо", "улыбнись", "подмигни мне", "потанцуй немного", "станцуй", "нахмурься",
+    "изобрази удивление", "покажи победную анимацию",
+])
+def test_face_asked_in_words_opens_animation_and_needs_no_words(text):
+    """Решение Шифу 26.10: лицо по прямой просьбе без слов — норма; одна таблица ``knowledge.FACE_*``."""
+    assert face_asked(text) and kn.FACE_ASK_GROUP in requested_groups(text)
+    assert not needs_words(text, SAD)
+    assert not needs_words(text, Command(actions=(HAPPY,)))
+
+
+@pytest.mark.parametrize("text", ["покажи кухню", "покажи CPU", "покажи точки маршрута", "мне грустно",
+                                  "как тебе погода", "расскажи про станцию", N101, N1011])
+def test_bare_show_or_mood_words_do_not_ask_for_the_face(text):
+    assert not face_asked(text) and kn.FACE_ASK_GROUP not in requested_groups(text)
+
+
+@pytest.mark.parametrize("text", [N101, N1011, "как дела"])
+@pytest.mark.parametrize("cmd", [SAD, Command(expression=Expression(gesture="wink")),
+                                 Command(expression=Expression(emotion="happy"), actions=(HAPPY,))])
+def test_only_expression_on_a_question_or_farewell_needs_words(text, cmd):
+    """Тот же класс дефекта, что голая анимация (#3995): одной ``expression`` на вопрос не слышно."""
+    assert needs_words(text, cmd)
+
+
+def test_neutral_expression_alone_is_an_empty_command_not_a_face():
+    assert not needs_words(N101, Command(expression=Expression(emotion="neutral")))
+
+
 def test_inaudible_tools_are_quiet_beside_speech_so_the_hint_is_true():
     """Подсказка нарушения обещает модели: speech рядом с анимацией звучит. Это правда, только пока неслышимые тулы
     входят в тихие (``QUIET_WITH_SPEECH_TOOLS``); звук сам себе доказательство и в неслышимые не входит."""
     assert set(kn.INAUDIBLE_TOOLS) <= set(kn.QUIET_WITH_SPEECH_TOOLS)
     assert "play_sound" not in kn.INAUDIBLE_TOOLS and set(kn.INAUDIBLE_TOOLS) <= set(kn.SILENT_DONE_TOOLS)
     assert all(tool in kn.SILENT_ANSWER_HINT for tool in kn.INAUDIBLE_TOOLS) and "speech" in kn.SILENT_ANSWER_HINT
+    assert "expression" in kn.SILENT_ANSWER_HINT, "подсказка честна и для команды из одной expression (#3997)"

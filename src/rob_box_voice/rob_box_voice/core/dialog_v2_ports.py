@@ -9,8 +9,8 @@
 * **действия** — :class:`rob_box_dialog.execute.Executor` поверх исполнителя тулов v1 (``plan_host.make_tool_executor``:
   MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``command_turn.owner_event``).
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
-* **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``),
-  ``/dialog/intent``.
+* **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``, на итоге
+  ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997), ``/dialog/intent``.
 
 Модуль без класса ноды: ROS-хост ``dialog_node`` (ч.8e2) отдаёт сюда себя и собранные объекты.
 """
@@ -24,11 +24,11 @@ from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Option
 from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Busy, Command, Invalid, Result, ToolCall as CommandCall, parse
+from rob_box_dialog.command import Busy, Command, Expression, Invalid, Result, ToolCall as CommandCall, parse
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor
-from rob_box_dialog.expression import reflex
+from rob_box_dialog.expression import ExpressionPlan, merge, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.turn import Answer
@@ -92,6 +92,18 @@ def to_result(response: LLMResponse) -> Result:
             return Invalid(str(marked), salvage=rest.actions if isinstance(rest, Command) else ())
     text = (response.content or "").strip()
     return Command(speech=text) if text else Invalid(EMPTY, "ни речи, ни команды")
+
+
+def stage_plan(stage: str, cls: Optional[str] = None,
+               expression: Optional[Expression] = None) -> Optional[ExpressionPlan]:
+    """Рефлекс стадии (``expression.reflex``), окрашенный экспрессией команды (#3997): эмоция, жест и сцена лица LLM
+    (``FaceScene.to_dict()``) через ``expression.merge`` - красит только ``speaking``/``done``, провал побеждает.
+    Отдельного запроса лицу нет: команда из одной ``expression`` доходит до лица рефлексом ``done``."""
+    plan = reflex(stage, cls)
+    if expression is None:
+        return plan
+    face = expression.face.to_dict() if expression.face is not None else None
+    return merge(plan, stage, expression.emotion, expression.gesture, face)
 
 
 def to_message(message: Any) -> LLMMessage:
@@ -198,16 +210,20 @@ class V2Ports:
         return speech_client.say(self._node, utterance, agent=self._agent, epoch=epoch, turn_id=turn_id)
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
-              llm_calls: int = 0, provider: str = "", source: str = "") -> None:
-        """Событие стадии (``/dialog/turn_event``) и рефлекс кода (лицо/кольцо/earcon) без LLM."""
+              llm_calls: int = 0, provider: str = "", source: str = "",
+              expression: Optional[Expression] = None) -> None:
+        """Событие стадии (``/dialog/turn_event``) и рефлекс кода (лицо/кольцо/earcon) без LLM. ``expression`` -
+        экспрессия команды на итоге хода (``turn.done_expression``: не в тишине, не у отменённого): красит рефлекс
+        (:func:`stage_plan`), жест и сцена лица LLM уходят в том же ``ExpressionRequest``."""
         status = _STATUS.get(status, status)
         expression_client.turn_event(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent, stage=stage,
                                      status=status, reason=reason, llm_calls=llm_calls, llm_provider=provider,
                                      source=source)
-        plan = reflex(stage, cls)
+        plan = stage_plan(stage, cls, expression)
         if plan is not None:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
-                                      emotion=plan.emotion, earcon=plan.earcon, ttl_ms=plan.ttl_ms)
+                                      emotion=plan.emotion, gesture=plan.gesture, earcon=plan.earcon, face=plan.face,
+                                      ttl_ms=plan.ttl_ms)
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
         speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
@@ -264,4 +280,4 @@ def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any,
 
 
 __all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
-           "follow_for", "to_message", "to_result", "tool_schema"]
+           "follow_for", "stage_plan", "to_message", "to_result", "tool_schema"]
