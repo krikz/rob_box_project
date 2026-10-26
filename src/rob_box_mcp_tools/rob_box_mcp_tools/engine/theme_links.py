@@ -9,8 +9,9 @@
    англоязычному архиву (``rob_box_music.theme_queries``); **каждую строку проверяет код** поиском по каталогу:
    берутся только записи, в опознавательных полях которых есть все слова строки; строка, совпавшая со слишком
    многими записями («dance», «love»), — не название, отбрасывается. Вердикт пишется в хранилище;
-4. LLM недоступна или не уложилась в :data:`ASK_WAIT_S` — сет решает без неё (как до #3493), фраза — в журнал
-   непонятого (``missed``); опоздавший ответ дописывается в хранилище в фоне — следующий заказ найдёт сразу.
+4. LLM недоступна или не уложилась в ``knowledge.THEME_ASK_WAIT_S`` — сет решает без неё (как до #3493), фраза — в
+   журнал непонятого (``missed``); опоздавший ответ дописывается в хранилище в фоне — следующий заказ найдёт сразу.
+   Одиночный трек (``knowledge.THEME_ASK_WAIT_TRACK_S`` = 0) не ждёт вовсе: LLM спрашивается только фоном.
 
 Хуков LLM не выбирает и фраз не пишет; «нашлось/не нашлось» — из результата поиска по каталогу.
 """
@@ -25,6 +26,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_music import knowledge as kn
 from rob_box_music import theme_queries as tq
 from rob_box_music.rtttl import THEME_HOOKS
 from rob_box_music.works import ThemeLink, get_theme_link, put_theme_link, theme_phrase
@@ -34,12 +36,7 @@ from .search import THEME_LIST_HOOKS, ThemeHits, _pool, by_part, ordered, round_
 
 _LOG = logging.getLogger(__name__)
 
-#: Сколько старт сета ждёт LLM — только у фразы, которой нет в хранилище (повтор — без LLM, живьём 07.10 трек 1
-#: через 3.4 с после STT). Замер на роботе 07.10 13:20 UTC (hotpatch): ответ на 3 части темы — 5.9 с, на одну —
-#: 3.5 с (с проверкой каталогом); с дедлайном 3 с оба опоздали, сет отказал/сыграл пул. Ожидание 8 с — меньше
-#: прежних 17 с до трека 1 (#3491); опоздавший ответ всё равно проверяется и кешируется.
-ASK_WAIT_S = 8.0
-#: Дедлайн самого вызова LLM в фоне (после :data:`ASK_WAIT_S` ответ уже идёт только в хранилище).
+#: Дедлайн самого вызова LLM в фоне (после ожидания ``knowledge.THEME_ASK_WAIT_S`` ответ идёт только в хранилище).
 ASK_DEADLINE_S = 20.0
 ASK_MAX_TOKENS = 600
 #: Строка поиска, совпавшая с таким числом записей и больше, — не название произведения («dance» — 50, «love» — 41;
@@ -90,7 +87,7 @@ class ThemeLinks:
     """Расширение находок темы по хранилищу связей и проверенным предложениям LLM."""
 
     def __init__(self, db_path: Callable[[Any], Optional[str]] = db_path_of, *,
-                 ask: Optional[Ask] = None, wait_s: float = ASK_WAIT_S, logger: Any = None,
+                 ask: Optional[Ask] = None, wait_s: float = kn.THEME_ASK_WAIT_S, logger: Any = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc).replace(tzinfo=None),
                  spawn: Callable[[Callable[[], None]], None] = lambda fn: threading.Thread(
                      target=fn, name="rbx-theme-links", daemon=True).start()) -> None:
@@ -102,9 +99,12 @@ class ThemeLinks:
         self._spawn = spawn
         self._lock = threading.Lock()  # одна запись в хранилище за раз (фоновый опоздавший ответ и старт сета)
 
-    def expand(self, library: Any, theme: str, hits: ThemeHits, ask: bool = True) -> ThemeHits:
+    def expand(self, library: Any, theme: str, hits: ThemeHits, ask: bool = True,
+               wait_s: Optional[float] = None) -> ThemeHits:
         """Находки темы с частями, найденными через хранилище связей или проверенные предложения LLM; ``ask=False`` —
-        LLM не спрашивается и не ждётся (одиночная пьеса, #3608: до 8 с на пути звука), в журнал «не понято» не пишется."""
+        LLM не спрашивается и не ждётся (одиночная пьеса, #3608: до 8 с на пути звука), в журнал «не понято» не пишется.
+        ``wait_s`` — сколько ждать LLM в этом вызове (нет — ``self._wait_s``); ``0`` — не ждать вовсе: LLM
+        спрашивается фоном, ответ допишется в хранилище (одиночный трек, #3960 п.2)."""
         unresolved = list(hits.missing) or ([] if hits.names else [theme])
         path = self._db_path(library)
         if not theme.strip() or not unresolved or not path:
@@ -125,7 +125,7 @@ class ThemeLinks:
             self._log.info(f"🔎 [theme-links] «{part}»: связь {link.source}/{link.status} {list(link.queries)} → "
                            f"{list(found[part])}")
         if ask_parts and ask:
-            answered = self._ask_llm(library, path, theme, ask_parts)
+            answered = self._ask_llm(library, path, theme, ask_parts, wait_s)
             for part in ask_parts:
                 if part in answered:
                     kinds[part], found[part], queries[part] = answered[part]
@@ -137,9 +137,11 @@ class ThemeLinks:
     def _names(self, library: Any, queries: Sequence[str]) -> Tuple[str, ...]:
         return tuple(round_robin([verify(library, q) for q in queries], THEME_HOOKS))
 
-    def _ask_llm(self, library: Any, path: str, theme: str,
-                 parts: List[str]) -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
-        """Спросить LLM и проверить ответ каталогом; ждём не дольше ``wait_s``, опоздавший ответ — в хранилище."""
+    def _ask_llm(self, library: Any, path: str, theme: str, parts: List[str],
+                 wait: Optional[float]) -> Mapping[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]:
+        """Спросить LLM и проверить ответ каталогом; ждём не дольше ``wait`` (нет — ``self._wait_s``), опоздавший ответ
+        — в хранилище."""
+        wait_s = self._wait_s if wait is None else wait
         if self._ask is None:
             self._note_missed(path, parts, "LLM выключена")
             return {}
@@ -151,9 +153,13 @@ class ThemeLinks:
                 self._log.warning(f"⚠️ [theme-links] {parts}: {type(exc).__name__}: {exc}")
                 return {}
 
-        done, answer = in_time(self._spawn, self._wait_s, run)
+        done, answer = in_time(self._spawn, wait_s, run)
+        if not done and wait_s <= 0:  # фон: заказ не ждёт, вердикт (или «не понято») запишет сам вызов LLM
+            self._log.info(f"🔎 [theme-links] {parts}: LLM спрошена в фоне — заказ её не ждёт, ответ "
+                           "допишется в хранилище")
+            return {}
         if not done:
-            self._log.warning(f"⚠️ [theme-links] {parts}: LLM не ответила за {self._wait_s:g} с — сет без неё, "
+            self._log.warning(f"⚠️ [theme-links] {parts}: LLM не ответила за {wait_s:g} с — сет без неё, "
                               "ответ допишется в хранилище")
             self._note_missed(path, parts, "LLM опоздала")
             return {}
@@ -207,5 +213,5 @@ class ThemeLinks:
                        named=named)
 
 
-__all__ = ["ASK_DEADLINE_S", "ASK_WAIT_S", "GENERIC_MATCHES", "PER_QUERY", "Ask", "ThemeLinks", "in_time",
+__all__ = ["ASK_DEADLINE_S", "GENERIC_MATCHES", "PER_QUERY", "Ask", "ThemeLinks", "in_time",
            "tool_payload", "verify"]

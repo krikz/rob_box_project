@@ -69,8 +69,16 @@ INSTRUCTIONS = ("Выбери, откуда взять музыку роботу
                 "наибольшим итогом. Выбери один id.")
 
 
+_WORD_RE = re.compile(r"[^\W\d_]+")
+
+
+def _spans(text: str) -> List[Tuple[str, int, int]]:
+    """Слова речи в нижнем регистре без «ё» и их позиции ``(слово, начало, конец)`` в исходной строке."""
+    return [(m.group().lower().replace("ё", "е"), m.start(), m.end()) for m in _WORD_RE.finditer(text or "")]
+
+
 def _words(text: str) -> List[str]:
-    return re.findall(r"[^\W\d_]+", (text or "").lower().replace("ё", "е"))
+    return [word for word, _start, _end in _spans(text)]
 
 
 def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
@@ -81,7 +89,8 @@ def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
 class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
-    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»."""
+    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»; ``tweak`` — просьба правит играющее («ускорь»,
+    «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
 
     generated: bool = False
     vocal: bool = False
@@ -90,10 +99,16 @@ class SourceAsk:
     own: bool = False
     genre: str = ""
     engine: str = ""
+    tweak: bool = False
 
     def describe(self) -> str:
         flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own") if getattr(self, name)]
         return f"asked=[{','.join(flags)}] genre={self.genre or '—'}" + (f" engine={self.engine}" if self.engine else "")
+
+    @property
+    def plain(self) -> bool:
+        """Просьба не называет путь: ни «сгенерируй»/«спой»/«новую»/«сочини», ни жанра («ускорь», «добавь баса»)."""
+        return not (self.generated or self.vocal or self.robot_voice or self.fresh or self.own or self.genre)
 
 
 def ask_genre(text: str) -> str:
@@ -107,13 +122,80 @@ def ask_genre(text: str) -> str:
     return style if style in kn.GEN_STYLES else ""
 
 
+def _has_phrase(words: Sequence[str], entry: str) -> bool:
+    """Запись таблицы в речи: одно слово — основа (начало слова), несколько — эти слова подряд, точно."""
+    parts = entry.split()
+    if len(parts) == 1:
+        return _has(words, parts)
+    return any(list(words[i:i + len(parts)]) == parts for i in range(len(words) - len(parts) + 1))
+
+
+def ask_tweak(text: str) -> bool:
+    """Просьба правит играющее: в словах есть запись ``ENGINE_TWEAK_WORDS`` («ускорь», «добавь баса», «в том же духе»)."""
+    words = _words(text)
+    return any(_has_phrase(words, entry) for group in kn.ENGINE_TWEAK_WORDS.values() for entry in group)
+
+
+def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
+    """Слово речи называет движок: начинается с основы или содержит ядро (слово-двойник ядром не считается)."""
+    if word.startswith(engine.stems):
+        return True
+    return not word.startswith(engine.lookalikes) and any(core in word for core in engine.cores)
+
+
+def _straddles(glued: str, split: int, piece: str) -> bool:
+    """``piece`` стоит в склейке ``glued`` через стык ``split`` (часть в первом слове, часть во втором)."""
+    start = glued.find(piece)
+    while start != -1:
+        if start < split < start + len(piece):
+            return True
+        start = glued.find(piece, start + 1)
+    return False
+
+
+def _joined_names_engine(engine: kn.MusicEngine, first: str, second: str) -> bool:
+    """Соседние слова, склеенные, называют движок через стык («ре нардо», «нарен дарда»): STT разрезал имя. Основа или
+    ядро обязаны заходить во второе слово — имя, целиком лежащее в первом, пару не берёт (лишний сосед не съедается);
+    слово-двойник склейку не даёт."""
+    if first.startswith(engine.lookalikes) or second.startswith(engine.lookalikes):
+        return False
+    glued = first + second
+    return (any(glued.startswith(stem) and len(stem) > len(first) for stem in engine.stems)
+            or any(_straddles(glued, len(first), core) for core in engine.cores))
+
+
+def engine_words(text: str) -> List[Tuple[str, int, int]]:
+    """Слова речи, называющие движок: ``(ключ, начало, конец)`` в исходной строке. Единственное место, где код узнаёт
+    движок в услышанной фразе (ADR-0148): по таблице ``MUSIC_ENGINES`` — основы, ядра, склейка пары слов. Пара слов —
+    один отрезок от начала первого до конца второго."""
+    tokens = _spans(text)
+    found: List[Tuple[str, int, int]] = []
+    taken: Set[int] = set()
+    for key, engine in kn.MUSIC_ENGINES.items():
+        for i in range(len(tokens) - 1):  # пары первыми: в «ре нардо» второе слово само ядро, но «ре» — часть имени
+            if not ({i, i + 1} & taken) and _joined_names_engine(engine, tokens[i][0], tokens[i + 1][0]):
+                found.append((key, tokens[i][1], tokens[i + 1][2]))
+                taken.update((i, i + 1))
+        for i, (word, start, end) in enumerate(tokens):
+            if i not in taken and _names_engine(engine, word):
+                found.append((key, start, end))
+                taken.add(i)
+    return sorted(found, key=lambda hit: hit[1])
+
+
 def ask_engine(text: str) -> str:
     """Движок, названный в речи (``MUSIC_ENGINES``: «на Ренардо» и искажения STT, в том числе слитые из двух слов); не
     назван — «»."""
-    words = _words(text)
-    glued = [a + b for a, b in zip(words, words[1:])]
-    return next((key for key, engine in kn.MUSIC_ENGINES.items()
-                 if _has(words, engine.stems) or _has(glued, engine.stems)), "")
+    found = engine_words(text)
+    return found[0][0] if found else ""
+
+
+def blank_engine(text: str) -> str:
+    """Текст без слов, называющих движок (на их месте пробелы той же длины): имя движка — не тема трека."""
+    out = text or ""
+    for _key, start, end in engine_words(out):
+        out = out[:start] + " " * (end - start) + out[end:]
+    return out
 
 
 def engine_route(engine: str) -> str:
@@ -122,10 +204,26 @@ def engine_route(engine: str) -> str:
     return known.route if known is not None else ""
 
 
-def with_engine(ask: SourceAsk, engine: Optional[str]) -> SourceAsk:
-    """Слот ``engine`` схемы ``request_music`` дополняет слова: STT мог исказить имя дальше основ. Названное в
-    словах человека главнее; неизвестный ключ и ``auto`` ничего не меняют."""
-    return replace(ask, engine=engine) if engine in kn.MUSIC_ENGINES and not ask.engine else ask
+def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
+                  own_subject: bool = False) -> Tuple[SourceAsk, str]:
+    """Движок заказа: ``(просьба, строка для лога)``. Решает код по словам человека и снимку плеера, а не LLM (#4013).
+
+    * Слова называют движок (:func:`ask_engine`) — он и есть; слот ``engine`` схемы (его заполнила LLM) ничего не
+      прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=renardo``), отбрасывается
+      с причиной в строке, иначе молчаливое сужение пути до синтеза (кэш и генерация не рассматриваются).
+    * Не названного движка заказ наследует играющий (``playing``, снимок плеера) только когда просьба **правит
+      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под Ренардо — движок
+      тот же), не называет путь (``SourceAsk.plain``) и не называет своего предмета (``own_subject``: пьеса по
+      названию или инструмент реплики). Всякая прочая просьба — «сыграй ещё», «включи музыку», «поставь Нирвану»,
+      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, Ренардо
+      до стопа не липнет.
+
+    Строка пуста, когда добавить нечего."""
+    unsupported = slot in kn.MUSIC_ENGINES and slot != ask.engine  # слова человека не называют этот движок
+    note = f"слот engine={slot} без опоры в словах человека — отброшен" if unsupported else ""
+    if ask.engine or playing not in kn.MUSIC_ENGINES or own_subject or not ask.plain or not ask.tweak:
+        return ask, note
+    return replace(ask, engine=playing), "; ".join(filter(None, (note, f"движок наследуется от играющего: {playing}")))
 
 
 def source_ask(text: str) -> SourceAsk:
@@ -137,7 +235,7 @@ def source_ask(text: str) -> SourceAsk:
     vocal = (_has(words, kn.SOURCE_ASK_STEMS["vocal"]) or robot_voice
              or (_has(words, kn.SONG_STEMS) and (generated or own)))
     return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text),
-                     ask_engine(text))
+                     ask_engine(text), ask_tweak(text))
 
 
 def synth_style(genre: str) -> Optional[str]:
@@ -645,8 +743,8 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "cover_rejected_text",
            "cover_ready_text", "cover_slot", "cover_style_key", "slot_style", "GENERATE", "INSTRUCTIONS", "PIECE",
            "REASON_WORDS", "Route", "SYNTH",
-           "SourceAsk", "SourceContext", "ask_genre", "ask_engine", "cache_text", "choose_route", "choose_with_fallback",
-           "decline_text", "engine_route", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
+           "SourceAsk", "SourceContext", "ask_genre", "ask_engine", "ask_tweak", "blank_engine", "cache_text", "choose_route", "choose_with_fallback",
+           "decline_text", "engine_route", "engine_words", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
-           "set_candidates", "set_genres", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
-           "theme_cache", "theme_fit", "theme_title", "with_engine"]
+           "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
+           "theme_cache", "theme_fit", "theme_title"]
