@@ -32,6 +32,9 @@ tts_node:
     #   happy | neutral | sad | angry | fearful | disgusted | surprised
     # Прокидывание значений в ``TTSSettings`` — в карточке t_4e98182a.
     normalize_text: true
+    # #4022 — set_pitch двигает pitch_shift (1.0 = норма) и читает его назад. Без chipmunk_mode тон слышен только у
+    # MiniMax: pitch_shift -> voice_setting.pitch полутонами (12*log2, +-12) к minimax_pitch; у Yandex/Silero тона
+    # нет, тул отвечает отказом. С chipmunk_mode: true коэффициент съедает передискретизация (любой провайдер).
     chipmunk_mode: false
     pitch_shift: 1.0
     volume_db: -3.0
@@ -58,6 +61,7 @@ tts_node:
     minimax_voice: male-qn-qingse
     minimax_model: speech-02-hd
     minimax_language: ru
+    # #4022 — живой: set_speed при звучащем MiniMax двигает именно его (0.5-2.0), yandex_speed он не читает.
     minimax_speed: 1.0
     minimax_sample_rate: 32000
     minimax_format: pcm

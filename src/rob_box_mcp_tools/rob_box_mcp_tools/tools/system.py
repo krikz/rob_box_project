@@ -23,7 +23,7 @@ import datetime as _datetime
 import math
 import os
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import Callable, List, NamedTuple, Optional, TYPE_CHECKING
 
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
@@ -185,18 +185,132 @@ class SetVolumeTool(MCPTool):
         return MCPToolResult(success=True, data=data, message=message)
 
 
+class TtsParams:
+    """Параметры ``tts_node`` по ROS-сервисам: чтение с проверкой типа, запись с причиной отказа (#4022).
+
+    Тип проверяется: параметра нет (``NOT_SET``) — это «не прочитал», а не 0.0, из которого тул посчитал бы шаг.
+    """
+
+    def __init__(self, node):
+        # Динамический импорт во время выполнения
+        from rcl_interfaces.srv import GetParameters, SetParameters
+
+        self._get = node.create_client(GetParameters, "/tts_node/get_parameters")
+        self._set = node.create_client(SetParameters, "/tts_node/set_parameters")
+
+    def ready(self) -> bool:
+        return self._get.wait_for_service(timeout_sec=1.0)
+
+    def read(self, name: str):
+        """Значение параметра (``float`` у double, ``bool`` у bool) или ``None``: нет ответа / параметр не задан."""
+        from rcl_interfaces.msg import ParameterType
+        from rcl_interfaces.srv import GetParameters
+
+        request = GetParameters.Request()
+        request.names = [name]
+        future = self._get.call_async(request)
+        if not wait_future(future, timeout_sec=2.0) or future.result() is None:
+            return None
+        value = future.result().values[0]
+        if value.type == ParameterType.PARAMETER_DOUBLE:
+            return value.double_value
+        if value.type == ParameterType.PARAMETER_BOOL:
+            return value.bool_value
+        return None
+
+    def write(self, name: str, value: float) -> Optional[str]:
+        """Записать double-параметр: ``None`` — нода приняла, иначе причина отказа текстом."""
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import SetParameters
+
+        request = SetParameters.Request()
+        param = Parameter()
+        param.name = name
+        param.value = ParameterValue()
+        param.value.type = ParameterType.PARAMETER_DOUBLE
+        param.value.double_value = value
+        request.parameters = [param]
+        future = self._set.call_async(request)
+        if not wait_future(future, timeout_sec=2.0):
+            return "timeout"
+        if future.result() is None:
+            return "нет ответа"
+        outcome = future.result().results[0]
+        return None if outcome.successful else (outcome.reason or "нода отклонила значение")
+
+
+class _Step(NamedTuple):
+    """Действие тула на оси: направление шага (−1/0/+1), слова «сделал» и «уже на границе»."""
+
+    direction: int
+    said: str
+    edge: str
+
+
+def _rejected(reason: str, error: str, **data) -> MCPToolResult:
+    """Честный отказ: статус ``rejected`` и причина — в данных, чтобы фразу об исходе строил код, а не «Готово»."""
+    return MCPToolResult(success=False, error=error, message=error,
+                         data={"status": "rejected", "reason": reason, **data})
+
+
+def _unsupported(kind: str, provider: str) -> MCPToolResult:
+    """У активного провайдера нет регулировки (``kind`` = ``speed`` | ``pitch``): голос не менялся — так и говорим."""
+    from rob_box_voice.tts_voice_registry import PROVIDER_LABELS
+
+    what = {"speed": "скорости", "pitch": "тона"}[kind]
+    return _rejected(f"{kind}_unsupported",
+                     f"У провайдера {PROVIDER_LABELS.get(provider, provider or '?')} нет регулировки {what}, "
+                     "голос не изменился", provider=provider)
+
+
+def _active_provider(node) -> str:
+    """Провайдер, чей голос звучит сейчас: фактический от ``tts_node`` (после фолбека), как у ``speak_text``."""
+    from .dialogue import _active_tts_provider
+
+    return _active_tts_provider(node)
+
+
+def _step_axis(tts: TtsParams, axis, step: _Step, provider: str, kind: str,
+               describe: Callable[[float], str]) -> MCPToolResult:
+    """Шаг по оси активного провайдера: прочитать, записать, прочитать назад. Фраза — из прочитанного значения (#4022).
+
+    Параметр, который нода записала, но не применила к синтезу, — не успех: ответ «готово» ставит код только после
+    того, как значение прочитано обратно и совпало с запрошенным.
+    """
+    from rob_box_voice.tts_prosody import target_value
+
+    current = tts.read(axis.param)
+    if current is None:
+        return _rejected("read_failed", f"Не удалось прочитать {axis.param}", provider=provider)
+    target = target_value(axis, step.direction, current)
+    data = {"provider": provider, "param": axis.param, f"old_{kind}": current}
+    if abs(target - current) < 0.01:
+        return MCPToolResult(success=True, message=step.edge,
+                             data={**data, "status": "done", "reason": "at_limit", f"new_{kind}": current})
+    error = tts.write(axis.param, target)
+    if error is not None:
+        return _rejected("set_failed", f"Не удалось установить {axis.param}: {error}", **data)
+    applied = tts.read(axis.param)
+    if applied is None or abs(applied - target) > 1e-6:
+        return _rejected("not_applied", f"{axis.param}: просили {target:g}, нода держит {applied!r}", **data)
+    return MCPToolResult(success=True, message=f"{step.said}: {describe(applied)}",
+                         data={**data, "status": "done", f"new_{kind}": applied})
+
+
 class SetPitchTool(MCPTool):
     """Инструмент для управления высотой голоса."""
 
     event_source = "srv:/tts_node/set_parameters"
+    #: Действия → шаг по оси ``pitch_shift`` (коэффициент тона, 1.0 — норма).
+    _STEPS = {
+        "higher": _Step(1, "Говорю выше", "Голос уже максимально высокий"),
+        "lower": _Step(-1, "Говорю ниже", "Голос уже минимально низкий"),
+        "normal": _Step(0, "Нормальный голос", "Голос уже нормальный"),
+    }
 
     def __init__(self, node):
         super().__init__(node)
-        # Динамический импорт во время выполнения
-        from rcl_interfaces.srv import GetParameters, SetParameters
-
-        self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
-        self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
+        self.tts = TtsParams(node)
 
     @property
     def name(self) -> str:
@@ -231,81 +345,42 @@ class SetPitchTool(MCPTool):
         return "personality"
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить высоту голоса."""
-        # Динамический импорт во время выполнения
-        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-        from rcl_interfaces.srv import GetParameters, SetParameters
+        """Установить высоту голоса: параметром активного провайдера, а нет такого — честный отказ (#4022)."""
+        from rob_box_voice.tts_prosody import describe_pitch, pitch_axis
 
         self.log_info(f"Изменение pitch: {action}")
-
-        if not self.get_params_client.wait_for_service(timeout_sec=1.0):
-            return MCPToolResult(success=False, error="TTS параметры недоступны")
-
-        # Получить текущий pitch_shift
-        get_request = GetParameters.Request()
-        get_request.names = ["pitch_shift"]
-        future = self.get_params_client.call_async(get_request)
-        if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось получить текущий pitch")
-
-        if future.result() is None:
-            return MCPToolResult(success=False, error="Не удалось получить текущий pitch")
-
-        current_pitch = future.result().values[0].double_value
-
-        # Вычислить новый pitch
-        if action == "higher":
-            new_pitch = min(current_pitch + 0.2, 2.0)
-            message = "Говорю выше"
-        elif action == "lower":
-            new_pitch = max(current_pitch - 0.2, 0.5)
-            message = "Говорю ниже"
-        elif action == "normal":
-            new_pitch = 1.0
-            message = "Нормальный голос"
-        else:
-            return MCPToolResult(success=False, error=f"Неизвестное действие: {action}")
-
-        # Проверка на пределы
-        if abs(new_pitch - current_pitch) < 0.01:
-            if action == "higher":
-                return MCPToolResult(success=True, message="Голос уже максимально высокий")
-            elif action == "lower":
-                return MCPToolResult(success=True, message="Голос уже минимально низкий")
-
-        # Установить новый pitch
-        set_request = SetParameters.Request()
-        param = Parameter()
-        param.name = "pitch_shift"
-        param.value = ParameterValue()
-        param.value.type = ParameterType.PARAMETER_DOUBLE
-        param.value.double_value = new_pitch
-        set_request.parameters = [param]
-
-        future = self.set_params_client.call_async(set_request)
-        if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось установить pitch (timeout)")
-
-        if future.result() is None or not future.result().results[0].successful:
-            return MCPToolResult(success=False, error="Не удалось установить pitch")
-
-        self.log_info(f"Pitch: {current_pitch:.2f} → {new_pitch:.2f}")
-
-        return MCPToolResult(success=True, data={"old_pitch": current_pitch, "new_pitch": new_pitch}, message=message)
+        step = self._STEPS.get(action)
+        if step is None:
+            return _rejected("bad_action", f"Неизвестное действие: {action}")
+        if not self.tts.ready():
+            return _rejected("params_unavailable", "TTS параметры недоступны")
+        chipmunk = self.tts.read("chipmunk_mode")  # от режима зависит, слышен ли тон у этого провайдера
+        if chipmunk is None:
+            return _rejected("read_failed", "Не удалось прочитать chipmunk_mode")
+        provider = _active_provider(self.node)
+        axis = pitch_axis(provider, bool(chipmunk))
+        if axis is None:
+            return _unsupported("pitch", provider)
+        result = _step_axis(self.tts, axis, step, provider, "pitch",
+                            lambda ratio: "тон " + describe_pitch(ratio, bool(chipmunk)))
+        self.log_info(f"Pitch [{provider}, {axis.param}]: {result.message}")
+        return result
 
 
 class SetSpeedTool(MCPTool):
     """Инструмент для управления скоростью речи."""
 
     event_source = "srv:/tts_node/set_parameters"
+    #: Действия → шаг по оси скорости активного провайдера (``minimax_speed`` / ``yandex_speed``).
+    _STEPS = {
+        "faster": _Step(1, "Говорю быстрее", "Скорость уже максимальная"),
+        "slower": _Step(-1, "Говорю медленнее", "Скорость уже минимальная"),
+        "normal": _Step(0, "Нормальная скорость", "Скорость уже нормальная"),
+    }
 
     def __init__(self, node):
         super().__init__(node)
-        # Динамический импорт во время выполнения
-        from rcl_interfaces.srv import GetParameters, SetParameters
-
-        self.get_params_client = node.create_client(GetParameters, "/tts_node/get_parameters")
-        self.set_params_client = node.create_client(SetParameters, "/tts_node/set_parameters")
+        self.tts = TtsParams(node)
 
     @property
     def name(self) -> str:
@@ -338,69 +413,22 @@ class SetSpeedTool(MCPTool):
         return "personality"
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить скорость речи."""
-        # Динамический импорт во время выполнения
-        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-        from rcl_interfaces.srv import GetParameters, SetParameters
+        """Установить скорость речи: параметром активного провайдера, а нет такого — честный отказ (#4022)."""
+        from rob_box_voice.tts_prosody import speed_axis
 
         self.log_info(f"Изменение speed: {action}")
-
-        if not self.get_params_client.wait_for_service(timeout_sec=1.0):
-            return MCPToolResult(success=False, error="TTS параметры недоступны")
-
-        # Получить текущую скорость
-        get_request = GetParameters.Request()
-        get_request.names = ["yandex_speed"]
-        future = self.get_params_client.call_async(get_request)
-        if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось получить текущую скорость")
-
-        if future.result() is None:
-            return MCPToolResult(success=False, error="Не удалось получить текущую скорость")
-
-        current_speed = future.result().values[0].double_value
-
-        # Вычислить новую скорость
-        if action == "faster":
-            new_speed = min(current_speed + 0.2, 2.0)
-            message = "Говорю быстрее"
-        elif action == "slower":
-            new_speed = max(current_speed - 0.2, 0.5)
-            message = "Говорю медленнее"
-        elif action == "normal":
-            new_speed = 1.0
-            message = "Нормальная скорость"
-        else:
-            return MCPToolResult(success=False, error=f"Неизвестное действие: {action}")
-
-        # Проверка на пределы
-        if abs(new_speed - current_speed) < 0.01:
-            if action == "faster":
-                return MCPToolResult(success=True, message="Скорость уже максимальная")
-            elif action == "slower":
-                return MCPToolResult(success=True, message="Скорость уже минимальная")
-
-        # Установить новую скорость
-        set_request = SetParameters.Request()
-        param = Parameter()
-        param.name = "yandex_speed"
-        param.value = ParameterValue()
-        param.value.type = ParameterType.PARAMETER_DOUBLE
-        param.value.double_value = new_speed
-        set_request.parameters = [param]
-
-        future = self.set_params_client.call_async(set_request)
-        if not wait_future(future, timeout_sec=2.0):
-            return MCPToolResult(success=False, error="Не удалось установить скорость (timeout)")
-
-        if future.result() is None or not future.result().results[0].successful:
-            return MCPToolResult(success=False, error="Не удалось установить скорость")
-
-        self.log_info(f"Speed: {current_speed:.2f} → {new_speed:.2f}")
-
-        return MCPToolResult(
-            success=True, data={"old_speed": current_speed, "new_speed": new_speed}, message=message
-        )
+        step = self._STEPS.get(action)
+        if step is None:
+            return _rejected("bad_action", f"Неизвестное действие: {action}")
+        provider = _active_provider(self.node)
+        axis = speed_axis(provider)
+        if axis is None:
+            return _unsupported("speed", provider)
+        if not self.tts.ready():
+            return _rejected("params_unavailable", "TTS параметры недоступны", provider=provider)
+        result = _step_axis(self.tts, axis, step, provider, "speed", lambda speed: f"скорость {speed:g}")
+        self.log_info(f"Speed [{provider}, {axis.param}]: {result.message}")
+        return result
 
 
 WEEKDAYS_RU = [
