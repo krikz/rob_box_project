@@ -25,10 +25,13 @@ from rob_box_dialog.knowledge import (
     STOP_WORDS,
     TIER1_POLICY,
     WAKE_SLIP_AMBIGUOUS,
-    WAKE_SLIP_COMMAND_LEADS,
+    WAKE_SLIP_CUE_WINDOW,
+    WAKE_SLIP_GATES,
     WAKE_SLIP_NEVER,
+    WAKE_SLIP_PLURAL,
     WAKE_SLIP_TARGETS,
     WAKE_SLIP_VARIANTS,
+    SlipGate,
 )
 
 _LEFT = r"(?<![\w-])"
@@ -74,25 +77,45 @@ def _distance(a: str, b: str) -> int:
 
 
 def _slip_kind(token: str) -> str:
-    """Что за первое слово фразы: ``wake`` (искажённый вейк), ``gated`` (настоящее слово — будит только перед
-    командой) или ``""``. Граница (#3975): «роботу» и неизвестные слова на расстоянии ≤ 1 (до 5 букв) / ≤ 2 от
-    «робот/робокс/роббокс» — вейк; «работа/рада» — только с командой следом; формы «роботы» — никогда."""
+    """Что за первое слово фразы: ``wake`` (искажённый вейк), ``gated`` (настоящее слово — будит, только если
+    открыты ворота) или ``""``. Граница (#3975, #3996): «роботу» и неизвестные слова на расстоянии ≤ 1 (до 5 букв) /
+    ≤ 2 от «робот/робокс/роббокс» — вейк; «работа/рада/роботы» — за воротами; остальные формы «робот» — никогда."""
     word = token.lower().replace("ё", "е")
     if word in WAKE_SLIP_NEVER:
         return ""
     if word in WAKE_SLIP_VARIANTS:
         return "wake"
-    if word in WAKE_SLIP_AMBIGUOUS:
+    if word in WAKE_SLIP_AMBIGUOUS or word in WAKE_SLIP_PLURAL:
         return "gated"
     limit = 1 if len(word) <= 5 else 2
     near = len(word) >= 5 and word[0] == "р" and any(_distance(word, t) <= limit for t in WAKE_SLIP_TARGETS)
     return "wake" if near else ""
 
 
+def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
+    """Есть ли в ``tail`` знак ворот: слово целиком из ``forms`` или начинающееся с основы из ``stems``.
+    Ворота без знака пропускают всегда."""
+    if not (gate.forms or gate.stems):
+        return True
+    return any(t in gate.forms or t.startswith(gate.stems) for t in tail)
+
+
+def _gates_open(rest: str) -> bool:
+    """Открыты ли ворота за искажённым словом: первое слово остатка — из ``leads`` ворот и знак есть в
+    ближайших ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Единственное правило
+    для «работа/рада/роботы»: таблицы в :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
+    tokens = name_tokens(rest)
+    if not tokens:
+        return False
+    tail = tokens[1:1 + WAKE_SLIP_CUE_WINDOW]
+    return any(tokens[0] in gate.leads and _gate_cue(tail, gate) for gate in WAKE_SLIP_GATES)
+
+
 def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
-    """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше»): остаток
-    фразы после него, иначе ``None``. Только первый токен; тишину это не снимает (остаток идёт обычным путём).
-    Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка. Вейков нет в таблице — допуска нет."""
+    """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше», «роботы еще
+    куплет добавь», «работа как меня зовут»): остаток фразы после него, иначе ``None``. Только первый токен; тишину
+    это не снимает (остаток идёт обычным путём). Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка.
+    Вейков нет в таблице — допуска нет."""
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
     if not any(t in words for t in WAKE_SLIP_TARGETS):
         return None
@@ -101,8 +124,7 @@ def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> 
         return None
     kind = _slip_kind(match.group(0))
     rest = (text or "")[match.end():].strip(" ,.!?;:-–—")
-    lead = (_TOKEN.search(rest).group(0).lower() if _TOKEN.search(rest) else "")
-    if kind == "wake" or (kind == "gated" and lead in WAKE_SLIP_COMMAND_LEADS):
+    if kind == "wake" or (kind == "gated" and _gates_open(rest)):
         return rest
     return None
 
