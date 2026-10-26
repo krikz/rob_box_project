@@ -338,6 +338,16 @@ def test_voice_by_registry_without_llm(run_plans):
     assert n._tool_executor.calls == [("set_voice", {"voice": "Russian_ReliableMan"})]
 
 
+def test_4022_pace_reset_kind_has_no_v1_executor_and_goes_to_llm_as_before(run_plans):
+    """«Говори нормально» - Tier-1 только в v2 (#4022): вид без исполнителя v1 не роняет узел ``AttributeError``,
+    реплика идёт в LLM, как и шла до появления вида."""
+    n = _make_node()
+    _stt(n, "Робот, говори нормально")
+    run_plans()
+    n._dispatch_turn.assert_called_once()
+    assert n._tool_executor.calls == [] and n._llm_skipped_counter["tier1"] == 0
+
+
 def test_disputed_stop_part_of_command_goes_on_and_speech_is_not_cut(run_plans):
     n = _make_node(verdict="part_of_command")
     _stt(n, "Робот, расскажи сказку про то как ёж сказал хватит")

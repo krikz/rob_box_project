@@ -63,12 +63,21 @@ local.timeout: ["Не дождался подтверждения — не зн�
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
 local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
 local.rejected.no_evidence: ["Память не подтвердила запись, так что не запомнил."]
+# set_speed / set_pitch (#4022, PR #4039): у активного провайдера нет такой регулировки - тул отказал с причиной
+# {speed,pitch}_unsupported, голос не менялся; без этих ключей говорилось общее «Не вышло.»
+local.rejected.speed_unsupported: ["У этого голоса скорость не регулируется — речь не изменилась."]
+local.rejected.pitch_unsupported: ["У этого голоса тон не регулируется — голос не изменился."]
+# «Говори нормально» (Tier-1 prosody_normal, knowledge.PROSODY_NORMAL_KIND): оба сброса удались - одна фраза; один
+# отказал - фразы исходов тулов (speed.normal / pitch.normal для удавшегося, local.rejected.* для отказавшего)
+prosody.normal: ["Говорю как обычно."]
+speed.normal: ["Скорость речи обычная."]
+pitch.normal: ["Тон голоса обычный."]
 
 media.done: &request_ok ["Включаю музыку."]
 media.rejected: &request_fail ["Не получилось включить музыку."]
 media.timeout: &not_started ["Музыка пока не заиграла."]
 # play_sound (knowledge.TOOL_PHRASES): исход - SoundEvent владельца звука (sound_node), причина - SoundEvent.reason.
-# Успех молчит (knowledge.SILENT_DONE_TOOLS): звук сам себе доказательство.
+# Успех молчит (knowledge.SILENT_DONE_TOOLS): звук сам себе доказательство - кроме звукоподражания (ниже).
 sound.skipped: ["Звук {sound} не сыграл."]
 sound.skipped.busy: ["Звук {sound} не сыграл: другой звук ещё играет."]
 sound.skipped.voice_stream: ["Звук {sound} не сыграл: сейчас идёт голос оператора."]
@@ -76,6 +85,14 @@ sound.skipped.not_found: ["Звука {sound} нет в звуковом пак�
 sound.skipped.error: ["Звук {sound} не сыграл: ошибка воспроизведения."]
 sound.skipped.superseded: ["Звук {sound} не сыграл: следом попросили другой."]
 sound.timeout: ["Не дождался ответа от звука {sound} — не знаю, сыграл ли."]
+# Звукоподражание к тихому звуку (#4031, идея Шифу 26.10): knowledge.SOUND_IMITATIONS - звук каталога -> ключ; успех
+# звука без записи в таблице тихий. Говорит код фразой исхода play_sound, а не LLM.
+sound.imitation.siren: ["Виу-виу!"]
+sound.imitation.bell: ["Дзынь-дзынь!"]
+sound.imitation.chime: ["Динь-дон!"]
+sound.imitation.bubbles: ["Буль-буль-буль!"]
+sound.imitation.whoosh: ["Вжух!"]
+sound.imitation.impact: ["Бабах!"]
 
 motion.started: ["Еду к {target}."]
 motion.done: ["Приехал."]
@@ -179,6 +196,7 @@ music.library_examples: [", например: {names}."]
 music.library_liked: ["Запомнил: {name} нравится."]
 music.library_disliked: ["Запомнил: {name} не нравится, больше не включу."]
 music.library_deleted: ["Удалил {name} из библиотеки."]
+music.library_updated: ["Обновил данные трека {name}."]
 music.library_play: ["Включаю {name} из библиотеки — {duration}."]
 music.dj_fail: ["Не получилось включить диджей-сет — музыка не заиграла."]
 music.request_fail: *request_fail

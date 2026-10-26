@@ -28,3 +28,15 @@ def test_sound_aliases_match_the_sound_catalog():
     assert unnamed <= triggers, sorted(unnamed - triggers)
     assert not named & unnamed
     assert triggers - named - unnamed == set(), sorted(triggers - named - unnamed)
+
+
+def test_sound_imitations_are_named_sounds_of_the_sound_catalog():
+    """Звукоподражание (``knowledge.SOUND_IMITATIONS``, #4031) - только к звукам каталога, у которых есть разговорное
+    название (человек просит их словами: «включи сирену»); звука реакции робота (``SOUND_UNNAMED``) в таблице нет."""
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    triggers = {info["trigger"] for name, info in catalog["sounds"].items() if name.endswith(".mp3")}
+    named = {t for ts, _ in kn.SOUND_ALIASES_RU for t in ts}
+    imitated = set(kn.SOUND_IMITATIONS)
+    assert imitated <= triggers, sorted(imitated - triggers)
+    assert imitated <= named, sorted(imitated - named)
+    assert not imitated & set(kn.SOUND_UNNAMED)

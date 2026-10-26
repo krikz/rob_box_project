@@ -62,7 +62,7 @@ from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
-from rob_box_dialog.respond import ActionResult, audible, join
+from rob_box_dialog.respond import ActionResult, audible, classed, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words
@@ -216,7 +216,8 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
-    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп всего — музыка, если играет
+    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, «говори нормально» — сброс скорости и
+    тона (``set_speed``/``set_pitch`` ``normal``, #4022), стоп всего — музыка, если играет
     (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и оговорка «музыку оставь» (#3994)
     музыку не трогают."""
     if command.kind == "volume":
@@ -224,6 +225,8 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
     if command.kind == "set_voice":
         return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
+    if command.kind == kn.PROSODY_NORMAL_KIND:
+        return tuple(ToolCall(tool, {"action": kn.PROSODY_NORMAL_ARG}) for tool in kn.PROSODY_RESET_TOOLS)
     return stop_music_calls(snapshot) if stops_music(command) else ()
 
 
@@ -283,12 +286,23 @@ def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
                 provider=turn.provider, **extra)
 
 
+def prosody_phrase(results: Sequence[ActionResult]) -> str:
+    """Фраза «говори нормально» (#4022) из РЕЗУЛЬТАТОВ ``set_speed``/``set_pitch`` (ADR-0148): оба сброса удались -
+    одна фраза; хоть один нет - фразы исходов тулов (``respond.join``): что встало на норму и что не вышло
+    (провайдер без регулировки - ``local.rejected.*_unsupported``). Результатов нет (ход отброшен) - молчание."""
+    if results and all(r.status == "done" for r in results):
+        return phrases.text(kn.PROSODY_NORMAL_PHRASE)
+    return outcome_phrase(results) or ""
+
+
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
                  pick: Callable[[str], str] = lambda key: "") -> Optional[str]:
-    """Фраза Tier-1: громкость — по исходу тула; новая сессия — вариант из каталога; стоп и тишина молчат; голос говорит
-    сам тул (SpeechEvent)."""
+    """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
+    новая сессия — вариант из каталога; стоп и тишина молчат; голос говорит сам тул (SpeechEvent)."""
     if command.kind == "new_session":
         return pick(kn.NEW_SESSION_PHRASE)
+    if command.kind == kn.PROSODY_NORMAL_KIND:
+        return prosody_phrase(results)
     if command.kind != "volume":
         return None
     prefix = "music" if command.args["channel"] == "music" else "voice"
@@ -373,8 +387,9 @@ def note_perform_start(log: TurnLog, turn_id: str, cmd: Command, taken: bool) ->
 
 
 def _runnable(actions: Sequence[ToolCall], last: bool) -> Tuple[ToolCall, ...]:
-    """Действия к исполнению: на последней итерации ``query`` уже не исполняется (данные некому вернуть)."""
-    return tuple(a for a in actions if not last or kn.TOOL_CLASSES[a.tool] != _QUERY)
+    """Действия к исполнению: на последней итерации ``query`` уже не исполняется (данные некому вернуть). Класс -
+    вызова (``knowledge.call_class``): ``music_library`` list/search/info - ``query``."""
+    return tuple(a for a in actions if not last or kn.call_class(a.tool, a.args) != _QUERY)
 
 
 def _offered(tools: Sequence[Any], last: bool) -> Tuple[Any, ...]:
@@ -479,24 +494,27 @@ def query_fallback(results: Sequence[ActionResult]) -> str:
 async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: SessionSnapshot,
                               now: SessionSnapshot, turn_id: str) -> List[ActionResult]:
     """Действия владельцам; факт ``memory_save`` при смене собеседника с начала хода — ``rejected{speaker_changed}``
-    без запроса (код решает, чей это факт, #3881). Результаты — в порядке команды."""
+    без запроса (код решает, чей это факт, #3881). Результаты — в порядке команды, с классом ВЫЗОВА
+    (``respond.classed``): исполнитель клеит класс тула, а ``music_library`` list/search/info - ``query`` (#4020)."""
     changed = {i for i, a in enumerate(actions) if memory.speaker_changed(a, snap, now)}
     sent = [a for i, a in enumerate(actions) if i not in changed]
     done = iter(await ports.execute(sent, snap, turn_id) if sent else [])
-    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.TOOL_CLASSES[a.tool], "rejected",
-                         kn.SPEAKER_CHANGED_REASON) if i in changed else next(done) for i, a in enumerate(actions)]
+    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.call_class(a.tool, a.args), "rejected",
+                         kn.SPEAKER_CHANGED_REASON) if i in changed else classed(next(done), a.args)
+            for i, a in enumerate(actions)]
 
 
 def action_term(actions: Sequence[ToolCall]) -> float:
     """Срок действий хода: дедлайн самого долгого класса + ``ACTION_GRACE_S`` - исполнитель закроет ожидание честным
     ``timeout`` раньше, чем дедлайн хода (``TurnDeadline.grant``) оборвёт его «долго думаю» (#3960)."""
-    return max(deadline_s(kn.TOOL_CLASSES[a.tool]) for a in actions) + kn.ACTION_GRACE_S
+    return max(deadline_s(kn.call_class(a.tool, a.args)) for a in actions) + kn.ACTION_GRACE_S
 
 
 def say_late(engine: "TurnEngine", result: ActionResult) -> None:
     """Итог действия после закрытия его хода (``Executor.on_late``): фраза кода по событию владельца, если класс из
     ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout`` - «Включаю музыку.»); тихие успехи и чужие классы
     молчат (#3960)."""
+    result = classed(result, result.data)  # аргументы вызова лежат в данных результата поверх ответа тула
     text = outcome_phrase([result]) if result.cls in kn.LATE_SPOKEN_CLASSES else None
     if not text:
         return
@@ -766,7 +784,7 @@ class TurnEngine:
     async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
         if not actions:
             return []
-        cls = kn.TOOL_CLASSES[actions[0].tool]
+        cls = kn.call_class(actions[0].tool, actions[0].args)
         turn.waiting = cls
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора

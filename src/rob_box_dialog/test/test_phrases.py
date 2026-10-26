@@ -19,7 +19,8 @@ def test_every_class_status_has_a_phrase():
 
 
 def test_tool_and_special_keys_exist():
-    tool_keys = [k for keys in kn.TOOL_PHRASES.values() for k in keys.values()]
+    tool_keys = [k for keys in kn.TOOL_PHRASES.values() for entry in keys.values()
+                 for k in (entry.all_keys() if isinstance(entry, kn.ByData) else (entry,))]
     ask_keys = [rule.ask for rule in kn.COMPOSITION.values() if rule.ask]
     assert [k for k in (*tool_keys, *ask_keys, *kn.PHRASE_KEYS) if k not in phrases.catalog()] == []
 

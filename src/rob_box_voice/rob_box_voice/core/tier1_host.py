@@ -78,8 +78,8 @@ class Tier1Runner:
             command: Optional[Tier1Command] = Tier1Command("new_session")
         else:
             command = match(ctx.text, self.snapshot(), self.voices())
-        if command is None:
-            return None
+        if command is None or not hasattr(self, f"_run_{command.kind}"):
+            return None  # вид без исполнителя v1 (сброс просодии «говори нормально», #4022 — он в v2): отвечает LLM
         if command.kind == "new_session" and not getattr(node, "_new_session_enabled", True):
             return None
         if command.kind in _NEEDS_TOOLS and getattr(node, "_tool_executor", None) is None:
