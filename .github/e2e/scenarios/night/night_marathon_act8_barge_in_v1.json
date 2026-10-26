@@ -45,7 +45,14 @@
       "patterns": [
         "SpeechEvent started speech_id"
       ],
-      "_why": "Сокращено, чтобы уйти от края окна VAD (было 100 символов, запас 1.2с, run 35658231116) — реплика лишь просит длинную историю, длина сгенерированного ответа не зависит от неё. v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
+      "acceptance": {
+        "must_not_say": [
+          "выключить и зачитать"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "Сокращено, чтобы уйти от края окна VAD (было 100 символов, запас 1.2с, run 35658231116) — реплика лишь просит длинную историю, длина сгенерированного ответа не зависит от неё. v2: `SpeechEvent started` вместо `speak_text` (см. n802). #3971 R22: вопрос выступления «выключить и зачитать?» (музыка, оставленная прошлым актом) -- тоже `SpeechEvent started`, но не история."
+      }
     },
     {
       "label": "n805_hard_stop",
@@ -79,7 +86,14 @@
       "patterns": [
         "SpeechEvent started speech_id"
       ],
-      "_why": "v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
+      "acceptance": {
+        "must_not_say": [
+          "выключить и зачитать"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "v2: `SpeechEvent started` вместо `speak_text` (см. n802); вопрос выступления -- не счёт (см. n804)."
+      }
     },
     {
       "label": "n807_merge_addition",
@@ -128,6 +142,9 @@
           "generate_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "_comment": "Готовим фон для проверки «речь поверх музыки». v2 (#3880, run 39876993047): запрос музыки может закончиться без речи -- харнесс ждал TTS (reply_after=41s ×3, `cycle_unconfirmed_after_accept`). `silent_ok` допускает ход без речи, а факт действия держит `expect_tools=request_music` (`Запрос выполнения: request_music` в mcp_server) -- шаг по-прежнему краснеет, если музыку не запросили. #3971: «поставлю ритм» без тула больше не PASS -- нужны `Инструмент request_music выполнен успешно` + `[music v2] started`."
       },
       "retry_acceptance": 1,
@@ -149,8 +166,11 @@
         "must_not_call": [
           "stop_music"
         ],
+        "must_not_say": [
+          "выключить и зачитать"
+        ],
         "expected_tool_calls": [],
-        "_comment": "Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы заговорить (issue #986 — соотношение музыки и речи мастер-гейном). v2: `SpeechEvent started` вместо `speak_text` (см. n802)."
+        "_comment": "Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы заговорить (issue #986 — соотношение музыки и речи мастер-гейном). v2: `SpeechEvent started` вместо `speak_text` (см. n802). #3971 R22 (робот 23.10 22:53:09): на «под этот бит зачитай» робот спросил «Сейчас играет …, выключить и зачитать?» -- харнесс засчитал вопрос речью. Просьба уже назвала бит, вопрос -- не рэп: шаг красный."
       }
     },
     {
@@ -164,17 +184,26 @@
       },
       "silent_ok": true,
       "patterns": [
-        "SpeechEvent cancelled|🛑 \\[interrupt\\]"
+        "SpeechEvent cancelled|🛑 \\[interrupt\\]",
+        "tier1 kind=stop_speech\\b"
       ],
-      "_why": "Зонд разделения каналов речь/музыка. Про музыку ассерта нет: «оставь музыку» робот сегодня понимает нестабильно (Tier-1 stop_all гасит и музыку по снимку), а must_not:stop_music здесь сделал бы шаг красным на каждом прогоне без диагностики. Речь «хватит читать» обязана быть погашена (v2, #3880: `silent_ok` + паттерн отмены, как n805)."
+      "acceptance": {
+        "must_not_call": [
+          "stop_music",
+          "[music v2] stop"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Разделение каналов речь/музыка. #4035 (охват стопа): «хватит читать, а музыку оставь» -- Tier-1 `stop_speech`: речь и выступление гаснут (`silent_ok` + паттерн отмены, как n805), плеер играет -- ни тула stop_music (в т.ч. outro бита), ни `[music v2] stop` в окне шага. До #4035 Tier-1 `stop_all` гасил и музыку (разбор 26.10, #3994)."
+      }
     },
     {
       "label": "n812_stop_music",
       "voice": "anton",
       "text": "Робот, теперь и музыку выключай.",
       "patterns": [
+        "\\[stop_music\\] .*was_playing(=|': )True",
         "✅ Инструмент stop_music выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=",
+        "🎵 \\[music v2\\] stop track_id=[a-z0-9]",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -183,7 +212,8 @@
         ],
         "must_not_call": [
           "stage=timeout"
-        ]
+        ],
+        "_comment": "Разбор 26.10 (22:55:01): стоп вхолостую `track_id=None` + `was_playing=False` давал PASS и фразу «Выключил музыку.». Теперь результат -- тул застал музыку играющей (`was_playing=True`) и дека снята с настоящим id трека. Музыку погасил n811 -- здесь честно красный (каскад от нарушения «оставь»)."
       },
       "_result_markers": {
         "tools": [

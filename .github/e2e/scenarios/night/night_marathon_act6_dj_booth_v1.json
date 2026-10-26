@@ -44,6 +44,9 @@
         "must_not_call": [
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "_comment": "#3971: v2-тул -- dj_set (action=start), прежний v1-тул режима диджея удалён. PASS только при `Инструмент dj_set выполнен успешно` + `[music v2] started`."
       },
       "retry_acceptance": 1,
@@ -77,7 +80,7 @@
     {
       "label": "n604_dj_rock",
       "voice": "anton",
-      "text": "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
+      "text": "Робот, уводи в сторону рока, тётя Гриша под рок добреет.",
       "patterns": [
         "✅ Инструмент (dj_set|request_music) выполнен успешно",
         "📊 \\[turn\\] .*stage=done status=finished"
@@ -87,6 +90,9 @@
           "stop_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "expected_tool_calls": [],
         "_comment": "#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен."
       },
@@ -95,7 +101,7 @@
           "dj_set",
           "request_music"
         ],
-        "music": ""
+        "music": "changed"
       }
     },
     {
@@ -112,7 +118,7 @@
           "stage=timeout"
         ],
         "expected_tool_calls": [],
-        "_comment": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1. #3971: просьба -- и действие, и объявление треков вслух: нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS."
+        "_comment": "Зонд gp01: спека §4.1 обещает «сет заканчивается финальным треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение подтверждает карточку W7-1. #3971: просьба -- и действие, и объявление треков вслух: нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS. Разбор 26.10 (n605: прогресс-фраза засчитана объявлением) -- шаг НАМЕРЕННО не ужесточён, пока не влит #4006 (диджей молчит между треками): ждать перехода и `dj_line` -- после него."
       },
       "_result_markers": {
         "tools": [
@@ -151,6 +157,9 @@
           "stop_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "expected_tool_calls": [],
         "_comment": "#3971: см. n604."
       },
@@ -159,7 +168,7 @@
           "dj_set",
           "request_music"
         ],
-        "music": ""
+        "music": "changed"
       }
     },
     {
@@ -168,7 +177,7 @@
       "text": "Робот, хватит диджеить, выключай.",
       "patterns": [
         "✅ Инструмент (dj_set|stop_music) выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=",
+        "🎵 \\[music v2\\] stop track_id=[a-z0-9]",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {

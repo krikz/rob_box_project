@@ -14,7 +14,7 @@
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

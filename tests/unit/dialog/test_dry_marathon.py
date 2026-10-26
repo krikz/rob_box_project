@@ -435,7 +435,8 @@ def test_classification_of_real_acts_separates_acoustic_steps():
     assert kinds["n210_grisha_no_name"] == dm.ACOUSTIC  # must_not_identify_as - биометрия
     assert kinds["n403_set_voice_alena"] == dm.ACOUSTIC  # voice_changed - владелец TTS
     assert kinds["n402_current_voice"] == dm.ACOUSTIC  # паттерн по строке SpeechEvent synthesized
-    assert sum(len(dm.load_act(k).steps) for k in ("1", "2", "3", "4")) == 56
+    # 57: акт 4 получил n411b_prosody_normal (сброс скорости и тона, #3971 / разбор 26.10)
+    assert sum(len(dm.load_act(k).steps) for k in ("1", "2", "3", "4")) == 57
 
 
 def test_acts_flags_follow_the_harness_isolation_rules():

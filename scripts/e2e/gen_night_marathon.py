@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_night_marathon.py — SSoT ночного голосового марафона (~110 шагов).
+"""gen_night_marathon.py — SSoT ночного голосового марафона (число шагов -- ``total_steps`` манифеста).
 
 Зачем генератор, а не 20 рукописных JSON
 ========================================
@@ -34,7 +34,16 @@
                   (v1-форма «accumulated (no_wake_word)» харнесс ещё понимает, сценарии её не ждут)
 
 ``silent_ok`` (bool): ход без речи допустим -- Tier-1 «стоп/хватит» гасит речь и молчит
-(``llm_calls=0``). Сам флаг ничего не доказывает: смысл шагу даёт паттерн отмены речи.
+(``llm_calls=0``), звук/анимация по прямой просьбе исполняются тихо (решение Шифу 26.10). Сам флаг ничего
+не доказывает: смысл шагу даёт паттерн результата (отмена речи, ``✅ Инструмент … выполнен успешно``).
+
+``recover`` (акт или шаг, #3989/#4034): какие восстановления харнесса разрешены -- ``true`` (все), ``false``/``[]``
+(никаких), список из ``no_wake``/``silenced``. Читает ``e2e_events.recover_kinds``; восстановленный шаг -- не чистый
+OK, а ``OK recovered_<вид>`` (маркер ``E2E_RECOVER`` в логе акта).
+
+``_skip_when`` (шаг, с подчёркиванием: харнесс его НЕ читает): предусловие внешнего мира, без которого шаг теряет
+смысл, -- ``{"reason": "KIE_QUOTA", "log": <regex>}``. Пока харнесс не умеет SKIP по строке лога, правило -- данные
+для человека и для будущей проверки харнесса (R21 разбора 26.10).
 
 ``patterns`` — grep -E по логам ШАГА, AND-семантика (все должны найтись).
 ``acceptance.expected_tool_calls`` / ``must_not_call`` — подстрочный
@@ -51,12 +60,17 @@ Preflight ``run_wake_gate_preflight`` — read-only: он смотрит, был
 auto-promote: шаг реально играется, реально пробивает wake-gate и
 открывает дорогу остальным.
 
-Каст (голоса синтеза Yandex, НЕ голоса робота)
-==============================================
-    anton  — Саша, ночной инженер           ПРЕДСТАВЛЯЕТСЯ (register_speaker)
-    ermil  — Борис, друг с пиццей           ПРЕДСТАВЛЯЕТСЯ (register_speaker)
-    zahar  — дядя Гриша, сторож             НЕ представляется → «незнакомец»
-    filipp — Валера, курьер                 НЕ представляется → «незнакомец»
+Каст (голоса синтеза людей, НЕ голоса робота; #4038, решение Шифу 26.10)
+========================================================================
+Имя голоса в шаге -- метка роли; голос MiniMax ей подбирает ``map_tts_voice`` харнесса
+(``e2e_voice_lib.sh``, замер ``docs/dialog/role_voices_biometrics_2026-10-26.md``). Марафон идёт с
+``tts_provider=minimax``: голоса Yandex одного регистра склеиваются (0.84–0.92).
+    anton  — Саша, ночной инженер     (English_Jovialman, муж.)       ПРЕДСТАВЛЯЕТСЯ (register_speaker)
+    ermil  — Борис, друг с пиццей     (English_WiseScholar, муж.)     ПРЕДСТАВЛЯЕТСЯ (register_speaker)
+    zahar  — тётя Гриша, сторож       (Gentle_Senior, ЖЕНСКИЙ)       НЕ представляется → «незнакомец»
+    filipp — Валера, курьерша         (Whispering_girl, ЖЕНСКИЙ)     НЕ представляется → «незнакомец»
+Реплики Гриши и Валеры от первого лица -- в женском роде («я мимо шла»). Голоса разведены (робот на 28 фразах
+завёл ровно 4 профиля), поэтому шаги атрибуции (n210, n304–n311) НЕ помечаются «предел голосов».
 
 Голоса РОБОТА (``set_voice``) — alena / jane — намеренно НЕ пересекаются
 с голосами людей: иначе resemblyzer сматчит собственную речь робота с
@@ -111,15 +125,81 @@ TURN_WITH_LLM = TURN_DONE + r" .*llm_calls=[1-9]"
 SPEECH_STARTED = r"SpeechEvent started speech_id"
 #: Речь погашена перебиванием: ``SpeechEvent cancelled`` владельца речи или решение ``🛑 [interrupt]`` ноды.
 SPEECH_CANCELLED = r"SpeechEvent cancelled|🛑 \[interrupt\]"
-#: Речь синтезирована провайдером: v2 пишет провайдера в `SpeechEvent synthesized … provider=<имя>`
-#: (замена v1-строки `TTS current_voice →`, которой v2 не пишет).
-SPEECH_PROVIDER = r"SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
-#: Сказка разными голосами в v2: `perform` в действиях команды (`🧾 [command] … actions=[…perform…]`, голос сегмента --
-#: `voice_per_segment`) либо смена голоса владельцем речи (`SpeechEvent voice_changed … applied=`).
-#: Тула set_voice тут нет.
-TALE_VOICES = r"🧾 \[command\] .*actions=\[[^]]*perform|SpeechEvent voice_changed .*applied="
 #: Тулы музыки, которыми v2 законно отвечает на «поставь что-нибудь»: ``📤 Отправлен запрос <id>: <tool>``.
 MUSIC_DISPATCH = r"📤 Отправлен запрос [0-9a-f]+: (request_music|generate_music|music_library|dj_set)"
+
+
+def spoken_by(provider: str) -> str:
+    """Реплика синтезирована провайдером ``provider`` (``speech_owner``: ``SpeechEvent synthesized … provider=<имя>``).
+
+    Голый ``provider=<любой>`` -- вакуум (R6 разбора 26.10: совпадает с каждым ходом); шаг называет провайдера,
+    которым обязан звучать: голос по умолчанию -- MiniMax, Алёна и Джейн -- голоса Yandex (``tts_voice_registry``)."""
+    return r"SpeechEvent synthesized speech_id=.* provider=" + provider + r"\b"
+
+
+# --- выступление (perform) v2: старт и конец по событиям владельца, а не по окнам (#3971 R4) ----------------------
+# turn.py:      🧭 [turn-v2] выступление старт kind=<kind> backing=… segments=N → {…}
+# perform.py:   🎤 [perform] perform-: конец (done) сегментов N, символов M, …
+# plan_events:  🗓️ [plan] PlanEvent block_end block=perform-… reason=done
+# В ``actions`` команды perform НЕ попадает (command_bridge логирует actions=[]), v1-ожидание ``actions=[…perform…]``
+# давало PATTERN_MISS на верной сказке, ретрай заказывал вторую (n412, 23.10 22:04:48).
+
+
+#: Начало строки старта выступления (``turn.py``). Шаг с этим паттерном ретрая не имеет: повтор фразы после старта
+#: заказал бы второе выступление (n412 23.10: вторая сказка, 2.5 мин) -- ``step`` такой шаг не соберёт.
+PERFORM_STARTED_MARK = "выступление старт kind="
+
+
+def perform_started(kind: str) -> str:
+    """Выступление вида ``kind`` (tale/poem/rap/song) взял владелец."""
+    return PERFORM_STARTED_MARK + kind + r"\b"
+
+
+#: Выступление дочитано до конца: строка владельца выступления или его ``PlanEvent block_end … reason=done``.
+PERFORM_DONE = r"\[perform\] [^ ]*: конец \(done\)|PlanEvent block_end .*reason=done"
+#: Вопрос выступления вместо него (``phrases/ru.yaml`` ``perform.ask_replace_music``: «Сейчас играет …, выключить и
+#: зачитать?»). Это не история и не рэп, а ``SpeechEvent started`` он даёт -- ложный PASS n804/n806/n810 23.10
+#: (#3971 R22, робот 22:53:09: на «под этот бит зачитай рэп» спросил, выключить ли бит). Ищется в РЕЧИ робота.
+PERFORM_ASKS_TO_REPLACE = "выключить и зачитать"
+
+# --- результат действий без речи и лица (решения Шифу 26.10, #4036/#4041) -----------------------------------------
+#: Лицо команды на итоге хода (``dialog_v2_ports.stage``): ``🎭 [turn-v2] лицо команды на done: emotion=<сцена> …``.
+FACE_DONE = r"🎭 \[turn-v2\] лицо команды на done: emotion="
+
+
+def face_or_animation(*emotions: str) -> str:
+    """Робот ПОКАЗАЛ эмоцию: лицо команды на ``done`` с одной из ``emotions`` (сцена ``knowledge.EMOTIONS``) или
+    ``play_animation`` с такой анимацией. Тул анимации не обязателен: v2 показывает эмоцию ``command.expression``."""
+    alt = "(" + "|".join(emotions) + ")"
+    return FACE_DONE + alt + r"\b|play_animation с параметрами \{.*'animation': '" + alt + "'"
+
+
+# --- скорость и тон голоса (#4039: тул меняет параметр АКТИВНОГО провайдера, tts_node пишет «изменён») ------------
+#: Оси скорости по провайдерам -- ``rob_box_voice.tts_prosody.SPEED_AXES`` (drift держит тест генератора).
+SPEED_PARAMS = ("minimax_speed", "yandex_speed")
+#: Ось тона -- ``tts_prosody.PITCH_AXIS``.
+PITCH_PARAM = "pitch_shift"
+#: Значение оси в строке ``tts_node``: ``🎚️ <param> изменён: <значение :g>`` -- «0.8», «1», «1.2», «2».
+BELOW_NORMAL = r"0\.[0-9]+"
+ABOVE_NORMAL = r"(1\.[0-9]+|2)(\s|$)"
+NORMAL = r"1(\s|$)"
+
+
+def prosody_changed(params: tuple, value: str) -> str:
+    """Параметр голоса реально изменён нодой (``tts_node.parameters_callback``), а не «тул вызван»."""
+    return r"(" + "|".join(params) + r") изменён: " + value
+
+
+#: «Уже нормально» -- тул прочитал ось назад и она на норме (``system._Step`` normal.edge): тоже результат, не вызов.
+SPEED_ALREADY_NORMAL = r"\[set_speed\] Speed \[[a-z]+, [a-z_]+\]: Скорость уже нормальная"
+PITCH_ALREADY_NORMAL = r"\[set_pitch\] Pitch \[[a-z]+, pitch_shift\]: Голос уже нормальный"
+
+
+def speaker_sure(name: str) -> str:
+    """Голос опознан как ``name`` с уверенностью ≥ 0.8 (``speaker_id_node``: ``👤 Speaker: 'Имя' confidence=0.914``).
+
+    Замена вакуумного ``Speaker|identify candidates|speaker_id`` (R6: совпадал с каждым ходом, в т.ч. ``unknown``)."""
+    return r"👤 Speaker: '" + name + r"' confidence=(0\.[89]|1\.)"
 
 
 #: Issue #3165 — ответ «тишина» на вопрос о состоянии музыки (n110, n313):
@@ -134,6 +214,10 @@ SILENCE_CLAIM = "тишин|ничего не играет|не играет|н�
 PLAYING_ANSWER = "играет|играю|звучит|звучат|крутится|крутим|идёт|идет|bpm|темп|ритм|бит|рок|трек|мелоди"
 #: «Музыка выключена» -- ответ на n1005 в формулировке вопроса.
 SILENCE_OR_OFF_ANSWER = SILENCE_ANSWER + "|выключен"
+#: Зонд утечки истории после «новой сессии» (n1007, R20): стемы фраз ОКНА разговора, которых нет в долгой памяти --
+#: вопросы акта 10 до сброса (n1001, n1002) и темы акта 9 (n907, n909, n910). Факты памяти (енот, Спартак, лук, чай)
+#: сюда не входят: после сброса они законно приходят из memory_search.
+LEAK_PROBE_WINDOW_PHRASES = ["ворчал", "итог ночи", "космос", "китайск", "четверостиш"]
 
 # --- маркеры РЕЗУЛЬТАТА действия (#3971, разбор марафона 23.10 §1.A) -----------------------------------------
 # Харнесс судит по тому, что случилось, а не по имени тула и не по наличию речи: «поставлю ритм» без тула и
@@ -142,10 +226,28 @@ SILENCE_OR_OFF_ANSWER = SILENCE_ANSWER + "|выключен"
 # Идут в ``patterns`` шага (grep -E по логам шага, AND) -- второго механизма acceptance нет.
 #: Музыкальный движок v2 реально поставил трек на деку.
 MUSIC_STARTED = r"🎵 \[music v2\] started track_id="
-#: Музыкальный движок v2 реально снял деку.
-MUSIC_STOPPED = r"🎵 \[music v2\] stop track_id="
+#: Музыкальный движок v2 реально снял деку С ТРЕКОМ: id трека -- ``gen…``/``req…``/``set…`` (строчные), а
+#: ``track_id=None`` -- стоп вхолостую на пустой деке (n812 23.10: «Выключил музыку.» при ``was_playing=False``).
+MUSIC_STOPPED = r"🎵 \[music v2\] stop track_id=[a-z0-9]"
+#: Тул остановки застал музыку играющей (``music.StopMusicTool``: ``[stop_music] was_playing=True`` или outro бита
+#: выступления ``{'was_playing': True, …}``).
+MUSIC_WAS_PLAYING = r"\[stop_music\] .*was_playing(=|': )True"
+#: Любая остановка деки (подстрока для ``must_not_call``: «а музыку оставь» -- деку не трогать).
+MUSIC_STOP_ANY = "[music v2] stop"
+#: Фраза потолка действия музыки (``phrases/ru.yaml`` ``media.timeout``): там, где музыка обязана заиграть, это ложь
+#: (n809: «Музыка пока не заиграла.», трек стартовал через 1,4 с). Ищется в РЕЧИ робота (``must_not_say``).
+MUSIC_NOT_STARTED = "Музыка пока не заиграла"
+#: Tier-1 «хватит читать/говорить» (#4035): гасит речь и выступление, плеер музыки не трогает.
+TIER1_STOP_SPEECH = r"tier1 kind=stop_speech\b"
 #: Ход упал по дедлайну (``stage=timeout``: «долго думаю» поверх живой речи) -- подстрока для ``must_not_call``.
 TURN_TIMEOUT = "stage=timeout"
+
+# --- предусловия внешнего мира (R21 разбора 26.10) ------------------------------------------------------------------
+#: Баланс KIE кончился (``engine/gen/cover.py``: ``🎼 [cover] баланс KIE: 0.0``). Песни этого прогона нет -- шаги
+#: «сохрани/расскажи/включи/удали эту песню» теряют смысл, а delete бьёт по чужому треку (n710, 23.10 22:39:22).
+KIE_QUOTA_LOG = r"\[cover\] баланс KIE: 0(\.0+)?(\s|$)"
+#: Причина пропуска -> строка лога, при которой шаг не играется. Одна таблица; шаги ссылаются на ключ.
+SKIP_WHEN: Dict[str, str] = {"KIE_QUOTA": KIE_QUOTA_LOG}
 #: Тулы живой правки/сета музыки v2: любой из них -- честная попытка поменять играющее (n504-n506, n604, n607).
 MUSIC_EDIT_TOOLS = ("dj_set", "request_music", "generate_music")
 #: Тулы, которыми v2 законно запускает музыку (n310: «поставь что-нибудь»).
@@ -179,6 +281,7 @@ def step(
     discovery_tools: Optional[List[str]] = None,
     barge_in: Optional[Dict[str, Any]] = None,
     silent_ok: bool = False,
+    skip_when: str = "",
 ) -> Dict[str, Any]:
     s: Dict[str, Any] = {"label": label, "voice": voice, "text": text}
     # Issue #3857 -- barge_in: НАМЕРЕННОЕ перебивание. Без него харнесс перед шагом ждёт тишины, и
@@ -192,42 +295,13 @@ def step(
     if silent_ok:
         s["silent_ok"] = True
     s["patterns"] = patterns or []
-    acc: Dict[str, Any] = {}
-    if expect_tools:
-        acc["expected_tool_calls"] = expect_tools
-    # Issue #2406 — discovery_tools: тул, который ОБЯЗАН быть вызван ДО
-    # первого голосового ответа (проверяется check_acceptance в
-    # e2e_voice_test.sh через first_invocation_position/first_voice_cycle_position).
-    # Раньше это поле жило только в сгенерированных JSON руками — SSoT
-    # (этот файл) о нём не знал, и любой прогон gen_night_marathon.py
-    # молча стирал контракт. Теперь discovery_tools — параметр step().
-    if discovery_tools:
-        acc["discovery_tools"] = discovery_tools
-    if must_not:
-        acc["must_not_call"] = must_not
-    # Issue #2779 — must_not_say: НЕ то же самое, что must_not! must_not
-    # (→ must_not_call) свободным текстом матчит ВЕСЬ лог шага, включая
-    # строки голосовой биометрии (`identify candidates: best='Борис'`,
-    # `Speaker: 'Борис'`) — те звучат независимо от ответа робота, так что
-    # искать там имя диктора тавтологически КРАСНО. must_not_say ищет
-    # ТОЛЬКО в robot_speech() (тот же канал, что и keywords/expected_keywords,
-    # issue #2764) — кладите сюда имена/факты, которых робот не должен
-    # ПРОИЗНЕСТИ, а не любой текст лога.
-    if must_not_say:
-        acc["must_not_say"] = must_not_say
-    if must_not_identify_as:
-        acc["must_not_identify_as"] = must_not_identify_as
-    if keywords:
-        acc["expected_keywords"] = keywords
-    if voice_changed:
-        acc["voice_changed"] = True
+    # #3971 R4: после старта выступления повтор фразы заказывает второе -- ретрай у такого шага запрещён структурой.
+    if retry and any(p.startswith(PERFORM_STARTED_MARK) for p in s["patterns"]):
+        raise ValueError(f"{label}: шаг ждёт выступление ({PERFORM_STARTED_MARK}…) -- retry запрещён (#3971 R4)")
+    acc = _acceptance(
+        expect_tools, discovery_tools, must_not, must_not_say, must_not_identify_as, keywords, voice_changed, why
+    )
     if acc:
-        if "expected_tool_calls" not in acc:
-            acc["expected_tool_calls"] = []
-        if "must_not_call" not in acc:
-            acc["must_not_call"] = []
-        if why:
-            acc["_comment"] = why
         s["acceptance"] = acc
     if expect:
         s["expect"] = expect
@@ -235,7 +309,47 @@ def step(
         s["retry_acceptance"] = retry
     if why and "acceptance" not in s:
         s["_why"] = why
+    # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN). Поле с «_» -- харнесс его не читает (см. шапку).
+    if skip_when:
+        s["_skip_when"] = {"reason": skip_when, "log": SKIP_WHEN[skip_when]}
     return s
+
+
+def _acceptance(
+    expect_tools: Optional[List[str]],
+    discovery_tools: Optional[List[str]],
+    must_not: Optional[List[str]],
+    must_not_say: Optional[List[str]],
+    must_not_identify_as: Optional[List[str]],
+    keywords: Optional[List[str]],
+    voice_changed: bool,
+    why: str,
+) -> Dict[str, Any]:
+    """Блок ``acceptance`` шага (пустой -- шаг без него). Порядок ключей -- как в JSON актов (сверяет ``--check``).
+
+    Issue #2406 -- ``discovery_tools``: тул, который ОБЯЗАН быть вызван ДО первого голосового ответа (проверяется
+    check_acceptance через first_invocation_position/first_voice_cycle_position).
+    Issue #2779 -- ``must_not_say`` НЕ то же самое, что ``must_not``: ``must_not`` (-> ``must_not_call``) свободным
+    текстом матчит ВЕСЬ лог шага, включая строки биометрии (``Speaker: 'Борис'``), там имя диктора тавтологически
+    КРАСНО. ``must_not_say`` ищет ТОЛЬКО в речи робота (``robot_speech()``, тот же канал, что ``expected_keywords``).
+    """
+    fields = (
+        ("expected_tool_calls", expect_tools),
+        ("discovery_tools", discovery_tools),
+        ("must_not_call", must_not),
+        ("must_not_say", must_not_say),
+        ("must_not_identify_as", must_not_identify_as),
+        ("expected_keywords", keywords),
+        ("voice_changed", True if voice_changed else None),
+    )
+    acc: Dict[str, Any] = {key: value for key, value in fields if value}
+    if not acc:
+        return acc
+    acc.setdefault("expected_tool_calls", [])
+    acc.setdefault("must_not_call", [])
+    if why:
+        acc["_comment"] = why
+    return acc
 
 
 def action_step(
@@ -252,19 +366,20 @@ def action_step(
     """Шаг-действие: PASS только при МАРКЕРЕ РЕЗУЛЬТАТА в логе робота (#3971), а не по речи или имени тула.
 
     ``result_of`` -- тулы, любой из которых обязан закончиться ``✅ Инструмент <tool> выполнен успешно``;
-    ``music`` -- ``"started"`` (``🎵 [music v2] started``: трек встал на деку) или ``"stopped"``
-    (``🎵 [music v2] stop``: дека снята); всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет
-    ``stage=timeout``. ``known_red`` -- причина, по которой шаг сегодня красный по делу (поле ``_known_red``
-    для людей; харнесс его не читает, шаг остаётся красным честно).
+    ``music`` -- ``"started"`` (``🎵 [music v2] started``: трек встал на деку), ``"changed"`` (играющую музыку
+    правят: трек может и не смениться, маркера деки не ждём) или ``"stopped"`` (``🎵 [music v2] stop`` с id трека:
+    дека снята); при ``started``/``changed`` робот не вправе сказать фразу потолка ``Музыка пока не заиграла``
+    (#3971 R22). Всегда: ход дошёл до ``stage=done status=finished`` и в шаге нет ``stage=timeout``.
+    ``known_red`` -- причина, по которой шаг сегодня красный по делу (поле ``_known_red`` для людей; харнесс его
+    не читает, шаг остаётся красным честно).
     """
     pats = list(patterns or [])
     if result_of:
         pats.append(tool_done(*result_of))
-    if music == "started":
-        pats.append(MUSIC_STARTED)
-    elif music == "stopped":
-        pats.append(MUSIC_STOPPED)
+    pats.extend({"started": [MUSIC_STARTED], "stopped": [MUSIC_STOPPED]}.get(music, []))
     pats.append(TURN_DONE)
+    if music in ("started", "changed"):
+        kwargs["must_not_say"] = list(kwargs.get("must_not_say") or []) + [MUSIC_NOT_STARTED]
     s = step(label, text, patterns=pats, must_not=list(must_not or []) + [TURN_TIMEOUT], **kwargs)
     s["_result_markers"] = {"tools": list(result_of or []), "music": music}
     if known_red:
@@ -337,7 +452,8 @@ def _validate_voice_distinctness(
     """
     import sys as _sys
     if warn is None:
-        warn = lambda msg: print("WARNING: " + msg, file=_sys.stderr)
+        def warn(msg: str) -> None:
+            print("WARNING: " + msg, file=_sys.stderr)
 
     # 1. Собрать уникальные voice=
     voices: List[str] = sorted({
@@ -502,7 +618,10 @@ def act(
     gate_tools: List[str],
     steps: List[Dict[str, Any]],
     gate_comment: List[str],
+    recover: Any = None,
 ) -> None:
+    """``recover`` -- поле акта для харнесса (#3989/#4034, ``e2e_events.recover_kinds``): ``None`` -- не писать
+    (по умолчанию харнесс разрешает все восстановления), иначе ``True``/``False``/список видов."""
     ACTS.append(
         {
             "n": n,
@@ -513,6 +632,7 @@ def act(
             "gate_tools": gate_tools,
             "gate_comment": gate_comment,
             "steps": steps,
+            "recover": recover,
         }
     )
 
@@ -604,7 +724,12 @@ act(
         "дальше по актам идти бессмысленно (раннер останавливает марафон).",
         "get_perception_context и faq_search намеренно ВНЕ gate — они зависят",
         "от железа стенда и профиля FAQ (см. dialogue-coverage-map §3).",
+        "recover=[silenced]: акт проверяет САМ вейк -- потерянный вейк харнесс не лечит",
+        "«Робот!» (no_wake), шаг честно красный; тишину, оставленную прошлым прогоном, снимать можно.",
     ],
+    # #4034: акт 1 -- проверка вейка. Восстановление no_wake («Робот!» подхватывает бэклог) спрятало бы ровно то,
+    # что акт меряет; silenced (тишина с прошлого прогона) к вейку отношения не имеет и восстанавливается.
+    recover=["silenced"],
 )
 
 # =============================================================================
@@ -620,8 +745,8 @@ act(
     "Знакомство и прогрев голосов",
     "Саша (anton) и Борис (ermil) представляются ДЛИННЫМИ репликами — "
     "resemblyzer считает d-vector на каждой принятой фразе, короткое «привет» "
-    "даёт неустойчивый эмбеддинг при identify_threshold=0.75. Дядя Гриша "
-    "(zahar) заходит и намеренно НЕ называет имя — это контрольная группа "
+    "даёт неустойчивый эмбеддинг при identify_threshold=0.75. Тётя Гриша "
+    "(zahar, женский голос по касту #4038) заходит и намеренно НЕ называет имя — это контрольная группа "
     "«незнакомец» для акта 3.",
     "new-unproven",
     ["register_speaker", "memory_save", "memory_search"],
@@ -669,24 +794,27 @@ act(
             "n202a_sasha_warmup",
             "Робот, слушай дальше и запоминай, как я звучу.",
             voice=SASHA,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Саша")],
+            must_not=["memory_save"],
             why="n202 разбит на три шага: 15с VAD-окно (run 35658231116) не "
-            "пропускало исходную реплику ~20с. Паттерн мягкий: ловим ЛЮБОЙ "
-            "след биометрии в логах, поэтому держим его на каждой части.",
+            "пропускало исходную реплику ~20с. R6 разбора 26.10: прежний паттерн "
+            "`Speaker|identify candidates|speaker_id` совпадал с каждым ходом (и с `Speaker: unknown`) и спрятал "
+            "незапрошенный memory_save из бэклога. Теперь результат: голос опознан как Саша с уверенностью >= 0.8; "
+            "«запоминай, как я звучу» -- про голос, факт в память не пишется (must_not memory_save).",
         ),
         step(
             "n202b_sasha_warmup_hum",
             "Вчера я всю ночь паял этот несчастный блок питания, и он всё равно "
             "гудит как трансформатор.",
             voice=SASHA,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Саша")],
             expect="backlog",
         ),
         step(
             "n202c_sasha_warmup_guess",
             "А я так и не понял, земля виновата или дроссель.",
             voice=SASHA,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Саша")],
             expect="backlog",
         ),
         step(
@@ -738,23 +866,24 @@ act(
             "n205a_boris_warmup",
             "Робот, продолжаю говорить, чтобы ты привык к моему голосу.",
             voice=BORIS,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Борис")],
             why="n205 разбит на три шага: 15с VAD-окно (run 35658231116) не "
-            "пропускало исходную реплику ~20с. Паттерн держим на каждой части.",
+            "пропускало исходную реплику ~20с. R6: результат -- голос опознан как Борис (>= 0.8) на каждой части, "
+            "а не любой след биометрии.",
         ),
         step(
             "n205b_boris_warmup_spartak",
             "Я болею за Спартак с девяносто восьмого года, и Саша каждый раз "
             "надо мной смеётся.",
             voice=BORIS,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Борис")],
             expect="backlog",
         ),
         step(
             "n205c_boris_warmup_tease",
             "Хотя сам вообще футбол не смотрит и путает вратаря с защитником.",
             voice=BORIS,
-            patterns=["Speaker|identify candidates|speaker_id"],
+            patterns=[speaker_sure("Борис")],
             expect="backlog",
         ),
         step(
@@ -784,7 +913,7 @@ act(
         ),
         step(
             "n210_grisha_no_name",
-            "Робот, я мимо шёл. Имя своё я тебе называть не буду, я старой "
+            "Робот, я мимо шла. Имя своё я тебе называть не буду, я старой "
             "закалки и не доверяю железкам.",
             voice=GRISHA,
             must_not_identify_as=["Борис", "Саша"],
@@ -803,7 +932,9 @@ act(
             # пересказал его факты).
             must_not_say=["Борис", "Саш", "Спартак", "пицц"],
             why="Сокращено под бюджет VAD 15с (run 35658231116), отказ "
-            "называть имя сохранён. КОНТРОЛЬНАЯ ГРУППА для акта 3. Решение Шифу "
+            "называть имя сохранён. Каст #4038 (решение Шифу 26.10): Гриша -- женский голос, реплика в женском "
+            "роде («шла»); голоса разведены, шаг НЕ помечается «предел голосов». КОНТРОЛЬНАЯ ГРУППА для акта 3. "
+            "Решение Шифу "
             "22.10 (#3858, «режим мастерской» для голоса): незнакомый голос получает "
             "профиль без имени с кличкой -- поэтому запрет `must_not=[register_speaker]` "
             "снят (run 39830739928: он краснел по замыслу сценария, а не по ошибке "
@@ -917,7 +1048,7 @@ act(
     "backlog_diarization",
     "Кто там бубнил на фоне",
     "Четыре голоса говорят БЕЗ wake-слова: Саша и Борис (зарегистрированы в "
-    "акте 2), дядя Гриша и курьер Валера (не представлялись). dialog v2 копит их "
+    "акте 2), тётя Гриша и курьерша Валера (не представлялись; женские голоса каста #4038). dialog v2 копит их "
     "в бэклог (`[backlog] accumulated reason=no_wake`), а по голому «Робот.» "
     "(В12′, #3767) забирает свежий бэклог в ход. Затем -- вопрос, кого робот "
     "узнал, и LRU-правило: явная команда, произнесённая в фоне без wake-слова, "
@@ -987,7 +1118,7 @@ act(
             silent_ok=True,
             patterns=[TURN_WITH_LLM],
             why="В12′ (#3767): голое «Робот» ВСЕГДА забирает свежий бэклог, текст хода "
-            "-- реплика курьера из n305. Доказательство подхвата -- ход с LLM "
+            "-- реплика курьерши из n305. Доказательство подхвата -- ход с LLM "
             "(`llm_calls>=1`): без бэклога голый вейк даёт рефлекс «слушаю» без LLM. "
             "silent_ok: подхваченная болтовня законно может закончиться `passed` без "
             "речи (turn.py: passed из бэклога -- тихо). Без sleep_before_sec: окно "
@@ -999,12 +1130,14 @@ act(
             "Робот, скажи, кто сейчас говорил на фоне: кого ты узнал по "
             "голосу, а кого нет?",
             voice=SASHA,
-            keywords=["Борис", "незнаком"],
+            keywords=["Борис", "незнаком|неопознан"],
             retry=1,
             why="ЯДРО АКТА, зонд атрибуции по ОТВЕТУ робота (не по строке бэклога: "
             "в v2 она диктора не пишет). Ответ должен назвать и знакомого "
-            "(Борис), и факт наличия неопознанных (стем «незнаком» ловит "
-            "«незнакомец»/«незнакомый»/«незнакомых»). Ищется по речи робота. "
+            "(Борис), и факт наличия неопознанных (стемы «незнаком|неопознан» ловят "
+            "«незнакомец»/«незнакомый»/«неопознанные» -- одна метка неузнанного у кода не одна, разбор 26.10). "
+            "Ищется по речи робота. Каст #4038 развёл голоса (Гриша и Валера -- женские): шаг НЕ помечается "
+            "«предел голосов». "
             "ВНИМАНИЕ (#3880): метки `Addressed.picked` (кто сказал) в v2 до LLM "
             "не доходят (turn.py их не читает), поэтому шаг может краснеть как "
             "находка, а не как ошибка сценария -- акт expected-partially-red.",
@@ -1044,11 +1177,13 @@ act(
             silent_ok=True,
             patterns=[TURN_WITH_LLM, MUSIC_DISPATCH, tool_done(*MUSIC_START_TOOLS)],
             must_not=["stop_music", TURN_TIMEOUT],
+            must_not_say=[MUSIC_NOT_STARTED],
             why="Во фразе нет своей команды (голое «Робот.», В12′) — робот обязан "
             "выполнить последнюю явную команду из бэклога (LRU): ход с LLM и вызов "
             "тула музыки (`📤 Отправлен запрос <id>: <tool>`). Конкретный тул не "
             "фиксируем: «спокойное» законно ложится и в renardo, и в библиотеку, и в "
-            "dj_set. silent_ok: речь после запуска музыки не обязательна. v1-паттерн "
+            "dj_set. Фраза потолка «Музыка пока не заиграла» здесь -- ложь (музыка обязана заиграть, #3971 R22). "
+            "silent_ok: речь после запуска музыки не обязательна. v1-паттерн "
             "`[backlog] flushed to LLM` убран (в v2 его нет). Без retry: подхват бэклога "
             "-- разовое событие, на повторе бэклог уже пуст (голый вейк = рефлекс).",
         ),
@@ -1062,7 +1197,7 @@ act(
         ),
         action_step(
             "n312_stop_music",
-            "Робот, всё, спасибо, выключай музыку, курьер уехал.",
+            "Робот, всё, спасибо, выключай музыку, курьерша уехала.",
             ["stop_music"],
             music="stopped",
             voice=SASHA,
@@ -1089,6 +1224,8 @@ act(
         "Диаризация (#1077) в voice_core_suite_v1 значится out-of-scope,",
         "а атрибуция фоновых реплик по говорящему живьём не проверялась ни разу:",
         "строка бэклога dialog v2 диктора не пишет, метки picked до LLM не доходят.",
+        "Голоса каста разведены (#4038: Гриша и Валера -- женские), поэтому красный",
+        "n304-n311 -- не «предел голосов», а находка по роботу.",
         "GATE-1 гейтит только то, что обязано работать при любой погоде:",
         "stop_music (мы сами включили музыку в n310).",
         "Атрибуция проверяется per-step по ответу робота (n306) — её падение",
@@ -1127,9 +1264,13 @@ act(
         step(
             "n402_current_voice",
             "Робот, а каким голосом ты говоришь прямо сейчас?",
-            patterns=[SPEECH_PROVIDER],
-            why="v2 (#3880, run 39878786968): v1-строка `TTS current_voice` не пишется; "
-            "факт ответа голосом -- `SpeechEvent synthesized … provider=`.",
+            patterns=[spoken_by("minimax")],
+            keywords=["minimax|минимакс|мини макс|мини-макс|qingse|цинсе"],
+            why="R6 разбора 26.10: прежний `SpeechEvent synthesized … provider=<любой>` совпадал с каждым ходом. "
+            "Результат теперь: ответ ЗВУЧИТ голосом по умолчанию (MiniMax, `tts_node.yaml` minimax_voice "
+            "male-qn-qingse; харнесс возвращает голос и параметры до акта) и НАЗЫВАЕТ его -- провайдер или голос "
+            "(23.10: «Сейчас я на MiniMax, и голос у меня male-qn-qingse»). Если робот ушёл в фолбек Yandex, шаг "
+            "красный -- это и есть находка (голосовой стек деградирует молча).",
         ),
         step(
             "n403_set_voice_alena",
@@ -1143,8 +1284,10 @@ act(
         step(
             "n404_speak_after_set",
             "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
-            patterns=[SPEECH_PROVIDER],
-            why="v2 (#3880): см. n402 -- `SpeechEvent synthesized … provider=` вместо `current_voice`.",
+            patterns=[spoken_by("yandex")],
+            why="R6: результат -- реплика синтезирована ГОЛОСОМ ИЗ n403. Алёна есть только у Yandex "
+            "(`tts_voice_registry`: yandex:alena), голос робота по умолчанию -- MiniMax, значит «этим голосом» = "
+            "`SpeechEvent synthesized … provider=yandex`. Не сменил голос в n403 -- здесь тоже честно красный.",
         ),
         step(
             "n405_set_voice_jane",
@@ -1161,7 +1304,7 @@ act(
         ),
         step(
             "n407_volume_up",
-            "Робот, говори погромче, дядя Гриша глуховат и стоит в коридоре.",
+            "Робот, говори погромче, тётя Гриша глуховата и стоит в коридоре.",
             expect_tools=["set_volume"],
         ),
         step(
@@ -1173,45 +1316,62 @@ act(
         step(
             "n409_speed_down",
             "Робот, говори помедленнее, я за тобой записываю.",
-            expect_tools=["set_speed"],
+            patterns=[prosody_changed(SPEED_PARAMS, BELOW_NORMAL)],
+            why="Эффект, а не вызов (разбор 26.10: ложный PASS -- set_speed писал yandex_speed, а звучал MiniMax). "
+            "#4039: тул меняет ось АКТИВНОГО провайдера, нода пишет `🎚️ minimax_speed изменён: 0.8` -- скорость "
+            "стала ниже нормы (харнесс вернул ось к норме до акта).",
         ),
         step(
             "n410_speed_up",
             "Робот, ладно, хватит тянуть, теперь наоборот — тараторь.",
-            expect_tools=["set_speed"],
+            patterns=[prosody_changed(SPEED_PARAMS, ABOVE_NORMAL)],
+            why="«Тараторь» -- быстрее НОРМЫ: после n409 (0.8) один шаг возвращает лишь 1.0 (обычная речь), это не "
+            "эффект просьбы. 23.10 LLM звала set_speed дважды параллельно, оба прочитали 0.8 и записали 1.0 -- "
+            "такой ход здесь красный по делу.",
         ),
         step(
             "n411_pitch_bass",
             "Робот, говори басом, как диктор в старом кино.",
-            expect_tools=["set_pitch"],
+            patterns=[prosody_changed((PITCH_PARAM,), BELOW_NORMAL)],
             why="v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких "
-            "инструментов нет» -- проверка была слабой (паттерн `set_pitch|set_voice` "
-            "матчил список тулов). Теперь нужен реальный вызов set_pitch "
-            "(`Запрос выполнения: set_pitch`). У провайдера без set_pitch шаг "
-            "честно красный -- акт flaky-known.",
+            "инструментов нет». #4039: тон слышен у MiniMax (`voice_setting.pitch`) без chipmunk_mode; эффект -- "
+            "`🎚️ pitch_shift изменён: 0.8` (ниже нормы). У провайдера без тона тул честно отказывает -- шаг "
+            "красный, акт flaky-known.",
+        ),
+        step(
+            "n411b_prosody_normal",
+            "Робот, всё, верни обычную скорость речи и обычный тон.",
+            patterns=[
+                prosody_changed(SPEED_PARAMS, NORMAL) + "|" + SPEED_ALREADY_NORMAL,
+                prosody_changed((PITCH_PARAM,), NORMAL) + "|" + PITCH_ALREADY_NORMAL,
+            ],
+            why="Сброс просодии перед сказкой (акт возвращает робота в исходное). Отдельного маркера сброса пока "
+            "нет -- проверяем значения осей: скорость и тон снова 1 (`изменён: 1`) либо тул прочитал, что ось "
+            "уже на норме (`Скорость уже нормальная` / `Голос уже нормальный`: честное «уже», не каскад от n410/n411).",
         ),
         step(
             "n412_skazka_multivoice",
-            "Робот, расскажи сказку про Красную Шапочку, говори за каждого "
-            "персонажа своим голосом.",
-            patterns=[TALE_VOICES],
+            "Робот, расскажи короткую сказку про Красную Шапочку, говори за "
+            "каждого персонажа своим голосом.",
+            patterns=[perform_started("tale"), PERFORM_DONE],
             keywords=["красн"],
-            retry=1,
-            why="v2 (#3880, run 39878786968): сказку делает `perform kind=tale` с "
-            "`voice_per_segment`, тула set_voice нет -- ждём `perform` в действиях "
-            "команды или `SpeechEvent voice_changed` (строка `voice_used` -- v1/MiniMax). "
-            "Сокращено под бюджет VAD 15с (run 35658231116); просьба про "
-            "Красную Шапочку и смену голоса на персонажа сохранены. #1532: "
-            "сказка должна быть полной и реально менять голос. Стем «красн» "
-            "ловит «красную»/«красная» и запрещает generic «жила-была» без "
-            "героя.",
+            why="#3971 R4 (23.10 22:04:48): v1-паттерн `actions=[…perform…]` не совпадал с логом v2 (command_bridge "
+            "пишет actions=[]), верная сказка давала PATTERN_MISS, ретрай заказывал вторую (2.5 мин). Теперь "
+            "результат по событиям владельца: `выступление старт kind=tale` И конец `perform-: конец (done)` / "
+            "`PlanEvent block_end … reason=done`. Ретрая НЕТ: после старта выступления повтор заказал бы второе. "
+            "Конец ждём по событиям: сегменты ставятся в очередь сразу (`SpeechEvent queued`), харнесс ждёт, пока "
+            "все закроются, -- это и есть block_end; но его потолок -- E2E_REACTION_WINDOW×E2E_MAX_ATTEMPTS "
+            "(≈2 мин), поэтому просим КОРОТКУЮ сказку (23.10: 917 символов -- 99 с, 1519 -- 160 с не влезли). "
+            "#1532: сказка полная, голоса персонажей -- `voice_per_segment` (без него код -- нарушение, #3966). "
+            "Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя.",
         ),
     ],
     [
         "Акт 4 — flaky-known: mv-шаги зависят от tool-choice LLM и состава",
         "голосов провайдера, ломаются при каждой смене провайдера.",
         "GATE-1 держит минимум: список голосов, факт смены, громкость, скорость.",
-        "set_pitch ВНЕ gate — тула нет у части TTS-провайдеров.",
+        "set_pitch ВНЕ gate — тона нет у части TTS-провайдеров (#4039: честный отказ).",
+        "Скорость и тон шаги судят по эффекту (`<ось> изменён: <значение>` в tts_node), а не по вызову тула.",
     ],
 )
 
@@ -1275,6 +1435,7 @@ act(
             "n504_add_bass",
             "Робот, продолжай развивать эту тему и добавь баса пожирнее.",
             list(MUSIC_EDIT_TOOLS),
+            music="changed",
             must_not=["stop_music"],
             why="Эволюция трека без перезапуска: stop_music здесь = робот "
             "глушит и начинает заново вместо развития. #3971: в v2 тулов живой правки Renardo "
@@ -1285,6 +1446,7 @@ act(
             "n505_vibe_dark",
             "Робот, сделай атмосферу помрачнее, как в киберпанке.",
             list(MUSIC_EDIT_TOOLS),
+            music="changed",
             must_not=["stop_music"],
             why="#3971: см. n504 -- любой из dj_set|request_music|generate_music, но с успехом тула.",
         ),
@@ -1292,6 +1454,7 @@ act(
             "n506_faster",
             "Робот, и ускорь темп, а то мы тут засыпаем оба.",
             list(MUSIC_EDIT_TOOLS),
+            music="changed",
             must_not=["stop_music", "set_speed", "set_pitch"],
             why="#3976: «ускорь темп» под музыкой -- про музыку, а не про голос робота; set_speed/set_pitch "
             "(стем «темп» открывает группу voice) -- реальный баг. Шаг остаётся красным, пока его не починят: "
@@ -1374,8 +1537,9 @@ act(
         ),
         action_step(
             "n604_dj_rock",
-            "Робот, уводи в сторону рока, дядя Гриша под рок добреет.",
+            "Робот, уводи в сторону рока, тётя Гриша под рок добреет.",
             ["dj_set", "request_music"],
+            music="changed",
             must_not=["stop_music"],
             why="#3971: смена стиля сета -- `dj_set` (start с новой темой) или request_music; успех тула обязателен.",
         ),
@@ -1388,7 +1552,9 @@ act(
             "треком и прощанием», но тула save_dj_set_plan в коде НЕТ — сет "
             "глохнет по счётчику DJ_AUTO_MAX_TRANSITIONS=24. Падение "
             "подтверждает карточку W7-1. #3971: просьба -- и действие, и объявление треков вслух: "
-            "нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS.",
+            "нужны оба -- `SpeechEvent started` (#3880) И успех тула; речь без результата не PASS. "
+            "Разбор 26.10 (n605: прогресс-фраза засчитана объявлением) -- шаг НАМЕРЕННО не ужесточён, пока не влит "
+            "#4006 (диджей молчит между треками): ждать перехода и `dj_line` -- после него.",
         ),
         step(
             "n606_wake_under_dj",
@@ -1403,6 +1569,7 @@ act(
             "n607_vibe_chill",
             "Робот, а теперь помягче, поставь спокойную атмосферу, Валера уснёт за рулём.",
             ["dj_set", "request_music"],
+            music="changed",
             must_not=["stop_music"],
             why="#3971: см. n604.",
         ),
@@ -1477,10 +1644,10 @@ act(
             ["generate_music"],
             expect_tools=["generate_music"],
             retry=1,
-            known_red="квота KIE: при `<providers>` music_gen health != ok (run 132908: health=quota весь "
-            "марафон) честный ответ робота -- `perform song`, а не generate_music. Харнесс условий по "
-            "снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), поэтому шаг "
-            "красный по делу, пока Шифу не пополнит KIE.",
+            known_red="только при квоте KIE (`[cover] баланс KIE: 0`): при `<providers>` music_gen health != ok "
+            "(run 132908: health=quota весь марафон) честный ответ робота -- `perform song`, а не generate_music. "
+            "Харнесс условий по снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), "
+            "поэтому под квотой шаг красный по делу. 26.10 баланс есть (1712) -- шаг обязан быть зелёным.",
             why="Разводка коллизии имён (PR #1372): «спой песню» — это "
             "нейрогенерация, а не renardo-код. #3971: PASS только при `Инструмент generate_music "
             "выполнен успешно`. Под квотой KIE шаг ожидаемо красный (см. _known_red).",
@@ -1509,11 +1676,16 @@ act(
             "n706_gen_save_for_boris",
             "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
             expect_tools=["music_library"],
+            skip_when="KIE_QUOTA",
+            why="n706-n710 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` "
+            "песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA "
+            "(`_skip_when`; харнесс поле пока не читает -- см. шапку генератора).",
         ),
         step(
             "n707_gen_track_info",
             "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
             expect_tools=["music_library"],
+            skip_when="KIE_QUOTA",
         ),
         action_step(
             "n708_gen_play",
@@ -1522,6 +1694,7 @@ act(
             music="started",
             expect_tools=["music_library"],
             retry=1,
+            skip_when="KIE_QUOTA",
             why="#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + "
             "`[music v2] started`.",
         ),
@@ -1531,16 +1704,21 @@ act(
             ["stop_music"],
             music="stopped",
             expect_tools=["stop_music"],
+            skip_when="KIE_QUOTA",
             why="Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру "
-            "`[music v2] stop`, а не по слову «остановил».",
+            "`[music v2] stop` с id трека (не `track_id=None`), а не по слову «остановил».",
         ),
-        step(
+        action_step(
             "n710_gen_delete",
-            "Робот, удали последний трек из библиотеки, он всё-таки так себе.",
-            patterns=["music_library"],
+            "Робот, удали из библиотеки эту песню про енота, она всё-таки так себе.",
+            ["music_library"],
+            patterns=[r"music_library с параметрами \{.*'action': 'delete'"],
             expect_tools=["music_library"],
-            why="Уборка за собой + проверка, что «последний» робот определяет "
-            "через список, а не наугад.",
+            skip_when="KIE_QUOTA",
+            why="Уборка за собой. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило "
+            "чужой трек и осталось зелёным. Теперь просьба называет песню этого прогона (про енота): id робот "
+            "берёт из поиска/списка, без такой песни удалять нечего. Результат -- запрос `delete` и успех "
+            "music_library. Под квотой KIE шаг не играется (`_skip_when`), destructive delete вслепую не гоняем.",
         ),
         action_step(
             "n711_renardo_not_broken",
@@ -1565,6 +1743,8 @@ act(
     ],
     [
         "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
+        "Квота KIE (`[cover] баланс KIE: 0`): n706-n710 -- SKIP KIE_QUOTA (`_skip_when`, R21),",
+        "delete без песни этого прогона не гонять. 26.10 баланс 1712 -- правило стоит на будущее.",
         "generate_music и music_library ВНЕ GATE-1 намеренно —",
         "их отсутствие чаще всего означает недоступность внешнего API.",
         "В gate только каталожные gen_*-тулы (работают локально) и stop_music.",
@@ -1619,10 +1799,12 @@ act(
             "Робот, расскажи историю о том, как ты первый раз в жизни увидел "
             "кота и что подумал.",
             patterns=[SPEECH_STARTED],
+            must_not_say=[PERFORM_ASKS_TO_REPLACE],
             why="Сокращено, чтобы уйти от края окна VAD (было 100 символов, "
             "запас 1.2с, run 35658231116) — реплика лишь просит длинную "
             "историю, длина сгенерированного ответа не зависит от неё. v2: "
-            "`SpeechEvent started` вместо `speak_text` (см. n802).",
+            "`SpeechEvent started` вместо `speak_text` (см. n802). #3971 R22: вопрос выступления «выключить и "
+            "зачитать?» (музыка, оставленная прошлым актом) -- тоже `SpeechEvent started`, но не история.",
         ),
         step(
             "n805_hard_stop",
@@ -1653,7 +1835,8 @@ act(
             "n806_long_count_again",
             "Робот, посчитай вслух от одного до двадцати, спокойно.",
             patterns=[SPEECH_STARTED],
-            why="v2: `SpeechEvent started` вместо `speak_text` (см. n802).",
+            must_not_say=[PERFORM_ASKS_TO_REPLACE],
+            why="v2: `SpeechEvent started` вместо `speak_text` (см. n802); вопрос выступления -- не счёт (см. n804).",
         ),
         step(
             "n807_merge_addition",
@@ -1700,28 +1883,35 @@ act(
             "Робот, а теперь под этот бит зачитай короткий рэп про енотика.",
             patterns=[SPEECH_STARTED],
             must_not=["stop_music"],
+            must_not_say=[PERFORM_ASKS_TO_REPLACE],
             why="Речь ПОВЕРХ музыки: робот не должен глушить бит, чтобы "
             "заговорить (issue #986 — соотношение музыки и речи мастер-гейном). "
-            "v2: `SpeechEvent started` вместо `speak_text` (см. n802).",
+            "v2: `SpeechEvent started` вместо `speak_text` (см. n802). #3971 R22 (робот 23.10 22:53:09): на «под "
+            "этот бит зачитай» робот спросил «Сейчас играет …, выключить и зачитать?» -- харнесс засчитал вопрос "
+            "речью. Просьба уже назвала бит, вопрос -- не рэп: шаг красный.",
         ),
         step(
             "n811_stop_speech_keep_music",
             "Робот, хватит читать, а музыку оставь.",
             barge_in=BARGE_3S,
             silent_ok=True,
-            patterns=[SPEECH_CANCELLED],
-            why="Зонд разделения каналов речь/музыка. Про музыку ассерта нет: "
-            "«оставь музыку» робот сегодня понимает нестабильно (Tier-1 stop_all "
-            "гасит и музыку по снимку), а must_not:stop_music здесь сделал бы шаг "
-            "красным на каждом прогоне без диагностики. Речь «хватит читать» обязана "
-            "быть погашена (v2, #3880: `silent_ok` + паттерн отмены, как n805).",
+            patterns=[SPEECH_CANCELLED, TIER1_STOP_SPEECH],
+            must_not=["stop_music", MUSIC_STOP_ANY],
+            why="Разделение каналов речь/музыка. #4035 (охват стопа): «хватит читать, а музыку оставь» -- Tier-1 "
+            "`stop_speech`: речь и выступление гаснут (`silent_ok` + паттерн отмены, как n805), плеер играет -- "
+            "ни тула stop_music (в т.ч. outro бита), ни `[music v2] stop` в окне шага. До #4035 Tier-1 `stop_all` "
+            "гасил и музыку (разбор 26.10, #3994).",
         ),
         action_step(
             "n812_stop_music",
             "Робот, теперь и музыку выключай.",
             ["stop_music"],
             music="stopped",
+            patterns=[MUSIC_WAS_PLAYING],
             expect_tools=["stop_music"],
+            why="Разбор 26.10 (22:55:01): стоп вхолостую `track_id=None` + `was_playing=False` давал PASS и фразу "
+            "«Выключил музыку.». Теперь результат -- тул застал музыку играющей (`was_playing=True`) и дека снята "
+            "с настоящим id трека. Музыку погасил n811 -- здесь честно красный (каскад от нарушения «оставь»).",
         ),
         step(
             "n813_silence_final",
@@ -1760,35 +1950,47 @@ act(
             expect="cycle",
             expect_tools=["get_sound_info"],
         ),
-        step(
+        action_step(
             "n902_sound_doorbell",
-            "Робот, включи звук дверного звонка, дядя Гриша опять идёт с обходом.",
-            expect_tools=["play_sound"],
+            "Робот, включи звук дверного звонка, тётя Гриша опять идёт с обходом.",
+            ["play_sound"],
+            silent_ok=True,
+            why="Решение Шифу 26.10: тихое действие по прямой просьбе -- норма (код: SILENT_DONE_TOOLS). Раньше шаг "
+            "без silent_ok краснел `nospeech` и до acceptance не доходил (act9 23.10). Результат -- "
+            "`✅ Инструмент play_sound выполнен успешно`.",
         ),
-        step(
+        action_step(
             "n903_sound_siren_anim",
             "Робот, а теперь сирену и мигалку покажи, напугаем Валеру.",
-            patterns=["play_sound"],
-            expect_tools=["play_sound"],
-            why="police_lights как анимация — бонус; гейтим только звук, "
-            "потому что LLM часто ограничивается одним тулом из двух.",
+            ["play_sound"],
+            patterns=[tool_done("play_animation")],
+            silent_ok=True,
+            why="Просьба -- и сирена (звук), и мигалка (анимация police_lights): результат обоих тулов (23.10 робот "
+            "сделал оба тихо). Тихо -- норма (решение Шифу 26.10); «Виу-виу!» (#4031) допустимо, но не обязательно.",
         ),
         step(
             "n904_anim_sad",
             "Робот, покажи, как тебе грустно, что смена такая длинная.",
-            expect_tools=["play_animation"],
+            patterns=[face_or_animation("sad"), TURN_DONE],
+            silent_ok=True,
+            why="v2 показывает эмоцию лицом команды (`command.expression`), тул play_animation не обязателен "
+            "(23.10: expression sad + речь, сценарий требовал v1-тул). Результат -- `🎭 [turn-v2] лицо команды на "
+            "done: emotion=sad` (#4041) либо play_animation sad. Показать молча -- законно (просьба «покажи»).",
         ),
         step(
             "n905_anim_victory",
             "Робот, а теперь победную анимацию — блок питания наконец не гудит!",
-            expect_tools=["play_animation"],
+            patterns=[face_or_animation("victory", "happy"), TURN_DONE],
+            silent_ok=True,
+            why="См. n904: победа -- лицо команды emotion=victory|happy или play_animation victory|happy.",
         ),
         step(
             "n906_anekdot_anim",
             "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
-            patterns=["play_animation", SPEECH_STARTED],
+            patterns=[face_or_animation("happy", "victory"), SPEECH_STARTED],
             why="Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула "
-            "`speak_text` -- `SpeechEvent started` (см. n802).",
+            "`speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или play_animation "
+            "(голое имя тула в паттерне совпадало и со строкой действий без результата).",
         ),
         step(
             "n907_search_space",
@@ -1860,9 +2062,10 @@ act(
             "n1002_unknown_still_unknown",
             "Робот, а те двое, что ворчали на фоне и не представились — ты их "
             "так и не узнал?",
-            keywords=["незнаком|не знаю|не представил"],
+            keywords=["незнаком|не назвал|не представил|неопознан|без имён|без имен|не знаю"],
             why="Честность про неопознанных. Робот не должен задним числом "
-            "выдумывать им имена.",
+            "выдумывать им имена. Разбор 26.10 (R20, робот 23:12:16): честный ответ «не назвались / "
+            "неопознанными / без имён» краснел на узком regex -- стемы расширены.",
         ),
         step(
             "n1003_memory_search_food",
@@ -1893,12 +2096,12 @@ act(
         step(
             "n1007_no_leak",
             "Робот, о чём мы с тобой только что говорили?",
-            must_not=["енот", "Спартак"],
-            why="ЗОНД УТЕЧКИ (gp14). must_not_call используется нестандартно — "
-            "как «этих подстрок не должно быть в логах шага». Если после "
-            "сброса сессии робот всё ещё помнит енота и Спартак — история "
-            "протекла через reset. Приём осознанный, задокументирован в "
-            "docs/e2e/night-voice-marathon.md.",
+            must_not_say=LEAK_PROBE_WINDOW_PHRASES,
+            why="ЗОНД УТЕЧКИ (gp14). R20 разбора 26.10: «енот» и «Спартак» -- факты ДОЛГОЙ памяти (n206, n706 их "
+            "сохраняют), они законно приходят через memory_search/speaker_memory и после сброса, а запрет "
+            "подстроки по всему логу краснил честный ответ. Утечку ИСТОРИИ проверяем по фразам из окна, которых в "
+            "долгой памяти нет: вопросы акта 10 до сброса (n1001 «итог ночи», n1002 «ворчали») и темы акта 9 "
+            "(космос, китайский, четверостишие). Ищется в РЕЧИ робота (must_not_say), не по логу.",
         ),
         step(
             "n1008_memory_survives_reset",
@@ -2025,6 +2228,8 @@ def build() -> Dict[str, Dict[str, Any]]:
         if a["n"] in ACTS_INHERITING_PREVIOUS:
             scenario["inherits_previous_act"] = True
             scenario["_inherits_previous_act_reason"] = INHERITS_REASON
+        if a["recover"] is not None:
+            scenario["recover"] = a["recover"]
         scenario["steps"] = a["steps"]
         acceptance = {
             "name": base + "_acceptance_v1",
@@ -2032,9 +2237,10 @@ def build() -> Dict[str, Dict[str, Any]]:
             "_comment": a["gate_comment"],
             "expected_tool_calls": a["gate_tools"],
             "must_not_call": [],
+            # Каст #4038: команды людей синтезирует MiniMax (Yandex-роли склеиваются 0.84-0.92).
             "voice_provenance": {
                 "voice": "anton",
-                "tts": "yandex",
+                "tts": "minimax",
                 "volume": 100,
                 "llm": "minimax-m3",
             },

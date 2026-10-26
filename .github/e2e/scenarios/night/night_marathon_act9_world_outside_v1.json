@@ -24,63 +24,81 @@
     {
       "label": "n902_sound_doorbell",
       "voice": "anton",
-      "text": "Робот, включи звук дверного звонка, дядя Гриша опять идёт с обходом.",
-      "patterns": [],
+      "text": "Робот, включи звук дверного звонка, тётя Гриша опять идёт с обходом.",
+      "silent_ok": true,
+      "patterns": [
+        "✅ Инструмент play_sound выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
       "acceptance": {
-        "expected_tool_calls": [
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Решение Шифу 26.10: тихое действие по прямой просьбе -- норма (код: SILENT_DONE_TOOLS). Раньше шаг без silent_ok краснел `nospeech` и до acceptance не доходил (act9 23.10). Результат -- `✅ Инструмент play_sound выполнен успешно`."
+      },
+      "_result_markers": {
+        "tools": [
           "play_sound"
         ],
-        "must_not_call": []
+        "music": ""
       }
     },
     {
       "label": "n903_sound_siren_anim",
       "voice": "anton",
       "text": "Робот, а теперь сирену и мигалку покажи, напугаем Валеру.",
+      "silent_ok": true,
       "patterns": [
-        "play_sound"
+        "✅ Инструмент play_animation выполнен успешно",
+        "✅ Инструмент play_sound выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
-        "expected_tool_calls": [
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "expected_tool_calls": [],
+        "_comment": "Просьба -- и сирена (звук), и мигалка (анимация police_lights): результат обоих тулов (23.10 робот сделал оба тихо). Тихо -- норма (решение Шифу 26.10); «Виу-виу!» (#4031) допустимо, но не обязательно."
+      },
+      "_result_markers": {
+        "tools": [
           "play_sound"
         ],
-        "must_not_call": [],
-        "_comment": "police_lights как анимация — бонус; гейтим только звук, потому что LLM часто ограничивается одним тулом из двух."
+        "music": ""
       }
     },
     {
       "label": "n904_anim_sad",
       "voice": "anton",
       "text": "Робот, покажи, как тебе грустно, что смена такая длинная.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "play_animation"
-        ],
-        "must_not_call": []
-      }
+      "silent_ok": true,
+      "patterns": [
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(sad)\\b|play_animation с параметрами \\{.*'animation': '(sad)'",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
+      "_why": "v2 показывает эмоцию лицом команды (`command.expression`), тул play_animation не обязателен (23.10: expression sad + речь, сценарий требовал v1-тул). Результат -- `🎭 [turn-v2] лицо команды на done: emotion=sad` (#4041) либо play_animation sad. Показать молча -- законно (просьба «покажи»)."
     },
     {
       "label": "n905_anim_victory",
       "voice": "anton",
       "text": "Робот, а теперь победную анимацию — блок питания наконец не гудит!",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "play_animation"
-        ],
-        "must_not_call": []
-      }
+      "silent_ok": true,
+      "patterns": [
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(victory|happy)\\b|play_animation с параметрами \\{.*'animation': '(victory|happy)'",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
+      "_why": "См. n904: победа -- лицо команды emotion=victory|happy или play_animation victory|happy."
     },
     {
       "label": "n906_anekdot_anim",
       "voice": "anton",
       "text": "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
       "patterns": [
-        "play_animation",
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(happy|victory)\\b|play_animation с параметрами \\{.*'animation': '(happy|victory)'",
         "SpeechEvent started speech_id"
       ],
-      "_why": "Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (см. n802)."
+      "_why": "Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или play_animation (голое имя тула в паттерне совпадало и со строкой действий без результата)."
     },
     {
       "label": "n907_search_space",

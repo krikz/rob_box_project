@@ -6,6 +6,11 @@
 ``scripts/e2e/gen_night_marathon.py``: нет v1-имён, нет обязательного ``get_music_state``, у шагов-действий есть
 маркер результата, в акте 8 тишину снимает явное «Робот, говори». Сверка шагов с логом -- те же функции, что у
 живого харнесса (``e2e_tool_match.step_verdict`` и ``patterns_missing``), второго судьи нет.
+
+Разбор 26.10 (#3971 R4, R6, R19-R22; #3880; задача H2 плана итерации 2): шаги судят по РЕЗУЛЬТАТУ того, что влито
+26.10 -- каст голосов #4038 (Гриша и Валера женские), восстановление #4034 (поле ``recover``), стоп с охватом #4035,
+лицо команды #4041, скорость и тон #4039. Строки-образцы ниже -- формат строк робота; их источник (f-строка в
+коде) держит ``test_marker_sources_exist_in_robot_code``.
 """
 from __future__ import annotations
 
@@ -14,10 +19,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "e2e"))
 sys.path.insert(0, str(REPO_ROOT / ".github" / "workflows" / "scripts"))
 
+import e2e_events as eev  # noqa: E402
 import e2e_tool_match as etm  # noqa: E402
 import gen_night_marathon as gen  # noqa: E402
 
@@ -26,9 +34,14 @@ ACTION_LABELS = {
     "n310_execute_backlog_lru", "n312_stop_music",
     "n502_start_renardo", "n504_add_bass", "n505_vibe_dark", "n506_faster", "n511_stop_music",
     "n602_dj_on", "n604_dj_rock", "n605_dj_set_plan", "n607_vibe_chill", "n608_dj_off",
-    "n702_generate_raccoon", "n703_merge_komar", "n708_gen_play", "n709_stop_generated",
+    "n702_generate_raccoon", "n703_merge_komar", "n708_gen_play", "n709_stop_generated", "n710_gen_delete",
     "n711_renardo_not_broken", "n712_stop_all",
     "n809_music_bed", "n812_stop_music",
+}
+#: Шаги, где музыка обязана заиграть или смениться: фраза потолка «Музыка пока не заиграла» -- ложь (#3971 R22).
+MUSIC_MUST_START_LABELS = {
+    "n310_execute_backlog_lru", "n502_start_renardo", "n504_add_bass", "n505_vibe_dark", "n506_faster",
+    "n602_dj_on", "n604_dj_rock", "n607_vibe_chill", "n708_gen_play", "n711_renardo_not_broken", "n809_music_bed",
 }
 #: Вопросы о состоянии музыки: ответ из снимка ``<music_state>``, тул не нужен.
 STATE_QUESTION_LABELS = {
@@ -226,3 +239,317 @@ def test_patterns_are_valid_regex():
     for label, step in _steps().items():
         for pat in step["patterns"]:
             re.compile(pat)
+
+
+# ── разбор 26.10: строки робота (формат f-строк кода, см. test_marker_sources_exist_in_robot_code) ─────────────
+
+DONE = TURN_LINE % ("done", "finished")
+
+
+def _tts(text: str) -> str:
+    """Что робот ПРОИЗНЁС (канал ``robot_speech``: ``🔊 TTS: … text='…'``)."""
+    return ("[tts_node-4] [INFO] [1792795079.69] [tts_node]: 🔊 TTS: speech_id=764009bb, dialogue_id=None, "
+            "batch=None None/None, voice=default, lang=default, text='%s'" % text)
+
+
+def _speaker(name: str, conf: float) -> str:
+    return "[speaker_id_node-8] [INFO] [1792790345.07] [speaker_id_node]: 👤 Speaker: '%s' confidence=%.3f (336 ms)" % (
+        name, conf)
+
+
+def _param(name: str, value: str) -> str:
+    return "[tts_node-4] [INFO] [1792792911.93] [tts_node]: 🎚️ %s изменён: %s" % (name, value)
+
+
+def _face(emotion: str) -> str:
+    return ("[dialog_node-3] [INFO] [1792796472.28] [dialog_node]: 🎭 [turn-v2] лицо команды на done: emotion=%s "
+            "gesture=- face=llm turn=de10cf091894" % emotion)
+
+
+TALE_START = ("[dialog_node-3] [INFO] [1792792979.94] [dialog_node]: 🧭 [turn-v2] выступление старт kind=tale "
+              "backing=calm segments=7 → {'status': 'pending', 'block_id': 'perform-ee2404b9048f'} turn=ee2404b9048f")
+TALE_END = ("[dialog_node-3] [INFO] [1792793074.35] [dialog_node]: 🎤 [perform] perform-: конец (done) сегментов 7, "
+            "символов 917, synced=True, подложка stopped")
+TALE_BLOCK_END = ("[dialog_node-3] [INFO] [1792793074.36] [dialog_node]: 🗓️ [plan] PlanEvent block_end block=perform-ee24 "
+                  "seg=7 synced=true spoken_chars=917 text_len=0 offset_ms=- after=-/- eta_ms=0 reason=done")
+TALE_V1_COMMAND = ("[dialog_node-3] [INFO] [1792792979.88] [dialog_node]: 🧾 [command] provider=deepseek mode=tool_choice "
+                   "verdict=command actions=[] speech_dropped=0")
+
+
+def test_cast_grisha_and_valera_speak_in_feminine_and_tts_is_minimax():
+    """#4038 (решение Шифу 26.10): Гриша и Валера -- женские голоса; реплики Гриши в женском роде, «дяди» нет."""
+    steps = _steps()
+    assert steps["n210_grisha_no_name"]["text"].startswith("Робот, я мимо шла.")
+    assert steps["n210_grisha_no_name"]["voice"] == gen.GRISHA
+    assert "курьерша уехала" in steps["n312_stop_music"]["text"]
+    texts = " ".join(s["text"] for s in steps.values())
+    assert "мимо шёл" not in texts and "дядя Гриша" not in texts and "курьер уехал" not in texts
+    for name, payload in gen.build().items():
+        if name.endswith("_acceptance_v1.json"):
+            assert payload["voice_provenance"]["tts"] == "minimax", name
+
+
+def test_cast_steps_are_not_marked_voice_limit_red():
+    """Голоса разведены -- шаги атрибуции не помечены «предел голосов»; n306 принимает «незнаком|неопознан»."""
+    steps = _steps()
+    for label in ("n210_grisha_no_name", "n304_bg_grisha_unknown", "n305_bg_valera_unknown", "n306_who_was_talking",
+                  "n307_count_voices", "n309_bg_command_valera", "n311_who_asked"):
+        assert "_known_red" not in steps[label], label
+    assert _acc("n306_who_was_talking")["expected_keywords"] == ["Борис", "незнаком|неопознан"]
+    honest = "\n".join([_tts("Борис -- знакомый, а двое других голосов неопознанные."), DONE])
+    assert _verdict("n306_who_was_talking", honest)["pass"]
+
+
+def test_act1_checks_the_wake_itself_no_wake_is_not_recovered():
+    """Акт 1 -- проверка вейка: харнесс не лечит потерянный вейк «Робот!» (no_wake), тишину -- лечит (#4034)."""
+    act1 = gen.build()["night_marathon_act1_wakeup_v1.json"]
+    assert act1["recover"] == ["silenced"]
+    for step in act1["steps"]:
+        assert eev.recover_kinds(act1, step) == ("silenced",), step["label"]
+    act2 = gen.build()["night_marathon_act2_acquaintance_v1.json"]
+    assert "recover" not in act2  # остальные акты -- по умолчанию харнесса (все виды)
+    assert eev.recover_kinds(act2, act2["steps"][0]) == ("no_wake", "silenced")
+
+
+def test_n412_tale_is_judged_by_perform_events_and_never_retried():
+    """R4: v2 пишет actions=[] и «выступление старт» -- v1-паттерн краснил верную сказку, ретрай заказывал вторую."""
+    step = _steps()["n412_skazka_multivoice"]
+    assert "retry_acceptance" not in step, "после старта выступления повтор заказал бы вторую сказку"
+    speech = _tts("Жила-была Красная Шапочка, бабушка жила за лесом.")
+    assert _verdict("n412_skazka_multivoice", "\n".join([TALE_V1_COMMAND, TALE_START, speech, TALE_END]))["pass"]
+    assert _verdict("n412_skazka_multivoice", "\n".join([TALE_START, speech, TALE_BLOCK_END]))["pass"]
+    started_only = _verdict("n412_skazka_multivoice", "\n".join([TALE_V1_COMMAND, TALE_START, speech]))
+    assert not started_only["pass"] and started_only["missing_patterns"] == [gen.PERFORM_DONE]
+    stopped = TALE_END.replace("(done)", "(stopped)")
+    assert not _verdict("n412_skazka_multivoice", "\n".join([TALE_START, speech, stopped]))["pass"]
+    poem = TALE_START.replace("kind=tale", "kind=poem")
+    assert not _verdict("n412_skazka_multivoice", "\n".join([poem, speech, TALE_END]))["pass"]
+
+
+def test_step_waiting_for_a_performance_cannot_be_retried():
+    """R4 структурой: шаг с паттерном старта выступления и ``retry`` генератор не соберёт -- повтор = второе."""
+    with pytest.raises(ValueError, match="retry"):
+        gen.step("nX_tale", "Робот, расскажи сказку.", patterns=[gen.perform_started("tale"), gen.PERFORM_DONE],
+                 retry=1)
+    assert gen.step("nX_tale", "Робот, расскажи сказку.", patterns=[gen.perform_started("tale")])["patterns"]
+    for label, step in _steps().items():
+        if any(p.startswith(gen.PERFORM_STARTED_MARK) for p in step["patterns"]):
+            assert "retry_acceptance" not in step, label
+
+
+def test_performance_question_is_not_the_requested_speech():
+    """R22 (робот 23.10 22:53:09): «выключить и зачитать?» дал ``SpeechEvent started`` -- n804/n806/n810 краснеют."""
+    started = "🗣️ SpeechEvent started speech_id=88c39b53 agent=personality epoch=11 text_len=100"
+    asked = _tts("Сейчас играет поставь фоном ровный ритм · 125 BPM, выключить и зачитать?")
+    rap = _tts("Йо, енотик по ночам паяет провода, бит качает, и ему не беда.")
+    for label in ("n804_long_story", "n806_long_count_again", "n810_rap_over_music"):
+        assert gen.PERFORM_ASKS_TO_REPLACE in _acc(label)["must_not_say"], label
+        assert not _verdict(label, "\n".join([asked, started, DONE]))["pass"], label
+    assert _verdict("n810_rap_over_music", "\n".join([rap, started, DONE]))["pass"]
+
+
+def test_n902_n903_silent_sound_is_judged_by_tool_result():
+    """Решение Шифу 26.10: тихий звук/анимация по просьбе -- норма; шаг судит успех тула, а не речь."""
+    steps = _steps()
+    assert steps["n902_sound_doorbell"]["silent_ok"] is True and steps["n903_sound_siren_anim"]["silent_ok"] is True
+    sound = "✅ Инструмент play_sound выполнен успешно"
+    anim = "✅ Инструмент play_animation выполнен успешно"
+    assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
+    assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, DONE]))["pass"]
+    assert _verdict("n903_sound_siren_anim", "\n".join([sound, anim, _tts("Виу-виу!"), DONE]))["pass"]
+    assert not _verdict("n903_sound_siren_anim", "\n".join([sound, DONE]))["pass"], "мигалку просили тоже"
+
+
+def test_n904_n905_emotion_shown_by_face_or_animation():
+    """v2 показывает эмоцию лицом команды (#4041); тул play_animation не обязателен, но и не запрещён."""
+    assert _verdict("n904_anim_sad", "\n".join([_face("sad"), DONE]))["pass"]
+    anim = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'sad', 'duration': 4}"
+    assert _verdict("n904_anim_sad", "\n".join([anim, DONE]))["pass"]
+    assert not _verdict("n904_anim_sad", "\n".join([_face("happy"), DONE]))["pass"], "грусть, а не радость"
+    assert not _verdict("n904_anim_sad", DONE)["pass"]
+    assert _verdict("n905_anim_victory", "\n".join([_face("victory"), DONE]))["pass"]
+    assert _verdict("n905_anim_victory", "\n".join([_face("happy"), DONE]))["pass"]
+    assert _steps()["n904_anim_sad"]["silent_ok"] is True
+    for label in ("n904_anim_sad", "n905_anim_victory"):
+        assert "play_animation" not in _acc(label).get("expected_tool_calls", []), label
+
+
+def test_music_must_start_steps_forbid_the_timeout_phrase():
+    """#3971 R22 / n809: «Музыка пока не заиграла.», а трек стартовал через 1,4 с -- ложь; n605 не ужесточён."""
+    steps = _steps()
+    assert MUSIC_MUST_START_LABELS <= set(steps)
+    for label in MUSIC_MUST_START_LABELS:
+        assert gen.MUSIC_NOT_STARTED in _acc(label)["must_not_say"], label
+    assert gen.MUSIC_NOT_STARTED not in (_acc("n605_dj_set_plan").get("must_not_say") or []), "#4006 ещё не влит"
+    ok = "\n".join(["✅ Инструмент request_music выполнен успешно", "🎵 [music v2] started track_id=req1:01:A", DONE])
+    assert _verdict("n809_music_bed", ok)["pass"]
+    lie = "\n".join([_tts("Музыка пока не заиграла."), "✅ Инструмент request_music выполнен успешно",
+                     "🎵 [music v2] started track_id=req1:01:A", DONE])
+    assert not _verdict("n809_music_bed", lie)["pass"]
+
+
+def test_music_stop_on_empty_deck_is_not_a_result():
+    """n812 23.10: ``stop track_id=None`` + ``was_playing=False`` давал PASS -- теперь красный; нужен трек на деке."""
+    idle = "\n".join(["✅ Инструмент stop_music выполнен успешно",
+                      "🎵 [music v2] stop track_id=None reason=user_stop",
+                      "[mcp_server]: [stop_music] [stop_music] was_playing=False", DONE])
+    real = "\n".join(["✅ Инструмент stop_music выполнен успешно",
+                      "🎵 [music v2] stop track_id=req95964:01:A:f7de93b5 reason=user_stop",
+                      "[mcp_server]: [stop_music] [stop_music] was_playing=True", DONE])
+    for label in ("n312_stop_music", "n511_stop_music", "n709_stop_generated", "n712_stop_all", "n812_stop_music"):
+        assert not _verdict(label, idle)["pass"], label
+        assert _verdict(label, real)["pass"], label
+    no_flag = real.replace("was_playing=True", "was_playing=False")
+    assert not _verdict("n812_stop_music", no_flag)["pass"]
+
+
+def test_n811_stops_speech_and_keeps_music():
+    """#4035: «хватит читать, а музыку оставь» -- Tier-1 stop_speech; деку не трогать."""
+    cancel = "🗣️ SpeechEvent cancelled speech_id=88c39b53 agent=personality epoch=11 text_len=100 reason=stopped"
+    tier1 = "🧭 [turn-v2] tier1 kind=stop_speech args={'keep_music': True} turn=ab12"
+    assert _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1]))["pass"]
+    stop_all = tier1.replace("stop_speech", "stop_all")
+    assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, stop_all]))["pass"]
+    killed = "🎵 [music v2] stop track_id=req1:01:A reason=user_stop"
+    assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, killed]))["pass"]
+    outro = "📥 Запрос выполнения: stop_music с параметрами {'boundary': 'bar'}"
+    assert not _verdict("n811_stop_speech_keep_music", "\n".join([cancel, tier1, outro]))["pass"]
+
+
+@pytest.mark.parametrize("label,ok,bad", [
+    ("n409_speed_down", [_param("minimax_speed", "0.8")], [_param("minimax_speed", "1.2"),
+                                                           "✅ Инструмент set_speed выполнен успешно"]),
+    ("n410_speed_up", [_param("minimax_speed", "1.2"), _param("yandex_speed", "2")],
+     [_param("minimax_speed", "1"), _param("minimax_speed", "0.6"), "✅ Инструмент set_speed выполнен успешно"]),
+    ("n411_pitch_bass", [_param("pitch_shift", "0.8")], [_param("pitch_shift", "1.2"),
+                                                         "✅ Инструмент set_pitch выполнен успешно"]),
+])
+def test_prosody_steps_judge_the_effect_not_the_call(label, ok, bad):
+    """#4039: тул меняет ось активного провайдера, нода пишет «<ось> изменён: <значение>» -- это и есть результат."""
+    for line in ok:
+        assert _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
+    for line in bad:
+        assert not _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
+
+
+def test_n411b_reset_accepts_value_or_already_normal_only():
+    """«Говори нормально»: оси снова 1 либо тул прочитал, что они уже на норме (не каскад от n410/n411)."""
+    reset = "\n".join([_param("minimax_speed", "1"), _param("pitch_shift", "1"), DONE])
+    assert _verdict("n411b_prosody_normal", reset)["pass"]
+    already = "\n".join(["[mcp_server]: [set_speed] Speed [minimax, minimax_speed]: Скорость уже нормальная",
+                         "[mcp_server]: [set_pitch] Pitch [minimax, pitch_shift]: Голос уже нормальный", DONE])
+    assert _verdict("n411b_prosody_normal", already)["pass"]
+    half = "\n".join([_param("minimax_speed", "1"), _param("pitch_shift", "1.2"), DONE])
+    assert not _verdict("n411b_prosody_normal", half)["pass"], "тон не вернули"
+    assert not _verdict("n411b_prosody_normal", "\n".join([_param("minimax_speed", "1.2"), DONE]))["pass"]
+    labels = [s["label"] for a in gen.ACTS if a["n"] == 4 for s in a["steps"]]
+    assert labels.index("n411_pitch_bass") < labels.index("n411b_prosody_normal") < labels.index(
+        "n412_skazka_multivoice")
+
+
+def test_vacuum_patterns_replaced_by_results():
+    """R6: «Speaker|identify candidates|speaker_id» и «provider=<любой>» совпадали с каждым ходом."""
+    for label in ("n202a_sasha_warmup", "n202b_sasha_warmup_hum", "n202c_sasha_warmup_guess"):
+        assert _verdict(label, "\n".join([_speaker("Саша", 0.914), DONE]))["pass"], label
+        assert not _verdict(label, "\n".join([_speaker("Саша", 0.73), DONE]))["pass"], label
+        assert not _verdict(label, "\n".join([_speaker("Борис", 0.91), DONE]))["pass"], label
+        assert not _verdict(label, "👤 Speaker: unknown (311 ms)\n" + DONE)["pass"], label
+    for label in ("n205a_boris_warmup", "n205b_boris_warmup_spartak", "n205c_boris_warmup_tease"):
+        assert _verdict(label, "\n".join([_speaker("Борис", 0.88), DONE]))["pass"], label
+        assert not _verdict(label, "\n".join([_speaker("Саша", 0.88), DONE]))["pass"], label
+    saved = "\n".join([_speaker("Саша", 0.93), "✅ Инструмент memory_save выполнен успешно", DONE])
+    assert not _verdict("n202a_sasha_warmup", saved)["pass"], "незапрошенный memory_save из бэклога"
+    synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=%s"
+    honest = "\n".join([_tts("Сейчас я на MiniMax, голос male-qn-qingse."), synth % "minimax", DONE])
+    assert _verdict("n402_current_voice", honest)["pass"]
+    assert not _verdict("n402_current_voice", "\n".join([_tts("Голосом Антона."), synth % "minimax", DONE]))["pass"]
+    assert _verdict("n404_speak_after_set", "\n".join([synth % "yandex", DONE]))["pass"]
+    assert not _verdict("n404_speak_after_set", "\n".join([synth % "minimax", DONE]))["pass"], "голос не сменён"
+
+
+def test_n1002_and_n1007_judge_honesty_not_narrow_words():
+    """R20: честное «не назвались/неопознанные» -- зелёное; утечка -- по фразам ОКНА, а не по фактам памяти."""
+    for said in ("Нет, они не назвались.", "Они так и остались неопознанными.", "Без имён, я их не узнал."):
+        assert _verdict("n1002_unknown_still_unknown", "\n".join([_tts(said), DONE]))["pass"], said
+    from_memory = _tts("Историю я не держу. Помню из памяти: ты Саша, а Борис болеет за Спартак, был енот.")
+    assert _verdict("n1007_no_leak", "\n".join([from_memory, DONE]))["pass"], "факты долгой памяти -- не утечка"
+    leak = _tts("Ты спрашивал про тех двоих, что ворчали на фоне.")
+    assert not _verdict("n1007_no_leak", "\n".join([leak, DONE]))["pass"]
+    assert not _acc("n1007_no_leak")["must_not_call"], "подстрока по всему логу ловила факты памяти"
+
+
+def test_kie_quota_rule_marks_song_steps_and_n710_targets_this_runs_song():
+    """R21: при балансе KIE 0 песни прогона нет -- n706-n710 помечены SKIP KIE_QUOTA, delete не «последний трек»."""
+    import re
+
+    steps = _steps()
+    for label in ("n706_gen_save_for_boris", "n707_gen_track_info", "n708_gen_play", "n709_stop_generated",
+                  "n710_gen_delete"):
+        assert steps[label]["_skip_when"] == {"reason": "KIE_QUOTA", "log": gen.KIE_QUOTA_LOG}, label
+    for label in ("n701_silence_check", "n702_generate_raccoon", "n711_renardo_not_broken"):
+        assert "_skip_when" not in steps[label], label
+    zero = "[mcp_server]: 🎼 [cover] баланс KIE: 0.0"
+    assert re.search(gen.KIE_QUOTA_LOG, zero) and re.search(gen.KIE_QUOTA_LOG, "🎼 [cover] баланс KIE: 0")
+    for funded in ("🎼 [cover] баланс KIE: 1712", "🎼 [cover] баланс KIE: 0.5", "🎼 [cover] баланс KIE: неизвестен"):
+        assert not re.search(gen.KIE_QUOTA_LOG, funded), funded
+    n710 = steps["n710_gen_delete"]
+    assert "енот" in n710["text"] and "последний" not in n710["text"]
+    delete = "📥 Запрос выполнения: music_library с параметрами {'action': 'delete', 'track_id': 'a1b2'}"
+    assert _verdict("n710_gen_delete", "\n".join([delete, "✅ Инструмент music_library выполнен успешно", DONE]))["pass"]
+    search_only = "📥 Запрос выполнения: music_library с параметрами {'action': 'search', 'query': 'енот'}"
+    searched = "\n".join([search_only, "✅ Инструмент music_library выполнен успешно", DONE])
+    assert not _verdict("n710_gen_delete", searched)["pass"]
+
+
+def _src(rel: str) -> str:
+    return (REPO_ROOT / rel).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("rel,fragment", [
+    ("src/rob_box_dialog/rob_box_dialog/turn.py",
+     "выступление {'правка' if cmd.edit_pending else 'старт'} kind={cmd.perform.kind}"),
+    ("src/rob_box_dialog/rob_box_dialog/turn.py", 'f"{LOG_MARK} tier1 kind={command.kind}'),
+    ("src/rob_box_dialog/rob_box_dialog/plan/perform.py", 'LOG_MARK = "🎤 [perform]"'),
+    ("src/rob_box_dialog/rob_box_dialog/plan/perform.py", 'self.log(f"конец ({reason}) сегментов'),
+    ("src/rob_box_dialog/rob_box_dialog/plan/plan_events.py", 'f"PlanEvent {event.kind} block='),
+    ("src/rob_box_dialog/rob_box_dialog/grammar.py", 'Tier1Command("stop_speech"'),
+    ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml", 'media.timeout: &not_started ["Музыка пока не заиграла."]'),
+    ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",
+     'perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]'),
+    ("src/rob_box_voice/rob_box_voice/core/dialog_v2_ports.py",
+     'f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion}'),
+    ("src/rob_box_voice/rob_box_voice/tts_node.py", 'f"🎚️ {param.name} изменён: {getattr(self, param.name):g}"'),
+    ("src/rob_box_voice/rob_box_voice/speaker_id_node.py", "f\"👤 Speaker: '{match.name}' confidence={match.confidence:.3f} \""),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", 'f"Speed [{provider}, {axis.param}]: {result.message}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", 'f"Pitch [{provider}, {axis.param}]: {result.message}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", '"normal": _Step(0, "Нормальная скорость", "Скорость уже нормальная")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", '"normal": _Step(0, "Нормальный голос", "Голос уже нормальный")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'self.log_info(f"[stop_music] was_playing={was_playing}")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
+])
+def test_marker_sources_exist_in_robot_code(rel, fragment):
+    """Паттерны генератора собраны из f-строк кода робота: поменяли строку -- этот тест краснеет раньше марафона."""
+    assert fragment in _src(rel), rel
+
+
+def test_prosody_and_emotion_tables_match_robot_knowledge():
+    """Оси скорости/тона и сцены эмоций -- одна таблица в коде робота; генератор с ней сверяется."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "tts_prosody_for_gen", REPO_ROOT / "src/rob_box_voice/rob_box_voice/tts_prosody.py")
+    prosody = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = prosody  # dataclass с отложенными аннотациями ищет свой модуль в sys.modules
+    try:
+        spec.loader.exec_module(prosody)
+    finally:
+        sys.modules.pop(spec.name, None)
+    assert set(gen.SPEED_PARAMS) == {axis.param for axis in prosody.SPEED_AXES.values()}
+    assert gen.PITCH_PARAM == prosody.PITCH_AXIS.param
+    assert prosody.SPEED_AXES["minimax"].normal == 1.0 and prosody.PITCH_AXIS.normal == 1.0
+    knowledge = _src("src/rob_box_dialog/rob_box_dialog/knowledge.py")
+    for scene in ('"sad": "sad"', '"happy": "happy"', '"victory": "victory"'):
+        assert scene in knowledge, scene

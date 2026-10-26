@@ -3,6 +3,8 @@
   "schema_version": 1,
   "_comment": [
     "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
+    "Квота KIE (`[cover] баланс KIE: 0`): n706-n710 -- SKIP KIE_QUOTA (`_skip_when`, R21),",
+    "delete без песни этого прогона не гонять. 26.10 баланс 1712 -- правило стоит на будущее.",
     "generate_music и music_library ВНЕ GATE-1 намеренно —",
     "их отсутствие чаще всего означает недоступность внешнего API.",
     "В gate только каталожные gen_*-тулы (работают локально) и stop_music."
@@ -14,7 +16,7 @@
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }
