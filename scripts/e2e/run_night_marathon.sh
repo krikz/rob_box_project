@@ -97,7 +97,9 @@ RUN_TS="$(date -u +%Y%m%d_%H%M%S)"
 REPORT="${REPORT:-$ROOT/tests/e2e/_artifacts/night_${RUN_TS}}"
 mkdir -p "$REPORT"
 SUMMARY="$REPORT/summary.tsv"
-printf 'act\ttitle\tstability\tsteps\trun_id\tconclusion\turl\n' > "$SUMMARY"
+# #3989: recovered — шагов, прошедших после восстановления харнессом (не чистый PASS); act_recover — что харнесс
+# чинил на старте акта (утечка прошлого акта: music, silence). Оба — из строки E2E_SUMMARY лога акта.
+printf 'act\ttitle\tstability\tsteps\trun_id\tconclusion\turl\trecovered\tact_recover\n' > "$SUMMARY"
 
 log() { printf '[night %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -256,7 +258,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     # уже после того, как дайджест собран.
     if [ "$DEADLINE_EPOCH" -gt 0 ] && [ "$(date +%s)" -ge "$DEADLINE_EPOCH" ]; then
         log "⏰ дедлайн $(date -d "@$DEADLINE_EPOCH" +'%H:%M') прошёл — акт $a_n и последующие не запускаю"
-        printf '%s\t%s\t%s\t%s\t-\tskipped_deadline\t-\n' \
+        printf '%s\t%s\t%s\t%s\t-\tskipped_deadline\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
         continue
     fi
@@ -289,7 +291,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
             ${HOLD_ARGS[@]+"${HOLD_ARGS[@]}"} \
             >/dev/null 2>&1; then
         log "  ❌ dispatch не прошёл (акт $a_n) — пропускаю"
-        printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\n' \
+        printf '%s\t%s\t%s\t%s\t-\tdispatch_failed\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
         overall=1
         continue
@@ -307,7 +309,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     done
     if [ -z "$run_id" ]; then
         log "  ⚠️ run_id не определился — акт запущен, но статус не отследить"
-        printf '%s\t%s\t%s\t%s\t-\tunknown\t-\n' \
+        printf '%s\t%s\t%s\t%s\t-\tunknown\t-\t-\t-\n' \
             "$a_n" "$a_title" "$a_stab" "$a_steps" >> "$SUMMARY"
         overall=1
         continue
@@ -337,12 +339,17 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     # Акт last отработал до конца: его trap в харнессе вернул робота на боевые БД.
     [ "$a_phase" = "last" ] && [ "$status" = "completed" ] && PHASE_RELEASED=1
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" >> "$SUMMARY"
-
-    # Лог акта в отчёт — по нему потом читают, ЧТО именно упало.
+    # Лог акта в отчёт — по нему потом читают, ЧТО именно упало (и из него же — колонки recovered/act_recover).
     act_log="$REPORT/act${a_n}_${run_id}.log"
     gh run view "$run_id" --repo "$REPO_SLUG" --log > "$act_log" 2>/dev/null || true
+    recovered="$(marathon_summary_value "$act_log" recovered)"
+    act_recover="$(marathon_summary_value "$act_log" act_recover)"
+    [ "$recovered" != "-" ] && [ "$recovered" != "0" ] \
+        && log "  восстановлено харнессом шагов: $recovered (OK recovered_*, не чистый PASS)"
+    [ "$act_recover" != "-" ] && log "  на старте акта харнесс чинил утечку прошлого акта: $act_recover"
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$a_n" "$a_title" "$a_stab" "$a_steps" "$run_id" "$conclusion" "$url" "$recovered" "$act_recover" >> "$SUMMARY"
 
     [ "$conclusion" != "success" ] && overall=1
 

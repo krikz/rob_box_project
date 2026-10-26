@@ -129,9 +129,17 @@ class TestMusicPrecondition:
         assert "E2E_FATAL: перед актом не удалось проверить" in err and "secret" in err
         assert _calls(state) == []
 
-    def test_inherited_act_does_not_touch_player(self, tmp_path):
+    def test_inherited_act_stops_leaked_music_and_marks_it(self, tmp_path):
+        """#4027: наследующий акт больше не пропускает проверку -- n712 не остановил музыку, и она шла весь акт 8.
+        Играет на старте -- утечка прошлого акта: стоп и пометка E2E_RECOVER, а не тихий PASS под музыку."""
         rc, out, err, state = _run(tmp_path, snapshot=PLAYING_DJ, inherits="yes")
-        assert rc == 0 and "E2E_PRECONDITION music=skipped" in out, (out, err)
+        assert rc == 0 and "E2E_RECOVER music at_act_start" in out, (out, err)
+        assert "E2E_PRECONDITION music=skipped" not in out
+        assert [c["tool"] for c in _calls(state)] == ["dj_set", "stop_music"]
+
+    def test_inherited_act_in_silence_is_was_idle(self, tmp_path):
+        rc, out, err, state = _run(tmp_path, snapshot=IDLE, inherits="yes")
+        assert rc == 0 and "E2E_PRECONDITION music=was_idle" in out and "E2E_RECOVER" not in out, (out, err)
         assert _calls(state) == []
 
 

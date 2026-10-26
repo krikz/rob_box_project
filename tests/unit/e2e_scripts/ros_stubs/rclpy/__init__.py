@@ -7,6 +7,10 @@
 * ``mcp_calls`` -- по JSON-строке на каждый /mcp/execute (с признаком подписи);
 * стоп-тул (``stop_music`` / ``dj_set`` action=stop) переводит плеер в idle через FAKE_MUSIC_STOP_DELAY секунд;
   FAKE_MUSIC_STUCK=1 -- плеер стоп игнорирует (тул отвечает ok, а музыка играет).
+
+Сессия диалога (issue #3989): ``session_state.json`` -- последний latched-снимок /dialog/session (нет файла -- нода
+ничего не публиковала); реплика в /voice/stt/utterance пишется строкой в ``utterances``, «говори» снимает кадры
+``Silence`` (как Tier-1 unsilence у dialog_node); FAKE_UNSILENCE_STUCK=1 -- тишина не снимается.
 """
 
 import json
@@ -16,18 +20,34 @@ import time
 _STATE = os.environ.get("FAKE_ROBOT_STATE", "")
 _STATE_FILE = os.path.join(_STATE, "music_state.json")
 _CALLS_FILE = os.path.join(_STATE, "mcp_calls")
+_SESSION_FILE = os.path.join(_STATE, "session_state.json")
+_UTTERANCES_FILE = os.path.join(_STATE, "utterances")
 
 _pending_stops = []  # (due, tool)
 _queued_results = []  # (due, json_text)
 _nodes = []
 
 
-def _read_state():
+def _read_state(path=_STATE_FILE):
     try:
-        with open(_STATE_FILE, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read()
     except OSError:
         return None
+
+
+def _on_utterance(msg):
+    """/voice/stt/utterance: журнал реплик; «говори» снимает тишину (сцены Silence) в снимке сессии."""
+    with open(_UTTERANCES_FILE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"text": msg.text, "source": msg.source, "provider": msg.provider},
+                            ensure_ascii=False) + "\n")
+    session = _read_state(_SESSION_FILE)
+    if session is None or "говори" not in msg.text.lower() or os.environ.get("FAKE_UNSILENCE_STUCK") == "1":
+        return
+    data = json.loads(session)
+    data["scenes"] = [s for s in data.get("scenes", []) if s.get("kind") != "Silence"]
+    with open(_SESSION_FILE, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
 
 
 def _write_idle():
@@ -44,6 +64,9 @@ class _Publisher:
         return 1
 
     def publish(self, msg):
+        if self.topic == "/voice/stt/utterance":
+            _on_utterance(msg)
+            return
         request = json.loads(msg.data)
         signed = bool(request.get("signature")) and request.get("sender") == "harness"
         with open(_CALLS_FILE, "a", encoding="utf-8") as fh:
@@ -67,6 +90,7 @@ class _Node:
         self.name = name
         self.subs = []
         self._last_state = None
+        self._last_session = None
 
     def create_subscription(self, msg_type, topic, callback, qos):
         self.subs.append((topic, callback))
@@ -113,3 +137,16 @@ def spin_once(node, timeout_sec=0.0):
         for topic, callback in node.subs:
             if topic == "/voice/music/state":
                 callback(String(state))
+    _deliver_session(node)
+
+
+def _deliver_session(node):
+    session = _read_state(_SESSION_FILE)
+    if session is None or session == node._last_session:
+        return
+    node._last_session = session
+    for topic, callback in node.subs:
+        if topic == "/dialog/session":
+            from rob_box_dialog_msgs.msg import SessionState
+
+            callback(SessionState.from_dict(json.loads(session)))

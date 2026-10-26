@@ -144,6 +144,8 @@ class TestStepTally:
             "ok": 2,
             "fail": 1,
             "skip": 1,
+            "recovered": 0,  # #3989: OK recovered_<вид> -- отдельный счёт, тут таких нет
+            "recovered_labels": [],
             "failed_labels": ["s2"],
         }
 
