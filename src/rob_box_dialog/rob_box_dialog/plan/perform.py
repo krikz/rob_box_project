@@ -317,6 +317,11 @@ class MusicSide:
             return self.answer(False, now)
         return [MusicStop("now", "backing_timeout"), *self.failed("timeout", now)]
 
+    def keep(self) -> None:
+        """«А музыку оставь» (#3994): играющий бит доигрывает сам — снимать его концом выступления не будем."""
+        if self.track.kept():
+            self._block.log(f"бит {self.track.track_id} оставлен играть (музыку оставили)")
+
     def release(self, now: float, boundary: str, reason: str, states: Tuple[str, ...]) -> List[Effect]:
         """Выступление кончилось или снято: подложку в состояниях ``states`` снять на ``boundary``."""
         if self.track.state not in states:
@@ -488,22 +493,28 @@ class PerformBlock:
         rejected: List[Effect] = [self._event("rejected", perf.from_segment, reason=reason)]
         return rejected + ([self.speech.phrase("perform.edit_rejected")] if reason != "not_running" else [])
 
-    def stop(self, now: float) -> List[Effect]:
-        """Tier-1 «хватит» (X5): звучащий сегмент — до конца предложения, остальное снимается, затем outro."""
+    def stop(self, now: float, keep_backing: bool = False) -> List[Effect]:
+        """Tier-1 «хватит» (X5): звучащий сегмент — до конца предложения, остальное снимается, затем outro.
+        ``keep_backing`` («хватит читать, а музыку оставь», #3994) — играющий бит без outro доигрывает сам; ещё не
+        вставший бит снимается, как и без оговорки (оставлять нечего)."""
         if self.ended:
             return []
         self.phase = "stopping"
         out: List[Effect] = list(withdraw(self.lines, "sentence"))
         out += self.music.release(now, "now", "perform_stop", ("requested",))
+        if keep_backing:
+            self.music.keep()
         return out + self._maybe_end(now)
 
-    def halt(self, now: float, reason: str = "halt") -> List[Effect]:
-        """«Стой» (Tier-1): речь и подложка — сразу."""
+    def halt(self, now: float, reason: str = "halt", keep_backing: bool = False) -> List[Effect]:
+        """«Стой» (Tier-1): речь и подложка — сразу; ``keep_backing`` — играющий бит остаётся (как у :meth:`stop`)."""
         if self.ended:
             return []
         out: List[Effect] = list(withdraw(self.lines, "none"))
         for line in self.lines.lines:
             line.state = "cancelled" if line.state == "active" else line.state
+        if keep_backing:
+            self.music.keep()
         out += self.music.release(now, "now", reason, _SOUNDING)
         return out + self._end(reason)
 

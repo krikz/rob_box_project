@@ -19,7 +19,7 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, has_word, stop_command, strip_wake_word
+from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, has_form, has_word, stop_command, strip_wake_word
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name)`` голосов активного провайдера (реестр ``tts_voice_registry`` — у вызывающего).
@@ -74,13 +74,26 @@ def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tie
     """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи») или ``stop_all``
     (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10, #3700); после
     стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
-    ``disputed``."""
+    ``disputed``.
+
+    Охват (#3994, ``words.stop_scope``): названа речь («хватит читать/говорить/петь», «…а музыку оставь») —
+    ``stop_speech`` (``args.keep_music``): речь и выступление гаснут, плеер музыки и движение — нет. Названа музыка
+    («хватит музыки») или ничего («хватит», «стоп») — ``stop_all``, как было (В20). Во фразе есть «стой» (политика
+    ``halt`` — стоп и движения) — тоже ``stop_all``, даже при названной речи. Оговорка «музыку оставь» без названной
+    речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``args.keep_music``: гаснет всё,
+    кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает."""
     call = stop_command(text)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
         return None
-    silence = not call.rest and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
-    kind = "silence" if silence else "stop_all"
-    return Tier1Command(kind, disputed=call.verdict == STOP_DISPUTED, rest=call.rest)
+    scope = call.scope
+    silence = not call.rest and not scope.music and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
+    disputed = call.verdict == STOP_DISPUTED
+    halt = has_form(text, kn.TIER1_POLICY["halt"].words)
+    if not silence and scope.speech and not scope.music and not halt:
+        args = MappingProxyType({"keep_music": scope.keep_music})
+        return Tier1Command("stop_speech", args, disputed=disputed, rest=call.rest)
+    keep = MappingProxyType({"keep_music": True} if scope.keep_music else {})
+    return Tier1Command("silence" if silence else "stop_all", keep, disputed=disputed, rest=call.rest)
 
 
 def _new_session(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:

@@ -47,7 +47,8 @@ def grid_of(fields: Mapping[str, Any]) -> Optional[BeatGrid]:
 class BackingTrack:
     """Подложка одного выступления. Состояния: ``none`` (не просили) → [``asking`` — играет чужая музыка, спросили
     человека] → ``requested`` → ``playing`` | ``failed``; ``playing`` → ``ended`` (кончилась или сняли снаружи) |
-    ``stopped`` (сняли мы)."""
+    ``stopped`` (сняли мы) | ``kept`` (выступление сняли, а бит человек оставил — «а музыку оставь», #3994: дальше он
+    просто играющая музыка, выступление его не снимает и не продлевает)."""
 
     def __init__(self, kind: str) -> None:
         self.moods: Tuple[str, ...] = tuple(kn.PERFORM_BACKING_MOODS.get(kind, ()))
@@ -104,6 +105,13 @@ class BackingTrack:
 
     def stopped(self, now: float) -> None:
         self._give_up("stopped", now)
+
+    def kept(self) -> bool:
+        """«А музыку оставь»: играющий бит больше не наш (``True``); не играл — оставлять нечего (``False``)."""
+        if self.state != "playing":
+            return False
+        self.state, self.deadline = "kept", None
+        return True
 
     def fail(self, reason: str, now: float) -> str:
         """Отказ без новой попытки: причина фразы (``quota``/``network``/``timeout`` или ``error``)."""

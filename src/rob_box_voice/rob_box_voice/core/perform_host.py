@@ -194,13 +194,14 @@ class PerformHost:
         with self._lock:
             return self._edit_locked(perf)
 
-    def stop(self) -> bool:
-        """«Хватит»: дочитать предложение, outro бита. Выступления нет — ``False`` (стоп решает общий путь)."""
-        return self._command(lambda block, now: block.stop(now))
+    def stop(self, keep_backing: bool = False) -> bool:
+        """«Хватит»: дочитать предложение, outro бита. Выступления нет — ``False`` (стоп решает общий путь).
+        ``keep_backing`` («хватит читать, а музыку оставь», #3994) — играющий бит доигрывает без outro."""
+        return self._command(lambda block, now: block.stop(now, keep_backing=keep_backing))
 
-    def halt(self) -> bool:
-        """«Стой»: речь и бит — сразу."""
-        return self._command(lambda block, now: block.halt(now))
+    def halt(self, keep_backing: bool = False) -> bool:
+        """«Стой»: речь и бит — сразу; ``keep_backing`` — играющий бит остаётся."""
+        return self._command(lambda block, now: block.halt(now, keep_backing=keep_backing))
 
     def add_backing(self, backing: str = "beat") -> bool:
         """«Добавь бит» во время чтения (#993): ``True`` — бит заказан выступлению (его ещё не было)."""

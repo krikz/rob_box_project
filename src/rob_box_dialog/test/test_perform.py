@@ -324,6 +324,47 @@ def test_halt_cuts_speech_and_music_now():
     assert len(sim.segments_heard()) == 2 and sim.segments_heard()[1].outcome == "cancelled"
 
 
+def test_3994_stop_keeping_backing_finishes_the_sentence_and_leaves_the_beat_playing():
+    """n811: «хватит читать, а музыку оставь» во время рэпа под его бит — предложение дочитано, остальное снято, бит
+    без outro доигрывает; дальше он просто музыка: блок его не продлевает и не снимает."""
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    sim.run(1.0)
+    seg2 = sim.block.lines.first("active")
+    effects = sim.block.stop(sim.t, keep_backing=True)
+    assert Cancel(seg2.speech_id, "sentence") in effects
+    assert not [e for e in effects if isinstance(e, MusicStop)]
+    sim.apply(effects)
+    sim.run(60)
+    assert [h.text for h in sim.segments_heard()] == list(SEGS[:2]) and sim.segments_heard()[1].outcome == "cancelled"
+    assert sim.block.ended and sim.block.end_reason == "stopped"
+    assert sim.music_stops() == [] and sim.block.backing.state == "kept"
+    backings = len(sim.backings())
+    sim.music_event("nearly_finished", "trk1", {"form_end_beat": 64})
+    sim.music_event("finished", "trk1")
+    assert len(sim.backings()) == backings and sim.music_stops() == []
+
+
+def test_3994_halt_keeping_backing_cuts_speech_now_and_leaves_the_beat():
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    effects = sim.block.halt(sim.t, keep_backing=True)
+    assert not [e for e in effects if isinstance(e, MusicStop)]
+    assert [e.reason for e in effects if getattr(e, "kind", "") == "block_end"] == ["halt"]
+    assert sim.block.backing.state == "kept"
+
+
+def test_3994_keep_backing_before_the_beat_started_still_cancels_the_request():
+    """Бит ещё не встал — оставлять нечего: заказ снимается, как у простого «хватит»."""
+    sim = Sim(rap(), music_delay_s=3.0)
+    sim.start()
+    sim.run(0.5)
+    sim.apply(sim.block.stop(sim.t, keep_backing=True))
+    assert sim.block.ended and sim.music_stops() == [MusicStop("now", "perform_stop")]
+
+
 def test_someone_elses_cancel_stops_the_performance_with_outro():
     """Реплику выступления отменил не этот модуль (перебивание v1): дальше не читаем, подложке outro."""
     sim = Sim(rap())

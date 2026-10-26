@@ -88,6 +88,94 @@ def test_clear_stop_with_new_command_keeps_the_rest(text, rest):
     assert command.rest == rest
 
 
+# --- #3994: охват стопа — «хватит читать» гасит речь, плеер музыки остаётся --------------------------------------
+
+STOP_SPEECH = [  # (фраза, keep_music)
+    ("Робот, хватит читать, а музыку оставь", True),  # n811, акт 8
+    ("робот хватит читать а музыку оставь", True),  # то же из STT, без запятых
+    ("Робот, хватит читать рэп, а музыку оставь", True),  # «рэп» — объект речи при глаголе «читать»
+    ("Робот, хватит читать стих, а музыку оставь", True),
+    ("Робот, хватит тебе читать, а музыку оставь", True),
+    ("Робот, хватит читать, музыку не останавливай", True),
+    ("Робот, хватит читать", False),
+    ("робот хватит говорить", False),
+    ("Робот, хватит рассказывать", False),
+    ("Робот, хватит сказки рассказывать", False),
+    ("Робот, хватит петь", False),
+    ("робот ну хватит уже болтать", False),
+]
+
+
+@pytest.mark.parametrize("text, keep", STOP_SPEECH)
+@pytest.mark.parametrize("snap", [IDLE, MUSIC, MUSIC_AND_SPEECH, SILENCED])
+def test_3994_stop_speech_names_speech_and_leaves_no_rest(text, keep, snap):
+    """Речь (и «музыку оставь») покрыта целиком: вид ``stop_speech``, остатка для LLM нет; в тишине тоже работает."""
+    assert match(text, snap) == Tier1Command("stop_speech", {"keep_music": keep}), text
+
+
+@pytest.mark.parametrize("text, rest", [
+    ("Робот, хватит, спой другую", "спой другую"),  # решение по умолчанию (Шифу 26.10): стоп всего + остаток
+    ("Робот, хватит, сыграй другую", "сыграй другую"),
+    ("Робот, хватит музыки", ""),
+    ("Робот, стоп музыка", ""),
+    ("Робот, хватит играть", ""),
+    ("Робот, хватит читать и играть", ""),
+    ("Робот, останови", ""),  # #4020 n709
+    ("Робот, остановись", ""),
+    ("робот остановите", ""),
+    ("Робот, останови, Борис уже уснул под неё", "Борис уже уснул под неё"),
+])
+def test_3994_music_named_nothing_named_or_new_request_stays_stop_all(text, rest):
+    command = match(text, MUSIC)
+    assert command is not None and (command.kind, command.rest, command.disputed) == ("stop_all", rest, False), text
+
+
+def test_3994_stop_speech_with_a_new_request_keeps_only_the_uncovered_rest():
+    command = match("Робот, хватит читать, а музыку сделай потише", MUSIC)
+    assert command == Tier1Command("stop_speech", {"keep_music": False}, rest="музыку сделай потише")
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, стой, а музыку оставь",  # «стой» — стоп и движения: оговорка его не отменяет (ревью PR #4035)
+    "Робот, стой, музыку не выключай",
+    "Робот, стоп, а бит не трогай",
+    "Робот, хватит, музыку оставь",  # речь не названа — стоп всего (решение по умолчанию), кроме музыки
+    "Робот, стой, хватит читать, а музыку оставь",  # речь названа, но есть «стой»
+])
+@pytest.mark.parametrize("snap", [IDLE, MUSIC, SILENCED])
+def test_3994_keep_music_without_named_speech_or_with_halt_is_stop_all_keeping_music(text, snap):
+    """Оговорка «музыку оставь» не делает «стой»/«стоп» стопом одной речи: вид ``stop_all`` (движение тоже гаснет),
+    музыку оставляет ``args.keep_music``."""
+    assert match(text, snap) == Tier1Command("stop_all", {"keep_music": True}), text
+
+
+def test_3994_halt_with_named_speech_is_stop_all():
+    """«Стой, хватит читать» — «стой» стопит всё (и движение), даже когда названа речь."""
+    assert match("Робот, стой, хватит читать", MUSIC) == Tier1Command("stop_all")
+
+
+def test_3994_keep_after_a_new_request_still_keeps_music():
+    """Оговорка после новой просьбы не теряется: стоп всего без музыки, просьба целиком — LLM."""
+    command = match("Робот, хватит, спой другую, а музыку оставь", MUSIC)
+    assert command == Tier1Command("stop_all", {"keep_music": True}, rest="спой другую, а музыку оставь")
+
+
+def test_3994_bare_rap_is_not_speech_scope():
+    """«Хватит рэпа» без глагола речи — может быть трек плеера: стоп всего и остаток, как было."""
+    assert match("Робот, хватит рэпа", MUSIC) == Tier1Command("stop_all", rest="рэпа")
+
+
+def test_3994_shut_up_keeping_music_is_silence_keeping_music():
+    """«Замолчи, а музыку оставь» — тишина (плеер она и так не трогает) с ``keep_music``: бит выступления доигрывает."""
+    assert match("Робот, замолчи, а музыку оставь", MUSIC) == Tier1Command("silence", {"keep_music": True})
+
+
+@pytest.mark.parametrize("text", ["Робот, где остановка автобуса", "робот останова двигателя"])
+def test_4020_stop_lookalikes_are_not_tier1_stops(text):
+    command = match(text, MUSIC)
+    assert command is None or command.kind not in ("stop_all", "stop_speech", "silence"), text
+
+
 # --------------------------------------------------------------------------------------------------------------
 # В19: корпус пар «срабатывает / не срабатывает» (требование Шифу 20.10; те же фразы — scripts/dialog/reference_set.yaml r65–r83)
 # --------------------------------------------------------------------------------------------------------------
@@ -368,7 +456,7 @@ def test_voice_change_is_not_tier1_when_silenced(text):
 
 def test_silenced_kinds_are_the_quiet_ones():
     assert {kind for kind, sounds in kn.TIER1_KINDS.items() if not sounds} == {
-        "stop_all", "silence", "unsilence", "volume", "new_session", "answer"}
+        "stop_all", "stop_speech", "silence", "unsilence", "volume", "new_session", "answer"}
 
 
 ORDINARY = [

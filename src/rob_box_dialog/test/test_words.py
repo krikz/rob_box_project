@@ -8,8 +8,8 @@ from rob_box_dialog.knowledge import (
     WAKE_SLIP_PLURAL, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
-    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_form, has_wake_word, has_word, introduces_self, slipped_wake_rest,
-    stop_verdict, strip_wake_word,
+    NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, has_form, has_wake_word, has_word, introduces_self,
+    slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
 )
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
@@ -133,6 +133,9 @@ STOP_PAIRS = [
     ("РОББОКС СТОП", "робот работает"),
     # живой лог 21.10: хвост речи робота («…у корней старой сосны») склеился с фразой человека
     ("старой робот хватит", "спой песню про стоп робот"),
+    # #4020 n709: «останови» — стоп; «остановка» в обычной речи — нет
+    ("Робот, останови, Борис уже уснул под неё", "Робот, где остановка автобуса"),
+    ("робот остановись", "робот на остановке холодно"),
 ]
 
 
@@ -263,3 +266,80 @@ def test_slip_tables_do_not_contradict_each_other():
     assert not gated & set(WAKE_SLIP_NEVER), "слово либо за воротами, либо не будит никогда"
     assert not gated & set(WAKE_SLIP_VARIANTS), "слово либо за воротами, либо будит без условий"
     assert not set(WAKE_SLIP_AMBIGUOUS) & set(WAKE_SLIP_PLURAL)
+
+
+# --- #3994: охват ясного стопа (STOP_SCOPE, words.stop_scope) ------------------------------------------------------
+
+@pytest.mark.parametrize("tail, scope, rest", [
+    # n811 (акт 8, 23.10): «Робот, хватит читать, а музыку оставь» — со знаками и без (STT запятых не ставит)
+    ("читать, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать", StopScope(speech=True), ""),
+    ("говорить", StopScope(speech=True), ""),
+    ("рассказывать, пожалуйста", StopScope(speech=True), ""),
+    ("петь", StopScope(speech=True), ""),
+    ("зачитывать", StopScope(speech=True), ""),
+    ("болтать и петь", StopScope(speech=True), ""),
+    ("музыку оставь", StopScope(keep_music=True), ""),
+    ("оставь музыку", StopScope(keep_music=True), ""),
+    ("а музыка пусть играет", StopScope(keep_music=True), ""),
+    ("читать, музыку не выключай", StopScope(speech=True, keep_music=True), ""),
+    ("читать и бит не трогай", StopScope(speech=True, keep_music=True), ""),
+    ("читать, а музыку не глуши", StopScope(speech=True, keep_music=True), ""),
+    ("музыки", StopScope(music=True), ""),
+    ("играть", StopScope(music=True), ""),
+    ("читать и играть", StopScope(speech=True, music=True), ""),
+    # перефразы n811 (ревью PR #4035): объект речи, «тебе», «не останавливай/не отключай»
+    ("читать рэп, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("рэп читать", StopScope(speech=True), ""),
+    ("читать стих, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать вслух", StopScope(speech=True), ""),
+    ("сказки рассказывать", StopScope(speech=True), ""),
+    ("тебе читать, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать, музыку не останавливай", StopScope(speech=True, keep_music=True), ""),
+    ("читать, музыку не отключай", StopScope(speech=True, keep_music=True), ""),
+    # «рэп» без глагола речи — не охват («хватит рэпа» — может быть трек плеера)
+    ("рэпа", NO_SCOPE, "рэпа"),
+    # оговорка после новой просьбы не теряется; остаток — просьба целиком
+    ("спой другую, а музыку оставь", StopScope(keep_music=True), "спой другую, а музыку оставь"),
+    ("спой другую, и не трогай кота", NO_SCOPE, "спой другую, и не трогай кота"),
+    # не покрыто — остаток (новая просьба), как было
+    ("спой другую", NO_SCOPE, "спой другую"),
+    ("сыграй другую", NO_SCOPE, "сыграй другую"),  # повелительное «сыграй» — заказ, не объект стопа
+    ("играй дальше", NO_SCOPE, "играй дальше"),
+    ("говори про котов", NO_SCOPE, "говори про котов"),
+    ("читай другое", NO_SCOPE, "читай другое"),
+    ("и включи свет", NO_SCOPE, "и включи свет"),
+    ("Борис уже уснул под неё", NO_SCOPE, "Борис уже уснул под неё"),
+    # покрытая часть съедается, остаток начинается с первой непокрытой части (союз перед ней отброшен)
+    ("читать, а музыку сделай потише", StopScope(speech=True), "музыку сделай потише"),
+    ("рассказывать и спой песню", StopScope(speech=True), "спой песню"),
+    ("читать а музыку оставь и расскажи анекдот", StopScope(speech=True, keep_music=True), "расскажи анекдот"),
+    ("", NO_SCOPE, ""),
+])
+def test_stop_scope_closed_grammar(tail, scope, rest):
+    assert stop_scope(tail) == (scope, rest)
+
+
+def test_stop_command_n811_scope_and_no_rest_for_the_llm():
+    """n811: ясный стоп, охват — речь и «музыку оставь», остатка нет — новой просьбы в LLM нет."""
+    call = stop_command("робот хватит читать а музыку оставь")
+    assert call.verdict == STOP_CLEAR and call.word == "хватит"
+    assert call.scope == StopScope(speech=True, keep_music=True) and call.rest == ""
+
+
+def test_stop_command_keeps_the_rest_of_a_new_request():
+    call = stop_command("Робот, хватит, спой другую")
+    assert (call.verdict, call.scope, call.rest) == (STOP_CLEAR, NO_SCOPE, "спой другую")
+
+
+@pytest.mark.parametrize("text", ["Робот, останови", "робот остановись", "Робот, остановите", "робот остановить",
+                                  "Робот, останови, Борис уже уснул под неё"])
+def test_4020_stop_forms_are_clear_stops(text):
+    assert stop_verdict(text) == STOP_CLEAR
+
+
+@pytest.mark.parametrize("text", ["Робот, где остановка автобуса", "робот останова двигателя", "робот без остановки",
+                                  "робот остановкой больше", "остановка автобуса", "робот остановился сам"])
+def test_4020_stop_lookalikes_are_not_stops(text):
+    assert stop_verdict(text) == STOP_NONE
