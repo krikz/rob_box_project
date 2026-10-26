@@ -1,8 +1,8 @@
 # DeepSeek API (OpenAI-compatible SDK)
-openai>=2.53.0
+openai>=3.37.0
 
 # Timezone support for TimeAwarenessProvider
-pytz>=2026.3.post1
+pytz>=2026.5
 
 # UART к сенсорному хабу ESP32 (perception_bridge._open_uart): без pyserial нода
 # молча остаётся в stub-режиме (ADR-0159 §2.4). Образ запускает её и на Main Pi,
