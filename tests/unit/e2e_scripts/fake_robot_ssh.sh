@@ -44,6 +44,9 @@
 #   FAKE_MUSIC_STUCK=1       — стоп-тул отвечает ok, а музыка продолжает играть
 #   FAKE_MUSIC_STOP_DELAY=N  — секунд до idle после стоп-тула
 #   FAKE_NO_SIGN=1           — у харнесса нет секрета /mcp/execute
+# Сессия (issue #3989): $FAKE_ROBOT_STATE/session_state.json — latched /dialog/session, utterances — журнал
+# /voice/stt/utterance; FAKE_UNSILENCE_STUCK=1 — «говори» тишину не снимает. Параметры /tts_node yandex_speed,
+# minimax_speed, pitch_shift (#4027) — файлы, как у остальных параметров.
 set -u
 : "${FAKE_ROBOT_STATE:?fake_robot_ssh.sh: FAKE_ROBOT_STATE не задан}"
 mkdir -p "$FAKE_ROBOT_STATE"
@@ -104,6 +107,14 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon]
         get:e2e_release_after_s)
             echo "Double value is: $(cat "$f" 2>/dev/null || echo 0.0)"
             ;;
+        set:yandex_speed | set:minimax_speed | set:pitch_shift)
+            # #4027: скорость/тон /tts_node (Double, по умолчанию 1.0 -- tts_node.yaml)
+            echo "$value" > "$f"
+            echo "Set parameter successful"
+            ;;
+        get:yandex_speed | get:minimax_speed | get:pitch_shift)
+            echo "Double value is: $(cat "$f" 2>/dev/null || echo 1.0)"
+            ;;
         get:e2e_mode_applied)
             if [ "$(cat "$(_pfile /speaker_id_node e2e_mode)" 2>/dev/null || echo false)" = "true" ]; then
                 echo "Boolean value is: True"
@@ -142,8 +153,8 @@ docker() {
             return 0
             ;;
         exec:voice-assistant)
-            # docker exec voice-assistant bash -lc|-c <cmd>
-            [ "${3:-}" = "bash" ] || { _unsupported "docker $*"; return; }
+            # docker exec voice-assistant bash -lc|-c <cmd> | sh -c <cmd> (#3710: копия e2e-БД дикторов tar'ом)
+            case "${3:-}" in bash | sh) ;; *) _unsupported "docker $*"; return ;; esac
             local cmd="${5:-}"
             cmd="${cmd//\/proc\/1\/fd\/1/$FAKE_ROBOT_STATE/pid1_stdout}"
             # source ROS-окружения на роботе — в фейке no-op (вызывается

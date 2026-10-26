@@ -12,3 +12,13 @@ marathon_has_marker() {
     local log="$1" markers="$2"
     grep -qE "(^|[[:space:]])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z (>>> )?(${markers})([[:space:]]|\$)" "$log" 2>/dev/null
 }
+
+# marathon_summary_value <log> <key>  → значение «key=…» из последней строки-маркера E2E_SUMMARY харнесса
+# (#3989: recovered — шаги, прошедшие после восстановления; act_recover — что чинили на старте акта).
+# Нет строки или ключа — «-».
+marathon_summary_value() {
+    local log="$1" key="$2" value
+    value="$(grep -aE "(^|[[:space:]])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z (>>> )?E2E_SUMMARY.*[[:space:]]${key}=" "$log" 2>/dev/null \
+        | tail -1 | grep -oE "(^|[[:space:]])${key}=[^[:space:]]+" | tail -1 | sed -E "s/^[[:space:]]*${key}=//")"
+    printf '%s' "${value:--}"
+}
