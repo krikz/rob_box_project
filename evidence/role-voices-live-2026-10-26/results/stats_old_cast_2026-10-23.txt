@@ -1,0 +1,15 @@
+исключено чисткой ошибочных привязок (cos к своему центроиду < 0.6): [('m-en_WhisperingGirl', 'm-en_WhisperingGirl_p06', 0.499)]
+
+СВОЯ К СВОЕЙ, все пары записей одного голоса: мин / медиана (записей)
+  m-ReliableMan                0.784 / 0.888  (22)
+  m-Bad-temperedBoy+2          0.759 / 0.878  (18)
+  m-HandsomeChildhoodFriend    0.789 / 0.892  (22)
+  m-AttractiveGuy              0.768 / 0.884  (20)
+
+К ЧУЖИМ, все пары записей: макс / p95 / медиана / доля >0.72 / n пар
+  m-ReliableMan              x m-Bad-temperedBoy+2        0.706 / 0.683 / 0.633 /   0.0% / 396
+  m-ReliableMan              x m-HandsomeChildhoodFriend  0.910 / 0.878 / 0.817 / 100.0% / 484
+  m-ReliableMan              x m-AttractiveGuy            0.910 / 0.883 / 0.826 /  96.6% / 440
+  m-Bad-temperedBoy+2        x m-HandsomeChildhoodFriend  0.721 / 0.690 / 0.635 /   0.3% / 396
+  m-Bad-temperedBoy+2        x m-AttractiveGuy            0.747 / 0.705 / 0.647 /   1.7% / 360
+  m-HandsomeChildhoodFriend  x m-AttractiveGuy            0.899 / 0.875 / 0.816 /  98.0% / 440

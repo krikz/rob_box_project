@@ -218,7 +218,7 @@ class TestCache:
         )
         assert "RC1=0" in out and "RC2=0" in out, (out, err)
         assert "CALLS=1" in out  # вторая озвучка -- из кэша, провайдер не вызывался
-        assert "synth cache hit: minimax/Russian_ReliableMan" in out
+        assert "synth cache hit: minimax/English_Jovialman" in out
         assert "SAME" in out
 
     def test_cache_survives_run_dir_cleanup(self, tmp_path):

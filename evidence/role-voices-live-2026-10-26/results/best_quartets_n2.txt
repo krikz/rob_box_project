@@ -1,0 +1,27 @@
+﻿записей: старых 206, новых 377, несвязанных проигрышей 26.10: ['m-es_SereneElder_p22'] ; исключено чисткой (cos к своему центроиду < 0.6): [('m-en_WhisperingGirl', 'm-en_WhisperingGirl_p06', 0.499)]
+TOP K=4 из 94 конфигов (по худшей паре, макс по всем парам записей)
+  0.679 (худшая медиана 0.613)  m-cute_boy  s-baya  m-ko_ConfidentBoss  m-en_PassionateWarrior
+  0.682 (худшая медиана 0.670)  m-cute_boy  m-fr_NewsAnchor  y-madi_ru  m-en_DecentYoungMan
+  0.682 (худшая медиана 0.670)  m-cute_boy  m-fr_NewsAnchor  y-madirus  m-en_DecentYoungMan
+  0.683 (худшая медиана 0.669)  m-es_SantaClaus  m-de_PlayfulMan  m-en_WhisperingGirl  m-uk_CalmWoman
+  0.683 (худшая медиана 0.632)  m-cute_boy  s-baya  m-en_Jovialman  m-en_Debator
+  0.684 (худшая медиана 0.654)  m-en_WhisperingGirl  m-robot  m-en_Debator  m-it_WanderingSorcerer
+  0.684 (худшая медиана 0.618)  m-AttractiveGuy  m-es_SantaClaus  m-en_WhisperingGirl  m-ko_ConsiderateSenior
+  0.684 (худшая медиана 0.622)  m-AttractiveGuy  m-es_Ghost  m-en_WhisperingGirl  m-ko_ConsiderateSenior
+  0.684 (худшая медиана 0.633)  m-es_Ghost  m-en_WhisperingGirl  m-fr_NewsAnchor  m-ko_ConsiderateSenior
+  0.688 (худшая медиана 0.645)  m-AttractiveGuy  m-es_DeepTonedMan  m-en_WhisperingGirl  m-en_ImposingQueen
+  0.688 (худшая медиана 0.645)  m-AttractiveGuy  m-es_SantaClaus  m-en_WhisperingGirl  m-en_ImposingQueen
+  0.688 (худшая медиана 0.645)  m-es_SantaClaus  m-de_PlayfulMan  m-en_WhisperingGirl  m-en_ImposingQueen
+  0.690 (худшая медиана 0.592)  m-AttractiveGuy  m-es_SantaClaus  m-en_PlayfulGirl  m-ko_ConsiderateSenior
+  0.690 (худшая медиана 0.622)  m-AttractiveGuy  m-es_Ghost  m-en_PlayfulGirl  m-ko_ConsiderateSenior
+  0.690 (худшая медиана 0.633)  m-es_Ghost  m-en_PlayfulGirl  m-fr_NewsAnchor  m-ko_ConsiderateSenior
+  0.690 (худшая медиана 0.658)  m-es_SantaClaus  m-en_WhisperingGirl  m-en_StrongWilledBoy  m-it_WanderingSorcerer
+  0.690 (худшая медиана 0.666)  m-es_DeepTonedMan  m-en_WhisperingGirl  m-en_StrongWilledBoy  m-it_WanderingSorcerer
+  0.690 (худшая медиана 0.666)  m-es_DeepTonedMan  m-en_WhisperingGirl  m-uk_CalmWoman  m-en_StrongWilledBoy
+  0.690 (худшая медиана 0.669)  m-es_SantaClaus  m-en_WhisperingGirl  m-uk_CalmWoman  m-en_StrongWilledBoy
+  0.691 (худшая медиана 0.616)  m-cute_boy  s-baya  m-ko_ConfidentBoss  m-en_TeenBoy
+  0.691 (худшая медиана 0.619)  m-cute_boy  s-baya  m-en_TeenBoy  y-madi_ru
+  0.691 (худшая медиана 0.642)  m-cute_boy  m-en_TeenBoy  y-lera  y-madi_ru
+  0.691 (худшая медиана 0.642)  m-cute_boy  m-ko_ConfidentBoss  m-en_TeenBoy  y-lera
+  0.691 (худшая медиана 0.674)  m-es_Ghost  m-en_WhisperingGirl  m-uk_CalmWoman  m-pt_ReservedYoungMan
+  0.691 (худшая медиана 0.674)  m-es_SantaClaus  m-en_WhisperingGirl  m-uk_CalmWoman  m-pt_ReservedYoungMan

@@ -103,14 +103,16 @@ class TestMapTtsVoice:
 
     # Тоже измерено 22.09.2026: старая пара anton/ermil
     # (ReliableMan/HandsomeChildhoodFriend) = 0.739, а на живом роботе 0.846 —
-    # акт 2 склеил двух дикторов в один профиль (run 35667281570).
+    # акт 2 склеил двух дикторов в один профиль (run 35667281570). 23.10 низкие мужские
+    # Russian_* для робота остались одним человеком (0.9). Каст 26.10 (#3992) подобран по
+    # эмбеддингам живого канала среди 332 голосов MiniMax: docs/dialog/role_voices_biometrics_2026-10-26.md
     @pytest.mark.parametrize(
         "voice,expected",
         [
-            ("anton", "Russian_ReliableMan:0:1.0"),
-            ("ermil", "Russian_Bad-temperedBoy:2:1.0"),
-            ("zahar", "Russian_HandsomeChildhoodFriend:0:1.0"),
-            ("filipp", "Russian_AttractiveGuy:0:1.0"),
+            ("anton", "English_Jovialman:0:1.0"),
+            ("ermil", "English_WiseScholar:0:1.0"),
+            ("zahar", "Chinese (Mandarin)_Gentle_Senior:0:1.0"),
+            ("filipp", "English_Whispering_girl:0:1.0"),
         ],
     )
     def test_minimax_mapping(self, voice, expected):
@@ -152,13 +154,13 @@ class TestMapTtsVoice:
 
     @pytest.mark.parametrize(
         "provider,default",
-        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "Russian_ReliableMan:0:1.0")],
+        [("yandex", "anton"), ("silero", "aidar"), ("minimax", "English_Jovialman:0:1.0")],
     )
     def test_empty_voice_falls_back_to_default(self, provider, default):
         assert map_voice(provider, "") == default
 
     def test_mapped_voices_exist_in_registry(self):
-        """Целевые голоса обязаны быть в PROVIDER_VOICES, иначе провайдер
+        """Silero: целевые голоса обязаны быть в PROVIDER_VOICES, иначе провайдер
         молча возьмёт свой дефолт и все шаги зазвучат одинаково."""
         registry = (
             REPO_ROOT
@@ -167,11 +169,26 @@ class TestMapTtsVoice:
             / "rob_box_voice"
             / "tts_voice_registry.py"
         ).read_text(encoding="utf-8")
-        for provider in ("silero", "minimax"):
-            for voice in SCENARIO_VOICES:
-                mapped = map_voice(provider, voice)
-                # minimax: строка voice:pitch:speed (#3931) -- в каталоге ищем сам голос
-                assert '"%s"' % mapped.split(":")[0] in registry, (provider, voice, mapped)
+        for voice in SCENARIO_VOICES:
+            mapped = map_voice("silero", voice)
+            assert '"%s"' % mapped.split(":")[0] in registry, ("silero", voice, mapped)
+
+    def test_minimax_cast_is_outside_robot_voice_catalog(self):
+        """Каст 26.10 (#3992) -- голоса ТЕСТОВЫХ людей из нерусского каталога MiniMax. В каталог робота
+        (PROVIDER_VOICES, его set_voice и список для LLM) они не входят и не должны: робот не должен
+        предлагать себе голос «Гриши». Заодно роль не может получить голос самого робота."""
+        registry = (
+            REPO_ROOT
+            / "src"
+            / "rob_box_voice"
+            / "rob_box_voice"
+            / "tts_voice_registry.py"
+        ).read_text(encoding="utf-8")
+        robot_voices = {map_voice("minimax", v).split(":")[0] for v in ("alena", "jane", "omazh")}
+        for voice in SCENARIO_VOICES:
+            cast = map_voice("minimax", voice).split(":")[0]
+            assert cast not in robot_voices, (voice, cast)
+            assert '"%s"' % cast not in registry, (voice, cast)
 
 
 # --- resolve_tts_provider ---------------------------------------------------

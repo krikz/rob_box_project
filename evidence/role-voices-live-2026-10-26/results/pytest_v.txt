@@ -1,0 +1,100 @@
+[notice] To update, run: pip install --upgrade pip
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/python
+network secrets missing: MINIMAX_API_KEY (network tests will be skipped)
+harness package resolved from: <not found>
+harness package not importable yet — coverage gate is DISABLED (will activate once src/rob_box_harness is merged)
+rootdir: /w
+configfile: pytest.ini
+collecting ... collected 71 items
+
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_yandex_is_identity PASSED [  1%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[anton-aidar] PASSED [  2%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[ermil-eugene] PASSED [  4%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[zahar-kseniya] PASSED [  5%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_silero_mapping[filipp-xenia] PASSED [  7%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[anton-English_Jovialman:0:1.0] PASSED [  8%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[ermil-English_WiseScholar:0:1.0] PASSED [  9%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[zahar-Chinese (Mandarin)_Gentle_Senior:0:1.0] PASSED [ 11%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_mapping[filipp-English_Whispering_girl:0:1.0] PASSED [ 12%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_roles_are_four_voices_with_mild_prosody PASSED [ 14%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_scenario_voices_stay_distinct[silero] PASSED [ 15%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_scenario_voices_stay_distinct[minimax] PASSED [ 16%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[silero-aidar] PASSED [ 18%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[silero-eugene] PASSED [ 19%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[minimax-Russian_CrazyQueen] PASSED [ 21%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_native_voice_passthrough[minimax-male-qn-qingse] PASSED [ 22%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[yandex-anton] PASSED [ 23%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[silero-aidar] PASSED [ 25%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_empty_voice_falls_back_to_default[minimax-English_Jovialman:0:1.0] PASSED [ 26%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_mapped_voices_exist_in_registry PASSED [ 28%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestMapTtsVoice::test_minimax_cast_is_outside_robot_voice_catalog PASSED [ 29%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_explicit_provider_is_not_probed PASSED [ 30%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_takes_first_alive PASSED [ 32%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_falls_through_to_silero PASSED [ 33%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_auto_reports_none_when_nothing_answers PASSED [ 35%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestResolveTtsProvider::test_custom_order_is_honoured PASSED [ 36%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_run_step_uses_synth_command PASSED [ 38%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_yandex] PASSED [ 39%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_minimax] PASSED [ 40%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_silero] PASSED [ 42%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_functions_exist[synth_command] PASSED [ 43%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_tts_provider_flag_parsed PASSED [ 45%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_yandex_key_no_longer_unconditional_fatal PASSED [ 46%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_provider_recorded_as_artifact PASSED [ 47%]
+tests/unit/e2e_scripts/test_tts_provider_selection.py::TestHarnessContract::test_workflow_exposes_input_and_passes_it PASSED [ 49%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[anton-English_Jovialman-0-1.0] PASSED [ 50%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[ermil-English_WiseScholar-0-1.0] PASSED [ 52%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[zahar-Chinese (Mandarin)_Gentle_Senior-0-1.0] PASSED [ 53%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[filipp-English_Whispering_girl-0-1.0] PASSED [ 54%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_role_pitch_and_speed_are_sent[arina-Portuguese_StrictBoss-0-1.0] PASSED [ 56%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_plain_native_voice_has_neutral_prosody PASSED [ 57%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestRoleProsodyReachesMinimax::test_global_speed_multiplies_role_speed PASSED [ 59%]
+tests/unit/e2e_scripts/test_issue_3931_role_prosody.py::TestCacheKeyCoversProsody::test_pitch_and_speed_change_the_key PASSED [ 60%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRetry::test_two_network_errors_then_third_succeeds PASSED [ 61%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRetry::test_network_errors_exhaust_after_three_retries PASSED [ 63%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRetry::test_non_network_error_is_not_retried PASSED [ 64%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRetry::test_default_backoff_is_2_5_10 PASSED [ 66%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRetry::test_real_python_synth_classifies_dns_failure_as_network_error PASSED [ 67%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_second_call_is_cache_hit_without_provider PASSED [ 69%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_cache_survives_run_dir_cleanup PASSED [ 70%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_key_covers_voice_text_and_params[synth_command "\u0420\u043e\u0431\u043e\u0442, \u0438\u0433\u0440\u0430\u0439" ermil "$OUT_DIR/b.wav"] PASSED [ 71%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_key_covers_voice_text_and_params[synth_command "\u0420\u043e\u0431\u043e\u0442, \u0438\u0433\u0440\u0430\u0439!" anton "$OUT_DIR/b.wav"] PASSED [ 73%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_key_covers_voice_text_and_params[YANDEX_SPEED=1.3 synth_command "\u0420\u043e\u0431\u043e\u0442, \u0438\u0433\u0440\u0430\u0439" anton "$OUT_DIR/b.wav"] PASSED [ 74%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_key_covers_voice_text_and_params[MINIMAX_TTS_MODEL=speech-02-turbo synth_command "\u0420\u043e\u0431\u043e\u0442, \u0438\u0433\u0440\u0430\u0439" anton "$OUT_DIR/b.wav"] PASSED [ 76%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_failed_synth_is_not_cached PASSED [ 77%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_cache_off_still_reuses_within_run PASSED [ 78%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestCache::test_cache_dir_default_is_outside_run_tmp PASSED [ 80%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestPresynth::test_flaky_network_during_presynth_is_absorbed_by_retries PASSED [ 81%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestPresynth::test_network_down_fails_before_any_play_with_infra_fail PASSED [ 83%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestPresynth::test_cache_hits_make_presynth_offline PASSED [ 84%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestPresynth::test_main_flow_runs_presynth_before_recording_isolation_and_first_step PASSED [ 85%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestPresynth::test_infra_fail_marker_is_printed_for_synth_kind PASSED [ 87%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRunStep::test_step_survives_two_dns_flakes_and_plays PASSED [ 88%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::TestRunStep::test_step_fails_as_synth_when_network_stays_down_and_never_plays PASSED [ 90%]
+tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py::test_whole_harness_with_dead_network_fails_infra_before_first_play PASSED [ 91%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestFourIdenticalVoicesRaise::test_four_identical_voices_raises PASSED [ 92%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestYandexGreenfieldWarnsNoData::test_yandex_warns_when_no_data PASSED [ 94%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestThresholdOverride::test_threshold_override_takes_effect PASSED [ 95%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestNoFalsePositive::test_no_falsely_passing_pair PASSED [ 97%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestAsymmetricKeysSupported::test_only_one_side_of_pair_key_is_enough PASSED [ 98%]
+tests/unit/test_gen_night_marathon_voice_guard.py::TestMissingPairInEvidenceIsSkipped::test_unmeasured_pair_is_not_violation PASSED [100%]
+
+=============================== warnings summary ===============================
+../usr/local/lib/python3.11/site-packages/_pytest/config/__init__.py:1464
+  /usr/local/lib/python3.11/site-packages/_pytest/config/__init__.py:1464: PytestConfigWarning: Unknown config option: asyncio_mode
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 71 passed, 1 warning in 13.51s ========================
+
+=== bash scripts/testing/test_e2e_voice_map_tts_voice.sh ===
+OK   silero   zahar    -> kseniya
+OK   silero   filipp   -> xenia
+OK   silero   alena    -> baya
+OK   silero   aidar    -> aidar
+OK   silero            -> aidar
+OK   silero   четыре голоса сценария → четыре разных голоса
+
+PASS=31 FAIL=0

@@ -103,14 +103,16 @@ SCENARIO_VOICES = ("anton", "ermil", "zahar", "filipp")
 PROVIDER_VOICES: Dict[str, List[str]] = {
     "yandex": ["anton", "ermil", "zahar", "filipp", "alena", "jane", "arina", "omazh"],
     "silero": ["aidar", "eugene", "baya", "xenia", "kseniya"],
+    # minimax: русский каталог MiniMax (8 голосов; каталог по умолчанию без --voices). Голоса РОЛЕЙ не
+    # здесь: с 26.10 (#3992) они из нерусского каталога, их даёт --roles (из map_tts_voice).
     "minimax": [
-        "Russian_ReliableMan",             # anton
-        "Russian_HandsomeChildhoodFriend",  # ermil / madirus
-        "Russian_Bad-temperedBoy",         # zahar
-        "Russian_AttractiveGuy",           # filipp / kostya
+        "Russian_ReliableMan",
+        "Russian_HandsomeChildhoodFriend",
+        "Russian_Bad-temperedBoy",
+        "Russian_AttractiveGuy",
         "Russian_BrightHeroine",           # alena
         "Russian_AmbitiousWoman",          # jane
-        "Russian_PessimisticGirl",         # arina
+        "Russian_PessimisticGirl",
         "Russian_CrazyQueen",              # omazh / rush
     ],
 }
@@ -127,17 +129,10 @@ SCENARIO_OF: Dict[str, Dict[str, str]] = {
         "xenia": "filipp",
         "kseniya": "alena",
     },
-    "minimax": {
-        # таблица 23.10.2026 (#3931), см. map_tts_voice
-        "Russian_ReliableMan": "anton",
-        "Russian_Bad-temperedBoy": "ermil",
-        "Russian_HandsomeChildhoodFriend": "zahar",
-        "Russian_AttractiveGuy": "filipp",
-        "Russian_BrightHeroine": "alena",
-        "Russian_AmbitiousWoman": "jane",
-        "Russian_PessimisticGirl": "arina",
-        "Russian_CrazyQueen": "omazh",
-    },
+    # minimax: копии таблицы здесь НЕТ (с 26.10, #3992). Каст ролей меняется замерами, и вторая таблица молча
+    # устаревала (после 23.10 она уже врала). Карта строится из единственной таблицы - map_tts_voice
+    # в e2e_voice_lib.sh - функцией table_scenario_of() в момент отчёта.
+    "minimax": {},
 }
 
 
@@ -351,7 +346,7 @@ def build_report(
     provider: str, embeddings: Dict[str, List[np.ndarray]]
 ) -> Dict[str, object]:
     voices = list(embeddings)
-    scenario_of = SCENARIO_OF.get(provider, {})
+    scenario_of = SCENARIO_OF.get(provider) or table_scenario_of(provider)
 
     intra = {}
     for voice, embs in embeddings.items():
@@ -501,6 +496,32 @@ def role_specs(provider: str) -> List[str]:
         check=True, capture_output=True, text=True,
     ).stdout
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def table_scenario_of(provider: str) -> Dict[str, str]:
+    """Обратная карта «голос провайдера (без :pitch:speed) -> голос сценария» из map_tts_voice.
+
+    Роли (anton/ermil/zahar/filipp) и голоса робота (alena/jane/omazh, запасной arina) спрашиваются у bash;
+    без bash - пустая карта (отчёт тогда просто не размечает пары сценария)."""
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:
+        return {}
+    lib = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "scripts" / "e2e_voice_lib.sh"
+    names = list(SCENARIO_VOICES) + ["alena", "jane", "arina", "omazh"]
+    script = 'source "$1" 2>/dev/null; for v in %s; do map_tts_voice "$2" "$v"; echo; done' % " ".join(names)
+    try:
+        out = subprocess.run([bash, "-c", script, "_", lib.as_posix(), provider],
+                             check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    result: Dict[str, str] = {}
+    for name, spec in zip(names, lines):
+        result.setdefault(spec.split(":")[0], name)
+    return result
 
 
 def label_of(voice: str, pitch: int, speed: float) -> str:

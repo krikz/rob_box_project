@@ -2792,7 +2792,7 @@ for m in json.load(open(sys.argv[1], encoding="utf-8")).get("registration", {}).
         printf '%s\n' "$_merges" | while IFS= read -r _m; do
             printf '%s\n' "STEP ${label}: ${_m}" >> "$OUT_DIR/speaker_merges.log" 2>/dev/null || true
         done
-        log "ACCEPTANCE[${label}]${tag_str}: склейка — существующий профиль дополнен, отдельного не заведено. Смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-?}} (у minimax Russian_ReliableMan и Russian_HandsomeChildhoodFriend неразличимы для resemblyzer)."
+        log "ACCEPTANCE[${label}]${tag_str}: склейка — существующий профиль дополнен, отдельного не заведено. Смотреть register_match_threshold в speaker_id_node и различимость голосов TTS-провайдера ${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-?}} (у yandex anton/ermil/zahar/filipp и у minimax Russian_* низкие мужские голоса неразличимы для resemblyzer, 0.9; каст minimax 26.10 разнесён, худшая пара Саша-Борис макс 0.76: docs/dialog/role_voices_biometrics_2026-10-26.md)."
     fi
     return $rc
 }
