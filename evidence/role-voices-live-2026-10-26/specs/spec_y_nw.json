@@ -1,0 +1,314 @@
+[
+{
+"id": "y-filipp_p21",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-filipp_p22",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-filipp_p23",
+"provider": "yandex",
+"voice": "filipp",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-madirus_p21",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madirus_p22",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-madirus_p23",
+"provider": "yandex",
+"voice": "madirus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-kirill_p21",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-kirill_p22",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-kirill_p23",
+"provider": "yandex",
+"voice": "kirill",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-alexander_p21",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-alexander_p22",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-alexander_p23",
+"provider": "yandex",
+"voice": "alexander",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-dasha_p21",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-dasha_p22",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-dasha_p23",
+"provider": "yandex",
+"voice": "dasha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-julia_p21",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-julia_p22",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-julia_p23",
+"provider": "yandex",
+"voice": "julia",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-lera_p21",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-lera_p22",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-lera_p23",
+"provider": "yandex",
+"voice": "lera",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-masha_p21",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-masha_p22",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-masha_p23",
+"provider": "yandex",
+"voice": "masha",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-marina_p21",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-marina_p22",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-marina_p23",
+"provider": "yandex",
+"voice": "marina",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-madi_ru_p21",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-madi_ru_p22",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-madi_ru_p23",
+"provider": "yandex",
+"voice": "madi_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-saule_ru_p21",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-saule_ru_p22",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-saule_ru_p23",
+"provider": "yandex",
+"voice": "saule_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-zhanar_ru_p21",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-zhanar_ru_p22",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-zhanar_ru_p23",
+"provider": "yandex",
+"voice": "zhanar_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+},
+{
+"id": "y-yulduz_ru_p21",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "y-yulduz_ru_p22",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "y-yulduz_ru_p23",
+"provider": "yandex",
+"voice": "yulduz_ru",
+"pitch": 0,
+"speed": 1.0,
+"text": "Доложи статус: всё ли у тебя работает, ничего не отвалилось?"
+}
+]

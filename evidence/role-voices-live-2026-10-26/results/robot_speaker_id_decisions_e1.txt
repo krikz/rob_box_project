@@ -1,0 +1,34 @@
+﻿m-en_Jovialman_p01           -> профиль 703ac22d (НОВЫЙ) conf=
+m-en_WiseScholar_p01         -> профиль 2db57979 (НОВЫЙ) conf= best=703ac22d score=0.574 second= 
+m-zh_GentleSenior_p01        -> профиль e61cf692 (НОВЫЙ) conf= best=2db57979 score=0.633 second=703ac22d 0.429
+m-en_WhisperingGirl_p01      -> профиль bf982caf (НОВЫЙ) conf= best=703ac22d score=0.595 second=2db57979 0.563
+m-en_Jovialman_p02           -> профиль 703ac22d  conf=0.936 best=703ac22d score=0.936 second=bf982caf 0.620
+m-en_WiseScholar_p02         -> профиль 2db57979  conf=0.814 best=2db57979 score=0.814 second=e61cf692 0.634
+m-zh_GentleSenior_p02        -> профиль e61cf692  conf=0.842 best=e61cf692 score=0.842 second=2db57979 0.653
+m-en_WhisperingGirl_p02      -> профиль bf982caf  conf=0.896 best=bf982caf score=0.896 second=2db57979 0.606
+m-en_Jovialman_p03           -> профиль 703ac22d  conf=0.947 best=703ac22d score=0.947 second=2db57979 0.597
+m-en_WiseScholar_p03         -> профиль 2db57979  conf=0.868 best=2db57979 score=0.868 second=e61cf692 0.651
+m-zh_GentleSenior_p03        -> профиль e61cf692  conf=0.871 best=e61cf692 score=0.871 second=2db57979 0.677
+m-en_WhisperingGirl_p03      -> профиль bf982caf  conf=0.925 best=bf982caf score=0.925 second=2db57979 0.593
+m-en_Jovialman_p04           -> профиль 703ac22d  conf=0.919 best=703ac22d score=0.919 second=2db57979 0.612
+m-en_WiseScholar_p04          (решения нет)
+m-zh_GentleSenior_p04        -> профиль e61cf692  conf=0.870 best=e61cf692 score=0.870 second=2db57979 0.618
+m-en_WhisperingGirl_p04      -> профиль bf982caf  conf=0.928 best=bf982caf score=0.928 second=2db57979 0.597
+m-en_Jovialman_p05           -> профиль 703ac22d  conf=0.956 best=703ac22d score=0.956 second=bf982caf 0.628
+m-en_WiseScholar_p05         -> профиль 2db57979  conf=0.877 best=2db57979 score=0.877 second=e61cf692 0.590
+m-zh_GentleSenior_p05        -> профиль e61cf692  conf=0.867 best=e61cf692 score=0.867 second=bf982caf 0.678
+m-en_WhisperingGirl_p05      -> профиль bf982caf  conf=0.948 best=bf982caf score=0.948 second=2db57979 0.589
+m-en_Jovialman_p06           -> профиль 703ac22d  conf=0.917 best=703ac22d score=0.917 second=bf982caf 0.629
+m-en_WiseScholar_p06         -> профиль 2db57979  conf=0.864 best=2db57979 score=0.864 second=703ac22d 0.679
+m-zh_GentleSenior_p06        -> профиль e61cf692  conf=0.878 best=e61cf692 score=0.878 second=bf982caf 0.621
+m-en_WhisperingGirl_p06       (решения нет)
+m-en_Jovialman_p07           -> профиль 703ac22d  conf=0.948 best=703ac22d score=0.948 second=bf982caf 0.626
+m-en_WiseScholar_p07         -> профиль 2db57979  conf=0.889 best=2db57979 score=0.889 second=e61cf692 0.636
+m-zh_GentleSenior_p07        -> профиль e61cf692  conf=0.910 best=e61cf692 score=0.910 second=2db57979 0.611
+m-en_WhisperingGirl_p07      -> профиль bf982caf  conf=0.952 best=bf982caf score=0.952 second=703ac22d 0.605
+
+m-en_Jovialman           профили: {'703ac22d': 7}
+m-en_WiseScholar         профили: {'2db57979': 6}
+m-zh_GentleSenior        профили: {'e61cf692': 7}
+m-en_WhisperingGirl      профили: {'bf982caf': 6}
+профилей всего: 4 ; профилей, в которые попали ДВА И БОЛЕЕ голосов (склейка): нет

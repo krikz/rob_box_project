@@ -1,0 +1,562 @@
+[
+{
+"id": "m-en_ManWithDeepVoice_p21",
+"provider": "minimax",
+"voice": "English_ManWithDeepVoice",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_ManWithDeepVoice_p22",
+"provider": "minimax",
+"voice": "English_ManWithDeepVoice",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_DeepGentleman_p21",
+"provider": "minimax",
+"voice": "English_Deep-VoicedGentleman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_DeepGentleman_p22",
+"provider": "minimax",
+"voice": "English_Deep-VoicedGentleman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-es_DeepTonedMan_p21",
+"provider": "minimax",
+"voice": "Spanish_Deep-tonedMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-es_DeepTonedMan_p22",
+"provider": "minimax",
+"voice": "Spanish_Deep-tonedMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-es_Arnold_p21",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-es_Arnold_p22",
+"provider": "minimax",
+"voice": "Spanish_Arnold",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-es_Ghost_p21",
+"provider": "minimax",
+"voice": "Spanish_Ghost",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-es_Ghost_p22",
+"provider": "minimax",
+"voice": "Spanish_Ghost",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-es_SantaClaus_p21",
+"provider": "minimax",
+"voice": "Spanish_SantaClaus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-es_SantaClaus_p22",
+"provider": "minimax",
+"voice": "Spanish_SantaClaus",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-ko_ConfidentBoss_p21",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-ko_ConfidentBoss_p22",
+"provider": "minimax",
+"voice": "Korean_ConfidentBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-zh_HumorousElder_p21",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Humorous_Elder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-zh_HumorousElder_p22",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Humorous_Elder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_Storyteller_p21",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_Storyteller_p22",
+"provider": "minimax",
+"voice": "English_CaptivatingStoryteller",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_Comedian_p21",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_Comedian_p22",
+"provider": "minimax",
+"voice": "English_Comedian",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_PassionateWarrior_p21",
+"provider": "minimax",
+"voice": "English_PassionateWarrior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_PassionateWarrior_p22",
+"provider": "minimax",
+"voice": "English_PassionateWarrior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_TeenBoy_p21",
+"provider": "minimax",
+"voice": "English_SadTeen",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_TeenBoy_p22",
+"provider": "minimax",
+"voice": "English_SadTeen",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-ko_ColdYoungMan_p21",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-ko_ColdYoungMan_p22",
+"provider": "minimax",
+"voice": "Korean_ColdYoungMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-fi_FriendlyBoy_p21",
+"provider": "minimax",
+"voice": "finnish_male_1_v2",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-fi_FriendlyBoy_p22",
+"provider": "minimax",
+"voice": "finnish_male_1_v2",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_AussieBloke_p21",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_AussieBloke_p22",
+"provider": "minimax",
+"voice": "English_Aussie_Bloke",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_Narrator_p21",
+"provider": "minimax",
+"voice": "English_expressive_narrator",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_Narrator_p22",
+"provider": "minimax",
+"voice": "English_expressive_narrator",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-uk_WiseScholar_p21",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-uk_WiseScholar_p22",
+"provider": "minimax",
+"voice": "Ukrainian_WiseScholar",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-pl_MaleNarrator_p21",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-pl_MaleNarrator_p22",
+"provider": "minimax",
+"voice": "Polish_male_1_sample4",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-nl_BossyLeader_p21",
+"provider": "minimax",
+"voice": "Dutch_bossy_leader",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-nl_BossyLeader_p22",
+"provider": "minimax",
+"voice": "Dutch_bossy_leader",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-ro_EnergeticYouth_p21",
+"provider": "minimax",
+"voice": "Romanian_male_2_sample1",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-ro_EnergeticYouth_p22",
+"provider": "minimax",
+"voice": "Romanian_male_2_sample1",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-de_PlayfulMan_p21",
+"provider": "minimax",
+"voice": "German_PlayfulMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-de_PlayfulMan_p22",
+"provider": "minimax",
+"voice": "German_PlayfulMan",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_WhisperingGirl_p21",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_WhisperingGirl_p22",
+"provider": "minimax",
+"voice": "English_Whispering_girl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_PlayfulGirl_p21",
+"provider": "minimax",
+"voice": "English_PlayfulGirl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_PlayfulGirl_p22",
+"provider": "minimax",
+"voice": "English_PlayfulGirl",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_GracefulLady_p21",
+"provider": "minimax",
+"voice": "English_Graceful_Lady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_GracefulLady_p22",
+"provider": "minimax",
+"voice": "English_Graceful_Lady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_MatureBoss_p21",
+"provider": "minimax",
+"voice": "English_MatureBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_MatureBoss_p22",
+"provider": "minimax",
+"voice": "English_MatureBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-zh_KindElder_p21",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Kind-hearted_Elder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-zh_KindElder_p22",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Kind-hearted_Elder",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-zh_GentleSenior_p21",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-zh_GentleSenior_p22",
+"provider": "minimax",
+"voice": "Chinese (Mandarin)_Gentle_Senior",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-ko_HaughtyLady_p21",
+"provider": "minimax",
+"voice": "Korean_HaughtyLady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-ko_HaughtyLady_p22",
+"provider": "minimax",
+"voice": "Korean_HaughtyLady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-pt_StrictBoss_p21",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-pt_StrictBoss_p22",
+"provider": "minimax",
+"voice": "Portuguese_StrictBoss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_StressedLady_p21",
+"provider": "minimax",
+"voice": "English_StressedLady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_StressedLady_p22",
+"provider": "minimax",
+"voice": "English_StressedLady",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-uk_CalmWoman_p21",
+"provider": "minimax",
+"voice": "Ukrainian_CalmWoman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-uk_CalmWoman_p22",
+"provider": "minimax",
+"voice": "Ukrainian_CalmWoman",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-zh_ArrogantMiss_p21",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-zh_ArrogantMiss_p22",
+"provider": "minimax",
+"voice": "Arrogant_Miss",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-en_ImposingQueen_p21",
+"provider": "minimax",
+"voice": "English_ImposingManner",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-en_ImposingQueen_p22",
+"provider": "minimax",
+"voice": "English_ImposingManner",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-fr_NewsAnchor_p21",
+"provider": "minimax",
+"voice": "French_Female_News Anchor",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-fr_NewsAnchor_p22",
+"provider": "minimax",
+"voice": "French_Female_News Anchor",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+},
+{
+"id": "m-robot_p21",
+"provider": "minimax",
+"voice": "Robot_Armor",
+"pitch": 0,
+"speed": 1.0,
+"text": "Который сейчас час, и сколько осталось до утра?"
+},
+{
+"id": "m-robot_p22",
+"provider": "minimax",
+"voice": "Robot_Armor",
+"pitch": 0,
+"speed": 1.0,
+"text": "Сколько у тебя осталось заряда, до утра дотянешь?"
+}
+]

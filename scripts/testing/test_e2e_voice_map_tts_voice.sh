@@ -84,31 +84,42 @@ assert_voice yandex "" anton "пустой голос → дефолт пров�
 assert_four_distinct yandex
 
 echo
-echo "== minimax: таблица 23.10.2026 (#3931), voice:pitch:speed, замер на ЖИВОМ канале (колонка -> ReSpeaker) =="
-# Питч/темп сняты (вейк «Робот» на питче +5/темпе 1.2 терялся в 62% фраз), остался один сдвиг +2 у Бориса.
-# Борис высокий регистр (cos к Саше макс 0.71), Саша/Гриша/Валера низкий мужской регистр (между собой 0.9, НЕ различимы). Док: docs/dialog/role_voices_biometrics_2026-10-23.md
-assert_voice minimax anton "Russian_ReliableMan:0:1.0"
-assert_voice minimax ermil "Russian_Bad-temperedBoy:2:1.0"
-assert_voice minimax madirus "Russian_Bad-temperedBoy:2:1.0" "алиас Бориса"
-assert_voice minimax zahar "Russian_HandsomeChildhoodFriend:0:1.0"
-assert_voice minimax filipp "Russian_AttractiveGuy:0:1.0"
-assert_voice minimax kostya "Russian_AttractiveGuy:0:1.0" "алиас Валеры"
-assert_voice minimax arina "presenter_female:0:1.0" "запасной 1"
-assert_voice minimax rita "Russian_PessimisticGirl:0:1.0" "запасной 2"
-assert_voice minimax "" "Russian_ReliableMan:0:1.0" "пустой голос → дефолт провайдера"
+echo "== minimax: каст 26.10.2026 (#3992), voice:pitch:speed, замер на ЖИВОМ канале (колонка -> ReSpeaker -> speaker_id) =="
+# Подобран по эмбеддингам: четыре голоса далеко друг от друга (худшая пара Саша-Борис: макс 0.76, p95 0.70, 2.7% пар
+# записей выше порога опознания 0.72; остальные 0.66-0.74). Просодия 0/1.0 у всех (питч/темп вейк ломают, не разводят).
+# Гриша и Валера - ЖЕНСКИЕ голоса (вариант Б Шифу): реплики в сценариях в женском роде. Док: docs/dialog/role_voices_biometrics_2026-10-26.md
+assert_voice minimax anton "English_Jovialman:0:1.0"
+assert_voice minimax ermil "English_WiseScholar:0:1.0"
+assert_voice minimax madirus "English_WiseScholar:0:1.0" "алиас Бориса"
+assert_voice minimax zahar "Chinese (Mandarin)_Gentle_Senior:0:1.0" "Гриша: женский пожилой"
+assert_voice minimax filipp "English_Whispering_girl:0:1.0" "Валера: женский шёпот"
+assert_voice minimax kostya "English_Whispering_girl:0:1.0" "алиас Валеры"
+assert_voice minimax arina "Portuguese_StrictBoss:0:1.0" "запасной (вейк не мерили)"
+assert_voice minimax "" "English_Jovialman:0:1.0" "пустой голос → дефолт провайдера (Саша)"
+assert_voice minimax rita "Russian_ReliableMan" "rita: старые запасные склеивались с Гришей 0.82-0.84, имя ушло в голос по умолчанию"
 assert_voice minimax Russian_CrazyQueen Russian_CrazyQueen "native голос не переводим"
 assert_voice minimax Russian_ReliableMan:-2:0.9 Russian_ReliableMan:-2:0.9 "native со своей просодией не переводим"
 assert_four_distinct minimax
-# запасные не совпадают ни с одной из четырёх ролей
+# просодия у ролей нулевая: питч/темп не разводят голоса и ломают вейк «Робот»
+for v in anton ermil zahar filipp; do
+    case "$(map_tts_voice minimax "$v")" in
+        *:0:1.0) PASS=$((PASS + 1)); printf '%sOK%s   minimax %-6s просодия 0/1.0\n' "$GRN" "$NC" "$v" ;;
+        *) FAIL=$((FAIL + 1)); printf '%sFAIL%s minimax %s просодия не 0/1.0: %s\n' "$RED" "$NC" "$v" "$(map_tts_voice minimax "$v")" ;;
+    esac
+done
+# запасной и голос по умолчанию для rita не совпадают ни с одной из четырёх ролей
 for spare in arina rita; do
     sv="$(map_tts_voice minimax "$spare")"
     clash=0
     for v in anton ermil zahar filipp; do [ "$(map_tts_voice minimax "$v")" = "$sv" ] && clash=1; done
-    if [ "$clash" = "0" ]; then PASS=$((PASS + 1)); printf '%sOK%s   minimax %-6s запасной не совпадает с ролью (%s)
-' "$GRN" "$NC" "$spare" "$sv"
-    else FAIL=$((FAIL + 1)); printf '%sFAIL%s minimax %s совпал с ролью (%s)
-' "$RED" "$NC" "$spare" "$sv"; fi
+    if [ "$clash" = "0" ]; then PASS=$((PASS + 1)); printf '%sOK%s   minimax %-6s не совпадает с ролью (%s)\n' "$GRN" "$NC" "$spare" "$sv"
+    else FAIL=$((FAIL + 1)); printf '%sFAIL%s minimax %s совпал с ролью (%s)\n' "$RED" "$NC" "$spare" "$sv"; fi
 done
+# имя с пробелом и скобками (Chinese (Mandarin)_...) доезжает до синтеза одним аргументом
+sv="$(map_tts_voice minimax zahar)"
+if [ "$(printf '%s' "$sv" | cut -d: -f1)" = "Chinese (Mandarin)_Gentle_Senior" ]; then
+    PASS=$((PASS + 1)); printf '%sOK%s   minimax zahar    имя голоса с пробелом и скобками цело (первое поле до «:»)\n' "$GRN" "$NC"
+else FAIL=$((FAIL + 1)); printf '%sFAIL%s minimax zahar: имя голоса разобралось неверно (%s)\n' "$RED" "$NC" "$sv"; fi
 
 echo "== silero: zahar переехал с baya на kseniya, худшая пара 0.678 =="
 assert_voice silero anton aidar
