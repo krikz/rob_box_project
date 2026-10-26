@@ -293,3 +293,42 @@ def test_async_send_failure_is_rejected_at_once_not_after_class_deadline():
     res, took = _timed(Executor(send), ToolCall("request_music", {"intent": "track"}), "t33")
     assert (res.status, res.reason) == ("rejected", "error")
     assert took < 1.0, "срок action.media - 10 с: отказ пришёл от упавшего вызова, а не по сроку"
+
+
+# -- поздний итог не теряется ни в исполнителе, ни в транспорте (#3960 п.2, марафон 23.10 n809) ----------------------
+
+
+def test_event_landing_on_the_class_deadline_is_not_lost(monkeypatch):
+    """n809: итог владельца лёг в ожидание в том же такте, где сработал срок класса (``wait_for`` уже бросает
+    ``TimeoutError``). Он не теряется: ход получает его, запрос не висит в ожидании навсегда."""
+
+    async def deadline_with_event(waiting, timeout):
+        ex.on_event(OwnerEvent("t34/0", "done", data={"track_id": "req95964:01:A"}))
+        waiting.cancel()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", deadline_with_event)
+    late = []
+    ex = Executor(lambda request: None, on_late=late.append)
+    [res] = _run(ex.run([ToolCall("request_music", {"intent": "track"})], SNAP, "t34"))
+    assert (res.status, res.data.get("track_id")) == ("done", "req95964:01:A")
+    assert late == [] and not ex.expects("t34/0")
+
+
+@pytest.mark.parametrize("tool", sorted(t for t, c in kn.TOOL_CLASSES.items() if c in kn.LATE_SPOKEN_CLASSES))
+def test_transport_waits_for_late_outcome_past_the_class_deadline(tool):
+    """n809: транспорт v2 (``ROSMCPToolProvider``) ждал итог тула 10 с - ровно срок ``action.media``; трек заиграл
+    через 1,4 с после него, а мост уже вернул «Timeout ожидания результата» и выбросил настоящий итог. Транспорт
+    тула с поздним итогом ждёт дольше срока класса - до потолка хода (``TURN_CEILING_S``)."""
+    from rob_box_dialog.execute import transport_timeouts
+
+    waits = transport_timeouts()
+    cls = kn.TOOL_CLASSES[tool]
+    assert waits[tool] >= max(deadline_s(cls) + kn.ACTION_GRACE_S, kn.TURN_CEILING_S)
+
+
+def test_transport_keeps_its_own_wait_for_tools_without_late_outcome():
+    """Остальные классы транспорт ждёт как раньше: движение без ``pending`` иначе держало бы ход 120 с (#3960)."""
+    from rob_box_dialog.execute import transport_timeouts
+
+    assert set(transport_timeouts()) == {t for t, c in kn.TOOL_CLASSES.items() if c in kn.LATE_SPOKEN_CLASSES}

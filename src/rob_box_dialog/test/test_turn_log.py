@@ -170,3 +170,84 @@ def test_perform_outcome_is_forgotten_with_its_turn():
         log.performed(f"t{n}", "tale", "started")
     assert not log.performed("t1", "tale", "done"), "ход выпал из окна - записывать некуда"
     assert [dict(e.content)["status"] for e in log.window() if e.role == TOOL] == ["started", "started"]
+
+
+# -- поздний итог действия исправляет журнал хода (#3960 п.2, марафон 23.10 n809) ------------------------------------
+
+N809 = "поставь фоном ровный ритм на Ренардо, только не громко"
+
+
+def _phrase(result):
+    """Фраза кода об исходе, как её строит ход (``turn.outcome_phrase``)."""
+    from rob_box_dialog.turn import outcome_phrase
+
+    return outcome_phrase([result])
+
+
+def _music(status, ref="t9/0", data=None):
+    return ActionResult(turn_id=ref, epoch=0, agent="personality", tool="request_music", cls="action.media",
+                        status=status, data=data or {})
+
+
+def _n809_log():
+    """n809: ход заказал музыку, исполнитель закрыл ожидание ``timeout`` на сроке класса, робот сказал фразу кода."""
+    log = TurnLog()
+    log.begin("t9", 0, N809)
+    log.result("t9", _music("timeout"))
+    log.said("t9", "s1", _phrase(_music("timeout")))
+    return log
+
+
+def test_late_outcome_replaces_the_timeout_record_and_its_phrase():
+    """Трек заиграл через 1,4 с после срока: в окне следующего хода - «done» и «Включаю музыку.», а не таймаут."""
+    log = _n809_log()
+    assert log.spoken("s1", 24) == "Музыка пока не заиграла."
+    assert log.late(_music("done", data={"track_id": "req95964:01:A"}), _phrase)
+    log.said("t9", "s2", _phrase(_music("done")))
+    log.spoken("s2", 15)
+    window = log.window()
+    assert [(e.role, e.content) for e in window if e.role != TOOL] == [(USER, N809), (ASSISTANT, "Включаю музыку.")]
+    assert [dict(e.content) for e in window if e.role == TOOL] == [
+        {"tool": "request_music", "status": "done", "data": {"track_id": "req95964:01:A"}}]
+
+
+def test_late_outcome_drops_the_timeout_phrase_that_is_still_being_spoken():
+    """n809: поздний итог пришёл, пока «Музыка пока не заиграла.» ещё звучала: событие речи - как прозвучало (e2e),
+    а в окно модели опровергнутая фраза не идёт."""
+    log = _n809_log()
+    assert log.late(_music("done"), _phrase)
+    assert log.spoken("s1", 24) == "Музыка пока не заиграла."
+    assert [e.role for e in log.window()] == [USER, TOOL]
+
+
+def test_late_outcome_keeps_other_words_of_the_robot():
+    log = _n809_log()
+    log.spoken("s1", 24)
+    log.said("t9", "s3", "Ренардо уже прогревается.")
+    log.spoken("s3", 25)
+    assert log.late(_music("done"), _phrase)
+    assert [e.content for e in log.window() if e.role == ASSISTANT] == ["Ренардо уже прогревается."]
+
+
+def test_late_outcome_of_unknown_or_forgotten_action_changes_nothing():
+    log = _n809_log()
+    log.spoken("s1", 24)
+    before = log.window()
+    assert not log.late(_music("done", ref="t8/0"), _phrase), "чужое действие"
+    assert log.window() == before
+    log.reset()
+    assert not log.late(_music("done"), _phrase), "итог действия прошлой сессии ничего не добавляет"
+
+
+def test_late_outcome_after_a_promise_keeps_the_promise_phrase():
+    """Итог после ``pending`` («Еду к…») обновляет запись на месте; обещание было правдой - фраза остаётся."""
+    log = TurnLog()
+    log.begin("t5", 0, "езжай на кухню")
+    nav = dict(turn_id="t5/0", epoch=0, agent="personality", tool="navigate_to_waypoint", cls="action.motion")
+    log.result("t5", ActionResult(status="pending", **nav))
+    log.said("t5", "s1", "Еду на кухню.")
+    log.spoken("s1", 13)
+    assert log.late(ActionResult(status="done", data={"waypoint": "кухня"}, **nav), _phrase)
+    window = log.window()
+    assert [e.content for e in window if e.role == ASSISTANT] == ["Еду на кухню."]
+    assert [dict(e.content)["status"] for e in window if e.role == TOOL] == ["done"]

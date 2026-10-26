@@ -31,13 +31,15 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import json
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Awaitable, Dict, List, Mapping, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -57,12 +59,14 @@ from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
 from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
+from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
+from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.speaker_adapter import speaker_ref
-from rob_box_dialog.turn import TurnEngine, host_sections, say_late
+from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
@@ -149,14 +153,41 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
                         busy=lambda: plan_host.perform_busy(node))
 
 
+#: Скрытый контекст хода для MCP-тулов (``llm_adapter.TURN_CONTEXT_ARGS``): ``heard_text`` — реплика хода (опора
+#: слотов ``request_music``/``dj_set``/``generate_music``, #4013), ``utterance_id`` — её id (``register_speaker``).
+#: Задача хода ставит его себе (:func:`in_tool_turn`); вызов тула идёт в копии её контекста (``Executor`` →
+#: ``asyncio.ensure_future`` → ``asyncio.to_thread``): ход Личности и ход чата Telegram не путают реплики.
+_TOOL_TURN: "contextvars.ContextVar[Mapping[str, Any]]" = contextvars.ContextVar(
+    "dialog_v2_tool_turn", default=MappingProxyType({}))
+
+
+def tool_turn_context() -> Mapping[str, Any]:
+    """Контекст хода, в котором идёт вызов тула (``LLMToolCallAdapter.turn_context``); вне хода — пусто."""
+    return _TOOL_TURN.get()
+
+
+async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
+    """Работа хода (задача asyncio) с её контекстом тулов: реплика и её id едут в вызовы тулов этого хода."""
+    _TOOL_TURN.set(MappingProxyType(dict(context)))
+    return await work
+
+
+def late_outcome(engine: TurnEngine, result: ActionResult) -> None:
+    """Поздний итог действия (``Executor.on_late``, #3960): журнал хода — правда владельца вместо прежнего ``timeout``
+    (``TurnLog.late``), затем фраза кода (``turn.say_late``: «Включаю музыку.»)."""
+    engine.log.late(result, lambda before: outcome_phrase([before]))
+    say_late(engine, result)
+
+
 def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
-    """Провайдер MCP-тулов под подписью ``sender`` (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``)."""
+    """Провайдер MCP-тулов под подписью ``sender`` (``LLMToolCallAdapter`` → ``ROSMCPToolProvider``). Итог тула с
+    поздним итогом транспорт ждёт дольше срока класса (``execute.transport_timeouts``, #3960)."""
     from rob_box_harness.core.tool_registry import ToolRegistry  # noqa: PLC0415
     from rob_box_harness.executors import ROSMCPToolProvider, adapt_tool_provider  # noqa: PLC0415
     from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: PLC0415
 
-    adapter = LLMToolCallAdapter(node, sender=sender, turn_context=lambda: {"utterance_id": node.utterance_id})
-    provider = ROSMCPToolProvider(adapter)
+    adapter = LLMToolCallAdapter(node, sender=sender, turn_context=tool_turn_context)
+    provider = ROSMCPToolProvider(adapter, tool_timeouts=transport_timeouts())
     provider.update_tools([{"type": "function", "function": {"name": s.name, "description": s.description,
                                                              "parameters": dict(s.parameters)}}
                            for s in ToolRegistry(for_telegram=for_telegram).list_tools()])
@@ -217,7 +248,6 @@ class DialogNode(Node):
         super().__init__("dialog_node")
         declare_params(self)
         self.engine_flag = dialog_engine.declare(self)
-        self.utterance_id: Optional[str] = None
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
         self.last_chat_turn: Any = None  # то же для хода телеграм-агента
         self._loop = asyncio.new_event_loop()
@@ -255,7 +285,7 @@ class DialogNode(Node):
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   events=self._open_events(), log=_RosLog(self.get_logger()))
-        self._ports.on_late = functools.partial(say_late, self._engine)  # поздний старт музыки - фраза кода (#3960)
+        self._ports.on_late = functools.partial(late_outcome, self._engine)  # поздний старт музыки (#3960)
         self._subscribe()
         # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
         self._tars_status_feeds = parity.start_v2_status_feeds(self, String)
@@ -309,15 +339,16 @@ class DialogNode(Node):
                                    f"{self._backlog.background_phrases(now)}")
             return
         greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
-        self.utterance_id = uid or None
         self._interrupt(decision.text, uid, "utterance")
-        self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(self._turn(decision), self._loop), uid)
+        turn = in_tool_turn({"utterance_id": uid or None, "heard_text": decision.text}, self._turn(decision))
+        self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:
         """Реплика чата — ход телеграм-агента этого чата (не Личности); «Клод …» — никому (координатору)."""
         decision = self._chats.decide(chat_id, text, now)
         if isinstance(decision, Addressed):
-            self.last_chat_turn = asyncio.run_coroutine_threadsafe(self._chats.run(chat_id, decision), self._loop)
+            turn = in_tool_turn({"heard_text": decision.text}, self._chats.run(chat_id, decision))
+            self.last_chat_turn = asyncio.run_coroutine_threadsafe(turn, self._loop)
 
     async def _turn(self, decision: Addressed) -> None:
         if self._turn_lock.locked():  # не стоп во время хода — APPEND: новый ждёт конца текущего, речь не рвётся
