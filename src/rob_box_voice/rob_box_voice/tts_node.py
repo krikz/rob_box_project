@@ -98,7 +98,7 @@ from .tts_engines import (
     silero_apply_tts,
     yandex_collect_audio,
 )
-from .utils.stderr_silence import ignore_stderr
+from .utils.stderr_silence import silence_alsa_errors
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import (
@@ -1233,6 +1233,11 @@ class TTSNode(Node):
                 self.get_logger().warn(
                     f"⚠️  Не удалось подключиться к Yandex gRPC: {e}"
                 )
+
+        # ALSA-ругань глушим один раз на процесс, а не подменой fd 2 вокруг
+        # play_audio: fd 2 общий, и логи соседних потоков (SpeechEvent
+        # queued/synthesized/finished) пропадали в /dev/null (#3730).
+        silence_alsa_errors()
 
         # Инициализация аудио устройства для воспроизведения
         self.device_index = None
@@ -4627,16 +4632,15 @@ class TTSNode(Node):
             self._publish_tts_finished(speech_id, success=False, error="cancelled")
             return
         try:
-            with ignore_stderr(enable=True):
-                self.current_stream = True  # Маркер что воспроизведение идёт
-                success = self.playback_manager.play_audio(
-                    audio_data=audio_stereo,
-                    sample_rate=target_rate,
-                    device_index=self.device_index,
-                    blocking=True,  # Блокирующее воспроизведение для TTS
-                    timeout=5.0,
-                    node_name="tts_node",
-                )
+            self.current_stream = True  # Маркер что воспроизведение идёт
+            success = self.playback_manager.play_audio(
+                audio_data=audio_stereo,
+                sample_rate=target_rate,
+                device_index=self.device_index,
+                blocking=True,  # Блокирующее воспроизведение для TTS
+                timeout=5.0,
+                node_name="tts_node",
+            )
         finally:
             release = getattr(self, "_release_play_seq", None)
             if release is not None:
