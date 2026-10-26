@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import re
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
@@ -229,14 +229,18 @@ def stop_scope(rest: str) -> Tuple[StopScope, str]:
     Хвост делится на части союзами и знаками препинания; части съедаются по порядку, пока каждая покрыта таблицей
     (объекты, оговорка «оставь», служебные). Первая непокрытая часть и всё после неё — остаток; ни одна не покрыта —
     остаток весь хвост, как был. «читать, а музыку оставь» → речь + оставить музыку, «»; «музыки» → музыка, «»;
-    «спой другую» → ничего, «спой другую»; «читать, а музыку сделай потише» → речь, «музыку сделай потише»."""
+    «спой другую» → ничего, «спой другую»; «читать, а музыку сделай потише» → речь, «музыку сделай потише».
+    Оговорка в остатке тоже оставляет музыку: «спой другую, а музыку оставь» → оставить музыку, «спой другую, а
+    музыку оставь» (просьба целиком — LLM)."""
     text = rest or ""
     spans = [(m.group(0).lower().replace("ё", "е"), m.start(), m.end()) for m in _TOKEN.finditer(text)]
     speech = music = keep = False
-    for n, clause in enumerate(_clauses(text, spans)):
+    clauses = _clauses(text, spans)
+    for n, clause in enumerate(clauses):
         parsed = _clause_scope(tuple(token for token, _, _ in clause))
         if parsed is None:
             tail = text[clause[0][1]:] if n else text
+            keep = keep or _kept_later(clauses[n + 1:])
             return StopScope(speech, music, keep), tail.strip(" ,.!?;:-–—")
         named, kept = parsed
         speech = speech or "speech" in named
@@ -261,30 +265,44 @@ def _clauses(text: str, spans: Sequence[Span]) -> Tuple[Tuple[Span, ...], ...]:
     return tuple(out + [tuple(current)] if current else out)
 
 
+def _kept_later(clauses: Sequence[Tuple[Span, ...]]) -> bool:
+    """Есть ли среди частей остатка покрытая часть с оговоркой («…, а музыку оставь» после новой просьбы)."""
+    parsed = (_clause_scope(tuple(token for token, _, _ in clause)) for clause in clauses)
+    return any(part is not None and part[1] for part in parsed)
+
+
 def _clause_scope(tokens: Sequence[str]) -> Optional[Tuple[FrozenSet[str], bool]]:
-    """Часть хвоста по таблице: ``(названные объекты, есть ли оговорка «оставь»)``; чужое слово — ``None``."""
-    named, keep, i = set(), False, 0
+    """Часть хвоста по таблице: ``(названные объекты, есть ли оговорка «оставь»)``; чужое слово или дополнение без
+    глагола своего объекта («рэпа» без «читать») — ``None``."""
+    found: Dict[str, Set[str]] = {"stem": set(), "verb": set(), "complement": set()}
+    keep, i = False, 0
     while i < len(tokens):
         phrase = next((p for p in STOP_SCOPE.keep if tuple(tokens[i:i + len(p)]) == p), None)
         if phrase is not None:
             keep, i = True, i + len(phrase)
             continue
-        what = _stop_object(tokens[i])
+        what, role = _stop_object(tokens[i])
         if not what and tokens[i] not in STOP_SCOPE.filler:
             return None
-        named.update((what,) if what else ())
+        found[role or "stem"].update((what,) if what else ())
         i += 1
-    return frozenset(named), keep
+    if not found["complement"] <= found["verb"]:
+        return None
+    return frozenset(found["stem"] | found["verb"]), keep
 
 
-def _stop_object(token: str) -> str:
-    """Объект стопа (ключ ``STOP_SCOPE.objects``) или ``""``: слово с основы объекта; глагол — кроме повелительной
-    формы («говори», «играй» — новая просьба)."""
+def _stop_object(token: str) -> Tuple[str, str]:
+    """``(объект стопа — ключ STOP_SCOPE.objects, роль слова: stem/verb/complement)`` или ``("", "")``: слово с основы
+    объекта; глагол — кроме повелительной формы («говори», «играй» — новая просьба); дополнение («рэп»)."""
     imperative = token.endswith(STOP_SCOPE.imperative_endings)
     for what, obj in STOP_SCOPE.objects.items():
-        if token.startswith(obj.stems) or (token.startswith(obj.verbs) and not imperative):
-            return what
-    return ""
+        if token.startswith(obj.stems):
+            return what, "stem"
+        if token.startswith(obj.verbs) and not imperative:
+            return what, "verb"
+        if token.startswith(obj.complements):
+            return what, "complement"
+    return "", ""
 
 
 def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:

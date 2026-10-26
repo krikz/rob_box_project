@@ -10,7 +10,9 @@
   шлёт по-прежнему: В20 оставил это открытым вопросом («не затронуто»), здесь поведение не меняется;
 * «замолчи/помолчи» (``silence``) — то же, что «хватит», без музыки и движения; тишину кладёт ход (§6.3);
 * «хватит читать/говорить/петь», «…а музыку оставь» (``stop_speech``, #3994) — речь и выступление, как «хватит»;
-  плеер музыки и движение — нет; с оговоркой «музыку оставь» бит выступления доигрывает (``keep_backing``);
+  плеер музыки и движение — нет;
+* оговорка «музыку оставь» (``args.keep_music`` любого вида: «стой, а музыку оставь» — ``stop_all``) — плеер музыки
+  не гасится (:func:`stops_music`), бит выступления доигрывает (``keep_backing``); движение — по виду, как без неё;
 * не стоп (дополнение, новая просьба) и спорный стоп (В19) — :data:`NO_INTERRUPT`: речь не рвётся, новое решает
   ``plan.composition.compose()`` в ходе.
 
@@ -54,6 +56,12 @@ def stop_music_calls(snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
     return (ToolCall("stop_music", {}),) if snapshot.music.state == "playing" else ()
 
 
+def stops_music(command: Tier1Command) -> bool:
+    """Гасит ли Tier-1 команда плеер музыки: стоп всего — да, если человек не оставил музыку («стой, а музыку оставь»,
+    ``args.keep_music``, #3994); стоп речи и тишина — нет."""
+    return command.kind == "stop_all" and not command.args.get("keep_music")
+
+
 @dataclass(frozen=True)
 class Interrupt:
     """Что гасит перебивание. ``speech_boundary`` — ключ ``speech_client.CANCEL_BOUNDARIES``; ``perform`` — метод
@@ -87,12 +95,11 @@ def interrupt_for(command: Optional[Tier1Command], text: str, snapshot: SessionS
         return NO_INTERRUPT
     halt = policy_word(text, wake_words) == HALT
     cancel = frozenset(c for c in _ALL if not survives(c)) | (frozenset({"action.motion"}) if halt else frozenset())
-    sounds = command.kind == "stop_all"
-    keep_backing = command.kind == "stop_speech" and bool(command.args.get("keep_music"))
     return Interrupt(policy=HALT if halt else STOP, kind=command.kind,
                      speech_boundary="now" if halt else "as_requested", perform=HALT if halt else STOP,
-                     stop_motion=sounds, music=stop_music_calls(snapshot) if sounds else (),
-                     keep_backing=keep_backing, cancel_actions=cancel, keep=_ALL - cancel)
+                     stop_motion=command.kind == "stop_all",
+                     music=stop_music_calls(snapshot) if stops_music(command) else (),
+                     keep_backing=bool(command.args.get("keep_music")), cancel_actions=cancel, keep=_ALL - cancel)
 
 
 def on_interrupt(text: str, snapshot: SessionSnapshot, wake_words: Optional[Sequence[str]] = None) -> Interrupt:
@@ -131,4 +138,4 @@ class TurnsInFlight:
 
 
 __all__ = ["HALT", "Interrupt", "NO_INTERRUPT", "NONE", "STOP", "TurnsInFlight", "interrupt_for", "on_interrupt",
-           "stop_music_calls", "survives"]
+           "stop_music_calls", "stops_music", "survives"]

@@ -215,7 +215,7 @@ class V2Ports:
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его
         снимает само выступление. ``keep_backing`` («а музыку оставь», #3994) — бит доигрывает: выступление его не
-        снимает (``False``), общий стоп музыки по виду ``stop_speech`` тоже не зовётся."""
+        снимает (``False``), общий стоп музыки при оговорке тоже не зовётся (``interrupt.stops_music``)."""
         host = self._performer()
         if host is None:
             return False

@@ -7,8 +7,9 @@ import pytest
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import ToolCall
+from rob_box_dialog.grammar import Tier1Command
 from rob_box_dialog.interrupt import (HALT, NO_INTERRUPT, STOP, TurnsInFlight, on_interrupt, stop_music_calls,
-                                      survives)
+                                      stops_music, survives)
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 
 SNAP = Session("personality").snapshot
@@ -49,6 +50,38 @@ def test_3994_stop_speech_cuts_speech_and_performance_but_not_music_or_motion(sn
     assert stop.interrupts and stop.policy == STOP and stop.kind == "stop_speech"
     assert stop.perform == STOP and stop.speech_boundary == "as_requested" and stop.keep_backing
     assert stop.music == () and not stop.stop_motion
+
+
+@pytest.mark.parametrize("snap", [TRACK, DJ])
+@pytest.mark.parametrize("text", ["Робот, стой, музыку оставь", "Робот, стой, а музыку оставь",
+                                  "Робот, стой, музыку не выключай"])
+def test_3994_halt_keeping_music_still_stops_motion_but_not_music(text, snap):
+    """Ревью PR #4035: «стой, а музыку оставь» не должен оставлять робота ехать. ``halt``: речь сразу, выступление —
+    halt, ``stop_motion``; плеер музыки не гасится, бит выступления доигрывает."""
+    stop = on_interrupt(text, snap)
+    assert stop.interrupts and stop.policy == HALT and stop.kind == "stop_all"
+    assert stop.stop_motion and "action.motion" in stop.cancel_actions
+    assert stop.speech_boundary == "now" and stop.perform == HALT and stop.keep_backing
+    assert stop.music == ()
+
+
+@pytest.mark.parametrize("text", ["Робот, хватит, музыку оставь", "Робот, стоп, а бит не трогай"])
+def test_3994_bare_stop_keeping_music_stops_motion_like_enough(text):
+    stop = on_interrupt(text, TRACK)
+    assert stop.policy == STOP and stop.kind == "stop_all" and stop.stop_motion
+    assert stop.music == () and stop.keep_backing
+
+
+def test_3994_shut_up_keeping_music_keeps_the_performance_beat():
+    stop = on_interrupt("Робот, замолчи, а музыку оставь", TRACK)
+    assert stop.kind == "silence" and stop.keep_backing and stop.music == () and not stop.stop_motion
+
+
+def test_3994_stops_music_only_for_stop_all_without_keep():
+    assert stops_music(Tier1Command("stop_all"))
+    assert not stops_music(Tier1Command("stop_all", {"keep_music": True}))
+    assert not stops_music(Tier1Command("stop_speech", {"keep_music": False}))
+    assert not stops_music(Tier1Command("silence"))
 
 
 def test_3994_stop_speech_without_keep_lets_the_performance_outro_its_beat():

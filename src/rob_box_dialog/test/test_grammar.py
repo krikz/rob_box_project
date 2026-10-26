@@ -93,11 +93,14 @@ def test_clear_stop_with_new_command_keeps_the_rest(text, rest):
 STOP_SPEECH = [  # (фраза, keep_music)
     ("Робот, хватит читать, а музыку оставь", True),  # n811, акт 8
     ("робот хватит читать а музыку оставь", True),  # то же из STT, без запятых
-    ("Робот, хватит, музыку оставь", True),
-    ("Робот, стоп, а бит не трогай", True),
+    ("Робот, хватит читать рэп, а музыку оставь", True),  # «рэп» — объект речи при глаголе «читать»
+    ("Робот, хватит читать стих, а музыку оставь", True),
+    ("Робот, хватит тебе читать, а музыку оставь", True),
+    ("Робот, хватит читать, музыку не останавливай", True),
     ("Робот, хватит читать", False),
     ("робот хватит говорить", False),
     ("Робот, хватит рассказывать", False),
+    ("Робот, хватит сказки рассказывать", False),
     ("Робот, хватит петь", False),
     ("робот ну хватит уже болтать", False),
 ]
@@ -132,9 +135,39 @@ def test_3994_stop_speech_with_a_new_request_keeps_only_the_uncovered_rest():
     assert command == Tier1Command("stop_speech", {"keep_music": False}, rest="музыку сделай потише")
 
 
-def test_3994_shut_up_keeping_music_is_still_silence():
-    """«Замолчи, а музыку оставь» — тишина (она музыку и так не трогает), а не стоп речи."""
-    assert match("Робот, замолчи, а музыку оставь", MUSIC) == Tier1Command("silence")
+@pytest.mark.parametrize("text", [
+    "Робот, стой, а музыку оставь",  # «стой» — стоп и движения: оговорка его не отменяет (ревью PR #4035)
+    "Робот, стой, музыку не выключай",
+    "Робот, стоп, а бит не трогай",
+    "Робот, хватит, музыку оставь",  # речь не названа — стоп всего (решение по умолчанию), кроме музыки
+    "Робот, стой, хватит читать, а музыку оставь",  # речь названа, но есть «стой»
+])
+@pytest.mark.parametrize("snap", [IDLE, MUSIC, SILENCED])
+def test_3994_keep_music_without_named_speech_or_with_halt_is_stop_all_keeping_music(text, snap):
+    """Оговорка «музыку оставь» не делает «стой»/«стоп» стопом одной речи: вид ``stop_all`` (движение тоже гаснет),
+    музыку оставляет ``args.keep_music``."""
+    assert match(text, snap) == Tier1Command("stop_all", {"keep_music": True}), text
+
+
+def test_3994_halt_with_named_speech_is_stop_all():
+    """«Стой, хватит читать» — «стой» стопит всё (и движение), даже когда названа речь."""
+    assert match("Робот, стой, хватит читать", MUSIC) == Tier1Command("stop_all")
+
+
+def test_3994_keep_after_a_new_request_still_keeps_music():
+    """Оговорка после новой просьбы не теряется: стоп всего без музыки, просьба целиком — LLM."""
+    command = match("Робот, хватит, спой другую, а музыку оставь", MUSIC)
+    assert command == Tier1Command("stop_all", {"keep_music": True}, rest="спой другую, а музыку оставь")
+
+
+def test_3994_bare_rap_is_not_speech_scope():
+    """«Хватит рэпа» без глагола речи — может быть трек плеера: стоп всего и остаток, как было."""
+    assert match("Робот, хватит рэпа", MUSIC) == Tier1Command("stop_all", rest="рэпа")
+
+
+def test_3994_shut_up_keeping_music_is_silence_keeping_music():
+    """«Замолчи, а музыку оставь» — тишина (плеер она и так не трогает) с ``keep_music``: бит выступления доигрывает."""
+    assert match("Робот, замолчи, а музыку оставь", MUSIC) == Tier1Command("silence", {"keep_music": True})
 
 
 @pytest.mark.parametrize("text", ["Робот, где остановка автобуса", "робот останова двигателя"])

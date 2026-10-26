@@ -243,6 +243,39 @@ def test_3994_enough_reading_without_keep_still_leaves_the_player_alone():
     assert ports.executed == [] and ports.intents == [] and ports.asked == []
 
 
+@pytest.mark.parametrize("dj", [False, True])
+def test_3994_halt_keeping_music_publishes_stop_motion_and_does_not_stop_music(dj):
+    """Ревью PR #4035: «Робот, стой, музыку оставь» — ``stop_all`` с ``keep_music``: ``/dialog/intent stop_motion``
+    есть (робот не едет дальше), выступление — ``halt`` с ``keep_backing``, ``stop_music``/``dj_set(stop)`` нет, LLM
+    не зовётся."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    if dj:
+        engine.session.push_scene("DJ", "code")
+    agg = _run(engine, "Робот, стой, музыку оставь")
+    assert ports.cancels == ["tier1 stop_all"] and ports.intents == ["stop_motion"]
+    assert ports.performs == ["halt"] and ports.kept == [True]
+    assert ports.executed == [] and ports.asked == [] and agg.llm_calls == 0
+
+
+def test_3994_keep_after_a_new_request_keeps_music_and_the_request_goes_to_llm():
+    ports = Ports(answers=[Answer(Command(speech="Пою другую!"), "deepseek")])
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, хватит, спой другую, а музыку оставь")
+    assert ports.cancels == ["tier1 stop_all"] and ports.intents == ["stop_motion"]
+    assert all(("stop_music", {}) not in batch for batch in ports.executed)
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("спой другую, а музыку оставь")
+
+
+def test_3994_tier1_actions_keep_music_stops_nothing():
+    snap = Session("personality").snapshot
+    playing = snap.__class__(**{**vars(snap), "music": MusicStateRef("playing")})
+    assert tier1_actions(Tier1Command("stop_all", {"keep_music": True}), playing) == ()
+    assert tier1_actions(Tier1Command("stop_all"), playing) == (ToolCall("stop_music", {}),)
+
+
 def test_3994_port_without_keep_backing_is_called_the_old_way():
     """Чужая реализация порта (чат, оператор) без ``keep_backing`` не ломается новым видом стопа."""
     ports = Ports(perform_owns_music=True)

@@ -217,6 +217,22 @@ def test_3994_n811_enough_reading_keep_music_leaves_the_beat_and_asks_no_llm(loo
     assert any("tier1 kind=stop_speech args={'keep_music': True}" in r.getMessage() for r in caplog.records)
 
 
+def test_3994_halt_keep_music_stops_motion_and_leaves_the_beat(loop, caplog):
+    """Ревью PR #4035 на v2 целиком: рэп под свой бит → «Робот, стой, музыку оставь» — ``stop_all`` с ``keep_music``:
+    интент ``stop_motion`` опубликован (робот не едет дальше), выступление снято сразу, бит доигрывает (нет
+    ``stop_music``), LLM не зовётся."""
+    engine, ports, host, music, provider = _rap_under_its_beat(loop)
+    ports._intent_pub = intents = _Pub()
+    with caplog.at_level("INFO", logger="rob_box_dialog.turn"):
+        agg = asyncio.run(engine.run(Addressed("Робот, стой, музыку оставь", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    assert provider.asked == 1 and agg.llm_calls == 0
+    assert [c.name for c in music.calls] == ["request_music"], "бит оставлен: ни stop_music, ни новой подложки"
+    assert host.block.backing.state == "kept" and not host.owns_backing
+    assert [m.kind for m in intents.sent] == ["stop_motion"]
+    assert any("tier1 kind=stop_all args={'keep_music': True}" in r.getMessage() for r in caplog.records)
+
+
 def test_3994_v2_port_keep_backing_is_not_reported_as_owned_beat(loop):
     """``V2Ports.stop_perform(keep_backing=True)``: бит остаётся, выступление его не снимает — ``False``."""
     _engine, ports, host, music, _provider = _rap_under_its_beat(loop)

@@ -289,6 +289,20 @@ def test_slip_tables_do_not_contradict_each_other():
     ("музыки", StopScope(music=True), ""),
     ("играть", StopScope(music=True), ""),
     ("читать и играть", StopScope(speech=True, music=True), ""),
+    # перефразы n811 (ревью PR #4035): объект речи, «тебе», «не останавливай/не отключай»
+    ("читать рэп, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("рэп читать", StopScope(speech=True), ""),
+    ("читать стих, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать вслух", StopScope(speech=True), ""),
+    ("сказки рассказывать", StopScope(speech=True), ""),
+    ("тебе читать, а музыку оставь", StopScope(speech=True, keep_music=True), ""),
+    ("читать, музыку не останавливай", StopScope(speech=True, keep_music=True), ""),
+    ("читать, музыку не отключай", StopScope(speech=True, keep_music=True), ""),
+    # «рэп» без глагола речи — не охват («хватит рэпа» — может быть трек плеера)
+    ("рэпа", NO_SCOPE, "рэпа"),
+    # оговорка после новой просьбы не теряется; остаток — просьба целиком
+    ("спой другую, а музыку оставь", StopScope(keep_music=True), "спой другую, а музыку оставь"),
+    ("спой другую, и не трогай кота", NO_SCOPE, "спой другую, и не трогай кота"),
     # не покрыто — остаток (новая просьба), как было
     ("спой другую", NO_SCOPE, "спой другую"),
     ("сыграй другую", NO_SCOPE, "сыграй другую"),  # повелительное «сыграй» — заказ, не объект стопа

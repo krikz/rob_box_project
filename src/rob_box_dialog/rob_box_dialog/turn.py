@@ -52,7 +52,7 @@ from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.grammar import Tier1Command, match
-from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls
+from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, audible, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
@@ -200,16 +200,15 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
-    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп всего — музыка, если играет;
-    стоп речи (``stop_speech``, #3994) музыку не трогает."""
+    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп всего — музыка, если играет
+    (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и оговорка «музыку оставь» (#3994)
+    музыку не трогают."""
     if command.kind == "volume":
         tool = kn.VOLUME_CHANNELS[command.args["channel"]].tool
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
     if command.kind == "set_voice":
         return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
-    if command.kind == "stop_all":
-        return stop_music_calls(snapshot)
-    return ()
+    return stop_music_calls(snapshot) if stops_music(command) else ()
 
 
 def stop_performance(ports: Any, how: str, keep_backing: bool = False) -> bool:
