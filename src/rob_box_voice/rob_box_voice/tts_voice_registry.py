@@ -182,6 +182,32 @@ def voices_for(provider: str) -> list[str]:
     return list(PROVIDER_VOICES.get(provider, []))
 
 
+def known_provider(name: object) -> str:
+    """Провайдер синтеза из каталога (``yandex``/``minimax``/``silero``); не провайдер - ``""``.
+
+    Одно правило для всех, кто читает ``/voice/tts/provider_state``: метка вроде ``prefetch`` (звучание готового
+    пред-синтеза) или мусор не становится «фактическим провайдером», и каталог голосов от неё не пустеет (#4024).
+    """
+    key = str(name or "").strip().lower()
+    return key if key in PROVIDER_VOICES else ""
+
+
+#: Язык голосов, которыми звучат роли выступления: реплики русские, чужой язык у голоса - чужой акцент (#3998).
+ROLE_VOICE_LANGUAGE = "ru"
+
+
+def role_voices_for(provider: str, narrator: str = "") -> list[str]:
+    """Голоса для РОЛЕЙ выступления (сказка и т.п.): русские голоса каталога звучащего провайдера, кроме голоса
+    рассказчика.
+
+    Единственная таблица - ``VOICE_METADATA.language``: legacy-китайские ``male-qn-qingse``/``female-shaonv`` MiniMax и
+    английский/немецкий ``john``/``lea`` Yandex в роли не попадают (#3998: сказка звучала китайским голосом на русском
+    тексте). ``narrator`` - голос, которым звучит пустая строка в ``voice_per_segment`` (текущий голос робота): роль не
+    должна звучать так же, как рассказчик. ``voices_for`` не меняется: ``set_voice`` и обзоры голосов видят весь каталог.
+    """
+    return [v for v in voices_for(provider) if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator]
+
+
 def default_voice_for(provider: str) -> str:
     """Дефолтный голос провайдера; для неизвестного — пустая строка."""
     return DEFAULT_VOICES.get(provider, "")

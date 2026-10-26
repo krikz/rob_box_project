@@ -98,7 +98,7 @@ from .tts_engines import (
     silero_apply_tts,
     yandex_collect_audio,
 )
-from .utils.stderr_silence import ignore_stderr
+from .utils.stderr_silence import silence_alsa_errors
 
 # Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
 from .core.speak_helpers import (
@@ -116,6 +116,8 @@ from .core.voice_owner import attach_voice_owner
 from .core import speech_compat
 from rob_box_core import dialog_engine
 from .core.speech_owner import SpeechOwner, owner_of
+from .core.speech_timing import PREFETCH_PROVIDER
+from .tts_voice_registry import known_provider
 from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -632,6 +634,23 @@ def _text_or_language_notice(
         f"произношу отказ (текст был: {text[:60]!r})"
     )
     return notice
+
+
+def _provider_for_state(node, requested, reason: str) -> Optional[str]:
+    """Провайдер для ``/voice/tts/provider_state`` (#4024): только из каталога реестра.
+
+    Метка «пред-синтез» (``prefetch``) раньше уходила сюда и затирала фактического провайдера у читателей: каталог
+    голосов пустел, и голоса сегментов сказки не сверялись. Метка не из каталога - не провайдер: громкая запись в лог
+    и публикация фактического (``node._effective_provider()`` - первый живой в цепочке). Модульная функция, как
+    :func:`_text_or_language_notice`: класс ``TTSNode`` в бюджете ADR-0145.
+    """
+    provider = known_provider(requested)
+    if requested and not provider:
+        node.get_logger().warn(
+            f"⚠️ [issue 4024] provider_state: {requested!r} не провайдер синтеза (reason={reason}) — "
+            "публикую фактического"
+        )
+    return provider or node._effective_provider()
 
 
 # bug(#2183) — живые voice-параметры ноды: {имя ROS-параметра: (человекочитаемое
@@ -1233,6 +1252,11 @@ class TTSNode(Node):
                 self.get_logger().warn(
                     f"⚠️  Не удалось подключиться к Yandex gRPC: {e}"
                 )
+
+        # ALSA-ругань глушим один раз на процесс, а не подменой fd 2 вокруг
+        # play_audio: fd 2 общий, и логи соседних потоков (SpeechEvent
+        # queued/synthesized/finished) пропадали в /dev/null (#3730).
+        silence_alsa_errors()
 
         # Инициализация аудио устройства для воспроизведения
         self.device_index = None
@@ -3596,7 +3620,8 @@ class TTSNode(Node):
 
         Args:
             reason: "startup" | "provider_dead" | "synthesis_ok" — для логов.
-            provider: фактический провайдер; None → вычислить самим.
+            provider: фактический провайдер; None (или метка не из каталога
+                реестра, #4024) → вычислить самим.
             voice: фактически использованный голос (для synthesis_ok).
 
         Публикует JSON ``{"provider": str, "voice": str, "default_voice": str,
@@ -3606,10 +3631,11 @@ class TTSNode(Node):
         pub = getattr(self, "provider_state_pub", None)
         if pub is None:
             return  # тестовый stub без топика
-        eff = provider or self._effective_provider()
+        from .tts_voice_registry import default_voice_for as _default_voice
+
+        eff = _provider_for_state(self, provider, reason)
         if not eff:
             return
-        from .tts_voice_registry import default_voice_for as _default_voice
 
         default_voice = _default_voice(eff)
         used_voice = voice or default_voice
@@ -3725,9 +3751,11 @@ class TTSNode(Node):
         ``speech_id`` (ADR-0150 PR-3, ``SpeechOwner.claim_presynth``). Когда
         передано, функция ПРОПУСКАЕТ цепочку синтеза и использует
         ``prebaked_audio["audio_np"]`` / ``prebaked_audio["sample_rate"]``
-        как готовый результат. ``used_provider`` помечается как
-        ``"prefetch"`` (чтобы provider_state и метрики видели, что
-        чанк пришёл не от провайдера). ``None`` (default) — обычный синтез.
+        как готовый результат. ``used_provider`` / ``used_voice`` — те, что
+        синтезировали пред-синтез (в provider_state уходит РЕАЛЬНЫЙ
+        провайдер, #4024), а ``ctx["prefetch"]`` помечает для SpeechEvent и
+        метрик, что чанк пришёл не от провайдера. ``None`` (default) —
+        обычный синтез.
 
         Реализация декомпозирована (issue #2078): ``_synthesize_and_play``
         — orchestrator-метод (CC≤15), тяжёлая логика разнесена в приватные
@@ -3785,7 +3813,8 @@ class TTSNode(Node):
         ctx: Dict[str, Any] = {
             "audio_np": None,  # np.ndarray | None
             "sample_rate": 16000,  # default; each provider overrides
-            "used_provider": None,  # "minimax" | "yandex" | "silero" | "prefetch"
+            "used_provider": None,  # "minimax" | "yandex" | "silero" (при пред-синтезе - кто его синтезировал)
+            "prefetch": False,  # True - аудио взято из готового пред-синтеза (commit=true после commit=false)
             "used_voice": None,  # issue #1229 — фактический голос
             "result": {},  # последний result от MiniMax (already_published etc.)
             # #3930 — в динамик можно потоком (пред-синтез, шлем, бурундук — целиком).
@@ -4007,8 +4036,12 @@ class TTSNode(Node):
             return False
         ctx["audio_np"] = np.asarray(cached_audio, dtype=np.float32)
         ctx["sample_rate"] = int(cached_sr)
-        ctx["used_provider"] = "prefetch"
-        ctx["used_voice"] = voice or self.minimax_voice
+        # #4024 — провайдер и голос те, что синтезировали пред-синтез: они уходят в provider_state и журнал речи.
+        # Метка «prefetch» (``ctx["prefetch"]``) остаётся для SpeechEvent и метрик, но провайдером не считается.
+        # Провайдер не сообщён (чужой вызов без него) - ``""``: provider_state тогда не публикуется, а не врёт.
+        ctx["used_provider"] = known_provider(prebaked_audio.get("provider"))
+        ctx["used_voice"] = prebaked_audio.get("voice") or voice
+        ctx["prefetch"] = True
         self.get_logger().info(
             f"⚡ [presynth] prebaked_audio used "
             f"(speech_id={(speech_id or '')[:8]}, "
@@ -4017,7 +4050,7 @@ class TTSNode(Node):
             f"basis={prebaked_audio.get('basis')!r})"
         )
         if is_metrics_enabled():
-            record_tts_synthesize("prefetch", success=True, duration_s=0.0)
+            record_tts_synthesize(PREFETCH_PROVIDER, success=True, duration_s=0.0)
         return True
 
     def _sap_run_provider_chain(
@@ -4627,16 +4660,15 @@ class TTSNode(Node):
             self._publish_tts_finished(speech_id, success=False, error="cancelled")
             return
         try:
-            with ignore_stderr(enable=True):
-                self.current_stream = True  # Маркер что воспроизведение идёт
-                success = self.playback_manager.play_audio(
-                    audio_data=audio_stereo,
-                    sample_rate=target_rate,
-                    device_index=self.device_index,
-                    blocking=True,  # Блокирующее воспроизведение для TTS
-                    timeout=5.0,
-                    node_name="tts_node",
-                )
+            self.current_stream = True  # Маркер что воспроизведение идёт
+            success = self.playback_manager.play_audio(
+                audio_data=audio_stereo,
+                sample_rate=target_rate,
+                device_index=self.device_index,
+                blocking=True,  # Блокирующее воспроизведение для TTS
+                timeout=5.0,
+                node_name="tts_node",
+            )
         finally:
             release = getattr(self, "_release_play_seq", None)
             if release is not None:

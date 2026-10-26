@@ -23,7 +23,7 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_voice.tts_voice_registry import voices_for
+from rob_box_voice.tts_voice_registry import known_provider, role_voices_for
 
 from . import perform_ask
 from .music_player_state import parse_music_event
@@ -91,10 +91,10 @@ def _foreign_music(node: Any) -> str:
 def _tts_provider(node: Any) -> str:
     """Провайдер TTS сейчас: фактический из ``/voice/tts/provider_state`` (после фолбека), иначе номинальный
     параметр ``tts_provider``; неизвестен — ``""`` (выступление тогда без пауз MiniMax, с причиной в логе).
-    ``prefetch`` — не провайдер: так tts_node метит звучание готового пред-синтеза, кто синтезировал — не сказано."""
-    actual = getattr(node, "_actual_tts_provider", None)
-    if actual and actual != "prefetch":
-        return str(actual)
+    Метка не из каталога реестра (``prefetch`` и т.п.) — не провайдер (:func:`known_provider`)."""
+    actual = known_provider(getattr(node, "_actual_tts_provider", None))
+    if actual:
+        return actual
     try:
         return str(node.get_parameter("tts_provider").value or "")
     except Exception:  # noqa: BLE001 — параметр не объявлен (тестовая нода): провайдер неизвестен
@@ -103,13 +103,15 @@ def _tts_provider(node: Any) -> str:
 
 def on_tts_provider_state(node: Any, msg: Any) -> None:
     """``/voice/tts/provider_state`` (JSON ``{"provider": …}`` от tts_node) → фактический провайдер TTS для
-    :func:`_tts_provider`: без него хост v2 не знал провайдера, и паузы MiniMax по сетке строк не включались (#3901)."""
+    :func:`_tts_provider`: без него хост v2 не знал провайдера, и паузы MiniMax по сетке строк не включались (#3901).
+    Принимается только провайдер из каталога реестра: ``prefetch`` (#4024) факт не затирает — иначе каталог голосов
+    пуст и голоса сегментов сказки не сверяются."""
     try:
-        provider = (json.loads(msg.data or "{}") or {}).get("provider")
+        provider = known_provider((json.loads(msg.data or "{}") or {}).get("provider"))
     except (ValueError, TypeError, AttributeError):
         return
     if provider:
-        node._actual_tts_provider = str(provider)
+        node._actual_tts_provider = provider
 
 
 def _now(node: Any) -> float:
@@ -178,10 +180,13 @@ def on_music_event(node: Any, msg: Any) -> None:
 
 
 def perform_busy(node: Any) -> Busy:
-    """Что занято для валидатора команды: идущее выступление и его ACTIVE-сегмент (``edit_pending``)."""
+    """Что занято для валидатора команды: идущее выступление и его ACTIVE-сегмент (``edit_pending``), и голоса РОЛЕЙ —
+    русские голоса звучащего провайдера без рассказчика (:func:`role_voices_for`, #3998): из них схема команды строит
+    перечень ``voice_per_segment``, и тем же перечнем валидатор отвергает чужое имя (``bad_enum``)."""
     host = performer(node)
+    provider, narrator = tts_state(node)
     return Busy(active_segment=None if host is None else host.active_segment,
-                voices=tuple(voices_for(tts_state(node)[0])))
+                voices=tuple(role_voices_for(provider, narrator)))
 
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
