@@ -41,8 +41,35 @@ def test_silence_word_interrupts_speech_but_not_music_or_motion():
     assert stop.music == () and not stop.stop_motion and stop.perform == STOP
 
 
+@pytest.mark.parametrize("snap", [TRACK, DJ])
+def test_3994_stop_speech_cuts_speech_and_performance_but_not_music_or_motion(snap):
+    """n811: «хватит читать, а музыку оставь» под играющий бит — речь и выступление гаснут, плеер и движение — нет;
+    бит самого выступления доигрывает (``keep_backing``)."""
+    stop = on_interrupt("Робот, хватит читать, а музыку оставь", snap)
+    assert stop.interrupts and stop.policy == STOP and stop.kind == "stop_speech"
+    assert stop.perform == STOP and stop.speech_boundary == "as_requested" and stop.keep_backing
+    assert stop.music == () and not stop.stop_motion
+
+
+def test_3994_stop_speech_without_keep_lets_the_performance_outro_its_beat():
+    stop = on_interrupt("Робот, хватит читать", TRACK)
+    assert stop.kind == "stop_speech" and stop.music == () and not stop.stop_motion and not stop.keep_backing
+
+
+def test_3994_stt_partial_with_stop_speech_already_interrupts():
+    """Сегмент фразы с вейком (``/dialog/interrupt_request``): «робот хватит читать» рвёт речь, как «хватит»."""
+    assert on_interrupt("робот хватит читать", TRACK).interrupts
+
+
+def test_4020_stop_form_stops_everything_like_enough():
+    stop = on_interrupt("Робот, останови, Борис уже уснул под неё", TRACK)
+    assert stop.kind == "stop_all" and stop.music == (ToolCall("stop_music", {}),) and stop.stop_motion
+    assert not stop.keep_backing
+
+
 @pytest.mark.parametrize("text", ["Робот, а который час", "Робот, спой песню про стоп", "Робот, расскажи сказку",
-                                  "стоит ли нам ехать", "Робот, хватит ли нам бензина", ""])
+                                  "стоит ли нам ехать", "Робот, хватит ли нам бензина", "",
+                                  "Робот, где остановка автобуса"])
 def test_not_a_clear_stop_does_not_interrupt(text):
     assert on_interrupt(text, DJ) is NO_INTERRUPT
 

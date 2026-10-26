@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import random
@@ -120,9 +121,11 @@ class Ports(Protocol):
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
 
-    def stop_perform(self, how: str) -> bool:
+    def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Выступление: ``halt`` — сразу, ``stop`` — дочитать предложение. ``True`` — играющая музыка — его бит
-        (её снимает само выступление, общий стоп музыки не нужен)."""
+        (её снимает само выступление, общий стоп музыки не нужен). ``keep_backing`` (необязательный, #3994: «а
+        музыку оставь») — бит выступления доигрывает сам; порт без этого параметра зовётся прежним вызовом
+        (:func:`stop_performance`)."""
         ...
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None: ...
@@ -197,7 +200,8 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
-    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп — музыка, если играет."""
+    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, стоп всего — музыка, если играет;
+    стоп речи (``stop_speech``, #3994) музыку не трогает."""
     if command.kind == "volume":
         tool = kn.VOLUME_CHANNELS[command.args["channel"]].tool
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
@@ -206,6 +210,23 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
     if command.kind == "stop_all":
         return stop_music_calls(snapshot)
     return ()
+
+
+def stop_performance(ports: Any, how: str, keep_backing: bool = False) -> bool:
+    """Перебивание выступления через ``Ports.stop_perform``. ``keep_backing`` (#3994, «а музыку оставь») уходит в
+    порт, только если его ``stop_perform`` объявил такой параметр: реализации порта без него (чат, оператор —
+    выступлений у них нет) зовутся прежним вызовом, их не ломает новый вид стопа."""
+    stop = getattr(ports, "stop_perform")
+    if keep_backing and _accepts(stop, "keep_backing"):
+        return bool(stop(how, keep_backing=True))
+    return bool(stop(how))
+
+
+def _accepts(fn: Callable[..., Any], name: str) -> bool:
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def voices_passed(pickup: bool, snapshot: SessionSnapshot) -> bool:
@@ -562,7 +583,7 @@ class TurnEngine:
         stop = interrupt_for(command, turn.text, snap)
         if stop.interrupts:
             snap = self._interrupt(turn, stop)
-            actions = () if self._ports.stop_perform(str(stop.perform)) else stop.music
+            actions = () if stop_performance(self._ports, str(stop.perform), stop.keep_backing) else stop.music
         if command.kind == "silence" and snap.top("Silence") is None:
             self.session.push_scene("Silence", "user")
         elif command.kind == "unsilence":
@@ -725,5 +746,5 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "query_fallback", "tier1_actions",
-           "tier1_for", "tier1_phrase", "voices_passed"]
+           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "query_fallback", "stop_performance",
+           "tier1_actions", "tier1_for", "tier1_phrase", "voices_passed"]

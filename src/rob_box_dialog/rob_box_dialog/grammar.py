@@ -74,13 +74,21 @@ def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tie
     """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи») или ``stop_all``
     (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10, #3700); после
     стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
-    ``disputed``."""
+    ``disputed``.
+
+    Охват (#3994, ``words.stop_scope``): «хватит читать/говорить/петь», «…а музыку оставь» — ``stop_speech``
+    (``args.keep_music``): речь и выступление гаснут, плеер музыки — нет. Названа музыка («хватит музыки») или ничего
+    («хватит», «стоп») — ``stop_all``, как было (В20). Покрытая охватом часть в ``rest`` не попадает."""
     call = stop_command(text)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
         return None
-    silence = not call.rest and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
-    kind = "silence" if silence else "stop_all"
-    return Tier1Command(kind, disputed=call.verdict == STOP_DISPUTED, rest=call.rest)
+    scope = call.scope
+    silence = not call.rest and not scope.music and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
+    disputed = call.verdict == STOP_DISPUTED
+    if not silence and (scope.speech or scope.keep_music) and not scope.music:
+        args = MappingProxyType({"keep_music": scope.keep_music})
+        return Tier1Command("stop_speech", args, disputed=disputed, rest=call.rest)
+    return Tier1Command("silence" if silence else "stop_all", disputed=disputed, rest=call.rest)
 
 
 def _new_session(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:

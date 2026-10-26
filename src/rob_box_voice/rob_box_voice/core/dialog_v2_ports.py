@@ -212,13 +212,15 @@ class V2Ports:
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
         speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
 
-    def stop_perform(self, how: str) -> bool:
-        """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит."""
+    def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
+        """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его
+        снимает само выступление. ``keep_backing`` («а музыку оставь», #3994) — бит доигрывает: выступление его не
+        снимает (``False``), общий стоп музыки по виду ``stop_speech`` тоже не зовётся."""
         host = self._performer()
         if host is None:
             return False
-        owns = bool(host.owns_backing)
-        stopped = host.halt() if how == "halt" else host.stop()
+        owns = bool(host.owns_backing) and not keep_backing
+        stopped = host.halt(keep_backing=keep_backing) if how == "halt" else host.stop(keep_backing=keep_backing)
         return bool(stopped) and owns
 
     def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:

@@ -17,7 +17,7 @@ from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.execute import Executor, OwnerEvent
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRef
-from rob_box_dialog.turn import RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, tier1_actions
+from rob_box_dialog.turn import RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, stop_performance, tier1_actions
 from rob_box_dialog.grammar import Tier1Command
 
 
@@ -204,6 +204,98 @@ def test_enough_with_continuation_runs_tier1_rest_without_llm():
     _run(engine, "хватит, громче")
     assert ports.cancels == ["tier1 stop_all"] and ports.asked == []
     assert ports.executed == [[("set_volume", {"action": "louder"})]]
+
+
+class KeepPorts(Ports):
+    """Порт с хостом выступлений, знающим необязательный ``keep_backing`` (#3994), как ``V2Ports``."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.kept = []
+
+    def stop_perform(self, how, keep_backing=False):
+        self.kept.append(keep_backing)
+        return super().stop_perform(how)
+
+
+def test_3994_n811_stop_speech_keeps_music_and_asks_no_llm():
+    """n811 (акт 8, 23.10): под играющим битом «Робот, хватит читать, а музыку оставь» — ``tier1 stop_speech``: речь и
+    выступление гаснут, бит выступления доигрывает, ``stop_music`` и ``stop_motion`` нет, остатка нет — LLM не зовётся
+    (было: ``stop_all`` глушил музыку, а «читать, а музыку оставь» уходил в LLM новым рэпом с новой подложкой). Ответов
+    LLM у порта нет: вызов модели упал бы на пустой очереди."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    agg = _run(engine, "Робот, хватит читать, а музыку оставь")
+    assert ports.asked == [] and agg.llm_calls == 0 and agg.stage == "done"
+    assert ports.cancels == ["tier1 stop_speech"] and ports.performs == ["stop"] and ports.kept == [True]
+    assert ports.executed == [] and ports.intents == [] and ports.said == []
+    assert engine.session.snapshot.music.state == "playing" and engine.session.snapshot.top("Silence") is None
+
+
+def test_3994_enough_reading_without_keep_still_leaves_the_player_alone():
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    engine.session.push_scene("DJ", "code")
+    _run(engine, "Робот, хватит читать")
+    assert ports.cancels == ["tier1 stop_speech"] and ports.kept == [False]
+    assert ports.executed == [] and ports.intents == [] and ports.asked == []
+
+
+def test_3994_port_without_keep_backing_is_called_the_old_way():
+    """Чужая реализация порта (чат, оператор) без ``keep_backing`` не ломается новым видом стопа."""
+    ports = Ports(perform_owns_music=True)
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, хватит читать, а музыку оставь")
+    assert ports.performs == ["stop"] and ports.executed == [] and ports.asked == []
+
+
+def test_3994_stop_performance_passes_keep_backing_only_where_declared():
+    old, new = Ports(), KeepPorts()
+    assert stop_performance(old, "stop", True) is False and old.performs == ["stop"]
+    assert stop_performance(new, "halt", True) is False and new.performs == ["halt"] and new.kept == [True]
+    stop_performance(new, "stop")
+    assert new.kept == [True, False]
+
+
+def test_3994_enough_sing_another_stays_stop_all_and_the_rest_goes_to_llm():
+    """Решение по умолчанию (Шифу 26.10): «хватит, спой другую» — стоп всего (музыка тоже) и остаток — новой просьбой."""
+    ports = Ports(answers=[Answer(Command(speech="Пою другую!"), "deepseek")])
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, хватит, спой другую")
+    assert ports.cancels == ["tier1 stop_all"] and ports.intents == ["stop_motion"]
+    assert ports.executed[0] == [("stop_music", {})]
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("спой другую")
+
+
+def test_3994_bare_enough_under_music_stops_everything_without_llm():
+    ports = Ports()
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, хватит")
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed == [[("stop_music", {})]] and ports.asked == []
+
+
+def test_4020_n709_stop_form_stops_music_by_code_then_the_rest_goes_to_llm():
+    """n709 (акт 7): «Робот, останови, Борис уже уснул под неё» уходил в LLM целиком, и та врала «Музыку выключил»
+    без тула. Теперь стоп — кодом (``stop_music`` по снимку), остаток — реплика LLM."""
+    ports = Ports(answers=[Answer(Command(speech="Спокойной ночи, Борис."), "deepseek")])
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, останови, Борис уже уснул под неё")
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed[0] == [("stop_music", {})]
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("Борис уже уснул под неё")
+
+
+def test_4020_bus_stop_is_not_a_stop():
+    ports = Ports(answers=[Answer(Command(speech="Не знаю, где остановка."), "deepseek")])
+    engine = _engine(ports)
+    _with_music(engine)
+    _run(engine, "Робот, где остановка автобуса")
+    assert ports.cancels == [] and ports.executed == [] and len(ports.asked) == 1
 
 
 def test_tier1_actions_dj_set_is_stopped_with_set():
