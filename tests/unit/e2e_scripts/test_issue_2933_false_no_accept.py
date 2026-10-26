@@ -336,6 +336,8 @@ class TestRunStepDoesNotReplayAfterAccept:
                 extract_function("vad_reject_reason"),
                 extract_function("emit_step_fail_or_vad"),
                 extract_function("check_cycle"),
+                extract_function("eq_command_wav"),
+                extract_function("play_eq_wav"),
                 extract_function("run_step"),
                 'synth_command() { : ; }',
                 'run_step "робот а что ты обо мне запомнил из того что я говорил" '

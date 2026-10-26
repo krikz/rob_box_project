@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import re
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
@@ -22,18 +22,24 @@ from rob_box_dialog.knowledge import (
     REPLY_VERB_ENDINGS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
+    STOP_SCOPE,
     STOP_WORDS,
     TIER1_POLICY,
     WAKE_SLIP_AMBIGUOUS,
-    WAKE_SLIP_COMMAND_LEADS,
+    WAKE_SLIP_CUE_WINDOW,
+    WAKE_SLIP_GATES,
     WAKE_SLIP_NEVER,
+    WAKE_SLIP_PLURAL,
     WAKE_SLIP_TARGETS,
     WAKE_SLIP_VARIANTS,
+    SlipGate,
 )
 
 _LEFT = r"(?<![\w-])"
 _RIGHT = r"(?![\w-])"
 _TOKEN = re.compile(r"[\w-]+")
+#: Знак между словами, который делит хвост стопа на части (``STOP_SCOPE``): «хватит читать, музыку не выключай».
+_CLAUSE_BREAK = re.compile(r"[,.;:!?—–]")
 
 #: Вердикты :func:`stop_verdict` (В19): ясная стоп-команда, спорная (стоп-слово внутри другой команды), нет стопа.
 STOP_CLEAR = "clear"
@@ -74,25 +80,45 @@ def _distance(a: str, b: str) -> int:
 
 
 def _slip_kind(token: str) -> str:
-    """Что за первое слово фразы: ``wake`` (искажённый вейк), ``gated`` (настоящее слово — будит только перед
-    командой) или ``""``. Граница (#3975): «роботу» и неизвестные слова на расстоянии ≤ 1 (до 5 букв) / ≤ 2 от
-    «робот/робокс/роббокс» — вейк; «работа/рада» — только с командой следом; формы «роботы» — никогда."""
+    """Что за первое слово фразы: ``wake`` (искажённый вейк), ``gated`` (настоящее слово — будит, только если
+    открыты ворота) или ``""``. Граница (#3975, #3996): «роботу» и неизвестные слова на расстоянии ≤ 1 (до 5 букв) /
+    ≤ 2 от «робот/робокс/роббокс» — вейк; «работа/рада/роботы» — за воротами; остальные формы «робот» — никогда."""
     word = token.lower().replace("ё", "е")
     if word in WAKE_SLIP_NEVER:
         return ""
     if word in WAKE_SLIP_VARIANTS:
         return "wake"
-    if word in WAKE_SLIP_AMBIGUOUS:
+    if word in WAKE_SLIP_AMBIGUOUS or word in WAKE_SLIP_PLURAL:
         return "gated"
     limit = 1 if len(word) <= 5 else 2
     near = len(word) >= 5 and word[0] == "р" and any(_distance(word, t) <= limit for t in WAKE_SLIP_TARGETS)
     return "wake" if near else ""
 
 
+def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
+    """Есть ли в ``tail`` знак ворот: слово целиком из ``forms`` или начинающееся с основы из ``stems``.
+    Ворота без знака пропускают всегда."""
+    if not (gate.forms or gate.stems):
+        return True
+    return any(t in gate.forms or t.startswith(gate.stems) for t in tail)
+
+
+def _gates_open(rest: str) -> bool:
+    """Открыты ли ворота за искажённым словом: первое слово остатка — из ``leads`` ворот и знак есть в
+    ближайших ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Единственное правило
+    для «работа/рада/роботы»: таблицы в :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
+    tokens = name_tokens(rest)
+    if not tokens:
+        return False
+    tail = tokens[1:1 + WAKE_SLIP_CUE_WINDOW]
+    return any(tokens[0] in gate.leads and _gate_cue(tail, gate) for gate in WAKE_SLIP_GATES)
+
+
 def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> Optional[str]:
-    """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше»): остаток
-    фразы после него, иначе ``None``. Только первый токен; тишину это не снимает (остаток идёт обычным путём).
-    Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка. Вейков нет в таблице — допуска нет."""
+    """Первое слово фразы — искажённый STT вейк («роботу дали», «работа тишина», «рада слушай дальше», «роботы еще
+    куплет добавь», «работа как меня зовут»): остаток фразы после него, иначе ``None``. Только первый токен; тишину
+    это не снимает (остаток идёт обычным путём). Вызывать, когда :func:`has_wake_word` не нашёл настоящего вейка.
+    Вейков нет в таблице — допуска нет."""
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
     if not any(t in words for t in WAKE_SLIP_TARGETS):
         return None
@@ -101,8 +127,7 @@ def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None) -> 
         return None
     kind = _slip_kind(match.group(0))
     rest = (text or "")[match.end():].strip(" ,.!?;:-–—")
-    lead = (_TOKEN.search(rest).group(0).lower() if _TOKEN.search(rest) else "")
-    if kind == "wake" or (kind == "gated" and lead in WAKE_SLIP_COMMAND_LEADS):
+    if kind == "wake" or (kind == "gated" and _gates_open(rest)):
         return rest
     return None
 
@@ -166,18 +191,118 @@ def introduces_self(text: str) -> bool:
 
 
 @dataclass(frozen=True)
+class StopScope:
+    """Охват ясного стопа (#3994, таблица ``knowledge.STOP_SCOPE``): после стоп-слова названа речь робота
+    («хватит читать»), названа музыка, которую погасить («хватит музыки»), есть оговорка «музыку оставь»."""
+
+    speech: bool = False
+    music: bool = False
+    keep_music: bool = False
+
+
+NO_SCOPE = StopScope()
+
+
+@dataclass(frozen=True)
 class StopCall:
     """Разбор стоп-команды (В19): вердикт, стоп-слово и текст ПОСЛЕ него («хватит, спой другую» → «спой другую»).
 
-    ``word``/``rest``/``words`` заполнены только у ясного вердикта; у спорного ``word`` — первое стоп-слово фразы.
-    ``words`` — все стоп-слова ведущей серии («всё, хватит, замолчи» → «хватит», «замолчи»): вид команды решает
-    самое сильное из них (тишина — только по слову из ``SILENCE_WORDS``).
+    ``word``/``rest``/``words``/``scope`` заполнены только у ясного вердикта; у спорного ``word`` — первое стоп-слово
+    фразы. ``words`` — все стоп-слова ведущей серии («всё, хватит, замолчи» → «хватит», «замолчи»): вид команды решает
+    самое сильное из них (тишина — только по слову из ``SILENCE_WORDS``). ``scope`` — что названо после стопа
+    (:func:`stop_scope`), ``rest`` — только непокрытая им часть (новая просьба).
     """
 
     verdict: str
     word: str = ""
     rest: str = ""
     words: Tuple[str, ...] = ()
+    scope: StopScope = NO_SCOPE
+
+
+Span = Tuple[str, int, int]  # слово (нижний регистр, ё → е), начало, конец
+
+
+def stop_scope(rest: str) -> Tuple[StopScope, str]:
+    """Хвост ясного стопа → ``(охват, остаток)`` по закрытой грамматике ``knowledge.STOP_SCOPE`` (#3994, решает код).
+
+    Хвост делится на части союзами и знаками препинания; части съедаются по порядку, пока каждая покрыта таблицей
+    (объекты, оговорка «оставь», служебные). Первая непокрытая часть и всё после неё — остаток; ни одна не покрыта —
+    остаток весь хвост, как был. «читать, а музыку оставь» → речь + оставить музыку, «»; «музыки» → музыка, «»;
+    «спой другую» → ничего, «спой другую»; «читать, а музыку сделай потише» → речь, «музыку сделай потише».
+    Оговорка в остатке тоже оставляет музыку: «спой другую, а музыку оставь» → оставить музыку, «спой другую, а
+    музыку оставь» (просьба целиком — LLM)."""
+    text = rest or ""
+    spans = [(m.group(0).lower().replace("ё", "е"), m.start(), m.end()) for m in _TOKEN.finditer(text)]
+    speech = music = keep = False
+    clauses = _clauses(text, spans)
+    for n, clause in enumerate(clauses):
+        parsed = _clause_scope(tuple(token for token, _, _ in clause))
+        if parsed is None:
+            tail = text[clause[0][1]:] if n else text
+            keep = keep or _kept_later(clauses[n + 1:])
+            return StopScope(speech, music, keep), tail.strip(" ,.!?;:-–—")
+        named, kept = parsed
+        speech = speech or "speech" in named
+        keep = keep or kept
+        music = music or ("music" in named and not kept)  # с оговоркой названная музыка — что оставить
+    return StopScope(speech, music, keep), ""
+
+
+def _clauses(text: str, spans: Sequence[Span]) -> Tuple[Tuple[Span, ...], ...]:
+    """Части хвоста стопа: граница — союз из ``STOP_SCOPE.joins`` (сам он ни в одну часть не входит) или знак
+    препинания между словами."""
+    out, current, prev_end = [], [], 0
+    for span in spans:
+        token, start, end = span
+        join = token in STOP_SCOPE.joins
+        if current and (join or _CLAUSE_BREAK.search(text[prev_end:start])):
+            out.append(tuple(current))
+            current = []
+        prev_end = end
+        if not join:
+            current.append(span)
+    return tuple(out + [tuple(current)] if current else out)
+
+
+def _kept_later(clauses: Sequence[Tuple[Span, ...]]) -> bool:
+    """Есть ли среди частей остатка покрытая часть с оговоркой («…, а музыку оставь» после новой просьбы)."""
+    parsed = (_clause_scope(tuple(token for token, _, _ in clause)) for clause in clauses)
+    return any(part is not None and part[1] for part in parsed)
+
+
+def _clause_scope(tokens: Sequence[str]) -> Optional[Tuple[FrozenSet[str], bool]]:
+    """Часть хвоста по таблице: ``(названные объекты, есть ли оговорка «оставь»)``; чужое слово или дополнение без
+    глагола своего объекта («рэпа» без «читать») — ``None``."""
+    found: Dict[str, Set[str]] = {"stem": set(), "verb": set(), "complement": set()}
+    keep, i = False, 0
+    while i < len(tokens):
+        phrase = next((p for p in STOP_SCOPE.keep if tuple(tokens[i:i + len(p)]) == p), None)
+        if phrase is not None:
+            keep, i = True, i + len(phrase)
+            continue
+        what, role = _stop_object(tokens[i])
+        if not what and tokens[i] not in STOP_SCOPE.filler:
+            return None
+        found[role or "stem"].update((what,) if what else ())
+        i += 1
+    if not found["complement"] <= found["verb"]:
+        return None
+    return frozenset(found["stem"] | found["verb"]), keep
+
+
+def _stop_object(token: str) -> Tuple[str, str]:
+    """``(объект стопа — ключ STOP_SCOPE.objects, роль слова: stem/verb/complement)`` или ``("", "")``: слово с основы
+    объекта; глагол — кроме повелительной формы («говори», «играй» — новая просьба); дополнение («рэп»)."""
+    imperative = token.endswith(STOP_SCOPE.imperative_endings)
+    for what, obj in STOP_SCOPE.objects.items():
+        if token.startswith(obj.stems):
+            return what, "stem"
+        if token.startswith(obj.verbs) and not imperative:
+            return what, "verb"
+        if token.startswith(obj.complements):
+            return what, "complement"
+    return "", ""
 
 
 def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
@@ -196,7 +321,8 @@ def stop_verdict(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
 
 
 def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopCall:
-    """То же, что :func:`stop_verdict`, плюс стоп-слово и остаток команды после него (одна реализация разбора)."""
+    """То же, что :func:`stop_verdict`, плюс стоп-слово, его охват (:func:`stop_scope`) и остаток команды после них
+    (одна реализация разбора)."""
     words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
     part = _command_part(text, words)
     spans = [(m.group(0).lower(), m.end()) for m in _TOKEN.finditer(part)]
@@ -204,7 +330,8 @@ def stop_command(text: str, wake_words: Optional[Sequence[str]] = None) -> StopC
     skip = set(STOP_LEAD_WORDS) | {w.lower() for w in words}
     lead = next((i for i, t in enumerate(tokens) if t not in skip), None)
     if lead is not None and _clear_at(tokens, lead):
-        return StopCall(STOP_CLEAR, tokens[lead], _rest(part, spans, lead, skip), _stop_run(tokens, lead, skip))
+        scope, rest = stop_scope(_rest(part, spans, lead, skip))
+        return StopCall(STOP_CLEAR, tokens[lead], rest, _stop_run(tokens, lead, skip), scope)
     first = next((t for t in tokens if _is_stop(t)), "")
     return StopCall(STOP_DISPUTED, first, words=(first,)) if first else StopCall(STOP_NONE)
 

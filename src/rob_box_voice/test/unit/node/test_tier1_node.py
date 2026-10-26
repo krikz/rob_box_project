@@ -150,6 +150,18 @@ def test_halt_during_a_performance_cuts_everything_now(run_plans):
     assert n._intent_pub.publish.call_args[0][0].kind == "stop_motion"
 
 
+def test_3994_stop_speech_in_v1_stops_speech_and_performance_but_not_music_or_motion(run_plans):
+    """Путь отката v1: вид ``stop_speech`` (#3994) исполняется, а не роняет приём (``_run_<вид>``); плеер и движение
+    не трогаются. Фраза со словом «музыку» в v1 до Tier-1 не доходит (её раньше берёт ``is_music_stop_command``)."""
+    n = _make_node(playing=True)
+    n._tool_executor.performer = _Performer(owns_backing=False)
+    _stt(n, "Робот, хватит читать")
+    run_plans()
+    n._dispatch_turn.assert_not_called()
+    assert _speech_stopped(n) and n._tool_executor.performer.calls == ["stop"]
+    assert n._tool_executor.calls == [] and not n._intent_pub.publish.called
+
+
 def test_halt_over_someone_elses_music_still_stops_that_music_once(run_plans):
     n = _make_node(playing=True)
     n._tool_executor.performer = _Performer(owns_backing=False)

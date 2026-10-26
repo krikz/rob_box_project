@@ -18,8 +18,8 @@ from rob_box_dialog import knowledge as kn
 GRAMMAR_GROUPS: Tuple[str, ...] = ("stop", "silence", "volume", "voice", "new_session", "dj", "yes_no")
 #: Вид команды Tier-1 (``grammar.match``, ``knowledge.TIER1_KINDS``) → группа грамматики агента.
 TIER1_GROUPS: Mapping[str, str] = MappingProxyType({
-    "stop_all": "stop", "silence": "silence", "unsilence": "silence", "volume": "volume", "set_voice": "voice",
-    "new_session": "new_session", "answer": "yes_no",
+    "stop_all": "stop", "stop_speech": "stop", "silence": "silence", "unsilence": "silence", "volume": "volume",
+    "set_voice": "voice", "new_session": "new_session", "answer": "yes_no",
 })
 
 _VIEWS: Mapping[str, Callable[[], Tuple[ToolCatalogEntry, ...]]] = MappingProxyType({

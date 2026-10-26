@@ -120,6 +120,12 @@ class Tier1Runner:
         if player is not None and (player.is_playing() or player.dj) and not outro:
             self.stop_music()
 
+    def _run_stop_speech(self, _command: Tier1Command, text: str) -> None:
+        """«Хватит читать / говорить / петь», «…а музыку оставь» (#3994): ход, речь и выступление — как у стопа всего;
+        плеер музыки и движение не трогаются. Путь отката v1: бит выступления снимает само выступление (outro)."""
+        self._stop_performance(text)
+        self._node._cancel_run("tier1 stop_speech", stop_tts=True)
+
     def _stop_performance(self, text: str) -> bool:
         """Остановить выступление по слову (``policy_word``: «стой» — halt, иначе — до конца предложения). ``True`` —
         музыка, что играет, — бит выступления, и её снимает само выступление («стой» — сразу ``stop_music(now)``,

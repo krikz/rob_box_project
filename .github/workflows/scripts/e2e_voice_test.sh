@@ -2049,6 +2049,96 @@ emit_step_fail_or_vad() {
     return 1
 }
 
+# eq_command_wav IN OUT — фильтр реплики перед колонкой: highpass + громкость + лимитер (клиппинг-фикс 514e7e87) и
+# 1.5 с тишины спереди (adelay; модель окна VAD -- test_e2e_scenario_playable.sh). Одно место на все реплики шага.
+eq_command_wav() {  # $1=синтезированный wav $2=wav для колонки
+    ffmpeg -nostdin -y -i "$1" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$2" 2>/dev/null
+}
+
+# play_eq_wav WAV — громкость динамика 100% (по умолчанию; явный >100% доступен через inputs.volume в workflow,
+# e.g. -f volume=120) и реплика в колонку.
+play_eq_wav() {  # $1=wav после eq_command_wav
+    pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
+    paplay "$1" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+}
+
+# phrase_eq_wav TEXT VOICE BASE — синтез фразы восстановления (тот же synth_command с кэшем, что у фраз шага) в
+# BASE.wav и фильтр в BASE_eq.wav. rc 1 -- синтез не удался (лог -- BASE.log).
+phrase_eq_wav() {  # $1=text $2=voice $3=base (без .wav)
+    ensure_outdir
+    synth_command "$1" "$2" "$3.wav" > "$3.log" 2>&1 || return 1
+    eq_command_wav "$3.wav" "$3_eq.wav"
+}
+
+# --- issue #3989 — ОДНО восстановление шага ---------------------------------------------------------------
+# Судья (e2e_events.py) сказал: фраза ушла в бэклог без вейка (no_wake: STT потерял «Робот», n301/n704/n1004 марафона
+# 23.10) или ход проглотила тишина (silenced: «замолчи» прошлого шага/акта). Харнесс делает то, что сделал бы человек,
+# один раз за шаг: no_wake -- «Робот!» (голый вейк подхватывает свежий бэклог, ответ -- по подхвату), silenced --
+# «Робот, говори.» и фраза шага ещё раз (что именно -- RECOVERY в e2e_events.py, кому можно -- recover_kinds).
+# В лог акта -- маркер E2E_RECOVER <вид> <шаг>, итог шага -- «OK recovered_<вид>», не чистый OK (scenario-цикл).
+# Выход: E2E_WAIT_RC/E2E_REPLY_* последнего ожидания, BEFORE -- начало его окна. Восстановления не было (нельзя,
+# уже было) или оно не сработало -- E2E_WAIT_RC=4: run_step пишет честный FAIL turn_<вид>.
+step_recover() {  # $1=label $2=text $3=voice $4=safe
+    local label="$1" voice="$3" safe="$4" kind="$E2E_REPLY_VERDICT" phrase replay keep_silent
+    if [ -n "${E2E_STEP_RECOVERED:-}" ]; then
+        log "STEP ${label}: ${kind} -- восстановление шага уже было (${E2E_STEP_RECOVERED}), второго нет"
+        return 0
+    fi
+    if ! recover_allowed "$kind"; then
+        log "STEP ${label}: ${kind} -- восстановление шагу не разрешено (recover: ${E2E_STEP_RECOVER_KINDS:--})"
+        return 0
+    fi
+    phrase="$(recovery_field "$kind" phrase)"
+    replay="$(recovery_field "$kind" replay)"
+    if ! phrase_eq_wav "$phrase" "$voice" "$OUT_DIR/rec_${kind}_${safe}"; then
+        log "STEP ${label}: ❌ восстановление ${kind}: синтез «${phrase}» не удался ($(tail -1 "$OUT_DIR/rec_${kind}_${safe}.log" 2>/dev/null)) -- роботу ничего не сказано"
+        return 0
+    fi
+    E2E_STEP_RECOVERED="$kind"
+    echo "E2E_RECOVER ${kind} ${label} phrase=«${phrase}» replay=${replay} after=${E2E_REPLY_AFTER:-?}s"
+    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    E2E_LAST_PLAY_SINCE="$BEFORE"
+    log "STEP ${label}: восстановление ${kind}: «${phrase}»"
+    play_eq_wav "$OUT_DIR/rec_${kind}_${safe}_eq.wav"
+    if [ "$replay" != "1" ]; then
+        step_wait_after_play "$BEFORE" 0
+        return 0
+    fi
+    # Снятие тишины -- ход без речи (Tier-1 unsilence): ждём его конца как silent_ok-шага.
+    keep_silent="${E2E_STEP_SILENT_OK:-0}"
+    E2E_STEP_SILENT_OK=1
+    wait_reply_done "$BEFORE" 0
+    E2E_WAIT_RC=$?
+    E2E_STEP_SILENT_OK="$keep_silent"
+    if [ "$E2E_WAIT_RC" != "0" ]; then
+        log "STEP ${label}: ❌ восстановление ${kind}: «${phrase}» не сработало (verdict=${E2E_REPLY_VERDICT}, ${E2E_REPLY_REASON:--}) -- фразу шага не повторяю"
+        E2E_WAIT_RC=4
+        E2E_REPLY_VERDICT="$kind"
+        return 0
+    fi
+    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    E2E_LAST_PLAY_SINCE="$BEFORE"
+    log "STEP ${label}: восстановление ${kind}: тишина снята -- фраза шага ещё раз"
+    play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+    step_wait_after_play "$BEFORE" 0
+}
+
+# presynth_recovery_phrases ROWS — #3989: фразы восстановления голосами акта -- в кэш синтеза до первого PLAY:
+# «Робот!» обязано прозвучать, пока фраза шага свежая для подхвата бэклога (BACKLOG_PICKUP_S = 20 с), а сеть
+# билд-машины мигает (#3875). Не вышло -- не отказ акта: step_recover синтезирует сам.
+presynth_recovery_phrases() {  # $1 = строки сценария (parse_scenario_to_tsv)
+    local kind phrase voice n=0 bad=0
+    for kind in $(python3 "$(_events_py)" recovery | _ev_kv kinds | tr ',' ' '); do
+        phrase="$(recovery_field "$kind" phrase)"
+        for voice in $(awk -F'\037' '{ print $4 }' "$1" | sort -u); do
+            n=$((n + 1))
+            synth_command "$phrase" "$voice" "$OUT_DIR/.presynth_rec_${kind}_$(safe_label "$voice").wav" \
+                > /dev/null 2>&1 < /dev/null || bad=$((bad + 1))
+        done
+    done
+    log "PRESYNTH: фразы восстановления (#3989): синтезов ${n}, не вышло ${bad} (не вышло -- step_recover синтезирует сам)"
+}
+
 # --- один атомарный шаг -----------------------------------------------------
 # Ожидаемое поведение определяется параметром $4 (expect_kind):
 #   cycle       — полный цикл STT→LLM→TTS (по дефолту)
@@ -2136,9 +2226,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         mark_fail_kind synth
         return 1
     fi
-    # EQ: highpass 200 + volume 1.2 + alimiter (клиппинг-фикс 514e7e87)
     ensure_outdir
-    ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+    eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav"
 
     # 1b. Реплика влезает в окно VAD робота?
     #
@@ -2283,8 +2372,7 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         for battempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             log "STEP ${label}: PLAY backlog attempt ${battempt}/${E2E_MAX_ATTEMPTS}"
-            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
-            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
             # issue #3857: опрос маркера каждые 2 с до потолка, а не слепой sleep 40 с.
             local _bt0 _bfound=1
             _bt0="$(date +%s)"
@@ -2347,9 +2435,6 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             E2E_LAST_PLAY_SINCE="$BEFORE"
             log "STEP ${label}: PLAY attempt ${attempt}/${E2E_MAX_ATTEMPTS}"
-            # Громкость динамика 100% (по умолчанию; явный >100% доступен через
-            # inputs.volume в workflow, e.g. -f volume=120).
-            pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
             # cleanup-resilience (ретро 11.08 t_26a6d362): если eq-файл пропал
             # (OUT_DIR удалён внешним cleanup на 249) — пере-синтезируем и EQ,
             # а не получаем ложный FAIL от paplay open(): No such file.
@@ -2359,11 +2444,13 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 synth_command "$text" "$voice" "$OUT_DIR/cmd_${safe}.wav" > "$OUT_DIR/synth_${safe}.log" 2>&1 \
                     || { synth_surface_log "$label" "$OUT_DIR/synth_${safe}.log"; log "STEP ${label}: FAIL — повторный синтез ${E2E_TTS_PROVIDER_RESOLVED:-$E2E_TTS_PROVIDER} упал ($(tail -1 "$OUT_DIR/synth_${safe}.log"))"; emit_step "${label} FAIL synth"; mark_fail_kind synth; return 1; }
                 ensure_outdir
-                ffmpeg -nostdin -y -i "$OUT_DIR/cmd_${safe}.wav" -af "highpass=f=100,volume=3.0,alimiter=limit=0.98,adelay=1500|all=1" -ac 1 -ar 16000 "$OUT_DIR/cmd_${safe}_eq.wav" 2>/dev/null
+                eq_command_wav "$OUT_DIR/cmd_${safe}.wav" "$OUT_DIR/cmd_${safe}_eq.wav"
             fi
-            paplay "$OUT_DIR/cmd_${safe}_eq.wav" && log "  PLAY_DONE" || log "  PLAY_FAIL"
+            play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
         fi
         step_wait_after_play "$BEFORE" "$_barge_mode"
+        # #3989: до хода не дошло (вейк потерян / тишина) -- одно восстановление шага, если оно ему разрешено.
+        [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
 
         if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
             # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
@@ -2372,6 +2459,16 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 0) rc=0 ;;
                 1) rc=3 ;;   # ПРИНЯТО есть, ход не кончился за потолок: ждём то же окно, PLAY не повторяем (#2933)
                 3) rc=1 ;;   # ПРИНЯТО нет за E2E_ACCEPT_WINDOW: переигрываем сразу
+                4)  # #3989: no_wake/silenced, а восстановления нет (нельзя, уже было или не сработало)
+                    log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s (wait=event, verdict=${E2E_REPLY_VERDICT})"
+                    if [ "$E2E_REPLY_VERDICT" = "no_wake" ]; then
+                        log "STEP ${label}: ❌ хода нет: фраза принята без вейка и ушла в бэклог (STT потерял «Робот») -- повторов нет"
+                    else
+                        log "STEP ${label}: ❌ ход проглотила тишина (stage=silenced): робот в тишине с прошлого шага/акта -- повторов нет"
+                    fi
+                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}} (${E2E_REPLY_REASON:--})"
+                    mark_fail_kind no_reaction
+                    return 1 ;;
                 *)
                     log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s (wait=event, verdict=${E2E_REPLY_VERDICT})"
                     log "STEP ${label}: ❌ ход закончен без ответа: ${E2E_REPLY_REASON:--} -- ПРИНЯТО было, повторов нет"
@@ -2582,10 +2679,10 @@ write_summary() {
     ensure_outdir
     [ -f "$OUT_DIR/steps.jsonl" ] || : > "$OUT_DIR/steps.jsonl"
     python3 - "$OUT_DIR" "${PASS:-0}" "${E2E_FAIL_KIND:-}" \
-             "${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-}}" "${RUN_ID:-}" <<'PY'
+             "${E2E_TTS_PROVIDER_RESOLVED:-${E2E_TTS_PROVIDER:-}}" "${RUN_ID:-}" "${E2E_ACT_RECOVERED:-}" <<'PY'
 import json, os, sys, time
 
-out_dir, passed, fail_kind, tts_provider, run_id = sys.argv[1:6]
+out_dir, passed, fail_kind, tts_provider, run_id, act_recover = sys.argv[1:7]
 
 def read_json(name):
     path = os.path.join(out_dir, name)
@@ -2623,6 +2720,16 @@ for label in order:
         counts[status] += 1
 total = len(order)
 
+
+def recovered_kind(rec):
+    """#3989: «OK recovered_<вид> …» -- шаг прошёл после восстановления харнессом, не чистый OK."""
+    if (rec.get("status") or "").upper() != "OK":
+        return None
+    return next((w[len("recovered_"):] for w in (rec.get("detail") or "").split() if w.startswith("recovered_")), None)
+
+
+recovered = [l for l in order if recovered_kind(steps[l])]
+
 acceptance = read_json("acceptance.json") or {}
 audio = read_json("audio_metrics.json") or {}
 baseline = read_json("baseline_diff.json") or {}
@@ -2638,10 +2745,14 @@ summary = {
         "ok": counts["OK"],
         "fail": counts["FAIL"],
         "skip": counts["SKIP"],
+        "recovered": len(recovered),
+        "recovered_labels": recovered,
         "failed_labels": [
             l for l in order if (steps[l].get("status") or "").upper() == "FAIL"
         ],
     },
+    # #3989/#4027: что харнесс чинил на старте акта (утечка прошлого акта): music, silence.
+    "act_recover": [x for x in act_recover.split(",") if x],
     "gate1": {
         "pass": acceptance.get("pass"),
         "reason": acceptance.get("reason"),
@@ -2672,11 +2783,14 @@ with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
     fh.write("\n")
 
 st = summary["steps"]
-print(">>> E2E_SUMMARY verdict=%s steps=%d/%d ok fail=%d skip=%d provider=%s"
-      % (summary["verdict"], st["ok"], st["total"], st["fail"], st["skip"],
+print(">>> E2E_SUMMARY verdict=%s steps=%d/%d ok fail=%d skip=%d recovered=%d provider=%s"
+      % (summary["verdict"], st["ok"], st["total"], st["fail"], st["skip"], st["recovered"],
          summary["tts_provider"] or "?"))
 if st["failed_labels"]:
     print(">>> E2E_SUMMARY failed: %s" % ", ".join(st["failed_labels"]))
+if recovered:
+    print(">>> E2E_SUMMARY recovered: %s" % ", ".join("%s(%s)" % (l, recovered_kind(steps[l])) for l in recovered))
+print(">>> E2E_SUMMARY act_recover=%s" % (",".join(summary["act_recover"]) or "-"))
 if summary["audio"]["error"]:
     print(">>> E2E_SUMMARY audio metrics: %s" % summary["audio"]["error"])
 else:
@@ -2822,6 +2936,12 @@ TTSJSON
 if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH" = "1" ]; then
     presynth_scenario "$SCENARIO_FILE" || E2E_PRESYNTH_FAILED=1
 fi
+# Issue #3989 — восстановление шагов: поле recover сценария разбирается ДО записи и изоляции (ошибка схемы —
+# E2E_FATAL, робот не тронут); фразы восстановления — в кэш синтеза вместе с фразами акта.
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
+    load_recover_policy "$SCENARIO_FILE"
+    [ "$E2E_PRESYNTH" = "1" ] && presynth_recovery_phrases "$OUT_DIR/scenario_presynth.txt"
+fi
 
 # --- сценарий или одиночная команда ----------------------------------------
 # Issue #1353: запись микрофона охватывает ВЕСЬ retry-цикл (все шаги, все
@@ -2843,20 +2963,31 @@ observe_step "${SCENARIO_FILE:+scenario}${SCENARIO_FILE:-single}" > "$OUT_DIR/he
 # Issue #3248 — restore_robot_tts_default (e2e_voice_lib.sh): акт, менявший
 # голос/провайдера (mv01 → Yandex alena), возвращает дефолт set_voice в обход
 # LLM; иначе следующий акт и живые люди слышат голос из этого акта.
-trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; stop_recording' EXIT
+# Issue #4027 — скорость и тон (yandex_speed, minimax_speed, pitch_shift) читаются ДО акта и возвращаются к этим
+# значениям там же, в restore_robot_tts_default. Issue #3710 п.2 — collect_e2e_speaker_db: копия e2e-БД дикторов
+# акта (только чтение, один ssh) в артефакты.
+E2E_TTS_PROSODY_FILE="$OUT_DIR/.tts_prosody_before.tsv"
+if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
+    snapshot_tts_prosody "$E2E_TTS_PROSODY_FILE"
+fi
+trap 'restore_robot_tts_default; restore_node_params; leave_e2e_mode; deactivate_e2e_dialog_db; collect_e2e_speaker_db "$OUT_DIR"; stop_recording' EXIT
 
 # Issue #2890 — изоляция акта ДО первого шага: e2e-БД дикторов (#2750),
 # e2e-память фактов (#2781) и окно диалога dialogue_node. См. isolate_act_start.
 if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     isolate_act_start "$SCENARIO_FILE"
+    E2E_ACT_STARTED=1
     # Issue #3871 — музыка/DJ-сет не переживают прогон: 22.10 замер акта 1 шёл под сет из
     # Telegram. Играет — стоп через подписанный /mcp/execute и ожидание idle; не вышло — E2E_FATAL.
-    # Акт, наследующий окно диалога прошлого (inherits_previous_act=true), плеер не трогает.
+    # Issue #4027 — и в акте, наследующем окно диалога прошлого: там играющая музыка — утечка прошлого
+    # акта (n712 → весь акт 8), стоп и пометка E2E_RECOVER music.
     _music_inherits=no
     scenario_inherits_previous_act "$SCENARIO_FILE" && _music_inherits=yes
     ensure_music_stopped_for_act "$_music_inherits"
     # Issue #3886 — прогрев sink и пауза перед первой фразой v2-акта (потеря «Робот,» в n201).
     [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && warm_act_audio_path "$OUT_DIR"
+    # Issue #3989 п.5 — тишина («замолчи») прошлого акта не переезжает в этот: снимается и помечается.
+    ensure_not_silenced_for_act
 fi
 # Issue #2809 — node_params override (см. apply_node_params выше). Применяем
 # ДО первого шага, как и изоляцию БД: акт «переспрос личности» форсирует
@@ -2962,6 +3093,9 @@ elif [ -n "$SCENARIO_FILE" ]; then
         # wake-gated). Классифицируем в bash, чтобы Python-парсер
         # оставался pure-data.
         expect="$(classify_step_expect "$expect_raw" "$text")"
+        # issue #3989 — какие восстановления разрешены шагу (load_recover_policy); одно на шаг, на все попытки.
+        E2E_STEP_RECOVER_KINDS="$(step_recover_kinds "$label")"
+        E2E_STEP_RECOVERED=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).
@@ -3174,11 +3308,15 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             # прятаться за строкой ✅ под строкой ❌: итог — одна строка, и в
             # E2E_STEP уходит after_retry=N (статус по-прежнему OK, сводка
             # считает его как OK).
+            # issue #3989 — то же про восстановление харнессом (E2E_RECOVER): «OK recovered_<вид>», не чистый OK;
+            # сводка считает такие шаги отдельно (recovered=N).
+            _recovered="${E2E_STEP_RECOVERED:+recovered_${E2E_STEP_RECOVERED}}"
+            [ -n "$_recovered" ] && log "STEP ${label}: итог — ✅ OK после восстановления харнессом (${E2E_STEP_RECOVERED}, см. E2E_RECOVER выше) — не чистый PASS (#3989)"
             if [ "$attempt_n" -gt 0 ]; then
                 log "STEP ${label}: итог — ✅ OK с попытки $((attempt_n + 1))/$((retry_acceptance + 1)); прежние попытки провалились: ${acc_fail_history:-паттерны шага}"
-                emit_step "${label} OK after_retry=${attempt_n}"
+                emit_step "${label} OK ${_recovered:+${_recovered} }after_retry=${attempt_n}"
             else
-                emit_step "${label} OK"
+                emit_step "${label} OK${_recovered:+ ${_recovered}}"
             fi
         else
             PASS=0

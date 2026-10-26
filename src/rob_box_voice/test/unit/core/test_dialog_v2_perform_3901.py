@@ -174,6 +174,81 @@ def test_3901_without_minimax_performer_still_owns_the_rap_and_says_why_no_pause
     assert any("разметка пауз выключена" in line for line in node.logs)
 
 
+class _CountingDeepseek(_Deepseek):
+    """Тот же провайдер со счётом вызовов: второй вызов вернул бы ещё один рэп с новой подложкой (n811)."""
+
+    def __init__(self, reply: LLMResponse) -> None:
+        super().__init__(reply)
+        self.asked = 0
+
+    async def complete(self, messages: Any, *, tools: Any = (), settings: Any = None) -> LLMResponse:
+        self.asked += 1
+        return await super().complete(messages, tools=tools, settings=settings)
+
+
+def _rap_under_its_beat(loop: Any) -> tuple:
+    """Ход «зачитай рэп про енота под бит» на настоящем ``PerformHost``: бит встал, выступление идёт."""
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._tool_executor.performer = PerformHost(node, music.run, lambda: loop, lambda event: None,
+                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
+    provider = _CountingDeepseek(_rap_reply())
+    ports = V2Ports(node, CommandModeLLM(provider, log=[].append), CallCounter(), node._tool_executor,
+                    performer=lambda: plan_host.performer(node))
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    asyncio.run(engine.run(Addressed("зачитай рэп про енота под бит", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)  # бит встал (исход заказа)
+    host = plan_host.performer(node)
+    assert host.owns_backing and provider.asked == 1
+    return engine, ports, host, music, provider
+
+
+def test_3994_n811_enough_reading_keep_music_leaves_the_beat_and_asks_no_llm(loop, caplog):
+    """n811 (акт 8, 23.10) целиком на v2: рэп под свой бит → «Робот, хватит читать, а музыку оставь» — Tier-1
+    ``stop_speech``: выступление снято, бит доигрывает (ни ``stop_music``, ни новой подложки ``request_music``),
+    второго вызова LLM нет."""
+    engine, _ports, host, music, provider = _rap_under_its_beat(loop)
+    with caplog.at_level("INFO", logger="rob_box_dialog.turn"):
+        agg = asyncio.run(engine.run(Addressed("Робот, хватит читать, а музыку оставь", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    assert provider.asked == 1 and agg.llm_calls == 0
+    assert [c.name for c in music.calls] == ["request_music"], "ни stop_music, ни новой подложки"
+    assert host.block.backing.state == "kept" and not host.owns_backing
+    assert any("tier1 kind=stop_speech args={'keep_music': True}" in r.getMessage() for r in caplog.records)
+
+
+def test_3994_halt_keep_music_stops_motion_and_leaves_the_beat(loop, caplog):
+    """Ревью PR #4035 на v2 целиком: рэп под свой бит → «Робот, стой, музыку оставь» — ``stop_all`` с ``keep_music``:
+    интент ``stop_motion`` опубликован (робот не едет дальше), выступление снято сразу, бит доигрывает (нет
+    ``stop_music``), LLM не зовётся."""
+    engine, ports, host, music, provider = _rap_under_its_beat(loop)
+    ports._intent_pub = intents = _Pub()
+    with caplog.at_level("INFO", logger="rob_box_dialog.turn"):
+        agg = asyncio.run(engine.run(Addressed("Робот, стой, музыку оставь", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    assert provider.asked == 1 and agg.llm_calls == 0
+    assert [c.name for c in music.calls] == ["request_music"], "бит оставлен: ни stop_music, ни новой подложки"
+    assert host.block.backing.state == "kept" and not host.owns_backing
+    assert [m.kind for m in intents.sent] == ["stop_motion"]
+    assert any("tier1 kind=stop_all args={'keep_music': True}" in r.getMessage() for r in caplog.records)
+
+
+def test_3994_v2_port_keep_backing_is_not_reported_as_owned_beat(loop):
+    """``V2Ports.stop_perform(keep_backing=True)``: бит остаётся, выступление его не снимает — ``False``."""
+    _engine, ports, host, music, _provider = _rap_under_its_beat(loop)
+    assert ports.stop_perform("stop", keep_backing=True) is False
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    assert [c.name for c in music.calls] == ["request_music"] and host.block.backing.state == "kept"
+
+
+def test_3994_v2_port_plain_stop_still_outros_the_beat(loop):
+    """Без оговорки — прежнее «хватит»: выступление само снимает свой бит (``True``, ``stop_music`` от выступления)."""
+    _engine, ports, host, music, _provider = _rap_under_its_beat(loop)
+    assert ports.stop_perform("stop") is True
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    assert [c.name for c in music.calls] == ["request_music", "stop_music"] and host.block.backing.state == "stopped"
+
+
 def test_tts_provider_state_sets_actual_provider_and_ignores_garbage():
     node = types.SimpleNamespace(_actual_tts_provider=None)
     plan_host.on_tts_provider_state(node, types.SimpleNamespace(data="не json"))
