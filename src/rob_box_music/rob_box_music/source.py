@@ -89,7 +89,8 @@ def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
 class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
-    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»."""
+    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»; ``tweak`` — просьба правит играющее («ускорь»,
+    «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
 
     generated: bool = False
     vocal: bool = False
@@ -98,6 +99,7 @@ class SourceAsk:
     own: bool = False
     genre: str = ""
     engine: str = ""
+    tweak: bool = False
 
     def describe(self) -> str:
         flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own") if getattr(self, name)]
@@ -118,6 +120,20 @@ def ask_genre(text: str) -> str:
             return found
     style = match_style_text(text or "")
     return style if style in kn.GEN_STYLES else ""
+
+
+def _has_phrase(words: Sequence[str], entry: str) -> bool:
+    """Запись таблицы в речи: одно слово — основа (начало слова), несколько — эти слова подряд, точно."""
+    parts = entry.split()
+    if len(parts) == 1:
+        return _has(words, parts)
+    return any(list(words[i:i + len(parts)]) == parts for i in range(len(words) - len(parts) + 1))
+
+
+def ask_tweak(text: str) -> bool:
+    """Просьба правит играющее: в словах есть запись ``ENGINE_TWEAK_WORDS`` («ускорь», «добавь баса», «в том же духе»)."""
+    words = _words(text)
+    return any(_has_phrase(words, entry) for group in kn.ENGINE_TWEAK_WORDS.values() for entry in group)
 
 
 def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
@@ -195,14 +211,17 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
     * Слова называют движок (:func:`ask_engine`) — он и есть; слот ``engine`` схемы (его заполнила LLM) ничего не
       прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=renardo``), отбрасывается
       с причиной в строке, иначе молчаливое сужение пути до синтеза (кэш и генерация не рассматриваются).
-    * Не названного движка заказ наследует играющий (``playing``, снимок плеера: «ускорь», «добавь баса» под Ренардо
-      — движок тот же), если просьба не называет путь (``SourceAsk.plain``) и не называет своего предмета
-      (``own_subject``: пьеса по названию или инструмент реплики) — такой заказ идёт обычным путём.
+    * Не названного движка заказ наследует играющий (``playing``, снимок плеера) только когда просьба **правит
+      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под Ренардо — движок
+      тот же), не называет путь (``SourceAsk.plain``) и не называет своего предмета (``own_subject``: пьеса по
+      названию или инструмент реплики). Всякая прочая просьба — «сыграй ещё», «включи музыку», «поставь Нирвану»,
+      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, Ренардо
+      до стопа не липнет.
 
     Строка пуста, когда добавить нечего."""
     unsupported = slot in kn.MUSIC_ENGINES and slot != ask.engine  # слова человека не называют этот движок
     note = f"слот engine={slot} без опоры в словах человека — отброшен" if unsupported else ""
-    if ask.engine or playing not in kn.MUSIC_ENGINES or own_subject or not ask.plain:
+    if ask.engine or playing not in kn.MUSIC_ENGINES or own_subject or not ask.plain or not ask.tweak:
         return ask, note
     return replace(ask, engine=playing), "; ".join(filter(None, (note, f"движок наследуется от играющего: {playing}")))
 
@@ -216,7 +235,7 @@ def source_ask(text: str) -> SourceAsk:
     vocal = (_has(words, kn.SOURCE_ASK_STEMS["vocal"]) or robot_voice
              or (_has(words, kn.SONG_STEMS) and (generated or own)))
     return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text),
-                     ask_engine(text))
+                     ask_engine(text), ask_tweak(text))
 
 
 def synth_style(genre: str) -> Optional[str]:
@@ -724,7 +743,7 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "cover_rejected_text",
            "cover_ready_text", "cover_slot", "cover_style_key", "slot_style", "GENERATE", "INSTRUCTIONS", "PIECE",
            "REASON_WORDS", "Route", "SYNTH",
-           "SourceAsk", "SourceContext", "ask_genre", "ask_engine", "blank_engine", "cache_text", "choose_route", "choose_with_fallback",
+           "SourceAsk", "SourceContext", "ask_genre", "ask_engine", "ask_tweak", "blank_engine", "cache_text", "choose_route", "choose_with_fallback",
            "decline_text", "engine_route", "engine_words", "fallback_note", "gen_block", "gen_kind", "QUIET_REASONS", "route_note", "route_seconds",
            "set_cache",
            "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",

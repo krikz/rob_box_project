@@ -270,9 +270,12 @@ def track_label(profile: ThemeProfile) -> str:
 
 
 def playing_engine(owner: Any) -> str:
-    """Движок играющего трека из снимка плеера (``PlayerOwner.now_playing``, факт ``engine``); не играет — «»."""
+    """Движок играющего трека из снимка плеера (``PlayerOwner.now_playing``, факт ``engine``); не играет — «». Факт
+    живёт в снимке и тогда, когда старт упал (``PlayerOwner.play`` кладёт факты до ``adapter.start``): движок
+    принимается, только пока дека занята — трек звучит (``playing``) или поставлен и ждёт ``started`` (``pending``)."""
     now = getattr(owner, "now_playing", None)
-    return str((now() if callable(now) else {}).get("engine") or "")
+    snap = now() if callable(now) else {}
+    return str(snap.get("engine") or "") if snap.get("playing") or snap.get("pending") else ""
 
 
 def settled_ask(ask: SourceAsk, slot: Optional[str], texts: Tuple[Optional[str], ...], classic: bool,

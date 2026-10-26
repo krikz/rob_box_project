@@ -10,9 +10,9 @@ import pytest
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Choice, DeterministicChooser
-from rob_box_music.source import (CacheTrack, SourceAsk, SourceContext, ask_engine, blank_engine, choose_route,
-                                  decline_text, engine_route, engine_words, route_note, set_candidates, settle_engine,
-                                  source_ask, source_candidates)
+from rob_box_music.source import (CacheTrack, SourceAsk, SourceContext, ask_engine, ask_tweak, blank_engine,
+                                  choose_route, decline_text, engine_route, engine_words, route_note, set_candidates,
+                                  settle_engine, source_ask, source_candidates)
 
 #: Кэш как на роботе: свежий инструментал, который без имени движка выиграл бы у синтеза.
 CACHE = (CacheTrack("k", "STAR WARS (RoBBox cover)", "cover", "club", True, rating=0, group="g1"),)
@@ -136,24 +136,52 @@ def test_unknown_or_auto_slot_changes_nothing():
     "Робот, и ускорь темп, а то мы тут засыпаем оба.",  # n506
     "Робот, продолжай развивать эту тему и добавь баса пожирнее.",  # n504
     "Робот, сделай атмосферу помрачнее, как в киберпанке.",  # n505
+    "ускорь темп", "замедли", "быстрее", "помедленнее",  # темп
+    "добавь баса", "басы погромче", "жирнее", "добавь тембр",  # бас и тембр
+    "развивай", "продолжи этот бит", "ещё такой же", "в том же духе", "давай в таком же духе",  # развитие
 ])
-def test_playing_engine_is_inherited_by_a_plain_request(text):
-    """n504–n506: «ускорь», «добавь баса» под Ренардо — движок тот же, его наследует код по снимку плеера."""
+def test_playing_engine_is_inherited_by_a_request_that_tweaks_what_plays(text):
+    """n504–n506: «ускорь», «добавь баса», «развивай» под Ренардо — движок тот же, его наследует код по снимку плеера."""
+    assert source_ask(text).tweak
     ask, note = settle_engine(source_ask(text), None, playing="renardo")
     assert ask.engine == "renardo" and "наследуется от играющего: renardo" in note
     assert engine_route(ask.engine) == "synth"
     assert settle_engine(source_ask(text), "renardo", playing="renardo")[0].engine == "renardo"  # слот не мешает
 
 
+@pytest.mark.parametrize("text", [
+    # список ревьюера PR #4037: Ренардо держался до стопа для любой «чистой» просьбы
+    "сыграй ещё", "поставь трек про космос", "включи музыку", "поставь Нирвану", "включи что-нибудь другое",
+    "сделай потише",
+    "Робот, сыграй ещё", "Робот, включи другую", "поставь Metallica", "сделай погромче", "поставь медленную музыку",
+    "включи светлую музыку", "включи что-нибудь про баскетбол", "сыграй что-нибудь жёсткое",
+])
+def test_playing_engine_is_not_inherited_by_a_request_that_does_not_tweak_it(text):
+    """Названное произведение или исполнитель, тема, «другое», «включи музыку», громкость — не правка играющего: путь
+    решается заново, Ренардо до стопа не липнет (кавер и кэш остаются кандидатами)."""
+    assert not source_ask(text).tweak
+    assert settle_engine(source_ask(text), None, playing="renardo") == (source_ask(text), "")
+    assert settle_engine(source_ask(text), "renardo", playing="renardo")[0].engine == ""  # и слот без опоры снят
+
+
+def test_tweak_words_are_one_table_and_a_phrase_must_stand_in_a_row():
+    """Единственная таблица ``ENGINE_TWEAK_WORDS``: все виды правки в ней; одно слово — основа, несколько — подряд."""
+    assert set(kn.ENGINE_TWEAK_WORDS) == {"tempo", "bass", "timbre", "develop"}
+    assert ask_tweak("в том же духе") and not ask_tweak("в том городе же")
+    assert ask_tweak("ускорь") and not ask_tweak("")
+
+
 @pytest.mark.parametrize("text,own_subject", [
-    ("сгенерируй новый трек", False),  # просьба называет путь: «сгенерируй»
-    ("спой что-нибудь", False),
-    ("сыграй рок", False),  # жанр, которого синтез не играет
-    ("поставь новый трек", False),
-    ("сыграй что-нибудь на балалайке", True),  # свой предмет: инструмент реплики
-    ("поставь Калинку", True),  # свой предмет: пьеса по названию
+    ("ускорь и сгенерируй новый трек", False),  # просьба называет путь: «сгенерируй»
+    ("добавь баса и спой что-нибудь", False),
+    ("ускорь, сыграй рок", False),  # жанр, которого синтез не играет
+    ("развивай, поставь новый трек", False),
+    ("добавь баса на балалайке", True),  # свой предмет: инструмент реплики
+    ("продолжи, поставь Калинку", True),  # свой предмет: пьеса по названию
 ])
 def test_playing_engine_is_not_inherited_by_a_request_with_its_own_subject_or_path(text, own_subject):
+    """Даже правка не наследует движок, если называет путь или свой предмет."""
+    assert source_ask(text).tweak
     ask, note = settle_engine(source_ask(text), None, playing="renardo", own_subject=own_subject)
     assert ask.engine == "" and note == ""
 

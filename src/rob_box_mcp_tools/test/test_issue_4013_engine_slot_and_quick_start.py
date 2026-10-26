@@ -19,7 +19,6 @@ from unittest.mock import patch
 import pytest
 
 from rob_box_core.tool_catalog import get_tool
-from rob_box_dialog import knowledge as dialog_kn
 from rob_box_dialog.command import _schema_error
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine import tools_v2
@@ -110,17 +109,72 @@ def test_playing_engine_is_inherited_by_a_plain_follow_up_like_n506(caplog):
     assert any("движок наследуется от играющего: renardo" in r.getMessage() for r in caplog.records)
 
 
-def test_playing_engine_is_not_inherited_by_a_request_with_its_own_subject():
-    """Под играющим Ренардо «сыграй что-нибудь на балалайке» и «сыграй рок» — обычный путь, а не молчаливый синтез."""
+@pytest.mark.parametrize("heard,intent", [
+    (BALALAIKA, "track"), ("Робот, сыграй рок", "track"), ("Робот, сгенерируй новый трек", "track"),
+    ("Робот, ускорь и добавь баса на балалайке", "track"),  # правка, но с инструментом реплики — свой предмет
+    ("Робот, поставь Калинку", "melody"),  # пьеса по названию
+])
+def test_playing_engine_is_not_inherited_by_a_request_with_its_own_subject(heard, intent):
+    """Под играющим Ренардо «сыграй что-нибудь на балалайке» и «сыграй рок» — обычный путь, а не молчаливый синтез.
+    Ренардо заводится заново в каждом случае: заказ другого трека снимает его факт из снимка плеера."""
     rig = _rig()
     _dj, req = _tools(rig)
     asks = _asks(req)
     assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
-    for heard in (BALALAIKA, "Робот, сыграй рок", "Робот, сгенерируй новый трек"):
-        req.execute(intent="track", text=heard, heard_text=heard, engine="renardo")
-        assert asks[-1].engine == "", heard
-    req.execute(intent="melody", text="Калинка", heard_text="Робот, поставь Калинку")  # пьеса по названию
-    assert asks[-1].engine == ""
+    req.execute(intent=intent, text=heard, heard_text=heard, engine="renardo")
+    assert len(asks) == 2 and asks[-1].engine == "", heard
+
+
+#: Просьбы, на которых ревьюер PR #4037 показал липкое наследование: Ренардо держался до стопа, кавер и кэш исключались.
+NOT_A_TWEAK = ("Робот, сыграй ещё", "Робот, поставь трек про космос", "Робот, включи музыку", "Робот, поставь Нирвану",
+               "Робот, включи что-нибудь другое", "Робот, сделай потише")
+
+
+@pytest.mark.parametrize("heard", NOT_A_TWEAK)
+def test_playing_engine_is_not_inherited_by_a_request_that_does_not_tweak_what_plays(heard):
+    """Наследуют только правки играющего (темп, бас, тембр, развитие); новая просьба идёт обычным путём."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    asks = _asks(req)
+    assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
+    assert rig.owner.now_playing()["engine"] == "renardo"  # Ренардо играет (поставлен на деку)
+    result = req.execute(intent="track", text=heard, heard_text=heard)
+    assert len(asks) == 2 and asks[-1].engine == "", heard
+    assert "engine" not in result.data
+
+
+@pytest.mark.parametrize("heard", [
+    "Робот, ускорь темп", "Робот, замедли", "Робот, добавь баса", "Робот, жирнее", "Робот, развивай",
+    "Робот, продолжи этот бит", "Робот, ещё такой же", "Робот, давай в том же духе",
+])
+def test_playing_engine_is_inherited_by_each_kind_of_tweak(heard):
+    rig = _rig()
+    _dj, req = _tools(rig)
+    asks = _asks(req)
+    assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
+    result = req.execute(intent="track", text=heard, heard_text=heard)
+    assert len(asks) == 2 and asks[-1].engine == "renardo" and result.data["engine"] == "renardo", heard
+
+
+def test_engine_of_a_track_whose_start_failed_is_not_inherited():
+    """``PlayerOwner.play`` кладёт факты заказа до ``adapter.start``: старт упал — факт ``engine`` остаётся в снимке при
+    пустой деке. «Ускорь» после такого провала Ренардо не наследует: играть нечему."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    asks = _asks(req)
+
+    def boom(program, started):
+        raise RuntimeError("scsynth недоступен")
+
+    rig.adapter.start = boom
+    failed = req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо")
+    assert not failed.success
+    snap = rig.owner.now_playing()
+    assert snap["engine"] == "renardo" and not snap["playing"] and not snap["pending"]  # факт остался при пустой деке
+    assert tools_v2.playing_engine(rig.owner) == ""
+    heard = "Робот, ускорь темп"
+    req.execute(intent="track", text=heard, heard_text=heard)
+    assert len(asks) == 2 and asks[-1].engine == ""
 
 
 def test_nothing_is_inherited_when_nothing_plays():
@@ -186,17 +240,27 @@ def archive(tmp_path_factory):
     return RtttlLibrary(db_path=str(tmp_path_factory.mktemp("links4013") / "voice_memory.db"))
 
 
+HOLD_S = 30.0  # сколько LLM держит ответ, если тест её не отпустил
+
+
 class SlowLLM:
     """LLM разбора темы (``reasoner.ask``): ждёт, пока тест её отпустит; ``calls`` — что у неё спросили."""
 
     def __init__(self):
         self.calls, self.release, self.finished = [], threading.Event(), threading.Event()
+        self.asked = threading.Event()
 
     def __call__(self, *args):
         self.calls.append(args)
-        self.release.wait(10)
+        self.asked.set()
+        self.release.wait(HOLD_S)
         self.finished.set()
         return "fail", None, ""
+
+
+#: Ожидание LLM у сета в этих тестах — дольше, чем она держит ответ (``SlowLLM``): заказ, который стал бы её ждать,
+#: дождался бы ответа (``llm.finished``), а не отсидел таймаут. Без порогов по стене: тест не сравнивает время.
+LONG_SET_WAIT_S = 60.0
 
 
 @pytest.fixture()
@@ -207,40 +271,36 @@ def real_chain(archive, tmp_path):
                               _db_path=db)
     llm = SlowLLM()
     rig = _rig()
-    with patch.object(tools_v2, "_rtttl_library", lambda: library):
+    links = lambda node, reasoner: ThemeLinks(ask=reasoner.ask, wait_s=LONG_SET_WAIT_S)  # noqa: E731
+    with patch.object(tools_v2, "_rtttl_library", lambda: library), patch.object(tools_v2, "theme_links", links):
         dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, seed=lambda: 4242,
                        reasoner=SimpleNamespace(enabled=True, ask=llm))
         req = RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777,
                                classic=lambda query, seed: ClassicPick(query=query, found=False, reason="нет в базе"),
                                records=lambda ids: {}, words=lambda word: ThemeHits())
-    yield req, llm
+    yield req, llm, rig
     llm.release.set()
 
 
 def test_n809_renardo_mood_request_starts_at_once_and_asks_no_llm_theme_links(real_chain):
     """Живой n809: между выбором синтеза и стартом стоял LLM ``submit_catalog_queries`` 9.7 с — теперь LLM не зовётся."""
-    req, llm = real_chain
-    started = time.monotonic()
+    req, llm, rig = real_chain
     result = req.execute(intent="track", text="поставь фоном ровный ритм на Ренардо только не громко", mood="calm",
                          engine="renardo", heard_text=RHYTHM)
     assert result.success and result.data["engine"] == "renardo"
+    assert rig.owner.is_playing()  # трек запущен (поставлен на деку, ждёт ``started``)
     assert llm.calls == []  # LLM-разбора темы нет совсем
-    assert time.monotonic() - started < kn.THEME_ASK_WAIT_S  # раньше заказ отсиживал ожидание сета (8 с): 9.7 с в n809
 
 
 def test_track_with_a_theme_asks_the_llm_only_in_the_background(real_chain):
-    """Тема без находок и без настроения: LLM спрашивается, но заказ её не ждёт (раньше стоял до 8 с)."""
-    req, llm = real_chain
-    started = time.monotonic()
+    """Тема без находок и без настроения: LLM спрашивается, но заказ её не ждёт. Ожидание сета тут 60 с, а LLM держит
+    ответ 30 с: заказ, ждущий её, вернулся бы после ответа (``finished``) — этот вернулся, пока она молчит."""
+    req, llm, rig = real_chain
     result = req.execute(intent="track", text="трек про динозавров", heard_text="Робот, сыграй трек про динозавров")
-    elapsed = time.monotonic() - started
-    # LLM ещё держит ответ (release не отпущен), а заказ уже играет: ожидание сета (8 с) он не отсиживает
-    assert result.success and elapsed < kn.THEME_ASK_WAIT_S
+    assert result.success and rig.owner.is_playing()
     assert not llm.finished.is_set()
-    deadline = time.monotonic() + 5
-    while not llm.calls and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert len(llm.calls) == 1  # вопрос ушёл в фоне: связь запишется в хранилище, повтор найдёт её сразу
+    assert llm.asked.wait(10)  # вопрос ушёл в фоне, в своём потоке
+    assert len(llm.calls) == 1  # связь запишется в хранилище, повтор найдёт её сразу
     llm.release.set()
     assert llm.finished.wait(5)
 
@@ -258,9 +318,9 @@ def test_zero_wait_asks_the_llm_in_the_background_and_does_not_block(tmp_path):
     assert len(asked) == 1
 
 
-def test_single_track_wait_fits_the_music_action_deadline():
-    """Ожидание LLM у сета (8 с) и запуск трека не умещаются в потолок действия музыки в диалоге (10 с) — у одиночного
-    трека своё ожидание, из знания музыки, и умещается."""
-    assert kn.THEME_ASK_WAIT_S + dialog_kn.MUSIC_START_WAIT_S > dialog_kn.MUSIC_ACTION_DEADLINE_S
-    assert kn.THEME_ASK_WAIT_TRACK_S + dialog_kn.MUSIC_START_WAIT_S <= dialog_kn.MUSIC_ACTION_DEADLINE_S
+def test_single_track_does_not_wait_for_the_llm_while_the_set_still_does():
+    """Одиночный трек не ждёт LLM-разбор темы вовсе (``THEME_ASK_WAIT_TRACK_S`` = 0: трек играет сразу, ответ допишется
+    в хранилище фоном), у сета прежнее ожидание."""
+    assert kn.THEME_ASK_WAIT_TRACK_S == 0
+    assert kn.THEME_ASK_WAIT_S > 0
     assert ThemeLinks()._wait_s == kn.THEME_ASK_WAIT_S  # noqa: SLF001 — у сета прежнее ожидание
