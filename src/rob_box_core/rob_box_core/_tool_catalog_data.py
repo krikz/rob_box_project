@@ -1568,10 +1568,11 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'description': 'Поставить музыку по просьбе человека: intent=track — клубный '
                        'трек (темп, тональность и аранжировку решает код), '
                        'intent=melody — известная мелодия по названию из text. text — '
-                       'слова человека дословно. engine=renardo — человек назвал '
-                       'Ренардо («на Ренардо», искажённо «на индардо»): играет живой '
-                       'синтез, не готовый трек. Об успехе робот скажет сам, когда '
-                       'музыка реально заиграет; ok=false — музыка не заиграла.',
+                       'слова человека дословно. engine=renardo — только если человек '
+                       'сам назвал Ренардо («на Ренардо», искажённо «на индардо»): '
+                       'играет живой синтез, не готовый трек; не называл — engine не '
+                       'заполняй. Об успехе робот скажет сам, когда музыка реально '
+                       'заиграет; ok=false — музыка не заиграла.',
         'parameters': {   'type': 'object',
                           'properties': {   'intent': {   'type': 'string',
                                                           'description': 'track — '
@@ -1598,15 +1599,16 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                          'enum': [   'auto',
                                                                      'club',
                                                                      'classical',
-                                                                     'folk']},
+                                                                     'folk',
+                                                                     'rock']},
                                             'engine': {   'type': 'string',
                                                           'description': 'Движок: '
                                                                          'renardo — '
+                                                                         'только если '
                                                                          'человек '
                                                                          'назвал '
                                                                          'Ренардо; '
-                                                                         'auto — не '
-                                                                         'называл',
+                                                                         'иначе auto',
                                                           'enum': ['auto', 'renardo']},
                                             'min_seconds': {   'type': 'number',
                                                                'description': 'Служебный '

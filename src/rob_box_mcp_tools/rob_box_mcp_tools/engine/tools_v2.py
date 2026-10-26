@@ -50,8 +50,8 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, cache_text, decline_text, route_note,
-                                  source_ask, with_engine)
+from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, blank_engine, cache_text, decline_text,
+                                  engine_route, route_note, settle_engine, source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -69,7 +69,7 @@ from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .instrumental_order import InstrumentalOrder
 from .source_route import SourceRouter
-from .theme_grounding import set_slots
+from .theme_grounding import heard_theme, set_slots
 from .theme_links import Ask, ThemeLinks
 
 _LOG = logging.getLogger(__name__)
@@ -128,11 +128,15 @@ def lead_for(*texts: Optional[str]) -> Optional[LeadChoice]:
 
 def club_theme(text: str) -> str:
     """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
-    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1); иначе — слова как есть."""
+    (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1). Иначе — слова реплики без глаголов
+    заказа и служебных слов (:func:`theme_grounding.heard_theme`, одно место, где тема выделяется из свободных слов)
+    и без названия движка («на Ренардо» — путь, а не тема, #3960 п.2: LLM-разбор темы спрашивал «Renardo»)."""
     from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
     command = parse_media_command(text)
-    return command.name if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument else text
+    if command.intent is MediaIntent.REQUEST_MUSIC and command.instrument:
+        return command.name
+    return heard_theme(blank_engine(text))
 
 
 def club_name(text: str, theme: str) -> str:
@@ -213,10 +217,11 @@ def word_hooks(library_factory: Callable[[], Any]) -> WordHooks:
 
 
 def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks] = None,
-                 ask: bool = True) -> ThemeFinder:
+                 ask: bool = True, wait_s: Optional[float] = None) -> ThemeFinder:
     """``тема -> ThemeHits`` по её словам (``engine.search.theme_search``); библиотека — при первой теме. Часть без
     находок — через связи реестра и проверенные каталогом строки поиска LLM (``engine.theme_links``, #3493); ``ask=False`` — без вопроса LLM (одиночная пьеса: ответ
-    не ждётся на пути звука, #3608), только хранилище связей."""
+    не ждётся на пути звука, #3608), только хранилище связей; ``wait_s`` — сколько ждать LLM (нет — как у сета, ``0`` —
+    только фоном, одиночный трек)."""
     box: Dict[str, Any] = {}
 
     def find(theme: str) -> ThemeHits:
@@ -229,12 +234,61 @@ def theme_finder(library_factory: Callable[[], Any], links: Optional[ThemeLinks]
         if links is None:
             return hits
         try:
-            return links.expand(box["lib"], theme, hits, ask=ask)
+            return links.expand(box["lib"], theme, hits, ask=ask, wait_s=wait_s)
         except Exception as exc:  # noqa: BLE001 — прямые находки не теряются из-за хранилища связей
             _LOG.warning(f"⚠️ [dj_set] связи темы «{theme}» упали: {type(exc).__name__}: {exc}")
             return hits
 
     return find
+
+
+def theme_finders(library_factory: Callable[[], Any], links: Optional[ThemeLinks],
+                  finder: Optional[ThemeFinder] = None) -> Tuple[ThemeFinder, ThemeFinder, ThemeFinder]:
+    """Поиски темы ``(сет, одиночная пьеса, одиночный трек)``: сет ждёт LLM (``THEME_ASK_WAIT_S``), пьеса её не
+    спрашивает (#3608), трек спрашивает только фоном (``THEME_ASK_WAIT_TRACK_S``, #3960 п.2). Подставной ``finder``
+    (тесты) заменяет все три."""
+    if finder is not None:
+        return finder, finder, finder
+    return (theme_finder(library_factory, links), theme_finder(library_factory, links, ask=False),
+            theme_finder(library_factory, links, wait_s=kn.THEME_ASK_WAIT_TRACK_S))
+
+
+def single_track_find(dj: Any, theme: str, mood: Optional[str], find: Optional[ThemeFinder] = None) -> ThemeFinder:
+    """Поиск темы одиночного трека — без ожидания LLM на пути звука (#3960 п.2): разбор темы 4–10 с упирался в потолок
+    действия музыки 10 с, ход закрывался «музыка пока не заиграла», хотя трек стартовал через 1.4 с. Поиск от вызывающего
+    (мост ожидания генерации) главнее. Пустая тема — искать нечего; заказ по настроению (слот ``mood``) называет не
+    произведение — каталог и хранилище связей, LLM не спрашивается совсем; иначе LLM только фоном."""
+    if find is not None:
+        return find
+    return dj.quick_find if mood or not theme else dj.track_find
+
+
+def track_label(profile: ThemeProfile) -> str:
+    """Тема трека для названия: тема, по которой нашлись хуки или материал, иначе пусто — слова просьбы без находок
+    («ровный ритм») названием трека не служат."""
+    return profile.theme if profile.source == "theme" else ""
+
+
+def playing_engine(owner: Any) -> str:
+    """Движок играющего трека из снимка плеера (``PlayerOwner.now_playing``, факт ``engine``); не играет — «»."""
+    now = getattr(owner, "now_playing", None)
+    return str((now() if callable(now) else {}).get("engine") or "")
+
+
+def settled_ask(ask: SourceAsk, slot: Optional[str], texts: Tuple[Optional[str], ...], classic: bool,
+                owner: Any, log: Any) -> SourceAsk:
+    """Просьба с движком, который решил код по словам человека и снимку плеера (:func:`settle_engine`, #4013): слот
+    ``engine`` от LLM без опоры в словах отброшен, играющий движок унаследован («ускорь», «добавь баса»); пьеса по
+    названию и инструмент реплики — свой предмет заказа, наследования нет. Решение — строкой в лог."""
+    settled, note = settle_engine(ask, slot, playing_engine(owner), classic or lead_for(*texts) is not None)
+    if note:
+        log.info(f"🎚️ [engine] {note}")
+    return settled
+
+
+def engine_facts(ask: SourceAsk) -> Dict[str, str]:
+    """Движок заказа для снимка плеера (``TRACK_FACTS``): назван или унаследован — «ускорь» под ним наследует его."""
+    return {"engine": ask.engine} if engine_route(ask.engine) == SYNTH else {}
 
 
 def _shared(factory: Callable[[], Any]) -> Callable[[], Any]:
@@ -318,8 +372,9 @@ SOURCE_SYNTH, SOURCE_PIECE, SOURCE_MELODY = "synth", "piece", "melody"
 _PIECE_SOURCES = {SCORE: SOURCE_PIECE, RTTTL: SOURCE_MELODY}
 #: Что не заиграло — во фразе отказа заказа: мелодия (пьеса по названию) или музыка.
 _NOT_PLAYING = {True: "мелодия не заиграла", False: "музыка не заиграла"}
-#: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет».
-TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played")
+#: Факты заказа, которые владелец плеера кладёт в снимок (поле ``dj``) — по ним код отвечает «что играет». ``engine``
+#: — названный движок трека (``knowledge.MUSIC_ENGINES``): «ускорь» под ним наследует его (``source.settle_engine``).
+TRACK_FACTS = ("title", "name", "source", "style", "bpm", "key", "instrument_played", "engine")
 
 
 def track_facts(staged: Mapping[str, Any]) -> Dict[str, Any]:
@@ -372,8 +427,9 @@ class DjSetTool(MCPTool):
         library = self.library = _shared(_rtttl_library)  # одна библиотека RTTTL на сет и одиночную пьесу
         self._melodies = melodies or library_melodies(library)
         links = theme_links(node, self._reasoner)
-        self._find = finder or theme_finder(library, links)
-        self._find_work = finder or theme_finder(library, links, ask=False)  # одиночная пьеса: LLM не на пути звука
+        #: ``_find_work``: одиночная пьеса — LLM не на пути звука; ``track_find``: одиночный трек (``request_music``
+        #: intent=track) — LLM-разбор темы только фоном, заказ его не ждёт (#3960 п.2, ``THEME_ASK_WAIT_TRACK_S``)
+        self._find, self._find_work, self.track_find = theme_finders(library, links, finder)
         #: Поиск темы без вопроса LLM (связи — только хранилище): мост ожидания генерации (песня, кавер, сет) берётся
         #: кодом мгновенно — 13.10 мост песни 8 с ждал theme-links, ``request_music`` 10.6 с > таймаута хода 10 с.
         self.quick_find = self._find_work
@@ -700,9 +756,9 @@ class RequestMusicTool(MCPTool):
     def description(self) -> str:
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
-                "человека дословно. engine=renardo — человек назвал Ренардо («на Ренардо», искажённо «на "
-                "индардо»): играет живой синтез, не готовый трек. Об успехе робот скажет сам, когда музыка "
-                "реально заиграет; ok=false — музыка не заиграла.")
+                "человека дословно. engine=renardo — только если человек сам назвал Ренардо («на Ренардо», "
+                "искажённо «на индардо»): играет живой синтез, не готовый трек; не называл — engine не заполняй. "
+                "Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — музыка не заиграла.")
 
     @property
     def parameters(self) -> List[MCPToolParameter]:
@@ -716,9 +772,9 @@ class RequestMusicTool(MCPTool):
             MCPToolParameter(name="mood", type="string", description="Настроение трека", required=False,
                              enum=sorted(kn.MOOD_ENERGY)),
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
-                             enum=["auto", "club", "classical", "folk"]),
+                             enum=["auto", "club", "classical", "folk", "rock"]),
             MCPToolParameter(name="engine", type="string", required=False,
-                             description="Движок: renardo — человек назвал Ренардо; auto — не называл",
+                             description="Движок: renardo — только если человек назвал Ренардо; иначе auto",
                              enum=[kn.ENGINE_AUTO, *kn.MUSIC_ENGINES]),
             MCPToolParameter(name="min_seconds", type="number", required=False,
                              description="Служебный аргумент кода выступления, не заполняй"),
@@ -760,7 +816,8 @@ class RequestMusicTool(MCPTool):
         classic = intent == "melody" or genre in CLASSIC_GENRES
         what = _NOT_PLAYING[classic]
         # пьеса собирается до выбора пути: кавер (ADR-0158 PR-4) — по её произведению, мост и фолбэк — она сама
-        ask = with_engine(ask or source_ask(heard_text or text), engine)
+        ask = settled_ask(ask or source_ask(heard_text or text), engine, (text, heard_text), classic, self._owner,
+                          self._log())
         piece = self._stage_piece(text, heard_text) if classic else None
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
@@ -771,6 +828,7 @@ class RequestMusicTool(MCPTool):
         staged = self._stage(route, piece, text, mood, heard_text, bridge_find(self._dj, gen_failed))
         if "program" not in staged:  # не нашлось / не собралось: идущий сет играет дальше
             return tool_result(staged, what)
+        staged.update(engine_facts(ask))  # движок трека — в снимок плеера: «ускорь» под ним наследует его (#4013)
         program, once, row, model = unstage(staged)
         self._dj.close_set("request_music")  # деку снимаем только под собранный заказ
         # мост ожидания генерации (кавер — PR-4, песня — PR-7) держит звук до результата (BridgeHold, PR-8)
@@ -834,8 +892,10 @@ class RequestMusicTool(MCPTool):
         """Трек плана с энергией настроения: ``compose`` → ``render`` (дека A) — собран, но не запущен; ``lead`` —
         синт инструмента заказа; ``style`` — стиль синтеза, который выбрал путь (ADR-0158)."""
         theme = club_theme(text)
+        find = single_track_find(self._dj, theme, mood, find)
         profile = (self._dj.theme_profile(theme, style, find) if style in kn.STYLES and style != kn.DEFAULT_STYLE
                    else self._dj.theme_profile(theme, find=find))
+        label = track_label(profile)  # тема без находок — не название трека
         seed = self._seed()
         plan = seeded_plan(profile, seed, set_id=f"req{seed % 100000:05d}")
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
@@ -847,9 +907,9 @@ class RequestMusicTool(MCPTool):
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
-        title = f"{profile.theme or 'клубный трек'} · {plan.bpm} BPM"
+        title = f"{label or 'клубный трек'} · {plan.bpm} BPM"
         return {"program": program, "once": False, "bridge_model": model, "title": title,
-                "name": club_name(text, profile.theme),
+                "name": club_name(text, label),
                 "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
