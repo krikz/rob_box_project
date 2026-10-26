@@ -100,7 +100,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rob_box_dialog_msgs.msg import SpeakerResult
 from std_msgs.msg import String
 from rob_box_core.e2e_mode import E2EModeOwner
-from rob_box_core.speaker_wire import fill_speaker_result
+from rob_box_core.speaker_wire import TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
 
 from .core import epithets, unnamed_voice
 from .core.utterance_id import compute_utterance_id
@@ -165,9 +165,11 @@ def _gap_to_other_name(
 # с РАЗНЫМИ именами, малый разрыв — n210: Борис vs Саша) не может нести
 # ни одного имени кандидата дальше — даже в подсказку-гипотезу, не то
 # что вслух (must_not_say в n210 запрещает само слово "Борис").
+# Строки tentative_kind — из контракта сообщения (rob_box_core.speaker_wire):
+# по ним потребители решают, приписан ли голос профилю (#4023).
 NAME_CONFIDENT = "confident"
-NAME_TENTATIVE_SINGLE = "single"
-NAME_TENTATIVE_CONTESTED = "contested"
+NAME_TENTATIVE_SINGLE = TENTATIVE_SINGLE
+NAME_TENTATIVE_CONTESTED = TENTATIVE_CONTESTED
 
 
 def classify_name_confidence(
@@ -1283,7 +1285,7 @@ class SpeakerIdNode(Node):
             confidence=match.confidence if match else None,
         )
         name_decision = _name_decision(self, embedding, match)
-        enrolled = unnamed_voice.enroll(self, embedding, match, name_decision, duration_sec)
+        enrolled = unnamed_voice.enroll(self, embedding, match, duration_sec)  # узнанному (и спорному) — нет
         # Issue #3858 -- вердикт в логе строится ПОСЛЕ решения об имени и совпадает с опубликованным: харнесс
         # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
         # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.

@@ -16,8 +16,9 @@ from typing import Any, Callable, List, Mapping, Optional, Tuple
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Ask
 
-#: Состояния имени собеседника (ADR-0130 §2.6): по имени обращаться можно только при ``confirmed``.
-NAME_STATES: Tuple[str, ...] = ("unknown", "tentative", "confirmed")
+#: Состояния имени собеседника (ADR-0130 §2.6): по имени обращаться можно только при ``confirmed``. ``contested`` —
+#: голос похож на знакомого, но кто из похожих — спорно (#2809): имени и профиля нет, как у незнакомца (#4023, #3993).
+NAME_STATES: Tuple[str, ...] = ("unknown", "tentative", "confirmed", "contested")
 
 
 @dataclass(frozen=True)

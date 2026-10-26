@@ -11,8 +11,10 @@
 3. Представился (``register_speaker`` с именем) → имя получает ЭТОТ ЖЕ профиль, дубля нет, кличка остаётся.
 4. Короткая/шумная фраза → профиля нет, результат прежний (``is_known=false``).
 5. Лимит безымянных → вытеснение самых старых; именованных не трогаем.
-6. Уже опознанный уверенно (именованный) голос профиль не плодит; «contested» (n709/n210) — плодит; одинокий
-   кандидат в полосе («single», свой на плохом канале) — нет; открытая growth-сессия — нет; выключатель — нет.
+6. Уже опознанный голос (порог 0.72 пройден) профиль не плодит при ЛЮБОМ решении об имени: уверенное, одинокий
+   кандидат в полосе («single», свой на плохом канале) и «contested» (n709/n210, акт 2b «Саша» 0.944 / «Борис» 0.661
+   при band_high 0.99 — решение Шифу 26.10: спорному голосу двойника не заводить); открытая growth-сессия — нет;
+   выключатель — нет.
 
 Нода собрана через ``object.__new__`` (без ROS2 и resemblyzer), как в соседних тестах #2829/#2863.
 """
@@ -297,22 +299,50 @@ def _stranger_in_band(boris: np.ndarray) -> np.ndarray:
     raise AssertionError("не нашли вектор в полосе")
 
 
-def test_contested_stranger_gets_own_profile_instead_of_being_named_boris(node):
-    """n709/n210: незнакомец в полосе между двумя людьми с разными именами (классификация contested)."""
+def test_contested_stranger_gets_no_clone_and_no_name(node):
+    """n709/n210: голос в полосе между двумя людьми с разными именами (contested) — двойника нет (решение Шифу
+    26.10), имени нет; результат честно «спорный»: диалог сочтёт его незнакомцем без профиля (#4023)."""
     boris = _embedding(10)
     node._db.register("Борис", boris, duration_sec=5.0)
     node._db.register("Саша", _embedding(11), duration_sec=5.0)
     stranger = _stranger_in_band(boris)
 
-    first = _hear(node, stranger, 4.5, "u1")
+    for n, phrase in enumerate((stranger, _degraded(stranger, 0.25, noise_seed=95))):
+        result = _hear(node, phrase, 4.5, f"u{n}")
+        assert result["is_known"] is True and result["name"] is None
+        assert result["tentative_kind"] == "contested" and "tentative_name" not in result
+        assert "source" not in result, "это опознание, а не заведение профиля"
 
-    assert first["source"] == "enroll" and first["name"] is None
-    assert first["speaker_id"] not in {row["id"] for row in _profiles(node) if row["name"]}
-    assert sorted(row["name"] for row in _profiles(node) if row["name"]) == ["Борис", "Саша"]
+    assert sorted(row["name"] for row in _profiles(node)) == ["Борис", "Саша"], "безымянных двойников нет"
 
-    again = _hear(node, _degraded(stranger, 0.25, noise_seed=95), 4.5, "u2")
-    assert again["speaker_id"] == first["speaker_id"], "вторая реплика незнакомца — его профиль, а не Борис"
-    assert again["name"] is None
+
+def _phrase_at(anchor: np.ndarray, cos: float, seed: int) -> np.ndarray:
+    """Единичный вектор с косинусом ``cos`` к единичному ``anchor``."""
+    noise = _embedding(seed)
+    orth = noise - float(np.dot(noise, anchor)) * anchor
+    orth /= np.linalg.norm(orth)
+    return (cos * anchor + np.sqrt(1.0 - cos * cos) * orth).astype(np.float32)
+
+
+def test_known_person_in_contested_band_is_not_cloned_act_2b(node):
+    """Акт 2b марафона 23.10: «Саша» 0.944, «Борис» 0.661, band_high 0.99 → contested на каждой фразе. Раньше каждая
+    фраза длиннее гейта речи заводила безымянную копию Саши; теперь база не растёт, результат — без имени и без
+    гипотезы-имени."""
+    node._name_confidence_band_high = 0.99
+    sasha = _embedding(20)
+    sasha_id = node._db.register("Саша", sasha, duration_sec=5.0)
+    phrases = [_phrase_at(sasha, 0.944, seed=200 + i) for i in range(4)]
+    boris = _phrase_at(phrases[0], 0.661, seed=300)
+    node._db.register("Борис", boris, duration_sec=5.0)
+    assert abs(_cos(phrases[0], sasha) - 0.944) < 1e-3 and abs(_cos(phrases[0], boris) - 0.661) < 1e-3
+
+    results = [_hear(node, p, 6.0, f"u{i}") for i, p in enumerate(phrases)]
+
+    assert sorted(row["name"] for row in _profiles(node)) == ["Борис", "Саша"], "двойников Саши нет"
+    first = results[0]
+    assert first["is_known"] is True and first["name"] is None and first["tentative_kind"] == "contested"
+    assert first["speaker_id"] == sasha_id, "в результате — лишь ближайший кандидат, приписывать его решает потребитель"
+    assert all(r.get("source") != "enroll" for r in results)
 
 
 def test_lone_candidate_in_band_is_not_cloned(node):
@@ -358,19 +388,16 @@ def test_switch_off_keeps_old_behaviour(node):
         ({"voiced_sec": 2.9}, unnamed_voice.SKIP_TOO_SHORT),
         ({"voiced_sec": None}, unnamed_voice.SKIP_TOO_SHORT),
         ({"recognised": True}, unnamed_voice.SKIP_RECOGNISED),
-        ({"recognised": True, "name_decision": "single"}, unnamed_voice.SKIP_RECOGNISED),
-        ({"recognised": True, "name_decision": "confident"}, unnamed_voice.SKIP_RECOGNISED),
-        ({"recognised": True, "name_decision": "contested"}, None),
         ({"growth_session_open": True}, unnamed_voice.SKIP_GROWTH_SESSION),
     ],
 )
 def test_enroll_skip_reason(kwargs, expected):
+    """Решение об имени (confident/single/contested) в правило не входит: узнанный голос клона не получает."""
     args = dict(
         enabled=True,
         voiced_sec=4.0,
         min_voiced_sec=3.0,
         recognised=False,
-        name_decision=None,
         growth_session_open=False,
     )
     args.update(kwargs)

@@ -11,6 +11,10 @@
 
 Модуль не импортирует ROS: сообщение - любой объект с полями ``SpeakerResult``
 (настоящий тип или ``rob_box_core.msg_stub``).
+
+:func:`name_state` - что результат фразы говорит об имени собеседника
+(``confirmed``/``tentative``/``contested``/``nameless``/``unknown``): одно
+правило для диалога и MCP (#4023), выводится из полей сообщения.
 """
 
 from __future__ import annotations
@@ -31,6 +35,40 @@ _EVENT_NAMES = {
     EVENT_MERGED: "merged",
 }
 _EVENT_CODES = {name: code for code, name in _EVENT_NAMES.items()}
+
+# ``tentative_kind`` узнанного голоса, чьё имя не опубликовано (#2809): одна
+# гипотеза имени в полосе сомнения или конкурент с ДРУГИМ именем рядом.
+TENTATIVE_SINGLE = "single"
+TENTATIVE_CONTESTED = "contested"
+
+# Состояние имени результата фразы (#4023, #3993) - что биометрия знает о
+# том, КТО говорит. Одна таблица для потребителей (диалог, MCP), без нового
+# поля в сообщении: всё нужное уже лежит в ``name``/``tentative_*``.
+NAME_CONFIRMED = "confirmed"  # имя опубликовано: биометрия уверена или голос только что зарегистрирован
+NAME_TENTATIVE = "tentative"  # одна гипотеза имени, вслух не называть
+NAME_CONTESTED = "contested"  # голос похож на знакомого, но кто из похожих - не решено: не приписан никому
+NAME_NAMELESS = "nameless"  # профиль без имени, с кличкой (#3858): голос свой, имени нет
+NAME_UNKNOWN = "unknown"  # голос не узнан или не оценён
+
+
+def name_state(payload: Mapping[str, Any]) -> str:
+    """Состояние имени результата биометрии фразы (словарь :func:`speaker_result_to_payload`).
+
+    ``contested`` - не «незнаком» и не «узнан»: ``speaker_id`` в нём лишь
+    ближайший кандидат, которому конкурирует профиль с другим именем, - ни
+    имя, ни профиль (а значит, и его факты) этому голосу приписывать нельзя.
+    Служебные события (``registered`` и т.п.) - не результат фразы: ``unknown``.
+    """
+    if payload.get("event") or not payload.get("is_known"):
+        return NAME_UNKNOWN
+    if payload.get("name"):
+        return NAME_CONFIRMED
+    if payload.get("tentative_kind") == TENTATIVE_CONTESTED:
+        return NAME_CONTESTED
+    if payload.get("tentative_name"):
+        return NAME_TENTATIVE
+    return NAME_NAMELESS
+
 
 # Ключ словаря -> поле сообщения для скалярных значений, одинаковых по смыслу
 # во всех событиях. Строки "" в сообщении читаются как отсутствие значения.

@@ -500,3 +500,67 @@ class TestIssue2863KeepKnownSpeaker:
         handler(_msg(json.dumps({"is_known": False, "utterance_id": "u-2"})))
 
         assert node._current_encounter_speaker_id() is None
+
+
+class TestIssue4023OnlyConfirmedNameBindsSpeaker:
+    """Issue #4023 — «кто сейчас» для memory-тулов становится профилем только при опубликованном имени.
+
+    Марафон 23.10 (акт 2b): ``current_speaker_id: ∅ → 429eae2c… (name=None)`` в «спорной» полосе (#2809), затем
+    ``memory_search{query:'Саша'}`` с id Саши при снимке ``speaker unknown``; 21:35:44 n709 — посторонний голос
+    привязан к профилю Саши. Спорный голос — как незнакомец: «кто сейчас» сбрасывается в ∅.
+    """
+
+    #: 21:31:04 — «Саша» 0.892, имя скрыто: contested (band_high 0.99).
+    CONTESTED = {"is_known": True, "speaker_id": "429eae2c-738a", "name": None, "confidence": 0.892,
+                 "epithet": "Спутник", "tentative_conf": 0.892, "tentative_kind": "contested",
+                 "utterance_id": "4be70727a7b1"}
+
+    def _prime_sasha(self, handler) -> None:
+        handler(_msg(json.dumps({"is_known": True, "speaker_id": "429eae2c-738a", "name": "Саша",
+                                 "confidence": 0.95})))
+
+    def test_contested_from_empty_does_not_bind_the_candidate(self) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        assert node._current_encounter_speaker_id() is None
+        assert not any("429eae2c" in m for m in node.logger.infos)
+
+    def test_contested_after_confirmed_sasha_resets_to_nobody(self) -> None:
+        """n709: посторонний голос в спорной полосе больше не продолжает «Сашу» — факты Саши ему не достаются."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime_sasha(handler)
+        assert node._current_encounter_speaker_id() == "429eae2c-738a"
+
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        assert node._current_encounter_speaker_id() is None
+        assert any("→ ∅" in m and "name_state=contested" in m for m in node.logger.infos)
+
+    @pytest.mark.parametrize("payload", [
+        {"is_known": True, "speaker_id": "p-guess", "name": None, "confidence": 0.76, "tentative_conf": 0.76,
+         "tentative_kind": "single", "tentative_name": "Дэнчик"},
+        {"is_known": True, "speaker_id": "p-nameless", "name": None, "confidence": 0.81, "epithet": "Гость"},
+    ])
+    def test_known_voice_without_published_name_binds_nobody(self, payload) -> None:
+        """Гипотеза имени и профиль без имени — тоже не опубликованное имя: memory-тулы без speaker_id чужой профиль
+        не получают (в диалоге v2 собеседника им даёт снимок хода, а не этот запасной путь)."""
+        node = _StubNode()
+        handler = _bind_handler(node)
+        self._prime_sasha(handler)
+
+        handler(_msg(json.dumps(payload)))
+
+        assert node._current_encounter_speaker_id() is None
+
+    def test_confirmed_after_contested_binds_again(self) -> None:
+        node = _StubNode()
+        handler = _bind_handler(node)
+        handler(_msg(json.dumps(self.CONTESTED)))
+
+        self._prime_sasha(handler)
+
+        assert node._current_encounter_speaker_id() == "429eae2c-738a"
