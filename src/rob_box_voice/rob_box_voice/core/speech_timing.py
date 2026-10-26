@@ -5,7 +5,9 @@
 * ``commit=false`` - только синтез: аудио держится здесь до второго запроса с
   тем же ``speech_id`` и ``commit=true``, наружу - ``queued`` и
   ``synthesized{duration_ms}``. Запрос с ``commit=true`` берёт готовое аудио
-  вместо провайдера (``provider=prefetch`` в его ``synthesized``).
+  вместо провайдера (``provider=prefetch`` в его ``synthesized``; в
+  ``/voice/tts/provider_state`` метка не уходит - там провайдер, который
+  синтезировал, он хранится вместе с аудио, #4024).
 * ``at`` (ROS-секунды) - момент, когда звук должен прозвучать: перед
   ``play_audio`` ждём ``at - now - output_latency_ms``; отмена прерывает ожидание.
 * ``boundary=sentence`` - отмена играющей реплики на ближайшей границе
@@ -29,6 +31,9 @@ from typing import Any, Callable, Dict, Optional
 MAX_AT_WAIT_S = 30.0
 #: Потоков пред-синтеза: столько сегментов правки синтезируются одновременно.
 PRESYNTH_MAX_WORKERS = 2
+#: Метка звучания готового пред-синтеза в ``SpeechEvent.synthesized`` и метриках. Это не провайдер: в
+#: ``provider_state`` и каталог голосов она не попадает (``tts_voice_registry.known_provider``).
+PREFETCH_PROVIDER = "prefetch"
 PRESYNTH_THREAD_NAME_PREFIX = "tts-presynth"
 
 
@@ -95,6 +100,7 @@ class Presynth:
             done(speech_id, 0.0, ctx)
             return
         voice, language = chunk.get("voice"), chunk.get("language")
+        ctx["requested_voice"] = voice  # какой голос просили: подмена голоса при синтезе - событие, не тишина (#4024)
         text = node._extract_text_from_ssml(ssml)
         attrs = node._parse_ssml_attributes(ssml) or {}
         try:
@@ -108,5 +114,6 @@ class Presynth:
             self._held[speech_id] = {
                 "audio_np": ctx["audio_np"], "sample_rate": ctx["sample_rate"],
                 "decision": "presynth", "confidence": 1.0, "basis": "commit=false",
+                "provider": ctx["used_provider"], "voice": ctx["used_voice"],  # кто синтезировал и каким голосом
             }
         done(speech_id, len(ctx["audio_np"]) / ctx["sample_rate"] if ctx["sample_rate"] else 0.0, ctx)

@@ -10,17 +10,28 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from rob_box_voice.core.provider_reporter import reporter_context
-from rob_box_voice.tts_voice_registry import default_voice_for, format_tts_context, voice_info_for
+from rob_box_voice.tts_voice_registry import (
+    ROBOT_DEFAULT_PROVIDER,
+    default_voice_for,
+    format_tts_context,
+    known_provider,
+    voice_info_for,
+)
 
 
 def tts_state(node: Any) -> Tuple[str, str]:
-    """``(провайдер, голос)``, которые реально звучат: факт от tts_node (#1229, после фолбека) важнее параметра."""
-    provider = getattr(node, "_actual_tts_provider", None)
+    """``(провайдер, голос)``, которые реально звучат: факт от tts_node (#1229, после фолбека) важнее параметра.
+
+    Провайдер всегда из каталога реестра (#4024): метка не из него (``prefetch``) факт не заменяет, берётся настроенный
+    ``tts_provider``, а при его отсутствии - провайдер робота по умолчанию. Иначе каталог голосов пуст, и голоса
+    сегментов выступления перестают сверяться."""
+    provider = known_provider(getattr(node, "_actual_tts_provider", None))
     if not provider:
         try:
-            provider = str(node.get_parameter("tts_provider").value or "minimax")
+            provider = known_provider(node.get_parameter("tts_provider").value)
         except Exception:  # noqa: BLE001 — тестовая нода без параметров
-            provider = "minimax"
+            provider = ""
+    provider = provider or ROBOT_DEFAULT_PROVIDER
     return provider, getattr(node, "_actual_tts_voice", None) or default_voice_for(provider)
 
 

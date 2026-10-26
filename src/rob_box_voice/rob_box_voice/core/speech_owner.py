@@ -38,7 +38,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_core.utterance import Utterance
 
 from . import speech_compat
-from .speech_timing import Presynth, at_delay_s
+from .speech_timing import PREFETCH_PROVIDER, Presynth, at_delay_s
 
 FRAME_MS = 40
 #: ``SpeechCancel.boundary``: резать по границе из запроса (``boundary=sentence`` — на конце предложения) или сразу.
@@ -334,10 +334,12 @@ class SpeechOwner:
         if rec is None:
             return
         provider, applied = ctx.get("used_provider") or "", ctx.get("used_voice") or ""
+        prefetch = bool(ctx.get("prefetch"))  # commit=true взял готовый пред-синтез: подмену голоса сказал он сам
         if (ctx.get("result") or {}).get("stream") is not None:
             duration_s = 0.0  # поток (#3930): длительность неизвестна до конца синтеза - 0 = «не сообщена»
-        self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)
-        if voice and applied and applied != voice:
+        self._emit("synthesized", rec, duration_ms=int(duration_s * 1000),
+                   provider=PREFETCH_PROVIDER if prefetch else provider)
+        if voice and applied and applied != voice and not prefetch:
             self._emit("voice_changed", rec, voice_requested=voice, voice_applied=applied,
                        provider=provider, reason="voice_unavailable")
 
@@ -408,8 +410,9 @@ class SpeechOwner:
                 self._emit("cancelled", rec, spoken_chars=0, reason="cancelled")
             return
         # Запись остаётся в журнале до ``commit=true`` с тем же speech_id: так отмена
-        # по эпохе находит и готовый пред-синтез, а не только ждущий (#3834).
-        self.synthesized(speech_id, duration_s, ctx, None)
+        # по эпохе находит и готовый пред-синтез, а не только ждущий (#3834). Голос сегмента сверяется здесь, при
+        # синтезе: подмену (``voice_unavailable``) видит ``SpeechEvent voice_changed``, а не одна строка лога (#4024).
+        self.synthesized(speech_id, duration_s, ctx, ctx.get("requested_voice"))
 
     # -- публикация ---------------------------------------------------------------
 

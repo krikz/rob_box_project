@@ -25,7 +25,10 @@ from rob_box_voice.tts_voice_registry import (  # noqa: E402
     default_voice_for,
     effective_provider,
     format_tts_context,
+    known_provider,
+    language_of,
     resolve_voice,
+    role_voices_for,
     voice_info_for,
     voices_for,
     voices_info_for,
@@ -245,3 +248,53 @@ def test_voices_info_for_minimax_includes_legacy_ids():
     assert "male-qn-qingse" in info_ids
     assert "female-shaonv" in info_ids
 
+
+# ── Голоса ролей выступления (#3998) и «что считать провайдером» (#4024) ─────────────────────────────────
+
+
+def test_minimax_role_voices_are_only_the_russian_catalogue():
+    """Сказка звучала китайским ``male-qn-qingse`` на русском тексте: в роли идут только Russian_*."""
+    roles = role_voices_for("minimax")
+    assert roles and all(v.startswith("Russian_") for v in roles), roles
+    assert "male-qn-qingse" not in roles and "female-shaonv" not in roles
+    assert roles == [v for v in voices_for("minimax") if v.startswith("Russian_")]  # порядок каталога
+
+
+def test_role_voices_come_from_the_metadata_language_not_from_a_second_list():
+    for provider in PROVIDER_VOICES:
+        for voice in role_voices_for(provider):
+            assert language_of(provider, voice) == "ru", (provider, voice)
+
+
+def test_yandex_role_voices_drop_foreign_language_voices():
+    roles = role_voices_for("yandex")
+    assert "john" not in roles and "lea" not in roles
+    assert {"alena", "zahar", "omazh"} <= set(roles)
+
+
+def test_silero_role_voices_are_the_whole_catalogue():
+    assert role_voices_for("silero") == voices_for("silero")
+
+
+def test_narrator_voice_is_not_a_role():
+    """Пустая строка в ``voice_per_segment`` - рассказчик (текущий голос); роль звучит иначе."""
+    roles = role_voices_for("minimax", "Russian_ReliableMan")
+    assert "Russian_ReliableMan" not in roles
+    assert set(roles) == set(role_voices_for("minimax")) - {"Russian_ReliableMan"}
+    assert role_voices_for("minimax", "male-qn-qingse") == role_voices_for("minimax")  # не русский - и так не в ролях
+
+
+def test_every_provider_has_enough_role_voices_for_a_tale():
+    """Рассказчик и хотя бы два персонажа: иначе сказка «разными голосами» невозможна по структуре."""
+    for provider in PROVIDER_VOICES:
+        assert len(role_voices_for(provider, default_voice_for(provider))) >= 2, provider
+
+
+def test_role_voices_of_an_unknown_provider_is_empty_and_the_catalogue_is_untouched():
+    assert role_voices_for("prefetch") == []
+    assert "male-qn-qingse" in voices_for("minimax")  # set_voice и обзоры видят весь каталог
+
+
+def test_known_provider_is_the_one_rule_for_what_a_provider_is():
+    assert [known_provider(p) for p in ("yandex", "MiniMax", " silero ")] == ["yandex", "minimax", "silero"]
+    assert [known_provider(p) for p in ("prefetch", "", None, "auto", 5)] == [""] * 5

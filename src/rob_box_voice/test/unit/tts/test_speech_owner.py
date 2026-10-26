@@ -559,3 +559,55 @@ def test_epoch_watch_feeds_barge_in_cancel(setup):
     for ev in node.pubs["/voice/speech/event"].sent:
         watch.on_event(ev)
     assert watch.epoch == 4
+
+
+# -- #4024: голос сегмента выступления - событие, а не тихая подмена ----------------------
+
+
+def _presynth_chain_applying(node, provider, applied_voice):
+    def chain(voice, language, attrs, text, sink, ctx):
+        ctx.update(audio_np=np.zeros(8000, dtype=np.float32), sample_rate=16000, used_provider=provider,
+                   used_voice=applied_voice)
+
+    node._sap_run_provider_chain = chain
+
+
+def test_presynth_with_an_unavailable_voice_says_voice_changed(setup):
+    """Сегмент сказки просит Yandex-голос у MiniMax: подмена уходит событием ``voice_changed`` ещё при пред-синтезе
+    (раньше пред-синтез звал ``synthesized`` без запрошенного голоса, и подмена оставалась одной строкой лога)."""
+    node, _, _ = setup
+    _presynth_node(node)
+    _presynth_chain_applying(node, "minimax", "male-qn-qingse")
+    node.subs["/voice/speech/request"](_request(commit=False, voice="alena"))
+
+    assert _kinds(node) == ["queued", "synthesized", "voice_changed"]
+    changed = dict(_events(node))["voice_changed"]
+    assert (changed.voice_requested, changed.voice_applied) == ("alena", "male-qn-qingse")
+    assert (changed.provider, changed.reason) == ("minimax", "voice_unavailable")
+
+
+def test_presynth_with_the_requested_voice_has_no_extra_event(setup):
+    node, _, _ = setup
+    _presynth_node(node)
+    _presynth_chain_applying(node, "minimax", "Russian_AttractiveGuy")
+    node.subs["/voice/speech/request"](_request(commit=False, voice="Russian_AttractiveGuy"))
+    assert _kinds(node) == ["queued", "synthesized"]
+
+
+def test_presynth_remembers_provider_and_voice_for_the_commit(setup):
+    node, owner, _ = setup
+    _presynth_node(node)
+    _presynth_chain_applying(node, "yandex", "anton")
+    node.subs["/voice/speech/request"](_request(commit=False, voice="alena"))
+    held = owner.claim_presynth("sid-1")
+    assert (held["provider"], held["voice"]) == ("yandex", "anton")
+
+
+def test_commit_over_prefetch_keeps_the_prefetch_label_and_does_not_repeat_the_voice_event(setup):
+    """``commit=true`` взял готовый пред-синтез: в ``synthesized`` - метка ``prefetch``, ``voice_changed`` уже был."""
+    node, owner, _ = setup
+    owner.admit(_chunk(), "sid-1")
+    ctx = {"used_provider": "minimax", "used_voice": "male-qn-qingse", "prefetch": True}
+    owner.synthesized("sid-1", 1.0, ctx, "alena")
+    assert _kinds(node) == ["queued", "synthesized"]
+    assert dict(_events(node))["synthesized"].provider == "prefetch"
