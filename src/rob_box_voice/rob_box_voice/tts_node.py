@@ -160,6 +160,10 @@ from .tts_params import (  # noqa: F401 re-export
     _parse_pronunciation_dict,
 )
 
+# #4022 — скорость и тон «на лету»: какие параметры нода принимает от set_speed/set_pitch и какой pitch шлёт MiniMax
+# (одна таблица с тулами, ``rob_box_voice.tts_prosody``).
+from .tts_prosody import LIVE_AXES, minimax_pitch
+
 # Issue #1709 — Unicode-script guard: не отправляем в TTS текст, который
 # в основном состоит из букв неподдерживаемых письменностей (CJK,
 # деванагари, арабица) — провайдеры бормочут такое нечитаемо.
@@ -5392,7 +5396,12 @@ class TTSNode(Node):
             # pronunciation_dict to the provider. Empty string → field
             # is omitted (no behaviour change vs. pre-#1780).
             emotion=self.minimax_emotion or None,
-            pitch=_parse_optional_int(self.minimax_pitch_raw),
+            # Статический ``minimax_pitch`` + живой ``pitch_shift`` (set_pitch, #4022): тон слышен без chipmunk_mode.
+            pitch=minimax_pitch(
+                _parse_optional_int(self.minimax_pitch_raw),
+                self.pitch_shift,
+                self.chipmunk_mode,
+            ),
             volume=_parse_optional_float(self.minimax_volume_raw),
             pronunciation_dict=_parse_pronunciation_dict(
                 self.minimax_pronunciation_dict_raw
@@ -6379,17 +6388,16 @@ class TTSNode(Node):
                 self.get_logger().info(
                     f"🔊 Громкость изменена: {self.volume_db:.1f} dB (gain: {self.volume_gain:.2f}x)"
                 )
-            elif param.name == "pitch_shift":
-                self.pitch_shift = param.value
-                self.get_logger().info(f"🐿️ Pitch shift изменён: {self.pitch_shift}x")
+            elif param.name in LIVE_AXES:
+                # Скорость (minimax_speed / yandex_speed) и тон (pitch_shift): таблица одна с тулами set_speed /
+                # set_pitch (#4022). Раньше minimax_speed сюда не входил — параметр менялся, а звучащий голос нет.
+                setattr(self, param.name, float(param.value))
+                self.get_logger().info(
+                    f"🎚️ {param.name} изменён: {getattr(self, param.name):g}"
+                )
             elif param.name == "chipmunk_mode":
                 self.chipmunk_mode = param.value
                 self.get_logger().info(f"🐿️ Chipmunk mode: {self.chipmunk_mode}")
-            elif param.name == "yandex_speed":
-                self.yandex_speed = param.value
-                self.get_logger().info(
-                    f"🎵 Yandex speed (pitch) изменён: {self.yandex_speed}"
-                )
             elif param.name in _LIVE_VOICE_PARAMS:
                 # bug(#2183): раньше этих параметров тут не было вообще —
                 # параметр менялся (``ros2 param get`` подтверждал новое

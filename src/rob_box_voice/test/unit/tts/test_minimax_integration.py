@@ -117,6 +117,9 @@ def _make_fake_node():
     node.minimax_pitch_raw = ""
     node.minimax_volume_raw = ""
     node.minimax_pronunciation_dict_raw = ""
+    # #4022 — живой тон (set_pitch) складывается со статическим minimax_pitch в _minimax_settings.
+    node.pitch_shift = 1.0
+    node.chipmunk_mode = False
     node.audio_output_sample_rate = 16000
     node.audio_pub = MagicMock()
     node.get_logger = MagicMock()
