@@ -982,6 +982,8 @@ def test_invalid_without_query_is_said_by_code_not_silence():
 def test_valid_short_answer_after_query_is_said_and_fallback_stays_silent():
     ports, agg = _voices_turn(Command(speech="Три провайдера, назвать?"))
     assert [t for t, _, _ in ports.said] == ["Три провайдера, назвать?"] and agg.status != "failed"
+
+
 def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919():
     from rob_box_dialog.music_state import MusicStateMemory
     from rob_box_dialog.turn import host_sections
@@ -1060,6 +1062,30 @@ def test_3997_only_expression_twice_shows_the_face_and_code_speaks():
     assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.SILENT_ANSWER_PHRASE]
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
     assert ports.faces == [("done", SAD)]
+
+
+def test_3997_twice_without_words_and_the_animation_failed_shows_no_command_face():
+    """Повтор кончился, анимация команды отказала: «радостно» о провале не бывает — эмоция команды итог не красит,
+    фраза кода грустная (то же правило, что у исполненной команды, ``command_face``)."""
+    happy = Command(actions=(SLEEP,), expression=Expression(emotion="happy"))
+    ports = Ports(answers=[Answer(happy, "deepseek"), Answer(happy, "deepseek")],
+                  outcomes={"play_animation": ("rejected", {})})
+    _run(_engine(ports), N1011)
+    assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
+    assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
+    assert ports.faces == [] and len(ports.said) == 1 and ports.said[0][2] == "sad"
+
+
+def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_without_the_face():
+    """После запросов одна ``expression`` на последней итерации: говорит код по данным запроса (#3883), а лицо
+    команды не показывается — её действия не исполнены, и лицо идёт вместе с ними."""
+    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
+                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    ports = Ports(answers=[*search, Answer(Command(expression=SAD), "deepseek")],
+                  outcomes={"memory_search": ("done", {"results": []})})
+    agg = _run(_engine(ports), "а ты меня помнишь")
+    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and ports.faces == []
 
 
 def test_3997_speech_with_emotion_colours_done_too():

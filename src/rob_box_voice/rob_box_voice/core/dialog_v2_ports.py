@@ -214,12 +214,15 @@ class V2Ports:
               expression: Optional[Expression] = None) -> None:
         """Событие стадии (``/dialog/turn_event``) и рефлекс кода (лицо/кольцо/earcon) без LLM. ``expression`` -
         экспрессия команды на итоге хода (``turn.done_expression``: не в тишине, не у отменённого): красит рефлекс
-        (:func:`stage_plan`), жест и сцена лица LLM уходят в том же ``ExpressionRequest``."""
+        (:func:`stage_plan`), жест и сцена лица LLM уходят в том же ``ExpressionRequest``; строка ``🎭 [turn-v2]``."""
         status = _STATUS.get(status, status)
         expression_client.turn_event(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent, stage=stage,
                                      status=status, reason=reason, llm_calls=llm_calls, llm_provider=provider,
                                      source=source)
         plan = stage_plan(stage, cls, expression)
+        if plan is not None and expression is not None:
+            self._log(f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion} gesture={plan.gesture or '-'} "
+                      f"face={'llm' if plan.face else '-'} turn={turn_id}")
         if plan is not None:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
                                       emotion=plan.emotion, gesture=plan.gesture, earcon=plan.earcon, face=plan.face,

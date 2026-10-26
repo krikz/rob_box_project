@@ -267,10 +267,11 @@ def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expres
     return face if shows(face.emotion, face.gesture, face.face) else None
 
 
-def command_face(cmd: Command, results: Sequence[ActionResult]) -> Optional[Expression]:
+def command_face(expression: Optional[Expression], results: Sequence[ActionResult]) -> Optional[Expression]:
     """Экспрессия исполненной команды для итога хода (#3997); провал действия её не показывает (``None`` — рефлекс как
-    есть): «радостно» о провале не бывает, как и в ``expression.merge``."""
-    return None if any(r.status in _FAILED for r in results) else cmd.expression
+    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Одно правило для исполненной команды
+    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
+    return None if any(r.status in _FAILED for r in results) else expression
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
@@ -411,11 +412,13 @@ def _voices_summary(data: Mapping[str, Any]) -> Optional[str]:
     return ", ".join(f"{name} — {count}" for name, count in pairs if name and isinstance(count, int)) or None
 
 
-async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot) -> None:
+async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot,
+                         expression: Optional[Expression] = None) -> None:
     """Невалидная команда после повтора моста: на адресованную реплику не молчим (В21, решение Шифу 23.10, #3953).
     Запрос в ходе выполнен - говорит код по его данным (#3883). Иначе допустимые действия команды (``Invalid.salvage``)
     исполняются, об исходе говорит код (:func:`_salvaged_phrase`); исполнять нечего - честная фраза
-    ``INVALID_COMMAND_PHRASE``. Ход ``done``."""
+    ``INVALID_COMMAND_PHRASE``. Ход ``done``. ``expression`` - лицо команды, исполняемой после нарушения
+    ``silent_answer`` (#3997): красит итог вместе с её действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
@@ -427,6 +430,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     if engine._stale(turn, "results"):
         return
     turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
+    turn.expression = command_face(expression, results)
     sad = not results or any(r.status in _FAILED for r in results)
     engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, "sad" if sad else None)
 
@@ -456,8 +460,8 @@ async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap
         return explain(Invalid(kn.VIOLATION_SILENT_ANSWER, kn.SILENT_ANSWER_HINT), after_query=bool(turn.queried))
     engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SILENT_ANSWER}: {tools} без слов и после повтора → анимация и "
                         f"фраза кода turn={turn.turn_id}")
-    turn.expression = cmd.expression  # лицо команды, как и её анимация, показывается — говорит код (#3997)
-    await _close_invalid(engine, turn, Invalid(kn.VIOLATION_SILENT_ANSWER, salvage=cmd.actions), snap)
+    # лицо команды, как и её анимация, показывается — говорит код (#3997)
+    await _close_invalid(engine, turn, Invalid(kn.VIOLATION_SILENT_ANSWER, salvage=cmd.actions), snap, cmd.expression)
     return None
 
 
@@ -743,7 +747,7 @@ class TurnEngine:
     def _speak(self, turn: _Turn, cmd: Command, results: Sequence[ActionResult]) -> None:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997)."""
-        turn.expression = command_face(cmd, results)
+        turn.expression = command_face(cmd.expression, results)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
         if outcome:
             sad = any(r.status in _FAILED for r in results)

@@ -303,6 +303,17 @@ def test_in_silence_the_command_emotion_is_not_sent():
     assert (done.emotion, done.gesture, done.face_json) == (reflex("done").emotion, "", "")
 
 
+def test_command_face_on_done_is_one_log_line_for_the_live_check():
+    """Живая проверка видит окраску итога в логе ноды: одна строка ``🎭 [turn-v2]`` на ``done`` с эмоцией команды;
+    стадия без экспрессии команды строки не пишет."""
+    lines, node = [], _Node()
+    ports = V2Ports(node, _LLM([], CallCounter()), CallCounter(), _Tools(), log=lines.append)
+    ports.stage("t1", 0, "thinking", "started")
+    ports.stage("t1", 0, "done", "finished", expression=Expression(emotion="sad"))
+    assert lines == ["🎭 [turn-v2] лицо команды на done: emotion=sad gesture=- face=- turn=t1"]
+    assert _done_request(node).emotion == "sad"
+
+
 def test_stage_plan_merges_only_where_merge_allows():
     sad = Expression(emotion="sad", gesture="wink")
     assert (stage_plan("done", None, sad).emotion, stage_plan("done", None, sad).gesture) == ("sad", "wink")
