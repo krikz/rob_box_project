@@ -335,10 +335,11 @@ class SpeechOwner:
             return
         provider, applied = ctx.get("used_provider") or "", ctx.get("used_voice") or ""
         prefetch = bool(ctx.get("prefetch"))  # commit=true взял готовый пред-синтез: подмену голоса сказал он сам
+        if prefetch:
+            provider = PREFETCH_PROVIDER
         if (ctx.get("result") or {}).get("stream") is not None:
             duration_s = 0.0  # поток (#3930): длительность неизвестна до конца синтеза - 0 = «не сообщена»
-        self._emit("synthesized", rec, duration_ms=int(duration_s * 1000),
-                   provider=PREFETCH_PROVIDER if prefetch else provider)
+        self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)
         if voice and applied and applied != voice and not prefetch:
             self._emit("voice_changed", rec, voice_requested=voice, voice_applied=applied,
                        provider=provider, reason="voice_unavailable")
