@@ -183,6 +183,22 @@ def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_re
         made.shutdown()
 
 
+def test_late_outcome_of_a_chat_action_fixes_the_chat_window_3960(monkeypatch):
+    """Поздний итог правит журнал хода у любого агента, не только у Личности: обещание ``say_aloud`` (``pending``) в
+    окне чата сменяется итогом владельца речи - модель следующего хода чата не видит «ещё звучит»."""
+    made = _aloud_node(monkeypatch)
+    try:
+        made._on_utterance(_chat_utterance("сочини историю про робота и расскажи"))
+        made.last_chat_turn.result(timeout=10)
+        window = made._chats.engine(42).log.window
+        assert [dict(e.content)["status"] for e in window() if e.role == "tool"] == ["pending"]
+        made._on_speech_event(_speech_event(M.SpeechEvent.KIND_FINISHED, "sp-77", seconds=11.6))
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.1), made._loop).result(5)
+        assert [dict(e.content)["status"] for e in window() if e.role == "tool"] == ["done"]
+    finally:
+        made.shutdown()
+
+
 def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
     made = _aloud_node(monkeypatch, hold=True)
     try:
@@ -653,19 +669,22 @@ def test_snapshot_has_no_memory_of_unconfirmed_speaker_3919(node, tmp_path):
 # -- MCP-тулы v2 настоящим транспортом: поздний итог (#3960 п.2) и реплика хода в тул (#4013) ------------------------
 
 N809 = "поставь фоном ровный ритм на Ренардо, только не громко"
+#: Время тестов транспорта сжато в 10 раз: срок класса, ожидание моста и задержка итога тула — все в одном масштабе.
+SCALE = 0.1
 
 
 class _Bridge:
-    """``LLMToolCallAdapter`` по поведению: контекст хода читает в момент отправки (``_prepare_parameters``), итог
-    тула ждёт не дольше ``timeout`` - иначе «Timeout ожидания результата инструмента», а настоящий итог теряется."""
+    """``LLMToolCallAdapter`` по поведению (время - в масштабе :data:`SCALE`): контекст хода читает в момент отправки
+    (``_prepare_parameters``), итог тула ждёт не дольше ``timeout`` - иначе «Timeout ожидания результата инструмента»,
+    а настоящий итог, пришедший позже, уходит в кэш никому (n809: ``on_result`` через 1,4 с после срока)."""
 
     def __init__(self, turn_context, delay):
         self.turn_context, self.delay, self.calls = turn_context, delay, []
 
     def execute_tool_call_sync(self, name, params, timeout=None):
         self.calls.append((name, dict(params), timeout, dict(self.turn_context())))
-        if self.delay > timeout:
-            time.sleep(timeout)
+        if self.delay > timeout * SCALE:
+            time.sleep(timeout * SCALE)
             return {"success": False, "error": "Timeout ожидания результата инструмента"}
         time.sleep(self.delay)
         return {"success": True, "data": {"status": "done", "track_id": "req95964:01:A"}}
@@ -738,23 +757,23 @@ def test_chat_tool_call_gets_the_chat_text_not_the_voice_turn(monkeypatch):
 
 
 def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_window_3960(monkeypatch):
-    """n809 (марафон 23.10): срок ``action.media`` истёк - «Музыка пока не заиграла.»; трек заиграл через 1,4 с, итог
-    дошёл настоящим транспортом до ``say_late`` - «Включаю музыку.»; окно следующего хода видит ``done``, а не таймаут.
-    Время сжато в 10 раз: срок класса 0,3 с, итог тула через 0,44 с."""
+    """n809 (марафон 23.10): срок ``action.media`` (10 с) истёк - «Музыка пока не заиграла.»; трек заиграл через 1,4 с.
+    Мост ``ROSMCPToolProvider`` ждал итог тула свои 10 с по умолчанию - ровно срок класса - и вернул «Timeout ожидания
+    результата», настоящий итог ушёл в кэш никому, «Включаю музыку.» не прозвучало. Теперь итог доходит настоящим
+    транспортом до ``say_late``, а окно следующего хода видит ``done``, а не таймаут. Время сжато (:data:`SCALE`)."""
     import dataclasses
 
     from rob_box_dialog import knowledge as kn
 
-    media = dataclasses.replace(kn.ACTION_CLASSES["action.media"], timeout_s=0.3)
+    deadline = kn.ACTION_CLASSES["action.media"].timeout_s
+    media = dataclasses.replace(kn.ACTION_CLASSES["action.media"], timeout_s=deadline * SCALE)
     monkeypatch.setattr(kn, "ACTION_CLASSES", types.MappingProxyType({**kn.ACTION_CLASSES, "action.media": media}))
-    made = _music_node(monkeypatch, delay=0.44)
+    made = _music_node(monkeypatch, delay=(deadline + 1.4) * SCALE)
     try:
         made._on_utterance(_said(f"Робот, {N809}", "u809"))
         made.last_turn.result(timeout=10)
-        [(_, _, waited, _)] = made.test_bridge.calls
-        assert waited >= kn.TURN_CEILING_S, "транспорт не бросает итог на сроке класса"
         until = time.monotonic() + 5.0
-        while len(_said_texts(made)) < 2 and time.monotonic() < until:  # поздний итог - через 0,14 с после хода
+        while len(_said_texts(made)) < 2 and time.monotonic() < until:  # поздний итог - через 1,4 с (×SCALE) после хода
             time.sleep(0.05)
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), made._loop).result(5)  # say_late дописал журнал
         said = _said_texts(made)
@@ -764,5 +783,7 @@ def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_windo
         window = made._engine.log.window()
         assert [e.content for e in window if e.role == "assistant"] == ["Включаю музыку."]
         assert [dict(e.content)["status"] for e in window if e.role == "tool"] == ["done"]
+        [(_, _, waited, _)] = made.test_bridge.calls
+        assert waited >= kn.TURN_CEILING_S, "транспорт ждёт итог тула с поздним итогом дольше срока класса"
     finally:
         made.shutdown()

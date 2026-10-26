@@ -39,7 +39,7 @@ import time
 import uuid
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Awaitable, Dict, List, Mapping, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -172,11 +172,12 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     return await work
 
 
-def late_outcome(engine: TurnEngine, result: ActionResult) -> None:
-    """Поздний итог действия (``Executor.on_late``, #3960): журнал хода — правда владельца вместо прежнего ``timeout``
-    (``TurnLog.late``), затем фраза кода (``turn.say_late``: «Включаю музыку.»)."""
+def late_outcome(engine: TurnEngine, say: Callable[[ActionResult], Any], result: ActionResult) -> None:
+    """Поздний итог действия (``Executor.on_late``, #3960) у любого агента: журнал хода — правда владельца вместо
+    прежнего ``timeout``/``pending`` (``TurnLog.late``; фраза кода о таймауте — как её строит ход), затем фраза итога
+    своим каналом ``say``: Личность — ``turn.say_late`` («Включаю музыку.»), чат — ``ChatPorts.late``."""
     engine.log.late(result, lambda before: outcome_phrase([before]))
-    say_late(engine, result)
+    say(result)
 
 
 def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
@@ -233,9 +234,10 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch)
         ports = ChatPorts(base, chat_id, send, log, hold)
-        base.on_late = ports.late
         chats.adopt(base.executor)
-        return TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()))  # потолок хода (В31)
+        engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()))  # потолок хода (В31)
+        base.on_late = functools.partial(late_outcome, engine, ports.late)
+        return engine
 
     chats = ChatTurns(make_engine, wake, log)
     return chats
@@ -285,7 +287,8 @@ class DialogNode(Node):
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   events=self._open_events(), log=_RosLog(self.get_logger()))
-        self._ports.on_late = functools.partial(late_outcome, self._engine)  # поздний старт музыки (#3960)
+        self._ports.on_late = functools.partial(late_outcome, self._engine,
+                                                functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()
         # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
         self._tars_status_feeds = parity.start_v2_status_feeds(self, String)

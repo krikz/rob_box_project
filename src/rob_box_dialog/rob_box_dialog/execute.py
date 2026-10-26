@@ -80,8 +80,8 @@ def transport_timeouts() -> Mapping[str, float]:
     (``LATE_SPOKEN_CLASSES``): дольше срока класса — до потолка хода. Срок класса закрывает ожидание хода честным
     ``timeout``, а итог, пришедший позже, транспорт ещё несёт исполнителю — в ``on_late``. Транспорт со сроком, равным
     сроку класса, бросал итог вместе с ходом (n809, #3960: трек заиграл через 1,4 с после срока, мост вернул «Timeout
-    ожидания результата», «Включаю музыку.» не прозвучало). Тулам остальных классов транспорт ждёт своё
-    (``default_timeout``): движение без обещания ``pending`` держало бы ход до 120 с."""
+    ожидания результата», «Включаю музыку.» не прозвучало). Поздний итог исполнитель держит только у этих классов,
+    поэтому тулам остальных транспорт ждёт как раньше (``default_timeout``)."""
     return MappingProxyType({tool: max(deadline_s(cls) + kn.ACTION_GRACE_S, float(kn.TURN_CEILING_S))
                              for tool, cls in kn.TOOL_CLASSES.items() if cls in kn.LATE_SPOKEN_CLASSES})
 
@@ -223,13 +223,13 @@ class Executor:
     def _deliver(self, event: OwnerEvent) -> None:
         """Событие владельца в цикле исполнителя: ожидание хода, поздний итог (``on_late``) или ``stale_event``.
         Строка лога на входе - всегда: в n809 (#3960) нельзя было понять, дошёл ли итог до исполнителя вообще."""
-        self._log.info(f"📨 [execute] событие {event.ref} {event.status} {event.reason or '-'} "
-                       f"ход_ждёт={event.ref in self._waiting} запрос={event.ref in self._requests}")
+        request = self._requests.get(event.ref)
+        self._log.info(f"📨 [execute] событие {request.tool if request else '?'} {event.ref} {event.status} "
+                       f"{event.reason or '-'} ход_ждёт={event.ref in self._waiting} запрос={request is not None}")
         future = self._waiting.get(event.ref)
         if future is not None and not future.done():
             future.set_result(event)
             return
-        request = self._requests.get(event.ref)
         if request is None or event.status not in _FINAL:
             self._stale(event)
             return

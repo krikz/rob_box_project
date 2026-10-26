@@ -315,6 +315,22 @@ def test_event_landing_on_the_class_deadline_is_not_lost(monkeypatch):
     assert late == [] and not ex.expects("t34/0")
 
 
+def test_owner_event_leaves_an_entry_line_with_its_tool(monkeypatch, caplog):
+    """n809: в логе не было ни строки о том, дошёл ли поздний итог до исполнителя. Каждое событие владельца - строка
+    на входе ``_deliver``: тул, ref, статус, ждёт ли его ход, есть ли запрос."""
+    monkeypatch.setattr("rob_box_dialog.execute.deadline_s", lambda cls: 0.02)
+
+    async def send(request):
+        await asyncio.sleep(0.08)
+        ex.on_event(OwnerEvent(request.turn_id, "done", data={"title": "x"}))
+
+    ex = Executor(send, on_late=lambda result: None)
+    with caplog.at_level(logging.INFO, logger="rob_box_dialog.execute"):
+        res, _ = _timed(ex, ToolCall("request_music", {"intent": "track"}), "t35", settle_s=0.15)
+    assert res.status == "timeout"
+    assert "📨 [execute] событие request_music t35/0 done - ход_ждёт=False запрос=True" in caplog.text
+
+
 @pytest.mark.parametrize("tool", sorted(t for t, c in kn.TOOL_CLASSES.items() if c in kn.LATE_SPOKEN_CLASSES))
 def test_transport_waits_for_late_outcome_past_the_class_deadline(tool):
     """n809: транспорт v2 (``ROSMCPToolProvider``) ждал итог тула 10 с - ровно срок ``action.media``; трек заиграл
@@ -328,7 +344,7 @@ def test_transport_waits_for_late_outcome_past_the_class_deadline(tool):
 
 
 def test_transport_keeps_its_own_wait_for_tools_without_late_outcome():
-    """Остальные классы транспорт ждёт как раньше: движение без ``pending`` иначе держало бы ход 120 с (#3960)."""
+    """Остальные классы транспорт ждёт как раньше: поздний итог исполнитель держит только у ``LATE_SPOKEN_CLASSES``."""
     from rob_box_dialog.execute import transport_timeouts
 
     assert set(transport_timeouts()) == {t for t, c in kn.TOOL_CLASSES.items() if c in kn.LATE_SPOKEN_CLASSES}
