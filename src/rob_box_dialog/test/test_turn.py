@@ -12,13 +12,13 @@ from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, VOICE, Addressed, decide
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.speaker_adapter import VoiceTag
-from rob_box_dialog.command import Ask, Command, Invalid, Performance, ToolCall
+from rob_box_dialog.command import Ask, Command, Expression, Invalid, Performance, ToolCall
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.execute import Executor, OwnerEvent
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRef
-from rob_box_dialog.turn import (RECENT_ACTIONS, Answer, TurnEngine, outcome_phrase, stop_performance, tier1_actions,
-                                 words_owed)
+from rob_box_dialog.turn import (RECENT_ACTIONS, Answer, TurnEngine, done_expression, finish_stage, outcome_phrase,
+                                 stop_performance, tier1_actions, words_owed)
 from rob_box_dialog.grammar import Tier1Command
 
 
@@ -32,6 +32,7 @@ class Ports:
         self.perform_owns_music = perform_owns_music
         self.asked, self.executed, self.said, self.stages, self.cancels, self.intents = [], [], [], [], [], []
         self.boundaries, self.performs, self.exec_epochs = [], [], []
+        self.faces = []  # экспрессия команды, с которой пришла стадия (#3997): (стадия, Expression)
         self.performed, self.perform_outcome = [], None  # None — владельца выступлений нет (сегменты — репликами)
         self.gate = None  # asyncio.Event: ask ждёт его (LLM «думает»), пока тест не отпустит
 
@@ -57,8 +58,11 @@ class Ports:
         self.said.append((text, voice, emotion))
         return f"sp{len(self.said)}"
 
-    def stage(self, turn_id, epoch, stage, status, reason="", cls=None, llm_calls=0, provider="", source=""):
+    def stage(self, turn_id, epoch, stage, status, reason="", cls=None, llm_calls=0, provider="", source="",
+              expression=None):
         self.stages.append((stage, status, reason))
+        if expression is not None:
+            self.faces.append((stage, expression))
 
     def cancel_speech(self, epoch, reason, boundary="as_requested"):
         self.cancels.append(reason)
@@ -978,6 +982,8 @@ def test_invalid_without_query_is_said_by_code_not_silence():
 def test_valid_short_answer_after_query_is_said_and_fallback_stays_silent():
     ports, agg = _voices_turn(Command(speech="Три провайдера, назвать?"))
     assert [t for t, _, _ in ports.said] == ["Три провайдера, назвать?"] and agg.status != "failed"
+
+
 def test_host_sections_shows_speaker_memory_only_of_the_same_interlocutor_3919():
     from rob_box_dialog.music_state import MusicStateMemory
     from rob_box_dialog.turn import host_sections
@@ -1014,13 +1020,139 @@ def test_rejected_perform_leaves_no_started_entry_3973():
     assert "tool" not in [e.role for e in engine.log.window()], "отказ владельца - не выступление"
 
 
-def test_3974_expression_only_command_finishes_the_turn_without_failure():
-    """«Покажи, как тебе грустно»: команда из одной экспрессии валидна, ход ``finished``, не ``nothing_to_do``."""
-    from rob_box_dialog.command import Expression
-    ports = Ports(answers=[Answer(Command(expression=Expression(emotion="sad")), "deepseek")])
-    agg = _run(_engine(ports), "покажи, как тебе грустно")
-    assert (agg.stage, agg.status) == ("done", "finished")
+# -- команда из одной expression доходит до лица (#3997, хвост #3974 п.3; n904 23.10 «покажи как тебе грустно») -----
+
+SAD = Expression(emotion="sad")
+N904 = "покажи как тебе грустно что смена такая длинная"  # текст хода из лога 23:01:09
+
+
+def test_3997_expression_only_asked_in_words_shows_the_face_silently():
+    """«Покажи, как тебе грустно» → ``{expression: sad}``: молча (решение Шифу 26.10), ход ``finished``, а эмоция
+    уходит в итог ``done`` — красит его рефлекс (до #3997 ход закрывался, а лицо не менялось)."""
+    ports = Ports(answers=[Answer(Command(expression=SAD), "deepseek")])
+    agg = _run(_engine(ports), N904)
+    assert (agg.stage, agg.status) == ("done", "finished") and len(ports.asked) == 1
     assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []
+    assert ports.faces == [("done", SAD)], "эмоция команды — только в рефлексе итога, отдельного запроса нет"
+
+
+@pytest.mark.parametrize("text", ["улыбнись", "подмигни мне", "покажи победу", "покажи эмоцию радости"])
+def test_3997_face_asked_in_words_needs_no_words(text):
+    ports = Ports(answers=[Answer(Command(expression=Expression(emotion="victory", gesture="wink")), "deepseek")])
+    _run(_engine(ports), text)
+    assert len(ports.asked) == 1 and ports.said == [] and [s for s, _ in ports.faces] == ["done"]
+
+
+def test_3997_question_answered_with_only_expression_is_returned_to_the_model():
+    """Вопрос, а модель ответила одной ``expression`` (лицо не просили): тот же класс дефекта, что #3995 — нарушение
+    ``silent_answer`` модели, вторая итерация говорит словами, эмоция красит итог."""
+    fixed = Command(speech="Слышу тебя!", expression=Expression(emotion="happy"))
+    ports = Ports(answers=[Answer(Command(expression=Expression(emotion="happy")), "deepseek"), Answer(fixed, "x")])
+    agg = _run(_engine(ports), N101)
+    assert len(ports.asked) == 2 and agg.llm_calls == 2
+    note = ports.asked[1][0][-1]["content"]
+    assert note.startswith("invalid arguments") and kn.VIOLATION_SILENT_ANSWER in note
+    assert ports.said == [("Слышу тебя!", None, "happy")] and ports.faces == [("done", fixed.expression)]
+
+
+def test_3997_only_expression_twice_shows_the_face_and_code_speaks():
+    """Обе итерации — одна ``expression`` на прощание: повтора больше нет — лицо показано, говорит код, не молчание."""
+    ports = Ports(answers=[Answer(Command(expression=SAD), "deepseek"), Answer(Command(expression=SAD), "deepseek")])
+    _run(_engine(ports), N1011)
+    assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.SILENT_ANSWER_PHRASE]
+    assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
+    assert ports.faces == [("done", SAD)]
+
+
+def test_3997_twice_without_words_and_the_animation_failed_shows_no_command_face():
+    """Повтор кончился, анимация команды отказала: «радостно» о провале не бывает — эмоция команды итог не красит,
+    фраза кода грустная (то же правило, что у исполненной команды, ``command_face``)."""
+    happy = Command(actions=(SLEEP,), expression=Expression(emotion="happy"))
+    ports = Ports(answers=[Answer(happy, "deepseek"), Answer(happy, "deepseek")],
+                  outcomes={"play_animation": ("rejected", {})})
+    _run(_engine(ports), N1011)
+    assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
+    assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
+    assert ports.faces == [] and len(ports.said) == 1 and ports.said[0][2] == "sad"
+
+
+def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_without_the_face():
+    """После запросов одна ``expression`` на последней итерации: говорит код по данным запроса (#3883), а лицо
+    команды не показывается — её действия не исполнены, и лицо идёт вместе с ними."""
+    search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
+                     follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
+    ports = Ports(answers=[*search, Answer(Command(expression=SAD), "deepseek")],
+                  outcomes={"memory_search": ("done", {"results": []})})
+    agg = _run(_engine(ports), "а ты меня помнишь")
+    assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and ports.faces == []
+
+
+def test_3997_speech_with_emotion_colours_done_too():
+    """n904 на деле: речь + ``expression{sad, face}`` — эмоция и сцена лица LLM доходят до итога, не только до TTS."""
+    from rob_box_dialog.face_scene import FaceScene
+    expr = Expression(emotion="sad", face=FaceScene(eyes="half", mouth="frown", duration_s=6))
+    ports = Ports(answers=[Answer(Command(speech="Вот так мне грустно.", expression=expr), "deepseek")])
+    _run(_engine(ports), N904)
+    assert ports.said == [("Вот так мне грустно.", None, "sad")] and ports.faces == [("done", expr)]
+
+
+def test_3997_neutral_expression_and_failed_action_do_not_colour_done():
+    ports = Ports(answers=[Answer(Command(speech="Привет!"), "deepseek")])
+    _run(_engine(ports), "привет")
+    assert ports.faces == [], "нейтраль — нечего показать, рефлекс как есть"
+    stop = (ToolCall("stop_music", {}),)
+    failed = Ports(answers=[Answer(Command(actions=stop, expression=Expression(emotion="happy")), "deepseek")],
+                   outcomes={"stop_music": ("rejected", {})})
+    _run(_engine(failed), "выключи музыку")
+    assert failed.faces == [], "«радостно» о провале не бывает"
+
+
+def test_3997_silence_during_the_turn_keeps_the_taped_face():
+    """Тишину включили, пока ход ждал модель (эпоха та же): эмоция команды на лицо не уходит (#3984)."""
+    ports = Ports(answers=[Answer(Command(expression=SAD), "deepseek")])
+    engine = _engine(ports)
+
+    async def scenario():
+        ports.gate = asyncio.Event()
+        turn = asyncio.ensure_future(engine.run(Addressed(N904, VOICE)))
+        await asyncio.sleep(0)
+        engine.session.push_scene("Silence", "user")
+        ports.gate.set()
+        return await turn
+
+    agg = asyncio.run(scenario())
+    assert (agg.stage, agg.status) == ("done", "finished"), "ход не отменён: эмоцию гасит именно тишина"
+    assert ports.faces == [] and ports.said == [] and len(ports.asked) == 1
+
+
+def test_3997_cancelled_or_failed_turn_does_not_show_the_command_face():
+    turn = _turn_with(SAD)
+    snap = Session("personality").snapshot
+    assert done_expression(turn, snap) == SAD
+    turn.status = "cancelled"
+    assert done_expression(turn, snap) is None
+    turn.status, turn.stage = "failed", "failed"
+    assert done_expression(turn, snap) is None
+
+
+def test_3997_port_without_expression_parameter_is_called_as_before():
+    """Чат и шлем оператора (лица нет) — прежний вызов ``stage`` без ``expression``."""
+    calls = []
+
+    class Chat:
+        def stage(self, turn_id, epoch, stage, status, reason="", cls=None, llm_calls=0, provider="", source=""):
+            calls.append((stage, status))
+
+    finish_stage(Chat(), _turn_with(SAD), Session("personality").snapshot)
+    assert calls == [("done", "finished")]
+
+
+def _turn_with(expression):
+    from rob_box_dialog.deadline import TurnDeadline
+    from rob_box_dialog.turn import _Turn
+
+    return _Turn("t1", 0, N904, VOICE, TurnDeadline(30.0), stage="done", expression=expression)
 
 
 # ── В31 (решение Шифу 23.10): вести запрос до конца, пока провайдер жив; фраза на ~6 с; потолок; стоп всегда ─────

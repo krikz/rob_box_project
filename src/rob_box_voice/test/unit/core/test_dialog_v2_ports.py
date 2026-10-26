@@ -12,13 +12,15 @@ M = install_dialog_msgs_stub()
 
 from rob_box_dialog import knowledge as kn, phrases  # noqa: E402
 from rob_box_dialog.address import VOICE, Addressed  # noqa: E402
-from rob_box_dialog.command import Command, Invalid, ToolCall as CommandCall  # noqa: E402
+from rob_box_dialog.command import Command, Expression, Invalid, ToolCall as CommandCall  # noqa: E402
+from rob_box_dialog.expression import reflex  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.turn import TurnEngine  # noqa: E402
 from rob_box_llm.provider import LLMResponse, ToolCall, ToolResult  # noqa: E402
 from rob_box_voice.core import command_bridge  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import (  # noqa: E402
-    EMPTY, CallCounter, Counted, V2Ports, command_providers, counted_wrapper, follow_for, to_result, tool_schema,
+    EMPTY, CallCounter, Counted, V2Ports, command_providers, counted_wrapper, follow_for, stage_plan, to_result,
+    tool_schema,
 )
 
 TIME = type(M.TurnEvent().stamp)
@@ -237,3 +239,83 @@ def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(mon
     llm, system = assemble_llm(["deepseek", " "], counter, prompt_dir=tmp_path, system_prompt_file="prompt.txt")
     assert system == "Ты робот." and llm.name == "deepseek" and llm.mode in ("tool_choice", "json_mode", "tool_offered")
     assert counter.calls == 0
+
+
+# -- команда из одной expression доходит до лица рефлексом done (#3997, хвост #3974 п.3) -----------------------------
+
+N904 = "покажи как тебе грустно что смена такая длинная"  # n904 23.10 23:01:09 без вейка (его снимает адресация)
+SAD_FACE = {"emotion": "sad", "face": {"eyes": "half", "gaze": "down", "mouth": "frown", "tint": "blue",
+                                       "tempo": "slow", "duration_s": 6}}
+
+
+def _done_request(node):
+    """``ExpressionRequest`` итога хода: последний на топике (после него стадий нет)."""
+    return node.pubs["/voice/expression/request"].sent[-1]
+
+
+def test_expression_only_command_reaches_the_face_in_the_done_reflex():
+    """n904: ``{expression: {emotion: sad, face}}`` без речи → ``ExpressionRequest`` итога ``done`` с эмоцией ``sad``,
+    сценой лица LLM и earcon/ttl рефлекса; речи нет, ход ``finished``."""
+    ports, node, _ = _ports([LLMResponse(tool_calls=(_command_call({"expression": SAD_FACE}),))])
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed(N904, VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished") and agg.llm_calls == 1
+    assert "/voice/speech/request" not in node.pubs, "лицо по прямой просьбе — молча"
+    done = _done_request(node)
+    assert (done.emotion, done.earcon, done.ttl_ms) == ("sad", reflex("done").earcon, reflex("done").ttl_ms)
+    assert json.loads(done.face_json) == SAD_FACE["face"] and done.turn_id == agg.turn_id
+    others = node.pubs["/voice/expression/request"].sent[:-1]
+    assert [r.emotion for r in others] == [reflex(s).emotion for s in ("addressed", "thinking")], "отдельного нет"
+
+
+def test_question_with_only_expression_gets_words_and_the_emotion_still_colours_done():
+    """Вопрос: одна ``expression`` — нарушение ``silent_answer`` модели; второй ответ словами звучит, ``happy`` на
+    итоге."""
+    first = LLMResponse(tool_calls=(_command_call({"expression": {"emotion": "happy"}}),))
+    second = LLMResponse(tool_calls=(_command_call({"speech": "Слышу тебя!", "expression": {"emotion": "happy"}}),))
+    ports, node, _ = _ports([first, second])
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("ты меня слышишь", VOICE)))
+    assert agg.llm_calls == 2
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["<speak>Слышу тебя!</speak>"]
+    assert _done_request(node).emotion == "happy"
+
+
+class _SilencingLLM(_LLM):
+    """Пока модель думает, человек сказал «замолчи» в другом ходе: кадр ``Silence`` на той же эпохе."""
+
+    def __init__(self, responses, counter, session):
+        super().__init__(responses, counter)
+        self.session = session
+
+    async def complete(self, messages, tools=(), settings=None):
+        self.session.push_scene("Silence", "user")
+        return await super().complete(messages, tools, settings)
+
+
+def test_in_silence_the_command_emotion_is_not_sent():
+    """#3984: в тишине лицо — заклеенный рот; эмоция и сцена команды в запрос итога не попадают."""
+    session, counter = Session("personality"), CallCounter()
+    node = _Node()
+    llm = _SilencingLLM([LLMResponse(tool_calls=(_command_call({"expression": SAD_FACE}),))], counter, session)
+    ports = V2Ports(node, llm, counter, _Tools())
+    agg = asyncio.run(TurnEngine(session, ports).run(Addressed(N904, VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished")
+    done = _done_request(node)
+    assert (done.emotion, done.gesture, done.face_json) == (reflex("done").emotion, "", "")
+
+
+def test_command_face_on_done_is_one_log_line_for_the_live_check():
+    """Живая проверка видит окраску итога в логе ноды: одна строка ``🎭 [turn-v2]`` на ``done`` с эмоцией команды;
+    стадия без экспрессии команды строки не пишет."""
+    lines, node = [], _Node()
+    ports = V2Ports(node, _LLM([], CallCounter()), CallCounter(), _Tools(), log=lines.append)
+    ports.stage("t1", 0, "thinking", "started")
+    ports.stage("t1", 0, "done", "finished", expression=Expression(emotion="sad"))
+    assert lines == ["🎭 [turn-v2] лицо команды на done: emotion=sad gesture=- face=- turn=t1"]
+    assert _done_request(node).emotion == "sad"
+
+
+def test_stage_plan_merges_only_where_merge_allows():
+    sad = Expression(emotion="sad", gesture="wink")
+    assert (stage_plan("done", None, sad).emotion, stage_plan("done", None, sad).gesture) == ("sad", "wink")
+    assert stage_plan("failed", None, sad) == reflex("failed"), "провал побеждает эмоцию команды"
+    assert stage_plan("done") == reflex("done") and stage_plan("silenced", None, sad) is None

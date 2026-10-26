@@ -8,7 +8,8 @@
 темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
 sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744). Голый неслышимый ответ
-(анимация без слов), когда анимацию словами не просили, - :func:`needs_words` (#3995).
+(анимация или одна ``expression`` без слов), когда лицо словами не просили (:func:`face_asked`), - :func:`needs_words`
+(#3995, #3997).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 from rob_box_core.tool_catalog import ToolCatalogEntry, get_tool
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.agents import agent_spec, tools_for
+from rob_box_dialog.expression import shows
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
 from rob_box_dialog.words import has_form, has_word, introduces_self
@@ -88,17 +90,31 @@ def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
 
 
 def needs_words(text: str, cmd: "Command") -> bool:
-    """Ответ модели не слышен, а человек ждёт слов (#3995): нет ни речи, ни вопроса, ни выступления, ни ``passed``,
-    все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), и анимацию человек словами не просил (группы
-    ``animation`` нет в :func:`requested_groups`: «покажи анимацию радости», «посмотри налево»).
+    """Ответ модели не слышен, а человек ждёт слов (#3995, #3997): нет ни речи, ни вопроса, ни выступления, ни
+    ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а показать есть что - действия или
+    одна ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``), и лицо человек
+    словами не просил (группы ``FACE_ASK_GROUP`` нет в :func:`requested_groups`: «покажи анимацию радости»,
+    «улыбнись», «посмотри налево»).
 
     Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
     динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
     if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
         return False
-    if not cmd.actions or any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
+    if any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
         return False
-    return "animation" not in requested_groups(text)
+    face = cmd.expression
+    if not cmd.actions and not shows(face.emotion, face.gesture, face.face):
+        return False
+    return kn.FACE_ASK_GROUP not in requested_groups(text)
+
+
+def face_asked(text: str) -> bool:
+    """Просил ли человек словами показать лицо: глагол из ``FACE_ASK_STEMS`` («улыбнись», «изобрази») или «покажи»
+    рядом с тем, что показать (``FACE_SHOW_WHAT_STEMS``: «покажи победу», «покажи, как тебе грустно»). Голое «покажи»
+    («покажи кухню») лицо не просит. Таблица одна - ``knowledge``; группа ``FACE_ASK_GROUP`` открывается по ней же."""
+    if has_word(text or "", kn.FACE_ASK_STEMS):
+        return True
+    return has_word(text or "", kn.FACE_SHOW_STEMS) and has_word(text or "", kn.FACE_SHOW_WHAT_STEMS)
 
 
 def motion_named(text: str) -> bool:
@@ -148,6 +164,8 @@ def _named(text: str, field: str) -> set:
     names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
     if field == "stems" and introduces_self(text):  # «здравствуй, я Саша»: словом-основой это не поймать
         names.add(kn.SELF_INTRO_GROUP)
+    if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
+        names.add(kn.FACE_ASK_GROUP)
     return names
 
 
@@ -175,5 +193,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "needs_words",
-           "requested_groups", "widen_for"]
+__all__ = ["available_tools", "command_groups", "face_asked", "groups_for", "motion_named", "motion_refusal",
+           "needs_words", "requested_groups", "widen_for"]

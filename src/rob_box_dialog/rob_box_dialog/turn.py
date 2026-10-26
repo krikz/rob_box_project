@@ -20,6 +20,11 @@
 * голый неслышимый ответ (``play_animation`` без слов) на адресованную реплику, где анимацию не просили
   (``tools_view.needs_words``, #3995), не исполняется: модель получает нарушение ``VIOLATION_SILENT_ANSWER``
   следующей итерацией (≤ ``COMMAND_RETRIES_MAX`` повторов); повтор кончился — анимация и фраза кода, не молчание;
+  команда из одной ``expression`` — тот же класс (#3997): по прямой просьбе («покажи, как тебе грустно») лицо молча,
+  иначе повтор;
+* экспрессия команды (эмоция, жест, сцена лица LLM) красит рефлекс итога ``done`` (:func:`done_expression` →
+  ``Ports.stage(..., expression=)`` → ``expression.merge``), отдельного запроса лицу нет; в тишине и у отменённого
+  хода — рефлекс как есть (#3997);
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций; последний вызов
   модели идёт без query-тулов в схеме (читать больше нечем — остаётся сказать итог), а если она всё же просит query —
@@ -50,10 +55,11 @@ from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
-from rob_box_dialog.command import Command, Invalid, Performance, Result, ToolCall, explain, loud_actions
+from rob_box_dialog.command import Command, Expression, Invalid, Performance, Result, ToolCall, explain, loud_actions
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
+from rob_box_dialog.expression import shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, audible, join
@@ -120,7 +126,12 @@ class Ports(Protocol):
             emotion: Optional[str] = None) -> str: ...
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "",
-              cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "") -> None: ...
+              cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "",
+              expression: Optional[Expression] = None) -> None:
+        """Событие стадии и рефлекс. ``expression`` (необязательный, #3997) — экспрессия команды на итоге ``done``
+        (:func:`done_expression`): красит рефлекс. Порт без этого параметра (чат, шлем оператора — лица у них нет)
+        зовётся прежним вызовом (:func:`finish_stage`)."""
+        ...
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
 
@@ -161,6 +172,7 @@ class _Turn:
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания, #3883)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за голый неслышимый ответ (``VIOLATION_SILENT_ANSWER``, #3995)
+    expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done`` (#3997)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -243,6 +255,32 @@ def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command)
     (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
     return (agent_spec(snapshot.agent).sink == Sink.SPEAKERS and voices_passed(pickup, snapshot)
             and needs_words(text, cmd))
+
+
+def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
+    """Экспрессия команды для рефлекса итога (#3997, ADR-0148: решает код): лицо команды красит ``done``. ``None`` —
+    рефлекс как есть: ход не ``done`` или отменён (перебивание, ``stale_epoch``), в кадре ``Silence`` (лицо там —
+    заклеенный рот, #3984), у команды нечего показать (``expression.shows``)."""
+    face = turn.expression
+    if face is None or turn.stage != "done" or turn.status == "cancelled" or snapshot.top("Silence") is not None:
+        return None
+    return face if shows(face.emotion, face.gesture, face.face) else None
+
+
+def command_face(expression: Optional[Expression], results: Sequence[ActionResult]) -> Optional[Expression]:
+    """Экспрессия исполненной команды для итога хода (#3997); провал действия её не показывает (``None`` — рефлекс как
+    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Одно правило для исполненной команды
+    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
+    return None if any(r.status in _FAILED for r in results) else expression
+
+
+def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
+    """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
+    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``)."""
+    face = done_expression(turn, snapshot)
+    extra = {"expression": face} if face is not None and _accepts(ports.stage, "expression") else {}
+    ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
+                provider=turn.provider, **extra)
 
 
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
@@ -374,11 +412,13 @@ def _voices_summary(data: Mapping[str, Any]) -> Optional[str]:
     return ", ".join(f"{name} — {count}" for name, count in pairs if name and isinstance(count, int)) or None
 
 
-async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot) -> None:
+async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot,
+                         expression: Optional[Expression] = None) -> None:
     """Невалидная команда после повтора моста: на адресованную реплику не молчим (В21, решение Шифу 23.10, #3953).
     Запрос в ходе выполнен - говорит код по его данным (#3883). Иначе допустимые действия команды (``Invalid.salvage``)
     исполняются, об исходе говорит код (:func:`_salvaged_phrase`); исполнять нечего - честная фраза
-    ``INVALID_COMMAND_PHRASE``. Ход ``done``."""
+    ``INVALID_COMMAND_PHRASE``. Ход ``done``. ``expression`` - лицо команды, исполняемой после нарушения
+    ``silent_answer`` (#3997): красит итог вместе с её действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
@@ -390,6 +430,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     if engine._stale(turn, "results"):
         return
     turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
+    turn.expression = command_face(expression, results)
     sad = not results or any(r.status in _FAILED for r in results)
     engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, "sad" if sad else None)
 
@@ -411,7 +452,7 @@ async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap
     итерация, ≤ ``COMMAND_RETRIES_MAX``) - команда не исполняется, модели уходит нарушение ``VIOLATION_SILENT_ANSWER``
     в форме ``command.explain`` (следующая итерация ``_understand``). Повтора нет - анимация исполняется, а говорит код
     (:func:`_close_invalid` с этой причиной), не молчание."""
-    tools = [a.tool for a in cmd.actions]
+    tools = [a.tool for a in cmd.actions] or [f"expression:{cmd.expression.emotion}"]
     if not last and turn.retried < kn.COMMAND_RETRIES_MAX:
         turn.retried += 1
         engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SILENT_ANSWER}: {tools} без слов на адресованную реплику → "
@@ -419,7 +460,8 @@ async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap
         return explain(Invalid(kn.VIOLATION_SILENT_ANSWER, kn.SILENT_ANSWER_HINT), after_query=bool(turn.queried))
     engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SILENT_ANSWER}: {tools} без слов и после повтора → анимация и "
                         f"фраза кода turn={turn.turn_id}")
-    await _close_invalid(engine, turn, Invalid(kn.VIOLATION_SILENT_ANSWER, salvage=cmd.actions), snap)
+    # лицо команды, как и её анимация, показывается — говорит код (#3997)
+    await _close_invalid(engine, turn, Invalid(kn.VIOLATION_SILENT_ANSWER, salvage=cmd.actions), snap, cmd.expression)
     return None
 
 
@@ -703,7 +745,9 @@ class TurnEngine:
         return None
 
     def _speak(self, turn: _Turn, cmd: Command, results: Sequence[ActionResult]) -> None:
-        """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1)."""
+        """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
+        запоминается для рефлекса ``done`` (:func:`command_face`, #3997)."""
+        turn.expression = command_face(cmd.expression, results)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
         if outcome:
             sad = any(r.status in _FAILED for r in results)
@@ -762,8 +806,7 @@ class TurnEngine:
 
     def _finish(self, turn: _Turn) -> TurnAggregate:
         latency = int(turn.deadline.elapsed() * 1000)
-        self._ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason,
-                          llm_calls=turn.llm_calls, provider=turn.provider)
+        finish_stage(self._ports, turn, self.session.snapshot)
         agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, turn.status,
                             latency, turn.llm_calls, turn.provider, turn.tokens)
         self._log.info(agg.log_line())
@@ -787,5 +830,6 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "hand_perform", "host_sections", "outcome_phrase", "query_fallback", "stop_performance",
-           "tier1_actions", "tier1_for", "tier1_phrase", "voices_passed", "words_owed"]
+           "TurnEngine", "done_expression", "finish_stage", "hand_perform", "host_sections", "outcome_phrase",
+           "query_fallback", "stop_performance", "tier1_actions", "tier1_for", "tier1_phrase", "voices_passed",
+           "words_owed"]
