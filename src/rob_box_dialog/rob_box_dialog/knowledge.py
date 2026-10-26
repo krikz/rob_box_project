@@ -741,6 +741,17 @@ TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода.
 SILENT_DONE_TOOLS: Tuple[str, ...] = ("play_sound", "play_animation")
+#: Действия, которых не слышно: исход виден только на лице и кольце (#3995). Голый такой ответ модели на адресованную
+#: реплику, где анимацию словами не просили (``tools_view.needs_words``), - молчание в ответ на вопрос (марафон 23.10:
+#: n101 «ты меня слышишь?» → ``play_animation(happy)``, n1011 «спокойной ночи» → ``play_animation(sleep)``, речи нет).
+#: ``play_sound`` звучит сам и сюда не входит (решение Шифу 26.10: тихое действие по прямой просьбе - норма).
+INAUDIBLE_TOOLS: Tuple[str, ...] = ("play_animation",)
+#: Причина нарушения «ответ без слов»: ход не исполняет голый неслышимый ответ, а возвращает модели нарушение (форма
+#: ``command.explain``) следующей итерацией; повтор кончился - анимация исполняется и говорит код
+#: (``INVALID_COMMAND_PHRASES``), не молчание. Правило словами для модели - :data:`SILENT_ANSWER_HINT`.
+VIOLATION_SILENT_ANSWER = "silent_answer"
+SILENT_ANSWER_HINT = (f"человек ждёт ответа словами, а {', '.join(INAUDIBLE_TOOLS)} не слышно: ответь словами в speech;"
+                      f" анимацию положи в actions рядом — speech с {', '.join(INAUDIBLE_TOOLS)} звучит")
 #: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: голос -
 #: сам тул (``voice_request``, SpeechEvent ``voice_changed``), запуск музыки и библиотека - музыкальный ход ноды
 #: (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует; в v2 (PR-8) - фраза респонда.
@@ -773,6 +784,9 @@ STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
 #: Фразы, которые выбирает код (решения Шифу 22.10): «промолчать» на адресованную реплику и подтверждение «новой сессии».
 PASSED_ADDRESSED_PHRASE = "understand.nothing_to_say"
 NEW_SESSION_PHRASE = "tier1.new_session"
+#: Модель и после повтора ответила голой анимацией на адресованную реплику (``VIOLATION_SILENT_ANSWER``, #3995):
+#: анимация исполнена, а говорит код - короткая фраза из каталога, не молчание.
+SILENT_ANSWER_PHRASE = "understand.silent_answer"
 #: Поле с данными ``query`` в сообщении, которым ход возвращает их модели (``turn._query_data``); по нему мост узнаёт,
 #: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
 QUERY_RESULTS_FIELD = "query_results"
@@ -787,7 +801,8 @@ INVALID_COMMAND_PHRASE = "command.invalid_generic"
 #: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез
 #: (``too_long``: перечисление голосов длиннее лимита речи, #3883). Единственная таблица причина → ключ каталога;
 #: причины вне таблицы говорят ``INVALID_COMMAND_PHRASE``.
-INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long"})
+INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
+                                                               VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE})
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,

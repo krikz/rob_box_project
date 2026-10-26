@@ -7,12 +7,13 @@
 ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Слова с двумя владельцами («ускорь
 темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
 sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
-``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744).
+``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744). Голый неслышимый ответ
+(анимация без слов), когда анимацию словами не просили, - :func:`needs_words` (#3995).
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 from rob_box_core.tool_catalog import ToolCatalogEntry, get_tool
 from rob_box_dialog import knowledge as kn
@@ -20,6 +21,9 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
 from rob_box_dialog.words import has_form, has_word, introduces_self
+
+if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
+    from rob_box_dialog.command import Command
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) -> Tuple[str, ...]:
@@ -81,6 +85,20 @@ def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
     """
     actions = {t for t in called if kn.TOOL_CLASSES.get(t, "query") != "query"}
     return tuple(g for g in requested_groups(text) if actions & set(kn.TOOL_GROUPS[g].tools))
+
+
+def needs_words(text: str, cmd: "Command") -> bool:
+    """Ответ модели не слышен, а человек ждёт слов (#3995): нет ни речи, ни вопроса, ни выступления, ни ``passed``,
+    все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), и анимацию человек словами не просил (группы
+    ``animation`` нет в :func:`requested_groups`: «покажи анимацию радости», «посмотри налево»).
+
+    Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
+    динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
+    if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
+        return False
+    if not cmd.actions or any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
+        return False
+    return "animation" not in requested_groups(text)
 
 
 def motion_named(text: str) -> bool:
@@ -157,5 +175,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "requested_groups",
-           "widen_for"]
+__all__ = ["available_tools", "command_groups", "groups_for", "motion_named", "motion_refusal", "needs_words",
+           "requested_groups", "widen_for"]
