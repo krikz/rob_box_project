@@ -3,10 +3,13 @@
 import pytest
 
 from rob_box_dialog.knowledge import (
-    DEFAULT_WAKE_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS,
+    DEFAULT_WAKE_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, WAKE_SLIP_ADDRESSEE,
+    WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER,
+    WAKE_SLIP_PLURAL, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
-    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_form, has_wake_word, has_word, introduces_self, stop_verdict, strip_wake_word,
+    STOP_CLEAR, STOP_DISPUTED, STOP_NONE, has_form, has_wake_word, has_word, introduces_self, slipped_wake_rest,
+    stop_verdict, strip_wake_word,
 )
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
@@ -190,3 +193,73 @@ def test_does_not_introduce_self(text):
 
 def test_has_form_is_a_whole_word():
     assert has_form("добавь бас", ("бас",)) and not has_form("расскажи басню", ("бас",))
+
+
+# --- #3996: искажённый вейк «роботы/работа/рада» - ворота WAKE_SLIP_GATES (поведение slipped_wake_rest) ------------
+
+@pytest.mark.parametrize("text,rest", [
+    ("роботы еще куплет добавь про комара который еноту мешал", "еще куплет добавь про комара который еноту мешал"),
+    ("РОБОТЫ ЕЩЁ КУПЛЕТ ДОБАВЬ", "ЕЩЁ КУПЛЕТ ДОБАВЬ"),
+    ("работа как меня зовут", "как меня зовут"),
+    ("Работа, как меня зовут?", "как меня зовут"),
+    ("роботы что ты умеешь", "что ты умеешь"),
+    ("рада какое у тебя имя", "какое у тебя имя"),
+    ("работа сколько у тебя заряда", "сколько у тебя заряда"),
+    ("роботы где ты", "где ты"),
+    ("рада что сейчас звучит", "что сейчас звучит"),
+    ("рада что сейчас крутится", "что сейчас крутится"),
+    ("роботы дальше музыку потише", "дальше музыку потише"),
+    ("работа тишина", "тишина"),
+    ("роботу дали команду", "дали команду"),
+    ("работа как а б в г д ты", "как а б в г д ты"),
+])
+def test_slipped_wake_rest_gate_opens(text, rest):
+    assert slipped_wake_rest(text) == rest
+
+
+@pytest.mark.parametrize("text", [
+    "работ много накопилось", "работ на неделю", "работа дальше пойдёт", "роботе не хватает памяти",
+    "роботы это сложно", "роботы такие умные", "роботы ещё не умеют летать", "работа как работа", "работа что надо",
+    "роботы что-то делают", "работа какая-то странная", "рада тебя видеть", "роботы захватят мир",
+    "роботы", "работа", "работа, ",
+    "привет работа как меня зовут",
+    "роботы как а б в г д е ты",
+])
+def test_slipped_wake_rest_gate_stays_closed(text):
+    """Отрицательные из проверки #3975, союзное/сравнительное «как/что», «ещё» без музыки, не первый токен и знак
+    дальше окна ``WAKE_SLIP_CUE_WINDOW`` (шестое слово после ведущего - ещё внутри, седьмое - уже нет)."""
+    assert slipped_wake_rest(text) is None
+
+
+@pytest.mark.parametrize("lead", WAKE_SLIP_COMMAND_LEADS + WAKE_SLIP_QUESTION_LEADS)
+@pytest.mark.parametrize("slip", ["работа", "рады", "роботы"])
+def test_slip_lead_without_condition_opens_by_itself(slip, lead):
+    assert slipped_wake_rest(f"{slip} {lead} просто так") == f"{lead} просто так"
+
+
+@pytest.mark.parametrize("lead", WAKE_SLIP_QUESTION_CUED_LEADS + WAKE_SLIP_MORE_LEADS)
+@pytest.mark.parametrize("slip", ["работа", "рады", "роботы"])
+def test_slip_lead_with_condition_needs_its_cue(slip, lead):
+    """«как/что/…» и «ещё/дальше/…» одни ничего не решают: без знака обращения или темы ворота закрыты."""
+    assert slipped_wake_rest(f"{slip} {lead} просто так") is None
+
+
+@pytest.mark.parametrize("cue", WAKE_SLIP_ADDRESSEE)
+def test_every_addressee_word_opens_the_question_gate(cue):
+    assert slipped_wake_rest(f"работа как {cue} думаешь") == f"как {cue} думаешь"
+
+
+def test_slipped_wake_rest_needs_a_robot_wake_word_in_the_table():
+    assert slipped_wake_rest("роботы еще куплет добавь", ["тарс"]) is None
+    assert slipped_wake_rest("роботы еще куплет добавь", ["робот"]) == "еще куплет добавь"
+
+
+def test_slip_tables_do_not_contradict_each_other():
+    leads = [lead for gate in WAKE_SLIP_GATES for lead in gate.leads]
+    assert len(leads) == len(set(leads)), "ведущее слово принадлежит одним воротам"
+    for word in (*leads, *WAKE_SLIP_ADDRESSEE, *WAKE_SLIP_AMBIGUOUS, *WAKE_SLIP_PLURAL, *WAKE_SLIP_NEVER):
+        assert word == word.lower() and "ё" not in word and " " not in word, word
+    gated = set(WAKE_SLIP_AMBIGUOUS) | set(WAKE_SLIP_PLURAL)
+    assert not gated & set(WAKE_SLIP_NEVER), "слово либо за воротами, либо не будит никогда"
+    assert not gated & set(WAKE_SLIP_VARIANTS), "слово либо за воротами, либо будит без условий"
+    assert not set(WAKE_SLIP_AMBIGUOUS) & set(WAKE_SLIP_PLURAL)
