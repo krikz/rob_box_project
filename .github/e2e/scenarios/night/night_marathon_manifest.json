@@ -80,7 +80,7 @@
       "act": 7,
       "title": "Нейрокомпозитор и библиотека",
       "stability": "flaky-known",
-      "steps": 12,
+      "steps": 13,
       "scenario_file": ".github/e2e/scenarios/night/night_marathon_act7_neuro_composer_v1.json",
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act7_neuro_composer_acceptance_v1.json"
     },
@@ -109,5 +109,5 @@
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_acceptance_v1.json"
     }
   ],
-  "total_steps": 135
+  "total_steps": 136
 }

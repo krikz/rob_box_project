@@ -137,6 +137,82 @@ def test_library_edit_that_failed_says_library_failure():
     assert ports.said == [phrases.text("music.library_fail")]
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# #4025, #4026: отказ тула ПО ПРИЧИНЕ (reason в данных, PR #4056) говорит своей фразой, а не общим «не вышло»
+# ---------------------------------------------------------------------------------------------------------------
+
+def _refusal(tool, cls, reason, **data):
+    return ActionResult("t1/0", 0, "personality", tool, cls, "rejected", reason, data)
+
+
+@pytest.mark.parametrize("title, want", [
+    ("Кот и ёж", "Удалить «Кот и ёж»? Скажи «да, удаляй»."),
+    ("", "Удалить этот трек? Скажи «да, удаляй»."),
+])
+def test_library_delete_without_confirm_asks_with_the_track_title(title, want):
+    """n710 (марафон 23.10): необратимое удаление теперь идёт в два вызова. Первый тул только спрашивает
+    (``needs_confirmation``, ``data.title``) - человек слышит вопрос с названием трека, а не «С библиотекой не вышло»."""
+    data = {"track_id": "t-1", "title": title, "question": want}  # данные отказа как у тула (gen_library._delete)
+    ports = Ports([Answer(Command(actions=(_library("delete", track_id="t-1"),)), "deepseek")],
+                  {"music_library": ("rejected", "needs_confirmation", data)})
+    agg = _run(_engine(ports), "удали эту песню про енота")
+    assert ports.said == [want] == [data["question"]]
+    assert phrases.text("music.library_fail") not in ports.said
+    assert agg.llm_calls == 1 and ports.stage_classes == ["action.local"], "вопрос говорит код, LLM за ним не зовётся"
+
+
+@pytest.mark.parametrize("call", [_library("delete", track_id="x1"), _library("update", track_id="x1", title="Кот")])
+def test_library_edit_of_an_unnamed_track_says_it_does_not_know_that_track(call):
+    """Тул отверг id, которого не называл (``unknown_track``): фраза о незнакомом треке и что делать дальше."""
+    ports = Ports([Answer(Command(actions=(call,)), "deepseek")],
+                  {"music_library": ("rejected", "unknown_track", {"track_id": "x1"})})
+    _run(_engine(ports), "удали вон тот трек")
+    assert len(ports.said) == 1 and ports.said[0].startswith("Не знаю такого трека в библиотеке.")
+    assert "список" in ports.said[0] and ports.said != [phrases.text("music.library_fail")]
+
+
+def test_library_edit_refused_for_an_unlisted_reason_keeps_the_general_failure():
+    """Причина, которой у каталога нет, не ломает фразу: общая ``music.library_fail`` (как было)."""
+    ports = Ports([Answer(Command(actions=(_library("delete", track_id="t-9"),)), "deepseek")],
+                  {"music_library": ("rejected", "disk_on_fire", {"track_id": "t-9"})})
+    _run(_engine(ports), "удали трек")
+    assert ports.said == [phrases.text("music.library_fail")]
+
+
+def test_library_info_of_an_unnamed_track_is_a_query_refusal_with_the_same_words():
+    """``info`` - чтение (``query``): данные идут LLM, код говорит только когда ответ модели не сложился
+    (``query_fallback``) - и говорит ту же фразу про незнакомый трек, а не «Не нашёл ответа.»."""
+    from rob_box_dialog.respond import phrase_from_result
+    from rob_box_dialog.turn import query_fallback
+
+    refused = _refusal("music_library", "query", "unknown_track", action="info", track_id="x1")
+    unknown = phrases.text("music.library_fail.unknown_track")
+    assert phrase_from_result(refused).text == unknown == query_fallback([refused])
+    assert unknown != phrases.text("query.rejected")
+
+
+def test_search_web_that_could_not_search_says_so_and_the_model_gets_the_reason():
+    """n907/n908: поиск недоступен (оба бэкенда отказали) - не «ничего не нашёл». Фраза кода по ``search_unavailable``
+    (``query_fallback``); модель в данных запроса видит ту же причину."""
+    from rob_box_dialog.respond import phrase_from_result
+    from rob_box_dialog.turn import query_fallback
+
+    want = "Не смог проверить в интернете: поиск сейчас не ответил."
+    refused = _refusal("search_web", "query", "search_unavailable", query="погода", tried=["ddgs", "deepseek"])
+    said = phrase_from_result(refused)
+    assert said.text == want == query_fallback([refused]) and said.emotion == "sad"
+    other = _refusal("search_web", "query", "error", query="погода")
+    assert phrase_from_result(other).text == phrases.text("query.rejected"), "другая причина - прежнее «Не нашёл»"
+
+    first = Answer(Command(actions=(ToolCall("search_web", {"query": "погода"}),)), "deepseek", follow=_follow)
+    second = Answer(Command(speech="Поиск сейчас не отвечает."), "deepseek")
+    ports = Ports([first, second], {"search_web": ("rejected", "search_unavailable", {"tried": ["ddgs", "deepseek"]})})
+    _run(_engine(ports), "какая завтра погода")
+    row = json.loads(ports.asked[1][0][-1]["content"])[kn.QUERY_RESULTS_FIELD][0]
+    assert (row["tool"], row["status"], row["reason"]) == ("search_web", "rejected", "search_unavailable")
+    assert ports.said == ["Поиск сейчас не отвечает."]
+
+
 def test_library_play_stays_media_and_is_the_only_one_who_says_playing():
     ports = Ports([Answer(Command(actions=(_library("play", track_id="t-1"),)), "deepseek")])
     _run(_engine(ports), "включи трек из библиотеки")
