@@ -54,6 +54,8 @@ def _run(tmp_path, *, snapshot=None, env=None, inherits="no", wait="3"):
         'export FAKE_ROBOT_STATE="%s"' % state.as_posix(),
         *("export %s='%s'" % kv for kv in (env or {}).items()),
         'ROBOT_SSH="bash %s"' % FAKE.as_posix(),
+        # маркер E2E_RECOVER строит e2e_events.recover_marker (ревью #4034), как в главном потоке харнесса
+        'SCRIPT_DIR_E2E="%s"' % SCRIPTS_DIR.as_posix(),
         "E2E_MUSIC_IDLE_WAIT=%s" % wait,
         'log() { echo ">>> $*"; }',
         LIB.read_text(encoding="utf-8").replace("\r\n", "\n"),
