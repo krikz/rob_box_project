@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -565,22 +567,33 @@ QUESTION = "Удалить «Енот-мастер»? Скажи «да, уда�
 DELETE_ASK = "📥 Запрос выполнения: music_library с параметрами {'action': 'delete', 'track_id': 'a1b2'}"
 DELETE_CONFIRM = ("📥 Запрос выполнения: music_library с параметрами "
                   "{'action': 'delete', 'track_id': 'a1b2', 'confirm': True}")
-REFUSED = ("[dialog_node-3] [2026-10-24 01:39:22 - rob_box_dialog.execute:231 - INFO] 📨 [execute] событие "
-           "music_library t5/0 rejected needs_confirmation ход_ждёт=True запрос=True")
+#: Что тул отдал в лог контейнера, когда спросил вместо удаления: ``mcp_server.py`` (ROS-логгер, WARNING).
+REFUSED = ("[mcp_server-9] [WARN] [1792795162.30] [mcp_server]: ❌ Инструмент music_library завершился с ошибкой: "
+           + QUESTION)
+#: Строки, которой в логе контейнера НЕТ: python-логгер ``rob_box_dialog.execute`` уровня INFO (27.10: 0 строк за 5 ч).
+EXECUTE_REJECTED = ("[dialog_node-3] [2026-10-24 01:39:22 - rob_box_dialog.execute:231 - INFO] 📨 [execute] событие "
+                    "music_library t5/0 rejected needs_confirmation ход_ждёт=True запрос=True")
 TOOL_OK = "[mcp_server-9] [INFO] [1792795162.34] [mcp_server]: ✅ Инструмент music_library выполнен успешно"
 
 
 def test_n710_passes_only_when_the_tool_asked_and_the_robot_said_the_question():
-    """Шаг 1: PASS = вызов delete + отказ владельца ``needs_confirmation`` + вопрос с названием трека в речи."""
+    """Шаг 1: PASS = вызов delete + видимая строка отказа тула (вопрос) + вопрос с названием трека в речи."""
     asked = [DELETE_ASK, REFUSED, _tts(QUESTION), DONE]
     assert _verdict("n710_gen_delete", "\n".join(asked))["pass"]
+    # вопрос без названия («Удалить этот трек?» -- у трека пустой title) тоже засчитывается
+    nameless = "Удалить этот трек? Скажи «да, удаляй»."
+    refused_nameless = REFUSED.replace(QUESTION, nameless)
+    assert _verdict("n710_gen_delete", "\n".join([DELETE_ASK, refused_nameless, _tts(nameless), DONE]))["pass"]
     # трек стёрт без вопроса (успех тула + «Удалил»): красный, хотя вызов delete и конец хода на месте
     erased = [DELETE_ASK, TOOL_OK, _tts("Удалил «Енот-мастер» из библиотеки."), DONE]
     assert not _verdict("n710_gen_delete", "\n".join(erased))["pass"]
     # тул отказал, но человек услышал общее «не вышло» (нет фразы по причине): красный
     general = [DELETE_ASK, REFUSED, _tts("С библиотекой музыки не вышло."), DONE]
     assert not _verdict("n710_gen_delete", "\n".join(general))["pass"]
-    # робот сам сказал вопрос, а отказа владельца в логе нет (тул не спрашивал): красный
+    # тул отказал по другой причине (трек не найден): это не вопрос про удаление, красный
+    unknown = REFUSED.replace(QUESTION, "Трек не найден")
+    assert not _verdict("n710_gen_delete", "\n".join([DELETE_ASK, unknown, _tts(QUESTION), DONE]))["pass"]
+    # робот сам сказал вопрос, а отказа тула в логе нет (тул не спрашивал): красный
     assert not _verdict("n710_gen_delete", "\n".join([DELETE_ASK, _tts(QUESTION), DONE]))["pass"]
     # вопрос без вызова delete (болтовня) и отказ без слов: красные
     assert not _verdict("n710_gen_delete", "\n".join([REFUSED, _tts(QUESTION), DONE]))["pass"]
@@ -592,8 +605,24 @@ def test_n710_checks_the_refusal_and_the_question_and_never_the_tool_success():
     acc = step["acceptance"]
     assert acc["expected_keywords"] == ["удалить", "да, удаляй"] and acc["must_not_say"] == ["удалил"]
     assert step["_result_markers"] == {"tools": [], "music": ""}
-    assert gen.tool_refused("music_library", "needs_confirmation") in step["patterns"]
+    assert gen.LIBRARY_DELETE_ASKED in step["patterns"]
     assert not any(p.startswith("✅ Инструмент ") for p in step["patterns"]), "успех тула здесь - стёртый трек"
+
+
+@pytest.mark.skipif(shutil.which("grep") is None, reason="нужен настоящий grep -E, как у харнесса")
+def test_delete_markers_are_lines_of_the_container_log_not_python_info_logger():
+    """27.10 06:00 UTC: за 5 ч в логе voice-assistant 0 строк ``📨 [execute] событие`` (python-логгер INFO не выводится).
+    Маркер n710/n710b -- строка ROS-логгера mcp_server; ``[execute]`` в паттернах и ``must_not_call`` шагов запрещён."""
+    steps = _steps()
+    everything = [p for s in steps.values() for p in s["patterns"] + s.get("acceptance", {}).get("must_not_call", [])]
+    assert not [p for p in everything if "[execute]" in p or "\\[execute\\]" in p]
+    assert gen.LIBRARY_DELETE_ASKED in steps["n710b_gen_delete_confirm"]["acceptance"]["must_not_call"]
+    # настоящий grep -E, как check_patterns харнесса: вопрос -- HIT, стёрли -- MISS; строка python-логгера -- MISS
+    erased = "[mcp_server-9] [INFO] [1792795162.34] [mcp_server]: ✅ Инструмент music_library выполнен успешно"
+    for line, hit in ((REFUSED, True), (erased, False), (EXECUTE_REJECTED, False)):
+        found = subprocess.run(["grep", "-E", "--", gen.LIBRARY_DELETE_ASKED], input=line, capture_output=True,
+                               text=True, encoding="utf-8").returncode == 0
+        assert found is hit, line
 
 
 def test_n710b_passes_only_when_yes_became_a_confirmed_delete():
@@ -658,9 +687,12 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
-    ("src/rob_box_dialog/rob_box_dialog/execute.py",
-     "f\"📨 [execute] событие {request.tool if request else '?'} {event.ref} {event.status} \""),
-    ("src/rob_box_dialog/rob_box_dialog/execute.py", "f\"{event.reason or '-'} ход_ждёт="),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
+     'f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
+     'question = f"Удалить «{title}»? Скажи «да, удаляй»." if title else "Удалить этот трек? Скажи «да, удаляй»."'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
+     "return _refused(NEEDS_CONFIRMATION, question, track_id=track_id, title=title, question=question)"),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py", 'NEEDS_CONFIRMATION = "needs_confirmation"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
      'confirm is True or str(confirm).lower() == "true"'),
