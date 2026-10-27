@@ -24,13 +24,14 @@ import re
 from datetime import datetime
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
-#: Бюджет eq-файла в окне VAD: ``speech_max_duration`` 15.0 с минус накладка 2.5 с (дефолты ``run_step``; синхронность
-#: с ``audio_node.yaml`` держит ``scripts/testing/test_e2e_scenario_playable.sh``).
+#: Бюджет eq-файла в окне VAD: ``speech_max_duration`` 15.0 с минус накладка 2.5 с (дефолты ``run_step``). Равенство
+#: ``audio_node.yaml`` и харнессу держит CHECK 1 ``scripts/testing/test_e2e_scenario_playable.sh`` (``G-Run Tests``):
+#: поменяли окно в yaml или накладку в харнессе -- гард краснеет, пока не поправят это число.
 VAD_BUDGET_S = 12.5
 #: Замер выше -- красный: запас меньше 0.5 с, а повторный синтез на холодном кэше может чуть растянуть фразу.
-EQ_ERROR_S = 12.0
+EQ_ERROR_S = VAD_BUDGET_S - 0.5
 #: Замер выше -- предупреждение (запас меньше 1 с, как ``⚠️ запас < 1s`` харнесса); оценка без замера выше -- красная.
-EQ_TIGHT_S = 11.5
+EQ_TIGHT_S = VAD_BUDGET_S - 1.0
 
 #: Секунд eq-файла (adelay 1.5 с + речь) на символ: худший темп голоса среди фраз >= 55 символов прогона 27.10
 #: (MiniMax, ``tts_provider=minimax``), округлён вверх. anton -- n607 (0.163), ermil -- n706 (0.118), zahar -- n709

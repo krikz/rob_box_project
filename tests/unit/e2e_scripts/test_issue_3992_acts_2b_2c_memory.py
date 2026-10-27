@@ -426,6 +426,18 @@ def test_n722_second_profile_on_same_voice_is_red():
     assert not _judge(step, only_fact)[0]["pass"], "факт-имя больше не пишется (имя живёт в записи голоса)"
 
 
+@pytest.mark.parametrize(
+    "said", ["Приятно познакомиться, Тамара!", "Очень приятно, давай познакомимся, Тамара.", "Рада знакомству, Тамара."]
+)
+def test_n722_pleased_to_meet_you_is_not_the_phrase_we_are_acquainted(said):
+    """Ревью PR #4105: стем «знаком» сидит в «познакомиться» -- при строке переименования ответ «Приятно познакомиться»
+    (код фразу «мы знакомы» не сказал) давал PASS. Нужна фраза «мы знакомы / уже знакомы / голос знакомый»."""
+    step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
+    verdict, missing = _judge(step, _verdict("Нина", 0.93) + _register_call("Тамара") + RENAMED + _tts(said))
+    assert missing == [], "строка переименования на месте"
+    assert not verdict["pass"] and "знаком" in verdict["reason"], said
+
+
 def test_n722_rename_line_is_required_not_just_the_phrase():
     """Фраза «мы знакомы» без строки переименования (робот просто сказал, ничего не сделав) — красный."""
     step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]

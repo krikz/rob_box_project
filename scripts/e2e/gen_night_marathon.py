@@ -252,6 +252,14 @@ SILENCE_CLAIM = "тишин|ничего не играет|не играет|н�
 PLAYING_ANSWER = "играет|играю|звучит|звучат|крутится|крутим|идёт|идет|bpm|темп|ритм|бит|рок|трек|мелоди"
 #: «Музыка выключена» -- ответ на n1005 в формулировке вопроса.
 SILENCE_OR_OFF_ANSWER = SILENCE_ANSWER + "|выключен"
+#: Честный ответ n1002 «тех, кто не представился, по именам не знаю»: подстроки РЕЧИ. Слов вопроса здесь нет нарочно
+#: («не представил», «по именам знаю»): эхо вопроса не доказательство, а голое «не знаю» засчитывало бы и «не знаю, о ком
+#: ты». Отрицание привязано к именам, «ё»/«е» -- обе формы (STT и LLM пишут по-разному).
+NAMES_UNKNOWN_ANSWER = (
+    "незнаком|не назвал|неопознан|без имён|без имен"
+    "|по именам не знаю|по имени не знаю|не знаю по имен|не знаю их по имен"
+    "|не знаю их имён|не знаю их имен|имён не знаю|имен не знаю"
+)
 #: Зонд утечки истории после «новой сессии» (n1007, R20): стемы фраз ОКНА разговора, которых нет в долгой памяти --
 #: вопрос акта 10 до сброса (n1002 «по именам») и темы акта 9 (n907 космос, n909 китайский). Факты памяти (енот,
 #: Спартак, лук, чай) сюда не входят: после сброса они законно приходят из memory_search; вопрос n1001 -- про память,
@@ -2179,12 +2187,14 @@ act(
         step(
             "n1002_unknown_still_unknown",
             "Робот, а тех, кто не представился, ты по именам знаешь?",
-            keywords=["незнаком|не назвал|не представил|неопознан|без имён|без имен"],
+            keywords=[NAMES_UNKNOWN_ANSWER],
             why="Честность про неопознанных. Робот не должен задним числом "
             "выдумывать им имена. Разбор 26.10 (R20, робот 23:12:16): честный ответ «не назвались / "
             "неопознанными / без имён» краснел на узком regex -- стемы расширены. #4077 П3: прежний вопрос ссылался "
             "на акт 3 («те двое, что ворчали на фоне»), вне окна диалога, а «не знаю» засчитывало и «не знаю, о ком "
-            "ты» -- шаг был зелёным без доказательства сути; «не знаю» убрано из стемов.",
+            "ты» -- шаг был зелёным без доказательства сути; голое «не знаю» убрано, остались отрицания, привязанные "
+            "к именам («по именам не знаю»). Ревью PR #4105: стем «не представил» стоял и в самом вопросе, поэтому "
+            "эхо «тех, кто не представился, я знаю по именам: Гриша и Валера» давало PASS -- слов вопроса в стемах нет.",
         ),
         step(
             "n1003_memory_search_food",
@@ -2393,17 +2403,24 @@ def _dump(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
-def _manual_steps() -> List[Dict[str, Any]]:
-    """Шаги рукописных актов 2b/2c с диска: их нет в SSoT, но реплики играет тот же харнесс в то же окно VAD."""
+def _read_manual_acts() -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Шаги рукописных актов 2b/2c с диска и имена файлов, которые прочитать не вышло. Шагов нет в SSoT, но реплики
+    играет тот же харнесс в то же окно VAD; нечитаемый файл молча терял их из ``--check`` (его называет ``check()``)."""
     out: List[Dict[str, Any]] = []
+    unreadable: List[str] = []
     for m in MANUAL_ACTS:
-        path = os.path.join(OUT_DIR, "night_marathon_" + m["slug"] + "_v1.json")
+        name = "night_marathon_" + m["slug"] + "_v1.json"
         try:
-            with open(path, encoding="utf-8") as fh:
-                out.extend(s for s in json.load(fh).get("steps", []) if isinstance(s, dict))
-        except (OSError, ValueError):
-            continue
-    return out
+            with open(os.path.join(OUT_DIR, name), encoding="utf-8") as fh:
+                steps = json.load(fh)["steps"]
+            out.extend(s for s in steps if isinstance(s, dict))
+        except (OSError, ValueError, KeyError, TypeError):
+            unreadable.append(name)
+    return out, unreadable
+
+
+def _manual_steps() -> List[Dict[str, Any]]:
+    return _read_manual_acts()[0]
 
 
 def phrases() -> Dict[str, Tuple[str, str]]:
@@ -2419,19 +2436,26 @@ def phrase_report() -> Tuple[List[pb.Verdict], List[pb.Verdict]]:
     return [v for v in verdicts if v.level == pb.TOO_LONG], [v for v in verdicts if v.level == pb.TIGHT]
 
 
-def check() -> int:
-    """``--check``: JSON на диске == то, что соберёт генератор, и каждая реплика влезает в окно VAD робота
-    (``phrase_budget``, #4077 П2). 0 -- всё в порядке, 1 -- расходятся файлы или есть слишком длинная реплика."""
+def _stale_files() -> List[str]:
+    """Файлы, которые генератор собрал бы иначе, чем они лежат на диске (нет файла -- тоже устарел)."""
     stale: List[str] = []
     for name, payload in build().items():
-        path = os.path.join(OUT_DIR, name)
         try:
-            with open(path, encoding="utf-8", newline="") as fh:
+            with open(os.path.join(OUT_DIR, name), encoding="utf-8", newline="") as fh:
                 on_disk = fh.read().replace("\r\n", "\n")
         except OSError:
             on_disk = None
         if on_disk != _dump(payload):
             stale.append(name)
+    return stale
+
+
+def check() -> int:
+    """``--check``: JSON на диске == то, что соберёт генератор, рукописные акты 2b/2c читаются и каждая реплика влезает
+    в окно VAD робота (``phrase_budget``, #4077 П2). 0 -- всё в порядке, 1 -- расходятся файлы, акт не читается или
+    есть слишком длинная реплика."""
+    stale = _stale_files()
+    unreadable = _read_manual_acts()[1]
     red, tight = phrase_report()
     for v in tight:
         print("  ⚠️ тугая реплика (запас < %g с): %s" % (pb.VAD_BUDGET_S - pb.EQ_TIGHT_S, v.describe()))
@@ -2440,12 +2464,16 @@ def check() -> int:
               "(перегенерируйте: py -3 scripts/e2e/gen_night_marathon.py):")
         for name in stale:
             print("  - " + name)
+    if unreadable:
+        print("Рукописные акты не читаются (их реплик --check не видит):")
+        for name in unreadable:
+            print("  - " + name)
     if red:
         print("Реплики не влезают в окно VAD робота (бюджет %g с; замер выше %g с либо оценка без замера выше %g с):"
               % (pb.VAD_BUDGET_S, pb.EQ_ERROR_S, pb.EQ_TIGHT_S))
         for v in red:
             print("  - " + v.describe() + " (до %d симв без замера)" % pb.char_limit(v.voice))
-    if stale or red:
+    if stale or red or unreadable:
         return 1
     print("JSON актуальны (%d файлов), реплик в окне VAD: %d" % (len(build()), len(phrases())))
     return 0
@@ -2488,7 +2516,19 @@ def emit() -> None:
     print("out:  %s" % OUT_DIR)
 
 
+def _utf8_console() -> None:
+    """Консоль Windows-хоста -- cp1252 (``PYTHONUTF8`` не задан): ``print()`` кириллицы и эмодзи падал
+    ``UnicodeEncodeError``, а раннер марафона звал ``--check`` и принимал падение за красный сценарий. Вывод CLI
+    всегда UTF-8, как у питон-блока раннера и у ``test_e2e_scenario_playable.sh``."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 if __name__ == "__main__":
+    _utf8_console()
     if "--check" in sys.argv[1:]:
         raise SystemExit(check())
     if "--learn" in sys.argv[1:]:

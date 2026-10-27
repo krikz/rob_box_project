@@ -176,7 +176,12 @@ done
 # n702 -- и шесть шагов про несуществующую песню следом). `--check` генератора сверяет длину каждой реплики с замером
 # (scripts/e2e/phrase_eq_measured.json) или оценкой по голосу и JSON на диске с генератором. Раннер локальный: REF не
 # обновляет скрипт и сценарии, проверяется ваш чекаут (ff develop перед стартом). Красный -- марафон не стартует.
-if ! gen_check="$("$PY" "$SCRIPT_DIR/gen_night_marathon.py" --check 2>&1)"; then
+# Вывод генератора -- кириллица и эмодзи: кодировку консоли (cp1252 на Windows без PYTHONUTF8) он ставит сам; \r от
+# print() Windows срезаем, как у плана выше.
+gen_rc=0
+gen_check="$("$PY" "$SCRIPT_DIR/gen_night_marathon.py" --check 2>&1)" || gen_rc=$?
+gen_check="${gen_check//$'\r'/}"
+if [ "$gen_rc" -ne 0 ]; then
     printf '%s\n' "$gen_check" >&2
     echo "FATAL: сценарий марафона не прошёл gen_night_marathon.py --check (реплика не влезает в окно VAD или JSON устарел) -- не стартую" >&2
     exit 2

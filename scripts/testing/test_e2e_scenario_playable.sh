@@ -92,6 +92,9 @@ def harness_default(text, var):
     m = re.search(rf'^\s*{re.escape(var)}="\$\{{{re.escape(var)}:-([0-9.]+)\}}"', text, re.M)
     return float(m.group(1)) if m else None
 
+sys.path.insert(0, str(repo / "scripts" / "e2e"))
+import phrase_budget as pb  # noqa: E402
+
 cfg_max = yaml_float(config_text, "speech_max_duration")
 if cfg_max is None:
     fails.append("audio_node.yaml: не нашёл speech_max_duration — гард не может знать лимит")
@@ -116,6 +119,16 @@ if h_ovh is None:
 else:
     print(f"  ✅ VAD-накладка {h_ovh}s задана явно")
 overhead = h_ovh if h_ovh is not None else 2.5
+# Бюджет реплики ночного марафона (phrase_budget.py) -- то же окно, а не отдельное число: пороги EQ_ERROR_S/EQ_TIGHT_S
+# выводятся из него.
+if abs(pb.VAD_BUDGET_S - (cfg_max - overhead)) > 1e-9:
+    fails.append(
+        f"рассинхрон бюджета: scripts/e2e/phrase_budget.py держит VAD_BUDGET_S={pb.VAD_BUDGET_S}, а окно робота "
+        f"speech_max_duration={cfg_max} минус накладка харнесса {overhead} даёт {cfg_max - overhead}. "
+        "Поправь VAD_BUDGET_S (пороги замера выводятся из него)."
+    )
+else:
+    print(f"  ✅ бюджет реплики марафона VAD_BUDGET_S={pb.VAD_BUDGET_S}s = {cfg_max}s - {overhead}s")
 
 # --- CHECK 2: adelay в EQ совпадает с моделью ------------------------------
 print("CHECK 2: adelay в EQ-фильтре совпадает с моделью оценки")
@@ -141,9 +154,6 @@ scenarios = sorted(
 )
 if not scenarios:
     fails.append("не нашёл ни одного сценария — тест сломан?")
-
-sys.path.insert(0, str(repo / "scripts" / "e2e"))
-import phrase_budget as pb  # noqa: E402
 
 phrase_store = pb.load_store(str(repo / "scripts" / "e2e" / "phrase_eq_measured.json"))
 night_dir = repo / ".github" / "e2e" / "scenarios" / "night"

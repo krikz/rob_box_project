@@ -14,12 +14,23 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+
+from tests.unit.e2e_scripts.test_issue_2890_act_isolation import (
+    BASH,
+    _bash_path,
+    _require_bash_sees,
+    bash_required,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 NIGHT = ROOT / ".github" / "e2e" / "scenarios" / "night"
@@ -382,9 +393,14 @@ def test_n1001_n1002_n1008_phrases_are_short_and_do_not_contain_their_own_answer
     ):
         text = steps[label]["text"].lower()
         assert len(text) <= 60 and not any(a in text for a in answer), label
-    assert steps["n1002_unknown_still_unknown"]["acceptance"]["expected_keywords"] == [
-        "незнаком|не назвал|не представил|неопознан|без имён|без имен"
-    ], "«не знаю» засчитывало «не знаю, о ком ты»"
+    alternatives = steps["n1002_unknown_still_unknown"]["acceptance"][
+        "expected_keywords"
+    ][0].split("|")
+    assert alternatives == gen.NAMES_UNKNOWN_ANSWER.split("|")
+    assert "не знаю" not in alternatives, "«не знаю» засчитывало «не знаю, о ком ты»"
+    assert (
+        "не представил" not in alternatives
+    ), "слово вопроса -- эхо вопроса (ревью PR #4105)"
 
 
 # ── акт 5: n502/n504/n506 ───────────────────────────────────────────────────────────────────────────────────
@@ -521,3 +537,222 @@ def test_runner_checks_the_scenario_before_the_dry_run_exit_and_any_dispatch():
     assert (
         "exit 2" in src[check : check + 700]
     ), "красный --check -- марафон не стартует"
+
+
+# ── n1002: вопрос не содержит собственного ответа (ревью PR #4105, круг 2) ──────────────────────────────────
+
+
+def _speech_log(said: str) -> str:
+    return "\n".join(
+        [
+            _tts(said),
+            "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=20",
+            DONE,
+        ]
+    )
+
+
+def test_no_keyword_alternative_of_the_act10_questions_is_in_the_question_itself():
+    """Слово вопроса в ``expected_keywords`` засчитывает эхо вопроса: 'не представил' стояло в стемах n1002, а вопрос
+    -- 'тех, кто не представился' (ревью PR #4105: 'Тех, кто не представился, я знаю по именам: Гриша и Валера.' -- PASS).
+    """
+    steps = _steps()
+    for label in (
+        "n1001_recall_night",
+        "n1002_unknown_still_unknown",
+        "n1008_memory_survives_reset",
+    ):
+        question = steps[label]["text"].lower()
+        for group in steps[label]["acceptance"]["expected_keywords"]:
+            for alt in group.lower().split("|"):
+                assert alt.strip() not in question, (label, alt)
+
+
+@pytest.mark.parametrize(
+    "said, ok",
+    [
+        # эхо вопроса и ложь про имена -- красные (ревью PR #4105, дословно)
+        ("Тех, кто не представился, я знаю по именам: Гриша и Валера.", False),
+        ("Да, знаю: тех, кто не представился, зовут Гриша и Валера.", False),
+        ("Не знаю, о ком ты.", False),
+        ("Не знаю, но по именам знаю Гришу.", False),
+        # честное «по именам не знаю» -- зелёное
+        ("Нет, по именам не знаю.", True),
+        ("Тех, кто не представился, я по именам не знаю.", True),
+        ("Нет, не знаю их по именам.", True),
+        ("Нет, имён не знаю, они не называли.", True),
+        ("Нет, имен не знаю.", True),
+        ("Нет, они не назвались.", True),
+        ("Это незнакомые мне люди, без имён.", True),
+    ],
+)
+def test_n1002_echo_of_the_question_is_red_and_honest_ignorance_of_names_is_green(
+    said, ok
+):
+    assert (
+        _verdict("n1002_unknown_still_unknown", _speech_log(said))["pass"] is ok
+    ), said
+
+
+# ── консоль Windows (cp1252): раннер локальный (ревью PR #4105, круг 2) ──────────────────────────────────────
+
+#: Консоль Windows по умолчанию: stdout в cp1252, режим UTF-8 выключен. CI (Linux) этого не видит -- задаём явно.
+CP1252_CONSOLE = {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}
+
+
+def _cp1252_env() -> Dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in CP1252_CONSOLE}
+    env.update(CP1252_CONSOLE)
+    return env
+
+
+def _marathon_tree(tmp_path: Path) -> Path:
+    """Копия генератора и сценариев ночи: писать и портить их можно, не трогая рабочее дерево."""
+    tree = tmp_path / "repo"
+    shutil.copytree(
+        ROOT / "scripts" / "e2e",
+        tree / "scripts" / "e2e",
+        ignore=shutil.ignore_patterns("tests", "__pycache__"),
+    )
+    shutil.copytree(NIGHT, tree / ".github" / "e2e" / "scenarios" / "night")
+    return tree
+
+
+def _run_generator(tree: Path, *args: str):
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(tree / "scripts" / "e2e" / "gen_night_marathon.py"),
+            *args,
+        ],
+        capture_output=True,
+        env=_cp1252_env(),
+        timeout=120,
+    )
+    return (
+        proc.returncode,
+        proc.stdout.decode("utf-8", errors="replace"),
+        proc.stderr.decode("utf-8", errors="replace"),
+    )
+
+
+def test_generator_check_prints_cyrillic_and_emoji_on_a_cp1252_console():
+    """Раннер зовёт ``--check`` на Windows-хосте без PYTHONUTF8: print() кириллицы и эмодзи падал UnicodeEncodeError,
+    и раннер говорил 'сценарий не прошёл --check' про годный сценарий."""
+    code, out, err = _run_generator(ROOT, "--check")
+    assert code == 0, err[-1500:]
+    assert "JSON актуальны" in out and "UnicodeEncodeError" not in err
+
+
+def test_generator_emit_and_learn_print_on_a_cp1252_console_too(tmp_path):
+    tree = _marathon_tree(tmp_path)
+    for args, marker in (((), "рукописных"), (("--learn",), "замеров в словаре")):
+        code, out, err = _run_generator(tree, *args)
+        assert code == 0 and marker in out, (args, err[-1500:])
+
+
+def _runner_env(tmp_path: Path, **extra: str) -> Dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "SKIP_SENTINEL": "1",
+        "POLL_SEC": "0",
+        "DISPATCH_WAIT_SEC": "0",
+        "MAX_WAIT": "5",
+        "REPORT": _bash_path(tmp_path / "report"),
+        "PY_BIN": _bash_path(Path(sys.executable)),
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+    }
+    env.update(extra)
+    return env
+
+
+@bash_required
+def test_runner_dry_run_starts_on_a_cp1252_host(tmp_path):
+    """Тот же раннер, что у координатора: DRY_RUN доходит до конца, строка --check -- в журнале раннера."""
+    _require_bash_sees(tmp_path)
+    runner = ROOT / "scripts" / "e2e" / "run_night_marathon.sh"
+    proc = subprocess.run(
+        [BASH, _bash_path(runner)],
+        capture_output=True,
+        timeout=120,
+        env=_runner_env(tmp_path, DRY_RUN="1", ACTS="1", **CP1252_CONSOLE),
+    )
+    out = proc.stdout.decode(
+        "utf-8", errors="replace"
+    )  # байты как есть: text=True съел бы \r
+    assert proc.returncode == 0, out + proc.stderr.decode("utf-8", errors="replace")
+    assert "gen --check: JSON актуальны" in out and "DRY_RUN=1" in out
+    assert (
+        b"\r" not in proc.stdout
+    ), "хвост \\r от print() Windows прилипал к строкам журнала раннера"
+
+
+def _break_scenario(tree: Path, how: str) -> None:
+    night = tree / ".github" / "e2e" / "scenarios" / "night"
+    if how == "stale_json":
+        victim = next(night.glob("night_marathon_act1_*_v1.json"))
+        with open(victim, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n")
+    elif how == "phrase_over_the_window":
+        victim = night / "night_marathon_act2b_identity_question_v1.json"
+        data = json.loads(victim.read_text(encoding="utf-8"))
+        step = next(
+            s for s in data["steps"] if s["label"] == "n701_sasha_back_recognized"
+        )
+        step["text"] = "Робот, " + "очень длинная реплика " * 6
+        with open(victim, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    else:
+        victim = night / "night_marathon_act2c_voice_conflict_question_v1.json"
+        victim.write_text("{ не json", encoding="utf-8")
+
+
+@bash_required
+@pytest.mark.parametrize(
+    "how", ["stale_json", "phrase_over_the_window", "unreadable_hand_written_act"]
+)
+def test_runner_does_not_start_and_dispatches_nothing_when_check_is_red(tmp_path, how):
+    """Красный ``--check`` -- ``exit 2`` до первого ``gh workflow run``, а не просто строка в тексте скрипта."""
+    _require_bash_sees(tmp_path)
+    tree = _marathon_tree(tmp_path)
+    _break_scenario(tree, how)
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    gh = fake_dir / "gh"
+    gh.write_text(
+        '#!/usr/bin/env bash\necho "$@" >> "$FAKE_GH_LOG"\nexit 0\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+    gh_log = tmp_path / "gh.log"
+    env = _runner_env(
+        tmp_path, ACTS="1", FAKE_GH_LOG=_bash_path(gh_log), **CP1252_CONSOLE
+    )
+    env["PATH"] = f"{_bash_path(fake_dir)}{os.pathsep}{env['PATH']}"
+    proc = subprocess.run(
+        [BASH, _bash_path(tree / "scripts" / "e2e" / "run_night_marathon.sh")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        env=env,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "FATAL: сценарий марафона не прошёл" in proc.stderr
+    assert (
+        not gh_log.exists() or not gh_log.read_text(encoding="utf-8").strip()
+    ), "до диспатча не дошло"
+    assert (
+        "UnicodeEncodeError" not in proc.stderr
+    ), "красный по делу, а не по кодировке консоли"
+
+
+def test_check_names_the_hand_written_act_it_cannot_read(tmp_path):
+    """``_manual_steps()`` молча глотал нечитаемый JSON 2b/2c: ``--check`` не видел их реплик и говорил 'всё в порядке'."""
+    tree = _marathon_tree(tmp_path)
+    _break_scenario(tree, "unreadable_hand_written_act")
+    code, out, err = _run_generator(tree, "--check")
+    assert code == 1, out + err
+    assert "night_marathon_act2c_voice_conflict_question_v1.json" in out
