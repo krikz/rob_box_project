@@ -27,8 +27,7 @@ from rob_box_voice.core import perform_ask
 from rob_box_voice.core.command_parser import Command, IntentType
 from rob_box_voice.core.media_router import DJ_SET_TOOL, MediaToolCall
 from rob_box_voice.core.stop_chooser import STOP
-from rob_box_voice.core.turn_context import tts_state
-from rob_box_voice.tts_voice_registry import VOICE_METADATA, voices_for
+from rob_box_voice.core.turn_context import tts_voices
 
 if TYPE_CHECKING:  # pragma: no cover
     from rob_box_voice.core.stt_admission import SttContext
@@ -67,9 +66,7 @@ class Tier1Runner:
             pending_ask=perform_ask.ASK if perform_ask.window(node) is not None else None)
 
     def voices(self) -> list:
-        provider, _ = tts_state(self._node)
-        return [(vid, VOICE_METADATA.get(f"{provider}:{vid}", {}).get("display_name", vid))
-                for vid in voices_for(provider)]
+        return tts_voices(self._node)
 
     def match(self, ctx: "SttContext") -> Optional[Tier1Command]:
         """Tier-1 команда реплики или ``None`` (дальше медиа-грамматика / LLM)."""

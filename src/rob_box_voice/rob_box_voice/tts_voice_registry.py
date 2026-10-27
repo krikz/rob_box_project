@@ -243,6 +243,14 @@ def voices_for(provider: str) -> list[str]:
     return list(PROVIDER_VOICES.get(provider, []))
 
 
+def named_voices_for(provider: str) -> list[tuple[str, str]]:
+    """``(voice_id, display_name)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос в реестре
+    (``rob_box_dialog.grammar``, #4086). Имя - русское ``display_name`` из ``VOICE_METADATA``, нет записи - сам id.
+    Одно знание для v1 (``tier1_host``) и v2 (``dialog_node``); провайдер неизвестен - пустой список."""
+    return [(vid, (VOICE_METADATA.get(f"{provider}:{vid}") or {}).get("display_name", vid))
+            for vid in voices_for(provider)]
+
+
 def known_provider(name: object) -> str:
     """Провайдер синтеза из каталога (``yandex``/``minimax``/``silero``); не провайдер - ``""``.
 
