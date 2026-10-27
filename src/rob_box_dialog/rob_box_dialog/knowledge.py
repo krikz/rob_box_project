@@ -1523,9 +1523,9 @@ PASSED: Tuple[str, ...] = ("not_addressed", "nothing_to_say", "unclear")
 #: голосе в этой реплике (группа ``TOOL_GROUPS_EXPLICIT`` или названный голос: n109 23.10, DeepSeek сам включил
 #: female-shaonv).
 FORM_FIELDS: Tuple[str, ...] = ("passed", "voice")
-#: Символы, которых в тексте речи не бывает: U+FFFD - битый UTF-8 в ответе провайдера (n105 23.10: «Остально�� в
+#: Символы, которых в тексте речи не бывает: U+FFFD - битый UTF-8 в ответе провайдера (n105 23.10: «Остально<U+FFFD×2> в
 #: порядке» ушло в TTS). Разбор команды их вырезает (``command._clean``), вырезанное - в ``fields_dropped``.
-SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("�",)
+SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("\ufffd",)
 #: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
 #: structured_output/JSON-режима и для JSON в тексте.
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")

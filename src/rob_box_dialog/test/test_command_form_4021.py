@@ -3,7 +3,7 @@
 * n813 «Робот, тишина?» → DeepSeek ``{passed: not_addressed}`` → «Хм, я задумался…»: на адресованную реплику в схеме
   нет ``passed`` (только подхват бэклога), прислала — нарушение моста и повтор;
 * n109 вопрос про звуки → DeepSeek сам добавил ``voice: female-shaonv``: голос реплики — только по просьбе о голосе;
-* n105 «Остально�� в порядке» ушло в TTS: U+FFFD вырезается разбором;
+* n105 «Остально<U+FFFD×2> в порядке» ушло в TTS: U+FFFD вырезается разбором;
 * ревью #4041: одна ``expression`` с одним earcon на вопрос — тоже «ответ без слов»; фраза кода после повтора
   ``silent_answer`` — без ``sad``.
 """
@@ -26,7 +26,7 @@ ALL = [t.name for t in TOOL_CATALOG]
 ADDRESSED = Form(passed=False, voice=False)  # адресованная реплика без просьбы о голосе
 N813 = "тишина"  # текст хода n813 после вейка (22:55:19.87 STT «робот тишина»)
 N109 = "а какие звуки ты умеешь играть"  # вопрос про звуки, голос не просили
-N105_SPEECH = "Остально�� в порядке"  # 21:11:01.576
+N105_SPEECH = "Остально\ufffd\ufffd в порядке"  # 21:11:01.576
 
 
 # -- форма: схема хода ---------------------------------------------------------------------------------------
@@ -129,11 +129,11 @@ def test_voice_named_from_the_registry_opens_the_voice_and_pace_under_music_does
 def test_n105_replacement_chars_are_cut_from_speech_ask_and_segments():
     cmd = parse({"speech": N105_SPEECH})
     assert cmd.speech == "Остально в порядке" and cmd.dropped == ("speech.U+FFFD",)
-    ask = parse({"ask": {"expects": "free", "text": "Как� дела?"}})
+    ask = parse({"ask": {"expects": "free", "text": "Как\ufffd дела?"}})
     assert ask.ask.text == "Как дела?" and ask.dropped == ("ask.text.U+FFFD",)
-    perf = parse({"perform": {"kind": "poem", "segments": ["Раз�", "два"]}})
+    perf = parse({"perform": {"kind": "poem", "segments": ["Раз\ufffd", "два"]}})
     assert perf.perform.segments == ("Раз", "два") and perf.dropped == ("perform.segments[0].U+FFFD",)
-    assert parse({"speech": "��"}).speech is None, "одни битые символы — речи нет"
+    assert parse({"speech": "\ufffd\ufffd"}).speech is None, "одни битые символы — речи нет"
     clean = parse({"speech": "Всё в порядке"})
     assert clean.speech == "Всё в порядке" and clean.dropped == ()
 
