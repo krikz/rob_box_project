@@ -28,10 +28,11 @@ from rob_box_voice.core.track_start_guard import TrackStartGuard, refusal_conten
 
 _LOG = logging.getLogger(__name__)
 SPEAK_TOOL = kn.SPEECH_CHANNEL_TOOLS[0]
-#: Запуск музыки во время выступления без бита — его бит (#993, ADR-0150 §5.6.4): клубный трек или бит; мелодия по
-#: названию («включи Калинку») — своя музыка, а не бит выступления.
+#: Тул подложки выступления: ``intent=backing`` заказывает только код выступления (:func:`_code_only_refusal`). Музыка,
+#: которую человек заказал этим тулом во время выступления, — его музыка, а не бит выступления: исполняется как
+#: просил (настроение, движок, длина) и концом выступления не снимается (#4085). Бит к идущему выступлению — команда
+#: выступления ``perform{backing}`` без куплетов (#993, A22), его ставит хост выступления.
 BACKING_TOOL = "request_music"
-BACKING_INTENTS = ("track",)
 #: Тул вне таблицы классов (служебный, транспорт) идёт без допуска: ресурсов он не занимает.
 _NO_PLAN = "query"
 
@@ -135,11 +136,6 @@ class PlanToolExecutor:
             why = "library phrase by code" if library else "piece phrase by code" if piece else "launch failed"
             _LOG.warning(f"music turn: speak_text refused — {why}")
             return ToolResult(tool_call_id=call.id, content=speech_refusal_content(piece, library), is_error=True)
-        beat = call.name == BACKING_TOOL and (call.arguments or {}).get("intent") in BACKING_INTENTS
-        if beat and self.performer is not None and self.performer.add_backing():
-            # #993: «добавь бит» во время чтения без бита — бит выступления (на такте, речь не рвётся), а не трек поверх
-            return ToolResult(tool_call_id=call.id, content="бит выступления заказан",
-                              data={"status": "done", "backing": True})
         if _plan_kind(call.name) != _NO_PLAN:
             admission = await self.planner.admit(call.name, call.id)
             if admission.status != "go":

@@ -139,7 +139,7 @@ def test_backing_silent_six_seconds_then_timeout_phrase_and_late_start_is_stoppe
     sim.run(kn.PERFORM_BACKING_START_S + 0.05)
     assert MusicStop("now", "backing_timeout") in sim.music_stops()  # поздний старт снимается заранее
     sim.run(2.0)
-    sim.music_event("started", "late", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
+    sim.backing_outcome("started", "late", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
     assert sim.music_stops()[-1] == MusicStop("now", "backing_late")
     sim.run(300)
     assert sim.heard[0].key == "perform.no_backing.timeout"
@@ -393,6 +393,73 @@ def test_993_add_beat_during_reading_next_segment_on_the_bar_speech_not_cut():
     assert all(on_bar(sim, h.start) for h in heard[1:])
     assert sim.music_stops() == [MusicStop("bar", "perform_end")]
     assert sim.block.add_backing("beat", sim.t) == []  # выступления уже нет
+
+
+# --- #4085: выступление снимает только свою подложку ---------------------------------------------------------------
+
+def test_4085_music_ordered_during_a_beatless_performance_is_not_stopped_at_its_end():
+    """Прослушивание PR-14 27.10: сказка без бита, человек посреди неё: «поставь фоном спокойный бит на Ренардо» —
+    трек встал (событие плеера), сказка дочитана — конец выступления его не снимает: это музыка человека."""
+    sim = Sim(rap(backing="none"))
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    sim.music_event("started", "req11344:02:A", {"bpm": 136.0, "beat_at": sim.t, "bar_beats": 4})
+    sim.run(300)
+    assert sim.block.ended and sim.block.end_reason == "done"
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
+    assert sim.music_stops() == [] and sim.block.backing.state == "none" and sim.block.backing.track_id == ""
+    assert not any(e.synced for e in sim.events("segment_started"))  # чужой трек — не наша сетка тактов
+
+
+def test_4085_enough_reading_keep_music_over_a_beatless_performance_stops_no_music():
+    """«Хватит читать, а музыку оставь» (``stop`` с ``keep_backing``) над чтением поверх чужой музыки: речь снята,
+    стопа музыки нет."""
+    sim = Sim(rap(backing="none"))
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 1)
+    sim.music_event("started", "person", {"bpm": 120.0, "beat_at": sim.t, "bar_beats": 4})
+    sim.apply(sim.block.stop(sim.t, keep_backing=True))
+    sim.run(300)
+    assert sim.block.ended and sim.block.end_reason == "stopped" and len(sim.segments_heard()) == 1
+    assert sim.music_stops() == []
+
+
+def test_4085_foreign_track_while_the_beat_is_requested_is_not_adopted():
+    """Бит выступления ещё не встал, а плеер сообщил о чужом треке: id неизвестен, но это не исход нашего запроса —
+    не наш; наш встаёт по ответу тула, его и снимает outro."""
+    sim = Sim(rap(), music_delay_s=3.0)
+    sim.start()
+    sim.run(1.0)
+    sim.music_event("started", "person", {"bpm": 90.0, "beat_at": sim.t, "bar_beats": 4})
+    assert sim.block.backing.state == "requested" and sim.block.backing.track_id == ""
+    sim.run(300)
+    assert sim.block.backing.track_id == "trk1"
+    assert sim.music_stops() == [MusicStop("bar", "perform_end")]
+
+
+def test_4085_foreign_track_after_the_beat_timed_out_is_not_stopped_as_late():
+    """После отказа бита по сроку недолго ждём его поздний ``started`` (снять). Чужой трек в это окно — событие
+    плеера, не исход нашего запроса: «поздним битом» он не считается и не снимается."""
+    sim = Sim(rap(), music=("silent",))
+    sim.start()
+    sim.run(kn.PERFORM_BACKING_START_S + 0.05)
+    stops = list(sim.music_stops())
+    sim.run(1.0)
+    sim.music_event("started", "person", {"bpm": 120, "beat_at": sim.t, "bar_beats": 4})
+    sim.run(300)
+    assert sim.music_stops() == stops == [MusicStop("now", "backing_timeout")]
+
+
+def test_4085_person_track_replacing_the_beat_is_not_stopped_at_the_end():
+    """Свой бит играл, человек поставил другой трек (деку заняла другая музыка): тактов больше нет, конец выступления
+    чужой трек не снимает."""
+    sim = Sim(rap())
+    sim.start()
+    sim.run(200, stop=lambda: sim.active_no() == 2)
+    sim.music_event("started", "person", {"bpm": 90.0, "beat_at": sim.t, "bar_beats": 4})
+    sim.run(300)
+    assert sim.block.backing.state == "ended" and sim.music_stops() == []
+    assert [e.synced for e in sim.events("segment_started")][2:] == [False] * 4
 
 
 # --- подложка: продление и конец -----------------------------------------------------------------------------------

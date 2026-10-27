@@ -3,8 +3,9 @@
 * речь — как tts_node (PR-3): ``commit=false`` → ``synthesized{duration_ms}`` через ``synth_s``; ``commit=true`` —
   очередь FIFO, реплика звучит не раньше ``at`` (ждёт ``at − output_latency``), ``started`` → ``finished`` через
   длительность; отмена по ``speech_id``: не начатая — сразу, звучащая с ``sentence`` — на конце предложения;
-* музыка — как ``PlayerOwner``: исход запроса подложки по сценарию попыток (``ok``/``rejected:<reason>``/``silent``),
-  ``started{bpm, beat_at, bar_beats, start_beat}``; ``MusicStop`` записывается.
+* музыка — как ``PlayerOwner``: исход запроса подложки по сценарию попыток (``ok``/``rejected:<reason>``/``silent``)
+  приходит ответом тула (:meth:`Sim.backing_outcome` → ``PerformBlock.on_backing``), ``started{bpm, beat_at,
+  bar_beats, start_beat}``; события плеера о любой музыке — :meth:`Sim.music_event`; ``MusicStop`` записывается.
 
 Хост — :meth:`Sim.apply`: эффекты блока → фейковые владельцы; события владельцев → блок; таймер блока — 0.1 с.
 """
@@ -121,7 +122,12 @@ class Sim:
         self.apply(self.block.on_speech(kind, speech_id, self.t, **kw))
 
     def music_event(self, kind: str, track_id: Optional[str], fields=None) -> None:
+        """Событие плеера из топика — о любой музыке (своя подложка узнаётся только по её ``track_id``)."""
         self.apply(self.block.on_music(kind, track_id, self.t, fields or {}))
+
+    def backing_outcome(self, kind: str, track_id: Optional[str], fields=None) -> None:
+        """Исход нашего запроса подложки — ответ тула ``request_music(intent=backing)``."""
+        self.apply(self.block.on_backing(kind, track_id, self.t, fields or {}))
 
     # -- фейковый tts_node -------------------------------------------------------------------------------------------
 
@@ -208,12 +214,12 @@ class Sim:
 
             def started() -> None:
                 self.track_started_at = self.t + 0.5
-                self.music_event("started", track, {"bpm": self.bpm, "beat_at": self.t + 0.5, "bar_beats": 4,
-                                                    "start_beat": 32.0})
+                self.backing_outcome("started", track, {"bpm": self.bpm, "beat_at": self.t + 0.5, "bar_beats": 4,
+                                                        "start_beat": 32.0})
             self.at(when, started)
         elif outcome.startswith("rejected:"):
             reason = outcome.split(":", 1)[1]
-            self.at(self.t + 0.4, lambda: self.music_event("rejected", None, {"reason": reason}))
+            self.at(self.t + 0.4, lambda: self.backing_outcome("rejected", None, {"reason": reason}))
         # "silent" — плеер молчит: started не придёт
 
     # -- выборки -----------------------------------------------------------------------------------------------------

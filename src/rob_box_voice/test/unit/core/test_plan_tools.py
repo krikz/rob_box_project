@@ -190,13 +190,13 @@ def test_3700_llm_cannot_order_the_performance_beat():
     """Робот 22.10: LLM сама позвала ``request_music(intent=backing)`` на «прочитай рэп под бит» — бит заиграл без
     выступления и без outro. Из хода такой заказ — отказ с причиной, до владельца музыки он не доходит."""
     executor, under, events, _ = _executor()
-    executor.performer = _BeatHost(takes=True)
+    executor.performer = _Performer()
     result = asyncio.run(executor.execute(
         _call("1", "request_music", intent=kn.BACKING_INTENT, text="", mood="groove", min_seconds=45)))
     assert result.is_error is True and under.executed == [] and events == []
     assert (result.data["status"], result.data["reason"]) == ("rejected", "backing_code_only")
     assert "intent=backing" in result.content and "intent=track" in result.content
-    assert executor.performer.asked == 0  # и «добавь бит» хост по нему не принимает
+    assert executor.performer.touched == []  # хост выступления по нему не зовётся
 
 
 def test_3700_performance_code_still_orders_the_beat_through_the_owned_path():
@@ -207,24 +207,27 @@ def test_3700_performance_code_still_orders_the_beat_through_the_owned_path():
     assert result.is_error is False and under.executed == ["request_music"] and events == []
 
 
-class _BeatHost:
-    def __init__(self, takes: bool) -> None:
-        self.takes, self.asked = takes, 0
+class _Performer:
+    """Хост выступления: идёт выступление без бита; журнал любых обращений исполнителя к нему."""
 
-    def add_backing(self) -> bool:
-        self.asked += 1
-        return self.takes
+    def __init__(self) -> None:
+        self.touched: list = []
+
+    def __getattr__(self, name: str):
+        def record(*args, **kwargs):
+            self.touched.append(name)
+            return True
+        return record
 
 
-def test_993_music_during_a_beatless_performance_becomes_its_beat():
-    """«Добавь бит» во время чтения без бита: клубный трек — бит выступления (на такте, речь не рвётся), а не трек
-    поверх; мелодия по названию и музыка вне выступления идут обычным путём."""
+def test_4085_music_the_person_orders_during_a_performance_is_theirs_not_its_beat():
+    """#4085 (прослушивание PR-14 27.10): посреди сказки без бита «поставь фоном спокойный бит на Ренардо» — вызов LLM
+    уходит владельцу музыки как просил человек (его ``intent``, настроение, движок), исполнитель не подменяет его
+    битом выступления (тот снимался концом сказки). Бит к выступлению — команда ``perform{backing}`` (A22)."""
     executor, under, *_ = _executor()
-    executor.performer = _BeatHost(takes=True)
-    result = asyncio.run(executor.execute(_call("1", "request_music", intent="track", text="добавь бит")))
-    assert result.data == {"status": "done", "backing": True} and under.executed == []
-    asyncio.run(executor.execute(_call("2", "request_music", intent="melody", text="калинку")))
-    assert under.executed == ["request_music"] and executor.performer.asked == 1
-    executor.performer = _BeatHost(takes=False)  # выступления нет или бит уже играет
-    asyncio.run(executor.execute(_call("3", "request_music", intent="track", text="поставь трек")))
-    assert under.executed == ["request_music", "request_music"]
+    executor.performer = _Performer()
+    for n, intent in enumerate(("track", "melody")):
+        result = asyncio.run(executor.execute(_call(str(n), "request_music", intent=intent, text="спокойный бит",
+                                                    engine="renardo", mood="calm")))
+        assert result.is_error is False and result.data == {"ok": True}
+    assert under.executed == ["request_music", "request_music"] and executor.performer.touched == []

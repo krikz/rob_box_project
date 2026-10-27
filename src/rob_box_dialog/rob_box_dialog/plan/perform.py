@@ -1,9 +1,10 @@
 """Выступление — песня, рэп, сказка, стих как одно действие (ADR-0150 §5.6.3, §5.6.4; класс ``action.perform``).
 
 Владелец выступления — этот модуль (решение О6); tts_node и плеер — исполнители. :class:`PerformBlock` — автомат
-на событиях владельцев: хост кормит его ``SpeechEvent`` (:meth:`~PerformBlock.on_speech`), событиями плеера
-(:meth:`~PerformBlock.on_music`), таймером (:meth:`~PerformBlock.tick`) и командами (правка, «хватит», «стой»,
-«добавь бит»), а в ответ получает эффекты — что отправить владельцам: :class:`Say` (``SpeechRequest``),
+на событиях владельцев: хост кормит его ``SpeechEvent`` (:meth:`~PerformBlock.on_speech`), исходом своего запроса
+подложки (:meth:`~PerformBlock.on_backing`), событиями плеера (:meth:`~PerformBlock.on_music`), таймером
+(:meth:`~PerformBlock.tick`) и командами (правка, «хватит», «стой», «добавь бит» командой выступления), а в ответ
+получает эффекты — что отправить владельцам: :class:`Say` (``SpeechRequest``),
 :class:`Cancel` (``SpeechCancel``), :class:`~.backing.Backing` (``request_music(intent=backing)``),
 :class:`~.backing.MusicStop` и ``PlanEvent``. Транспорт (ROS, тулы) — у хоста; часов и потоков здесь нет.
 
@@ -23,8 +24,12 @@
 
 Правка (``edit_pending``, X3) меняет только ещё не отданные на звучание сегменты; не синтезированная к границе
 правка уступает прежней версии (О7). «Хватит» (X5) — звучащий сегмент дочитывается до конца предложения, остальное
-снимается, outro. «Стой» — всё сразу. «Добавь бит» во время чтения (#993) — подложка без остановки речи, следующий
-сегмент — на такте.
+снимается, outro. «Стой» — всё сразу. «Добавь бит» командой выступления во время чтения (#993) — подложка без
+остановки речи, следующий сегмент — на такте.
+
+Снимает выступление только свою подложку (#4085): ту, что заказало само, по ``track_id`` исхода своего запроса.
+Музыку, которую человек заказал тулом музыки, выступление не присваивает: конец, «хватит» с оговоркой «музыку оставь»
+и отказ бита её не трогают (гасит её только общий стоп музыки Tier-1 или тул).
 """
 
 from __future__ import annotations
@@ -274,9 +279,10 @@ class MusicSide:
         question = self._block.speech.phrase("perform.ask_replace_music", title=playing)
         return [question, AskReplace(question.speech_id, playing)]
 
-    def on_music(self, kind: str, track_id: Optional[str], now: float, fields: Mapping[str, Any]) -> List[Effect]:
-        """Событие плеера о нашей подложке (``BackingTrack.verdict``)."""
-        verdict = self.track.verdict(kind, track_id, now)
+    def on_music(self, kind: str, track_id: Optional[str], now: float, fields: Mapping[str, Any],
+                 own: bool = False) -> List[Effect]:
+        """Событие о нашей подложке (``BackingTrack.verdict``): ``own`` — исход нашего запроса, иначе — плеера."""
+        verdict = self.track.verdict(kind, track_id, now, own)
         if verdict == "ignore":
             return []
         self._block.touch(now)
@@ -302,7 +308,9 @@ class MusicSide:
         return self.failed("busy", now)
 
     def add(self, kind: str, now: float) -> List[Effect]:
-        """«Добавь бит» во время чтения (#993): подложка без остановки речи; следующий сегмент — на такте."""
+        """«Добавь бит» командой выступления во время чтения (#993, ``perform{backing}`` без куплетов): своя подложка
+        без остановки речи, следующий сегмент — на такте, снимается с концом выступления. Музыка, заказанная тулом
+        музыки, сюда не идёт: она человека (#4085)."""
         if self._block.ended or self.track.sounding or self.track.unresolved:
             return []
         self.track = BackingTrack(kind if kind in kn.PERFORM_BACKING_MOODS else "beat")
@@ -472,15 +480,23 @@ class PerformBlock:
 
     def on_music(self, kind: str, track_id: Optional[str], now: float,
                  fields: Optional[Mapping[str, Any]] = None) -> List[Effect]:
-        """Событие плеера (``started``/``rejected``/``nearly_finished``/``finished``/``idle``) — о нашей подложке."""
+        """Событие плеера (``started``/``nearly_finished``/``finished``/``idle``): о нашей подложке — только по её
+        ``track_id``; ``started`` другого трека, пока наша играет, — деку заняла другая музыка. Чужой трек, вставший,
+        пока бит просили, своим не становится (#4085: его снял бы конец выступления)."""
         return self.music.on_music(kind, track_id, now, fields or {})
+
+    def on_backing(self, kind: str, track_id: Optional[str], now: float,
+                   fields: Optional[Mapping[str, Any]] = None) -> List[Effect]:
+        """Исход НАШЕГО запроса подложки (ответ ``request_music(intent=backing)``): ``started`` с ``track_id`` и сеткой
+        или ``rejected`` с причиной. Только он делает трек своей подложкой (поздний — снимается)."""
+        return self.music.on_music(kind, track_id, now, fields or {}, own=True)
 
     def answer(self, yes: bool, now: float) -> List[Effect]:
         """Ответ человека на «выключить и зачитать?» (:meth:`MusicSide.answer`)."""
         return self.music.answer(yes, now)
 
     def add_backing(self, backing: str, now: float) -> List[Effect]:
-        """«Добавь бит» во время чтения (#993, :meth:`MusicSide.add`)."""
+        """«Добавь бит» командой выступления во время чтения (#993, :meth:`MusicSide.add`)."""
         return self.music.add(backing, now)
 
     def edit(self, perf: Performance, now: float) -> List[Effect]:

@@ -7,8 +7,9 @@
 * ``Cancel`` → ``SpeechCancel`` реплики по ``speech_id``;
 * ``Backing`` → ``request_music(intent=backing)``, ``MusicStop`` → ``stop_music(boundary)`` — исполнителем тулов
   напрямую (:meth:`PlanToolExecutor.execute_owned`): это код выступления, а не ход LLM — без допуска плана и без
-  речи «музыки хода»; исход запуска подложки (``started``/``rejected``/``busy``) — из ответа тула, остальное
-  (``nearly_finished``, ``finished``, ``idle``) — из ``/voice/music/event``;
+  речи «музыки хода»; исход запуска подложки (``started``/``rejected``/``busy``) — из ответа тула
+  (``PerformBlock.on_backing``: только он делает трек своей подложкой, #4085), остальное (``nearly_finished``,
+  ``finished``, ``idle``, чужой ``started``) — из ``/voice/music/event`` (``PerformBlock.on_music``);
 * ``PlanEvent`` → планировщик хода (``/dialog/plan_event`` и строка лога).
 
 Один блок на ноду. Колбэки ROS, таймер и loop ноды — разные потоки: блок трогается только под замком.
@@ -38,12 +39,13 @@ AGENT = "personality"
 TICK_S = 0.1
 REQUEST_MUSIC, STOP_MUSIC = "request_music", "stop_music"
 #: События плеера, которые блок узнаёт из топика. ``rejected`` подложки — только из ответа тула: второй экземпляр
-#: того же отказа «съел» бы вторую попытку. ``started`` — и оттуда, и отсюда (повтор своего блок игнорирует, чужой
-#: значит: деку заняла другая музыка — тактов бита больше нет).
+#: того же отказа «съел» бы вторую попытку. ``started`` из топика своей подложкой трек не делает (это — только ответ
+#: тула, #4085): повтор своего блок игнорирует, чужой при играющем бите значит «деку заняла другая музыка» — тактов
+#: бита больше нет, чужой до исхода запроса — не наш.
 _TOPIC_EVENTS = ("started", "nearly_finished", "finished", "idle")
 
 RunTool = Callable[[ToolCall], Any]  # корутина → ToolResult
-#: Исход запуска подложки обратно в блок: ``feed(kind, track_id, fields)`` — как событие плеера.
+#: Исход запуска подложки обратно в блок: ``feed(kind, track_id, fields)`` — ``PerformBlock.on_backing``.
 Feed = Callable[[str, Optional[str], Mapping[str, Any]], None]
 
 
@@ -145,7 +147,7 @@ class PerformHost:
         self._on_ask = on_ask
         #: Фактический провайдер TTS: паузы MiniMax по сетке строк — только у него (О11, #3901).
         self._tts_provider = tts_provider
-        self._run = EffectRunner(node, run_tool, loop, emit, self._fed)
+        self._run = EffectRunner(node, run_tool, loop, emit, self._outcome)
 
     # -- что видят валидатор, LLM и планировщик ---------------------------------------------------------------------
 
@@ -203,12 +205,6 @@ class PerformHost:
         """«Стой»: речь и бит — сразу; ``keep_backing`` — играющий бит остаётся."""
         return self._command(lambda block, now: block.halt(now, keep_backing=keep_backing))
 
-    def add_backing(self, backing: str = "beat") -> bool:
-        """«Добавь бит» во время чтения (#993): ``True`` — бит заказан выступлению (его ещё не было)."""
-        with self._lock:
-            block = self.block
-            return block is not None and not block.ended and self._add_backing_locked(block, backing)
-
     # -- события владельцев ---------------------------------------------------------------------------------------------
 
     def on_speech(self, kind: str, speech_id: str, duration_ms: int = 0, spoken_chars: int = 0) -> None:
@@ -228,17 +224,18 @@ class PerformHost:
             return True
 
     def on_music_event(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
+        """Событие плеера из ``/voice/music/event``: о любой музыке — блок сам решает, его ли это подложка."""
         if kind in _TOPIC_EVENTS:
-            self._fed(kind, track_id, fields)
+            self._command(lambda block, now: block.on_music(kind, track_id, now, fields))
 
     def tick(self) -> None:
         self._command(lambda block, now: block.tick(now))
 
     # -- исполнение -----------------------------------------------------------------------------------------------------
 
-    def _fed(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
-        """Событие плеера о подложке: из топика или исход запуска из ответа тула."""
-        self._command(lambda block, now: block.on_music(kind, track_id, now, fields))
+    def _outcome(self, kind: str, track_id: Optional[str], fields: Mapping[str, Any]) -> None:
+        """Исход запуска нашей подложки из ответа тула (``started``/``rejected``)."""
+        self._command(lambda block, now: block.on_backing(kind, track_id, now, fields))
 
     def _command(self, step: Callable[[PerformBlock, float], List[Any]]) -> bool:
         with self._lock:
