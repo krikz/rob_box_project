@@ -5,9 +5,14 @@
 (``speaker_id_node``) кодом, без LLM (ADR-0148): здесь — чистое правило «можно ли», нода — исполнение.
 
 Пороги опознания (0.72) и слияния (0.75) не трогаются: профиль заводится только тогда, когда голос НИКОГО не опознал
-с уверенностью. Защита от мусора (#2779) — два рубежа: гейт длительности речи (тот же, что у регистрации по имени:
-``MIN_REGISTER_AUDIO_DURATION_SEC``) и лимит числа безымянных профилей с вытеснением старейших
+(``identify()`` не прошёл порог). Защита от мусора (#2779) — два рубежа: гейт длительности речи (тот же, что у
+регистрации по имени: ``MIN_REGISTER_AUDIO_DURATION_SEC``) и лимит числа безымянных профилей с вытеснением старейших
 (``SpeakerDatabase.unnamed.register``).
+
+«Спорный» голос (``contested``, #2809: порог пройден, но в полосе сомнения есть кандидат с другим именем) двойника НЕ
+получает (решение Шифу 26.10, #3858): он уже похож на знакомого, и каждая спорная фраза длиннее гейта речи заводила
+бы безымянную копию своего человека (акт 2b: «Саша» 0.944 / «Борис» 0.661 при band_high 0.99). Диалог видит такой
+голос как незнакомца (имени и чужих фактов нет, #4023), но снимок честно говорит «голос похож на знакомый» (#3993).
 """
 
 from __future__ import annotations
@@ -15,10 +20,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from rob_box_voice.utils import speaker_embeddings as _se
-
-# Исход «зоны сомнения», когда в полосе несколько людей с РАЗНЫМИ именами (см. speaker_id_node.classify_name_confidence):
-# незнакомец, похожий сразу на двух (n210: «Гриша» ~ Борис 0.780 / Саша 0.653). Строка та же, что NAME_TENTATIVE_CONTESTED.
-CONTESTED = "contested"
 
 SKIP_DISABLED = "disabled"
 SKIP_TOO_SHORT = "too_short"
@@ -32,15 +33,13 @@ def enroll_skip_reason(
     voiced_sec: Optional[float],
     min_voiced_sec: float,
     recognised: bool,
-    name_decision: Optional[str],
     growth_session_open: bool,
 ) -> Optional[str]:
     """Почему профиль без имени заводить НЕ надо; ``None`` — можно.
 
-    * ``recognised`` — ``identify()`` вернул профиль (порог 0.72 пройден). Его имя публикуют, только если решение
-      ``classify_name_confidence`` не «contested»; в полосе, где конкурируют двое с разными именами, голос — скорее
-      незнакомец, и ему заводится свой профиль (иначе его вечно «узнавали бы» как Бориса, #2889). Один кандидат в
-      полосе («single») — скорее свой человек на плохом канале: не дробим его на безымянные клоны.
+    * ``recognised`` — ``identify()`` вернул профиль (порог 0.72 пройден) — при ЛЮБОМ решении об имени: уверенное,
+      одна гипотеза («single», свой на плохом канале) или «contested» (конкурент с другим именем в полосе сомнения).
+      Узнанный голос на безымянные клоны не дробим (#3858, решение Шифу 26.10: спорному голосу двойника не заводить).
     * ``voiced_sec`` — речь после VAD; неизвестна/короче ``min_voiced_sec`` — профиля нет (шум, обрывок фразы).
     * ``growth_session_open`` — идёт growth-сессия (человек только что представился, #2747): реплика, не прошедшая
       вето, сессию закрыла бы; пока она открыта, голос считается голосом её владельца, а не новым человеком.
@@ -49,7 +48,7 @@ def enroll_skip_reason(
         return SKIP_DISABLED
     if voiced_sec is None or voiced_sec < min_voiced_sec:
         return SKIP_TOO_SHORT
-    if recognised and name_decision != CONTESTED:
+    if recognised:
         return SKIP_RECOGNISED
     if growth_session_open:
         return SKIP_GROWTH_SESSION
@@ -60,7 +59,6 @@ def enroll(
     node: Any,
     embedding: Any,
     match: Optional[_se.SpeakerMatch],
-    name_decision: Optional[str],
     duration_sec: float,
 ) -> Optional[_se.SpeakerMatch]:
     """#3858: незнакомый голос -> профиль без имени + кличка; результат -- «узнан, имени нет» (или ``None``).
@@ -74,7 +72,6 @@ def enroll(
         voiced_sec=duration_sec,
         min_voiced_sec=_se.MIN_REGISTER_AUDIO_DURATION_SEC,
         recognised=match is not None,
-        name_decision=name_decision,
         growth_session_open=getattr(node, "_growth_session", None) is not None,
     )
     if reason is not None:

@@ -11,7 +11,13 @@ import math
 import pytest
 
 from rob_box_core.msg_stub import build_dialog_msgs_module, install_dialog_msgs_stub
-from rob_box_core.speaker_wire import fill_speaker_result, speaker_result_to_payload
+from rob_box_core.speaker_wire import (
+    NAME_CONTESTED,
+    TENTATIVE_CONTESTED,
+    fill_speaker_result,
+    name_state,
+    speaker_result_to_payload,
+)
 
 M = install_dialog_msgs_stub()
 
@@ -122,3 +128,35 @@ def test_e2e_db_flag_roundtrips_and_is_absent_by_default():
     ack = {"event": "registered", "name": "Саша", "speaker_id": "s", "reused_profile": False,
            "utterance_id": None, "e2e_db": True}
     assert _roundtrip(ack)["e2e_db"] is True
+
+
+# -- name_state: что результат фразы говорит об имени (#4023, #3993) ---------------------------------------
+
+
+@pytest.mark.parametrize("payload, state", [
+    ({"is_known": True, "speaker_id": "s", "name": "Саша", "confidence": 0.95}, "confirmed"),
+    ({"is_known": True, "speaker_id": "s", "name": "Саша", "source": "register"}, "confirmed"),
+    ({"is_known": True, "speaker_id": "s", "name": None, "confidence": 0.77, "tentative_conf": 0.77,
+      "tentative_kind": "single", "tentative_name": "Дэнчик"}, "tentative"),
+    # акт 2b 23.10: «Саша» 0.944, «Борис» 0.661, band_high 0.99 — имя скрыто, кандидатов двое
+    ({"is_known": True, "speaker_id": "s", "name": None, "confidence": 0.944, "tentative_conf": 0.944,
+      "tentative_kind": "contested"}, "contested"),
+    ({"is_known": True, "speaker_id": "s", "name": None, "confidence": 0.0, "epithet": "Гость",
+      "source": "enroll"}, "nameless"),
+    ({"is_known": False}, "unknown"),
+    ({"is_known": False, "inconclusive": True, "reason": "too_short"}, "unknown"),
+    ({"is_known": False, "candidate_name": "Борис", "candidate_score": 0.41}, "unknown"),
+    ({"event": "registered", "name": "Саша", "speaker_id": "s", "reused_profile": False}, "unknown"),
+])
+def test_name_state_of_phrase_result_survives_the_wire(payload, state):
+    """Состояние выводится из полей сообщения — до провода и после одно и то же."""
+    assert name_state(payload) == state
+    assert name_state(_roundtrip(payload)) == state
+
+
+def test_contested_result_keeps_only_the_candidate_id_and_no_name():
+    """contested: ``speaker_id`` — лишь ближайший кандидат (приписывать его голосу не будут потребители), имени нет."""
+    out = _roundtrip({"is_known": True, "speaker_id": "sasha-id", "name": None, "confidence": 0.944,
+                      "tentative_conf": 0.944, "tentative_kind": TENTATIVE_CONTESTED, "utterance_id": "u1"})
+    assert name_state(out) == NAME_CONTESTED
+    assert out["name"] is None and "tentative_name" not in out and out["speaker_id"] == "sasha-id"

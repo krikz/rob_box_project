@@ -36,7 +36,7 @@ from std_msgs.msg import String
 from rob_box_dialog import knowledge as _dialog_kn
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_core.e2e_mode import E2EModeFollower
-from rob_box_core.speaker_wire import speaker_result_to_payload
+from rob_box_core.speaker_wire import NAME_CONFIRMED, name_state, speaker_result_to_payload
 import asyncio
 import json
 import math
@@ -391,6 +391,13 @@ def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     мало речи), раньше читались как is_known=false и сбрасывали узнанного
     диктора в ∅. Теперь они ``(False, None)`` — не сигнал. Сбрасывает
     только оценённая фраза (``{"is_known": false}`` без пометки, #2829).
+
+    Issue #4023 — «кто сейчас» становится профилем ТОЛЬКО при опубликованном
+    имени (``speaker_wire.name_state == confirmed``) или по ack регистрации.
+    Узнанный голос без подтверждённого имени (``contested``: похож на двоих с
+    разными именами; гипотеза ``tentative``; профиль без имени) сбрасывает
+    «кто сейчас» в ∅, как незнакомец: иначе memory-тулы без ``speaker_id``
+    читали и писали факты ЧУЖОГО профиля (марафон 23.10, 2b n709).
     Модульная функция — чтобы держать CC ``_on_speaker_result`` в бюджете
     ADR-0021 и чтобы её можно было звать со стаба ноды в тестах.
     """
@@ -400,7 +407,7 @@ def _speaker_signal(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     raw_sid = data.get("speaker_id")
     # ``registered`` событие несёт speaker_id даже без is_known; ``and``
     # отфильтровывает пустые строки и None.
-    if raw_sid and (event == "registered" or data.get("is_known")):
+    if raw_sid and (event == "registered" or name_state(data) == NAME_CONFIRMED):
         return True, str(raw_sid)
     return True, None
 
@@ -743,9 +750,10 @@ class MCPServer(Node):
                 f"{new_speaker_id[:12]}… (name={data.get('name')!r})"
             )
         else:
+            # #4023: почему ∅ — голос не узнан (unknown) или узнан без подтверждённого имени (contested/…)
             self.get_logger().info(
                 f"👤 [issue 1770] current_speaker_id: {old or '∅'} → ∅ "
-                "(unknown / is_known=false)"
+                f"(name_state={name_state(data)})"
             )
 
     def _current_encounter_speaker_id(self) -> Optional[str]:

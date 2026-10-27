@@ -155,6 +155,21 @@ def test_tentative_voice_asks_confirm_after_accumulation_not_in_first_turn():
     assert tentative_states(n).get("sid-sasha")["asked"] is True
 
 
+def test_contested_voice_is_never_asked_who_it_is():
+    """Решение Шифу 26.10 (#3993): в «спорной» полосе (#2809) переспроса личности нет — ни «Саша, это ты?», ни «Как
+    тебя зовут?»; робот делает, что просят. Спорный голос — собеседник без профиля (#4023): фразы копятся не на
+    профиль кандидата, а вопрос незнакомцу ему не положен (``note_interlocutor``). Снимок честно говорит
+    ``contested``, а не «голос не узнан». На develop до правки здесь звучало «Как тебя зовут?» после 3-й фразы."""
+    n = _node()
+    n._utterance_speaker.result = {"is_known": True, "speaker_id": "sid-sasha", "name": None, "confidence": 0.944,
+                                   "tentative_conf": 0.944, "tentative_kind": "contested"}
+    for i in range(5):
+        _turn(n, f"фраза {i}", _Result("Ок."))
+    assert ASK_NAME not in n.tts and not any("это ты" in t for t in n.tts), n.tts
+    n._current_speaker = n._utterance_speaker.result
+    assert speaker_section(n) == {"name": None, "name_state": "contested"}
+
+
 def test_live_robot_21_10_chat_with_reads_and_llm_animation_asks_once_after_third_phrase():
     """Живой FAIL 21.10 08:10Z: болтовня, где LLM сама зовёт чтение или анимацию, — не команда. Ровно один вопрос
     после 3-й фразы; просьба «покажи анимацию сон» — команда, без вопроса; повтор — без вопроса."""

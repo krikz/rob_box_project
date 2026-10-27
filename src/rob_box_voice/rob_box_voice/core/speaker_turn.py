@@ -87,7 +87,8 @@ def note_interlocutor(node: Any, sp: Mapping[str, Any], utterance_id: Optional[s
     set_speaker(node, ref)
     count = ask_policy(node).note(ref.person_ref or STRANGER, now)
     own = sp.get("utterance_id") == utterance_id and not sp.get("inconclusive")
-    if ref.person_ref is None and own and not names:
+    # «Спорный» голос (contested) — без профиля, но не незнакомец: переспрос личности не делаем (Шифу 26.10, #3993)
+    if ref.person_ref is None and ref.name_state == "unknown" and own and not names:
         node._identity_ask_candidate = AskCandidate(STRANGER, "unknown", None, utterance_id, request)
     node.get_logger().info(
         f"👤 [SpeakerRef] person={(ref.person_ref or '-')[:8]} state={ref.name_state} "

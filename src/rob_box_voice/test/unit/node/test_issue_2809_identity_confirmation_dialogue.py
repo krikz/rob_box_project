@@ -333,8 +333,8 @@ class TestContestedHypothesis:
         result_sp = speaker_section(node)
         assert "Boris" not in result
         assert "Sasha" not in result
-        # contested: гипотезы одного имени нет — для снимка это unknown, имён в снимке нет
-        assert result_sp == {"name": None, "name_state": "unknown"}
+        # contested: гипотезы одного имени нет — имён в снимке нет; состояние честное «спорно», а не «не узнан» (#3993)
+        assert result_sp == {"name": None, "name_state": "contested"}
 
         assert node._identity_question_asked_in_turn  # вопрос всё же есть -- нейтральный «Как тебя зовут?»
 

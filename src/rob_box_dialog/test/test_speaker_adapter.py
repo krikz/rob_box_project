@@ -54,11 +54,39 @@ def test_tentative_voice_confirmed_only_by_face_with_the_same_name():
 @pytest.mark.parametrize("sp", [
     {"is_known": False},
     {"is_known": False, "inconclusive": True},
-    {"is_known": True, "speaker_id": "p9", "name": None, "tentative_kind": "contested"},
 ])
 def test_no_name_is_unknown(sp):
     ref = speaker_ref(sp, now=1.0, face_names={"литвин"})
     assert ref.name_state == "unknown" and ref.name is None
+
+
+#: Акт 2b марафона 23.10 (21:30:37): «Саша» 0.944, «Борис» 0.661, band_high 0.99 — имя скрыто, кандидат — профиль Саши.
+_CONTESTED_SASHA = {"is_known": True, "speaker_id": "sasha-id", "name": None, "confidence": 0.944, "epithet": "Спутник",
+                    "tentative_conf": 0.944, "tentative_kind": "contested", "utterance_id": "u1"}
+
+
+def test_contested_voice_is_nobody_but_not_unknown():
+    """#4023/#3993: спорный голос не приписан профилю кандидата (как незнакомец), но снимок не врёт «unknown»."""
+    ref = speaker_ref(_CONTESTED_SASHA, now=1.0, face_names={"саша"})
+    assert (ref.person_ref, ref.name, ref.name_state) == (None, None, "contested")
+    assert speaker_block(ref) == {"name": None, "name_state": "contested"}
+
+
+def test_contested_voice_does_not_inherit_since_of_the_candidate():
+    sasha = speaker_ref({"is_known": True, "speaker_id": "sasha-id", "name": "Саша"}, now=5.0)
+    assert speaker_ref(_CONTESTED_SASHA, now=9.0, prev=sasha).since == 9.0
+
+
+def test_nameless_profile_is_still_a_person():
+    """#3858: профиль без имени — свой голос с кличкой: собеседник-профиль есть, имени нет (не спор)."""
+    ref = speaker_ref({"is_known": True, "speaker_id": "p7", "name": None, "epithet": "Гость", "source": "enroll"},
+                      now=1.0)
+    assert (ref.person_ref, ref.name, ref.name_state) == ("p7", None, "unknown")
+
+
+def test_known_voice_without_id_names_nobody():
+    ref = speaker_ref({"is_known": True, "speaker_id": "", "name": "Борис"}, now=1.0)
+    assert (ref.person_ref, ref.name, ref.name_state) == (None, None, "unknown")
 
 
 def test_face_alone_never_names_the_speaker():
@@ -154,6 +182,13 @@ def test_voice_tag_from_biometry_results():
     assert voice_tag({"is_known": False, "candidate_name": "Борис", "candidate_score": 0.4123}) == VoiceTag(
         "unknown_voice", candidate="Борис", candidate_score=0.412)
     assert voice_tag({"is_known": False, "inconclusive": True, "reason": "too_short"}) == VoiceTag("inconclusive")
+
+
+def test_contested_phrase_in_backlog_names_nobody_even_with_the_candidate_in_frame():
+    tag = voice_tag(_CONTESTED_SASHA)
+    assert (tag.name, tag.tentative) == ("", "")
+    out = phrase_speaker(tag, faces={"саша"})
+    assert out["identified"] is False and "candidate" not in out
 
 
 def test_confirmed_voice_names_the_speaker():
@@ -307,6 +342,7 @@ def test_question_texts_come_from_phrases():
     (SpeakerRef(person_ref="p1", name="Саша", name_state="confirmed"), {"name": "Саша", "name_state": "confirmed"}),
     (SpeakerRef(person_ref="p1", name="Литвин", name_state="tentative"), {"name": None, "name_state": "tentative"}),
     (SpeakerRef(), {"name": None, "name_state": "unknown"}),
+    (SpeakerRef(name_state="contested"), {"name": None, "name_state": "contested"}),
 ])
 def test_speaker_block_names_only_confirmed(ref, block):
     """Эпизод Б 20.10: гипотеза «Литвин» в снимок не попадает — обращаться по ней нельзя."""

@@ -5,7 +5,8 @@
 * :func:`speaker_ref` — :class:`~rob_box_dialog.session.SpeakerRef` из результата голосовой биометрии (словарь
   ``rob_box_core.speaker_wire``) и лиц из кадра: ``confirmed`` — только уверенное имя биометрии (отрыв от соседа
   проверяет владелец биометрии) или голос-гипотеза, которую подтвердило лицо с тем же именем (два канала);
-  ``tentative`` — гипотеза голоса без второго канала; иначе ``unknown``.
+  ``tentative`` — гипотеза голоса без второго канала; ``contested`` — голос похож на знакомого, но кто из похожих —
+  спорно (#2809): собеседник без профиля, как незнакомец (#4023), но и не «голос не узнан» (#3993); иначе ``unknown``.
 * :func:`same_interlocutor` — тот ли это собеседник (подхват бэклога голым «робот», В12/В12′): **ИЛИ** по каналам
   ``knowledge.PICKUP_CHANNELS`` — голос длинной фразы узнан; человек, чей голос узнан в фразе бэклога, виден в кадре
   (по имени — у лица и голоса разные id); (слабо) DOA ±60° при ком-то в кадре. Короткому «робот» по голосу не верим,
@@ -34,6 +35,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from rob_box_core.speaker_wire import (
+    NAME_CONFIRMED,
+    NAME_CONTESTED,
+    NAME_NAMELESS,
+    NAME_TENTATIVE,
+    NAME_UNKNOWN,
+    name_state,
+)
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.doa import angle_diff_deg
@@ -81,12 +90,28 @@ class FaceSightings:
         return frozenset(f.name.lower() for f in self._seen if f.name and start <= f.t <= end)
 
 
+#: Состояние имени результата биометрии (``speaker_wire.name_state``) → ``(SpeakerRef.name_state, приписан ли голос
+#: профилю)``. ``contested`` (#2809: голос похож на знакомого, но в полосе сомнения конкурент с другим именем) — кто
+#: это, не знаем: собеседника-профиля нет, как у незнакомца (чужие факты не читаются и не пишутся, #4023), а снимок
+#: честно говорит «голос похож на знакомый, имя не подтверждено», а не «unknown» (#3993). Профиль без имени (#3858) —
+#: свой голос с кличкой: профиль есть, имени нет.
+_REF_STATE: Mapping[str, Tuple[str, bool]] = {
+    NAME_CONFIRMED: ("confirmed", True),
+    NAME_TENTATIVE: ("tentative", True),
+    NAME_CONTESTED: ("contested", False),
+    NAME_NAMELESS: ("unknown", True),
+    NAME_UNKNOWN: ("unknown", False),
+}
+
+
 def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[str] = (),
                 azimuth_deg: Optional[float] = None, prev: Optional[SpeakerRef] = None) -> SpeakerRef:
     """Собеседник этой фразы по правилам ADR-0130 §2.6; пороги биометрии не здесь и не меняются."""
     faces = {n.lower() for n in face_names if n}
-    person = (str(result.get("speaker_id") or "") or None) if result.get("is_known") else None
-    state, name = _name_state(result) if person else ("unknown", None)
+    state, name, attributed = _name_state(result)
+    person = (str(result.get("speaker_id") or "") or None) if attributed else None
+    if attributed and person is None:  # узнан, а id нет (битый результат) — назвать некого
+        state, name = "unknown", None
     channels = ("voice", "face") if name and name.lower() in faces else ("voice",)
     if state == "tentative" and len(channels) == 2:
         state = "confirmed"  # два канала согласны (ADR-0130 §2.6, ADR-0139)
@@ -95,13 +120,12 @@ def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[s
                       since=since, channels=channels)
 
 
-def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str]]:
-    """Имя узнанного голоса: уверенное (``name``, отрыв проверил владелец биометрии) или гипотеза."""
-    if result.get("name"):
-        return "confirmed", str(result["name"])
-    if result.get("tentative_name"):
-        return "tentative", str(result["tentative_name"])
-    return "unknown", None
+def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str], bool]:
+    """``(name_state, имя, приписан ли голос профилю)``: имя — уверенное (``name``, отрыв проверил владелец биометрии)
+    или гипотеза (``tentative_name``); у спора и профиля без имени его нет."""
+    state, attributed = _REF_STATE[name_state(result)]
+    name = {"confirmed": result.get("name"), "tentative": result.get("tentative_name")}.get(state)
+    return state, (str(name) if name else None), attributed
 
 
 @dataclass(frozen=True)
@@ -132,7 +156,7 @@ def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
         return VoiceTag("inconclusive", candidate=candidate, candidate_score=cand_score)
     if not result.get("is_known"):
         return VoiceTag("unknown_voice", candidate=candidate, candidate_score=cand_score)
-    state, name = _name_state(result)
+    state, name, _attributed = _name_state(result)
     return VoiceTag("known", person_ref=str(result.get("speaker_id") or ""),
                     name=name if state == "confirmed" else "", tentative=name if state == "tentative" else "",
                     score=_score(result.get("confidence")), epithet=str(result.get("epithet") or ""))
