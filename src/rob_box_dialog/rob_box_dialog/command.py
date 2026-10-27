@@ -468,15 +468,15 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
 
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
-    ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, голос реплики без просьбы о голосе
-    отбрасывается (``dropped``). Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
+    голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
+    же и голос реплики без просьбы о голосе отбрасываются (``dropped``). Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
     так же лишние поля ВЛОЖЕННЫХ объектов аргументов тула (``play_animation.face.emotion``, #3974): без отказа
     команды, с записью в ``dropped``. Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _drop_unasked_voice(_drop_nested_extras(cmd), form)
+    cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     checks: Tuple[Callable[[], Any], ...] = (
         lambda: _check_passed(cmd, form),
@@ -575,6 +575,18 @@ def _check_passed(cmd: Command, form: Form) -> None:
         raise _Bad("bad_enum", f"passed={cmd.passed}", kn.PASSED)
     if cmd.speech or cmd.ask or cmd.actions or cmd.perform:
         raise _Bad("passed_with_content", "молчание вместе с речью или действиями")
+
+
+def _drop_closed_passed(cmd: Command, form: Form) -> Command:
+    """``passed`` вместе с ответом (речь, вопрос, действия, выступление) там, где форма хода ``passed`` закрыла
+    (адресованная реплика, #4021) — лишнее поле, а не нарушение: ответ исполняется, поле — в ``dropped``. Иначе
+    ответ терялся: нарушение ``passed_addressed``, повтор, и после повтора ход мычал фразой ``passed`` (ревью #4053,
+    ``turn.silence_insisted``). Голый ``passed`` — по-прежнему нарушение; с открытой формой (подхват бэклога) правило
+    ``passed_with_content`` прежнее."""
+    content = cmd.speech or cmd.ask or cmd.actions or cmd.perform
+    if cmd.passed is None or form.passed or not content:
+        return cmd
+    return replace(cmd, passed=None, dropped=cmd.dropped + ("passed",))
 
 
 def _drop_unasked_voice(cmd: Command, form: Form) -> Command:

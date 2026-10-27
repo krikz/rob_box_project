@@ -90,8 +90,6 @@ from rob_box_dialog.music_state import MusicStateMemory
 
 #: ``SpeechEvent.kind`` конца реплики: finished / cancelled / rejected.
 _ENDED = (SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED)
-#: Автор события владельца голоса (``speech_owner.voice_changed``: ответ на ``/voice/tts/voice_request``).
-VOICE_OWNER_AGENT = "system"
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
 _CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
                     DialogControl.Request.ACTION_RESET: RESET}
@@ -176,9 +174,10 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
 
 def robot_voice_changed(msg: Any) -> bool:
     """``voice_changed`` сменил голос РОБОТА (#4045): событие владельца голоса — ответ на ``set_voice``/возврат голоса
-    сцены (``agent=system``, без реплики). Подмена голоса одной реплики или сегмента выступления (у события есть
-    ``speech_id``: голос роли сказки недоступен, #4043) голос робота не меняет и в ``session.voice`` не идёт."""
-    return msg.agent == VOICE_OWNER_AGENT and not msg.speech_id
+    сцены (``speech_client.VOICE_OWNER_AGENT``, без реплики). Подмена голоса одной реплики или сегмента выступления (у
+    события есть ``speech_id``: голос роли сказки недоступен, #4043) голос робота не меняет и в ``session.voice`` не
+    идёт."""
+    return msg.agent == speech_client.VOICE_OWNER_AGENT and not msg.speech_id
 
 
 def late_outcome(engine: TurnEngine, say: Callable[[ActionResult], Any], result: ActionResult) -> None:

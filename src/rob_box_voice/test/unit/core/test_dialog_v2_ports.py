@@ -319,3 +319,73 @@ def test_stage_plan_merges_only_where_merge_allows():
     assert (stage_plan("done", None, sad).emotion, stage_plan("done", None, sad).gesture) == ("sad", "wink")
     assert stage_plan("failed", None, sad) == reflex("failed"), "провал побеждает эмоцию команды"
     assert stage_plan("done") == reflex("done") and stage_plan("silenced", None, sad) is None
+
+
+# -- #4049: исполненный play_animation доходит до лица ExpressionRequest итога (живая проверка 27.10 00:44) ---------
+
+#: 00:44:39 LLM RESPONSE ``play_animation`` на «Робот, покажи молча, как тебе грустно» (аргументы как в логе).
+SAD_ANIMATION = {"animation": "sad", "duration": 6,
+                 "face": {"eyes": "half", "gaze": "down", "mouth": "frown", "tint": "blue"}}
+
+
+def test_4049_play_animation_sad_is_the_done_expression_request_with_its_scene_face_and_duration():
+    """Тул лицо не трогает (PR-3b) — до #4049 на лице был рефлекс ``happy``. Теперь ``ExpressionRequest`` итога:
+    ``emotion=sad``, сцена лица LLM с 6 с вызова, ``ttl_ms=6000``; earcon — рефлекса; строка ``🎭`` с ``ttl_ms``."""
+    lines = []
+    call = _command_call({"actions": [{"tool": "play_animation", "args": SAD_ANIMATION}]})
+    counter = CallCounter()
+    node = _Node()
+    ports = V2Ports(node, _LLM([LLMResponse(tool_calls=(call,))], counter), counter, _Tools(), log=lines.append)
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("покажи молча как тебе грустно", VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished") and "/voice/speech/request" not in node.pubs
+    done = _done_request(node)
+    assert (done.emotion, done.gesture, done.ttl_ms, done.earcon) == ("sad", "", 6000, reflex("done").earcon)
+    assert json.loads(done.face_json) == {**SAD_ANIMATION["face"], "duration_s": 6.0}
+    assert done.emotion != reflex("done").emotion, "рефлекс done (happy) не перекрывает сцену вызова"
+    assert lines[-1] == (f"🎭 [turn-v2] лицо команды на done: emotion=sad gesture=- face=llm ttl_ms=6000 "
+                         f"turn={agg.turn_id}")
+
+
+def test_4049_siren_animation_without_duration_holds_by_the_face_default():
+    """«Включи сирену» → ``play_animation{police_lights}`` + речь: мигалка — сцена итога, ``ttl_ms=0`` (по умолчанию
+    лица), а не 3 с рефлекса."""
+    call = _command_call({"speech": "Сирена — включаю!",
+                          "actions": [{"tool": "play_animation", "args": {"animation": "police_lights"}}]})
+    ports, node, _ = _ports([LLMResponse(tool_calls=(call,))])
+    asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("включи сирену", VOICE)))
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["<speak>Сирена — включаю!</speak>"]
+    done = _done_request(node)
+    assert (done.emotion, done.ttl_ms) == ("police_lights", 0)
+
+
+# -- #4050: спасённый query невалидной команды — данные модели, ответ звучит -----------------------------------------
+
+LIBRARY_LIST = Invalid("speech_with_actions", salvage=(CommandCall("music_library", {"action": "list"}),))
+
+
+def test_4050_follow_of_an_invalid_command_hides_the_bridge_mark_from_the_model():
+    _, calls, _ = command_bridge.to_legacy(LIBRARY_LIST)
+    assistant, tool = follow_for(LLMResponse(tool_calls=calls))('{"query_results": []}')
+    args = dict(assistant.tool_calls[0].arguments)
+    assert kn.COMMAND_INVALID_FIELD not in args
+    assert args["actions"] == [{"tool": "music_library", "args": {"action": "list"}}]
+    assert tool.tool_call_id == calls[0].id and tool.content == '{"query_results": []}'
+
+
+def test_4050_salvaged_library_list_goes_back_to_the_model_and_the_answer_is_spoken():
+    """00:44:54: ``invalid:speech_with_actions`` + ``music_library list`` → list исполнен, данные — модели, её слова
+    звучат (до #4050 ход ``done`` без речи)."""
+    _, invalid, _ = command_bridge.to_legacy(LIBRARY_LIST)
+    tracks = {"tracks": [{"title": "Рассвет"}], "count": 1}
+    tools = _Tools({"music_library": ("done", tracks)})
+    answer = LLMResponse(content="В библиотеке один трек: «Рассвет».")
+    ports, node, _ = _ports([LLMResponse(tool_calls=invalid), answer], tools)
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(
+        Addressed("что у тебя в музыкальной библиотеке", VOICE)))
+    assert tools.calls == [("music_library", {"action": "list"})]
+    assert [s.text for s in node.pubs["/voice/speech/request"].sent] == [f"<speak>{answer.content}</speak>"]
+    second = ports._llm.calls[1][0]
+    data = json.loads(second[-1].content)[kn.QUERY_RESULTS_FIELD]
+    assert second[-1].role == "tool" and data[0]["data"]["tracks"] == tracks["tracks"]
+    assert kn.COMMAND_INVALID_FIELD not in second[-2].tool_calls[0].arguments
+    assert (agg.stage, agg.status) == ("done", "finished") and agg.llm_calls == 2

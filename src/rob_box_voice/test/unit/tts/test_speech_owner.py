@@ -121,6 +121,16 @@ def _request(**fields):
     return req
 
 
+def test_4053_voice_owner_event_carries_the_one_owner_agent_constant(setup):
+    """Ревью #4053: автор ``voice_changed`` владельца голоса — одна константа ``speech_client.VOICE_OWNER_AGENT``; её
+    же читает ``dialog_node.robot_voice_changed`` (литерала ``"system"`` в двух местах нет)."""
+    node, owner, _clock = setup
+    owner.voice_changed("req-1", "ermil", "anton", "yandex")
+    [(kind, event)] = _events(node)
+    assert kind == "voice_changed" and event.agent == speech_client.VOICE_OWNER_AGENT and not event.speech_id
+    assert speech_client.VOICE_OWNER_AGENT in speech_client.SPEECH_AGENTS
+
+
 # -- чистые функции -----------------------------------------------------------
 
 

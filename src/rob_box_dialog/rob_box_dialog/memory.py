@@ -6,7 +6,9 @@
   написала модель в аргументе собеседника, подставляется он; в снимке его нет - привязать не к кому, исполнитель
   отвечает ``rejected{no_person}`` и в память не идёт (раньше такой факт становился общим для всех, #1770). Голос
   узнан, а чей он - не подтверждено (спор, гипотеза: ``knowledge.VOICE_UNCONFIRMED_STATES``) - тоже не к кому, но
-  причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда;
+  причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда; о таком отказе чтения памяти
+  (:func:`refused_read`) на вопрос о памяти о самом человеке говорит код (:func:`voiced_refusals`, ревью #4053),
+  на остальные реплики он - данные модели (ревью PR #4055);
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
 
@@ -21,9 +23,10 @@ ADR-0130 этапа 3 это ``Acquaintance.id``, смена - в адаптер
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.words import asks_own_memory
 
 
 def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
@@ -47,6 +50,23 @@ def unbound_reason(snapshot: Any) -> str:
     чей»); иначе собеседника нет - ``no_person``."""
     state = getattr(getattr(snapshot, "speaker", None), "name_state", None)
     return kn.VOICE_UNCONFIRMED_REASON if state in kn.VOICE_UNCONFIRMED_STATES else kn.NO_PERSON_REASON
+
+
+def refused_read(result: Any) -> bool:
+    """Чтение памяти (``memory_search``/``memory_context``) отклонено кодом до владельца - собеседника нет или голос
+    не подтверждён (``knowledge.UNBOUND_REASONS``). Кто о нём говорит - :func:`voiced_refusals`."""
+    return (result.tool in kn.PERSON_SCOPED_TOOLS and result.cls == "query" and result.status == "rejected"
+            and result.reason in kn.UNBOUND_REASONS)
+
+
+def voiced_refusals(results: Sequence[Any], text: str) -> Tuple[Any, ...]:
+    """Отказы чтения памяти (:func:`refused_read`), о которых говорит КОД фразой ``query.rejected.<причина>``, а не
+    модель: только когда реплика - вопрос о памяти о самом человеке (``words.asks_own_memory``: «что ты обо мне
+    помнишь?» - ответ и есть отказ; ревью #4053: не «запоминать не буду» записи). Иначе ``()``: отказ - данные модели,
+    как до #4053, и она отвечает на сам вопрос (ревью PR #4055: неузнанный голос спросил «кто такой Гагарин?», модель
+    позвала ``memory_search("Гагарин")`` - ход закрывался фразой об отказе, вопрос оставался без ответа)."""
+    refused = tuple(r for r in results if refused_read(r))
+    return refused if refused and asks_own_memory(text) else ()
 
 
 def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
@@ -84,5 +104,5 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "profiled_person", "speaker_changed", "speaker_memory_block",
-           "unbound_reason"]
+__all__ = ["bind_person", "has_evidence", "profiled_person", "refused_read", "speaker_changed",
+           "speaker_memory_block", "unbound_reason", "voiced_refusals"]

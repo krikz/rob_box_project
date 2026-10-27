@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from rob_box_core import speech_client
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 M = install_dialog_msgs_stub()
@@ -559,7 +560,7 @@ def _music_msg(**dj):
     return msg
 
 
-def _voice_changed(requested, applied, provider, speech_id="", agent=dn.VOICE_OWNER_AGENT):
+def _voice_changed(requested, applied, provider, speech_id="", agent=speech_client.VOICE_OWNER_AGENT):
     """``voice_changed`` владельца голоса (``speech_owner.voice_changed``: ``agent=system``, без реплики); с
     ``speech_id`` — подмена голоса одной реплики/сегмента (``speech_owner.synthesized``)."""
     event = M.SpeechEvent()

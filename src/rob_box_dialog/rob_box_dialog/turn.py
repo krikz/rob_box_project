@@ -15,8 +15,9 @@
   того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
 * Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия), спорный стоп (В19) идёт в LLM;
 * невалидная команда (после повтора моста) — допустимые действия исполняются, итог (или честное «не понял») говорит
-  код, ход ``done`` (#3953, Шифу 23.10); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``)
-  законен; ``passed`` — тихо;
+  код, ход ``done`` (#3953, Шифу 23.10); спасённый ``query`` возвращает данные модели, пока есть итерации, иначе код
+  говорит по данным (#4050); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) законен;
+  ``passed`` — тихо;
 * форма команды хода (:func:`command_form`, #4021): ``passed`` есть в схеме только при подхвате бэклога (адресованную
   реплику модель молчанием не закрывает — нарушение и повтор моста), голос реплики — только по просьбе о голосе;
 * голый неслышимый ответ (``play_animation`` без слов) на адресованную реплику, где анимацию не просили
@@ -25,12 +26,15 @@
   команда из одной ``expression`` — тот же класс (#3997): по прямой просьбе («покажи, как тебе грустно») лицо молча,
   иначе повтор;
 * экспрессия команды (эмоция, жест, сцена лица LLM) красит рефлекс итога ``done`` (:func:`done_expression` →
-  ``Ports.stage(..., expression=)`` → ``expression.merge``), отдельного запроса лицу нет; в тишине и у отменённого
-  хода — рефлекс как есть (#3997);
+  ``Ports.stage(..., expression=)`` → ``expression.merge``), отдельного запроса лицу нет; исполненный ``play_animation``
+  красит его своей сценой, сценой лица и временем (:func:`shown_face`, #4049: тул лицо не трогает); в тишине и у
+  отменённого хода — рефлекс как есть (#3997);
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций; последний вызов
   модели идёт без query-тулов в схеме (читать больше нечем — остаётся сказать итог), а если она всё же просит query —
-  ход ``done`` с фразой кода по данным (``query_fallback``), а не молчащий ``failed`` (#3953, В21);
+  ход ``done`` с фразой кода по данным (``query_fallback``), а не молчащий ``failed`` (#3953, В21); чтение памяти,
+  отклонённое кодом без собеседника, на вопрос о памяти о самом человеке — фраза кода (``memory.voiced_refusals``,
+  ревью #4053), на остальные реплики — данные модели, и она отвечает на вопрос (ревью PR #4055);
 * ход ведётся до конца, пока провайдер жив, но не дольше ``TURN_CEILING_S`` (В31): ~``PROGRESS_AFTER_S`` тишины —
   одна промежуточная фраза кода (``understand.progress``/``media.progress``); потолок в ожидании LLM — фраза с именем
   провайдера, в ожидании действия — фраза его класса о таймауте (не «не понял»); цепочка провайдеров отказала —
@@ -48,10 +52,11 @@ import logging
 import random
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from rob_box_core.utterance import Sink
+from rob_box_core.utterance import Sink, Utterance
+from rob_box_dialog import face_scene
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import phrases
@@ -258,7 +263,9 @@ def voices_passed(pickup: bool, snapshot: SessionSnapshot) -> bool:
 def silence_insisted(result: Result) -> Result:
     """Модель и после повтора моста с нарушением ``VIOLATION_PASSED_ADDRESSED`` (#4021) «молчит» на адресованную
     реплику — исход хода ``passed``: код мычит фразой ``PASSED_ADDRESSED_PHRASE``, ход ``finished/passed`` (решение
-    Шифу 22.10), как и до формы хода; не «не понял» невалидной команды."""
+    Шифу 22.10), как и до формы хода; не «не понял» невалидной команды. Это только ГОЛЫЙ ``passed``: рядом с речью или
+    действиями поле ``passed`` на адресованной реплике отбрасывает валидатор (``command._drop_closed_passed``, ревью
+    #4053) - ответ исполняется и звучит, сюда такая команда не доходит и мычанием не теряется."""
     if isinstance(result, Invalid) and result.reason == kn.VIOLATION_PASSED_ADDRESSED:
         return Command(passed=kn.PASSED_INSISTED)
     return result
@@ -291,11 +298,49 @@ def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expres
     return face if shows(face.emotion, face.gesture, face.face) else None
 
 
+@dataclass(frozen=True)
+class Shown(Expression):
+    """Лицо итога после исполненного ``play_animation`` (#4049): сцена анимации (``emotion``), её сцена лица LLM и
+    ``hold_ms`` - сколько держать сцену (``duration`` тула; ``0`` - по умолчанию лица). Не команда модели: схема
+    команды - поля :class:`~rob_box_dialog.command.Expression`, время показа модель задаёт аргументом тула."""
+
+    hold_ms: int = 0
+
+
+def _show_seconds(duration: Any) -> float:
+    """Заказанное время показа из данных ``play_animation`` (тул уже применил своё правило длительности); нет - 0."""
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
+        return 0.0
+    return min(float(duration), kn.FACE_SCENE_MAX_S)
+
+
+def shown_face(expression: Optional[Expression], data: Mapping[str, Any]) -> Optional[Expression]:
+    """Лицо итога после исполненного ``play_animation`` (#4049; ADR-0150 PR-3b: тул лицо не трогает, показывает
+    диалог). ``animation`` (тул уже свёл его к имени сцены лица) - сцена итога вместо эмоции и жеста команды (жест
+    ``face_node`` показал бы поверх сцены) со своей сценой лица LLM и временем ``duration`` (:class:`Shown`; нет -
+    ``0``, по умолчанию лица); заказанное время важнее ``duration_s`` сцены лица, как у v1 (``turn_tools.face_dict``).
+    Только ``face`` - сцена лица поверх экспрессии команды. Ни того ни другого - экспрессия команды как есть."""
+    animation, duration, raw = (data.get(key) for key in kn.SHOW_FIELDS)
+    face = face_scene.validate(raw)[0] if raw is not None else None
+    seconds = _show_seconds(duration)
+    if face is not None and seconds:
+        face = replace(face, duration_s=seconds)
+    if animation:
+        return Shown(emotion=str(animation), face=face, hold_ms=int(seconds * 1000))
+    return replace(expression or Expression(), face=face) if face is not None else expression
+
+
 def command_face(expression: Optional[Expression], results: Sequence[ActionResult]) -> Optional[Expression]:
-    """Экспрессия исполненной команды для итога хода (#3997); провал действия её не показывает (``None`` — рефлекс как
-    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Одно правило для исполненной команды
-    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
-    return None if any(r.status in _FAILED for r in results) else expression
+    """Экспрессия исполненной команды для итога хода (#3997); исполненный ``play_animation`` красит итог своей сценой
+    (:func:`shown_face`, #4049: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``; последний вызов главнее).
+    Провал действия её не показывает (``None`` — рефлекс как есть): «радостно» о провале не бывает, как и в
+    ``expression.merge``. Одно правило для исполненной команды (``TurnEngine._speak``) и для действий, исполненных
+    после нарушения (:func:`_close_invalid`)."""
+    if any(r.status in _FAILED for r in results):
+        return None
+    for shown in (r for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"):
+        expression = shown_face(expression, shown.data)
+    return expression
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
@@ -366,11 +411,16 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str) -> Optional[str]:
+def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str, text: str = "") -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
-    простом успехе (``respond.audible``, #3953)."""
+    простом успехе (``respond.audible``, #3953). Отказ чтения памяти рядом с действиями
+    (``[memory_search, play_sound]``) на вопрос о памяти о самом человеке (``text`` — реплика хода) звучит первым
+    (:func:`read_refusal`, ревью PR #4055): данные такой команды модели не возвращаются, и без фразы кода об отказе
+    человек его не услышал бы."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks)) if results else None
+    refusal = read_refusal(memory.voiced_refusals(results, text))
+    outcome = outcome_phrase(audible(results, speaks)) if results else None
+    return " ".join(part for part in (refusal.text if refusal is not None else None, outcome) if part) or None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
@@ -435,6 +485,32 @@ def _close_nothing_to_do(turn: _Turn) -> str:
     return ""
 
 
+def read_refusal(refused: Sequence[ActionResult]) -> Optional[Utterance]:
+    """Фраза кода об отказах чтения памяти (:func:`memory.voiced_refusals`): одна на причину (``memory_context`` и
+    ``memory_search`` спорным голосом - одна «не буду гадать, что помню»); отказов нет - ``None``."""
+    return join(list({r.reason: r for r in refused}.values()))
+
+
+def query_more(engine: "TurnEngine", turn: _Turn, results: Sequence[ActionResult]) -> Optional[str]:
+    """Исполненные ``query`` хода (итерации ещё есть): данные - модели, строкой для ``Answer.follow``. Отказ чтения
+    памяти до владельца (собеседника нет или голос не подтверждён) на вопрос о памяти о самом человеке
+    (:func:`memory.voiced_refusals`) - не данные: о нём говорит код фразой ``query.rejected.<причина>`` (ревью #4053:
+    «что ты обо мне помнишь?» спорным голосом - «не буду гадать, что помню», а не «запоминать не буду»); читать модели
+    больше нечего - ``None``, ход закрыт фразой кода. На любую другую реплику отказ - данные модели, как до #4053, и
+    ход продолжается (ревью PR #4055: «кто такой Гагарин?» неузнанным голосом - модель отвечает про Гагарина)."""
+    refused = memory.voiced_refusals(results, turn.text)
+    said = read_refusal(refused)
+    if said is not None:
+        engine._log.info(f"{LOG_MARK} отказ чтения памяти {[(r.tool, r.reason) for r in refused]} на вопрос о памяти "
+                         f"о собеседнике → фраза кода turn={turn.turn_id}")
+        engine._say(turn, said.text, None, said.emotion)
+    readable = tuple(r for r in results if r not in refused)
+    if not readable:
+        return None
+    turn.queried = readable
+    return _query_data(readable)
+
+
 def _query_data(results: Sequence[ActionResult]) -> str:
     rows = [{"tool": r.tool, "status": r.status, "reason": r.reason, "data": dict(r.data)} for r in results]
     return json.dumps({kn.QUERY_RESULTS_FIELD: rows}, ensure_ascii=False, default=str)
@@ -454,25 +530,36 @@ def _voices_summary(data: Mapping[str, Any]) -> Optional[str]:
 
 
 async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, snap: SessionSnapshot,
-                         expression: Optional[Expression] = None) -> None:
+                         expression: Optional[Expression] = None, last: bool = True) -> Optional[str]:
     """Невалидная команда после повтора моста: на адресованную реплику не молчим (В21, решение Шифу 23.10, #3953).
     Запрос в ходе выполнен - говорит код по его данным (#3883). Иначе допустимые действия команды (``Invalid.salvage``)
     исполняются, об исходе говорит код (:func:`_salvaged_phrase`); исполнять нечего - честная фраза
-    ``INVALID_COMMAND_PHRASE``. Ход ``done``. ``expression`` - лицо команды, исполняемой после нарушения
-    ``silent_answer`` (#3997): красит итог вместе с её действиями, если они не провалились (:func:`command_face`)."""
+    ``INVALID_COMMAND_PHRASE``. Ход ``done``. Среди спасённых есть ``query`` (класс ВЫЗОВА: ``music_library list``,
+    #4050) и итерации ещё есть (не ``last``) - его данные возвращаются модели (строка для ``Answer.follow``, как у
+    исполненной команды), и она отвечает словами; итераций нет - фраза кода по данным (:func:`query_fallback`).
+    ``expression`` - лицо команды, исполняемой после нарушения ``silent_answer`` (#3997): красит итог вместе с её
+    действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
         turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
         engine._say(turn, query_fallback(turn.queried), None, invalid_emotion(invalid, ()))
-        return
+        return None
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):
-        return
-    turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
+        return None
     turn.expression = command_face(expression, results)
+    queried = tuple(r for r in results if r.cls == _QUERY)
+    if queried and not last:
+        log.warning(f"{LOG_MARK} невалидная команда {why}: спасённый query {[r.tool for r in queried]} → данные "
+                    f"модели, ещё итерация turn={turn.turn_id}")
+        turn.queried = queried
+        engine._say(turn, outcome_phrase(results) or "", None, invalid_emotion(invalid, results))
+        return _query_data(results)
+    turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
     engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, invalid_emotion(invalid, results))
+    return None
 
 
 def invalid_emotion(invalid: Invalid, results: Sequence[ActionResult]) -> Optional[str]:
@@ -486,9 +573,14 @@ def invalid_emotion(invalid: Invalid, results: Sequence[ActionResult]) -> Option
 
 def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, results: Sequence[ActionResult]) -> str:
     """Фраза кода после невалидной команды: об исходе исполненного; успех звука молчит (звук сам себе доказательство) -
-    тишина честна. Исполнять было нечего или исполненного не слышно, а человек ждёт слов (:func:`words_owed`, #3995:
-    голая анимация) - фраза причины (``INVALID_COMMAND_PHRASES``), не молчание."""
+    тишина честна. Спасённый ``query`` на последней итерации - его данные читать некому, говорит код по ним
+    (:func:`query_fallback`, #4050: «что у тебя в библиотеке?» не молчит). Исполнять было нечего или исполненного не
+    слышно, а человек ждёт слов (:func:`words_owed`, #3995: голая анимация) - фраза причины
+    (``INVALID_COMMAND_PHRASES``), не молчание."""
     said = outcome_phrase(results) if results else None
+    queried = [r for r in results if r.cls == _QUERY]
+    if queried:
+        return " ".join(text for text in (said, query_fallback(queried)) if text)
     snap = engine.session.snapshot
     if said or (results and not words_owed(snap, turn.pickup, turn.text, Command(actions=tuple(invalid.salvage)))):
         return said or ""
@@ -516,7 +608,13 @@ async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
     """Фраза кода, когда запрос хода выполнен, а ответ модели не прошёл проверку и после повтора (#3883, решение Шифу
-    23.10): по данным результата тула (``knowledge.QUERY_FALLBACK_PHRASES``), иначе общая честная фраза."""
+    23.10): по данным результата тула (``knowledge.QUERY_FALLBACK_PHRASES``), иначе общая честная фраза. «Нашёл ответ»
+    - только когда хоть один запрос ``done``: ни одного (``rejected``/``timeout``: спасённый ``music_library list``
+    отклонён) - фраза его исхода по результату (``respond.join``: «Не нашёл ответа.», «Не дождался ответа…»), а не
+    «нашёл» (ревью PR #4055)."""
+    if not any(r.status == "done" for r in results):
+        failed = join(results)  # у класса query фраза есть на каждый не-done исход (rejected, timeout)
+        return failed.text if failed is not None else phrases.text("query.rejected")
     for r in results:
         key = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
         summary = _voices_summary(r.data) if key and r.status == "done" else None
@@ -766,10 +864,10 @@ class TurnEngine:
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
             result = silence_insisted(answer.result)
-            if not isinstance(result, Command):
-                await _close_invalid(self, turn, result, snap)
-                return
-            more = await self._act(turn, result, snap, last=last)
+            if isinstance(result, Command):
+                more = await self._act(turn, result, snap, last=last)
+            else:
+                more = await _close_invalid(self, turn, result, snap, last=last)
             if more is None:
                 return
             messages.extend(answer.follow(more))
@@ -792,8 +890,7 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if not last and results and all(r.cls == _QUERY for r in results):
-            turn.queried = tuple(results)
-            return _query_data(results)
+            return query_more(self, turn, results)
         self._speak(turn, cmd, results)
         return None
 
@@ -801,7 +898,7 @@ class TurnEngine:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997)."""
         turn.expression = command_face(cmd.expression, results)
-        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
+        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, turn.text)
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
@@ -882,7 +979,8 @@ class TurnEngine:
             self._log.warning(f"{LOG_MARK} e2e-событие {kind} не записано: {exc}")
 
 
-__all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "command_form", "done_expression", "finish_stage", "hand_perform", "host_sections",
+__all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY", "Shown",
+           "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage", "hand_perform",
+           "host_sections", "shown_face",
            "invalid_emotion", "outcome_phrase", "query_fallback", "stop_performance", "tier1_actions", "tier1_for",
            "tier1_phrase", "voices_passed", "words_owed"]

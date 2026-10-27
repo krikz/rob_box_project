@@ -20,6 +20,7 @@ from rob_box_dialog.knowledge import (
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
+    SELF_MEMORY_ASK,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
     STOP_SCOPE,
@@ -188,6 +189,18 @@ def introduces_self(text: str) -> bool:
     словарь даёт точность, а не полноту."""
     tokens = name_tokens(text)
     return introduced_name(tokens) is not None or _greeted_stranger(tokens)
+
+
+def asks_own_memory(text: str) -> bool:
+    """Спрашивает ли человек о памяти о самом себе (таблица ``knowledge.SELF_MEMORY_ASK``, ревью PR #4055): глагол
+    памяти к роботу и слово о себе в одной реплике («что ты обо мне помнишь?», «помнишь, что я …») или вопрос целиком
+    («как меня зовут?»). Память как условие другой просьбы («учти то, что ты про меня знаешь») - нет. Слова - как у
+    :func:`name_tokens` (нижний регистр, ё → е, без знаков): «помнишь, что я» и «помнишь что я» - одно."""
+    said = " ".join(name_tokens(text))
+    if has_word(said, SELF_MEMORY_ASK["condition"]):
+        return False
+    return has_form(said, SELF_MEMORY_ASK["whole"]) or (
+        has_word(said, SELF_MEMORY_ASK["verbs"]) and has_form(said, SELF_MEMORY_ASK["self"]))
 
 
 @dataclass(frozen=True)

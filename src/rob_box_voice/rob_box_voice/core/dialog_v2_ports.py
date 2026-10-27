@@ -31,7 +31,7 @@ from rob_box_dialog.execute import ActionRequest, Executor
 from rob_box_dialog.expression import ExpressionPlan, merge, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.turn import Answer
+from rob_box_dialog.turn import Answer, Shown
 from rob_box_harness.core.agent_core import answering_provider
 from rob_box_harness.core.tool_loop.command_turn import owner_event
 from rob_box_llm.errors import ProviderError
@@ -98,12 +98,18 @@ def stage_plan(stage: str, cls: Optional[str] = None,
                expression: Optional[Expression] = None) -> Optional[ExpressionPlan]:
     """Рефлекс стадии (``expression.reflex``), окрашенный экспрессией команды (#3997): эмоция, жест и сцена лица LLM
     (``FaceScene.to_dict()``) через ``expression.merge`` - красит только ``speaking``/``done``, провал побеждает.
-    Отдельного запроса лицу нет: команда из одной ``expression`` доходит до лица рефлексом ``done``."""
+    Отдельного запроса лицу нет: команда из одной ``expression`` и исполненный ``play_animation`` (``turn.Shown``: его
+    сцена и ``duration`` - время сцены, #4049) доходят до лица рефлексом ``done``."""
     plan = reflex(stage, cls)
     if expression is None:
         return plan
     face = expression.face.to_dict() if expression.face is not None else None
-    return merge(plan, stage, expression.emotion, expression.gesture, face)
+    return merge(plan, stage, expression.emotion, expression.gesture, face, _hold_ms(expression))
+
+
+def _hold_ms(expression: Optional[Expression]) -> Optional[int]:
+    """Время сцены итога: у исполненного ``play_animation`` (``turn.Shown``) - его ``duration``; иначе как у рефлекса."""
+    return expression.hold_ms if isinstance(expression, Shown) else None
 
 
 def to_message(message: Any) -> LLMMessage:
@@ -120,11 +126,16 @@ def tool_schema(entry: Any) -> Mapping[str, Any]:
 
 
 def follow_for(response: LLMResponse) -> Callable[[str], Sequence[Any]]:
-    """Продолжение запроса данными ``query``: вызов ``command`` модели и tool-результат с данными на него."""
+    """Продолжение запроса данными ``query``: вызов ``command`` модели и tool-результат с данными на него. Невалидную
+    команду мост отдаёт вызовом с отметкой ``COMMAND_INVALID_FIELD`` и спасёнными действиями (#4050: спасённый
+    ``query`` возвращает данные модели) - модель видит свой вызов без служебной отметки: только исполненные действия."""
     calls = tuple(c for c in response.tool_calls or () if c.name == kn.COMMAND_TOOL)
     if not calls:
         return lambda data: ({"role": "user", "content": data},)
     call = calls[0]
+    if kn.COMMAND_INVALID_FIELD in call.arguments:
+        call = ToolCall(id=call.id, name=call.name,
+                        arguments={k: v for k, v in call.arguments.items() if k != kn.COMMAND_INVALID_FIELD})
 
     def follow(data: str) -> Sequence[Any]:
         return (LLMMessage(role="assistant", content="", tool_calls=(call,)),
@@ -221,8 +232,9 @@ class V2Ports:
                                      source=source)
         plan = stage_plan(stage, cls, expression)
         if plan is not None and expression is not None:
+            held = f" ttl_ms={plan.ttl_ms}" if _hold_ms(expression) is not None else ""
             self._log(f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion} gesture={plan.gesture or '-'} "
-                      f"face={'llm' if plan.face else '-'} turn={turn_id}")
+                      f"face={'llm' if plan.face else '-'}{held} turn={turn_id}")
         if plan is not None:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
                                       emotion=plan.emotion, gesture=plan.gesture, earcon=plan.earcon, face=plan.face,
