@@ -144,9 +144,15 @@ def audible(results: Sequence[ActionResult], speaks: bool, performing: bool = Fa
 
 
 def join(results: Sequence[ActionResult], snapshot: Any = None) -> Optional[Utterance]:
-    """Фразы всех действий хода — одной репликой в порядке результатов; провал хоть одного — грустная эмоция."""
+    """Фразы всех действий хода — одной репликой в порядке результатов; провал хоть одного — грустная эмоция.
+
+    Одинаковые исходы говорятся один раз: «помягче» - ``set_pitch lower`` и ``set_speed slower``, оба ``local.done`` -
+    это «Готово.», а не «Готово. Готово.» (живой прогон 27.10). Одинаковость - по тексту фразы: разные ключи каталога с
+    общим текстом (``local.done`` и его псевдонимы) тоже один исход, а фразы со своими слотами (название трека, имя)
+    различаются и звучат обе. Порядок - по первому появлению."""
     said = [u for u in (phrase_from_result(r, snapshot) for r in results) if u is not None]
     if not said:
         return None
     sad = any(u.emotion == "sad" for u in said)
-    return Utterance(text=" ".join(u.text for u in said), sink=said[0].sink, emotion="sad" if sad else None)
+    texts = tuple(dict.fromkeys(u.text for u in said))
+    return Utterance(text=" ".join(texts), sink=said[0].sink, emotion="sad" if sad else None)

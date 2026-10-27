@@ -743,7 +743,7 @@ class DeepSeekProvider(_OpenAICompatibleProvider):
     """DeepSeek Chat (OpenAI-compatible).
 
     Default base URL: ``https://api.deepseek.com``.
-    Default model:    ``deepseek-v4-flash`` (одно имя с llm_config.PROVIDERS и telegram_bot.yaml; API обслуживает его моделью deepseek-flash).
+    Default model:    ``deepseek-v4-flash`` (API обслуживает его моделью deepseek-flash).
     """
 
     DEFAULT_BASE_URL = "https://api.deepseek.com"

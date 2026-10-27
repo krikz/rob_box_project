@@ -123,13 +123,13 @@ def parse_script(raw: Mapping[str, Any]) -> Script:
 
 def speech_ends(node: Any) -> Any:
     """Ожидания конца реплики по её ``speech_id``: первое ``SpeechEvent`` finished|cancelled|rejected
-    (``speech_client.KIND_STATUS``) с тем же id. Чужая реплика, закончившаяся раньше, дирижёра не будит."""
+    (``speech_client.is_speech_end``) с тем же id. Чужая реплика, закончившаяся раньше, дирижёра не будит."""
     from rob_box_core import speech_client
     from rob_box_dialog_msgs.msg import SpeechEvent
     from rob_box_mcp_tools.owner_event import OwnerEvents
 
     return OwnerEvents(node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
-                       accept=lambda m: int(m.kind) in speech_client.KIND_STATUS)
+                       accept=speech_client.is_speech_end)
 
 
 def say_and_wait(node: Any, ends: Any, text: str, timeout_s: float) -> bool:

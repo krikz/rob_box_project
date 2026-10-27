@@ -231,8 +231,9 @@ topics:
     type: rob_box_dialog_msgs/SpeechEvent
     status: live
     writers_allowed: [tts_node]
-    # audio_node, stt_node - эхо-гейты микрофона (PR-15 15-0b #3711, вместо String-топика состояния TTS)
-    readers: [mcp_server, face_node, telegram_node, audio_node, stt_node]
+    # audio_node, stt_node - эхо-гейты микрофона (PR-15 15-0b #3711, вместо String-топика состояния TTS);
+    # speaker_id_node - якорь роста галереи ждёт конца своей речи по финалу SpeechEvent (PR-15 15-0c #3711)
+    readers: [mcp_server, face_node, telegram_node, audio_node, stt_node, speaker_id_node]
   /voice/speech/envelope:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechEnvelope
