@@ -343,8 +343,11 @@ def _voiced(words: Sequence[str]) -> bool:
 
 
 def _no_vocal(words: Sequence[str]) -> bool:
-    """«Без вокала» — просьба инструментала, не песни."""
-    return any(w.startswith(kn.VOCAL_STEMS) and _negated_vocal(words, i) for i, w in enumerate(words))
+    """Просьба инструментала, не песни (#4090 E): «без вокала/слов/пения/голоса/текста» (``NO_VOCAL_STEMS`` сразу после
+    ``VOCAL_NEGATIONS``) или слово инструментала (``INSTRUMENTAL_STEMS``: «сгенерируй инструментальную песню»). Одна
+    таблица знания - ``knowledge``; решает ``_verb_kind``: глагол создания с таким отказом пением не считается."""
+    return _has(words, kn.INSTRUMENTAL_STEMS) or any(
+        w.startswith(kn.NO_VOCAL_STEMS) and _negated_vocal(words, i) for i, w in enumerate(words))
 
 
 def _modified(words: Sequence[str]) -> bool:
