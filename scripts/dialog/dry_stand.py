@@ -62,7 +62,7 @@ from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E40
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
 from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
 from rob_box_voice.tts_voice_registry import (  # noqa: E402
-    ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voices_for,
+    ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voice_id_by_name, voices_for,
 )
 
 WAKE_WORDS_YAML = REPO / "docker" / "sound" / "config" / "wake_words.yaml"
@@ -360,6 +360,7 @@ class FakeTools:
                 return self._voice_outcome("already_default", voice, voice, provider,
                                            phrases.text("voice.already_default"), True)
         current = stand.session.snapshot.voice.applied or default_voice_for(stand.voice_provider)
+        voice = voice_id_by_name(provider, voice) or voice  # имя каталога («Весельчак») -> id, как у владельца (#4086)
         if voice not in voices_for(provider):
             return self._voice_outcome("unavailable", voice, current, stand.voice_provider,
                                        phrases.text("voice.unavailable", requested=voice, applied=current), False)

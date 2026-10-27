@@ -36,6 +36,7 @@ try:
         resolve_voice,
         robot_default_voice,
         voices_for,
+        voices_info_for,
     )
 except ImportError:  # pragma: no cover — fallback для minimal environments
     def default_voice_for(provider: str) -> str:
@@ -48,6 +49,9 @@ except ImportError:  # pragma: no cover — fallback для minimal environments
         return (requested or ""), False
 
     def voices_for(provider: str) -> list:
+        return []
+
+    def voices_info_for(provider: str) -> list:
         return []
 
     def providers_overview(active: str = "") -> list:
@@ -1485,11 +1489,13 @@ class ListTtsVoicesTool(MCPTool):
                 ),
             )
         voices = voices_for(target_provider)
+        names = {info["voice_id"]: info["display_name"] for info in voices_info_for(target_provider)}
         return MCPToolResult(
             success=True,
             data={
                 "provider": target_provider,
                 "voices": voices,
+                "names": names,  # id -> русское имя каталога (#4086): голос можно называть и им, id найдёт код
                 "default_voice": default_voice,
             },
             message=(

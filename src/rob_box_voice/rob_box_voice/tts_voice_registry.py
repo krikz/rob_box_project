@@ -20,6 +20,8 @@ tts_voice_registry.py — единый реестр голосов TTS-пров�
   список меняется на голоса нового провайдера.
 * Неизвестный/недоступный голос → **дефолтный голос провайдера** + в
   результате ``voice_used`` сообщает фактический (Q6).
+* Голос называют id или ИМЕНЕМ: русское ``display_name`` («Весельчак»), хвост id («Jovialman»), запись из
+  ``VOICE_ALIASES`` («джовиалмен»). Имя в id переводит код (``voice_id_by_name``, #4086), а не модель.
 
 Дефолтные голоса зеркалят ``src/rob_box_voice/config/tts_node.yaml``:
 yandex → anton, minimax → male-qn-qingse, silero → aidar.
@@ -27,6 +29,7 @@ yandex → anton, minimax → male-qn-qingse, silero → aidar.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # ── Реестр голосов по провайдерам ────────────────────────────────────────────
@@ -57,6 +60,11 @@ PROVIDER_VOICES: dict[str, list[str]] = {
         "Russian_AttractiveGuy", "Russian_Bad-temperedBoy",      # male
         "Russian_BrightHeroine", "Russian_AmbitiousWoman",
         "Russian_CrazyQueen", "Russian_PessimisticGirl",         # female
+        # голоса каста марафона (#3992): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
+        # ``.github/workflows/scripts/e2e_voice_lib.sh``). В каталоге робота они с #4086: «говори голосом Весельчак»
+        # без записи здесь честно отвечало «такого голоса нет». Нерусские: русский текст читают с акцентом.
+        "English_Jovialman", "English_WiseScholar", "Chinese (Mandarin)_Gentle_Senior",   # male, male, female
+        "English_Whispering_girl", "Portuguese_StrictBoss",                               # female, female
         # legacy (работают, но нет в актуальном списке):
         "male-qn-qingse", "female-shaonv",
     ],
@@ -116,6 +124,13 @@ VOICE_METADATA: dict[str, "VoiceInfo"] = {
     "minimax:Russian_AmbitiousWoman":      {"display_name": "Амбициозная женщина",   "language": "ru-RU", "gender": "female", "presets": ["standard", "authoritative"]},
     "minimax:Russian_CrazyQueen":          {"display_name": "Безумная королева",     "language": "ru-RU", "gender": "female", "presets": ["authoritative"]},
     "minimax:Russian_PessimisticGirl":     {"display_name": "Пессимистичная девушка","language": "ru-RU", "gender": "female", "presets": ["whisper", "standard"]},
+    # Голоса каста марафона (#3992, #4086): язык - НАТИВНЫЙ язык голоса (русский он читает с акцентом), поэтому в роли
+    # сказки (``role_voices_for``, #3998) они не идут; пол - по замеру живого канала (docs/dialog/role_voices_biometrics_2026-10-26.md).
+    "minimax:English_Jovialman":           {"display_name": "Весельчак",             "language": "en", "gender": "male",   "presets": ["standard", "friendly"]},
+    "minimax:English_WiseScholar":         {"display_name": "Мудрый учёный",         "language": "en", "gender": "male",   "presets": ["standard", "authoritative"]},
+    "minimax:Chinese (Mandarin)_Gentle_Senior": {"display_name": "Добрая бабушка",   "language": "zh-CN", "gender": "female", "presets": ["standard", "friendly"]},
+    "minimax:English_Whispering_girl":     {"display_name": "Шёпот",                 "language": "en", "gender": "female", "presets": ["whisper", "standard"]},
+    "minimax:Portuguese_StrictBoss":       {"display_name": "Строгая начальница",    "language": "pt", "gender": "female", "presets": ["authoritative", "standard"]},
     "minimax:male-qn-qingse":              {"display_name": "Qingse (legacy)",       "language": "zh-CN", "gender": "male",   "presets": ["standard"]},
     "minimax:female-shaonv":               {"display_name": "Shaonv (legacy)",       "language": "zh-CN", "gender": "female", "presets": ["standard"]},
     # Silero v5 — speaker id (aidar/baya/kseniya/xenia/eugene).
@@ -125,6 +140,52 @@ VOICE_METADATA: dict[str, "VoiceInfo"] = {
     "silero:xenia":   {"display_name": "Ксения (v5)",         "language": "ru-RU", "gender": "female", "presets": ["standard", "friendly"]},
     "silero:eugene":  {"display_name": "Евгений (v5)",        "language": "ru-RU", "gender": "male",   "presets": ["standard", "authoritative"]},
 }
+
+#: Другие имена голосов, которыми их называют люди и STT: кириллическая запись латинского имени. Остальные имена код берёт
+#: сам - сам id, его хвост после первого «_» («Jovialman») и ``display_name``. Ключ - как у ``VOICE_METADATA``.
+VOICE_ALIASES: dict[str, tuple[str, ...]] = {
+    "minimax:English_Jovialman": ("Джовиалмен", "Джовиалмэн"),
+    "minimax:English_WiseScholar": ("Вайз Скулар",),
+    "minimax:Chinese (Mandarin)_Gentle_Senior": ("Джентл Сениор",),
+    "minimax:English_Whispering_girl": ("Виспериг гёрл",),
+    "minimax:Portuguese_StrictBoss": ("Стрикт Босс",),
+}
+
+_NAME_NOISE = re.compile(r"[\W_]+")
+
+
+def _name_key(text: object) -> str:
+    """Ключ сравнения имён голосов: без регистра, ``ё`` = ``е``, без пробелов, скобок, дефисов и подчёркиваний."""
+    return _NAME_NOISE.sub("", str(text or "").casefold().replace("ё", "е"))
+
+
+def _names_of(provider: str, voice_id: str) -> set[str]:
+    """Все ключи имён одного голоса: id, хвост id, ``display_name``, ``VOICE_ALIASES``."""
+    key = f"{provider}:{voice_id}"
+    meta = VOICE_METADATA.get(key) or {}
+    names = (voice_id, voice_id.split("_", 1)[-1], meta.get("display_name", ""), *VOICE_ALIASES.get(key, ()))
+    return {k for k in map(_name_key, names) if k}
+
+
+def _build_name_index() -> dict[str, dict[str, set[str]]]:
+    index: dict[str, dict[str, set[str]]] = {}
+    for provider, ids in PROVIDER_VOICES.items():
+        by_name = index.setdefault(provider, {})
+        for voice_id in ids:
+            for name in _names_of(provider, voice_id):
+                by_name.setdefault(name, set()).add(voice_id)
+    return index
+
+
+#: ``провайдер -> ключ имени -> id голосов с таким именем``; строится кодом из каталога, отдельной таблицы имён нет.
+_NAME_INDEX: dict[str, dict[str, set[str]]] = _build_name_index()
+
+
+def voice_id_by_name(provider: str, name: object) -> str:
+    """id голоса каталога провайдера по id или по имени («Весельчак», «Jovialman», «джовиалмен»); не нашёлся или имя
+    у двух голосов - ``""``. Угадывать не пытаемся: решение «этого голоса нет» - за кодом, не за моделью (#4086)."""
+    ids = _NAME_INDEX.get(provider, {}).get(_name_key(name), set())
+    return next(iter(ids)) if len(ids) == 1 else ""
 
 
 def language_of(provider: str, voice_id: str) -> str:
@@ -291,17 +352,20 @@ def resolve_voice(provider: str, requested: str | None) -> tuple[str, bool]:
 
     Args:
         provider: имя провайдера ("yandex" | "minimax" | "silero").
-        requested: запрошенный голос (может быть None / пустой строкой).
+        requested: запрошенный голос - id или имя каталога (может быть None / пустой строкой).
 
     Returns:
         ``(voice_used, fell_back)``:
-        * ``voice_used`` — голос, который реально будет использован;
+        * ``voice_used`` — голос, который реально будет использован (id каталога, даже если просили именем);
         * ``fell_back`` — True, если запрошенный голос неизвестен/недоступен
           у провайдера и пришлось откатиться на дефолт (Q6).
     """
     voices = voices_for(provider)
     if requested and requested in voices:
         return requested, False
+    named = voice_id_by_name(provider, requested)
+    if named:
+        return named, False
     return default_voice_for(provider), True
 
 

@@ -39,6 +39,7 @@ from rob_box_llm.provider import LLMResponse, ProviderCapabilities, ToolCall  # 
 from rob_box_llm.providers.fake import FakeLLMProvider  # noqa: E402
 from rob_box_voice.core import command_bridge  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, Counted  # noqa: E402
+from rob_box_voice.tts_voice_registry import PROVIDER_LABELS, PROVIDER_VOICES  # noqa: E402
 
 
 def command(args: dict) -> LLMResponse:
@@ -394,7 +395,9 @@ def test_3883_still_long_after_retry_code_says_summary_not_silence(make_env):
     report = env.run(VOICES_Q)
     assert report.said, "робот промолчал"
     spoken = " ".join(report.said)
-    assert "Яндекс — 13" in spoken and "MiniMax — 10" in spoken and "Silero — 5" in spoken
+    # числа - из реестра (один источник, #4086: каст каталога растёт), не вписаны руками: новый голос не ломает тест
+    for provider in ("yandex", "minimax", "silero"):
+        assert f"{PROVIDER_LABELS[provider]} — {len(PROVIDER_VOICES[provider])}" in spoken, (provider, spoken)
     assert "Назвать какие-нибудь?" in spoken
     assert not any("invalid_command" in str(s) for s in env.stand.ports.stages)
 
@@ -499,6 +502,16 @@ def test_unknown_voice_is_refused_by_the_owner_and_not_applied(make_env):
     heard = env.hear("Робот, говори голосом без имени.")
     assert heard.outcomes == [("set_voice", "rejected", "voice_unavailable")] and "недоступен" in heard.said[0]
     assert env.stand.session.snapshot.voice.applied is None
+
+
+def test_cast_voice_named_by_catalog_name_is_applied_by_id_like_the_owner_does(make_env):
+    """#4086: сухой стенд не расходится с владельцем голоса: «Весельчак» (имя каталога) -> id ``English_Jovialman``."""
+    args = {"actions": [{"tool": "set_voice", "args": {"voice": "Весельчак", "provider": "minimax"}}]}
+    env = make_env(lambda env, msgs, tools: args)
+    heard = env.hear("Робот, говори голосом Весельчак.")
+    assert heard.outcomes == [("set_voice", "done", None)]
+    assert env.stand.voice_provider == "minimax" and env.stand.session.snapshot.voice.applied == "English_Jovialman"
+    assert "English_Jovialman" in heard.said[0]
 
 
 def test_expect_backlog_step_fails_when_the_phrase_is_addressed(make_env):
