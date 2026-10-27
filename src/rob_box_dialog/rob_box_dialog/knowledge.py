@@ -1518,6 +1518,22 @@ class Reflex:
     ttl_ms: Optional[int] = None
 
 
+#: Музыкальные сцены лица (§5.5.5, #4010) - ОДНА таблица знания, ею пользуются ``face_director`` (лицо во время трека),
+#: ``expression`` (лицо на ``executing`` музыки) и рефлексы ниже. ``MUSIC_SCENE_BPM``: верхняя граница BPM (не включая) ->
+#: сцена, с которой лицо НАЧИНАЕТ трек; на слух Шифу. Порядок строк - порядок ротации ``MUSIC_SCENES``: треки сетов идут на
+#: одном темпе (130 BPM у синтеза, сгенерированный файл играет на темпе деки), и сцена только по темпу весь сет была одной
+#: (``music_shades``, 24.10). Дальше лицо ходит по кругу независимо от темпа: каждый новый трек - на шаг, каждые
+#: ``MUSIC_SCENE_HOLD_S`` секунд трека - ещё на шаг (``expression.music_scene``). Темпа нет - ``MUSIC_DEFAULT_BPM``.
+MUSIC_SCENE_BPM: Tuple[Tuple[float, str], ...] = ((100.0, "music_vibe"), (125.0, "music_groove"),
+                                                  (float("inf"), "music_shades"))
+MUSIC_SCENES: Tuple[str, ...] = tuple(scene for _, scene in MUSIC_SCENE_BPM)
+MUSIC_DEFAULT_BPM = 118.0
+#: Через сколько секунд трека лицо переходит на следующую музыкальную сцену: сцена играет цикл 8 с (``face.states``),
+#: 30 с - почти четыре цикла и 16 тактов на 130 BPM; на слух не проверено. ``MUSIC_SCENE_MIN_S`` - пол: сцена держится не
+#: короче, даже когда ротация по времени и смена трека выпали рядом (без мерцания); два цикла сцены.
+MUSIC_SCENE_HOLD_S = 30.0
+MUSIC_SCENE_MIN_S = 16.0
+
 #: Стадия хода / состояние → рефлекс. ``thinking``: зубы или орбита — выбор Шифу (В13), старт с зубов.
 REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "idle": Reflex(("idle_stare", "idle_bored"), ring="breath", after_ms=3000),
@@ -1529,7 +1545,7 @@ REFLEXES: Mapping[str, Reflex] = MappingProxyType({
     "failed": Reflex(("error",), ring="flash_red", earcon="fail", ttl_ms=4000),
     "timeout": Reflex(("sad",), ring="flash_red", earcon="fail", ttl_ms=4000),
     "silenced": Reflex(("taped_mouth",), ring="silence"),
-    "music.playing": Reflex(("music_groove", "music_shades", "music_vibe"), ring="beat_pulse"),
+    "music.playing": Reflex(MUSIC_SCENES, ring="beat_pulse"),
     "not_addressed": Reflex(()),
     "battery.low": Reflex(("low_battery",)),
     "charging": Reflex(("charging",)),
@@ -1546,11 +1562,8 @@ FACE_SCENE_CANCEL_SCENES: Tuple[str, ...] = tuple(
 #: Сцена лица на стадии ``executing`` по классу действия; класса нет — ``REFLEXES["executing"]``.
 EXECUTING_FACE: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "action.motion": ("turn_left", "turn_right", "accelerating"),
-    "action.media": ("music_groove", "music_shades", "music_vibe"),
+    "action.media": MUSIC_SCENES,
 })
-#: Музыка (§5.5.5): верхняя граница BPM (не включая) → сцена; на слух Шифу.
-MUSIC_SCENE_BPM: Tuple[Tuple[float, str], ...] = ((100.0, "music_vibe"), (125.0, "music_groove"),
-                                                  (float("inf"), "music_shades"))
 #: Стадии хода (``TurnEvent.stage``, §2.3), на которые есть рефлекс.
 TURN_STAGES: Tuple[str, ...] = ("addressed", "thinking", "executing", "speaking", "done", "failed", "timeout")
 
