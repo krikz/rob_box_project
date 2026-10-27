@@ -43,6 +43,13 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from rob_box_dialog_msgs.msg import SpeechEvent  # заглушка из .msg (test/conftest.py) или rosidl
+
+
+def _speech(node, kind: int, sid: str = "s1", agent: str = "personality") -> None:
+    """SpeechEvent владельца речи через подписку ноды на /voice/speech/event — вход эхо-гейта (PR-15 15-0b)."""
+    node.subscriptions_by_topic["/voice/speech/event"](SpeechEvent(kind=kind, speech_id=sid, agent=agent))
+
 
 # ---------------------------------------------------------------------------
 # Общий rclpy/pyaudio стаб (тот же подход, что test_audio_node_first_capture.py
@@ -211,7 +218,14 @@ def _make_audio_node_stub(**param_overrides):
         debug=lambda *a, **kw: None,
     )
     node.create_publisher = lambda *a, **kw: MagicMock()
-    node.create_subscription = lambda *a, **kw: MagicMock()
+    # подписки по топику: SpeechEvent доставляется через настоящую подписку ноды (watch_speaking)
+    node.subscriptions_by_topic = {}
+
+    def _subscribe(msg_type, topic, callback, *a, **kw):
+        node.subscriptions_by_topic[topic] = callback
+        return MagicMock()
+
+    node.create_subscription = _subscribe
     node.create_timer = lambda *a, **kw: MagicMock()
     node.get_clock = lambda: MagicMock(now=MagicMock(return_value=MagicMock(nanoseconds=0)))
 
@@ -555,9 +569,7 @@ class TestNoFalsePositiveDuringTtsMute:
         audio_node._reopen_audio_stream = MagicMock()
 
         # TTS начал говорить — issue #993/#989 гейтит VAD, но НЕ callback.
-        playing = MagicMock()
-        playing.data = "playing"
-        audio_node._on_tts_state(playing)
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
         assert audio_node.tts_active is True
 
         # Callback продолжает вызываться каждые 256ms в течение TTS,

@@ -31,6 +31,13 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from rob_box_dialog_msgs.msg import SpeechEvent  # заглушка из .msg (test/conftest.py) или rosidl
+
+
+def _speech(node, kind: int, sid: str = "s1", agent: str = "personality") -> None:
+    """SpeechEvent владельца речи через подписку ноды на /voice/speech/event — вход эхо-гейта (PR-15 15-0b)."""
+    node.subscriptions_by_topic["/voice/speech/event"](SpeechEvent(kind=kind, speech_id=sid, agent=agent))
+
 
 _OPTIONAL_DEPS = {
     "rclpy": True,
@@ -202,7 +209,14 @@ def _make_audio_node_stub(**param_overrides):
         debug=lambda *a, **kw: None,
     )
     node.create_publisher = lambda *a, **kw: MagicMock()
-    node.create_subscription = lambda *a, **kw: MagicMock()
+    # подписки по топику: SpeechEvent доставляется через настоящую подписку ноды (watch_speaking)
+    node.subscriptions_by_topic = {}
+
+    def _subscribe(msg_type, topic, callback, *a, **kw):
+        node.subscriptions_by_topic[topic] = callback
+        return MagicMock()
+
+    node.create_subscription = _subscribe
     node.create_timer = lambda *a, **kw: MagicMock()
     node.get_clock = lambda: MagicMock(now=MagicMock(return_value=MagicMock(nanoseconds=0)))
 
@@ -419,9 +433,7 @@ class TestPrefetchTtsEcho:
             audio_node.audio_callback(_speech_chunk(0x40), 4096, {}, 0)
         assert audio_node.speech_prefetch_buffer
 
-        playing = MagicMock()
-        playing.data = "playing"
-        audio_node._on_tts_state(playing)
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
 
         assert audio_node.speech_prefetch_buffer == b""
 
@@ -429,30 +441,24 @@ class TestPrefetchTtsEcho:
         """После TTS pre-roll чистится — хвост собственного голоса
         (эхо) не должен стать pre-roll'ом первого захвата."""
         audio_node.is_running = True
-        # Робот говорил → pre-roll наполнен его голосом
+        # TTS зазвучал (SpeechEvent started) → робот говорит → pre-roll наполнен его голосом
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
         for _ in range(4):
             audio_node.audio_callback(_speech_chunk(0x50), 4096, {}, 0)
         assert audio_node.speech_prefetch_buffer
 
-        # TTS был активен, теперь закончился
-        audio_node.tts_active = True
-        ready = MagicMock()
-        ready.data = "ready"
-        audio_node._on_tts_state(ready)
+        # теперь реплика закончилась
+        _speech(audio_node, SpeechEvent.KIND_FINISHED)
 
         assert audio_node.tts_active is False
         assert audio_node.speech_prefetch_buffer == b""
 
     def test_prefetch_clean_after_tts_cycle(self, audio_node):
-        """Полный цикл TTS (playing → ready) → pre-roll пуст и наполняется
+        """Полный цикл речи (started → finished) → pre-roll пуст и наполняется
         уже чистой тишиной/речью пользователя, без эха."""
         audio_node.is_running = True
-        playing = MagicMock()
-        playing.data = "playing"
-        audio_node._on_tts_state(playing)
-        ready = MagicMock()
-        ready.data = "ready"
-        audio_node._on_tts_state(ready)
+        _speech(audio_node, SpeechEvent.KIND_STARTED)
+        _speech(audio_node, SpeechEvent.KIND_FINISHED)
 
         assert audio_node.speech_prefetch_buffer == b""
 

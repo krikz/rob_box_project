@@ -5,8 +5,8 @@ Runs in the ``led-matrix`` container on Vision Pi next to the compositor
 for a frame and publishes the panels that changed to ``/panel_image``
 (``sensor_msgs/Image`` rgb8, ``frame_id`` = logical group), one publisher.
 
-Inputs: ``/voice/speech/envelope`` + ``/voice/speech/event`` (mouth by the real
-voice), ``/voice/tts/state`` (transitional «speaking»), ``/audio/direction`` +
+Inputs: ``/voice/speech/envelope`` (mouth by the real voice) + ``/voice/speech/event``
+(«speaking» while a reply sounds; ``cancelled`` shuts the mouth), ``/audio/direction`` +
 ``/audio/vad`` (look at the speaker), ``/voice/music/state`` (music scenes by
 tempo),
 ``/voice/expression/request`` (``ExpressionRequest``; answered with ``ExpressionEvent{executor=face}``),
@@ -38,7 +38,7 @@ from .face_director import FaceDirector, GazeTrack, parse_animation_request
 
 VOICE_OWNER_TOPIC = '/voice/speech/event'
 #: Publishers in the graph that mean «voice-assistant is up» (tts_node, audio_node).
-VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/voice/tts/state', '/audio/direction')
+VOICE_PRESENCE_TOPICS = (VOICE_OWNER_TOPIC, '/audio/direction')
 #: Азимут собеседника из ``/dialog/session`` (ADR-0150 §7.5, #3695) держит взгляд столько секунд: сырой DOA
 #: (``/audio/direction``) в это время взгляд не уводит — собеседник важнее последнего звука в комнате.
 SPEAKER_GAZE_HOLD_S = 4.0
@@ -112,7 +112,6 @@ class FaceNode(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(SpeechEnvelope, '/voice/speech/envelope', self._on_envelope, 10)
         self.create_subscription(SpeechEvent, VOICE_OWNER_TOPIC, self._on_speech_event, 10)
-        self.create_subscription(String, '/voice/tts/state', self._on_tts_state, 10)
         self.create_subscription(Int32, '/audio/direction', self._on_direction, 10)
         self.create_subscription(SessionState, '/dialog/session', self._on_session, latched)
         self.create_subscription(Bool, '/audio/vad', self._on_vad, 10)
@@ -128,14 +127,7 @@ class FaceNode(Node):
         self.director.on_envelope(msg.speech_id, t0, msg.frame_ms, msg.levels, msg.vowel_hint, time.time())
 
     def _on_speech_event(self, msg) -> None:
-        now = time.time()
-        if msg.kind == SpeechEvent.KIND_CANCELLED:
-            self.director.on_speech_cancelled(msg.speech_id, now)
-        else:
-            self.director.voice_seen(now)
-
-    def _on_tts_state(self, msg) -> None:
-        self.director.on_tts_state(msg.data, time.time())
+        self.director.on_speech_event(msg, time.time())
 
     def _on_direction(self, msg) -> None:
         now = time.time()

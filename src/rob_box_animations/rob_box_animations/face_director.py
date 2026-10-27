@@ -7,7 +7,7 @@ clocks are kept in sync by chrony).
 
 Priority, highest first: side test frame > ``sleep`` (no voice owner for
 ``voice_timeout_s``) > ``wakeup`` (start / voice is back) > LLM face scene (``apply_face``, slots of
-``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (TTS) >
+``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (``SpeechEvent`` / envelope) >
 requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
 ``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > silence (taped mouth, #3984) > music > idle. Rear lights outside the scenes
 that draw their own: manual ``set_rear`` (for ``duration_s``) > ``rear_theme`` parameter > holiday calendar.
@@ -20,6 +20,7 @@ from typing import Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from rob_box_core.speech_client import ANY_AGENT, SpeakingWatch, event_outcome
 from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S
 
@@ -188,7 +189,11 @@ class FaceDirector:
         self.mouth, self.music, self.gaze = MouthTrack(), MusicTrack(), gaze or GazeTrack()
         self.drive, self.battery, self.tz_offset_h = DriveTracker(), BatteryWatch(), tz_offset_h
         self._rear: Optional[Tuple[str, float]] = None
-        self._tts_until = -math.inf
+        # «говорит» — пока звучит реплика любого агента (SpeechEvent started ... finished|cancelled|rejected);
+        # часы наблюдателя — время директора (epoch, как у огибающей), ими отсекается потерянный конец реплики
+        self._now = now
+        self._speech = SpeakingWatch(ANY_AGENT, clock=lambda: self._now)
+        self._speech_hang_until = -math.inf
         self._voice_seen = now          # grace: the voice owner has voice_timeout_s to show up
         self._asleep = False
         self._wake_until = now + SCENES['wakeup'].period
@@ -207,27 +212,27 @@ class FaceDirector:
         """Any sign of the voice owner (a message, a publisher in the graph)."""
         self._voice_seen = now
 
-    def on_tts_state(self, state: str, now: float) -> None:
-        """``/voice/tts/state`` — transitional source of «speaking» next to the envelope."""
+    def on_speech_event(self, event, now: float) -> None:
+        """``SpeechEvent`` of the speech owner: the face talks while a reply of any agent sounds
+        (``SpeakingWatch``: ``started`` ... ``finished|cancelled|rejected``).
+
+        The end of the last reply keeps the face talking for ``speaking_hang_s``: replies of one answer come one after
+        another, without the hang the face flickers to idle at every boundary. ``cancelled`` drops that reply's
+        envelope and, if nothing else sounds, shuts the mouth at once (≤ 80 ms, A25).
+        """
         self.voice_seen(now)
-        if state in ('synthesizing', 'playing'):
-            self._tts_until = math.inf
-        elif state in ('stopped',):
-            self._tts_until = now
-            self.mouth.cancel()
-        elif state in ('ready', 'idle', 'tts_silero_warming'):
-            # chunks of one reply come as ready -> synthesizing 25–79 ms apart:
-            # without the hang the face flickers to idle at every chunk boundary
-            self._tts_until = min(self._tts_until, now + self.speaking_hang_s)
+        self._now = now
+        edge = self._speech.on_event(event)
+        if event_outcome(event)[0] == 'cancelled':
+            self.mouth.cancel(str(getattr(event, 'speech_id', '') or ''))
+            if not self._speech.speaking:
+                self._speech_hang_until = now
+        elif edge is False:
+            self._speech_hang_until = now + self.speaking_hang_s
 
     def on_envelope(self, speech_id: str, t0: float, frame_ms: int, levels, vowels, now: float) -> None:
         self.voice_seen(now)
         self.mouth.add(speech_id, t0, frame_ms, levels, vowels)
-
-    def on_speech_cancelled(self, speech_id: str, now: float) -> None:
-        self.voice_seen(now)
-        self.mouth.cancel(speech_id)
-        self._tts_until = now
 
     def on_music_state(self, raw: str, now: float) -> bool:
         return self.music.on_state(raw)
@@ -292,7 +297,10 @@ class FaceDirector:
 
     # -- choice ---------------------------------------------------------------
     def speaking(self, now: float) -> bool:
-        return now < self._tts_until or now < self.mouth.until() + self.speaking_hang_s
+        self._now = now
+        if self._speech.speaking or now < self._speech_hang_until:
+            return True
+        return now < self.mouth.until() + self.speaking_hang_s
 
     def _voice_alive(self, now: float) -> bool:
         alive = now - self._voice_seen < self.voice_timeout_s

@@ -9,8 +9,17 @@ import pytest
 
 from rob_box_animations.face_director import (FaceDirector, GazeTrack, MouthTrack, MusicTrack,
                                               parse_animation_request)
+from rob_box_core.msg_stub import build_dialog_msgs_module
 
 T0 = 1_800_000_000.0     # epoch seconds, like envelope t0 / player started_at
+SpeechEvent = build_dialog_msgs_module().SpeechEvent   # built from the real .msg: same kinds as the owner sends
+QUEUED, SYNTHESIZED, STARTED = SpeechEvent.KIND_QUEUED, SpeechEvent.KIND_SYNTHESIZED, SpeechEvent.KIND_STARTED
+FINISHED, CANCELLED, REJECTED = SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED
+
+
+def speech(d: FaceDirector, kind: int, now: float, sid: str = 's1', agent: str = 'personality') -> None:
+    """SpeechEvent of the speech owner (tts_node) as face_node hands it to the director."""
+    d.on_speech_event(SpeechEvent(kind=kind, speech_id=sid, agent=agent), now)
 
 
 def awake(**kw) -> FaceDirector:
@@ -42,30 +51,75 @@ def test_never_seen_voice_owner_sleeps_after_timeout():
     assert d.choose(T0 + 10.5)[0] == 'sleep'
 
 
-def test_tts_state_speaking_with_debounce_between_chunks():
+def test_speech_event_speaking_with_hang_between_replies():
+    """PR-15 15-0b: «speaking» = a reply sounds (started ... finished); the hang bridges the replies of one answer."""
     d = awake()
     now = T0 + 8
-    d.on_tts_state('synthesizing', now)
+    speech(d, STARTED, now)
     assert d.choose(now)[0] == 'talk_jaw'
-    d.on_tts_state('ready', now + 1.0)
-    assert d.choose(now + 1.3)[0] == 'talk_jaw'          # 0.6 s hang: no flicker between chunks
-    d.on_tts_state('synthesizing', now + 1.35)
+    speech(d, FINISHED, now + 1.0)
+    assert d.choose(now + 1.3)[0] == 'talk_jaw'          # 0.6 s hang: no flicker between replies
+    speech(d, STARTED, now + 1.35, sid='s2')
     assert d.choose(now + 2.5)[0] == 'talk_jaw'
-    d.on_tts_state('ready', now + 3.0)
+    speech(d, FINISHED, now + 3.0, sid='s2')
     assert d.choose(now + 3.7)[0] == 'idle_stare'
 
 
-def test_stopped_ends_speech_at_once_and_shuts_the_mouth():
+def test_synthesis_without_sound_is_not_speaking():
+    """queued / synthesized (pre-synthesis of a performance minutes ahead) does not open the talking face."""
+    d = awake()
+    speech(d, QUEUED, T0 + 8)
+    speech(d, SYNTHESIZED, T0 + 8.5)
+    assert d.choose(T0 + 9)[0] == 'idle_stare'
+
+
+def test_rejected_reply_ends_speech_like_finished():
+    d = awake()
+    speech(d, STARTED, T0 + 8)
+    speech(d, REJECTED, T0 + 9)
+    assert d.choose(T0 + 9.7)[0] == 'idle_stare'
+
+
+def test_any_agent_speaks_and_overlapping_replies_end_with_the_last_one():
+    """The speaker plays every agent (personality, operator, telegram /say, system): the face talks for all of them."""
+    d = awake()
+    speech(d, STARTED, T0 + 8, sid='p')
+    speech(d, STARTED, T0 + 8.2, sid='op', agent='operator')
+    speech(d, FINISHED, T0 + 9, sid='p')
+    assert d.choose(T0 + 10)[0] == 'talk_jaw'             # operator still sounds
+    speech(d, FINISHED, T0 + 10.5, sid='op', agent='operator')
+    assert d.choose(T0 + 11.2)[0] == 'idle_stare'
+
+
+def test_cancelled_ends_speech_at_once_and_shuts_the_mouth():
     d = awake()
     now = T0 + 8
     d.on_envelope('s1', now, 40, [0.3] * 100, [], now)
-    d.on_tts_state('playing', now)
+    speech(d, STARTED, now)
     for k in range(5):
         d.choose(now + 0.04 * k)
     assert d.mouth.level(now + 0.2)[0] > 0.5
-    d.on_tts_state('stopped', now + 0.25)
+    speech(d, CANCELLED, now + 0.25)
     assert d.mouth.level(now + 0.26)[0] < 0.05
     assert not d.speaking(now + 0.26)
+
+
+def test_cancel_of_one_reply_keeps_the_face_talking_while_another_sounds():
+    d = awake()
+    speech(d, STARTED, T0 + 8, sid='p')
+    speech(d, STARTED, T0 + 8.1, sid='op', agent='operator')
+    speech(d, CANCELLED, T0 + 8.5, sid='p')
+    assert d.speaking(T0 + 8.6)
+
+
+def test_lost_end_of_reply_does_not_keep_the_face_talking_forever():
+    """No finished (event lost): after SpeakingWatch's stale limit the face is idle again."""
+    from rob_box_core.speech_client import SPEAKING_STALE_S
+
+    d = awake()
+    speech(d, STARTED, T0 + 8)
+    assert d.speaking(T0 + 8 + SPEAKING_STALE_S - 1)
+    assert not d.speaking(T0 + 8 + SPEAKING_STALE_S + 1)
 
 
 def test_mouth_follows_the_envelope_window_of_real_speech():
@@ -105,14 +159,14 @@ def test_cancelled_speech_event_closes_mouth():
     d.on_envelope('s1', now, 40, [0.4] * 50, [], now)
     d.choose(now + 0.1)
     assert d.choose(now + 0.15)[1].mouth_level > 0.5
-    d.on_speech_cancelled('s1', now + 0.2)
+    speech(d, CANCELLED, now + 0.2)
     assert d.mouth.level(now + 0.24)[0] == 0.0             # mouth shut within one frame (A25: <= 80 ms)
     assert d.choose(now + 0.24)[0] == 'idle_stare'         # and the face stops talking at once
 
 
 def test_mouth_design_parameter():
     d = awake(mouth_design='voicebox')
-    d.on_tts_state('playing', T0 + 8)
+    speech(d, STARTED, T0 + 8)
     assert d.choose(T0 + 8)[0] == 'talk_voicebox'
 
 
@@ -142,10 +196,10 @@ def test_4083_request_without_seconds_holds_the_dialogue_show_default():
 def test_requested_emotion_while_speaking_becomes_the_tone():
     d = awake()
     d.request('happy', 5.0, T0 + 8)
-    d.on_tts_state('playing', T0 + 8)
+    speech(d, STARTED, T0 + 8)
     key, ctx = d.choose(T0 + 8.5)
     assert key == 'talk_jaw' and ctx.mood == 'happy'
-    d.on_tts_state('stopped', T0 + 9)
+    speech(d, CANCELLED, T0 + 9)
     assert d.choose(T0 + 9.1)[0] == 'happy'               # the request outlives the speech
 
 
@@ -178,7 +232,7 @@ def test_music_idle_and_finished_track_and_bad_json():
 def test_speech_wins_over_music():
     d = awake()
     d.on_music_state(_snap(dj={'bpm': 118}), T0 + 8)
-    d.on_tts_state('playing', T0 + 8)
+    speech(d, STARTED, T0 + 8)
     assert d.choose(T0 + 8.1)[0] == 'talk_jaw'
 
 
