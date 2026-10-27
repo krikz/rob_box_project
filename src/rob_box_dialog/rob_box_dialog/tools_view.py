@@ -7,7 +7,8 @@
 ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Слова с двумя владельцами («ускорь
 темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» и «запомни мой голос» открывают people
 (голос человека — не голос робота, ``knowledge.PERSON_VOICE_FORMS``, #4054); названия звуков («сирена») —
-sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
+sound (#3976; таблицы — ``knowledge``). Открытый вопрос тула («Удалить «X»?», ``tool_ask``, #4062) держит группу
+этого тула в срезе следующих ходов как названную. Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744). Голый неслышимый ответ
 (анимация или одна ``expression`` без слов), когда ни лицо словами не просили (:func:`face_asked`), ни ответа без слов
 (:func:`silent_asked`, #4083), - :func:`needs_words` (#3995, #3997).
@@ -29,22 +30,33 @@ if TYPE_CHECKING:  # только тип: срез тулов не тянет р
     from rob_box_dialog.command import Command
 
 
-def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = ()) -> Tuple[str, ...]:
-    """Группы среза: прямо названные словами человека (порядок ``TOOL_GROUPS``), затем сцены снимка, затем названные
-    только общим глаголом; ни одной — ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме
-    тех, что только по явной просьбе, ``TOOL_GROUPS_EXPLICIT``), иначе по умолчанию.
+def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
+               asked: Sequence[str] = ()) -> Tuple[str, ...]:
+    """Группы среза: прямо названные словами человека (порядок ``TOOL_GROUPS``) и группы тулов открытого вопроса
+    (``asked``, :func:`asked_groups`, #4062), затем сцены снимка, затем названные только общим глаголом; ни одной —
+    ``carry`` (группы прошлого хода: «я же просил про стрижей» — продолжение; кроме тех, что только по явной просьбе,
+    ``TOOL_GROUPS_EXPLICIT``), иначе по умолчанию.
 
     Сцена идёт ПОСЛЕ названных групп: срез режется по ``TOOLS_VISIBLE_MAX``, и играющий диджей-сет (6 музыкальных
     схем + 6 всегда-видимых = 12) иначе вытеснял тулы, о которых человек спросил прямо — «сколько заряда» под музыку
     не видел ``get_battery_level``, и LLM отвечала «заряд мне не виден» (#3857, run 39849541397).
     """
-    named = _under_music(snapshot, text, _named(text, "stems"))
+    named = _under_music(snapshot, text, _named(text, "stems")) | set(asked_groups(asked))
     scene = ({"music"} if _music_playing(snapshot) else set()) - named
     weak = _named(text, "weak") - named - scene
     if not named | scene | weak:
         named = {g for g in carry if g in kn.TOOL_GROUPS and g not in kn.TOOL_GROUPS_EXPLICIT}
         named = named or set(kn.TOOL_GROUPS_DEFAULT)
     return _ordered(named) + _ordered(scene) + _ordered(weak)
+
+
+def asked_groups(tools: Sequence[str]) -> Tuple[str, ...]:
+    """Группы, где лежат тулы открытого вопроса (``tool_ask.asked_tools``, #4062): на «Робот, да, удаляй» слов
+    группы нет, а тул спросил в прошлом ходе - его группа открыта, как названная (живой робот 27.10 14:47:
+    ``music_library`` вне среза, модель «удалила» речью без вызова). Голос (``TOOL_GROUPS_EXPLICIT``) - только по
+    словам человека."""
+    return _ordered({g for g, group in kn.TOOL_GROUPS.items()
+                     if g not in kn.TOOL_GROUPS_EXPLICIT and set(group.tools) & set(tools)})
 
 
 def _music_playing(snapshot: SessionSnapshot) -> bool:
@@ -203,18 +215,20 @@ def _ordered(names: set) -> Tuple[str, ...]:
 
 
 def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent: str = "personality",
-                    text: str = "", carry: Sequence[str] = ()) -> Tuple[ToolCatalogEntry, ...]:
+                    text: str = "", carry: Sequence[str] = (),
+                    asked: Sequence[str] = ()) -> Tuple[ToolCatalogEntry, ...]:
     """Тулы хода (≤ ``TOOLS_VISIBLE_MAX``) из среза агента: всегда-видимые, затем группы по приоритету.
 
     ``caps`` — возможности провайдера (``tools=False`` — тулов нет вовсе); ``None`` — не известны, тулы есть.
-    ``carry`` — группы прошлого хода (см. :func:`groups_for`).
+    ``carry`` — группы прошлого хода, ``asked`` — тулы открытого вопроса (см. :func:`groups_for`).
     """
     if snapshot.top("Silence") is not None or (caps is not None and not getattr(caps, "tools", True)):
         return ()
     allowed = set(tools_for(agent_spec(agent))) | set(kn.SPEECH_CHANNEL_TOOLS)
     names: List[str] = []
     drive = motion_named(text)
-    for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + tuple(t for g in groups_for(snapshot, text, carry) for t in kn.TOOL_GROUPS[g].tools):
+    grouped = tuple(t for g in groups_for(snapshot, text, carry, asked) for t in kn.TOOL_GROUPS[g].tools)
+    for name in kn.TOOLS_ALWAYS + kn.ALOUD_TOOLS + grouped:
         if name in kn.MOTION_TOOLS and not drive:
             continue
         if name in allowed and name not in names and len(names) < kn.TOOLS_VISIBLE_MAX:
@@ -222,5 +236,6 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["available_tools", "command_groups", "face_asked", "groups_for", "motion_named", "motion_refusal",
-           "needs_words", "requested_groups", "show_asked", "silent_asked", "voice_asked", "widen_for"]
+__all__ = ["asked_groups", "available_tools", "command_groups", "face_asked", "groups_for", "motion_named",
+           "motion_refusal", "needs_words", "requested_groups", "show_asked", "silent_asked", "voice_asked",
+           "widen_for"]

@@ -43,9 +43,13 @@ _NEEDS_TRACK = ("info", "play", "update", "delete")
 _VERDICT_RATING = {"like": kn.RATING_LIKE, "dislike": kn.RATING_DISLIKE}
 #: Действия, где ``track_id`` обязан быть из ответа самого тула (``list`` / ``search``), а не из памяти модели (#4025).
 _NAMED_ONLY = ("info", "update", "delete")
-#: Причины отказа (поле ``reason`` результата): по ним диалог выбирает фразу, а не по тексту ошибки.
+#: Причины отказа (поле ``reason`` результата): по ним диалог выбирает фразу (ключ ``music.library_fail.<причина>``
+#: каталога ``ru.yaml``), а не по тексту ошибки. ``NEEDS_CONFIRMATION`` - не провал, а вопрос человеку: диалог v2 ждёт
+#: ответа окном (``rob_box_dialog.knowledge.TOOL_QUESTIONS``, #4062) и сам шлёт ``confirm=true`` на «да, удаляй».
+#: Сверку с каталогом и таблицей диалога держит ``test/test_tools/test_gen_library.py``.
 UNKNOWN_TRACK = "unknown_track"
 NEEDS_CONFIRMATION = "needs_confirmation"
+REFUSAL_REASONS: Tuple[str, ...] = (UNKNOWN_TRACK, NEEDS_CONFIRMATION)
 #: Сколько названных id помнит окно: до 100 строк на вызов ``list`` / ``search``, последние вызовы разговора.
 NAMED_WINDOW_MAX = 200
 #: Вопрос «удалить?» ждёт ответа человека не дольше этого (с, по часам тула); дальше спрашиваем заново.
@@ -304,16 +308,17 @@ class MusicLibraryTool(MCPTool):
         return MCPToolResult(success=True, data=_brief(saved), message=f"Метаданные трека обновлены: {', '.join(fields)}.")
 
     def _delete(self, track_id: str, confirm: Any = False, **_: Any) -> MCPToolResult:
-        """Необратимо: без вопроса человеку не удаляем (:class:`DeleteConfirmation`), название трека - в вопросе."""
-        from rob_box_voice.core.media_phrases import library_delete_text
+        """Необратимо: без вопроса человеку не удаляем (:class:`DeleteConfirmation`). Отказ - причина и данные вопроса
+        (``track_id``, ``title``); текст вопроса - из каталога фраз (``media_phrases``), диалог v2 строит его сам по
+        причине (#4062)."""
+        from rob_box_voice.core.media_phrases import library_delete_question_text, library_delete_text
 
         info = self._library.get_track_info(track_id)
         if not info.get("success"):
             return MCPToolResult(success=False, error=info.get("error"))
         title = str(info.get("title") or "")
         if not self._delete_question.settle(track_id, confirm is True or str(confirm).lower() == "true"):
-            question = f"Удалить «{title}»? Скажи «да, удаляй»." if title else "Удалить этот трек? Скажи «да, удаляй»."
-            return _refused(NEEDS_CONFIRMATION, question, track_id=track_id, title=title, question=question)
+            return _refused(NEEDS_CONFIRMATION, library_delete_question_text(title), track_id=track_id, title=title)
         result = self._library.delete_track(track_id)
         if not result.get("success"):
             return MCPToolResult(success=False, error=result.get("error"))

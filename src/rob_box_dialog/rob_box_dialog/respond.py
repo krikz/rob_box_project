@@ -3,7 +3,8 @@
 Исполнитель отвечает :class:`ActionResult`; :func:`phrase_from_result` строит по нему реплику из каталога
 ``phrases/ru.yaml`` по ключу ``{класс}.{статус}[.{причина}]`` (или особому ключу тула, ``knowledge.TOOL_PHRASES``),
 :func:`join` собирает фразы нескольких действий хода в одну реплику. ``query`` с ``done`` фразы не даёт: данные
-уходят обратно LLM.
+уходят обратно LLM. Провал (:func:`failed`) грустит; отказ тула, который - вопрос человеку (:func:`asks`,
+``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал (#4062).
 """
 
 from __future__ import annotations
@@ -34,6 +35,18 @@ class ActionResult:
     reason: Optional[str] = None
     data: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     event_ref: Optional[str] = None
+
+
+def asks(result: ActionResult) -> bool:
+    """Отказ тула - вопрос человеку (``knowledge.TOOL_QUESTIONS``, #4062): «Удалить «X»? Скажи «да, удаляй».» -
+    ничего не провалилось, тул ждёт ответа."""
+    return result.status == "rejected" and (result.tool, result.reason) in kn.TOOL_QUESTIONS
+
+
+def failed(result: ActionResult) -> bool:
+    """Исход - провал (``rejected``/``timeout``): фраза о нём грустит, лицо команды его не красит (§5.5.1). Вопрос
+    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad`` (#4062)."""
+    return result.status in _FAILED and not asks(result)
 
 
 def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
@@ -97,7 +110,7 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
     text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,
-                     emotion="sad" if result.status in _FAILED else None)
+                     emotion="sad" if failed(result) else None)
 
 
 def audible(results: Sequence[ActionResult], speaks: bool) -> Sequence[ActionResult]:
