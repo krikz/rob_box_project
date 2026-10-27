@@ -47,7 +47,8 @@ REASON_WORDS = {
     "not_wired": "генерация у меня ещё не подключена",
     "mode_synth": "генерация выключена",
     "pending": "песня ещё пишется",
-    "silero_voice": "запасным голосом петь пока не умею",
+    # запись песни (генерация), а не пение вообще: вживую робот читает под синт и этим голосом (``LIVE_OFFER_BY_REASON``)
+    "silero_voice": "запасной голос для записи песен пока не годится",
     # песня голосом робота (``engine.gen.song``, ADR-0158 PR-7): наши причины провала
     "lyrics": "текст не сложился",
     "no_voice": "не знаю, каким голосом петь",
@@ -79,11 +80,19 @@ INSTRUCTIONS = ("Выбери, откуда взять музыку роботу
                 "ожидание 1-3 минуты, сохранится в библиотеке). Учитывай заказ и последние реплики: просили сохранить "
                 "или записать - генерация, просили быстро - вживую. У кандидатов - очки кода в одной шкале; обычно "
                 "лучший - с наибольшим итогом. Выбери один id.")
-#: Тул музыки получил просьбу спеть вживую (агент без формы пения диалога v2: чат, v1) — фраза кода вместо генерации.
-#: Пения не обещает (ревью #4071 круг 2 NIT-5): в этом агенте выступления может и не быть.
-LIVE_TOOL_TEXT = "Спеть вживую под синт — это не трек: генерацию для этого не запускаю."
+#: Тул музыки получил просьбу спеть вживую (агент без формы пения диалога v2: чат Telegram, оператор, v1) — фраза кода
+#: вместо генерации (#4090 G.2). Пения здесь не обещает (ревью #4071 круг 2 NIT-5: в этом агенте выступления нет) и не
+#: оставляет человека ни с чем: честно называет, где робот поёт вживую (вслух, у него), и что сказать, чтобы он спел.
+LIVE_TOOL_TEXT = ("Вживую под синт я пою только вслух, голосом у робота, — отсюда не выйдет: скажи ему «Робот, спой под "
+                  "синт». Генерацию для этого не запускаю.")
 #: Генерации песни нет (ключ, деньги, сервис) — другая клетка вилки Шифу 27.10: спеть самому вживую под синт.
 LIVE_OFFER = "Могу спеть сам вживую под синт."
+#: То же предложение, когда причина отказа - голос, а не сервис (#4090 G.1): запасной голос (Silero) песню для записи не
+#: поёт, но вживую робот читает под синт и им (``perform`` идёт через TTS любого провайдера, паузы без разметки), - так и
+#: говорим, а не «петь не умею» рядом с «могу спеть». Причина вне таблицы - :data:`LIVE_OFFER`.
+LIVE_OFFER_BY_REASON = {
+    "silero_voice": "Могу спеть сам вживую под синт — этим же голосом, без записи.",
+}
 
 
 _WORD_RE = re.compile(r"[^\W\d_]+")
@@ -1112,7 +1121,7 @@ def decline_text(route: Route) -> str:
         return LIVE_TOOL_TEXT
     head = _excuse(route) or f"Сыграть это сейчас не могу: {REASON_WORDS.get(route.gen_reason, 'нечем')}."
     if route.ask.vocal:
-        return f"{head} {LIVE_OFFER}"
+        return f"{head} {LIVE_OFFER_BY_REASON.get(route.gen_reason, LIVE_OFFER)}"
     offer = ", ".join(st.name for key, st in kn.GEN_STYLES.items()
                       if st.synth == key and kn.STYLES[key].synth_fit >= kn.SYNTH_FIT_MIN)
     return f"{head} Могу сыграть своё: {offer}."
@@ -1127,5 +1136,5 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "set_cache",
            "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
            "theme_cache", "theme_fit", "theme_title"]
-__all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
+__all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_OFFER_BY_REASON", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
             "sing_candidates", "sing_kind", "sing_markers", "synth_key"]
