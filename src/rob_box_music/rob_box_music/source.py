@@ -13,6 +13,13 @@
    кода. Провал генерации после выбора — :func:`choose_with_fallback` спрашивает ещё раз без ``generate:*`` (В3).
 4. Фразу о выбранном строит код (:func:`route_note`, :func:`cache_text`, :func:`decline_text`): если играет не то, что
    просили, фраза называет и просьбу, и причину.
+5. Вилка Шифу 27.10 (2×2, без отказа «движок так не играет»): синт назван — без пения синтез (жанр, который синт не
+   играет, — ближайшим стилем, :func:`synth_key`), с пением — ``live:song``/``live:rap`` (робот поёт сам: ``perform``
+   под синт-подложку); генерация — ``generate:(robot_)song`` с пением, ``generate:instrumental``/кэш без. Путь пения
+   (#4079): :func:`choose_sing` до основной модели диалога v2. Пение — узко, словами целиком (:func:`sing_kind`); маркеры
+   пути (``knowledge.SING_ROUTE_MARKERS`` по приоритету, слова движка ``MUSIC_ENGINES`` — живое всегда) сужают
+   кандидатов кодом; голое «спой» — чойсер с контекстом (последние реплики, играет ли музыка, жива ли генерация) и
+   перевесом живому (``sing_live``; жанр, который синт не играет, — перевес генерации ``synth_poor``).
 
 Модуль чистый (без сети и БД): кэш и деньги собирает ``rob_box_mcp_tools.engine.source_route``.
 """
@@ -28,6 +35,10 @@ from .choice import Choice, ChoiceQuestion, Chooser, Option
 from .theme import match_style_text
 
 SYNTH, CACHE, GENERATE, DECLINE = "synth", "cache", "generate", "decline"
+#: Живое пение робота (#4079): ``live:song``/``live:rap`` — исполняет диалог v2 (``perform`` под синт-подложку), не тул.
+LIVE = "live"
+#: Кто решил путь пения: слова или один кандидат — код; иначе ``chooser:<провайдер>``.
+BY_CODE = "code"
 #: Синтез-кандидат одиночной пьесы по названию (наш материал: партитура/RTTTL, годность — ADR-0157).
 PIECE = "piece"
 #: Почему кандидатов ``generate:*`` нет / генерация не вышла → слова для фразы. Причины провайдера —
@@ -62,11 +73,17 @@ REASON_WORDS = {
     "timeout": "генерация не уложилась по времени",
     "no_material": "мелодии для живой версии у меня нет",
     "theme_cache": "под тему хватает сочинённого раньше",
-    "engine_cannot": "названный движок так не играет",
 }
-INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
-                "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
-                "наибольшим итогом. Выбери один id.")
+INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), вживую (робот поёт сам под "
+                "синт: сразу и бесплатно, не сохранится), сгенерированное раньше (кэш) или новая генерация (кредиты и "
+                "ожидание 1-3 минуты, сохранится в библиотеке). Учитывай заказ и последние реплики: просили сохранить "
+                "или записать - генерация, просили быстро - вживую. У кандидатов - очки кода в одной шкале; обычно "
+                "лучший - с наибольшим итогом. Выбери один id.")
+#: Тул музыки получил просьбу спеть вживую (агент без формы пения диалога v2: чат, v1) — фраза кода вместо генерации.
+#: Пения не обещает (ревью #4071 круг 2 NIT-5): в этом агенте выступления может и не быть.
+LIVE_TOOL_TEXT = "Спеть вживую под синт — это не трек: генерацию для этого не запускаю."
+#: Генерации песни нет (ключ, деньги, сервис) — другая клетка вилки Шифу 27.10: спеть самому вживую под синт.
+LIVE_OFFER = "Могу спеть сам вживую под синт."
 
 
 _WORD_RE = re.compile(r"[^\W\d_]+")
@@ -89,8 +106,9 @@ def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
 class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
-    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»; ``tweak`` — просьба правит играющее («ускорь»,
-    «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
+    ``MUSIC_ENGINES``, названный человеком («на Ренардо», «на синтезаторе», «вживую»), или «»; ``tweak`` — просьба
+    правит играющее («ускорь», «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое; ``live`` —
+    петь вживую названо словами («спой под синт», «спой вживую», #4079): вид исполнения (``song``/``rap``) или «»."""
 
     generated: bool = False
     vocal: bool = False
@@ -100,15 +118,21 @@ class SourceAsk:
     genre: str = ""
     engine: str = ""
     tweak: bool = False
+    live: str = ""
 
     def describe(self) -> str:
-        flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own") if getattr(self, name)]
+        flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own", "live") if getattr(self, name)]
         return f"asked=[{','.join(flags)}] genre={self.genre or '—'}" + (f" engine={self.engine}" if self.engine else "")
+
+    @property
+    def asks_path(self) -> bool:
+        """Просьба называет иной путь, чем «играй сам»: «сгенерируй», «спой», «своим голосом», «новую», «сочини»."""
+        return self.generated or self.vocal or self.robot_voice or self.fresh or self.own
 
     @property
     def plain(self) -> bool:
         """Просьба не называет путь: ни «сгенерируй»/«спой»/«новую»/«сочини», ни жанра («ускорь», «добавь баса»)."""
-        return not (self.generated or self.vocal or self.robot_voice or self.fresh or self.own or self.genre)
+        return not (self.asks_path or self.genre)
 
 
 def ask_genre(text: str) -> str:
@@ -122,12 +146,17 @@ def ask_genre(text: str) -> str:
     return style if style in kn.GEN_STYLES else ""
 
 
+def _phrase_at(words: Sequence[str], i: int, parts: Sequence[str]) -> bool:
+    """Слова ``parts`` стоят в речи подряд, точно, начиная с позиции ``i`` (запись из нескольких слов таблицы)."""
+    return list(words[i:i + len(parts)]) == list(parts)
+
+
 def _has_phrase(words: Sequence[str], entry: str) -> bool:
     """Запись таблицы в речи: одно слово — основа (начало слова), несколько — эти слова подряд, точно."""
     parts = entry.split()
     if len(parts) == 1:
         return _has(words, parts)
-    return any(list(words[i:i + len(parts)]) == parts for i in range(len(words) - len(parts) + 1))
+    return any(_phrase_at(words, i, parts) for i in range(len(words)))
 
 
 def ask_tweak(text: str) -> bool:
@@ -137,7 +166,7 @@ def ask_tweak(text: str) -> bool:
 
 
 def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
-    """Слово речи называет движок: начинается с основы или содержит ядро (слово-двойник ядром не считается)."""
+    """Слово речи называет движок по имени: начинается с основы или содержит ядро (слово-двойник ядром не считается)."""
     if word.startswith(engine.stems):
         return True
     return not word.startswith(engine.lookalikes) and any(core in word for core in engine.cores)
@@ -164,29 +193,53 @@ def _joined_names_engine(engine: kn.MusicEngine, first: str, second: str) -> boo
             or any(_straddles(glued, len(first), core) for core in engine.cores))
 
 
-def engine_words(text: str) -> List[Tuple[str, int, int]]:
+def _meaning_hits(engine: kn.MusicEngine, words: Sequence[str]) -> List[Tuple[int, int]]:
+    """Слова по смыслу в речи (``MusicEngine.words``): ``(первое слово, слово после записи)``. Запись не берётся, если
+    следом слово из её списка: «на синт» перед «вейв» — составной стиль."""
+    hits: List[Tuple[int, int]] = []
+    for i in range(len(words)):
+        for entry, unless in engine.words.items():
+            parts = entry.split()
+            end = i + len(parts)
+            if _phrase_at(words, i, parts) and (words[end] if end < len(words) else "") not in unless:
+                hits.append((i, end))
+                break
+    return hits
+
+
+def _name_hits(engine: kn.MusicEngine, words: Sequence[str]) -> List[Tuple[int, int]]:
+    """Имя движка в речи (основы, ядра, склейка пары слов): ``(первое слово, слово после имени)``. Пары первыми: в «ре
+    нардо» второе слово само ядро, но «ре» — часть имени."""
+    pairs = [(i, i + 2) for i in range(len(words) - 1) if _joined_names_engine(engine, words[i], words[i + 1])]
+    return pairs + [(i, i + 1) for i, word in enumerate(words) if _names_engine(engine, word)]
+
+
+def engine_words(text: str, by_meaning: Optional[bool] = None) -> List[Tuple[str, int, int]]:
     """Слова речи, называющие движок: ``(ключ, начало, конец)`` в исходной строке. Единственное место, где код узнаёт
-    движок в услышанной фразе (ADR-0148): по таблице ``MUSIC_ENGINES`` — основы, ядра, склейка пары слов. Пара слов —
-    один отрезок от начала первого до конца второго."""
+    движок в услышанной фразе (ADR-0148): по таблице ``MUSIC_ENGINES`` — имя (основы, ядра, склейка пары слов) и слова
+    по смыслу. Слова по смыслу берутся, только пока просьба не называет иной путь (``SourceAsk.asks_path``: «спой
+    вживую» — спеть); ``by_meaning`` решает за просьбу, когда её путь уже известен вызывающему (тул «сгенерируй»).
+    Слово после отрицания («не на синтезаторе», «без синтезатора», «а не пой вживую») или ввода темы («песню про
+    синтезатор», «про Ренардо») движок не называет (``ENGINE_NEGATIONS``, ``ENGINE_TOPIC_LEADS``)."""
     tokens = _spans(text)
-    found: List[Tuple[str, int, int]] = []
+    words = [word for word, _start, _end in tokens]
+    if by_meaning is None:
+        by_meaning = not _path_ask(text).asks_path
+    hits: List[Tuple[str, int, int]] = []
     taken: Set[int] = set()
     for key, engine in kn.MUSIC_ENGINES.items():
-        for i in range(len(tokens) - 1):  # пары первыми: в «ре нардо» второе слово само ядро, но «ре» — часть имени
-            if not ({i, i + 1} & taken) and _joined_names_engine(engine, tokens[i][0], tokens[i + 1][0]):
-                found.append((key, tokens[i][1], tokens[i + 1][2]))
-                taken.update((i, i + 1))
-        for i, (word, start, end) in enumerate(tokens):
-            if i not in taken and _names_engine(engine, word):
-                found.append((key, start, end))
-                taken.add(i)
-    return sorted(found, key=lambda hit: hit[1])
+        for first, end in [*(_meaning_hits(engine, words) if by_meaning else []), *_name_hits(engine, words)]:
+            if not taken & set(range(first, end)):
+                taken.update(range(first, end))
+                if not _negated(words, first) and (words[first - 1] if first else "") not in kn.ENGINE_TOPIC_LEADS:
+                    hits.append((key, tokens[first][1], tokens[end - 1][2]))
+    return sorted(hits, key=lambda hit: hit[1])
 
 
-def ask_engine(text: str) -> str:
-    """Движок, названный в речи (``MUSIC_ENGINES``: «на Ренардо» и искажения STT, в том числе слитые из двух слов); не
-    назван — «»."""
-    found = engine_words(text)
+def ask_engine(text: str, by_meaning: Optional[bool] = None) -> str:
+    """Движок, названный в речи (``MUSIC_ENGINES``): имя «Ренардо» и искажения STT, в том числе слитые из двух слов, или
+    слова по смыслу «на синтезаторе», «вживую» (:func:`engine_words`); не назван — «»."""
+    found = engine_words(text, by_meaning)
     return found[0][0] if found else ""
 
 
@@ -199,7 +252,7 @@ def blank_engine(text: str) -> str:
 
 
 def engine_route(engine: str) -> str:
-    """Путь, который играет названный движок (``SYNTH`` у Ренардо); движок не назван — «»."""
+    """Путь, который играет названный движок (``SYNTH`` у синтеза); движок не назван — «»."""
     known = kn.MUSIC_ENGINES.get(engine)
     return known.route if known is not None else ""
 
@@ -209,13 +262,13 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
     """Движок заказа: ``(просьба, строка для лога)``. Решает код по словам человека и снимку плеера, а не LLM (#4013).
 
     * Слова называют движок (:func:`ask_engine`) — он и есть; слот ``engine`` схемы (его заполнила LLM) ничего не
-      прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=renardo``), отбрасывается
+      прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=synth``), отбрасывается
       с причиной в строке, иначе молчаливое сужение пути до синтеза (кэш и генерация не рассматриваются).
     * Не названного движка заказ наследует играющий (``playing``, снимок плеера) только когда просьба **правит
-      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под Ренардо — движок
+      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под синтезом — движок
       тот же), не называет путь (``SourceAsk.plain``) и не называет своего предмета (``own_subject``: пьеса по
       названию или инструмент реплики). Всякая прочая просьба — «сыграй ещё», «включи музыку», «поставь Нирвану»,
-      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, Ренардо
+      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, синтез
       до стопа не липнет.
 
     Строка пуста, когда добавить нечего."""
@@ -226,16 +279,296 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
     return replace(ask, engine=playing), "; ".join(filter(None, (note, f"движок наследуется от играющего: {playing}")))
 
 
+def _path_ask(text: str, kind: Optional[str] = None) -> SourceAsk:
+    """Слоты пути, который просят словами: «сгенерируй», «спой» (:func:`sing_kind`), «своим голосом» — только в просьбе
+    спеть, «новую», «сочини» (жанр, движок и правка играющего — в :func:`source_ask`)."""
+    words = _words(text)
+    kind = sing_kind(text) if kind is None else kind
+    generated, own = _has(words, kn.SOURCE_ASK_STEMS["generated"]), _has(words, kn.SOURCE_ASK_STEMS["own"])
+    return SourceAsk(generated, bool(kind), bool(kind) and _robot_voice(words),
+                     _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own)
+
+
 def source_ask(text: str) -> SourceAsk:
     """Слоты просьбы о пути из слов человека (код, без LLM)."""
+    kind = sing_kind(text)
+    live = kind if kind and sing_markers(text) == LIVE else ""
+    return replace(_path_ask(text, kind), genre=ask_genre(text), engine=ask_engine(text), tweak=ask_tweak(text),
+                   live=live)
+
+
+_CLAUSE_TOKEN_RE = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*|[.,!?;:—–]")
+
+
+def _clauses(text: str) -> List[List[str]]:
+    """Части фразы для «глагол + объект» (ревью #4071 B2): слова между знаками препинания и словами-границами
+    (``SING_CLAUSE_BREAKS``: «запиши что я люблю песни» — объект в другой части). «Что-нибудь» — одно слово, не граница."""
+    out: List[List[str]] = [[]]
+    for token in _CLAUSE_TOKEN_RE.findall((text or "").lower().replace("ё", "е")):
+        if not token[0].isalpha() or token in kn.SING_CLAUSE_BREAKS:
+            out.append([])
+        else:
+            out[-1].extend(token.split("-"))
+    return [clause for clause in out if clause]
+
+
+def _negated_vocal(words: Sequence[str], i: int) -> bool:
+    return i > 0 and words[i - 1] in kn.VOCAL_NEGATIONS
+
+
+def _has_exact(words: Sequence[str], entry: str) -> bool:
+    """Запись таблицы в речи точно: одно слово — это слово целиком, несколько — эти слова подряд."""
+    parts = entry.split()
+    return any(_phrase_at(words, i, parts) for i in range(len(words)))
+
+
+def _robot_voice(words: Sequence[str]) -> bool:
+    """«Своим/твоим голосом» (``ROBOT_VOICE_PHRASES``, вид генерации ``robot_song``); «свой голос» — сам голос."""
+    return any(_has_exact(words, entry) for entry in kn.ROBOT_VOICE_PHRASES)
+
+
+def _voiced(words: Sequence[str]) -> bool:
+    """Музыку поют: «своим голосом», «с вокалом» (не после «без»), «со словами» (``VOCAL_PHRASES``)."""
+    vocal = any(w.startswith(kn.VOCAL_STEMS) and not _negated_vocal(words, i) for i, w in enumerate(words))
+    return vocal or _robot_voice(words) or any(_has_exact(words, entry) for entry in kn.VOCAL_PHRASES)
+
+
+def _no_vocal(words: Sequence[str]) -> bool:
+    """«Без вокала» — просьба инструментала, не песни."""
+    return any(w.startswith(kn.VOCAL_STEMS) and _negated_vocal(words, i) for i, w in enumerate(words))
+
+
+def _modified(words: Sequence[str]) -> bool:
+    """Правка звучащего: громкость, повтор, избранное (``SING_CREATE_MODIFIERS``, точные слова и фразы) или темп
+    (``ENGINE_TWEAK_WORDS["tempo"]``) — «сделай песню потише/на повтор/быстрее» не просьба создать песню."""
+    return any(_has_exact(words, e) for e in kn.SING_CREATE_MODIFIERS) or _has(words, kn.ENGINE_TWEAK_WORDS["tempo"])
+
+
+#: Вид прямого дополнения по слову (``SING_OBJECTS``) и правило глагола по слову (``SING_VERB_RULES``).
+_OBJECT_KIND = {word: kind for kind, words in kn.SING_OBJECTS.items() for word in words}
+_VERB_RULE = {verb: rule for rule in kn.SING_VERB_RULES for verb in rule.verbs}
+
+
+def _filler(word: str) -> bool:
+    """Слово между глаголом и дополнением: служебное, «эту/мою» или прилагательное-определение («новую», «пиздатый»)."""
+    return (word in kn.SING_OBJECT_FILLERS or word in kn.SING_EXISTING_WORDS
+            or word.endswith(kn.SING_OBJECT_ADJ_ENDINGS))
+
+
+def _object_at(clause: Sequence[str], i: int, step: int) -> int:
+    """Индекс прямого дополнения глагола ``clause[i]`` в сторону ``step`` (1 — после глагола, −1 — перед ним): первое
+    значимое слово — слово ``SING_OBJECTS``; между ними только служебные слова (:func:`_filler`) и после глагола
+    «под/на + слово» (``SING_OBJECT_PREPOSITIONS``), не дальше ``SING_OBJECT_REACH``. Нет — −1: «запиши название
+    песни» — первое значимое слово «название»."""
+    j, budget = i + step, kn.SING_OBJECT_REACH
+    while 0 <= j < len(clause) and budget > 0:
+        if clause[j] in _OBJECT_KIND:
+            return j
+        skip = 2 if step > 0 and clause[j] in kn.SING_OBJECT_PREPOSITIONS else int(_filler(clause[j]))
+        if not skip:
+            return -1
+        j, budget = j + step * skip, budget - skip
+    return -1
+
+
+def _existing(clause: Sequence[str], i: int, j: int) -> bool:
+    """У дополнения ``clause[j]`` глагола ``clause[i]`` — «эту/мою» (``SING_EXISTING_WORDS``): песня звучащая или
+    чужая («запиши эту песню», «эту песню запиши»)."""
+    near = clause[i + 1:j] if j > i else [*clause[max(0, j - 2):j], *clause[j + 1:i]]
+    return any(w in kn.SING_EXISTING_WORDS for w in near)
+
+
+def _object_of(clause: Sequence[str], i: int, made_new: bool) -> str:
+    """Вид прямого дополнения глагола ``clause[i]`` (``song``/``rap``/``music``) или «»: сначала после глагола, затем
+    перед ним («рэп мне зачитай»). У просьбы создать (``made_new``) звучащая или чужая песня — не дополнение."""
+    for step in (1, -1):
+        j = _object_at(clause, i, step)
+        if j >= 0:
+            return "" if made_new and _existing(clause, i, j) else _OBJECT_KIND[clause[j]]
+    return ""
+
+
+def _not_asked(clause: Sequence[str], i: int) -> bool:
+    """Глагол ``clause[i]`` — не просьба: отрицание прямо перед ним («не пой больше», «не спой, а сыграй») или инфинитив
+    без слова просьбы (``SING_INFINITIVE_ASKS``: «можешь спеть?») либо о себе («я хочу спеть караоке», «я мог бы
+    спеть»; «я прошу тебя спеть» — просьба)."""
+    if i and clause[i - 1] in kn.SING_NEGATIONS:
+        return True
+    if not clause[i].endswith(kn.SING_INFINITIVE_ENDING):
+        return False
+    words = set(clause)
+    about_self = bool(words & set(kn.SING_SELF_WORDS)) and not words & set(kn.SING_ROBOT_AGENT_WORDS)
+    return about_self or not words & set(kn.SING_INFINITIVE_ASKS)
+
+
+def _verb_kind(clause: Sequence[str], i: int, modified: bool, no_vocal: bool) -> str:
+    """Что просит спеть глагол ``clause[i]`` по своему правилу (``SING_VERB_RULES``): дополнение-рэп — ``rap``,
+    песня/музыка с голосом — ``song``, без дополнения — ``bare`` правила; не глагол пения или не просьба — «»."""
+    rule = _VERB_RULE.get(clause[i])
+    if rule is None or (rule.made_new and modified) or (no_vocal and not rule.bare) or _not_asked(clause, i):
+        return ""
+    obj = _object_of(clause, i, rule.made_new)
+    if obj in rule.objects or (obj in rule.voiced and _voiced(clause)):
+        return "rap" if obj == "rap" else "song"
+    return rule.bare
+
+
+def _asked_verbs(text: str) -> List[Tuple[str, str]]:
+    """``(глагол, вид пения)`` каждой просьбы спеть во фразе: глагол и его прямое дополнение в одной части фразы
+    (:func:`_clauses`)."""
+    clauses = _clauses(text)
+    words = [w for clause in clauses for w in clause]
+    modified, no_vocal = _modified(words), _no_vocal(words)
+    found = ((clause[i], _verb_kind(clause, i, modified, no_vocal)) for clause in clauses for i in range(len(clause)))
+    return [(verb, kind) for verb, kind in found if kind]
+
+
+def sing_kind(text: str) -> str:
+    """Что просят спеть (код, без LLM; ревью #4071 B1/B2 и круг 2 — узко: глагол и его прямое дополнение):
+    ``rap``/``song``; «» — не пение. Правило глагола — одна таблица ``SING_VERB_RULES``:
+
+    * Глагол пения (``SING_VERBS``: «спой», «пой», «спеть», «споёшь») — пение, с дополнением-рэпом — ``rap``; правка
+      звука рядом («спой погромче») пения не отменяет. «Зачитай/прочитай» — только с дополнением-рэпом.
+    * «Исполни», глагол создать (``SING_CREATE_VERBS``: «сгенерируй», «сочини», «запиши», «сделай») — с прямым
+      дополнением-песней или рэпом (``SING_OBJECTS``: винительный, точные слова, рядом с глаголом), музыка — только с
+      голосом («сгенерируй музон своим голосом», «трек с вокалом»). «Запиши название песни», «создай плейлист песен»,
+      «сделай свой голос помягче» — дополнение не песня; «сделай песню на повтор/потише», «запиши эту песню» — правка
+      или звучащая песня, не просьба создать.
+    * «Сыграй» — только с голосом робота («сыграй песню своим голосом»). Голос и песня без глагола («мне нравится твой
+      голос в этой песне») — не пение; «без вокала» — инструментал; «не пой», «я хочу спеть» — не просьба."""
+    kinds = {kind for _verb, kind in _asked_verbs(text)}
+    return "rap" if "rap" in kinds else "song" if kinds else ""
+
+
+def _generation_asked(text: str) -> bool:
+    """Маркер генерации: глагол со значением ``generate`` (``SING_CREATE_VERBS``: «сгенерируй», «запиши», «сделай»)
+    просит спеть — с прямым дополнением-песней, рэпом или музыкой с голосом, без правки звука и не звучащую песню."""
+    return any(kn.SING_CREATE_VERBS.get(verb) == GENERATE for verb, _kind in _asked_verbs(text))
+
+
+def _negated(words: Sequence[str], i: int) -> bool:
+    """Отрицание (``ENGINE_NEGATIONS``) прямо перед ``words[i]`` или через предлог/глагол пения («не на синтезаторе»,
+    «а не пой вживую»)."""
+    before = words[i - 1] if i else ""
+    bridged = before in kn.ENGINE_NEGATION_BRIDGES or before in kn.SING_VERBS
+    return before in kn.ENGINE_NEGATIONS or (bridged and i > 1 and words[i - 2] in kn.ENGINE_NEGATIONS)
+
+
+def _marked(words: Sequence[str], entry: str) -> bool:
+    """Запись маркера (``SING_ROUTE_MARKERS``: одно слово — основа, несколько — подряд) в речи не после отрицания:
+    «но не нейросетью» путь не называет."""
+    parts = entry.split()
+    if len(parts) == 1:
+        return any(w.startswith(entry) and not _negated(words, i) for i, w in enumerate(words))
+    return any(_phrase_at(words, i, parts) and not _negated(words, i) for i in range(len(words)))
+
+
+def sing_markers(text: str) -> str:
+    """Путь пения, названный словами (вилка Шифу 27.10), по приоритету ``SING_ROUTE_MARKERS``, первое совпадение:
+    синт назван — слова движка (``MUSIC_ENGINES``: имя «Ренардо» и «на синтезаторе», «вживую»; не после отрицания и не
+    тема — :func:`engine_words`) или «под синт/бит» — ``live``, даже рядом с «сгенерируй»; затем ``generate``
+    («нейросетью», «чтобы сохранилась», «сгенерируй/запиши песню», :func:`_generation_asked`); затем ``live`` («спой
+    сам», «прямо сейчас»); не назван — «» (решает чойсер, :func:`choose_sing`). Маркер после отрицания не считается.
+    Пение ли это вообще — :func:`sing_kind`."""
+    if engine_words(text, by_meaning=True):
+        return LIVE
     words = _words(text)
-    generated, own = _has(words, kn.SOURCE_ASK_STEMS["generated"]), _has(words, kn.SOURCE_ASK_STEMS["own"])
-    robot_voice = any(w.startswith("голос") and words[i - 1].startswith(kn.ROBOT_VOICE_OWNERS)
-                      for i, w in enumerate(words) if i)
-    vocal = (_has(words, kn.SOURCE_ASK_STEMS["vocal"]) or robot_voice
-             or (_has(words, kn.SONG_STEMS) and (generated or own)))
-    return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text),
-                     ask_engine(text), ask_tweak(text))
+    for route, entries in kn.SING_ROUTE_MARKERS:
+        if any(_marked(words, entry) for entry in entries) or (route == GENERATE and _generation_asked(text)):
+            return route
+    return ""
+
+
+@dataclass(frozen=True)
+class SingContext:
+    """Контекст выбора пути пения (собирает хост диалога, без сети и БД): ``recent`` — последние реплики человека
+    (``SING_CONTEXT_REPLIES``, старые первыми), ``playing`` — звучит музыка, ``gen_ok`` — генерация жива (здоровье
+    провайдера ``music_gen`` годно или неизвестно), ``gen_health`` — это здоровье словом для чойсера («» — неизвестно).
+    Баланса KIE хост диалога не знает: деньги и лимиты проверяет тул генерации (:func:`gen_block`) с фразой кода."""
+
+    recent: Tuple[str, ...] = ()
+    playing: bool = False
+    gen_ok: bool = True
+    gen_health: str = ""
+
+
+@dataclass(frozen=True)
+class SingRoute:
+    """Путь пения до основной модели диалога: ``id`` кандидата (``live:song``, ``generate:robot_song:V6``; «» — не
+    пение), ``by`` — кто решил (``code`` — слова или один кандидат, ``chooser:<провайдер>``), кандидаты, путь, названный
+    словами (``named``), вид пения (``song``/``rap``)."""
+
+    id: str = ""
+    by: str = BY_CODE
+    candidates: Tuple[str, ...] = ()
+    named: str = ""
+    kind: str = ""
+
+    def line(self) -> str:
+        """Строка лога для харнесса: ``[source] пение … кандидаты=[live:song, generate:robot_song:V6] → <id> (<кто>)``."""
+        return (f"[source] пение {self.kind} слова={self.named or '—'} кандидаты=[{', '.join(self.candidates)}] → "
+                f"{self.id} ({self.by})")
+
+
+def _live_option(kind: str, asked: bool, recent: bool, poor_genre: str = "") -> Option:
+    """Живое пение: робот поёт сам под синт-подложку; жанр, который синт не играет (``poor_genre`` — имя), подложка
+    честно своим битом — так и сказано в описании кандидата."""
+    tail = f"; «{poor_genre}» синт не сыграет — подложка своим битом" if poor_genre else ""
+    return Option(f"{LIVE}:{kind}", {"sing_live": 1.0, "asked": float(asked), "recent_asked": float(recent),
+                                     "wait_s": kn.INSTANT_WAIT_S},
+                  f"вживую ({kind}): пою сам под синт-подложку — сразу и бесплатно, не сохранится{tail}")
+
+
+def _sing_gen_option(robot_voice: bool, asked: bool, recent: bool, synth_poor: bool = False) -> Option:
+    kind, model = ("robot_song" if robot_voice else "song"), kn.GEN_MODELS[kn.DEFAULT_GEN_MODEL]
+    return Option(f"{GENERATE}:{kind}:{kn.DEFAULT_GEN_MODEL}", {
+        "asked": float(asked), "recent_asked": float(recent), "synth_poor": float(synth_poor),
+        "cost": model.credits_per_task, "wait_s": model.typical_s},
+        f"новая генерация ({kind}): 1-3 минуты, {model.credits_per_task:g} кредитов KIE, сохранится в библиотеке")
+
+
+def sing_candidates(text: str, ctx: SingContext) -> Tuple[Option, ...]:
+    """Кандидаты пути пения (код, жёсткие фильтры до выбора): не пение — пусто; путь назван словами
+    (:func:`sing_markers`) — только он (просили сгенерировать — генерация и при мёртвом провайдере: тул скажет причину
+    сам и предложит спеть вживую); иначе живое и генерация (генерация жива, ``gen_ok``). Маркер пути в последних
+    репликах — признак ``recent_asked``; жанр, который синт не играет («спой метал»), — признак генерации
+    ``synth_poor`` (перевес генерации, решает модель чойсера, ``SOURCE_WEIGHTS``)."""
+    kind = sing_kind(text)
+    if not kind:
+        return ()
+    named, recent = sing_markers(text), {sing_markers(r) for r in _recent(ctx)}
+    poor = _poor_genre(SourceAsk(genre=ask_genre(text)))
+    live = _live_option(kind, named == LIVE, LIVE in recent, poor)
+    gen = _sing_gen_option(_path_ask(text, kind).robot_voice, named == GENERATE, GENERATE in recent, bool(poor))
+    if named:
+        return (live,) if named == LIVE else (gen,)
+    return (live, gen) if ctx.gen_ok else (live,)
+
+
+def _recent(ctx: SingContext) -> Tuple[str, ...]:
+    """Последние реплики человека, которые видит выбор пути пения (``SING_CONTEXT_REPLIES``)."""
+    return ctx.recent[-kn.SING_CONTEXT_REPLIES:] if kn.SING_CONTEXT_REPLIES else ()
+
+
+def _sing_question(text: str, kind: str, ctx: SingContext, options: Tuple[Option, ...]) -> ChoiceQuestion:
+    """Вопрос чойсеру: модель видит заказ с контекстом (``ChoiceQuestion.text``) и кандидатов с очками кода."""
+    recent = " | ".join(_recent(ctx)) or "—"
+    order = (f"спеть ({kind}): «{text}»; последние реплики человека: {recent}; играет музыка: "
+             f"{'да' if ctx.playing else 'нет'}; генерация: {ctx.gen_health or 'неизвестно'}")
+    state = {"recent": list(_recent(ctx)), "playing": ctx.playing, "gen_health": ctx.gen_health}
+    return ChoiceQuestion(order, options, state=state, weights=kn.SOURCE_WEIGHTS, instructions=INSTRUCTIONS)
+
+
+def choose_sing(text: str, ctx: SingContext, chooser: Chooser) -> SingRoute:
+    """Путь пения до основной модели диалога (#4079): кандидаты кода (:func:`sing_candidates`) → один — код, иначе
+    ``chooser`` (перевес живому — ``SOURCE_WEIGHTS["sing_live"]``; контекст сужает разрыв — решает модель чойсера).
+    Не пение — пустой путь: форма хода не меняется."""
+    options = sing_candidates(text, ctx)
+    ids, kind, named = tuple(o.id for o in options), sing_kind(text), sing_markers(text) if options else ""
+    if len(options) <= 1:
+        return SingRoute(ids[0] if ids else "", BY_CODE, ids, named, kind)
+    choice = chooser.choose(_sing_question(text, kind, ctx, options))
+    return SingRoute(choice.id, f"chooser:{choice.provider}", ids, named, kind)
 
 
 def synth_style(genre: str) -> Optional[str]:
@@ -320,12 +653,22 @@ def gen_block(ctx: SourceContext, cost: float) -> str:
     return next((reason for blocked, reason in checks if blocked), "")
 
 
+def synth_key(genre: str) -> str:
+    """Стиль синтеза для жанра: жанр, который синт играет (``synth_fit`` ≥ ``SYNTH_FIT_MIN``), — его стиль; иначе
+    ближайший сильный стиль (``GEN_BRIDGE_STYLES``: метал, рок — брейкбит; джаз, шансон — синтвейв), нет в таблице —
+    ``DEFAULT_STYLE``. Названный синт играет так любой жанр (вилка Шифу 27.10: отказа «движок так не играет» нет)."""
+    if synth_fit(genre) >= kn.SYNTH_FIT_MIN:
+        return synth_style(genre) or kn.DEFAULT_STYLE
+    return kn.GEN_BRIDGE_STYLES.get(genre, kn.DEFAULT_STYLE)
+
+
 def _synth_option(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[Option]:
-    named = engine_route(ask.engine) == SYNTH  # «на Ренардо»: годность стиля не отговорка, играет синтез
-    fit = 1.0 if piece or named else synth_fit(ask.genre)
-    if ask.vocal or ctx.mode == "generate" or fit < kn.SYNTH_FIT_MIN:
+    # «на синтезаторе»/«на Ренардо»: синт играет всегда — ни годность стиля, ни режим ``generate`` не отговорка
+    named = engine_route(ask.engine) == SYNTH
+    if ask.vocal or (not named and (ctx.mode == "generate"
+                                    or (not piece and synth_fit(ask.genre) < kn.SYNTH_FIT_MIN))):
         return None
-    key = PIECE if piece else synth_style(ask.genre) if synth_fit(ask.genre) >= kn.SYNTH_FIT_MIN else kn.DEFAULT_STYLE
+    key = PIECE if piece else synth_key(ask.genre)
     return Option(f"{SYNTH}:{key}", {"fallback": 1.0, "theme_match": 1.0 if ask.genre else 0.0,
                                      "asked": 1.0 if named else -1.0 if ask.generated else 0.0,
                                      "wait_s": kn.INSTANT_WAIT_S},
@@ -528,13 +871,29 @@ def _cover_options(ask: SourceAsk, ctx: SourceContext, work: CoverWork) -> Tuple
     return out, reason
 
 
+def _named_cell(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[Tuple[Option, ...]]:
+    """Клетка вилки, названная словами, — один кандидат: петь вживую названо (``ask.live``) или синт назван с пением —
+    ``live:<вид>``; синт назван без пения — синтез (кэш и генерация не кандидаты, молчаливой подмены нет). Не названа —
+    ``None``: путь выбирают кандидаты."""
+    named = engine_route(ask.engine) == SYNTH
+    if ask.live or (named and ask.vocal):
+        return (_live_option(ask.live or "song", True, False),)
+    synth = _synth_option(ask, ctx, piece) if named else None
+    return (synth,) if synth is not None else None
+
+
 def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
                       work: Optional[CoverWork] = None) -> Tuple[Tuple[Option, ...], str]:
-    """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``.
-    Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4)."""
+    """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``
+    (отказ — только когда генерации физически нет: ключ, деньги, сервис; фраза предлагает другую клетку вилки).
+    Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4).
+    Вилка Шифу 27.10 (2×2): синт назван и петь просят (``ask.live`` — #4079, или пение от тула генерации) — один
+    ``live:<вид>``: поёт робот сам (``perform`` диалога); синт назван без пения — один синтез (жанр, который синт не
+    играет, — ближайшим стилем, :func:`synth_key`)."""
+    fixed = _named_cell(ask, ctx, piece)
+    if fixed is not None:
+        return fixed, ""
     synth = _synth_option(ask, ctx, piece)
-    if engine_route(ask.engine) == SYNTH:  # движок назван: кэш и генерация не кандидаты, молчаливой подмены нет
-        return ((synth,), "") if synth else ((Option(f"{DECLINE}:engine_cannot", {}, "честный отказ"),), "engine_cannot")
     if piece and work is not None and not ask.vocal:
         covers, reason = _cover_options(ask, ctx, work)
         options = [o for o in [synth, *covers] if o is not None]
@@ -637,7 +996,9 @@ def choose_with_fallback(ask: SourceAsk, ctx: SourceContext, chooser: Chooser,
 
 
 def _asked_text(ask: SourceAsk) -> str:
-    return ("спеть своим голосом" if ask.robot_voice else "спеть" if ask.vocal
+    """Что просили у генерации (для фразы «… сейчас не могу»): спеть робот может всегда сам — не может только
+    сгенерировать песню."""
+    return ("сгенерировать песню своим голосом" if ask.robot_voice else "сгенерировать песню" if ask.vocal
             else "сгенерировать" if ask.generated else "")
 
 
@@ -710,14 +1071,26 @@ def fallback_note(reason: str) -> str:
     return f"Сгенерировать сейчас не могу: {REASON_WORDS.get(reason, reason)}, играю своё."
 
 
+def _nearest_note(route: Route) -> str:
+    """Синт назван, а жанр он не играет («метал на Ренардо»): играет ближайший стиль — фраза кода говорит какой
+    (без тихой подмены и без отказа, вилка Шифу 27.10); иначе «»."""
+    genre, style = _poor_genre(route.ask), kn.GEN_STYLES.get(route.style)
+    if engine_route(route.ask.engine) != SYNTH or not genre or style is None:
+        return ""
+    return f"{genre[:1].upper()}{genre[1:]} на синте играю ближайшим стилем — {style.name}."
+
+
 def route_note(route: Route) -> str:
     """Фраза перед фразой запуска синтеза/пьесы: почему своё, а не то, что просили или что шло бы по умолчанию
-    (генерация, В13); просьба исполнена — «»."""
+    (генерация, В13), или каким стилем названный синт играет жанр, которого не умеет; просьба исполнена — «»."""
     if route.work is not None:
         return cover_note(route)
     excuse = _excuse(route)
     if route.kind != SYNTH or route.style == PIECE:
         return excuse
+    nearest = _nearest_note(route)
+    if nearest:
+        return nearest
     return f"{excuse[:-1]}, играю своё." if excuse else fallback_note(route.gen_reason)
 
 
@@ -731,11 +1104,17 @@ def cache_text(route: Route) -> str:
 
 
 def decline_text(route: Route) -> str:
-    """Честный отказ (звука нет): что просили, почему нельзя, что могу вместо (стили, которые синтез играет)."""
+    """Честный отказ (звука нет; только когда генерации физически нет — ключ, деньги, сервис): что просили, почему
+    нельзя и другая клетка вилки Шифу 27.10 — песню робот споёт сам вживую под синт (:data:`LIVE_OFFER`), инструментал
+    сыграет своим (стили, которые синтез играет). Путь ``live:*`` (#4079) — поёт сам робот, не тул музыки: тулу —
+    :data:`LIVE_TOOL_TEXT` (генерацию не запускаю)."""
+    if route.kind == LIVE:
+        return LIVE_TOOL_TEXT
+    head = _excuse(route) or f"Сыграть это сейчас не могу: {REASON_WORDS.get(route.gen_reason, 'нечем')}."
+    if route.ask.vocal:
+        return f"{head} {LIVE_OFFER}"
     offer = ", ".join(st.name for key, st in kn.GEN_STYLES.items()
                       if st.synth == key and kn.STYLES[key].synth_fit >= kn.SYNTH_FIT_MIN)
-    excuse = _excuse(route, ", а синтез не поёт." if route.ask.vocal else ".")
-    head = excuse or f"Сыграть это сейчас не могу: {REASON_WORDS.get(route.gen_reason, 'нечем')}."
     return f"{head} Могу сыграть своё: {offer}."
 
 
@@ -748,3 +1127,5 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "set_cache",
            "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
            "theme_cache", "theme_fit", "theme_title"]
+__all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing",
+            "sing_candidates", "sing_kind", "sing_markers", "synth_key"]

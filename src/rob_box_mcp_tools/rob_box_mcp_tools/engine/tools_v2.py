@@ -50,8 +50,8 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, blank_engine, cache_text, decline_text,
-                                  engine_route, route_note, settle_engine, source_ask)
+from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine, cache_text,
+                                  decline_text, engine_route, route_note, settle_engine, source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -130,7 +130,7 @@ def club_theme(text: str) -> str:
     """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
     (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1). Иначе — слова реплики без глаголов
     заказа и служебных слов (:func:`theme_grounding.heard_theme`, одно место, где тема выделяется из свободных слов)
-    и без названия движка («на Ренардо» — путь, а не тема, #3960 п.2: LLM-разбор темы спрашивал «Renardo»)."""
+    и без названия движка («на синтезаторе», «на Ренардо» — путь, а не тема, #3960 п.2, #4070)."""
     from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
     command = parse_media_command(text)
@@ -761,8 +761,9 @@ class RequestMusicTool(MCPTool):
     def description(self) -> str:
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
-                "человека дословно. engine=renardo — только если человек сам назвал Ренардо («на Ренардо», "
-                "искажённо «на индардо»): играет живой синтез, не готовый трек; не называл — engine не заполняй. "
+                "человека дословно. engine=synth — только если человек сам назвал синтез («на синтезаторе», "
+                "«на синте», «вживую», «на Ренардо», искажённо «на индардо»): играет живой синтез, не готовый "
+                "трек и не генерация; не называл — engine не заполняй. "
                 "Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — музыка не заиграла.")
 
     @property
@@ -779,7 +780,8 @@ class RequestMusicTool(MCPTool):
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
                              enum=["auto", "club", "classical", "folk", "rock"]),
             MCPToolParameter(name="engine", type="string", required=False,
-                             description="Движок: renardo — только если человек назвал Ренардо; иначе auto",
+                             description="Движок: synth — только если человек назвал синтез (синтезатор, синт, "
+                                         "вживую, Ренардо); иначе auto",
                              enum=[kn.ENGINE_AUTO, *kn.MUSIC_ENGINES]),
             MCPToolParameter(name="min_seconds", type="number", required=False,
                              description="Служебный аргумент кода выступления, не заполняй"),
@@ -883,6 +885,8 @@ class RequestMusicTool(MCPTool):
             return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return play_cache(self._play_cached, route, what, hold_start(self) if held else None)
+        # путь live:* (#4079: петь вживую назвали словами) — тоже сюда: поёт сам робот (perform диалога v2, форма хода
+        # закрывает этот тул), агенту без формы пения (чат, v1) — фраза кода ``decline_text``, не генерация
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
                             "message": decline_text(route)}, what)
 
@@ -992,7 +996,7 @@ class GenerateMusicTool(MCPTool):
         return ("Просьба сгенерировать музыку (Suno): kind=instrumental — без слов, song — песня, robot_song — песня "
                 "голосом робота; style — жанр, если назван. Это просьба, а не приказ: что играть (новую генерацию, "
                 "сочинённое раньше или своё) и что сказать — решает робот сам по словам человека; ok=false — "
-                "честный отказ, его фразу робот скажет сам. «Спой / сочини песню про X» — kind=robot_song, "
+                "честный отказ, его фразу робот скажет сам. Песня про X — kind=robot_song, "
                 "theme=слова человека (не music_library); слов песни не сочиняй и не читай через speak_text.")
 
     @property
@@ -1028,8 +1032,11 @@ class GenerateMusicTool(MCPTool):
             allowed = f"есть {list(GEN_KINDS)} и {list(GEN_STYLE_CHOICES)}"
             return MCPToolResult(success=False, error=f"kind={kind!r}/style={style!r}: {allowed}")
         heard = source_ask(heard_text or theme or "")
+        # тул «сгенерируй» сам просит иной путь, чем «играй сам»: движок здесь — только названный по имени («Ренардо»),
+        # а «вживую»/«на синтезаторе» (слова по смыслу) в генерации и песне — не просьба к синтезу (#4070)
         ask = replace(heard, generated=True, vocal=heard.vocal or kind != "instrumental",
-                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
+                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "",
+                      engine=ask_engine(heard_text or theme or "", by_meaning=False))
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
 

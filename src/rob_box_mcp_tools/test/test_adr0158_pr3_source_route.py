@@ -59,7 +59,7 @@ def test_live_phrase_plays_the_robot_song_from_cache_and_says_why(library):
     assert result.success and result.data["source"] == "cache" and result.data["started"] is True
     assert len(played) == 1 and result.data["title"] == "Я робот (РОББОКС)"
     assert launch_text("Включаю музыку.", result.data) == (
-        "Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена. "
+        "Сгенерировать песню своим голосом сейчас не могу: генерация у меня ещё не подключена. "
         "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)».")
     assert rig.owner.is_playing() is not True  # синтез не ставился
 
@@ -70,8 +70,9 @@ def test_without_cache_it_declines_with_a_code_phrase_and_plays_nothing():
     for result in (req.execute(intent="track", text="сгенерируй музон", heard_text=LIVE),
                    gen.execute(kind="robot_song", heard_text=LIVE)):
         assert not result.success and result.data["reason"] == SOURCE_DECLINED
-        assert source_phrase(result.error).startswith("Спеть своим голосом сейчас не могу: генерация у меня ещё не "
-                                                      "подключена, а синтез не поёт.")
+        # другая клетка вилки Шифу 27.10: генерации нет — робот предлагает спеть сам вживую под синт
+        assert source_phrase(result.error) == ("Сгенерировать песню своим голосом сейчас не могу: генерация у меня ещё "
+                                               "не подключена. Могу спеть сам вживую под синт.")
     assert rig.owner.is_playing() is not True
 
 

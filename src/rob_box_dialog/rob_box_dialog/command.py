@@ -147,14 +147,31 @@ class Form:
     (``address.py``), и на адресованную реплику молчанием не ответить (решение Шифу 22.10; n813 23.10: «Робот, тишина?»
     → ``passed`` → «Хм, я задумался…»). ``voice`` — модели можно задать голос реплики (``Command.voice``): человек в
     этой реплике просил о голосе (``tools_view.voice_asked``; n109 23.10: на вопрос про звуки DeepSeek сам включил
-    female-shaonv). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
+    female-shaonv). ``sing`` — путь пения, решённый кодом до модели (#4079: id кандидата ``live:song``/``generate:…``
+    от хоста, ``knowledge.SING_FORMS``): живое — только ``perform`` под синт-подложку, генерация и трек закрыты;
+    генерация — ``generate_music``, петь выступлением нельзя. ``sing_over`` — музыка уже играет при живом пении («под
+    этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
+    (``knowledge.SING_FORMS["live_over"]``). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1,
+    тесты)."""
 
     passed: bool = True
     voice: bool = True
+    sing: str = ""
+    sing_over: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
         return tuple(name for name in kn.FORM_FIELDS if not getattr(self, name))
+
+    @property
+    def sing_form(self) -> Optional[kn.SingForm]:
+        """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
+        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over))
+
+    def closed_tools(self) -> Tuple[str, ...]:
+        """Тулы, которых в этом ходе нет по пути пения (вне среза и вне команды)."""
+        form = self.sing_form
+        return form.closed_tools if form is not None else ()
 
 
 #: Форма хода, в котором идёт вызов LLM: ставит ход (:func:`turn_form`), читают мост (схема) и :func:`validate`. Вызов
@@ -179,8 +196,9 @@ def turn_form(form: Form) -> Iterator[Form]:
 
 def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[str, Any]:
     """Схема команды без полей, закрытых формой хода (``None`` — текущей): модель их не видит
-    (``knowledge.without_fields``)."""
-    return kn.without_fields(schema, (form or current_form()).closed())
+    (``knowledge.without_fields``); путь пения сужает перечни выступления (``knowledge.with_sing``)."""
+    form = form or current_form()
+    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over)
 
 
 @dataclass
@@ -493,16 +511,20 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
+    cmd = _fit_sing_backing(_drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form), form)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
+    # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
+    available = set(available_tools) - set(form.closed_tools())
+    open_actions = tuple(a for a in cmd.actions if a.tool not in form.closed_tools())
     checks: Tuple[Callable[[], Any], ...] = (
         lambda: _check_passed(cmd, form),
         lambda: _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech"),
         lambda: _check_voice(cmd.voice, busy),
         lambda: _check_ask(cmd.ask),
-        lambda: _check_actions(cmd.actions, set(available_tools), agent),
+        lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
         lambda: _check_perform(cmd, busy),
+        lambda: _check_sing(cmd, form),
         lambda: _check_when(cmd.when, busy),
         lambda: _drop_bad_faces(cmd),
     )
@@ -510,7 +532,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     found = tuple(v for v in outcomes if isinstance(v, Violation))
     if found:
         return Invalid(found[0].reason, found[0].detail, violations=found,
-                       salvage=_salvage(cmd, set(available_tools), agent))
+                       salvage=_salvage(replace(cmd, actions=open_actions), available, agent))
     return outcomes[-1]
 
 
@@ -612,6 +634,36 @@ def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
     if cmd.voice is None or form.voice:
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
+
+
+def _fit_sing_backing(cmd: Command, form: Form) -> Command:
+    """Живое пение (#4079) — под синт-подложку: ``perform`` с подложкой вне перечня пути (``none``, не названа) получает
+    первую из перечня (``knowledge.SING_FORMS``), поле — в ``dropped``; музыка уже играет (``live_over``) — ``none``:
+    поверх играющего. Подложку решает код по пути, модель — только настроение."""
+    sing = form.sing_form
+    perf = cmd.perform
+    if sing is None or not sing.backings or perf is None or cmd.edit_pending or perf.backing in sing.backings:
+        return cmd
+    return replace(cmd, perform=replace(perf, backing=sing.backings[0]), dropped=cmd.dropped + ("perform.backing",))
+
+
+def _check_sing(cmd: Command, form: Form) -> None:
+    """Путь пения, решённый кодом до модели (#4079, ``knowledge.SING_FORMS``): закрытые тулы не зовутся, живое пение —
+    ``perform`` вида пути, генерация — ``generate_music`` без выступления-песни. Правка идущего выступления
+    (``edit_pending``) — не новая просьба спеть: форма её не судит."""
+    sing = form.sing_form
+    if sing is None or cmd.edit_pending:
+        return
+    kinds = kn.sing_kinds(form.sing)
+    closed = [a.tool for a in cmd.actions if a.tool in sing.closed_tools]
+    if closed:
+        raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: {', '.join(closed)} закрыт", ("perform",))
+    if sing.needs_perform and cmd.perform is None:
+        raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен perform", kinds)
+    if cmd.perform is not None and cmd.perform.kind not in kinds:
+        raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: perform.kind={cmd.perform.kind}", kinds)
+    if sing.needs_tool and sing.needs_tool not in {a.tool for a in cmd.actions}:
+        raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен {sing.needs_tool}", (sing.needs_tool,))
 
 
 def _check_voice(voice: Optional[str], busy: Busy) -> None:
@@ -834,6 +886,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "edit_without_perform": "edit_pending — только вместе с perform",
     "edit_without_active_perform": "править нечего: выступление не идёт, убери edit_pending",
     "now_vs_uninterruptible": "when=now нельзя: занятое действие не прерывается, нужен after_current",
+    kn.VIOLATION_SING_ROUTE: "путь пения уже решён кодом: live — спой сам в perform (вид из перечня, бит ставит код), "
+                             "генерацию и трек не зови; generate — позови generate_music, песню выступлением не пой",
 })
 
 

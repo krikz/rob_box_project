@@ -16,7 +16,8 @@ from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.music_turn import MusicTurn
 
 LIVE = "Робот, сгенерируй пиздатый музон своим голосом"
-DECLINE = "Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена, а синтез не поёт."
+DECLINE = ("Сгенерировать песню своим голосом сейчас не могу: генерация у меня ещё не подключена. "
+           "Могу спеть сам вживую под синт.")
 CACHE = {"ok": True, "track_id": "gen_c0fe_1", "source": "cache",
          "source_message": "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)»."}
 
@@ -27,6 +28,15 @@ def test_generate_verb_goes_to_generate_music_without_llm():
         assert parse_media_command(text).intent is MediaIntent.GENERATE
     plan = MediaRouter().route(LIVE, MediaState())
     assert [(c.name, c.arguments["kind"]) for c in plan.tool_calls] == [("generate_music", "robot_song")]
+
+
+def test_singing_verb_of_v1_is_a_whole_word_not_the_start_of_a_word():
+    """Ревью #4071 круг 2 NIT-4: глаголы пения (``SING_VERBS``) и в грамматике v1 — точные слова: «спойлер», «пойдём»
+    — не генерация песни; «пой песню» — как «спой песню»."""
+    for text in ("Робот, спойлер", "Робот, пойдём гулять", "Робот, пойми меня"):
+        command = parse_media_command(text)
+        assert command is None or command.intent is not MediaIntent.GENERATE, text
+    assert parse_media_command("Робот, пой песню про кота").intent is MediaIntent.GENERATE
 
 
 def test_launch_text_takes_the_route_phrase_of_code():

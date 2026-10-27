@@ -20,6 +20,8 @@
   ``passed`` — тихо;
 * форма команды хода (:func:`command_form`, #4021): ``passed`` есть в схеме только при подхвате бэклога (адресованную
   реплику модель молчанием не закрывает — нарушение и повтор моста), голос реплики — только по просьбе о голосе;
+  путь пения (#4079) решает хост до модели (:func:`sing_route`: ``live:song`` — поёт сам, ``perform`` обязателен,
+  генерация и трек вне среза; ``generate:…`` — ``generate_music`` обязателен, песня выступлением — нарушение);
 * голый неслышимый ответ (``play_animation`` без слов) на адресованную реплику, где анимацию не просили
   (``tools_view.needs_words``, #3995), не исполняется: модель получает нарушение ``VIOLATION_SILENT_ANSWER``
   следующей итерацией (≤ ``COMMAND_RETRIES_MAX`` повторов); повтор кончился — анимация и фраза кода, не молчание;
@@ -59,15 +61,16 @@ import uuid
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
+from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import face_scene
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
-from rob_box_dialog.agents import agent_spec, allows_tier1
-from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, explain,
-                                    loud_actions, turn_form)
+from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
+from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
+                                    explain, loud_actions, turn_form)
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
@@ -78,7 +81,7 @@ from rob_box_dialog.respond import ActionResult, audible, classed, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
-from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
+from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -275,13 +278,58 @@ def silence_insisted(result: Result) -> Result:
     return result
 
 
-def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Form:
+def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = (),
+                 sing: str = "") -> Form:
     """Форма команды хода (#4021, ADR-0148 п.2): ``passed`` — только при подхвате бэклога (адресованную реплику
     молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
-    пары ``(id, название)``, как у Tier-1)."""
+    пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
+    живое пение при играющей музыке (:func:`music_playing`) — поверх неё (``Form.sing_over``, n810)."""
     names = tuple(name for pair in voices for name in pair if name)
-    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names))
+    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
+                sing_over=bool(sing) and music_playing(snapshot))
+
+
+def music_playing(snap: SessionSnapshot) -> bool:
+    """Играет музыка (сет DJ или трек плеера) — по снимку хода: контекст чойсера пути пения и подложка живого пения."""
+    return snap.top("DJ") is not None or snap.music.state == "playing"
+
+
+#: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
+#: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``.
+SingRouter = Callable[[str, Sequence[str], bool], str]
+
+
+async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> str:
+    """Путь пения до основной модели (#4079, решение Шифу 27.10): решает хост (маркеры слов, чойсер с контекстом), ход
+    сужает по нему форму команды. Хоста пути пения нет (чат, оператор) или подхват бэклога — «»: форма не меняется.
+    Чойсер может спросить модель (Jev/LLM при неясном разрыве) — вызов в пуле, петля хода не стоит. Исключение хоста
+    ход не роняет (ревью #4071 N5): строка WARNING и ход без формы пения, как без хоста."""
+    import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
+
+    if engine._sing is None or turn.pickup:
+        return ""
+    recent = tuple(str(e.content) for e in engine.log.window(exclude=turn.turn_id) if e.role == USER)
+    try:
+        return await asyncio.get_running_loop().run_in_executor(None, engine._sing, turn.text, recent,
+                                                                music_playing(snap))
+    except Exception as exc:  # noqa: BLE001 — путь пения не держит ход: без него модель решает как раньше
+        engine._log.warning(f"{LOG_MARK} путь пения не решён ({type(exc).__name__}: {exc}) — ход без формы пения "
+                            f"turn={turn.turn_id}")
+        return ""
+
+
+def form_tools(tools: Sequence[Any], form: Form, agent: str) -> Tuple[Any, ...]:
+    """Тулы хода в форме пути пения: закрытые путём убраны, тул, который путь требует (``generate_music``), добавлен,
+    если его срезала обрезка по ``TOOLS_VISIBLE_MAX`` (а агенту он доступен)."""
+    sing = form.sing_form
+    if sing is None:
+        return tuple(tools)
+    kept = [t for t in tools if t.name not in sing.closed_tools]
+    need = sing.needs_tool
+    if need and need not in {t.name for t in kept} and need in tools_for(agent_spec(agent)):
+        kept.append(get_tool(need))
+    return tuple(kept)
 
 
 def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command) -> bool:
@@ -428,8 +476,10 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     хода (:func:`command_form`, #4021): схема и валидатор моста видят её на время вызовов LLM этого хода."""
     if hold_silence(engine, turn):
         return
-    form = command_form(turn, snap, engine._voices())
-    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} turn={turn.turn_id}")
+    form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
+    over = " поверх играющего" if form.sing_over else ""
+    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over} "
+                     f"turn={turn.turn_id}")
     with turn_form(form):
         await engine._understand(turn, snap)
 
@@ -804,8 +854,10 @@ class TurnEngine:
                  voices: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None, turn_log: Optional[TurnLog] = None,
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
-                 log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None) -> None:
+                 log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None,
+                 sing: Optional[SingRouter] = None) -> None:
         self.session = session
+        self._sing = sing  # путь пения от хоста (#4079); нет — форма хода без пути пения
         self._rng = rng
         self._pick = phrases.Picker(rng)
         self.log = turn_log or TurnLog()
@@ -905,7 +957,7 @@ class TurnEngine:
     async def _understand(self, turn: _Turn, snap: SessionSnapshot) -> None:
         """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь."""
         self._ports.stage(turn.turn_id, turn.epoch, "thinking", "started")
-        tools = available_tools(snap, None, snap.agent, turn.text)
+        tools = form_tools(available_tools(snap, None, snap.agent, turn.text), current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX

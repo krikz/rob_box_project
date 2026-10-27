@@ -121,6 +121,9 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("sqlite_db_path", "")
     node.declare_parameter("voice_facts_db_path", "")
     node.declare_parameter("e2e_voice_facts_db_path", "/data/voice_memory.e2e.db")
+    # Выбиратель пути пения (#4079) — тот же режим, что у пути музыки: значение ``mcp_server.music_chooser`` передаёт
+    # launch (``rob_box_core.dialog_engine.shared_params``); пусто — умолчание ``chooser_model`` (цепочка).
+    node.declare_parameter("music_chooser", "")
 
 
 def _prefix(agent: str) -> str:
@@ -213,6 +216,17 @@ def build_tools(node: Any) -> Any:
     return plan_host.make_tool_executor(node, _mcp_provider(node, PERSONALITY_SENDER), lambda *_: None)
 
 
+def build_sing(node: Any, states: Callable[[], Any]) -> Any:
+    """Путь пения хода Личности до основной модели (#4079): ``SingRouteHost`` — решение ``rob_box_music.source``,
+    выбиратель — тот же, что у пути музыки: режим ``music_chooser`` (значение ``mcp_server.music_chooser``,
+    ``chooser_from_env``: цепочка Jev → LLM → кубик при неясном разрыве или детерминированный)."""
+    from rob_box_mcp_tools.engine.chooser_model import chooser_from_env  # noqa: PLC0415
+    from rob_box_mcp_tools.engine.sing_route import SingRouteHost  # noqa: PLC0415
+
+    mode = str(node.get_parameter("music_chooser").value or "")
+    return SingRouteHost(chooser_from_env(mode, log=node.get_logger), states, node.get_logger().info)
+
+
 def build_chat_tools(node: Any, personality_tools: Any) -> Any:
     """MCP-тулы агента чата: своя подпись (срез ``telegram`` с ``say_aloud``), планировщик ресурсов — общий с
     Личностью (одни владельцы, одна занятость); хост выступления остаётся у Личности."""
@@ -294,7 +308,8 @@ class DialogNode(Node):
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
-                                  events=self._open_events(), log=_RosLog(self.get_logger()))
+                                  events=self._open_events(), log=_RosLog(self.get_logger()),
+                                  sing=build_sing(self, self._reporter.all_states))  # путь пения до модели (#4079)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()

@@ -372,7 +372,7 @@ def test_failure_phrase_is_built_by_code_from_the_reason(cache, empty):
     bare = _request(_rig(), studio2, empty)
     bare.execute(intent="track", text=PHRASE, heard_text=PHRASE)
     phrase = studio2.failed("lyrics")  # моста нет: выбор заново без generate → честный отказ с причиной
-    assert phrase.startswith("Сгенерировать не вышло: текст не сложился, а синтез не поёт.")
+    assert phrase == "Сгенерировать не вышло: текст не сложился. Могу спеть сам вживую под синт."  # другая клетка
 
 
 def test_busy_studio_declines_with_a_phrase_and_starts_nothing(cache):

@@ -400,6 +400,33 @@ def test_mcp_tools_sign_as_the_personality_not_as_the_ros_node(monkeypatch):
     assert seen["sender"] in DEFAULT_ALLOWED_SENDERS
 
 
+@pytest.mark.parametrize("mode,model", [("deterministic", False), ("", True), ("chain", True)])
+def test_sing_route_takes_the_chooser_mode_of_the_music_path_4079(monkeypatch, mode, model):
+    """Ревью #4071 N4: путь пения хода выбирает тем же выбирателем, что путь тула музыки, — режим ``music_chooser``
+    (значение ``mcp_server.music_chooser`` передаёт launch), а не цепочка по умолчанию; пусто — умолчание выбирателя."""
+    import logging
+
+    import rob_box_mcp_tools.engine.chooser_model as cm
+
+    seen, real = [], cm.chooser_from_env
+
+    def spy(m="", env=None, log=None):
+        seen.append(m)
+        return real(m, env={}, log=log)
+
+    monkeypatch.setattr(cm, "chooser_from_env", spy)
+    params = {"music_chooser": mode}
+    node = types.SimpleNamespace(get_parameter=lambda name: types.SimpleNamespace(value=params[name]),
+                                 get_logger=lambda: logging.getLogger("dialog_node_test"))
+    host = dn.build_sing(node, lambda: [])
+    assert seen == [mode] and (host._chooser._model is not None) is model  # noqa: SLF001
+    assert host("Робот, спой вживую", (), False) == "live:song"
+
+
+def test_dialog_node_declares_the_music_chooser_parameter(node):
+    assert node.get_parameter("music_chooser").value == ""
+
+
 # -- перебивание по эпохе (PR-9 #3703, ADR-0150 §6.2) ---------------------------------------------------------------
 
 
