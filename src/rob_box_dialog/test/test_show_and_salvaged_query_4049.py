@@ -8,7 +8,10 @@
   ``invalid:speech_with_actions`` → ``music_library list`` исполнен → ход ``done`` молча. Спасённый ``query`` возвращает данные модели (итерации
   есть) или код говорит по данным (итераций нет);
 * ревью #4053: отказ ЧТЕНИЯ памяти спорным голосом — своя фраза кода; ``passed`` рядом с ответом на адресованной
-  реплике — лишнее поле, ответ не теряется.
+  реплике — лишнее поле, ответ не теряется;
+* ревью PR #4055: фраза кода об отказе чтения — только на вопрос о памяти о самом человеке, на остальные реплики отказ
+  — данные модели, и она отвечает («кто такой Гагарин?» неузнанным голосом); спасённый ``query`` с отказом — фраза
+  отказа, а не «нашёл ответ».
 """
 
 import asyncio
@@ -25,7 +28,8 @@ from rob_box_dialog.face_scene import FaceScene
 from rob_box_dialog.memory import refused_read
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session, SpeakerRef
-from rob_box_dialog.turn import Answer, Shown, TurnEngine, command_face, shown_face
+from rob_box_dialog.turn import Answer, Shown, TurnEngine, command_face, query_fallback, shown_face
+from rob_box_dialog.words import asks_own_memory
 
 #: Живой лог 27.10 00:44:37: «Робот, покажи молча, как тебе грустно» → вызов модели.
 N_SAD = "покажи молча как тебе грустно"
@@ -249,10 +253,130 @@ def test_4053_refused_read_next_to_a_readable_query_says_the_refusal_and_returns
     ports = Ports([Answer(Command(actions=reads), "deepseek"), Answer(Command(speech="Два трека."), "deepseek")],
                   outcomes={"memory_search": ("rejected", {}, kn.NO_PERSON_REASON),
                             "music_library": ("done", TRACKS, None)})
-    _run(ports, "что ты помнишь и что в библиотеке")
+    _run(ports, "что ты обо мне помнишь и что в библиотеке")
     assert [t for t, _, _ in ports.said] == [phrases.text("query.rejected.no_person"), "Два трека."]
     rows = json.loads(ports.asked[1][0][-1]["content"])[kn.QUERY_RESULTS_FIELD]
     assert [r["tool"] for r in rows] == ["music_library"], "отказ чтения модели не уходит"
+
+
+# -- ревью PR #4055: фраза кода об отказе чтения — только на вопрос о памяти о самом человеке ---------------------
+
+#: Проба ревьюера: неузнанный голос спрашивает о постороннем, модель перед ответом зовёт ``memory_search``.
+N_GAGARIN = "кто такой Гагарин"
+GAGARIN_SEARCH = ToolCall("memory_search", {"query": "Гагарин"})
+GAGARIN_ANSWER = "Гагарин — первый человек в космосе, полетел в 1961 году."
+NO_PERSON = ("rejected", {}, kn.NO_PERSON_REASON)
+UNCONFIRMED = ("rejected", {}, kn.VOICE_UNCONFIRMED_REASON)
+OWN_PHRASES = {phrases.text(f"query.rejected.{reason}") for reason in kn.UNBOUND_REASONS}
+
+
+def test_pr4055_unknown_voice_memory_search_on_a_foreign_question_goes_to_the_model_and_it_answers():
+    """Регрессия PR #4055 (блокер): отказ чтения на вопрос НЕ о памяти о себе — данные модели, как до #4053; ход идёт
+    дальше, модель отвечает про Гагарина. Раньше ход закрывался фразой «Не узнаю твой голос…» после одного вызова
+    LLM."""
+    ports = Ports([Answer(Command(actions=(GAGARIN_SEARCH,)), "deepseek"),
+                   Answer(Command(speech=GAGARIN_ANSWER), "deepseek")], outcomes={"memory_search": NO_PERSON})
+    agg = _run(ports, N_GAGARIN)
+    assert agg.llm_calls >= 2 and len(ports.asked) == 2
+    assert [t for t, _, _ in ports.said] == [GAGARIN_ANSWER], "звучит ответ модели, фразы кода об отказе нет"
+    rows = json.loads(ports.asked[1][0][-1]["content"])[kn.QUERY_RESULTS_FIELD]
+    assert rows == [{"tool": "memory_search", "status": "rejected", "reason": kn.NO_PERSON_REASON,
+                     "data": {"query": "Гагарин"}}], "модель получила отказ данными"
+    assert (agg.stage, agg.status) == ("done", "finished")
+
+
+def test_pr4055_contested_voice_memory_read_on_a_foreign_question_also_goes_to_the_model():
+    ports = Ports([Answer(Command(actions=(GAGARIN_SEARCH,)), "deepseek"),
+                   Answer(Command(speech=GAGARIN_ANSWER), "deepseek")], outcomes={"memory_search": UNCONFIRMED})
+    agg = _run(ports, N_GAGARIN, _contested_session())
+    assert agg.llm_calls == 2 and [t for t, _, _ in ports.said] == [GAGARIN_ANSWER]
+    assert not OWN_PHRASES & {t for t, _, _ in ports.said}
+
+
+@pytest.mark.parametrize(("session", "outcome", "reason"), [
+    (_contested_session, UNCONFIRMED, kn.VOICE_UNCONFIRMED_REASON),
+    (lambda: Session("personality"), NO_PERSON, kn.NO_PERSON_REASON),
+], ids=["contested_voice", "unknown_voice"])
+def test_pr4055_what_do_you_remember_about_me_is_the_code_phrase_of_its_reason(session, outcome, reason):
+    """«Что ты обо мне помнишь?» — ответ и есть отказ: фраза кода своей причины, второго вызова LLM нет."""
+    ports = Ports([Answer(Command(actions=(ToolCall("memory_context", {}),)), "deepseek")],
+                  outcomes={"memory_context": outcome})
+    agg = _run(ports, "Робот, что ты обо мне помнишь?", session())
+    assert ports.said == [(phrases.text(f"query.rejected.{reason}"), None, "sad")]
+    assert len(ports.asked) == 1 and agg.llm_calls == 1
+
+
+@pytest.mark.parametrize("text", [
+    "что ты обо мне помнишь?", "Робот, а про меня что помнишь?", "как меня зовут и что ты про меня уже знаешь?",
+    "ты ещё здесь, помнишь меня?", "помнишь, что я люблю зелёный чай?", "поищи в памяти, что я не ем",
+    "а меня ты по голосу узнаёшь? Скажи, кто я такой и откуда ты меня знаешь.", "Робот, как меня зовут?",
+    "а скажи-ка, ты же меня по голосу запомнил, как меня зовут?",
+])
+def test_pr4055_asks_own_memory_yes(text):
+    assert asks_own_memory(text)
+
+
+@pytest.mark.parametrize("text", [
+    N_GAGARIN, "ты знаешь, кто такой Гагарин? расскажи мне", "знаешь, я вчера всю ночь паял блок питания",
+    "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь.",
+    "подведи итог ночи: кто к нам приходил, что мы слушали и что ты про нас запомнил?",
+    "Меня зовут Саша, я твой ночной инженер", "спой песню про меня", "запомни: я пью только зелёный чай",
+    "скажи, кто сейчас говорил на фоне: кого ты узнал по голосу, а кого нет?", "",
+])
+def test_pr4055_asks_own_memory_no(text):
+    """Посторонний вопрос, память как условие другой просьбы (n908), самопредставление, запись — не вопрос о памяти."""
+    assert not asks_own_memory(text)
+
+
+def test_pr4055_borscht_with_memory_as_a_condition_keeps_the_turn_going_to_the_web_search():
+    """Марафон n908 неузнанным голосом: «учти то, что ты про меня знаешь» — память условие, а не вопрос: отказ
+    чтения — данные модели, она ищет рецепт; фразой об отказе ход не закрывается."""
+    web = Answer(Command(actions=(ToolCall("search_web", {"query": "рецепт борща"}),)), "deepseek")
+    ports = Ports([Answer(Command(actions=(ToolCall("memory_search", {"query": "еда"}),)), "deepseek"), web,
+                   Answer(Command(speech="Борщ: свёкла, капуста, картошка."), "deepseek")],
+                  outcomes={"memory_search": NO_PERSON, "search_web": ("done", {"results": ["борщ"]}, None)})
+    _run(ports, "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь.")
+    assert [a[0][0] for a in ports.executed] == ["memory_search", "search_web"]
+    assert [t for t, _, _ in ports.said] == ["Борщ: свёкла, капуста, картошка."]
+
+
+def test_pr4055_refusal_next_to_an_action_is_said_on_a_question_about_own_memory():
+    """Смешанная команда ``[memory_search (отказ), play_sound]``: данные её модели не возвращаются — на вопрос о памяти
+    о себе отказ говорит код (раньше не звучал нигде), звук исполнен; на посторонний — как было, только звук."""
+    mixed = Command(actions=(ToolCall("memory_search", {"query": "чай"}), ToolCall("play_sound", {"sound": "ui_bell"})))
+    ports = Ports([Answer(mixed, "deepseek")], outcomes={"memory_search": NO_PERSON})
+    _run(ports, "помнишь, что я пью? и позвони в колокольчик")
+    assert len(ports.said) == 1 and ports.said[0][2] == "sad"
+    said = ports.said[0][0]
+    assert said.startswith(phrases.text("query.rejected.no_person")), "отказ первым, затем звукоподражание звонка"
+    assert ports.executed == [[("memory_search", {"query": "чай"}), ("play_sound", {"sound": "ui_bell"})]]
+    foreign = Ports([Answer(mixed, "deepseek")], outcomes={"memory_search": NO_PERSON})
+    _run(foreign, "кто такой Гагарин? и позвони в колокольчик")
+    assert not any(own in text for own in OWN_PHRASES for text, _, _ in foreign.said)
+
+
+# -- ревью PR #4055: спасённый query с отказом — не «нашёл ответ» ------------------------------------------------
+
+
+@pytest.mark.parametrize(("status", "reason", "key"), [
+    ("rejected", None, "query.rejected"), ("rejected", "bad_event", "query.rejected"),
+    ("timeout", None, "query.timeout"),
+])
+def test_pr4055_salvaged_query_refused_on_the_last_iteration_says_its_outcome(monkeypatch, status, reason, key):
+    """Спасённый ``music_library list`` отклонён (или не дождался ответа) на последней итерации: код говорит его
+    исход — «Не нашёл ответа.», «Не дождался ответа…», грустно, — а не «Нашёл ответ, но не смог сложить…»."""
+    monkeypatch.setattr(kn, "LLM_QUERY_ITERATIONS_MAX", 0)
+    ports = Ports([_invalid_list()], outcomes={"music_library": (status, {}, reason)})
+    _run(ports, N_LIBRARY)
+    assert ports.said == [(phrases.text(key), None, "sad")]
+    assert phrases.text(kn.QUERY_FALLBACK_GENERIC) not in {t for t, _, _ in ports.said}
+
+
+def test_pr4055_query_fallback_says_found_only_when_something_was_found():
+    done = ActionResult("t/0", 0, "personality", "music_library", "query", "done", None, {"action": "list", **TRACKS})
+    refused = ActionResult("t/1", 0, "personality", "music_library", "query", "rejected", None, {"action": "list"})
+    assert query_fallback([refused]) == phrases.text("query.rejected")
+    assert query_fallback([refused, done]) == phrases.text(kn.QUERY_FALLBACK_GENERIC), "что-то найдено — «нашёл»"
 
 
 # -- ревью #4053: passed рядом с ответом на адресованной реплике --------------------------------------------------

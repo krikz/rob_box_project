@@ -33,7 +33,8 @@
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций; последний вызов
   модели идёт без query-тулов в схеме (читать больше нечем — остаётся сказать итог), а если она всё же просит query —
   ход ``done`` с фразой кода по данным (``query_fallback``), а не молчащий ``failed`` (#3953, В21); чтение памяти,
-  отклонённое кодом без собеседника, — фраза кода, а не данные модели (``memory.refused_read``, ревью #4053);
+  отклонённое кодом без собеседника, на вопрос о памяти о самом человеке — фраза кода (``memory.voiced_refusals``,
+  ревью #4053), на остальные реплики — данные модели, и она отвечает на вопрос (ревью PR #4055);
 * ход ведётся до конца, пока провайдер жив, но не дольше ``TURN_CEILING_S`` (В31): ~``PROGRESS_AFTER_S`` тишины —
   одна промежуточная фраза кода (``understand.progress``/``media.progress``); потолок в ожидании LLM — фраза с именем
   провайдера, в ожидании действия — фраза его класса о таймауте (не «не понял»); цепочка провайдеров отказала —
@@ -54,7 +55,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from rob_box_core.utterance import Sink
+from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import face_scene
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
@@ -410,11 +411,16 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str) -> Optional[str]:
+def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str, text: str = "") -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
-    простом успехе (``respond.audible``, #3953)."""
+    простом успехе (``respond.audible``, #3953). Отказ чтения памяти рядом с действиями
+    (``[memory_search, play_sound]``) на вопрос о памяти о самом человеке (``text`` — реплика хода) звучит первым
+    (:func:`read_refusal`, ревью PR #4055): данные такой команды модели не возвращаются, и без фразы кода об отказе
+    человек его не услышал бы."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks)) if results else None
+    refusal = read_refusal(memory.voiced_refusals(results, text))
+    outcome = outcome_phrase(audible(results, speaks)) if results else None
+    return " ".join(part for part in (refusal.text if refusal is not None else None, outcome) if part) or None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
@@ -479,19 +485,26 @@ def _close_nothing_to_do(turn: _Turn) -> str:
     return ""
 
 
+def read_refusal(refused: Sequence[ActionResult]) -> Optional[Utterance]:
+    """Фраза кода об отказах чтения памяти (:func:`memory.voiced_refusals`): одна на причину (``memory_context`` и
+    ``memory_search`` спорным голосом - одна «не буду гадать, что помню»); отказов нет - ``None``."""
+    return join(list({r.reason: r for r in refused}.values()))
+
+
 def query_more(engine: "TurnEngine", turn: _Turn, results: Sequence[ActionResult]) -> Optional[str]:
-    """Исполненные ``query`` хода (итерации ещё есть): данные - модели, строкой для ``Answer.follow``. Чтение памяти,
-    отклонённое кодом до владельца (``memory.refused_read``: собеседника нет или голос не подтверждён), - не данные: о
-    нём говорит код фразой ``query.rejected.<причина>``, одной на причину (ревью #4053: «что ты обо мне помнишь?»
-    спорным голосом - «не буду гадать, что помню», а не «запоминать не буду»). Читать модели нечего - ``None``, ход
-    закрыт фразой кода."""
-    refused = list({r.reason: r for r in results if memory.refused_read(r)}.values())
-    said = join(refused)
+    """Исполненные ``query`` хода (итерации ещё есть): данные - модели, строкой для ``Answer.follow``. Отказ чтения
+    памяти до владельца (собеседника нет или голос не подтверждён) на вопрос о памяти о самом человеке
+    (:func:`memory.voiced_refusals`) - не данные: о нём говорит код фразой ``query.rejected.<причина>`` (ревью #4053:
+    «что ты обо мне помнишь?» спорным голосом - «не буду гадать, что помню», а не «запоминать не буду»); читать модели
+    больше нечего - ``None``, ход закрыт фразой кода. На любую другую реплику отказ - данные модели, как до #4053, и
+    ход продолжается (ревью PR #4055: «кто такой Гагарин?» неузнанным голосом - модель отвечает про Гагарина)."""
+    refused = memory.voiced_refusals(results, turn.text)
+    said = read_refusal(refused)
     if said is not None:
-        engine._log.info(f"{LOG_MARK} отказ чтения памяти {[(r.tool, r.reason) for r in refused]} → фраза кода "
-                         f"turn={turn.turn_id}")
+        engine._log.info(f"{LOG_MARK} отказ чтения памяти {[(r.tool, r.reason) for r in refused]} на вопрос о памяти "
+                         f"о собеседнике → фраза кода turn={turn.turn_id}")
         engine._say(turn, said.text, None, said.emotion)
-    readable = tuple(r for r in results if not memory.refused_read(r))
+    readable = tuple(r for r in results if r not in refused)
     if not readable:
         return None
     turn.queried = readable
@@ -595,7 +608,13 @@ async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
     """Фраза кода, когда запрос хода выполнен, а ответ модели не прошёл проверку и после повтора (#3883, решение Шифу
-    23.10): по данным результата тула (``knowledge.QUERY_FALLBACK_PHRASES``), иначе общая честная фраза."""
+    23.10): по данным результата тула (``knowledge.QUERY_FALLBACK_PHRASES``), иначе общая честная фраза. «Нашёл ответ»
+    - только когда хоть один запрос ``done``: ни одного (``rejected``/``timeout``: спасённый ``music_library list``
+    отклонён) - фраза его исхода по результату (``respond.join``: «Не нашёл ответа.», «Не дождался ответа…»), а не
+    «нашёл» (ревью PR #4055)."""
+    if not any(r.status == "done" for r in results):
+        failed = join(results)  # у класса query фраза есть на каждый не-done исход (rejected, timeout)
+        return failed.text if failed is not None else phrases.text("query.rejected")
     for r in results:
         key = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
         summary = _voices_summary(r.data) if key and r.status == "done" else None
@@ -879,7 +898,7 @@ class TurnEngine:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997)."""
         turn.expression = command_face(cmd.expression, results)
-        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
+        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, turn.text)
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
