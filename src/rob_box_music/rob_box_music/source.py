@@ -106,9 +106,14 @@ class SourceAsk:
         return f"asked=[{','.join(flags)}] genre={self.genre or '—'}" + (f" engine={self.engine}" if self.engine else "")
 
     @property
+    def asks_path(self) -> bool:
+        """Просьба называет иной путь, чем «играй сам»: «сгенерируй», «спой», «своим голосом», «новую», «сочини»."""
+        return self.generated or self.vocal or self.robot_voice or self.fresh or self.own
+
+    @property
     def plain(self) -> bool:
         """Просьба не называет путь: ни «сгенерируй»/«спой»/«новую»/«сочини», ни жанра («ускорь», «добавь баса»)."""
-        return not (self.generated or self.vocal or self.robot_voice or self.fresh or self.own or self.genre)
+        return not (self.asks_path or self.genre)
 
 
 def ask_genre(text: str) -> str:
@@ -122,12 +127,17 @@ def ask_genre(text: str) -> str:
     return style if style in kn.GEN_STYLES else ""
 
 
+def _phrase_at(words: Sequence[str], i: int, parts: Sequence[str]) -> bool:
+    """Слова ``parts`` стоят в речи подряд, точно, начиная с позиции ``i`` (запись из нескольких слов таблицы)."""
+    return list(words[i:i + len(parts)]) == list(parts)
+
+
 def _has_phrase(words: Sequence[str], entry: str) -> bool:
     """Запись таблицы в речи: одно слово — основа (начало слова), несколько — эти слова подряд, точно."""
     parts = entry.split()
     if len(parts) == 1:
         return _has(words, parts)
-    return any(list(words[i:i + len(parts)]) == parts for i in range(len(words) - len(parts) + 1))
+    return any(_phrase_at(words, i, parts) for i in range(len(words)))
 
 
 def ask_tweak(text: str) -> bool:
@@ -137,9 +147,8 @@ def ask_tweak(text: str) -> bool:
 
 
 def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
-    """Слово речи называет движок: начинается с основы, совпадает целиком со словом по смыслу («вживую», «синтезаторе»)
-    или содержит ядро (слово-двойник ядром не считается)."""
-    if word in engine.words or word.startswith(engine.stems):
+    """Слово речи называет движок по имени: начинается с основы или содержит ядро (слово-двойник ядром не считается)."""
+    if word.startswith(engine.stems):
         return True
     return not word.startswith(engine.lookalikes) and any(core in word for core in engine.cores)
 
@@ -155,11 +164,9 @@ def _straddles(glued: str, split: int, piece: str) -> bool:
 
 
 def _joined_names_engine(engine: kn.MusicEngine, first: str, second: str) -> bool:
-    """Соседние слова называют движок вместе: фраза по смыслу из двух слов («на синте») или, склеенные, через стык («ре
-    нардо», «нарен дарда») — STT разрезал имя. Основа или ядро обязаны заходить во второе слово — имя, целиком лежащее
-    в первом, пару не берёт (лишний сосед не съедается); слово-двойник склейку не даёт."""
-    if f"{first} {second}" in engine.words:
-        return True
+    """Соседние слова, склеенные, называют движок через стык («ре нардо», «нарен дарда»): STT разрезал имя. Основа или
+    ядро обязаны заходить во второе слово — имя, целиком лежащее в первом, пару не берёт (лишний сосед не съедается);
+    слово-двойник склейку не даёт."""
     if first.startswith(engine.lookalikes) or second.startswith(engine.lookalikes):
         return False
     glued = first + second
@@ -167,29 +174,50 @@ def _joined_names_engine(engine: kn.MusicEngine, first: str, second: str) -> boo
             or any(_straddles(glued, len(first), core) for core in engine.cores))
 
 
-def engine_words(text: str) -> List[Tuple[str, int, int]]:
+def _meaning_hits(engine: kn.MusicEngine, words: Sequence[str]) -> List[Tuple[int, int]]:
+    """Слова по смыслу в речи (``MusicEngine.words``): ``(первое слово, слово после записи)``. Запись не берётся, если
+    следом слово из её списка: «на синт» перед «вейв» — составной стиль."""
+    hits: List[Tuple[int, int]] = []
+    for i in range(len(words)):
+        for entry, unless in engine.words.items():
+            parts = entry.split()
+            end = i + len(parts)
+            if _phrase_at(words, i, parts) and (words[end] if end < len(words) else "") not in unless:
+                hits.append((i, end))
+                break
+    return hits
+
+
+def _name_hits(engine: kn.MusicEngine, words: Sequence[str]) -> List[Tuple[int, int]]:
+    """Имя движка в речи (основы, ядра, склейка пары слов): ``(первое слово, слово после имени)``. Пары первыми: в «ре
+    нардо» второе слово само ядро, но «ре» — часть имени."""
+    pairs = [(i, i + 2) for i in range(len(words) - 1) if _joined_names_engine(engine, words[i], words[i + 1])]
+    return pairs + [(i, i + 1) for i, word in enumerate(words) if _names_engine(engine, word)]
+
+
+def engine_words(text: str, by_meaning: Optional[bool] = None) -> List[Tuple[str, int, int]]:
     """Слова речи, называющие движок: ``(ключ, начало, конец)`` в исходной строке. Единственное место, где код узнаёт
-    движок в услышанной фразе (ADR-0148): по таблице ``MUSIC_ENGINES`` — основы, ядра, склейка пары слов. Пара слов —
-    один отрезок от начала первого до конца второго."""
+    движок в услышанной фразе (ADR-0148): по таблице ``MUSIC_ENGINES`` — имя (основы, ядра, склейка пары слов) и слова
+    по смыслу. Слова по смыслу берутся, только пока просьба не называет иной путь (``SourceAsk.asks_path``: «спой
+    вживую» — спеть); ``by_meaning`` решает за просьбу, когда её путь уже известен вызывающему (тул «сгенерируй»)."""
     tokens = _spans(text)
-    found: List[Tuple[str, int, int]] = []
+    words = [word for word, _start, _end in tokens]
+    if by_meaning is None:
+        by_meaning = not _path_ask(text).asks_path
+    hits: List[Tuple[str, int, int]] = []
     taken: Set[int] = set()
     for key, engine in kn.MUSIC_ENGINES.items():
-        for i in range(len(tokens) - 1):  # пары первыми: в «ре нардо» второе слово само ядро, но «ре» — часть имени
-            if not ({i, i + 1} & taken) and _joined_names_engine(engine, tokens[i][0], tokens[i + 1][0]):
-                found.append((key, tokens[i][1], tokens[i + 1][2]))
-                taken.update((i, i + 1))
-        for i, (word, start, end) in enumerate(tokens):
-            if i not in taken and _names_engine(engine, word):
-                found.append((key, start, end))
-                taken.add(i)
-    return sorted(found, key=lambda hit: hit[1])
+        for first, end in [*(_meaning_hits(engine, words) if by_meaning else []), *_name_hits(engine, words)]:
+            if not taken & set(range(first, end)):
+                hits.append((key, tokens[first][1], tokens[end - 1][2]))
+                taken.update(range(first, end))
+    return sorted(hits, key=lambda hit: hit[1])
 
 
-def ask_engine(text: str) -> str:
+def ask_engine(text: str, by_meaning: Optional[bool] = None) -> str:
     """Движок, названный в речи (``MUSIC_ENGINES``): имя «Ренардо» и искажения STT, в том числе слитые из двух слов, или
-    слова по смыслу «на синтезаторе», «вживую»; не назван — «»."""
-    found = engine_words(text)
+    слова по смыслу «на синтезаторе», «вживую» (:func:`engine_words`); не назван — «»."""
+    found = engine_words(text, by_meaning)
     return found[0][0] if found else ""
 
 
@@ -229,16 +257,21 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
     return replace(ask, engine=playing), "; ".join(filter(None, (note, f"движок наследуется от играющего: {playing}")))
 
 
-def source_ask(text: str) -> SourceAsk:
-    """Слоты просьбы о пути из слов человека (код, без LLM)."""
+def _path_ask(text: str) -> SourceAsk:
+    """Слоты пути, который просят словами: «сгенерируй», «спой», «своим голосом», «новую», «сочини» (жанр, движок и
+    правка играющего — в :func:`source_ask`)."""
     words = _words(text)
     generated, own = _has(words, kn.SOURCE_ASK_STEMS["generated"]), _has(words, kn.SOURCE_ASK_STEMS["own"])
     robot_voice = any(w.startswith("голос") and words[i - 1].startswith(kn.ROBOT_VOICE_OWNERS)
                       for i, w in enumerate(words) if i)
     vocal = (_has(words, kn.SOURCE_ASK_STEMS["vocal"]) or robot_voice
              or (_has(words, kn.SONG_STEMS) and (generated or own)))
-    return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own, ask_genre(text),
-                     ask_engine(text), ask_tweak(text))
+    return SourceAsk(generated, vocal, robot_voice, _has(words, kn.SOURCE_ASK_STEMS["fresh"]), own)
+
+
+def source_ask(text: str) -> SourceAsk:
+    """Слоты просьбы о пути из слов человека (код, без LLM)."""
+    return replace(_path_ask(text), genre=ask_genre(text), engine=ask_engine(text), tweak=ask_tweak(text))
 
 
 def synth_style(genre: str) -> Optional[str]:

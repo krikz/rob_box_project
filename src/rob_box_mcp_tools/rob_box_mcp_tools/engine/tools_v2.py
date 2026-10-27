@@ -50,8 +50,8 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, blank_engine, cache_text, decline_text,
-                                  engine_route, route_note, settle_engine, source_ask)
+from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine, cache_text,
+                                  decline_text, engine_route, route_note, settle_engine, source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -1030,8 +1030,11 @@ class GenerateMusicTool(MCPTool):
             allowed = f"есть {list(GEN_KINDS)} и {list(GEN_STYLE_CHOICES)}"
             return MCPToolResult(success=False, error=f"kind={kind!r}/style={style!r}: {allowed}")
         heard = source_ask(heard_text or theme or "")
+        # тул «сгенерируй» сам просит иной путь, чем «играй сам»: движок здесь — только названный по имени («Ренардо»),
+        # а «вживую»/«на синтезаторе» (слова по смыслу) в генерации и песне — не просьба к синтезу (#4070)
         ask = replace(heard, generated=True, vocal=heard.vocal or kind != "instrumental",
-                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "")
+                      robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "",
+                      engine=ask_engine(heard_text or theme or "", by_meaning=False))
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
 

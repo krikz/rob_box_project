@@ -221,6 +221,8 @@ def test_synth_path_is_named_by_meaning_and_by_the_garbled_name(text):
     "поставь синтвейв", "сыграй синтвэйв", "включи synthwave", "поставь ретровейв",
     "сыграй что-нибудь в стиле синтвейв", "поставь синти-поп", "сыграй синт-поп", "поставь синт вейв",
     "включи синтпоп", "добавь синт бас",
+    # составной стиль из двух слов и с предлогом «на»: «на синт» перед второй половиной стиля — не путь (ревью #4071)
+    "сыграй на синт вейв", "сыграй на синт-поп", "поставь на синт-вейве", "включи на синт-вейв", "сыграй на синт бас",
     # множественное число — правка тембра («добавь синты»), не путь; прилагательное — окраска звука
     "добавь синты", "синты погромче", "включи что-нибудь с синтами", "сыграй синтезаторную музыку",
     "что-то синтетическое",
@@ -243,6 +245,18 @@ def test_no_style_or_genre_word_of_the_tables_names_the_engine():
     for word in sorted(words):
         for text in (word, f"поставь {word}", f"поставь на {word}", f"сыграй {word} бит"):
             assert ask_engine(text) == "", text
+
+
+def test_every_style_tail_of_the_table_cancels_the_bare_synt_and_only_it():
+    """«На синт» перед второй половиной составного стиля (``SYNTH_STYLE_TAILS``) — стиль, а не путь. Отмена держится
+    за запись «на синт»: «на синте вейв» и «вживую поп» хвостов не знают, путь на них остаётся."""
+    assert kn.SYNTH_STYLE_TAILS and kn.MUSIC_ENGINES["synth"].words["на синт"] == kn.SYNTH_STYLE_TAILS
+    for tail in kn.SYNTH_STYLE_TAILS:
+        assert ask_engine(f"сыграй на синт {tail}") == "", tail
+        assert blank_engine(f"сыграй на синт {tail}") == f"сыграй на синт {tail}", tail
+    assert ask_engine("сыграй на синте вейв") == "synth" and ask_engine("сыграй вживую поп") == "synth"
+    assert ask_engine("добавь на синт баса") == "synth"  # «баса» — не «бас»: хвосты точные слова, это «на синт» + бас
+    assert ask_engine("сыграй на синт и поп") == "synth"  # хвост — слово сразу после, не где-то дальше
 
 
 def test_every_entry_of_the_engine_table_names_the_engine():
@@ -276,6 +290,64 @@ def test_engine_word_by_meaning_leaves_the_theme_and_only_it():
     two = "сыграй вживую на синте"  # два слова по смыслу в одной реплике — оба вырезаны, движок один
     assert [two[start:end] for _key, start, end in engine_words(two)] == ["вживую", "на синте"]
     assert ask_engine(two) == "synth"
+
+
+#: Просьбы иного пути со словами по смыслу «вживую»/«на синтезаторе» (ревью #4071, блокирующее): человек не просил
+#: движок — «спой вживую» это спеть, «сгенерируй вживую» это генерация. Раньше: ``engine=synth`` → «Спеть сейчас не
+#: могу: названный движок так не играет» (движок не назван) и молчаливое сужение генерации до ``synth:club``.
+OTHER_PATH_WITH_MEANING_WORDS = [
+    "спой песню вживую", "спой вживую", "Робот, спой живьём", "спой песню на синтезаторе", "спой на синте",
+    "сыграй песню своим голосом вживую", "сгенерируй трек вживую", "сгенерируй вживую", "сгенерируй на синтезаторе",
+    "сочини вживую", "сочини что-нибудь на синтезаторе", "сыграй новую вживую", "поставь новый трек на синте",
+]
+
+
+@pytest.mark.parametrize("text", OTHER_PATH_WITH_MEANING_WORDS)
+def test_meaning_words_do_not_name_the_engine_when_another_path_is_asked(text):
+    ask = source_ask(text)
+    assert ask.asks_path and ask.engine == "" and ask_engine(text) == "" and engine_words(text) == []
+    assert blank_engine(text) == text  # слово остаётся в реплике: движок не назван, вырезать нечего
+
+
+@pytest.mark.parametrize("text", ["спой на ренардо", "сгенерируй на индардо", "спой на рем дарда", "сочини на ренардо",
+                                  "сыграй новую на нарен дарда"])
+def test_the_name_of_the_engine_names_it_whatever_path_is_asked(text):
+    """Имя «Ренардо» (и искажения STT) — прямое слово про движок: оно называет его и в просьбе иного пути."""
+    ask = source_ask(text)
+    assert ask.asks_path and ask.engine == "synth"
+
+
+def test_by_meaning_override_is_for_the_caller_that_knows_the_path():
+    """Тул «сгенерируй» сам просит иной путь, даже когда слов про него в реплике нет: ``by_meaning=False``."""
+    assert ask_engine("сыграй вживую") == "synth" and ask_engine("сыграй вживую", by_meaning=False) == ""
+    assert ask_engine("сыграй на ренардо", by_meaning=False) == "synth"
+    assert ask_engine("спой вживую", by_meaning=True) == "synth"
+    assert engine_words("сыграй на синте", by_meaning=False) == []
+
+
+def test_sing_live_goes_to_the_song_not_to_a_false_decline():
+    """«Спой вживую» — песня (генерация), а не отказ «названный движок так не играет», хотя движок не назван."""
+    for text in ("спой песню вживую", "спой вживую", "спой песню на синтезаторе", "сыграй песню своим голосом вживую"):
+        route = choose_route(source_ask(text), RICH, DeterministicChooser(Boom()))
+        assert route.kind == "generate" and route.id.startswith("generate:") and "song" in route.id, text
+    sing_to_name = choose_route(source_ask("спой на ренардо"), RICH, DeterministicChooser(Boom()))
+    assert sing_to_name.id == "decline:engine_cannot"  # с именем движка отказ честный: он действительно не поёт
+
+
+def test_generate_live_keeps_every_path_open_instead_of_narrowing_to_the_synth():
+    """«Сгенерируй вживую» и «сочини вживую» не сужаются молча до ``synth:club``: кэш и генерация остаются кандидатами."""
+    for text in ("сгенерируй трек вживую", "сгенерируй вживую", "сочини вживую", "сыграй новую вживую"):
+        options, _reason = source_candidates(source_ask(text), RICH)
+        assert {o.id.split(":")[0] for o in options} >= {"synth", "generate", "cache"}, text
+        route = choose_route(source_ask(text), RICH, DeterministicChooser(Boom()))
+        assert route.kind == "generate", text
+
+
+def test_slot_synth_without_the_engine_in_the_words_of_another_path_is_dropped():
+    """LLM поставила ``engine=synth`` на «спой песню вживую»: слов про движок нет — слот отброшен с причиной."""
+    for text in ("спой песню вживую", "сгенерируй трек вживую"):
+        ask, note = settle_engine(source_ask(text), "synth")
+        assert ask.engine == "" and "engine=synth без опоры в словах" in note, text
 
 
 @pytest.mark.parametrize("text", ["сыграй на рем дарда", "сыграй на ремдарда", "поставь бит на рен дарда"])
