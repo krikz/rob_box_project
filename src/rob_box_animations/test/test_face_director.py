@@ -128,6 +128,17 @@ def test_request_v1_name_with_duration_and_unknown_name():
     assert parse_animation_request('sad:x') == ('sad', None)
 
 
+def test_4083_request_without_seconds_holds_the_dialogue_show_default():
+    """Запрос без ``ttl_ms`` держится столько же, сколько показ по просьбе в диалоге (одно число в knowledge)."""
+    from rob_box_dialog.knowledge import FACE_SHOW_DEFAULT_S, FACE_SHOW_MIN_S
+
+    assert FACE_SHOW_DEFAULT_S >= FACE_SHOW_MIN_S
+    d = awake()
+    assert d.request('sad', None, T0 + 8) == 'sad'
+    assert d.choose(T0 + 8 + FACE_SHOW_DEFAULT_S - 0.1)[0] == 'sad'
+    assert d.choose(T0 + 8 + FACE_SHOW_DEFAULT_S + 0.1)[0] != 'sad'
+
+
 def test_requested_emotion_while_speaking_becomes_the_tone():
     d = awake()
     d.request('happy', 5.0, T0 + 8)

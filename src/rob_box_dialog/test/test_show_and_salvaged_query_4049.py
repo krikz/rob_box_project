@@ -23,7 +23,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases, respond
 from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, Expression, Form, Invalid, ToolCall, parse, validate
-from rob_box_dialog.expression import merge, reflex
+from rob_box_dialog.expression import held_face, hold_ms, merge, reflex
 from rob_box_dialog.face_scene import FaceScene
 from rob_box_dialog.memory import refused_read
 from rob_box_dialog.respond import ActionResult
@@ -95,10 +95,11 @@ def _run(ports, text, session=None):
 
 
 def _done_plan(expression):
-    """Что уйдёт лицу на итоге ``done`` (то же, что ``dialog_v2_ports.stage_plan``): рефлекс, окрашенный экспрессией."""
-    face = expression.face.to_dict() if expression.face is not None else None
-    hold = expression.hold_ms if isinstance(expression, Shown) else None
-    return merge(reflex("done"), "done", expression.emotion, expression.gesture, face, hold)
+    """Что уйдёт лицу на итоге ``done`` (то же, что ``dialog_v2_ports.stage_plan``): рефлекс, окрашенный экспрессией,
+    со временем сцены, которое решил ход (``expression.duration_s``, #4083)."""
+    seconds = expression.duration_s
+    return merge(reflex("done"), "done", expression.emotion, expression.gesture, held_face(expression.face, seconds),
+                 hold_ms(seconds))
 
 
 # -- #4049: исполненный play_animation красит итог своей сценой --------------------------------------------------
@@ -110,7 +111,7 @@ def test_4049_play_animation_sad_is_the_done_scene_with_its_face_and_duration_no
     agg = _run(ports, N_SAD)
     assert (agg.stage, agg.status) == ("done", "finished") and ports.said == [], "лицо по прямой просьбе — молча"
     face = FaceScene(eyes="half", gaze="down", mouth="frown", tint="blue", duration_s=6.0)
-    assert ports.faces == [("done", Shown(emotion="sad", face=face, hold_ms=6000))]
+    assert ports.faces == [("done", Shown(emotion="sad", face=face, duration_s=6.0))]
     plan = _done_plan(ports.faces[0][1])
     assert (plan.emotion, plan.ttl_ms, plan.face) == ("sad", 6000, face.to_dict())
     assert plan.emotion != reflex("done").emotion, "рефлекс done (happy) сцену вызова не перекрывает"
@@ -118,16 +119,17 @@ def test_4049_play_animation_sad_is_the_done_scene_with_its_face_and_duration_no
 
 
 @pytest.mark.parametrize("scene", ["police_lights", "fire_truck", "ambulance"])
-def test_4049_siren_animations_reach_the_face_without_duration_by_the_face_default(scene):
+def test_4049_siren_animations_reach_the_face_without_duration_by_the_show_default(scene):
     """00:45:45 «включи сирену»: мигалка — сцена ``face_node`` (``SCENES``, сверка ``KNOWN_ANIMATIONS`` —
-    ``tests/unit/docker/test_animation_assets.py``); без ``duration`` время — по умолчанию лица (``ttl_ms=0``), а
-    не 3 с рефлекса ``done``."""
+    ``tests/unit/docker/test_animation_assets.py``); без ``duration`` время — по умолчанию показа
+    (``FACE_SHOW_DEFAULT_S``, #4083: то же число, что по умолчанию у лица), а не 3 с рефлекса ``done``."""
     cmd = Command(speech="Включаю!", actions=(ToolCall("play_animation", {"animation": scene}),))
     ports = Ports([Answer(cmd, "deepseek")])
     _run(ports, N_SIREN)
-    assert ports.said == [("Включаю!", None, "neutral")] and ports.faces == [("done", Shown(emotion=scene))]
+    shown = Shown(emotion=scene, duration_s=kn.FACE_SHOW_DEFAULT_S)
+    assert ports.said == [("Включаю!", None, "neutral")] and ports.faces == [("done", shown)]
     plan = _done_plan(ports.faces[0][1])
-    assert (plan.emotion, plan.ttl_ms, plan.gesture) == (scene, 0, "")
+    assert (plan.emotion, plan.ttl_ms, plan.gesture) == (scene, int(kn.FACE_SHOW_DEFAULT_S * 1000), "")
 
 
 def test_4049_the_called_scene_beats_the_command_emotion_and_gesture():
@@ -137,7 +139,7 @@ def test_4049_the_called_scene_beats_the_command_emotion_and_gesture():
     ports = Ports([Answer(cmd, "deepseek")])
     _run(ports, N_SIREN)
     assert ports.said == [("Сирена — включаю!", None, "happy")], "play_animation тихий: речь рядом с ним звучит"
-    assert ports.faces == [("done", Shown(emotion="police_lights"))]
+    assert ports.faces == [("done", Shown(emotion="police_lights", duration_s=kn.FACE_SHOW_DEFAULT_S))]
 
 
 def test_4049_unknown_animation_is_an_honest_refusal_and_no_scene():
@@ -150,14 +152,20 @@ def test_4049_unknown_animation_is_an_honest_refusal_and_no_scene():
 
 def test_4049_shown_face_rules():
     sad = {"animation": "sad", "duration": 6, "face": {"eyes": "half", "duration_s": 2}}
-    assert shown_face(None, sad) == Shown(emotion="sad", face=FaceScene(eyes="half", duration_s=6.0), hold_ms=6000)
+    assert shown_face(None, sad) == Shown(emotion="sad", face=FaceScene(eyes="half", duration_s=6.0), duration_s=6.0)
     only_face = shown_face(Expression(emotion="happy", gesture="wink"), {"face": {"tint": "warm"}})
-    assert only_face == Expression(emotion="happy", gesture="wink", face=FaceScene(tint="warm"))
+    held = kn.FACE_SCENE_DEFAULT_S  # своё время сцены лица (5 с) — уже не меньше минимума показа
+    assert only_face == Expression(emotion="happy", gesture="wink", face=FaceScene(tint="warm", duration_s=held),
+                                   duration_s=held)
     assert shown_face(Expression(emotion="sad"), {"face": {"eyes": "no-such"}}) == Expression(emotion="sad")
-    assert shown_face(None, {"animation": "sad", "duration": True}).hold_ms == 0, "bool — не длительность"
+    assert shown_face(None, {"animation": "sad", "duration": True}).duration_s == kn.FACE_SHOW_DEFAULT_S, \
+        "bool — не длительность: время по умолчанию показа"
     calls = [ActionResult(f"t/{n}", 0, "personality", "play_animation", "action.local", "done", None, {"animation": a})
              for n, a in enumerate(("sad", "victory"))]
-    assert command_face(None, calls) == Shown(emotion="victory"), "последний вызов главнее"
+    default = kn.FACE_SHOW_DEFAULT_S
+    assert command_face(None, calls) == Shown(emotion="sad", duration_s=default,
+                                              then=(Shown(emotion="victory", duration_s=default),)), \
+        "#4083: пачка — по очереди, первая на итоге, а не «последний вызов главнее»"
     failed = [*calls, ActionResult("t/2", 0, "personality", "stop_music", "action.media", "rejected")]
     assert command_face(Expression(emotion="happy"), failed) is None, "«радостно» о провале не бывает"
 

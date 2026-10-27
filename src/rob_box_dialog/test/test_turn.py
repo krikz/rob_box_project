@@ -1036,7 +1036,8 @@ def test_3997_expression_only_asked_in_words_shows_the_face_silently():
     agg = _run(_engine(ports), N904)
     assert (agg.stage, agg.status) == ("done", "finished") and len(ports.asked) == 1
     assert ports.stages[-1] == ("done", "finished", "") and ports.said == [] and ports.executed == []
-    assert ports.faces == [("done", SAD)], "эмоция команды — только в рефлексе итога, отдельного запроса нет"
+    held = Expression(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S)  # #4083: показ по просьбе, а не 3 с рефлекса
+    assert ports.faces == [("done", held)], "эмоция команды — только в рефлексе итога, отдельного запроса нет"
 
 
 @pytest.mark.parametrize("text", ["улыбнись", "подмигни мне", "покажи победу", "покажи эмоцию радости"])
@@ -1098,7 +1099,9 @@ def test_3997_speech_with_emotion_colours_done_too():
     expr = Expression(emotion="sad", face=FaceScene(eyes="half", mouth="frown", duration_s=6))
     ports = Ports(answers=[Answer(Command(speech="Вот так мне грустно.", expression=expr), "deepseek")])
     _run(_engine(ports), N904)
-    assert ports.said == [("Вот так мне грустно.", None, "sad")] and ports.faces == [("done", expr)]
+    held = Expression(emotion="sad", face=FaceScene(eyes="half", mouth="frown", duration_s=6.0), duration_s=6.0)
+    assert ports.said == [("Вот так мне грустно.", None, "sad")] and ports.faces == [("done", held)], \
+        "лицо просили — время сцены лица (6 с) и есть время показа (#4083)"
 
 
 def test_3997_neutral_expression_and_failed_action_do_not_colour_done():

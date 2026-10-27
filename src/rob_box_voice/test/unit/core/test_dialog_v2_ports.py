@@ -255,14 +255,16 @@ def _done_request(node):
 
 def test_expression_only_command_reaches_the_face_in_the_done_reflex():
     """n904: ``{expression: {emotion: sad, face}}`` без речи → ``ExpressionRequest`` итога ``done`` с эмоцией ``sad``,
-    сценой лица LLM и earcon/ttl рефлекса; речи нет, ход ``finished``."""
+    сценой лица LLM и earcon рефлекса; лицо просили — время показа (6 с сцены лица, #4083), а не 3 с рефлекса; речи
+    нет, ход ``finished``."""
     ports, node, _ = _ports([LLMResponse(tool_calls=(_command_call({"expression": SAD_FACE}),))])
     agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed(N904, VOICE)))
     assert (agg.stage, agg.status) == ("done", "finished") and agg.llm_calls == 1
     assert "/voice/speech/request" not in node.pubs, "лицо по прямой просьбе — молча"
     done = _done_request(node)
-    assert (done.emotion, done.earcon, done.ttl_ms) == ("sad", reflex("done").earcon, reflex("done").ttl_ms)
-    assert json.loads(done.face_json) == SAD_FACE["face"] and done.turn_id == agg.turn_id
+    assert (done.emotion, done.earcon, done.ttl_ms) == ("sad", reflex("done").earcon, 6000)
+    assert done.ttl_ms > reflex("done").ttl_ms, "рефлекс done сцену по просьбе не обрезает (#4083)"
+    assert json.loads(done.face_json) == {**SAD_FACE["face"], "duration_s": 6.0} and done.turn_id == agg.turn_id
     others = node.pubs["/voice/expression/request"].sent[:-1]
     assert [r.emotion for r in others] == [reflex(s).emotion for s in ("addressed", "thinking")], "отдельного нет"
 
@@ -346,16 +348,127 @@ def test_4049_play_animation_sad_is_the_done_expression_request_with_its_scene_f
                          f"turn={agg.turn_id}")
 
 
-def test_4049_siren_animation_without_duration_holds_by_the_face_default():
-    """«Включи сирену» → ``play_animation{police_lights}`` + речь: мигалка — сцена итога, ``ttl_ms=0`` (по умолчанию
-    лица), а не 3 с рефлекса."""
+def test_4049_siren_animation_without_duration_holds_by_the_show_default():
+    """«Включи сирену» → ``play_animation{police_lights}`` + речь: мигалка — сцена итога со временем показа по
+    умолчанию (``FACE_SHOW_DEFAULT_S``, #4083: то же число, что по умолчанию у лица), а не 3 с рефлекса."""
     call = _command_call({"speech": "Сирена — включаю!",
                           "actions": [{"tool": "play_animation", "args": {"animation": "police_lights"}}]})
     ports, node, _ = _ports([LLMResponse(tool_calls=(call,))])
     asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("включи сирену", VOICE)))
     assert [s.text for s in node.pubs["/voice/speech/request"].sent] == ["<speak>Сирена — включаю!</speak>"]
     done = _done_request(node)
-    assert (done.emotion, done.ttl_ms) == ("police_lights", 0)
+    assert (done.emotion, done.ttl_ms) == ("police_lights", int(kn.FACE_SHOW_DEFAULT_S * 1000))
+
+
+# -- #4083: «молча» без слов; время показа доходит до ExpressionRequest; пачка — очередью ---------------------------
+
+
+class _Later:
+    """Таймер очереди лица под тестом: копит ``(через_с, fire)``, ``fire_all()`` — время прошло."""
+
+    def __init__(self):
+        self.calls, self.handles = [], []
+
+    def __call__(self, delay_s, fire):
+        handle = types.SimpleNamespace(cancelled=False)
+        handle.cancel = lambda: setattr(handle, "cancelled", True)
+        self.calls.append((delay_s, fire))
+        self.handles.append(handle)
+        return handle
+
+    def fire_all(self):
+        for (_, fire), handle in zip(self.calls, self.handles):
+            if not handle.cancelled:
+                fire()
+
+
+def _queued_ports(responses, lines):
+    counter, node, later = CallCounter(), _Node(), _Later()
+    ports = V2Ports(node, _LLM(responses, counter), counter, _Tools(), log=lines.append, later=later)
+    return ports, node, later
+
+
+def _animations(*names):
+    return [{"tool": "play_animation", "args": {"animation": n}} for n in names]
+
+
+def test_4083_batch_of_three_animations_reaches_the_face_one_after_another():
+    """«Робот, покажи по очереди радость, грусть и удивление» → три ``play_animation`` одной команды: на итоге
+    ``done`` — первая сцена, остальные — своими ``ExpressionRequest`` в свой срок (8 с, 16 с), каждая ≥ 5 с; ни одна
+    не перекрывает другую разом."""
+    lines = []
+    call = _command_call({"actions": _animations("happy", "sad", "surprised")})
+    ports, node, later = _queued_ports([LLMResponse(tool_calls=(call,))], lines)
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(
+        Addressed("покажи по очереди радость грусть и удивление", VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished") and "/voice/speech/request" not in node.pubs
+    default = kn.FACE_SHOW_DEFAULT_S
+    done = _done_request(node)
+    assert (done.emotion, done.ttl_ms, done.earcon) == ("happy", int(default * 1000), reflex("done").earcon)
+    assert [d for d, _ in later.calls] == [default, 2 * default], "вторая — когда кончилась первая, третья — за ней"
+    before = len(node.pubs["/voice/expression/request"].sent)
+    later.fire_all()
+    queued = node.pubs["/voice/expression/request"].sent[before:]
+    assert [(r.emotion, r.ttl_ms, r.earcon, r.gesture) for r in queued] == [
+        ("sad", int(default * 1000), "", ""), ("surprised", int(default * 1000), "", "")]
+    assert all(r.ttl_ms >= kn.FACE_SHOW_MIN_S * 1000 and r.turn_id == agg.turn_id for r in queued)
+    assert any(line.startswith("🎭 [turn-v2] очередь лица: sad через 8 с на 8 с, surprised через 16 с на 8 с")
+               for line in lines), lines
+    assert sum(line.startswith("🎭 [turn-v2] лицо из очереди:") for line in lines) == 2
+
+
+def test_4083_next_turn_drops_the_rest_of_the_queue():
+    """Пока пачка показывается, человек снова обратился к роботу: новая стадия снимает недопоказанные сцены."""
+    lines = []
+    call = _command_call({"actions": _animations("happy", "sad", "surprised")})
+    ports, node, later = _queued_ports([LLMResponse(tool_calls=(call,))], lines)
+    asyncio.run(TurnEngine(Session("personality"), ports).run(
+        Addressed("покажи по очереди радость грусть и удивление", VOICE)))
+    ports.stage("next", 0, "addressed", "started")
+    assert all(h.cancelled for h in later.handles)
+    assert lines[-1] == "🎭 [turn-v2] очередь лица снята: 2 сцен (стадия addressed turn=next)"
+    sent = len(node.pubs["/voice/expression/request"].sent)
+    later.fire_all()
+    assert len(node.pubs["/voice/expression/request"].sent) == sent, "снятая очередь лицу ничего не шлёт"
+
+
+def test_4083_silent_ask_with_an_expression_is_one_call_and_no_speech():
+    """08:20 «Робот, покажи молча, что ты задумался» → ``{expression: thinking}``: без нарушения ``silent_answer`` —
+    один вызов LLM, речи нет («Молчу и думаю.» не звучит), ``thinking`` на итоге держится показом по просьбе."""
+    call = _command_call({"expression": {"emotion": "thinking"}})
+    ports, node, _ = _ports([LLMResponse(tool_calls=(call,))])
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("покажи молча что ты задумался", VOICE)))
+    assert agg.llm_calls == 1 and (agg.stage, agg.status) == ("done", "finished")
+    assert "/voice/speech/request" not in node.pubs
+    done = _done_request(node)
+    assert (done.emotion, done.ttl_ms) == ("thinking", int(kn.FACE_SHOW_DEFAULT_S * 1000))
+
+
+def test_4083_expression_duration_from_the_model_reaches_the_expression_request():
+    """Марафон 23.10 21:53:48: ``expression.duration_s`` модели раньше выбрасывался (``fields_dropped``). Теперь 8 с
+    доходят до ``ttl_ms`` и до ``duration_s`` сцены лица."""
+    lines = []
+    expr = {"emotion": "sleepy", "face": {"eyes": "half", "mouth": "flat", "tint": "cold"}, "duration_s": 8}
+    call = _command_call({"speech": "Тихо. Я тоже помолчу.", "expression": expr})
+    counter, node = CallCounter(), _Node()
+    ports = V2Ports(node, _LLM([LLMResponse(tool_calls=(call,))], counter), counter, _Tools(), log=lines.append)
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(Addressed("все спасибо можно отдыхать", VOICE)))
+    done = _done_request(node)
+    assert (done.emotion, done.ttl_ms) == ("sleep", 8000)
+    assert json.loads(done.face_json) == {**expr["face"], "duration_s": 8.0}
+    assert lines[-1] == ("🎭 [turn-v2] лицо команды на done: emotion=sleep gesture=- face=llm ttl_ms=8000 "
+                         f"turn={agg.turn_id}")
+
+
+def test_4083_show_queue_only_for_done_with_a_batch():
+    from rob_box_dialog.turn import Shown
+
+    from rob_box_voice.core.dialog_v2_ports import show_queue
+
+    batch = Shown(emotion="happy", duration_s=6.0, then=(Shown(emotion="sad", duration_s=7.0),))
+    assert [(at, p.emotion, p.ttl_ms) for at, p in show_queue("done", batch)] == [(6.0, "sad", 7000)]
+    assert show_queue("failed", batch) == () and show_queue("done", Expression(emotion="sad")) == ()
+    assert show_queue("done", None) == ()
 
 
 # -- #4050: спасённый query невалидной команды — данные модели, ответ звучит -----------------------------------------
