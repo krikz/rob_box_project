@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U8
+from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U8, VOICE_OWNER_AGENT
 from rob_box_dialog import knowledge as kn
 from rob_box_core.utterance import Utterance
 
@@ -451,7 +451,7 @@ class SpeechOwner:
         """
         ev = self._msgs.SpeechEvent()
         ev.kind = _KINDS.index("voice_changed")
-        ev.turn_id, ev.agent, ev.provider, ev.reason = request_id, "system", provider, reason
+        ev.turn_id, ev.agent, ev.provider, ev.reason = request_id, VOICE_OWNER_AGENT, provider, reason
         ev.voice_requested, ev.voice_applied = requested, applied
         ev.stamp = self._node.get_clock().now().to_msg()
         self._event_pub.publish(ev)

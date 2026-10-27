@@ -20,7 +20,7 @@ from .turn_reflexes import ReflexOut, Turn
 
 #: Тулы речи: транспорт, а не действие (``knowledge.SPEECH_CHANNEL_TOOLS``) - стадию ``executing`` не открывают.
 SPEECH_TOOLS = kn.SPEECH_CHANNEL_TOOLS
-SHOW_TOOL = "play_animation"
+SHOW_TOOL = kn.SHOW_TOOL
 #: Сколько символов причины отказа тула хранить (``TurnEvent.reason``).
 REASON_MAX = 60
 

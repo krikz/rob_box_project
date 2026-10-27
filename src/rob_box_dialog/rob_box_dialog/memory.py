@@ -6,7 +6,8 @@
   написала модель в аргументе собеседника, подставляется он; в снимке его нет - привязать не к кому, исполнитель
   отвечает ``rejected{no_person}`` и в память не идёт (раньше такой факт становился общим для всех, #1770). Голос
   узнан, а чей он - не подтверждено (спор, гипотеза: ``knowledge.VOICE_UNCONFIRMED_STATES``) - тоже не к кому, но
-  причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда;
+  причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда; такой отказ чтения памяти
+  (:func:`refused_read`) - не данные для модели, о нём говорит код (ревью #4053);
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
 
@@ -49,6 +50,14 @@ def unbound_reason(snapshot: Any) -> str:
     return kn.VOICE_UNCONFIRMED_REASON if state in kn.VOICE_UNCONFIRMED_STATES else kn.NO_PERSON_REASON
 
 
+def refused_read(result: Any) -> bool:
+    """Чтение памяти (``memory_search``/``memory_context``) отклонено кодом до владельца - собеседника нет или голос
+    не подтверждён (``knowledge.UNBOUND_REASONS``): читать модели нечего, исход говорит код своей фразой
+    ``query.rejected.<причина>`` (ревью #4053), а не «запоминать не буду» записи."""
+    return (result.tool in kn.PERSON_SCOPED_TOOLS and result.cls == "query" and result.status == "rejected"
+            and result.reason in kn.UNBOUND_REASONS)
+
+
 def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
     """Собеседник сменился между началом хода и исполнением: факт мог быть сказан другим человеком, привязывать его к
     ``person_ref`` начала хода нельзя (#3881). Неузнанное начало хода - уже ``no_person``, здесь не считается."""
@@ -84,5 +93,5 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "profiled_person", "speaker_changed", "speaker_memory_block",
-           "unbound_reason"]
+__all__ = ["bind_person", "has_evidence", "profiled_person", "refused_read", "speaker_changed",
+           "speaker_memory_block", "unbound_reason"]

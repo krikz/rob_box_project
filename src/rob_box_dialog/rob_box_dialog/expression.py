@@ -2,8 +2,9 @@
 
 :func:`reflex` читает таблицу :data:`.knowledge.REFLEXES` и отдаёт :class:`ExpressionPlan` - что показать лицу и какой
 earcon сыграть на этой стадии. :func:`merge` накладывает эмоцию, жест и сцену лица команды (в v1 - аргумент
-``animation`` тулов речи, в v2 - ``command.expression``, #3997): на ``speaking`` и ``done`` она красит рефлекс, на
-``failed`` и ``timeout`` рефлекс побеждает - «радостно» о провале не бывает.
+``animation`` тулов речи, в v2 - ``command.expression`` и сцена исполненного ``play_animation``, #3997, #4049): на
+``speaking`` и ``done`` она красит рефлекс, на ``failed`` и ``timeout`` рефлекс побеждает - «радостно» о провале не
+бывает.
 Кольцо LED в план не входит: его режим исполнитель берёт из ``REFLEXES[stage].ring`` по событию стадии.
 
 Чистый модуль, без ROS: план превращается в ``ExpressionRequest`` клиентом ``rob_box_core.expression_client``.
@@ -109,9 +110,11 @@ def shows(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[
 
 
 def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = None, gesture: Optional[str] = None,
-          face: Optional[Mapping[str, object]] = None) -> Optional[ExpressionPlan]:
+          face: Optional[Mapping[str, object]] = None, ttl_ms: Optional[int] = None) -> Optional[ExpressionPlan]:
     """Наложить эмоцию, жест и сцену лица команды (``FaceScene.to_dict()``, уже проверенная) на рефлекс; на
-    ``failed``/``timeout`` и вне ``EMOTION_STAGES`` рефлекс как есть."""
+    ``failed``/``timeout`` и вне ``EMOTION_STAGES`` рефлекс как есть. ``ttl_ms`` - сколько держать сцену команды
+    (``duration`` исполненного ``play_animation``, #4049; ``0`` - по умолчанию лица): только вместе с её сценой - время
+    рефлекса без сцены команды не меняется."""
     if plan is None or stage not in EMOTION_STAGES:
         return plan
     scene = command_scene(emotion)
@@ -121,4 +124,6 @@ def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = N
         plan = replace(plan, gesture=gesture)
     if face:
         plan = replace(plan, face=dict(face))
+    if ttl_ms is not None and (scene or face):
+        plan = replace(plan, ttl_ms=max(0, int(ttl_ms)))
     return plan

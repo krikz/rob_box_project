@@ -33,9 +33,15 @@ SPEECH_CANCEL_TOPIC = "/voice/speech/cancel"
 SPEECH_EVENT_TOPIC = "/voice/speech/event"
 SPEECH_ENVELOPE_TOPIC = "/voice/speech/envelope"
 
+#: Автор речи, не ведущий сессию (джойстик, служебные фразы).
+SYSTEM_AGENT = "system"
 #: Авторы речи (ADR-0150 §6.1). Агенты движка (``knowledge.AGENTS``) плюс
-#: ``system`` - писатели, не ведущие сессию (джойстик, служебные фразы).
-SPEECH_AGENTS = ("personality", "operator", "telegram", "system")
+#: :data:`SYSTEM_AGENT` - писатели, не ведущие сессию.
+SPEECH_AGENTS = ("personality", "operator", "telegram", SYSTEM_AGENT)
+#: Автор события владельца голоса (``speech_owner.voice_changed``: ответ на ``/voice/tts/voice_request``). Только
+#: его ``voice_changed`` меняет голос робота (``dialog_node.robot_voice_changed``, #4045); одно место знания для
+#: того, кто событие шлёт, и того, кто его читает (ревью #4053).
+VOICE_OWNER_AGENT = SYSTEM_AGENT
 #: Отмена реплик любого агента (STOP оператора по PTT, старый STOP).
 ANY_AGENT = "*"
 #: ``cancel(epoch=None)``: все эпохи агента.
