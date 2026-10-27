@@ -14,7 +14,8 @@
   С #3767 — не фильтр подхвата, а поле ``same_as_caller`` метки фразы.
 * :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (#3767, Шифу 21.10): узнан уверенно
   (имя биометрии или гипотеза голоса, подтверждённая лицом с тем же именем) — конкретный спикер с id, каналами и
-  score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя.
+  score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя. Спорный голос
+  (``bio=contested``) — никому, ни ``person_ref`` кандидата, ни его имени (:func:`attributed_person`, #3993).
 * :func:`merge_plan` / :func:`merge_answer` / :func:`merge_phrase` — вопрос «вы разные люди или это ты?» после
   регистрации (#2828, ADR-0127; #3765): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил, #2829), что
   робот говорит об исходе — кодом, без подсказки LLM (ADR-0148).
@@ -109,7 +110,7 @@ def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[s
     """Собеседник этой фразы по правилам ADR-0130 §2.6; пороги биометрии не здесь и не меняются."""
     faces = {n.lower() for n in face_names if n}
     state, name, attributed = _name_state(result)
-    person = (str(result.get("speaker_id") or "") or None) if attributed else None
+    person = attributed_person(result) or None
     if attributed and person is None:  # узнан, а id нет (битый результат) — назвать некого
         state, name = "unknown", None
     channels = ("voice", "face") if name and name.lower() in faces else ("voice",)
@@ -128,10 +129,20 @@ def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str], bool]:
     return state, (str(name) if name else None), attributed
 
 
+def attributed_person(result: Mapping[str, Any]) -> str:
+    """``speaker_id`` профиля, которому биометрия приписала голос фразы (таблица ``_REF_STATE``), иначе ``""``. Спор
+    (#2809) — никому: ``speaker_id`` в нём лишь ближайший кандидат, и фраза бэклога (``VoiceTag``, ``Heard``) ему не
+    приписывается (#3993)."""
+    _state, _name, attributed = _name_state(result)
+    return str(result.get("speaker_id") or "") if attributed else ""
+
+
 @dataclass(frozen=True)
 class VoiceTag:
-    """Что биометрия сказала о фразе: ``bio`` — ``known`` | ``unknown_voice`` | ``inconclusive``; ``name`` — только
-    уверенное имя; ``tentative`` — гипотеза при ``known``; ``candidate`` — лучший кандидат без порога у незнакомого."""
+    """Что биометрия сказала о фразе: ``bio`` — ``known`` | ``contested`` | ``unknown_voice`` | ``inconclusive``;
+    ``name`` — только уверенное имя; ``tentative`` — гипотеза при ``known``; ``candidate`` — лучший кандидат без порога
+    у незнакомого. У ``contested`` нет ни ``person_ref``, ни имени, ни кандидата: голос похож на знакомого, а чей —
+    спорно (#3993)."""
 
     bio: str
     person_ref: str = ""
@@ -157,7 +168,9 @@ def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
     if not result.get("is_known"):
         return VoiceTag("unknown_voice", candidate=candidate, candidate_score=cand_score)
     state, name, _attributed = _name_state(result)
-    return VoiceTag("known", person_ref=str(result.get("speaker_id") or ""),
+    if state == "contested":  # голос похож на знакомого, кто из похожих — не решено: фраза — никому (#3993)
+        return VoiceTag("contested")
+    return VoiceTag("known", person_ref=attributed_person(result),
                     name=name if state == "confirmed" else "", tentative=name if state == "tentative" else "",
                     score=_score(result.get("confidence")), epithet=str(result.get("epithet") or ""))
 

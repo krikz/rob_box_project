@@ -4,7 +4,9 @@
 
 * :func:`bind_person` - тулы ``knowledge.PERSON_SCOPED_TOOLS`` получают ``SpeakerRef.person_ref`` снимка. Что бы ни
   написала модель в аргументе собеседника, подставляется он; в снимке его нет - привязать не к кому, исполнитель
-  отвечает ``rejected{no_person}`` и в память не идёт (раньше такой факт становился общим для всех, #1770);
+  отвечает ``rejected{no_person}`` и в память не идёт (раньше такой факт становился общим для всех, #1770). Голос
+  узнан, а чей он - не подтверждено (спор, гипотеза: ``knowledge.VOICE_UNCONFIRMED_STATES``) - тоже не к кому, но
+  причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда;
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
 
@@ -25,16 +27,26 @@ from rob_box_dialog import knowledge as kn
 
 
 def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
-    """Аргументы вызова с собеседником снимка; ``None`` - тул личный, а собеседника (``person_ref``) в снимке нет."""
+    """Аргументы вызова с собеседником снимка; ``None`` - тул личный, а собеседника, чьи это факты, в снимке нет:
+    ``person_ref`` пуст или голос не подтверждён (спор, гипотеза - для памяти гипотеза как спор, #3993: вопроса «ты
+    Саша?» нет, а факт кандидата чужому хуже пустого). Почему - :func:`unbound_reason`."""
     if call.tool not in kn.PERSON_SCOPED_TOOLS or snapshot.agent not in kn.PERSON_AGENTS:
         return call.args
     if not hasattr(snapshot, "speaker"):  # заглушка снимка режима команд v1 (``command_turn``): собеседник там - у MCP
         return call.args
     speaker = snapshot.speaker
     person = getattr(speaker, "person_ref", None)
-    if not person:
+    if not person or getattr(speaker, "name_state", None) in kn.VOICE_UNCONFIRMED_STATES:
         return None
     return MappingProxyType({**call.args, kn.PERSON_ARG: person})
+
+
+def unbound_reason(snapshot: Any) -> str:
+    """Причина отказа тула памяти без собеседника (:func:`bind_person` вернул ``None``): голос узнан, а чей - не
+    подтверждено (``knowledge.VOICE_UNCONFIRMED_STATES``) - ``voice_unconfirmed`` («Голос знакомый, но не уверен
+    чей»); иначе собеседника нет - ``no_person``."""
+    state = getattr(getattr(snapshot, "speaker", None), "name_state", None)
+    return kn.VOICE_UNCONFIRMED_REASON if state in kn.VOICE_UNCONFIRMED_STATES else kn.NO_PERSON_REASON
 
 
 def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
@@ -72,4 +84,5 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "profiled_person", "speaker_changed", "speaker_memory_block"]
+__all__ = ["bind_person", "has_evidence", "profiled_person", "speaker_changed", "speaker_memory_block",
+           "unbound_reason"]

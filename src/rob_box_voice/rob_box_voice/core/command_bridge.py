@@ -33,8 +33,8 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, is_empty,
-                                    is_query_data, parse, to_args, validate)
+from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, form_schema,
+                                    is_empty, is_query_data, parse, to_args, validate)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -89,8 +89,9 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:
-    """Добавка к системному промпту: форма команды из ``knowledge`` + поправка v1 + схема для JSON-режимов."""
-    parts = [kn.prompt_fragment(), V1_TRANSPORT_NOTE]
+    """Добавка к системному промпту: форма команды из ``knowledge`` (строки только о полях схемы хода, #4021) +
+    поправка v1 + схема для JSON-режимов."""
+    parts = [kn.prompt_fragment(schema), V1_TRANSPORT_NOTE]
     if request.instruction:
         parts.append(request.instruction)
     if mode in _SCHEMA_IN_PROMPT:
@@ -283,10 +284,12 @@ class CommandModeLLM(LLMProvider):
 
     def shape(self, messages: Iterable[LLMMessage], tools: Iterable[Mapping[str, Any]],
               settings: LLMSettings | None) -> Tuple[List[LLMMessage], List[Mapping[str, Any]], LLMSettings]:
-        """Запрос в режиме адаптера: тул/формат от ``FieldChannel``, свои тулы без тула речи, добавка к промпту."""
+        """Запрос в режиме адаптера: тул/формат от ``FieldChannel``, свои тулы без тула речи, добавка к промпту. Схема —
+        в форме команды хода (``command.form_schema``, #4021: на адресованную реплику нет ``passed``, без просьбы о
+        голосе нет ``voice``)."""
         tools = list(tools)
-        schema = kn.with_voices(kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools)),
-                                self._busy().voices)
+        offered = kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools))
+        schema = form_schema(kn.with_voices(offered, self._busy().voices))
         request = FieldChannel(schema).build_request(self.mode)
         native = [t for t in tools if _tool_name(t) not in kn.SPEECH_CHANNEL_TOOLS]
         base = settings or LLMSettings()

@@ -106,7 +106,8 @@ class Executor:
         self._loop = asyncio.get_running_loop()
         planned = [self._request(call, snapshot, f"{turn_id}/{n}") for n, call in enumerate(actions)]
         sent = iter(await asyncio.gather(*(self._one(r) for r, bound in planned if bound)))
-        return [next(sent) if bound else _result(r, OwnerEvent(r.turn_id, "rejected", kn.NO_PERSON_REASON))
+        unbound = memory.unbound_reason(snapshot)  # нет собеседника или голос не подтверждён (#3993)
+        return [next(sent) if bound else _result(r, OwnerEvent(r.turn_id, "rejected", unbound))
                 for r, bound in planned]
 
     @staticmethod

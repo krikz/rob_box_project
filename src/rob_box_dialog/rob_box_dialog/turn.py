@@ -17,6 +17,8 @@
 * невалидная команда (после повтора моста) — допустимые действия исполняются, итог (или честное «не понял») говорит
   код, ход ``done`` (#3953, Шифу 23.10); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``)
   законен; ``passed`` — тихо;
+* форма команды хода (:func:`command_form`, #4021): ``passed`` есть в схеме только при подхвате бэклога (адресованную
+  реплику модель молчанием не закрывает — нарушение и повтор моста), голос реплики — только по просьбе о голосе;
 * голый неслышимый ответ (``play_animation`` без слов) на адресованную реплику, где анимацию не просили
   (``tools_view.needs_words``, #3995), не исполняется: модель получает нарушение ``VIOLATION_SILENT_ANSWER``
   следующей итерацией (≤ ``COMMAND_RETRIES_MAX`` повторов); повтор кончился — анимация и фраза кода, не молчание;
@@ -55,7 +57,8 @@ from rob_box_dialog import memory
 from rob_box_dialog import phrases
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1
-from rob_box_dialog.command import Command, Expression, Invalid, Performance, Result, ToolCall, explain, loud_actions
+from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, explain,
+                                    loud_actions, turn_form)
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
@@ -65,7 +68,7 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls,
 from rob_box_dialog.respond import ActionResult, audible, classed, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
-from rob_box_dialog.tools_view import available_tools, needs_words
+from rob_box_dialog.tools_view import available_tools, needs_words, voice_asked
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
@@ -252,6 +255,24 @@ def voices_passed(pickup: bool, snapshot: SessionSnapshot) -> bool:
     return not pickup and snapshot.top("Silence") is None
 
 
+def silence_insisted(result: Result) -> Result:
+    """Модель и после повтора моста с нарушением ``VIOLATION_PASSED_ADDRESSED`` (#4021) «молчит» на адресованную
+    реплику — исход хода ``passed``: код мычит фразой ``PASSED_ADDRESSED_PHRASE``, ход ``finished/passed`` (решение
+    Шифу 22.10), как и до формы хода; не «не понял» невалидной команды."""
+    if isinstance(result, Invalid) and result.reason == kn.VIOLATION_PASSED_ADDRESSED:
+        return Command(passed=kn.PASSED_INSISTED)
+    return result
+
+
+def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Form:
+    """Форма команды хода (#4021, ADR-0148 п.2): ``passed`` — только при подхвате бэклога (адресованную реплику
+    молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
+    в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
+    пары ``(id, название)``, как у Tier-1)."""
+    names = tuple(name for pair in voices for name in pair if name)
+    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names))
+
+
 def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command) -> bool:
     """Команда модели не слышна, а человек ждёт слов (#3995): агент говорит в динамики (Личность, не шлем оператора и
     не чат), реплика адресована - не подхват бэклога и не тишина (:func:`voices_passed`), и сама команда без слов
@@ -323,8 +344,13 @@ def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
 
 
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
-    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`)."""
-    if not hold_silence(engine, turn):
+    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`), — в форме команды
+    хода (:func:`command_form`, #4021): схема и валидатор моста видят её на время вызовов LLM этого хода."""
+    if hold_silence(engine, turn):
+        return
+    form = command_form(turn, snap, engine._voices())
+    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} turn={turn.turn_id}")
+    with turn_form(form):
         await engine._understand(turn, snap)
 
 
@@ -438,7 +464,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
         turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
-        engine._say(turn, query_fallback(turn.queried), None, "sad")
+        engine._say(turn, query_fallback(turn.queried), None, invalid_emotion(invalid, ()))
         return
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     results = await engine._execute(turn, invalid.salvage, snap)
@@ -446,8 +472,16 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
         return
     turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
     turn.expression = command_face(expression, results)
-    sad = not results or any(r.status in _FAILED for r in results)
-    engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, "sad" if sad else None)
+    engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, invalid_emotion(invalid, results))
+
+
+def invalid_emotion(invalid: Invalid, results: Sequence[ActionResult]) -> Optional[str]:
+    """Эмоция фразы кода после нарушения: провал исполненного — грустно; исполнять было нечего — грустно («не понял»),
+    кроме нарушений, где ничего не провалилось (``knowledge.CALM_VIOLATIONS``: ответ лицом, анимацией или earcon без
+    слов; ревью #4041 — «Угу, я тут.» звучало с ``sad``)."""
+    if any(r.status in _FAILED for r in results):
+        return "sad"
+    return None if results or invalid.reason in kn.CALM_VIOLATIONS else "sad"
 
 
 def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, results: Sequence[ActionResult]) -> str:
@@ -731,10 +765,11 @@ class TurnEngine:
                 return
             data = answer.result.reason if isinstance(answer.result, Invalid) else None
             self._event("command", turn, data={"provider": answer.provider, "valid": data is None, "reason": data})
-            if not isinstance(answer.result, Command):
-                await _close_invalid(self, turn, answer.result, snap)
+            result = silence_insisted(answer.result)
+            if not isinstance(result, Command):
+                await _close_invalid(self, turn, result, snap)
                 return
-            more = await self._act(turn, answer.result, snap, last=last)
+            more = await self._act(turn, result, snap, last=last)
             if more is None:
                 return
             messages.extend(answer.follow(more))
@@ -848,6 +883,6 @@ class TurnEngine:
 
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "TurnEngine", "done_expression", "finish_stage", "hand_perform", "host_sections", "outcome_phrase",
-           "query_fallback", "stop_performance", "tier1_actions", "tier1_for", "tier1_phrase", "voices_passed",
-           "words_owed"]
+           "TurnEngine", "command_form", "done_expression", "finish_stage", "hand_perform", "host_sections",
+           "invalid_emotion", "outcome_phrase", "query_fallback", "stop_performance", "tier1_actions", "tier1_for",
+           "tier1_phrase", "voices_passed", "words_owed"]

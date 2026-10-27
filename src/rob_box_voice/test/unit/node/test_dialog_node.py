@@ -559,11 +559,37 @@ def _music_msg(**dj):
     return msg
 
 
-def _voice_changed(requested, applied, provider):
+def _voice_changed(requested, applied, provider, speech_id="", agent=dn.VOICE_OWNER_AGENT):
+    """``voice_changed`` владельца голоса (``speech_owner.voice_changed``: ``agent=system``, без реплики); с
+    ``speech_id`` — подмена голоса одной реплики/сегмента (``speech_owner.synthesized``)."""
     event = M.SpeechEvent()
     event.kind, event.voice_requested, event.voice_applied, event.provider = \
         M.SpeechEvent.KIND_VOICE_CHANGED, requested, applied, provider
+    event.speech_id, event.agent, event.turn_id = speech_id, agent, "req-1" if not speech_id else "t-tale"
     return event
+
+
+def test_4045_segment_voice_substitution_does_not_change_the_robots_voice(node):
+    """#4045: подмена голоса сегмента сказки (#4043, ``voice_unavailable``, есть ``speech_id``) — не смена голоса
+    робота: ``session.voice`` остаётся ответом владельца голоса на ``set_voice``."""
+    node._on_speech_event(_voice_changed("Reliable_Man", "Reliable_Man", "minimax"))
+    before = node._session.snapshot.voice
+    assert (before.requested, before.applied, before.provider) == ("Reliable_Man", "Reliable_Man", "minimax")
+    node._on_speech_event(_voice_changed("Wise_Woman", "Reliable_Man", "minimax", speech_id="seg-3",
+                                         agent="personality"))
+    node._on_speech_event(_voice_changed("alena", "Reliable_Man", "minimax", speech_id="line-1", agent="personality"))
+    assert node._session.snapshot.voice == before
+    node._on_speech_event(_voice_changed("alena", "alena", "yandex"))  # set_voice: владелец голоса ответил
+    after = node._session.snapshot.voice
+    assert (after.requested, after.applied, after.provider) == ("alena", "alena", "yandex")
+
+
+def test_4045_only_the_voice_owner_event_is_the_robots_voice():
+    owner = _voice_changed("alena", "alena", "yandex")
+    assert dn.robot_voice_changed(owner)
+    assert not dn.robot_voice_changed(_voice_changed("alena", "x", "minimax", speech_id="seg-1", agent="personality"))
+    assert not dn.robot_voice_changed(_voice_changed("alena", "x", "minimax", speech_id="seg-1"))
+    assert not dn.robot_voice_changed(_voice_changed("alena", "x", "minimax", agent="personality"))
 
 
 def _hold(node, action, set_by="operator", ttl_s=0.0):

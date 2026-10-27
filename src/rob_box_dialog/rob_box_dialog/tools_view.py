@@ -91,10 +91,10 @@ def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
 
 def needs_words(text: str, cmd: "Command") -> bool:
     """Ответ модели не слышен, а человек ждёт слов (#3995, #3997): нет ни речи, ни вопроса, ни выступления, ни
-    ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а показать есть что - действия или
-    одна ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``), и лицо человек
-    словами не просил (группы ``FACE_ASK_GROUP`` нет в :func:`requested_groups`: «покажи анимацию радости»,
-    «улыбнись», «посмотри налево»).
+    ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а ответ есть - действия или одна
+    ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``; или один earcon - короткий
+    сигнал, не слова: ревью #4041), и лицо человек словами не просил (группы ``FACE_ASK_GROUP`` нет в
+    :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»).
 
     Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
     динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
@@ -103,9 +103,19 @@ def needs_words(text: str, cmd: "Command") -> bool:
     if any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
         return False
     face = cmd.expression
-    if not cmd.actions and not shows(face.emotion, face.gesture, face.face):
+    if not cmd.actions and not shows(face.emotion, face.gesture, face.face) and face.earcon is None:
         return False
     return kn.FACE_ASK_GROUP not in requested_groups(text)
+
+
+def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()) -> bool:
+    """Просил ли человек в ЭТОЙ реплике о голосе (#4021, n109): его словами открыта группа «только по явной просьбе»
+    (``knowledge.TOOL_GROUPS_EXPLICIT``: «голос», «яндекс», «басом»; под играющей музыкой «ускорь» - музыка, не голос,
+    :func:`groups_for`) или названо имя голоса реестра (``voices``). Нет - голос реплики модели (``Command.voice``)
+    закрыт формой хода: голос сам собой не меняется."""
+    if set(groups_for(snapshot, text)) & set(kn.TOOL_GROUPS_EXPLICIT):
+        return True
+    return has_form(text or "", tuple(v for v in voices if v))
 
 
 def face_asked(text: str) -> bool:
@@ -194,4 +204,4 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
 
 
 __all__ = ["available_tools", "command_groups", "face_asked", "groups_for", "motion_named", "motion_refusal",
-           "needs_words", "requested_groups", "widen_for"]
+           "needs_words", "requested_groups", "voice_asked", "widen_for"]

@@ -70,8 +70,8 @@ def test_no_person_in_snapshot_means_rejected_and_nothing_is_sent():
 def test_contested_voice_neither_reads_nor_writes_the_candidates_facts():
     """#4023 (марафон 23.10, акт 2b): голос «Саша» 0.944 / «Борис» 0.661 при band_high 0.99 — имя скрыто (contested).
     Раньше собеседником становился профиль кандидата: memory_search{query:'Саша'} без speaker_id читал факты Саши.
-    Теперь спорный голос — как незнакомец: и поиск, и запись — rejected{no_person}, к владельцу памяти не уходит
-    ничего, даже если модель сама вписала id кандидата."""
+    Теперь спорный голос — как незнакомец: и поиск, и запись отклонены, к владельцу памяти не уходит ничего, даже если
+    модель сама вписала id кандидата. Причина — ``voice_unconfirmed``, не ``no_person`` (#3993: голос узнан)."""
     wire = install_dialog_msgs_stub().SpeakerResult()
     result = speaker_result_to_payload(fill_speaker_result(wire, {
         "is_known": True, "speaker_id": "spk-sasha", "name": None, "confidence": 0.944, "epithet": "Спутник",
@@ -83,9 +83,10 @@ def test_contested_voice_neither_reads_nor_writes_the_candidates_facts():
     res = owner.run([ToolCall("memory_search", {"query": "Саша"}),
                      ToolCall("memory_save", {"fact": "я люблю чай", kn.PERSON_ARG: "spk-sasha"}),
                      ToolCall("memory_context", {})], session.snapshot)
+    unconfirmed = kn.VOICE_UNCONFIRMED_REASON
     assert [(r.tool, r.status, r.reason) for r in res] == [
-        ("memory_search", "rejected", kn.NO_PERSON_REASON), ("memory_save", "rejected", kn.NO_PERSON_REASON),
-        ("memory_context", "rejected", kn.NO_PERSON_REASON)]
+        ("memory_search", "rejected", unconfirmed), ("memory_save", "rejected", unconfirmed),
+        ("memory_context", "rejected", unconfirmed)]
     assert owner.requests == []  # к владельцу памяти не ушло ни одного запроса
     assert profiled_person(session.snapshot.speaker) is None  # и профиль собеседника по спорному голосу не ведётся
 

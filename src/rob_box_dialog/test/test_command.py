@@ -325,8 +325,9 @@ def test_schema_fields_match_the_dataclasses():
 
 
 def test_validator_has_no_llm_hook_and_no_retry():
-    """Проверка — чистая функция без LLM: повтор по нарушениям делает мост режима команд, не валидатор (#3698)."""
-    assert list(inspect.signature(validate).parameters) == ["cmd", "available_tools", "session", "busy"]
+    """Проверка — чистая функция без LLM: повтор по нарушениям делает мост режима команд, не валидатор (#3698).
+    ``form`` — форма команды хода (#4021): данные, а не крючок к LLM."""
+    assert list(inspect.signature(validate).parameters) == ["cmd", "available_tools", "session", "busy", "form"]
     assert "retry" not in pathlib.Path(cm.__file__).read_text(encoding="utf-8").lower()
     invalid = Invalid("x")
     assert validate(invalid, ALL) is invalid
