@@ -830,6 +830,24 @@ SPEAKER_TAG = "[говорит: {who}] {text}"
 WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON),
 })
+#: Ход отработан действиями, а ответа словами в окне нет (#4066, живой робот 27.10 06:36: «покажи молча, как тебе
+#: грустно» - только ``play_animation(sad)``; реплика человека висела в истории без ответа, следующий ход «догнал» её -
+#: повторил анимацию рядом с ``music_library list``). Окно (``turn_log``) ставит после такой реплики реплику робота,
+#: которую строит код из исходов действий хода: тул, ключевой аргумент, статус, причина отказа. Квадратные скобки -
+#: служебная вставка: скопирует модель её в речь - TTS её не озвучит (``speak_helpers.strip_bracket_asides``).
+WINDOW_ACTIONS_REPLY = "[ответ действием: {actions}]"
+#: Ключевой аргумент тула в этой реплике - поле данных результата (аргументы вызова лежат в данных поверх ответа тула);
+#: тула нет в таблице или поля нет в данных - только имя тула. ``perform`` - запись выступления в окне (``turn_log``).
+WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
+    "play_animation": "animation", "play_sound": "sound", LIBRARY_TOOL: "action", "request_music": "intent",
+    "dj_set": "action", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
+})
+#: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
+#: ``PERFORM_*``). Статус вне таблицы - как есть.
+WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
+    "done": "сделано", "rejected": "отказ", "timeout": "итога нет в срок", "cancelled": "отменено",
+    "pending": "идёт", "started": "идёт", "stopped_by_user": "остановил человек", "interrupted": "оборвано",
+})
 #: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
 DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
