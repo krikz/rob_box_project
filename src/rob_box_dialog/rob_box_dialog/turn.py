@@ -195,7 +195,7 @@ class _Turn:
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за голый неслышимый ответ (``VIOLATION_SILENT_ANSWER``, #3995)
     expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done`` (#3997)
-    command: str = ""  # Tier-1 разбирает это, а не ``text``: слова после вейка (``Addressed.command``, n811 27.10)
+    command: str = ""  # запасной разбор Tier-1 (:func:`tier1_of`): слова после вейка (``Addressed.command``, n811)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -236,6 +236,23 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
     тишина Личности (решение О2), а слова для LLM телеграм-агента."""
     command = match(text, snapshot, voices)
     return command if command is not None and allows_tier1(agent_spec(snapshot.agent), command.kind) else None
+
+
+def tier1_of(text: str, after_wake: str, snapshot: SessionSnapshot,
+             voices: Sequence[Tuple[str, str]] = ()) -> Tuple[Optional[Tier1Command], str]:
+    """Tier-1 хода и текст, по которому он сработал (его же читает политика перебивания ``interrupt_for``).
+
+    Первым — фраза целиком (``text``): команда до вейка остаётся рефлексом («Стоп, Робот, пожалуйста» — ``stop_all``;
+    «Сделай музыку, Робот, потише» — громкость музыки, а не голоса). Слова после вейка (``after_wake``,
+    ``Addressed.command``) — только запасной разбор, когда целое не Tier-1 или стоп в нём спорный, а после вейка —
+    ясная команда: эхо речи робота, склеенное микрофоном перед вейком (n811 27.10: «четыре недели робот хватит читать
+    а музыку оставь» — целое спорное, после вейка ясный ``stop_speech``)."""
+    whole = tier1_for(text, snapshot, voices)
+    if after_wake and (whole is None or whole.disputed):
+        command = tier1_for(after_wake, snapshot, voices)
+        if command is not None and not command.disputed:
+            return command, after_wake
+    return whole, text
 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
@@ -803,19 +820,21 @@ def say_late(engine: "TurnEngine", result: ActionResult) -> None:
     engine._event_raw("speech_requested", turn_id, result.epoch, text, {"speech_id": speech_id, "voice": ""})
 
 
-async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Command, snap: SessionSnapshot) -> None:
+async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Command, snap: SessionSnapshot,
+                           parsed: str) -> None:
     """Ясный стоп с продолжением («хватит, спой другую», ``Tier1Command.rest``, §6.2): стоп — кодом, остаток фразы —
     новая реплика того же хода (Tier-1, если он ею покрыт, иначе LLM), а не потерянные слова (живой прогон 23.10,
-    акт 4 n410: «ладно, хватит тянуть, теперь наоборот» — стоп, 0 вызовов LLM, тишина)."""
-    await engine._tier1(turn, command, snap)
+    акт 4 n410: «ладно, хватит тянуть, теперь наоборот» — стоп, 0 вызовов LLM, тишина). ``parsed`` — текст, по
+    которому сработал ``command`` (:func:`tier1_of`)."""
+    await engine._tier1(turn, command, snap, parsed)
     if not command.rest:
         return
     turn.text, turn.command = command.rest, ""
     snap = engine.session.snapshot
     engine._log.info(f"{LOG_MARK} остаток после стопа: {turn.text[:80]!r} turn={turn.turn_id}")
-    follow = tier1_for(turn.text, snap, engine._voices())
+    follow, parsed = tier1_of(turn.text, turn.command, snap, engine._voices())
     if follow is not None and not follow.disputed:
-        await _tier1_then_rest(engine, turn, follow, snap)
+        await _tier1_then_rest(engine, turn, follow, snap, parsed)
     else:
         await understand(engine, turn, snap)
 
@@ -828,9 +847,9 @@ def turn_work(engine: "TurnEngine", turn: _Turn, snap: SessionSnapshot) -> Await
     reply = tool_ask.reply(engine.session, turn.text, turn.source)
     if reply is not None:
         return answer_tool(engine, turn, reply, snap)
-    tier1 = tier1_for(turn.command or turn.text, snap, engine._voices())
+    tier1, parsed = tier1_of(turn.text, turn.command, snap, engine._voices())
     if tier1 is not None and not tier1.disputed:
-        return _tier1_then_rest(engine, turn, tier1, snap)
+        return _tier1_then_rest(engine, turn, tier1, snap, parsed)
     return understand(engine, turn, snap)
 
 
@@ -988,12 +1007,13 @@ class TurnEngine:
         if said is not None and part:
             self._event_raw("speech_spoken", said[0], text=part, data={"spoken_chars": int(spoken_chars)})
 
-    async def _tier1(self, turn: _Turn, command: Tier1Command, snap: SessionSnapshot) -> None:
-        """Tier-1 кодом: сессия — здесь, действия — владельцам, речь и движение — через порты. 0 вызовов LLM."""
+    async def _tier1(self, turn: _Turn, command: Tier1Command, snap: SessionSnapshot, parsed: str) -> None:
+        """Tier-1 кодом: сессия — здесь, действия — владельцам, речь и движение — через порты. 0 вызовов LLM.
+        Политика перебивания читает тот же текст, по которому сработал ``command`` (``parsed``, :func:`tier1_of`)."""
         self._log.info(f"{LOG_MARK} tier1 kind={command.kind} args={dict(command.args)} turn={turn.turn_id}")
         turn.stage = "done"
         actions = tier1_actions(command, snap)
-        stop = interrupt_for(command, turn.command or turn.text, snap)
+        stop = interrupt_for(command, parsed, snap)
         if stop.interrupts:
             snap = self._interrupt(turn, stop)
             actions = () if stop_performance(self._ports, str(stop.perform), stop.keep_backing) else stop.music

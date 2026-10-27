@@ -231,3 +231,19 @@ def test_4085_music_the_person_orders_during_a_performance_is_theirs_not_its_bea
                                                     engine="renardo", mood="calm")))
         assert result.is_error is False and result.data == {"ok": True}
     assert under.executed == ["request_music", "request_music"] and executor.performer.touched == []
+
+
+def test_4085_music_ordered_while_a_performance_holds_its_column_goes_at_once():
+    """Ревью #4111: заказ музыки посреди ИДУЩЕГО выступления (колонка ``perform`` занята) допуск плана пропускает сразу —
+    ``music`` × ``perform`` конца выступления не ждёт — и вызов уходит владельцу музыки, выступление остаётся идти."""
+    from rob_box_dialog.command import Performance
+
+    node, under = _HostNode(), _Underlying()
+    executor = plan_host.make_tool_executor(node, under, on_tool=None)
+    node._tool_executor = executor
+    executor.performer.start(Performance(kind="tale", segments=("Жил-был кот.", "И ушёл.")), "t1")
+    assert set(executor.planner.state.busy()) == {"perform"}
+    result = asyncio.run(executor.execute(_call("m1", "request_music", intent="track", text="спокойный бит",
+                                                engine="renardo", mood="calm")))
+    assert result.is_error is False and result.data == {"ok": True} and under.executed == ["request_music"]
+    assert "perform" in executor.planner.state.busy()

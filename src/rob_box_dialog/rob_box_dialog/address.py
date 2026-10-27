@@ -66,9 +66,10 @@ class Addressed:
     recent: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10, #3892).
     background: Tuple[Dict[str, Any], ...] = ()
-    #: Команда реплики с микрофона для Tier-1 (``words.wake_command``), если она короче ``text``: слова после вейка.
-    #: Слова перед ним — эхо речи робота, склеенное микрофоном (n811 27.10: «четыре недели робот хватит читать…» —
-    #: спорный стоп, LLM вместо ``stop_speech``); модель видит ``text`` целиком. «» — команда и есть ``text``.
+    #: Запасной разбор Tier-1 (``turn.tier1_of``): слова после вейка (``words.wake_command``), если они короче ``text``.
+    #: Tier-1 разбирает сначала ``text`` целиком (команда до вейка — «Стоп, Робот, пожалуйста»), а это — только когда
+    #: целое не Tier-1 или спорно: перед вейком эхо речи робота (n811 27.10: «четыре недели робот хватит читать…» —
+    #: спорный стоп). Модель видит ``text`` целиком. «» — команда и есть ``text``.
     command: str = ""
 
 
@@ -143,7 +144,7 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
 
 
 def _command(text: str, rest: str, wake_words: Sequence[str]) -> str:
-    """Команда для Tier-1 (``Addressed.command``): слова после вейка, если перед ним было что-то ещё; иначе «»."""
+    """Запасной разбор Tier-1 (``Addressed.command``): слова после вейка, если перед ним было что-то ещё; иначе «»."""
     command = wake_command(text, wake_words)
     return command if command and command != rest.strip(" ,.!?;:-–—") else ""
 
