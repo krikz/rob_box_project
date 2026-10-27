@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import introduced_name, strip_wake_word
+from rob_box_dialog.words import introduced_name, nominative_name, strip_wake_word
 
 NAME, YES, NO, REFUSAL = "name", "yes", "no", "refusal"
 _TOKEN = re.compile(r"[\w-]+")
@@ -107,6 +107,11 @@ def _name_word(word: str) -> bool:
     return len(word) >= 2 and word.replace("-", "").isalpha() and word not in kn.REPLY_NOT_A_NAME
 
 
+def _rename(name: str, old: str = "") -> Rename:
+    """Просьба звать иначе: имена - в именительном падеже (``words.nominative_name``): «зови меня Тамарой» - это «Тамара»."""
+    return Rename(_display(nominative_name(name)), _display(nominative_name(old)) if old else "")
+
+
 def _correction(words: List[str]) -> Optional[Rename]:
     """«меня зовут не X, а Y», «я не X, а Y»: голова представления (или «я»), затем «не X а Y»."""
     heads = [tuple(p.split()) for p in kn.REPLY_INTRO_PHRASES + kn.REPLY_RENAME_PHRASES] + [("я",)]
@@ -114,7 +119,7 @@ def _correction(words: List[str]) -> Optional[Rename]:
         if words[i] != "не" or words[i + 2] != "а" or not _name_word(words[i + 3]):
             continue
         if any(i >= len(h) and tuple(words[i - len(h):i]) == h for h in heads):
-            return Rename(_display(words[i + 3]), _display(words[i + 1]))
+            return _rename(words[i + 3], words[i + 1])
     return None
 
 
@@ -129,7 +134,7 @@ def classify_rename(text: str) -> Optional[Rename]:
         head = phrase.split()
         for i in range(len(words) - len(head)):
             if words[i:i + len(head)] == head and _name_word(words[i + len(head)]):
-                return Rename(_display(words[i + len(head)]))
+                return _rename(words[i + len(head)])
     return None
 
 

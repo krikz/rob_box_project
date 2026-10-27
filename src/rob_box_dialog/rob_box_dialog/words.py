@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import re
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
@@ -17,6 +17,9 @@ from rob_box_dialog.knowledge import (
     INTRO_GREETING_WORDS,
     INTRO_NOT_A_NAME,
     KNOWN_FIRST_NAMES,
+    NAME_CASE_MIN_STEM,
+    NAME_CASE_SURE_TAILS,
+    NAME_CASE_TAILS,
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
@@ -159,15 +162,59 @@ def name_tokens(text: str) -> Tuple[str, ...]:
     return tuple(t for t in (w.lower().replace("ё", "е").strip("-") for w in _TOKEN.findall(text or "")) if t)
 
 
+def nominative_name(word: str) -> str:
+    """Слово-имя (нижний регистр, ё → е, как в :func:`name_tokens`) в именительном падеже: «тамарой» → «тамара», «сашей»
+    → «саша», «борисом» → «борис», «сергеем» → «сергей», «запиши как тамару» → «тамара» (таблицы ``NAME_CASE_TAILS`` /
+    ``NAME_CASE_SURE_TAILS``). Имя из словаря ``KNOWN_FIRST_NAMES`` уже именительное — как есть. Единственное место, где
+    падеж имени приводится к именительному: фраза «зови меня Тамарой» и профиль «Тамара» — одно имя (ревью PR #4108)."""
+    if word in KNOWN_FIRST_NAMES:
+        return word
+    return _dictionary_form(word) or _sure_form(word) or word
+
+
+def _dictionary_form(word: str) -> Optional[str]:
+    """Форма из словаря имён, из которой слово получается по ``NAME_CASE_TAILS``, или ``None``."""
+    for tail, replacements in NAME_CASE_TAILS:
+        stem = word[:-len(tail)]
+        if not (word.endswith(tail) and stem):
+            continue
+        found = next((stem + r for r in replacements if stem + r in KNOWN_FIRST_NAMES), None)
+        if found is not None:
+            return found
+    return None
+
+
+def _sure_form(word: str) -> Optional[str]:
+    """Незнакомое имя в однозначном творительном («аскаром» → «аскар»), иначе ``None`` (``NAME_CASE_SURE_TAILS``)."""
+    for tail, replacement in NAME_CASE_SURE_TAILS.items():
+        if word.endswith(tail) and len(word) - len(tail) >= NAME_CASE_MIN_STEM:
+            return word[:-len(tail)] + replacement
+    return None
+
+
+def name_key(name: Any) -> str:
+    """Ключ сравнения имён: пробелы по краям, нижний регистр, ё → е и именительный падеж (:func:`nominative_name`) для
+    одного слова. «Тамарой» и «Тамара» — один ключ; пустое имя — пустой ключ."""
+    folded = str(name or "").strip().lower().replace("ё", "е")
+    return folded if not folded or len(folded.split()) > 1 else nominative_name(folded)
+
+
+def same_name(left: Any, right: Any) -> bool:
+    """Одно ли имя (по ключу :func:`name_key`); пустое имя не равно ничему, даже пустому."""
+    a, b = name_key(left), name_key(right)
+    return bool(a) and a == b
+
+
 def introduced_name(tokens: Sequence[str]) -> Optional[str]:
     """Имя, которым человек назвал себя: «меня зовут X» (X - любое слово от двух букв), «я X» (X - из словаря
-    ``KNOWN_FIRST_NAMES``, перед «я» не «не») в любом месте фразы. ``tokens`` - из :func:`name_tokens`.
+    ``KNOWN_FIRST_NAMES``, перед «я» не «не») в любом месте фразы; X - в именительном падеже (:func:`nominative_name`:
+    «зови меня Тамарой» → «тамара»). ``tokens`` - из :func:`name_tokens`.
     Единственная реализация: ею же пользуется ``reply_grammar`` (ответ на «как тебя зовут?»)."""
     for phrase in REPLY_INTRO_PHRASES:
         head = phrase.split()
         for i in range(len(tokens) - len(head)):
             if tuple(tokens[i:i + len(head)]) == tuple(head) and len(tokens[i + len(head)]) >= 2:
-                return tokens[i + len(head)]
+                return nominative_name(tokens[i + len(head)])
     for i in range(len(tokens) - 1):
         if tokens[i] == "я" and tokens[i + 1] in KNOWN_FIRST_NAMES and (i == 0 or tokens[i - 1] != "не"):
             return tokens[i + 1]

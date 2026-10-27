@@ -53,7 +53,7 @@ from rob_box_dialog.greeting_reply import is_greeting_reply
 from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
-from rob_box_dialog.words import self_intro_name
+from rob_box_dialog.words import same_name, self_intro_name
 
 #: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
 STRANGER = "stranger"
@@ -367,11 +367,6 @@ class IdentityStep:
     frame: Optional[Mapping[str, Any]] = None
 
 
-def _same_name(left: Any, right: Any) -> bool:
-    a, b = (str(x or "").strip().lower().replace("ё", "е") for x in (left, right))
-    return bool(a) and a == b
-
-
 def same_voice_plan(speaker_id: str, known: str, name: str) -> Dict[str, Any]:
     """Голос уверенно узнан как ``known``, а человек назвался ``name``: второй профиль не заводится, после ответа хода
     робот говорит ``identity.same_voice``, ответ ждёт кадр ``Identity(same_voice)`` (окно ``REPLY_WINDOW_S``)."""
@@ -396,7 +391,7 @@ def rename_step(rename: Optional[Rename], speaker: Mapping[str, Any]) -> Optiona
         return None
     if certainty == VOICE_UNSURE:
         return template_step("rename", rename.name)
-    if _same_name(speaker.get("name"), rename.name):
+    if same_name(speaker.get("name"), rename.name):
         return IdentityStep(phrases.text("identity.name_same", name=rename.name))
     return IdentityStep(phrases.text("identity.renamed", name=rename.name),
                         rename=(str(speaker["speaker_id"]), rename.name))

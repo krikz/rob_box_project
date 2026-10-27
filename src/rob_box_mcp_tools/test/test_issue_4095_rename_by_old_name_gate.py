@@ -150,8 +150,13 @@ def test_turn_without_a_voice_renames_as_before() -> None:
     ("Нина", None, None, "Нина", None),
     ("Нина", "  ", None, "Нина", None),
     ("Алёна", "Тамара", "Тамара", "Алена", None),
+    ("Нина", "Тамара", "Тамарой", "Нина", None),
+    ("Нина", "Тамарой", "Тамара", "Нина", None),
+    ("Нина", "Тамара", "Тамара", "Ниной", None),
+    ("Саша", "Тамара", "Тамарой", "Нина", "not_own_profile"),
 ], ids=["fact", "other-name", "self-intro", "case", "same-name", "other-profile", "other-profile-same-name",
-        "no-confident-voice", "no-confident-voice-intro", "no-new-name", "blank-new-name", "yo"])
+        "no-confident-voice", "no-confident-voice-intro", "no-new-name", "blank-new-name", "yo",
+        "intro-in-instrumental", "name-in-instrumental", "known-in-instrumental", "other-profile-instrumental"])
 def test_rename_gate_table(old, new, intro, known, verdict) -> None:
     assert rename_gate(old, new, intro, known) == verdict
 
