@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import types
 from pathlib import Path
@@ -35,13 +36,21 @@ from rob_box_voice.tts_voice_registry import (
 M = install_dialog_msgs_stub()
 TIME = type(M.SpeechEvent().stamp)
 ALL_TOOLS = [t.name for t in TOOL_CATALOG]
-E2E_LIB = (
-    Path(__file__).resolve().parents[5]
-    / ".github"
-    / "workflows"
-    / "scripts"
-    / "e2e_voice_lib.sh"
-)
+LIB = Path(".github") / "workflows" / "scripts" / "e2e_voice_lib.sh"
+
+
+def _repo_root(start: Path) -> Path:
+    """Корень репо в dev и в CI (test_ws, туда копируется ``.github``), как в test_issue_3114_scsynth_block_size."""
+    override = os.environ.get("ROB_BOX_REPO_ROOT")
+    if override and (Path(override) / LIB).is_file():
+        return Path(override).resolve()
+    for parent in [start, *start.parents]:
+        if (parent / LIB).is_file():
+            return parent
+    raise RuntimeError(f"repo root not found for {start!s}; set ROB_BOX_REPO_ROOT")
+
+
+E2E_LIB = _repo_root(Path(__file__).resolve()) / LIB
 
 TALE = {
     "kind": "tale",
