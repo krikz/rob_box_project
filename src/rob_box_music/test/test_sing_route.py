@@ -12,18 +12,24 @@ import pytest
 
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Choice, ChoiceQuestion, DeterministicChooser
-from rob_box_music.source import (CacheTrack, SingContext, SourceContext, choose_route, choose_sing, sing_candidates,
-                                  sing_kind, sing_markers, source_ask, synth_fit)
+from rob_box_music.source import (LIVE_TOOL_TEXT, CacheTrack, SingContext, SourceContext, choose_route, choose_sing,
+                                  decline_text, sing_candidates, sing_kind, sing_markers, source_ask, synth_fit)
 
 RICH = SourceContext(cache=(CacheTrack("k", "STAR WARS", "cover", "club", True, group="g1"),), gen_ready=True,
                      balance=900.0, day_left=120.0)
 
 
+class ModelCalled(BaseException):
+    """Модель чойсера позвана там, где путь решает код. ``BaseException``: ``DeterministicChooser`` глотает
+    ``Exception`` модели (детерминированный ответ всегда есть) — ``AssertionError`` молча упал бы в него (ревью #4071
+    круг 2 NIT-8), а это исключение доходит до теста."""
+
+
 class NoModel:
-    """Модель чойсера, которую звать нельзя: путь решает код."""
+    """Модель чойсера, которую звать нельзя: путь решает код. Вызов — :class:`ModelCalled`, тест краснеет."""
 
     def choose(self, question, *, deadline_ms=0):
-        raise AssertionError(f"модель чойсера позвана: {question.text}")
+        raise ModelCalled(f"модель чойсера позвана: {question.text}")
 
 
 class Asked:
@@ -189,12 +195,19 @@ def test_singing_is_a_singing_verb_or_a_song_with_a_verb_to_make_or_perform_it(t
     assert sing_kind(text) == kind and source_ask(text).vocal
 
 
+def _asked(verb):
+    """Просьба с глаголом таблицы: инфинитив — со словом просьбы («можешь спеть»), иначе как есть."""
+    return f"можешь {verb}" if verb.endswith(kn.SING_INFINITIVE_ENDING) else verb
+
+
 def test_every_singing_verb_of_the_table_is_a_whole_word_not_a_stem():
-    """Глаголы пения — точные слова: каждое узнаётся само, а слово, которое с него начинается, — нет («спойлер»)."""
+    """Глаголы пения — точные слова: каждое узнаётся само, а слово, которое с него начинается, — нет («спойлер»);
+    после «не» — не просьба («не пой больше»)."""
     for verb in kn.SING_VERBS:
         assert verb == verb.lower() and "ё" not in verb, verb
-        assert sing_kind(f"{verb} про енота") == "song", verb
+        assert sing_kind(f"{_asked(verb)} про енота") == "song", verb
         assert sing_kind(f"{verb}лер про енота") == "", verb
+        assert sing_kind(f"не {verb} про енота") == "", verb
     assert kn.SOURCE_ASK_STEMS["vocal"] == kn.SING_VERBS  # одна таблица: грамматика v1 берёт те же слова
 
 
@@ -245,9 +258,9 @@ def test_every_verb_to_make_a_song_names_its_route():
     генерации («сгенерируй/запиши/сделай песню»), «» — путь не назван («сочини/придумай/напиши» — решает чойсер)."""
     for verb, route in kn.SING_CREATE_VERBS.items():
         assert verb == verb.lower() and "ё" not in verb, verb
-        assert sing_kind(f"{verb} песню про енота") == "song", verb
-        assert sing_markers(f"{verb} песню про енота") == route, verb
-        assert sing_kind(f"{verb} про енота") == "", verb  # без объекта-песни — не пение
+        assert sing_kind(f"{_asked(verb)} песню про енота") == "song", verb
+        assert sing_markers(f"{_asked(verb)} песню про енота") == route, verb
+        assert sing_kind(f"{_asked(verb)} про енота") == "", verb  # без объекта-песни — не пение
     assert set(kn.SING_CREATE_VERBS.values()) == {"generate", ""}
 
 
@@ -281,9 +294,144 @@ def test_live_candidate_carries_its_facts_for_the_chooser():
     assert "кредитов" in gen.label and "сохранится в библиотеке" in gen.label and gen.features["cost"] > 0
 
 
+# -- ревью #4071 круг 2: пение — глагол и его ПРЯМОЕ дополнение, не слова фразы вразброс ------------------------------
+
+#: BLOCK-1: «сделай/запиши + свой/твой голос» давало ``generate:robot_song`` кодом (платный ``generate_music``).
+NOT_SINGING_VOICE = ["Робот, сделай свой голос помягче", "Робот, сделай свой голос повыше",
+                     "Робот, сделай твой голос женским", "Робот, запиши свой голос", "Сделай голос потише"]
+#: BLOCK-2: «запиши/сделай» + «песн…» не дополнением или правка звучащего — давало ``generate:song`` кодом.
+NOT_GENERATION_OBJECT = ["Робот, запиши название песни", "Робот, запиши название этой песни",
+                         "Робот, запиши слова песни", "Робот, запиши заметку про песню",
+                         "Робот, сделай эту песню на повтор", "Робот, сделай песню на полную громкость",
+                         "Робот, сделай песню потихоньку", "Робот, сделай песню не такой громкой",
+                         "Робот, запиши песню в избранное", "Робот, запиши эту песню",
+                         "Робот, запиши мне песню на флешку", "Робот, сделай песню, пожалуйста, потише",
+                         "Робот, запиши песни Цоя", "Робот, сыграй песню Калинка", "Робот, сыграй песню"]
+#: BLOCK-3: «создай/придумай/напиши» + «песн…» не дополнением — давало ``live:song`` (``request_music`` вне среза).
+NOT_SINGING_OBJECT = ["Робот, создай плейлист песен", "Робот, создай плейлист из любимых песен",
+                      "Робот, придумай плейлист из песен для вечеринки", "Робот, придумай название для песни",
+                      "Робот, придумай название песни", "Робот, напиши письмо про песню", "Робот, напиши текст песни"]
+#: BLOCK-4: голос и песня без глагола пения — давало ``live:song`` с обязательным ``perform``.
+NOT_SINGING_NO_VERB = ["Мне нравится твой голос и твои песни", "Мне нравится твой голос в этой песне",
+                       "Эта песня твоим голосом звучит классно", "Расскажи про песни своим голосом"]
+#: BLOCK-5: «рэп» и глагол чтения не глагол с дополнением — давало ``live:rap`` (``request_music`` вне среза).
+NOT_SINGING_RAP = ["Робот, включи рэп и прочитай новости", "Робот, прочитай мне новости про рэп",
+                   "Робот, прочитай статью про рэп", "Робот, прочитай стих про рэп"]
+#: NIT-2: инфинитив пения о себе или без просьбы — человек говорит о себе, а не просит робота.
+NOT_SINGING_SELF = ["Я хочу спеть караоке", "Я не могу спеть эту песню", "Мы хотим спеть вместе",
+                    "Я хочу сочинить песню", "Я мог бы спеть", "Расскажи, как спеть эту песню", "Где спеть караоке?",
+                    "Не пой больше", "Не спой а сыграй"]
+
+
+@pytest.mark.parametrize("text", NOT_SINGING_VOICE + NOT_GENERATION_OBJECT + NOT_SINGING_OBJECT + NOT_SINGING_NO_VERB
+                         + NOT_SINGING_RAP + NOT_SINGING_SELF)
+def test_false_singing_or_generation_of_the_review_round_2_is_not_singing(text):
+    """Ни пения, ни генерации: путь пустой, форма хода не меняется (``request_music``/``generate_music`` в срезе,
+    ``perform`` не обязателен), кредиты KIE не тратятся."""
+    ask = source_ask(text)
+    assert sing_kind(text) == "" and sing_markers(text) != "generate" and not ask.vocal and not ask.robot_voice
+    assert choose_sing(text, SingContext(), DeterministicChooser(NoModel())).id == ""
+
+
+#: Подлинные просьбы: фраза → путь пения (живое/генерация), без модели чойсера (перевес живому — разрыв ≥ порога).
+GENUINE = [
+    ("Спой мне колыбельную", "live:song"), ("Давай споём", "live:song"), ("Споешь что-нибудь?", "live:song"),
+    ("Можешь спеть мне песню?", "live:song"), ("Спой-ка про енота", "live:song"), ("Пропой алфавит", "live:song"),
+    ("Исполни песню про лето", "live:song"), ("Исполни эту песню", "live:song"), ("Исполни рэп про енота", "live:rap"),
+    ("Зачитай рэп про кота", "live:rap"), ("Рэп мне зачитай", "live:rap"),
+    ("Зачитай под бит рэп про енота", "live:rap"), ("Сочини мне ещё одну короткую весёлую песенку", "live:song"),
+    ("Сочини и спой песню про енота", "live:song"), ("Попробуй сочинить песню про кота", "live:song"),
+    ("Я прошу тебя спеть", "live:song"), ("Робот, пой", "live:song"), ("Робот, пой про енота", "live:song"),
+    ("Пой со мной", "live:song"), ("Сыграй песню своим голосом", "live:song"),
+    ("Сгенерируй мне песню про лето", "generate:song:V6"), ("Запиши новую песню про зиму", "generate:song:V6"),
+    ("Сделай песню про дождь", "generate:song:V6"), ("Сгенерируй трек со словами про осень", "generate:song:V6"),
+    ("Сгенерируй трек с вокалом", "generate:song:V6"), ("Можешь сгенерировать песню про лето?", "generate:song:V6"),
+    ("Сгенерируй пиздатый музон своим голосом", "generate:robot_song:V6"),
+    ("Сделай музыку своим голосом", "generate:robot_song:V6"), ("Запиши рэп-трек про енота", "generate:song:V6"),
+]
+
+
+@pytest.mark.parametrize("text,route", GENUINE)
+def test_genuine_requests_keep_their_sing_route(text, route):
+    assert choose_sing(text, SingContext(), DeterministicChooser(NoModel())).id == route
+
+
+def test_every_object_of_the_table_is_a_direct_object_of_the_verb():
+    """Дополнение — точное слово ``SING_OBJECTS`` рядом с глаголом: песня и рэп поют, музыка — только с голосом;
+    то же слово не дополнением глагола («придумай название для …») — не пение."""
+    for kind, words in kn.SING_OBJECTS.items():
+        for word in words:
+            assert word == word.lower() and "ё" not in word, word
+            sung = sing_kind(f"сочини {word} про енота")
+            assert sung == {"song": "song", "rap": "rap", "music": ""}[kind], word
+            assert sing_kind(f"сгенерируй {word} своим голосом") in ("song", "rap"), word
+            assert sing_kind(f"придумай название для {word}") == "", word
+
+
+def test_only_the_instrumental_own_voice_is_the_voice_of_the_robot():
+    """Голос робота — «своим/твоим голосом» фразой (``ROBOT_VOICE_PHRASES``): музыку с ним поют (``robot_song``);
+    «свой голос», «твой голос» — сам голос, не голос песни (BLOCK-1/4)."""
+    for phrase in kn.ROBOT_VOICE_PHRASES:
+        assert sing_kind(f"сгенерируй трек {phrase}") == "song" and source_ask(f"спой {phrase}").robot_voice, phrase
+    assert sing_kind("сгенерируй трек под свой голос") == ""
+    assert sing_kind("сгенерируй трек, мне нравится твой голос") == ""
+    assert not source_ask("спой, мне нравится твой голос").robot_voice
+
+
+def test_every_word_of_editing_or_storing_the_song_is_not_a_request_to_make_one():
+    """Правка или хранение звучащего (``SING_CREATE_MODIFIERS``) — не просьба создать: генерации нет; спеть можно."""
+    for entry in kn.SING_CREATE_MODIFIERS:
+        assert entry == entry.lower() and "ё" not in entry, entry
+        assert sing_kind(f"сделай песню {entry}") == "" and sing_markers(f"сделай песню {entry}") == "", entry
+        assert sing_kind(f"спой {entry}") == "song", entry
+
+
+def test_a_sounding_or_someone_elses_song_is_not_made_but_can_be_sung():
+    """«Эту/мою песню» (``SING_EXISTING_WORDS``) — звучащая или чужая: создать нельзя, исполнить можно."""
+    for word in kn.SING_EXISTING_WORDS:
+        assert sing_kind(f"запиши {word} песню") == "" and sing_kind(f"{word} песню запиши") == "", word
+        assert sing_kind(f"исполни {word} песню") == "song", word
+
+
+def test_an_infinitive_is_a_request_only_with_a_word_of_asking_and_not_about_oneself():
+    """Инфинитив — просьба только со словом просьбы (``SING_INFINITIVE_ASKS``) и не о себе (``SING_SELF_WORDS`` без
+    ``SING_ROBOT_AGENT_WORDS``)."""
+    for ask in kn.SING_INFINITIVE_ASKS:
+        assert sing_kind(f"{ask} спеть про енота") == "song", ask
+    for me in kn.SING_SELF_WORDS:
+        assert sing_kind(f"{me} хочу спеть") == "" and sing_kind(f"{me} прошу тебя спеть") == "song", me
+    assert sing_kind("спеть про енота") == ""
+
+
+NEGATED_OR_THEME_ENGINE = ["Робот, сгенерируй песню не на синтезаторе", "Робот, сгенерируй песню без синтезатора",
+                           "Робот, сгенерируй мне настоящую песню, а не на синтезаторе",
+                           "Робот, сгенерируй песню, но не вживую", "Робот, запиши песню, а не пой вживую",
+                           "Робот, сгенерируй песню про синтезатор", "Робот, сгенерируй песню про Ренардо"]
+
+
+@pytest.mark.parametrize("text", NEGATED_OR_THEME_ENGINE)
+def test_a_negated_engine_or_an_engine_as_the_theme_does_not_name_the_synth(text):
+    """Ревью #4071 круг 2 NIT-1: «не/без» перед словом движка и «про/о» (тема) движок не называют — код не делает
+    обратное просьбе: генерация, как просили, а не живое пение; синт не назван и в пути тула."""
+    assert source_ask(text).engine == "" and sing_markers(text) == "generate"
+    assert choose_sing(text, SingContext(), DeterministicChooser(NoModel())).id == "generate:song:V6"
+
+
+def test_every_negation_and_theme_word_of_the_table_unnames_the_engine():
+    for neg in kn.ENGINE_NEGATIONS:
+        assert source_ask(f"сыграй {neg} на синтезаторе").engine == "", neg
+        assert sing_markers(f"сгенерируй песню, {neg} на Ренардо") == "generate", neg
+    for lead in kn.ENGINE_TOPIC_LEADS:
+        assert source_ask(f"сгенерируй песню {lead} Ренардо").engine == "", lead
+    assert source_ask("сыграй на синтезаторе").engine == "synth"  # без отрицания — синт, как в #4070
+    assert sing_markers("спой, но не нейросетью") == ""  # отрицание снимает и маркер таблицы
+
+
 def test_tool_route_of_a_live_request_is_live_not_a_generation():
     """Тул музыки получил «спой под синт» (агент без формы пения: чат, v1) — путь ``live:song`` кодом, без кэша и
     генерации: исполняет диалог, тул генерацию не запускает."""
     route = choose_route(source_ask("спой под синт про енота"), RICH, DeterministicChooser(NoModel()))
     assert (route.kind, route.id) == ("live", "live:song")
     assert "live" in source_ask("спой под синт про енота").describe()
+    # ревью #4071 круг 2 NIT-5: в агенте без формы пения выступления может не быть — фраза тула пения не обещает
+    assert decline_text(route) == LIVE_TOOL_TEXT and "пою" not in LIVE_TOOL_TEXT and "генерацию" in LIVE_TOOL_TEXT

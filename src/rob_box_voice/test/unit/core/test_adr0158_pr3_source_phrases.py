@@ -30,6 +30,15 @@ def test_generate_verb_goes_to_generate_music_without_llm():
     assert [(c.name, c.arguments["kind"]) for c in plan.tool_calls] == [("generate_music", "robot_song")]
 
 
+def test_singing_verb_of_v1_is_a_whole_word_not_the_start_of_a_word():
+    """Ревью #4071 круг 2 NIT-4: глаголы пения (``SING_VERBS``) и в грамматике v1 — точные слова: «спойлер», «пойдём»
+    — не генерация песни; «пой песню» — как «спой песню»."""
+    for text in ("Робот, спойлер", "Робот, пойдём гулять", "Робот, пойми меня"):
+        command = parse_media_command(text)
+        assert command is None or command.intent is not MediaIntent.GENERATE, text
+    assert parse_media_command("Робот, пой песню про кота").intent is MediaIntent.GENERATE
+
+
 def test_launch_text_takes_the_route_phrase_of_code():
     assert launch_text("Включаю музыку.", CACHE) == CACHE["source_message"]
     note = {"source_note": "Сгенерировать сейчас не могу: генерация у меня ещё не подключена, играю своё."}

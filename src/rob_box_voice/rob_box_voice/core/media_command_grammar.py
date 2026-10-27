@@ -1055,9 +1055,12 @@ def _sing_command(words: Sequence[str]) -> Optional[MediaCommand]:
 
 def _gen_verb(word: str) -> str:
     """Вид глагола генерации — ключ ``knowledge.SOURCE_ASK_STEMS`` (``vocal``/``generated``/``own``) или «». Записи
-    таблицы без «ё» («споешь»): слово сверяется так же."""
+    таблицы без «ё» («споешь»): слово сверяется так же. Глаголы пения (``vocal`` = ``SING_VERBS``) — точные слова, не
+    начало слова: «спойлер», «пойдём» — не пение (ревью #4071 круг 2 NIT-4); остальные — основы."""
     word = word.replace("ё", "е")
-    return next((key for key in ("vocal", "generated", "own") if word.startswith(kn.SOURCE_ASK_STEMS[key])), "")
+    if word in kn.SOURCE_ASK_STEMS["vocal"]:
+        return "vocal"
+    return next((key for key in ("generated", "own") if word.startswith(kn.SOURCE_ASK_STEMS[key])), "")
 
 
 def _gen_split(tail: Sequence[str]) -> Tuple[List[str], Optional[List[str]]]:

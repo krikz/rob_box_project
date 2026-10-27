@@ -22,9 +22,14 @@ from rob_box_music.choice import Choice, DeterministicChooser
 pytestmark = pytest.mark.unit
 
 
+class ModelCalled(BaseException):
+    """Модель чойсера позвана, где решает код: ``BaseException`` проходит сквозь ``except Exception`` выбирателя
+    (``AssertionError`` молча упал бы в детерминированный ответ — ревью #4071 круг 2 NIT-8)."""
+
+
 class NoModel:
     def choose(self, question, *, deadline_ms=0):
-        raise AssertionError(f"модель чойсера позвана: {question.text}")
+        raise ModelCalled(f"модель чойсера позвана: {question.text}")
 
 
 class Model:
@@ -67,13 +72,21 @@ def _state(health):
     ("Робот, ответь своим голосом", ""), ("Робот, не рассказывай спойлеры", ""),
     ("Робот, сделай песню потише", ""), ("Робот, запиши, что я люблю песни", ""),
     ("Робот, расскажи про песни, которые написала нейросеть", ""),
+    # ревью #4071 круг 2 (BLOCK-1..5, NIT-2): не пение и не генерация («… на полную громкость» до модели не доходит —
+    # громкость берёт Tier-1, поэтому здесь, на хосте)
+    ("Робот, сделай свой голос помягче", ""), ("Робот, запиши название песни", ""),
+    ("Робот, сделай песню на полную громкость", ""), ("Робот, сделай эту песню на повтор", ""),
+    ("Робот, создай плейлист песен", ""), ("Робот, напиши текст песни", ""),
+    ("Робот, мне нравится твой голос в этой песне", ""), ("Робот, прочитай статью про рэп", ""),
+    ("Робот, я хочу спеть караоке", ""), ("Робот, не пой больше", ""),
+    ("Робот, пой про енота", "live:song"),  # NIT-3: «пой» — глагол пения словом
 ])
 def test_host_decides_the_sing_route_and_logs_it_for_the_harness(text, route):
     host, lines = _host()
     assert host(text, (), False) == route
     if route:
         assert len(lines) == 1 and lines[0].startswith("🎚️ [source] пение ") and lines[0].endswith(
-            f"→ {route} ({'chooser:deterministic' if text.endswith('енота') and 'спой про' in text else 'code'})")
+            f"→ {route} ({'chooser:deterministic' if text.endswith('енота') and 'пой про' in text else 'code'})")
         assert "кандидаты=[" in lines[0]
     else:
         assert lines == []
@@ -187,6 +200,39 @@ def test_false_singing_or_generation_keeps_the_music_tools_in_the_slice(text):
     («сделай песню потише» до модели не доходит вовсе — громкость берёт Tier-1; путь хоста — тест выше)."""
     form, _tools = _form_of(text)
     assert form.sing == "" and form.sing_form is None
+
+
+#: Ревью #4071 круг 2 (BLOCK-1..5): реплика → ответ модели, который форма пения запрещала бы. Теперь формы пения нет —
+#: ответ проходит валидатор, ``request_music``/``generate_music`` в срезе, ``perform`` не обязателен.
+ROUND_2 = [
+    ("Робот, сделай свой голос помягче", {"actions": [{"tool": "set_voice", "args": {"voice": "female-shaonv"}}]}),
+    ("Робот, сделай твой голос женским", {"actions": [{"tool": "set_voice", "args": {"voice": "female-shaonv"}}]}),
+    ("Робот, запиши название этой песни", {"speech": "Записал."}),
+    ("Робот, создай плейлист песен",
+     {"actions": [{"tool": "request_music", "args": {"intent": "track", "text": "плейлист песен"}}]}),
+    ("Робот, придумай название для песни", {"speech": "Назову её Енот."}),
+    ("Робот, мне нравится твой голос и твои песни", {"speech": "Спасибо!"}),
+    ("Робот, включи рэп и прочитай новости",
+     {"actions": [{"tool": "request_music", "args": {"intent": "track", "text": "рэп"}}]}),
+    ("Робот, я хочу спеть караоке", {"speech": "Давай!"}),
+]
+
+
+@pytest.mark.parametrize("text,answer", ROUND_2)
+def test_false_singing_or_generation_of_the_review_round_2_passes_the_turn_validator(text, answer):
+    form, tools = _form_of(text)
+    assert form.sing == "" and form.sing_form is None  # форма пения не закрывает тулов и не требует perform
+    assert isinstance(validate(parse(answer), tools, form=form), Command)
+
+
+@pytest.mark.parametrize("text", ["Робот, сгенерируй песню не на синтезаторе", "Робот, сгенерируй песню про Ренардо"])
+def test_a_negated_or_theme_engine_keeps_the_generation_the_person_asked_for(text):
+    """NIT-1: «не на синтезаторе», «про Ренардо» — генерация, как просили: ``generate_music`` обязателен, выступление
+    вместо неё — нарушение формы (код больше не делает обратное просьбе)."""
+    form, tools = _form_of(text)
+    assert form.sing == "generate:song:V6" and "generate_music" in tools
+    song = parse({"perform": {"kind": "song", "segments": ["Енот", "поёт"]}})
+    assert validate(song, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
 
 
 def test_host_line_is_logged_once_per_sing_turn(caplog):
