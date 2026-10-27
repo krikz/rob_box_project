@@ -89,8 +89,8 @@ def _has(words: Sequence[str], stems: Sequence[str]) -> bool:
 class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
-    ``MUSIC_ENGINES``, названный человеком («на Ренардо»), или «»; ``tweak`` — просьба правит играющее («ускорь»,
-    «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
+    ``MUSIC_ENGINES``, названный человеком («на Ренардо», «на синтезаторе», «вживую»), или «»; ``tweak`` — просьба
+    правит играющее («ускорь», «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
 
     generated: bool = False
     vocal: bool = False
@@ -137,8 +137,9 @@ def ask_tweak(text: str) -> bool:
 
 
 def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
-    """Слово речи называет движок: начинается с основы или содержит ядро (слово-двойник ядром не считается)."""
-    if word.startswith(engine.stems):
+    """Слово речи называет движок: начинается с основы, совпадает целиком со словом по смыслу («вживую», «синтезаторе»)
+    или содержит ядро (слово-двойник ядром не считается)."""
+    if word in engine.words or word.startswith(engine.stems):
         return True
     return not word.startswith(engine.lookalikes) and any(core in word for core in engine.cores)
 
@@ -154,9 +155,11 @@ def _straddles(glued: str, split: int, piece: str) -> bool:
 
 
 def _joined_names_engine(engine: kn.MusicEngine, first: str, second: str) -> bool:
-    """Соседние слова, склеенные, называют движок через стык («ре нардо», «нарен дарда»): STT разрезал имя. Основа или
-    ядро обязаны заходить во второе слово — имя, целиком лежащее в первом, пару не берёт (лишний сосед не съедается);
-    слово-двойник склейку не даёт."""
+    """Соседние слова называют движок вместе: фраза по смыслу из двух слов («на синте») или, склеенные, через стык («ре
+    нардо», «нарен дарда») — STT разрезал имя. Основа или ядро обязаны заходить во второе слово — имя, целиком лежащее
+    в первом, пару не берёт (лишний сосед не съедается); слово-двойник склейку не даёт."""
+    if f"{first} {second}" in engine.words:
+        return True
     if first.startswith(engine.lookalikes) or second.startswith(engine.lookalikes):
         return False
     glued = first + second
@@ -184,8 +187,8 @@ def engine_words(text: str) -> List[Tuple[str, int, int]]:
 
 
 def ask_engine(text: str) -> str:
-    """Движок, названный в речи (``MUSIC_ENGINES``: «на Ренардо» и искажения STT, в том числе слитые из двух слов); не
-    назван — «»."""
+    """Движок, названный в речи (``MUSIC_ENGINES``): имя «Ренардо» и искажения STT, в том числе слитые из двух слов, или
+    слова по смыслу «на синтезаторе», «вживую»; не назван — «»."""
     found = engine_words(text)
     return found[0][0] if found else ""
 
@@ -199,7 +202,7 @@ def blank_engine(text: str) -> str:
 
 
 def engine_route(engine: str) -> str:
-    """Путь, который играет названный движок (``SYNTH`` у Ренардо); движок не назван — «»."""
+    """Путь, который играет названный движок (``SYNTH`` у синтеза); движок не назван — «»."""
     known = kn.MUSIC_ENGINES.get(engine)
     return known.route if known is not None else ""
 
@@ -209,13 +212,13 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
     """Движок заказа: ``(просьба, строка для лога)``. Решает код по словам человека и снимку плеера, а не LLM (#4013).
 
     * Слова называют движок (:func:`ask_engine`) — он и есть; слот ``engine`` схемы (его заполнила LLM) ничего не
-      прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=renardo``), отбрасывается
+      прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=synth``), отбрасывается
       с причиной в строке, иначе молчаливое сужение пути до синтеза (кэш и генерация не рассматриваются).
     * Не названного движка заказ наследует играющий (``playing``, снимок плеера) только когда просьба **правит
-      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под Ренардо — движок
+      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под синтезом — движок
       тот же), не называет путь (``SourceAsk.plain``) и не называет своего предмета (``own_subject``: пьеса по
       названию или инструмент реплики). Всякая прочая просьба — «сыграй ещё», «включи музыку», «поставь Нирвану»,
-      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, Ренардо
+      «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, синтез
       до стопа не липнет.
 
     Строка пуста, когда добавить нечего."""
@@ -321,7 +324,7 @@ def gen_block(ctx: SourceContext, cost: float) -> str:
 
 
 def _synth_option(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[Option]:
-    named = engine_route(ask.engine) == SYNTH  # «на Ренардо»: годность стиля не отговорка, играет синтез
+    named = engine_route(ask.engine) == SYNTH  # «на синтезаторе»/«на Ренардо»: годность стиля не отговорка
     fit = 1.0 if piece or named else synth_fit(ask.genre)
     if ask.vocal or ctx.mode == "generate" or fit < kn.SYNTH_FIT_MIN:
         return None

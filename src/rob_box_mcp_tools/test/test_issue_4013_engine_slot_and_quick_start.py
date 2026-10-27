@@ -1,11 +1,11 @@
 """#4013 и #3960 п.1/п.2 — путь музыки с движком Ренардо: слот ``engine`` решает код, старт трека не ждёт LLM.
 
-(A) LLM ставила ``engine=renardo`` на любую реплику с инструментом («сыграй X на балалайке»), а код принимал слот без
+(A) LLM ставила ``engine=synth`` на любую реплику с инструментом («сыграй X на балалайке»), а код принимал слот без
 проверки по словам человека: путь сужался до синтеза, кавер (KIE/Suno) не рассматривался. Теперь слот принимается,
 только если в словах хода есть опора (``knowledge.MUSIC_ENGINES``: основы и ядро имени, искажения STT), иначе
 отбрасывается с причиной в лог; играющий движок наследует код по снимку плеера («ускорь», «добавь баса»).
 
-(B) ``request_music(engine=renardo, mood)`` ждал LLM-разбор темы (theme-links, ``submit_catalog_queries``) 4–10 с и
+(B) ``request_music(engine=synth, mood)`` ждал LLM-разбор темы (theme-links, ``submit_catalog_queries``) 4–10 с и
 упирался в потолок действия музыки 10 с: ложное «Музыка пока не заиграла.» при старте трека через 1.4 с (марафон 23.10,
 n809). Тема одиночного трека — без глаголов, названия движка и служебных слов, поиск — без ожидания LLM.
 """
@@ -76,22 +76,59 @@ def test_llm_engine_slot_without_support_in_the_words_is_dropped_with_a_reason(h
     _dj, req = _tools(rig)
     asks = _asks(req)
     with caplog.at_level(logging.INFO):
-        result = req.execute(intent="track", text=heard, engine="renardo", heard_text=heard)
+        result = req.execute(intent="track", text=heard, engine="synth", heard_text=heard)
     assert asks[0].engine == "" and "engine" not in result.data
-    assert any("слот engine=renardo без опоры в словах человека — отброшен" in r.getMessage() for r in caplog.records)
+    assert any("слот engine=synth без опоры в словах человека — отброшен" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("heard", [
     "Робот, поставь ровный ритм на виндарда",  # искажение STT дальше основ — опора есть (ядро имени)
     "Робот, сыграй нарен дарда", "Робот, сыграй на индардо", RHYTHM,
 ])
-@pytest.mark.parametrize("slot", ["renardo", None])
+@pytest.mark.parametrize("slot", ["synth", None])
 def test_engine_with_support_in_the_words_is_kept_with_or_without_the_slot(heard, slot):
     rig = _rig()
     _dj, req = _tools(rig)
     asks = _asks(req)
     result = req.execute(intent="track", text=heard, engine=slot, heard_text=heard)
-    assert asks[0].engine == "renardo" and result.success and result.data["engine"] == "renardo"
+    assert asks[0].engine == "synth" and result.success and result.data["engine"] == "synth"
+
+
+@pytest.mark.parametrize("heard", [
+    "Робот, сыграй на синтезаторе спокойный ночной бит",
+    "Робот, сыграй вживую на синте что-нибудь",
+    "Робот, сыграй живьём",
+    "робот сыграй на рем дарда спокойный ночной бит что нибудь под пайку",  # живой прогон 27.10 (#4070): имя разрезано
+])
+def test_synth_path_named_by_meaning_plays_the_synth_not_a_library_track(heard):
+    """#4070: «играй сам, синтезом» словами — тот же движок, что и по имени «Ренардо»; слот LLM не нужен."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    asks = _asks(req)
+    result = req.execute(intent="track", text=heard, heard_text=heard)
+    assert asks[0].engine == "synth" and result.success and result.data["engine"] == "synth"
+    assert rig.owner.now_playing()["engine"] == "synth"
+
+
+def test_style_words_of_synth_do_not_name_the_synth_path():
+    """«Синтвейв» — стиль, не путь: слот пуст, путь не сужен до синтеза."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    asks = _asks(req)
+    result = req.execute(intent="track", text="Робот, поставь синтвейв", heard_text="Робот, поставь синтвейв")
+    assert asks[0].engine == "" and "engine" not in result.data
+
+
+def test_words_of_the_synth_path_are_not_the_theme_of_the_track():
+    """Слова по смыслу («на синтезаторе», «вживую», «на рем дарда») вырезаны из темы: поиск по ним не идёт."""
+    for heard, theme in (("Робот, сыграй на синтезаторе спокойный ночной бит", "спокойный ночной бит"),
+                         ("Робот, сыграй вживую спокойный ночной бит", "спокойный ночной бит"),
+                         ("Робот, сыграй на рем дарда спокойный ночной бит", "спокойный ночной бит")):
+        rig = _rig()
+        dj, req = _tools(rig)
+        finders = Finders(dj)
+        assert req.execute(intent="track", text=heard, heard_text=heard).success
+        assert finders.calls == {"quick": [], "track": [theme], "llm": []}, heard
 
 
 def test_playing_engine_is_inherited_by_a_plain_follow_up_like_n506(caplog):
@@ -100,13 +137,13 @@ def test_playing_engine_is_inherited_by_a_plain_follow_up_like_n506(caplog):
     _dj, req = _tools(rig)
     asks = _asks(req)
     first = req.execute(intent="track", text="сыграй на ренардо", heard_text="Робот, сыграй на ренардо")
-    assert first.success and rig.owner.now_playing()["engine"] == "renardo"  # движок — в снимке плеера
+    assert first.success and rig.owner.now_playing()["engine"] == "synth"  # движок — в снимке плеера
     with caplog.at_level(logging.INFO):
         for heard in ("Робот, и ускорь темп, а то мы тут засыпаем оба.",
                       "Робот, продолжай развивать эту тему и добавь баса пожирнее."):
             result = req.execute(intent="track", text=heard, heard_text=heard)
-            assert asks[-1].engine == "renardo" and result.success and result.data["engine"] == "renardo"
-    assert any("движок наследуется от играющего: renardo" in r.getMessage() for r in caplog.records)
+            assert asks[-1].engine == "synth" and result.success and result.data["engine"] == "synth"
+    assert any("движок наследуется от играющего: synth" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("heard,intent", [
@@ -121,7 +158,7 @@ def test_playing_engine_is_not_inherited_by_a_request_with_its_own_subject(heard
     _dj, req = _tools(rig)
     asks = _asks(req)
     assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
-    req.execute(intent=intent, text=heard, heard_text=heard, engine="renardo")
+    req.execute(intent=intent, text=heard, heard_text=heard, engine="synth")
     assert len(asks) == 2 and asks[-1].engine == "", heard
 
 
@@ -137,7 +174,7 @@ def test_playing_engine_is_not_inherited_by_a_request_that_does_not_tweak_what_p
     _dj, req = _tools(rig)
     asks = _asks(req)
     assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
-    assert rig.owner.now_playing()["engine"] == "renardo"  # Ренардо играет (поставлен на деку)
+    assert rig.owner.now_playing()["engine"] == "synth"  # Ренардо играет (поставлен на деку)
     result = req.execute(intent="track", text=heard, heard_text=heard)
     assert len(asks) == 2 and asks[-1].engine == "", heard
     assert "engine" not in result.data
@@ -153,7 +190,7 @@ def test_playing_engine_is_inherited_by_each_kind_of_tweak(heard):
     asks = _asks(req)
     assert req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо").success
     result = req.execute(intent="track", text=heard, heard_text=heard)
-    assert len(asks) == 2 and asks[-1].engine == "renardo" and result.data["engine"] == "renardo", heard
+    assert len(asks) == 2 and asks[-1].engine == "synth" and result.data["engine"] == "synth", heard
 
 
 def test_engine_of_a_track_whose_start_failed_is_not_inherited():
@@ -170,7 +207,7 @@ def test_engine_of_a_track_whose_start_failed_is_not_inherited():
     failed = req.execute(intent="track", text="на ренардо", heard_text="Робот, сыграй на ренардо")
     assert not failed.success
     snap = rig.owner.now_playing()
-    assert snap["engine"] == "renardo" and not snap["playing"] and not snap["pending"]  # факт остался при пустой деке
+    assert snap["engine"] == "synth" and not snap["playing"] and not snap["pending"]  # факт остался при пустой деке
     assert tools_v2.playing_engine(rig.owner) == ""
     heard = "Робот, ускорь темп"
     req.execute(intent="track", text=heard, heard_text=heard)
@@ -189,7 +226,7 @@ def test_request_music_schema_takes_rock_and_asks_for_engine_only_when_named():
     """LLM предложила ``genre='rock'`` — схема его не принимала (``invalid:bad_args``, повтор хода +1.7 с)."""
     schema = get_tool("request_music").parameters
     args = {"intent": "melody", "text": "сыграй Running Up That Hill на балалайке в рок стиле", "genre": "rock",
-            "engine": "renardo"}
+            "engine": "synth"}
     assert _schema_error(schema, args, "request_music") is None
     rig = _rig()
     _dj, req = _tools(rig)
@@ -199,14 +236,14 @@ def test_request_music_schema_takes_rock_and_asks_for_engine_only_when_named():
 # ── (B) старт трека не ждёт LLM-разбор темы ──────────────────────────────────────────────────────────────────────
 
 
-def test_renardo_mood_request_does_not_ask_the_llm_about_the_theme():
+def test_synth_mood_request_does_not_ask_the_llm_about_the_theme():
     """n809: «ровный ритм на Ренардо, только не громко» + mood=calm — каталог и хранилище, LLM-разбора темы нет."""
     rig = _rig()
     dj, req = _tools(rig)
     finders = Finders(dj)
     result = req.execute(intent="track", text="поставь фоном ровный ритм на Ренардо только не громко",
-                         mood="calm", engine="renardo", heard_text=RHYTHM)
-    assert result.success and result.data["engine"] == "renardo"
+                         mood="calm", engine="synth", heard_text=RHYTHM)
+    assert result.success and result.data["engine"] == "synth"
     assert finders.calls == {"quick": ["фоном ровный ритм громко"], "track": [], "llm": []}
 
 
@@ -216,7 +253,7 @@ def test_track_name_is_not_the_text_of_the_request():
     dj, req = _tools(rig)
     Finders(dj)
     text = "поставь фоном ровный ритм на Ренардо только не громко"
-    data = req.execute(intent="track", text=text, mood="calm", engine="renardo", heard_text=RHYTHM).data
+    data = req.execute(intent="track", text=text, mood="calm", engine="synth", heard_text=RHYTHM).data
     assert data["name"] == "клубный трек" and data["title"].startswith("клубный трек")
     assert text not in data["title"] and "ренардо" not in data["title"].lower()
 
@@ -282,12 +319,12 @@ def real_chain(archive, tmp_path):
     llm.release.set()
 
 
-def test_n809_renardo_mood_request_starts_at_once_and_asks_no_llm_theme_links(real_chain):
+def test_n809_synth_mood_request_starts_at_once_and_asks_no_llm_theme_links(real_chain):
     """Живой n809: между выбором синтеза и стартом стоял LLM ``submit_catalog_queries`` 9.7 с — теперь LLM не зовётся."""
     req, llm, rig = real_chain
     result = req.execute(intent="track", text="поставь фоном ровный ритм на Ренардо только не громко", mood="calm",
-                         engine="renardo", heard_text=RHYTHM)
-    assert result.success and result.data["engine"] == "renardo"
+                         engine="synth", heard_text=RHYTHM)
+    assert result.success and result.data["engine"] == "synth"
     assert rig.owner.is_playing()  # трек запущен (поставлен на деку, ждёт ``started``)
     assert llm.calls == []  # LLM-разбора темы нет совсем
 

@@ -130,7 +130,7 @@ def club_theme(text: str) -> str:
     """Тема одиночного трека: «сыграй (что-нибудь) на арфе» — заказ без названия, слова заказа и инструмента не тема
     (грамматика разобрала их в ``REQUEST_MUSIC`` с инструментом, ADR-0157 §3.1). Иначе — слова реплики без глаголов
     заказа и служебных слов (:func:`theme_grounding.heard_theme`, одно место, где тема выделяется из свободных слов)
-    и без названия движка («на Ренардо» — путь, а не тема, #3960 п.2: LLM-разбор темы спрашивал «Renardo»)."""
+    и без названия движка («на синтезаторе», «на Ренардо» — путь, а не тема, #3960 п.2, #4070)."""
     from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
 
     command = parse_media_command(text)
@@ -761,8 +761,9 @@ class RequestMusicTool(MCPTool):
     def description(self) -> str:
         return ("Поставить музыку по просьбе человека: intent=track — клубный трек (темп, тональность и "
                 "аранжировку решает код), intent=melody — известная мелодия по названию из text. text — слова "
-                "человека дословно. engine=renardo — только если человек сам назвал Ренардо («на Ренардо», "
-                "искажённо «на индардо»): играет живой синтез, не готовый трек; не называл — engine не заполняй. "
+                "человека дословно. engine=synth — только если человек сам назвал синтез («на синтезаторе», "
+                "«на синте», «вживую», «на Ренардо», искажённо «на индардо»): играет живой синтез, не готовый "
+                "трек и не генерация; не называл — engine не заполняй. "
                 "Об успехе робот скажет сам, когда музыка реально заиграет; ok=false — музыка не заиграла.")
 
     @property
@@ -779,7 +780,8 @@ class RequestMusicTool(MCPTool):
             MCPToolParameter(name="genre", type="string", description="Жанр; auto — решает код", required=False,
                              enum=["auto", "club", "classical", "folk", "rock"]),
             MCPToolParameter(name="engine", type="string", required=False,
-                             description="Движок: renardo — только если человек назвал Ренардо; иначе auto",
+                             description="Движок: synth — только если человек назвал синтез (синтезатор, синт, "
+                                         "вживую, Ренардо); иначе auto",
                              enum=[kn.ENGINE_AUTO, *kn.MUSIC_ENGINES]),
             MCPToolParameter(name="min_seconds", type="number", required=False,
                              description="Служебный аргумент кода выступления, не заполняй"),
