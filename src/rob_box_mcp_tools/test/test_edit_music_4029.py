@@ -256,6 +256,20 @@ def _host():
         ("Робот, ускорь темп", "edit:faster"),  # n506
         ("Робот, читай быстрее", ""),  # речь робота названа: скорость голоса, не бит
         ("Робот, поставь что-нибудь помрачнее", ""),  # заказ другого трека
+        # ревью PR #4116: слова правки не про музыку — пути нет (раньше edit:faster/develop/darker и обязательный
+        # edit_music: робот не мог ответить словами)
+        ("Робот, иди быстрее к двери", ""),
+        ("Робот, иди быстрее под этот бит", ""),  # тема названа, но «быстрее» — у движения
+        ("подъезжай побыстрее", ""),
+        ("Робот, продолжай рассказывать", ""),
+        ("Это тот же трек?", ""),
+        ("Ты тот же самый робот?", ""),
+        ("Робот, расскажи сказку побыстрее", ""),
+        ("Робот, сделай лицо мрачнее", ""),
+        ("Робот, расскажи, как развивается ситуация", ""),
+        ("в комнате стало темнее", ""),
+        ("мощнее поворачивай", ""),
+        ("Робот, сделай басы потише", "edit:less_bass"),  # ревью PR #4116: направление баса — из слов
     ],
 )
 def test_host_decides_the_edit_route_under_playing_music(text, route):
@@ -308,3 +322,47 @@ def test_n505_darker_turn_is_an_edit_and_n502_order_in_silence_is_untouched():
     assert form.sing == "edit:darker" and "edit_music" in tools
     form, tools = _form_under_music("Робот, поставь что-нибудь помрачнее")
     assert form.sing == "" and "request_music" in tools
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Робот, иди быстрее к двери",
+        "Робот, продолжай рассказывать",
+        "Это тот же трек?",
+        "Ты тот же самый робот?",
+        "Робот, расскажи сказку побыстрее",
+        "Робот, сделай лицо мрачнее",
+        "Робот, расскажи, как развивается ситуация",
+    ],
+)
+def test_turn_not_about_the_music_keeps_its_words_under_playing_music(text):
+    """Ревью PR #4116: под играющей музыкой реплика со словом правки не про музыку — ход как обычно: формы правки нет,
+    ``edit_music`` не обязателен, ответ словами — не нарушение (раньше sing_route → повтор → «не понял»)."""
+    form, tools = _form_under_music(text)
+    assert form.sing == "" and "edit_music" not in tools
+    talk = validate(parse({"speech": "Отвечаю словами."}), tools, form=form)
+    assert isinstance(talk, Command), talk
+
+
+def test_edit_route_head_is_the_same_in_dialog_and_music():
+    """Голова id пути правки живёт в двух пакетах (диалог от ``rob_box_music`` не зависит) — пин на равенство."""
+    from rob_box_music.track_edit import EDIT_ROUTE  # noqa: PLC0415
+
+    assert dkn.EDIT_ROUTE == EDIT_ROUTE
+    assert dkn.sing_family(f"{EDIT_ROUTE}:faster") == "edit"
+
+
+def test_less_bass_on_our_synth_track_turns_the_bass_down_not_up():
+    """Ревью PR #4116: «сделай басы потише» — бас тише (−3 дБ), а не «Добавил баса.» (+3 дБ)."""
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success
+    rig.clock.run_until(rig.clock.beat + 9)
+    req.order = _no_new_order
+
+    result = tool.execute(heard_text="Робот, сделай басы потише")
+
+    assert result.success, result
+    assert result.data["changes"] == ["less_bass"] and result.data["message"] == "Убавил бас."
+    assert len(_events(rig, "started")) == 1  # трек тот же

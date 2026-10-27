@@ -24,9 +24,11 @@ from rob_box_music.track_edit import (
     SET,
     SYNTH,
     EditTarget,
+    asks,
     edit_route,
     edit_text,
     edits_in,
+    music_edits,
     new_order,
     next_family,
     plan_edit,
@@ -91,6 +93,86 @@ def test_genre_names_volume_and_negation_are_not_an_edit(text):
 def test_edit_route_under_playing_music(text, route):
     assert edit_route(text, playing=True) == route
     assert route_edits(route) == edits_in(text) if route else route_edits(route) == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ревью PR #4116: слова правки не про музыку — пути «правка играющего» нет (раньше edit:faster/develop/darker)
+        "Робот, иди быстрее к двери",  # движение
+        "подъезжай побыстрее",
+        "мощнее поворачивай",
+        "Робот, продолжай рассказывать",  # рассказ
+        "Робот, расскажи сказку побыстрее",
+        "Робот, расскажи, как развивается ситуация",
+        "Робот, музыка классная, продолжай рассказывать",  # музыка названа, но в другой части реплики
+        "Это тот же трек?",  # вопрос
+        "Робот, а это тот же трек",
+        "Ты тот же самый робот?",
+        "Робот, сделай лицо мрачнее",  # лицо
+        "в комнате стало темнее",  # свет, комната
+        "в комнате стало теплее",
+        "Робот, продолжай",  # голое «продолжай» посреди рэпа или сказки — продолжение выступления
+        "Робот, сделай помрачнее",  # «мрачнее» без темы — про рассказ, лицо или свет тоже
+    ],
+)
+def test_edit_words_about_something_else_are_not_an_edit_of_the_music(text):
+    assert music_edits(text) == ()
+    assert edit_route(text, playing=True) == ""
+
+
+@pytest.mark.parametrize(
+    "text,route",
+    [
+        ("Робот, ускорь", "edit:faster"),  # вся реплика — правка: темп и жёсткость под музыкой — её
+        ("Робот, давай побыстрее", "edit:faster"),
+        ("Робот, сделай потяжелее", "edit:heavier"),
+        ("можешь сделать бит потяжелее?", "edit:heavier"),  # вежливая просьба со знаком вопроса — просьба
+        ("Робот, сделай музыку помрачнее", "edit:darker"),  # «мрачнее» рядом с темой — правка
+        ("Робот, продолжай этот бит", "edit:develop"),
+        ("сделай басы потише", "edit:less_bass"),
+    ],
+)
+def test_edit_of_the_music_names_it_or_is_the_whole_utterance(text, route):
+    assert edit_route(text, playing=True) == route
+
+
+def test_a_question_is_not_a_request():
+    assert asks("Это тот же трек?") and asks("Робот, а какой это темп") and asks("ускорил ли ты бит")
+    assert not asks("можешь сделать бит потяжелее?") and not asks("Робот, сделай атмосферу помрачнее, как в киберпанке")
+
+
+@pytest.mark.parametrize(
+    "text,kinds",
+    [
+        # ревью PR #4116: «баса» одно направления не несёт — раньше всё это было +3 дБ и «Добавил баса.»
+        ("сделай басы потише", ("less_bass",)),
+        ("басов поменьше", ("less_bass",)),
+        ("слишком много баса", ("less_bass",)),
+        ("баса многовато", ("less_bass",)),
+        ("убери бас", ("less_bass",)),
+        ("без баса", ("less_bass",)),
+        ("не добавляй баса", ()),  # отрицание — не правка
+        ("не надо больше баса", ()),
+        ("баса", ()),  # без направления — не правка
+        ("добавь баса, и побыстрее", ("more_bass", "faster")),  # у каждой части реплики — свои правки
+        ("басов больше или меньше", ()),  # встречные в одной части — не правка
+        ("добавь бас", ("more_bass",)),
+        ("басы погромче", ("more_bass",)),
+        ("слишком мало баса", ("more_bass",)),
+        ("не хватает баса", ("more_bass",)),
+        ("добавь баса, а то слишком тихо", ("more_bass",)),  # «слишком тихо» — в другой части, без баса
+        ("сделай погромче", ()),  # громкость, не бас
+        ("включи что-нибудь про баскетбол", ()),  # «бас» — слово целиком
+    ],
+)
+def test_bass_direction_comes_from_a_word_next_to_the_bass(text, kinds):
+    assert edits_in(text) == kinds
+
+
+def test_opposite_tempo_in_one_part_is_not_an_edit():
+    assert edits_in("быстрее или медленнее") == ()
+    assert edits_in("не быстрее, а медленнее") == ("slower",)
 
 
 def test_no_edit_route_in_silence():
@@ -161,11 +243,11 @@ def test_nothing_named_asks_what_to_change():
 
 
 def test_one_table_of_edits():
-    """``TRACK_EDITS`` — единственная таблица: ``ENGINE_TWEAK_WORDS`` её проекция по видам, у каждой правки есть
-    фраза, семьи тембров есть у каждого стиля синтеза."""
-    assert set(kn.ENGINE_TWEAK_WORDS) == set(kn.TRACK_EDIT_GROUPS)
-    for group, words in kn.ENGINE_TWEAK_WORDS.items():
-        assert words == tuple(w for e in kn.TRACK_EDITS.values() if e.group == group for w in e.words)
+    """``TRACK_EDITS`` — единственная таблица: её читают и правка играющего, и наследование движка (``ask_tweak``;
+    второй таблицы ``ENGINE_TWEAK_WORDS`` больше нет), у каждой правки есть фраза, семьи тембров есть у каждого стиля
+    синтеза, предмет правки баса — формы «бас» целиком."""
+    assert not hasattr(kn, "ENGINE_TWEAK_WORDS")
+    assert {e.about for e in kn.TRACK_EDITS.values() if e.group == "bass"} == {kn.EDIT_BASS_FORMS}
     for name, edit in kn.TRACK_EDITS.items():
         assert edit.group in kn.TRACK_EDIT_GROUPS and edit.done, name
         assert all(w == w.lower() and "ё" not in w for w in edit.words), name

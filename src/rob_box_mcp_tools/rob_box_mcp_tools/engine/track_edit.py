@@ -29,7 +29,7 @@ from rob_box_music.track_edit import (
     EditPlan,
     EditTarget,
     edit_text,
-    edits_in,
+    music_edits,
     plan_edit,
     with_bass,
 )
@@ -118,9 +118,10 @@ class TrackEditor:
                 self._recipes.popitem(last=False)
 
     def edit(self, kinds: Sequence[str], heard_text: Optional[str] = None) -> Dict[str, Any]:
-        """Правка играющего: виды — из слов человека (``heard_text``, таблица ``knowledge.TRACK_EDITS``), а без них —
-        из узкого слота LLM (``kinds``). Итог — данные результата тула с фразой исхода ``message``."""
-        named = edits_in(heard_text or "")
+        """Правка играющего: виды — из слов человека про играющую музыку (``heard_text``, ``track_edit.music_edits``
+        — то же чтение, что решило путь хода), а без них — из узкого слота LLM (``kinds``). Итог — данные результата
+        тула с фразой исхода ``message``."""
+        named = music_edits(heard_text or "")
         asked = named or tuple(kinds)
         snap = self._owner.now_playing()
         track_id = str(snap.get("track_id") or "")

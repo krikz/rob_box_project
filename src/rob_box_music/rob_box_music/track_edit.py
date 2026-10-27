@@ -5,9 +5,13 @@
 посреди выступления; марафон 27.10: «ускорь», «добавь баса», «помрачнее, как в киберпанке» — новый трек 60 BPM или
 ничего. Правка играющего — отдельный узкий путь, а не заказ нового:
 
-* :func:`edits_in` — виды правки в словах человека (единственная таблица ``knowledge.TRACK_EDITS``);
-* :func:`edit_route` — путь хода «правка играющего» для формы команды диалога v2: музыка играет, в реплике слова
-  правки, а не заказ другой музыки (``knowledge.EDIT_NEW_ORDER_WORDS``);
+* :func:`edits_in` — виды правки в словах человека (единственная таблица ``knowledge.TRACK_EDITS``): по частям
+  реплики, с отрицанием, предметом-басом и встречными видами одной оси;
+* :func:`music_edits` — те из них, что про ИГРАЮЩУЮ музыку (``knowledge.EDIT_TOPIC``, ревью PR #4116): часть реплики
+  называет играющее («бит», «трек», «темп», «бас», «атмосфера») или вся реплика — правка («Робот, ускорь»); вопрос —
+  не правка. «Иди быстрее к двери», «сделай лицо мрачнее», «продолжай рассказывать» — не правка музыки;
+* :func:`edit_route` — путь хода «правка играющего» для формы команды диалога v2: музыка играет, в реплике правка
+  играющего (:func:`music_edits`), а не заказ другой музыки (``knowledge.EDIT_NEW_ORDER_WORDS``);
 * :func:`plan_edit` — что правка сделает с тем, что играет (:class:`EditTarget`): темп, семья тембров, бас — или
   честный отказ (готовая запись, пьеса, сет, темп под выступлением: ``knowledge.EDIT_REFUSALS``);
 * :func:`edit_text` — фраза исхода из исхода, а не из слов модели.
@@ -23,7 +27,7 @@ from typing import List, Sequence, Tuple
 
 from . import knowledge as kn
 from .model import Track
-from .source import _words
+from .source import _clauses, _phrase, _words
 
 #: Голова id пути хода «правка играющего»: ``edit:<вид>+<вид>`` (``edit:heavier+more_bass``).
 EDIT_ROUTE = "edit"
@@ -86,19 +90,86 @@ def _matches(words: Sequence[str]) -> List[Tuple[int, int, str]]:
     return found
 
 
-def edits_in(text: str) -> Tuple[str, ...]:
-    """Виды правки играющего в словах человека — по порядку в речи, без повторов. Запись длиннее побеждает перекрытую
-    («поменьше баса» — меньше, а не больше баса); слово после отрицания («не быстрее, а громче») — не правка."""
-    words = _words(text)
+def _opposed(kind: str, kinds: Sequence[str]) -> bool:
+    """В части реплики есть другой вид той же оси (``knowledge.EDIT_OPPOSED_GROUPS``): «быстрее или медленнее»."""
+    group = kn.TRACK_EDITS[kind].group
+    return group in kn.EDIT_OPPOSED_GROUPS and any(k != kind and kn.TRACK_EDITS[k].group == group for k in kinds)
+
+
+def _clause_edits(clause: Sequence[str]) -> List[str]:
+    """Виды правки одной части реплики — по порядку в речи. Запись длиннее побеждает перекрытую («слишком много» —
+    не «много»); отрицание раньше в части («не быстрее», «не надо больше баса») снимает правку; правке с предметом
+    (``TrackEdit.about``: бас) нужен предмет в этой части; встречные виды одной оси — не правка (:func:`_opposed`)."""
     taken: set = set()
     picked: List[Tuple[int, str]] = []
-    for first, end, kind in sorted(_matches(words), key=lambda m: (m[0] - m[1], m[0])):
-        if taken & set(range(first, end)):
+    for first, end, kind in sorted(_matches(clause), key=lambda m: (m[0] - m[1], m[0])):
+        span = set(range(first, end))
+        if taken & span:
             continue
-        taken.update(range(first, end))
-        if not (first and words[first - 1] in kn.EDIT_NEGATIONS):
+        taken |= span
+        about = kn.TRACK_EDITS[kind].about
+        negated = bool(set(clause[:first]) & set(kn.EDIT_NEGATIONS))
+        if not negated and (not about or set(clause) & set(about)):
             picked.append((first, kind))
-    return tuple(dict.fromkeys(kind for _first, kind in sorted(picked)))
+    kinds = [kind for _first, kind in sorted(picked)]
+    return [kind for kind in kinds if not _opposed(kind, kinds)]
+
+
+def _parts(text: str) -> List[List[str]]:
+    """Части реплики — те же, что у вилки пения (``source._clauses``): слова между знаками препинания и словами-
+    границами ``SING_CLAUSE_BREAKS``."""
+    return [clause for _start, clause in _clauses(_phrase(text))]
+
+
+def edits_in(text: str) -> Tuple[str, ...]:
+    """Виды правки играющего в словах человека — по частям реплики (:func:`_parts`) и по порядку в речи, без повторов
+    (:func:`_clause_edits`). Про что правка — не решает: это :func:`music_edits`."""
+    return tuple(dict.fromkeys(kind for clause in _parts(text) for kind in _clause_edits(clause)))
+
+
+def _names_music(clause: Sequence[str]) -> bool:
+    """Часть реплики называет играющую музыку (``knowledge.EDIT_TOPIC``): «бит», «трек», «темп», «бас», «атмосфера»."""
+    topic = kn.EDIT_TOPIC
+    return any(word in topic.forms or word.startswith(topic.stems) for word in clause)
+
+
+def _only_edits(clauses: Sequence[Sequence[str]]) -> bool:
+    """Вся реплика — правка: кроме записей ``TRACK_EDITS`` только обращение и служебные слова («Робот, давай
+    побыстрее»). «Иди быстрее», «расскажи сказку побыстрее» — нет: там есть своё дело."""
+    spare = set(kn.EDIT_TOPIC.address) | set(kn.EDIT_TOPIC.fillers)
+    for clause in clauses:
+        covered = {i for first, end, _kind in _matches(clause) for i in range(first, end)}
+        if any(i not in covered and word not in spare for i, word in enumerate(clause)):
+            return False
+    return True
+
+
+def asks(text: str) -> bool:
+    """Реплика — вопрос, а не просьба («Это тот же трек?», «Робот, а как развивается ситуация»): первое слово после
+    обращения — вопросительное, или в ней частица «ли» (``knowledge.EDIT_TOPIC``). Знак «?» один не решает: «можешь
+    сделать бит потяжелее?» — просьба."""
+    topic = kn.EDIT_TOPIC
+    words = _words(text)
+    lead = next((w for w in words if w not in topic.address and w not in topic.lead_skip), "")
+    return lead in topic.question_leads or bool(set(words) & set(topic.question_particles))
+
+
+def music_edits(text: str) -> Tuple[str, ...]:
+    """Виды правки ИГРАЮЩЕЙ музыки в реплике (ревью PR #4116): правка, чья часть реплики называет играющее
+    (:func:`_names_music`), или правка ``TrackEdit.bare`` в реплике из одной правки (:func:`_only_edits`: «Робот,
+    ускорь»). Вопрос — не правка. «Иди быстрее к двери», «сделай лицо мрачнее», «продолжай рассказывать», «в комнате
+    стало теплее» — пусто: слова правки там не про музыку."""
+    if asks(text):
+        return ()
+    clauses = _parts(text)
+    bare = _only_edits(clauses)
+    kinds = (
+        kind
+        for clause in clauses
+        for kind in _clause_edits(clause)
+        if _names_music(clause) or (bare and kn.TRACK_EDITS[kind].bare)
+    )
+    return tuple(dict.fromkeys(kinds))
 
 
 def new_order(text: str) -> bool:
@@ -108,11 +179,12 @@ def new_order(text: str) -> bool:
 
 
 def edit_route(text: str, playing: bool) -> str:
-    """Путь хода «правка играющего» (``edit:<вид>+…``) или «»: музыка играет, в реплике слова правки, и это не заказ
-    другой музыки. Решает код по снимку плеера и словам, а не модель (форма команды закрывает заказ нового)."""
+    """Путь хода «правка играющего» (``edit:<вид>+…``) или «»: музыка играет, реплика правит именно её
+    (:func:`music_edits`), и это не заказ другой музыки. Решает код по снимку плеера и словам, а не модель (форма
+    команды закрывает заказ нового и требует ``edit_music``)."""
     if not playing or new_order(text):
         return ""
-    kinds = edits_in(text)
+    kinds = music_edits(text)
     return f"{EDIT_ROUTE}:{'+'.join(kinds)}" if kinds else ""
 
 
@@ -234,9 +306,11 @@ __all__ = [
     "PIECE",
     "SET",
     "SYNTH",
+    "asks",
     "edit_route",
     "edit_text",
     "edits_in",
+    "music_edits",
     "new_order",
     "next_family",
     "plan_edit",
