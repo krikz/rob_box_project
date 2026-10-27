@@ -112,3 +112,82 @@ def test_voice_feedback_off_keeps_the_robot_silent(node_params, callback):
     getattr(node, callback)(_joy(armed=False))
 
     assert _speech(node) == []
+
+
+# -- a failed phrase must not break driving -------------------------------------------------------
+
+
+def _say_fails(monkeypatch):
+    """Make the speech client raise, as it would with a shut-down context or a bad Utterance."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("speech client down")
+
+    monkeypatch.setattr(speech_client, "say", boom)
+
+
+def test_speak_failure_is_logged_and_does_not_propagate(node_params, monkeypatch):
+    node = JoystickControlNode()
+    _say_fails(monkeypatch)
+
+    node.speak(ARMED)  # must not raise
+
+    (call,) = node.get_logger().error.call_args_list
+    assert ARMED in call.args[0] and "speech client down" in call.args[0]
+    assert _speech(node) == []
+
+
+@pytest.mark.parametrize("callback", ["joy_callback_sbus", "joy_callback"])
+def test_disarm_still_sends_the_brake_when_the_phrase_fails(node_params, monkeypatch, callback):
+    """Disarm speaks first and brakes second: a speech failure must not swallow the stop message."""
+    node = JoystickControlNode()
+    cmd_vel = _publisher(node, "cmd_vel_joy").messages
+    getattr(node, callback)(_joy(armed=True))
+    sent_before_disarm = len(cmd_vel)
+    _say_fails(monkeypatch)
+
+    getattr(node, callback)(_joy(armed=False))
+
+    assert node.was_enabled is False
+    assert len(cmd_vel) == sent_before_disarm + 1
+    assert (cmd_vel[-1].linear.x, cmd_vel[-1].angular.z) == (0.0, 0.0)
+
+
+class _Stop(BaseException):
+    """Ends the reader's endless ``while True`` (BaseException: its ``except Exception`` lets it through)."""
+
+
+class _FakeSerialModule:
+    """pyserial stand-in: the first port opens already closed (no frames), the second open ends the test."""
+
+    EIGHTBITS, PARITY_EVEN, STOPBITS_TWO = 8, "E", 2
+
+    class SerialException(Exception):
+        pass
+
+    def __init__(self):
+        self.opened = 0
+
+    def Serial(self, **kwargs):
+        self.opened += 1
+        if self.opened > 1:
+            raise _Stop
+        return types.SimpleNamespace(is_open=False, close=lambda: None)
+
+
+def test_sbus_reader_survives_a_failed_connect_phrase(node_params, monkeypatch):
+    """The "joystick connected" phrase is spoken from the serial thread: its failure must not trigger the 5 s reconnect."""
+    from rob_box_teleop import joystick_control_node as module
+
+    node = JoystickControlNode()
+    fake_serial, sleeps = _FakeSerialModule(), []
+    monkeypatch.setattr(module, "serial", fake_serial, raising=False)
+    monkeypatch.setattr(module, "time", types.SimpleNamespace(sleep=sleeps.append, monotonic=lambda: 0.0))
+    _say_fails(monkeypatch)
+
+    with pytest.raises(_Stop):
+        node._run_sbus_reader()
+
+    assert node.device_connected is True
+    assert sleeps == []  # a speech failure did not send the reader into "SBUS reader error -> sleep(5)"
+    assert fake_serial.opened == 2  # the loop went on to the next iteration by itself

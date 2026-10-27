@@ -429,8 +429,17 @@ class JoystickControlNode(Node):
         and emotion are its defaults (speakers, normal, neutral) - the same values
         the old JSON payload carried. The joystick does not lead a dialog
         session, hence the "system" author and epoch 0.
+
+        The phrase is feedback, not control: a failure to send it is logged as an
+        error and never propagates. Callers sit next to driving code (the brake
+        message on disarm follows ``speak``; the SBUS reader thread speaks right
+        after opening the port), and the old ``String`` publish could not raise.
         """
-        speech_client.say(self, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
+        try:
+            speech_client.say(self, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
+        except Exception as exc:
+            self.get_logger().error(f"❌ TTS not sent ({text!r}): {exc!r}")
+            return
         self.get_logger().info(f"🗣️  TTS: {text}")
 
 
