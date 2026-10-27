@@ -234,13 +234,14 @@ def test_speech_beside_actions_is_a_violation_with_a_hint_for_the_model():
     assert ok({"speech": "Записала", "actions": sound}, session=chat).speech == "Записала"
 
 
-def test_voice_of_a_line_and_voices_of_segments():
+def test_voice_of_a_line_and_resolved_voices_of_segments():
     cmd = ok({"speech": "Привет", "voice": " zahar "})
     assert cmd.voice == "zahar"
-    tale = ok({"perform": _perform(3, voice_per_segment=["", None, "alena"])})
-    assert tale.perform.voice_per_segment == ("", "", "alena")
-    bad({"perform": _perform(3, voice_per_segment=["zahar"])}, "bad_segments")
-    bad({"perform": _perform(2, voice_per_segment=["a" * (kn.VOICE_MAX_CHARS + 1), ""])}, "too_long")
+    # голоса сегментов уже решённой команды (мост → исполнитель; каталога у перепроверки нет) разбор держит как есть
+    poem = ok({"perform": _perform(3, kind="poem", voice_per_segment=["", None, "alena"])})
+    assert poem.perform.voice_per_segment == ("", "", "alena")
+    bad({"perform": _perform(3, kind="poem", voice_per_segment=["zahar"])}, "bad_segments")
+    bad({"perform": _perform(2, kind="poem", voice_per_segment=["a" * (kn.VOICE_MAX_CHARS + 1), ""])}, "too_long")
     bad({"perform": _perform(2, voice_per_segment=[1, ""])}, "bad_type")
     bad({"speech": "Привет", "voice": "z" * (kn.VOICE_MAX_CHARS + 1)}, "too_long")
 
@@ -248,9 +249,12 @@ def test_voice_of_a_line_and_voices_of_segments():
 def test_to_args_round_trips_through_parse():
     raw = {"voice": "zahar", "ask": {"expects": "name", "text": "Как зовут?"},
            "actions": [{"tool": "memory_save", "args": {"fact": "чай"}}],
-           "perform": _perform(2, voice_per_segment=["", "alena"], expression_per_segment=[{"emotion": "happy"}] * 2),
+           "perform": {"kind": "tale", "segments": ["Жила-была лиса.", "Привет!"], "role_per_segment": ["", "Лиса"],
+                       "cast": [{"name": "Лиса", "gender": "female"}, {"name": "Ёж"}],
+                       "expression_per_segment": [{"emotion": "happy"}] * 2},
            "expression": {"emotion": "happy", "gesture": "wink", "face": {"eyes": "wide"}}}
-    cmd = ok(raw)
+    cmd = ok(raw, busy=Busy(voices=("zahar", "alena"), voice_genders=(("zahar", "male"), ("alena", "female"))))
+    assert cmd.perform.voice_per_segment == ("", "alena") and cmd.dropped == ()
     assert parse(cm.to_args(cmd)) == cmd
     assert json.loads(json.dumps(cm.to_args(cmd), ensure_ascii=False)) == cm.to_args(cmd)
 
@@ -319,7 +323,9 @@ def test_schema_fields_match_the_dataclasses():
 
     assert set(schema) == names(cm.Command) - {"dropped", "moved"}
     assert set(schema["ask"]["properties"]) == names(cm.Ask) - {"key"}
-    assert set(schema["perform"]["properties"]) == names(cm.Performance) - {"from_segment"}  # его выбирает код
+    # с какого сегмента править и голоса сегментов выбирает код (#3700, #4084)
+    assert set(schema["perform"]["properties"]) == names(cm.Performance) - {"from_segment", "voice_per_segment"}
+    assert set(schema["perform"]["properties"]["cast"]["items"]["properties"]) == names(cm.Role)
     assert set(schema["expression"]["properties"]) == names(cm.Expression)
     assert set(schema["expression"]["properties"]["face"]["properties"]) == names(cm.FaceScene)
 
@@ -519,39 +525,105 @@ TALE_SEGMENTS = ["Жила-была девочка.", "Куда идёшь?", "�
 VOICES = ("alena", "zahar", "filipp")
 
 
-def test_tale_without_voices_is_a_violation_with_the_voice_list_and_a_hint_3959():
-    """Марафон 23.10 акт 4: модель опустила voice_per_segment, сказка прозвучала одним голосом."""
-    res = bad({"perform": {"kind": "tale", "segments": TALE_SEGMENTS}}, "tale_without_voices", busy=cm.Busy(voices=VOICES))
-    assert res.violations[0].allowed == VOICES
+GENDERS = (("alena", "female"), ("zahar", "male"), ("filipp", "male"))
+POOL = cm.Busy(voices=VOICES, voice_genders=GENDERS)
+
+
+def test_tale_without_cast_is_a_violation_with_a_hint_3959_4084():
+    """Марафон 23.10 акт 4: сказка без ролей прозвучала одним голосом, а валидатор молчал. Теперь сказка обязана
+    назвать героев (``cast``, пусто — героев нет) и чья реплика в сегменте; голоса им даёт код."""
+    res = bad({"perform": {"kind": "tale", "segments": TALE_SEGMENTS}}, "tale_without_cast", busy=POOL)
     note = cm.explain(res)
-    assert "voice_per_segment обязателен" in note and "реплика одного говорящего" in note
-    assert "Допустимо: alena, zahar, filipp" in note
+    assert "perform.cast обязателен" in note and "реплика одного говорящего" in note and "голоса героям даст код" in note
 
 
-def test_tale_with_voices_is_valid_and_keeps_them_3959():
-    cmd = ok({"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "voice_per_segment": ["", "alena", "zahar"]}},
-             busy=cm.Busy(voices=VOICES))
+def test_tale_without_heroes_is_the_robot_voice_4084():
+    cmd = ok({"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": []}}, busy=POOL)
+    assert cmd.perform.voice_per_segment is None
+
+
+def test_model_voices_of_a_tale_are_replaced_by_the_code_4084():
+    """Голос сегмента модель больше не выбирает: её ``voice_per_segment`` — в ``dropped``, голоса — по ролям."""
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "voice_per_segment": ["", "Wise_Woman", "zahar"],
+                       "cast": [{"name": "Волк", "gender": "male"}], "role_per_segment": ["", "волк", "Волк"]}}
+    cmd = ok(raw, busy=POOL)
+    assert cmd.perform.voice_per_segment == ("", "zahar", "zahar") and cmd.dropped == ("perform.voice_per_segment",)
+
+
+def test_role_outside_the_cast_is_a_violation_with_the_cast_names_4084():
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": [{"name": "Волк", "gender": "male"}],
+                       "role_per_segment": ["", "Волк", "Бабушка"]}}
+    res = bad(raw, "bad_cast", busy=POOL)
+    assert res.violations[0].allowed == ("Волк", "") and "Бабушка" in res.violations[0].detail
+    assert "только name героя из cast" in cm.explain(res)
+
+
+@pytest.mark.parametrize("perform, detail", [
+    ({"cast": [{"name": "Волк", "gender": "male"}]}, "без role_per_segment"),
+    ({"cast": [{"name": n, "gender": "male"} for n in "абвгд"], "role_per_segment": ["", "а", "б"]}, "героев 5"),
+])
+def test_cast_structure_violations_4084(perform, detail):
+    res = bad({"perform": {"kind": "tale", "segments": TALE_SEGMENTS, **perform}}, "bad_cast", busy=POOL)
+    assert detail in res.violations[0].detail
+
+
+def test_more_speaking_heroes_than_role_voices_is_a_violation_4084():
+    four = ["Жил-был кот.", "Мяу.", "Гав.", "Ква."]
+    raw = {"perform": {"kind": "tale", "segments": four, "role_per_segment": ["", "кот", "пёс", "жаба"],
+                       "cast": [{"name": "кот"}, {"name": "пёс"}, {"name": "жаба"}]}}
+    small = cm.Busy(voices=("alena", "zahar"))
+    assert "голосов для них 2" in bad(raw, "bad_cast", busy=small).violations[0].detail
+    assert len(set(ok(raw, busy=POOL).perform.voice_per_segment) - {""}) == 3
+
+
+def test_role_names_length_is_checked_4084():
+    long = "я" * (kn.ROLE_NAME_MAX_CHARS + 1)
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS[:2], "cast": [{"name": long}],
+                       "role_per_segment": ["", long]}}
+    bad(raw, "too_long", busy=POOL)
+
+
+def test_cast_items_are_lenient_but_the_model_does_not_pick_a_voice_4084():
+    """Герой строкой — без пола; пол вне перечня и голос героя от модели — в ``dropped``, команда не отвергается."""
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "role_per_segment": ["", "Лиса", "Волк"],
+                       "cast": ["Волк", {"name": "Лиса", "gender": "child", "voice": "zahar"}]}}
+    cmd = ok(raw, busy=POOL)
+    assert cmd.perform.cast == (cm.Role("Волк"), cm.Role("Лиса"))
+    assert set(cmd.dropped) == {"perform.cast[1].voice", "perform.cast[1].gender"}
     assert cmd.perform.voice_per_segment == ("", "alena", "zahar")
+    bad({"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": [{"gender": "male"}]}}, "bad_type")
 
 
-def test_tale_voice_outside_the_provider_catalogue_is_a_violation_3959():
-    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "voice_per_segment": ["", "Wise_Woman", "zahar"]}}
-    res = bad(raw, "bad_enum", busy=cm.Busy(voices=VOICES))
-    assert res.violations[0].allowed == VOICES and "Wise_Woman" in res.violations[0].detail
-    ok(raw)  # каталог неизвестен (Busy без голосов) - имя не сверяется
-
-
-def test_only_tale_needs_voices_and_a_backing_only_edit_does_not_3959():
-    ok({"perform": {"kind": "poem", "segments": TALE_SEGMENTS}})
+def test_only_tale_needs_a_cast_and_a_backing_only_edit_does_not_3959():
+    ok({"perform": {"kind": "poem", "segments": TALE_SEGMENTS}}, busy=POOL)
     ok({"edit_pending": True, "perform": {"kind": "tale", "backing": "calm", "segments": []}},
        busy=cm.Busy(active_segment=1))
 
 
-def test_voice_catalogue_goes_into_the_schema_as_an_enum_3959():
-    items = kn.with_voices(kn.command_schema("json"), VOICES)["properties"]["perform"]["properties"][
-        "voice_per_segment"]["items"]
-    assert items["enum"] == ["", "alena", "filipp", "zahar"]
-    assert "enum" not in kn.command_schema("json")["properties"]["perform"]["properties"]["voice_per_segment"]["items"]
+def test_song_and_rap_are_sung_in_the_robot_voice_whatever_the_model_sent_4084():
+    """Живой случай 27.10: песня про енота — куплеты через один голосом ReliableMan и HandsomeChildhoodFriend."""
+    for kind in ("song", "rap"):
+        raw = {"perform": {"kind": kind, "segments": TALE_SEGMENTS, "voice_per_segment": ["alena", "zahar", "alena"],
+                           "cast": [{"name": "Енот", "gender": "male"}], "role_per_segment": ["Енот", "", "Енот"]}}
+        for busy in (POOL, cm.Busy()):
+            cmd = ok(raw, busy=busy)
+            assert (cmd.perform.voice_per_segment, cmd.perform.cast, cmd.perform.role_per_segment) == (None,) * 3
+            assert set(cmd.dropped) == {"perform.voice_per_segment", "perform.cast", "perform.role_per_segment"}
+
+
+def test_an_edit_keeps_the_voices_of_the_heroes_already_heard_4084():
+    """Правка идущей сказки: ``Busy.cast`` — роли и голоса выступления; новый герой — свободный голос."""
+    busy = cm.Busy(frozenset({"action.perform"}), active_segment=1, voices=VOICES, voice_genders=GENDERS,
+                   cast=(("лиса", "filipp"),))
+    raw = {"edit_pending": True, "perform": {"kind": "tale", "segments": TALE_SEGMENTS, "role_per_segment": [
+        "Волк", "Лиса", ""], "cast": [{"name": "Волк", "gender": "male"}, {"name": "Лиса", "gender": "female"}]}}
+    assert ok(raw, busy=busy).perform.voice_per_segment == ("zahar", "filipp", "")
+
+
+def test_voice_catalogue_goes_into_the_schema_as_an_enum_of_the_line_voice_only_4084():
+    schema = kn.with_voices(kn.command_schema("json"), VOICES)
+    assert schema["properties"]["voice"]["enum"] == ["", "alena", "filipp", "zahar"]
+    assert "voice_per_segment" not in schema["properties"]["perform"]["properties"]
     assert kn.with_voices(kn.command_schema("json"), ()) == kn.command_schema("json")
 
 

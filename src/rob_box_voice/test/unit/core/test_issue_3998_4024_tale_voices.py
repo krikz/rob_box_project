@@ -6,7 +6,8 @@ MiniMax молча заменил: ``provider_state`` с ``prefetch`` затёр
 и ``_check_voices`` ничего не сверял (#4024).
 
 Тесты гонят настоящий путь хоста: события ``/voice/tts/provider_state`` -> ``plan_host`` -> ``Busy.voices`` -> схема и
-валидатор команды ``rob_box_dialog``.
+валидатор команды ``rob_box_dialog``. С #4084 голос героя выбирает не модель, а код (``rob_box_dialog.cast``) из этого
+каталога: модель называет героев (``cast``) и чья реплика в сегменте (``role_per_segment``).
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from types import SimpleNamespace
 import pytest
 from rob_box_core.tool_catalog import TOOL_CATALOG
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Command, Invalid, parse, validate
+from rob_box_dialog.command import Command, parse, validate
 
 from rob_box_voice.core import plan_host
 from rob_box_voice.tts_voice_registry import (
     default_voice_for,
+    gender_of,
     role_voices_for,
     voices_for,
 )
@@ -53,18 +55,38 @@ def _state(node, provider, reason="synthesis_ok", voice=None) -> None:
     plan_host.on_tts_provider_state(node, SimpleNamespace(data=json.dumps(payload)))
 
 
+#: Красная Шапочка: рассказчик, Волк, Девочка, Бабушка - голоса им даёт код (#4084), модель называет только героев.
+CAST = [
+    {"name": "Волк", "gender": "male"},
+    {"name": "Девочка", "gender": "female"},
+    {"name": "Бабушка", "gender": "female"},
+]
+ROLES = ["", "Волк", "Девочка", "Бабушка"]
+
+
 def _tale(*voices):
+    """Сказка с героями; ``voices`` - голоса, которые модель (по старой привычке) прислала сама."""
+    perform = {
+        "kind": "tale",
+        "segments": SEGMENTS,
+        "cast": CAST,
+        "role_per_segment": ROLES,
+    }
     return {
         "perform": {
-            "kind": "tale",
-            "segments": SEGMENTS[: len(voices)],
-            "voice_per_segment": list(voices),
+            **perform,
+            **({"voice_per_segment": list(voices)} if voices else {}),
         }
     }
 
 
 def _judge(node, raw):
     return validate(parse(raw), ALL_TOOLS, busy=plan_host.perform_busy(node))
+
+
+def _hero_voices(res) -> list:
+    assert isinstance(res, Command), res
+    return [v for v in res.perform.voice_per_segment if v]
 
 
 # -- #3998: перечень голосов ролей --------------------------------------------------------------------------------
@@ -90,43 +112,37 @@ def test_busy_voices_follow_the_sounding_provider(provider):
     )
 
 
-def test_the_chinese_voice_is_a_violation_in_a_tale():
-    res = _judge(_node("minimax"), _tale("", "male-qn-qingse", "Russian_BrightHeroine"))
-    assert isinstance(res, Invalid) and res.reason == "bad_enum", res
-    assert "male-qn-qingse" in res.violations[0].detail
-    assert set(res.violations[0].allowed) == set(
-        plan_host.perform_busy(_node("minimax")).voices
-    )
+def test_the_chinese_voice_from_the_model_never_reaches_a_tale_role():
+    """#3998 + #4084: голос героя выбирает код из русских голосов звучащего провайдера; китайский от модели - мимо."""
+    res = _judge(_node("minimax"), _tale("", "male-qn-qingse", "female-shaonv", ""))
+    heroes = _hero_voices(res)
+    assert heroes and all(v.startswith("Russian_") for v in heroes), heroes
+    assert "perform.voice_per_segment" in res.dropped
 
 
-def test_russian_voices_pass_and_the_command_keeps_them():
-    node = _node("minimax")
-    res = _judge(
-        node,
-        _tale(
-            "", "Russian_AttractiveGuy", "Russian_BrightHeroine", "Russian_CrazyQueen"
-        ),
-    )
+def test_heroes_get_distinct_russian_voices_of_their_gender_and_the_narrator_the_robot_voice():
+    res = _judge(_node("minimax"), _tale())
     assert isinstance(res, Command), res
-    assert res.perform.voice_per_segment == (
-        "",
-        "Russian_AttractiveGuy",
-        "Russian_BrightHeroine",
-        "Russian_CrazyQueen",
+    narrator, wolf, girl, granny = res.perform.voice_per_segment
+    assert narrator == "" and len({wolf, girl, granny}) == 3
+    assert gender_of("minimax", wolf) == "male"
+    assert gender_of("minimax", girl) == gender_of("minimax", granny) == "female"
+    assert {wolf, girl, granny} <= set(
+        role_voices_for("minimax", default_voice_for("minimax"))
     )
 
 
-def test_command_schema_offers_the_model_only_role_voices():
-    items = kn.with_voices(
+def test_command_schema_offers_role_voices_only_for_the_line_voice():
+    """Голос реплики (``voice``, по просьбе о голосе) - из голосов ролей; голосов сегментов в схеме нет (#4084)."""
+    schema = kn.with_voices(
         kn.command_schema("json"), plan_host.perform_busy(_node("minimax")).voices
     )
-    offered = items["properties"]["perform"]["properties"]["voice_per_segment"][
-        "items"
-    ]["enum"]
+    offered = schema["properties"]["voice"]["enum"]
     assert offered[0] == "" and offered[1:] == sorted(
         role_voices_for("minimax", default_voice_for("minimax"))
     )
     assert "male-qn-qingse" not in offered
+    assert "voice_per_segment" not in schema["properties"]["perform"]["properties"]
 
 
 def test_set_voice_still_sees_the_whole_catalogue():
@@ -163,20 +179,16 @@ def test_garbage_provider_state_is_ignored(data):
     assert node._actual_tts_provider == "yandex"
 
 
-def test_prefetch_before_a_tale_with_yandex_names_is_bad_enum_not_a_silent_swap():
+def test_prefetch_before_a_tale_with_yandex_names_still_voices_heroes_from_the_minimax_catalogue():
     """Раньше: ``prefetch`` -> каталог пуст -> проверка выключена -> alena/omazh/zahar доходили до MiniMax и молча
-    заменялись китайским голосом. Теперь та же последовательность событий даёт нарушение с перечнем допустимых.
+    заменялись китайским голосом. Теперь каталог ролей не пустеет, и голоса героям даёт код из него (#4084).
     """
     node = _node("minimax")
     _state(node, "minimax")
     _state(node, "prefetch")
-    res = _judge(node, _tale("", "alena", "omazh", "zahar"))
+    heroes = _hero_voices(_judge(node, _tale("", "alena", "omazh", "zahar")))
 
-    assert isinstance(res, Invalid) and res.reason == "bad_enum", res
-    assert "alena" in res.violations[0].detail
-    assert res.violations[0].allowed and all(
-        v.startswith("Russian_") for v in res.violations[0].allowed
-    )
+    assert heroes and all(v.startswith("Russian_") for v in heroes), heroes
 
 
 def test_a_foreign_provider_label_set_by_another_writer_falls_back_to_the_configured_catalogue():
@@ -188,8 +200,8 @@ def test_a_foreign_provider_label_set_by_another_writer_falls_back_to_the_config
         busy.voices == tuple(role_voices_for("yandex", default_voice_for("yandex")))
         and busy.voices
     )
-    res = _judge(node, _tale("", "Russian_BrightHeroine"))
-    assert isinstance(res, Invalid) and res.reason == "bad_enum"
+    heroes = _hero_voices(_judge(node, _tale("", "Russian_BrightHeroine", "", "")))
+    assert heroes and set(heroes) <= set(voices_for("yandex")), heroes
 
 
 def test_without_actual_provider_and_parameter_the_robot_default_catalogue_is_used():

@@ -22,7 +22,9 @@ from types import MappingProxyType
 from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.tool_catalog import get_tool
+from rob_box_dialog import cast as perform_cast
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.cast import Role
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
@@ -67,8 +69,10 @@ class Performance:
     его выбирает код (хост выступления: первый ещё не отданный на звучание, #3700), LLM его не задаёт — разбор
     отбрасывает это поле из ответа модели.
 
-    ``voice_per_segment`` — голос каждого сегмента (сказка разными голосами, #3269); ``""`` — текущий голос робота.
-    Голос робота он не меняет: это ``set_voice`` (только по явной просьбе, #3744)."""
+    Роли (#4084): ``cast`` — герои с репликами (имя и пол), ``role_per_segment`` — чья реплика в сегменте (``""`` —
+    рассказчик); их называет модель. ``voice_per_segment`` — голос каждого сегмента, его решает КОД
+    (:func:`validate` → :mod:`.cast`): у роли один голос на всё выступление, песня и рэп — голосом робота; ``""`` —
+    текущий голос робота. Голос робота он не меняет: это ``set_voice`` (только по явной просьбе, #3744)."""
 
     kind: str
     segments: Tuple[str, ...]
@@ -76,6 +80,8 @@ class Performance:
     expression_per_segment: Optional[Tuple[Expression, ...]] = None
     from_segment: int = 0
     voice_per_segment: Optional[Tuple[str, ...]] = None
+    cast: Optional[Tuple[Role, ...]] = None
+    role_per_segment: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -128,12 +134,23 @@ class Invalid:
 
 @dataclass(frozen=True)
 class Busy:
-    """Что занято сейчас — классы действий и ACTIVE-сегмент выступления (заполняет планировщик, PR-7b) - и голоса
-    звучащего провайдера TTS (#3959; пусто - каталог неизвестен, голос сегмента тогда не сверяется)."""
+    """Что занято сейчас — классы действий и ACTIVE-сегмент выступления (заполняет планировщик, PR-7b) - и каталог
+    голосов ролей звучащего провайдера TTS (#3959; пусто - каталог неизвестен: голоса сегментов тогда не решаются
+    заново и не сверяются - так перепроверяется уже решённая команда).
+
+    ``voice_genders`` — пол голосов каталога ``(голос, пол)``: по нему код даёт голос роли (#4084); ``cast`` — роли
+    идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает."""
 
     classes: FrozenSet[str] = frozenset()
     active_segment: Optional[int] = None
     voices: Tuple[str, ...] = ()
+    voice_genders: Tuple[Tuple[str, str], ...] = ()
+    cast: Tuple[Tuple[str, str], ...] = ()
+
+    def role_pool(self) -> Tuple[Tuple[str, str], ...]:
+        """Каталог ролей для :func:`.cast.assign`: голоса ``voices`` в их порядке и их пол (неизвестен — ``""``)."""
+        genders = dict(self.voice_genders)
+        return tuple((voice, genders.get(voice, "")) for voice in self.voices)
 
 
 Result = Union[Command, Invalid]
@@ -430,7 +447,8 @@ def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
         return None
     if not isinstance(data, Mapping):
         raise _Bad("bad_type", "perform")
-    _only(data, ("kind", "segments", "backing", "expression_per_segment", "voice_per_segment"), "perform")
+    _only(data, ("kind", "segments", "backing", "expression_per_segment", "voice_per_segment", *kn.ROLE_FIELDS),
+          "perform")
     segments = _get(data, "segments", list, []) or []
     if not all(isinstance(s, str) for s in segments):
         raise _Bad("bad_type", "perform.segments")
@@ -441,18 +459,42 @@ def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
         backing=_get(data, "backing", str, "none") or "none",
         expression_per_segment=None if per is None else tuple(
             _expression(e, f"perform.expression_per_segment[{i}]", fix) for i, e in enumerate(per)),
-        voice_per_segment=_voices(data),
+        voice_per_segment=_names(data, "voice_per_segment"),
+        cast=_cast(data, fix),
+        role_per_segment=_names(data, "role_per_segment"),
     )
 
 
-def _voices(data: Mapping[str, Any]) -> Optional[Tuple[str, ...]]:
-    """Голоса сегментов; ``null`` в списке — текущий голос робота (как ``""``)."""
-    voices = _get(data, "voice_per_segment", list)
-    if voices is None:
+def _names(data: Mapping[str, Any], key: str) -> Optional[Tuple[str, ...]]:
+    """Список имён по сегментам (голоса, роли); ``null`` в списке — голос робота, рассказчик (как ``""``).
+    ``voice_per_segment`` модели в схеме нет: его решает код (:func:`_voice_roles`), разбор держит поле для уже решённой
+    команды (мост → исполнитель)."""
+    names = _get(data, key, list)
+    if names is None:
         return None
-    if not all(v is None or isinstance(v, str) for v in voices):
-        raise _Bad("bad_type", "perform.voice_per_segment")
-    return tuple((v or "").strip() for v in voices)
+    if not all(v is None or isinstance(v, str) for v in names):
+        raise _Bad("bad_type", f"perform.{key}")
+    return tuple((v or "").strip() for v in names)
+
+
+def _cast(data: Mapping[str, Any], fix: _Repairs) -> Optional[Tuple[Role, ...]]:
+    """Герои выступления (#4084): ``{name, gender}``; строка — герой без пола. Пол вне ``ROLE_GENDERS`` и лишние поля
+    (``voice`` героя модель не выбирает) — в ``dropped``: голос подойдёт любой, команда не отвергается."""
+    items = _get(data, "cast", list)
+    if items is None:
+        return None
+    out: List[Role] = []
+    for i, item in enumerate(items):
+        item = {"name": item} if isinstance(item, str) else item
+        if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+            raise _Bad("bad_type", f"perform.cast[{i}]")
+        fix.dropped.extend(f"perform.cast[{i}].{key}" for key in sorted(set(item) - {"name", "gender"}))
+        gender = item.get("gender") or ""
+        if gender not in kn.ROLE_GENDERS:
+            fix.dropped.extend([f"perform.cast[{i}].gender"] if gender else [])
+            gender = ""
+        out.append(Role(item["name"].strip(), gender))
+    return tuple(out)
 
 
 def _lift_edit(data: Mapping[str, Any], fix: _Repairs) -> Mapping[str, Any]:
@@ -512,6 +554,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         return cmd
     form = form or current_form()
     cmd = _fit_sing_backing(_drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form), form)
+    cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
     available = set(available_tools) - set(form.closed_tools())
@@ -647,6 +690,27 @@ def _fit_sing_backing(cmd: Command, form: Form) -> Command:
     return replace(cmd, perform=replace(perf, backing=sing.backings[0]), dropped=cmd.dropped + ("perform.backing",))
 
 
+def _voice_roles(cmd: Command, busy: Busy) -> Command:
+    """Голоса сегментов выступления решает код (#4084, :mod:`.cast`), не модель. Песня и рэп — голосом робота: роли и
+    голоса модели — в ``dropped``. Выступление с ролями — голос роли из каталога ``busy`` (у роли один на всё
+    выступление, правка идущего не перекрашивает его роли); ``voice_per_segment`` модели — в ``dropped``. Каталог
+    неизвестен (``busy.voices`` пуст: перепроверка уже решённой команды, вне хода) — голоса как есть."""
+    perf = cmd.perform
+    if perf is None:
+        return cmd
+    if not perform_cast.has_roles(perf.kind):
+        gone = tuple(f"perform.{name}" for name in ("voice_per_segment", *kn.ROLE_FIELDS) if getattr(perf, name))
+        clean = replace(perf, voice_per_segment=None, cast=None, role_per_segment=None)
+        return cmd if clean == perf else replace(cmd, perform=clean, dropped=cmd.dropped + gone)
+    if not busy.voices:
+        return cmd
+    voices = perform_cast.segment_voices(perf.kind, perf.cast, perf.role_per_segment, busy.role_pool(), dict(busy.cast))
+    if voices == perf.voice_per_segment:
+        return cmd
+    gone = ("perform.voice_per_segment",) if perf.voice_per_segment is not None else ()
+    return replace(cmd, perform=replace(perf, voice_per_segment=voices), dropped=cmd.dropped + gone)
+
+
 def _check_sing(cmd: Command, form: Form) -> None:
     """Путь пения, решённый кодом до модели (#4079, ``knowledge.SING_FORMS``): закрытые тулы не зовутся, живое пение —
     ``perform`` вида пути, генерация — ``generate_music`` без выступления-песни. Правка идущего выступления
@@ -762,23 +826,28 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     _check_segments(perf, busy)
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
-    for name, per in (("expression_per_segment", perf.expression_per_segment),
-                      ("voice_per_segment", perf.voice_per_segment)):
+    for name in ("expression_per_segment", "voice_per_segment", "role_per_segment"):
+        per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
-    _check_voices(perf, busy)
+    _check_roles(perf, busy)
     _check_edit(cmd.edit_pending, busy)
 
 
-def _check_voices(perf: Performance, busy: Busy) -> None:
-    """Голоса сегментов: из каталога звучащего провайдера (``Busy.voices``, пусто - не сверяется); у сказки обязательны
-    (#3959: без них она звучит одним голосом, а валидатор молчал)."""
+def _check_roles(perf: Performance, busy: Busy) -> None:
+    """Роли выступления (#4084, :func:`.cast.problem`): у сказки ``cast`` обязателен (#3959: без ролей она звучала одним
+    голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами не больше,
+    чем голосов ролей. Уже решённая команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не
+    сказка без ролей."""
+    for i, name in enumerate((*(r.name for r in perf.cast or ()), *(perf.role_per_segment or ()))):
+        _check_speech(name, kn.ROLE_NAME_MAX_CHARS, f"perform.role[{i}]")
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
-        if voice and busy.voices and voice not in busy.voices:
-            raise _Bad("bad_enum", f"perform.voice_per_segment[{i}]={voice}", busy.voices)
-    if perf.kind == "tale" and perf.segments and perf.voice_per_segment is None:
-        raise _Bad("tale_without_voices", f"{len(perf.segments)} сегментов без voice_per_segment", busy.voices)
+    if not perf.segments or (perf.voice_per_segment is not None and not busy.voices):
+        return
+    found = perform_cast.problem(perf.kind, len(perf.segments), perf.cast, perf.role_per_segment, len(busy.voices))
+    if found is not None:
+        raise _Bad(*found)
 
 
 def _check_segments(perf: Performance, busy: Busy) -> None:
@@ -872,9 +941,12 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
                     "списки *_per_segment — по числу сегментов",
-    "tale_without_voices": "сказка: voice_per_segment обязателен, на каждый сегмент — голос персонажа из списка "
-                           "голосов (\"\" — рассказчик, текущий голос); сегмент = реплика одного говорящего, "
-                           "повествование и каждая реплика героя — отдельные сегменты",
+    perform_cast.TALE_WITHOUT_CAST: "сказка: perform.cast обязателен — герои с репликами (name и gender; героев нет — "
+                                    "[]) и role_per_segment — чья реплика в каждом сегменте (\"\" — рассказчик); "
+                                    "сегмент = реплика одного говорящего, повествование и каждая реплика героя — "
+                                    "отдельные сегменты; голоса героям даст код",
+    perform_cast.BAD_CAST: "роли выступления: в role_per_segment — только name героя из cast или \"\" (рассказчик), по "
+                           "одной роли на сегмент, по числу сегментов; героев с репликами не больше, чем голосов",
     "too_long": "слишком длинно",
     "control_chars": "управляющие символы в тексте",
     "passed_with_content": "passed — только без речи и действий",
@@ -947,6 +1019,10 @@ def _perform_args(perf: Performance) -> Dict[str, Any]:
         out["expression_per_segment"] = [_expression_args(e) for e in perf.expression_per_segment]
     if perf.voice_per_segment is not None:
         out["voice_per_segment"] = list(perf.voice_per_segment)
+    if perf.cast is not None:
+        out["cast"] = [{"name": r.name, **({"gender": r.gender} if r.gender else {})} for r in perf.cast]
+    if perf.role_per_segment is not None:
+        out["role_per_segment"] = list(perf.role_per_segment)
     return out
 
 

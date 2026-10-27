@@ -142,11 +142,23 @@ def test_command_schema_modes():
 def test_prompt_fragment_names_every_enum_value():
     text = kn.prompt_fragment()
     values = [*kn.EMOTIONS, *kn.GESTURES, *kn.EARCONS, *kn.PERFORM_KINDS, *kn.WHEN, *kn.ASK_EXPECTS, *kn.PASSED,
-              *(v for vs in kn.FACE_SCENE_SLOTS.values() for v in vs)]
+              *kn.ROLE_GENDERS, *(v for vs in kn.FACE_SCENE_SLOTS.values() for v in vs)]
     assert [v for v in values if v not in text] == []
     assert str(kn.SPEECH_MAX_CHARS) in text and str(kn.ACTIONS_MAX) in text
-    # PR-7 ч.7c: об итоге действий говорит код; ответ по сути при действиях — perform; голос реплики и сегментов
-    assert "скажет код" in text and "voice_per_segment" in text and "- voice:" in text
+    # PR-7 ч.7c: об итоге действий говорит код; ответ по сути при действиях — perform; голос реплики; роли (#4084) —
+    # герои и чья реплика, голоса им даёт код (поля voice_per_segment в схеме и в промпте нет)
+    assert "скажет код" in text and "- voice:" in text and "voice_per_segment" not in text
+    assert all(field in text for field in kn.ROLE_FIELDS) and "Голоса ролям даёт код" in text
+
+
+def test_prompt_fragment_of_a_sung_turn_has_no_roles_4084():
+    """Путь живого пения (песня/рэп) — схема без полей ролей, и промпт о них молчит: всё голосом робота."""
+    sung = kn.with_sing(kn.command_schema("json"), "live:song")
+    assert not set(kn.ROLE_FIELDS) & set(sung["properties"]["perform"]["properties"])
+    text = kn.prompt_fragment(sung)
+    assert "cast" not in text and "голосом робота" in text
+    generate = kn.with_sing(kn.command_schema("json"), "generate:robot_song:V6")  # петь нельзя — сказка/стих с ролями
+    assert set(kn.ROLE_FIELDS) <= set(generate["properties"]["perform"]["properties"])
 
 
 def test_outcome_tables_name_action_tools_of_the_catalog():

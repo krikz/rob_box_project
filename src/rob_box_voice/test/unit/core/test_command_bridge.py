@@ -813,24 +813,27 @@ def test_retry_without_query_keeps_the_plain_hint() -> None:
     assert "ничего не сделано" in inner.requests[1]["messages"][-1].content
 
 
-def test_tale_without_voices_is_retried_with_the_voice_list_and_the_second_try_performs_3959() -> None:
-    """Марафон 23.10: сказка без voice_per_segment проходила валидатор. Теперь нарушение уходит модели с каталогом
-    голосов, ретрай с голосами - выступление (а не фраза «не понял» запасного пути #3953)."""
+def test_tale_without_cast_is_retried_and_the_second_try_gets_voices_from_the_code_3959_4084() -> None:
+    """Марафон 23.10: сказка без ролей проходила валидатор и звучала одним голосом. Теперь нарушение уходит модели,
+    ретрай называет героев и чья реплика в сегменте - голоса им даёт код (#4084): в схеме голосов сегментов нет, модель
+    их не выбирает. Ретрай - выступление (а не фраза «не понял» запасного пути #3953)."""
     segments = ["Жила-была девочка.", "Куда идёшь?", "К бабушке."]
     bad = LLMResponse(tool_calls=(_command_call(perform={"kind": "tale", "backing": "calm", "segments": segments}),))
-    voices = ["", "alena", "zahar"]
+    roles = ["", "Волк", "Девочка"]
+    cast = [{"name": "Волк", "gender": "male"}, {"name": "Девочка", "gender": "female"}]
     good = LLMResponse(tool_calls=(_command_call(perform={"kind": "tale", "backing": "calm", "segments": segments,
-                                                          "voice_per_segment": voices}),))
+                                                          "cast": cast, "role_per_segment": roles}),))
     inner = _Inner(DEEPSEEK_CAPS, [bad, good])
     log: list = []
-    busy = lambda: cb.Busy(voices=("alena", "zahar", "filipp"))  # noqa: E731
+    genders = (("alena", "female"), ("zahar", "male"), ("filipp", "male"))
+    busy = lambda: cb.Busy(voices=tuple(v for v, _ in genders), voice_genders=genders)  # noqa: E731
     out = _run(cb.CommandModeLLM(inner, log.append, busy).complete(_messages(), tools=TOOLS))
 
     assert len(inner.requests) == 2
     note = inner.requests[1]["messages"][-1].content
-    assert "tale_without_voices" in note and "Допустимо: alena, zahar, filipp" in note
-    schema_voices = json.dumps(inner.requests[0]["tools"], ensure_ascii=False)
-    assert '"enum": ["", "alena", "filipp", "zahar"]' in schema_voices
-    assert "verdict=invalid:tale_without_voices" in log[0] and "verdict=command" in log[1]
+    assert "tale_without_cast" in note and "perform.cast обязателен" in note
+    schema = json.dumps(inner.requests[0]["tools"], ensure_ascii=False)
+    assert '"cast"' in schema and '"role_per_segment"' in schema and "voice_per_segment" not in schema
+    assert "verdict=invalid:tale_without_cast" in log[0] and "verdict=command" in log[1]
     perform = out.tool_calls[0].arguments["perform"]
-    assert perform["voice_per_segment"] == voices and perform["kind"] == "tale"
+    assert perform["voice_per_segment"] == ["", "zahar", "alena"] and perform["role_per_segment"] == roles

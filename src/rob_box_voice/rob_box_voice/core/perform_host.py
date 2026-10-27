@@ -21,6 +21,7 @@ import itertools
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from rob_box_core import speech_client
@@ -156,6 +157,13 @@ class PerformHost:
             return None if self.block is None else self.block.active_segment
 
     @property
+    def cast(self) -> Dict[str, str]:
+        """``Busy.cast`` валидатора: роли идущего выступления и их голоса — правка их не перекрашивает (#4084)."""
+        with self._lock:
+            block = self.block
+            return {} if block is None or block.ended else dict(block.cast)
+
+    @property
     def owns_backing(self) -> bool:
         """Музыка — бит идущего выступления (снимет его outro само), а не трек человека."""
         with self._lock:
@@ -257,8 +265,7 @@ class PerformHost:
         added = perf.backing in kn.PERFORM_BACKING_MOODS and self._add_backing_locked(block, perf.backing)
         if not perf.segments:  # «добавь бит» командой выступления (#993, A22 #3700): только бит, куплеты прежние
             return {"status": "done", "backing": True} if added else {"status": "rejected", "reason": "no_backing"}
-        perf = Performance(perf.kind, perf.segments, perf.backing, perf.expression_per_segment,
-                           (block.active_segment or 0) + 1, perf.voice_per_segment)
+        perf = replace(perf, from_segment=(block.active_segment or 0) + 1)  # роли и их голоса — как решил код (#4084)
         effects = block.edit(perf, self._clock())
         self._run.apply(effects)
         rejected = [e for e in effects if isinstance(e, PlanEvent) and e.kind == "rejected"]
