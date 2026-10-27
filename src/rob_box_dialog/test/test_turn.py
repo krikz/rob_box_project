@@ -109,6 +109,16 @@ def test_tier1_volume_runs_tool_and_says_outcome_without_llm():
     assert agg.llm_calls == 0 and agg.stage == "done"
 
 
+def test_same_outcomes_of_one_turn_are_said_once():
+    """Живой прогон 27.10 18:56 UTC: на «Робот, сделай свой голос помягче» модель дала ``set_pitch lower`` +
+    ``set_speed slower`` - оба исполнены, TTS сказал «Готово. Готово.». Фраза исходов одна."""
+    command = Command(actions=(ToolCall("set_pitch", {"action": "lower"}), ToolCall("set_speed", {"action": "slower"})))
+    ports = Ports(answers=[Answer(command, "deepseek")])
+    _run(_engine(ports), "Робот, сделай свой голос помягче")
+    assert ports.executed == [[("set_pitch", {"action": "lower"}), ("set_speed", {"action": "slower"})]]
+    assert [text for text, _, _ in ports.said] == ["Готово."]
+
+
 def test_tier1_volume_failure_is_said_honestly():
     ports = Ports(outcomes={"set_volume": ("rejected", {})})
     _run(_engine(ports), "громче")

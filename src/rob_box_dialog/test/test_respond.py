@@ -64,6 +64,29 @@ def test_join_collects_turn_phrases_in_order():
     assert join([_result("get_current_time", "done")]) is None
 
 
+def test_identical_outcomes_are_said_once():
+    """Живой прогон 27.10 18:56 UTC: «сделай свой голос помягче» - ``set_pitch lower`` + ``set_speed slower``, оба
+    ``local.done`` -> TTS говорил «Готово. Готово.». Одинаковые исходы - одна фраза."""
+    said = join([_result("set_pitch", "done", action="lower"), _result("set_speed", "done", action="slower")])
+    assert said.text == "Готово."
+    assert said.emotion == "neutral"
+
+
+def test_identical_outcomes_are_said_once_wherever_they_stand():
+    """Одинаковость - по тексту, порядок - по первому появлению: «Готово.» между и после других исходов не повторяется."""
+    results = [_result("set_volume", "done"), _result("request_music", "rejected"), _result("set_speed", "done")]
+    assert join(results).text == "Готово. Не получилось включить музыку."
+    twice = [_result("request_music", "rejected"), _result("request_music", "rejected")]
+    said = join(twice)
+    assert said.text == "Не получилось включить музыку." and said.emotion == "sad"
+
+
+def test_outcomes_with_their_own_slots_are_all_said():
+    """Фразы со слотами (факт, имя) различаются - схлопываются только одинаковые: два разных факта звучат оба."""
+    said = join([_result("memory_save", "done", fact="Саша любит чай"), _result("memory_save", "done", fact="Нина любит кофе")])
+    assert said.text == "Запомнил: Саша любит чай. Запомнил: Нина любит кофе."
+
+
 def test_3974_result_data_named_like_text_parameters_cannot_crash_the_phrase():
     """n707: у трека gen-библиотеки есть поле ``variant`` -> ``TypeError: text() got multiple values for argument
     'variant'`` и ход падал без фразы. Данные результата - слоты, а не параметры ``text()``."""
