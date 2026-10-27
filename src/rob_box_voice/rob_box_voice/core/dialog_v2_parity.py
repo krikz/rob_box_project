@@ -16,6 +16,7 @@ from rob_box_core import expression_client
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.meeting import MeetingGreeter, MeetingMarker, greet_on_meeting, parse_meeting_marker
 from rob_box_dialog.meeting import unprompted_quiet
+from rob_box_dialog.shift_log import FACE
 from rob_box_dialog.startup import pick_greeting
 from rob_box_dialog.status_feed import StatusFeed, describe_chain, describe_wake
 
@@ -86,13 +87,15 @@ def subscribe_meeting(node: Any) -> bool:
 
 
 def on_vision_event(node: Any, msg: Any) -> Optional[str]:
-    """Маркер начала Встречи → не больше одной фразы (правила — ``rob_box_dialog.meeting``). Колбэк горячий (~5
-    событий в секунду на человека): всё, кроме маркера, отсеивается разбором. Ошибка не роняет колбэк."""
+    """Маркер начала Встречи → приход в журнал смены (#4076: имя лица или незнакомое) и не больше одной фразы (правила
+    — ``rob_box_dialog.meeting``). Колбэк горячий (~5 событий в секунду на человека): всё, кроме маркера, отсеивается
+    разбором. Ошибка не роняет колбэк."""
     marker = parse_meeting_marker(event_type=getattr(msg, "event_type", "") or "",
                                   attributes_json=getattr(msg, "attributes_json", "") or "",
                                   source_camera=getattr(msg, "source_camera", "") or "")
     if marker is None:
         return None
+    node._shift.seen(marker.name if marker.is_named else None, FACE)
     try:
         return _greet(node, marker)
     except Exception as exc:  # noqa: BLE001

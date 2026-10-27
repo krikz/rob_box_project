@@ -26,6 +26,7 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 Не стоп во время хода — новый ход ждёт конца текущего (APPEND), речь не рвётся.
 
 Текст ходов на диск — только в e2e-БД вне ``/data`` (непустой ``e2e_db_path``, ``rob_box_dialog.e2e_events``; #3904).
+Журнал смены (#4076, ``rob_box_dialog.shift_log``) — в памяти: приходы из сессии и встречи, треки плеера, исходы хода.
 """
 
 from __future__ import annotations
@@ -65,8 +66,10 @@ from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.shift_log import ShiftLog
 from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_ref
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
+from rob_box_dialog.turn_log import TurnLog
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
 from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
@@ -311,6 +314,8 @@ class DialogNode(Node):
         self._session_pub = self.create_publisher(SessionState, identity_question.SESSION_TOPIC, _LATCHED)
         self._session = Session("personality", clock=time.time)
         self._session.subscribe(functools.partial(identity_question.publish, self))
+        self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
+        self._session.subscribe(self._shift.observe)
         self._voice_pub = self.create_publisher(String, VOICE_REQUEST_TOPIC, 10)
         self._scenes = SceneDirector(self._session, self._restore_voice, robot_default_voice())
         self._wake = load_wake_words(str(self.get_parameter("wake_words_path").value))[0]
@@ -339,6 +344,7 @@ class DialogNode(Node):
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
                                   voices=functools.partial(tts_voices, self),  # реестр имён Tier-1 «голос <имя>» (#4086)
+                                  turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в журнал смены
                                   events=self._open_events(), log=_RosLog(self.get_logger()),
                                   sing=build_sing(self, self._reporter.all_states))  # путь пения до модели (#4079)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
@@ -466,6 +472,7 @@ class DialogNode(Node):
             return
         self._music_player_state = snap
         self._music.observe_state(snap)
+        self._shift.music(snap, self._music.last_ended)  # что звучало за смену и как кончилось (#4076)
         plan_host.on_music(self, snap)
         title = str((snap.dj_info or {}).get("title") or "") or None
         self._session.set_music(MusicStateRef("playing" if snap.is_playing() else "idle", track_id=snap.track_id,
@@ -514,9 +521,11 @@ class DialogNode(Node):
 
     # -- выход и служебное ---------------------------------------------------------------------------------------
 
-    def _sections(self, snap: Any, _text: str) -> Dict[str, Any]:
-        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила)."""
-        return host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory)
+    def _sections(self, snap: Any, text: str) -> Dict[str, Any]:
+        """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка (данные, не правила); журнал смены — на
+        вопрос о ней (``shift_log.shift_asked``, #4076)."""
+        return {**host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory),
+                **self._shift.section(text)}
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

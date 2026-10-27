@@ -42,12 +42,15 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.respond import ActionResult
 
 #: Строка лога агрегата хода (читает ``scripts/dialog`` для метрик §14 без текста турнов).
 AGGREGATE_MARK = "📊 [turn]"
 USER, ASSISTANT, TOOL = "user", "assistant", "tool"
 #: Тул-запись исхода выступления в окне (``recent_actions``: ``{"tool": "perform", "status": ..., "data": {"kind"}}``).
 PERFORM_TOOL = "perform"
+#: Класс исхода выступления для наблюдателя исходов (``knowledge.ACTION_CLASSES``).
+PERFORM_CLASS = "action.perform"
 #: Статус выступления в окне: идёт / досказано / остановил человек («хватит», «стой») / оборвано без его слова.
 PERFORM_STARTED, PERFORM_DONE = "started", "done"
 PERFORM_STOPPED, PERFORM_INTERRUPTED = "stopped_by_user", "interrupted"
@@ -183,14 +186,25 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     return MappingProxyType(out)
 
 
+#: Наблюдатель исходов (``TurnLog(on_outcome=...)``): исход как его отдал исполнитель (``ActionResult``, ``turn_id`` —
+#: id вызова ``<ход>/<n>``), выступление — ``ActionResult`` тула ``perform`` класса ``PERFORM_CLASS`` с id
+#: ``<ход>/perform`` и видом в ``data["kind"]``. Наблюдатель судит исход сам (``respond.failed``/``asks``), поэтому
+#: получает результат целиком, а не запись окна. Его ведёт журнал смены (``shift_log``, #4076).
+OnOutcome = Callable[[ActionResult], None]
+
+
 class TurnLog:
-    """Ходы одной сессии агента: что сказал человек, что прозвучало, чем кончились действия."""
+    """Ходы одной сессии агента: что сказал человек, что прозвучало, чем кончились действия.
+
+    ``on_outcome`` получает каждый исход, что журнал принял (результат, выступление; поздний итог — даже когда ход уже
+    выпал из окна): журнал смены живёт дольше сессии и окна (#4076)."""
 
     def __init__(self, max_turns: int = kn.TURN_WINDOW_MAX_TURNS, max_tokens: int = kn.TURN_WINDOW_MAX_TOKENS,
-                 estimate: Callable[[str], int] = estimate_tokens) -> None:
+                 estimate: Callable[[str], int] = estimate_tokens, on_outcome: Optional[OnOutcome] = None) -> None:
         self._max_turns = max_turns
         self._max_tokens = max_tokens
         self._estimate = estimate
+        self._on_outcome = on_outcome
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
         self._performs: Dict[str, str] = {}  # turn_id → kind выступления, запись которого в окне ещё можно обновить
@@ -241,6 +255,7 @@ class TurnLog:
         не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
         if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
             return
+        self._outcome(result)
         entry = self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
         if entry is not None:
             self._actions[result.turn_id] = (turn_id, entry, result)
@@ -251,6 +266,7 @@ class TurnLog:
         не заиграла.», ``phrase_of`` — как её строит ход) из окна уходит — и прозвучавшая, и та, что ещё звучит: модель
         на следующем ходу видит правду, а не таймаут (n809, #3960). Фраза позднего итога входит в окно обычным путём
         (:meth:`said` → :meth:`spoken`). Действия нет в журнале (ход выпал из окна, новая сессия) — ``False``."""
+        self._outcome(result)
         known = self._actions.get(result.turn_id)
         turn = self._turns.get(known[0]) if known is not None else None
         if turn is None:
@@ -268,13 +284,17 @@ class TurnLog:
     def performed(self, turn_id: str, kind: str, status: str, segments_done: Optional[int] = None) -> bool:
         """Исход выступления хода (``kind`` - сказка/рэп/..., ``status`` - ``PERFORM_*``): запись ``tool`` ``perform``
         закрывает просьбу, на которую выступление отвечает (#3973). Одна запись на выступление: старт кладёт её,
-        конец/стоп обновляет на месте. Хода нет в журнале (выпал из окна, новая сессия) - ``False``, не пишется."""
+        конец/стоп обновляет на месте. Хода нет в журнале (выпал из окна, новая сессия) - ``False``, в окно не пишется,
+        но наблюдатель исходов исход получает: журнал смены живёт дольше окна, и его запись «идёт» иначе висела бы
+        вечно (ревью PR #4110)."""
         turn = self._turns.get(turn_id)
-        if turn is None:
-            return False
         data: Dict[str, Any] = {"kind": kind or self._performs.get(turn_id, "")}
         if segments_done is not None:
             data["segments_done"] = int(segments_done)
+        self._outcome(ActionResult(f"{turn_id}/{PERFORM_TOOL}", turn.epoch if turn is not None else 0, "",
+                                   PERFORM_TOOL, PERFORM_CLASS, status, data=MappingProxyType(dict(data))))
+        if turn is None:
+            return False
         entry = WindowEntry(TOOL, MappingProxyType({"tool": PERFORM_TOOL, "status": status, "data": data}))
         slot = next((i for i, e in enumerate(turn.entries) if _is_perform(e)), None)
         if slot is None:
@@ -340,6 +360,10 @@ class TurnLog:
         self._performs.clear()
         self._actions.clear()
 
+    def _outcome(self, result: ActionResult) -> None:
+        if self._on_outcome is not None:
+            self._on_outcome(result)
+
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
         return lead + list(turn.entries) + _action_reply(lead, turn.entries, turn.faced)
@@ -364,6 +388,6 @@ class TurnLog:
             self._performs.pop(gone, None)
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "PERFORM_DONE", "PERFORM_INTERRUPTED", "PERFORM_STARTED", "PERFORM_STOPPED",
-           "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "perform_status", "phrase_label",
-           "speaker_label"]
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "OnOutcome", "PERFORM_CLASS", "PERFORM_DONE", "PERFORM_INTERRUPTED",
+           "PERFORM_STARTED", "PERFORM_STOPPED", "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER",
+           "WindowEntry", "perform_status", "phrase_label", "speaker_label"]
