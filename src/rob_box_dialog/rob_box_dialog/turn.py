@@ -442,19 +442,36 @@ def held_expression(expression: Optional[Expression], text: str) -> Optional[Exp
     return replace(expression, face=face, duration_s=seconds)
 
 
-def command_face(expression: Optional[Expression], results: Sequence[ActionResult],
-                 text: str = "") -> Optional[Expression]:
+def _scenes_of(face: Optional[Expression]) -> List[Expression]:
+    """Сцены исполненных ``play_animation``, которые уже стоят в лице хода (:class:`Shown`: первая и очередь за ней),
+    по порядку вызовов; иное лицо или его нет - пусто."""
+    if not isinstance(face, Shown):
+        return []
+    return [replace(face, then=()), *face.then]
+
+
+def command_face(expression: Optional[Expression], results: Sequence[ActionResult], text: str = "",
+                 earlier: Optional[Expression] = None) -> Optional[Expression]:
     """Экспрессия исполненной команды для итога хода (#3997); исполненные ``play_animation`` красят итог своими
     сценами по очереди (:func:`shown_face`, #4049: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``;
     #4083: пачка — первая сцена на итоге, остальные в ``Shown.then``), иначе лицо команды со временем показа
     (:func:`held_expression`, ``text`` — реплика человека). Провал действия её не показывает (``None`` — рефлекс как
     есть): «радостно» о провале не бывает, как и в ``expression.merge``. Вопрос тула («Удалить «X»?», #4062) её тоже
     не показывает: это фраза кода, настроение модели её не красит. Одно правило для исполненной команды
-    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
+    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`).
+
+    ``earlier`` - лицо хода после прошлых итераций (``turn.expression``): сцены ``play_animation``, исполненные в них,
+    остаются на итоге, а сцены этой итерации встают очередью за ними (#4103, n905: ``[play_animation victory,
+    get_current_time]`` → данные модели → речь; вторая итерация красила итог только своим результатом и затирала
+    ``victory``, на лице оставался рефлекс ``done`` на 3 с). Та же сцена, повторённая моделью на следующей итерации
+    (``[play_animation sad, list]`` до потолка итераций, #4065), в очередь второй раз не встаёт."""
     if any(failed(r) or asks(r) for r in results):
         return None
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
-    scenes = [s for s in shown if s is not None and s is not expression]
+    kept, fresh = _scenes_of(earlier), [s for s in shown if s is not None and s is not expression]
+    if kept and fresh and fresh[0] == kept[-1]:  # та же сцена на следующей итерации - дважды не показываем
+        fresh = fresh[1:]
+    scenes = kept + fresh
     return _in_order(scenes) if scenes else held_expression(expression, text)
 
 
@@ -713,7 +730,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):
         return None
-    turn.expression = command_face(expression, results, turn.text)
+    turn.expression = command_face(expression, results, turn.text, earlier=turn.expression)
     read = not last and any(r.cls == _QUERY for r in results)
     more = query_more(engine, turn, results) if read else None
     if more is not None:
@@ -1128,7 +1145,7 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if not last and any(r.cls == _QUERY for r in results):
-            turn.expression = command_face(turn.expression, results, turn.text)
+            turn.expression = command_face(turn.expression, results, turn.text, earlier=turn.expression)
             return query_more(self, turn, results, cmd.expression.emotion)
         self._speak(turn, cmd, results, unread=len(runnable) < len(cmd.actions))
         return None
@@ -1137,7 +1154,7 @@ class TurnEngine:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997). ``unread`` — модель на последней итерации
         ещё просила ``query`` (не исполнен): слов её не слышно — говорит код по данным хода (:func:`_close_unread`)."""
-        turn.expression = command_face(cmd.expression, results, turn.text)
+        turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?», #4062) - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
