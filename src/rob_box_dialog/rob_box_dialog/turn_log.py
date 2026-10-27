@@ -273,9 +273,18 @@ class TurnLog:
         return True
 
     def performance_ended(self, turn_id: str, end_reason: str, segments_done: int = 0) -> bool:
-        """Выступление хода кончилось (``block_end`` владельца: ``done``/``stopped``/``halt``/``lost``): статус строит
-        код (:func:`perform_status`), а не слова модели (#3973)."""
-        return self.performed(turn_id, "", perform_status(end_reason), segments_done)
+        """Выступление кончилось (``block_end`` владельца: ``done``/``stopped``/``halt``/``lost``): статус строит
+        код (:func:`perform_status`), а не слова модели (#3973). ``turn_id`` - ход, чей старт открыл блок (его id несёт
+        ``block_end``), но выступление одно за раз, и конец закрывает все записи ``PERFORM_STARTED``: правка идущего
+        («добавь куплет», «добавь бит») тоже записана «идёт» своим ходом (``note_perform_start``), а владелец её конец
+        под её ход не присылает. Без этого запись правки висела бы «идёт» до выпадения хода из окна, и
+        :meth:`performing` молчал бы об успехе музыки уже после выступления (#4075). Закрыта хоть одна запись -
+        ``True``."""
+        status = perform_status(end_reason)
+        closed = self.performed(turn_id, "", status, segments_done)
+        for other in self._started_performs():
+            closed = self.performed(other, "", status, segments_done) or closed
+        return closed
 
     def faced(self, turn_id: str, face: str) -> bool:
         """Ход ответил лицом: ``face`` - показанное словами кода (``expression.face_label``), как его показал итог хода
@@ -292,8 +301,12 @@ class TurnLog:
         """Выступление идёт: его запись в окне стоит на ``PERFORM_STARTED`` - старт владельцем взят
         (``note_perform_start``), конца (:meth:`performance_ended`: ``block_end`` владельца) ещё не было. Решает код по
         событиям владельца: по этому признаку исход «музыка пошла» посреди выступления не озвучивается (#4075)."""
-        return any(_is_perform(e) and e.content.get("status") == PERFORM_STARTED
-                   for turn in self._turns.values() for e in turn.entries)
+        return bool(self._started_performs())
+
+    def _started_performs(self) -> List[str]:
+        """Ходы, чья запись выступления в окне стоит на ``PERFORM_STARTED`` (старт владелец взял, конца не было)."""
+        return [turn.turn_id for turn in self._turns.values()
+                if any(_is_perform(e) and e.content.get("status") == PERFORM_STARTED for e in turn.entries)]
 
     def window(self, exclude: str = "") -> Tuple[WindowEntry, ...]:
         """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала.

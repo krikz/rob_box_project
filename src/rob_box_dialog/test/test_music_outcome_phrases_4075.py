@@ -18,11 +18,11 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, ToolCall
+from rob_box_dialog.command import Command, Performance, ToolCall
 from rob_box_dialog.respond import ActionResult, phrase_from_result
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, TurnEngine, say_late
-from rob_box_dialog.turn_log import PERFORM_STARTED
+from rob_box_dialog.turn_log import PERFORM_STARTED, PERFORM_TOOL, TOOL, TurnLog
 
 STARTED = phrases.text("media.done")  # «Включаю музыку.»
 SONG = {"kind": "robot_song", "theme": "про енота"}
@@ -242,3 +242,97 @@ def test_late_start_during_a_performance_is_quiet_too():
 
 def test_quiet_keys_are_the_class_success_phrase_only():
     assert kn.QUIET_IN_PERFORMANCE_KEYS == (kn.ACTION_CLASSES["action.media"].phrases["done"],) == ("media.done",)
+
+
+# -- правка идущего выступления не оставляет «выступление идёт» после его конца (ревью #4104) ------------------------
+
+
+class OwnerPorts(Ports):
+    """Владелец выступления, как ``PerformHost``: старт - ``pending``; пока блок идёт, и ``edit_pending``, и новое
+    выступление поверх (MERGE, «добавь бит») - правка (``done``); блок кончился - правке нечего править (отказ)."""
+
+    def __init__(self, answers=(), outcomes=None):
+        super().__init__(answers, outcomes)
+        self.running = False
+
+    def perform(self, turn_id, epoch, perf, edit):
+        if self.running:
+            return {"status": "done"}
+        if edit:
+            return {"status": "rejected", "reason": "edit_without_active_perform"}
+        self.running = True
+        return {"status": "pending", "block_id": f"perform-{turn_id}"}
+
+
+RAP = Command(perform=Performance("rap", ("куплет раз", "куплет два")))
+EDITS = {
+    "edit_pending": Command(perform=Performance("rap", ("куплет три",)), edit_pending=True),
+    "merge_over_running": Command(perform=Performance("rap", ("куплет три",))),
+    "add_beat": Command(perform=Performance("rap", (), backing="beat")),
+}
+REQUEST = ToolCall("request_music", {"intent": "track", "text": "поставь трек"})
+
+
+def _performs(engine):
+    return [e.content["status"] for e in engine.log.window() if e.role == TOOL and e.content["tool"] == PERFORM_TOOL]
+
+
+def _rap_with_edit(edit, extra_answers=()):
+    """Рэп (ход t1), правка (ход t2), смена подложки во время выступления (t3); дальше - ответы ``extra_answers``."""
+    answers = [Answer(RAP, "deepseek"), Answer(edit, "deepseek"), Answer(Command(actions=(REQUEST,)), "deepseek"),
+               *(Answer(c, "deepseek") for c in extra_answers)]
+    ports = OwnerPorts(answers, {"request_music": ("done", None, {"ok": True})})
+    engine = _engine(ports)
+    _run(engine, "прочитай рэп")
+    _run(engine, "добавь куплет")
+    assert engine.log.performing() and _performs(engine) == ["started", "started"], "оба хода взял владелец"
+    _run(engine, "поставь другой бит")
+    assert ports.said == [], "пока выступление идёт, смена подложки молчит"
+    return ports, engine
+
+
+@pytest.mark.parametrize("edit", EDITS.values(), ids=list(EDITS))
+def test_end_of_a_performance_that_was_edited_makes_the_next_music_audible(edit):
+    """Рэп → «добавь куплет» / «добавь бит» → ``block_end`` с ``turn_id`` ПЕРВОГО хода (блок хранит его, правка id не
+    меняет): запись хода-правки тоже закрыта, и следующий «поставь трек» не выполняется молча."""
+    ports, engine = _rap_with_edit(edit, extra_answers=(Command(actions=(REQUEST,)),))
+    engine.log.performance_ended("t1", "done", 3)
+    assert not engine.log.performing()
+    assert _performs(engine) == ["done", "done"], "обе записи в окне закрыты исходом владельца"
+    _run(engine, "поставь трек")
+    assert ports.said == [STARTED]
+
+
+def test_end_by_stop_closes_the_edit_record_with_the_same_status():
+    ports, engine = _rap_with_edit(EDITS["edit_pending"])
+    engine.log.performance_ended("t1", "halt", 2)
+    assert not engine.log.performing() and _performs(engine) == ["stopped_by_user", "stopped_by_user"]
+
+
+def test_next_performance_after_an_edited_one_is_tracked_again_and_old_records_stay_closed():
+    ports, engine = _rap_with_edit(EDITS["edit_pending"], extra_answers=(RAP, Command(actions=(REQUEST,))))
+    engine.log.performance_ended("t1", "done", 3)
+    ports.running = False  # блок кончился и у владельца
+    _run(engine, "прочитай ещё рэп")
+    assert engine.log.performing() and _performs(engine) == ["done", "done", "started"]
+    _run(engine, "поставь трек")
+    assert ports.said == [], "второе выступление идёт - снова тихо"
+
+
+def test_performance_end_closes_edit_records_even_when_the_block_turn_left_the_window():
+    log = TurnLog(max_turns=2)
+    log.begin("t1", 0, "прочитай рэп")
+    log.performed("t1", "rap", PERFORM_STARTED)
+    log.begin("t2", 0, "добавь куплет")
+    log.performed("t2", "rap", PERFORM_STARTED)
+    log.begin("t3", 0, "как дела")  # t1 выпал из журнала
+    assert log.performing()
+    assert log.performance_ended("t1", "done", 3), "закрыта запись правки"
+    assert not log.performing()
+
+
+def test_performance_end_without_any_started_record_changes_nothing():
+    log = TurnLog()
+    log.begin("t1", 0, "привет")
+    assert not log.performance_ended("t9", "done") and not log.performing()
+    assert log.window() == (log.window()[0],) and log.window()[0].role == "user"
