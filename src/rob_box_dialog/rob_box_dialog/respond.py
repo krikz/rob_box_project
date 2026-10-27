@@ -62,10 +62,13 @@ def _imitation_key(result: ActionResult) -> Optional[str]:
 def phrase_key(result: ActionResult) -> Optional[str]:
     """Ключ фразы результата или ``None``, если о таком исходе шаблон не говорит (``query.done`` — речь LLM;
     успех молчаливого действия ``knowledge.SILENT_DONE_TOOLS`` — звук сам себе доказательство, кроме звукоподражания;
-    успех по причине из ``knowledge.SILENT_DONE_REASONS`` — делать было нечего, #4054: имя живёт в профиле).
-    Фраза берётся из РЕЗУЛЬТАТА, а не из класса тула (ADR-0148): ``stop_music`` при ``was_playing=False`` - «ничего не
-    играет», а не «Выключил музыку»; действия ``music_library`` - свои фразы (``knowledge.TOOL_PHRASES``)."""
-    if result.status == "done" and (result.tool in kn.SILENT_DONE_TOOLS or result.reason in kn.SILENT_DONE_REASONS):
+    исход с причиной из ``knowledge.VOICED_BY_OTHER_REASONS`` — о нём говорит другой результат команды, #4054: факт-имя
+    и ``register_speaker``). Фраза берётся из РЕЗУЛЬТАТА, а не из класса тула (ADR-0148): ``stop_music`` при
+    ``was_playing=False`` - «ничего не играет», а не «Выключил музыку»; действия ``music_library`` - свои фразы
+    (``knowledge.TOOL_PHRASES``)."""
+    if result.reason in kn.VOICED_BY_OTHER_REASONS:
+        return None
+    if result.status == "done" and result.tool in kn.SILENT_DONE_TOOLS:
         return _imitation_key(result)
     if result.reason == kn.PLAN_WAIT_REASON:  # не дождался очереди плана: исход не у владельца — фраза плана
         return "plan.timeout"

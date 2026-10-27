@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import sys
 import threading
 import time
@@ -77,6 +78,14 @@ def _embedding(seed: int) -> np.ndarray:
 def _degraded(base: np.ndarray, alpha: float, noise_seed: int) -> np.ndarray:
     v = base + alpha * _embedding(noise_seed)
     return (v / np.linalg.norm(v)).astype(np.float32)
+
+
+def _at_cosine(base: np.ndarray, cos: float, seed: int) -> np.ndarray:
+    """Вектор с ТОЧНЫМ косинусом ``cos`` к ``base`` (шум ортогонализован к ``base``)."""
+    noise = _embedding(seed)
+    noise = noise - float(np.dot(noise, base)) * base
+    noise = noise / np.linalg.norm(noise)
+    return (cos * base + math.sqrt(1.0 - cos * cos) * noise).astype(np.float32)
 
 
 class _FakePublisher:
@@ -242,13 +251,7 @@ def test_short_register_under_other_name_still_refused(node):
     ниже уверенного, и регистрация, как раньше, требует эталона."""
     base = _embedding(5)
     node._db.register("Саша", base, duration_sec=5.0)
-    phrase = None
-    for seed in range(105, 400):
-        cand = _degraded(base, 0.85, noise_seed=seed)
-        if 0.73 <= _cos(base, cand) < 0.79:
-            phrase = cand
-            break
-    assert phrase is not None, "предусловие: фраза узнаётся как Саша, но не уверенно (0.72-0.80)"
+    phrase = _at_cosine(base, 0.77, seed=105)  # узнаётся как Саша (>= 0.72), но не уверенно (< 0.80)
     node._recent_embeddings.append((time.time(), phrase, 2.0, "utt-other"))
 
     node._on_register_request(_msg({"name": "Борис", "utterance_id": "utt-other"}))

@@ -439,16 +439,26 @@ def _rename_by_voice(node: "SpeakerIdNode", owner: SpeakerMatch, name: str, utte
     ``speaker_id`` тот же — эмбеддинги, кличка и факты памяти остаются у профиля. Ack — обычный ``registered`` этого
     профиля с ``new_name`` («регистрация переименовала профиль голоса»): по нему фразу «мы знакомы» строит код
     (``register_speaker`` → ``identity.done.renamed``), а не LLM. Дальше — как после регистрации: результат фразы с
-    ``source="register"`` (новое имя доезжает до диалога и лица) и growth-сессия владельца под новым именем.
-    ``False`` — имя мусорное или профиля уже нет: решает обычный путь регистрации.
+    ``source="register"`` (новое имя доезжает до диалога; ``FaceStore`` берёт его, только если в кадре ровно одно лицо
+    этого голоса — ``FaceRecognizer.note_voice_identification``, иначе лицо остаётся под старым именем, как и при
+    ``/voice/speaker/rename``) и growth-сессия владельца под новым именем. Имя уже носит ДРУГОЙ профиль — переименование
+    всё равно идёт (голос фразы — этот профиль), а тёзки видны в логе предупреждением с подсказкой склейки
+    (:func:`_namesake`): склеивать молча нельзя — слияние необратимо (ADR-0127). ``False`` — имя мусорное или профиля
+    уже нет: решает обычный путь регистрации.
     """
     clean = _se_mod._validate_speaker_name(name)
+    twin = _namesake(node, owner.speaker_id, clean) if clean else None
     if not clean or not node._db.rename(owner.speaker_id, clean):
         return False
     node.get_logger().info(
         f"✏️ [#4054] один голос — одна личность: голос фразы уверенно {owner.name!r} (id={owner.speaker_id[:8]}, "
         f"score={owner.confidence:.3f}), назвался {clean!r} — профиль переименован {owner.name!r} → {clean!r}, "
         "второй профиль не заводится")
+    if twin is not None:
+        node.get_logger().warning(
+            f"👥 [#4054] имя {clean!r} уже было у профиля id={twin[:8]} — теперь два профиля {clean!r} (тёзки); голос "
+            f"фразы уверенно id={owner.speaker_id[:8]}. Если это один человек — склеить вручную: "
+            f"merge_speakers(src={twin}, dst={owner.speaker_id})")
     _publish_speaker_result(node._result_pub, {
         "event": "registered", "name": clean, "speaker_id": owner.speaker_id, "reused_profile": True,
         "new_name": clean, "utterance_id": utterance_id,
@@ -457,6 +467,13 @@ def _rename_by_voice(node: "SpeakerIdNode", owner: SpeakerMatch, name: str, utte
     node._open_growth_session(owner.speaker_id, clean)
     node._growth_session["name"] = clean  # сессия могла быть открыта под старым именем
     return True
+
+
+def _namesake(node: "SpeakerIdNode", speaker_id: str, name: str) -> Optional[str]:
+    """``speaker_id`` другого профиля с именем ``name`` (сравнение как у ``register_or_merge``: без регистра и
+    пробелов) или ``None``: переименование в это имя сделает тёзок (ревью PR #4087)."""
+    return next((p["id"] for p in node._db.list_speakers()
+                 if p["id"] != speaker_id and _se_mod._same_speaker_name(p["name"], name)), None)
 
 
 def _settled_by_voice(

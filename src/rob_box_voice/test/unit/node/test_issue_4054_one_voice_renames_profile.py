@@ -167,7 +167,9 @@ def test_act_2c_confident_nina_says_tamara_renames_the_one_profile(node):
     assert "voice_conflict" not in ack[0] and not ack[0].get("already_known")
     match = _matches(node)
     assert [(m["speaker_id"], m["name"], m.get("source"), m.get("utterance_id")) for m in match] == [
-        (sid, "Тамара", "register", "u722")], "новое имя доезжает до диалога и лица этой же фразой"
+        (sid, "Тамара", "register", "u722")], "новое имя доезжает до диалога этой же фразой"
+    # Лицо (FaceStore) берёт имя из этого результата, только если в кадре ровно одно лицо этого голоса
+    # (FaceRecognizer.note_voice_identification); иначе остаётся старое имя — как и при /voice/speaker/rename.
     assert node._growth_session["speaker_id"] == sid and node._growth_session["name"] == "Тамара"
 
 
@@ -209,6 +211,21 @@ def test_other_profiles_are_untouched(node):
     assert node._do_register("Тамара", _at_cosine(base_n, 0.93, seed=12), speaker_id=None, duration_sec=6.0,
                              utterance_id="u1")
     assert _profiles(node) == {sid_n: "Тамара", sid_b: "Борис"}
+    node.get_logger().warning.assert_not_called()  # тёзок нет — предупреждения нет
+
+
+def test_rename_into_a_taken_name_makes_namesakes_and_says_so_in_the_log(node):
+    """Ревью PR #4087: профили «Нина»(A) и «Тамара»(B), голос A 0.93 + «Тамара» — A переименован (голос фразы - A),
+    профилей «Тамара» два; молча не склеиваем (слияние необратимо, ADR-0127), а предупреждаем в логе с подсказкой
+    склейки обоих id."""
+    base_n, sid_n = _known(node, "Нина", seed=28)
+    _, sid_t = _known(node, "Тамара", seed=29)
+    assert node._do_register("тамара", _at_cosine(base_n, 0.93, seed=30), speaker_id=None, duration_sec=6.0,
+                             utterance_id="u1")
+    assert _profiles(node) == {sid_n: "Тамара", sid_t: "Тамара"}
+    assert _events(node, "registered")[0]["speaker_id"] == sid_n
+    warned = [c.args[0] for c in node.get_logger().warning.call_args_list]
+    assert len(warned) == 1 and sid_t[:8] in warned[0] and f"merge_speakers(src={sid_t}, dst={sid_n})" in warned[0]
 
 
 # ---------------------------------------------------------------------------
