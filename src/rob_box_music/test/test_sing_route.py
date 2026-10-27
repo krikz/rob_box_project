@@ -196,18 +196,22 @@ def test_singing_is_a_singing_verb_or_a_song_with_a_verb_to_make_or_perform_it(t
 
 
 def _asked(verb):
-    """Просьба с глаголом таблицы: инфинитив — со словом просьбы («можешь спеть»), иначе как есть."""
+    """Просьба с глаголом таблицы: инфинитив — со словом просьбы («можешь спеть»), 1-е лицо мн. — с «давай» («давай
+    споём», #4090 B), иначе как есть."""
+    if verb.endswith(kn.SING_JOINT_ENDINGS):
+        return f"давай {verb}"
     return f"можешь {verb}" if verb.endswith(kn.SING_INFINITIVE_ENDING) else verb
 
 
 def test_every_singing_verb_of_the_table_is_a_whole_word_not_a_stem():
     """Глаголы пения — точные слова: каждое узнаётся само, а слово, которое с него начинается, — нет («спойлер»);
-    после «не» — не просьба («не пой больше»)."""
+    после «не» — не просьба («не пой больше»), кроме 2-го лица ед. ч.: «не споёшь?» — вежливая просьба (#4090 C)."""
     for verb in kn.SING_VERBS:
         assert verb == verb.lower() and "ё" not in verb, verb
         assert sing_kind(f"{_asked(verb)} про енота") == "song", verb
         assert sing_kind(f"{verb}лер про енота") == "", verb
-        assert sing_kind(f"не {verb} про енота") == "", verb
+        polite = verb.endswith(kn.SING_POLITE_ENDING)
+        assert sing_kind(f"не {verb} про енота") == ("song" if polite else ""), verb
     assert kn.SOURCE_ASK_STEMS["vocal"] == kn.SING_VERBS  # одна таблица: грамматика v1 берёт те же слова
 
 
@@ -241,13 +245,15 @@ def test_named_synth_with_singing_beats_the_generation_words(text):
 
 
 def test_every_marker_of_the_table_names_its_route_by_priority():
-    """Таблица не врёт сама себе: каждая запись узнаётся в просьбе спеть как свой путь; записи строчные, без «ё»;
-    порядок — приоритет (синт назван → генерация → «спой сам/прямо сейчас»)."""
-    for route, entries in kn.SING_ROUTE_MARKERS:
+    """Таблица не врёт сама себе: каждая запись узнаётся в просьбе спеть как свой путь (строка вилки ``synth`` —
+    клетка «синт + пение» ``MUSIC_FORK``: живое); записи строчные, без «ё»; порядок — приоритет (синт назван →
+    генерация → «спой сам/прямо сейчас»)."""
+    for row, entries in kn.SING_ROUTE_MARKERS:
+        route = kn.MUSIC_FORK[(row, True)].route if (row, True) in kn.MUSIC_FORK else row
         for entry in entries:
             assert entry == entry.lower() and "ё" not in entry, entry
             assert sing_markers(f"спой {entry} про енота") == route, entry
-    assert [route for route, _entries in kn.SING_ROUTE_MARKERS] == ["live", "generate", "live"]
+    assert [row for row, _entries in kn.SING_ROUTE_MARKERS] == ["synth", "generate", "live"]
     strong, gen, weak = (entries for _route, entries in kn.SING_ROUTE_MARKERS)
     assert sing_markers(f"спой {strong[0]} {gen[0]}") == "live"
     assert sing_markers(f"спой {weak[-1]} {gen[0]}") == "generate"
@@ -255,7 +261,8 @@ def test_every_marker_of_the_table_names_its_route_by_priority():
 
 def test_every_verb_to_make_a_song_names_its_route():
     """Глаголы «создать песню» (``SING_CREATE_VERBS``): с объектом-песней — пение; значение ``generate`` — маркер
-    генерации («сгенерируй/запиши/сделай песню»), «» — путь не назван («сочини/придумай/напиши» — решает чойсер)."""
+    генерации («сгенерируй/запиши/сделай песню»), «» — путь не назван («сочини/придумай/напиши» — решает чойсер).
+    1-е лицо мн. — с «давай» (#4090 C: «давай сочиним песню»)."""
     for verb, route in kn.SING_CREATE_VERBS.items():
         assert verb == verb.lower() and "ё" not in verb, verb
         assert sing_kind(f"{_asked(verb)} песню про енота") == "song", verb

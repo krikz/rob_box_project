@@ -12,7 +12,7 @@ from __future__ import annotations
 import zlib
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
@@ -111,13 +111,26 @@ def _slots(result: ActionResult) -> Mapping[str, Any]:
     return slots
 
 
+def _owner_text(result: ActionResult) -> Tuple[str, str]:
+    """``(whole, note)`` — фраза кода владельца из данных успешного исхода (``knowledge.OUTCOME_OWNER_TEXT``, #4090).
+    Пусто, когда об исходе говорит таблица диалога по данным (``knowledge.TOOL_PHRASES``: «песня пишется» —
+    ``knowledge.GEN_WAIT``, #4104): её фраза — единственная об этом факте, владелец её не подменяет и не дополняет."""
+    fields = kn.OUTCOME_OWNER_TEXT.get(result.tool)
+    if result.status != "done" or fields is None or _tool_key(result) is not None:
+        return "", ""
+    return (str(result.data.get(fields.whole) or "").strip(), str(result.data.get(fields.note) or "").strip())
+
+
 def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[Utterance]:
     """Реплика по результату исполнителя. Вариант фразы выбирается по ``turn_id`` (повторяемо в тестах), адресат —
-    наушник для агента оператора, иначе динамики (телеграм-агент берёт из реплики только текст)."""
+    наушник для агента оператора, иначе динамики (телеграм-агент берёт из реплики только текст). Фраза кода владельца
+    из данных исхода (:func:`_owner_text`) — целиком (``whole``) вместо фразы исхода или перед ней (``note``)."""
     key = phrase_key(result)
     if key is None:
         return None
-    text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
+    whole, note = _owner_text(result)
+    outcome = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
+    text = whole or " ".join(filter(None, (note, outcome)))
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,
                      emotion=outcome_emotion((result,)))

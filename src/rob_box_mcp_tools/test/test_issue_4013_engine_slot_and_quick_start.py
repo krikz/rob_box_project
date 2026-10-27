@@ -123,11 +123,12 @@ def test_named_synth_plays_a_genre_it_is_poor_at_in_the_nearest_style_not_a_decl
 
 
 @pytest.mark.parametrize("heard", ["Робот, спой песню вживую", "Робот, сгенерируй трек вживую",
-                                   "Робот, спой песню на синтезаторе", "Робот, сочини что-нибудь на синте"])
+                                   "Робот, спой живьём"])
 def test_meaning_words_in_a_request_of_another_path_are_not_a_request_to_the_synth(heard, caplog):
     """Ревью #4071: «спой вживую» шло в отказ «названный движок так не играет» (движок не назван), «сгенерируй вживую»
-    молча сужалось до синтеза. Слова по смыслу движок не называют, пока просят спеть/сгенерировать; слот LLM,
-    поставленный на такую реплику, отброшен с причиной в лог."""
+    молча сужалось до синтеза. Слова по смыслу («вживую», «живьём») движок не называют, пока просят
+    спеть/сгенерировать; слот LLM, поставленный на такую реплику, отброшен с причиной в лог. «На синтезаторе» — слово
+    движка, как имя (#4090 D): ``test_issue_4090_sing_fork_tail.py``."""
     rig = _rig()
     _dj, req = _tools(rig)
     asks = _asks(req)
@@ -173,17 +174,18 @@ def test_generate_music_with_own_voice_and_without_live_words_is_a_generation():
 
 def test_generate_music_names_the_engine_only_by_its_name():
     """``generate_music`` сам просит иной путь: даже когда слов «сгенерируй»/«спой» в реплике нет (LLM выбрала тул по
-    смыслу), «вживую»/«на синтезаторе» движок не называют, а имя «Ренардо» — да."""
+    смыслу), «вживую»/«живьём» движок не называют, а имя «Ренардо» и слово движка «на синтезаторе» — да (#4090 D)."""
     rig = _rig()
     _dj, req = _tools(rig)
     gen = GenerateMusicTool(None, req)
     asks = _asks(req)
     for kind, heard in (("instrumental", "Робот, сыграй вживую"), ("song", "Робот, исполни песню вживую"),
-                        ("instrumental", "Робот, сыграй на синтезаторе"), ("robot_song", "Робот, спой живьём")):
+                        ("robot_song", "Робот, спой живьём")):
         gen.execute(kind=kind, heard_text=heard)
         assert asks[-1].generated and asks[-1].engine == "", (kind, heard)
-    gen.execute(kind="instrumental", heard_text="Робот, сыграй на ренардо")
-    assert asks[-1].generated and asks[-1].engine == "synth"
+    for heard in ("Робот, сыграй на ренардо", "Робот, сыграй на синтезаторе"):
+        gen.execute(kind="instrumental", heard_text=heard)
+        assert asks[-1].generated and asks[-1].engine == "synth", heard
 
 
 def test_style_words_of_synth_do_not_name_the_synth_path():
