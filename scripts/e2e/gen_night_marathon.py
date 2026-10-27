@@ -41,9 +41,12 @@
 (никаких), список из ``no_wake``/``silenced``. Читает ``e2e_events.recover_kinds``; восстановленный шаг -- не чистый
 OK, а ``OK recovered_<вид>`` (маркер ``E2E_RECOVER`` в логе акта).
 
-``_skip_when`` (шаг, с подчёркиванием: харнесс его НЕ читает): предусловие внешнего мира, без которого шаг теряет
-смысл, -- ``{"reason": "KIE_QUOTA", "log": <regex>}``. Пока харнесс не умеет SKIP по строке лога, правило -- данные
-для человека и для будущей проверки харнесса (R21 разбора 26.10).
+``skip_when`` (шаг, R21 разбора 26.10): предусловие внешнего мира, без которого шаг теряет смысл, --
+``{"reason": "KIE_QUOTA", "log": <regex>}`` (одна таблица :data:`SKIP_WHEN`). Харнесс перед шагом ищет ``log`` в логе
+робота за акт (``e2e_events.skip_rule``/``skip_verdict``): нашёл -- шаг не играется, итог ``SKIP <reason>``.
+
+``cast`` (акт): имена ролей каста (:data:`CAST`). Харнесс выносит в публичные артефакты из e2e-БД дикторов только их
+(``collect_e2e_speaker_db``); прочие имена -- числом, без имени.
 
 ``patterns`` — grep -E по логам ШАГА, AND-семантика (все должны найтись).
 ``acceptance.expected_tool_calls`` / ``must_not_call`` — подстрочный
@@ -106,6 +109,9 @@ SASHA = "anton"    # представляется
 BORIS = "ermil"    # представляется
 GRISHA = "zahar"   # не представляется
 VALERA = "filipp"  # не представляется
+#: Имя роли за голосом синтеза. Поле акта ``cast``: e2e-БД дикторов уходит в ПУБЛИЧНЫЕ артефакты, и харнесс выносит из
+#: неё только эти имена -- прочие (люди мастерской, которых speaker_id_node тоже слышит) только числом (ревью #4034).
+CAST: Dict[str, str] = {SASHA: "Саша", BORIS: "Борис", GRISHA: "Гриша", VALERA: "Валера"}
 
 # --- маркеры логов dialog v2 (SSoT — код робота) -----------------------------
 # PR-14 (#3880, эпик #3683): v2 — диалог по умолчанию, v1 удаляется в PR-15. Ожидания сценариев — только по
@@ -165,13 +171,18 @@ PERFORM_ASKS_TO_REPLACE = "выключить и зачитать"
 # --- результат действий без речи и лица (решения Шифу 26.10, #4036/#4041) -----------------------------------------
 #: Лицо команды на итоге хода (``dialog_v2_ports.stage``): ``🎭 [turn-v2] лицо команды на done: emotion=<сцена> …``.
 FACE_DONE = r"🎭 \[turn-v2\] лицо команды на done: emotion="
+#: Тул анимации принял анимацию -- строка пути ``success=True`` (``tools/animation.py``: ``[play_animation] Принято
+#: {'animation': <имя манифеста>, …}``, дальше только ``return`` успеха). Не строка ЗАПРОСА ``play_animation с
+#: параметрами …``: та пишется до проверки, и упавший вызов засчитывался бы (ревью #4046).
+ANIMATION_ACCEPTED = r"\[play_animation\] Принято \{'animation': "
 
 
 def face_or_animation(*emotions: str) -> str:
     """Робот ПОКАЗАЛ эмоцию: лицо команды на ``done`` с одной из ``emotions`` (сцена ``knowledge.EMOTIONS``) или
-    ``play_animation`` с такой анимацией. Тул анимации не обязателен: v2 показывает эмоцию ``command.expression``."""
+    ``play_animation``, принявший такую анимацию. Тул анимации не обязателен: v2 показывает эмоцию
+    ``command.expression``; если же LLM позвала тул -- засчитывается его успех, а не запрос."""
     alt = "(" + "|".join(emotions) + ")"
-    return FACE_DONE + alt + r"\b|play_animation с параметрами \{.*'animation': '" + alt + "'"
+    return FACE_DONE + alt + r"\b|" + ANIMATION_ACCEPTED + "'" + alt + "'"
 
 
 # --- скорость и тон голоса (#4039: тул меняет параметр АКТИВНОГО провайдера, tts_node пишет «изменён») ------------
@@ -181,8 +192,8 @@ SPEED_PARAMS = ("minimax_speed", "yandex_speed")
 PITCH_PARAM = "pitch_shift"
 #: Значение оси в строке ``tts_node``: ``🎚️ <param> изменён: <значение :g>`` -- «0.8», «1», «1.2», «2».
 BELOW_NORMAL = r"0\.[0-9]+"
-ABOVE_NORMAL = r"(1\.[0-9]+|2)(\s|$)"
 NORMAL = r"1(\s|$)"
+ANY_VALUE = r"[0-9]"
 
 
 def prosody_changed(params: tuple, value: str) -> str:
@@ -193,6 +204,10 @@ def prosody_changed(params: tuple, value: str) -> str:
 #: «Уже нормально» -- тул прочитал ось назад и она на норме (``system._Step`` normal.edge): тоже результат, не вызов.
 SPEED_ALREADY_NORMAL = r"\[set_speed\] Speed \[[a-z]+, [a-z_]+\]: Скорость уже нормальная"
 PITCH_ALREADY_NORMAL = r"\[set_pitch\] Pitch \[[a-z]+, pitch_shift\]: Голос уже нормальный"
+#: Скорость выросла ОТНОСИТЕЛЬНО ПРЕДЫДУЩЕЙ: шаг «faster» записан и прочитан назад (``system._step_axis``: фраза
+#: ``_Step.said`` «Говорю быстрее» -- только когда нода держит новое значение). Шаг оси ±0.2: после n409 (0.8) верный
+#: «faster» даёт 1.0 -- это и есть «быстрее, чем было», а не «выше нормы» (ревью #4046).
+SPEED_RAISED = r"\[set_speed\] Speed \[[a-z]+, (" + "|".join(SPEED_PARAMS) + r")\]: Говорю быстрее"
 
 
 def speaker_sure(name: str) -> str:
@@ -309,9 +324,9 @@ def step(
         s["retry_acceptance"] = retry
     if why and "acceptance" not in s:
         s["_why"] = why
-    # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN). Поле с «_» -- харнесс его не читает (см. шапку).
+    # R21 разбора 26.10: предусловие внешнего мира (ключ SKIP_WHEN): нарушено -- харнесс шаг не играет, SKIP <ключ>.
     if skip_when:
-        s["_skip_when"] = {"reason": skip_when, "log": SKIP_WHEN[skip_when]}
+        s["skip_when"] = {"reason": skip_when, "log": SKIP_WHEN[skip_when]}
     return s
 
 
@@ -1324,10 +1339,11 @@ act(
         step(
             "n410_speed_up",
             "Робот, ладно, хватит тянуть, теперь наоборот — тараторь.",
-            patterns=[prosody_changed(SPEED_PARAMS, ABOVE_NORMAL)],
-            why="«Тараторь» -- быстрее НОРМЫ: после n409 (0.8) один шаг возвращает лишь 1.0 (обычная речь), это не "
-            "эффект просьбы. 23.10 LLM звала set_speed дважды параллельно, оба прочитали 0.8 и записали 1.0 -- "
-            "такой ход здесь красный по делу.",
+            patterns=[SPEED_RAISED, prosody_changed(SPEED_PARAMS, ANY_VALUE)],
+            why="«Тараторь» -- быстрее, ЧЕМ БЫЛО (ревью #4046): шаг оси ±0.2, после n409 (0.8) верный set_speed "
+            "faster даёт 1.0, и ожидание «выше нормы» красило верный ход. Результат -- тул записал шаг «быстрее» и "
+            "прочитал его назад (`[set_speed] Speed [<провайдер>, <ось>]: Говорю быстрее`), нода применила "
+            "(`🎚️ <ось> изменён: <значение>`). «Скорость уже максимальная» -- не результат.",
         ),
         step(
             "n411_pitch_bass",
@@ -1359,9 +1375,9 @@ act(
             "пишет actions=[]), верная сказка давала PATTERN_MISS, ретрай заказывал вторую (2.5 мин). Теперь "
             "результат по событиям владельца: `выступление старт kind=tale` И конец `perform-: конец (done)` / "
             "`PlanEvent block_end … reason=done`. Ретрая НЕТ: после старта выступления повтор заказал бы второе. "
-            "Конец ждём по событиям: сегменты ставятся в очередь сразу (`SpeechEvent queued`), харнесс ждёт, пока "
-            "все закроются, -- это и есть block_end; но его потолок -- E2E_REACTION_WINDOW×E2E_MAX_ATTEMPTS "
-            "(≈2 мин), поэтому просим КОРОТКУЮ сказку (23.10: 917 символов -- 99 с, 1519 -- 160 с не влезли). "
+            "Конец ждём по событиям (ревью #4046): пока выступление идёт, судья харнесса (`e2e_events`) ждёт его "
+            "конца до потолка 240 с от старта (`PERFORM_CEILING_S`, 23.10 сказка шла 94-162 с), а не 3×40 с; не "
+            "кончилось -- `FAIL turn_perform_ceiling` без повтора фразы. «Короткую» просим, чтобы акт не рос. "
             "#1532: сказка полная, голоса персонажей -- `voice_per_segment` (без него код -- нарушение, #3966). "
             "Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя.",
         ),
@@ -1679,7 +1695,7 @@ act(
             skip_when="KIE_QUOTA",
             why="n706-n710 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` "
             "песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA "
-            "(`_skip_when`; харнесс поле пока не читает -- см. шапку генератора).",
+            "(`skip_when`: харнесс видит строку баланса 0 в логе акта и шаг не играет).",
         ),
         step(
             "n707_gen_track_info",
@@ -1718,7 +1734,7 @@ act(
             why="Уборка за собой. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило "
             "чужой трек и осталось зелёным. Теперь просьба называет песню этого прогона (про енота): id робот "
             "берёт из поиска/списка, без такой песни удалять нечего. Результат -- запрос `delete` и успех "
-            "music_library. Под квотой KIE шаг не играется (`_skip_when`), destructive delete вслепую не гоняем.",
+            "music_library. Под квотой KIE шаг не играется (`skip_when`), destructive delete вслепую не гоняем.",
         ),
         action_step(
             "n711_renardo_not_broken",
@@ -1743,7 +1759,7 @@ act(
     ],
     [
         "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
-        "Квота KIE (`[cover] баланс KIE: 0`): n706-n710 -- SKIP KIE_QUOTA (`_skip_when`, R21),",
+        "Квота KIE (`[cover] баланс KIE: 0`): n706-n710 -- SKIP KIE_QUOTA (`skip_when`, R21),",
         "delete без песни этого прогона не гонять. 26.10 баланс 1712 -- правило стоит на будущее.",
         "generate_music и music_library ВНЕ GATE-1 намеренно —",
         "их отсутствие чаще всего означает недоступность внешнего API.",
@@ -1975,22 +1991,23 @@ act(
             silent_ok=True,
             why="v2 показывает эмоцию лицом команды (`command.expression`), тул play_animation не обязателен "
             "(23.10: expression sad + речь, сценарий требовал v1-тул). Результат -- `🎭 [turn-v2] лицо команды на "
-            "done: emotion=sad` (#4041) либо play_animation sad. Показать молча -- законно (просьба «покажи»).",
+            "done: emotion=sad` (#4041) либо УСПЕХ play_animation sad (`[play_animation] Принято {'animation': "
+            "'sad'`; строка запроса тула -- не результат, ревью #4046). Показать молча -- законно (просьба «покажи»).",
         ),
         step(
             "n905_anim_victory",
             "Робот, а теперь победную анимацию — блок питания наконец не гудит!",
             patterns=[face_or_animation("victory", "happy"), TURN_DONE],
             silent_ok=True,
-            why="См. n904: победа -- лицо команды emotion=victory|happy или play_animation victory|happy.",
+            why="См. n904: победа -- лицо команды emotion=victory|happy или успех play_animation victory|happy.",
         ),
         step(
             "n906_anekdot_anim",
             "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
             patterns=[face_or_animation("happy", "victory"), SPEECH_STARTED],
             why="Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула "
-            "`speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или play_animation "
-            "(голое имя тула в паттерне совпадало и со строкой действий без результата).",
+            "`speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или успехом play_animation "
+            "(голое имя тула и строка запроса совпадали и без результата).",
         ),
         step(
             "n907_search_space",
@@ -2224,6 +2241,7 @@ def build() -> Dict[str, Dict[str, Any]]:
             "title": a["title"],
             "description": a["description"],
             "generated_by": "scripts/e2e/gen_night_marathon.py",
+            "cast": list(CAST.values()),
         }
         if a["n"] in ACTS_INHERITING_PREVIOUS:
             scenario["inherits_previous_act"] = True

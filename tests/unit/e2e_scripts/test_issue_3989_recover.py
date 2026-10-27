@@ -226,8 +226,9 @@ class TestKnowledgeDrift:
 
 # -- bash: run_step с восстановлением на фейковом роботе ---------------------------------------------------
 
-def _run_step(tmp_path, log_text, plays, body, env=""):
-    """``plays[i]`` -- куски лога, которые робот «скажет» после (i+2)-го PLAY (первый PLAY -- фраза шага)."""
+def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
+    """``plays[i]`` -- куски лога, которые робот «скажет» после (i+2)-го PLAY (первый PLAY -- фраза шага).
+    ``replace`` -- кусок ЗАМЕНЯЕТ лог (окно нового PLAY начинается с чистого листа: фейк не режет ``--since``)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "robot.log"
@@ -237,8 +238,9 @@ def _run_step(tmp_path, log_text, plays, body, env=""):
     counter = tmp_path / "play_count"
     (bindir / "paplay").write_text(
         '#!/bin/bash\nn=$(( $(cat "{c}" 2>/dev/null || echo 0) + 1 ))\necho "$n" > "{c}"\necho "$1" >> "{t}/played"\n'
-        '[ -f "{t}/play_$n.log" ] && cat "{t}/play_$n.log" >> "{log}"\nexit 0\n'.format(
-            c=counter.as_posix(), t=tmp_path.as_posix(), log=log.as_posix()), encoding="utf-8")
+        '[ -f "{t}/play_$n.log" ] && cat "{t}/play_$n.log" {op} "{log}"\nexit 0\n'.format(
+            c=counter.as_posix(), t=tmp_path.as_posix(), log=log.as_posix(), op=">" if replace else ">>"),
+        encoding="utf-8")
     for name in ("ffmpeg", "pactl", "ffprobe"):
         (bindir / name).write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
     for name in ("paplay", "ffmpeg", "pactl", "ffprobe"):
@@ -311,10 +313,30 @@ class TestRunStepRecovery:
         assert "E2E_STEP a FAIL turn_no_wake (no_wake)" in out and "E2E_RECOVER" not in out
         assert took < 25, took
 
-    def test_only_one_recovery_per_step(self, tmp_path):
+    def test_recovery_that_did_not_help_is_fail_not_second_recovery(self, tmp_path):
         out, err, _, _ = _run_step(tmp_path, N301, [heard("робот", "{NOW-12}")], STEP, BOTH)
         assert "RC=1" in out and "PLAY_COUNT=2" in out, (out, err)
         assert out.count("E2E_RECOVER ") == 1
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+
+    def test_only_one_recovery_per_step_across_attempts(self, tmp_path):
+        """E2E_MAX_ATTEMPTS=2: «Робот!» не услышан (no_accept) -> попытка 2 снова теряет вейк -> второго «Робот!»
+        нет (ревью #4034: прежний тест не ловил удаление этой проверки -- run_step звал step_recover один раз)."""
+        env = BOTH + "; E2E_MAX_ATTEMPTS=2; E2E_ACCEPT_WINDOW=3"
+        out, err, _, played = _run_step(tmp_path, N301, ["", N301], STEP, env, replace=True)
+        assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
+        assert out.count("E2E_RECOVER ") == 1, out
+        assert "восстановление шага уже было (no_wake), второго нет" in out
+        assert [p.rsplit("/", 1)[-1] for p in played] == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav"]
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
+
+    def test_only_one_recovery_per_step_across_retry_acceptance(self, tmp_path):
+        """Повтор шага (retry_acceptance) зовёт run_step с той же меткой: шаг уже восстановлен -- второго нет."""
+        pickup = heard("робот", "{NOW-12}") + REPLY
+        body = STEP.replace('echo "RC=$?"', 'echo "RC1=$?"') + "\n" + STEP.replace('echo "RC=$?"', 'echo "RC2=$?"')
+        out, err, _, played = _run_step(tmp_path, N301, [pickup, N301], body, BOTH, replace=True)
+        assert "RC1=0" in out and "RC2=1" in out and "PLAY_COUNT=3" in out, (out, err)
+        assert out.count("E2E_RECOVER ") == 1, out
         assert "E2E_STEP a FAIL turn_no_wake after_recover_no_wake" in out
 
 
@@ -404,7 +426,9 @@ class TestActStartSilence:
     def test_silence_left_by_previous_act_is_lifted_and_marked(self, tmp_path):
         rc, out, err, state = _act_start(tmp_path, "ensure_not_silenced_for_act", session=SESSION_SILENCED)
         assert rc == 0, (out, err)
-        assert "E2E_RECOVER silence at_act_start" in out and "ACT_RECOVERED=silence" in out
+        # ревью #4034: один вид маркера -- тот же вид «silenced», что у шага (E2E_RECOVER silenced <шаг>)
+        assert "E2E_RECOVER silenced at_act_start (было: Silence set_by=user" in out and "ACT_RECOVERED=silenced" in out
+        assert "E2E_RECOVER silence " not in out
         assert [u["text"] for u in _utterances(state)] == ["Робот, говори."]
         assert _utterances(state)[0]["source"] == "respeaker"
 
@@ -459,68 +483,144 @@ class TestActStartMusic:
 
 # -- bash: скорость и тон TTS (#4027) ---------------------------------------------------------------------
 
+def _prosody(body_lines, tmp_path):
+    """Старт акта -> ``remember_node_params /tts_node`` (как главный поток), дальше ``body_lines``."""
+    return "\n".join([
+        'E2E_RUN_BEFORE=""; E2E_NODE_PARAM_ORIGINALS_FILE="%s/originals.tsv"' % tmp_path.as_posix(),
+        ': > "$E2E_NODE_PARAM_ORIGINALS_FILE"',
+        "remember_node_params /tts_node $E2E_TTS_PROSODY_PARAMS",
+        *body_lines,
+    ])
+
+
 @needs_bash
 def test_restore_returns_speed_and_pitch_to_values_before_act(tmp_path):
-    body = "\n".join([
-        'E2E_RUN_BEFORE=""; E2E_TTS_PROSODY_FILE="%s/prosody.tsv"' % tmp_path.as_posix(),
-        "snapshot_tts_prosody \"$E2E_TTS_PROSODY_FILE\"",
+    """#4027 одним механизмом (ревью #4034): значения до акта -- в файл node_params, возврат -- restore_node_params."""
+    body = _prosody([
         # акт 4: n409/n410 «медленнее/тараторь», n411 «басом»
         "robot_ros \"ros2 param set /tts_node yandex_speed 1.2 --no-daemon\" >/dev/null",
         "robot_ros \"ros2 param set /tts_node pitch_shift 0.8 --no-daemon\" >/dev/null",
         "restore_robot_tts_default",
+        "restore_node_params",
         'for p in yandex_speed minimax_speed pitch_shift; do echo "$p=$(_ros2_param_value "$(_ros2_param_get_raw /tts_node $p)")"; done',
-    ])
+    ], tmp_path)
     rc, out, err, state = _act_start(tmp_path, body)
     assert rc == 0, (out, err)
     assert "yandex_speed=1.0" in out and "pitch_shift=1.0" in out and "minimax_speed=1.0" in out
-    assert re.search(r"TTS: скорость/тон возвращены к значениям до акта: .*yandex_speed 1\.2 -> 1\.0", out), out
-    assert "minimax_speed 1.0 ->" not in out  # не менялся -- не трогаем
+    assert "node_params: /tts_node yandex_speed восстановлен к исходному 1.0" in out, out
+    assert "node_params: /tts_node pitch_shift восстановлен к исходному 1.0" in out
+    assert "/tts_node minimax_speed за акт не менялся (1.0)" in out  # не менялся -- не пишем
+    originals = (tmp_path / "originals.tsv").read_text(encoding="utf-8").splitlines()
+    assert originals == ["/tts_node\x1f%s\x1f1.0" % p for p in ("minimax_speed", "yandex_speed", "pitch_shift")]
 
 
 @needs_bash
 def test_restore_without_changes_does_not_set(tmp_path):
-    body = "\n".join([
-        'E2E_RUN_BEFORE=""; E2E_TTS_PROSODY_FILE="%s/prosody.tsv"' % tmp_path.as_posix(),
-        "snapshot_tts_prosody \"$E2E_TTS_PROSODY_FILE\"",
-        ': > "$FAKE_ROBOT_STATE/ssh_calls"',
-        "restore_robot_tts_default",
-    ])
+    body = _prosody([': > "$FAKE_ROBOT_STATE/ssh_calls"', "restore_node_params"], tmp_path)
     rc, out, err, state = _act_start(tmp_path, body)
-    assert rc == 0 and "скорость и тон за акт не менялись" in out, (out, err)
-    # одно чтение трёх параметров, ни одной записи
-    assert len((state / "ssh_calls").read_text(encoding="utf-8").splitlines()) == 1
+    assert rc == 0 and out.count("за акт не менялся") == 3, (out, err)
+    calls = (state / "ssh_calls").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 3 and not any("param set" in c or "param\\ set" in c for c in calls), calls
+
+
+def test_prosody_has_one_mechanism():
+    """Ревью #4034: второй механизм возврата скорости/тона (_tts_prosody_read, snapshot_tts_prosody,
+    _restore_tts_prosody) удалён; restore_robot_tts_default скорость/тон не трогает."""
+    lib = LIB.read_text(encoding="utf-8")
+    for gone in ("_tts_prosody_read", "_tts_prosody_value", "snapshot_tts_prosody", "_restore_tts_prosody",
+                 "E2E_TTS_PROSODY_FILE"):
+        assert gone not in lib, gone
+    restore_voice = re.search(r"^restore_robot_tts_default\(\) \{(.*?)^\}", lib, re.S | re.M).group(1)
+    assert "param set" not in restore_voice
 
 
 # -- bash: e2e-БД дикторов в артефакты (#3710 п.2) --------------------------------------------------------
 
-@needs_bash
-def test_speaker_db_copied_read_only_in_one_ssh_call(tmp_path):
+CAST = ["Саша", "Борис", "Гриша", "Валера"]
+
+
+def _speaker_db(tmp_path):
+    """e2e-БД как у speaker_id_node (speaker_embeddings._CREATE_SQL + эпитет): каст, клон Бориса, безымянный профиль
+    и человек мастерской, которого speaker_id_node тоже услышал."""
     data = tmp_path / "data"
     data.mkdir()
     db = data / "speakers.e2e.db"
     con = sqlite3.connect(str(db))
-    con.execute("create table speakers (id text, name text, embedding blob)")
-    con.execute("insert into speakers values ('429eae2c', 'Саша', x'0102')")
+    con.execute("create table speakers (speaker_id text, name text, created_at real, epithet text, tags text)")
+    con.execute("create table embeddings (id integer primary key, speaker_id text, embedding blob, created_at real)")
+    con.executemany("insert into speakers values (?, ?, 1.0, ?, ?)", [
+        ("429eae2c", "Саша", "ночной инженер", "паяльник"),
+        ("dc417cef", "Борис", None, None),
+        ("ab12cd34", "борис", None, None),  # клон роли: регистр не важен
+        ("ee0000ff", "", None, None),  # безымянный профиль (speaker_embeddings.UNNAMED)
+        ("f00dbabe", "Иван Петрович", "сосед по цеху", "шахматы"),
+    ])
+    con.execute("insert into embeddings (speaker_id, embedding, created_at) values ('429eae2c', x'0102', 1.0)")
     con.commit()
     con.close()
+    return db
+
+
+@needs_bash
+@pytest.mark.parametrize("with_cast", [True, False], ids=["cast", "no_cast_field"])
+def test_speaker_db_copied_read_only_and_public_json_has_no_outsider_names(tmp_path, with_cast):
+    """Ревью #4034: json уходит в артефакты публичного репо -- в нём число строк и имена ролей каста, не больше."""
+    db = _speaker_db(tmp_path)
     before = db.read_bytes()
+    scen = tmp_path / "scenario.json"
+    scen.write_text(json.dumps({"cast": CAST, "steps": []} if with_cast else {"steps": []}, ensure_ascii=False),
+                    encoding="utf-8")
     art = tmp_path / "art"
     art.mkdir()
     body = "\n".join([
         'E2E_ACT_STARTED=1; E2E_SPEAKER_DB="%s"' % db.as_posix(),
         ': > "$FAKE_ROBOT_STATE/ssh_calls"',
-        'collect_e2e_speaker_db "%s"' % art.as_posix(),
+        'collect_e2e_speaker_db "%s" "%s"' % (art.as_posix(), scen.as_posix()),
     ])
     rc, out, err, state = _act_start(tmp_path, body)
     assert rc == 0, (out, err)
     assert len((state / "ssh_calls").read_text(encoding="utf-8").splitlines()) == 1
     with tarfile.open(str(art / "speakers_e2e_db.tar")) as tf:
         assert tf.getnames() == ["speakers.e2e.db"]
-    summary = json.loads((art / "speakers_e2e_db.json").read_text(encoding="utf-8"))
-    assert summary["tables"]["speakers"]["count"] == 1
-    assert summary["tables"]["speakers"]["rows"] == [{"id": "429eae2c", "name": "Саша"}]  # эмбеддинги не выносим
+    raw = (art / "speakers_e2e_db.json").read_text(encoding="utf-8")
+    summary = json.loads(raw)
+    assert summary["tables"] == {"embeddings": {"count": 1}, "speakers": {"count": 5}}
+    if with_cast:
+        assert summary["speakers"] == {"cast": {"Саша": 1, "Борис": 2}, "unnamed": 1, "masked": 1}
+    else:  # нет поля cast -- скрыты все имена
+        assert summary["speakers"] == {"cast": {}, "unnamed": 1, "masked": 4}
+        assert "Саша" not in raw
+    for private in ("Иван", "Петрович", "сосед", "шахмат", "паяльник", "ночной инженер", "429eae2c", "f00dbabe"):
+        assert private not in raw, private
+        assert private not in out, private
     assert "E2E_SPEAKER_DB copied" in out
     assert db.read_bytes() == before
+
+
+@needs_bash
+def test_speaker_db_ssh_that_hangs_does_not_hold_the_trap(tmp_path):
+    """Ревью #4034: копия БД идёт в trap EXIT -- зависший ssh не держит выход акта (timeout, E2E_SPEAKER_DB_TIMEOUT)."""
+    slow = tmp_path / "slow_ssh.sh"
+    slow.write_text("#!/bin/bash\nexec sleep 30\n", encoding="utf-8")
+    art = tmp_path / "art"
+    art.mkdir()
+    body = "\n".join([
+        'E2E_ACT_STARTED=1; E2E_SPEAKER_DB_TIMEOUT=2; ROBOT_SSH="bash %s"' % slow.as_posix(),
+        'collect_e2e_speaker_db "%s" ""' % art.as_posix(),
+    ])
+    t0 = time.time()
+    rc, out, err, _ = _act_start(tmp_path, body)
+    took = time.time() - t0
+    assert rc == 0 and "ssh не ответил за 2 с" in out and "E2E_SPEAKER_DB none" in out, (out, err)
+    assert took < 20, took
+    assert not (art / "speakers_e2e_db.tar").exists()
+
+
+def test_trap_collects_db_with_timeout_and_scenario_cast():
+    lib = LIB.read_text(encoding="utf-8")
+    body = re.search(r"^collect_e2e_speaker_db\(\) \{(.*?)^\}", lib, re.S | re.M).group(1)
+    assert 'timeout "$wait_s" ${ROBOT_SSH}' in body and 'timeout "$wait_s" python3' in body
+    assert '"rows"' not in body and "SELECT * FROM" not in body  # строки таблиц не выносятся
 
 
 @needs_bash
@@ -539,9 +639,52 @@ def test_main_flow_wires_policy_act_state_and_db_copy():
     assert 'ensure_music_stopped_for_act "$_music_inherits"' in src
     assert src.index('ensure_music_stopped_for_act "$_music_inherits"') < src.index("    ensure_not_silenced_for_act\n")
     trap = next(line for line in src.splitlines() if line.startswith("trap 'restore_robot_tts_default"))
-    assert "collect_e2e_speaker_db" in trap
-    assert src.index('snapshot_tts_prosody "$E2E_TTS_PROSODY_FILE"') < src.index(trap)
+    assert 'collect_e2e_speaker_db "$OUT_DIR" "${SCENARIO_FILE:-}"' in trap
+    # скорость/тон -- после голоса: set_voice не перебьёт возвращённые значения
+    assert trap.index("restore_robot_tts_default") < trap.index("restore_node_params")
+    assert src.index("remember_node_params /tts_node $E2E_TTS_PROSODY_PARAMS") < src.index(trap)
     assert src.index('load_recover_policy "$SCENARIO_FILE"') < src.index("start_recording\n")
+    assert src.index('load_skip_rules "$SCENARIO_FILE"') < src.index("start_recording\n")
+
+
+def test_recover_marker_has_one_form():
+    """Ревью #4034: «E2E_RECOVER silenced <шаг>» и «E2E_RECOVER silence at_act_start» -- один вид, одна функция."""
+    assert e2e_events.recover_marker("silenced", "n805c", "phrase=x") == "E2E_RECOVER silenced n805c phrase=x"
+    assert e2e_events.recover_marker("silenced", "at_act_start", "(было: Silence)") == \
+        "E2E_RECOVER silenced at_act_start (было: Silence)"
+    assert e2e_events.recover_marker("music", "at_act_start") == "E2E_RECOVER music at_act_start"
+    for kind, where in (("silence", "at_act_start"), ("music", "n712"), ("no_wake", "at_act_start"), ("silenced", "")):
+        with pytest.raises(ValueError):
+            e2e_events.recover_marker(kind, where)
+    assert set(e2e_events.ACT_RECOVERY) - {"music"} <= set(e2e_events.RECOVERY)  # тишина -- тем же видом
+
+
+def test_cli_mark_refuses_foreign_kind():
+    ok = subprocess.run([sys.executable, str(EVENTS), "mark", "--kind", "no_wake", "--where", "n301",
+                         "--detail", "phrase=«Робот!» replay=0"], capture_output=True, text=True, encoding="utf-8")
+    assert ok.returncode == 0 and ok.stdout == "E2E_RECOVER no_wake n301 phrase=«Робот!» replay=0\n"
+    bad = subprocess.run([sys.executable, str(EVENTS), "mark", "--kind", "silence", "--where", "at_act_start"],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert bad.returncode == 2 and bad.stdout == "" and "silence" in bad.stderr
+
+
+def test_harness_prints_recover_markers_only_through_recover_mark():
+    """Все места маркера -- через recover_mark; литеральные виды в вызовах -- из словаря e2e_events."""
+    lib = LIB.read_text(encoding="utf-8")
+    src = lib + E2E_SCRIPT.read_text(encoding="utf-8")
+    assert not re.search(r'echo "E2E_RECOVER', src), "маркер мимо recover_mark"
+    calls = re.findall(r"^\s*recover_mark (\S+) (\S+)", src, re.M)
+    assert {c for c in calls} >= {("music", "at_act_start"), ("silenced", "at_act_start"), ('"$kind"', '"$label"')}
+    for kind, where in calls:
+        if not kind.startswith('"$'):
+            e2e_events.recover_marker(kind, where)  # ValueError -- чужой вид
+
+
+@needs_bash
+def test_recover_mark_with_foreign_kind_is_loud_and_not_counted(tmp_path):
+    rc, out, err, _ = _act_start(tmp_path, "recover_mark silence at_act_start '(x)'")
+    assert rc == 0 and not any(line.startswith("E2E_RECOVER") for line in out.splitlines()), (out, err)
+    assert "❌ маркер восстановления не записан" in out and "ACT_RECOVERED=" in out.splitlines()
 
 
 @needs_bash
@@ -550,13 +693,13 @@ def test_marathon_summary_value_reads_harness_summary(tmp_path):
     log.write_text(
         "2026-10-23T22:55:47.8157749Z >>> E2E_SUMMARY verdict=FAIL steps=12/14 ok fail=2 skip=0 recovered=2 "
         "provider=minimax\n"
-        "2026-10-23T22:55:47.8158257Z >>> E2E_SUMMARY act_recover=music,silence\n"
+        "2026-10-23T22:55:47.8158257Z >>> E2E_SUMMARY act_recover=music,silenced\n"
         "2026-10-23T22:55:48.0000000Z \x1b[36;1m echo \"E2E_SUMMARY recovered=99\"\n", encoding="utf-8")
     lib, path = (MARATHON / "marathon_markers.sh").as_posix(), log.as_posix()
     script = ('. "{lib}"; marathon_summary_value "{log}" recovered; echo; marathon_summary_value "{log}" act_recover; '
               'echo; marathon_summary_value "{log}" nothing').format(lib=lib, log=path)
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, encoding="utf-8").stdout
-    assert out.splitlines() == ["2", "music,silence", "-"]
+    assert out.splitlines() == ["2", "music,silenced", "-"]
 
 
 def test_marathon_summary_tsv_has_recovered_column():

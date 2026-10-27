@@ -98,7 +98,8 @@ REPORT="${REPORT:-$ROOT/tests/e2e/_artifacts/night_${RUN_TS}}"
 mkdir -p "$REPORT"
 SUMMARY="$REPORT/summary.tsv"
 # #3989: recovered — шагов, прошедших после восстановления харнессом (не чистый PASS); act_recover — что харнесс
-# чинил на старте акта (утечка прошлого акта: music, silence). Оба — из строки E2E_SUMMARY лога акта.
+# чинил на старте акта (утечка прошлого акта: music, silenced — те же виды, что в маркере
+# «E2E_RECOVER <вид> at_act_start», e2e_events.ACT_RECOVERY). Оба — из строки E2E_SUMMARY лога акта.
 printf 'act\ttitle\tstability\tsteps\trun_id\tconclusion\turl\trecovered\tact_recover\n' > "$SUMMARY"
 
 log() { printf '[night %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }

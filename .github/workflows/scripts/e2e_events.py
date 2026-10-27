@@ -20,6 +20,10 @@ v2 (``dialog_engine: v2``):
   проглотила тишина (#3982: LLM не зовётся, речи нет);
 * ``[backlog] accumulated reason=no_wake`` -- фраза принята без вейка и ушла в бэклог: хода не будет (#3989);
 * ``🧭 [turn-v2] tier1 kind=<вид>`` -- ход Tier-1 (стоп, тишина, «говори», громкость...);
+* ``🧭 [turn-v2] выступление старт kind=<вид> … {'status': 'pending', …}`` -- владелец взял выступление (сказку,
+  стих, рэп); конец -- ``🎤 [perform] …: конец (<причина>)`` или ``🗓️ [plan] PlanEvent block_end block=perform-…``.
+  Ход (``📊 [turn] stage=done``) кончается раньше выступления, а между куплетами нет открытых реплик: ответ готов
+  только после конца выступления, потолок -- :data:`PERFORM_CEILING_S` от его старта (#3971 R4, n412);
 * ``🗣️ SpeechEvent <kind> speech_id=<8> ...`` -- события владельца речи (``speech_owner._emit``): ``queued`` /
   ``synthesized`` / ``started`` / ``progress`` открывают или ведут реплику, ``finished`` / ``cancelled`` /
   ``rejected`` закрывают её. Пара -- по ``speech_id``. Каждый куплет выступления -- отдельный ``SpeechRequest``
@@ -37,7 +41,14 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 Вердикты ``no_wake`` и ``silenced`` -- не «робот не ответил», а «до хода дело не дошло»: вейк потерян в STT либо
 тишина, оставленная прошлым шагом/актом. Харнесс делает ОДНО восстановление (:data:`RECOVERY`) и помечает шаг
 ``OK recovered_<вид>``; какие виды разрешены шагу -- :func:`recover_kinds` (поле ``recover`` сценария). Тишину на
-старте акта харнесс читает из снимка ``/dialog/session`` (:func:`session_report`).
+старте акта харнесс читает из снимка ``/dialog/session`` (:func:`session_report`). Маркер в логе акта один на все
+восстановления -- ``E2E_RECOVER <вид> <шаг|at_act_start> …``; виды -- :data:`RECOVERY` (шаг) и :data:`ACT_RECOVERY`
+(старт акта).
+
+Предусловие шага (#3971 R21)
+============================
+Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
+робота за акт значит, что шаг не играется, вердикт ``SKIP <reason>`` (:func:`skip_rule`, :func:`skip_verdict`).
 """
 
 from __future__ import annotations
@@ -46,7 +57,7 @@ import json
 import re
 import sys
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Pattern, Tuple
 
 TS_RE = re.compile(r"\[(\d{9,}\.\d+)\]")
 SPEECH_V2 = re.compile(r"SpeechEvent (queued|synthesized|started|progress|finished|cancelled|rejected) speech_id=([0-9A-Za-z]+)")
@@ -68,6 +79,16 @@ SILENCE_TIER1 = "silence"
 NO_WAKE_SETTLE_S = 4.0
 #: Сцена тишины в снимке сессии: ``rob_box_core.voice_state.SILENCE_SCENE`` (drift держит тест #3989).
 SILENCE_SCENE = "Silence"
+#: Старт выступления, которое владелец ещё играет: ``turn.py`` -- ``выступление старт kind=<вид> … → {'status':
+#: 'pending', 'block_id': 'perform-…'}``. ``'status': 'done'`` -- куплеты легли в уже идущее выступление (у него свой
+#: старт и свой конец), отдельного конца у такой строки нет.
+PERFORM_START_RE = re.compile(r"выступление старт kind=(\w+).*'status': 'pending'")
+#: Конец выступления с любой причиной (done/stopped/failed): ``plan/perform.py`` -- ``🎤 [perform] …: конец (<причина>)``,
+#: ``plan_events`` -- ``🗓️ [plan] PlanEvent block_end block=perform-… reason=<причина>`` (пишутся парой).
+PERFORM_END_RE = re.compile(r"\[perform\] \S*: конец \((\w+)\)|PlanEvent block_end block=perform-\S* .*\breason=(\w+)")
+#: Потолок ожидания выступления от его старта (часы робота): сказка марафона 23.10 шла 94-162 с (n412), а потолок
+#: ответа (``E2E_REACTION_WINDOW``, 40 с на попытку) её обрывал -- ``cycle_unconfirmed_after_accept`` за 4 с до конца.
+PERFORM_CEILING_S = 240.0
 STALE_S = 60.0
 MAX_SKEW_S = 3600.0
 ANCHORS = ("speech_started", "llm_request", "segment_started")
@@ -120,6 +141,9 @@ class Window:
         self.events = 0
         self.no_wake = False  # принятая фраза ушла в бэклог без вейка (#3989)
         self.tier1: List[str] = []  # виды ходов Tier-1 после принятой фразы
+        self.performing = False  # выступление после принятой фразы взято и ещё не кончилось (#3971 R4)
+        self.perform_since: Optional[float] = None  # метка лога его старта
+        self.perform_kind = ""
 
     def feed(self, line: str) -> None:
         if "ПРИНЯТО" in line and not self.accepted:
@@ -140,6 +164,14 @@ class Window:
         tier1 = TIER1_RE.search(line)
         if tier1:
             self.tier1.append(tier1.group(1))
+        self._perform(line)
+
+    def _perform(self, line: str) -> None:
+        started = PERFORM_START_RE.search(line)
+        if started:
+            self.performing, self.perform_since, self.perform_kind = True, _ts(line), started.group(1)
+        elif self.performing and PERFORM_END_RE.search(line):
+            self.performing = False
 
     def _turn(self, line: str) -> None:
         found = TURN_RE.search(line)
@@ -178,10 +210,18 @@ class Window:
 
     def quiet_for(self, now: Optional[float]) -> float:
         """Секунд с последнего события речи; ``-1`` -- не определить (нет времени или часы разошлись)."""
-        if now is None or self.last_ts is None:
-            return -1.0
-        gap = now - self.last_ts
-        return gap if 0 <= gap <= MAX_SKEW_S else -1.0
+        return _since(self.last_ts, now)
+
+    def perform_for(self, now: Optional[float]) -> float:
+        """Секунд с начала идущего выступления по часам робота; ``-1`` -- выступления нет или время не определить."""
+        return _since(self.perform_since, now) if self.performing else -1.0
+
+
+def _since(ts: Optional[float], now: Optional[float]) -> float:
+    if now is None or ts is None:
+        return -1.0
+    gap = now - ts
+    return gap if 0 <= gap <= MAX_SKEW_S else -1.0
 
 
 def scan(text: str, engine: str, barge: bool = False) -> Tuple[Window, Optional[float]]:
@@ -197,19 +237,23 @@ def _no_wake(window: Window, engine: str, waited: float) -> bool:
     return engine == "v2" and window.no_wake and not window.busy() and waited >= NO_WAKE_SETTLE_S
 
 
-def reply_verdict(window: Window, engine: str, silent_ok: bool, waited: float = 0.0, accept_window: float = 0.0) -> str:
+def reply_verdict(window: Window, engine: str, silent_ok: bool, waited: float = 0.0, accept_window: float = 0.0,
+                  now: Optional[float] = None, perform_ceiling: float = PERFORM_CEILING_S) -> str:
     """``done`` -- ответ состоялся и робот замолчал; ``nospeech`` -- ход закончен, речи не было (ждать льготу);
     ``silent`` -- ход закончен без речи и шаг это разрешает; ``failed`` / ``cancelled`` -- ход закончен сбоем /
     отменой (v2, #3954: терминально, ждать нечего); ``no_wake`` / ``silenced`` -- до хода не дошло: фраза ушла в бэклог
     без вейка / ход проглотила тишина (v2, #3989: терминально, харнесс решает о восстановлении шага; ``silent_ok`` их
     не прощает -- ответа на фразу шага не было); ``no_accept`` -- фразу STT не принял за ``accept_window`` секунд
-    (переигрывать, не ждать потолок); ``wait`` -- рано."""
+    (переигрывать, не ждать потолок); ``perform_ceiling`` -- выступление идёт дольше ``perform_ceiling`` секунд от
+    старта (терминально: повтор фразы заказал бы второе, #3971 R4); ``wait`` -- рано."""
     if not window.accepted:
         if accept_window > 0 and waited >= accept_window:
             return "no_accept"
         return "wait"
     if _no_wake(window, engine, waited):
         return "no_wake"
+    if window.performing:
+        return "perform_ceiling" if window.perform_for(now) >= perform_ceiling else "wait"
     if window.opened:
         return "wait"
     if engine == "v2":
@@ -234,24 +278,33 @@ def _turn_verdict(window: Window, silent_ok: bool) -> str:
 
 
 def state(text: str, engine: str, silent_ok: bool, barge: bool = False, waited: float = 0.0,
-          accept_window: float = 0.0) -> Dict[str, object]:
+          accept_window: float = 0.0, perform_ceiling: float = PERFORM_CEILING_S) -> Dict[str, object]:
+    """Вердикт окна и счётчики для харнесса. ``performing=1`` -- идёт выступление: потолок ожидания харнесса --
+    ``perform_ceiling`` (а не потолок ответа), судья сам скажет ``perform_ceiling`` по часам робота."""
     window, now = scan(text, engine, barge)
     live = window.open_live(now)
     if window.opened and live == 0:  # все открытые реплики протухли: говорящих нет
         window.opened.clear()
-    verdict = reply_verdict(window, engine, silent_ok, waited, accept_window)
+    verdict = reply_verdict(window, engine, silent_ok, waited, accept_window, now, perform_ceiling)
     info = window.turn_info
     return {
-        "reason": "no_wake" if verdict == "no_wake" else _reason(window), "llm_calls": info.get("llm_calls", "-"),
+        "reason": _reason(window, verdict, now), "llm_calls": info.get("llm_calls", "-"),
         "fetch": 0 if now is None else 1, "verdict": verdict, "accepted": int(window.accepted),
         "turn_done": int(window.turn_done), "started": window.started, "ends": window.ends,
         "open": live, "llm": window.llm, "quiet_for": f"{window.quiet_for(now):.2f}",
+        "performing": int(window.performing), "perform_for": f"{window.perform_for(now):.0f}",
+        "perform_ceiling": f"{perform_ceiling:.0f}",
         "sig": f"{window.events}.{window.started}.{window.ends}.{int(window.turn_done)}",
     }
 
 
-def _reason(window: Window) -> str:
-    """Причина конца хода из строки ``📊 [turn]`` без пробелов: ``failed:status=failed,llm_calls=3``; ``-`` если ход не кончился."""
+def _reason(window: Window, verdict: str = "", now: Optional[float] = None) -> str:
+    """Причина вердикта без пробелов: ``no_wake``; ``perform_unfinished:kind=tale,for=241s``; конец хода из строки
+    ``📊 [turn]`` -- ``failed:status=failed``; ``-`` если ход не кончился."""
+    if verdict == "no_wake":
+        return "no_wake"
+    if verdict == "perform_ceiling":
+        return f"perform_unfinished:kind={window.perform_kind},for={window.perform_for(now):.0f}s"
     if not window.turn_stage:
         return "-"
     parts = [f"{k}={v}" for k, v in window.turn_info.items() if k != "llm_calls"]
@@ -314,6 +367,23 @@ RECOVERY: Mapping[str, Recovery] = MappingProxyType({
     SILENCED: Recovery("Робот, говори.", True),
 })
 RECOVERABLE: Tuple[str, ...] = tuple(RECOVERY)
+#: Утечки прошлого акта, которые харнесс убирает на старте акта (#3989 п.5, #4027): тишина -- тем же видом и той же
+#: репликой, что у шага (:data:`RECOVERY`), играющая музыка -- стопом через ``/mcp/execute``.
+ACT_RECOVERY: Tuple[str, ...] = (SILENCED, "music")
+#: Маркер восстановления в логе акта -- один вид на все места: ``E2E_RECOVER <вид> <метка шага|at_act_start> …``.
+RECOVER_MARK = "E2E_RECOVER"
+AT_ACT_START = "at_act_start"
+
+
+def recover_marker(kind: str, where: str, detail: str = "") -> str:
+    """Строка маркера восстановления (её печатает ``recover_mark`` харнесса). Вид -- из :data:`RECOVERY` у шага и из
+    :data:`ACT_RECOVERY` на старте акта: «silence» вместо «silenced» -- ``ValueError``, а не второй словарь видов."""
+    known = ACT_RECOVERY if where == AT_ACT_START else RECOVERABLE
+    if kind not in known:
+        raise ValueError(f"{RECOVER_MARK} {kind} {where}: вид не из {list(known)}")
+    if not re.fullmatch(r"\S+", where or ""):
+        raise ValueError(f"{RECOVER_MARK} {kind}: где -- метка шага или {AT_ACT_START}, а не {where!r}")
+    return " ".join(part for part in (RECOVER_MARK, kind, where, detail.strip()) if part)
 
 
 def _norm(text: str) -> str:
@@ -392,6 +462,61 @@ def session_report(report: Any) -> Dict[str, object]:
     return {"fetch": 1, "silenced": int(frame is not None), "after": after, "detail": detail}
 
 
+# -- предусловие шага: skip_when (#3971 R21) --------------------------------------------------------------------
+
+
+class SkipRule(NamedTuple):
+    """Шаг не играется, если в логе робота за акт есть строка ``log``: вердикт ``SKIP <reason>``."""
+
+    reason: str
+    log: Pattern[str]
+
+
+#: Поле шага (пишет генератор марафона, таблица ``SKIP_WHEN``): ``{"reason": "KIE_QUOTA", "log": <regex>}``.
+SKIP_FIELD = "skip_when"
+_SKIP_REASON_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+#: Сколько символов строки-улики выводить в лог шага.
+EVIDENCE_CHARS = 200
+
+
+def skip_rule(step: Mapping[str, Any]) -> Optional[SkipRule]:
+    """Правило пропуска шага или ``None``; кривое поле -- ``ValueError`` (молча сыграть шаг без предусловия нельзя:
+    n710 удалял чужой трек, когда песни прогона не было)."""
+    raw = step.get(SKIP_FIELD)
+    if raw is None:
+        return None
+    label = step.get("label", "?")
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("reason"), str) or not isinstance(raw.get("log"), str):
+        raise ValueError(f"{label}: {SKIP_FIELD} -- {{reason: ИМЯ, log: regex}}, а не {raw!r}")
+    if not _SKIP_REASON_RE.fullmatch(raw["reason"]) or not raw["log"]:
+        raise ValueError(f"{label}: {SKIP_FIELD}: причина -- ИМЯ_ЗАГЛАВНЫМИ, regex -- не пустой: {raw!r}")
+    try:
+        return SkipRule(raw["reason"], re.compile(raw["log"]))
+    except re.error as exc:
+        raise ValueError(f"{label}: {SKIP_FIELD}.log -- не regex: {exc}") from exc
+
+
+def skip_rules(scenario: Any) -> List[Tuple[str, SkipRule]]:
+    """``[(label, правило)]`` шагов с предусловием; ошибка схемы любого шага -- ``ValueError`` до первого шага."""
+    if not isinstance(scenario, Mapping):
+        raise ValueError("сценарий -- не JSON-объект")
+    steps = [s for s in scenario.get("steps", []) if isinstance(s, Mapping)]
+    rules = [(str(s.get("label", f"s{i + 1}")), skip_rule(s)) for i, s in enumerate(steps)]
+    return [(label, rule) for label, rule in rules if rule is not None]
+
+
+def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
+    """Лог робота за акт (первая строка -- часы робота) -> ``fetch`` (0 -- лог не прочитан, предусловие не
+    проверено), ``skip`` (причина или ``-``), ``evidence`` (первая строка-улика)."""
+    now, lines = split_input(text)
+    if now is None:
+        return {"fetch": 0, "skip": "-", "evidence": "-"}
+    hit = next((line for line in lines if rule.log.search(line)), None)
+    if hit is None:
+        return {"fetch": 1, "skip": "-", "evidence": "-"}
+    return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(hit.split())[:EVIDENCE_CHARS]}
+
+
 # -- CLI ---------------------------------------------------------------------------------------------------
 
 
@@ -408,8 +533,9 @@ def _num(value: str) -> float:
 
 
 def _cmd_state(opts: Dict[str, str], flags: List[str]) -> int:
+    ceiling = _num(opts["--perform-ceiling"]) or PERFORM_CEILING_S  # пусто/0 -- потолок по умолчанию
     _emit(state(sys.stdin.read(), opts["engine"], "--silent-ok" in flags, "--barge" in flags, _num(opts["--waited"]),
-                _num(opts["--accept-window"])))
+                _num(opts["--accept-window"]), ceiling))
     return 0
 
 
@@ -459,12 +585,54 @@ def _cmd_session(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_mark(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--kind K --where W [--detail D]`` -> строка маркера ``E2E_RECOVER``; чужой вид -- rc 2 и причина в stderr."""
+    try:
+        sys.stdout.write(recover_marker(opts["--kind"], opts["--where"], opts["--detail"]) + "\n")
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    return 0
+
+
+def _load_scenario(path: str) -> Any:
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _cmd_skips(opts: Dict[str, str], flags: List[str]) -> int:
+    """``label<TAB>причина`` шагов с ``skip_when``; ошибка схемы -- rc 2 и причина в stderr."""
+    try:
+        rules = skip_rules(_load_scenario(opts["--scenario"]))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    for label, rule in rules:
+        sys.stdout.write(f"{label}\t{rule.reason}\n")
+    return 0
+
+
+def _cmd_skip(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--scenario F --label L`` < лог акта -> ``fetch=`` / ``skip=`` / ``evidence=``; у шага нет правила -- ``skip=-``."""
+    try:
+        steps = _load_scenario(opts["--scenario"]).get("steps", [])
+        step = next((s for s in steps if isinstance(s, Mapping) and s.get("label") == opts["--label"]), {})
+        rule = skip_rule(step)
+    except (OSError, ValueError, AttributeError) as exc:
+        sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
+        return 2
+    _emit(skip_verdict(rule, sys.stdin.read()) if rule else {"fetch": 1, "skip": "-", "evidence": "-"})
+    return 0
+
+
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "session": _cmd_session,
+    "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor --engine v1|v2 [--silent-ok] [--barge] [--waited S --accept-window S]"
-         " [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json\n")
+         " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
+         " | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log\n")
 
 
 def main(argv: List[str]) -> int:
@@ -477,7 +645,7 @@ def main(argv: List[str]) -> int:
         except (AttributeError, ValueError):
             pass
     opts = {"--engine": "v1", "--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
-            "--scenario": "", "--kind": ""}
+            "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

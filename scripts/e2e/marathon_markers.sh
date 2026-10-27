@@ -14,8 +14,8 @@ marathon_has_marker() {
 }
 
 # marathon_summary_value <log> <key>  → значение «key=…» из последней строки-маркера E2E_SUMMARY харнесса
-# (#3989: recovered — шаги, прошедшие после восстановления; act_recover — что чинили на старте акта).
-# Нет строки или ключа — «-».
+# (#3989: recovered — шаги, прошедшие после восстановления; act_recover — что чинили на старте акта, виды
+# маркера «E2E_RECOVER <вид> at_act_start»: music, silenced). Нет строки или ключа — «-».
 marathon_summary_value() {
     local log="$1" key="$2" value
     value="$(grep -aE "(^|[[:space:]])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z (>>> )?E2E_SUMMARY.*[[:space:]]${key}=" "$log" 2>/dev/null \

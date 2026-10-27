@@ -394,6 +394,36 @@ _node_param_values_match() {  # $1=actual $2=requested
     awk -v a="$a" -v b="$b" 'BEGIN{ exit !(a+0 == b+0) }' 2>/dev/null
 }
 
+# _remember_node_param() — прочитать значение параметра ДО изменения и дописать
+# его в $E2E_NODE_PARAM_ORIGINALS_FILE: restore_node_params() вернёт к нему из
+# trap EXIT. Печатает значение; не прочитано — rc 1, в файл ничего.
+_remember_node_param() {  # $1=node $2=param
+    local value
+    value="$(_ros2_param_value "$(_ros2_param_get_raw "$1" "$2")")"
+    [ -n "$value" ] || return 1
+    printf '%s\x1f%s\x1f%s\n' "$1" "$2" "$value" >> "$E2E_NODE_PARAM_ORIGINALS_FILE"
+    printf '%s' "$value"
+}
+
+# remember_node_params() — issue #4027: параметры, которые акт может сдвинуть
+# сам (не сценарий через node_params, а робот по просьбе: n409-n411 «помедленнее»,
+# «тараторь», «басом» двигают minimax_speed/yandex_speed/pitch_shift /tts_node),
+# запоминаются на старте акта в тот же файл, что и node_params; возвращает их тот
+# же restore_node_params(). Не прочитан — громко, не фатал (вернуть будет не к чему).
+remember_node_params() {  # $1=node, дальше параметры
+    local node="$1" param value got=""
+    shift
+    for param in "$@"; do
+        if value="$(_remember_node_param "$node" "$param")"; then
+            got="${got:+${got}, }${param}=${value}"
+        else
+            log "⚠️ ${node} ${param}: до акта не прочитан — после акта вернуть его будет не к чему (#4027)"
+        fi
+    done
+    [ -n "$got" ] && log "🧪 ${node} до акта: ${got} — вернёт restore_node_params"
+    return 0
+}
+
 # apply_node_params() — читает top-level ``node_params`` сценария, применяет
 # КАЖДЫЙ параметр, проверяет ЧТЕНИЕМ (не exit-кодом), копит исходные значения
 # в $E2E_NODE_PARAM_ORIGINALS_FILE для restore_node_params(). Пустой/
@@ -423,10 +453,9 @@ NPPY
     local node param value
     while IFS=$'\x1f' read -r node param value; do
         [ -z "$node" ] && continue
-        local before_raw before_value after_raw after_value
-        before_raw="$(_ros2_param_get_raw "$node" "$param")"
-        before_value="$(_ros2_param_value "$before_raw")"
-        if [ -z "$before_value" ]; then
+        local before_value after_raw after_value
+        # Оригинал запоминается ДО записи: и провал проверки ниже (exit 2) вернёт узел через trap EXIT.
+        if ! before_value="$(_remember_node_param "$node" "$param")"; then
             echo "E2E_FATAL: node_params — не удалось прочитать исходное значение ${node} ${param} (без него нечего восстанавливать после акта)" >&2
             echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get ${node} ${param} --no-daemon'\"" >&2
             exit 2
@@ -438,21 +467,25 @@ NPPY
             echo "E2E_FATAL: node_params — ${node} ${param} не применился: сценарий просил '${value}', узел вернул '${after_value}' (parameters_callback отклонил значение либо не перехватывает этот параметр — см. issue #2809)" >&2
             exit 2
         fi
-        printf '%s\x1f%s\x1f%s\n' "$node" "$param" "$before_value" >> "$E2E_NODE_PARAM_ORIGINALS_FILE"
         log "🧪 node_params: ${node} ${param} = ${value} (было ${before_value}) — применено и подтверждено чтением"
     done <<< "$node_params_tsv"
 }
 
 # restore_node_params() — вызывается ТОЛЬКО из trap EXIT, всегда, независимо
-# от PASS/FAIL/обрыва. Восстанавливает КАЖДЫЙ параметр к значению, прочитанному
-# в apply_node_params ДО изменения (не к хардкоду в этом файле). Провал
-# восстановления — НЕ фатал (акт уже закончился), но обязан быть громким в
+# от PASS/FAIL/обрыва. Восстанавливает КАЖДЫЙ запомненный параметр (node_params
+# сценария и remember_node_params акта) к значению, прочитанному ДО изменения (не
+# к хардкоду в этом файле); параметр, который за акт не менялся, не пишется.
+# Провал восстановления — НЕ фатал (акт уже закончился), но обязан быть громким в
 # логе прогона (ADR-0018 — молчать о сбое нельзя).
 restore_node_params() {
     [ -s "$E2E_NODE_PARAM_ORIGINALS_FILE" ] || return 0
     local node param value after_raw after_value
     while IFS=$'\x1f' read -r node param value; do
         [ -z "$node" ] && continue
+        if _node_param_values_match "$(_ros2_param_value "$(_ros2_param_get_raw "$node" "$param")")" "$value"; then
+            log "🧪 ${node} ${param} за акт не менялся (${value})"
+            continue
+        fi
         robot_ros "ros2 param set '${node}' '${param}' '${value}' --no-daemon" >/dev/null 2>&1
         after_raw="$(_ros2_param_get_raw "$node" "$param")"
         after_value="$(_ros2_param_value "$after_raw")"
@@ -635,7 +668,7 @@ MUSICPY
 # INHERITS=yes -- акт наследует окно диалога прошлого (inherits_previous_act=true). Раньше плеер такого акта не
 # трогали, и утечка доезжала: n712 «всё, глуши» не остановил трек, и он играл весь акт 8 марафона 23.10 (#4027).
 # Каждый акт марафона кончается стопом музыки, значит играющая на старте наследующего акта музыка -- утечка: стоп
-# тем же путём и честная пометка акта ``E2E_RECOVER music at_act_start`` (E2E_ACT_RECOVERED, сводка).
+# тем же путём и честная пометка акта ``E2E_RECOVER music at_act_start`` (recover_mark: E2E_ACT_RECOVERED, сводка).
 # Лог ``E2E_PRECONDITION music=stopped|was_idle``; играет и не гаснет за
 # E2E_MUSIC_IDLE_WAIT (10 с) -- ``E2E_FATAL: перед актом играет музыка``, exit 2 (trap EXIT
 # вернёт узлы на боевые БД). Не удалось даже прочитать -- тоже FATAL: тишину не доказали.
@@ -667,8 +700,7 @@ print("%s\tбыло: %s; стоп: %s; после (%s с): %s" % (p["verdict"], 
             ;;
         stopped)
             if [ "$inherits" = "yes" ]; then
-                echo "E2E_RECOVER music at_act_start (${detail})"
-                E2E_ACT_RECOVERED="${E2E_ACT_RECOVERED:+${E2E_ACT_RECOVERED},}music"
+                recover_mark music at_act_start "(${detail})"
                 log "🎵 музыка: прошлый акт оставил её играть — утечка состояния (#4027), остановлена через /mcp/execute dj_set stop + stop_music (${detail})"
                 return 0
             fi
@@ -716,7 +748,11 @@ strip_llm_request_dump() {
 #     поведение то же, что было. E2E_EVENT_WAITS=0 возвращает фиксированный sleep.
 #   * #3989: фраза ушла в бэклог без вейка (``[backlog] accumulated reason=no_wake``) или ход проглотила тишина
 #     (``stage=silenced``) -- ждать нечего, run_step решает о восстановлении шага (step_recover).
-_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|TTS finished event|🔊 TTS:|\[backlog\] accumulated|tier1 kind='
+#   * #3971 R4: ответ -- выступление (сказка n412 шла 94-162 с): ``📊 [turn] stage=done`` приходит раньше, между
+#     куплетами открытых реплик нет. Ждём конца выступления (``[perform] …: конец`` / ``PlanEvent block_end``), потолок --
+#     E2E_PERFORM_WAIT_MAX (по умолчанию e2e_events.PERFORM_CEILING_S, 240 с) от старта выступления, а не 40 с на
+#     попытку; не кончилось -- FAIL turn_perform_ceiling сразу, без повтора фразы (он заказал бы второе выступление).
+_E2E_EVENT_GREP='ПРИНЯТО|SpeechEvent|\[turn\]|LLM REQUEST START|TTS finished event|🔊 TTS:|\[backlog\] accumulated|tier1 kind=|выступление старт kind=|\[perform\] [^ ]*: конец|PlanEvent block_end block=perform-'
 _E2E_SPEECH_GREP='SpeechEvent|TTS finished event|🔊 TTS:'
 
 _events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
@@ -736,11 +772,13 @@ _ev_kv() {  # stdin = key=value строки; $1=key
 # rc=1 -- потолок при принятой фразе (ход не кончился), rc=2 -- ход кончился сбоем/отменой/без речи (FAIL сразу,
 # E2E_REPLY_REASON), rc=3 -- ПРИНЯТО нет за E2E_ACCEPT_WINDOW (переигрывать сразу, не ждать потолок),
 # rc=4 -- до хода не дошло: no_wake (вейк потерян, фраза в бэклоге) / silenced (тишина), #3989.
+# Выступление (#3971 R4): пока оно идёт, потолок -- perform_ceiling судьи, а не E2E_REACTION_WINDOW; не кончилось --
+# rc=2, вердикт perform_ceiling (повтора фразы нет).
 # Пишет E2E_REPLY_AFTER (с), E2E_REPLY_VERDICT и E2E_REPLY_NO_SPEECH=1, если ход закончился без речи
 # (silent_ok шага либо льгота E2E_NO_SPEECH_GRACE; у v1 льгота ведёт к rc=0, как раньше).
 wait_reply_done() {
     local since="$1" barge_flag="" poll="${E2E_EVENT_POLL:-2}" ceiling="${E2E_REACTION_WINDOW:-40}"
-    local accept_win=0 reason
+    local accept_win=0 reason performing limit
     [ "${2:-0}" = "1" ] && barge_flag="--barge"
     [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ] && accept_win="${E2E_ACCEPT_WINDOW:-15}"
     E2E_REPLY_VERDICT="wait"; E2E_REPLY_REASON="-"
@@ -751,14 +789,17 @@ wait_reply_done() {
     t0="$(date +%s)"
     while :; do
         now="$(date +%s)"
-        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win")"
+        out="$(_events_fetch "$since" "$_E2E_EVENT_GREP" | python3 "$(_events_py)" state --engine "${E2E_DIALOG_ENGINE:-v1}" $silent_flag $barge_flag --waited "$((now - t0))" --accept-window "$accept_win" --perform-ceiling "${E2E_PERFORM_WAIT_MAX:-0}")"
         verdict="$(printf '%s\n' "$out" | _ev_kv verdict)"
         sig="$(printf '%s\n' "$out" | _ev_kv sig)"
         quiet="$(printf '%s\n' "$out" | _ev_kv quiet_for)"
         reason="$(printf '%s\n' "$out" | _ev_kv reason)"
+        performing="$(printf '%s\n' "$out" | _ev_kv performing)"
+        limit="$ceiling"
+        [ "$performing" = "1" ] && limit="$(printf '%s\n' "$out" | _ev_kv perform_ceiling)"
         now="$(date +%s)"
         case "$verdict" in
-            failed|cancelled)
+            failed|cancelled|perform_ceiling)
                 E2E_REPLY_VERDICT="$verdict"; E2E_REPLY_REASON="$reason"
                 E2E_REPLY_AFTER=$((now - t0)); return 2 ;;
             no_accept)
@@ -783,8 +824,13 @@ wait_reply_done() {
                 fi ;;
             *) stable=0; prev_sig=""; nospeech_at=0 ;;
         esac
-        if [ $((now - t0)) -ge "$ceiling" ]; then
-            E2E_REPLY_VERDICT="ceiling"; E2E_REPLY_AFTER=$((now - t0)); return 1
+        if [ $((now - t0)) -ge "${limit:-$ceiling}" ]; then
+            E2E_REPLY_AFTER=$((now - t0))
+            if [ "$performing" = "1" ]; then  # часы робота не дали судье решить сам: тот же итог, без повтора фразы
+                E2E_REPLY_VERDICT="perform_ceiling"; E2E_REPLY_REASON="perform_unfinished:waited=${E2E_REPLY_AFTER}s"
+                return 2
+            fi
+            E2E_REPLY_VERDICT="ceiling"; return 1
         fi
         sleep "$poll"
     done
@@ -946,13 +992,67 @@ recover_allowed() {  # $1 = вид; разрешён ли он текущему 
 recovery_field() {  # $1 = вид, $2 = phrase|replay -> значение из RECOVERY (e2e_events.py)
     python3 "$(_events_py)" recovery --kind "$1" | _ev_kv "$2"
 }
+# recover_mark ВИД ГДЕ [ПОДРОБНОСТИ] -- ОДИН вид маркера восстановления в логе акта: «E2E_RECOVER <вид> <где> …».
+# Где -- метка шага (step_recover) или at_act_start (утечка прошлого акта: вид копится в E2E_ACT_RECOVERED, сводка
+# act_recover=). Строку строит e2e_events.recover_marker: вид -- из RECOVERY у шага, из ACT_RECOVERY на старте акта
+# (тишина -- «silenced» в обоих местах); чужой вид -- громко в лог, маркера нет.
+recover_mark() {
+    local line
+    if ! line="$(python3 "$(_events_py)" mark --kind "$1" --where "$2" --detail "${3:-}" 2>&1)"; then
+        log "❌ маркер восстановления не записан: ${line}"
+        return 0
+    fi
+    echo "$line"
+    [ "$2" = "at_act_start" ] && E2E_ACT_RECOVERED="${E2E_ACT_RECOVERED:+${E2E_ACT_RECOVERED},}$1"
+    return 0
+}
+
+# --- issue #3971 R21 — предусловие внешнего мира шага (поле skip_when) ---------------------------------------
+# Акт 7: при «🎼 [cover] баланс KIE: 0» песни прогона нет -- n706-n710 краснели каскадом, а n710 (delete) удалил
+# чужой трек и остался зелёным. Шаг с полем ``skip_when: {"reason": R, "log": regex}`` перед игрой сверяется с логом
+# робота за акт (с E2E_RUN_BEFORE): строка есть -- шаг не играется, итог «SKIP <R>» (не PASS и не FAIL). Решает
+# e2e_events.py (skip_rule / skip_verdict); поле не разобрано -- E2E_FATAL до первого шага. Лог не прочитан --
+# предусловие не доказано, шаг играется как обычно (громко в лог).
+E2E_SKIP_RULES_FILE="${E2E_SKIP_RULES_FILE:-}"
+load_skip_rules() {  # $1 = файл сценария
+    local err n
+    E2E_SKIP_RULES_FILE="${OUT_DIR:-/tmp}/skip_rules.tsv"
+    if ! err="$(python3 "$(_events_py)" skips --scenario "$1" 2>&1 >"$E2E_SKIP_RULES_FILE")"; then
+        echo "E2E_FATAL: поле skip_when сценария не разобрано: ${err:-нет ответа} (issue #3971)" >&2
+        exit 2
+    fi
+    n="$(grep -c . "$E2E_SKIP_RULES_FILE" 2>/dev/null)"
+    [ "${n:-0}" -gt 0 ] && log "⏭ предусловия шагов (#3971): ${n} шагов с skip_when — ${E2E_SKIP_RULES_FILE}"
+    return 0
+}
+# step_precondition_skip LABEL SCENARIO -- rc 0: предусловие нарушено, шаг пропущен (E2E_STEP <label> SKIP <причина>
+# уже выведен); rc 1 -- играть шаг.
+step_precondition_skip() {
+    local label="$1" scenario="$2" reason out
+    [ -n "${E2E_SKIP_RULES_FILE:-}" ] && [ -s "$E2E_SKIP_RULES_FILE" ] || return 1
+    reason="$(awk -F'\t' -v l="$label" '$1 == l { sub(/\r$/, "", $2); print $2; exit }' "$E2E_SKIP_RULES_FILE")"
+    [ -n "$reason" ] || return 1
+    out="$(${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '${E2E_RUN_BEFORE:-600s}' 2>&1; true" 2>/dev/null \
+        | python3 "$(_events_py)" skip --scenario "$scenario" --label "$label")"
+    if [ "$(printf '%s\n' "$out" | _ev_kv fetch)" != "1" ]; then
+        log "STEP ${label}: ⚠️ предусловие ${reason} не проверено (лог робота не прочитан) — шаг играется"
+        return 1
+    fi
+    if [ "$(printf '%s\n' "$out" | _ev_kv skip)" != "$reason" ]; then
+        log "STEP ${label}: предусловие ${reason} не нарушено — шаг играется"
+        return 1
+    fi
+    log "STEP ${label}: ⏭ SKIP ${reason} — в логе акта: $(printf '%s\n' "$out" | _ev_kv evidence). Шаг НЕ играется (не PASS и не FAIL)"
+    emit_step "${label} SKIP ${reason}"
+    return 0
+}
 
 # --- issue #3989 п.5 — тишина не переживает акт ---------------------------------------------------------
 # «Замолчи» ставит сцену Silence на 10 минут, снимает её только «Робот, говори» (решение Шифу 23.10). Акт, оборванный
 # между ними, оставлял следующему молчащего робота, и все шаги, ждущие ответа, краснели «робот молчит». В начале
 # КАЖДОГО v2-акта (и наследующего) харнесс читает latched /dialog/session (пишет dialog_node), решает
 # e2e_events.session_report; тишина -- реплика снятия (фраза -- RECOVERY в e2e_events.py) в /voice/stt/utterance, как
-# от STT, и новый снимок. Маркер «E2E_RECOVER silence at_act_start», пометка акта в сводке (E2E_ACT_RECOVERED). Не
+# от STT, и новый снимок. Маркер «E2E_RECOVER silenced at_act_start» (recover_mark), пометка акта в сводке. Не
 # снялась -- E2E_FATAL: акт молчащего робота нечитаем. Не прочитать -- громко, но не фатал: шагам поможет step_recover.
 # Рабочий процесс внутри voice-assistant (rclpy), как у музыки ниже. argv: read|unsilence, фраза (base64), сек ждать
 # снимков после реплики. Печатает одну строку JSON: snapshot, scenes, [after], now.
@@ -1022,8 +1122,7 @@ ensure_not_silenced_for_act() {
     out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" unsilence '${phrase_b64}' '${wait_s}'" 2>/dev/null)"
     rep="$(_session_report "$out")"
     if [ "$(printf '%s\n' "$rep" | _ev_kv after)" = "0" ]; then
-        echo "E2E_RECOVER silence at_act_start (было: ${detail})"
-        E2E_ACT_RECOVERED="${E2E_ACT_RECOVERED:+${E2E_ACT_RECOVERED},}silence"
+        recover_mark silenced at_act_start "(было: ${detail})"
         log "🤫 тишина: прошлый акт оставил робота в тишине (${detail}) — снята репликой «${phrase}» в /voice/stt/utterance (#3989 п.5)"
         return 0
     fi
@@ -1033,69 +1132,26 @@ ensure_not_silenced_for_act() {
 }
 
 # --- issue #4027 — скорость и тон TTS не переживают акт ---------------------------------------------------
-# Акт 4 (n409-n411 «помедленнее», «тараторь», «басом») двигает yandex_speed/pitch_shift (после T1 -- и
-# minimax_speed), а возврат set_voice ниже их не трогает: 23.10 yandex_speed=1.2 и pitch_shift=0.8 доехали до акта 10.
-# Как restore_node_params: значения ЧИТАЮТСЯ до акта (snapshot_tts_prosody) и возвращаются к ним, не к хардкоду;
-# запись проверяется чтением. Чтение трёх параметров -- один ssh.
-E2E_TTS_PROSODY_PARAMS="yandex_speed minimax_speed pitch_shift"
-E2E_TTS_PROSODY_FILE="${E2E_TTS_PROSODY_FILE:-}"
-_tts_prosody_read() {  # -> «параметр<US>значение» по каждому прочитанному параметру /tts_node
-    robot_ros "for p in ${E2E_TTS_PROSODY_PARAMS}; do echo \"@\$p\"; ros2 param get /tts_node \$p --no-daemon; done" 2>/dev/null \
-        | awk '/^@/ { p = substr($0, 2); sub(/\r$/, "", p); next }
-               p != "" && /Double value is: / { sub(/.*Double value is: /, ""); sub(/\r$/, ""); printf "%s\037%s\n", p, $0; p = "" }'
-}
-_tts_prosody_value() {  # $1 = вывод _tts_prosody_read, $2 = параметр
-    printf '%s\n' "$1" | awk -F'\037' -v p="$2" '$1 == p { print $2; exit }'
-}
-snapshot_tts_prosody() {  # $1 = файл: «параметр<US>значение до акта» для restore_robot_tts_default
-    E2E_TTS_PROSODY_FILE="$1"
-    _tts_prosody_read > "$1" 2>/dev/null || : > "$1"
-    if [ -s "$1" ]; then
-        log "🎙️ TTS: скорость/тон до акта: $(tr '\037\n' '= ' < "$1")"
-    else
-        log "⚠️ TTS: скорость/тон /tts_node до акта не прочитаны — после акта их вернуть будет не к чему (#4027)"
-    fi
-}
-_restore_tts_prosody() {
-    local file="${E2E_TTS_PROSODY_FILE:-}" now after cmd="" changed="" bad="" param value cur
-    [ -n "$file" ] && [ -s "$file" ] || return 0
-    now="$(_tts_prosody_read)"
-    while IFS=$'\x1f' read -r param value; do
-        [ -n "$param" ] || continue
-        cur="$(_tts_prosody_value "$now" "$param")"
-        _node_param_values_match "$cur" "$value" && continue
-        case "$value" in *.*) ;; *) value="${value}.0" ;; esac   # Double, а не Integer: иначе ros2 param set откажет
-        cmd="${cmd}ros2 param set /tts_node ${param} ${value} --no-daemon >/dev/null; "
-        changed="${changed:+${changed}, }${param} ${cur:-?} -> ${value}"
-    done < "$file"
-    if [ -z "$cmd" ]; then
-        log "🎙️ TTS: скорость и тон за акт не менялись"
-        return 0
-    fi
-    robot_ros "$cmd" >/dev/null 2>&1
-    after="$(_tts_prosody_read)"
-    while IFS=$'\x1f' read -r param value; do
-        [ -n "$param" ] || continue
-        _node_param_values_match "$(_tts_prosody_value "$after" "$param")" "$value" \
-            || bad="${bad:+${bad}, }${param}=$(_tts_prosody_value "$after" "$param") (ждали ${value})"
-    done < "$file"
-    if [ -z "$bad" ]; then
-        log "🎙️ TTS: скорость/тон возвращены к значениям до акта: ${changed}"
-    else
-        log "❌ ВНИМАНИЕ: TTS — скорость/тон НЕ возвращены (${bad}), робот говорит с параметрами из акта!"
-        log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set /tts_node <параметр> <значение> --no-daemon'\""
-    fi
-}
+# Акт 4 (n409-n411 «помедленнее», «тараторь», «басом») двигает minimax_speed/yandex_speed/pitch_shift, а возврат
+# set_voice ниже их не трогает: 23.10 yandex_speed=1.2 и pitch_shift=0.8 доехали до акта 10. Механизм один -- тот же,
+# что у node_params: на старте акта remember_node_params /tts_node $E2E_TTS_PROSODY_PARAMS кладёт значения до акта в
+# E2E_NODE_PARAM_ORIGINALS_FILE, restore_node_params в trap EXIT возвращает их и проверяет чтением.
+E2E_TTS_PROSODY_PARAMS="minimax_speed yandex_speed pitch_shift"
 
 # --- issue #3710 п.2 — e2e-БД дикторов акта в артефакты ------------------------------------------------
 # Разбор каста (клоны, отравленная галерея, «неопознанный») шёл по логам: сама e2e-БД оставалась в контейнере и
 # стиралась следующим марафоном. В конце акта харнесс забирает её копию ОДНИМ ssh -- tar файла БД и его -wal/-shm
 # (/data видна только из контейнера), только чтение. Боевую /data/speakers.db не трогает: путь обязан кончаться на
-# .e2e.db. Артефакты: speakers_e2e_db.tar (на билд-машине, в OUT_DIR акта) и speakers_e2e_db.json -- таблицы, число
-# строк и строки без BLOB (эмбеддинги не выносятся); json уходит в архив артефактов workflow (*.json).
+# .e2e.db. Артефакты: speakers_e2e_db.tar (на билд-машине, в OUT_DIR акта; в архив workflow не уходит) и
+# speakers_e2e_db.json -- он уходит в архив артефактов ПУБЛИЧНОГО репо (*.json), поэтому в нём только число строк по
+# таблицам и имена ролей каста (поле сценария ``cast``, пишет генератор марафона). Прочие имена (в e2e-БД пишет
+# speaker_id_node всех, кого слышит, -- и людей мастерской) не выносятся: только их число (masked), безымянные
+# профили -- числом (unnamed). Нет поля cast -- скрыты все имена. trap EXIT: ssh и разбор -- под timeout
+# (E2E_SPEAKER_DB_TIMEOUT, 60 с), зависший ssh не держит выход акта.
 E2E_SPEAKER_DB="${E2E_SPEAKER_DB:-/data/speakers.e2e.db}"
-collect_e2e_speaker_db() {  # $1 = каталог артефактов акта
-    local dir="$1" db="${E2E_SPEAKER_DB}" base tarf remote summary
+collect_e2e_speaker_db() {  # $1 = каталог артефактов акта, $2 = файл сценария (поле cast)
+    local dir="$1" scenario="${2:-}" db="${E2E_SPEAKER_DB}" wait_s="${E2E_SPEAKER_DB_TIMEOUT:-60}" base tarf remote
+    local summary rc
     [ "${E2E_ACT_STARTED:-0}" = "1" ] || return 0
     case "$db" in
         /*.e2e.db) ;;
@@ -1104,16 +1160,47 @@ collect_e2e_speaker_db() {  # $1 = каталог артефактов акта
     base="${db##*/}"
     tarf="${dir}/speakers_e2e_db.tar"
     remote="cd '${db%/*}' && f=\$(ls -- '${base}' '${base}-wal' '${base}-shm' 2>/dev/null); [ -n \"\$f\" ] && tar -cf - \$f"
-    ${ROBOT_SSH} "docker exec voice-assistant sh -c $(printf '%q' "$remote")" > "$tarf" 2>/dev/null
-    if [ ! -s "$tarf" ]; then
+    timeout "$wait_s" ${ROBOT_SSH} "docker exec voice-assistant sh -c $(printf '%q' "$remote")" > "$tarf" 2>/dev/null
+    rc=$?
+    if [ "$rc" = "124" ] || [ ! -s "$tarf" ]; then
         rm -f "$tarf"
-        log "🗄️ e2e-БД дикторов: копии нет (в контейнере нет ${db} либо ssh/tar не ответили)"
+        if [ "$rc" = "124" ]; then
+            log "🗄️ e2e-БД дикторов: ssh не ответил за ${wait_s} с — копии нет"
+        else
+            log "🗄️ e2e-БД дикторов: копии нет (в контейнере нет ${db} либо ssh/tar не ответили)"
+        fi
         echo "E2E_SPEAKER_DB none"
         return 0
     fi
-    summary="$(python3 - "$tarf" "$base" "${dir}/speakers_e2e_db.json" <<'DBPY'
+    summary="$(timeout "$wait_s" python3 - "$tarf" "$base" "${dir}/speakers_e2e_db.json" "$scenario" <<'DBPY'
 import json, os, sqlite3, sys, tarfile, tempfile
-tar_path, base, out_path = sys.argv[1:4]
+tar_path, base, out_path, scenario = sys.argv[1:5]
+
+
+def cast_names(path):
+    """Роли каста из сценария (поле ``cast``): имя без регистра -> имя роли; нет поля -- пусто, скрыты все имена."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cast = json.load(fh).get("cast") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {str(n).strip().casefold(): str(n).strip() for n in cast if str(n).strip()}
+
+
+def speaker_names(con, cast):
+    """Профили дикторов без имён посторонних: роли каста -- поимённо (клон роли виден числом 2), прочие -- числом."""
+    out = {"cast": {}, "unnamed": 0, "masked": 0}
+    for (name,) in con.execute("SELECT name FROM speakers"):
+        role = cast.get(str(name or "").strip().casefold())
+        if not str(name or "").strip():
+            out["unnamed"] += 1
+        elif role:
+            out["cast"][role] = out["cast"].get(role, 0) + 1
+        else:
+            out["masked"] += 1
+    return out
+
+
 report = {"db": base, "files": [], "tables": {}}
 try:
     with tempfile.TemporaryDirectory() as tmp:
@@ -1122,27 +1209,31 @@ try:
             report["files"] = [{"name": m.name, "bytes": m.size} for m in members]
             tf.extractall(tmp, members=members)
         con = sqlite3.connect(os.path.join(tmp, base))
-        for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall():
+        tables = [n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        for name in tables:
             quoted = '"%s"' % name.replace('"', '""')
-            cur = con.execute("SELECT * FROM %s LIMIT 200" % quoted)
-            cols = [d[0] for d in cur.description]
-            rows = [{c: v for c, v in zip(cols, row) if not isinstance(v, (bytes, memoryview))} for row in cur]
-            report["tables"][name] = {"count": con.execute("SELECT COUNT(*) FROM %s" % quoted).fetchone()[0],
-                                      "rows": rows}
+            report["tables"][name] = {"count": con.execute("SELECT COUNT(*) FROM %s" % quoted).fetchone()[0]}
+        if "speakers" in tables:
+            report["speakers"] = speaker_names(con, cast_names(scenario) if scenario else {})
         con.close()
 except Exception as exc:  # копия есть и без сводки: разбор -- руками по tar
     report["error"] = "%s: %s" % (type(exc).__name__, exc)
 with open(out_path, "w", encoding="utf-8") as fh:
     json.dump(report, fh, ensure_ascii=False, indent=1, default=str)
-print(", ".join("%s=%d" % (k, v["count"]) for k, v in report["tables"].items()) or report.get("error", "таблиц нет"))
+counts = ", ".join("%s=%d" % (k, v["count"]) for k, v in report["tables"].items())
+sp = report.get("speakers")
+if sp:
+    counts += "; каст %s, безымянных %d, скрыто %d" % (sp["cast"] or "{}", sp["unnamed"], sp["masked"])
+print(counts or report.get("error", "таблиц нет"))
 DBPY
 )"
+    [ -n "$summary" ] || summary="сводки нет (разбор не уложился в ${wait_s} с либо упал)"
     log "🗄️ e2e-БД дикторов скопирована (только чтение): ${tarf} ($(wc -c < "$tarf" | tr -d ' ') байт), строки: ${summary}"
     echo "E2E_SPEAKER_DB copied ${tarf}"
 }
 
 restore_robot_tts_default() {
-    _restore_tts_prosody   # #4027: скорость и тон -- к значениям до акта (своё чтение, без E2E_RUN_BEFORE)
+    # #4027: скорость и тон возвращает restore_node_params (идёт в trap EXIT следом), здесь -- только голос.
     [ -n "${E2E_RUN_BEFORE:-}" ] || return 0
     local logs provider code_b64 out result_line verdict
     # Строки, доказывающие, что за прогон голос/провайдер МЕНЯЛИ (а не что

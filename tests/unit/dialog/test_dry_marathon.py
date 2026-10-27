@@ -439,6 +439,33 @@ def test_classification_of_real_acts_separates_acoustic_steps():
     assert sum(len(dm.load_act(k).steps) for k in ("1", "2", "3", "4")) == 57
 
 
+@pytest.mark.parametrize("act,label", [
+    ("4", "n409_speed_down"), ("4", "n410_speed_up"), ("4", "n411_pitch_bass"), ("4", "n411b_prosody_normal"),
+    ("4", "n412_skazka_multivoice"), ("8", "n812_stop_music"), ("9", "n904_anim_sad"), ("9", "n905_anim_victory"),
+    ("9", "n906_anekdot_anim"),
+])
+def test_steps_judged_by_owner_lines_the_stand_does_not_write_are_acoustic(act, label):
+    """Ревью #4046: строк tts_node «изменён», ответа тула скорости, конца выступления, лица команды, was_playing и
+    успеха play_animation фейки стенда не пишут -- такой шаг на стенде красный всегда, засчитывает его робот."""
+    step = next(s for s in dm.load_act(act).steps if s["label"] == label)
+    kind, reasons = dm.classify_step(step)
+    assert kind == dm.ACOUSTIC, (label, step["patterns"])
+    assert any(r.startswith("паттерн по строке") for r in reasons), reasons
+
+
+def test_owner_line_fragments_match_the_generator_markers():
+    """Фрагменты ``_ACOUSTIC_PATTERN`` сверены с ИСХОДНИКАМИ паттернов генератора, а не с текстом строк робота."""
+    sys.path.insert(0, str(REPO / "scripts" / "e2e"))
+    import gen_night_marathon as gen  # noqa: PLC0415
+
+    for pattern in (gen.prosody_changed(gen.SPEED_PARAMS, gen.BELOW_NORMAL), gen.SPEED_RAISED, gen.SPEED_ALREADY_NORMAL,
+                    gen.PITCH_ALREADY_NORMAL, gen.PERFORM_DONE, gen.FACE_DONE, gen.MUSIC_WAS_PLAYING,
+                    gen.face_or_animation("sad")):
+        assert dm._ACOUSTIC_PATTERN.search(pattern), pattern
+    for pattern in (gen.TURN_DONE, gen.SPEECH_STARTED, gen.tool_done("play_sound"), gen.MUSIC_STARTED):
+        assert not dm._ACOUSTIC_PATTERN.search(pattern), pattern
+
+
 def test_acts_flags_follow_the_harness_isolation_rules():
     act2, act3 = dm.load_act("2"), dm.load_act("3")
     assert act2.registers_speakers and act2.writes_memory and not act2.inherits
