@@ -116,7 +116,7 @@ def test_gen_set_orders_cover_tasks_through_the_same_cover_maker(tmp_path):
     gen.order_more()
     assert maker.made == [(track, A, "club", 0.0, False)] and gen.task_ids == ["T1"] and gen.spent == 12.0
     title = "Звёздные войны (кавер)"
-    ready = [(i.id, i.genre, i.title) for i in gen._ready]  # noqa: SLF001
+    ready = [(i.id, i.genre, i.title) for i in gen._pool.ready]  # noqa: SLF001
     assert ready == [("c1a", key, title), ("c1b", key, title)]
     assert gs.genre_name(key) == "клуб"
 
