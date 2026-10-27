@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Sequence
 
@@ -36,18 +36,52 @@ class ActionResult:
     event_ref: Optional[str] = None
 
 
+def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
+    """Результат с классом ВЫЗОВА (``knowledge.call_class``): исполнитель клеит класс тула, а класс ``music_library``
+    зависит от ``action`` (#4020) - list/search/info это ``query`` (данные идут LLM), а не «Включаю музыку.».
+    ``args`` - аргументы вызова (для позднего исхода - данные результата: аргументы лежат в них поверх ответа тула)."""
+    cls = kn.call_class(result.tool, args)
+    return result if cls == result.cls else replace(result, cls=cls)
+
+
+def _tool_key(result: ActionResult) -> Optional[str]:
+    """Особый ключ тула (``knowledge.TOOL_PHRASES``): готовый или выбранный по данным результата
+    (``knowledge.ByData``)."""
+    entry = kn.TOOL_PHRASES.get(result.tool, {}).get(result.status)
+    return entry.key(result.data) if isinstance(entry, kn.ByData) else entry
+
+
+def _imitation_key(result: ActionResult) -> Optional[str]:
+    """Успех тихого действия молчит, кроме звукоподражания (``knowledge.SOUND_IMITATIONS``): ключ по звуку из данных
+    результата или ``None``."""
+    if result.tool != kn.SOUND_TOOL:
+        return None
+    return kn.SOUND_IMITATIONS.get(str(result.data.get("sound")))
+
+
 def phrase_key(result: ActionResult) -> Optional[str]:
     """Ключ фразы результата или ``None``, если о таком исходе шаблон не говорит (``query.done`` — речь LLM;
-    успех молчаливого действия ``knowledge.SILENT_DONE_TOOLS`` — звук сам себе доказательство)."""
+    успех молчаливого действия ``knowledge.SILENT_DONE_TOOLS`` — звук сам себе доказательство, кроме звукоподражания).
+    Фраза берётся из РЕЗУЛЬТАТА, а не из класса тула (ADR-0148): ``stop_music`` при ``was_playing=False`` - «ничего не
+    играет», а не «Выключил музыку»; действия ``music_library`` - свои фразы (``knowledge.TOOL_PHRASES``)."""
     if result.status == "done" and result.tool in kn.SILENT_DONE_TOOLS:
-        return None
+        return _imitation_key(result)
     if result.reason == kn.PLAN_WAIT_REASON:  # не дождался очереди плана: исход не у владельца — фраза плана
         return "plan.timeout"
-    base = kn.TOOL_PHRASES.get(result.tool, {}).get(result.status) \
-        or kn.ACTION_CLASSES[result.cls].phrases.get(result.status)
+    base = _tool_key(result) or kn.ACTION_CLASSES[result.cls].phrases.get(result.status)
     if base is None:
         return None
     return phrases.first_key(f"{base}.{result.reason}" if result.reason else None, base)
+
+
+def _slots(result: ActionResult) -> Mapping[str, Any]:
+    """Слоты фразы: данные события; у фраз библиотеки ``{name}`` - название трека из результата (``title``) в кавычках,
+    как у ``media_phrases.library_*_text`` (тексты - один каталог ``ru.yaml``)."""
+    slots = dict(result.data)
+    if result.tool == kn.LIBRARY_TOOL:
+        title = str(slots.get("title") or "").strip()
+        slots["name"] = f"«{title}»" if title else kn.LIBRARY_UNNAMED
+    return slots
 
 
 def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[Utterance]:
@@ -56,7 +90,7 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
     key = phrase_key(result)
     if key is None:
         return None
-    text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **dict(result.data))
+    text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,
                      emotion="sad" if result.status in _FAILED else None)

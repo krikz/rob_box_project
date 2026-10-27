@@ -329,13 +329,16 @@ VOLUME_TOPIC_STEMS: Tuple[str, ...] = ("громк", "звук", "уровень
 # Tier-1 закрытая грамматика (§4.2, ``grammar.match``): виды команд, служебные слова, голос, новая сессия
 # ---------------------------------------------------------------------------------------------------------------
 
+#: Вид Tier-1 «говори нормально» (#4022): сброс скорости и тона речи; слова - ``PROSODY_*`` ниже.
+PROSODY_NORMAL_KIND = "prosody_normal"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
+#: ``prosody_normal`` звучит: тулы сброса молчат, фразу о результате говорит код.
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
-    "new_session": False, "set_voice": True, "answer": False,
+    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, "answer": False,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -374,6 +377,34 @@ VOICE_DEFAULT_FILLER: Tuple[str, ...] = (
     "верни", "вернись", "вернуть", "обратно", "назад", "снова", "опять", "по", "своим", "твоим", "свое", "своё",
     "роботу", "робот", "мой", "к",
 )
+#: «Говори нормально» (#4022, Tier-1 ``prosody_normal``): сброс скорости и тона речи к норме двумя тулами
+#: (``set_speed``/``set_pitch`` ``action=normal``), фразу строит код по их результату. Раньше такая реплика шла в LLM,
+#: и та отвечала «Возвращаю обычный темп» без вызова тула - скорость оставалась 0.8 (живой прогон 26.10 20:58:30,
+#: ADR-0148). Команда покрыта грамматикой ЦЕЛИКОМ: речевой глагол (точные формы: «говоришь» - не просьба) или «речи»,
+#: слово «нормально» (``PROSODY_NORMAL_STEMS``) и только слова ниже; «обычным ГОЛОСОМ» - не скорость, а голос робота
+#: (``set_voice``, #3803).
+PROSODY_VERBS: Tuple[str, ...] = (
+    "говори", "говорите", "разговаривай", "разговаривайте", "читай", "читайте", "произноси",
+)
+#: Тулы сброса и их аргумент: оба сразу, у каждого своя ось и свой исход.
+PROSODY_RESET_TOOLS: Tuple[str, ...] = ("set_speed", "set_pitch")
+PROSODY_NORMAL_ARG = "normal"
+PROSODY_SPEECH_NOUNS: Tuple[str, ...] = ("речь", "речи")
+PROSODY_NORMAL_STEMS: Tuple[str, ...] = ("нормальн", "обычн", "стандартн", "привычн")
+#: Слова «про что»: скорость, темп (основы) и тон (точные формы: «тонкий», «тонна» - не тон).
+PROSODY_TOPIC_STEMS: Tuple[str, ...] = ("скорост", "темп")
+PROSODY_TONE_FORMS: Tuple[str, ...] = ("тон", "тона", "тоне", "тоном")
+PROSODY_FILLER: Tuple[str, ...] = (
+    "как", "с", "со", "к", "верни", "вернись", "вернуть", "обратно", "снова", "опять", "свой", "свою", "своей",
+    "твоей", "прежней",
+)
+#: Слова, с которыми фраза - не сброс просодии: голос робота (``set_voice``) и громкость (основы), отрицание
+#: (точные формы).
+PROSODY_FOREIGN_STEMS: Tuple[str, ...] = ("голос", "громк")
+PROSODY_NEGATION: Tuple[str, ...] = ("не", "нет")
+#: Фраза всех сбросов, прошедших удачно (одна на оба тула); при отказе хоть одного - фразы исходов тулов
+#: (``TOOL_PHRASES``).
+PROSODY_NORMAL_PHRASE = "prosody.normal"
 #: «Новая сессия» (U8): фразы — подстрокой после снятия вейка (как в v1); Telegram «/clear» — правило хоста.
 NEW_SESSION_PHRASES: Tuple[str, ...] = (
     "новая сессия", "новую сессию", "новый диалог", "новый разговор",
@@ -504,6 +535,35 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
     "say": "action.speak_aloud",
     "say_aloud": "action.speak_aloud",
 })
+#: Тул библиотеки сгенерированной музыки: семь действий одним тулом каталога (``action``), а класс у них разный.
+LIBRARY_TOOL = "music_library"
+#: Название трека в слоте ``{name}`` фраз библиотеки, когда в данных результата его нет (удаление отдаёт без названия).
+LIBRARY_UNNAMED = "этот трек"
+#: Класс ВЫЗОВА, когда он зависит от аргумента (#4020, ADR-0148: фразу об исходе строит код по результату, а не по тулу):
+#: тул -> (аргумент, значение -> класс). ``music_library``: list/search/info читают библиотеку - это ``query`` (данные
+#: идут обратно LLM, речь строит она по данным), rate/update/delete правят её - ``action.local`` со своими фразами
+#: ``music.library_*``; ``play`` (и значение вне таблицы) берёт класс тула - ``action.media``, «Включаю музыку.» говорит
+#: только он. Класс тула в :data:`TOOL_CLASSES` остаётся запасным (валидатор команды, срез тулов, дедлайн запроса).
+CLASS_BY_ARG: Mapping[str, Tuple[str, Mapping[str, str]]] = MappingProxyType({
+    LIBRARY_TOOL: ("action", MappingProxyType({
+        "list": "query", "search": "query", "info": "query",
+        "rate": "action.local", "update": "action.local", "delete": "action.local",
+    })),
+})
+
+
+def call_class(tool: str, args: Mapping[str, Any]) -> str:
+    """Класс действия ВЫЗОВА: по аргументу из :data:`CLASS_BY_ARG`, иначе класс тула (:data:`TOOL_CLASSES`).
+    Единственное место, где класс зависит от аргументов; ход и фраза исхода берут класс отсюда."""
+    by_arg = CLASS_BY_ARG.get(tool)
+    if by_arg is not None:
+        name, classes = by_arg
+        cls = classes.get(str(args.get(name)))
+        if cls is not None:
+            return cls
+    return TOOL_CLASSES[tool]
+
+
 #: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` всегда в срезе агента чата; КОГДА звать - решает модель по правилу
 #: промпта чата (RULE #ALOUD), а не список слов в коде (решение Шифу 22.10: без костылей под формулировки).
 ALOUD_TOOL = "say_aloud"
@@ -745,17 +805,76 @@ WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
 DONE_EVIDENCE: Mapping[str, str] = MappingProxyType({"memory_save": "fact_id"})
 NO_EVIDENCE_REASON = "no_evidence"
+
+
+@dataclass(frozen=True)
+class ByData:
+    """Ключ фразы по ДАННЫМ результата (#4020, ADR-0148): фразу об исходе выбирает код по тому, что сообщил владелец,
+    а не по классу тула. ``fields`` - поля данных результата (аргументы вызова лежат в данных поверх ответа тула),
+    ``keys`` - кортеж значений этих полей -> ключ каталога; пустое значение поля (нет поля, ``""``) читается как
+    ``None``. Не нашлось - ``default``; ``None`` - ключ класса действия."""
+
+    fields: Tuple[str, ...]
+    keys: Mapping[Tuple[Any, ...], str]
+    default: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "keys", MappingProxyType(dict(self.keys)))
+
+    def key(self, data: Mapping[str, Any]) -> Optional[str]:
+        values = tuple(None if data.get(f) in (None, "") else data.get(f) for f in self.fields)
+        return self.keys.get(values, self.default)
+
+    def all_keys(self) -> Tuple[str, ...]:
+        """Все ключи каталога, которые таблица может отдать (их обязан содержать ``phrases/ru.yaml``)."""
+        return (*self.keys.values(), *((self.default,) if self.default else ()))
+
+
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
-TOOL_PHRASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
+TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
     "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
-    # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media
-    "stop_music": MappingProxyType({"done": "music.stop_ok", "rejected": "music.stop_fail"}),
+    # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media. Тул сказал, что играть
+    # было нечему (``was_playing=False``, живой прогон 26.10 20:57:50: ``stop track_id=None``) - так и говорим (#4020).
+    "stop_music": MappingProxyType({
+        "done": ByData(("was_playing",), {(False,): "music.stop_idle"}, "music.stop_ok"),
+        "rejected": "music.stop_fail",
+    }),
+    # библиотека (CLASS_BY_ARG): правка - фраза о ней, не «Включаю музыку»; list/search/info - query, фразы кода нет
+    LIBRARY_TOOL: MappingProxyType({
+        "done": ByData(("action", "verdict"), {
+            ("rate", "like"): "music.library_liked", ("rate", "dislike"): "music.library_disliked",
+            ("update", None): "music.library_updated", ("delete", None): "music.library_deleted",
+        }),
+        "rejected": ByData(("action",), {
+            ("rate",): "music.library_fail", ("update",): "music.library_fail", ("delete",): "music.library_fail",
+        }),
+    }),
+    # «Говори нормально» (PROSODY_NORMAL_KIND): сброс по результату тула, а не «Готово.» - ни о чём не говорящее слово
+    "set_speed": MappingProxyType({"done": ByData(("action",), {("normal",): "speed.normal"})}),
+    "set_pitch": MappingProxyType({"done": ByData(("action",), {("normal",): "pitch.normal"})}),
 })
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
-#: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода.
+#: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
+#: (:data:`SOUND_IMITATIONS`).
 SILENT_DONE_TOOLS: Tuple[str, ...] = ("play_sound", "play_animation")
+#: Тул звука: его аргумент ``sound`` - ключ :data:`SOUND_IMITATIONS`.
+SOUND_TOOL = "play_sound"
+#: Звукоподражание к тихому звуку (#4031, идея Шифу 26.10: «сирена - сказать „виу-виу“, это будет круто»): триггер
+#: звука каталога ``sound_pack/sound_catalog.json`` -> ключ фразы ``phrases/ru.yaml``. Единственная таблица: код
+#: говорит её фразой исхода ``play_sound`` при успехе (``respond.phrase_key``) - только там, где это смешно; звука нет в
+#: таблице - успех тихий, как и был (решение Шифу: тихое действие по прямой просьбе - норма). Сверку с каталогом держит
+#: ``tests/unit/dialog/test_sound_aliases.py``.
+SOUND_IMITATIONS: Mapping[str, str] = MappingProxyType({
+    "robot_alert": "sound.imitation.siren",
+    "ui_bell": "sound.imitation.bell",
+    "ui_chime": "sound.imitation.chime",
+    "robot_bubbles": "sound.imitation.bubbles",
+    "robot_flyby": "sound.imitation.whoosh",
+    "robot_whoosh": "sound.imitation.whoosh",
+    "robot_impact": "sound.imitation.impact",
+})
 #: Действия, которых не слышно: исход виден только на лице и кольце (#3995). Голый такой ответ модели на адресованную
 #: реплику, где анимацию словами не просили (``tools_view.needs_words``), - молчание в ответ на вопрос (марафон 23.10:
 #: n101 «ты меня слышишь?» → ``play_animation(happy)``, n1011 «спокойной ночи» → ``play_animation(sleep)``, речи нет).
@@ -839,6 +958,10 @@ PHRASE_KEYS: Tuple[str, ...] = (
     # встреча лицом и стартовая фраза (перенос v1 #3912)
     "meeting.long_absence", *(f"meeting.tod.{part}" for part in ("morning", "day", "evening", "night")),
     "startup.greeting",
+    # исход по результату тула (#4020, #4022, #4031): «говори нормально», отказ без регулировки (причина тула
+    # ``speed_unsupported``/``pitch_unsupported``), звукоподражание
+    PROSODY_NORMAL_PHRASE, "local.rejected.speed_unsupported", "local.rejected.pitch_unsupported",
+    *SOUND_IMITATIONS.values(),
 )
 
 # ---------------------------------------------------------------------------------------------------------------

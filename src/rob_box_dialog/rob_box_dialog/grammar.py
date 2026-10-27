@@ -1,6 +1,7 @@
 """Tier-1: закрытая грамматика команд без LLM (ADR-0150 §4.2, §6.3, §18.3 В19; карточка #3696).
 
-:func:`match` — стоп, тишина и её снятие, громкость по каналу, голос, новая сессия, да/нет на вопрос робота.
+:func:`match` — стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона),
+новая сессия, да/нет на вопрос робота.
 Команда должна быть покрыта грамматикой ЦЕЛИКОМ: лишнее слово — не Tier-1, решает следующий шаг (медиа-грамматика
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
@@ -44,7 +45,7 @@ def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
     body = strip_wake_word(text or "")
-    for rule in (_stop, _new_session, _unsilence, _volume, _voice, _answer):
+    for rule in (_stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
         if command is not None and not (silenced and kn.TIER1_KINDS[command.kind]):
             return command
@@ -195,6 +196,29 @@ def _voice(text: str, _snapshot: SessionSnapshot, voices: Voices) -> Optional[Ti
     hits = [vid for vid, display in voices
             if all(any(len(w) >= n and t[:n] == w[:n] for t in _voice_tokens(vid, display)) for w in names)]
     return Tier1Command("set_voice", MappingProxyType({"voice": hits[0]})) if len(hits) == 1 else None
+
+
+def _prosody_word(word: str) -> bool:
+    """Слово команды «говори нормально»: речевой глагол или «речь», признак нормы, «про что» (скорость, темп, тон),
+    служебное."""
+    return bool(word in kn.PROSODY_VERBS or word in kn.PROSODY_SPEECH_NOUNS or _starts(word, kn.PROSODY_NORMAL_STEMS)
+                or _starts(word, kn.PROSODY_TOPIC_STEMS) or word in kn.PROSODY_TONE_FORMS
+                or word in kn.PROSODY_FILLER or word in kn.GRAMMAR_FILLER)
+
+
+def _prosody(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
+    """«говори нормально / с обычной скоростью / как обычно / нормальным темпом» → ``prosody_normal`` (#4022): сброс
+    скорости и тона речи. Фраза покрыта ЦЕЛИКОМ: есть речевой глагол или «речь» (без них «верни нормальную скорость» -
+    не про речь), есть признак нормы, остальное - только слова команды. «Обычным ГОЛОСОМ» - голос робота (``_voice``,
+    раньше по порядку), «громче» и отрицание - не сброс: решает LLM."""
+    words = _words(text)
+    if any(w in kn.PROSODY_NEGATION or _starts(w, kn.PROSODY_FOREIGN_STEMS) for w in words):
+        return None
+    owner = any(w in kn.PROSODY_VERBS or w in kn.PROSODY_SPEECH_NOUNS for w in words)
+    normal = any(_starts(w, kn.PROSODY_NORMAL_STEMS) for w in words)
+    if not (owner and normal and all(_prosody_word(w) for w in words)):
+        return None
+    return Tier1Command(kn.PROSODY_NORMAL_KIND)
 
 
 def _answer(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
