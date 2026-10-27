@@ -65,7 +65,7 @@ from rob_box_dialog.memory import profiled_person
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, Session
-from rob_box_dialog.speaker_adapter import speaker_ref
+from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_ref
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
@@ -157,22 +157,51 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
 
 
 #: Скрытый контекст хода для MCP-тулов (``llm_adapter.TURN_CONTEXT_ARGS``): ``heard_text`` — реплика хода (опора
-#: слотов ``request_music``/``dj_set``/``generate_music``, #4013), ``utterance_id`` — её id (``register_speaker``).
-#: Задача хода ставит его себе (:func:`in_tool_turn`); вызов тула идёт в копии её контекста (``Executor`` →
-#: ``asyncio.ensure_future`` → ``asyncio.to_thread``): ход Личности и ход чата Telegram не путают реплики.
+#: слотов ``request_music``/``dj_set``/``generate_music``, #4013), ``utterance_id`` — её id и ``self_intro_name`` /
+#: ``known_speaker_name`` — как человек назвал себя и кем голос уверенно узнан (гейт ``register_speaker``, #2925;
+#: :func:`voice_turn_context`). Задача хода ставит его себе (:func:`in_tool_turn`); вызов тула идёт в копии её
+#: контекста (``Executor`` → ``asyncio.ensure_future`` → ``asyncio.to_thread``): ход Личности и ход чата Telegram не
+#: путают реплики.
 _TOOL_TURN: "contextvars.ContextVar[Mapping[str, Any]]" = contextvars.ContextVar(
     "dialog_v2_tool_turn", default=MappingProxyType({}))
 
 
 def tool_turn_context() -> Mapping[str, Any]:
-    """Контекст хода, в котором идёт вызов тула (``LLMToolCallAdapter.turn_context``); вне хода — пусто."""
-    return _TOOL_TURN.get()
+    """Контекст хода, в котором идёт вызов тула (``LLMToolCallAdapter.turn_context``); вне хода — пусто. Значение-вызов
+    (``voice_turn_context``: биометрия фразы приходит, пока идёт LLM) читается сейчас, в момент вызова тула; ещё не
+    известное — ключа нет."""
+    context: Dict[str, Any] = {}
+    for key, value in _TOOL_TURN.get().items():
+        now = value() if callable(value) else value
+        if now is not None or not callable(value):
+            context[key] = now
+    return context
 
 
 async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     """Работа хода (задача asyncio) с её контекстом тулов: реплика и её id едут в вызовы тулов этого хода."""
     _TOOL_TURN.set(MappingProxyType(dict(context)))
     return await work
+
+
+def voice_turn_context(speakers: Any, uid: str, text: str) -> Dict[str, Any]:
+    """Контекст хода голосом для MCP-тулов (``tool_turn_context``): реплика и её id, а для гейта ``register_speaker``
+    (#2925, ADR-0127 §8) - как человек назвал себя в реплике (``self_intro_name``, код по её словам) и кем голос ЭТОЙ
+    реплики уверенно узнан (``known_speaker_name``, из реестра биометрии по ``utterance_id``, читается при вызове тула:
+    биометрия приходит, пока идёт LLM). Без этого гейт в v2 молчал и «запомни, что Саша любит чай» голосом Нины
+    переименовывало бы живой профиль (#4054). Ход чата Telegram ключей гейта не получает: диктора-голоса у него нет."""
+    context: Dict[str, Any] = {"utterance_id": uid or None, "heard_text": text}
+    intro = named_self(text)
+    if intro:
+        context["self_intro_name"] = intro
+    if uid:
+        context["known_speaker_name"] = functools.partial(_voice_name, speakers, uid)
+    return context
+
+
+def _voice_name(speakers: Any, uid: str) -> Optional[str]:
+    """Имя, под которым биометрия уверенно узнала голос фразы ``uid``; результата нет или голос не уверенный - ``None``."""
+    return confident_name(speakers.peek(uid))
 
 
 def robot_voice_changed(msg: Any) -> bool:
@@ -366,7 +395,7 @@ class DialogNode(Node):
             return
         greeting_window.take_reply(self, decision.source, heard)  # окно после приветствия снимает первая фраза
         self._interrupt(decision.text, uid, "utterance")
-        turn = in_tool_turn({"utterance_id": uid or None, "heard_text": decision.text}, self._turn(decision))
+        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text), self._turn(decision))
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:

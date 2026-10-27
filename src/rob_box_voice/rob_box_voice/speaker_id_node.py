@@ -89,6 +89,7 @@ import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Deque, Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -411,6 +412,81 @@ def _publish_speaker_result(pub, payload: dict) -> None:
     класс под бюджетом размера (ADR-0145).
     """
     pub.publish(fill_speaker_result(SpeakerResult(), payload))
+
+
+# ── #4054 (решение Шифу 27.10, порт #3801 в v2): один голос — одна личность ──────────────────────────────────────
+# Голос фразы регистрации уверенно узнан как профиль P под именем Y, а человек называет себя X («я Тамара, мы не
+# знакомы, запомни мой голос», «меня зовут Денчик» при профиле «Эйджик») — это поправка имени, а не второй человек:
+# P переименовывается Y → X, второго профиля нет. Биометрия — источник правды; похожие голоса разных людей пока
+# терпим (Шифу 27.10). Решает код здесь, у владельца голосов, а не LLM и не диалог: правило одно для v1 и v2.
+def _voice_owner(node: "SpeakerIdNode", name: str, embedding: np.ndarray) -> Optional[SpeakerMatch]:
+    """Профиль, который биометрия УВЕРЕННО узнаёт в фразе регистрации под ДРУГИМ именем, — его и переименовывать.
+
+    «Уверенно» — тот же исход :func:`classify_name_confidence` (``confident``, порог ``name_confidence_band_high``),
+    с которым имя этой фразы публикуется вслух; нового порога нет. ``None`` — голос не узнан или узнан в полосе
+    сомнения (single/contested: регистрация как раньше, ADR-0127; решения 26.10 #3993/#3858 — без вопросов), профиль
+    безымянный (#3858: имя ему присвоит ``register_or_merge``) или имя то же (#2863 «уже знаю» / дописать в профиль).
+    """
+    match = node._db.identify(embedding)
+    if match is None or _se_mod._same_speaker_name(match.name, name):
+        return None
+    return match if _name_decision(node, embedding, match) == NAME_CONFIDENT else None
+
+
+def _rename_by_voice(node: "SpeakerIdNode", owner: SpeakerMatch, name: str, utterance_id: Optional[str]) -> bool:
+    """Переименовать уверенно узнанный профиль ``owner`` в ``name`` вместо второго профиля (:func:`_voice_owner`).
+
+    ``speaker_id`` тот же — эмбеддинги, кличка и факты памяти остаются у профиля. Ack — обычный ``registered`` этого
+    профиля с ``new_name`` («регистрация переименовала профиль голоса»): по нему фразу «мы знакомы» строит код
+    (``register_speaker`` → ``identity.done.renamed``), а не LLM. Дальше — как после регистрации: результат фразы с
+    ``source="register"`` (новое имя доезжает до диалога; ``FaceStore`` берёт его, только если в кадре ровно одно лицо
+    этого голоса — ``FaceRecognizer.note_voice_identification``, иначе лицо остаётся под старым именем, как и при
+    ``/voice/speaker/rename``) и growth-сессия владельца под новым именем. Имя уже носит ДРУГОЙ профиль — переименование
+    всё равно идёт (голос фразы — этот профиль), а тёзки видны в логе предупреждением с подсказкой склейки
+    (:func:`_namesake`): склеивать молча нельзя — слияние необратимо (ADR-0127). ``False`` — имя мусорное или профиля
+    уже нет: решает обычный путь регистрации.
+    """
+    clean = _se_mod._validate_speaker_name(name)
+    twin = _namesake(node, owner.speaker_id, clean) if clean else None
+    if not clean or not node._db.rename(owner.speaker_id, clean):
+        return False
+    node.get_logger().info(
+        f"✏️ [#4054] один голос — одна личность: голос фразы уверенно {owner.name!r} (id={owner.speaker_id[:8]}, "
+        f"score={owner.confidence:.3f}), назвался {clean!r} — профиль переименован {owner.name!r} → {clean!r}, "
+        "второй профиль не заводится")
+    if twin is not None:
+        node.get_logger().warning(
+            f"👥 [#4054] имя {clean!r} уже было у профиля id={twin[:8]} — теперь два профиля {clean!r} (тёзки); голос "
+            f"фразы уверенно id={owner.speaker_id[:8]}. Если это один человек — склеить вручную: "
+            f"merge_speakers(src={twin}, dst={owner.speaker_id})")
+    _publish_speaker_result(node._result_pub, {
+        "event": "registered", "name": clean, "speaker_id": owner.speaker_id, "reused_profile": True,
+        "new_name": clean, "utterance_id": utterance_id,
+    })
+    node._publish_result(replace(owner, name=clean), source="register", utterance_id=utterance_id)
+    node._open_growth_session(owner.speaker_id, clean)
+    node._growth_session["name"] = clean  # сессия могла быть открыта под старым именем
+    return True
+
+
+def _namesake(node: "SpeakerIdNode", speaker_id: str, name: str) -> Optional[str]:
+    """``speaker_id`` другого профиля с именем ``name`` (сравнение как у ``register_or_merge``: без регистра и
+    пробелов) или ``None``: переименование в это имя сделает тёзок (ревью PR #4087)."""
+    return next((p["id"] for p in node._db.list_speakers()
+                 if p["id"] != speaker_id and _se_mod._same_speaker_name(p["name"], name)), None)
+
+
+def _settled_by_voice(
+    node: "SpeakerIdNode", name: str, embedding: np.ndarray, duration_sec: Optional[float], utterance_id: Optional[str]
+) -> bool:
+    """Регистрацию решил голос самой фразы, нового профиля нет (``True``, ack уже отправлен): фраза уже узнана под
+    этим именем (#2863, «уже знаю») или уверенно узнана под другим — переименование (#4054)."""
+    known = node._already_known_as(name, embedding, duration_sec)
+    if known is not None:
+        node._ack_already_known(known, utterance_id)
+        return True
+    owner = _voice_owner(node, name, embedding)
+    return owner is not None and _rename_by_voice(node, owner, name, utterance_id)
 
 
 class _E2EStampedPublisher:
@@ -1928,10 +2004,14 @@ class SpeakerIdNode(Node):
         Issue #2863 — повторный register_speaker того, кого фраза УЖЕ
         узнала под этим же именем, — не регистрация, а «уже знаю»
         (см. :meth:`_already_known_as`).
+
+        #4054 (решение Шифу 27.10) — фраза УВЕРЕННО узнана под ДРУГИМ
+        именем: один голос — одна личность, профиль переименовывается,
+        второго нет (:func:`_rename_by_voice`). Конфликт ADR-0127 ниже
+        остаётся только для полосы сомнения: голос не ниже порога слияния,
+        но не уверенный (single/contested).
         """
-        known = self._already_known_as(name, embedding, duration_sec) if speaker_id is None else None
-        if known is not None:
-            self._ack_already_known(known, utterance_id)
+        if speaker_id is None and _settled_by_voice(self, name, embedding, duration_sec, utterance_id):
             return True
         try:
             outcome = self._db.register_or_merge(

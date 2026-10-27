@@ -11,6 +11,10 @@
   на остальные реплики он - данные модели (ревью PR #4055);
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
+* :func:`name_fact` / :func:`name_facts` / :func:`name_outcome` - факт, который лишь повторяет имя ``register_speaker``
+  той же команды (#4054: имя живёт в профиле голоса), владельцу памяти не идёт: его исход - исход регистрации с
+  причиной ``name_in_profile``, без своей фразы. Без регистрации в команде факт-имя - обычный факт (ревью PR #4087).
+  Собеседник сменился с начала хода (:func:`speaker_changed`) - ``rejected{speaker_changed}`` (#3881).
 
 * :func:`profiled_person` / :func:`speaker_memory_block` - «робот помнит, с кем говорит» (#3919): профиль ведётся только
   о собеседнике с подтверждённым именем (``name_state == confirmed``: биометрия уверена или голос подтвердило лицо,
@@ -26,7 +30,7 @@ from types import MappingProxyType
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import asks_own_memory
+from rob_box_dialog.words import asks_own_memory, name_tokens
 
 
 def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
@@ -79,6 +83,46 @@ def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
     return bool(before) and before != now
 
 
+def name_fact(call: Any, snapshot: Any, actions: Sequence[Any]) -> Optional[int]:
+    """Факт ``memory_save`` повторяет имя, которое ``register_speaker`` ЭТОЙ ЖЕ команды пишет в профиль голоса (#4054,
+    решение Шифу 27.10; таблица ``knowledge.NAME_FACT_WORDS``): «Пользователя зовут Тамара» рядом с
+    ``register_speaker("Тамара")``. Индекс этой регистрации в ``actions`` - исход факта будет её исходом
+    (:func:`name_outcome`), владельцу памяти факт не идёт; ``None`` - обычный факт, идёт владельцу как раньше.
+
+    Без ``register_speaker`` в команде факт-имя - обычный факт (ревью PR #4087): «запомнил» без записи нигде было бы
+    ``done`` без доказательства (``DONE_EVIDENCE``, #4055). Только у агента с собеседником-голосом (``PERSON_AGENTS``):
+    у чата Telegram профиля голоса нет."""
+    named = _named_in_fact(str(call.args.get("fact") or "")) if call.tool == "memory_save" else ()
+    if not named or snapshot.agent not in kn.PERSON_AGENTS:
+        return None
+    return next((i for i, a in enumerate(actions)
+                 if a.tool == kn.NAME_OWNER_TOOL and name_tokens(str(a.args.get("name") or "")) == named), None)
+
+
+def _named_in_fact(fact: str) -> Tuple[str, ...]:
+    """Слова имени, если факт - «зовут <имя>» о самом собеседнике (``knowledge.NAME_FACT_WORDS``), иначе ``()``: слова
+    факта без слов ``marker`` и ``subject``, когда хоть одно слово ``marker`` в нём есть."""
+    words = kn.NAME_FACT_WORDS
+    tokens = name_tokens(fact)
+    if not any(t in words["marker"] for t in tokens):
+        return ()
+    return tuple(t for t in tokens if t not in words["marker"] and t not in words["subject"])
+
+
+def name_facts(actions: Sequence[Any], snapshot: Any) -> Dict[int, int]:
+    """Факты-имена команды (:func:`name_fact`): индекс факта → индекс регистрации, чей исход станет его исходом."""
+    found = ((i, name_fact(call, snapshot, actions)) for i, call in enumerate(actions))
+    return {i: r for i, r in found if r is not None}
+
+
+def name_outcome(registration: Any) -> Tuple[str, str]:
+    """Исход факта-имени (:func:`name_fact`) - ``(статус, причина)``: статус регистрации, которую он повторяет, с
+    причиной ``name_in_profile``. Регистрация ``done`` (новый профиль, «уже знаю», переименование) - имя в профиле,
+    факт ``done``; не прошла (``rejected``, ``timeout``) - имени нет нигде, и факт не ``done`` (фраза - у регистрации,
+    ``knowledge.VOICED_BY_OTHER_REASONS``)."""
+    return registration.status, kn.NAME_IN_PROFILE_REASON
+
+
 def has_evidence(tool: str, data: Mapping[str, Any]) -> bool:
     """Есть ли в данных события владельца то, без чего ``done`` этого тула не верится (``knowledge.DONE_EVIDENCE``)."""
     key = kn.DONE_EVIDENCE.get(tool)
@@ -104,5 +148,5 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "profiled_person", "refused_read", "speaker_changed",
-           "speaker_memory_block", "unbound_reason", "voiced_refusals"]
+__all__ = ["bind_person", "has_evidence", "name_fact", "name_facts", "name_outcome", "profiled_person",
+           "refused_read", "speaker_changed", "speaker_memory_block", "unbound_reason", "voiced_refusals"]

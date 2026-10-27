@@ -121,6 +121,8 @@ def _registered_payload(msg: Any) -> Dict[str, Any]:
     }
     if msg.already_known:
         payload["already_known"] = True
+    if msg.new_name:  # регистрация переименовала уверенно узнанный профиль голоса фразы (#4054)
+        payload["new_name"] = msg.new_name
     if msg.conflict_name:
         payload["voice_conflict"] = {
             "name": msg.conflict_name,

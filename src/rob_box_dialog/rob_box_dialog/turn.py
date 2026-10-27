@@ -729,16 +729,40 @@ def query_fallback(results: Sequence[ActionResult]) -> str:
 
 
 async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: SessionSnapshot,
-                              now: SessionSnapshot, turn_id: str) -> List[ActionResult]:
-    """Действия владельцам; факт ``memory_save`` при смене собеседника с начала хода — ``rejected{speaker_changed}``
-    без запроса (код решает, чей это факт, #3881). Результаты — в порядке команды, с классом ВЫЗОВА
-    (``respond.classed``): исполнитель клеит класс тула, а ``music_library`` list/search/info - ``query`` (#4020)."""
-    changed = {i for i, a in enumerate(actions) if memory.speaker_changed(a, snap, now)}
-    sent = [a for i, a in enumerate(actions) if i not in changed]
+                              now: SessionSnapshot, turn_id: str, log: Any = _LOG) -> List[ActionResult]:
+    """Действия владельцам; исход ``memory_save``, который решает код, — без запроса: при смене собеседника с начала
+    хода ``rejected{speaker_changed}`` (чей это факт, #3881); факт, лишь повторяющий имя ``register_speaker`` этой же
+    команды (``memory.name_fact``, #4054: имя живёт в профиле голоса), - исход этой регистрации с причиной
+    ``name_in_profile`` (``memory.name_outcome``): ``done`` только по ``done`` владельца голосов. Результаты — в порядке
+    команды, с классом ВЫЗОВА (``respond.classed``): исполнитель клеит класс тула, а ``music_library``
+    list/search/info - ``query`` (#4020)."""
+    names = memory.name_facts(actions, snap)
+    changed = {i for i, a in enumerate(actions) if i not in names and memory.speaker_changed(a, snap, now)}
+    sent = [a for i, a in enumerate(actions) if i not in names and i not in changed]
     done = iter(await ports.execute(sent, snap, turn_id) if sent else [])
-    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.call_class(a.tool, a.args), "rejected",
-                         kn.SPEAKER_CHANGED_REASON) if i in changed else classed(next(done), a.args)
-            for i, a in enumerate(actions)]
+    results = [_by_code(turn_id, i, a, snap, "rejected", kn.SPEAKER_CHANGED_REASON) if i in changed
+               else None if i in names else classed(next(done), a.args) for i, a in enumerate(actions)]
+    return _settle_names(results, names, actions, snap, turn_id, log)
+
+
+def _by_code(turn_id: str, i: int, call: ToolCall, snap: SessionSnapshot, status: str, reason: str) -> ActionResult:
+    """Результат действия, исход которого решил код, а не владелец (:func:`execute_for_speaker`)."""
+    return ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, call.tool, kn.call_class(call.tool, call.args),
+                        status, reason)
+
+
+def _settle_names(results: List[Optional[ActionResult]], names: Mapping[int, int], actions: Sequence[ToolCall],
+                  snap: SessionSnapshot, turn_id: str, log: Any) -> List[ActionResult]:
+    """Факты-имена (``memory.name_facts``: факт → регистрация той же команды) получают исход своей регистрации с
+    причиной ``name_in_profile`` (``memory.name_outcome``), когда исход регистрации известен."""
+    for i, r in names.items():
+        reg = results[r]
+        results[i] = _by_code(turn_id, i, actions[i], snap, *memory.name_outcome(reg))
+        log.info(f"{LOG_MARK} {actions[i].tool} {reg.status}{{{kn.NAME_IN_PROFILE_REASON}}}: факт повторяет имя "
+                 f"{actions[r].tool}({actions[r].args.get('name')!r}) этой команды, исход - её "
+                 f"({reg.status}{{{reg.reason or '-'}}}), владельцу памяти не отправлен: {dict(actions[i].args)} "
+                 f"turn={turn_id}")
+    return results  # type: ignore[return-value]  # все None заполнены: индексы фактов-имён - ключи ``names``
 
 
 def action_term(actions: Sequence[ToolCall]) -> float:
@@ -1035,7 +1059,7 @@ class TurnEngine:
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
         turn.deadline.grant(action_term(actions))
-        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
+        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
         for result in results:
             self.log.result(turn.turn_id, result)

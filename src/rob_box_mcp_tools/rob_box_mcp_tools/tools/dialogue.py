@@ -920,6 +920,9 @@ class RegisterSpeakerTool(MCPTool):
         return MCPToolResult(
             success=False,
             data={"error": "not_self_introduction",
+                  # исход для диалога v2 (``command_turn.owner_event``): статус и причина - ключ фразы кода
+                  # ``identity.rejected.not_self_introduction``, а не обрывок текста ``message`` (#4054)
+                  "status": "rejected", "reason": "not_self_introduction",
                   "received": name, "known_speaker": known_speaker_name},
             message=(
                 f"Имя '{name}' НЕ зарегистрировано: в этой реплике человек "
@@ -988,13 +991,16 @@ def register_deadline_s() -> float:
 
 
 def register_outcome(event) -> tuple:
-    """``SpeakerResult`` → ``(status, reason)``: registered — ``done`` («уже знаю» — причина ``already_known``),
+    """``SpeakerResult`` → ``(status, reason)``: registered — ``done`` («уже знаю» — причина ``already_known``; голос
+    фразы уверенно узнан под другим именем и профиль переименован, ``new_name`` — ``renamed``: «мы знакомы», #4054),
     register_error — ``rejected`` с кодом ошибки владельца, нет события — ``timeout``."""
     if event is None:
         return "timeout", None
     if event.event == event.EVENT_REGISTER_ERROR:
         return "rejected", event.error or "error"
-    return "done", ("already_known" if event.already_known else None)
+    if event.already_known:
+        return "done", "already_known"
+    return "done", ("renamed" if event.new_name else None)
 
 
 def register_phrase(status: str, reason, name: str):

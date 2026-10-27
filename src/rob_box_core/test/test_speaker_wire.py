@@ -94,6 +94,13 @@ def test_register_error_too_short_and_other():
     assert _roundtrip(other) == other
 
 
+def test_registered_by_renaming_the_voice_profile_carries_new_name_4054():
+    """#4054: регистрация переименовала уверенно узнанный профиль голоса фразы — ``new_name`` доезжает до читателя."""
+    payload = {"event": "registered", "name": "Тамара", "speaker_id": "e35517b2", "reused_profile": True,
+               "utterance_id": "u722", "new_name": "Тамара"}
+    assert _roundtrip(payload) == payload
+
+
 def test_renamed_and_merged_acks():
     renamed = {"event": "renamed", "ok": True, "speaker_id": "s", "new_name": "Ден"}
     merged = {"event": "merged", "ok": False, "src_speaker_id": "a", "dst_speaker_id": "b",

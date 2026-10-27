@@ -48,6 +48,7 @@ docstring test_gallery_warmup.py). Теперь галерея растёт по
 from __future__ import annotations
 
 import collections
+import math
 import sys
 import threading
 import types
@@ -216,11 +217,24 @@ def test_do_register_opens_growth_session(node):
     assert session["speaker_id"] == match_msgs[0]["speaker_id"]
 
 
+def _at_cosine(base: np.ndarray, cos: float, seed: int) -> np.ndarray:
+    """Вектор с ТОЧНЫМ косинусом ``cos`` к ``base`` (шум ортогонализован к ``base``)."""
+    noise = _embedding(seed)
+    noise = noise - float(np.dot(noise, base)) * base
+    noise = noise / np.linalg.norm(noise)
+    return (cos * base + math.sqrt(1.0 - cos * cos) * noise).astype(np.float32)
+
+
 def test_do_register_on_name_conflict_still_publishes_own_match(node):
     """ADR-0127: конфликт имён заводит ОТДЕЛЬНЫЙ профиль — is_known=true
-    обязан указывать на НОВЫЙ профиль (Борис), а не на чужой (Саша)."""
+    обязан указывать на НОВЫЙ профиль (Борис), а не на чужой (Саша).
+
+    #4054: конфликт остался полосе сомнения — голос не ниже порога слияния
+    (0.75), но ниже уверенного (0.80). Уверенно узнанный голос под другим
+    именем переименовывает профиль (test_issue_4054_one_voice_renames_profile.py).
+    """
     base = _embedding(700)
-    similar = _degraded(base, alpha=0.6, noise_seed=701)  # cos ~0.86 > REGISTER_MATCH_THRESHOLD
+    similar = _at_cosine(base, 0.77, seed=701)  # 0.75 <= cos < 0.80: полоса сомнения
 
     node._do_register("Саша", base, speaker_id=None)
     node._result_pub.messages.clear()
