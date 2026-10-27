@@ -70,8 +70,8 @@ Parameters:
                                         разрыв внутри growth-сессии — больше
                                         этого считаем, что человек мог уйти и
                                         сессия прервана. Отсчёт идёт от конца
-                                        речи РОБОТА (``/voice/tts/finished``,
-                                        см. _on_tts_finished), а не от прошлой
+                                        речи РОБОТА (``SpeechEvent`` конца реплики,
+                                        см. _on_speech_end), а не от прошлой
                                         реплики человека: пока робот говорит,
                                         человек молчит по очереди, а не из-за
                                         ухода [30.0]
@@ -98,8 +98,9 @@ from audio_common_msgs.msg import AudioData
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from rob_box_dialog_msgs.msg import SpeakerResult
+from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
 from std_msgs.msg import String
+from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
 
@@ -278,6 +279,20 @@ def _name_decision(node: "SpeakerIdNode", embedding: np.ndarray, match: Optional
 def _label(match: SpeakerMatch) -> str:
     """Имя профиля для лога; безымянный (#3858) -- ``∅``."""
     return match.name or "∅"
+
+
+def on_speech_end(callback):
+    """Подписчик ``SpeechEvent``, зовущий ``callback()`` только на финал реплики робота (PR-15 15-0c #3711).
+
+    Финал — ``finished``, ``cancelled`` или ``rejected``: одна таблица ``speech_client.KIND_STATUS``;
+    ``queued``/``synthesized``/``started``/``progress``/``voice_changed`` — реплика ещё ждёт или звучит.
+    """
+
+    def on_event(event: SpeechEvent) -> None:
+        if int(getattr(event, "kind", -1)) in speech_client.KIND_STATUS:
+            callback()
+
+    return on_event
 
 
 def _verdict_line(
@@ -940,12 +955,13 @@ class SpeakerIdNode(Node):
         # диалога закрывалась по таймауту раньше, чем успевала дописать хоть
         # один эмбеддинг (прогон 35781881888: «закрыта по таймауту 33.7s» и
         # «61.7s», галереи Саши и Бориса остались по 1 вектору при потолке 5).
-        # Топик общий для всех говорилок (issue #776), speech_id нам не важен:
-        # любое окончание речи робота означает, что очередь снова за человеком.
+        # Конец речи — событие владельца речи SpeechEvent (ADR-0150 §10.1; String-топик v1 снят в PR-15 15-0c #3711).
+        # Топик общий для всех агентов, speech_id нам не важен: любая
+        # закончившаяся реплика робота означает, что очередь снова за человеком.
         self.create_subscription(
-            String,
-            "/voice/tts/finished",
-            self._on_tts_finished,
+            SpeechEvent,
+            speech_client.SPEECH_EVENT_TOPIC,
+            on_speech_end(self._on_speech_end),
             reliable_qos,
         )
         self.get_logger().info("🎙️ speaker_id_node ready")
@@ -1397,8 +1413,10 @@ class SpeakerIdNode(Node):
             return "too_short_for_biometry"
         return None
 
-    def _on_tts_finished(self, msg: String) -> None:
+    def _on_speech_end(self) -> None:
         """Issue #2747 — робот договорил: отсчёт паузы человека начинается ЗДЕСЬ.
+
+        «Договорил» — финал реплики у владельца речи (``SpeechEvent``, отбор — :func:`on_speech_end`).
 
         ``_apply_growth_session`` меряет разрыв до предыдущей реплики, и без
         этого сдвига в разрыв попадало время, пока робот сам произносил
@@ -1441,7 +1459,7 @@ class SpeakerIdNode(Node):
         просто НЕ дописываем эмбеддинг, профиль не портится):
           * разрыв с прошлой отметкой сессии > ``_growth_session_gap_sec``
             — человек мог уйти, сессия прервана. Отметку двигает и реплика
-            человека, и окончание речи робота (``_on_tts_finished``), иначе
+            человека, и окончание речи робота (``_on_speech_end``), иначе
             монолог робота засчитывался бы человеку в простой;
           * галерея уже доросла до ``GALLERY_WARMUP_SIZE`` — потолок;
           * ЭТА реплика уверенно (обычный ``identify()``, калиброванный

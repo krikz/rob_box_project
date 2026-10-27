@@ -1467,8 +1467,9 @@ def _recommended_executor_threads() -> int:
 def _make_executor(node: "MCPServer"):
     """Build the executor for the MCP server.
 
-    Uses ``MultiThreadedExecutor`` so subscription callbacks (e.g.
-    ``/voice/tts/finished``) can run while a tool call blocks in ``registry.execute``.
+    Uses ``MultiThreadedExecutor`` so subscription callbacks (e.g. ``SpeechEvent`` on
+    ``/voice/speech/event``, which ``say``/``say_aloud``/``set_voice`` wait for) can run while a tool call blocks in
+    ``registry.execute``.
 
     When ``MCP_SPIN_DIAG=1`` is set, wraps it with a diagnostic that logs — every ~10s —
     how many times the executor woke up and which entity kinds were ready. This is used
@@ -1540,7 +1541,7 @@ def main(args=None):
     node = MCPServer()
 
     # Используем MultiThreadedExecutor для параллельной обработки callbacks
-    # Это позволяет получать /voice/tts/finished пока execute() блокируется
+    # Это позволяет получать события владельцев (SpeechEvent /voice/speech/event и др.), пока execute() блокируется
     executor = _make_executor(node)
     executor.add_node(node)
 
