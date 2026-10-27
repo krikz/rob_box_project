@@ -501,11 +501,15 @@ def test_restore_returns_speed_and_pitch_to_values_before_act(tmp_path):
         "robot_ros \"ros2 param set /tts_node yandex_speed 1.2 --no-daemon\" >/dev/null",
         "robot_ros \"ros2 param set /tts_node pitch_shift 0.8 --no-daemon\" >/dev/null",
         "restore_robot_tts_default",
+        ': > "$FAKE_ROBOT_STATE/ssh_calls"',
         "restore_node_params",
+        'cp "$FAKE_ROBOT_STATE/ssh_calls" "$FAKE_ROBOT_STATE/restore_calls"',
         'for p in yandex_speed minimax_speed pitch_shift; do echo "$p=$(_ros2_param_value "$(_ros2_param_get_raw /tts_node $p)")"; done',
     ], tmp_path)
     rc, out, err, state = _act_start(tmp_path, body)
     assert rc == 0, (out, err)
+    # чтение, одна пачка записи изменённых, проверка чтением -- три ssh, а не по паре на параметр
+    assert len((state / "restore_calls").read_text(encoding="utf-8").splitlines()) == 3
     assert "yandex_speed=1.0" in out and "pitch_shift=1.0" in out and "minimax_speed=1.0" in out
     assert "node_params: /tts_node yandex_speed восстановлен к исходному 1.0" in out, out
     assert "node_params: /tts_node pitch_shift восстановлен к исходному 1.0" in out
@@ -519,8 +523,17 @@ def test_restore_without_changes_does_not_set(tmp_path):
     body = _prosody([': > "$FAKE_ROBOT_STATE/ssh_calls"', "restore_node_params"], tmp_path)
     rc, out, err, state = _act_start(tmp_path, body)
     assert rc == 0 and out.count("за акт не менялся") == 3, (out, err)
+    # одно чтение трёх параметров (один ssh), ни одной записи -- как у прежнего отдельного механизма
     calls = (state / "ssh_calls").read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 3 and not any("param set" in c or "param\\ set" in c for c in calls), calls
+    assert len(calls) == 1 and not any("param set" in c or "param\\ set" in c for c in calls), calls
+
+
+@needs_bash
+def test_remember_reads_all_params_in_one_ssh(tmp_path):
+    body = "\n".join([': > "$FAKE_ROBOT_STATE/ssh_calls"', _prosody([], tmp_path)])
+    rc, out, err, state = _act_start(tmp_path, body)
+    assert rc == 0 and "/tts_node до акта: minimax_speed=1.0, yandex_speed=1.0, pitch_shift=1.0" in out, (out, err)
+    assert len((state / "ssh_calls").read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_prosody_has_one_mechanism():

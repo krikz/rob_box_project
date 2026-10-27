@@ -405,16 +405,41 @@ _remember_node_param() {  # $1=node $2=param
     printf '%s' "$value"
 }
 
+# _node_params_read() — текущие значения ОДНИМ вызовом robot_ros (один ssh +
+# docker exec на все параметры, а не на каждый). stdin: строки «узел<US>параметр[<US>…]»
+# (формат E2E_NODE_PARAM_ORIGINALS_FILE); stdout: «узел<US>параметр<US>значение» по
+# каждому прочитанному; не прочитанный параметр в выводе отсутствует.
+_node_params_read() {
+    local cmd="" node param rest
+    while IFS=$'\x1f' read -r node param rest; do
+        [ -n "$node" ] || continue
+        cmd="${cmd}echo '@${node} ${param}'; ros2 param get '${node}' '${param}' --no-daemon; "
+    done
+    [ -n "$cmd" ] || return 0
+    robot_ros "$cmd" 2>/dev/null | awk '
+        /^@/ { split(substr($0, 2), np, " "); node = np[1]; param = np[2]; sub(/\r$/, "", param); next }
+        node != "" && /(Boolean|Integer|Double|String) value is: / {
+            v = $0; sub(/.*(Boolean|Integer|Double|String) value is: /, "", v); sub(/\r$/, "", v)
+            printf "%s\037%s\037%s\n", node, param, v; node = "" }'
+}
+
+_node_param_lookup() {  # $1 = вывод _node_params_read, $2 = узел, $3 = параметр -> значение
+    printf '%s\n' "$1" | awk -F'\037' -v n="$2" -v p="$3" '$1 == n && $2 == p { print $3; exit }'
+}
+
 # remember_node_params() — issue #4027: параметры, которые акт может сдвинуть
 # сам (не сценарий через node_params, а робот по просьбе: n409-n411 «помедленнее»,
 # «тараторь», «басом» двигают minimax_speed/yandex_speed/pitch_shift /tts_node),
-# запоминаются на старте акта в тот же файл, что и node_params; возвращает их тот
-# же restore_node_params(). Не прочитан — громко, не фатал (вернуть будет не к чему).
+# запоминаются на старте акта (одно чтение на все) в тот же файл, что и node_params;
+# возвращает их тот же restore_node_params(). Не прочитан — громко, не фатал.
 remember_node_params() {  # $1=node, дальше параметры
-    local node="$1" param value got=""
+    local node="$1" param value got="" now
     shift
+    now="$(for param in "$@"; do printf '%s\x1f%s\n' "$node" "$param"; done | _node_params_read)"
     for param in "$@"; do
-        if value="$(_remember_node_param "$node" "$param")"; then
+        value="$(_node_param_lookup "$now" "$node" "$param")"
+        if [ -n "$value" ]; then
+            printf '%s\x1f%s\x1f%s\n' "$node" "$param" "$value" >> "$E2E_NODE_PARAM_ORIGINALS_FILE"
             got="${got:+${got}, }${param}=${value}"
         else
             log "⚠️ ${node} ${param}: до акта не прочитан — после акта вернуть его будет не к чему (#4027)"
@@ -475,27 +500,35 @@ NPPY
 # от PASS/FAIL/обрыва. Восстанавливает КАЖДЫЙ запомненный параметр (node_params
 # сценария и remember_node_params акта) к значению, прочитанному ДО изменения (не
 # к хардкоду в этом файле); параметр, который за акт не менялся, не пишется.
-# Провал восстановления — НЕ фатал (акт уже закончился), но обязан быть громким в
-# логе прогона (ADR-0018 — молчать о сбое нельзя).
+# Чтение до и после записи — по одному robot_ros на все параметры (_node_params_read),
+# запись изменённых — тоже одним. Провал восстановления — НЕ фатал (акт уже
+# закончился), но обязан быть громким в логе прогона (ADR-0018 — молчать о сбое нельзя).
 restore_node_params() {
     [ -s "$E2E_NODE_PARAM_ORIGINALS_FILE" ] || return 0
-    local node param value after_raw after_value
+    local node param value now after after_value cmd="" changed=""
+    now="$(_node_params_read < "$E2E_NODE_PARAM_ORIGINALS_FILE")"
     while IFS=$'\x1f' read -r node param value; do
         [ -z "$node" ] && continue
-        if _node_param_values_match "$(_ros2_param_value "$(_ros2_param_get_raw "$node" "$param")")" "$value"; then
+        if _node_param_values_match "$(_node_param_lookup "$now" "$node" "$param")" "$value"; then
             log "🧪 ${node} ${param} за акт не менялся (${value})"
             continue
         fi
-        robot_ros "ros2 param set '${node}' '${param}' '${value}' --no-daemon" >/dev/null 2>&1
-        after_raw="$(_ros2_param_get_raw "$node" "$param")"
-        after_value="$(_ros2_param_value "$after_raw")"
+        cmd="${cmd}ros2 param set '${node}' '${param}' '${value}' --no-daemon >/dev/null; "
+        changed="${changed}${node}"$'\x1f'"${param}"$'\x1f'"${value}"$'\n'
+    done < "$E2E_NODE_PARAM_ORIGINALS_FILE"
+    [ -n "$cmd" ] || return 0
+    robot_ros "$cmd" >/dev/null 2>&1
+    after="$(printf '%s' "$changed" | _node_params_read)"
+    while IFS=$'\x1f' read -r node param value; do
+        [ -z "$node" ] && continue
+        after_value="$(_node_param_lookup "$after" "$node" "$param")"
         if _node_param_values_match "$after_value" "$value"; then
             log "🧪 node_params: ${node} ${param} восстановлен к исходному ${value}"
         else
             log "❌ ВНИМАНИЕ: node_params — ${node} ${param} НЕ восстановлен (просили ${value}, узел вернул ${after_value:-<пусто>}) — робот остался на форсированном значении!"
             log "   почини вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param set ${node} ${param} ${value} --no-daemon'\""
         fi
-    done < "$E2E_NODE_PARAM_ORIGINALS_FILE"
+    done <<< "$changed"
 }
 
 # --- issue #3248 — голос/провайдер TTS не должны переживать акт ----------------
