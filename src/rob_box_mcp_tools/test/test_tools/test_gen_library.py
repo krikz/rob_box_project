@@ -698,7 +698,7 @@ class TestPlay:
         wav = str(setup.library.root_dir / setup.track_id / "track.16k.wav")
         assert program.sample_files == frozenset({wav}) and f"loop({wav!r}" in program.code
         assert dj == {"enabled": False, "title": "Космос", "source": "generated", "library_id": setup.track_id,
-                      "bpm": None}
+                      "bpm": None, "name": "Космос"}   # #4060: название и стиль трека кэша - для «что играет»
         assert result.message == "Включаю «Космос» из библиотеки — 2 секунды."
         info = setup.library.get_track_info(setup.track_id)
         assert info["play_count"] == before + 1 and info["last_played_at"]

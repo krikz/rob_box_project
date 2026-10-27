@@ -214,7 +214,6 @@ music.instrument_no_pack: ["Для {asked} у меня нет пака — иг�
 music.instrument_neighbors: ["Для {asked} у меня нет пака, могу сыграть {others} — играю на {played}."]
 music.nothing_playing: ["Сейчас ничего не играет."]
 music.pending: ["Музыку поставил, она ещё не заиграла."]
-music.source.synth: ["трек из синтов, его собрал код"]
 music.source.piece: ["пьеса по нотам партитуры"]
 music.source.melody: ["мелодия из архива, без полной аранжировки"]
 music.source.generated: ["сгенерированный трек из библиотеки"]

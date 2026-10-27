@@ -21,6 +21,8 @@ from rob_box_dialog.knowledge import LIBRARY_UNNAMED
 from rob_box_dialog.phrases import text as _phrase
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
+from rob_box_music.track_brief import cover_text, track_traits
+from rob_box_music.track_brief import plural as _plural
 
 
 def theme_text(theme: str) -> str:
@@ -103,14 +105,9 @@ NOTHING_PLAYING_TEXT = _phrase("music.nothing_playing")
 #: Трек поставлен на деку, а ``started`` ещё не пришло: о звуке не говорим (A14).
 PENDING_TEXT = _phrase("music.pending")
 
-#: Источник звучащего трека (``rob_box_mcp_tools.engine.tools_v2.SOURCE_*``) — словами для фразы «что играет».
-SOURCE_WORDS: Mapping[str, str] = {k: _phrase(f"music.source.{k}") for k in ("synth", "piece", "melody", "generated")}
-
-
-def _plural(n: int, one: str, few: str, many: str) -> str:
-    if n % 10 == 1 and n % 100 != 11:
-        return one
-    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+#: Источник звучащего трека (``rob_box_mcp_tools.engine.tools_v2.SOURCE_*``) — словами для фразы «что играет». Синтеза
+#: здесь нет: его называет движок среди черт трека (``rob_box_music.track_brief.ENGINE_WORDS``).
+SOURCE_WORDS: Mapping[str, str] = {k: _phrase(f"music.source.{k}") for k in ("piece", "melody", "generated")}
 
 
 def duration_text(seconds: float, accusative: bool = False) -> str:
@@ -133,6 +130,7 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     if not facts.get("playing"):
         return PENDING_TEXT if facts.get("pending") else NOTHING_PLAYING_TEXT
     name = str(facts.get("name") or facts.get("title") or "")
+    facts = {**facts, "name": name}  # снимок старого сервера: название - в ``title``
     head = _phrase("music.now_playing_named", name=name) if name else _phrase("music.now_playing")
     if name and facts.get("composer"):  # автор — за кавычками, как во фразе запуска (piece_text)
         head += f", {facts['composer']}"
@@ -187,15 +185,11 @@ def library_play_text(title: str, seconds: float) -> str:
 
 
 def _track_about(facts: Mapping[str, Any]) -> list:
-    """Источник, темп и инструмент трека — словами (части фразы «что играет»)."""
-    about = [SOURCE_WORDS[str(facts["source"])]] if str(facts.get("source") or "") in SOURCE_WORDS else []
-    if facts.get("bpm"):
-        bpm = int(round(float(facts["bpm"])))
-        about.append(f"{bpm} {_plural(bpm, 'удар', 'удара', 'ударов')} в минуту")
-    lead = kn.INSTRUMENTS.get(str(facts.get("instrument_played") or ""))
-    if lead is not None:
-        about.append(f"на {lead.prepositional}")
-    return about
+    """Что за трек, словами (части фразы «что играет»): источник пьесы/мелодии/файла, оригинал кавера и черты трека -
+    стиль, движок, темп, инструмент (``rob_box_music.track_brief``, #4060: те же черты, что в ``<music_state>`` и в ответе
+    диджея). Синтез источником не называется: его называет движок среди черт."""
+    word = SOURCE_WORDS.get(str(facts.get("source") or ""))
+    return [part for part in (word, cover_text(facts), *track_traits(facts)) if part]
 
 
 def _track_time(facts: Mapping[str, Any]) -> str:

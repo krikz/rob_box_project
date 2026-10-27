@@ -16,6 +16,9 @@ v2 (``mcp_server``, ``engine.player_owner.PlayerOwner``, ADR-0149). Он пуб�
       "stops_at": float | null,        # epoch остановки конечного трека
       "dj": {"enabled": bool, ...},    # DJ-режим; владелец
                                        # плеера кладёт сюда и сет (ADR-0149 §2.3)
+                                       # и ``brief`` - короткое описание трека
+                                       # из его фактов: «название», стиль, темп
+                                       # (``rob_box_music.track_brief``, #4060)
       "finished_track_id": str | null, # idle потому, что этот трек доиграл сам
       "ts": float                      # epoch публикации
     }

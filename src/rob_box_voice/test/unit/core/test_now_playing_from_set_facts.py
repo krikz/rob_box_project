@@ -51,7 +51,7 @@ def test_other_phrases_are_not_now_playing(text):
 def test_what_is_playing_names_the_melody_from_snapshot():
     plan = MediaRouter().route("что сейчас играет", _media())
     assert plan.tool_calls == ()
-    assert plan.say_ok == ("Сейчас трек 2 из 4: «Тетрис». Дальше по плану: «Аладдин». "
+    assert plan.say_ok == ("Сейчас играет «Тетрис». Дальше по плану: «Аладдин». "
                            "Не нашлось в библиотеке: «Марио».")
 
 
@@ -94,7 +94,7 @@ def test_live_0610_last_track_answers():
     say = MediaRouter().route("когда будет тетрис", _media(LAST)).say_ok
     assert say.startswith("«Тетрис» уже был — трек 1.") and "больше не будет" in say and "следующ" not in say
     assert MediaRouter().route("что сейчас играет", _media(LAST)).say_ok == (
-        "Сейчас трек 2 из 2: «Super Mario World». Это последний трек сета.")
+        "Сейчас играет «Super Mario World». Это последний трек сета.")
 
 
 def test_played_melodies_reach_music_state():
@@ -121,7 +121,7 @@ def test_live_3613_single_club_track_is_named_by_code(text):
     """Живой лог #3613: при ``[music v2] started req99682…`` LLM сказала «в плеере тишина». Теперь — код, без LLM."""
     plan = MediaRouter().route(text, _track(CLUB))
     assert plan.tool_calls == ()
-    assert plan.say_ok == ("Сейчас играет «космос» — трек из синтов, его собрал код, 124 удара в минуту. "
+    assert plan.say_ok == ("Сейчас играет «космос» — клуб, синтез Ренардо, 124 удара в минуту. "
                            "Играет уже 1 минуту и повторяется, пока не скажешь «стоп».")
 
 
@@ -151,3 +151,31 @@ def test_old_snapshot_without_facts_still_names_the_title():
     """Снимок без фактов заказа (сервер старее подписчика) — название из ``title``, без выдумок об источнике."""
     say = MediaRouter().route("что играет", _track({"enabled": False, "title": "космос · 124 BPM"})).say_ok
     assert say == "Сейчас играет «космос · 124 BPM»."
+
+
+# ── #4060: «что играет» - название, стиль и темп трека, а не номер и id ────────────────────────────────────────────
+
+GEN_SET = {"enabled": True, "theme": "Неоновая ночь", "track_no": 3, "tracks": 10, "melody": "", "next_melodies": [],
+           "next_known": False, "not_found": [], "name": "Ночной город", "style": "synthwave", "source": "generated",
+           "bpm": 130.0, "library_id": "a1b2c3", "title": "Неоновая ночь · трек 3 из 10"}
+
+
+def test_4060_set_from_generation_answers_with_title_and_style_not_with_the_track_number():
+    say = MediaRouter().route("что сейчас играет", _media(GEN_SET)).say_ok
+    assert say == "Сейчас играет «Ночной город», синтвейв."      # темп файла неизвестен: 130 - темп деки, не называем
+    assert "3 из 10" not in say and "a1b2c3" not in say
+
+
+def test_4060_synth_set_track_without_melody_says_style_tempo_and_its_own_motif():
+    facts = {"enabled": True, "theme": "космос", "track_no": 2, "tracks": 5, "melody": "", "style": "club", "bpm": 130}
+    assert MediaRouter().route("что играет", _media(facts)).say_ok == (
+        "Сейчас играет трек в стиле клуб, 130 ударов в минуту — свой мотив диджея, без мелодии из библиотеки.")
+
+
+def test_4060_single_generated_cover_track_is_told_by_title_original_and_style():
+    dj = {"enabled": False, "name": "Тихий вечер", "source": "generated", "style": "rock", "cover": "Группа крови",
+          "bpm": 60.0, "started_at": 40.0, "track_id": "gen_abc_1", "library_id": "a1b2c3"}
+    say = MediaRouter().route("что играет", _track(dj)).say_ok
+    assert say == ("Сейчас играет «Тихий вечер» — сгенерированный трек из библиотеки, кавер на «Группа крови», рок. "
+                   "Играет уже 1 минуту и повторяется, пока не скажешь «стоп».")
+    assert "gen_abc_1" not in say and "60" not in say

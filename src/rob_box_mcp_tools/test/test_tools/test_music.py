@@ -147,9 +147,33 @@ class TestGetMusicStateTool:
         assert result.data["playing"] is True
         assert result.data["deck"]["track_id"] == "req99682:03:A"
         assert result.data["deck"]["source"] == "synth"
-        assert result.message.startswith("Сейчас играет «космос» — трек из синтов, его собрал код, 124 удара в минуту.")
+        assert result.message.startswith("Сейчас играет «космос» — клуб, синтез Ренардо, 124 удара в минуту.")
         assert "Играет уже 1 минуту 5 секунд" in result.message and "повторяется" in result.message
         assert "Диджей-сета не было" not in result.message and "паттерн" not in result.message
+
+    def test_4060_generated_track_is_told_by_title_and_style_not_by_id_or_a_tempo_the_deck_invented(self, music_node):
+        """Шифу 27.10: «что именно сейчас играет, а не номер трека»; темп деки файла (130) - не темп файла."""
+        owner = music_node._player_owner
+        owner.play(_program("gen48211:00:A", bpm=130.0),
+                   dj={"enabled": False, "name": "Ночной город", "source": "generated", "style": "synthwave",
+                       "title": "Очень странные дела · трек 3 из 10", "library_id": "a1b2c3", "bpm": 130.0})
+        music_node.clock.now += 5
+        result = self._tool(music_node).execute()
+        assert result.message.startswith("Сейчас играет «Ночной город» — сгенерированный трек из библиотеки, синтвейв.")
+        for key_of_code in ("gen48211", "00:A", "a1b2c3", "трек 3", "130", "удар"):
+            assert key_of_code not in result.message, key_of_code
+        assert result.data["deck"]["brief"] == "«Ночной город», синтвейв"
+
+    def test_4060_running_set_answers_with_the_track_description(self, music_node):
+        from rob_box_mcp_tools.engine.tools_v2 import brief_facts
+        from rob_box_music.dj_line import now_playing_text
+
+        owner = music_node._player_owner
+        owner.play(_program("gen48211:01:B", bpm=130.0),
+                   dj={"enabled": True, "name": "Ночной город", "source": "generated", "style": "synthwave"})
+        facts = {**brief_facts(owner), "track_no": 3, "tracks": 10, "melody": ""}
+        assert facts["name"] == "Ночной город" and "track_id" not in facts and "title" not in facts
+        assert now_playing_text(facts) == "Сейчас играет «Ночной город», синтвейв."
 
     def test_piece_tells_remaining_time(self, music_node):
         owner = music_node._player_owner

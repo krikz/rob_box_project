@@ -43,6 +43,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Opt
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import LeadChoice, lead_choice
 from rob_box_music.dj_line import now_playing_text, persona_title, set_not_found_text
+from rob_box_music.track_brief import BRIEF_FACTS
 from rob_box_music.arrange.compose import compose
 from rob_box_music.render.renardo import render
 from rob_box_music.set_plan import DEFAULT_TRACKS, MAX_TRACKS, seeded_plan, set_tracks
@@ -277,6 +278,14 @@ def playing_engine(owner: Any) -> str:
     now = getattr(owner, "now_playing", None)
     snap = now() if callable(now) else {}
     return str(snap.get("engine") or "") if snap.get("playing") or snap.get("pending") else ""
+
+
+def brief_facts(owner: Any) -> Dict[str, Any]:
+    """Факты описания играющего трека из снимка плеера (``PlayerOwner.now_playing``: название, стиль, темп, источник —
+    ``rob_box_music.track_brief.BRIEF_FACTS``, #4060); не играет или владельца нет - пусто."""
+    now = getattr(owner, "now_playing", None)
+    snap = now() if callable(now) else {}
+    return {k: snap[k] for k in BRIEF_FACTS if snap.get(k) not in (None, "")}
 
 
 def settled_ask(ask: SourceAsk, slot: Optional[str], texts: Tuple[Optional[str], ...], classic: bool,
@@ -633,8 +642,9 @@ class DjSetTool(MCPTool):
         base = plan_source(box.current, self._memory, materials)
         self._facts.forecast = getattr(base, "upcoming", None)  # «дальше будет» — из той же очереди, что компоновка
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
-                             bpm=plan.bpm, dj={"theme": theme, "persona": persona}, logger=logger,
-                             on_track_started=box.on_started, tracks_dir=self._tracks_dir, tracks=length)
+                             bpm=plan.bpm, logger=logger, on_track_started=box.on_started,
+                             dj={"theme": theme, "persona": persona, "style": plan.style, "source": SOURCE_SYNTH},
+                             tracks_dir=self._tracks_dir, tracks=length)
         result = session.start()
         self._session = session if result.get("ok") else None
         self._last = self._session or self._last
@@ -665,8 +675,9 @@ class DjSetTool(MCPTool):
             return {"active": False, "message": "Диджей-сета не было."}
         info = {"set_id": session.set_id, "tracks": session.tracks, "track_no": session.track_no}
         now = self._facts.now() if self._facts is not None else {}
-        if session.active and now:
-            return {**info, **now, "active": True, "message": f"Идёт диджей-сет. {now_playing_text(now)}"}
+        if session.active and now:  # описание трека - из фактов деки (название, стиль, темп) и сета (мелодия, план)
+            text = now_playing_text({**brief_facts(self._owner), **now})
+            return {**info, **now, "active": True, "message": f"Идёт диджей-сет. {text}"}
         if session.active:
             return {**info, "active": True, "message": f"Идёт диджей-сет: трек {session.track_no} из {session.tracks}."}
         if session.ended:
