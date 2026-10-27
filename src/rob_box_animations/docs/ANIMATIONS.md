@@ -89,6 +89,8 @@ python tools/led_face_lab/render_gifs.py docs/assets/animations --gallery src/ro
 
 ### Музыка
 
+Первую сцену трека выбирает темп (`knowledge.MUSIC_SCENE_BPM`), дальше сцены идут по кругу независимо от темпа: новый трек — шаг, каждые 30 с трека — шаг, сцена держится не меньше 16 с (#4010, `expression.music_scene`).
+
 | Сцена | Что происходит | Превью |
 |---|---|---|
 | `music_groove` | Музыка · «грув»: кивок на долю, эквалайзер в зубах, кольца-динамики | ![](../../../docs/assets/animations/music_groove.gif) |
