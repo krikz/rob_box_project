@@ -5,7 +5,8 @@
 реплики («спой», «голос», «поезжай»…), затем сцены снимка (кадр ``DJ`` и играющая музыка — музыкальные тулы); ни одна
 группа не совпала — группы прошлого хода (продолжение разговора), иначе ``TOOL_GROUPS_DEFAULT``. В SILENCED
 ничего звучащего: срез пуст (LLM в тишине не зовётся). Провайдер без тулов — пусто. Слова с двумя владельцами («ускорь
-темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
+темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» и «запомни мой голос» открывают people
+(голос человека — не голос робота, ``knowledge.PERSON_VOICE_FORMS``, #4054); названия звуков («сирена») —
 sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744). Голый неслышимый ответ
 (анимация или одна ``expression`` без слов), когда лицо словами не просили (:func:`face_asked`), - :func:`needs_words`
@@ -22,7 +23,7 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.expression import shows
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import has_form, has_word, introduces_self
+from rob_box_dialog.words import has_form, has_word, introduces_self, without_forms
 
 if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
     from rob_box_dialog.command import Command
@@ -171,8 +172,9 @@ def _group_of(tool: str, allowed: set) -> List[str]:
 
 
 def _named(text: str, field: str) -> set:
-    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(text or "", getattr(group, field))}
-    if field == "stems" and introduces_self(text):  # «здравствуй, я Саша»: словом-основой это не поймать
+    said, own_voice = without_forms(text, kn.PERSON_VOICE_FORMS)  # «запомни мой голос» - не голос робота (#4054)
+    names = {name for name, group in kn.TOOL_GROUPS.items() if has_word(said, getattr(group, field))}
+    if field == "stems" and (own_voice or introduces_self(text)):  # «здравствуй, я Саша»: основой это не поймать
         names.add(kn.SELF_INTRO_GROUP)
     if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
         names.add(kn.FACE_ASK_GROUP)

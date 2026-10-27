@@ -646,16 +646,19 @@ def query_fallback(results: Sequence[ActionResult]) -> str:
 
 
 async def execute_for_speaker(ports: Ports, actions: Sequence[ToolCall], snap: SessionSnapshot,
-                              now: SessionSnapshot, turn_id: str) -> List[ActionResult]:
-    """Действия владельцам; факт ``memory_save`` при смене собеседника с начала хода — ``rejected{speaker_changed}``
-    без запроса (код решает, чей это факт, #3881). Результаты — в порядке команды, с классом ВЫЗОВА
+                              now: SessionSnapshot, turn_id: str, log: Any = _LOG) -> List[ActionResult]:
+    """Действия владельцам; исход ``memory_save``, который решает код (``memory.code_outcome``), — без запроса: при
+    смене собеседника с начала хода ``rejected{speaker_changed}`` (чей это факт, #3881), факт - только имя -
+    ``done{name_in_profile}`` (имя живёт в профиле голоса, #4054). Результаты — в порядке команды, с классом ВЫЗОВА
     (``respond.classed``): исполнитель клеит класс тула, а ``music_library`` list/search/info - ``query`` (#4020)."""
-    changed = {i for i, a in enumerate(actions) if memory.speaker_changed(a, snap, now)}
-    sent = [a for i, a in enumerate(actions) if i not in changed]
+    decided = {i: o for i, o in ((i, memory.code_outcome(a, snap, now)) for i, a in enumerate(actions)) if o}
+    for i, (status, reason) in decided.items():
+        log.info(f"{LOG_MARK} {actions[i].tool} {status}{{{reason}}} решён кодом, владельцу не отправлен: "
+                 f"{dict(actions[i].args)} turn={turn_id}")
+    sent = [a for i, a in enumerate(actions) if i not in decided]
     done = iter(await ports.execute(sent, snap, turn_id) if sent else [])
-    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.call_class(a.tool, a.args), "rejected",
-                         kn.SPEAKER_CHANGED_REASON) if i in changed else classed(next(done), a.args)
-            for i, a in enumerate(actions)]
+    return [ActionResult(f"{turn_id}/{i}", snap.epoch, snap.agent, a.tool, kn.call_class(a.tool, a.args), *decided[i])
+            if i in decided else classed(next(done), a.args) for i, a in enumerate(actions)]
 
 
 def action_term(actions: Sequence[ToolCall]) -> float:
@@ -950,7 +953,7 @@ class TurnEngine:
         self._ports.stage(turn.turn_id, turn.epoch, "executing", "started", cls=cls)
         # свой срок класса целиком (исполнитель закроет честным timeout), а не остаток хода после LLM и его повтора
         turn.deadline.grant(action_term(actions))
-        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id)
+        run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
         for result in results:
             self.log.result(turn.turn_id, result)

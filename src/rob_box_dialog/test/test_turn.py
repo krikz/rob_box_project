@@ -434,12 +434,13 @@ def test_salvaged_action_that_failed_is_said_sadly():
 
 
 def test_quiet_action_beside_speech_speaks_and_runs_silently_n701():
-    """Акт 2b n701: speech + memory_save - слова звучат, факт сохранён, «Запомнил: …» поверх них не говорится."""
+    """Акт 2b n701: speech + memory_save - слова звучат, факт сохранён, «Запомнил: …» поверх них не говорится. Факт -
+    не имя: имя живёт в профиле голоса, факт «Пользователя зовут Саша» код владельцу не шлёт (#4054)."""
     cmd = Command(speech="Привет, Саша! Приятно познакомиться.",
-                  actions=(ToolCall("memory_save", {"fact": "Пользователя зовут Саша"}),))
+                  actions=(ToolCall("memory_save", {"fact": "Саша чинит тут технику"}),))
     ports = Ports(answers=[Answer(cmd, "deepseek")], outcomes={"memory_save": ("done", {"fact_id": "f1"})})
     agg = _run(_engine(ports), "здравствуй я Саша чиню тут технику")
-    assert ports.executed == [[("memory_save", {"fact": "Пользователя зовут Саша"})]]
+    assert ports.executed == [[("memory_save", {"fact": "Саша чинит тут технику"})]]
     assert ports.said == [("Привет, Саша! Приятно познакомиться.", None, "neutral")]
     assert (agg.stage, agg.status) == ("done", "finished")
 

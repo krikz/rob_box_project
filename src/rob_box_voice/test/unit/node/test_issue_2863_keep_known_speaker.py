@@ -233,11 +233,22 @@ def test_long_confident_repeat_register_still_merges_into_profile(node):
 
 
 def test_short_register_under_other_name_still_refused(node):
-    """Фраза узнана как Саша, а регистрируют «Борис» — это не «уже знаю»:
-    честный too_short, как раньше (#2769)."""
+    """Фраза узнана как Саша в полосе сомнения, а регистрируют «Борис» — это
+    не «уже знаю»: честный too_short, как раньше (#2769).
+
+    #4054 (решение Шифу 27.10): голос, узнанный УВЕРЕННО (>= band_high), под
+    другим именем — поправка имени, профиль переименовывается и без нового
+    эталона (test_issue_4054_one_voice_renames_profile.py); здесь — голос
+    ниже уверенного, и регистрация, как раньше, требует эталона."""
     base = _embedding(5)
     node._db.register("Саша", base, duration_sec=5.0)
-    phrase = _degraded(base, 0.55, noise_seed=105)
+    phrase = None
+    for seed in range(105, 400):
+        cand = _degraded(base, 0.85, noise_seed=seed)
+        if 0.73 <= _cos(base, cand) < 0.79:
+            phrase = cand
+            break
+    assert phrase is not None, "предусловие: фраза узнаётся как Саша, но не уверенно (0.72-0.80)"
     node._recent_embeddings.append((time.time(), phrase, 2.0, "utt-other"))
 
     node._on_register_request(_msg({"name": "Борис", "utterance_id": "utt-other"}))

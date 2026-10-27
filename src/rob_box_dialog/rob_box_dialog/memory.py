@@ -11,6 +11,9 @@
   на остальные реплики он - данные модели (ревью PR #4055);
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
+* :func:`code_outcome` - исход, который код решает без владельца памяти: факт - только имя собеседника
+  (:func:`name_fact`, #4054: имя живёт в профиле голоса) - ``done{name_in_profile}`` без записи и без фразы; собеседник
+  сменился с начала хода - ``rejected{speaker_changed}`` (#3881).
 
 * :func:`profiled_person` / :func:`speaker_memory_block` - «робот помнит, с кем говорит» (#3919): профиль ведётся только
   о собеседнике с подтверждённым именем (``name_state == confirmed``: биометрия уверена или голос подтвердило лицо,
@@ -26,7 +29,7 @@ from types import MappingProxyType
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.words import asks_own_memory
+from rob_box_dialog.words import asks_own_memory, name_tokens
 
 
 def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
@@ -79,6 +82,29 @@ def speaker_changed(call: Any, turn_snapshot: Any, now_snapshot: Any) -> bool:
     return bool(before) and before != now
 
 
+def name_fact(call: Any, snapshot: Any) -> bool:
+    """Факт ``memory_save`` - только имя собеседника (таблица ``knowledge.NAME_FACT_WORDS``, #4054, решение Шифу 27.10):
+    «Пользователя зовут Тамара». Имя живёт в профиле голоса (``register_speaker``), а не фактом памяти. Только у агента с
+    собеседником-голосом (``PERSON_AGENTS``): у чата Telegram профиля голоса нет, его факт об имени - обычный факт."""
+    if call.tool != "memory_save" or snapshot.agent not in kn.PERSON_AGENTS:
+        return False
+    tokens = name_tokens(str(call.args.get("fact") or ""))
+    words = kn.NAME_FACT_WORDS
+    rest = [t for t in tokens if t not in words["marker"] and t not in words["subject"]]
+    return len(rest) == 1 and len(rest[0]) >= 2 and any(t in words["marker"] for t in tokens)
+
+
+def code_outcome(call: Any, turn_snapshot: Any, now_snapshot: Any) -> Optional[Tuple[str, str]]:
+    """Исход вызова памяти, который решает код без владельца, - ``(статус, причина)``, или ``None`` (вызов идёт
+    владельцу): факт - только имя (:func:`name_fact`) - ``done{name_in_profile}`` без записи и без фразы; собеседник
+    сменился с начала хода (:func:`speaker_changed`) - ``rejected{speaker_changed}``."""
+    if name_fact(call, turn_snapshot):
+        return "done", kn.NAME_IN_PROFILE_REASON
+    if speaker_changed(call, turn_snapshot, now_snapshot):
+        return "rejected", kn.SPEAKER_CHANGED_REASON
+    return None
+
+
 def has_evidence(tool: str, data: Mapping[str, Any]) -> bool:
     """Есть ли в данных события владельца то, без чего ``done`` этого тула не верится (``knowledge.DONE_EVIDENCE``)."""
     key = kn.DONE_EVIDENCE.get(tool)
@@ -104,5 +130,5 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "profiled_person", "refused_read", "speaker_changed",
-           "speaker_memory_block", "unbound_reason", "voiced_refusals"]
+__all__ = ["bind_person", "code_outcome", "has_evidence", "name_fact", "profiled_person", "refused_read",
+           "speaker_changed", "speaker_memory_block", "unbound_reason", "voiced_refusals"]

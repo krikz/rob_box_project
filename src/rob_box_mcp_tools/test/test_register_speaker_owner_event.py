@@ -122,6 +122,15 @@ def test_already_known_voice_says_so(monkeypatch):
     assert out.success and out.data["reason"] == "already_known" and out.message == "Я тебя и так знаю, Глеб."
 
 
+def test_confident_voice_renamed_says_we_know_each_other(monkeypatch):
+    """#4054: голос фразы уверенно узнан под другим именем — speaker_id_node переименовал профиль (ack ``registered``
+    с ``new_name``): исход ``done{renamed}``, фраза кода «мы знакомы», а не «Запомнил тебя»."""
+    tool, _ = _tool(monkeypatch, lambda b: _registered(b, reused_profile=True, new_name=b["name"]))
+    out = tool.execute(name="тамара", utterance_id=UTT)
+    assert out.success and out.data["status"] == "done" and out.data["reason"] == "renamed"
+    assert out.message == "Мы знакомы — я тебя узнал по голосу. Буду звать тебя Тамара." and out.error is None
+
+
 def test_intro_sent_by_robot_returns_its_rejection_without_a_second_request(monkeypatch):
     """Живой случай #3793: робот сам отправил регистрацию по «я Глеб», too_short пришёл ДО вызова тула."""
     tool, node = _tool(monkeypatch, deadline=5.0)

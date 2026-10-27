@@ -145,6 +145,15 @@ def has_form(text: str, forms: Sequence[str]) -> bool:
     return bool(forms) and bool(_pattern(tuple(forms), _RIGHT).search(text or ""))
 
 
+def without_forms(text: str, forms: Sequence[str]) -> Tuple[str, bool]:
+    """Текст без слов ровно этих форм (границы - как у :func:`has_form`) и были ли они в нём: «запомни мой голос» без
+    формы «мой голос» - («запомни  », ``True``)."""
+    if not forms:
+        return text or "", False
+    stripped, count = _pattern(tuple(forms), _RIGHT).subn(" ", text or "")
+    return stripped, count > 0
+
+
 def name_tokens(text: str) -> Tuple[str, ...]:
     """Слова фразы в нижнем регистре, ё → е (как в таблицах имён)."""
     return tuple(t for t in (w.lower().replace("ё", "е").strip("-") for w in _TOKEN.findall(text or "")) if t)
