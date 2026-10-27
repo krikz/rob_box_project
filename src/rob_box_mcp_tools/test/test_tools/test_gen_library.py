@@ -367,6 +367,19 @@ class TestNamedTracks:
         result = setup.tool.execute(action="delete", track_id=NO_ID)
         assert not result.success and result.data["reason"] == "unknown_track"
 
+    @pytest.mark.parametrize("junk", [["a", "b"], {"id": "x"}, 12345, ["a"]])
+    @pytest.mark.parametrize("action", ["info", "update", "delete"])
+    def test_non_string_id_is_a_refusal_not_a_crash(self, setup, action, junk):
+        """Список или словарь от небрежной модели вместо строки: ``unknown_track``, а не ``TypeError`` в ``execute``."""
+        result = setup.tool.execute(action=action, track_id=junk, confirm=True)
+        assert not result.success and result.data["reason"] == "unknown_track"
+        assert setup.library.count == 2
+
+    def test_non_string_id_in_the_window_check_itself(self):
+        window = _mm.NamedTracks(limit=2)
+        window.name(["a"])
+        assert ["a"] not in window and {"a": 1} not in window and "a" in window
+
     def test_info_does_not_name_an_id(self, setup):
         """n707 -> n710: ``info`` по чужому id отказывает сам, а значит и не открывает дорогу ``delete``."""
         assert setup.tool.execute(action="info", track_id=setup.stranger).data["reason"] == "unknown_track"

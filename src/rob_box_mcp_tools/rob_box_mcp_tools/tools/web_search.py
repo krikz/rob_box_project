@@ -5,13 +5,17 @@ LLM получает фактуру, которой нет в её обучаю�
 
 Бэкенды по порядку (ADR-0148: какой отвечает и что значит ответ — решает код, а не модель):
 
-1. ``ddgs`` — DuckDuckGo. Пустая выдача (``DDGSException("No results found.")``) — честное «ничего не нашёл»,
-   дальше не идём. Любой другой сбой (сеть, rate-limit, пакет не установлен) — бэкенд недоступен.
+1. ``ddgs`` — DuckDuckGo. Ответом считаются только непустые строки. Пустая выдача (``DDGSException("No results found.")``
+   или ``[]``) — не вердикт: ddgs бросает то же самое, когда запрос ничего не нашёл и когда источник заблокировал
+   запрос или отдал анти-бот страницу с пустым разбором (n907/n908 23.10). Поэтому пусто и любой другой сбой (сеть,
+   rate-limit, пакет не установлен) одинаково отправляют дальше, к DeepSeek.
 2. ``deepseek`` — ``POST https://api.deepseek.com/v1/tools/search`` (``Authorization: Bearer $DEEPSEEK_API_KEY``,
    тело ``{query, count}``, ответ ``results[]`` с ``title / url / snippet / summary``). Модели отдаётся ``summary``
-   (он написан для модели), ``snippet`` — запасной. Нет ключа — ступень пропускается со строкой в логе.
-3. Оба недоступны — ``success=False``, ``data.status="rejected"``, ``data.reason="search_unavailable"``: сбой связи
-   не выглядит для LLM как «0 результатов» (n907/n908 23.10: 4 вызова LLM впустую и «поиск ничего не выдал»).
+   (он написан для модели), ``snippet`` — запасной. Нет ключа — ступень пропускается со строкой в логе. Только
+   ответ этого бэкенда - 200 с пустым ``results[]`` - честное «0 результатов» (пустые выдачи не тарифицируются).
+3. Подтвердить не удалось (DeepSeek недоступен, а ddgs промолчал или сломался) — ``success=False``,
+   ``data.status="rejected"``, ``data.reason="search_unavailable"``: «пусто у одного источника» не выдаётся
+   LLM за «в сети нет» (n907/n908: 4 вызова LLM впустую и «поиск ничего не выдал»).
 
 Какой бэкенд ответил — в логе (``backend=``) и в ``data.backend``.
 
@@ -40,16 +44,18 @@ BACKEND_DEEPSEEK = "deepseek"
 SEARCH_UNAVAILABLE = "search_unavailable"
 DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
 DEEPSEEK_KEY_ENV = "DEEPSEEK_API_KEY"
-#: API: запрос 1-128 символов. Тул отдаёт ответ в пределах дедлайна класса ``query`` (15 с): DDGS ждёт до 10 с,
-#: поэтому DeepSeek (замер 26.10: 0,7 с) получает не больше 4 с.
+#: API: запрос 1-128 символов. Тул отдаёт ответ в пределах дедлайна класса ``query`` (15 с, ``rob_box_dialog.knowledge.
+#: ACTION_CLASSES``): DDGS ждёт до ``DDGS_TIMEOUT_S``, поэтому DeepSeek (замер 26.10: 0,7 с) получает не больше 4 с;
+#: сумма держит запас в 1 с (тест фиксирует её числами - диалог отсюда не импортируется).
 DEEPSEEK_QUERY_MAX = 128
+DDGS_TIMEOUT_S = 10
 DEEPSEEK_TIMEOUT_S = 4.0
 #: Честная причина по HTTP-коду DeepSeek (остальные - просто код).
 _DEEPSEEK_HTTP_WHY = {401: "ключ отвергнут", 402: "на балансе пусто", 429: "лимит запросов"}
 
 
 class _BackendDown(Exception):
-    """Бэкенд не смог ответить (сеть, лимит, нет ключа, не установлен) - это не «ничего не найдено»."""
+    """Бэкенд не дал ответа (сеть, лимит, нет ключа, не установлен, пустая выдача ddgs) - это не «ничего не найдено»."""
 
 
 class SearchWebTool(MCPTool):
@@ -136,27 +142,21 @@ class SearchWebTool(MCPTool):
     # ── DuckDuckGo ───────────────────────────────────────────────────────
 
     def _ddgs_text(self, DDGS_cls, query: str, max_results: int) -> list:
-        """Сырая выдача DDGS; пустая выдача — ``[]``, а не исключение (issue #3242).
+        """Сырая выдача DDGS; исключения библиотеки пробрасываются как есть.
 
-        ddgs сообщает о пустой выдаче ``DDGSException("No results found.")`` —
-        это не сбой сети: раньше он логировался ``[ERROR]`` и отвечал «DuckDuckGo
-        недоступен». Остальные исключения пробрасываются как раньше.
+        ``DDGSException("No results found.")`` тут НЕ превращается в ``[]`` (так было до #4026): ddgs бросает его и
+        когда запрос ничего не нашёл, и когда ни один движок не вернул строк из-за блока или анти-бот страницы без
+        ошибки разбора. Отличить одно от другого изнутри нельзя, поэтому вердикт «ничего нет» ddgs не выносит.
         """
-        try:
-            with DDGS_cls(timeout=10) as ddgs:
-                return list(
-                    ddgs.text(
-                        query,
-                        max_results=max_results,
-                        region="wt-wt",
-                        backend="duckduckgo",
-                    )
+        with DDGS_cls(timeout=DDGS_TIMEOUT_S) as ddgs:
+            return list(
+                ddgs.text(
+                    query,
+                    max_results=max_results,
+                    region="wt-wt",
+                    backend="duckduckgo",
                 )
-        except Exception as exc:  # noqa: BLE001
-            if "no results found" not in str(exc).lower():
-                raise
-            self.log_info(f"[search_web] query={query[:60]!r} → 0 results ({type(exc).__name__})")
-            return []
+            )
 
     def _ddgs_class(self):
         """Класс DDGS или ``None``, если пакета нет.
@@ -189,13 +189,16 @@ class SearchWebTool(MCPTool):
             raise _BackendDown("пакет ddgs не установлен")
         try:
             raw = self._ddgs_text(ddgs_cls, query, max_results)
-        except Exception as exc:  # noqa: BLE001 — сеть, rate-limit, смена разметки: бэкенд не ответил
+        except Exception as exc:  # noqa: BLE001 — сеть, rate-limit, смена разметки, «No results found»: вердикта нет
             raise _BackendDown(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
-        return [
+        rows = [
             row for row in (
                 _row(r.get("title"), r.get("body"), r.get("href"), self._SNIPPET_CHARS) for r in raw
             ) if row
         ]
+        if not rows:
+            raise _BackendDown("выдача пуста — от блока источника не отличить, вердикта нет")
+        return rows
 
     # ── DeepSeek ─────────────────────────────────────────────────────────
 
@@ -252,18 +255,20 @@ class SearchWebTool(MCPTool):
                 rows = search(query, max_results)
             except _BackendDown as down:
                 failures.append((backend, str(down)))
-                self.log_warning(f"[search_web] query={query[:60]!r} backend={backend} недоступен: {down}")
+                self.log_warning(f"[search_web] query={query[:60]!r} backend={backend} не дал ответа: {down}")
                 continue
-            return self._answer(query, backend, rows)
+            return self._answer(query, backend, rows, tried=[name for name, _ in failures] + [backend])
         return self._unavailable(query, failures)
 
-    def _answer(self, query: str, backend: str, rows: List[dict]) -> MCPToolResult:
-        """Бэкенд ответил: пустая выдача - честное «ничего не нашёл по этой строке», иначе строки для LLM."""
+    def _answer(self, query: str, backend: str, rows: List[dict], tried: List[str]) -> MCPToolResult:
+        """Бэкенд ответил: пустая выдача (до сюда доходит только пустой ответ DeepSeek) - честное «ничего не нашёл
+        по этой строке», иначе строки для LLM."""
         payload = {"query": query, "results": rows, "backend": backend}
         if not rows:
+            self.log_info(f"[search_web] query={query[:60]!r} → 0 results backend={backend} tried={tried}")
             return MCPToolResult(
                 success=True,
-                data=payload,
+                data={**payload, "tried": tried},
                 # 07.10: пустая выдача по одной строке («"танец маленьких утят" ноты RTTTL OR melody») стала
                 # у робота «в сети нет». Код называет, что именно искали.
                 message=(
@@ -288,7 +293,10 @@ class SearchWebTool(MCPTool):
         return MCPToolResult(
             success=False,
             error=f"{SEARCH_UNAVAILABLE}: {detail}",
-            message="Поиск в интернете сейчас недоступен — это сбой связи, а не «ничего не найдено».",
+            message=(
+                "Поиск в интернете не дал надёжного ответа: источники недоступны или промолчали, подтвердить, что "
+                "ничего нет, не удалось — это сбой, а не «ничего не найдено»."
+            ),
             data={
                 "status": "rejected",
                 "reason": SEARCH_UNAVAILABLE,

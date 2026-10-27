@@ -982,9 +982,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'настроение, жанр, заметка; delete — удалить трек насовсем: без '
                        'confirm тул только спрашивает (needs_confirmation), '
                        'confirm=true — после «да» человека. track_id для info / update '
-                       '/ delete — только из ответа list / search этого разговора, не '
-                       'выдумывай (иначе unknown_track). Ответ содержит фразу, которую '
-                       'надо сказать.',
+                       '/ delete — только из ответа list / search, не выдумывай (иначе '
+                       'unknown_track). Ответ содержит фразу, которую надо сказать.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Что сделать '

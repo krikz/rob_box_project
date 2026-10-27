@@ -1,9 +1,12 @@
 """#4026 (n907/n908 23.10): сбой поиска не выглядит для LLM как «0 результатов».
 
 Марафон 23.10 23:03-23:04: ``search_web`` трижды ответил ``→ 0 results (DDGSException)`` при «✅ выполнен успешно»,
-робот сказал «поиск ничего не выдал», 4 вызова LLM впустую. Теперь: DDGS → при сбое бэкенда DeepSeek
-``/v1/tools/search`` → оба не ответили - ``success=False``, ``reason=search_unavailable``. Пустая выдача DDGS
-(«No results found») - честное «ничего не нашёл» без второго бэкенда. HTTP подменён транспортом, DDGS - классом.
+робот сказал «поиск ничего не выдал», 4 вызова LLM впустую. Эта строка лога и этот ``success=True`` были ветвью «No
+results found» старого кода, а не сбоя сети: ddgs бросает ``DDGSException("No results found.")`` и когда запрос
+ничего не нашёл, и когда источник заблокировал запрос (пустой разбор анти-бот страницы). Теперь: пустая выдача DDGS
+(исключение «No results found» или ``[]``) - не вердикт, как и любой сбой; идём к DeepSeek ``/v1/tools/search``;
+честное «0 результатов» говорит только его пустой ответ; DeepSeek недоступен - ``success=False``,
+``reason=search_unavailable``. HTTP подменён транспортом, DDGS - классом.
 """
 
 from __future__ import annotations
@@ -142,7 +145,7 @@ def test_ddgs_backend_failure_goes_to_deepseek_with_the_summary():
     assert call.body == {"query": "погода завтра в Москве", "count": 3}
     assert json.loads(result.message)["backend"] == "deepseek"
     log = s.log.text()
-    assert "backend=ddgs недоступен: DDGSException: Ratelimit 202" in log and "backend=deepseek" in log
+    assert "backend=ddgs не дал ответа: DDGSException: Ratelimit 202" in log and "backend=deepseek" in log
 
 
 def test_deepseek_falls_back_to_snippet_when_summary_is_empty_and_clips_long_text():
@@ -165,7 +168,7 @@ def test_both_backends_down_is_an_honest_refusal_not_zero_results():
     assert result.data["results"] == [] and result.data["tried"] == ["ddgs", "deepseek"]
     assert result.error.startswith("search_unavailable:")
     assert "ddgs: DDGSException: Ratelimit 202" in result.error and "deepseek: HTTP 500" in result.error
-    assert "сбой связи, а не «ничего не найдено»" in result.message
+    assert "это сбой, а не «ничего не найдено»" in result.message
     assert "search_unavailable" in s.log.text() and "error: " in s.log.text()
 
 
@@ -184,20 +187,57 @@ def test_deepseek_failures_are_named(reply, why):
     assert why in result.error
 
 
-def test_empty_ddgs_is_a_real_miss_and_deepseek_is_not_asked():
-    """«No results found» - не сбой бэкенда: честное «ничего не нашёл по этой строке», второй бэкенд не зовём."""
-    s = _tool(ddgs=_ddgs(error=DDGSException("No results found.")))
-    result = s.tool.execute('"танец маленьких утят" ноты')
-    assert result.success and result.data["results"] == [] and result.data["backend"] == "ddgs"
-    assert "вернул 0 результатов" in result.message and "танец маленьких утят" in result.message
-    assert "не про то, что такого нет в сети" in result.message
-    assert s.transport.calls == []
+INCIDENT_EMPTY = DDGSException("No results found.")  # ровно то, что бросает ddgs в n907/n908 23.10
 
 
-def test_ddgs_rows_without_text_count_as_empty():
+def test_ddgs_no_results_found_is_not_a_verdict_deepseek_is_asked():
+    """Корень #4026: «No results found» от ddgs - блок источника не отличить от пустого запроса, вердикта нет."""
+    s = _tool(ddgs=_ddgs(error=INCIDENT_EMPTY))
+    result = s.tool.execute("погода завтра в Москве")
+    assert result.success and result.data["backend"] == "deepseek" and len(s.transport.calls) == 1
+    assert result.data["results"][0]["body"].startswith("Завтра в Москве +5")
+    assert "→ 0 results" not in s.log.text()  # той самой строки инцидента больше не пишем
+
+
+def test_ddgs_empty_list_without_exception_is_not_a_verdict_either():
+    s = _tool(ddgs=_ddgs([]))
+    result = s.tool.execute("погода завтра в Москве")
+    assert result.success and result.data["backend"] == "deepseek" and len(s.transport.calls) == 1
+    assert "выдача пуста" in s.log.text()
+
+
+def test_ddgs_rows_without_text_are_not_a_verdict_either():
     s = _tool(ddgs=_ddgs([{"title": "t", "body": "", "href": "h"}]))
     result = s.tool.execute("q")
-    assert result.success and result.data["results"] == [] and s.transport.calls == []
+    assert result.success and result.data["backend"] == "deepseek" and len(s.transport.calls) == 1
+
+
+def test_both_empty_is_the_only_honest_zero_results():
+    """DDGS промолчал, DeepSeek ответил 200 с пустым ``results[]`` - единственный способ честно сказать «0 результатов»."""
+    s = _tool(ddgs=_ddgs(error=INCIDENT_EMPTY), transport=_Transport(_deepseek_ok()))
+    result = s.tool.execute('"танец маленьких утят" ноты')
+    assert result.success and result.data["results"] == [] and result.data["backend"] == "deepseek"
+    assert result.data["tried"] == ["ddgs", "deepseek"] and len(s.transport.calls) == 1
+    assert "вернул 0 результатов" in result.message and "танец маленьких утят" in result.message
+    assert "не про то, что такого нет в сети" in result.message
+    assert "→ 0 results backend=deepseek" in s.log.text()
+
+
+@pytest.mark.parametrize("reply,environ,why", [
+    ((500, {"error": "x"}), None, "deepseek: HTTP 500"),
+    ((402, {}), None, "deepseek: HTTP 402 (на балансе пусто)"),
+    (TimeoutError("timed out"), None, "deepseek: TimeoutError: timed out"),
+    (_deepseek_ok(), {}, "нет ключа DEEPSEEK_API_KEY"),
+])
+def test_ddgs_empty_and_deepseek_down_is_unavailable_never_zero_results(reply, environ, why):
+    """Развилка решена кодом: пустой ddgs без подтверждения DeepSeek - ``search_unavailable``, а не «0 результатов»:
+    так выглядит и блок источника (n907/n908), и честный промах - отличить их нечем."""
+    s = _tool(ddgs=_ddgs(error=INCIDENT_EMPTY), transport=_Transport(reply), environ=environ)
+    result = s.tool.execute("рецепт борща")
+    assert not result.success and result.data["status"] == "rejected" and result.data["reason"] == "search_unavailable"
+    assert result.data["results"] == [] and result.data["tried"] == ["ddgs", "deepseek"]
+    assert "ddgs: DDGSException: No results found." in result.error and why in result.error
+    assert "→ 0 results" not in s.log.text() and "search_unavailable" in s.log.text()
 
 
 def test_deepseek_empty_answer_after_a_ddgs_failure_is_a_real_miss():
@@ -235,10 +275,26 @@ def test_query_is_clipped_to_the_api_limit_and_count_is_clamped():
     assert len(body["query"]) == web_search.DEEPSEEK_QUERY_MAX == 128 and body["count"] == 10
 
 
+QUERY_CLASS_DEADLINE_S = 15.0  # rob_box_dialog.knowledge.ACTION_CLASSES["query"]; диалог отсюда не импортируется
+
+
 def test_deepseek_gets_a_deadline_inside_the_query_class_budget():
-    s = _tool(ddgs=_ddgs(error=DDGSException("down")))
+    """Худший ход: ddgs ждёт ``DDGS_TIMEOUT_S`` и промолчал, затем DeepSeek ждёт свои секунды - в сумме с запасом."""
+    s = _tool(ddgs=_ddgs(error=INCIDENT_EMPTY))
     s.tool.execute("q")
-    assert s.transport.calls[0].timeout == web_search.DEEPSEEK_TIMEOUT_S <= 4.0
+    assert s.transport.calls[0].timeout == web_search.DEEPSEEK_TIMEOUT_S
+    assert web_search.DDGS_TIMEOUT_S + web_search.DEEPSEEK_TIMEOUT_S <= QUERY_CLASS_DEADLINE_S - 1.0
+
+
+def test_ddgs_is_asked_with_its_timeout_constant():
+    seen = {}
+
+    class FakeDDGS(_ddgs([DDG_ROW])):
+        def __init__(self, timeout=None):
+            seen["timeout"] = timeout
+
+    s = _tool(ddgs=FakeDDGS)
+    assert s.tool.execute("q").success and seen["timeout"] == web_search.DDGS_TIMEOUT_S
 
 
 def test_the_key_never_reaches_results_errors_or_logs():

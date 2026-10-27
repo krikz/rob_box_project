@@ -60,7 +60,10 @@ class NamedTracks:
 
     Модель подставляла id из пересказа, а не из ответа тула (n707/n710 23.10: ``info`` и ``delete`` по id, которого в
     ходе не было, - стёрт посторонний трек). Окно - последние ``limit`` названных id по давности обращения; тул один
-    на процесс, поэтому окно живёт, пока жив разговор с роботом (перезапуск сервера обнуляет - модель вызовет ``list``).
+    на процесс, поэтому окно общее для всех ходов и разговоров, пока жив сервер (перезапуск обнуляет - модель вызовет
+    ``list``). Что оно защищает: от выдуманного id; чего НЕ защищает: от настоящего id из давнего ``list`` (один
+    ``list`` на 100 строк называет всю небольшую библиотеку). От ошибочного ``delete`` настоящего трека оберегает
+    только подтверждение (:class:`DeleteConfirmation`).
     """
 
     def __init__(self, limit: int = NAMED_WINDOW_MAX) -> None:
@@ -78,10 +81,11 @@ class NamedTracks:
                 self._ids.popitem(last=False)
 
     def __contains__(self, track_id: object) -> bool:
+        key = str(track_id)  # нехешируемое (список, словарь) от небрежной модели - просто не названный id
         with self._lock:
-            named = track_id in self._ids
+            named = key in self._ids
             if named:
-                self._ids.move_to_end(str(track_id))
+                self._ids.move_to_end(key)
             return named
 
 
@@ -140,7 +144,7 @@ class MusicLibraryTool(MCPTool):
             "(verdict like / dislike; трек, который не нравится, больше не включается, но не удаляется); "
             "update — переименовать, теги, настроение, жанр, заметка; delete — удалить трек насовсем: "
             "без confirm тул только спрашивает (needs_confirmation), confirm=true — после «да» человека. "
-            "track_id для info / update / delete — только из ответа list / search этого разговора, не выдумывай "
+            "track_id для info / update / delete — только из ответа list / search, не выдумывай "
             "(иначе unknown_track). Ответ содержит фразу, которую надо сказать."
         )
 
@@ -209,7 +213,8 @@ class MusicLibraryTool(MCPTool):
     # starts_music=False намеренно: флаг на уровне тула, а музыку запускает только action=play. С True
     # ``TrackStartGuard`` («один запуск трека за ход») отказал бы ``play`` после ``list`` в том же ходе.
 
-    def execute(self, action: str = "", track_id: str = "", **kwargs: Any) -> MCPToolResult:
+    def execute(self, action: str = "", track_id: Any = "", **kwargs: Any) -> MCPToolResult:
+        track_id = str(track_id) if track_id else ""  # список / словарь от небрежной модели - не TypeError, а неизвестный id
         handler = {
             "list": self._list, "search": self._search, "info": self._info, "play": self._play,
             "rate": self._rate, "update": self._update, "delete": self._delete,
