@@ -23,13 +23,15 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCENE_SET = REPO_ROOT / "scripts" / "maintenance" / "scene_set"
 sys.path.insert(0, str(SCENE_SET))
+# CI-шаг сцен гоняет этот файл без PYTHONPATH (pytest + PyYAML): rob_box_core - чистый Python, берём из репозитория.
+sys.path.insert(0, str(REPO_ROOT / "src" / "rob_box_core"))
 
 import conductor  # noqa: E402
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
 import decoder_node  # noqa: E402
 import replay  # noqa: E402
 import scene_spec as ss  # noqa: E402
