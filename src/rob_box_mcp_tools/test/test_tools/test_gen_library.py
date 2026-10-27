@@ -436,7 +436,8 @@ class TestDeleteNeedsAnAnswer:
         assert not result.success
         assert result.data["status"] == "rejected" and result.data["reason"] == "needs_confirmation"
         assert result.data["title"] == "Дождь" and result.data["track_id"] == setup.track_id
-        assert result.data["question"] == result.message == "Удалить «Дождь»? Скажи «да, удаляй»."
+        assert result.message == result.error == "Удалить «Дождь»? Скажи «да, удаляй»."
+        assert "question" not in result.data, "текст вопроса строит диалог по причине, тул шлёт данные (#4062)"
         assert setup.library.count == 2
 
     def test_confirm_after_the_question_deletes(self, setup):
@@ -509,6 +510,85 @@ class TestDeleteNeedsAnAnswer:
         confirm = next(p for p in setup.tool.parameters if p.name == "confirm")
         assert confirm.type == "boolean" and not confirm.required and confirm.default is False
         assert "needs_confirmation" in setup.tool.description and "unknown_track" in setup.tool.description
+
+
+def _as_dialog_result(call_args, result):
+    """Исход тула глазами диалога v2: как ``command_turn.owner_event`` - статус и причина из данных, данные = аргументы
+    вызова и ответ тула поверх них; класс вызова - ``knowledge.call_class``."""
+    from rob_box_dialog import knowledge as dkn
+    from rob_box_dialog.respond import ActionResult
+
+    data = {**call_args, **dict(result.data or {})}
+    status = data.get("status") or ("done" if result.success else "rejected")
+    return ActionResult("t1/0", 0, "personality", "music_library", dkn.call_class("music_library", call_args), status,
+                        data.get("reason"), data)
+
+
+class TestDialogSpeaksTheToolsQuestion:
+    """#4062: вопрос «Удалить «X»?» - одна фраза каталога, на ответ «да, удаляй» диалог v2 шлёт подтверждение сам
+    (``rob_box_dialog.knowledge.TOOL_QUESTIONS``, ``tool_ask``). Сверка тула и диалога - здесь: пакет диалога тул не
+    импортирует (``test_purity``)."""
+
+    @pytest.fixture
+    def setup(self, tmp_path):
+        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+        named = lib.save_track(audio_bytes=b"x", prompt="x", title="Дождь")["id"]
+        untitled = lib.save_track(audio_bytes=b"y", prompt="y")["id"]
+        clock = _Clock()
+        tool = _tool(lib, clock=clock)
+        tool.execute(action="list")
+        return SimpleNamespace(library=lib, named=named, untitled=untitled, clock=clock, tool=tool)
+
+    @pytest.mark.parametrize("which", ["named", "untitled"])
+    def test_tool_and_dialog_say_the_same_question(self, setup, which):
+        """Дрейф текста: тул (``media_phrases``) и диалог (``respond`` по причине и ``title``) собирают вопрос разными
+        путями из одного ключа каталога - совпасть обязаны, и с названием, и без него."""
+        from rob_box_dialog.respond import phrase_from_result
+
+        args = {"action": "delete", "track_id": getattr(setup, which)}
+        result = setup.tool.execute(**args)
+        assert phrase_from_result(_as_dialog_result(args, result)).text == result.message
+
+    @pytest.mark.parametrize("reason", _mm.REFUSAL_REASONS)
+    def test_every_refusal_reason_has_its_own_phrase(self, reason):
+        """Переименование причины в туле не должно молча вернуть общее «С библиотекой музыки не вышло.»."""
+        from rob_box_dialog import phrases
+        from rob_box_dialog.respond import ActionResult, phrase_key
+
+        assert f"music.library_fail.{reason}" in phrases.catalog()
+        result = ActionResult("t1/0", 0, "personality", "music_library", "action.local", "rejected", reason,
+                              {"action": "delete", "track_id": "t-1"})
+        assert phrase_key(result) == f"music.library_fail.{reason}"
+
+    def test_a_refusal_reason_outside_the_list_is_a_code_error(self):
+        """Ревью PR #4100: список причин ведётся руками - новая причина мимо него прошла бы мимо сверки с каталогом и
+        молча говорила бы «С библиотекой музыки не вышло.». ``_refused`` её не пропускает."""
+        with pytest.raises(ValueError, match="disk_on_fire"):
+            _mm._refused("disk_on_fire", "Диск горит.")
+        assert _mm._refused(_mm.UNKNOWN_TRACK, "нет такого").data["reason"] == "unknown_track"
+
+    def test_the_question_is_known_to_the_dialog_and_its_window_fits_the_tools(self):
+        from rob_box_dialog import knowledge as dkn
+
+        question = dkn.TOOL_QUESTIONS[("music_library", _mm.NEEDS_CONFIRMATION)]
+        assert dict(question.confirm) == {"confirm": True}
+        assert dkn.TOOL_ASK_TTL_S + _mm.CONFIRM_MIN_WAIT_S <= _mm.CONFIRM_TTL_S, "подтверждение кода тул ещё примет"
+
+    def test_dialogs_confirmed_call_deletes_after_the_question(self, setup):
+        """Вызов, который диалог исполняет на «да, удаляй» (``tool_ask.Asked.confirmed``), тул принимает: трек удалён,
+        фраза диалога - из результата."""
+        from rob_box_dialog import tool_ask
+        from rob_box_dialog.respond import phrase_from_result
+
+        args = {"action": "delete", "track_id": setup.named}
+        asked = tool_ask.Asked("music_library", _mm.NEEDS_CONFIRMATION, args)
+        assert not setup.tool.execute(**args).success
+        setup.clock.now += 8.0  # робот договорил вопрос, человек позвал его и ответил
+        confirmed = asked.confirmed()
+        result = setup.tool.execute(**dict(confirmed.args))
+        assert result.success and setup.library.get_track_info(setup.named)["success"] is False
+        said = phrase_from_result(_as_dialog_result(dict(confirmed.args), result)).text
+        assert said == "Удалил «Дождь» из библиотеки."
 
 
 class TestRate:

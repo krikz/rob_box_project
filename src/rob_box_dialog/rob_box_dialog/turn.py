@@ -14,6 +14,10 @@
   (В12″) — модель получает подхваченные фразы каждую со своим автором (``[говорит: …]`` на момент фразы, не
   того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
 * Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия), спорный стоп (В19) идёт в LLM;
+* вопрос тула («Удалить «X»? Скажи «да, удаляй».», ``knowledge.TOOL_QUESTIONS``) — окно ответа в сессии
+  (``tool_ask``, #4062): ответ «да, удаляй» исполняет код подтверждённым вызовом, фраза — из результата тула; «нет» —
+  фраза кода; другие слова — к LLM с тулом вопроса в срезе. Вопрос — не провал: фраза и лицо не грустят
+  (``respond.failed``);
 * невалидная команда (после повтора моста) — допустимые действия исполняются, итог (или честное «не понял») говорит
   код, ход ``done`` (#3953, Шифу 23.10); спасённый ``query`` возвращает данные модели, пока есть итерации, иначе код
   говорит по данным (#4050); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) законен;
@@ -67,6 +71,7 @@ from rob_box_dialog import face_scene
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import phrases
+from rob_box_dialog import tool_ask
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
@@ -77,7 +82,7 @@ from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import show_seconds, shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
-from rob_box_dialog.respond import ActionResult, audible, classed, join
+from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
@@ -90,6 +95,8 @@ _QUERY = "query"
 _FAILED = ("rejected", "timeout")
 #: Строка лога подхвата бэклога голым «робот» (#3767, #3892).
 PICKUP_MARK = "🗒️ [backlog] pickup"
+#: Метка строк лога окна вопроса тула (#4062): «открыт» после вопроса, «ответ» на реплику в окне.
+ASK_MARK = "❓ [tool-ask]"
 #: Раздел снимка с исходами действий прошлых ходов (окно ``turn_log``: ``tool`` — структурой, не в тексте реплик).
 RECENT_ACTIONS = "recent_actions"
 #: Раздел снимка хода с фразой: фоновая фраза того же собеседника (``Backlog.recent_unaddressed``, §7.3, #3894).
@@ -417,9 +424,10 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
     сценами по очереди (:func:`shown_face`, #4049: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``;
     #4083: пачка — первая сцена на итоге, остальные в ``Shown.then``), иначе лицо команды со временем показа
     (:func:`held_expression`, ``text`` — реплика человека). Провал действия её не показывает (``None`` — рефлекс как
-    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Одно правило для исполненной команды
+    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Вопрос тула («Удалить «X»?», #4062) её тоже
+    не показывает: это фраза кода, настроение модели её не красит. Одно правило для исполненной команды
     (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
-    if any(r.status in _FAILED for r in results):
+    if any(failed(r) or asks(r) for r in results):
         return None
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
     scenes = [s for s in shown if s is not None and s is not expression]
@@ -491,8 +499,8 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     try:
         said = join(own)
     except KeyError:
-        failed = [r for r in own if r.status in _FAILED]
-        return phrases.text(f"local.{failed[0].status}") if failed else None
+        lost = [r for r in own if r.status in _FAILED]
+        return phrases.text(f"local.{lost[0].status}") if lost else None
     return said.text if said is not None else None
 
 
@@ -611,7 +619,7 @@ def _before_data(refusal: Optional[Utterance], acted: Sequence[ActionResult]) ->
     """Реплика кода, пока данные ``query`` идут модели (:func:`query_more`): отказ чтения памяти первым, затем исход
     исполненных действий команды (:func:`outcome_phrase`); ``True`` - грустно (отказ или провал действия)."""
     parts = (refusal.text if refusal is not None else None, outcome_phrase(acted))
-    return " ".join(part for part in parts if part), refusal is not None or any(r.status in _FAILED for r in acted)
+    return " ".join(part for part in parts if part), refusal is not None or any(failed(r) for r in acted)
 
 
 def _query_data(results: Sequence[ActionResult]) -> str:
@@ -671,8 +679,9 @@ def invalid_emotion(invalid: Invalid, results: Sequence[ActionResult]) -> Option
     """Эмоция фразы кода после нарушения: провал исполненного — грустно; исполнять было нечего — грустно («не понял»),
     кроме нарушений, где ничего не провалилось (``knowledge.CALM_VIOLATIONS``: ответ лицом, анимацией или earcon без
     слов; ревью #4041 — «Угу, я тут.» звучало с ``sad``)."""
-    if any(r.status in _FAILED for r in results):
-        return "sad"
+    emotion = outcome_emotion(results)  # провал - sad, вопрос тула - эмоция вопроса (#4062)
+    if emotion is not None:
+        return emotion
     return None if results or invalid.reason in kn.CALM_VIOLATIONS else "sad"
 
 
@@ -781,7 +790,7 @@ def say_late(engine: "TurnEngine", result: ActionResult) -> None:
         return
     turn_id = result.turn_id.split("/")[0]
     engine._log.info(f"{LOG_MARK} поздний итог {result.tool} {result.status} {result.reason or '-'} turn={turn_id}")
-    speech_id = engine._ports.say(turn_id, result.epoch, text, None, "sad" if result.status in _FAILED else None)
+    speech_id = engine._ports.say(turn_id, result.epoch, text, None, outcome_emotion((result,)))
     engine.log.said(turn_id, speech_id, text)
     engine._event_raw("speech_requested", turn_id, result.epoch, text, {"speech_id": speech_id, "voice": ""})
 
@@ -801,6 +810,43 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
         await _tier1_then_rest(engine, turn, follow, snap)
     else:
         await understand(engine, turn, snap)
+
+
+def turn_work(engine: "TurnEngine", turn: _Turn, snap: SessionSnapshot) -> Awaitable[None]:
+    """Чем ответить на адресованную реплику: ответ на открытый вопрос тула (``tool_ask.reply``, #4062) и Tier-1 -
+    кодом, без LLM; иначе - ход к LLM. На вопрос тула отвечает только реплика из ``tool_ask.ANSWER_SOURCES`` (вейк,
+    Telegram, оператор): «да» без вейка на другой вопрос робота и подхват бэклога необратимое не подтверждают; новый
+    вопрос робота или модели, тишина и стоп окно снимают (``Session``, ``knowledge.TOOL_ASK_CLOSED_BY``)."""
+    reply = tool_ask.reply(engine.session, turn.text, turn.source)
+    if reply is not None:
+        return answer_tool(engine, turn, reply, snap)
+    tier1 = tier1_for(turn.text, snap, engine._voices())
+    if tier1 is not None and not tier1.disputed:
+        return _tier1_then_rest(engine, turn, tier1, snap)
+    return understand(engine, turn, snap)
+
+
+async def answer_tool(engine: "TurnEngine", turn: _Turn, reply: tool_ask.Reply, snap: SessionSnapshot) -> None:
+    """Ответ человека на вопрос тула (#4062, ADR-0148: решает код, 0 вызовов LLM). Окно снимается сразу. «Да» -
+    подтверждённый вызов (``Asked.confirmed``: аргументы вопроса + ``confirm``) исполняет код, фраза об исходе - из
+    РЕЗУЛЬТАТА тула (``respond.join``: «Удалил «X» из библиотеки.», отказ - своей фразой; тул спросил снова - вопрос и
+    новое окно, ``TurnEngine._execute``). «Нет» - фраза ``ToolQuestion.declined`` («Не удаляю.»), тул не зовётся."""
+    asked = reply.asked
+    tool_ask.close(engine.session)
+    turn.stage = "done"
+    engine._log.info(f"{LOG_MARK} {ASK_MARK} ответ {'да' if reply.yes else 'нет'}: {tool_ask.describe(asked)} "
+                     f"text={turn.text[:60]!r} turn={turn.turn_id}")
+    if not reply.yes:
+        turn.reason = "tool_ask:declined"
+        engine._say(turn, phrases.text(asked.question.declined))
+        return
+    turn.reason = "tool_ask:confirmed"
+    results = await engine._execute(turn, (asked.confirmed(),), snap)
+    if engine._stale(turn, "results"):
+        return
+    emotion = outcome_emotion(results)  # тул спросил снова - эмоция вопроса, не грусть
+    said = outcome_phrase(results) or phrases.text("local.rejected" if emotion == "sad" else "local.done")
+    engine._say(turn, said, None, emotion)  # на ответ не молчим
 
 
 def provider_in_flight(ports: Any) -> str:
@@ -911,9 +957,7 @@ class TurnEngine:
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
         if addressed.source == BARE_WAKE or not turn.text:
             return self._finish(turn)
-        tier1 = tier1_for(turn.text, snap, self._voices())
-        work = (_tier1_then_rest(self, turn, tier1, snap) if tier1 is not None and not tier1.disputed
-                else understand(self, turn, snap))
+        work = turn_work(self, turn, snap)
         try:
             await _paced(self, turn, work)
         except asyncio.CancelledError:
@@ -981,7 +1025,8 @@ class TurnEngine:
     async def _understand(self, turn: _Turn, snap: SessionSnapshot) -> None:
         """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь."""
         self._ports.stage(turn.turn_id, turn.epoch, "thinking", "started")
-        tools = form_tools(available_tools(snap, None, snap.agent, turn.text), current_form(), snap.agent)
+        offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
+        tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
@@ -1037,9 +1082,8 @@ class TurnEngine:
         ещё просила ``query`` (не исполнен): слов её не слышно — говорит код по данным хода (:func:`_close_unread`)."""
         turn.expression = command_face(cmd.expression, results, turn.text)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
-        if outcome:
-            sad = any(r.status in _FAILED for r in results)
-            self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)
+        if outcome:  # провал - грустно, вопрос тула («Удалить «X»?», #4062) - эмоцией вопроса, иначе лицом модели
+            self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, cmd, self._log)
         note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
         self._say(turn, refusal, None, "sad")  # отказ владельца выступления — фраза кода, а не тишина ("" — нет)
@@ -1065,7 +1109,18 @@ class TurnEngine:
             self.log.result(turn.turn_id, result)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
+        self._note_asked(turn, actions, results)
         return results
+
+    def _note_asked(self, turn: _Turn, actions: Sequence[ToolCall], results: Sequence[ActionResult]) -> None:
+        """Окно вопроса тула по исходам хода (``tool_ask.note``). Эпоха сменилась, пока тул отвечал (стоп, новая
+        сессия): вопрос не прозвучит (``_stale``) - и окна под него нет."""
+        if self.session.snapshot.epoch != turn.epoch:
+            return
+        asked = tool_ask.note(self.session, actions, results)
+        if asked is not None:
+            self._log.info(f"{LOG_MARK} {ASK_MARK} открыт: {tool_ask.describe(asked)} ttl={kn.TOOL_ASK_TTL_S:.0f}с "
+                           f"turn={turn.turn_id}")
 
     def _messages(self, turn: _Turn, snap: SessionSnapshot) -> List[Any]:
         """Запрос: системный промпт, окно озвученного (``user``/``assistant``), снимок хода + реплика человека.
@@ -1117,8 +1172,8 @@ class TurnEngine:
             self._log.warning(f"{LOG_MARK} e2e-событие {kind} не записано: {exc}")
 
 
-__all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY", "Shown",
-           "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage", "hand_perform",
+__all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
+           "Shown", "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage", "hand_perform",
            "held_expression", "host_sections", "shown_face",
            "invalid_emotion", "outcome_phrase", "query_fallback", "stop_performance", "tier1_actions", "tier1_for",
-           "tier1_phrase", "voices_passed", "words_owed"]
+           "tier1_phrase", "turn_work", "answer_tool", "voices_passed", "words_owed"]

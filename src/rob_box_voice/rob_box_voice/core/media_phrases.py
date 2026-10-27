@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence, Tuple
 
+from rob_box_dialog.knowledge import LIBRARY_UNNAMED
 from rob_box_dialog.phrases import text as _phrase
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
@@ -166,6 +167,13 @@ def library_rate_text(title: str, liked: bool) -> str:
     return _phrase("music.library_liked" if liked else "music.library_disliked", name=name)
 
 
+def library_delete_question_text(title: str) -> str:
+    """Вопрос перед удалением трека (``music_library(delete)`` без ``confirm``, #4025): тот же ключ каталога
+    ``music.library_fail.needs_confirmation`` и то же название без трека (``LIBRARY_UNNAMED``), что у фразы диалога v2
+    по причине отказа (``respond.phrase_from_result``, #4062): текст вопроса один, тул f-строку не собирает."""
+    return _phrase("music.library_fail.needs_confirmation", name=f"«{title}»" if title else LIBRARY_UNNAMED)
+
+
 def library_delete_text(title: str) -> str:
     """Фраза после удаления трека из библиотеки."""
     return _phrase("music.library_deleted", name=f"«{title}»" if title else "трек")
@@ -303,6 +311,7 @@ __all__ = [
     "LIBRARY_EMPTY_TEXT",
     "LIBRARY_FAIL_TEXT",
     "LIBRARY_NO_TRACK_TEXT",
+    "library_delete_question_text",
     "library_delete_text",
     "library_list_text",
     "library_play_text",
