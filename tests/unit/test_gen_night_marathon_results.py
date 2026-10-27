@@ -289,6 +289,16 @@ def test_cast_grisha_and_valera_speak_in_feminine_and_tts_is_minimax():
             assert payload["voice_provenance"]["tts"] == "minimax", name
 
 
+def test_every_generated_act_names_its_cast_for_the_privacy_filter():
+    """Ревью #4034: e2e-БД дикторов уходит в публичные артефакты -- харнесс выносит только имена ролей поля ``cast``."""
+    assert gen.CAST == {gen.SASHA: "Саша", gen.BORIS: "Борис", gen.GRISHA: "Гриша", gen.VALERA: "Валера"}
+    voices = {s["voice"] for s in _steps().values()}
+    assert voices <= set(gen.CAST), voices - set(gen.CAST)
+    for name, payload in gen.build().items():
+        if name.endswith("_v1.json") and not name.endswith("_acceptance_v1.json"):
+            assert payload["cast"] == ["Саша", "Борис", "Гриша", "Валера"], name
+
+
 def test_cast_steps_are_not_marked_voice_limit_red():
     """Голоса разведены -- шаги атрибуции не помечены «предел голосов»; n306 принимает «незнаком|неопознан»."""
     steps = _steps()
@@ -361,11 +371,20 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     assert not _verdict("n903_sound_siren_anim", "\n".join([sound, DONE]))["pass"], "мигалку просили тоже"
 
 
+def _anim_request(name: str) -> str:
+    return "[mcp_server]: 📥 Запрос выполнения: play_animation с параметрами {'animation': '%s', 'duration': 4}" % name
+
+
+def _anim_accepted(name: str) -> str:
+    """Путь ``success=True`` тула (``tools/animation.py``): «Принято {data} (показывает диалог по ExpressionRequest)»."""
+    return ("[mcp_server]: [play_animation] Принято {'animation': '%s', 'duration': 4.0} "
+            "(показывает диалог по ExpressionRequest)" % name)
+
+
 def test_n904_n905_emotion_shown_by_face_or_animation():
-    """v2 показывает эмоцию лицом команды (#4041); тул play_animation не обязателен, но и не запрещён."""
+    """v2 показывает эмоцию лицом команды (#4041); тул play_animation не обязателен, но засчитывается только его успех."""
     assert _verdict("n904_anim_sad", "\n".join([_face("sad"), DONE]))["pass"]
-    anim = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'sad', 'duration': 4}"
-    assert _verdict("n904_anim_sad", "\n".join([anim, DONE]))["pass"]
+    assert _verdict("n904_anim_sad", "\n".join([_anim_request("sad"), _anim_accepted("sad"), DONE]))["pass"]
     assert not _verdict("n904_anim_sad", "\n".join([_face("happy"), DONE]))["pass"], "грусть, а не радость"
     assert not _verdict("n904_anim_sad", DONE)["pass"]
     assert _verdict("n905_anim_victory", "\n".join([_face("victory"), DONE]))["pass"]
@@ -373,6 +392,20 @@ def test_n904_n905_emotion_shown_by_face_or_animation():
     assert _steps()["n904_anim_sad"]["silent_ok"] is True
     for label in ("n904_anim_sad", "n905_anim_victory"):
         assert "play_animation" not in _acc(label).get("expected_tool_calls", []), label
+
+
+@pytest.mark.parametrize("label,emotion", [("n904_anim_sad", "sad"), ("n905_anim_victory", "victory"),
+                                           ("n906_anekdot_anim", "happy")])
+def test_animation_request_without_success_is_not_the_emotion(label, emotion):
+    """Ревью #4046: строка ЗАПРОСА тула совпадала с паттерном -- упавший вызов (неизвестная анимация, нет face)
+    засчитывался. Теперь нужен успех тула или лицо команды."""
+    speech = "🗣️ SpeechEvent started speech_id=ab12cd34 agent=main epoch=1 text_len=40"
+    failed = "\n".join([_anim_request(emotion), "❌ Инструмент play_animation завершился с ошибкой: Неизвестная анимация",
+                        speech, DONE])
+    assert not _verdict(label, failed)["pass"], label
+    ok = "\n".join([_anim_request(emotion), _anim_accepted(emotion), speech, DONE])
+    assert _verdict(label, ok)["pass"], label
+    assert not _verdict(label, "\n".join([_anim_accepted("idle"), speech, DONE]))["pass"], "не та анимация"
 
 
 def test_music_must_start_steps_forbid_the_timeout_phrase():
@@ -420,8 +453,6 @@ def test_n811_stops_speech_and_keeps_music():
 @pytest.mark.parametrize("label,ok,bad", [
     ("n409_speed_down", [_param("minimax_speed", "0.8")], [_param("minimax_speed", "1.2"),
                                                            "✅ Инструмент set_speed выполнен успешно"]),
-    ("n410_speed_up", [_param("minimax_speed", "1.2"), _param("yandex_speed", "2")],
-     [_param("minimax_speed", "1"), _param("minimax_speed", "0.6"), "✅ Инструмент set_speed выполнен успешно"]),
     ("n411_pitch_bass", [_param("pitch_shift", "0.8")], [_param("pitch_shift", "1.2"),
                                                          "✅ Инструмент set_pitch выполнен успешно"]),
 ])
@@ -431,6 +462,30 @@ def test_prosody_steps_judge_the_effect_not_the_call(label, ok, bad):
         assert _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
     for line in bad:
         assert not _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
+
+
+def _speed_said(provider: str, param: str, said: str) -> str:
+    """Ответ тула скорости (``system.SetSpeedTool``: ``[set_speed] Speed [<провайдер>, <ось>]: <фраза>``)."""
+    return "[mcp_server]: [set_speed] Speed [%s, %s]: %s" % (provider, param, said)
+
+
+def test_n410_faster_than_before_not_above_normal():
+    """Ревью #4046: после n409 (0.8) шаг ±0.2 даёт 1.0 -- это «быстрее, чем было»; красить его за «не выше нормы» нельзя."""
+    after_slow = "\n".join([_speed_said("minimax", "minimax_speed", "Говорю быстрее: скорость обычная"),
+                            _param("minimax_speed", "1"), DONE])
+    assert _verdict("n410_speed_up", after_slow)["pass"]
+    from_norm = "\n".join([_speed_said("yandex", "yandex_speed", "Говорю быстрее: скорость 1.2"),
+                           _param("yandex_speed", "1.2"), DONE])
+    assert _verdict("n410_speed_up", from_norm)["pass"]
+    for bad in (
+        "\n".join([_param("minimax_speed", "1.2"), DONE]),  # нода изменилась, но шаг «быстрее» тул не подтвердил
+        "\n".join([_speed_said("minimax", "minimax_speed", "Говорю медленнее: скорость 0.6"),
+                   _param("minimax_speed", "0.6"), DONE]),
+        "\n".join([_speed_said("minimax", "minimax_speed", "Скорость уже максимальная"), DONE]),
+        "\n".join(["✅ Инструмент set_speed выполнен успешно", DONE]),
+        "\n".join([_speed_said("minimax", "pitch_shift", "Говорю быстрее"), _param("pitch_shift", "1.2"), DONE]),
+    ):
+        assert not _verdict("n410_speed_up", bad)["pass"], bad
 
 
 def test_n411b_reset_accepts_value_or_already_normal_only():
@@ -486,9 +541,12 @@ def test_kie_quota_rule_marks_song_steps_and_n710_targets_this_runs_song():
     steps = _steps()
     for label in ("n706_gen_save_for_boris", "n707_gen_track_info", "n708_gen_play", "n709_stop_generated",
                   "n710_gen_delete"):
-        assert steps[label]["_skip_when"] == {"reason": "KIE_QUOTA", "log": gen.KIE_QUOTA_LOG}, label
+        # ревью #4046: харнесс поле читает (e2e_events.skip_rule) -- без «_», как остальные поля для харнесса
+        assert steps[label]["skip_when"] == {"reason": "KIE_QUOTA", "log": gen.KIE_QUOTA_LOG}, label
+        assert eev.skip_rule(steps[label]).reason == "KIE_QUOTA", label
     for label in ("n701_silence_check", "n702_generate_raccoon", "n711_renardo_not_broken"):
-        assert "_skip_when" not in steps[label], label
+        assert "skip_when" not in steps[label], label
+    assert not any("_skip_when" in s for s in steps.values())
     zero = "[mcp_server]: 🎼 [cover] баланс KIE: 0.0"
     assert re.search(gen.KIE_QUOTA_LOG, zero) and re.search(gen.KIE_QUOTA_LOG, "🎼 [cover] баланс KIE: 0")
     for funded in ("🎼 [cover] баланс KIE: 1712", "🎼 [cover] баланс KIE: 0.5", "🎼 [cover] баланс KIE: неизвестен"):
@@ -525,6 +583,11 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", 'f"Pitch [{provider}, {axis.param}]: {result.message}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", '"normal": _Step(0, "Нормальная скорость", "Скорость уже нормальная")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", '"normal": _Step(0, "Нормальный голос", "Голос уже нормальный")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", '"faster": _Step(1, "Говорю быстрее", "Скорость уже максимальная")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/system.py", 'message=f"{step.said}: {describe(applied)}"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/animation.py",
+     'self.log_info(f"Принято {data} (показывает диалог по ExpressionRequest)")'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/animation.py", 'data["animation"] = resolved'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/music.py", 'self.log_info(f"[stop_music] was_playing={was_playing}")'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),

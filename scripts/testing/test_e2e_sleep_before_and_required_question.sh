@@ -227,13 +227,15 @@ else
     bad "не нашёл вызов parse_scenario_to_tsv в scenario-цикле — парсер снова задублирован?"
 fi
 
-# node_params: apply ДО первого шага, restore в trap EXIT.
+# node_params: apply ДО первого шага, restore в trap EXIT. trap начинается с возврата голоса
+# (restore_robot_tts_default, #3248), restore_node_params идёт следом -- ищем его В строке trap, а не первым словом
+# (прежний якорь «trap 'restore_node_params;» краснел уже на develop 6dd93eca9).
 if grep -q 'apply_node_params "\$SCENARIO_FILE"' "$HARNESS"; then
     ok "apply_node_params вызывается для сценария"
 else
     bad "не нашёл вызов apply_node_params — node_params сценария не применяется вообще"
 fi
-if grep -qE "trap 'restore_node_params;.*EXIT" "$HARNESS"; then
+if grep -qE "^trap '[^']*\brestore_node_params;[^']*' EXIT" "$HARNESS"; then
     ok "restore_node_params включён в trap EXIT (восстановление при любом завершении)"
 else
     bad "restore_node_params НЕ в trap EXIT — форсированный порог переживёт аварийный обрыв акта"

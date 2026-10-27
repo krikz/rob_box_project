@@ -5,6 +5,12 @@
   "title": "Мир снаружи",
   "description": "Звуки, анимации на LED-матрице и веб-поиск. Ключевой шаг — рецепт борща: робот обязан САМ вспомнить из памяти акта 2, что Саша не ест лук, без напоминания в самой фразе.",
   "generated_by": "scripts/e2e/gen_night_marathon.py",
+  "cast": [
+    "Саша",
+    "Борис",
+    "Гриша",
+    "Валера"
+  ],
   "inherits_previous_act": true,
   "_inherits_previous_act_reason": "issue #2890: ночной марафон — одна история; акт продолжает разговор предыдущих актов (манифест: акт N опирается на состояние актов < N), поэтому харнесс НЕ сбрасывает окно диалога перед ним",
   "steps": [
@@ -74,10 +80,10 @@
       "text": "Робот, покажи, как тебе грустно, что смена такая длинная.",
       "silent_ok": true,
       "patterns": [
-        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(sad)\\b|play_animation с параметрами \\{.*'animation': '(sad)'",
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(sad)\\b|\\[play_animation\\] Принято \\{'animation': '(sad)'",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
-      "_why": "v2 показывает эмоцию лицом команды (`command.expression`), тул play_animation не обязателен (23.10: expression sad + речь, сценарий требовал v1-тул). Результат -- `🎭 [turn-v2] лицо команды на done: emotion=sad` (#4041) либо play_animation sad. Показать молча -- законно (просьба «покажи»)."
+      "_why": "v2 показывает эмоцию лицом команды (`command.expression`), тул play_animation не обязателен (23.10: expression sad + речь, сценарий требовал v1-тул). Результат -- `🎭 [turn-v2] лицо команды на done: emotion=sad` (#4041) либо УСПЕХ play_animation sad (`[play_animation] Принято {'animation': 'sad'`; строка запроса тула -- не результат, ревью #4046). Показать молча -- законно (просьба «покажи»)."
     },
     {
       "label": "n905_anim_victory",
@@ -85,20 +91,20 @@
       "text": "Робот, а теперь победную анимацию — блок питания наконец не гудит!",
       "silent_ok": true,
       "patterns": [
-        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(victory|happy)\\b|play_animation с параметрами \\{.*'animation': '(victory|happy)'",
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(victory|happy)\\b|\\[play_animation\\] Принято \\{'animation': '(victory|happy)'",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
-      "_why": "См. n904: победа -- лицо команды emotion=victory|happy или play_animation victory|happy."
+      "_why": "См. n904: победа -- лицо команды emotion=victory|happy или успех play_animation victory|happy."
     },
     {
       "label": "n906_anekdot_anim",
       "voice": "anton",
       "text": "Робот, расскажи анекдот и покажи под него весёлую анимацию.",
       "patterns": [
-        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(happy|victory)\\b|play_animation с параметрами \\{.*'animation': '(happy|victory)'",
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(happy|victory)\\b|\\[play_animation\\] Принято \\{'animation': '(happy|victory)'",
         "SpeechEvent started speech_id"
       ],
-      "_why": "Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или play_animation (голое имя тула в паттерне совпадало и со строкой действий без результата)."
+      "_why": "Комбинация двух каналов в одном ходе: речь + LED. v2 (#3880): вместо тула `speak_text` -- `SpeechEvent started` (см. n802). Весёлое -- лицом команды или успехом play_animation (голое имя тула и строка запроса совпадали и без результата)."
     },
     {
       "label": "n907_search_space",
