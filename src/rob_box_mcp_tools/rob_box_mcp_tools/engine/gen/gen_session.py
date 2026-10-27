@@ -336,6 +336,16 @@ def respread(plan: Sequence[str], start: int, dead: Set[str], alive: Callable[[s
     return out
 
 
+def turn_sources(sources: Sequence[Tuple[str, Any]], turn: int) -> Tuple[Tuple[str, Any], ...]:
+    """Мелодии задачи ``turn`` (с 0) одного произведения в сете (#4012): задача начинает с мелодии ``turn`` по кругу
+    (партитуры по годности, затем RTTTL хуков — ``piece_cover._piece_cover``), остальные — запас попыток после отказа
+    Suno (В17). Живой сет 24.10: десять каверов «Stranger Things» — все из одной партитуры (барабанная партия)."""
+    if not sources:
+        return ()
+    k = turn % len(sources)
+    return tuple(sources[k:]) + tuple(sources[:k])
+
+
 class SetCovers:
     """Каверы произведений темы в треках сета (В14, В16): ``works`` — произведение по ключу слота
     ``cover|<стиль>|<пьеса>`` (план решил, какое произведение у какого трека), ``make(work, ask, set_spent)`` — тот же
@@ -977,15 +987,24 @@ class GenSetMaker:
         return (lambda deck: replace(quiet, track_id=f"{set_id}:00:{deck}")), bpm
 
     def _set_cover(self, plan: "SetRoutes") -> Optional[Callable[[CoverWork, SourceAsk, float], Any]]:
-        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; отказ
-        Suno — следующая попытка ``COVER_TRIES`` (``cover.cover_tries``, В17)."""
+        """Исполнитель кавера трека сета: тот же ``CoverMaker.make`` с мелодиями материала темы, оба варианта; задача
+        N произведения начинает с его мелодии N по кругу (:func:`turn_sources`, #4012: разные аранжировки, а не десять
+        каверов одной партитуры); отказ Suno — следующая попытка ``COVER_TRIES`` (``cover.cover_tries``, В17)."""
         from .cover import cover_tries
 
         if self._cover is None:
             return None
         sources = {work: srcs for work, srcs in plan.theme_covers}  # у двух пьес может быть одна партитура
-        return lambda work, ask, spent: cover_tries(self._cover.make, sources[work], work, ask, set_spent=spent,
-                                                    early=False, log=self._log())
+        turns: Dict[CoverWork, int] = {}
+
+        def run(work: CoverWork, ask: SourceAsk, spent: float) -> Any:
+            turn = turns[work] = turns.get(work, -1) + 1
+            melodies = turn_sources(sources[work], turn)
+            self._log().info(f"🎼 [cover] «{work.title}» задача {turn + 1} в сете: мелодия "
+                             f"{melodies[0][0] if melodies else '—'} (по кругу из {len(melodies)})")
+            return cover_tries(self._cover.make, melodies, work, ask, set_spent=spent, early=False, log=self._log())
+
+        return run
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
@@ -1115,5 +1134,5 @@ __all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCove
            "SetTalk", "Take", "REPEAT_WORDS",
            "bridge_facts", "bridge_line", "cache_item", "set_label",
            "background_text", "theme_why", "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
-           "repeat_text", "repeat_why", "repeat_words", "set_reserve",
+           "repeat_text", "repeat_why", "repeat_words", "set_reserve", "turn_sources",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

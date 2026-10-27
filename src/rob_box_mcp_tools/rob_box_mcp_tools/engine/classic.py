@@ -10,7 +10,8 @@
 
 Произведение есть в индексе партитур (ADR-0154 PR-7B, §3.5: точное название в индексе партитур > RTTTL) — песня из
 материала (:func:`pick_score`, ``song.score_song``): куплеты = секции материала, аккомпанемент — аккорды автора, а не
-``harmonize``; ни один материал не сложился — RTTTL-песня, как раньше.
+``harmonize``; материалы — по годности мотива эталона (:func:`rank_scores`, #4012), а не по порядку поиска; ни один
+не сложился — RTTTL-песня, как раньше.
 
 Одиночная пьеса fail-open (ADR-0157 §2.3, PR-2): кандидаты — партитуры произведения по рангу, затем RTTTL-хуки, которые
 поиск темы и ``theme_links`` уже подтвердили по каталогу (не сырая фраза человека: «Токката ре минор Баха на
@@ -25,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_music import knowledge as kn
+from rob_box_music.arrange.hook import theme_fit
 from rob_box_music.arrange.song import SongMaterial, score_song, song_track
 from rob_box_music.diversity import track_history
 from rob_box_music.instruments import LeadChoice
@@ -173,23 +175,55 @@ def pick_record(record: Mapping[str, Any], title: str, query: str, *, seed: int,
     return _picked_record(query, track, title, deck, record)
 
 
+def rank_scores(materials: Mapping[str, ScoreMaterial], ids: Sequence[str],
+                references: Sequence[str] = ()) -> List[Tuple[str, float]]:
+    """``(id, годность)`` материалов ``ids`` по годности мотива эталонов ``references`` (``hook.theme_fit``) —
+    лучшая первой, при равной — порядок поиска (#4012: «Stranger Things» — барабанная партия 0.96 стояла первой в
+    поиске и выбиралась, три партитуры 1.00 не проверялись). Без эталонов — порядок поиска (годность 0); материала
+    нет или он не читается — годность 0 (причину отказа назовёт сборка песни)."""
+    def fit(mid: str) -> float:
+        if not references:
+            return 0.0
+        try:
+            return theme_fit(materials[mid], references) or 0.0
+        except (KeyError, ValueError):
+            return 0.0
+
+    return sorted(((mid, fit(mid)) for mid in ids), key=lambda pair: -pair[1])
+
+
+def score_songs(materials: Mapping[str, ScoreMaterial], ranked: Sequence[str], *, seed: int, deck: str = "A",
+                references: Sequence[str] = (), lead: Optional[LeadChoice] = None,
+                match_min: float = kn.CLASSIC_REF_MATCH_MIN,
+                limit: Optional[int] = None) -> Tuple[List[Tuple[str, Any]], List[str]]:
+    """Песни (``song.score_song``) из материалов ``ranked`` по порядку, пока не сложится ``limit`` (``None`` — все):
+    ``([(id, трек)], отказы)``; отказ — причина по материалу (размер, нет аккордов, нет JSON, нет мотива эталона)."""
+    built: List[Tuple[str, Any]] = []
+    reasons: List[str] = []
+    for mid in ranked:
+        if limit is not None and len(built) >= limit:
+            break
+        try:
+            built.append((mid, score_song(materials[mid], seed=seed, deck=deck, references=references,
+                                          match_min=match_min, **_lead_kw(lead))))
+        except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
+            reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
+    return built, reasons
+
+
 def pick_score(materials: Mapping[str, ScoreMaterial], ids: Sequence[str], query: str, *, seed: int,
                deck: str = "A", references: Sequence[str] = (), lead: Optional[LeadChoice] = None,
                match_min: float = kn.CLASSIC_REF_MATCH_MIN) -> ClassicPick:
-    """Песня из первого материала ``ids`` (порядок поиска), из которого она складывается (``song.score_song``);
-    ни одного — ``found=False`` с причинами по каждому (размер, нет аккордов, нет JSON, нет мотива RTTTL-эталона
-    ``references``) — заказ идёт в RTTTL."""
-    reasons = []
-    for mid in ids:
-        try:
-            material = materials[mid]
-            track = score_song(material, seed=seed, deck=deck, references=references, match_min=match_min,
-                               **_lead_kw(lead))
-        except (KeyError, ValueError) as exc:  # TrackError и MaterialError — тоже ValueError
-            reasons.append(f"{mid}: {type(exc).__name__}: {exc}")
-            continue
-        return _picked(query, track, material.title, deck, SCORE, material.composer, material.title)
-    return ClassicPick(query, False, "; ".join(reasons) or "партитур по названию нет")
+    """Песня из лучшего по годности материала ``ids`` (:func:`rank_scores`, при равной — порядок поиска), из которого
+    она складывается (:func:`score_songs`); ни одного — ``found=False`` с причинами по каждому — заказ идёт в RTTTL."""
+    ranked = [mid for mid, _fit in rank_scores(materials, ids, references)]
+    built, reasons = score_songs(materials, ranked, seed=seed, deck=deck, references=references, lead=lead,
+                                 match_min=match_min, limit=1)
+    if not built:
+        return ClassicPick(query, False, "; ".join(reasons) or "партитур по названию нет")
+    mid, track = built[0]
+    material = materials[mid]
+    return _picked(query, track, material.title, deck, SCORE, material.composer, material.title)
 
 
 def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicPick]:
@@ -205,4 +239,4 @@ def classic_picker(library_factory: Callable[[], Any]) -> Callable[..., ClassicP
 
 
 __all__ = ["ClassicPick", "PieceMemory", "classic_picker", "find_record", "pick_classic", "pick_piece", "pick_record",
-           "pick_score", "song_material"]
+           "pick_score", "rank_scores", "score_songs", "song_material"]
