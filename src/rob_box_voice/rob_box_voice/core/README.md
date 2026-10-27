@@ -48,41 +48,6 @@ if manager.should_respond(user_text):
 
 **Dependencies**: None (pure Python with standard library only)
 
-### speech_formatter.py (253 LOC)
-
-**Purpose**: Formats text for TTS output with accent placement, SSML processing, and text cleanup.
-
-**Public Interface**:
-- `SpeechFormatter` - Main class for text formatting
-
-**Key Methods**:
-- `format_for_tts(text, add_ssml)` - Main formatting method
-- `add_accents(text)` - Add Russian accents to text
-- `clean_for_speech(text)` - Clean text for speech synthesis
-- `wrap_in_ssml(text)` - Wrap text in SSML tags
-- `extract_from_ssml(ssml_text)` - Extract text from SSML
-- `is_ssml(text)` - Check if text is SSML
-
-**Usage Example**:
-```python
-from rob_box_voice.core.speech_formatter import SpeechFormatter
-
-# Create formatter
-formatter = SpeechFormatter()
-
-# Format for TTS
-formatted = formatter.format_for_tts('**Важно**: привет!', add_ssml=True)
-# Result: '<speak>Важно: привет!</speak>' with accents added
-
-# Clean markdown and URLs
-clean = formatter.clean_for_speech('See https://example.com here')
-# Result: 'See here'
-```
-
-**Tests**: `test/unit/core/test_speech_formatter.py` (7 test classes, 30+ tests)
-
-**Dependencies**: AccentReplacer from scripts (optional, graceful fallback)
-
 ### command_parser.py (307 LOC)
 
 **Purpose**: Parses voice commands, classifies intents, and extracts entities for robot control.
@@ -128,7 +93,6 @@ Run unit tests:
 ```bash
 # From package root
 python3 -m pytest test/unit/core/test_dialogue_manager.py -v
-python3 -m pytest test/unit/core/test_speech_formatter.py -v
 python3 -m pytest test/unit/core/test_command_parser.py -v
 
 # Or test all core modules
@@ -148,11 +112,10 @@ python3 -m pytest test/unit/core/ -v
 | Module | LOC | Tests | Status |
 |--------|-----|-------|--------|
 | dialogue_manager.py | 321 | 25+ | ✅ Complete |
-| speech_formatter.py | 253 | 30+ | ✅ Complete |
 | command_parser.py | 307 | 40+ | ✅ Complete |
 
-**Total**: 3 of 15 planned modules (20% complete)  
-**LOC**: 881 lines, 95+ tests
+**Total**: 2 of 15 planned modules (13% complete)  
+**LOC**: 628 lines, 65+ tests
 
 ## Future Modules
 
