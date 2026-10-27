@@ -52,12 +52,13 @@ PASS, FAIL, NOT_RUN = "PASS", "FAIL", "NOT_RUN"
 #: Паттерны шага, которые ловят строки акустических владельцев (STT, биометрия, синтез) и владельцев, чьих строк фейки
 #: сухого стенда не пишут (ревью #4046: шаг с ними на стенде красный всегда): ``tts_node`` («<ось> изменён:», ответ тула
 #: скорости/тона ``[set_speed]``/``[set_pitch]``), выступление (``[perform] …: конец (done)`` / ``PlanEvent block_end``),
-#: лицо команды (``лицо команды на done``), плеер (``[stop_music] was_playing``), тул анимации (``Принято {…}``).
+#: лицо команды (``лицо команды на done``), плеер (``[stop_music] was_playing``), тул анимации (``Принято {…}``),
+#: путь заказа музыки (``🎚️ [source] … → synth:…`` -- пишет роутер источника, #4077).
 #: Ищется по ИСХОДНИКУ паттерна, поэтому скобки -- в экранированном виде, как их пишет генератор.
 _ACOUSTIC_PATTERN = re.compile(r"Speaker|speaker_id|identify candidates|ПРИНЯТО|SpeechEvent synthesized"
                                r"|SpeechEvent voice_changed|TTS current_voice|Воспроизведение"
                                r"| изменён: |set_speed\\\] |set_pitch\\\] |конец \\\(|PlanEvent block_end"
-                               r"|лицо команды на |was_playing|play_animation\\\] Принято")
+                               r"|лицо команды на |was_playing|play_animation\\\] Принято|\\\[source\\\] ")
 
 
 @dataclass

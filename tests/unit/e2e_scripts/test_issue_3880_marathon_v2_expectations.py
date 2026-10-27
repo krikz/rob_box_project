@@ -165,7 +165,10 @@ def test_n210_no_longer_forbids_register_speaker():
     acc = _steps(ACT2)["n210_grisha_no_name"]["acceptance"]
     assert "register_speaker" not in acc.get("must_not_call", [])
     assert acc["must_not_identify_as"] == ["Борис", "Саша"]
-    assert acc["must_not_say"] == ["Борис", "Саш", "Спартак", "пицц"]
+    said = acc["must_not_say"]
+    assert "Саш" not in said and "Борис" not in said, "голый стем краснил «…не перепутаю с Сашей» (#4077, n210)"
+    assert {"Саша,", "ты Саша", "это Саша", "Борис,", "ты Борис"} <= set(said)
+    assert {"Спартак", "пицц"} <= set(said), "факты других дикторов — как были"
 
 
 @pytest.mark.parametrize("label", ["n805_hard_stop", "n807_merge_addition", "n809_music_bed",

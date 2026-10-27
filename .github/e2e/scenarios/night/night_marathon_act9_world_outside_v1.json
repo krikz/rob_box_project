@@ -142,16 +142,14 @@
       "patterns": [
         "SpeechEvent started speech_id"
       ],
-      "_why": "v2 (#3880): `SpeechEvent started` вместо `speak_text`. Зонд gp07: спека §3.2 обещает ответ на выбранном языке, но tts_text_guard режет чанк с >10% «чужой» письменности (#1709). Красный подтверждает карточку W6-4/W6-5."
-    },
-    {
-      "label": "n910_estimate_duration",
-      "voice": "anton",
-      "text": "Робот, прикинь, сколько секунд ты будешь читать вслух четверостишие?",
-      "patterns": [
-        "estimate_tts_duration|SpeechEvent started speech_id"
-      ],
-      "_why": "estimate_tts_duration — служебный тул планировщика, LLM зовёт его редко. Вне gate по той же причине, что в dialogue-coverage-map §3."
+      "acceptance": {
+        "expected_keywords": [
+          "晚安"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "v2 (#3880): `SpeechEvent started` вместо `speak_text`. #4077 П3: прежний why устарел -- с #3728 MiniMax читает CJK, и `SpeechEvent started` засчитывал ЛЮБОЙ ответ (27.10 был зелёным без проверки языка). Теперь в речи обязано быть «晚安» (спокойной ночи по-китайски). Красный = робот ответил не по-китайски или tts_text_guard срезал чанк (#1709, карточки W6-4/W6-5)."
+      }
     }
   ]
 }

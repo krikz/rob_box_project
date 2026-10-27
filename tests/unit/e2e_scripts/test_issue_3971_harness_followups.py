@@ -5,8 +5,9 @@ n412 (сказка, 23.10): выступление шло 94-162 с, а харн
 и его конец (``[perform] …: конец`` / ``PlanEvent block_end block=perform-…``): пока оно идёт, ответ не готов, потолок --
 ``PERFORM_CEILING_S`` (240 с) от старта по часам робота; не кончилось -- ``perform_ceiling``, FAIL без повтора фразы.
 
-Акт 7 (R21): поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}``. Строка ``[cover] баланс KIE: 0`` в логе
-акта -- шаги n706-n710 не играются (``SKIP KIE_QUOTA``), деструктивный n710 (delete) робот не слышит.
+Акт 7 (R21, #4077): поле шага ``skip_when: {"reason": "NO_SONG", "log": <regex>}``. Строка ``[cover] баланс KIE: 0`` (или
+провал заказа песни) в логе акта -- шаги n707-n709 не играются (``SKIP NO_SONG``). Механизм (``RULE``, шаги ``KIE_QUOTA``
+ниже) проверяется на собственных сценариях; правила акта 7 -- на файле сценария.
 
 Робот -- ``fake_robot_ssh.sh`` (лог с метками ``{NOW-x}``).
 
@@ -190,9 +191,8 @@ class TestSkipRule:
     def test_act7_rules_come_from_the_generator(self):
         scenario = json.loads(ACT7.read_text(encoding="utf-8"))
         rules = dict(e2e_events.skip_rules(scenario))
-        assert sorted(rules) == ["n706_gen_save_for_boris", "n707_gen_track_info", "n708_gen_play",
-                                 "n709_stop_generated", "n710_gen_delete", "n710b_gen_delete_confirm"]
-        assert {r.reason for r in rules.values()} == {"KIE_QUOTA"}
+        assert sorted(rules) == ["n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
+        assert {r.reason for r in rules.values()} == {"NO_SONG"}
         assert "_skip_when" not in ACT7.read_text(encoding="utf-8")
 
     def test_every_generated_act_parses(self):
@@ -206,10 +206,17 @@ class TestSkipRule:
     def test_cli_skips_and_skip(self, tmp_path):
         out = subprocess.run([sys.executable, str(EVENTS), "skips", "--scenario", str(ACT7)],
                              capture_output=True, text=True, encoding="utf-8")
-        assert out.returncode == 0 and "n710_gen_delete\tKIE_QUOTA" in out.stdout.splitlines()
-        zero = subprocess.run([sys.executable, str(EVENTS), "skip", "--scenario", str(ACT7), "--label", "n710_gen_delete"],
+        assert out.returncode == 0 and "n708_gen_play\tNO_SONG" in out.stdout.splitlines()
+        zero = subprocess.run([sys.executable, str(EVENTS), "skip", "--scenario", str(ACT7), "--label", "n708_gen_play"],
                               input=_feed(kie("0.0")), capture_output=True, text=True, encoding="utf-8").stdout
-        assert "skip=KIE_QUOTA" in zero.splitlines() and "fetch=1" in zero.splitlines()
+        assert "skip=NO_SONG" in zero.splitlines() and "fetch=1" in zero.splitlines()
+        failed = subprocess.run([sys.executable, str(EVENTS), "skip", "--scenario", str(ACT7), "--label", "n709_stop_generated"],
+                                input=_feed(_l("voice_assistant", "{NOW-50}", "🎤 [song] не вышло: задача t1 без треков")),
+                                capture_output=True, text=True, encoding="utf-8").stdout
+        assert "skip=NO_SONG" in failed.splitlines(), "провал заказа песни тоже гасит шаги про неё"
+        made = subprocess.run([sys.executable, str(EVENTS), "skip", "--scenario", str(ACT7), "--label", "n708_gen_play"],
+                              input=_feed(kie("1712")), capture_output=True, text=True, encoding="utf-8").stdout
+        assert "skip=-" in made.splitlines(), "баланс есть, песни не провалились — играть"
         free = subprocess.run([sys.executable, str(EVENTS), "skip", "--scenario", str(ACT7), "--label", "n711_renardo_not_broken"],
                               input=_feed(kie("0.0")), capture_output=True, text=True, encoding="utf-8").stdout
         assert "skip=-" in free.splitlines(), "у шага нет правила -- играть"
@@ -220,7 +227,7 @@ class TestSkipRule:
         assert err.returncode == 2 and "skip_when" in err.stderr
 
 
-def _precondition(tmp_path, log_text, label="n710_gen_delete", extra=""):
+def _precondition(tmp_path, log_text, label="n708_gen_play", extra=""):
     log = tmp_path / "robot.log"
     log.write_text(log_text, encoding="utf-8")
     body = "\n".join([
@@ -238,7 +245,7 @@ def _precondition(tmp_path, log_text, label="n710_gen_delete", extra=""):
 class TestStepPrecondition:
     def test_kie_quota_skips_the_step(self, tmp_path):
         rc, out, err, _ = _precondition(tmp_path, kie("0.0"))
-        assert "RC=0" in out and "E2E_STEP n710_gen_delete SKIP KIE_QUOTA" in out, (out, err)
+        assert "RC=0" in out and "E2E_STEP n708_gen_play SKIP NO_SONG" in out, (out, err)
         assert "баланс KIE: 0.0" in out and "НЕ играется" in out
 
     def test_funded_balance_plays_the_step(self, tmp_path):
@@ -253,7 +260,7 @@ class TestStepPrecondition:
 
     def test_unreadable_log_is_loud_and_plays(self, tmp_path):
         rc, out, err, _ = _precondition(tmp_path, kie("0.0"), extra='ROBOT_SSH="false"')
-        assert "RC=1" in out and "предусловие KIE_QUOTA не проверено" in out, (out, err)
+        assert "RC=1" in out and "предусловие NO_SONG не проверено" in out, (out, err)
 
     def test_bad_field_is_fatal_before_first_step(self, tmp_path):
         bad = tmp_path / "bad.json"

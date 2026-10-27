@@ -3,7 +3,7 @@
   "stability": "flaky-known",
   "act": 7,
   "title": "Нейрокомпозитор и библиотека",
-  "description": "MiniMax generate_music и gen_*-библиотека. Отделено от акта 5 намеренно: Music API MiniMax недоступен независимо от нашего кода, и его красный не должен пачкать живую музыку. Цепочка замкнута: сгенерировать → дополнить (#968 merge) → найти в библиотеке → сохранить → спросить о треке → проиграть → остановить → удалить.",
+  "description": "Генерация песни голосом робота (KIE/Suno, «сгенерируй песню своим голосом») и gen_*-библиотека. Отделено от акта 5 намеренно: Music API недоступен независимо от нашего кода, и его красный не должен пачкать живую музыку. Цепочка: сгенерировать → найти в библиотеке → расспросить о треке → проиграть → остановить → вернуться к живому синтезу. Шаги по песне этого прогона (n707-n709) не играются, если песни нет (`skip_when` NO_SONG). Удаление трека (n710/n710b) из марафона убрано до привязки к track_id (#4063).",
   "generated_by": "scripts/e2e/gen_night_marathon.py",
   "cast": [
     "Саша",
@@ -37,8 +37,9 @@
     {
       "label": "n702_generate_raccoon",
       "voice": "anton",
-      "text": "Робот, сочини и спой короткую песню про енота, который по ночам чинит роботов в мастерской.",
+      "text": "Робот, сгенерируй песню своим голосом про енота-механика.",
       "patterns": [
+        "\\[source\\] .*→ generate:robot_song:",
         "✅ Инструмент generate_music выполнен успешно",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
@@ -47,9 +48,10 @@
           "generate_music"
         ],
         "must_not_call": [
+          "выступление старт kind=",
           "stage=timeout"
         ],
-        "_comment": "Разводка коллизии имён (PR #1372): «спой песню» — это нейрогенерация, а не renardo-код. #3971: PASS только при `Инструмент generate_music выполнен успешно`. Под квотой KIE шаг ожидаемо красный (см. _known_red)."
+        "_comment": "Вилка Шифу 27.10 (#4070/#4079): «сгенерируй песню своим голосом» -- генерация голосом робота (`generate:robot_song`), а не пение вживую (`выступление старт kind=song` здесь -- ошибка клетки: `must_not`). 27.10 (run 40482613938, 09:43:48) прежняя реплика в 91 символ звучала 12.89 с при бюджете 12.50 с -- до робота не дошла, и шесть шагов про «эту песню» краснели каскадом; теперь 57 символов. #3971: PASS только при `Инструмент generate_music выполнен успешно`. Это ЗАПУСК фонового заказа (`SongStudio.launch`, ~90-150 с), а не готовая песня: готовность и track_id -- П5 карточки #4077."
       },
       "retry_acceptance": 1,
       "_result_markers": {
@@ -58,28 +60,7 @@
         ],
         "music": ""
       },
-      "_known_red": "только при квоте KIE (`[cover] баланс KIE: 0`): при `<providers>` music_gen health != ok (run 132908: health=quota весь марафон) честный ответ робота -- `perform song`, а не generate_music. Харнесс условий по снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), поэтому под квотой шаг красный по делу. 26.10 баланс есть (1712) -- шаг обязан быть зелёным."
-    },
-    {
-      "label": "n703_merge_komar",
-      "voice": "anton",
-      "text": "Робот, и ещё куплет добавь, про комара, который еноту мешал.",
-      "patterns": [
-        "📊 \\[turn\\] .*stage=done status=finished"
-      ],
-      "acceptance": {
-        "must_not_call": [
-          "STOP command received",
-          "Cancel: new STT input",
-          "stage=timeout"
-        ],
-        "expected_tool_calls": [],
-        "_comment": "Issue #968 MERGE: добавка к уже поющейся песне не должна обрывать текущее исполнение. must_not_call используется здесь как «этих строк не должно быть в логах шага». #3971: ход обязан дойти до `stage=done status=finished` без `stage=timeout` (run 132908: ход убит на 12 с, робот сказал «долго думаю» -- ложный PASS)."
-      },
-      "_result_markers": {
-        "tools": [],
-        "music": ""
-      }
+      "_known_red": "при `[source] asked=[generated…] … → decline:<причина>` (нет денег/ключа/сервиса KIE: `[cover] баланс KIE: 0`) честный ответ робота -- отказ и предложение спеть вживую, а не генерация; шаг красный по делу, а n707-n709 не играются (`skip_when` NO_SONG). 26.10 баланс есть (1712) -- шаг обязан быть зелёным."
     },
     {
       "label": "n704_music_library",
@@ -106,36 +87,21 @@
       }
     },
     {
-      "label": "n706_gen_save_for_boris",
+      "label": "n707_gen_track_info",
       "voice": "anton",
-      "text": "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
+      "text": "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
+      "sleep_before_sec": 60,
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
           "music_library"
         ],
         "must_not_call": [],
-        "_comment": "n706-n710b -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA (`skip_when`: харнесс видит строку баланса 0 в логе акта и шаг не играет)."
+        "_comment": "n707-n709 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10 / #4077: песни нет (`NO_SONG`: баланс KIE 0, `[song] не вышло|сбой|не заиграла`, отказ пути `→ decline:`) -- шаги не играются, SKIP NO_SONG (`skip_when`), а не каскад красных. `sleep_before_sec`: песня пишется ~90-150 с, к n707 без паузы проходит около 2 минут -- минимум до П5 (await_log, #4077); пауза идёт ДО проверки `skip_when`, строка провала успевает попасть в лог. 27.10 шаг был зелёным БЕЗ песни (любой вызов music_library) -- ложный PASS; ужесточение до `action=info` + track_id песни -- П5."
       },
       "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
-      }
-    },
-    {
-      "label": "n707_gen_track_info",
-      "voice": "anton",
-      "text": "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "music_library"
-        ],
-        "must_not_call": []
-      },
-      "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+        "reason": "NO_SONG",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
       }
     },
     {
@@ -157,12 +123,12 @@
         "must_not_say": [
           "Музыка пока не заиграла"
         ],
-        "_comment": "#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + `[music v2] started`."
+        "_comment": "#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + `[music v2] started`. Песни нет -- SKIP NO_SONG (см. n707)."
       },
       "retry_acceptance": 1,
       "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+        "reason": "NO_SONG",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
       },
       "_result_markers": {
         "tools": [
@@ -187,11 +153,11 @@
         "must_not_call": [
           "stage=timeout"
         ],
-        "_comment": "Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру `[music v2] stop` с id трека (не `track_id=None`), а не по слову «остановил»."
+        "_comment": "Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру `[music v2] stop` с id трека (не `track_id=None`), а не по слову «остановил». Песни нет -- SKIP NO_SONG (см. n707)."
       },
       "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+        "reason": "NO_SONG",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
       },
       "_result_markers": {
         "tools": [
@@ -201,78 +167,11 @@
       }
     },
     {
-      "label": "n710_gen_delete",
-      "voice": "anton",
-      "text": "Робот, удали эту песню про енота из библиотеки.",
-      "patterns": [
-        "music_library с параметрами \\{.*'action': 'delete'",
-        "❌ Инструмент music_library завершился с ошибкой: Удалить",
-        "📊 \\[turn\\] .*stage=done status=finished"
-      ],
-      "acceptance": {
-        "expected_tool_calls": [
-          "music_library"
-        ],
-        "must_not_call": [
-          "stage=timeout"
-        ],
-        "must_not_say": [
-          "удалил"
-        ],
-        "expected_keywords": [
-          "удалить",
-          "да, удаляй"
-        ],
-        "_comment": "Уборка за собой, шаг 1 из 2. #4025 (PR #4056): удаление необратимо и идёт в два вызова -- первый ТОЛЬКО спрашивает (тул отказал, трек цел), робот говорит вопрос с названием трека (код по `data.title`: «Удалить «…»? Скажи «да, удаляй».»). PASS по видимой строке отказа тула `❌ Инструмент music_library завершился с ошибкой: Удалить …` (mcp_server, WARNING; error тула -- сам вопрос) и по вопросу в речи, а не по `✅ Инструмент music_library`: успех здесь означал бы стёртый трек без «да» (`must_not_say: удалил`). Строка `📨 [execute] событие … rejected` пишется python-логгером INFO и в лог контейнера не попадает, маркером её брать нельзя. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило чужой трек и осталось зелёным -- просьба называет песню этого прогона (про енота), id робот берёт из поиска/списка. Под квотой KIE шаг не играется (`skip_when`)."
-      },
-      "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
-      },
-      "_result_markers": {
-        "tools": [],
-        "music": ""
-      }
-    },
-    {
-      "label": "n710b_gen_delete_confirm",
-      "voice": "anton",
-      "text": "Робот, да, удаляй.",
-      "patterns": [
-        "music_library с параметрами \\{[^}]*('action': 'delete'[^}]*'confirm': (True|'true')|'confirm': (True|'true')[^}]*'action': 'delete')",
-        "✅ Инструмент music_library выполнен успешно",
-        "📊 \\[turn\\] .*stage=done status=finished"
-      ],
-      "acceptance": {
-        "expected_tool_calls": [
-          "music_library"
-        ],
-        "must_not_call": [
-          "❌ Инструмент music_library завершился с ошибкой: Удалить",
-          "stage=timeout"
-        ],
-        "expected_keywords": [
-          "удалил"
-        ],
-        "_comment": "Уборка за собой, шаг 2 из 2: «да» человека на вопрос n710. Ход обязан сам позвать `music_library delete confirm=true` по `recent_actions` (там отказ `needs_confirmation` с track_id и title); тул засчитывает подтверждение, если спрашивал про ЭТОТ трек 2-120 с назад. PASS: вызов delete с confirm + `✅ Инструмент music_library` + код-фраза «Удалил «…» из библиотеки.» (`music.library_deleted`, строится из результата). Повторный вопрос (`❌ Инструмент music_library завершился с ошибкой: Удалить …` в логе шага) -- красный: трек цел. Строка `📨 [execute] событие … rejected` пишется python-логгером INFO и в лог контейнера не попадает. Тул вне среза хода «да, удаляй» (слов про музыку нет) открывает `widen_for` одним лишним запросом к LLM -- ожидаемо."
-      },
-      "retry_acceptance": 1,
-      "skip_when": {
-        "reason": "KIE_QUOTA",
-        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
-      },
-      "_result_markers": {
-        "tools": [
-          "music_library"
-        ],
-        "music": ""
-      }
-    },
-    {
       "label": "n711_renardo_not_broken",
       "voice": "anton",
-      "text": "Робот, а живьём на рендардо сыграть ты всё ещё умеешь? Сыграй короткий бит.",
+      "text": "Робот, сыграй бит на синтезаторе, коротко.",
       "patterns": [
+        "\\[source\\] .*→ synth:",
         "✅ Инструмент request_music выполнен успешно",
         "🎵 \\[music v2\\] started track_id=",
         "📊 \\[turn\\] .*stage=done status=finished"
@@ -283,12 +182,13 @@
         ],
         "must_not_call": [
           "generate_music",
+          "[music v2] exec track_id=gen_",
           "stage=timeout"
         ],
         "must_not_say": [
           "Музыка пока не заиграла"
         ],
-        "_comment": "Контроль отсутствия регрессии коллизии имён: после серии gen_* робот обязан вернуться к живому синтезу. #3971: `Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: трек из кэша без Renardo давал ложный PASS; кэш от Renardo по логу `started` не отличить -- это известный предел шага)."
+        "_comment": "Контроль отсутствия регрессии коллизии имён: после серии gen_* робот обязан вернуться к живому синтезу. #3971: `Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: трек из кэша без Renardo давал ложный PASS). #4077: вилка Шифу 27.10 -- «сыграй <жанр> на синтезаторе» -- инструментал на синте (`[source] … → synth:<стиль>`, не трек кэша `exec track_id=gen_…`); реплика сокращена с 75 до 42 символа (П2)."
       },
       "retry_acceptance": 1,
       "_result_markers": {

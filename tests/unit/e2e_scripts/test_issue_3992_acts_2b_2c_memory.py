@@ -375,33 +375,95 @@ def test_n721_conflict_with_known_voice_is_red():
     assert step["patterns"][0] in missing
 
 
-def test_n722_second_profile_on_same_voice_is_red():
+#: Строка хозяина голосов (#4054, PR #4087, ``speaker_id_node``): профиль переименован, второго нет.
+RENAMED = _l(
+    "speaker_id_node",
+    "✏️ [#4054] один голос — одна личность: голос фразы уверенно 'Нина' (id=5e6f7a8b, score=0.930), назвался "
+    "'Тамара' — профиль переименован 'Нина' → 'Тамара', второй профиль не заводится",
+)
+#: Пять вариантов фразы кода ``identity.done.renamed`` (PR #4087, ``phrases/ru.yaml``): вариант выбирает код.
+RENAMED_PHRASES = [
+    "Мы знакомы — я тебя узнал по голосу. Буду звать тебя Тамара.",
+    "А мы ведь уже знакомы: голос твой я помню. Теперь зову тебя Тамара.",
+    "Голос-то знакомый — мы уже встречались. Хорошо, теперь ты у меня Тамара.",
+    "Новое имя, а голос знакомый — меня не проведёшь! Ладно, буду звать тебя Тамара.",
+    "Узнал по голосу — мы знакомы. Имя поправил: теперь ты Тамара.",
+]
+#: Живой лог 27.10 08:58:00 (run 40476941395, develop до #4054): ВТОРОЙ профиль «Тамара» на голос Нины 0.930.
+DUPLICATE = (
+    _l("speaker_embeddings", "⚠️ register_or_merge: голос похож на 'Нина' (id=e35517b2, score=0.930 >= 0.75), но "
+       "регистрируют как 'Тамара' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль", level="WARN")
+    + _l("speaker_id_node", "⚠️ Speaker 'Тамара' (id=99cc00dd) — голос похож на уже известного 'Нина' "
+         "(id=e35517b2, score=0.930 >= порога слияния), но имя другое: завожу ОТДЕЛЬНЫЙ профиль и НЕ переименовываю "
+         "чужой (ADR-0127).", level="WARN")
+)
+
+
+@pytest.mark.parametrize("phrase", RENAMED_PHRASES)
+def test_n722_rename_is_green_whichever_phrase_the_code_picks(phrase):
+    """#4054 (решение Шифу 27.10): уверенный голос под другим именем — профиль переименован, второго нет, робот говорит
+    «мы знакомы». Тул register_speaker в срезе v2 теперь законно вызывается — шаг судит ИСХОД, а не вызов."""
     step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
-    dup = _l(
-        "speaker_id_node",
-        "⚠️ Speaker 'Тамара' (id=99cc00dd) — голос похож на уже известного 'Нина' "
-        "(id=5e6f7a8b, score=0.902 >= порога слияния), но имя другое: завожу ОТДЕЛЬНЫЙ "
-        "профиль и НЕ переименовываю чужой (ADR-0127).",
-        level="WARN",
-    )
-    verdict, _ = _judge(step, _verdict("Нина", 0.9) + _register_call("Тамара") + dup + _tts("Запомнил тебя, Тамара."))
-    assert not verdict["pass"]
-    assert "register_speaker" in verdict["reason"]
-    one_voice = _verdict("Нина", 0.9) + _tts(
-        "Голос-то у тебя Нинин. Хочешь, чтобы звал Тамарой, скажи: зови меня Тамара."
-    )
-    assert _judge(step, one_voice)[0]["pass"]
+    log = _verdict("Нина", 0.93) + _register_call("Тамара") + RENAMED + _tts(phrase)
+    verdict, missing = _judge(step, log)
+    assert verdict["pass"], verdict["reason"]
+    assert missing == []
+    assert etm.REGISTER_TOOL not in step["acceptance"]["must_not_call"], "тул не запрещён: решает исход"
 
 
-def test_n722_is_known_red_until_3801_is_ported_to_v2():
-    """Красный ожидается ПО КОДУ и вживую не проверен (LLM может и не вызвать register_speaker) — так и написано;
-    карточка порта правила — #4054, до удаления v1 (#3711)."""
+def test_n722_second_profile_on_same_voice_is_red():
+    """Дубль «Тамара» на голос Нины (27.10): красный по обеим строкам ADR-0127, по отсутствию строки переименования
+    и по факту-имени, который больше не пишется."""
+    step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
+    said = _tts("Запомнил тебя, Тамара. Запомнил: Пользователя зовут Тамара.")
+    verdict, missing = _judge(step, _verdict("Нина", 0.93) + _register_call("Тамара") + DUPLICATE + said)
+    assert not verdict["pass"] and missing == step["patterns"]
+    assert "слияния НЕ делаю" in verdict["reason"] or "голос похож на уже известного" in verdict["reason"]
+    assert "знаком" in verdict["reason"], "нет фразы «мы знакомы»"
+    for one_line in DUPLICATE.splitlines(keepends=True):  # любой из двух строк достаточно
+        assert not _judge(step, RENAMED + _tts(RENAMED_PHRASES[0]) + one_line)[0]["pass"], one_line
+    only_fact = RENAMED + _tts("Мы знакомы. Запомнил: Пользователя зовут Тамара.")
+    assert not _judge(step, only_fact)[0]["pass"], "факт-имя больше не пишется (имя живёт в записи голоса)"
+
+
+@pytest.mark.parametrize(
+    "said", ["Приятно познакомиться, Тамара!", "Очень приятно, давай познакомимся, Тамара.", "Рада знакомству, Тамара."]
+)
+def test_n722_pleased_to_meet_you_is_not_the_phrase_we_are_acquainted(said):
+    """Ревью PR #4105: стем «знаком» сидит в «познакомиться» -- при строке переименования ответ «Приятно познакомиться»
+    (код фразу «мы знакомы» не сказал) давал PASS. Нужна фраза «мы знакомы / уже знакомы / голос знакомый»."""
+    step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
+    verdict, missing = _judge(step, _verdict("Нина", 0.93) + _register_call("Тамара") + RENAMED + _tts(said))
+    assert missing == [], "строка переименования на месте"
+    assert not verdict["pass"] and "знаком" in verdict["reason"], said
+
+
+def test_n722_rename_line_is_required_not_just_the_phrase():
+    """Фраза «мы знакомы» без строки переименования (робот просто сказал, ничего не сделав) — красный."""
+    step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
+    assert step["patterns"] and "#4054" in step["patterns"][0], "строка переименования обязательна"
+    _, missing = _judge(step, _verdict("Нина", 0.93) + _tts(RENAMED_PHRASES[0]))
+    assert missing == step["patterns"]
+    wrong_name = RENAMED.replace("→ 'Тамара'", "→ 'Тина'")
+    assert _judge(step, wrong_name + _tts(RENAMED_PHRASES[0]))[1] == step["patterns"], "переименовали не в то имя"
+
+
+def test_n722_is_red_until_the_robot_runs_pr_4087_and_says_so():
+    """Красный ожидается, пока на роботе нет образа с PR #4087 (#4054): влит в develop, но живой робот строку ``[#4054]``
+    ещё не писал. Это и написано; утверждения «проверено на роботе» нет."""
     known_red = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]["_known_red"]
-    assert "#3801" in known_red and "#3711" in known_red
-    assert "#4054" in known_red
-    assert "ожидаемо красный (по коду, не проверено" in known_red
-    assert "красный по делу" not in known_red, "'по делу' — утверждение о проверенном; живого прогона нет"
-    assert "карточки на порт нет" not in known_red, "карточка есть: #4054"
+    assert "#4087" in known_red and "#4054" in known_red
+    assert "не проверен" in known_red and "живой робот её ещё не писал" in known_red
+    assert "#3801" not in known_red, "правило #3801 в v2 порту уже не ожидание"
+
+
+def test_rename_marker_is_the_line_speaker_id_node_logs():
+    """Паттерн n722 собран из f-строки хозяина голосов (PR #4087): поменяли строку — тест краснеет раньше марафона."""
+    source = SPEAKER_ID_NODE.read_text(encoding="utf-8")
+    assert 'f"✏️ [#4054] один голос — одна личность: голос фразы уверенно {owner.name!r}' in source
+    assert "назвался {clean!r} — профиль переименован {owner.name!r} → {clean!r}" in source
+    pattern = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]["patterns"][0]
+    assert etm.patterns_missing(RENAMED, [pattern]) == []
 
 
 @pytest.mark.parametrize("label, name", [("n201_sasha_intro_long", "Саша"), ("n204_boris_intro_long", "Борис")])
@@ -421,11 +483,16 @@ def test_act2_introduction_claiming_nameless_profile_is_confirmed(label, name):
 
 
 def test_n723_one_name_per_voice():
+    """После n722 голос — одна запись «Тамара»; старое имя вслух не звучит (#4054: чужой голос — утечка имени)."""
     step = _steps(ACT2C)["n723_nina_one_name"]
-    verdict, missing = _judge(step, _verdict("Нина", 0.91) + _tts("Тебя зовут Нина, соседка снизу."))
+    verdict, missing = _judge(step, _verdict("Тамара", 0.91) + _tts("Тебя зовут Тамара, соседка снизу."))
     assert verdict["pass"] and missing == []
-    verdict, missing = _judge(step, _verdict("Тамара", 0.93) + _tts("Тебя зовут Тамара."))
-    assert not verdict["pass"] and missing == step["patterns"]
+    verdict, missing = _judge(step, _verdict("Нина", 0.93) + _tts("Тебя зовут Нина."))
+    assert not verdict["pass"] and missing == step["patterns"], "запись не переименована"
+    said_old = _judge(step, _verdict("Тамара", 0.91) + _tts("Тамара, а раньше ты была Ниной."))[0]
+    assert not said_old["pass"] and "Нин" in said_old["reason"]
+    low = _judge(step, _verdict("Тамара", 0.76) + _tts("Тебя зовут Тамара."))
+    assert low[1] == step["patterns"], "уверенность < 0.8 — имя не подтверждено"
 
 
 # ── строки лога, на которые опираются паттерны, есть в коде робота ───────────

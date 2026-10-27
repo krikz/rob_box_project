@@ -449,7 +449,8 @@ def test_classification_of_real_acts_separates_acoustic_steps():
 @pytest.mark.parametrize("act,label", [
     ("4", "n409_speed_down"), ("4", "n410_speed_up"), ("4", "n411_pitch_bass"), ("4", "n411b_prosody_normal"),
     ("4", "n412_skazka_multivoice"), ("8", "n812_stop_music"), ("9", "n904_anim_sad"), ("9", "n905_anim_victory"),
-    ("9", "n906_anekdot_anim"),
+    ("9", "n906_anekdot_anim"), ("5", "n502_start_renardo"), ("7", "n702_generate_raccoon"),
+    ("7", "n711_renardo_not_broken"),
 ])
 def test_steps_judged_by_owner_lines_the_stand_does_not_write_are_acoustic(act, label):
     """Ревью #4046: строк tts_node «изменён», ответа тула скорости, конца выступления, лица команды, was_playing и
@@ -467,7 +468,7 @@ def test_owner_line_fragments_match_the_generator_markers():
 
     for pattern in (gen.prosody_changed(gen.SPEED_PARAMS, gen.BELOW_NORMAL), gen.SPEED_RAISED, gen.SPEED_ALREADY_NORMAL,
                     gen.PITCH_ALREADY_NORMAL, gen.PERFORM_DONE, gen.FACE_DONE, gen.MUSIC_WAS_PLAYING,
-                    gen.face_or_animation("sad")):
+                    gen.face_or_animation("sad"), gen.ROUTE_SYNTH, gen.ROUTE_GENERATE_ROBOT_SONG):
         assert dm._ACOUSTIC_PATTERN.search(pattern), pattern
     for pattern in (gen.TURN_DONE, gen.SPEECH_STARTED, gen.tool_done("play_sound"), gen.MUSIC_STARTED):
         assert not dm._ACOUSTIC_PATTERN.search(pattern), pattern
