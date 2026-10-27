@@ -275,6 +275,22 @@ def tool_done(*tools: str) -> str:
     return "✅ Инструмент " + name + " выполнен успешно"
 
 
+def tool_refused(tool: str, reason: str) -> str:
+    """Паттерн «владелец ОТКАЗАЛ с причиной» (``execute.py``: ``📨 [execute] событие <tool> <ref> rejected <reason> …``):
+    исход, который диалог получил от тула, а не слова робота. Нужен там, где отказ -- и есть ожидаемый результат шага
+    (#4025: удаление трека без «да» человека только спрашивает, ``rejected needs_confirmation``)."""
+    return r"📨 \[execute\] событие " + tool + r" \S+ rejected " + reason + r"( |$)"
+
+
+#: Вызов ``music_library delete`` в запросе к тулу (``mcp_server``: ``📥 Запрос выполнения: music_library с параметрами
+#: {…}``). Просьба удалить трек, а не его поиск: без ``delete`` в параметрах шаг не засчитывается.
+LIBRARY_DELETE_CALL = r"music_library с параметрами \{.*'action': 'delete'"
+#: Тот же вызов С ПОДТВЕРЖДЕНИЕМ (``confirm`` -- истина, порядок ключей в словаре любой; тул принимает ``True`` и
+#: ``'true'``). Второй вызов удаления после вопроса «Удалить …?» и «да, удаляй» человека (#4025).
+LIBRARY_DELETE_CONFIRMED = (r"music_library с параметрами \{[^}]*('action': 'delete'[^}]*'confirm': (True|'true')"
+                            r"|'confirm': (True|'true')[^}]*'action': 'delete')")
+
+
 #: Перебить через 3 с после начала речи робота (первая реплика ответа на предыдущую фразу).
 BARGE_3S: Dict[str, Any] = {"after": "speech_started", "n": 1, "delay_sec": 3.0}
 
@@ -1693,7 +1709,7 @@ act(
             "Робот, сохрани эту песню про енота для Бориса, он такое любит.",
             expect_tools=["music_library"],
             skip_when="KIE_QUOTA",
-            why="n706-n710 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` "
+            why="n706-n710b -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` "
             "песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA "
             "(`skip_when`: харнесс видит строку баланса 0 в логе акта и шаг не играет).",
         ),
@@ -1726,15 +1742,37 @@ act(
         ),
         action_step(
             "n710_gen_delete",
-            "Робот, удали из библиотеки эту песню про енота, она всё-таки так себе.",
-            ["music_library"],
-            patterns=[r"music_library с параметрами \{.*'action': 'delete'"],
+            "Робот, удали эту песню про енота из библиотеки.",
+            patterns=[LIBRARY_DELETE_CALL, tool_refused("music_library", "needs_confirmation")],
             expect_tools=["music_library"],
+            keywords=["удалить", "да, удаляй"],
+            must_not_say=["удалил"],
             skip_when="KIE_QUOTA",
-            why="Уборка за собой. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило "
-            "чужой трек и осталось зелёным. Теперь просьба называет песню этого прогона (про енота): id робот "
-            "берёт из поиска/списка, без такой песни удалять нечего. Результат -- запрос `delete` и успех "
-            "music_library. Под квотой KIE шаг не играется (`skip_when`), destructive delete вслепую не гоняем.",
+            why="Уборка за собой, шаг 1 из 2. #4025 (PR #4056): удаление необратимо и идёт в два вызова -- первый "
+            "ТОЛЬКО спрашивает (`rejected needs_confirmation`, трек цел), робот говорит вопрос с названием трека "
+            "(код по `data.title`: «Удалить «…»? Скажи «да, удаляй».»). PASS по маркеру отказа владельца и по "
+            "вопросу в речи, а не по `✅ Инструмент music_library`: успех здесь означал бы стёртый трек без «да» "
+            "(`must_not_say: удалил`). R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона "
+            "удалило чужой трек и осталось зелёным -- просьба называет песню этого прогона (про енота), id робот "
+            "берёт из поиска/списка. Под квотой KIE шаг не играется (`skip_when`).",
+        ),
+        action_step(
+            "n710b_gen_delete_confirm",
+            "Робот, да, удаляй.",
+            ["music_library"],
+            patterns=[LIBRARY_DELETE_CONFIRMED],
+            expect_tools=["music_library"],
+            keywords=["удалил"],
+            must_not=["rejected needs_confirmation"],
+            retry=1,
+            skip_when="KIE_QUOTA",
+            why="Уборка за собой, шаг 2 из 2: «да» человека на вопрос n710. Ход обязан сам позвать "
+            "`music_library delete confirm=true` по `recent_actions` (там `rejected needs_confirmation` с "
+            "track_id и title); тул засчитывает подтверждение, если спрашивал про ЭТОТ трек 2-120 с назад. "
+            "PASS: вызов delete с confirm + `✅ Инструмент music_library` + код-фраза «Удалил «…» из библиотеки.» "
+            "(`music.library_deleted`, строится из результата). Повторный вопрос (`rejected needs_confirmation` "
+            "в логе шага) -- красный: трек цел. Тул вне среза хода «да, удаляй» (слов про музыку нет) открывает "
+            "`widen_for` одним лишним запросом к LLM -- ожидаемо.",
         ),
         action_step(
             "n711_renardo_not_broken",
@@ -1759,7 +1797,7 @@ act(
     ],
     [
         "Акт 7 — flaky-known: MiniMax Music API падает независимо от нас.",
-        "Квота KIE (`[cover] баланс KIE: 0`): n706-n710 -- SKIP KIE_QUOTA (`skip_when`, R21),",
+        "Квота KIE (`[cover] баланс KIE: 0`): n706-n710b -- SKIP KIE_QUOTA (`skip_when`, R21),",
         "delete без песни этого прогона не гонять. 26.10 баланс 1712 -- правило стоит на будущее.",
         "generate_music и music_library ВНЕ GATE-1 намеренно —",
         "их отсутствие чаще всего означает недоступность внешнего API.",

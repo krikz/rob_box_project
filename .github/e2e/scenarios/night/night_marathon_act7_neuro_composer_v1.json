@@ -115,7 +115,7 @@
           "music_library"
         ],
         "must_not_call": [],
-        "_comment": "n706-n710 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA (`skip_when`: харнесс видит строку баланса 0 в логе акта и шаг не играет)."
+        "_comment": "n706-n710b -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA (`skip_when`: харнесс видит строку баланса 0 в логе акта и шаг не играет)."
       },
       "skip_when": {
         "reason": "KIE_QUOTA",
@@ -203,10 +203,10 @@
     {
       "label": "n710_gen_delete",
       "voice": "anton",
-      "text": "Робот, удали из библиотеки эту песню про енота, она всё-таки так себе.",
+      "text": "Робот, удали эту песню про енота из библиотеки.",
       "patterns": [
         "music_library с параметрами \\{.*'action': 'delete'",
-        "✅ Инструмент music_library выполнен успешно",
+        "📨 \\[execute\\] событие music_library \\S+ rejected needs_confirmation( |$)",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -216,8 +216,47 @@
         "must_not_call": [
           "stage=timeout"
         ],
-        "_comment": "Уборка за собой. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило чужой трек и осталось зелёным. Теперь просьба называет песню этого прогона (про енота): id робот берёт из поиска/списка, без такой песни удалять нечего. Результат -- запрос `delete` и успех music_library. Под квотой KIE шаг не играется (`skip_when`), destructive delete вслепую не гоняем."
+        "must_not_say": [
+          "удалил"
+        ],
+        "expected_keywords": [
+          "удалить",
+          "да, удаляй"
+        ],
+        "_comment": "Уборка за собой, шаг 1 из 2. #4025 (PR #4056): удаление необратимо и идёт в два вызова -- первый ТОЛЬКО спрашивает (`rejected needs_confirmation`, трек цел), робот говорит вопрос с названием трека (код по `data.title`: «Удалить «…»? Скажи «да, удаляй».»). PASS по маркеру отказа владельца и по вопросу в речи, а не по `✅ Инструмент music_library`: успех здесь означал бы стёртый трек без «да» (`must_not_say: удалил`). R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило чужой трек и осталось зелёным -- просьба называет песню этого прогона (про енота), id робот берёт из поиска/списка. Под квотой KIE шаг не играется (`skip_when`)."
       },
+      "skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+      },
+      "_result_markers": {
+        "tools": [],
+        "music": ""
+      }
+    },
+    {
+      "label": "n710b_gen_delete_confirm",
+      "voice": "anton",
+      "text": "Робот, да, удаляй.",
+      "patterns": [
+        "music_library с параметрами \\{[^}]*('action': 'delete'[^}]*'confirm': (True|'true')|'confirm': (True|'true')[^}]*'action': 'delete')",
+        "✅ Инструмент music_library выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [
+          "music_library"
+        ],
+        "must_not_call": [
+          "rejected needs_confirmation",
+          "stage=timeout"
+        ],
+        "expected_keywords": [
+          "удалил"
+        ],
+        "_comment": "Уборка за собой, шаг 2 из 2: «да» человека на вопрос n710. Ход обязан сам позвать `music_library delete confirm=true` по `recent_actions` (там `rejected needs_confirmation` с track_id и title); тул засчитывает подтверждение, если спрашивал про ЭТОТ трек 2-120 с назад. PASS: вызов delete с confirm + `✅ Инструмент music_library` + код-фраза «Удалил «…» из библиотеки.» (`music.library_deleted`, строится из результата). Повторный вопрос (`rejected needs_confirmation` в логе шага) -- красный: трек цел. Тул вне среза хода «да, удаляй» (слов про музыку нет) открывает `widen_for` одним лишним запросом к LLM -- ожидаемо."
+      },
+      "retry_acceptance": 1,
       "skip_when": {
         "reason": "KIE_QUOTA",
         "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"

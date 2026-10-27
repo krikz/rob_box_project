@@ -34,7 +34,7 @@ ACTION_LABELS = {
     "n310_execute_backlog_lru", "n312_stop_music",
     "n502_start_renardo", "n504_add_bass", "n505_vibe_dark", "n506_faster", "n511_stop_music",
     "n602_dj_on", "n604_dj_rock", "n605_dj_set_plan", "n607_vibe_chill", "n608_dj_off",
-    "n702_generate_raccoon", "n703_merge_komar", "n708_gen_play", "n709_stop_generated", "n710_gen_delete",
+    "n702_generate_raccoon", "n703_merge_komar", "n708_gen_play", "n709_stop_generated", "n710b_gen_delete_confirm",
     "n711_renardo_not_broken", "n712_stop_all",
     "n809_music_bed", "n812_stop_music",
 }
@@ -540,7 +540,7 @@ def test_kie_quota_rule_marks_song_steps_and_n710_targets_this_runs_song():
 
     steps = _steps()
     for label in ("n706_gen_save_for_boris", "n707_gen_track_info", "n708_gen_play", "n709_stop_generated",
-                  "n710_gen_delete"):
+                  "n710_gen_delete", "n710b_gen_delete_confirm"):
         # ревью #4046: харнесс поле читает (e2e_events.skip_rule) -- без «_», как остальные поля для харнесса
         assert steps[label]["skip_when"] == {"reason": "KIE_QUOTA", "log": gen.KIE_QUOTA_LOG}, label
         assert eev.skip_rule(steps[label]).reason == "KIE_QUOTA", label
@@ -553,11 +553,77 @@ def test_kie_quota_rule_marks_song_steps_and_n710_targets_this_runs_song():
         assert not re.search(gen.KIE_QUOTA_LOG, funded), funded
     n710 = steps["n710_gen_delete"]
     assert "енот" in n710["text"] and "последний" not in n710["text"]
-    delete = "📥 Запрос выполнения: music_library с параметрами {'action': 'delete', 'track_id': 'a1b2'}"
-    assert _verdict("n710_gen_delete", "\n".join([delete, "✅ Инструмент music_library выполнен успешно", DONE]))["pass"]
     search_only = "📥 Запрос выполнения: music_library с параметрами {'action': 'search', 'query': 'енот'}"
     searched = "\n".join([search_only, "✅ Инструмент music_library выполнен успешно", DONE])
     assert not _verdict("n710_gen_delete", searched)["pass"]
+    assert not _verdict("n710b_gen_delete_confirm", searched)["pass"]
+
+
+# ── #4025 (PR #4056): удаление трека в два шага - вопрос, затем «да» ─────────────────────────────────────────
+
+QUESTION = "Удалить «Енот-мастер»? Скажи «да, удаляй»."
+DELETE_ASK = "📥 Запрос выполнения: music_library с параметрами {'action': 'delete', 'track_id': 'a1b2'}"
+DELETE_CONFIRM = ("📥 Запрос выполнения: music_library с параметрами "
+                  "{'action': 'delete', 'track_id': 'a1b2', 'confirm': True}")
+REFUSED = ("[dialog_node-3] [2026-10-24 01:39:22 - rob_box_dialog.execute:231 - INFO] 📨 [execute] событие "
+           "music_library t5/0 rejected needs_confirmation ход_ждёт=True запрос=True")
+TOOL_OK = "[mcp_server-9] [INFO] [1792795162.34] [mcp_server]: ✅ Инструмент music_library выполнен успешно"
+
+
+def test_n710_passes_only_when_the_tool_asked_and_the_robot_said_the_question():
+    """Шаг 1: PASS = вызов delete + отказ владельца ``needs_confirmation`` + вопрос с названием трека в речи."""
+    asked = [DELETE_ASK, REFUSED, _tts(QUESTION), DONE]
+    assert _verdict("n710_gen_delete", "\n".join(asked))["pass"]
+    # трек стёрт без вопроса (успех тула + «Удалил»): красный, хотя вызов delete и конец хода на месте
+    erased = [DELETE_ASK, TOOL_OK, _tts("Удалил «Енот-мастер» из библиотеки."), DONE]
+    assert not _verdict("n710_gen_delete", "\n".join(erased))["pass"]
+    # тул отказал, но человек услышал общее «не вышло» (нет фразы по причине): красный
+    general = [DELETE_ASK, REFUSED, _tts("С библиотекой музыки не вышло."), DONE]
+    assert not _verdict("n710_gen_delete", "\n".join(general))["pass"]
+    # робот сам сказал вопрос, а отказа владельца в логе нет (тул не спрашивал): красный
+    assert not _verdict("n710_gen_delete", "\n".join([DELETE_ASK, _tts(QUESTION), DONE]))["pass"]
+    # вопрос без вызова delete (болтовня) и отказ без слов: красные
+    assert not _verdict("n710_gen_delete", "\n".join([REFUSED, _tts(QUESTION), DONE]))["pass"]
+    assert not _verdict("n710_gen_delete", "\n".join([DELETE_ASK, REFUSED, DONE]))["pass"]
+
+
+def test_n710_checks_the_refusal_and_the_question_and_never_the_tool_success():
+    step = _steps()["n710_gen_delete"]
+    acc = step["acceptance"]
+    assert acc["expected_keywords"] == ["удалить", "да, удаляй"] and acc["must_not_say"] == ["удалил"]
+    assert step["_result_markers"] == {"tools": [], "music": ""}
+    assert gen.tool_refused("music_library", "needs_confirmation") in step["patterns"]
+    assert not any(p.startswith("✅ Инструмент ") for p in step["patterns"]), "успех тула здесь - стёртый трек"
+
+
+def test_n710b_passes_only_when_yes_became_a_confirmed_delete():
+    """Шаг 2: PASS = ``delete`` с ``confirm`` + успех тула + «Удалил» из результата; повторный вопрос - красный."""
+    deleted = _tts("Удалил «Енот-мастер» из библиотеки.")
+    assert _verdict("n710b_gen_delete_confirm", "\n".join([DELETE_CONFIRM, TOOL_OK, deleted, DONE]))["pass"]
+    reordered = ("📥 Запрос выполнения: music_library с параметрами "
+                 "{'confirm': 'true', 'track_id': 'a1b2', 'action': 'delete'}")
+    assert _verdict("n710b_gen_delete_confirm", "\n".join([reordered, TOOL_OK, deleted, DONE]))["pass"]
+    # delete без confirm (модель не поняла «да»): красный, даже с чужим успехом и словом «Удалил» в речи
+    assert not _verdict("n710b_gen_delete_confirm", "\n".join([DELETE_ASK, TOOL_OK, deleted, DONE]))["pass"]
+    # confirm был, но тул снова спросил: трек цел, красный
+    again = [DELETE_CONFIRM, REFUSED, _tts(QUESTION), DONE]
+    assert not _verdict("n710b_gen_delete_confirm", "\n".join(again))["pass"]
+    # confirm был, тул снова спросил, а успех - от соседнего поиска и «Удалил» сказал сам робот: красный (must_not)
+    lying = [DELETE_CONFIRM, REFUSED, TOOL_OK, deleted, DONE]
+    assert not _verdict("n710b_gen_delete_confirm", "\n".join(lying))["pass"]
+    # поиск вместо удаления
+    searching = DELETE_ASK.replace("'delete'", "'search'")
+    assert not _verdict("n710b_gen_delete_confirm", "\n".join([searching, TOOL_OK, deleted, DONE]))["pass"]
+
+
+def test_n710b_follows_the_question_and_retries_once_while_the_question_does_not():
+    """Повтор «да, удаляй» безопасен (подтверждение засчитывается, только если тул спрашивал про этот трек);
+    вопрос n710 повторять незачем."""
+    steps = _steps()
+    assert steps["n710b_gen_delete_confirm"]["retry_acceptance"] == 1
+    assert "retry_acceptance" not in steps["n710_gen_delete"]
+    order = [s["label"] for s in gen.ACTS[6]["steps"]]
+    assert order.index("n710b_gen_delete_confirm") == order.index("n710_gen_delete") + 1, "«да» идёт сразу за вопросом"
 
 
 def _src(rel: str) -> str:
@@ -592,6 +658,14 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music v2] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
+    ("src/rob_box_dialog/rob_box_dialog/execute.py",
+     "f\"📨 [execute] событие {request.tool if request else '?'} {event.ref} {event.status} \""),
+    ("src/rob_box_dialog/rob_box_dialog/execute.py", "f\"{event.reason or '-'} ход_ждёт="),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py", 'NEEDS_CONFIRMATION = "needs_confirmation"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tools/gen_library.py",
+     'confirm is True or str(confirm).lower() == "true"'),
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
+     'f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}"'),
 ])
 def test_marker_sources_exist_in_robot_code(rel, fragment):
     """Паттерны генератора собраны из f-строк кода робота: поменяли строку -- этот тест краснеет раньше марафона."""
