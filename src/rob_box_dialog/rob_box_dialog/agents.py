@@ -14,12 +14,14 @@ from rob_box_core.tool_catalog import ToolCatalogEntry, llm_visible_tools, opera
 from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
 
-#: Группы закрытой грамматики Tier-1 (§4.2); разбор — ``grammar.py`` (PR-6).
-GRAMMAR_GROUPS: Tuple[str, ...] = ("stop", "silence", "volume", "voice", "new_session", "dj", "yes_no")
+#: Группы закрытой грамматики Tier-1 (§4.2); разбор — ``grammar.py`` (PR-6). ``face`` — очередь показа лица
+#: (#4103): лицо есть только у Личности.
+GRAMMAR_GROUPS: Tuple[str, ...] = ("stop", "silence", "volume", "voice", "new_session", "dj", "yes_no", "face")
 #: Вид команды Tier-1 (``grammar.match``, ``knowledge.TIER1_KINDS``) → группа грамматики агента.
 TIER1_GROUPS: Mapping[str, str] = MappingProxyType({
     "stop_all": "stop", "stop_speech": "stop", "silence": "silence", "unsilence": "silence", "volume": "volume",
     "set_voice": "voice", kn.PROSODY_NORMAL_KIND: "voice", "new_session": "new_session", "answer": "yes_no",
+    kn.SHOW_QUEUE_KIND: "face",
 })
 
 _VIEWS: Mapping[str, Callable[[], Tuple[ToolCatalogEntry, ...]]] = MappingProxyType({

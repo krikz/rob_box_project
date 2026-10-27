@@ -331,14 +331,19 @@ VOLUME_TOPIC_STEMS: Tuple[str, ...] = ("громк", "звук", "уровень
 
 #: Вид Tier-1 «говори нормально» (#4022): сброс скорости и тона речи; слова - ``PROSODY_*`` ниже.
 PROSODY_NORMAL_KIND = "prosody_normal"
+#: Вид Tier-1 «покажи по очереди радость, грусть и удивление» (#4103): очередь сцен лица собирает код по словарю
+#: анимаций (:func:`animation_name`), а не модель. Живая проверка 27.10 18:55: DeepSeek на такую просьбу делал ОДИН
+#: ``play_animation thinking`` - ни одной из трёх сцен, до очереди #4088 дело не доходило. Слова - ``SHOW_QUEUE_*``.
+SHOW_QUEUE_KIND = "show_queue"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
-#: ``prosody_normal`` звучит: тулы сброса молчат, фразу о результате говорит код.
+#: ``prosody_normal`` звучит: тулы сброса молчат, фразу о результате говорит код. ``show_queue`` не звучит, но в
+#: тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход молчит, как вся тишина (#3982).
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
-    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, "answer": False,
+    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, "answer": False, SHOW_QUEUE_KIND: True,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -405,6 +410,20 @@ PROSODY_NEGATION: Tuple[str, ...] = ("не", "нет")
 #: Фраза всех сбросов, прошедших удачно (одна на оба тула); при отказе хоть одного - фразы исходов тулов
 #: (``TOOL_PHRASES``).
 PROSODY_NORMAL_PHRASE = "prosody.normal"
+#: «Покажи по очереди радость, грусть и удивление», «сначала покажи радость, потом грусть», «покажи нейтральное лицо
+#: и грусть» (#4103, Tier-1 ``show_queue``). Команда покрыта грамматикой ЦЕЛИКОМ: глагол показа (основы
+#: ``SHOW_QUEUE_VERB_STEMS``), от ``SHOW_QUEUE_MIN`` до ``SHOW_QUEUE_MAX`` имён сцен словаря анимаций
+#: (:func:`animation_name`: имя или алиас) и только слова порядка и служебные (``SHOW_QUEUE_FILLER``, точные формы);
+#: «молча», «без слов» (``SILENT_ASK_FORMS``) и «тихо» (``SILENT_SHOW_FORMS``) - тоже. Одно имя («покажи радость»),
+#: лишнее слово («…и кота», «…два раза», «…одновременно»), отрицание («не радость») - не очередь кода: решает модель.
+#: Пачка длиннее ``SHOW_QUEUE_MAX`` держала бы лицо больше 40 с - её тоже решает модель.
+SHOW_QUEUE_VERB_STEMS: Tuple[str, ...] = ("покаж", "изобраз")
+SHOW_QUEUE_FILLER: Tuple[str, ...] = (
+    "по", "очереди", "очередно", "поочередно", "сначала", "вначале", "сперва", "потом", "затем", "после", "этого",
+    "дальше", "далее", "следом", "и", "а", "еще", "снова", "опять", "наконец", "в", "конце", "лицо", "лица", "мне",
+    "нам", "пожалуйста", "ну", "давай", "свое", "свою", "свои", "эмоции", "эмоцию", "анимации", "анимацию",
+)
+SHOW_QUEUE_MIN, SHOW_QUEUE_MAX = 2, 5
 #: «Новая сессия» (U8): фразы — подстрокой после снятия вейка (как в v1); Telegram «/clear» — правило хоста.
 NEW_SESSION_PHRASES: Tuple[str, ...] = (
     "новая сессия", "новую сессию", "новый диалог", "новый разговор",
@@ -1057,7 +1076,7 @@ SOUND_IMITATIONS: Mapping[str, str] = MappingProxyType({
 #: из одной ``expression`` (лицо без слов, #3997) - тот же класс: её тоже не слышно.
 INAUDIBLE_TOOLS: Tuple[str, ...] = ("play_animation",)
 #: Тул показа сцены на лице (ADR-0150 PR-3b): сам лицо не трогает, показывает диалог. Данные его результата (тул уже
-#: проверил их: ``animation`` - имя из ``rob_box_mcp_tools.animations.KNOWN_ANIMATIONS``, каждое - сцена ``face_node``,
+#: проверил их: ``animation`` - имя из :data:`KNOWN_ANIMATIONS`, каждое - сцена ``face_node``,
 #: сверку держит ``tests/unit/docker/test_animation_assets.py``; ``duration`` - секунды по правилу тула или нет;
 #: ``face`` - сцена лица LLM) красят итог хода ``done`` (``turn.command_face``, #4049): живой прогон 27.10 - «покажи
 #: молча, как тебе грустно» → ``play_animation(sad)`` → на лице рефлекс ``happy``; «включи сирену» → мигалки нет.
@@ -1166,7 +1185,115 @@ PHRASE_KEYS: Tuple[str, ...] = (
 # Экспрессия (§5.5): эмоция → сцена лица, жесты, earcon'ы, слоты сцены для LLM
 # ---------------------------------------------------------------------------------------------------------------
 
-#: Анимации с манифестом, которые умеет сегодняшний плеер (``rob_box_mcp_tools.animations.KNOWN_ANIMATIONS``),
+#: Словарь анимаций тула ``play_animation`` (ADR-0150 PR-3b) - ОДИН источник (#4103): тулы (enum ``play_animation`` и
+#: ``speak_text``, ``rob_box_mcp_tools.animations.normalize_animation``, каталог ``tools/gen_tool_catalog.py``) и диалог
+#: (очередь показа Tier-1 ``show_queue``) берут его отсюда. Каждое имя - сцена ``face_node``
+#: (``rob_box_animations.face.states``: ``SCENES``/``LEGACY``), сверку держит ``tests/unit/docker/test_animation_assets.py``.
+KNOWN_ANIMATIONS: Tuple[str, ...] = (
+    "accelerating",
+    "ambulance",
+    "angry",
+    "braking",
+    "charging",
+    "error",
+    "fire_truck",
+    "happy",
+    "idle",
+    "low_battery",
+    "police_lights",
+    "road_service",
+    "sad",
+    "sleep",
+    "surprised",
+    "talking",
+    "thinking",
+    "turn_left",
+    "turn_right",
+    "victory",
+    "wakeup",
+)
+#: Слова, которые не анимации, но сводятся к одной (:func:`animation_name`): русские - из речи человека (тул получает
+#: их напрямую; очередь показа - из реплики «покажи по очереди радость, грусть и удивление», #4103), английские - из
+#: словаря эмоций LLM (MiniMax M3 пишет ``excited``). В enum тула не входят: это не анимации, рекламировать их нельзя.
+#: Формы - целыми словами, строчными, «ё» как «е» (как ``words.name_tokens``); падеж - тот, что звучит после «покажи».
+ANIMATION_ALIASES: Mapping[str, str] = MappingProxyType({
+    # покой: «покажи нейтральное / спокойное лицо»
+    "нейтрально": "idle",
+    "нейтральная": "idle",
+    "нейтральный": "idle",
+    "нейтральное": "idle",
+    "нейтральную": "idle",
+    "спокойное": "idle",
+    "спокойную": "idle",
+    "спокойный": "idle",
+    "спокойствие": "idle",
+    "покой": "idle",
+    "радость": "happy",
+    "радостный": "happy",
+    "радостное": "happy",
+    "радостную": "happy",
+    "счастливый": "happy",
+    "счастливое": "happy",
+    "счастье": "happy",
+    "веселье": "happy",
+    "веселое": "happy",
+    "улыбку": "happy",
+    "грустный": "sad",
+    "грустное": "sad",
+    "грустную": "sad",
+    "грусть": "sad",
+    "печаль": "sad",
+    "печальное": "sad",
+    "тоску": "sad",
+    "злой": "angry",
+    "злое": "angry",
+    "злость": "angry",
+    "гнев": "angry",
+    "ярость": "angry",
+    "удивление": "surprised",
+    "удивленный": "surprised",
+    "удивленное": "surprised",
+    "изумление": "surprised",
+    "задумчивость": "thinking",
+    "задумчивое": "thinking",
+    "задумчивый": "thinking",
+    "сон": "sleep",
+    "сонное": "sleep",
+    "сонный": "sleep",
+    "победу": "victory",
+    "победа": "victory",
+    "пробуждение": "wakeup",
+    "возбужденный": "happy",
+    "возбуждение": "happy",
+    "смущенный": "thinking",
+    "смущение": "thinking",
+    "растерянный": "thinking",
+    # Эмоции из общего словаря LLM, которых нет среди анимаций
+    "neutral": "idle",
+    "excited": "happy",
+    "confused": "thinking",
+    "laughing": "happy",
+    "smiling": "happy",
+    # ``dancing`` раньше маппился в "excited" — такой анимации не существует, нормализация скатывалась в fallback.
+    "dancing": "happy",
+    "singing": "happy",
+    # LLM часто пишет "talk" вместо "talking"
+    "talk": "talking",
+})
+
+
+def animation_name(word: Optional[str]) -> Optional[str]:
+    """Анимация словаря по слову: имя из :data:`KNOWN_ANIMATIONS` - как есть, алиас (:data:`ANIMATION_ALIASES`) - его
+    анимация; регистр и «ё» не важны. Иначе ``None``. Одно правило для тула (``normalize_animation``: аргумент LLM) и
+    для реплики человека (Tier-1 ``show_queue``, #4103)."""
+    if not word:
+        return None
+    key = str(word).strip().lower().replace("ё", "е")
+    key = ANIMATION_ALIASES.get(key, key)
+    return key if key in KNOWN_ANIMATIONS else None
+
+
+#: Анимации с манифестом, которые умеет сегодняшний плеер (:data:`KNOWN_ANIMATIONS`),
 #: плюс сцены лица ``rob_box_animations/face/states.py:SCENES`` (§5.5.2): ими именуются сцены лица в v1 и v2.
 LAB_SCENES: Tuple[str, ...] = (
     "idle_stare", "idle_bored", "listening", "thinking_teeth", "thinking_orbit", "wink",

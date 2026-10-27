@@ -43,3 +43,15 @@ def test_normalize_animation_handles_the_cases_that_reach_it() -> None:
     assert normalize_animation(None) == "idle"
     assert normalize_animation("no_such_animation") == "idle"
     assert normalize_animation("no_such_animation", fallback="talking") == "talking"
+
+
+def test_vocabulary_is_the_one_table_of_the_dialogue() -> None:
+    """#4103: the dialogue builds the show queue from the same table — one source, re-exported here, not a copy."""
+    from rob_box_dialog import knowledge as kn
+
+    assert KNOWN_ANIMATIONS is kn.KNOWN_ANIMATIONS
+    assert ANIMATION_ALIASES is kn.ANIMATION_ALIASES
+    # Russian words a person uses for the show queue normalise for the tool as well.
+    assert normalize_animation("удивление") == "surprised"
+    assert normalize_animation("Нейтральное") == "idle"
+    assert normalize_animation("удивлённое") == "surprised"

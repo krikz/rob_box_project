@@ -1,7 +1,7 @@
 """Tier-1: закрытая грамматика команд без LLM (ADR-0150 §4.2, §6.3, §18.3 В19; карточка #3696).
 
 :func:`match` — стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона),
-новая сессия, да/нет на вопрос робота.
+новая сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица, #4103).
 Команда должна быть покрыта грамматикой ЦЕЛИКОМ: лишнее слово — не Tier-1, решает следующий шаг (медиа-грамматика
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
@@ -20,7 +20,8 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, has_form, has_word, stop_command, strip_wake_word
+from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, has_form, has_word, name_tokens, stop_command,
+                                  strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name)`` голосов активного провайдера (реестр ``tts_voice_registry`` — у вызывающего).
@@ -45,7 +46,7 @@ def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
     body = strip_wake_word(text or "")
-    for rule in (_stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer):
+    for rule in (_stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
         if command is not None and not (silenced and kn.TIER1_KINDS[command.kind]):
             return command
@@ -231,4 +232,33 @@ def _answer(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[T
     return Tier1Command("answer", MappingProxyType({"value": value})) if value else None
 
 
-__all__ = ["Tier1Command", "Voices", "match", "volume_channel"]
+def _show_queue(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
+    """«Покажи по очереди радость, грусть и удивление» → ``show_queue{scenes: (happy, sad, surprised)}`` (#4103):
+    сцены по порядку реплики, их показывает код очередью без LLM (живая проверка 27.10: модель на такую просьбу делала
+    один вызов). Не покрыта целиком (:func:`show_queue_scenes`) - не Tier-1, решает модель, как раньше."""
+    scenes = show_queue_scenes(text)
+    return Tier1Command(kn.SHOW_QUEUE_KIND, MappingProxyType({"scenes": scenes})) if scenes else None
+
+
+def show_queue_scenes(text: str) -> Tuple[str, ...]:
+    """Имена анимаций очереди показа по порядку реплики или ``()``. Фраза покрыта ЦЕЛИКОМ: «молча»/«без слов»/«тихо»
+    (``SILENT_ASK_FORMS``, ``SILENT_SHOW_FORMS``) сняты, есть глагол показа (``SHOW_QUEUE_VERB_STEMS``), остальное -
+    слова порядка и служебные (``SHOW_QUEUE_FILLER``) или имена сцен словаря анимаций (``knowledge.animation_name``: имя
+    или алиас - «радость» → ``happy``, «нейтральное» → ``idle``); имён от ``SHOW_QUEUE_MIN`` до ``SHOW_QUEUE_MAX``.
+    Одно имя, лишнее слово, отрицание - ``()``."""
+    body, _ = without_forms(text or "", (*kn.SILENT_ASK_FORMS, *kn.SILENT_SHOW_FORMS))
+    words = name_tokens(body)
+    if not any(_starts(w, kn.SHOW_QUEUE_VERB_STEMS) for w in words):
+        return ()
+    scenes: List[str] = []
+    for word in words:
+        if _starts(word, kn.SHOW_QUEUE_VERB_STEMS) or word in kn.SHOW_QUEUE_FILLER:
+            continue
+        name = kn.animation_name(word)
+        if name is None:
+            return ()
+        scenes.append(name)
+    return tuple(scenes) if kn.SHOW_QUEUE_MIN <= len(scenes) <= kn.SHOW_QUEUE_MAX else ()
+
+
+__all__ = ["Tier1Command", "Voices", "match", "show_queue_scenes", "volume_channel"]

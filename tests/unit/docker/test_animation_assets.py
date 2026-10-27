@@ -17,8 +17,8 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -155,11 +155,14 @@ def test_side_frame_marks_every_board():
 
 
 def _known_animations():
-    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "animations.py"
-    spec = importlib.util.spec_from_file_location("_animations_vocab", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.KNOWN_ANIMATIONS
+    """Словарь тула ``play_animation`` - один источник ``rob_box_dialog.knowledge.KNOWN_ANIMATIONS`` (#4103; тулы
+    берут его через ``rob_box_mcp_tools.animations``). Литерал читается без импорта пакета: в офлайн-джобе
+    ``rob_box_dialog`` не на пути."""
+    path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "KNOWN_ANIMATIONS":
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"KNOWN_ANIMATIONS не найден в {path}")
 
 
 def test_v1_vocabulary_resolves_to_scenes():

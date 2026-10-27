@@ -15,7 +15,8 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, Expression, ToolCall
-from rob_box_dialog.expression import held_face, hold_ms, merge, queued, reflex, show_seconds
+from rob_box_dialog.expression import (ExpressionPlan, held_face, hold_ms, merge, queued, reflex, show_seconds,
+                                       shown_scene)
 from rob_box_dialog.face_scene import FaceScene
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
@@ -26,8 +27,9 @@ from rob_box_dialog.turn import Answer, Shown, TurnEngine, command_face, held_ex
 N_SILENT = "покажи молча что ты задумался"
 #: Та же просьба без «молча»: «задумался» лицо не называет (``FACE_SHOW_WHAT_STEMS``) — правило #3995 как было.
 N_PLAIN = "покажи что ты задумался"
-#: Живая проверка из карточки: пачка из трёх сцен.
-N_BATCH = "покажи по очереди радость грусть и удивление"
+#: Пачка, которую модель кладёт несколькими ``play_animation``: слов вне словаря анимаций очередь кода Tier-1 не берёт
+#: (#4103: «покажи по очереди радость, грусть и удивление» собирает код, ``test_face_queue_by_code_4103``).
+N_BATCH = "покажи как ты радуешься потом грустишь и удивляешься"
 THINKING = Expression(emotion="thinking")
 DEFAULT = kn.FACE_SHOW_DEFAULT_S
 
@@ -204,8 +206,8 @@ def test_ordinary_reply_keeps_the_reflex_time():
 
 
 def test_batch_of_three_animations_is_a_queue_not_an_overwrite():
-    """«Покажи по очереди радость, грусть и удивление» → три ``play_animation``: первая — сцена итога, две — очередь
-    за ней; ни одна не перекрывает другую, каждая держится ≥ ``FACE_SHOW_MIN_S``."""
+    """Модель кладёт три ``play_animation`` одной командой: первая — сцена итога, две — очередь за ней; ни одна не
+    перекрывает другую, каждая держится ≥ ``FACE_SHOW_MIN_S``."""
     calls = (_animation("happy"), _animation("sad", 3), _animation("surprised", 12))
     ports = Ports([Answer(Command(actions=calls), "deepseek")])
     agg = _run(ports, N_BATCH)
@@ -234,41 +236,59 @@ def test_queued_face_scene_lives_as_long_as_its_scene():
     assert at == 5.0 and plan.emotion == "" and plan.face["duration_s"] == 9.0 and plan.ttl_ms == 9000
 
 
-#: Ревью #4088: пачка, первая сцена которой сама ничего не показывает.
-N_NEUTRAL_FIRST = "покажи по очереди нейтральное лицо и радость"
+#: Ревью #4088: пачка, первая сцена которой - нейтраль или сама ничего не показывает (слова вне словаря анимаций -
+#: путь модели, а не очередь кода #4103).
+N_NEUTRAL_FIRST = "покажи как ты спокоен а потом радуешься"
+REST = kn.REFLEXES["idle"].face[0]
 
 
-@pytest.mark.parametrize("first", ["idle", "neutral", "talking"])
-def test_batch_whose_first_scene_shows_nothing_keeps_its_queue(first):
-    """Ревью #4088 (блокер): ``[play_animation idle, play_animation happy]`` терял очередь целиком — ``done_expression``
-    смотрел только на первую сцену, ход закрывался без лица и без слов (``faces == [] and said == []``). Теперь
-    первая сцена-нейтраль оставляет ``done`` обычным рефлексом, а ``happy`` идёт очередью — когда кончилось время
-    первой, со своим временем ≥ минимума."""
+@pytest.mark.parametrize("first", ["idle", "neutral"])
+def test_batch_whose_first_scene_is_neutral_shows_the_rest_face_not_happy(first):
+    """#4103 (живая проверка 27.10 18:55: «нейтральное лицо и грусть» → на ``done`` рефлекс ``happy`` 5 с): нейтраль
+    первой сценой — лицо покоя на своё время, итог ``done`` не красится в ``happy``; вторая сцена — очередью в срок."""
     ports = Ports([Answer(Command(actions=(_animation(first), _animation("happy"))), "deepseek")])
     agg = _run(ports, N_NEUTRAL_FIRST)
     assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
     (stage, done), = ports.faces
     assert stage == "done"
-    assert done == Shown(emotion=first, duration_s=DEFAULT, then=(Shown(emotion="happy", duration_s=DEFAULT),))
-    assert _done_plan(done) == reflex("done"), "первая сцена-нейтраль: на итоге обычный рефлекс done"
+    assert done == Shown(emotion=REST, duration_s=DEFAULT, then=(Shown(emotion="happy", duration_s=DEFAULT),))
+    plan = _done_plan(done)
+    assert (plan.emotion, plan.ttl_ms) == (REST, int(DEFAULT * 1000)) and plan.emotion != reflex("done").emotion
     steps = queued(done.duration_s, done.then)
     assert [(at, p.emotion, p.ttl_ms) for at, p in steps] == [(DEFAULT, "happy", int(DEFAULT * 1000))]
 
 
-def test_neutral_scene_inside_the_queue_keeps_its_time_and_sends_nothing():
-    """Сцена-нейтраль в середине пачки запроса лицу не шлёт (лицо и так в покое, когда кончилась предыдущая), но
-    своё время держит: следующая сцена — после неё в срок, а не раньше."""
-    scenes = [Shown(emotion="idle", duration_s=6.0), Shown(emotion="sad", duration_s=7.0)]
-    assert [(at, p.emotion, p.ttl_ms) for at, p in queued(5.0, scenes)] == [(11.0, "sad", 7000)]
-    assert queued(5.0, [Shown(emotion="idle"), Shown(emotion="talking")]) == ()
+def test_batch_whose_first_scene_shows_nothing_keeps_its_queue():
+    """Ревью #4088 (блокер): ``[play_animation talking, play_animation happy]`` терял очередь целиком —
+    ``done_expression`` смотрел только на первую сцену, ход закрывался без лица и без слов. Первой сцене без речи
+    показать нечего: ``done`` — обычный рефлекс, а ``happy`` идёт очередью, когда кончилось время первой."""
+    ports = Ports([Answer(Command(actions=(_animation("talking"), _animation("happy"))), "deepseek")])
+    agg = _run(ports, N_NEUTRAL_FIRST)
+    assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
+    (stage, done), = ports.faces
+    assert done == Shown(emotion="talking", duration_s=DEFAULT, then=(Shown(emotion="happy", duration_s=DEFAULT),))
+    assert _done_plan(done) == reflex("done"), "первой сцене нечего показать: на итоге обычный рефлекс done"
+    steps = queued(done.duration_s, done.then)
+    assert [(at, p.emotion, p.ttl_ms) for at, p in steps] == [(DEFAULT, "happy", int(DEFAULT * 1000))]
 
 
-def test_batch_of_only_neutral_scenes_is_the_plain_done_reflex():
-    """Пачка из одних нейтралей: итог — рефлекс ``done``, очереди нет (ни одного запроса лицу сверх рефлекса)."""
+def test_neutral_scene_inside_the_queue_holds_the_rest_face_for_its_time():
+    """#4103: нейтраль в середине пачки — лицо покоя на своё время (запросом, а не «само успокоится»); следующая
+    сцена — после неё в срок. Сцена, которой нечего показать (``talking`` без речи), запроса не шлёт, но время держит."""
+    scenes = [Shown(emotion=shown_scene("idle"), duration_s=6.0), Shown(emotion="sad", duration_s=7.0)]
+    assert [(at, p.emotion, p.ttl_ms) for at, p in queued(5.0, scenes)] == [(5.0, REST, 6000), (11.0, "sad", 7000)]
+    assert queued(5.0, [Shown(emotion="talking", duration_s=6.0), Shown(emotion="sad")]) == (
+        (11.0, ExpressionPlan(emotion="sad", ttl_ms=int(DEFAULT * 1000))),)
+
+
+def test_batch_of_only_neutral_scenes_holds_the_rest_face():
+    """Пачка из одних нейтралей (#4103): лицо покоя на итоге своё время, затем ещё раз очередью — не рефлекс
+    ``happy``."""
     ports = Ports([Answer(Command(actions=(_animation("idle"), _animation("neutral"))), "deepseek")])
     _run(ports, N_NEUTRAL_FIRST)
     (_, done), = ports.faces
-    assert _done_plan(done) == reflex("done") and queued(done.duration_s, done.then) == ()
+    assert _done_plan(done).emotion == REST
+    assert [(at, p.emotion) for at, p in queued(done.duration_s, done.then)] == [(DEFAULT, REST)]
 
 
 def test_failed_action_in_the_batch_shows_no_scene():
