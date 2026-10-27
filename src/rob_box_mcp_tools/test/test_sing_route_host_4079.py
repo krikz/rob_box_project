@@ -56,6 +56,17 @@ def _state(health):
     ("Робот, спой про енота", "live:song"),  # голое «спой»: перевес живому без контекста
     ("Робот, сыграй на синтезаторе бит", ""),  # не пение: путь синтеза #4071, форма не меняется
     ("Робот, поставь синтвейв", ""),
+    # вилка Шифу 27.10: синт назван + пение — живое пение кодом, даже рядом с «сгенерируй/сочини/запиши»
+    ("Робот, сгенерируй песню на Ренардо", "live:song"),
+    ("Робот, сочини песню на синтезаторе", "live:song"),
+    ("Робот, запиши рэп на Ренардо", "live:rap"),
+    ("Робот, сгенерируй песню вживую", "live:song"),
+    ("Робот, а теперь под этот бит зачитай короткий рэп про енотика.", "live:rap"),  # акт 8 n810
+    # ревью #4071 B1/B2: не пение и не генерация — форма хода не меняется
+    ("Робот, поставь музыку без вокала", ""), ("Робот, мне нравится твой голос", ""),
+    ("Робот, ответь своим голосом", ""), ("Робот, не рассказывай спойлеры", ""),
+    ("Робот, сделай песню потише", ""), ("Робот, запиши, что я люблю песни", ""),
+    ("Робот, расскажи про песни, которые написала нейросеть", ""),
 ])
 def test_host_decides_the_sing_route_and_logs_it_for_the_harness(text, route):
     host, lines = _host()
@@ -155,6 +166,27 @@ def test_generation_words_require_the_generation_tool_in_the_turn():
 def test_play_on_the_synth_without_singing_keeps_the_turn_form_open():
     form, tools = _form_of("Робот, сыграй на синтезаторе бит")
     assert form == Form(passed=False, voice=False) and "request_music" in tools
+
+
+@pytest.mark.parametrize("text", ["Робот, сгенерируй песню на Ренардо", "Робот, сочини песню на синтезаторе"])
+def test_generate_a_song_on_the_synth_is_a_performance_not_a_generation(text):
+    """Решение Шифу 27.10: «он должен на «Сгенерируй песню на Ренардо» сделать перформ» — генерация закрыта, выступление
+    обязательно (KIE на Ренардо не играет); отказа нет."""
+    form, tools = _form_of(text)
+    assert form.sing == "live:song" and "generate_music" not in tools
+    gen = parse({"actions": [{"tool": "generate_music", "args": {"kind": "song", "theme": "енот"}}]})
+    assert validate(gen, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
+    assert isinstance(validate(parse({"perform": {"kind": "song", "segments": ["Енот", "поёт"]}}), tools, form=form),
+                      Command)
+
+
+@pytest.mark.parametrize("text", ["Робот, мне нравится твой голос", "Робот, запиши, что я люблю песни",
+                                  "Робот, поставь музыку без вокала"])
+def test_false_singing_or_generation_keeps_the_music_tools_in_the_slice(text):
+    """Ревью #4071 B1/B2: ложное пение не убирает ``request_music``/``generate_music`` из среза и не требует ``perform``
+    («сделай песню потише» до модели не доходит вовсе — громкость берёт Tier-1; путь хоста — тест выше)."""
+    form, _tools = _form_of(text)
+    assert form.sing == "" and form.sing_form is None
 
 
 def test_host_line_is_logged_once_per_sing_turn(caplog):

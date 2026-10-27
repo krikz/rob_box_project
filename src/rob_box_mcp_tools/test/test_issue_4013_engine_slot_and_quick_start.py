@@ -111,6 +111,17 @@ def test_synth_path_named_by_meaning_plays_the_synth_not_a_library_track(heard):
     assert rig.owner.now_playing()["engine"] == "synth"
 
 
+@pytest.mark.parametrize("heard", ["Робот, сыграй метал на Ренардо", "Робот, сыграй рок на синтезаторе"])
+def test_named_synth_plays_a_genre_it_is_poor_at_in_the_nearest_style_not_a_decline(heard):
+    """Вилка Шифу 27.10 (без отказа): синт назван, жанр он не играет — играет ближайший стиль (``GEN_BRIDGE_STYLES``:
+    брейкбит), фраза кода называет его; отказа «названный движок так не играет» нет."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    result = req.execute(intent="track", text=heard, heard_text=heard)
+    assert result.success and result.data["engine"] == "synth" and rig.owner.now_playing()["engine"] == "synth"
+    assert "на синте играю ближайшим стилем — брейкбит." in result.data.get("source_note", "")
+
+
 @pytest.mark.parametrize("heard", ["Робот, спой песню вживую", "Робот, сгенерируй трек вживую",
                                    "Робот, спой песню на синтезаторе", "Робот, сочини что-нибудь на синте"])
 def test_meaning_words_in_a_request_of_another_path_are_not_a_request_to_the_synth(heard, caplog):
@@ -123,7 +134,7 @@ def test_meaning_words_in_a_request_of_another_path_are_not_a_request_to_the_syn
     with caplog.at_level(logging.INFO):
         result = req.execute(intent="track", text=heard, engine="synth", heard_text=heard)
     assert asks[0].engine == "" and asks[0].asks_path and "engine" not in result.data
-    assert result.data.get("reason") != "engine_cannot" and "движок так не играет" not in (result.error or "")
+    assert "движок так не играет" not in (result.error or "")  # вилка Шифу 27.10: такого отказа нет совсем
     assert any("слот engine=synth без опоры в словах человека — отброшен" in r.getMessage() for r in caplog.records)
     # #4079: «спой вживую / на синтезаторе» — живое пение робота (путь live, исполняет диалог), а не генерация
     sings = "спой" in heard

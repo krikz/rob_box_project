@@ -176,6 +176,27 @@ def test_launch_v2_dialog_node_gets_its_yaml_and_flag(monkeypatch, tmp_path):
     assert dialog.kwargs["parameters"] == [str(cfg / "dialog_node.yaml"), {"dialog_engine": "v2"}]
 
 
+def test_launch_v2_dialog_node_gets_the_music_chooser_of_the_mcp_server(monkeypatch, tmp_path):
+    """Ревью #4071 N4: путь пения хода (``dialog_node.build_sing``) выбирает тем же выбирателем, что путь тула музыки —
+    значение ``mcp_server.music_chooser`` одно, launch передаёт его ``dialog_node`` (своей копии в yaml нет)."""
+    _fake_launch(monkeypatch)
+    cfg = _config(tmp_path, "v2")
+    (cfg / "mcp_server.yaml").write_text('mcp_server:\n  ros__parameters:\n    music_chooser: "deterministic"\n',
+                                         encoding="utf-8")
+    tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
+                "parameters": ["tts_node.yaml"]}
+    dialog, _tts = de.launch_nodes({"config_dir": str(cfg)}, _Node(name="dialogue_node"), tts_args)
+    assert dialog.kwargs["parameters"][1] == {"dialog_engine": "v2", "music_chooser": "deterministic"}
+
+
+def test_shared_params_of_both_config_copies_are_the_live_music_chooser():
+    """Обе копии каталога конфигов дают ``dialog_node`` режим выбирателя из своего ``mcp_server.yaml``."""
+    for copy in CONFIG_COPIES:
+        mcp = yaml.safe_load((copy.parent / "mcp_server.yaml").read_text(encoding="utf-8"))
+        assert de.shared_params(copy.parent) == {"music_chooser": mcp["mcp_server"]["ros__parameters"]["music_chooser"]}
+    assert de.shared_params(Path("нет-такого-каталога")) == {}
+
+
 def test_flag_value_lives_only_in_dialog_engine_module():
     """Значения флага не копируются: launch-файлы и ноды берут их из ``rob_box_core.dialog_engine``."""
     users = [LAUNCHES["headless"], LAUNCHES["src"],

@@ -68,6 +68,25 @@ def test_live_route_takes_the_performance_and_puts_the_synth_under_it():
     assert calm.perform.backing == "calm" and "perform.backing" not in calm.dropped
 
 
+OVER = Form(passed=False, sing="live:rap", sing_over=True)
+RAP_PERF = {"kind": "rap", "segments": ["Енотик в ритме", "моет лапки"]}
+
+
+def test_live_singing_while_music_plays_goes_over_it_without_a_second_beat():
+    """Акт 8 n810 «под этот бит зачитай рэп»: музыка уже играет — она и есть подложка. Схема даёт только ``none``,
+    бит модели код снимает (поле в ``dropped``): выступление поверх, без вопроса «выключить и зачитать?» и без второго
+    бита. Генерация и трек закрыты, как у живого пения."""
+    schema = form_schema(kn.command_schema("json"), OVER)
+    assert schema["properties"]["perform"]["properties"]["backing"]["enum"] == ["none"] and "perform" in schema["required"]
+    beat = _check({"perform": {**RAP_PERF, "backing": "beat"}}, OVER)
+    assert isinstance(beat, Command) and beat.perform.backing == "none" and "perform.backing" in beat.dropped
+    bare = _check({"perform": RAP_PERF}, OVER)
+    assert bare.perform.backing == "none" and "perform.backing" not in bare.dropped
+    assert _check({"actions": [GEN_CALL]}, OVER).reason == kn.VIOLATION_SING_ROUTE
+    assert OVER.closed_tools() == LIVE.closed_tools() and kn.sing_family("live:rap", True) == "live_over"
+    assert kn.sing_family("generate:song:V6", True) == "generate"  # генерации играющая музыка не меняет
+
+
 @pytest.mark.parametrize("raw", [
     {"actions": [GEN_CALL]},  # генерация вместо пения
     {"actions": [{"tool": "request_music", "args": {"intent": "track", "text": "спой под синт"}}]},
@@ -203,3 +222,40 @@ def test_backlog_pickup_does_not_ask_for_a_sing_route():
     router = Router("live:song")
     ports = _turns(router, [Answer(Command(speech="Слышал."))], "Робот, спой под синт", pickup=True)
     assert ports.asked and router.calls == [] and ports.forms[-1].sing == ""
+
+
+def test_live_route_while_music_plays_is_sung_over_it():
+    """Играет музыка (снимок хода) — хост видит это, форма живого пения идёт поверх играющего (``sing_over``)."""
+    from rob_box_dialog.session import MusicStateRef
+
+    lines = tuple(RAP_PERF["segments"])
+    router, session = Router("live:rap"), Session("personality")
+    ports = Ports([Answer(Command(perform=Performance("rap", lines, "none")))])
+    session.set_music(MusicStateRef("playing", title="ровный ритм"))
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.", sing=router)
+    asyncio.run(engine.run(Addressed("Робот, а теперь под этот бит зачитай короткий рэп про енотика.", VOICE)))
+    form = ports.forms[-1]
+    assert router.calls[-1][2] is True and form.sing_over and form.sing == "live:rap"
+    beat = validate(parse({"perform": {**RAP_PERF, "backing": "beat"}}), ports.asked[-1], form=form)
+    assert beat.perform.backing == "none"  # модель просит бит — валидатор моста ставит «поверх играющего»
+    assert ports.performed and ports.performed[-1].backing == "none"
+    quiet = _turns(Router("live:rap"), [Answer(Command(perform=Performance("rap", lines, "beat")))],
+                   "Робот, зачитай рэп")
+    assert not quiet.forms[-1].sing_over  # тишина — синт-подложка, как раньше
+    assert validate(parse({"perform": RAP_PERF}), quiet.asked[-1], form=quiet.forms[-1]).perform.backing == "beat"
+
+
+class Broken:
+    def __call__(self, text, recent, playing):
+        raise RuntimeError("чойсер упал")
+
+
+def test_a_failing_sing_host_does_not_drop_the_turn(caplog):
+    """Ревью #4071 N5: исключение хоста пути пения ход не роняет — строка WARNING, ход без формы пения (как раньше)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        ports = _turns(Broken(), [Answer(Command(speech="Сейчас спою!"))], "Робот, спой про енота")
+    assert ports.asked and ports.forms[-1].sing == "" and "generate_music" in ports.asked[-1]
+    assert any("путь пения не решён (RuntimeError: чойсер упал)" in r.getMessage() for r in caplog.records
+               if r.levelno == logging.WARNING)

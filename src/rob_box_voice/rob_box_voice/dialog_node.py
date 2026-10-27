@@ -121,6 +121,9 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("sqlite_db_path", "")
     node.declare_parameter("voice_facts_db_path", "")
     node.declare_parameter("e2e_voice_facts_db_path", "/data/voice_memory.e2e.db")
+    # Выбиратель пути пения (#4079) — тот же режим, что у пути музыки: значение ``mcp_server.music_chooser`` передаёт
+    # launch (``rob_box_core.dialog_engine.shared_params``); пусто — умолчание ``chooser_model`` (цепочка).
+    node.declare_parameter("music_chooser", "")
 
 
 def _prefix(agent: str) -> str:
@@ -215,11 +218,13 @@ def build_tools(node: Any) -> Any:
 
 def build_sing(node: Any, states: Callable[[], Any]) -> Any:
     """Путь пения хода Личности до основной модели (#4079): ``SingRouteHost`` — решение ``rob_box_music.source``,
-    выбиратель — тот же, что у пути музыки (``chooser_from_env``, цепочка Jev → LLM → кубик при неясном разрыве)."""
+    выбиратель — тот же, что у пути музыки: режим ``music_chooser`` (значение ``mcp_server.music_chooser``,
+    ``chooser_from_env``: цепочка Jev → LLM → кубик при неясном разрыве или детерминированный)."""
     from rob_box_mcp_tools.engine.chooser_model import chooser_from_env  # noqa: PLC0415
     from rob_box_mcp_tools.engine.sing_route import SingRouteHost  # noqa: PLC0415
 
-    return SingRouteHost(chooser_from_env(log=node.get_logger), states, node.get_logger().info)
+    mode = str(node.get_parameter("music_chooser").value or "")
+    return SingRouteHost(chooser_from_env(mode, log=node.get_logger), states, node.get_logger().info)
 
 
 def build_chat_tools(node: Any, personality_tools: Any) -> Any:

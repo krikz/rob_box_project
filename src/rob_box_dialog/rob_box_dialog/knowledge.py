@@ -1606,11 +1606,15 @@ class SingForm:
 
 
 #: ``live`` — робот поёт сам: ``perform`` вида из id под синт-подложку (``none`` закрыт), генерация и трек закрыты (бит
-#: ставит код выступления: ``request_music(intent=backing)`` мимо среза). ``generate`` (генерация и кэш) — песню
-#: делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением (song/rap) нельзя.
+#: ставит код выступления: ``request_music(intent=backing)`` мимо среза). ``live_over`` — то же, когда музыка уже
+#: играет («под этот бит зачитай рэп», акт 8 n810): играющее и есть подложка — ``backing`` только ``none``, выступление
+#: идёт поверх, без вопроса «выключить и зачитать?» (``perform.ask_replace_music``) и без второго бита. ``generate``
+#: (генерация и кэш) — песню делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением
+#: (song/rap) нельзя.
 SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True,
                      backings=tuple(b for b in PERFORM_BACKINGS if b != "none")),
+    "live_over": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True, backings=("none",)),
     "generate": SingForm(needs_tool="generate_music",
                          kinds=tuple(k for k in PERFORM_KINDS if k not in SING_PERFORM_KINDS)),
 })
@@ -1618,11 +1622,13 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
 VIOLATION_SING_ROUTE = "sing_route"
 
 
-def sing_family(route: str) -> str:
-    """Путь пения по id кандидата: ``live:*`` — ``live``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
-    «» — не пение."""
+def sing_family(route: str, over_music: bool = False) -> str:
+    """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); иной
+    непустой (``generate:*``, ``cache:*``) — ``generate``; «» — не пение."""
     head = (route or "").split(":", 1)[0]
-    return "live" if head == "live" else "generate" if head else ""
+    if head == "live":
+        return "live_over" if over_music else "live"
+    return "generate" if head else ""
 
 
 def sing_kinds(route: str) -> Tuple[str, ...]:
@@ -1637,12 +1643,12 @@ def sing_kinds(route: str) -> Tuple[str, ...]:
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
 
 
-def with_sing(schema: Mapping[str, Any], route: str) -> Dict[str, Any]:
+def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False) -> Dict[str, Any]:
     """Схема команды в форме пути пения: ``perform.kind`` и ``perform.backing`` — перечни пути, ``perform`` обязателен
-    на живом пении (ADR-0148 п.2: выбор сужает структура, а не правило в промпте). Подложку без синта (``none`` или не
-    названа) на живом пении валидатор ставит первой из перечня — синт решает код (``command._fit_sing_backing``). Не
-    пение — без изменений."""
-    form = SING_FORMS.get(sing_family(route))
+    на живом пении (ADR-0148 п.2: выбор сужает структура, а не правило в промпте). Подложку вне перечня пути на живом
+    пении валидатор ставит первой из перечня — синт (или поверх играющего, ``over_music``) решает код
+    (``command._fit_sing_backing``). Не пение — без изменений."""
+    form = SING_FORMS.get(sing_family(route, over_music))
     out = copy.deepcopy(dict(schema))
     perform = out.get("properties", {}).get("perform")
     if form is None or perform is None:

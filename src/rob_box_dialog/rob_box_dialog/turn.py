@@ -281,9 +281,16 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tupl
     """Форма команды хода (#4021, ADR-0148 п.2): ``passed`` — только при подхвате бэклога (адресованную реплику
     молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
-    пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`)."""
+    пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
+    живое пение при играющей музыке (:func:`music_playing`) — поверх неё (``Form.sing_over``, n810)."""
     names = tuple(name for pair in voices for name in pair if name)
-    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing)
+    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
+                sing_over=bool(sing) and music_playing(snapshot))
+
+
+def music_playing(snap: SessionSnapshot) -> bool:
+    """Играет музыка (сет DJ или трек плеера) — по снимку хода: контекст чойсера пути пения и подложка живого пения."""
+    return snap.top("DJ") is not None or snap.music.state == "playing"
 
 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
@@ -294,14 +301,20 @@ SingRouter = Callable[[str, Sequence[str], bool], str]
 async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> str:
     """Путь пения до основной модели (#4079, решение Шифу 27.10): решает хост (маркеры слов, чойсер с контекстом), ход
     сужает по нему форму команды. Хоста пути пения нет (чат, оператор) или подхват бэклога — «»: форма не меняется.
-    Чойсер может спросить модель (Jev/LLM при неясном разрыве) — вызов в пуле, петля хода не стоит."""
+    Чойсер может спросить модель (Jev/LLM при неясном разрыве) — вызов в пуле, петля хода не стоит. Исключение хоста
+    ход не роняет (ревью #4071 N5): строка WARNING и ход без формы пения, как без хоста."""
     import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
 
     if engine._sing is None or turn.pickup:
         return ""
     recent = tuple(str(e.content) for e in engine.log.window(exclude=turn.turn_id) if e.role == USER)
-    playing = snap.top("DJ") is not None or snap.music.state == "playing"
-    return await asyncio.get_running_loop().run_in_executor(None, engine._sing, turn.text, recent, playing)
+    try:
+        return await asyncio.get_running_loop().run_in_executor(None, engine._sing, turn.text, recent,
+                                                                music_playing(snap))
+    except Exception as exc:  # noqa: BLE001 — путь пения не держит ход: без него модель решает как раньше
+        engine._log.warning(f"{LOG_MARK} путь пения не решён ({type(exc).__name__}: {exc}) — ход без формы пения "
+                            f"turn={turn.turn_id}")
+        return ""
 
 
 def form_tools(tools: Sequence[Any], form: Form, agent: str) -> Tuple[Any, ...]:
@@ -431,7 +444,8 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     if hold_silence(engine, turn):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
-    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'} "
+    over = " поверх играющего" if form.sing_over else ""
+    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over} "
                      f"turn={turn.turn_id}")
     with turn_form(form):
         await engine._understand(turn, snap)

@@ -16,7 +16,8 @@ from rob_box_voice.core.media_router import MediaRouter, MediaState
 from rob_box_voice.core.music_turn import MusicTurn
 
 LIVE = "Робот, сгенерируй пиздатый музон своим голосом"
-DECLINE = "Спеть своим голосом сейчас не могу: генерация у меня ещё не подключена, а синтез не поёт."
+DECLINE = ("Сгенерировать песню своим голосом сейчас не могу: генерация у меня ещё не подключена. "
+           "Могу спеть сам вживую под синт.")
 CACHE = {"ok": True, "track_id": "gen_c0fe_1", "source": "cache",
          "source_message": "Ставлю спетое раньше своим голосом: «Я робот (РОББОКС)»."}
 

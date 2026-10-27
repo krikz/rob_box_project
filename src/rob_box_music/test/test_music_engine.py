@@ -81,10 +81,26 @@ def test_named_engine_beats_cache_that_would_win_otherwise():
     assert route_note(named) == ""  # просили именно это: оправданий нет
 
 
-def test_named_engine_plays_even_style_that_synth_is_poor_at():
-    """Рок синтез «не играет» (``synth_fit`` 0) — но человек назвал Ренардо: играет движок со стилем по умолчанию."""
-    route = choose_route(source_ask("сыграй рок на ренардо"), RICH, DeterministicChooser(Boom()))
-    assert route.id == f"synth:{kn.DEFAULT_STYLE}"
+@pytest.mark.parametrize("text,style", [
+    ("сыграй рок на ренардо", "breaks"), ("сыграй метал на Ренардо", "breaks"), ("сыграй блюз на синтезаторе", "breaks"),
+    ("сыграй шансон на ренардо", "synthwave"), ("сыграй на ренардо что-нибудь оркестровое", "synthwave"),
+])
+def test_named_engine_plays_a_genre_it_is_poor_at_in_the_nearest_style_not_a_decline(text, style):
+    """Вилка Шифу 27.10 (2×2, без отказа): синт назван, а жанр он не играет (``synth_fit`` < ``SYNTH_FIT_MIN``) — играет
+    ближайший сильный стиль (``GEN_BRIDGE_STYLES``), фраза кода говорит какой: ни отказа, ни тихой подмены."""
+    ask = source_ask(text)
+    assert kn.GEN_BRIDGE_STYLES[ask.genre] == style
+    route = choose_route(ask, RICH, DeterministicChooser(Boom()))
+    assert (route.kind, route.id) == ("synth", f"synth:{style}")
+    assert route_note(route) == (f"{kn.GEN_STYLES[ask.genre].name.capitalize()} на синте играю ближайшим стилем — "
+                                 f"{kn.GEN_STYLES[style].name}.")
+
+
+def test_named_engine_plays_even_in_the_generate_mode_and_says_nothing_for_a_genre_it_plays():
+    """Режим ``generate`` (без синтеза) — не отговорка для названного синта; жанр, который синт играет, — без фразы."""
+    route = choose_route(source_ask("сыграй на ренардо"), replace(RICH, mode="generate"), DeterministicChooser(Boom()))
+    assert route.id == "synth:club" and route_note(route) == ""
+    assert route_note(choose_route(source_ask("сыграй синтвейв на синтезаторе"), RICH, DeterministicChooser(Boom()))) == ""
 
 
 def test_named_engine_with_a_request_to_sing_is_live_singing():
@@ -337,11 +353,24 @@ def test_sing_live_is_live_singing_not_a_generation_and_not_a_false_decline():
         assert (route.kind, route.id, route.provider) == ("live", "live:song", "code"), text
 
 
-def test_generation_on_the_named_engine_declines_honestly():
-    """Сгенерировать песню «на Ренардо» — оба пути названы (``sing_markers`` пуст), живого пения код не выбирает молча:
-    движок назван, а синтез не поёт — честный отказ, как до #4079."""
-    route = choose_route(source_ask("сгенерируй песню на ренардо"), RICH, DeterministicChooser(Boom()))
-    assert route.id == "decline:engine_cannot" and "названный движок так не играет" in decline_text(route)
+@pytest.mark.parametrize("text,route_id", [
+    ("сгенерируй песню на ренардо", "live:song"), ("сочини песню на синтезаторе", "live:song"),
+    ("запиши рэп на Ренардо", "live:rap"), ("сгенерируй трек на ренардо", "synth:club"),
+    ("сгенерируй метал на ренардо", "synth:breaks"),
+])
+def test_generation_on_the_named_engine_is_a_cell_of_the_fork_not_a_decline(text, route_id):
+    """Решение Шифу 27.10: «он должен на «Сгенерируй песню на Ренардо» сделать перформ» — названный синт с пением —
+    живое пение робота, без пения — синтез; отказа «названный движок так не играет» нет ни на одном пути."""
+    route = choose_route(source_ask(text), RICH, DeterministicChooser(Boom()))
+    assert route.id == route_id and route.kind != "decline"
+    assert "движок так не играет" not in decline_text(route) + route_note(route)
+
+
+def test_named_engine_with_a_song_kind_from_the_generation_tool_is_live_singing():
+    """Тул генерации отдал пение (``vocal`` из ``kind=song``), слова назвали синт — та же клетка вилки: живое пение."""
+    ask = replace(source_ask("сгенерируй на ренардо"), generated=True, vocal=True)
+    options, reason = source_candidates(ask, RICH)
+    assert [o.id for o in options] == ["live:song"] and reason == ""
 
 
 def test_generate_live_keeps_every_path_open_instead_of_narrowing_to_the_synth():

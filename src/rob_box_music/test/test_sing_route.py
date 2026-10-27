@@ -1,8 +1,11 @@
 """#4079 — путь пения: робот поёт сам (``live:song``/``live:rap``) или генерирует трек (``generate:(robot_)song``).
 
 Решение Шифу 27.10: «кандидат live:song в чойсере, явные слова сужают кодом, голое «спой» решает чойсер по контексту с
-перевесом живому». Маркеры — одна таблица ``knowledge.SING_ROUTE_MARKERS`` (+ слова движка ``MUSIC_ENGINES``), выбор —
-``source.choose_sing`` до основной модели диалога v2; тесты — на поведение модуля, не на текст промпта.
+перевесом живому». Вилка Шифу 27.10 (2×2, без отказа): «либо на Ренардо поём, либо синтезируем песню; и ещё либо играем
+без песни на Ренардо, или генерируем трек без песни» — названный синт с пением всегда живое пение, даже рядом с
+«сгенерируй/сочини/запиши» («он должен на «Сгенерируй песню на Ренардо» сделать перформ»). Маркеры — одна таблица
+``knowledge.SING_ROUTE_MARKERS`` по приоритету (+ слова движка ``MUSIC_ENGINES``), выбор — ``source.choose_sing`` до
+основной модели диалога v2; пение — узко, словами целиком (ревью #4071 B1/B2). Тесты — на поведение модуля.
 """
 
 import pytest
@@ -10,7 +13,7 @@ import pytest
 from rob_box_music import knowledge as kn
 from rob_box_music.choice import Choice, ChoiceQuestion, DeterministicChooser
 from rob_box_music.source import (CacheTrack, SingContext, SourceContext, choose_route, choose_sing, sing_candidates,
-                                  sing_kind, sing_markers, source_ask)
+                                  sing_kind, sing_markers, source_ask, synth_fit)
 
 RICH = SourceContext(cache=(CacheTrack("k", "STAR WARS", "cover", "club", True, group="g1"),), gen_ready=True,
                      balance=900.0, day_left=120.0)
@@ -52,6 +55,19 @@ BY_WORDS = [
     ("спой нейросетью про енота", "generate:song:V6"),
     ("сделай песню про енота и спой", "generate:song:V6"),
     ("спой про енота, чтобы сохранилась", "generate:song:V6"),
+    ("сгенерируй песню прямо сейчас", "generate:song:V6"),  # «прямо сейчас» слабее «сгенерируй»
+    ("исполни песню про енота вживую", "live:song"),
+    # вилка Шифу 27.10: синт назван + пение — живое пение, даже рядом с «сгенерируй/сочини/запиши» (N1)
+    ("сгенерируй песню на Ренардо", "live:song"),
+    ("Робот, сгенерируй песню на ренардо про енота", "live:song"),
+    ("сочини песню на синтезаторе", "live:song"),
+    ("запиши рэп на Ренардо", "live:rap"),
+    ("сгенерируй песню под бит", "live:song"),
+    ("сгенерируй песню вживую", "live:song"),
+    ("сочини песню на синте", "live:song"),
+    ("сгенерируй песню на рем дарда", "live:song"),
+    # акт 8 n810: «под этот бит» — играющий бит назван, рэп вживую поверх него
+    ("Робот, а теперь под этот бит зачитай короткий рэп про енотика.", "live:rap"),
 ]
 
 
@@ -113,11 +129,73 @@ def test_dead_generation_leaves_only_live_for_a_bare_sing_but_not_for_an_explici
 @pytest.mark.parametrize("text", [
     "сыграй на синтезаторе бит", "сыграй вживую", "поставь синтвейв", "включи рэп", "поставь песню Калинка",
     "сохрани песню, которую ты спел", "расскажи сказку про репку", "сгенерируй рок", "",
+    "я прочитал статью про рэп", "исполни мою просьбу",
 ])
 def test_not_a_request_to_sing_has_no_sing_route(text):
     """Не пение — пустой путь: форма хода диалога не меняется."""
     chosen = choose_sing(text, SingContext(), DeterministicChooser(NoModel()))
     assert sing_kind(text) == "" and chosen.id == "" and chosen.candidates == ()
+
+
+#: Ревью #4071 B1: ложное «пение» — основа «спой» ловила «спойлеры», «вокал» — «без вокала», «свой/твой голос» без
+#: глагола пения считался просьбой спеть. Форма живого пения убирала бы ``request_music``/``generate_music`` из среза и
+#: требовала ``perform``.
+NOT_SINGING_B1 = ["поставь музыку без вокала", "мне нравится твой голос", "что с твоим голосом",
+                  "ответь своим голосом", "не рассказывай спойлеры", "Робот, спойлер: фильм кончится хорошо",
+                  "сгенерируй трек без вокала", "говори своим голосом, а не чужим"]
+
+
+@pytest.mark.parametrize("text", NOT_SINGING_B1)
+def test_false_singing_of_the_review_b1_is_not_singing(text):
+    ask = source_ask(text)
+    assert sing_kind(text) == "" and not ask.vocal and not ask.robot_voice and ask.live == ""
+    assert choose_sing(text, SingContext(), DeterministicChooser(NoModel())).id == ""
+
+
+#: Ревью #4071 B2: ложная «генерация» — «сделай песню потише» (правка), «запиши, что …» (заметка), «песни, которые
+#: написала нейросеть» (рассказ) давали ``generate:song`` кодом и принудительный платный ``generate_music``.
+NOT_GENERATION_B2 = ["сделай песню потише", "сделай песню погромче", "сделай песню быстрее", "сделай песню помедленнее",
+                     "запиши, что я люблю песни", "запиши что я люблю песни",
+                     "расскажи про песни, которые написала нейросеть",
+                     "расскажи про песни которые сгенерировала нейросеть", "песни нейросети мне нравятся"]
+
+
+@pytest.mark.parametrize("text", NOT_GENERATION_B2)
+def test_false_generation_of_the_review_b2_sets_no_generation_form(text):
+    chosen = choose_sing(text, SingContext(), DeterministicChooser(NoModel()))
+    assert sing_kind(text) == "" and chosen.id == "" and not source_ask(text).vocal
+
+
+def test_a_volume_or_tempo_word_does_not_make_the_generation_marker_but_keeps_the_singing():
+    """«Спой и сделай погромче» — пение (глагол пения правкой не отменяется), но «сделай» без объекта-песни и с правкой
+    громкости — не маркер генерации: решает чойсер, а не принудительный ``generate_music``."""
+    assert sing_kind("спой и сделай погромче") == "song" and sing_markers("спой и сделай погромче") == ""
+    assert sing_kind("спой погромче про енота") == "song"
+    assert sing_markers("спой, а потом сделай песню погромче") == ""
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("спой", "song"), ("спойте", "song"), ("можешь спеть?", "song"), ("споёшь про кота?", "song"),
+    ("давай споём", "song"), ("пропой припев", "song"), ("напой мелодию", "song"),
+    ("исполни песню", "song"), ("исполни рэп", "rap"), ("зачитай рэп", "rap"), ("прочитай рэп про енота", "rap"),
+    ("спой рэп", "rap"), ("сгенерируй трек с вокалом", "song"), ("сочини песню", "song"),
+    ("придумай песенку про ежа", "song"), ("сгенерируй музон своим голосом", "song"),
+    ("сыграй песню своим голосом", "song"), ("спой своим голосом", "song"), ("запиши новую песню про лето", "song"),
+    ("сделай песню про енота", "song"), ("сгенерируй громкую песню", "song"),
+])
+def test_singing_is_a_singing_verb_or_a_song_with_a_verb_to_make_or_perform_it(text, kind):
+    """Пение — глагол пения словом целиком, рэп с глаголом исполнения, или песня/вокал/«своим голосом» с глаголом
+    создать или исполнить в той же части фразы. «Громкую песню» — прилагательное, не правка громкости."""
+    assert sing_kind(text) == kind and source_ask(text).vocal
+
+
+def test_every_singing_verb_of_the_table_is_a_whole_word_not_a_stem():
+    """Глаголы пения — точные слова: каждое узнаётся само, а слово, которое с него начинается, — нет («спойлер»)."""
+    for verb in kn.SING_VERBS:
+        assert verb == verb.lower() and "ё" not in verb, verb
+        assert sing_kind(f"{verb} про енота") == "song", verb
+        assert sing_kind(f"{verb}лер про енота") == "", verb
+    assert kn.SOURCE_ASK_STEMS["vocal"] == kn.SING_VERBS  # одна таблица: грамматика v1 берёт те же слова
 
 
 def test_play_on_the_synth_without_singing_stays_the_synth_of_4070():
@@ -140,21 +218,60 @@ def test_bare_word_sam_is_not_the_live_marker(text):
     assert sing_markers(text) == ""
 
 
-def test_both_routes_named_go_to_the_chooser():
-    """Названы оба пути («сгенерируй песню вживую») — код не сужает, оба кандидата у чойсера."""
-    assert sing_markers("сгенерируй песню вживую") == ""
-    assert [o.id for o in sing_candidates("сгенерируй песню вживую", SingContext())] == [
-        "live:song", "generate:song:V6"]
+@pytest.mark.parametrize("text", ["сгенерируй песню вживую", "сгенерируй песню под бит", "сочини песню на синте",
+                                  "сгенерируй песню на Ренардо", "запиши песню на синтезаторе, чтобы сохранилась"])
+def test_named_synth_with_singing_beats_the_generation_words(text):
+    """Ревью #4071 N1 и решение Шифу 27.10: названы оба пути — синт/живое побеждает «сгенерируй»: живое пение кодом,
+    без чойсера и без отказа (KIE на Ренардо не играет)."""
+    assert sing_markers(text) == "live"
+    assert [o.id for o in sing_candidates(text, SingContext())] == ["live:song"]
 
 
-def test_every_marker_of_the_table_names_its_route():
-    """Таблица не врёт сама себе: каждая запись узнаётся в просьбе спеть как свой путь; записи строчные, без «ё»."""
-    for route, entries in kn.SING_ROUTE_MARKERS.items():
+def test_every_marker_of_the_table_names_its_route_by_priority():
+    """Таблица не врёт сама себе: каждая запись узнаётся в просьбе спеть как свой путь; записи строчные, без «ё»;
+    порядок — приоритет (синт назван → генерация → «спой сам/прямо сейчас»)."""
+    for route, entries in kn.SING_ROUTE_MARKERS:
         for entry in entries:
             assert entry == entry.lower() and "ё" not in entry, entry
             assert sing_markers(f"спой {entry} про енота") == route, entry
-    assert set(kn.SING_ROUTE_MARKERS) == {"live", "generate"}
-    assert set(kn.SOURCE_ASK_STEMS["generated"]) <= set(kn.SING_ROUTE_MARKERS["generate"])  # одна таблица «сгенерируй»
+    assert [route for route, _entries in kn.SING_ROUTE_MARKERS] == ["live", "generate", "live"]
+    strong, gen, weak = (entries for _route, entries in kn.SING_ROUTE_MARKERS)
+    assert sing_markers(f"спой {strong[0]} {gen[0]}") == "live"
+    assert sing_markers(f"спой {weak[-1]} {gen[0]}") == "generate"
+
+
+def test_every_verb_to_make_a_song_names_its_route():
+    """Глаголы «создать песню» (``SING_CREATE_VERBS``): с объектом-песней — пение; значение ``generate`` — маркер
+    генерации («сгенерируй/запиши/сделай песню»), «» — путь не назван («сочини/придумай/напиши» — решает чойсер)."""
+    for verb, route in kn.SING_CREATE_VERBS.items():
+        assert verb == verb.lower() and "ё" not in verb, verb
+        assert sing_kind(f"{verb} песню про енота") == "song", verb
+        assert sing_markers(f"{verb} песню про енота") == route, verb
+        assert sing_kind(f"{verb} про енота") == "", verb  # без объекта-песни — не пение
+    assert set(kn.SING_CREATE_VERBS.values()) == {"generate", ""}
+
+
+@pytest.mark.parametrize("text", ["спой метал", "спой блюз про кота", "спой песню в стиле шансон", "спой рок"])
+def test_a_genre_the_synth_does_not_play_gives_the_generation_the_lead_but_the_model_decides(text):
+    """Ревью #4071 N2: жанр, который синт не играет (``synth_fit`` < ``SYNTH_FIT_MIN``), + голое «спой» — у генерации
+    перевес (``synth_poor``), но разрыв меньше ``CHOOSER_CLEAR_GAP``: решает модель чойсера по контексту, без модели —
+    генерация. Живое честно говорит, что подложка — свой бит."""
+    live, gen = sing_candidates(text, SingContext())
+    assert gen.features["synth_poor"] == 1.0 and "синт не сыграет — подложка своим битом" in live.label
+    ranked = DeterministicChooser().rank(ChoiceQuestion("путь", (live, gen), weights=kn.SOURCE_WEIGHTS))
+    assert ranked[0][1].id == gen.id and ranked[0][0] - ranked[1][0] < kn.CHOOSER_CLEAR_GAP
+    model = Asked("live:song")  # модель видит контекст и может выбрать живое
+    assert choose_sing(text, SingContext(), DeterministicChooser(model)).id == "live:song" and model.questions
+    assert choose_sing(text, SingContext(), DeterministicChooser()).id == gen.id
+    dead = SingContext(gen_ok=False, gen_health="quota")
+    assert choose_sing(text, dead, DeterministicChooser(NoModel())).id == "live:song"
+
+
+def test_a_genre_the_synth_plays_keeps_the_live_lead():
+    """Жанр, который синт играет («клуб», «синтвейв»), — без ``synth_poor``: перевес живому, модель не зовётся."""
+    for text in ("спой в стиле синтвейв", "спой клубную песню"):
+        assert synth_fit(source_ask(text).genre) >= kn.SYNTH_FIT_MIN, text
+        assert choose_sing(text, SingContext(), DeterministicChooser(NoModel())).id == "live:song", text
 
 
 def test_live_candidate_carries_its_facts_for_the_chooser():

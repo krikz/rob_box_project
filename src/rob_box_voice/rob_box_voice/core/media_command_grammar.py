@@ -1054,7 +1054,9 @@ def _sing_command(words: Sequence[str]) -> Optional[MediaCommand]:
 
 
 def _gen_verb(word: str) -> str:
-    """Вид глагола генерации — ключ ``knowledge.SOURCE_ASK_STEMS`` (``vocal``/``generated``/``own``) или «»."""
+    """Вид глагола генерации — ключ ``knowledge.SOURCE_ASK_STEMS`` (``vocal``/``generated``/``own``) или «». Записи
+    таблицы без «ё» («споешь»): слово сверяется так же."""
+    word = word.replace("ё", "е")
     return next((key for key in ("vocal", "generated", "own") if word.startswith(kn.SOURCE_ASK_STEMS[key])), "")
 
 

@@ -147,12 +147,15 @@ class Form:
     этой реплике просил о голосе (``tools_view.voice_asked``; n109 23.10: на вопрос про звуки DeepSeek сам включил
     female-shaonv). ``sing`` — путь пения, решённый кодом до модели (#4079: id кандидата ``live:song``/``generate:…``
     от хоста, ``knowledge.SING_FORMS``): живое — только ``perform`` под синт-подложку, генерация и трек закрыты;
-    генерация — ``generate_music``, петь выступлением нельзя. По умолчанию всё открыто — так зовут валидатор вне хода
-    (режим команд v1, тесты)."""
+    генерация — ``generate_music``, петь выступлением нельзя. ``sing_over`` — музыка уже играет при живом пении («под
+    этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
+    (``knowledge.SING_FORMS["live_over"]``). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1,
+    тесты)."""
 
     passed: bool = True
     voice: bool = True
     sing: str = ""
+    sing_over: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -161,7 +164,7 @@ class Form:
     @property
     def sing_form(self) -> Optional[kn.SingForm]:
         """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
-        return kn.SING_FORMS.get(kn.sing_family(self.sing))
+        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over))
 
     def closed_tools(self) -> Tuple[str, ...]:
         """Тулы, которых в этом ходе нет по пути пения (вне среза и вне команды)."""
@@ -193,7 +196,7 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
     """Схема команды без полей, закрытых формой хода (``None`` — текущей): модель их не видит
     (``knowledge.without_fields``); путь пения сужает перечни выступления (``knowledge.with_sing``)."""
     form = form or current_form()
-    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing)
+    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over)
 
 
 @dataclass
@@ -617,8 +620,9 @@ def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
 
 
 def _fit_sing_backing(cmd: Command, form: Form) -> Command:
-    """Живое пение (#4079) — под синт-подложку: ``perform`` без неё (``none``, не названа) получает первую из перечня
-    пути (``knowledge.SING_FORMS``), поле — в ``dropped``. Подложку решает код по пути, модель — только настроение."""
+    """Живое пение (#4079) — под синт-подложку: ``perform`` с подложкой вне перечня пути (``none``, не названа) получает
+    первую из перечня (``knowledge.SING_FORMS``), поле — в ``dropped``; музыка уже играет (``live_over``) — ``none``:
+    поверх играющего. Подложку решает код по пути, модель — только настроение."""
     sing = form.sing_form
     perf = cmd.perform
     if sing is None or not sing.backings or perf is None or cmd.edit_pending or perf.backing in sing.backings:
