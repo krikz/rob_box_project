@@ -327,6 +327,9 @@ pis:
 
       teleop:
         dockerfile: docker/main/teleop/Dockerfile
+        # PR-15 часть 15-0d (D8): джойстик говорит через speech_client -> SpeechRequest,
+        # типы rob_box_dialog_msgs приходят из общего образа msgs.
+        msgs_image: true
         build_context: "."
         base:
           family: ros2-zenoh

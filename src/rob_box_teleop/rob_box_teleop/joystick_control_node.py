@@ -4,7 +4,9 @@ Joystick Control Node for Rob Box.
 
 Provides direct joystick control with voice feedback:
 - Reads ExpressLRS SBUS receiver via serial port
-- ARM channel activates motors with voice confirmation
+- ARM channel activates motors with voice confirmation (the phrase goes out as a
+  SpeechRequest through rob_box_core.speech_client, author "system" - ADR-0150
+  section 6.1; the JSON /voice/tts/request is no longer written, PR-15 part 15-0d)
 - Publishes cmd_vel_joy for robot control
 - Publishes /joystick_lock (twist_mux lock): while ARMED the lock is active,
   which blocks lower-priority velocity sources (web/voice/nav2) so the robot
@@ -20,12 +22,13 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
+
+from rob_box_core import speech_client
+from rob_box_core.utterance import Utterance
 
 from rob_box_teleop.joystick_logic import (
-    TTS_REQUEST_TOPIC,
     apply_deadzone,
-    build_tts_request,
     compute_axes,
     compute_buttons,
     compute_twist,
@@ -108,7 +111,11 @@ class JoystickControlNode(Node):
 
         # Publishers
         self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel_joy", 10)
-        self.tts_pub = self.create_publisher(String, TTS_REQUEST_TOPIC, 10)
+        # Speech goes through the single speech client (SpeechRequest on
+        # /voice/speech/request). The publisher is created up front: the first
+        # phrase ("joystick connected") must not be lost while Zenoh is still
+        # matching a writer created at the moment of publishing.
+        speech_client.prepare(self, "request")
         self.joy_pub = self.create_publisher(Joy, "joy", 10)
         # twist_mux lock (std_msgs/Bool): True while armed blocks lower-priority
         # sources (web/voice/nav2). twist_mux is configured with timeout=0.0
@@ -416,10 +423,14 @@ class JoystickControlNode(Node):
         self.cmd_vel_pub.publish(twist)
 
     def speak(self, text: str):
-        """Publish a spoken reply to tts_node (/voice/tts/request JSON contract)."""
-        msg = String()
-        msg.data = build_tts_request(text)
-        self.tts_pub.publish(msg)
+        """Say ``text`` through the robot's speakers (SpeechRequest, author "system").
+
+        ``Utterance`` builds the SSML (escaping, markup sanitiser); sink, priority
+        and emotion are its defaults (speakers, normal, neutral) - the same values
+        the old JSON payload carried. The joystick does not lead a dialog
+        session, hence the "system" author and epoch 0.
+        """
+        speech_client.say(self, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
         self.get_logger().info(f"🗣️  TTS: {text}")
 
 

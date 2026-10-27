@@ -14,6 +14,9 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <!-- speech_client.say -> SpeechRequest (PR-15 part 15-0d); the types come from the msgs image -->
+  <depend>rob_box_core</depend>
+  <depend>rob_box_dialog_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

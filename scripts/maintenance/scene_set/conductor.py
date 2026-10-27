@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import os
 import signal
 import subprocess
@@ -44,7 +43,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
-from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -120,13 +118,16 @@ def parse_script(raw: Mapping[str, Any]) -> Script:
     return Script(scene, participants, steps, dict(raw.get("expected") or {}), str(raw.get("description") or ""))
 
 
-def ssml(text: str) -> str:
-    """Реплика → SSML: ``tts_node`` без поля ``ssml`` молчит (память speak-through-robot)."""
-    return f"<speak>{escape(text)}</speak>"
+def say_text(node: Any, text: str) -> str:
+    """Реплика дирижёра → ``SpeechRequest`` через единый клиент речи (автор ``system``); вернуть ``speech_id``.
 
+    JSON в ``/voice/tts/request`` дирижёр больше не пишет (PR-15 часть 15-0d): SSML и экранирование делает
+    ``Utterance``, ``tts_node`` принимает тот же запрос, что у живого v2. Импорт ленивый: ``--dry-run`` идёт без ROS.
+    """
+    from rob_box_core import speech_client
+    from rob_box_core.utterance import Utterance
 
-def tts_request(text: str) -> str:
-    return json.dumps({"ssml": ssml(text), "source": "operator"}, ensure_ascii=False)
+    return speech_client.say(node, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
 
 
 # ── пустой кадр ──────────────────────────────────────────────────────────────
@@ -220,15 +221,15 @@ class Runtime:
         import rclpy
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.qos import qos_profile_sensor_data
+        from rob_box_core import speech_client
         from rob_box_dialog_msgs.msg import Utterance
         from rob_box_perception_msgs.msg import Observation
         from sensor_msgs.msg import CompressedImage
         from std_msgs.msg import String
 
         rclpy.init()
-        self._String = String
         self.node = rclpy.create_node("scene_conductor")
-        self.tts_pub = self.node.create_publisher(String, "/voice/tts/request", 10)
+        speech_client.prepare(self.node, "request")
         self._finished = threading.Event()
         self._lock = threading.Lock()
         self.watcher: Optional[EmptyWatcher] = None
@@ -259,7 +260,7 @@ class Runtime:
 
     def say(self, text: str, timeout_s: float = 25.0) -> bool:
         self._finished.clear()
-        self.tts_pub.publish(self._String(data=tts_request(text)))
+        say_text(self.node, text)
         return self._finished.wait(timeout_s)
 
     def wait_empty(

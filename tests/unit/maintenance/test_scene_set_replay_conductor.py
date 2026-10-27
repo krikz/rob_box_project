@@ -18,10 +18,12 @@ import argparse
 import copy
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
 import yaml
+from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCENE_SET = REPO_ROOT / "scripts" / "maintenance" / "scene_set"
@@ -194,11 +196,42 @@ def test_parse_script_rejects(steps, msg):
         conductor.parse_script({"scene": "x", "participants": [OWNER], "steps": steps})
 
 
-def test_tts_request_is_ssml_operator_json():
-    payload = json.loads(conductor.tts_request('Войдите в кадр & встаньте на метку <1.5>'))
-    assert payload == {"ssml": "<speak>Войдите в кадр &amp; встаньте на метку &lt;1.5&gt;</speak>",
-                       "source": "operator"}
-    assert "text" not in payload  # tts_node молча выкидывает text без ssml
+class _SpeechNode:
+    """Узел-заглушка: ``speech_client`` берёт у него публикатор и часы."""
+
+    def __init__(self, time_type):
+        self.pubs = []
+        self._time_type = time_type
+
+    def create_publisher(self, msg_type, topic, depth):
+        pub = types.SimpleNamespace(msg_type=msg_type, topic=topic, sent=[])
+        pub.publish = pub.sent.append
+        self.pubs.append(pub)
+        return pub
+
+    def get_clock(self):
+        stamp = self._time_type(sec=1, nanosec=0)
+        return types.SimpleNamespace(now=lambda: types.SimpleNamespace(to_msg=lambda: stamp))
+
+
+def test_say_text_is_speech_request_from_the_system_author():
+    msgs = install_dialog_msgs_stub()
+    node = _SpeechNode(type(msgs.SpeechRequest().stamp))
+
+    speech_id = conductor.say_text(node, 'Войдите в кадр & встаньте на метку <1.5>')
+
+    (pub,) = node.pubs
+    (req,) = pub.sent
+    assert pub.topic == "/voice/speech/request" and pub.msg_type is msgs.SpeechRequest
+    assert req.text == "<speak>Войдите в кадр &amp; встаньте на метку &lt;1.5&gt;</speak>"
+    assert (req.agent, req.sink, req.speech_id) == ("system", "speakers", speech_id)
+    assert (req.epoch, req.commit) == (0, True)  # вне сессии диалога, играть сразу
+
+
+def test_conductor_creates_no_publisher_on_the_legacy_tts_request_topic():
+    """Runtime без rclpy не создать: следим за исходником - топик как строковый литерал не встречается."""
+    source = (SCENE_SET / "conductor.py").read_text(encoding="utf-8")
+    assert '"/voice/tts/request"' not in source
 
 
 # ── conductor: пустой кадр ───────────────────────────────────────────────────
