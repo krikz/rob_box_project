@@ -474,9 +474,11 @@ def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
 def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
     """Тишина (кадр ``Silence``): после Tier-1 ход не идёт к LLM и ничего не говорит (#3982, решение Шифу 23.10: робот
     молчит, снимает только «Робот, говори»; вейк тишину не снимает). Реплика уже в журнале хода (``TurnLog.begin``), здесь
-    - строка лога с причиной и итог хода ``silenced``/``finished``: не провал и не «не понял»."""
+    - строка лога с причиной, метка «рот заклеен» в окне LLM после реплики (``TurnLog.mark``, #4106: без неё реплика
+    висит без ответа) и итог хода ``silenced``/``finished``: не провал и не «не понял»."""
     if engine.session.snapshot.top("Silence") is None:
         return False
+    engine.log.mark(turn.turn_id, kn.WINDOW_MUTED_MARK)
     engine._log.info(f"{LOG_MARK} {kn.SILENCED_TURN_REASON}: LLM не зовётся, речи нет text={turn.text[:80]!r} "
                      f"turn={turn.turn_id}")
     turn.stage, turn.status, turn.reason = kn.SILENCED_TURN_STAGE, "finished", kn.SILENCED_TURN_REASON
@@ -1004,6 +1006,7 @@ class TurnEngine:
             self.session.reset()
             self.log.reset()
             turn.epoch = self.session.snapshot.epoch  # сам ход — в новой сессии: его подтверждение не «устарело»
+        self.log.mark(turn.turn_id, kn.WINDOW_SILENCE_MARKS.get(command.kind, ""))  # тишина вкл/выкл без слов (#4106)
         results = await self._execute(turn, actions, snap)
         said = tier1_phrase(command, results, self._pick)
         if said and self.session.snapshot.top("Silence") is None:
