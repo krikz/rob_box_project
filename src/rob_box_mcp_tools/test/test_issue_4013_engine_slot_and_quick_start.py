@@ -27,6 +27,7 @@ from rob_box_mcp_tools.engine.search import ThemeHits
 from rob_box_mcp_tools.engine.theme_links import ThemeLinks
 from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool
 from rob_box_music import knowledge as kn
+from rob_box_music.source import LIVE_TOOL_TEXT
 
 from .test_engine_session import _rig
 
@@ -124,6 +125,39 @@ def test_meaning_words_in_a_request_of_another_path_are_not_a_request_to_the_syn
     assert asks[0].engine == "" and asks[0].asks_path and "engine" not in result.data
     assert result.data.get("reason") != "engine_cannot" and "движок так не играет" not in (result.error or "")
     assert any("слот engine=synth без опоры в словах человека — отброшен" in r.getMessage() for r in caplog.records)
+    # #4079: «спой вживую / на синтезаторе» — живое пение робота (путь live, исполняет диалог), а не генерация
+    sings = "спой" in heard
+    assert (asks[0].live == "song") is sings and (result.data.get("route") == "live:song") is sings
+
+
+@pytest.mark.parametrize("heard", ["Робот, спой под синт про енота", "Робот, спой вживую", "Робот, спой на Ренардо"])
+def test_live_singing_reaching_a_music_tool_is_not_a_generation(heard, caplog):
+    """#4079: просьба спеть вживую дошла до тула музыки (агент без формы пения диалога v2 — чат, v1): путь ``live:song``
+    кодом (одна строка ``[source]``), генерации нет, фраза кода — что поёт он сам, без трека; не «движок так не играет».
+    В ходе Личности форма пения эти тулы закрывает (``rob_box_dialog.knowledge.SING_FORMS``)."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    gen = GenerateMusicTool(None, req)
+    with caplog.at_level(logging.INFO):
+        results = [req.execute(intent="track", text=heard, heard_text=heard),
+                   gen.execute(kind="robot_song", theme="енот", heard_text=heard)]
+    for result in results:
+        assert not result.success and result.data["route"] == "live:song", heard
+        assert result.data["reason"] == tools_v2.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
+        assert "движок так не играет" not in (result.error or "")
+    lines = [r.getMessage() for r in caplog.records if "[source]" in r.getMessage()]
+    assert lines and all("кандидаты=['live:song'] → live:song (code)" in line for line in lines), lines
+    assert rig.owner.now_playing().get("playing") is not True  # ничего не заиграло: ни трек, ни генерация
+
+
+def test_generate_music_with_own_voice_and_without_live_words_is_a_generation():
+    """«Сгенерируй песню про енота своим голосом» — генерация голосом робота (``robot_song``), не живое пение."""
+    rig = _rig()
+    _dj, req = _tools(rig)
+    gen = GenerateMusicTool(None, req)
+    asks = _asks(req)
+    gen.execute(kind="robot_song", theme="енот", heard_text="Робот, сгенерируй песню про енота своим голосом")
+    assert asks[-1].generated and asks[-1].robot_voice and asks[-1].live == ""
 
 
 def test_generate_music_names_the_engine_only_by_its_name():

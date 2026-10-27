@@ -13,6 +13,10 @@
    кода. Провал генерации после выбора — :func:`choose_with_fallback` спрашивает ещё раз без ``generate:*`` (В3).
 4. Фразу о выбранном строит код (:func:`route_note`, :func:`cache_text`, :func:`decline_text`): если играет не то, что
    просили, фраза называет и просьбу, и причину.
+5. Путь пения (#4079, решение Шифу 27.10): :func:`choose_sing` до основной модели диалога v2 — ``live:song``/``live:rap``
+   (робот поёт сам: ``perform`` под синт-подложку) или ``generate:(robot_)song`` (трек KIE/Suno). Маркеры пути в словах
+   (``knowledge.SING_ROUTE_MARKERS``, слова движка ``MUSIC_ENGINES``) сужают кандидатов кодом; голое «спой» — чойсер
+   с контекстом (последние реплики, играет ли музыка, жива ли генерация) и перевесом живому (``sing_live``).
 
 Модуль чистый (без сети и БД): кэш и деньги собирает ``rob_box_mcp_tools.engine.source_route``.
 """
@@ -28,6 +32,10 @@ from .choice import Choice, ChoiceQuestion, Chooser, Option
 from .theme import match_style_text
 
 SYNTH, CACHE, GENERATE, DECLINE = "synth", "cache", "generate", "decline"
+#: Живое пение робота (#4079): ``live:song``/``live:rap`` — исполняет диалог v2 (``perform`` под синт-подложку), не тул.
+LIVE = "live"
+#: Кто решил путь пения: слова или один кандидат — код; иначе ``chooser:<провайдер>``.
+BY_CODE = "code"
 #: Синтез-кандидат одиночной пьесы по названию (наш материал: партитура/RTTTL, годность — ADR-0157).
 PIECE = "piece"
 #: Почему кандидатов ``generate:*`` нет / генерация не вышла → слова для фразы. Причины провайдера —
@@ -64,9 +72,13 @@ REASON_WORDS = {
     "theme_cache": "под тему хватает сочинённого раньше",
     "engine_cannot": "названный движок так не играет",
 }
-INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), сгенерированное раньше (кэш) "
-                "или новая генерация (кредиты и ожидание). У кандидатов - очки кода в одной шкале; обычно лучший - с "
-                "наибольшим итогом. Выбери один id.")
+INSTRUCTIONS = ("Выбери, откуда взять музыку роботу: своё (синтез, сразу и бесплатно), вживую (робот поёт сам под "
+                "синт: сразу и бесплатно, не сохранится), сгенерированное раньше (кэш) или новая генерация (кредиты и "
+                "ожидание 1-3 минуты, сохранится в библиотеке). Учитывай заказ и последние реплики: просили сохранить "
+                "или записать - генерация, просили быстро - вживую. У кандидатов - очки кода в одной шкале; обычно "
+                "лучший - с наибольшим итогом. Выбери один id.")
+#: Тул музыки получил просьбу спеть вживую (агент без формы пения диалога v2: чат, v1) — фраза кода вместо генерации.
+LIVE_TOOL_TEXT = "Вживую пою сам, без трека, — генерацию для этого не запускаю."
 
 
 _WORD_RE = re.compile(r"[^\W\d_]+")
@@ -90,7 +102,8 @@ class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
     ``MUSIC_ENGINES``, названный человеком («на Ренардо», «на синтезаторе», «вживую»), или «»; ``tweak`` — просьба
-    правит играющее («ускорь», «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое."""
+    правит играющее («ускорь», «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое; ``live`` —
+    петь вживую названо словами («спой под синт», «спой вживую», #4079): вид исполнения (``song``/``rap``) или «»."""
 
     generated: bool = False
     vocal: bool = False
@@ -100,9 +113,10 @@ class SourceAsk:
     genre: str = ""
     engine: str = ""
     tweak: bool = False
+    live: str = ""
 
     def describe(self) -> str:
-        flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own") if getattr(self, name)]
+        flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own", "live") if getattr(self, name)]
         return f"asked=[{','.join(flags)}] genre={self.genre or '—'}" + (f" engine={self.engine}" if self.engine else "")
 
     @property
@@ -271,7 +285,123 @@ def _path_ask(text: str) -> SourceAsk:
 
 def source_ask(text: str) -> SourceAsk:
     """Слоты просьбы о пути из слов человека (код, без LLM)."""
-    return replace(_path_ask(text), genre=ask_genre(text), engine=ask_engine(text), tweak=ask_tweak(text))
+    live = sing_kind(text) if sing_markers(text) == LIVE else ""
+    return replace(_path_ask(text), genre=ask_genre(text), engine=ask_engine(text), tweak=ask_tweak(text), live=live)
+
+
+def sing_kind(text: str) -> str:
+    """Что просят спеть (код, без LLM): ``rap`` — рэп с глаголом пения или исполнения («спой рэп», «зачитай рэп»),
+    ``song`` — «спой»/«своим голосом», песня рядом с «сгенерируй»/«сочини» (``SourceAsk.vocal``) или с маркером
+    генерации («запиши песню»); «» — не пение («сыграй на синтезаторе», «включи рэп», «поставь песню Калинка»)."""
+    words, ask = _words(text), _path_ask(text)
+    if _has(words, kn.SING_RAP_STEMS) and (ask.vocal or _has(words, kn.SING_RAP_VERBS)):
+        return "rap"
+    if ask.vocal or (_has(words, kn.SONG_STEMS) and GENERATE in _sing_routes_named(text)):
+        return "song"
+    return ""
+
+
+def _sing_routes_named(text: str) -> Set[str]:
+    """Пути пения, названные словами: маркеры :data:`knowledge.SING_ROUTE_MARKERS`; слова движка (``MUSIC_ENGINES``:
+    имя и слова по смыслу — «на синтезаторе», «вживую») — ``live``."""
+    words = _words(text)
+    named = {route for route, entries in kn.SING_ROUTE_MARKERS.items()
+             if any(_has_phrase(words, entry) for entry in entries)}
+    return named | ({LIVE} if engine_words(text, by_meaning=True) else set())
+
+
+def sing_markers(text: str) -> str:
+    """Путь пения, названный словами одной стороны: ``live`` («под синт», «вживую», «спой сам», «на Ренардо»),
+    ``generate`` («сгенерируй», «запиши», «нейросетью», «чтобы сохранилась») или «» — не назван или названы оба (решает
+    чойсер, :func:`choose_sing`). Пение ли это вообще — :func:`sing_kind`."""
+    named = _sing_routes_named(text)
+    return next(iter(named)) if len(named) == 1 else ""
+
+
+@dataclass(frozen=True)
+class SingContext:
+    """Контекст выбора пути пения (собирает хост диалога, без сети и БД): ``recent`` — последние реплики человека
+    (``SING_CONTEXT_REPLIES``, старые первыми), ``playing`` — звучит музыка, ``gen_ok`` — генерация жива (здоровье
+    провайдера ``music_gen`` годно или неизвестно), ``gen_health`` — это здоровье словом для чойсера («» — неизвестно).
+    Баланса KIE хост диалога не знает: деньги и лимиты проверяет тул генерации (:func:`gen_block`) с фразой кода."""
+
+    recent: Tuple[str, ...] = ()
+    playing: bool = False
+    gen_ok: bool = True
+    gen_health: str = ""
+
+
+@dataclass(frozen=True)
+class SingRoute:
+    """Путь пения до основной модели диалога: ``id`` кандидата (``live:song``, ``generate:robot_song:V6``; «» — не
+    пение), ``by`` — кто решил (``code`` — слова или один кандидат, ``chooser:<провайдер>``), кандидаты, путь, названный
+    словами (``named``), вид пения (``song``/``rap``)."""
+
+    id: str = ""
+    by: str = BY_CODE
+    candidates: Tuple[str, ...] = ()
+    named: str = ""
+    kind: str = ""
+
+    def line(self) -> str:
+        """Строка лога для харнесса: ``[source] пение … кандидаты=[live:song, generate:robot_song:V6] → <id> (<кто>)``."""
+        return (f"[source] пение {self.kind} слова={self.named or '—'} кандидаты=[{', '.join(self.candidates)}] → "
+                f"{self.id} ({self.by})")
+
+
+def _live_option(kind: str, asked: bool, recent: bool) -> Option:
+    return Option(f"{LIVE}:{kind}", {"sing_live": 1.0, "asked": float(asked), "recent_asked": float(recent),
+                                     "wait_s": kn.INSTANT_WAIT_S},
+                  f"вживую ({kind}): пою сам под синт-подложку — сразу и бесплатно, не сохранится")
+
+
+def _sing_gen_option(robot_voice: bool, asked: bool, recent: bool) -> Option:
+    kind, model = ("robot_song" if robot_voice else "song"), kn.GEN_MODELS[kn.DEFAULT_GEN_MODEL]
+    return Option(f"{GENERATE}:{kind}:{kn.DEFAULT_GEN_MODEL}", {
+        "asked": float(asked), "recent_asked": float(recent), "cost": model.credits_per_task,
+        "wait_s": model.typical_s}, f"новая генерация ({kind}): 1-3 минуты, {model.credits_per_task:g} кредитов KIE, "
+                                    f"сохранится в библиотеке")
+
+
+def sing_candidates(text: str, ctx: SingContext) -> Tuple[Option, ...]:
+    """Кандидаты пути пения (код, жёсткие фильтры до выбора): не пение — пусто; маркер одного пути — только он
+    (просили сгенерировать — генерация и при мёртвом провайдере: тул скажет причину сам); иначе живое и генерация
+    (генерация жива, ``gen_ok``). Маркер пути в последних репликах — признак ``recent_asked``."""
+    kind = sing_kind(text)
+    if not kind:
+        return ()
+    named, recent = sing_markers(text), set().union(*(_sing_routes_named(r) for r in _recent(ctx)))
+    live = _live_option(kind, named == LIVE, LIVE in recent)
+    gen = _sing_gen_option(_path_ask(text).robot_voice, named == GENERATE, GENERATE in recent)
+    if named:
+        return (live,) if named == LIVE else (gen,)
+    return (live, gen) if ctx.gen_ok else (live,)
+
+
+def _recent(ctx: SingContext) -> Tuple[str, ...]:
+    """Последние реплики человека, которые видит выбор пути пения (``SING_CONTEXT_REPLIES``)."""
+    return ctx.recent[-kn.SING_CONTEXT_REPLIES:] if kn.SING_CONTEXT_REPLIES else ()
+
+
+def _sing_question(text: str, kind: str, ctx: SingContext, options: Tuple[Option, ...]) -> ChoiceQuestion:
+    """Вопрос чойсеру: модель видит заказ с контекстом (``ChoiceQuestion.text``) и кандидатов с очками кода."""
+    recent = " | ".join(_recent(ctx)) or "—"
+    order = (f"спеть ({kind}): «{text}»; последние реплики человека: {recent}; играет музыка: "
+             f"{'да' if ctx.playing else 'нет'}; генерация: {ctx.gen_health or 'неизвестно'}")
+    state = {"recent": list(_recent(ctx)), "playing": ctx.playing, "gen_health": ctx.gen_health}
+    return ChoiceQuestion(order, options, state=state, weights=kn.SOURCE_WEIGHTS, instructions=INSTRUCTIONS)
+
+
+def choose_sing(text: str, ctx: SingContext, chooser: Chooser) -> SingRoute:
+    """Путь пения до основной модели диалога (#4079): кандидаты кода (:func:`sing_candidates`) → один — код, иначе
+    ``chooser`` (перевес живому — ``SOURCE_WEIGHTS["sing_live"]``; контекст сужает разрыв — решает модель чойсера).
+    Не пение — пустой путь: форма хода не меняется."""
+    options = sing_candidates(text, ctx)
+    ids, kind, named = tuple(o.id for o in options), sing_kind(text), sing_markers(text) if options else ""
+    if len(options) <= 1:
+        return SingRoute(ids[0] if ids else "", BY_CODE, ids, named, kind)
+    choice = chooser.choose(_sing_question(text, kind, ctx, options))
+    return SingRoute(choice.id, f"chooser:{choice.provider}", ids, named, kind)
 
 
 def synth_style(genre: str) -> Optional[str]:
@@ -567,7 +697,11 @@ def _cover_options(ask: SourceAsk, ctx: SourceContext, work: CoverWork) -> Tuple
 def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
                       work: Optional[CoverWork] = None) -> Tuple[Tuple[Option, ...], str]:
     """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``.
-    Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4)."""
+    Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4).
+    Петь вживую названо словами (``ask.live``, #4079) — один ``live:<вид>``: поёт робот сам (``perform`` диалога), не
+    генерация и не отказ «движок так не играет»."""
+    if ask.live:
+        return (_live_option(ask.live, True, False),), ""
     synth = _synth_option(ask, ctx, piece)
     if engine_route(ask.engine) == SYNTH:  # движок назван: кэш и генерация не кандидаты, молчаливой подмены нет
         return ((synth,), "") if synth else ((Option(f"{DECLINE}:engine_cannot", {}, "честный отказ"),), "engine_cannot")
@@ -767,7 +901,10 @@ def cache_text(route: Route) -> str:
 
 
 def decline_text(route: Route) -> str:
-    """Честный отказ (звука нет): что просили, почему нельзя, что могу вместо (стили, которые синтез играет)."""
+    """Честный отказ (звука нет): что просили, почему нельзя, что могу вместо (стили, которые синтез играет). Путь
+    ``live:*`` (#4079) — поёт сам робот, не тул музыки: тулу — :data:`LIVE_TOOL_TEXT` (генерацию не запускаю)."""
+    if route.kind == LIVE:
+        return LIVE_TOOL_TEXT
     offer = ", ".join(st.name for key, st in kn.GEN_STYLES.items()
                       if st.synth == key and kn.STYLES[key].synth_fit >= kn.SYNTH_FIT_MIN)
     excuse = _excuse(route, ", а синтез не поёт." if route.ask.vocal else ".")
@@ -784,3 +921,5 @@ __all__ = ["CACHE", "COVER_SLOT", "CacheTrack", "CoverWork", "DECLINE", "cover_f
            "set_cache",
            "set_candidates", "set_genres", "settle_engine", "source_ask", "source_candidates", "synth_fit", "synth_style", "theme_tags",
            "theme_cache", "theme_fit", "theme_title"]
+__all__ += ["BY_CODE", "LIVE", "LIVE_TOOL_TEXT", "SingContext", "SingRoute", "choose_sing", "sing_candidates",
+            "sing_kind", "sing_markers"]

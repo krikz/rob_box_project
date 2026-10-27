@@ -361,9 +361,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'жанр, если назван. Это просьба, а не приказ: что играть (новую '
                        'генерацию, сочинённое раньше или своё) и что сказать — решает '
                        'робот сам по словам человека; ok=false — честный отказ, его '
-                       'фразу робот скажет сам. «Спой / сочини песню про X» — '
-                       'kind=robot_song, theme=слова человека (не music_library); слов '
-                       'песни не сочиняй и не читай через speak_text.',
+                       'фразу робот скажет сам. Песня про X — kind=robot_song, '
+                       'theme=слова человека (не music_library); слов песни не сочиняй '
+                       'и не читай через speak_text.',
         'parameters': {   'type': 'object',
                           'properties': {   'kind': {   'type': 'string',
                                                         'description': 'instrumental, '

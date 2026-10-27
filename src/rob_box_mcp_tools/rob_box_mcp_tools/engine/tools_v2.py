@@ -885,6 +885,8 @@ class RequestMusicTool(MCPTool):
             return self._song_order.start(ask, args, self.order, tool_result)
         if route.kind == CACHE and route.track is not None and self._play_cached is not None:
             return play_cache(self._play_cached, route, what, hold_start(self) if held else None)
+        # путь live:* (#4079: петь вживую назвали словами) — тоже сюда: поёт сам робот (perform диалога v2, форма хода
+        # закрывает этот тул), агенту без формы пения (чат, v1) — фраза кода ``decline_text``, не генерация
         return tool_result({"ok": False, "reason": SOURCE_DECLINED, "route": route.id,
                             "message": decline_text(route)}, what)
 
@@ -994,7 +996,7 @@ class GenerateMusicTool(MCPTool):
         return ("Просьба сгенерировать музыку (Suno): kind=instrumental — без слов, song — песня, robot_song — песня "
                 "голосом робота; style — жанр, если назван. Это просьба, а не приказ: что играть (новую генерацию, "
                 "сочинённое раньше или своё) и что сказать — решает робот сам по словам человека; ok=false — "
-                "честный отказ, его фразу робот скажет сам. «Спой / сочини песню про X» — kind=robot_song, "
+                "честный отказ, его фразу робот скажет сам. Песня про X — kind=robot_song, "
                 "theme=слова человека (не music_library); слов песни не сочиняй и не читай через speak_text.")
 
     @property

@@ -72,7 +72,9 @@ _POINTS = {"title_match": "название", "composer_match": "компози�
            # путь музыки (ADR-0158 §2.2, ``SOURCE_WEIGHTS``)
            "fallback": "синтез-запас", "theme_match": "тема", "cache_theme": "тема сочинённого раньше",
            "asked": "что просили", "fresh": "свежее",
-           "cost": "кредиты", "wait_s": "ожидание"}
+           "cost": "кредиты", "wait_s": "ожидание",
+           # путь пения (#4079): перевес живому и маркер пути в последних репликах человека
+           "sing_live": "вживую", "recent_asked": "просили в последних репликах"}
 
 
 class ModelUnavailable(Exception):

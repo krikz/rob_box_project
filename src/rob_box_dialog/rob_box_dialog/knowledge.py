@@ -1580,6 +1580,80 @@ SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("\ufffd",)
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")
 COMMAND_TOOL = "command"
 
+# ---------------------------------------------------------------------------------------------------------------
+# Путь пения (#4079, ADR-0158 §2.2; ADR-0148 п.2 — выбор сужает структура): решает код ДО основной модели
+# ---------------------------------------------------------------------------------------------------------------
+# Решение — id кандидата (``live:song``, ``live:rap``, ``generate:robot_song:V6``) от хоста хода: его строит
+# ``rob_box_music.source.choose_sing`` (маркеры слов, чойсер с перевесом живому). Пакет диалога от ``rob_box_music`` не
+# зависит (образы telegram_bot и led_matrix), поэтому решение приходит строкой, а здесь — только что форма хода
+# закрывает по каждому пути. Нет решения (не пение, хост без пути пения — чат, оператор) — форма не меняется.
+
+#: Виды выступления, которые робот поёт (``live:<вид>``).
+SING_PERFORM_KINDS: Tuple[str, ...] = ("song", "rap")
+
+
+@dataclass(frozen=True)
+class SingForm:
+    """Что форма хода делает по пути пения: ``closed_tools`` — тулы вне среза и вне команды (новая музыка мимо
+    выступления), ``needs_perform`` — команда обязана петь (``perform``), ``needs_tool`` — команда обязана позвать тул,
+    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все)."""
+
+    closed_tools: Tuple[str, ...] = ()
+    needs_perform: bool = False
+    needs_tool: str = ""
+    kinds: Tuple[str, ...] = ()
+    backings: Tuple[str, ...] = ()
+
+
+#: ``live`` — робот поёт сам: ``perform`` вида из id под синт-подложку (``none`` закрыт), генерация и трек закрыты (бит
+#: ставит код выступления: ``request_music(intent=backing)`` мимо среза). ``generate`` (генерация и кэш) — песню
+#: делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением (song/rap) нельзя.
+SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
+    "live": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True,
+                     backings=tuple(b for b in PERFORM_BACKINGS if b != "none")),
+    "generate": SingForm(needs_tool="generate_music",
+                         kinds=tuple(k for k in PERFORM_KINDS if k not in SING_PERFORM_KINDS)),
+})
+#: Нарушение формы пути пения: подробность — что именно, допустимое — из :class:`SingForm`.
+VIOLATION_SING_ROUTE = "sing_route"
+
+
+def sing_family(route: str) -> str:
+    """Путь пения по id кандидата: ``live:*`` — ``live``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
+    «» — не пение."""
+    head = (route or "").split(":", 1)[0]
+    return "live" if head == "live" else "generate" if head else ""
+
+
+def sing_kinds(route: str) -> Tuple[str, ...]:
+    """Допустимые ``perform.kind`` пути пения: ``live:<вид>`` — этот вид (вид вне ``SING_PERFORM_KINDS`` — оба),
+    иначе — из :data:`SING_FORMS`; не пение — пусто (как в схеме)."""
+    form = SING_FORMS.get(sing_family(route))
+    if form is None:
+        return ()
+    kind = route.split(":")[1] if route.count(":") >= 1 else ""
+    if form.kinds:
+        return form.kinds
+    return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
+
+
+def with_sing(schema: Mapping[str, Any], route: str) -> Dict[str, Any]:
+    """Схема команды в форме пути пения: ``perform.kind`` и ``perform.backing`` — перечни пути, ``perform`` обязателен
+    на живом пении (ADR-0148 п.2: выбор сужает структура, а не правило в промпте). Подложку без синта (``none`` или не
+    названа) на живом пении валидатор ставит первой из перечня — синт решает код (``command._fit_sing_backing``). Не
+    пение — без изменений."""
+    form = SING_FORMS.get(sing_family(route))
+    out = copy.deepcopy(dict(schema))
+    perform = out.get("properties", {}).get("perform")
+    if form is None or perform is None:
+        return out
+    perform["properties"]["kind"] = _enum(sing_kinds(route))
+    if form.backings:
+        perform["properties"]["backing"] = _enum(form.backings)
+    if form.needs_perform:
+        out["required"] = sorted({*out.get("required", ()), "perform"})
+    return out
+
 
 def _enum(values: Sequence[str]) -> Dict[str, Any]:
     return {"type": "string", "enum": list(values)}
@@ -1689,7 +1763,12 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         return "{" + ", ".join(values) + "}"
 
     face = "; ".join(f"{slot} ∈ {_set(v)}" for slot, v in FACE_SCENE_SLOTS.items())
-    fields = set((schema or command_schema("json"))["properties"])
+    props = (schema or command_schema("json"))["properties"]
+    fields = set(props)
+    # перечни выступления — из схемы хода (путь пения сужает вид и подложку, ``with_sing``), а не из полной таблицы
+    perform = props.get("perform", {}).get("properties", {})
+    kinds = tuple(perform.get("kind", {}).get("enum", PERFORM_KINDS))
+    backings = tuple(perform.get("backing", {}).get("enum", PERFORM_BACKINGS))
     lines: List[Tuple[str, str]] = [
         ("", "Ответ — одна команда (JSON-объект) с полями:"),
         ("speech", f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда"
@@ -1700,8 +1779,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
         ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
                     f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
-        ("perform", f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-                    f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech (speech при"
+        ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
+                    f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(backings)}; вместо speech (speech при"
                     " нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
                     " отчёт о действиях. voice_per_segment — голос на сегмент, у сказки обязателен (сегмент = реплика"
                     " одного говорящего, \"\" — рассказчик); set_voice меняет голос робота насовсем — только когда об"

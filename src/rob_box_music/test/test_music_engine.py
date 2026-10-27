@@ -87,11 +87,11 @@ def test_named_engine_plays_even_style_that_synth_is_poor_at():
     assert route.id == f"synth:{kn.DEFAULT_STYLE}"
 
 
-def test_named_engine_cannot_sing_declines_honestly():
+def test_named_engine_with_a_request_to_sing_is_live_singing():
+    """#4079: «спой на Ренардо» — робот поёт сам под синт (``live:song``), а не отказ «движок так не играет»."""
     ask = source_ask("спой на ренардо")
     route = choose_route(ask, RICH, DeterministicChooser(Boom()))
-    assert route.id == "decline:engine_cannot" and route.kind == "decline"
-    assert "названный движок так не играет" in decline_text(route)
+    assert ask.engine == "synth" and ask.live == "song" and (route.id, route.kind) == ("live:song", "live")
 
 
 def test_set_of_named_engine_is_synth_only():
@@ -325,13 +325,23 @@ def test_by_meaning_override_is_for_the_caller_that_knows_the_path():
     assert engine_words("сыграй на синте", by_meaning=False) == []
 
 
-def test_sing_live_goes_to_the_song_not_to_a_false_decline():
-    """«Спой вживую» — песня (генерация), а не отказ «названный движок так не играет», хотя движок не назван."""
-    for text in ("спой песню вживую", "спой вживую", "спой песню на синтезаторе", "сыграй песню своим голосом вживую"):
+def test_sing_live_is_live_singing_not_a_generation_and_not_a_false_decline():
+    """#4079 (решение Шифу 27.10, поправка ревью #4071): «спой вживую», «спой на синтезаторе», «спой на Ренардо» — робот
+    поёт сам (``live:song``: ``perform`` диалога под синт-подложку), а не генерация KIE и не отказ «названный движок так
+    не играет». Кэш и генерация не кандидаты, модель чойсера не зовётся (``Boom`` выбрал бы генерацию)."""
+    for text in ("спой песню вживую", "спой вживую", "спой песню на синтезаторе", "сыграй песню своим голосом вживую",
+                 "спой на ренардо", "спой на рем дарда", "Робот, спой живьём"):
+        options, reason = source_candidates(source_ask(text), RICH)
+        assert [o.id for o in options] == ["live:song"] and reason == "", text
         route = choose_route(source_ask(text), RICH, DeterministicChooser(Boom()))
-        assert route.kind == "generate" and route.id.startswith("generate:") and "song" in route.id, text
-    sing_to_name = choose_route(source_ask("спой на ренардо"), RICH, DeterministicChooser(Boom()))
-    assert sing_to_name.id == "decline:engine_cannot"  # с именем движка отказ честный: он действительно не поёт
+        assert (route.kind, route.id, route.provider) == ("live", "live:song", "code"), text
+
+
+def test_generation_on_the_named_engine_declines_honestly():
+    """Сгенерировать песню «на Ренардо» — оба пути названы (``sing_markers`` пуст), живого пения код не выбирает молча:
+    движок назван, а синтез не поёт — честный отказ, как до #4079."""
+    route = choose_route(source_ask("сгенерируй песню на ренардо"), RICH, DeterministicChooser(Boom()))
+    assert route.id == "decline:engine_cannot" and "названный движок так не играет" in decline_text(route)
 
 
 def test_generate_live_keeps_every_path_open_instead_of_narrowing_to_the_synth():
