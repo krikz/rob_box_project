@@ -6,18 +6,23 @@
 смены ведёт код, записи пишут владельцы событий:
 
 * приход (:data:`VISIT`) — голос из снимка сессии (``SessionChanged`` ``set_speaker``; имя — только уверенное,
-  ``speaker_adapter.speaker_block``: гипотеза и спор голоса — «незнакомый», A30) и встреча лицом (``meeting``). Тот же
-  человек в пределах ``knowledge.SHIFT_VISIT_GAP_S`` — продолжение прихода (``until`` — когда видели последний раз);
+  ``speaker_adapter.speaker_block``: гипотеза и спор голоса — без имени, A30) и встреча лицом (``meeting``). Тот же
+  человек в пределах ``knowledge.SHIFT_VISIT_GAP_S`` — продолжение прихода (``until`` — когда видели последний раз).
+  Все голоса без подтверждённого имени одного канала — одно «появление» (ключ ``?voice``), а не число людей;
 * музыка (:data:`TRACK`) — снимок владельца плеера (``/voice/music/state``): название, источник, как кончилось — по
-  правилу ``music_state.MusicStateMemory`` (``last_ended``: доиграл / остановлен / сменён), второго правила нет;
+  правилу ``music_state.MusicStateMemory`` (``last_ended``: доиграл / остановлен / сменён), второго правила нет.
+  Название и источник уточняет повторный снимок того же трека (имя мелодии сета приходит после старта);
 * действия и выступления (:data:`ACTION`, :data:`PERFORM`) — исходы владельцев из журнала ходов
-  (``TurnLog(on_outcome=...)``): тул и статус; поздний итог и конец выступления обновляют запись на месте. Чтение
-  (класс ``query``), обещание ``pending`` и тулы ``knowledge.SHIFT_SKIP_TOOLS`` не пишутся;
+  (``TurnLog(on_outcome=...)``): тул, статус и исход по правилу ``respond`` (:func:`verdict`: провал — ``failed``,
+  вопрос тула человеку — ``asks``, #4062; второго понятия «провала» здесь нет). Поздний итог после ``timeout`` и конец
+  выступления обновляют запись на месте. Чтение (класс ``query``), обещание ``pending`` и тулы
+  ``knowledge.SHIFT_SKIP_TOOLS`` не пишутся;
 * тишина (:data:`SILENCE`) — кадр ``Silence`` сессии.
 
 Журнал — в памяти процесса: кольцо ``SHIFT_LOG_MAX_EVENTS`` записей за ``SHIFT_LOG_WINDOW_S``. Новая сессия разговора
 («забудь всё», ``Session.reset``) его не чистит — это журнал смены, а не разговора. Рестарт процесса журнал обнуляет,
 и раздел говорит об этом сам: ``covers_min`` — сколько минут журнал покрывает, фраза-итог — «за последние N мин».
+Журнал — наблюдатель: его сбой пишется в лог и не роняет колбэк владельца, который его вызвал (:func:`_quiet`).
 
 Раздел снимка ``shift_log`` (:meth:`ShiftLog.section`) идёт модели, когда человек спрашивает о смене
 (:func:`shift_asked`): записи и фраза-итог ``summary``, которую строит код из записей (:func:`summary`, тексты —
@@ -26,18 +31,23 @@
 
 from __future__ import annotations
 
+import functools
+import logging
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence, TypeVar
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.music_state import UNNAMED_TRACK
+from rob_box_dialog.respond import ActionResult, asks, failed
 from rob_box_dialog.speaker_adapter import speaker_block
 from rob_box_dialog.turn_log import PERFORM_TOOL
-from rob_box_dialog.words import has_form, has_word
+from rob_box_dialog.words import has_form, has_word, without_forms
+
+_LOG = logging.getLogger(__name__)
 
 #: Раздел снимка хода (``knowledge.CONTEXT_SECTIONS``).
 SECTION = "shift_log"
@@ -49,7 +59,11 @@ VOICE, FACE = "voice", "face"
 ONGOING = "ongoing"
 #: ``ShiftEvent.status`` конца тишины.
 ENDED = "ended"
+#: Исход действия (:func:`verdict`): выполнено, провал (``respond.failed``), вопрос тула человеку (``respond.asks``).
+DONE, FAILED, ASKED = "done", "failed", "asked"
 _QUERY = "query"
+
+_Writer = TypeVar("_Writer", bound=Callable[..., None])
 
 
 @dataclass(frozen=True)
@@ -61,16 +75,43 @@ class ShiftEvent:
     at: float
     until: float
     key: str
-    who: str = ""  # VISIT: имя (только уверенное); "" — незнакомый
+    who: str = ""  # VISIT: имя (только уверенное); "" — без подтверждённого имени
     what: str = ""  # TRACK: название; ACTION: тул; PERFORM: вид выступления
-    status: str = ""  # ACTION/PERFORM: исход; TRACK/SILENCE: ONGOING или как кончилось
-    detail: str = ""  # VISIT: каналы через запятую; TRACK: источник; ACTION: причина отказа
+    status: str = ""  # ACTION/PERFORM: статус исхода; TRACK/SILENCE: ONGOING или как кончилось
+    detail: str = ""  # VISIT: каналы через запятую; TRACK: источник; ACTION: причина
+    verdict: str = ""  # ACTION: исход по правилу ``respond`` (:func:`verdict`)
+
+
+def verdict(result: ActionResult) -> str:
+    """Исход действия одним словом по правилам ``respond`` — одно понятие «провала» на весь диалог: вопрос тула
+    («Удалить «X»?», ``respond.asks``) — :data:`ASKED`, а не провал (#4062); провал (``respond.failed``) —
+    :data:`FAILED`; иначе статус как есть (``done``, ``cancelled``)."""
+    if asks(result):
+        return ASKED
+    return FAILED if failed(result) else result.status
 
 
 def shift_asked(text: str) -> bool:
-    """Спрашивает ли человек о смене («подведи итог ночи», «кто приходил», «что мы слушали»): основы
-    ``knowledge.SHIFT_ASK_STEMS`` или целые слова ``SHIFT_ASK_FORMS``. Таблица одна — ``knowledge``."""
-    return has_word(text or "", kn.SHIFT_ASK_STEMS) or has_form(text or "", kn.SHIFT_ASK_FORMS)
+    """Спрашивает ли человек о смене («подведи итог ночи», «кто ещё был», «что мы слушали»): основа
+    ``knowledge.SHIFT_ASK_STEMS`` или пара целых слов ``SHIFT_ASK_PAIRS`` (вопросительное слово и глагол прошлого) в
+    реплике без слов ``SHIFT_ASK_NOT``. Таблицы — одна, ``knowledge``."""
+    plain, _ = without_forms(text or "", kn.SHIFT_ASK_NOT)
+    if has_word(plain, kn.SHIFT_ASK_STEMS):
+        return True
+    return any(has_form(plain, ask) and has_form(plain, about) for ask, about in kn.SHIFT_ASK_PAIRS)
+
+
+def _quiet(write: _Writer) -> _Writer:
+    """Запись журнала не роняет колбэк владельца (сессия, плеер, журнал ходов, встреча лицом): сбой — в лог."""
+
+    @functools.wraps(write)
+    def guarded(self: "ShiftLog", *args: Any, **kwargs: Any) -> None:
+        try:
+            write(self, *args, **kwargs)
+        except Exception:  # noqa: BLE001 — наблюдатель не ломает владельца события
+            _LOG.exception("журнал смены: запись %s не удалась", write.__name__)
+
+    return guarded  # type: ignore[return-value]
 
 
 class ShiftLog:
@@ -90,61 +131,86 @@ class ShiftLog:
 
     # -- запись: владельцы событий ------------------------------------------------------------------------------
 
+    @_quiet
     def observe(self, change: Any) -> None:
         """Подписчик сессии (``Session.subscribe``): голос собеседника — приход, кадр ``Silence`` — тишина."""
         snap = change.snapshot
         with self._lock:
             if change.change == "set_speaker" and snap.speaker is not None:
-                self.seen(speaker_block(snap.speaker)["name"], VOICE)
+                self._seen(speaker_block(snap.speaker)["name"], VOICE)
             self._silence(snap.top("Silence") is not None)
 
+    @_quiet
     def seen(self, name: Optional[str], via: str = VOICE) -> None:
-        """Человек замечен каналом ``via`` (голос, лицо): имя — только уверенное, ``None`` — незнакомый. Тот же
-        человек после паузы меньше ``SHIFT_VISIT_GAP_S`` — продолжение прихода, иначе — новый приход."""
-        who = (name or "").strip()
-        key = who.lower() or f"?{via}"
-        with self._lock:
-            now = self._clock()
-            slot = self._find(VISIT, key)
-            old = self._events[slot] if slot is not None else None
-            if old is not None and now - old.until <= kn.SHIFT_VISIT_GAP_S:
-                self._events[slot] = replace(old, until=now, detail=_with_channel(old.detail, via))
-            else:
-                self._events.append(ShiftEvent(VISIT, now, now, key, who=who, detail=via))
+        """Человек замечен каналом ``via`` (голос, лицо): имя — только уверенное, ``None`` — без подтверждённого имени.
+        Тот же человек после паузы меньше ``SHIFT_VISIT_GAP_S`` — продолжение прихода, иначе — новый приход."""
+        self._seen(name, via)
 
+    @_quiet
     def music(self, snapshot: Any, ended: Any = None) -> None:
         """Снимок владельца плеера (``MusicPlayerState``) после ``MusicStateMemory.observe_state``: ``ended`` — её
-        ``last_ended`` (как и когда замолчал прошлый трек). Новый звучащий ``track_id`` — запись трека."""
+        ``last_ended`` (как и когда замолчал прошлый трек). Новый звучащий ``track_id`` — запись трека; повторный
+        снимок того же трека уточняет название и источник (имя мелодии сета владелец публикует после старта)."""
         with self._lock:
             at = float(getattr(snapshot, "ts", None) or self._clock())
             if ended is not None and ended is not self._ended:
                 self._ended = ended
                 self._close(TRACK, str(ended.track_id or ""), float(ended.at), str(ended.how))
             track = snapshot.track_id if snapshot.is_playing(at) else None
+            info = getattr(snapshot, "dj_info", None) or {}
             if track and track != self._track:
-                info = getattr(snapshot, "dj_info", None) or {}
                 self._events.append(ShiftEvent(TRACK, at, at, track, what=_title(info), status=ONGOING,
                                                detail=_source(info)))
+            elif track:
+                self._refresh_track(track, info)
             self._track = track
 
-    def outcome(self, ref: str, cls: str, content: Mapping[str, Any]) -> None:
-        """Исход действия или выступления из журнала ходов (``TurnLog`` ``on_outcome``): ``ref`` — id вызова
-        (``<ход>/<n>``) или выступления хода, ``content`` — запись окна (тул, статус, причина, данные). Повтор ``ref``
-        (поздний итог, конец выступления) обновляет запись на месте."""
-        tool, status = str(content.get("tool") or ""), str(content.get("status") or "")
-        if cls == _QUERY or tool in kn.SHIFT_SKIP_TOOLS or status in kn.SHIFT_SKIP_STATUSES:
+    @_quiet
+    def outcome(self, result: ActionResult) -> None:
+        """Исход действия или выступления из журнала ходов (``TurnLog`` ``on_outcome``): ``result.turn_id`` — id вызова
+        (``<ход>/<n>``) или выступления хода (``<ход>/perform``). Конец выступления и поздний итог после
+        ``SHIFT_LATE_REPLACES`` того же тула обновляют запись на месте; прочий повтор id — другой вызов (итерации
+        хода нумеруют вызовы заново), новая запись."""
+        if result.cls == _QUERY or result.tool in kn.SHIFT_SKIP_TOOLS or result.status in kn.SHIFT_SKIP_STATUSES:
             return
-        kind = PERFORM if tool == PERFORM_TOOL else ACTION
-        what = str((content.get("data") or {}).get("kind") or "") if kind == PERFORM else tool
+        perform = result.tool == PERFORM_TOOL
+        kind = PERFORM if perform else ACTION
+        what = str((result.data or {}).get("kind") or "") if perform else result.tool
         with self._lock:
             now = self._clock()
-            fresh = ShiftEvent(kind, now, now, ref, what=what, status=status, detail=str(content.get("reason") or ""))
-            slot = self._find(kind, ref)
-            if slot is None:
-                self._events.append(fresh)
-            else:
+            fresh = ShiftEvent(kind, now, now, result.turn_id, what=what, status=result.status,
+                               detail=str(result.reason or ""), verdict="" if perform else verdict(result))
+            slot = self._find(kind, result.turn_id)
+            if slot is not None and _updates(self._events[slot], fresh):
                 old = self._events[slot]
                 self._events[slot] = replace(fresh, at=old.at, what=what or old.what)
+            else:
+                self._events.append(fresh)
+
+    def _seen(self, name: Optional[str], via: str) -> None:
+        who = (name or "").strip()
+        key = who.lower() or f"?{via}"
+        with self._lock:
+            now = self._clock()
+            slot = self._find(VISIT, key)
+            if slot is not None and now - self._events[slot].until <= kn.SHIFT_VISIT_GAP_S:
+                old = self._events[slot]
+                self._events[slot] = replace(old, until=now, detail=_with_channel(old.detail, via))
+            else:
+                self._events.append(ShiftEvent(VISIT, now, now, key, who=who, detail=via))
+
+    def _refresh_track(self, track: str, info: Mapping[str, Any]) -> None:
+        """Повторный снимок звучащего трека: имя (``name``) заменяет общий заголовок деки, пустой источник
+        заполняется; снимок без имени уже записанное имя не стирает."""
+        slot = self._find(TRACK, track)
+        if slot is None:
+            return
+        old = self._events[slot]
+        name = str(info.get("name") or "")
+        what = name or (_title(info) if old.what == UNNAMED_TRACK else old.what)
+        detail = old.detail or _source(info)
+        if (what, detail) != (old.what, old.detail):
+            self._events[slot] = replace(old, what=what, detail=detail)
 
     def _silence(self, on: bool) -> None:
         """Кадр ``Silence`` появился — запись тишины; снят (сам, словом, по TTL) — её конец."""
@@ -236,8 +302,8 @@ def _people(events: Sequence[ShiftEvent], now: float) -> List[Dict[str, Any]]:
              "last_min_ago": _minutes(now - r["last"]), "via": ",".join(sorted(r["via"]))} for r in recent]
 
 
-def _unknown(events: Sequence[ShiftEvent], _now: float) -> Dict[str, int]:
-    """Приходы незнакомых по каналу: ``{"voice": 3, "face": 1}``."""
+def _unnamed(events: Sequence[ShiftEvent], _now: float) -> Dict[str, int]:
+    """Появления голоса/лица без подтверждённого имени по каналу (``{"voice": 3, "face": 1}``) — не число людей."""
     counts: Dict[str, int] = {}
     for e in events:
         if e.kind == VISIT and not e.who:
@@ -265,27 +331,34 @@ def _performances(events: Sequence[ShiftEvent], now: float) -> List[Dict[str, An
 
 
 def _actions(events: Sequence[ShiftEvent], _now: float) -> Dict[str, Dict[str, int]]:
-    """Исходы действий по тулам: ``{"request_music": {"done": 3, "rejected": 1}}``."""
+    """Исходы действий по тулам (:func:`verdict`): ``{"request_music": {"done": 3, "failed": 1}}`` — тулы с самым
+    свежим исходом, не больше ``SHIFT_SECTION_MAX_ITEMS``; фраза-итог считает все."""
     counts: Dict[str, Dict[str, int]] = {}
-    for e in events:
-        if e.kind == ACTION:
-            by_status = counts.setdefault(e.what, {})
-            by_status[e.status] = by_status.get(e.status, 0) + 1
-    return counts
+    for e in reversed([e for e in events if e.kind == ACTION]):
+        if e.what not in counts and len(counts) >= kn.SHIFT_SECTION_MAX_ITEMS:
+            continue
+        by_verdict = counts.setdefault(e.what, {})
+        by_verdict[e.verdict] = by_verdict.get(e.verdict, 0) + 1
+    return {tool: counts[tool] for tool in reversed(list(counts))}
 
 
-def _silence_rows(events: Sequence[ShiftEvent], now: float) -> List[Dict[str, Any]]:
-    """Тишина: минут назад началась и сколько длилась (идущая — до сейчас, ``ongoing``)."""
-    rows = []
-    for e in [e for e in events if e.kind == SILENCE][-kn.SHIFT_SECTION_MAX_ITEMS:]:
-        end = now if e.status == ONGOING else e.until
-        rows.append({"min_ago": _minutes(now - e.at), "for_min": _minutes(end - e.at), "ended": e.status})
-    return rows
+def _silence_view(events: Sequence[ShiftEvent], now: float) -> Dict[str, Any]:
+    """Тишина одной строкой: сколько раз просили, сколько минут всего (идущая — до сейчас), последний раз минут назад;
+    ``ongoing`` — тишина идёт сейчас."""
+    rows = [e for e in events if e.kind == SILENCE]
+    if not rows:
+        return {}
+    total = sum((now if e.status == ONGOING else e.until) - e.at for e in rows)
+    out: Dict[str, Any] = {"times": len(rows), "total_min": _minutes(total),
+                           "last_min_ago": _minutes(now - rows[-1].at)}
+    if rows[-1].status == ONGOING:
+        out["ongoing"] = True
+    return out
 
 
 _VIEW: Mapping[str, Callable[[Sequence[ShiftEvent], float], Any]] = {
-    "people": _people, "unknown": _unknown, "music": _music, "performances": _performances, "actions": _actions,
-    "silence": _silence_rows,
+    "people": _people, "unnamed": _unnamed, "music": _music, "performances": _performances, "actions": _actions,
+    "silence": _silence_view,
 }
 
 
@@ -296,7 +369,7 @@ def _people_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
     return {"names": ", ".join(names)} if names else None
 
 
-def _unknown_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
+def _unnamed_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
     count = sum(1 for e in events if e.kind == VISIT and not e.who)
     return {"count": count} if count else None
 
@@ -312,11 +385,21 @@ def _performance_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]
 
 
 def _action_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
-    acts = [e for e in events if e.kind == ACTION]
-    if not acts:
-        return None
-    failed = sum(1 for e in acts if e.status in kn.SHIFT_FAILED_STATUSES)
-    return {"done": sum(1 for e in acts if e.status == "done"), "failed": failed}
+    """Каждый записанный исход — в своей части: выполнено, не вышло, спросил подтверждения (``SHIFT_ACTION_PHRASES``),
+    прочие статусы словами окна (``WINDOW_ACTION_STATUS``: «отменено»)."""
+    counts: Dict[str, int] = {name: 0 for name in kn.SHIFT_ACTION_PHRASES}
+    for e in events:
+        if e.kind == ACTION:
+            counts[e.verdict] = counts.get(e.verdict, 0) + 1
+    parts = [_action_part(name, n) for name, n in counts.items() if n]
+    return {"counts": ", ".join(parts)} if parts else None
+
+
+def _action_part(name: str, count: int) -> str:
+    key = kn.SHIFT_ACTION_PHRASES.get(name)
+    if key is not None:
+        return phrases.text(key, count=count)
+    return phrases.text(kn.SHIFT_ACTION_OTHER_PHRASE, status=kn.WINDOW_ACTION_STATUS.get(name, name), count=count)
 
 
 def _silence_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
@@ -325,9 +408,17 @@ def _silence_slots(events: Sequence[ShiftEvent]) -> Optional[Dict[str, Any]]:
 
 
 _SLOTS: Mapping[str, Callable[[Sequence[ShiftEvent]], Optional[Dict[str, Any]]]] = {
-    "people": _people_slots, "unknown": _unknown_slots, "music": _music_slots, "performances": _performance_slots,
+    "people": _people_slots, "unnamed": _unnamed_slots, "music": _music_slots, "performances": _performance_slots,
     "actions": _action_slots, "silence": _silence_slots,
 }
+
+
+def _updates(old: ShiftEvent, fresh: ShiftEvent) -> bool:
+    """Исход ``fresh`` с тем же id обновляет запись ``old``, а не новый вызов: конец выступления; поздний итог того же
+    тула после ``SHIFT_LATE_REPLACES``. Иначе id повторился в другой итерации хода — это другой вызов."""
+    if fresh.kind == PERFORM:
+        return True
+    return old.what == fresh.what and old.status in kn.SHIFT_LATE_REPLACES
 
 
 def _with_channel(channels: str, via: str) -> str:
@@ -353,5 +444,5 @@ def _minutes(seconds: float) -> int:
     return max(0, int(round(float(seconds) / 60.0)))
 
 
-__all__ = ["ACTION", "ENDED", "FACE", "ONGOING", "PERFORM", "SECTION", "SILENCE", "ShiftEvent", "ShiftLog", "TRACK",
-           "VISIT", "VOICE", "shift_asked", "span_words", "summary"]
+__all__ = ["ACTION", "ASKED", "DONE", "ENDED", "FACE", "FAILED", "ONGOING", "PERFORM", "SECTION", "SILENCE",
+           "ShiftEvent", "ShiftLog", "TRACK", "VISIT", "VOICE", "shift_asked", "span_words", "summary", "verdict"]

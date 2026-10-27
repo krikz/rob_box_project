@@ -293,8 +293,15 @@ startup.greeting: ["Мяу! Я на связи! Все системы в нор�
 shift.empty: ["В журнале смены за последние {span} ничего не записано."]
 shift.summary: ["Журнал смены за последние {span}: {events}."]
 shift.people: ["узнал: {names}"]
-shift.unknown: ["незнакомых приходов: {count}"]
+# Появления голоса или лица без подтверждённого имени (A30), а не число незнакомцев: такие голоса одного канала в
+# пределах ``knowledge.SHIFT_VISIT_GAP_S`` - одно появление.
+shift.unnamed: ["появлений без подтверждённого имени (не число людей): {count}"]
 shift.music: ["звучало треков: {count}, последний — «{last}»"]
 shift.performances: ["выступления: {kinds}"]
-shift.actions: ["действий выполнено: {done}, не вышло: {failed}"]
+# Действия: каждый записанный исход - в своей части; провал и вопрос тула - по правилу ``respond.failed``/``asks``.
+shift.actions: ["действия — {counts}"]
+shift.action.done: ["выполнено: {count}"]
+shift.action.failed: ["не вышло: {count}"]
+shift.action.asked: ["спросил подтверждения: {count}"]
+shift.action.other: ["{status}: {count}"]
 shift.silence: ["тишину просили: {count}"]

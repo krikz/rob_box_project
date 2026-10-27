@@ -25,5 +25,5 @@ def test_prompt_names_only_snapshot_sections_that_exist():
     """Промпт ссылается на разделы снимка по именам — каждое имя есть в таблице ``CONTEXT_SECTIONS``."""
     assert f"<{SNAPSHOT_TAG}>" in PROMPT
     named = {s for s in ("user_profile", "tts_context", "speech_gender", "providers", "music_state",
-                         "recent_unaddressed", "hardware", "tts_voice", "reminder") if f"`{s}`" in PROMPT}
+                         "recent_unaddressed", "shift_log", "hardware", "tts_voice", "reminder") if f"`{s}`" in PROMPT}
     assert named <= set(kn.CONTEXT_SECTIONS)
