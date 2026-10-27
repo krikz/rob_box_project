@@ -240,8 +240,10 @@ def test_late_start_during_a_performance_is_quiet_too():
     assert ports.said == [STARTED]
 
 
-def test_quiet_keys_are_the_class_success_phrase_only():
-    assert kn.QUIET_IN_PERFORMANCE_KEYS == (kn.ACTION_CLASSES["action.media"].phrases["done"],) == ("media.done",)
+def test_quiet_keys_are_the_class_success_phrase_and_the_heard_beat_edit():
+    """Молчат только общий успех класса и правка бита выступления, которую слышно (#4029: ``music.edit_heard``)."""
+    assert kn.QUIET_IN_PERFORMANCE_KEYS == (kn.ACTION_CLASSES["action.media"].phrases["done"], "music.edit_heard")
+    assert kn.QUIET_IN_PERFORMANCE_KEYS[0] == "media.done"
 
 
 # -- правка идущего выступления не оставляет «выступление идёт» после его конца (ревью #4104) ------------------------

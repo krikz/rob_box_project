@@ -616,7 +616,9 @@ INTERRUPT_STOPS_CLASSES: Tuple[str, ...] = ("action.media",)
 #: Выступление идёт (рэп, сказка, песня вживую): общий успех запуска музыки не озвучивается отдельной фразой (#4075;
 #: живой 27.10 15:16:58: смена подложки посреди рэпа - поверх выступления «Включаю музыку.»). Молчит только ключ общего
 #: успеха класса ``action.media``; фразы по данным результата (ожидание генерации, стоп) и любой провал говорятся.
-QUIET_IN_PERFORMANCE_KEYS: Tuple[str, ...] = (ACTION_CLASSES["action.media"].phrases["done"],)
+#: ``music.edit_heard`` (#4029, Шифу 27.10: «просто входящий запрос на изменение текущего трека»): правка бита
+#: выступления слышна сама - фразы поверх рэпа нет; предел и отказ правки - другой ключ (``music.edit_said``), говорятся.
+QUIET_IN_PERFORMANCE_KEYS: Tuple[str, ...] = (ACTION_CLASSES["action.media"].phrases["done"], "music.edit_heard")
 
 #: Тул каталога ``rob_box_core.tool_catalog`` → класс действия. Тул вне таблицы командой не исполняется
 #: (валидатор отвергает); полноту против каталога держит тест.
@@ -633,7 +635,7 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "set_volume",
     )},
     **{t: "action.media" for t in (
-        "dj_set", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
+        "dj_set", "edit_music", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
     )},
     # долгие операции навигационного стека (Nav2/картирование): тот же дедлайн 120 с и непрерываемость
     **{t: "action.motion" for t in (
@@ -646,6 +648,8 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 })
 #: Тул библиотеки сгенерированной музыки: семь действий одним тулом каталога (``action``), а класс у них разный.
 LIBRARY_TOOL = "music_library"
+#: Тул правки ИГРАЮЩЕЙ музыки (#4029): темп, тембр, бас своего синт-трека на такте или честный отказ кодом.
+EDIT_TOOL = "edit_music"
 #: Название трека в слоте ``{name}`` фраз библиотеки, когда в данных результата его нет (удаление отдаёт без названия).
 LIBRARY_UNNAMED = "этот трек"
 #: Класс ВЫЗОВА, когда он зависит от аргумента (#4020, ADR-0148: фразу об исходе строит код по результату, а не по тулу):
@@ -983,7 +987,7 @@ WINDOW_FACE_SCENE = "сцена лица"
 #: тула нет в таблице или поля нет в данных - только имя тула. ``perform`` - запись выступления в окне (``turn_log``).
 WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
     "play_animation": "animation", "play_sound": "sound", LIBRARY_TOOL: "action", "request_music": "intent",
-    "dj_set": "action", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
+    "dj_set": "action", "edit_music": "changes", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
 })
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
@@ -1100,6 +1104,14 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
         ("normal",): "speed.normal", ("faster",): "speed.faster", ("slower",): "speed.slower"})}),
     "set_pitch": MappingProxyType({"done": ByData(("action",), {
         ("normal",): "pitch.normal", ("lower",): "pitch.lower", ("higher",): "pitch.higher"})}),
+    # правка играющего (#4029): фразу исхода строит код музыки из исхода (``rob_box_music.track_edit.edit_text`` -
+    # ``message`` результата: сделано, предел, честный отказ с предложением), а не «Включаю музыку.» класса;
+    # ``heard`` (поменялся бит выступления, без предела и отказа) - ключ, который молчит во время выступления
+    EDIT_TOOL: MappingProxyType({
+        "done": ByData(("heard",), {(True,): "music.edit_heard"}, "music.edit_said"),
+        "rejected": ByData(("message",), {(None,): "music.edit_fail"}, "music.edit_said"),
+        "timeout": "music.edit_timeout",
+    }),
 })
 
 
@@ -1912,6 +1924,9 @@ COMPOSITION_KIND_BY_CLASS: Mapping[str, str] = MappingProxyType({
 #: Тулы, чья строка не следует из класса: звук — SFX, анимация — экспрессия, тул речи — реплика.
 COMPOSITION_KIND_BY_TOOL: Mapping[str, str] = MappingProxyType({
     "play_sound": "sfx", "play_animation": "expression", "speak_text": "speech",
+    # правка играющего (#4029) ничего не занимает и не вытесняет: бит меняется на такте под идущее выступление (строка
+    # ``music`` вытеснила бы выступление на такте - кейс Шифу 27.10: рэп без тактов после «сделай бит потяжелее»)
+    "edit_music": "query",
 })
 #: Какой ресурс (столбец) занимает начатый блок строки; ``halt`` и ``query`` ничего не занимают. Подложку
 #: выступления (``backing``) запускает выступление (PR-7c), а не строка ``music``.
@@ -2106,15 +2121,27 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live_over": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True, backings=("none",)),
     "generate": SingForm(needs_tool="generate_music",
                          kinds=tuple(k for k in PERFORM_KINDS if k not in SING_PERFORM_KINDS)),
+    # правка играющего (#4029): заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
+    "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
+                     kinds=PERFORM_KINDS),
 })
+#: Голова id пути хода «правка играющего» (``edit:<вид>+…``, #4029): музыка играет, а реплика её правит («сделай бит
+#: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
+#: вызовом, что путь пения (``rob_box_music.track_edit.edit_route``: слова правки ``TRACK_EDITS`` и снимок плеера), и
+#: форма хода сужает выбор структурой (ADR-0148 п.2): ``request_music``/``dj_set``/``generate_music`` вне среза и вне
+#: команды, ``edit_music`` обязателен - правка на такте играющего, а не новый трек, платная генерация и мост.
+EDIT_ROUTE = "edit"
 #: Нарушение формы пути пения: подробность — что именно, допустимое — из :class:`SingForm`.
 VIOLATION_SING_ROUTE = "sing_route"
 
 
 def sing_family(route: str, over_music: bool = False) -> str:
-    """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); иной
-    непустой (``generate:*``, ``cache:*``) — ``generate``; «» — не пение."""
+    """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); правка
+    играющего ``edit:*`` (:data:`EDIT_ROUTE`) — ``edit``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
+    «» — не пение."""
     head = (route or "").split(":", 1)[0]
+    if head == EDIT_ROUTE:
+        return "edit"
     if head == "live":
         return "live_over" if over_music else "live"
     return "generate" if head else ""

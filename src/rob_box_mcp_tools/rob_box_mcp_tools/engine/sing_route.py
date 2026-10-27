@@ -6,15 +6,22 @@
 играет ли музыка (их даёт ход), и строка лога для харнесса. Баланса KIE процесс диалога не знает: деньги и лимиты
 судит тул генерации (``source.gen_block``) и говорит о них фразой кода. Пакет диалога от ``rob_box_music`` не зависит —
 решение уходит ему строкой id кандидата (``live:song``, ``generate:robot_song:V6``; «» — не пение).
+
+Тем же вызовом — путь «правка играющего» (#4029): не пение, музыка играет, в реплике слова правки
+(``rob_box_music.track_edit.edit_route``: «сделай бит потяжелее», «ускорь», «добавь баса») и речь робота не названа
+(``knowledge.SPEECH_OWNER_STEMS``: «читай быстрее» — про голос) — id ``edit:<вид>+…``: форма хода закрывает заказ
+нового и требует ``edit_music``.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
-from rob_box_dialog.knowledge import PROVIDER_USABLE_HEALTH
+from rob_box_dialog.knowledge import PROVIDER_USABLE_HEALTH, SPEECH_OWNER_STEMS
+from rob_box_dialog.words import has_word
 from rob_box_music.choice import Chooser
 from rob_box_music.source import SingContext, choose_sing
+from rob_box_music.track_edit import edit_route
 
 #: Вид провайдера генерации музыки на доске (``rob_box_dialog.knowledge.PROVIDER_KINDS``).
 GEN_KIND = "music_gen"
@@ -42,7 +49,11 @@ class SingRouteHost:
         route = choose_sing(text, ctx, self._chooser)
         if route.id:
             self._log(f"🎚️ {route.line()}")
-        return route.id
+            return route.id
+        edit = "" if has_word(text, SPEECH_OWNER_STEMS) else edit_route(text, playing)
+        if edit:
+            self._log(f"🎚️ [edit] путь хода {edit}: играет музыка, реплика её правит — новый трек не заказываем")
+        return edit
 
 
 __all__ = ["GEN_KIND", "SingRouteHost", "gen_health"]

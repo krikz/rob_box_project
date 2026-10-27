@@ -335,7 +335,8 @@ def music_playing(snap: SessionSnapshot) -> bool:
 
 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
-#: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``.
+#: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``; не пение, а
+#: правка играющей музыки — ``edit:<вид>+…`` (#4029, ``rob_box_music.track_edit.edit_route``, ``knowledge.EDIT_ROUTE``).
 SingRouter = Callable[[str, Sequence[str], bool], str]
 
 
