@@ -74,7 +74,7 @@ from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performa
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
-from rob_box_dialog.expression import show_seconds, shows
+from rob_box_dialog.expression import face_label, show_seconds, shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, audible, classed, join
@@ -426,13 +426,15 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
     return _in_order(scenes) if scenes else held_expression(expression, text)
 
 
-def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
+def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
-    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``)."""
+    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``).
+    Возвращает лицо итога (``None`` - рефлекс как есть): ход записывает его в окно (``TurnLog.faced``, #4073)."""
     face = done_expression(turn, snapshot)
     extra = {"expression": face} if face is not None and _accepts(ports.stage, "expression") else {}
     ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
                 provider=turn.provider, **extra)
+    return face
 
 
 def prosody_phrase(results: Sequence[ActionResult]) -> str:
@@ -1097,7 +1099,9 @@ class TurnEngine:
 
     def _finish(self, turn: _Turn) -> TurnAggregate:
         latency = int(turn.deadline.elapsed() * 1000)
-        finish_stage(self._ports, turn, self.session.snapshot)
+        face = finish_stage(self._ports, turn, self.session.snapshot)
+        if face is not None:  # ответ одним лицом (#4073): без записи в окне реплика человека висит без ответа
+            self.log.faced(turn.turn_id, face_label(face.emotion, face.gesture, face.face))
         agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, turn.status,
                             latency, turn.llm_calls, turn.provider, turn.tokens)
         self._log.info(agg.log_line())

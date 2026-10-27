@@ -9,7 +9,8 @@
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Ход отработан действиями,
   а ответа словами в окне нет — реплику робота строит код из исходов этих действий
   (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»), иначе реплика человека висит
-  в истории без ответа и модель повторяет прошлое действие (#4066);
+  в истории без ответа и модель повторяет прошлое действие (#4066); ход отвечен одним лицом (``command.expression`` без
+  действий и слов) - ``knowledge.WINDOW_FACE_REPLY``: «[ответ лицом: sad — показано]» (:meth:`TurnLog.faced`, #4073);
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные); поздний итог
   действия (:meth:`TurnLog.late`) заменяет его запись на месте, а фраза кода об опровергнутом ``timeout`` из окна
   уходит (#3960: «Музыка пока не заиграла.», а трек заиграл через 1,4 с);
@@ -123,6 +124,7 @@ class _Turn:
     entries: List[WindowEntry] = field(default_factory=list)
     heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода (#3892)
     superseded: Tuple[str, ...] = ()  # фразы кода об исходе, которые опроверг поздний итог (:meth:`TurnLog.late`)
+    faced: str = ""  # лицо, которым ход ответил без действий и слов (:meth:`TurnLog.faced`, #4073)
 
 
 def _is_perform(entry: WindowEntry) -> bool:
@@ -151,15 +153,19 @@ def _action_label(record: Mapping[str, Any]) -> str:
     return f"{head} — {said} ({reason})" if reason else f"{head} — {said}"
 
 
-def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry]) -> List[WindowEntry]:
+def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry], face: str = "") -> List[WindowEntry]:
     """Ход отработан действиями, а ответа словами в окне нет: реплика робота из исходов этих действий (#4066).
     Без неё реплика человека висит в истории без ответа, и модель «догоняет» её - повторяет прошлое действие. Строится
-    при каждой выдаче окна, поэтому поздний итог (:meth:`TurnLog.late`) и конец выступления видны в ней сразу. Ход
-    без реплики человека, без действий или с прозвучавшим ответом - без неё."""
+    при каждой выдаче окна, поэтому поздний итог (:meth:`TurnLog.late`) и конец выступления видны в ней сразу. Действий
+    нет, но ход ответил лицом (``face``, :meth:`TurnLog.faced`) - реплика о показанном лице (#4073: ответ одним лицом
+    тоже ответ, иначе модель «догоняет» его - победа → грусть). Ход без реплики человека, без действий и лица или с
+    прозвучавшим ответом - без неё."""
     if not lead or any(e.role == ASSISTANT for e in entries):
         return []
     labels = [_action_label(e.content) for e in entries if e.role == TOOL]
-    return [WindowEntry(ASSISTANT, kn.WINDOW_ACTIONS_REPLY.format(actions="; ".join(labels)))] if labels else []
+    if labels:
+        return [WindowEntry(ASSISTANT, kn.WINDOW_ACTIONS_REPLY.format(actions="; ".join(labels)))]
+    return [WindowEntry(ASSISTANT, kn.WINDOW_FACE_REPLY.format(face=face))] if face else []
 
 
 def _tool_content(result: Any) -> Mapping[str, Any]:
@@ -271,6 +277,17 @@ class TurnLog:
         код (:func:`perform_status`), а не слова модели (#3973)."""
         return self.performed(turn_id, "", perform_status(end_reason), segments_done)
 
+    def faced(self, turn_id: str, face: str) -> bool:
+        """Ход ответил лицом: ``face`` - показанное словами кода (``expression.face_label``), как его показал итог хода
+        (``turn.done_expression``). Запись в окне - реплика робота после реплики человека, если у хода нет ни действий,
+        ни прозвучавшей речи (:func:`_action_reply`, #4073). Хода нет в журнале (выпал из окна, новая сессия) или
+        показывать нечего (``face`` пусто) - ``False``, не пишется."""
+        turn = self._turns.get(turn_id)
+        if turn is None or not face:
+            return False
+        turn.faced = face
+        return True
+
     def performing(self) -> bool:
         """Выступление идёт: его запись в окне стоит на ``PERFORM_STARTED`` - старт владельцем взят
         (``note_perform_start``), конца (:meth:`performance_ended`: ``block_end`` владельца) ещё не было. Решает код по
@@ -300,7 +317,7 @@ class TurnLog:
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
-        return lead + list(turn.entries) + _action_reply(lead, turn.entries)
+        return lead + list(turn.entries) + _action_reply(lead, turn.entries, turn.faced)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
         return sum(self._estimate(e.text()) for t in turns for e in t)

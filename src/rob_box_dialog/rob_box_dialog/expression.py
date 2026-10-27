@@ -113,6 +113,14 @@ def shows(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[
     return bool(command_scene(emotion) or (gesture and gesture in kn.GESTURES) or face)
 
 
+def face_label(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None) -> str:
+    """Лицо, которое покажет экспрессия команды, словами кода для окна LLM (``knowledge.WINDOW_FACE_REPLY``, #4073): сцена
+    эмоции (:func:`command_scene`), жест из ``GESTURES``, «сцена лица» для сцены LLM - через запятую. Показывать нечего
+    (:func:`shows` ложно) - пусто."""
+    parts = [command_scene(emotion), gesture if gesture in kn.GESTURES else "", kn.WINDOW_FACE_SCENE if face else ""]
+    return ", ".join(dict.fromkeys(part for part in parts if part))  # «victory» бывает и эмоцией, и жестом
+
+
 def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = None, gesture: Optional[str] = None,
           face: Optional[Mapping[str, object]] = None, ttl_ms: Optional[int] = None) -> Optional[ExpressionPlan]:
     """Наложить эмоцию, жест и сцену лица команды (``FaceScene.to_dict()``, уже проверенная) на рефлекс; на
