@@ -26,8 +26,8 @@ rob_box_animations/
 
 | Вход | Что делает |
 |---|---|
-| `/voice/speech/envelope`, `/voice/speech/event` | рот по огибающей настоящего TTS, `cancelled` — рот закрыт сразу |
-| `/voice/tts/state` | переходный источник «говорит» (дебаунс 0,6 с между чанками) |
+| `/voice/speech/envelope` | рот по огибающей настоящего TTS |
+| `/voice/speech/event` | «говорит», пока звучит реплика любого агента (`started` … `finished`, хвост 0,6 с между репликами); `cancelled` — рот закрыт сразу |
 | `/audio/direction` + `/audio/vad` | взгляд на говорящего, пока VAD слышит речь (+ 8 с) |
 | `/voice/music/state` | сцена музыки по `dj.bpm`, фаза от `dj.started_at` |
 | `/voice/expression/request` | `ExpressionRequest` (эмоция/жест; `face_json` — PR-3c) |

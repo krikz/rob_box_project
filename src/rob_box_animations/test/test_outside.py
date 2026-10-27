@@ -11,7 +11,9 @@ from rob_box_animations.face import rear as R
 from rob_box_animations.face.states import SCENES
 from rob_box_animations.face_director import FaceDirector
 from rob_box_animations.outside import (BatteryWatch, DriveTracker, battery_percent, calendar_rear, calendar_scene)
+from rob_box_core.msg_stub import build_dialog_msgs_module
 
+SpeechEvent = build_dialog_msgs_module().SpeechEvent
 T0 = 1_800_000_000.0
 MSK = 3.0
 
@@ -186,9 +188,9 @@ def test_director_shows_turn_then_idle_and_talking_beats_it():
     for i in range(6):
         d.on_cmd_vel(0.3, 0.5, t + i * 0.1)
     assert d.choose(t + 0.5)[0] == 'turn_left'
-    d.on_tts_state('playing', t + 0.5)
+    d.on_speech_event(SpeechEvent(kind=SpeechEvent.KIND_STARTED, speech_id='s1', agent='personality'), t + 0.5)
     assert d.choose(t + 0.5)[0].startswith('talk_')
-    d.on_tts_state('stopped', t + 0.6)
+    d.on_speech_event(SpeechEvent(kind=SpeechEvent.KIND_CANCELLED, speech_id='s1', agent='personality'), t + 0.6)
     d.voice_seen(t + 3)
     assert d.choose(t + 3)[0].startswith('idle_')
 

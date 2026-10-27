@@ -305,7 +305,6 @@ def _make_stt_node_stub(**param_overrides):
     node._speech_client_pubs = {"cancel": MagicMock()}
     node.get_clock = MagicMock()  # stamp SpeechRequest (speech_client.say)
     node.audio_sub = MagicMock()
-    node.tts_state_sub = MagicMock()
     real_logger = logging.getLogger("test_stt_node_fallback")
     node.get_logger = MagicMock(return_value=real_logger)
     node.publish_result = MagicMock()

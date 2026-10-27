@@ -225,7 +225,7 @@ section { display: grid; gap: 12px; }
             <li class="no">Волна-осциллограф, как сейчас</li>
             <li class="no">Бегущая строка с текстом речи: 15 знаков в секунду на 25 столбцах не прочитать</li></ul></td>
             <td>Во всех трёх играет лицо: в начале фразы взгляд в сторону, на ударном слоге веки вверх и кивок, в конце фразы моргание. Рот идёт за огибающей громкости, поэтому на роботе будет следовать за настоящим голосом.</td>
-            <td><code>/voice/tts/state</code> + уровень звука TTS (такого топика пока нет)</td></tr>
+            <td><code>/voice/speech/event</code> (started … finished) + огибающая голоса <code>/voice/speech/envelope</code></td></tr>
           <tr><td><b>Эмоции</b></td><td><ul>
             <li class="yes">Радость ^^ с хихиканьем, подмигивание</li>
             <li class="yes">Грусть: веки домиком, слеза</li>
@@ -306,7 +306,7 @@ const GROUPS = [
   ['emotion', 'Эмоции'], ['music', 'Музыка'], ['emergency', 'Экстренные'], ['driving', 'Езда'],
   ['system', 'Сон и система'], ['holiday', 'Праздник']
 ];
-const SIGNAL = { idle: 'IDLE', listening: 'LISTENING + /audio/direction', thinking: 'ждёт ответ LLM', talking: '/voice/tts/state + уровень голоса',
+const SIGNAL = { idle: 'IDLE', listening: 'LISTENING + /audio/direction', thinking: 'ждёт ответ LLM', talking: '/voice/speech/event + /voice/speech/envelope',
   emotion: '/voice/animation/request', music: '/voice/music/state, bpm', emergency: '/voice/animation/request',
   system: 'сон, батарея, ошибки', driving: 'cmd_vel / odom', holiday: 'календарь' };
 const M = DATA.model;

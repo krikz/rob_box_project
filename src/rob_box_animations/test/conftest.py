@@ -1,6 +1,6 @@
 """Test setup for rob_box_animations: package on sys.path, ROS stand-ins for face_node.
 
-``face_director`` and ``face`` are pure Python and need only numpy. ``face_node``
+``face_director`` and ``face`` are pure Python: numpy and the pure-Python packages rob_box_dialog / rob_box_core. ``face_node``
 imports rclpy / sensor_msgs / std_msgs / rob_box_dialog_msgs at module load;
 when they are not installed (Windows, lint images) light stand-ins are
 registered — a real ROS install wins (``setdefault``).
@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # rob_box_dialog (pure Python): CALENDAR table lives there; colcon puts it on the path in CI / the image
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rob_box_dialog'))
+# rob_box_core (pure Python): SpeakingWatch — «говорит» по SpeechEvent (PR-15 15-0b); в образе led-matrix собран рядом
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rob_box_core'))
 
 
 class _Msg:

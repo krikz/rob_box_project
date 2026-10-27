@@ -477,8 +477,9 @@ class STTNode(Node):
             AudioData, "/audio/quest_wake", self.quest_wake_audio_callback, audio_qos
         )
 
-        # Подписка на состояние TTS (чтобы не слышать себя)
-        self.tts_state_sub = self.create_subscription(String, "/voice/tts/state", self.tts_state_callback, 10)
+        # Речь робота (чтобы не слышать себя): SpeechEvent реплики любого агента, «звучит» решает SpeakingWatch
+        # (PR-15 15-0b #3711, раньше старый String-топик состояния TTS); здесь - реакция на фронт.
+        self._robot_speech = speech_client.watch_speaking(self, self._on_robot_speech)
         # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
         # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
         # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.
@@ -701,34 +702,27 @@ class STTNode(Node):
             self.publish_state("error")
             return False
 
-    def tts_state_callback(self, msg: String):
-        """Отслеживание состояния TTS.
+    def _on_robot_speech(self, speaking: bool) -> None:
+        """Фронт речи робота (``SpeechEvent``): «говорит» от ``started`` до ``finished|cancelled|rejected``.
 
         software mode: выключаем STT пока робот говорит.
         hardware mode: только логируем; AEC на чипе XVF-3000 фильтрует эхо.
+        Конец речи — и отмена (STOP/barge-in), и отказ: ``is_robot_speaking`` не залипает в ``True``, иначе ниже
+        (hardware-AEC, конфиг робота) фразы короче 0.8 с молча отбрасывались бы — «робот», «стоп», «да».
         """
-        import time
-
-        if msg.data in ["synthesizing", "playing"]:
-            if not self.is_robot_speaking:
-                if self.aec_mode == "software":
-                    self.get_logger().info("🔇 [software AEC] Робот говорит - распознавание отключено")
-                else:
-                    self.get_logger().debug("🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо")
-                self.is_robot_speaking = True
-        # ``stopped`` — STOP/barge-in (``tts_node._handle_stop_command``),
-        # ``tts_silero_warming`` — чанк пропущен и озвучен не будет.
-        # Оба означают «робот молчит». Без них ``is_robot_speaking``
-        # залипал в ``True``, и ниже (hardware-AEC, конфиг робота) фразы
-        # короче 0.8 с молча отбрасывались — «робот», «стоп», «да».
-        elif msg.data in ["ready", "idle", "stopped", "tts_silero_warming"]:
-            if self.is_robot_speaking:
-                self._tts_ended_at = time.monotonic()
-                if self.aec_mode == "software":
-                    self.get_logger().info("🎙️ [software AEC] Робот замолчал - распознавание включено")
-                else:
-                    self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
-                self.is_robot_speaking = False
+        software = self.aec_mode == "software"
+        if speaking:
+            if software:
+                self.get_logger().info("🔇 [software AEC] Робот говорит - распознавание отключено")
+            else:
+                self.get_logger().debug("🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо")
+        else:
+            self._tts_ended_at = time.monotonic()
+            if software:
+                self.get_logger().info("🎙️ [software AEC] Робот замолчал - распознавание включено")
+            else:
+                self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
+        self.is_robot_speaking = speaking
 
     def speech_audio_callback(self, msg: AudioData) -> None:
         """Фраза от audio_node (ReSpeaker) → /voice/stt/utterance (личность)."""

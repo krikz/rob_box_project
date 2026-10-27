@@ -18,6 +18,8 @@
   <depend>rob_box_dialog</depend>
   <depend>geometry_msgs</depend>
 
+  <!-- SpeakingWatch: «говорит» по SpeechEvent (PR-15 15-0b #3711) -->
+  <exec_depend>rob_box_core</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
