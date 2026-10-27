@@ -9,7 +9,7 @@ face_node:
     thinking_design: thinking_teeth
     # Через сколько секунд покоя лицо «заскучает» (idle_bored, 14 с) и вернётся в idle_stare.
     idle_bored_every_s: 60.0
-    # Нет голосового стека (ни сообщений, ни издателей /voice/speech/event, /voice/tts/state,
+    # Нет голосового стека (ни сообщений, ни издателей /voice/speech/event,
     # /audio/direction в графе) столько секунд -> sleep. Граф Zenoh отпускает издателя упавшего
     # контейнера ещё ~3 с (замер 20.10: kill 21:52:16 -> sleep через 13 с при 10 с), отсюда 7 с.
     voice_timeout_s: 7.0

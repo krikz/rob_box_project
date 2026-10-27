@@ -131,6 +131,44 @@ def test_speaking_watch_follows_started_and_end_events():
     assert not watch.speaking  # событие конца потерялось — не звучит вечно
 
 
+def test_speaking_watch_of_any_agent_reports_edges_once_for_overlapping_speech():
+    """PR-15 15-0b: читатели ``/voice/tts/state`` (лицо, эхо-гейты) слушают речь любого агента и реагируют на фронт:
+    начало первой реплики и конец последней; реплика внахлёст и конец незвучавшей фронта не дают."""
+    watch = speech_client.SpeakingWatch(speech_client.ANY_AGENT)
+    ev = lambda kind, sid, agent="personality": types.SimpleNamespace(kind=kind, speech_id=sid, agent=agent)  # noqa: E731
+    assert watch.on_event(ev(0, "a")) is None                       # queued: ещё не звучит
+    assert watch.on_event(ev(2, "a")) is True                       # started: зазвучало
+    assert watch.on_event(ev(2, "a")) is None                       # started того же куска ещё раз
+    assert watch.on_event(ev(2, "op", agent="operator")) is None    # оператор внахлёст: всё ещё звучит
+    assert watch.on_event(ev(4, "a")) is None                       # личность закончила, оператор звучит
+    assert watch.on_event(ev(5, "never-played")) is None            # отмена незвучавшей реплики
+    assert watch.on_event(ev(5, "op", agent="operator")) is False   # последняя замолчала
+    assert watch.on_event(ev(2, "s", agent="system")) is True
+    assert watch.on_event(ev(7, "s", agent="system")) is False      # rejected тоже конец
+
+
+def test_watch_speaking_subscribes_to_speech_event_and_reports_only_edges():
+    """Эхо-гейты микрофона (audio_node, stt_node): одна подписка на SpeechEvent, реакция — только на фронт."""
+    subs, edges = {}, []
+    node = types.SimpleNamespace(create_subscription=lambda t, topic, cb, depth: subs.setdefault(topic, (t, cb)))
+    watch = speech_client.watch_speaking(node, edges.append)
+    msg_type, callback = subs[speech_client.SPEECH_EVENT_TOPIC]
+    assert msg_type is M.SpeechEvent
+    for kind, sid, agent in [(0, "a", "personality"), (2, "a", "personality"), (2, "b", "operator"),
+                             (4, "a", "personality"), (5, "b", "operator")]:
+        callback(M.SpeechEvent(kind=kind, speech_id=sid, agent=agent))
+    assert edges == [True, False]
+    assert not watch.speaking
+
+
+def test_speaking_watch_of_one_agent_ignores_others_and_unknown_agent_is_refused():
+    watch = speech_client.SpeakingWatch("personality")
+    assert watch.on_event(types.SimpleNamespace(kind=2, speech_id="x", agent="operator")) is None
+    assert not watch.speaking
+    with pytest.raises(ValueError):
+        speech_client.SpeakingWatch("robot")
+
+
 def test_speech_agents_cover_dialog_engine_agents():
     """Агенты движка (knowledge.AGENTS) - подмножество авторов речи."""
     knowledge = pytest.importorskip("rob_box_dialog.knowledge")

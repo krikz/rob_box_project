@@ -163,7 +163,7 @@ def test_session_budgets():
     assert kn.IDENTITY_TTL_S == 15
     assert kn.REPLY_WINDOW_S == 15 == kn.IDENTITY_TTL_S  # одна константа окна ответа (Identity и приветствие)
     assert set(kn.SCENE_KINDS) == {"Silence", "Persona", "DJ", "OperatorHold", "Identity", "GreetingReply",
-                                   "PerformAsk"}
+                                   "PerformAsk", "ToolAsk"}
 
 
 def test_reflexes_use_known_scenes_ring_modes_and_earcons():

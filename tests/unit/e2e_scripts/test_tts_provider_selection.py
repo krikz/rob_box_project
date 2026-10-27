@@ -173,22 +173,15 @@ class TestMapTtsVoice:
             mapped = map_voice("silero", voice)
             assert '"%s"' % mapped.split(":")[0] in registry, ("silero", voice, mapped)
 
-    def test_minimax_cast_is_outside_robot_voice_catalog(self):
-        """Каст 26.10 (#3992) -- голоса ТЕСТОВЫХ людей из нерусского каталога MiniMax. В каталог робота
-        (PROVIDER_VOICES, его set_voice и список для LLM) они не входят и не должны: робот не должен
-        предлагать себе голос «Гриши». Заодно роль не может получить голос самого робота."""
-        registry = (
-            REPO_ROOT
-            / "src"
-            / "rob_box_voice"
-            / "rob_box_voice"
-            / "tts_voice_registry.py"
-        ).read_text(encoding="utf-8")
+    def test_minimax_cast_never_gets_the_robot_own_voice(self):
+        """Каст 26.10 (#3992) -- голоса ТЕСТОВЫХ людей. С #4086 (Шифу 27.10: «говори голосом Jovialman») они есть и в
+        каталоге робота (PROVIDER_VOICES): сверку «каст из харнесса -- в каталоге» держит test_issue_4086_cast_in_catalog.py.
+        Остаётся другое: роль не может получить голос самого робота (alena/jane/omazh -- Russian_*), иначе
+        speaker_id_node примет речь робота за человека марафона."""
         robot_voices = {map_voice("minimax", v).split(":")[0] for v in ("alena", "jane", "omazh")}
         for voice in SCENARIO_VOICES:
             cast = map_voice("minimax", voice).split(":")[0]
             assert cast not in robot_voices, (voice, cast)
-            assert '"%s"' % cast not in registry, (voice, cast)
 
 
 # --- resolve_tts_provider ---------------------------------------------------

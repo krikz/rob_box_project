@@ -83,9 +83,50 @@ def test_set_voice_with_provider_hint_yandex_updates_attribute():
 
 def test_set_voice_with_provider_hint_minimax_updates_attribute():
     n = _make_set_voice_node()
-    n._on_set_voice(_msg({"voice_id": "zahar", "provider": "minimax", "source": "set_voice"}))
-    assert n.minimax_voice == "zahar"
+    n._on_set_voice(_msg({"voice_id": "Russian_BrightHeroine", "provider": "minimax", "source": "set_voice"}))
+    assert n.minimax_voice == "Russian_BrightHeroine"
     assert n.yandex_voice == "anton"  # не тронут
+
+
+# ── #4086: голоса каста марафона в каталоге; топик не принимает голос вне каталога ──────────────────────────────
+
+
+def _warnings(n) -> str:
+    return " ".join(str(call) for call in n.get_logger().warning.call_args_list)
+
+
+def test_set_voice_cast_voice_by_id_is_applied():
+    """Голос каста (``English_Jovialman``) - голос каталога MiniMax: применяется как есть."""
+    n = _make_set_voice_node()
+    n._on_set_voice(_msg({"voice_id": "English_Jovialman", "provider": "minimax", "source": "set_voice"}))
+    assert n.minimax_voice == "English_Jovialman"
+
+
+def test_set_voice_topic_takes_ids_not_names():
+    """Топик ``/voice/tts/set_voice`` читает id (его пишут supervisor и Quest, оба с проверкой по каталогу). Имя
+    («Весельчак») в id переводит владелец голоса (``VoiceOwner`` через ``resolve_voice``), а не этот обработчик."""
+    n = _make_set_voice_node()
+    n._on_set_voice(_msg({"voice_id": "Весельчак", "provider": "minimax", "source": "set_voice"}))
+    assert n.minimax_voice == "male-qn-qingse"
+    assert "нет в каталоге" in _warnings(n)
+
+
+def test_set_voice_unknown_voice_with_provider_hint_is_refused_by_code():
+    """Раньше при явном ``provider`` в параметр уходил любой id, а синтез молча (WARN) брал дефолт.
+    Теперь голос вне каталога топик не принимает: голос не меняется, в логе причина."""
+    n = _make_set_voice_node()
+    n._on_set_voice(_msg({"voice_id": "Terminator_3000", "provider": "minimax", "source": "set_voice"}))
+    assert n.minimax_voice == "male-qn-qingse"
+    assert "Terminator_3000" in _warnings(n) and "нет в каталоге" in _warnings(n)
+
+
+def test_set_voice_voice_of_another_provider_is_refused():
+    """``zahar`` - голос Yandex; у MiniMax его нет (раньше топик клал его в ``minimax_voice``)."""
+    n = _make_set_voice_node()
+    n._on_set_voice(_msg({"voice_id": "zahar", "provider": "minimax", "source": "set_voice"}))
+    assert n.minimax_voice == "male-qn-qingse"
+    assert n.yandex_voice == "anton"
+    assert "нет в каталоге" in _warnings(n) and "'minimax'" in _warnings(n)
 
 
 def test_set_voice_with_provider_hint_silero_updates_attribute():
@@ -141,7 +182,7 @@ def test_set_voice_unknown_provider_dropped():
     assert n.silero_speaker == "baya"
     warning_calls = [
         call for call in n.get_logger().warning.call_args_list
-        if "unknown provider" in str(call)
+        if "провайдер неизвестен" in str(call)
     ]
     assert warning_calls
 

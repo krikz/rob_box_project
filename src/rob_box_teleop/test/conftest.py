@@ -4,6 +4,10 @@ conftest.py — Mock ROS2/rclpy dependencies for rob_box_teleop unit tests.
 Loaded before any module that imports rclpy (mirrors the rob_box_voice
 pattern). FakeNode keeps a parameter registry and records published
 messages so tests can assert on topics without a ROS2 runtime.
+
+Speech goes through rob_box_core.speech_client, which builds a real
+``SpeechRequest``: the real rosidl package when it is built (CI), otherwise a
+stub assembled from the repository's ``.msg`` files (Windows, no ROS).
 """
 
 import sys
@@ -11,6 +15,13 @@ import types
 from unittest.mock import MagicMock
 
 import pytest
+
+from rob_box_core.msg_stub import install_dialog_msgs_stub
+
+DIALOG_MSGS = install_dialog_msgs_stub()
+#: ``builtin_interfaces/Time`` of whichever message build is at hand (the real
+#: one validates the type of ``SpeechRequest.stamp`` on assignment).
+_TIME = type(DIALOG_MSGS.SpeechRequest().stamp)
 
 
 # Per-test parameter overrides; a test sets them before instantiating the node.
@@ -35,6 +46,16 @@ class FakePublisher:
 
     def publish(self, msg):
         self.messages.append(msg)
+
+
+class FakeClock:
+    """rclpy Clock stub: ``now().to_msg()`` is a real ``builtin_interfaces/Time``."""
+
+    def now(self):
+        return self
+
+    def to_msg(self):
+        return _TIME(sec=7, nanosec=5)
 
 
 class FakeNode:
@@ -77,9 +98,7 @@ class FakeNode:
         return self._name
 
     def get_clock(self):
-        clock = MagicMock()
-        clock.now.return_value.to_msg.return_value = MagicMock()
-        return clock
+        return FakeClock()
 
 
 class FakeTwist:
@@ -112,7 +131,6 @@ def _install_ros_mocks():
 
     mock_std_msgs = MagicMock()
     mock_std_msgs_msg = MagicMock()
-    mock_std_msgs_msg.String = MagicMock
     mock_std_msgs_msg.Bool = FakeBool
 
     mocks = {

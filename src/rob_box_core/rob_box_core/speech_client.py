@@ -218,28 +218,52 @@ class SpeakingWatch:
     """Звучит ли сейчас речь агента — по ``/voice/speech/event``: ``started`` без ``finished/cancelled/rejected``.
 
     Канал громкости «громче» (ADR-0150 §4.2): звучит речь — голос робота, а не музыка.
+    ``agent=ANY_AGENT`` — речь любого автора, то есть всё, что играет динамик: рот лица и эхо-гейты микрофона
+    (``face_node``, ``audio_node``, ``stt_node``; вместо старого String-топика состояния TTS, PR-15 15-0b #3711).
     """
 
     def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic) -> None:
-        _check_agent(agent)
+        _check_agent(agent, allow_any=True)
         self.agent = agent
         self._clock = clock
         self._live: Dict[str, float] = {}
 
-    def on_event(self, event: Any) -> None:
-        if getattr(event, "agent", "") != self.agent:
-            return
+    def on_event(self, event: Any) -> Optional[bool]:
+        """Учесть событие; вернуть новое «звучит», если событие его сменило (фронт), иначе ``None``.
+
+        По фронту читатель делает своё один раз: эхо-гейт сбрасывает буфер на ``True`` и запоминает конец речи на
+        ``False``; реплики, звучащие внахлёст (оператор поверх личности), фронта не дают."""
+        if self.agent != ANY_AGENT and getattr(event, "agent", "") != self.agent:
+            return None
+        was = self.speaking
         kind, sid = int(getattr(event, "kind", -1)), str(getattr(event, "speech_id", "") or "")
         if kind == KIND_STARTED:
             self._live[sid] = self._clock()
         elif kind in _KIND_ENDED:
             self._live.pop(sid, None)
+        now = self.speaking
+        return now if now != was else None
 
     @property
     def speaking(self) -> bool:
         now = self._clock()
         self._live = {sid: at for sid, at in self._live.items() if now - at <= SPEAKING_STALE_S}
         return bool(self._live)
+
+
+def watch_speaking(node: Any, on_change: Callable[[bool], None], agent: str = ANY_AGENT) -> SpeakingWatch:
+    """Подписать узел на ``/voice/speech/event``: ``on_change(speaking)`` — на каждый фронт «звучит» речи ``agent``
+    (по умолчанию любого автора — всё, что играет динамик). Эхо-гейты микрофона (``audio_node``, ``stt_node``)
+    держат только реакцию на фронт; что такое «звучит» — :class:`SpeakingWatch`. Возвращает наблюдателя."""
+    watch = SpeakingWatch(agent)
+
+    def on_event(event: Any) -> None:
+        speaking = watch.on_event(event)
+        if speaking is not None:
+            on_change(speaking)
+
+    node.create_subscription(_msgs().SpeechEvent, SPEECH_EVENT_TOPIC, on_event, _QOS_DEPTH)
+    return watch
 
 
 __all__ = [
@@ -264,4 +288,5 @@ __all__ = [
     "event_outcome",
     "prepare",
     "say",
+    "watch_speaking",
 ]

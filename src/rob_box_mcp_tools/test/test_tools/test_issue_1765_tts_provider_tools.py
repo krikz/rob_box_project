@@ -48,6 +48,7 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
     _validate_provider,
 )
 from rob_box_mcp_tools.voice_request import VoiceOutcome  # noqa: E402
+from rob_box_voice.tts_voice_registry import PROVIDER_VOICES  # noqa: E402
 
 
 def _published_payloads(tool, topic: str) -> list[dict]:
@@ -265,7 +266,8 @@ class TestListTtsVoicesTool:
         by_name = {p["provider"]: p for p in data["providers"]}
         assert set(by_name) == set(SUPPORTED_TTS_PROVIDERS)
         assert [p["provider"] for p in data["providers"] if p["active"]] == ["minimax"]
-        assert by_name["minimax"]["voices_count"] == 10 and by_name["yandex"]["voices_count"] == 13
+        # число голосов - из реестра, не вписано руками: новый голос каталога (#4086) не ломает тест
+        assert {n: p["voices_count"] for n, p in by_name.items()} == {n: len(v) for n, v in PROVIDER_VOICES.items()}
         for p in data["providers"]:
             assert {s["gender"] for s in p["samples"]} == {"male", "female"}
             assert p["label"] and all(s["name"] and "legacy" not in s["name"] for s in p["samples"])
@@ -285,6 +287,13 @@ class TestListTtsVoicesTool:
         assert "zahar" in result.data["voices"]
         assert "artem" not in result.data["voices"]  # artem нет в списке
         assert result.data["default_voice"] == "anton"
+
+    def test_provider_listing_names_voices_for_the_human(self, mock_node) -> None:
+        """#4086: у голосов каста MiniMax в ответе есть русские имена - ими модель назовёт голос человеку."""
+        result = ListTtsVoicesTool(mock_node).execute(provider="minimax")
+        assert "English_Jovialman" in result.data["voices"]
+        assert result.data["names"]["English_Jovialman"] == "Весельчак"
+        assert set(result.data["names"]) == set(result.data["voices"])  # имя есть у каждого голоса списка
 
     def test_unknown_provider_returns_error(self, mock_node) -> None:
         tool = ListTtsVoicesTool(mock_node)

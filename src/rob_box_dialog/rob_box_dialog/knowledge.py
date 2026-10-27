@@ -982,6 +982,54 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "set_speed": MappingProxyType({"done": ByData(("action",), {("normal",): "speed.normal"})}),
     "set_pitch": MappingProxyType({"done": ByData(("action",), {("normal",): "pitch.normal"})}),
 })
+
+
+@dataclass(frozen=True)
+class ToolQuestion:
+    """Вопрос тула человеку (#4062, ADR-0148): отказ тула с этой причиной - не провал, а вопрос «Удалить «X»?». Его
+    фраза - ключ ``{класс}.rejected.{причина}`` каталога, как у любого исхода (``respond``); лицо - не грустное.
+
+    Ответ ждёт окно сессии (кадр :data:`TOOL_ASK_SCENE`, ``tool_ask``): «да» исполняет КОД - тот же вызов с
+    ``confirm`` поверх его аргументов, фраза успеха - из результата; «нет» - фраза ``declined``. ``verbs`` - основы
+    глагола действия в ответе («да, удаляй»), ``objects`` - основы того, о чём вопрос («удаляй эту песню»).
+    ``emotion`` - эмоция речи вопроса на всех путях хода (``respond.outcome_emotion``): не грусть провала и не
+    настроение модели (ревью PR #4100: с лицом модели ``happy`` вопрос звучал радостно)."""
+
+    confirm: Mapping[str, Any]
+    verbs: Tuple[str, ...]
+    objects: Tuple[str, ...]
+    declined: str
+    emotion: str = "neutral"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "confirm", MappingProxyType(dict(self.confirm)))
+
+
+#: Отказы тулов, которые - вопрос человеку: ``(тул, причина)`` -> :class:`ToolQuestion`. Причина - константа тула
+#: (``gen_library.NEEDS_CONFIRMATION``; сверку держит ``rob_box_mcp_tools/test/test_tools/test_gen_library.py``).
+#: Живой робот 27.10 14:47: на «Робот, да, удаляй» ``music_library`` не было в срезе, модель сказала «Удаляю все
+#: четыре…» без вызова тула, треки остались - подтверждение больше не идёт через LLM.
+TOOL_QUESTIONS: Mapping[Tuple[str, str], ToolQuestion] = MappingProxyType({
+    (LIBRARY_TOOL, "needs_confirmation"): ToolQuestion(
+        {"confirm": True}, ("удал", "сотр", "стир"), ("песн", "трек", "композиц", "библиотек"),
+        "music.library_delete_kept"),
+})
+#: Ответ на вопрос тула (``tool_ask.answer``): реплика ЦЕЛИКОМ из этих слов, глагола и предмета вопроса
+#: (:class:`ToolQuestion`) и служебных :data:`TOOL_ANSWER_FILLER`. Есть слово «нет» - отказ (необратимое не делаем по
+#: «нет, удали»); иначе «да» или глагол - согласие. Лишнее слово - не ответ: «да, удали все» или «удали оба» просят не
+#: о том треке, о котором спросил тул, - ход идёт к LLM, группа тула вопроса открыта в срезе. Стоп-слов
+#: (:data:`STOP_WORDS`: «стой», «отставить») здесь нет: стоп остаётся стопом Tier-1 и при открытом вопросе.
+#: Согласие на необратимое - только явное: «да», «ага», «угу», «подтверждаю», «уверен(а)» и глагол вопроса. Не
+#: :data:`YES_WORDS` целиком: «ладно», «ок», «окей», «хорошо», «конечно», «точно» поодиночке - не подтверждение
+#: удаления («ну ладно» - часто «ладно, забудь»; «да ладно» - недоверие; ревью PR #4100): такая реплика - не ответ,
+#: решает LLM. «давай» - служебное: «да, давай, удаляй» - согласие, голое «давай» - не ответ.
+TOOL_ANSWER_YES: Tuple[str, ...] = ("да", "ага", "угу", "подтверждаю", "уверен", "уверена")
+TOOL_ANSWER_NO: Tuple[str, ...] = NO_WORDS + (
+    "отмена", "отмени", "отменяй", "передумал", "передумала", "оставь", "оставляй")
+TOOL_ANSWER_FILLER: Tuple[str, ...] = (
+    "давай",
+    "ну", "а", "и", "но", "же", "ка", "эй", "пожалуйста", "плиз", "это", "эту", "этот", "эта", "его", "её", "ее", "так",
+    "вот", "уже", "сейчас", "там", "тут", "ты", "мне", "надо", "нужно", "можно", "из", "насовсем", "совсем")
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
@@ -1088,6 +1136,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER,)
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     *INVALID_COMMAND_PHRASES.values(),
+    *(question.declined for question in TOOL_QUESTIONS.values()),
     *QUERY_FALLBACK_PHRASES.values(),
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
@@ -1259,7 +1308,8 @@ CALENDAR: Tuple[CalendarTheme, ...] = (
 # ---------------------------------------------------------------------------------------------------------------
 
 #: Кадры стека сцен сессии.
-SCENE_KINDS: Tuple[str, ...] = ("Silence", "Persona", "DJ", "OperatorHold", "Identity", "GreetingReply", "PerformAsk")
+SCENE_KINDS: Tuple[str, ...] = ("Silence", "Persona", "DJ", "OperatorHold", "Identity", "GreetingReply", "PerformAsk",
+                                "ToolAsk")
 #: Кадры вопроса робота: их истечение снимает и ``pending_ask`` сессии (имя; «выключить и зачитать?», О9′).
 ASK_SCENES: Tuple[str, ...] = ("Identity", "PerformAsk")
 #: Кто кладёт кадр ``Silence``/``OperatorHold``: пользовательскую тишину снимает не оператор, и наоборот.
@@ -1277,6 +1327,19 @@ SILENCED_TURN_REASON = "silenced"
 REPLY_WINDOW_S = 15
 #: Кадр ``Identity(ask)`` — ответ ждётся ``REPLY_WINDOW_S``.
 IDENTITY_TTL_S = REPLY_WINDOW_S
+#: Окно ответа на вопрос тула (#4062, :data:`TOOL_QUESTIONS`): кадр сессии с тулом, аргументами вызова и причиной
+#: кладёт ход, получивший такой отказ (``tool_ask.note``). Отвечает только реплика с вейком, из Telegram или от
+#: оператора (``tool_ask.ANSWER_SOURCES``: «да» без вейка на другой вопрос робота окно не видит), поэтому окно длиннее
+#: ``REPLY_WINDOW_S``: робот договаривает вопрос, человек зовёт его и отвечает. Не дольше срока самого тула
+#: (``gen_library.CONFIRM_TTL_S`` = 120 с; сверку держит тест тула): подтверждение кода тул ещё принимает. Истекло -
+#: «да» ничего не подтверждает и идёт к LLM как обычная реплика.
+TOOL_ASK_SCENE = "ToolAsk"
+TOOL_ASK_TTL_S = 60.0
+#: Кадры, которые снимают окно вопроса тула, когда их кладут (``Session.push_scene``, ревью PR #4100): «да» после них -
+#: ответ не тулу. Новый вопрос робота (``Identity`` «это ты, Саша?», ``GreetingReply``, ``PerformAsk`` «выключить и
+#: зачитать?»), тишина (робот молчит, необратимое не подтверждается), оператор взял личность. Окно снимают и вопрос
+#: модели (``Session.set_pending_ask``), и стоп (``Session.replace_epoch``), и новая сессия.
+TOOL_ASK_CLOSED_BY: Tuple[str, ...] = ("Silence", "OperatorHold", "Identity", "GreetingReply", "PerformAsk")
 #: Окно 15 с идёт от КОНЦА речи самого вопроса (``SpeechEvent finished``), а не от конца хода (#3771, В17′).
 #: Пока вопрос не договорён, кадр ждёт; это страховка, если событие конца потерялось (кадр снимается без ответа).
 IDENTITY_WAIT_QUESTION_S = 180

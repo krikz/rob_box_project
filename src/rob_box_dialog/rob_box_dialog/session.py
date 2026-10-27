@@ -139,13 +139,15 @@ class Session:
 
     def push_scene(self, kind: str, set_by: str, ttl_s: Optional[float] = None,
                    payload: Optional[Mapping[str, Any]] = None) -> SceneFrame:
-        """Положить кадр; TTL по умолчанию — из :mod:`.knowledge` (тишина пользователя, вопрос личности)."""
+        """Положить кадр; TTL по умолчанию — из :mod:`.knowledge` (тишина пользователя, вопрос личности). Кадр из
+        ``knowledge.TOOL_ASK_CLOSED_BY`` (новый вопрос робота, тишина, оператор) снимает окно вопроса тула (#4062)."""
         if kind not in kn.SCENE_KINDS or set_by not in kn.SCENE_SETTERS:
             raise ValueError(f"push_scene: unknown kind/set_by {kind!r}/{set_by!r}")
         ttl = _DEFAULT_TTL_S.get((kind, set_by)) if ttl_s is None else ttl_s
         frame = SceneFrame(kind, set_by, None if ttl is None else self._clock() + ttl,
                            MappingProxyType(dict(payload or {})))
-        self._commit("push_scene", scenes=self._snap.scenes + (frame,))
+        scenes = _without_tool_ask(self._snap.scenes) if kind in kn.TOOL_ASK_CLOSED_BY else self._snap.scenes
+        self._commit("push_scene", scenes=scenes + (frame,))
         return frame
 
     def pop_scene(self, kind: str, set_by: Optional[str] = None) -> Optional[SceneFrame]:
@@ -187,8 +189,9 @@ class Session:
 
     def replace_epoch(self) -> int:
         """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий
-        прошлой эпохи больше не исполняются; сцены, вопрос и всё остальное — как были (это не новая сессия)."""
-        self._commit("replace_epoch", epoch=self._snap.epoch + 1)
+        прошлой эпохи больше не исполняются; сцены, вопрос и всё остальное — как были (это не новая сессия), кроме
+        окна вопроса тула: после «стоп» «да» необратимое не подтверждает (#4062, ревью PR #4100)."""
+        self._commit("replace_epoch", epoch=self._snap.epoch + 1, scenes=_without_tool_ask(self._snap.scenes))
         return self._snap.epoch
 
     def set_voice(self, requested: Optional[str] = None, applied: Optional[str] = None,
@@ -210,10 +213,18 @@ class Session:
         self._commit("set_music", music=music)
 
     def set_pending_ask(self, ask: Optional[Ask]) -> None:
-        self._commit("set_pending_ask", pending_ask=ask)
+        """Вопрос робота словами модели. Новый вопрос снимает окно вопроса тула: «да» после него — ответ ему, а не
+        подтверждение удаления (#4062, ревью PR #4100)."""
+        scenes = _without_tool_ask(self._snap.scenes) if ask is not None else self._snap.scenes
+        self._commit("set_pending_ask", pending_ask=ask, scenes=scenes)
 
     def _commit(self, change: str, **fields: Any) -> None:
         self._snap = replace(self._snap, **fields)
         event = SessionChanged(change, self._snap)
         for listener in list(self._listeners):
             listener(event)
+
+
+def _without_tool_ask(scenes: Tuple[SceneFrame, ...]) -> Tuple[SceneFrame, ...]:
+    """Стек без окна вопроса тула (``knowledge.TOOL_ASK_SCENE``, ``tool_ask``)."""
+    return tuple(f for f in scenes if f.kind != kn.TOOL_ASK_SCENE)

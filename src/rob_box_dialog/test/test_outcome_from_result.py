@@ -151,12 +151,14 @@ def _refusal(tool, cls, reason, **data):
 ])
 def test_library_delete_without_confirm_asks_with_the_track_title(title, want):
     """n710 (марафон 23.10): необратимое удаление теперь идёт в два вызова. Первый тул только спрашивает
-    (``needs_confirmation``, ``data.title``) - человек слышит вопрос с названием трека, а не «С библиотекой не вышло»."""
-    data = {"track_id": "t-1", "title": title, "question": want}  # данные отказа как у тула (gen_library._delete)
+    (``needs_confirmation``, ``data.title``) - человек слышит вопрос с названием трека, а не «С библиотекой не вышло».
+    Текст вопроса - фраза кода по причине и названию (#4062: тул его в данных больше не шлёт); ``want`` - литерал, а не
+    сборка из того же каталога: правка ``ru.yaml`` видна здесь, совпадение с текстом тула держит тест тула."""
+    data = {"track_id": "t-1", "title": title}  # данные отказа как у тула (gen_library._delete)
     ports = Ports([Answer(Command(actions=(_library("delete", track_id="t-1"),)), "deepseek")],
                   {"music_library": ("rejected", "needs_confirmation", data)})
     agg = _run(_engine(ports), "удали эту песню про енота")
-    assert ports.said == [want] == [data["question"]]
+    assert ports.said == [want]
     assert phrases.text("music.library_fail") not in ports.said
     assert agg.llm_calls == 1 and ports.stage_classes == ["action.local"], "вопрос говорит код, LLM за ним не зовётся"
 

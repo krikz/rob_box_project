@@ -3,7 +3,8 @@
 Исполнитель отвечает :class:`ActionResult`; :func:`phrase_from_result` строит по нему реплику из каталога
 ``phrases/ru.yaml`` по ключу ``{класс}.{статус}[.{причина}]`` (или особому ключу тула, ``knowledge.TOOL_PHRASES``),
 :func:`join` собирает фразы нескольких действий хода в одну реплику. ``query`` с ``done`` фразы не даёт: данные
-уходят обратно LLM.
+уходят обратно LLM. Провал (:func:`failed`) грустит; отказ тула, который - вопрос человеку (:func:`asks`,
+``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал (#4062); эмоция фразы об исходах - :func:`outcome_emotion`.
 """
 
 from __future__ import annotations
@@ -34,6 +35,28 @@ class ActionResult:
     reason: Optional[str] = None
     data: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     event_ref: Optional[str] = None
+
+
+def asks(result: ActionResult) -> bool:
+    """Отказ тула - вопрос человеку (``knowledge.TOOL_QUESTIONS``, #4062): «Удалить «X»? Скажи «да, удаляй».» -
+    ничего не провалилось, тул ждёт ответа."""
+    return result.status == "rejected" and (result.tool, result.reason) in kn.TOOL_QUESTIONS
+
+
+def failed(result: ActionResult) -> bool:
+    """Исход - провал (``rejected``/``timeout``): фраза о нём грустит, лицо команды его не красит (§5.5.1). Вопрос
+    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad`` (#4062)."""
+    return result.status in _FAILED and not asks(result)
+
+
+def outcome_emotion(results: Sequence[ActionResult], default: Optional[str] = None) -> Optional[str]:
+    """Эмоция фразы кода об исходах - одно правило для всех путей хода (#4062): провал - ``sad``; вопрос тула -
+    эмоция вопроса (``ToolQuestion.emotion``: не грусть провала и не настроение модели, ревью PR #4100); иначе
+    ``default`` (лицо команды модели или ``None``)."""
+    if any(failed(r) for r in results):
+        return "sad"
+    question = next((r for r in results if asks(r)), None)
+    return default if question is None else kn.TOOL_QUESTIONS[(question.tool, str(question.reason))].emotion
 
 
 def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
@@ -97,7 +120,7 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
     text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,
-                     emotion="sad" if result.status in _FAILED else None)
+                     emotion=outcome_emotion((result,)))
 
 
 def quiet_in_performance(result: ActionResult) -> bool:

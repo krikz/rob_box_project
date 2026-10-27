@@ -55,11 +55,31 @@ def test_node_wires_inputs_and_timers():
     from rob_box_animations.face_node import FaceNode
     node = FaceNode()
     topics = {t for t, _ in node.subscriptions}
-    assert {'/voice/speech/envelope', '/voice/speech/event', '/voice/tts/state', '/audio/direction',
+    assert {'/voice/speech/envelope', '/voice/speech/event', '/audio/direction',
             '/audio/vad', '/voice/music/state', '/voice/expression/request',
             '~/scene'} <= topics
     assert '/voice/animation/request' not in topics     # ADR-0150 PR-3b: v1-топик снят, лицо слушает ExpressionRequest
+    assert '/voice/tts/state' not in topics             # PR-15 15-0b: «говорит» — по SpeechEvent
     assert sorted(p for p, _ in node.timers) == [0.04, 1.0]
+
+
+def test_speech_event_through_the_subscription_makes_the_face_talk_and_cancel_shuts_it():
+    """PR-15 15-0b (#3711): лицо говорит, пока звучит реплика (SpeechEvent started ... finished); cancelled — рот
+    закрыт сразу. Событие идёт через ту же подписку /voice/speech/event, что на роботе."""
+    import time
+
+    from rob_box_core.msg_stub import build_dialog_msgs_module
+
+    speech_event = build_dialog_msgs_module().SpeechEvent
+    node = _face_node()
+    on_event = dict(node.subscriptions)['/voice/speech/event']
+    now = time.time()
+    node.director.voice_seen(now)
+    node.director._wake_until = now                      # wakeup start-up scene is over
+    on_event(speech_event(kind=speech_event.KIND_STARTED, speech_id='s1', agent='personality'))
+    assert node.director.choose(time.time())[0] == 'talk_jaw'
+    on_event(speech_event(kind=speech_event.KIND_CANCELLED, speech_id='s1', agent='personality'))
+    assert not node.director.speaking(time.time())
 
 
 def _expression(**fields):

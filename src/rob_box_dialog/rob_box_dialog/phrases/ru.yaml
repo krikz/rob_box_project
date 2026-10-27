@@ -214,8 +214,11 @@ music.library_empty: ["В библиотеке сгенерированной м
 music.library_no_track: ["Не знаю, о каком треке речь: ничего из библиотеки ещё не играло."]
 music.library_fail: ["С библиотекой музыки не вышло."]
 # отказы тула по ПРИЧИНЕ (reason в данных, #4025): удаление необратимо и идёт в два вызова - первый только спрашивает
-# («Удалить {name}?», название из data.title); track_id берётся только из list/search - выдуманный id тул отвергает
+# («Удалить {name}?», название из data.title); track_id берётся только из list/search - выдуманный id тул отвергает.
+# Текст вопроса один: его же берёт тул (media_phrases.library_delete_question_text); ответ ждёт окно сессии (#4062,
+# knowledge.TOOL_QUESTIONS): «да» исполняет код, «нет» - music.library_delete_kept
 music.library_fail.needs_confirmation: ["Удалить {name}? Скажи «да, удаляй»."]
+music.library_delete_kept: ["Не удаляю."]
 music.library_fail.unknown_track: *unknown_track
 music.library_list: ["В библиотеке {total} {tracks}"]
 music.library_examples: [", например: {names}."]
