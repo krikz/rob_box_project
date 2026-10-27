@@ -180,10 +180,10 @@ def _plausible_name(word: str) -> bool:
             and word not in INTRO_NOT_A_NAME and not word.endswith(REPLY_VERB_ENDINGS + INTRO_ADJECTIVE_ENDINGS))
 
 
-def _greeted_stranger(tokens: Sequence[str]) -> bool:
-    """«Привет, я Аскар»: «я» сразу после приветствия и за ним правдоподобное незнакомое имя."""
-    return any(tokens[i] == "я" and tokens[i - 1] in INTRO_GREETING_WORDS and _plausible_name(tokens[i + 1])
-               for i in range(1, len(tokens) - 1))
+def _greeted_name(tokens: Sequence[str]) -> Optional[str]:
+    """«Привет, я Аскар»: «я» сразу после приветствия и за ним правдоподобное незнакомое имя - оно и возвращается."""
+    return next((tokens[i + 1] for i in range(1, len(tokens) - 1)
+                 if tokens[i] == "я" and tokens[i - 1] in INTRO_GREETING_WORDS and _plausible_name(tokens[i + 1])), None)
 
 
 def introduces_self(text: str) -> bool:
@@ -196,8 +196,15 @@ def introduces_self(text: str) -> bool:
     ``REPLY_VERB_ENDINGS``), не прилагательное и не состояние (``INTRO_NOT_A_NAME``). Редкое имя без приветствия не
     узнаётся - это остаётся на LLM и на ``tools_view.widen_for`` (``register_speaker`` вне среза), честная граница:
     словарь даёт точность, а не полноту."""
+    return self_intro_name(text) is not None
+
+
+def self_intro_name(text: str) -> Optional[str]:
+    """Имя, которым человек назвал себя в реплике, или ``None``: то самое, что находит :func:`introduces_self` («меня
+    зовут X», «я X» из словаря имён, «привет, я X»), - строчное, ё → е, как в :func:`name_tokens`. Единственная
+    реализация: гейт ``register_speaker`` (#2925) сверяет с ним имя, которое модель пишет в профиль голоса."""
     tokens = name_tokens(text)
-    return introduced_name(tokens) is not None or _greeted_stranger(tokens)
+    return introduced_name(tokens) or _greeted_name(tokens)
 
 
 def asks_own_memory(text: str) -> bool:

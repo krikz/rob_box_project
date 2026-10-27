@@ -920,6 +920,9 @@ class RegisterSpeakerTool(MCPTool):
         return MCPToolResult(
             success=False,
             data={"error": "not_self_introduction",
+                  # исход для диалога v2 (``command_turn.owner_event``): статус и причина - ключ фразы кода
+                  # ``identity.rejected.not_self_introduction``, а не обрывок текста ``message`` (#4054)
+                  "status": "rejected", "reason": "not_self_introduction",
                   "received": name, "known_speaker": known_speaker_name},
             message=(
                 f"Имя '{name}' НЕ зарегистрировано: в этой реплике человек "

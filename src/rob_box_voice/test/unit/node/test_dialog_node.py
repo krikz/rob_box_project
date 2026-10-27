@@ -717,9 +717,9 @@ class _Bridge:
         return {"success": True, "data": {"status": "done", "track_id": "req95964:01:A"}}
 
 
-def _music_node(monkeypatch, delay):
+def _music_node(monkeypatch, delay, tool="request_music", args=None):
     """Нода с настоящими ``build_tools``/``build_chat_tools`` (``ROSMCPToolProvider`` под планировщиком) и мостом
-    :class:`_Bridge`; LLM заказывает ``request_music``."""
+    :class:`_Bridge`; LLM заказывает ``request_music`` (или другой ``tool`` с ``args``)."""
     import rob_box_mcp_tools.llm_adapter as adapter
     from rob_box_llm.provider import ToolCall
 
@@ -727,7 +727,7 @@ def _music_node(monkeypatch, delay):
     monkeypatch.setattr(adapter, "LLMToolCallAdapter", lambda node, sender=None, turn_context=None: (
         bridges.append(_Bridge(turn_context, delay)) or bridges[-1]))
     order = ToolCall(id="c1", name="command", arguments={
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": N809}}]})
+        "actions": [{"tool": tool, "args": args or {"intent": "track", "text": N809}}]})
     llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
     made = dn.DialogNode()
@@ -779,6 +779,107 @@ def test_chat_tool_call_gets_the_chat_text_not_the_voice_turn(monkeypatch):
         made._on_utterance(_chat_utterance("сыграй Running Up That Hill на балалайке"))
         made.last_chat_turn.result(timeout=10)
         assert seen == [{"heard_text": "сыграй Running Up That Hill на балалайке"}]
+    finally:
+        made.shutdown()
+
+
+# -- Гейт ``register_speaker`` в v2 (#2925, #4054): кем голос узнан уверенно и как человек назвал себя ----------------
+
+#: Реплики акта 2c (марафон 27.10) без вейка: ``decision.text``, как её видит тул.
+TAMARA_HEARD = "привет, я Тамара, мы с тобой ещё не знакомы, запомни мой голос"
+FACT_HEARD = "запомни, что Саша любит чай"
+NINA = {"is_known": True, "speaker_id": "e35517b2", "name": "Нина", "confidence": 0.93}
+
+
+def _register_call(monkeypatch, heard, voice, name):
+    """Голосовой ход: биометрия фразы (``voice`` или её нет) → реплика → LLM заказывает ``register_speaker(name)``;
+    скрытый контекст хода, как его читает ``LLMToolCallAdapter`` в момент отправки запроса тула."""
+    made = _music_node(monkeypatch, delay=0.0, tool="register_speaker", args={"name": name})
+    try:
+        if voice is not None:
+            made._on_speaker(_voice({**voice, "utterance_id": "u4054"}))
+        made._on_utterance(_said(f"Робот, {heard}", "u4054"))
+        made.last_turn.result(timeout=10)
+        [(tool, _, _, context)] = made.test_bridge.calls
+        assert tool == "register_speaker"
+        return context
+    finally:
+        made.shutdown()
+
+
+def test_register_speaker_gets_the_voice_and_the_introduction_of_its_turn_4054(monkeypatch):
+    """Акт 2c: Нина уверенно + «привет, я Тамара … запомни мой голос» - в тул едут и «назвалась Тамарой», и «по голосу это
+    Нина» (раньше только ``utterance_id`` и ``heard_text``: гейт #2925 в v2 молчал)."""
+    context = _register_call(monkeypatch, TAMARA_HEARD, NINA, "Тамара")
+    assert context == {"utterance_id": "u4054", "heard_text": TAMARA_HEARD, "self_intro_name": "тамара",
+                       "known_speaker_name": "Нина"}
+
+
+def test_register_speaker_of_a_fact_about_someone_else_gets_no_introduction_4054(monkeypatch):
+    """«Запомни, что Саша любит чай» голосом Нины: человек себя не называл (``self_intro_name`` нет), голос - Нина; гейт
+    по этому контексту откажет ``register_speaker("Саша")`` (``rob_box_mcp_tools/test/test_issue_4054_register_gate_v2``)."""
+    context = _register_call(monkeypatch, FACT_HEARD, NINA, "Саша")
+    assert context == {"utterance_id": "u4054", "heard_text": FACT_HEARD, "known_speaker_name": "Нина"}
+
+
+@pytest.mark.parametrize("voice", [
+    None,
+    {"is_known": False},
+    {"is_known": True, "speaker_id": "e35517b2", "name": None, "tentative_name": "Нина", "tentative_kind": "single"},
+    {"is_known": True, "speaker_id": "e35517b2", "name": None, "tentative_name": "Нина", "tentative_kind": "contested"},
+    {"is_known": True, "speaker_id": "e35517b2", "name": None, "epithet": "Хмурый"},
+], ids=["no-biometry", "unknown", "tentative", "contested", "nameless"])
+def test_register_speaker_gets_no_known_speaker_unless_the_voice_is_confident_4054(monkeypatch, voice):
+    """Нет биометрии фразы, голос не узнан, гипотеза, спор, профиль без имени - ключа ``known_speaker_name`` нет: гейт
+    молчит, регистрацию разбирает ADR-0127 (граница #2925: уверенно - значит уверенно)."""
+    context = _register_call(monkeypatch, "меня зовут Олег", voice, "Олег")
+    assert context == {"utterance_id": "u4054", "heard_text": "меня зовут Олег", "self_intro_name": "олег"}
+
+
+def test_known_speaker_is_read_when_the_tool_is_called_not_when_the_turn_starts_4054():
+    """Биометрия приходит, пока идёт LLM (STT и голос независимы): к вызову тула она уже в реестре - гейт её видит. В
+    момент начала хода её ещё не было."""
+    from rob_box_voice.core.utterance_speaker import UtteranceSpeakerRegistry
+
+    registry = UtteranceSpeakerRegistry()
+    context = dn.voice_turn_context(registry, "u-late", FACT_HEARD)
+
+    async def turn():
+        before = dict(dn.tool_turn_context())
+        registry.submit("u-late", {**NINA, "utterance_id": "u-late"})
+        return before, dict(dn.tool_turn_context())
+
+    before, after = asyncio.run(dn.in_tool_turn(context, turn()))
+    assert "known_speaker_name" not in before and after["known_speaker_name"] == "Нина"
+    assert dn.tool_turn_context() == {}, "вне хода контекста нет"
+
+
+def test_chat_turn_gets_no_gate_keys_even_when_the_text_names_someone_4054(monkeypatch):
+    """Telegram-ход: диктора-голоса нет, ключей гейта нет, что бы в тексте ни было (``меня зовут Тамара``); синтетика без
+    голоса - как раньше."""
+    seen = []
+
+    class _ChatTools:
+        async def execute(self, call):
+            seen.append(dict(dn.tool_turn_context()))
+            return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
+
+    from rob_box_llm.provider import ToolCall
+
+    order = ToolCall(id="c1", name="command", arguments={
+        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]})
+    chat_llm = _LLM([LLMResponse(content="", tool_calls=(order,))])
+    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
+        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
+    monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
+    monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: _ChatTools())
+    made = dn.DialogNode()
+    try:
+        made._speakers.submit("u4054", {**NINA, "utterance_id": "u4054"})
+        text = "меня зовут Тамара, сыграй Running Up That Hill"
+        made._on_utterance(_chat_utterance(text))
+        made.last_chat_turn.result(timeout=10)
+        assert seen == [{"heard_text": text}]
     finally:
         made.shutdown()
 

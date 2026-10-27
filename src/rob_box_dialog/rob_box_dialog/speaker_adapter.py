@@ -22,6 +22,8 @@
 * :func:`voice_certainty` / :class:`IdentityStep` — #3801 (решение Шифу 21.10): один голос — одна личность
   (:func:`same_voice_plan`), имя меняется фразой (:func:`rename_step`), неуверенный голос подтверждается шаблоном
   нормальной длины (:func:`template_step`, :func:`voice_check_step`); что сделать и что сказать — кодом.
+* :func:`confident_name` / :func:`named_self` — контекст хода для гейта ``register_speaker`` (#2925, #4054): кем голос
+  фразы УВЕРЕННО узнан и как человек назвал себя в реплике; гейт сверяет с ними имя, которое модель пишет в профиль.
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -51,6 +53,7 @@ from rob_box_dialog.greeting_reply import is_greeting_reply
 from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
+from rob_box_dialog.words import self_intro_name
 
 #: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
 STRANGER = "stranger"
@@ -334,6 +337,23 @@ def voice_certainty(speaker: Mapping[str, Any]) -> str:
         return VOICE_UNSURE
     score = speaker.get("candidate_score")
     return VOICE_UNSURE if score is not None and float(score) >= kn.IDENTITY_TEMPLATE_MIN_SCORE else VOICE_STRANGER
+
+
+def confident_name(speaker: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Имя, под которым биометрия УВЕРЕННО узнала голос фразы (:func:`voice_certainty` = ``sure``: то же имя, что
+    публикуется вслух, и тот же уверенный исход, по которому ``speaker_id_node`` переименовывает профиль, #4054), иначе
+    ``None``: гипотеза, спор, профиль без имени, голос не узнан или результата ещё нет."""
+    if not isinstance(speaker, Mapping) or voice_certainty(speaker) != VOICE_SURE:
+        return None
+    return str(speaker["name"])
+
+
+def named_self(text: str) -> Optional[str]:
+    """Имя, которым человек назвал СЕБЯ в реплике, или ``None``: просьба звать иначе (``classify_rename``: «зови меня
+    Y», «запомни меня как Y», «меня зовут не X, а Y») или представление (``words.self_intro_name``: «меня зовут Y», «я
+    Y», «привет, я Y»). Новой грамматики нет - обе уже решают, что реплика называет говорящего."""
+    rename = classify_rename(text)
+    return rename.name if rename is not None else self_intro_name(text)
 
 
 @dataclass(frozen=True)
