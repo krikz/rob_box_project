@@ -179,18 +179,34 @@ def on_music_event(node: Any, msg: Any) -> None:
         host.on_music_event(event.event, event.track_id, event.fields)
 
 
+def robot_voice(node: Any, provider: str, fallback: str) -> str:
+    """Голос РОБОТА сейчас - им звучит рассказчик выступления (реплики с пустым ``voice``, #4084), и роль не должна
+    звучать так же (#4045). Нода v2 не хранит ``_actual_tts_voice`` (его пишет только v1), а ``tts_state`` без него
+    отдавал голос провайдера по умолчанию, не тот, что робот применил по ``set_voice``: герой сказки получал голос
+    рассказчика. Голос робота знает сессия (``session.voice``: ответ владельца голоса на ``set_voice``, подмена голоса
+    сегмента выступления её не меняет - ``dialog_node.robot_voice_changed``). Голос другого провайдера (звучит уже
+    запасной после сбоя основного) каталога звучащего не касается - тогда ``fallback`` (``tts_state``: факт v1 или
+    голос провайдера по умолчанию). У ноды без сессии (v1) - тоже он."""
+    voice = getattr(getattr(getattr(node, "_session", None), "snapshot", None), "voice", None)
+    applied = getattr(voice, "applied", None)
+    if applied and getattr(voice, "provider", None) in (None, "", provider):
+        return str(applied)
+    return fallback
+
+
 def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
-    без рассказчика и каста марафона (:func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления
-    (``rob_box_dialog.cast``), им же сверяется голос реплики ``voice``."""
+    без рассказчика (голос робота, :func:`robot_voice`) и каста марафона (:func:`role_voices_for`, #3998, #4084): из
+    него код даёт голос роли выступления (``rob_box_dialog.cast``), им же сверяется голос реплики ``voice``."""
     host = performer(node)
-    provider, narrator = tts_state(node)
-    voices = tuple(role_voices_for(provider, narrator))
+    provider, fallback = tts_state(node)
+    voices = tuple(role_voices_for(provider, robot_voice(node, provider, fallback)))
     return Busy(active_segment=None if host is None else host.active_segment, voices=voices,
                 voice_genders=tuple((voice, gender_of(provider, voice)) for voice in voices),
                 cast=tuple((getattr(host, "cast", None) or {}).items()))
 
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
-           "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer"]
+           "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer",
+           "robot_voice"]
