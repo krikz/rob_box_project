@@ -68,5 +68,6 @@ def test_live_request_in_an_agent_without_sing_form_says_where_the_robot_sings(h
     text = decline_text(route)
     assert text == LIVE_TOOL_TEXT
     assert "отсюда не выйдет" in text, "здесь он не поёт - и не обещает"
-    assert "вслух" in text and "у робота" in text and "«Робот, спой под синт»" in text, "где и что сказать"
+    assert "вслух" in text and "из динамиков" in text and "«Робот, спой под синт»" in text, "где и что сказать"
+    assert "рядом со мной" in text and "скажи ему" not in text, "от первого лица: чат и оператор говорят словами робота"
     assert "Генерацию для этого не запускаю" in text, "платная генерация не стартовала"

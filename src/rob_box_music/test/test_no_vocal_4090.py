@@ -90,3 +90,16 @@ def test_every_stem_of_the_table_is_a_refusal_after_without_and_not_a_bare_word(
 def test_a_singing_verb_still_sings_even_with_the_refusal_word():
     """Правка не меняет прежнего: глагол пения («спой») пение, даже с «без вокала» (ветка ``rule.bare``)."""
     assert sing_kind("спой песню без вокала") == "song"
+
+
+@pytest.mark.parametrize("text", [
+    "сгенерируй песню своим голосом под инструментал",
+    "сгенерируй песню с вокалом под инструментал",
+    "сгенерируй песню со словами на инструментале",
+])
+def test_voice_asked_outright_beats_the_word_instrumental_in_the_same_phrase(text):
+    """Ревью #4104: слово «инструментал» ищется по всей фразе, но «песню своим голосом под инструментал» - это песня с
+    голосом (инструментал - подложка), а не инструментал без слов."""
+    assert sing_kind(text) == "song" and source_ask(text).vocal, text
+    assert source_ask("сгенерируй песню своим голосом под инструментал").robot_voice
+    assert sing_kind("сгенерируй инструментальную песню") == "", "без просьбы голоса - инструментал, как было"
