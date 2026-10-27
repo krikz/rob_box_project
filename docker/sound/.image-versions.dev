@@ -8,4 +8,4 @@ VOICE_ASSISTANT_TAG=dev-d68a784
 TELEGRAM_BOT_TAG=dev-d68a784
 SUPERVISOR_TAG=dev-d68a784
 # ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
-PERCEPTION_TAG=dev-d68a784
+PERCEPTION_TAG=dev-0d94634
