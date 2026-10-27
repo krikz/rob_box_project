@@ -301,10 +301,12 @@ def test_speak_normally_when_both_resets_are_rejected_says_both_failures():
 
 
 def test_ordinary_voice_phrase_is_still_set_voice_not_a_pace_reset():
-    """«Обычным голосом» - голос робота (#3803), а не скорость."""
+    """«Обычным голосом» - голос робота (#3803), а не скорость; режим тона («басом», #4074, решение Шифу 27.10) он
+    тоже снимает: к ``set_voice`` default - сброс тона, скорость не трогается."""
     ports = Ports(outcomes={"set_voice": ("done", None, {})})
     _run(_engine(ports), "Робот, говори обычным голосом")
-    assert ports.executed == [[("set_voice", {"voice": kn.VOICE_DEFAULT_ARG})]] and ports.asked == []
+    assert ports.executed == [[("set_voice", {"voice": kn.VOICE_DEFAULT_ARG}), ("set_pitch", {"action": "normal"})]]
+    assert ports.asked == []
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -315,9 +317,10 @@ def test_ordinary_voice_phrase_is_still_set_voice_not_a_pace_reset():
     ("set_speed", "slower", "speed_unsupported"), ("set_pitch", "higher", "pitch_unsupported"),
 ])
 def test_unsupported_prosody_is_said_with_its_own_phrase(tool, action, reason):
+    """Путь LLM: реплика, которую грамматика шага голоса не покрывает («говори помедленнее» с #4074 - Tier-1)."""
     ports = Ports([Answer(Command(actions=(ToolCall(tool, {"action": action}),)), "deepseek")],
                   {tool: ("rejected", reason, {"status": "rejected", "provider": "silero"})})
-    _run(_engine(ports), "говори помедленнее")
+    _run(_engine(ports), "сделай голос поинтереснее")
     assert ports.said == [phrases.text(f"local.rejected.{reason}")]
     assert ports.said != [phrases.text("local.rejected")]
 

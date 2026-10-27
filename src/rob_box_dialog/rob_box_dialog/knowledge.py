@@ -335,15 +335,19 @@ PROSODY_NORMAL_KIND = "prosody_normal"
 #: анимаций (:func:`animation_name`), а не модель. Живая проверка 27.10 18:55: DeepSeek на такую просьбу делал ОДИН
 #: ``play_animation thinking`` - ни одной из трёх сцен, до очереди #4088 дело не доходило. Слова - ``SHOW_QUEUE_*``.
 SHOW_QUEUE_KIND = "show_queue"
+#: Вид Tier-1 «шаг голоса» (#4074): темп или тон речи шагом (``set_speed``/``set_pitch``); слова - :data:`VOICE_STEP`.
+VOICE_STEP_KIND = "voice_step"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
-#: ``prosody_normal`` звучит: тулы сброса молчат, фразу о результате говорит код. ``show_queue`` не звучит, но в
-#: тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход молчит, как вся тишина (#3982).
+#: ``prosody_normal`` и ``voice_step`` звучат: тулы темпа и тона молчат, фразу о результате говорит код.
+#: ``show_queue`` не звучит, но в тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход
+#: молчит, как вся тишина (#3982).
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
-    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, "answer": False, SHOW_QUEUE_KIND: True,
+    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, VOICE_STEP_KIND: True, "answer": False,
+    SHOW_QUEUE_KIND: True,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -387,9 +391,10 @@ VOICE_DEFAULT_FILLER: Tuple[str, ...] = (
 #: и та отвечала «Возвращаю обычный темп» без вызова тула - скорость оставалась 0.8 (живой прогон 26.10 20:58:30,
 #: ADR-0148). Команда покрыта грамматикой ЦЕЛИКОМ: речевой глагол (точные формы: «говоришь» - не просьба) или «речи»,
 #: слово «нормально» (``PROSODY_NORMAL_STEMS``) и только слова ниже; «обычным ГОЛОСОМ» - не скорость, а голос робота
-#: (``set_voice``, #3803).
+#: (``set_voice``, #3803). «говорит» - так STT слышит «говори» в начале команды (марафон 27.10 n411: «Робот, говори
+#: басом…» → «робот говорит басом…»); до грамматики доходит только адресованная реплика.
 PROSODY_VERBS: Tuple[str, ...] = (
-    "говори", "говорите", "разговаривай", "разговаривайте", "читай", "читайте", "произноси",
+    "говори", "говорите", "говорит", "разговаривай", "разговаривайте", "читай", "читайте", "произноси",
 )
 #: Тулы сброса и их аргумент: оба сразу, у каждого своя ось и свой исход.
 PROSODY_RESET_TOOLS: Tuple[str, ...] = ("set_speed", "set_pitch")
@@ -424,6 +429,72 @@ SHOW_QUEUE_FILLER: Tuple[str, ...] = (
     "нам", "пожалуйста", "ну", "давай", "свое", "свою", "свои", "эмоции", "эмоцию", "анимации", "анимацию",
 )
 SHOW_QUEUE_MIN, SHOW_QUEUE_MAX = 2, 5
+
+
+@dataclass(frozen=True)
+class VoiceStepWords:
+    """Закрытая грамматика шага голоса (#4074, Tier-1 ``voice_step``, разбор - ``grammar._voice_step``).
+
+    ``requests`` - ``(тул, действие)`` → основы слов просьбы («быстрее», «басом», «как диктор»): слово начинается с
+    основы. Просьба - только рядом с речевым глаголом ``owners`` («говори басом»; голое «быстрее» под музыку - темп
+    трека) или основой из ``self_owned``, которая сама речевой глагол («тараторь»). ``manners`` - основа глагола манеры
+    речи робота после ``manner_leads`` («хватит тянуть», «не тараторь») → ``(тул, действие)``, которое её исправляет:
+    это просьба о темпе, а не стоп. ``inverse`` после манеры («теперь наоборот») - одно следующее слово пересказывает
+    противоположную манеру, направление уже известно (STT его искажает: «тараторь» → «ораторь»). ``simile`` - «как …»
+    до конца части: образ просьбы («как диктор в старом кино»), только если шаг в реплике есть («говори как пират» -
+    не шаг); ``likeness`` - основы образов, которые сами шаг, но только после «как» («как диктор» - тон ниже; голое
+    «диктор» - не просьба, и срез тулов по нему голос не открывает). ``filler`` - служебные слова сверх
+    ``GRAMMAR_FILLER`` и ``STOP_LEAD_WORDS``; ``joins`` - союзы между частями: непокрытая часть после союза или знака
+    препинания - новая просьба (``Tier1Command.rest``)."""
+
+    requests: Mapping[Tuple[str, str], Tuple[str, ...]]
+    owners: Tuple[str, ...]
+    self_owned: Tuple[str, ...]
+    manners: Mapping[str, Tuple[str, str]]
+    manner_leads: Tuple[str, ...]
+    inverse: Tuple[str, ...]
+    simile: Tuple[str, ...]
+    likeness: Mapping[Tuple[str, str], Tuple[str, ...]]
+    filler: Tuple[str, ...]
+    joins: Tuple[str, ...]
+
+
+_FASTER, _SLOWER = ("set_speed", "faster"), ("set_speed", "slower")
+#: Темп и тон речи робота (#4074, марафон 27.10): «говори басом / пониже / как диктор» - режим тона того же голоса
+#: (``set_pitch lower``, решение Шифу 27.10: голос не меняется, держится до «говори нормально» или «обычным голосом»);
+#: «тараторь», «говори быстрее / медленнее», «хватит тянуть, теперь наоборот - тараторь» - ``set_speed``. Решает код
+#: (ADR-0148): раньше n410 уходил в стоп по «хватит» и в LLM, а та врала «теперь тараторю» без вызова тула; n411 -
+#: одна фраза другим голосом (``command.voice``) вместо тона. Фразу об исходе строит код по результату тула
+#: (:data:`TOOL_PHRASES`). «бубнить» - не темп (непонятно, быстрее или громче): «хватит бубнить» остаётся стопом.
+VOICE_STEP = VoiceStepWords(
+    requests=MappingProxyType({
+        _FASTER: ("быстр", "побыстр", "ускор", "тарато", "живее", "поживее"),
+        _SLOWER: ("медленн", "помедленн", "замедл"),
+        ("set_pitch", "lower"): ("басом", "басовит", "ниже", "пониже", "низким", "баритон"),
+        ("set_pitch", "higher"): ("выше", "повыше", "высоким", "тоньше", "тоненьк", "пискляв"),
+    }),
+    owners=PROSODY_VERBS,
+    self_owned=("тарато",),
+    manners=MappingProxyType({
+        "тян": _FASTER, "мямл": _FASTER,
+        "тарато": _SLOWER, "тороп": _SLOWER, "спеш": _SLOWER,
+    }),
+    manner_leads=("хватит", "не", "перестань", "прекрати"),
+    inverse=("наоборот",),
+    simile=("как",),
+    likeness=MappingProxyType({("set_pitch", "lower"): ("диктор",)}),
+    filler=("голосом", "голос", "тоном", "тон", "темпом", "темп", "речь", "речи", "теперь", "лучше", "более", "чем",
+            "можешь", "своим", "режиме", "с", "со"),
+    joins=("а", "и", "но"),
+)
+#: Основы всех просьб шага (порядок таблицы): их же видит срез тулов (группа voice, :data:`TOOL_GROUPS`).
+VOICE_STEP_STEMS: Tuple[str, ...] = tuple(dict.fromkeys(s for stems in VOICE_STEP.requests.values() for s in stems))
+#: Причина исхода тула темпа/тона «ось уже на границе, записи не было» (``rob_box_mcp_tools.tools.system``).
+VOICE_STEP_AT_LIMIT = "at_limit"
+#: «Говори обычным голосом» (``set_voice`` default, #3803) снимает и режим тона (#4074, решение Шифу 27.10: бас - тот
+#: же голос с тоном ниже): к смене голоса - сброс этих тулов (``action=normal``). Скорость - не голос, её снимает
+#: «говори нормально».
+VOICE_DEFAULT_RESETS: Tuple[str, ...] = ("set_pitch",)
 #: «Новая сессия» (U8): фразы — подстрокой после снятия вейка (как в v1); Telegram «/clear» — правило хоста.
 NEW_SESSION_PHRASES: Tuple[str, ...] = (
     "новая сессия", "новую сессию", "новый диалог", "новый разговор",
@@ -686,7 +757,9 @@ MOTION_TOOLS: Tuple[str, ...] = ("move_direction", "navigate_to_waypoint", "navi
 #: «ускорь темп» в тишине - речь («ускор» - основа группы voice). Это та часть основ voice, что называет только скорость;
 #: «голос», «тембр», «басом» голос называют однозначно и сюда не входят. Одна таблица: ``TOOL_GROUPS["voice"]`` берёт
 #: их отсюда, ``tools_view`` - тоже (n506 23.10: «ускорь темп, а то мы тут засыпаем» → ``set_speed`` вместо музыки).
-VOICE_PACE_STEMS: Tuple[str, ...] = ("быстр", "побыстр", "медленн", "помедленн", "скорост", "ускор", "замедл")
+#: Слова просьб о скорости - из таблицы шага голоса (:data:`VOICE_STEP`, #4074), плюс «скорость».
+VOICE_PACE_STEMS: Tuple[str, ...] = tuple(dict.fromkeys(
+    (*(s for (tool, _), stems in VOICE_STEP.requests.items() if tool == "set_speed" for s in stems), "скорост")))
 #: Слова, которые под играющей музыкой уходят в группу music, а не в voice. Основы (левая граница): темп, быстрее,
 #: медленнее, жёстче, мягче. «громче/тише» сюда не входят: их называет группа volume (``set_music_volume`` рядом с
 #: ``set_volume``), а сцена играющей музыки добавляет music следом, и срез не теряет ни одну из групп.
@@ -765,11 +838,12 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     ),
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
     "voice": ToolGroup(
-        ("голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", *VOICE_PACE_STEMS,
-         "темп реч", "выше", "ниже", "тембр",
-         # живой прогон 23.10, акт 4 n411: «говори басом» не открывало set_pitch/set_voice — робот ответил «таких
-         # инструментов у меня нет» (они есть, но не в срезе хода)
-         "басом", "басов", "тарато"),
+        tuple(dict.fromkeys((
+            "голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", *VOICE_PACE_STEMS,
+            "темп реч", "тембр",
+            # живой прогон 23.10, акт 4 n411: «говори басом» не открывало set_pitch/set_voice — робот ответил «таких
+            # инструментов у меня нет» (они есть, но не в срезе хода); просьбы темпа и тона - таблица шага (#4074)
+            "басов", *VOICE_STEP_STEMS))),
         ("set_voice", "set_tts_provider", "list_tts_voices", "set_speed", "set_pitch", "estimate_tts_duration"),
     ),
     "navigation": ToolGroup(
@@ -999,9 +1073,13 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
             ("rate",): "music.library_fail", ("update",): "music.library_fail", ("delete",): "music.library_fail",
         }),
     }),
-    # «Говори нормально» (PROSODY_NORMAL_KIND): сброс по результату тула, а не «Готово.» - ни о чём не говорящее слово
-    "set_speed": MappingProxyType({"done": ByData(("action",), {("normal",): "speed.normal"})}),
-    "set_pitch": MappingProxyType({"done": ByData(("action",), {("normal",): "pitch.normal"})}),
+    # «Говори нормально» (PROSODY_NORMAL_KIND) и шаг голоса (VOICE_STEP_KIND, #4074): фраза по действию из результата
+    # тула («Говорю быстрее.»), а не «Готово.» - ни о чём не говорящее слово; ось уже на границе (причина
+    # VOICE_STEP_AT_LIMIT) - ключ «….at_limit»
+    "set_speed": MappingProxyType({"done": ByData(("action",), {
+        ("normal",): "speed.normal", ("faster",): "speed.faster", ("slower",): "speed.slower"})}),
+    "set_pitch": MappingProxyType({"done": ByData(("action",), {
+        ("normal",): "pitch.normal", ("lower",): "pitch.lower", ("higher",): "pitch.higher"})}),
 })
 
 
@@ -1199,6 +1277,9 @@ PHRASE_KEYS: Tuple[str, ...] = (
     # исход по результату тула (#4020, #4022, #4031): «говори нормально», отказ без регулировки (причина тула
     # ``speed_unsupported``/``pitch_unsupported``), звукоподражание
     PROSODY_NORMAL_PHRASE, "local.rejected.speed_unsupported", "local.rejected.pitch_unsupported",
+    # шаг голоса на границе оси (#4074): «Быстрее уже некуда», а не «Говорю быстрее» без перемены
+    *(f"{axis}.{step}.{VOICE_STEP_AT_LIMIT}" for axis, step in (
+        ("speed", "faster"), ("speed", "slower"), ("pitch", "lower"), ("pitch", "higher"))),
     *SOUND_IMITATIONS.values(),
     # отказ памяти при узнанном, но не подтверждённом голосе (#3993): своя фраза, не «Не узнаю твой голос»
     f"local.rejected.{VOICE_UNCONFIRMED_REASON}",

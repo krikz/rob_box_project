@@ -26,6 +26,7 @@ from rob_box_dialog.knowledge import (
     STOP_SCOPE,
     STOP_WORDS,
     TIER1_POLICY,
+    VOICE_STEP,
     WAKE_SLIP_AMBIGUOUS,
     WAKE_SLIP_CUE_WINDOW,
     WAKE_SLIP_GATES,
@@ -262,14 +263,13 @@ def stop_scope(rest: str) -> Tuple[StopScope, str]:
     Оговорка в остатке тоже оставляет музыку: «спой другую, а музыку оставь» → оставить музыку, «спой другую, а
     музыку оставь» (просьба целиком — LLM)."""
     text = rest or ""
-    spans = [(m.group(0).lower().replace("ё", "е"), m.start(), m.end()) for m in _TOKEN.finditer(text)]
     speech = music = keep = False
-    clauses = _clauses(text, spans)
-    for n, clause in enumerate(clauses):
+    parts = clauses(text, STOP_SCOPE.joins)
+    for n, clause in enumerate(parts):
         parsed = _clause_scope(tuple(token for token, _, _ in clause))
         if parsed is None:
             tail = text[clause[0][1]:] if n else text
-            keep = keep or _kept_later(clauses[n + 1:])
+            keep = keep or _kept_later(parts[n + 1:])
             return StopScope(speech, music, keep), tail.strip(" ,.!?;:-–—")
         named, kept = parsed
         speech = speech or "speech" in named
@@ -278,13 +278,19 @@ def stop_scope(rest: str) -> Tuple[StopScope, str]:
     return StopScope(speech, music, keep), ""
 
 
-def _clauses(text: str, spans: Sequence[Span]) -> Tuple[Tuple[Span, ...], ...]:
-    """Части хвоста стопа: граница — союз из ``STOP_SCOPE.joins`` (сам он ни в одну часть не входит) или знак
-    препинания между словами."""
+def clauses(text: str, joins: Sequence[str]) -> Tuple[Tuple[Span, ...], ...]:
+    """Части фразы (одна реализация на хвост стопа и шаг голоса, #4074): граница — союз из ``joins`` (сам он ни в
+    одну часть не входит) или знак препинания между словами. Слово части — ``(слово в нижнем регистре, ё → е,
+    начало, конец)``: по началу первого слова части берётся остаток фразы."""
+    spans = [(m.group(0).lower().replace("ё", "е"), m.start(), m.end()) for m in _TOKEN.finditer(text or "")]
+    return _clauses(text or "", spans, joins)
+
+
+def _clauses(text: str, spans: Sequence[Span], joins: Sequence[str]) -> Tuple[Tuple[Span, ...], ...]:
     out, current, prev_end = [], [], 0
     for span in spans:
         token, start, end = span
-        join = token in STOP_SCOPE.joins
+        join = token in joins
         if current and (join or _CLAUSE_BREAK.search(text[prev_end:start])):
             out.append(tuple(current))
             current = []
@@ -402,9 +408,12 @@ def _rest(part: str, spans: Sequence[Tuple[str, int]], lead: int, skip: set) -> 
 
 
 def _clear_at(tokens: Sequence[str], lead: int) -> bool:
-    """Ведущее слово — стоп-слово, и за ним не вопросительная частица («хватит ли …»)."""
+    """Ведущее слово — стоп-слово, и за ним не вопросительная частица («хватит ли …») и не манера речи робота
+    («хватит тянуть»: просьба о темпе, а не стоп — #4074, таблица ``VOICE_STEP.manners``; покрытую фразу решает шаг
+    голоса ``grammar``, остальное — спорный стоп)."""
     after = tokens[lead + 1] if lead + 1 < len(tokens) else ""
-    return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES
+    manner = bool(after) and after.startswith(tuple(VOICE_STEP.manners))
+    return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES and not manner
 
 
 def wake_command(text: str, wake_words: Optional[Sequence[str]] = None) -> str:

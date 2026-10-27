@@ -203,13 +203,14 @@ def test_shut_up_is_still_silence():
 
 
 def test_enough_with_continuation_stops_then_gives_the_rest_to_the_llm():
-    """Акт 4 n410 (23.10): «ладно, хватит тянуть, теперь наоборот» — стоп кодом, остаток не теряется, а идёт в LLM."""
-    ports = Ports(answers=[Answer(Command(speech="Тараторю!"), "deepseek")])
+    """«ладно, хватит, расскажи анекдот» — стоп кодом, остаток не теряется, а идёт в LLM. (Акт 4 n410 «хватит тянуть,
+    теперь наоборот» — не стоп, а шаг темпа: #4074, ``test_voice_step_4074.py``.)"""
+    ports = Ports(answers=[Answer(Command(speech="Анекдот!"), "deepseek")])
     engine = _engine(ports)
-    agg = _run(engine, "ладно хватит тянуть теперь наоборот")
+    agg = _run(engine, "ладно хватит, расскажи анекдот")
     assert ports.cancels == ["tier1 stop_all"]
-    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("тянуть теперь наоборот")
-    assert [t for t, _, _ in ports.said] == ["Тараторю!"] and agg.llm_calls == 1
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("расскажи анекдот")
+    assert [t for t, _, _ in ports.said] == ["Анекдот!"] and agg.llm_calls == 1
     assert engine.session.snapshot.top("Silence") is None
 
 
