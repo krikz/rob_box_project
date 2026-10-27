@@ -278,7 +278,7 @@ bash docs/dialog/pr15_map_greps.sh origin/develop 8178e2809                  # g
 | D5 | после 15s откат только гитом; 15s — последней из функциональных частей, после вердикта PR-14 | см. Q1: фактически откат флагом умирает раньше | 15s |
 | D6 | мёртвые модули удалить в 15a с grep-доказательством | `llm_config` (256), `voice_memory_init` (113), `utils/github_summary` (297) — читателей нет. **`skip_reason_checker` не мёртвый** (B6): его импортирует гард CI `scripts/lint/dialogue_skip_reasons.py:9` | 15a1, 15a2; `skip_reason_checker` и гард — 15p |
 | D7 | в PR-15 закрыть только хвосты v1 (`discard_last_reply`, `_HISTORY_MARKER_RE`, `_META_PREFIX_RE`); `voice_memory.db` — отдельная карточка | хвосты **на месте**: `_HISTORY_MARKER_RE` 2 (`speak_helpers.py:34,154`), `_META_PREFIX_RE` 2 (`:74,215`), `discard_last_reply` 10 (`agent_core` 6, `dialogue_node` 3, `turn_speech` 1); `voice_memory.db` 47 строк в 15 файлах — карточка [#4082](https://github.com/krikz/rob_box_project/issues/4082) | 15q, 15p, 15m4; `agent_core` — 15r3 (Q4): без неё 6 строк останутся |
-| D8 | teleop → `speech_client.say`, сборка `rob_box_dialog_msgs` + `rob_box_core` в `docker/main/teleop/Dockerfile` по образцу quest | PR #4097 (не влит, образ не собран целиком) | 15-0d |
+| D8 | teleop → `speech_client.say`, сборка `rob_box_dialog_msgs` + `rob_box_core` в `docker/main/teleop/Dockerfile` по образцу quest | PR #4097 (влит `2422c7148`, образ teleop — к пересборке) | 15-0d |
 
 **Вопросы к товарищу Шифу (новые, по этой пересверке):**
 

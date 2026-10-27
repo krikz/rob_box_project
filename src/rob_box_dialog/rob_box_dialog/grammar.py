@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from itertools import groupby
 from types import MappingProxyType
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
@@ -245,7 +246,8 @@ def show_queue_scenes(text: str) -> Tuple[str, ...]:
     (``SILENT_ASK_FORMS``, ``SILENT_SHOW_FORMS``) сняты, есть глагол показа (``SHOW_QUEUE_VERB_STEMS``), остальное -
     слова порядка и служебные (``SHOW_QUEUE_FILLER``) или имена сцен словаря анимаций (``knowledge.animation_name``: имя
     или алиас - «радость» → ``happy``, «нейтральное» → ``idle``); имён от ``SHOW_QUEUE_MIN`` до ``SHOW_QUEUE_MAX``.
-    Одно имя, лишнее слово, отрицание - ``()``."""
+    Соседние одинаковые сцены - одна («злость и гнев» → ``angry``, ``angry``: синонимы подряд, ревью #4109); через другую
+    сцену повтор остаётся («радость, грусть, радость»). Одно имя, лишнее слово, отрицание - ``()``."""
     body, _ = without_forms(text or "", (*kn.SILENT_ASK_FORMS, *kn.SILENT_SHOW_FORMS))
     words = name_tokens(body)
     if not any(_starts(w, kn.SHOW_QUEUE_VERB_STEMS) for w in words):
@@ -258,7 +260,9 @@ def show_queue_scenes(text: str) -> Tuple[str, ...]:
         if name is None:
             return ()
         scenes.append(name)
-    return tuple(scenes) if kn.SHOW_QUEUE_MIN <= len(scenes) <= kn.SHOW_QUEUE_MAX else ()
+    if not kn.SHOW_QUEUE_MIN <= len(scenes) <= kn.SHOW_QUEUE_MAX:
+        return ()
+    return tuple(name for name, _ in groupby(scenes))
 
 
 __all__ = ["Tier1Command", "Voices", "match", "show_queue_scenes", "volume_channel"]

@@ -108,6 +108,31 @@ def test_show_queue_is_tier1_with_scenes_in_the_order_of_the_request(text, scene
     assert all(name in kn.KNOWN_ANIMATIONS for name in scenes)
 
 
+@pytest.mark.parametrize("text, scenes", [
+    ("покажи злость и гнев", ("angry",)),                                       # синонимы подряд - одна сцена
+    ("покажи радость, грусть, печаль и удивление", ("happy", "sad", "surprised")),  # грусть и печаль - sad, sad
+    ("покажи радость и счастье, потом грусть", ("happy", "sad")),
+    ("покажи радость, грусть и снова радость", ("happy", "sad", "happy")),     # через другую сцену повтор остаётся
+    ("покажи грусть и печаль и тоску", ("sad",)),
+])
+def test_adjacent_equal_scenes_of_the_queue_are_one(text, scenes):
+    """Ревью #4109: синонимы подряд («злость и гнев» → ``angry``, ``angry``) дублировали сцену - лицо держало бы её дважды.
+    Соседние одинаковые сцены - одна; повтор через другую сцену остаётся. Сколько имён названо - считается по словам
+    реплики (``SHOW_QUEUE_MIN``..``SHOW_QUEUE_MAX``), поэтому «злость и гнев» - очередь кода из одной сцены."""
+    command = match(text, Session("personality").snapshot)
+    assert command is not None and command.kind == kn.SHOW_QUEUE_KIND
+    assert command.args["scenes"] == scenes == show_queue_scenes(text)
+
+
+def test_queue_of_synonyms_is_one_play_animation_without_llm():
+    ports = Ports()
+    _, agg = _run(ports, "покажи злость и гнев")
+    assert ports.asked == [] and agg.llm_calls == 0
+    assert ports.executed == [[("play_animation", {"animation": "angry"})]]
+    (_, face), = ports.faces
+    assert face == Shown(emotion="angry", duration_s=DEFAULT) and face.then == ()
+
+
 @pytest.mark.parametrize("text", [
     "покажи радость",                                 # одна эмоция — путь модели, как раньше
     "покажи по очереди радость и кота",               # неизвестное слово

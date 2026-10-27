@@ -38,9 +38,11 @@ class PlayAnimationTool(MCPTool):
     #: ExpressionEvent исполнителей (показ - по ExpressionRequest диалога)
     event_source = "/voice/expression/event"
 
-    #: Kept as a class attribute for backwards compatibility; the list
-    #: itself lives in :mod:`rob_box_mcp_tools.animations` so ``speak_text``
-    #: and ``play_animation`` cannot disagree about what the matrix can show.
+    #: Kept as a class attribute for backwards compatibility; the vocabulary
+    #: itself lives in ``rob_box_dialog.knowledge.KNOWN_ANIMATIONS`` (#4103;
+    #: :mod:`rob_box_mcp_tools.animations` only re-exports it) so ``speak_text``,
+    #: ``play_animation`` and the dialogue cannot disagree about what the
+    #: matrix can show.
     AVAILABLE_ANIMATIONS = list(KNOWN_ANIMATIONS)
 
     # ADR-0150 PR-3b (#3690): тул лицо не трогает. Сцену и время показывает диалог: он видит вызов

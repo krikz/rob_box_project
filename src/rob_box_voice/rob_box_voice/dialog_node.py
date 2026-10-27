@@ -92,8 +92,6 @@ from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
 
-#: ``SpeechEvent.kind`` конца реплики: finished / cancelled / rejected.
-_ENDED = (SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED)
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
 _CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
                     DialogControl.Request.ACTION_RESET: RESET}
@@ -463,7 +461,7 @@ class DialogNode(Node):
             return
         if msg.kind == SpeechEvent.KIND_STARTED:
             self._engine.speech_started(msg.speech_id)
-        elif msg.kind in _ENDED:
+        elif speech_client.is_speech_end(msg):  # finished / cancelled / rejected - одно знание о конце реплики
             self._engine.speech_ended(msg.speech_id, int(msg.spoken_chars))
 
     def _on_music_state(self, msg: Any) -> None:
