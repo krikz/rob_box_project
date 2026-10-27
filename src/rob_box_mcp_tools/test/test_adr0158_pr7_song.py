@@ -448,7 +448,10 @@ def test_silero_voice_never_reaches_the_executor_and_the_chooser_declines_in_wor
     fake.block = "silero_voice"
     result = _request(_rig(), fake, library).execute(intent="track", text=PHRASE, heard_text=PHRASE)
     assert not result.success and result.data["reason"] == SOURCE_DECLINED and not fake.requests
-    assert "запасным голосом петь пока не умею" in result.data["message"]
+    message = result.data["message"]
+    assert "запасной голос для записи песен пока не годится" in message
+    assert "петь пока не умею" not in message, "#4090 G.1: «не умею петь» рядом с «могу спеть» - противоречие"
+    assert message.endswith("Могу спеть сам вживую под синт — этим же голосом, без записи.")
 
 
 # ── сбой вокала: причина кодом (живой сбой 13.10 20:55 UTC: «что-то пошло не так» при TTSTimeoutError без текста) ──

@@ -433,5 +433,8 @@ def test_tool_route_of_a_live_request_is_live_not_a_generation():
     route = choose_route(source_ask("спой под синт про енота"), RICH, DeterministicChooser(NoModel()))
     assert (route.kind, route.id) == ("live", "live:song")
     assert "live" in source_ask("спой под синт про енота").describe()
-    # ревью #4071 круг 2 NIT-5: в агенте без формы пения выступления может не быть — фраза тула пения не обещает
-    assert decline_text(route) == LIVE_TOOL_TEXT and "пою" not in LIVE_TOOL_TEXT and "генерацию" in LIVE_TOOL_TEXT
+    # ревью #4071 круг 2 NIT-5: в агенте без формы пения выступления может не быть — фраза тула пения здесь не обещает
+    # (#4090 G.2: «отсюда не выйдет»), называет, где поёт робот (вслух, из динамиков), и что сказать; генерацию не запускает
+    assert decline_text(route) == LIVE_TOOL_TEXT and "отсюда не выйдет" in LIVE_TOOL_TEXT
+    assert "вслух" in LIVE_TOOL_TEXT and "«Робот, спой под синт»" in LIVE_TOOL_TEXT
+    assert "Генерацию для этого не запускаю" in LIVE_TOOL_TEXT

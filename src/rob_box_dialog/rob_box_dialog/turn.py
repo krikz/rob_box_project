@@ -79,7 +79,7 @@ from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performa
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
-from rob_box_dialog.expression import show_seconds, shows
+from rob_box_dialog.expression import face_label, show_seconds, shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
@@ -434,13 +434,17 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
     return _in_order(scenes) if scenes else held_expression(expression, text)
 
 
-def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
+def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
-    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``)."""
+    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``).
+    Возвращает лицо, которое порт получил (``None`` - рефлекс как есть или порт лица не принимает): ход записывает его в
+    окно (``TurnLog.faced``, #4073), и запись «показано» не опережает показ - у чата и шлема оператора лица нет."""
     face = done_expression(turn, snapshot)
-    extra = {"expression": face} if face is not None and _accepts(ports.stage, "expression") else {}
+    shown = face if face is not None and _accepts(ports.stage, "expression") else None
+    extra = {"expression": shown} if shown is not None else {}
     ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
                 provider=turn.provider, **extra)
+    return shown
 
 
 def prosody_phrase(results: Sequence[ActionResult]) -> str:
@@ -504,12 +508,14 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str) -> Optional[str]:
+def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
+                    performing: bool = False) -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
-    простом успехе (``respond.audible``, #3953). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
-    (:func:`query_more`, там же отказ чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
+    простом успехе (``respond.audible``, #3953), а при идущем выступлении (``performing``) молчит общий успех запуска
+    музыки (#4075). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели (:func:`query_more`, там же отказ
+    чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks)) if results else None
+    return outcome_phrase(audible(results, speaks, performing)) if results else None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
@@ -785,7 +791,8 @@ def say_late(engine: "TurnEngine", result: ActionResult) -> None:
     ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout`` - «Включаю музыку.»); тихие успехи и чужие классы
     молчат (#3960)."""
     result = classed(result, result.data)  # аргументы вызова лежат в данных результата поверх ответа тула
-    text = outcome_phrase([result]) if result.cls in kn.LATE_SPOKEN_CLASSES else None
+    late = result.cls in kn.LATE_SPOKEN_CLASSES
+    text = outcome_phrase(audible([result], False, engine.log.performing())) if late else None  # #4075: рэп не рвём
     if not text:
         return
     turn_id = result.turn_id.split("/")[0]
@@ -1081,7 +1088,7 @@ class TurnEngine:
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997). ``unread`` — модель на последней итерации
         ещё просила ``query`` (не исполнен): слов её не слышно — говорит код по данным хода (:func:`_close_unread`)."""
         turn.expression = command_face(cmd.expression, results, turn.text)
-        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
+        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?», #4062) - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, cmd, self._log)
@@ -1149,7 +1156,9 @@ class TurnEngine:
 
     def _finish(self, turn: _Turn) -> TurnAggregate:
         latency = int(turn.deadline.elapsed() * 1000)
-        finish_stage(self._ports, turn, self.session.snapshot)
+        face = finish_stage(self._ports, turn, self.session.snapshot)
+        if face is not None:  # ответ одним лицом (#4073): без записи в окне реплика человека висит без ответа
+            self.log.faced(turn.turn_id, face_label(face.emotion, face.gesture, face.face))
         agg = TurnAggregate(turn.turn_id, turn.epoch, self.session.snapshot.agent, turn.stage, turn.status,
                             latency, turn.llm_calls, turn.provider, turn.tokens)
         self._log.info(agg.log_line())

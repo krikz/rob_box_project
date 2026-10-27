@@ -2800,6 +2800,16 @@ SONG_STEMS: Tuple[str, ...] = ("песн", "песен")
 VOCAL_STEMS: Tuple[str, ...] = ("вокал",)
 VOCAL_NEGATIONS: Tuple[str, ...] = ("без",)
 VOCAL_PHRASES: Tuple[str, ...] = ("со словами", "с текстом")
+#: Отказ от пения тем же словом (#4090 E): сразу после слова из :data:`VOCAL_NEGATIONS` стоит слово, НАЧИНАЮЩЕЕСЯ с
+#: основы «вокала» или его синонима - «без вокала», «без слов», «без пения», «без голоса», «без текста» - просьба
+#: инструментала, а не песни. Основы сравниваются по началу слова (как :data:`VOCAL_STEMS`): «слов» ловит и «словами»,
+#: «текст» - «текстов»; редкое чужое слово с той же основой после «без» («без словаря») отказом тоже сочтётся - цена общей
+#: основы. «Без лишних слов» (между «без» и «слов» стоит другое слово) отказом от пения не считается.
+NO_VOCAL_STEMS: Tuple[str, ...] = (*VOCAL_STEMS, "слов", "пени", "голос", "текст")
+#: Слово самого инструментала в просьбе: «сгенерируй инструментальную песню» - инструментал, как и «без слов». Явная
+#: просьба голоса в той же фразе («своим голосом», «с вокалом», «со словами») сильнее: «песню своим голосом под
+#: инструментал» - песня с голосом, а не инструментал (``source._no_vocal``).
+INSTRUMENTAL_STEMS: Tuple[str, ...] = ("инструментал",)
 #: Глаголы «исполни» — пение только с дополнением-песней или рэпом («исполни песню», «исполни эту песню», «исполни
 #: рэп»): «исполни мою просьбу» — не пение. Точные слова.
 SING_PERFORM_VERBS: Tuple[str, ...] = ("исполни", "исполните", "исполнить", "исполнишь")
@@ -3113,7 +3123,7 @@ __all__ += ["DEFAULT_GEN_MODEL", "GEN_FRESH_HOURS", "GEN_GENRE_WORDS", "GEN_MODE
             "SING_OBJECT_PREPOSITIONS", "SING_OBJECT_REACH", "SING_PERFORM_VERBS", "SING_PLAY_VERBS",
             "SING_RAP_VERBS", "SING_ROBOT_AGENT_WORDS", "SING_SELF_WORDS", "SING_VERB_RULES", "SingVerbRule",
             "SING_ROUTE_MARKERS", "SING_VERBS", "SONG_STEMS", "SOURCE_ASK_STEMS", "SOURCE_MODES", "VOCAL_NEGATIONS",
-            "VOCAL_PHRASES", "VOCAL_STEMS",
+            "VOCAL_PHRASES", "VOCAL_STEMS", "NO_VOCAL_STEMS", "INSTRUMENTAL_STEMS",
             "SOURCE_CACHE_ASKED", "SOURCE_CACHE_SONG_PENALTY", "SOURCE_WEIGHTS", "SYNTH_FIT_MIN"]
 __all__ += ["ENGINE_AUTO", "ENGINE_NEGATIONS", "ENGINE_NEGATION_BRIDGES", "ENGINE_TOPIC_LEADS", "ENGINE_TWEAK_WORDS",
             "MUSIC_ENGINES", "MusicEngine"]

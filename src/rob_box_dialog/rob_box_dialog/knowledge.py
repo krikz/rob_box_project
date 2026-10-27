@@ -508,6 +508,10 @@ ACTION_CLASSES: Mapping[str, ActionClass] = MappingProxyType({
 #: старой эпохи не должен заиграть после «хватит»/«стой». Остальные непрерываемые (память, громкость, голос,
 #: знакомство, движение) доживают до конца — движение гасит только «стой» интентом ``stop_motion`` (``interrupt.py``).
 INTERRUPT_STOPS_CLASSES: Tuple[str, ...] = ("action.media",)
+#: Выступление идёт (рэп, сказка, песня вживую): общий успех запуска музыки не озвучивается отдельной фразой (#4075;
+#: живой 27.10 15:16:58: смена подложки посреди рэпа - поверх выступления «Включаю музыку.»). Молчит только ключ общего
+#: успеха класса ``action.media``; фразы по данным результата (ожидание генерации, стоп) и любой провал говорятся.
+QUIET_IN_PERFORMANCE_KEYS: Tuple[str, ...] = (ACTION_CLASSES["action.media"].phrases["done"],)
 
 #: Тул каталога ``rob_box_core.tool_catalog`` → класс действия. Тул вне таблицы командой не исполняется
 #: (валидатор отвергает); полноту против каталога держит тест.
@@ -852,6 +856,14 @@ WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: которую строит код из исходов действий хода: тул, ключевой аргумент, статус, причина отказа. Квадратные скобки -
 #: служебная вставка: скопирует модель её в речь - TTS её не озвучит (``speak_helpers.strip_bracket_asides``).
 WINDOW_ACTIONS_REPLY = "[ответ действием: {actions}]"
+#: Ход отвечен одним лицом: ``command.expression`` без действий и без речи (#4073, живой 27.10, акт 9: «покажи, как тебе
+#: грустно» -> ``expression sad``, в окне ответа нет, следующий ход «догнал» реплику - показал грусть вместо победной
+#: анимации). Тот же приём, что у :data:`WINDOW_ACTIONS_REPLY`: после реплики человека окно ставит реплику робота, которую
+#: строит код из показанного лица (``expression.face_label``: сцена эмоции, жест, «сцена лица» от LLM). Лицо не показано
+#: (отмена, тишина) - записи нет.
+WINDOW_FACE_REPLY = "[ответ лицом: {face} — показано]"
+#: Слова метки для сцены лица, которую модель нарисовала сама (``Expression.face``): имени у неё нет.
+WINDOW_FACE_SCENE = "сцена лица"
 #: Ключевой аргумент тула в этой реплике - поле данных результата (аргументы вызова лежат в данных поверх ответа тула);
 #: тула нет в таблице или поля нет в данных - только имя тула. ``perform`` - запись выступления в окне (``turn_log``).
 WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
@@ -898,24 +910,49 @@ class ByData:
     """Ключ фразы по ДАННЫМ результата (#4020, ADR-0148): фразу об исходе выбирает код по тому, что сообщил владелец,
     а не по классу тула. ``fields`` - поля данных результата (аргументы вызова лежат в данных поверх ответа тула),
     ``keys`` - кортеж значений этих полей -> ключ каталога; пустое значение поля (нет поля, ``""``) читается как
-    ``None``. Не нашлось - ``default``; ``None`` - ключ класса действия."""
+    ``None``. Не нашлось - ``default``; ``None`` - ключ класса действия. ``present`` - поля, у которых важно лишь
+    есть ли в данных значение (``True``/``False``), а не какое (#4075: идёт ли мост - ``track_id`` у каждого свой)."""
 
     fields: Tuple[str, ...]
     keys: Mapping[Tuple[Any, ...], str]
     default: Optional[str] = None
+    present: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "keys", MappingProxyType(dict(self.keys)))
 
+    def _value(self, name: str, data: Mapping[str, Any]) -> Any:
+        value = data.get(name)
+        if name in self.present:
+            return value not in (None, "")
+        return None if value in (None, "") else value
+
     def key(self, data: Mapping[str, Any]) -> Optional[str]:
-        values = tuple(None if data.get(f) in (None, "") else data.get(f) for f in self.fields)
-        return self.keys.get(values, self.default)
+        return self.keys.get(tuple(self._value(f, data) for f in self.fields), self.default)
 
     def all_keys(self) -> Tuple[str, ...]:
         """Все ключи каталога, которые таблица может отдать (их обязан содержать ``phrases/ru.yaml``)."""
         return (*self.keys.values(), *((self.default,) if self.default else ()))
 
 
+#: Платная генерация началась, трек ещё пишется (#4075, Шифу 27.10: «надо было сказать: подожди, скоро будет, а пока
+#: послушай»). Тул музыки сообщает это в данных результата: ``pending`` - что пишется (``song`` - песня, в т.ч. голосом
+#: робота, ``instrumental`` - трек без слов) и ``track_id`` - играет мост ожидания (своё или сочинённое раньше), пока трек
+#: пишется. Фразу ожидания выбирает код по этим данным (``(pending, мост есть)`` -> ключ), а не общее «Включаю музыку.»
+#: класса: оно было ложью об исходе (музыка не та, что просили). ``pending`` вне таблицы - ключ класса.
+GEN_PENDING_FIELD = "pending"
+GEN_BRIDGE_FIELD = "track_id"
+GEN_WAIT = ByData((GEN_PENDING_FIELD, GEN_BRIDGE_FIELD), {
+    ("song", True): "music.gen_wait.song.bridge", ("song", False): "music.gen_wait.song",
+    ("instrumental", True): "music.gen_wait.track.bridge", ("instrumental", False): "music.gen_wait.track",
+}, present=(GEN_BRIDGE_FIELD,))
+#: Остановка диджей-сета (``dj_set`` ``action=stop``, #4075; живой 27.10: «хватит диджеить, выключай» - музыка остановлена,
+#: а робот говорил «Включаю музыку.»): фраза о стопе по тому, играло ли (``was_playing`` - ответ тула), как у ``stop_music``.
+#: Старт сета (``action=start``) вне таблицы - ключ класса: о нём говорит «заиграло» владельца.
+DJ_STOP = ByData(("action", "was_playing"), {
+    ("stop", False): "music.stop_idle", ("stop", True): "music.stop_ok", ("stop", None): "music.stop_ok",
+})
+DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
@@ -927,6 +964,10 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
         "done": ByData(("was_playing",), {(False,): "music.stop_idle"}, "music.stop_ok"),
         "rejected": "music.stop_fail",
     }),
+    # стоп сета - то же, что стоп музыки, а не «Включаю музыку.» старта (#4075); платная генерация - фраза ожидания
+    "dj_set": MappingProxyType({"done": DJ_STOP, "rejected": DJ_STOP_FAIL}),
+    "request_music": MappingProxyType({"done": GEN_WAIT}),
+    "generate_music": MappingProxyType({"done": GEN_WAIT}),
     # библиотека (CLASS_BY_ARG): правка - фраза о ней, не «Включаю музыку»; list/search/info - query, фразы кода нет
     LIBRARY_TOOL: MappingProxyType({
         "done": ByData(("action", "verdict"), {
