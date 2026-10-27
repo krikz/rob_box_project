@@ -35,6 +35,7 @@ import math
 import subprocess
 import threading
 import time
+import zlib
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -66,13 +67,23 @@ BRIDGE_LINE_MAX = 140
 
 @dataclass(frozen=True)
 class SetItem:
-    """Трек сета из кэша: ``group`` — задача (варианты одной задачи — одна группа), ``origin`` — cache/generated."""
+    """Трек сета из кэша: ``group`` — задача (варианты одной задачи — одна группа), ``origin`` — cache/generated.
+    ``hook`` — название мелодии трека для реплики диджея (#4006): у кавера — произведение; у инструментала «» —
+    его название лишь метка заказа (``theme_title`` темы, иначе «RoBBox <стиль> set»), одна у всех вариантов и
+    задач темы: на каждом переходе она звучала бы одной и той же связкой, а мелодии не называет."""
 
     id: str
     group: str
     title: str
     origin: str = "cache"
     genre: str = ""
+    hook: str = ""
+
+
+def cache_item(track: CacheTrack, genre: str) -> SetItem:
+    """Трек кэша → трек сета: кавер несёт мелодию своего произведения (``work_id`` — каталожное название)."""
+    hook = track.work_id if track.kind == "cover" else ""
+    return SetItem(track.id, track.group or track.id, track.title, genre=genre, hook=hook)
 
 
 def pick_item(ready: Sequence[SetItem], used: Set[str], prev_group: str) -> Tuple[Optional[SetItem], str]:
@@ -300,9 +311,9 @@ class SetCovers:
         result = self._make(work, replace(ask, genre=slot_style(key)), spent)
         if result.reason:
             raise GenUnavailable(result.reason, f"кавер «{work.title}»")
-        title = f"{work.spoken or work.title} (кавер)"
-        return ([SetItem(t, result.task_id, title, "generated", key) for t in result.track_ids], result.task_id,
-                result.credits)
+        name = work.spoken or work.title
+        return ([SetItem(t, result.task_id, f"{name} (кавер)", "generated", key, name) for t in result.track_ids],
+                result.task_id, result.credits)
 
 
 def _say(speak: Optional[Callable[[str], Any]], text: str) -> None:
@@ -314,9 +325,46 @@ def _thread(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="rbx-gen-set", daemon=True).start()
 
 
+def set_label(theme: str, genre: str) -> str:
+    """Тема сета для снимка и реплик: тема человека, иначе стиль сета («синтвейв»)."""
+    return theme or genre_name(genre)
+
+
+class SetTalk:
+    """Номер, снимок и реплика треков сета из генерации (#4006). Номер трека в сете — без моста: мост лишь держит звук,
+    пока пишется первый трек (его фразу говорит запуск), «трек 1 из N» — первый файл. Название и номер играющего
+    трека — в снимок плеера (``publish`` = ``PlayerOwner.update_dj``); факты трека и реплика на переходе —
+    ``lines`` (``engine.dj_lines.TransitionLines``: тот же объект и те же правила, что у сета синтезом, одна фраза на
+    ``started``, LLM только красит); ``None`` — ни реплик, ни фактов."""
+
+    def __init__(self, lines: Any, publish: Optional[Callable[[str, Dict[str, Any]], Any]], *, label: str, slots: int,
+                 bridged: bool, seed: int) -> None:
+        self._lines, self._publish, self.label, self._slots = lines, publish, label, slots
+        self._bridge, self._seed = int(bridged), seed  # мост — трек 1 сессии, не трек сета
+        self._numbers: Dict[str, int] = {}  # track_id деки → номер трека в сете
+
+    def prepared(self, track_id: str, item: SetItem, track_no: int) -> None:
+        """Трек ``track_no`` сессии собран: его факты и фраза LLM готовятся в фоне к его ``started``."""
+        no = self._numbers[track_id] = track_no - self._bridge
+        if self._lines is not None:
+            self._lines.prepare_item(track_id, no, tracks=self._slots, theme=self.label, hook=item.hook or None,
+                                     seed=self._seed)
+
+    def started(self, track_id: str, item: SetItem) -> str:
+        """``started`` трека: название и номер — в снимок; реплика — ``lines`` (в потоке). Пометка для лога."""
+        no = self._numbers[track_id]
+        if self._publish is not None:
+            self._publish(track_id, {"name": item.title, "source": "generated", "library_id": item.id,
+                                     "track_no": no, "tracks": self._slots,
+                                     "title": f"{self.label} · трек {no} из {self._slots}"})
+        return self._lines.on_started(track_id) if self._lines is not None else ""
+
+
 class GenSet:
     """Источник треков одного сета из генерации. ``bridge`` — ``deck -> Track`` синтеза-моста (первый трек) или
-    None; ``gen_reason`` — почему генерировать нельзя («» — можно); ``speak`` — фраза провала генерации."""
+    None; ``gen_reason`` — почему генерировать нельзя («» — можно); ``speak`` — фраза провала генерации; ``lines`` —
+    реплики диджея на переходах и факты играющего трека (``engine.dj_lines.TransitionLines``, тот же объект, что у
+    сета синтезом; ``None`` — ни реплик, ни фактов)."""
 
     def __init__(self, *, provider: Any, library: Any, ask: SourceAsk, genre: str, theme: str, set_id: str, bpm: int,
                  tracks: int, cache: Sequence[CacheTrack], bridge: Optional[Callable[[str], Any]] = None,
@@ -324,17 +372,20 @@ class GenSet:
                  spawn: Callable[[Callable[[], None]], None] = _thread, run: Callable[..., Any] = subprocess.run,
                  clock: Callable[[], float] = time.monotonic,
                  publish: Optional[Callable[[str, Dict[str, Any]], Any]] = None, genres: Sequence[str] = (),
-                 theme_tags: str = "", keys: Sequence[str] = (), covers: Optional["SetCovers"] = None) -> None:
+                 theme_tags: str = "", keys: Sequence[str] = (), covers: Optional["SetCovers"] = None,
+                 lines: Any = None) -> None:
         self._provider, self._library, self._ask, self._theme = provider, library, ask, theme
-        self._publish = publish  # ``PlayerOwner.update_dj``: название играющего трека — в снимок («что играет»)
         self.set_id, self.bpm, self.slots = set_id, int(bpm), int(tracks)
         self.genres = tuple(dict.fromkeys(genres)) or (genre,)
         self.genre, self._tags = self.genres[0], theme_tags
+        #: ``publish`` — ``PlayerOwner.update_dj``: название и номер играющего трека — в снимок («что играет»)
+        self.talk = SetTalk(lines, publish, label=set_label(theme, self.genre), slots=self.slots,
+                            bridged=bridge is not None, seed=zlib.crc32(set_id.encode()))
         self._plan = slot_plan(keys, genres, self.genres, self.slots)
         self._covers = covers or SetCovers()  # каверы материала темы (В14)
         self._bridge, self.gen_reason, self._speak, self._log = bridge, gen_reason, speak, log
         self._spawn, self._run, self._clock = spawn, run, clock
-        self._ready: List[SetItem] = [SetItem(t.id, t.group or t.id, t.title, genre=self._genre_of(t)) for t in cache]
+        self._ready: List[SetItem] = [cache_item(t, self._genre_of(t)) for t in cache]
         self._used: Set[str] = set()
         self._prev, self._taken, self._inflight, self.ordered, self.spent = "", 0, 0, 0, 0.0
         self._inflight_genre = ""
@@ -380,13 +431,13 @@ class GenSet:
         raise RuntimeError(f"сет {self.set_id}: файлы треков не декодируются")
 
     def on_started(self, track_id: str) -> str:
-        """Пометка строки ``started``: какой трек кэша и как выбран; название — в снимок плеера."""
+        """Пометка строки ``started``: какой трек кэша и как выбран, есть ли реплика диджея; название и номер трека в
+        сете (мост не в счёте) — в снимок плеера; факты и реплика перехода — ``lines`` (одна на трек, I23)."""
         item, how = self._items.get(track_id, (None, "bridge"))
         if item is None:
             return "gen=bridge"
-        if self._publish is not None:
-            self._publish(track_id, {"name": item.title, "source": "generated", "library_id": item.id})
-        return f"gen={item.id} {item.origin} {how} «{item.title}»"
+        line = self.talk.started(track_id, item)
+        return f"gen={item.id} {item.origin} {how} «{item.title}» {line}".rstrip()
 
     def _wait_s(self) -> float:
         if self._playing_s is None:  # играет мост: он продлевается проходами — ждать генерацию до таймаута
@@ -436,6 +487,7 @@ class GenSet:
         self._items[track_id] = (item, how)
         self._log.info(f"🎧 [gen set] {self.set_id} трек {track_no}: {item.genre} {item.origin} {item.id} "
                        f"«{item.title}» ({how}, задача {item.group}) {track.duration_s:.0f} с")
+        self.talk.prepared(track_id, item, track_no)
         return track
 
     def _short_genre(self) -> Optional[str]:
@@ -715,10 +767,11 @@ class GenSetMaker:
 
     def start(self, plan: "SetRoutes", owner: Any, *, theme: str, persona: Optional[str], set_id: str,
               bridge: Bridge, line_ask: Any = None, speak: Optional[Callable[[str], Any]] = None,
-              replace_set: Callable[[], None] = lambda: None) -> Dict[str, Any]:
+              replace_set: Callable[[], None] = lambda: None, lines: Any = None) -> Dict[str, Any]:
         """Запустить сет по путям треков ``plan`` (кэш и генерация): ``{ok, …, source_message, session}`` — фраза от
         кода. Треков с путём нет — отказ с фразой кода, идущий сет не трогается (синтез-запас решает ``dj_set``);
-        иначе ``replace_set`` снимает идущий сет до старта нового."""
+        иначе ``replace_set`` снимает идущий сет до старта нового. ``lines`` — реплики диджея на переходах и факты
+        трека (``TransitionLines`` от ``DjSetTool``, те же правила, что у сета синтезом; #4006)."""
         from rob_box_music.source import decline_text
 
         played = plan.played()
@@ -735,9 +788,9 @@ class GenSetMaker:
                      bridge=made[0] if made else None, gen_reason=reason, speak=speak, log=logger,
                      publish=getattr(owner, "update_dj", None), genres=genres, theme_tags=plan.theme_tags,
                      keys=[keys[i] for i in played],
-                     covers=SetCovers(plan.covers(), self._set_cover(plan), plan.pieces()))
+                     covers=SetCovers(plan.covers(), self._set_cover(plan), plan.pieces()), lines=lines)
         line = _LineBox(bridge_facts(genres[0], task_model(0, True)), line_ask, logger) if wait == "да" else None
-        session = _gen_session(owner, gen, theme, persona, logger)
+        session = _gen_session(owner, gen, persona, logger)
         result = session.start()
         if wait == "фон":
             head = background_text(theme or plan.theme_tags)
@@ -827,12 +880,12 @@ def start_message(head: str, plan: "SetRoutes") -> str:
     return " ".join(p for p in (head, set_notes(plan.unknown, plan.dropped())) if p)
 
 
-def _gen_session(owner: Any, gen: GenSet, theme: str, persona: Optional[str], logger: Any) -> Any:
+def _gen_session(owner: Any, gen: GenSet, persona: Optional[str], logger: Any) -> Any:
     from ..session import SetSession
 
     return SetSession(owner, gen.next_track, set_id=gen.set_id, bpm=gen.bpm, logger=logger,
                       tracks=gen.slots + gen.bridged, on_track_started=gen.on_started,
-                      dj={"theme": theme or genre_name(gen.genre), "persona": persona, "style": gen.genre,
+                      dj={"theme": gen.talk.label, "persona": persona, "style": gen.genre,
                           "styles": list(gen.genres), "source": "generated"})
 
 
@@ -922,6 +975,7 @@ class _LineBox:
         return self._line or bridge_template(self._facts)
 
 
-__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "bridge_facts", "bridge_line",
+__all__ = ["BRIDGE_LINE_DEADLINE_S", "Bridge", "GenSet", "GenSetMaker", "SetCovers", "SetItem", "SetRoutes", "SetTalk",
+           "bridge_facts", "bridge_line", "cache_item", "set_label",
            "background_text", "theme_why", "bridge_style", "bridge_template", "failed_text", "genre_name", "launch_text", "pick_item", "respread", "set_head", "set_notes",
            "supply_of", "synth_set_note", "task_model", "tasks_needed", "validate_bridge"]

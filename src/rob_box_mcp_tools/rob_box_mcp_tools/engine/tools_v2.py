@@ -627,7 +627,8 @@ class DjSetTool(MCPTool):
         (logger or _LOG).info(f"🎛️ [dj_set] {set_id} длина сета: {length} ({why}), "
                               f"энергия={[t.energy for t in plan.tracks]}")
         materials = self.plan_materials(plan, logger)
-        box = SetPlanBox(plan, self._melodies, lines=self._transition_lines(persona, logger), logger=logger)
+        self._facts = self._transition_lines(persona, logger, self._missing)
+        box = SetPlanBox(plan, self._melodies, lines=self._facts, logger=logger)
         base = plan_source(box.current, self._memory, materials)
         self._facts.forecast = getattr(base, "upcoming", None)  # «дальше будет» — из той же очереди, что компоновка
         session = SetSession(self._owner, lambda no, deck: box.compose_mark(base(no, deck), no), set_id=set_id,
@@ -650,9 +651,11 @@ class DjSetTool(MCPTool):
         if self._session is not None:
             self._session.stop("new_set")
 
-    def adopt(self, session: SetSession, theme: str, persona: Optional[str]) -> None:
-        """Сет из генерации заиграл (ADR-0158 PR-8): он — идущий сет (стоп, «что играет», «продолжай»)."""
-        self._session, self._last, self._facts, self._last_dj = session, session, None, (theme, persona)
+    def adopt(self, session: SetSession, theme: str, persona: Optional[str],
+              lines: Optional[TransitionLines] = None) -> None:
+        """Сет из генерации заиграл (ADR-0158 PR-8): он — идущий сет (стоп, «что играет», «продолжай»); ``lines`` —
+        его факты играющего трека (``status`` отвечает по ним, как у сета синтезом; #4006)."""
+        self._session, self._last, self._facts, self._last_dj = session, session, lines, (theme, persona)
 
     def status(self) -> Dict[str, Any]:
         """Сет для ``get_music_state``: идёт (трек N из M), окончен сам или его нет; фразу строит код (ADR-0148)."""
@@ -670,15 +673,14 @@ class DjSetTool(MCPTool):
                     "message": f"Диджей-сет закончился сам: сыграны все {session.tracks} из {session.tracks}."}
         return {**info, "active": False, "ended": False, "message": "Диджей-сет остановлен."}
 
-    def _transition_lines(self, persona: Optional[str], logger: Any) -> TransitionLines:
-        """Факты и реплики сета: факты (мелодия трека, план дальше, не найденное) — всегда, в снимок и ``status``;
-        реплика — если включена параметром и есть чем говорить; раскраска — LLM ризонера (его breaker)."""
+    def _transition_lines(self, persona: Optional[str], logger: Any, missing: Tuple[str, ...] = ()) -> TransitionLines:
+        """Факты и реплики сета — одни правила для сета синтезом и сета из генерации (#4006): факты (мелодия трека,
+        план дальше, ``missing`` — не найденное) — всегда, в снимок и ``status``; реплика — если включена параметром
+        (``music_v2_dj_lines``) и есть чем говорить (``speak_text`` робота); раскраска — LLM ризонера (его breaker)."""
         speak = self._speak if self._lines else None
         ask = self._reasoner.ask if self._reasoner.enabled and speak is not None else None
-        lines = TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=self._missing,
-                                publish=getattr(self._owner, "update_dj", None), fold=latin_fold, logger=logger)
-        self._facts = lines
-        return lines
+        return TransitionLines(speak, titles=self._titles, ask=ask, persona=persona, missing=missing,
+                               publish=getattr(self._owner, "update_dj", None), fold=latin_fold, logger=logger)
 
     def close_set(self, reason: str) -> None:
         """Закрыть идущий сет: деку занимает другой запрос (``request_music``)."""
@@ -1085,12 +1087,14 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
     seed = dj._seed()  # noqa: SLF001 — тот же сид, что у сета синтезом
     set_id = f"gen{seed % 100000:05d}"
     reasoner = dj._reasoner  # noqa: SLF001
+    lines = dj._transition_lines(persona, log)  # noqa: SLF001 — реплика на каждом переходе, как у сета синтезом
     result = makers.start(plan, dj._owner, theme=theme, persona=persona, set_id=set_id,  # noqa: SLF001
                           bridge=bridge_source(dj, theme, set_id, seed), speak=dj._speak,  # noqa: SLF001
-                          line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session)  # noqa: SLF001
+                          line_ask=reasoner.ask if reasoner.enabled else None, replace_set=dj._drop_session,  # noqa: SLF001
+                          lines=lines)
     session = result.pop("session", None)
     if session is not None:
-        dj.adopt(session, theme, persona)
+        dj.adopt(session, theme, persona, lines)
     return {**result, "seed": seed}, SynthFallback(key, window)
 
 
