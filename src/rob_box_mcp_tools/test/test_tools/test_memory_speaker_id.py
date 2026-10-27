@@ -8,13 +8,10 @@ on CI builders that don't have rclpy installed.
 """
 import asyncio
 import importlib.util
-import os
 import sys
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from rob_box_harness.encounter import EncounterChannel, EncounterSeam
 from rob_box_harness.identity import Acquaintance, MemoryIdentitySeam
@@ -330,13 +327,13 @@ class TestMemorySaveSpeakerScope:
         assert result.data["speaker_id"] == "denchik-uuid"
         assert node.voice_memory._facts[0]["speaker_id"] == "denchik-uuid"
 
-    def test_save_without_any_speaker_stays_global(self):
+    def test_save_without_any_speaker_is_refused_not_global(self):
+        """#4023: «кто сейчас» пуст (незнакомец, спорный голос) и id нет - факт никому не пишется (раньше - общий)."""
         node = _FakeNode()
-        tool = MemorySaveTool(node)
-        result = tool.execute(fact="глобальный факт")
-        assert result.success
-        assert result.data["speaker_id"] is None
-        assert node.voice_memory._facts[0]["speaker_id"] is None
+        result = MemorySaveTool(node).execute(fact="глобальный факт")
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+        assert node.voice_memory._facts == []
 
 
 class TestMemorySearchSpeakerScope:
@@ -386,6 +383,53 @@ class TestMemoryContextSpeakerScope:
         assert result.data["speaker_id"] == "denchik"
         fact_texts = [f["fact"] for f in result.data["facts"]]
         assert not any("Саша" in t for t in fact_texts)
+
+
+class TestNoPersonNoWholeMemory:
+    """#4023: без ``speaker_id`` и без «кто сейчас» (``mcp_server`` при contested/tentative/незнакомце ставит ∅)
+    память о людях не читается и не пишется: ни поиска, ни контекста по памяти ВСЕХ людей."""
+
+    @staticmethod
+    def _filled(node):
+        node.voice_memory.save_turn("user", "Саша пьёт зелёный чай", speaker_id="sasha")
+        node.voice_memory.save_fact("Саша пьёт только зелёный чай", speaker_id="sasha")
+        node.voice_memory.save_fact("общий факт без хозяина", speaker_id=None)
+        return node
+
+    def test_search_without_person_does_not_search_everyone(self):
+        node = self._filled(_FakeNode())
+        node.voice_memory.search = MagicMock(side_effect=AssertionError("поиск по всей памяти"))
+        result = MemorySearchTool(node).execute(query="чай")
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+        assert "Саша" not in (result.message or "")
+
+    def test_context_without_person_gives_nobodys_turns_or_facts(self):
+        node = self._filled(_FakeNode())
+        node.voice_memory.get_context = MagicMock(side_effect=AssertionError("контекст всех"))
+        node.voice_memory.format_facts_for_prompt = MagicMock(side_effect=AssertionError("факты всех"))
+        result = MemoryContextTool(node).execute()
+        assert not result.success
+        assert result.data == {"status": "rejected", "reason": "no_person"}
+
+    def test_node_without_encounter_seam_is_nobody_too(self):
+        node = _node_with()  # узел без шва Встречи (speaker_id_enabled=false)
+        for tool, args in ((MemorySaveTool, {"fact": "x"}), (MemorySearchTool, {"query": "x"}),
+                           (MemoryContextTool, {})):
+            result = tool(node).execute(**args)
+            assert not result.success and result.data["reason"] == "no_person", tool.__name__
+        assert node.voice_memory._facts == []
+
+    def test_explicit_speaker_id_still_scopes_without_current_speaker(self):
+        """Диалог v2 кладёт собеседника снимка сам (#3705): «кто сейчас» узла ему не нужен."""
+        node = self._filled(_FakeNode())
+        found = MemorySearchTool(node).execute(query="чай", speaker_id="sasha")
+        assert found.success and found.data["speaker_id"] == "sasha" and found.data["total"] >= 1
+
+    def test_reason_is_the_dialog_knowledge_key(self):
+        from rob_box_dialog import knowledge as kn
+
+        assert memory_mod._no_person().data["reason"] == kn.NO_PERSON_REASON
 
 
 class TestSavedEventAndOneTable:

@@ -205,7 +205,8 @@ def _search_log(hits: list[dict]) -> str:
     memory_mod = _load_memory_tools()
     node = _Node(_Memory(hits))
     tool = memory_mod.MemorySearchTool(node)
-    result = tool.execute(query="чай")
+    # собеседник есть всегда: без него поиск не идёт (#4023), а v2 кладёт его из снимка
+    result = tool.execute(query="чай", speaker_id="spk-sasha")
     assert result.success, result.message
     return "\n".join(
         f"[INFO] [1790180960.1] [mcp_server]: {line}" for line in node._logger.lines

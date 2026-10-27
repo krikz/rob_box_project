@@ -77,6 +77,9 @@ class WindowEntry:
     speaker: str = ""  # у ``user``: кто говорил в этот ход (метка кода из снимка, #3881)
     #: у ``assistant``: реплика прозвучала (или доставлена текстом) - не метка кода; в сравнении записей не участвует
     voiced: bool = field(default=False, compare=False)
+    #: У ``tool``: чья память была у хода, когда тул исполнялся (``memory.memory_owner`` снимка исполнения): исход тула
+    #: памяти другого владельца в ``recent_actions`` не идёт (``memory.foreign_result``, #4023).
+    owner: Optional[str] = None
 
     def text(self) -> str:
         """Как запись уходит модели (и как считается её размер): данные ``tool`` — компактным JSON."""
@@ -301,13 +304,14 @@ class TurnLog:
         журнале (выпал из окна, новая сессия) - ``False``, не пишется."""
         return bool(mark) and self._add(turn_id, WindowEntry(ASSISTANT, mark)) is not None
 
-    def result(self, turn_id: str, result: Any) -> None:
-        """Результат действия хода (``ActionResult``) — структурой. Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно
-        не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
+    def result(self, turn_id: str, result: Any, owner: Optional[str] = None) -> None:
+        """Результат действия хода (``ActionResult``) — структурой; ``owner`` — чья память была у хода при исполнении
+        (``memory.memory_owner``, #4023). Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно не идёт: модель не должна
+        помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
         if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
             return
         self._outcome(result)
-        entry = self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
+        entry = self._add(turn_id, WindowEntry(TOOL, _tool_content(result), owner=owner))
         if entry is not None:
             self._actions[result.turn_id] = (turn_id, entry, result)
 
@@ -323,7 +327,7 @@ class TurnLog:
         if turn is None:
             return False
         _, entry, before = known
-        fresh = WindowEntry(TOOL, _tool_content(result))
+        fresh = WindowEntry(TOOL, _tool_content(result), owner=entry.owner)
         turn.entries = [fresh if e is entry else e for e in turn.entries]
         self._actions[result.turn_id] = (turn.turn_id, fresh, result)
         _supersede(turn, phrase_of(before) if before.status == "timeout" else None)
