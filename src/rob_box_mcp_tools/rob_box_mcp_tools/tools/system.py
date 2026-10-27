@@ -25,6 +25,8 @@ import os
 import threading
 from typing import Callable, List, NamedTuple, Optional, TYPE_CHECKING
 
+from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
+
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
     import rclpy
@@ -278,7 +280,6 @@ def _step_axis(tts: TtsParams, axis, step: _Step, provider: str, kind: str,
     того, как значение прочитано обратно и совпало с запрошенным. Ось уже на границе — ``done`` с причиной
     ``VOICE_STEP_AT_LIMIT`` (по ней диалог говорит «Быстрее уже некуда», а не «Говорю быстрее», #4074).
     """
-    from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
     from rob_box_voice.tts_prosody import target_value
 
     current = tts.read(axis.param)

@@ -409,11 +409,32 @@ def _rest(part: str, spans: Sequence[Tuple[str, int]], lead: int, skip: set) -> 
 
 def _clear_at(tokens: Sequence[str], lead: int) -> bool:
     """Ведущее слово — стоп-слово, и за ним не вопросительная частица («хватит ли …») и не манера речи робота
-    («хватит тянуть»: просьба о темпе, а не стоп — #4074, таблица ``VOICE_STEP.manners``; покрытую фразу решает шаг
-    голоса ``grammar``, остальное — спорный стоп)."""
+    («хватит тянуть»: просьба о темпе, а не стоп — #4074, :func:`speech_manner`; покрытую фразу решает шаг голоса
+    ``grammar``, остальное — спорный стоп). «Стой, тороплюсь», «стоп, тяни» — ясный стоп: ведущее «стой/стоп» —
+    не слово манеры."""
     after = tokens[lead + 1] if lead + 1 < len(tokens) else ""
-    manner = bool(after) and after.startswith(tuple(VOICE_STEP.manners))
-    return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES and not manner
+    return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES and speech_manner(tokens, lead) is None
+
+
+def speech_manner(tokens: Sequence[str], lead: int) -> Optional[Tuple[Tuple[str, str], int]]:
+    """Манера речи робота с ведущим словом (#4074, ``VOICE_STEP``): «хватит тянуть», «не тараторь», «хватит так
+    тараторить» → ``((тул, действие), индекс слова манеры)`` — шаг, который её исправляет; иначе ``None``. Слова —
+    в нижнем регистре; манера — точной формой (инфинитив или повелительная), а не основой: «хватит тянет» — не она.
+    Одна реализация на грамматику шага, ясность стопа и срез тулов."""
+    if lead >= len(tokens) or tokens[lead] not in VOICE_STEP.manner_leads:
+        return None
+    at = lead + 1
+    if at < len(tokens) - 1 and tokens[at] in VOICE_STEP.manner_gap:
+        at += 1
+    step = VOICE_STEP.manners.get(tokens[at]) if at < len(tokens) else None
+    return (step, at) if step is not None else None
+
+
+def has_speech_manner(text: str) -> bool:
+    """Есть ли во фразе манера речи робота с ведущим словом (:func:`speech_manner`): «хватит тянуть резину» — тоже
+    (срез тулов открывает голос, решает модель)."""
+    tokens = [t.lower().replace("ё", "е") for t in _TOKEN.findall(text or "")]
+    return any(speech_manner(tokens, i) is not None for i in range(len(tokens)))
 
 
 def wake_command(text: str, wake_words: Optional[Sequence[str]] = None) -> str:

@@ -19,7 +19,7 @@ from rob_box_dialog.command import Command, ToolCall
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import NO_INTERRUPT, on_interrupt
 from rob_box_dialog.respond import ActionResult
-from rob_box_dialog.session import SceneFrame, Session, SessionSnapshot
+from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SessionSnapshot
 from rob_box_dialog.tools_view import available_tools
 from rob_box_dialog.turn import Answer, TurnEngine
 from rob_box_dialog.words import STOP_CLEAR, STOP_DISPUTED, policy_word, stop_verdict
@@ -93,10 +93,55 @@ def test_pace_and_pitch_requests_are_voice_steps(text, steps):
     "говори быстрее и медленнее", "говори выше и ниже",  # два действия одного тула
     "говори быстрее о погоде", "ты обычно говоришь быстро", "ускорь темп, а то мы тут засыпаем",
     "Робот, говори помедленнее я за тобой записываю",  # n409 из STT: лишние слова без границы части - LLM
+    "хватит тянет", "хватит так медленно",  # манера - точной формой глагола, а не основой и не наречием
 ])
 def test_not_a_voice_step(text):
     command = match(text, IDLE, VOICES)
     assert command is None or command.kind != kn.VOICE_STEP_KIND, text
+
+
+@pytest.mark.parametrize("text", ["Робот, ты тараторишь", "ты тараторишь", "тараторишь", "Робот, ты тараторишь!"])
+def test_you_rattle_on_is_a_complaint_not_a_request_to_speed_up(text):
+    """Ревью #4113: основа «тарато» делала жалобу «ты тараторишь» просьбой ``set_speed faster`` - робот отвечал
+    «Говорю быстрее.» человеку, которому и так быстро. Просьба - только повелительная форма («тараторь»)."""
+    assert match(text, IDLE, VOICES) is None, text
+    names = {t.name for t in available_tools(IDLE, text=text)}
+    assert "set_speed" in names, text  # жалобу решает модель, и тул темпа у неё в срезе
+
+
+@pytest.mark.parametrize("text", ["тараторь", "тараторьте", "Робот, тараторь!"])
+def test_imperative_rattle_on_is_still_a_faster_step(text):
+    assert match(text, IDLE, VOICES) == _step(FASTER), text
+
+
+@pytest.mark.parametrize("text", [
+    "ладно хватит тянуть теперь наоборот давай ораторь", "ладно хватит тянуть теперь наоборот ты ораторь",
+    "ладно хватит тянуть теперь на оборот ораторь", "Робот, ладно, хватит тянуть, теперь наоборот, давай тараторь.",
+    "ладно, хватит тянуть, теперь наоборот",
+])
+def test_n410_variants_from_stt_are_the_same_faster_step(text):
+    """Ревью #4113: служебное слово перед пересказом («давай», «ты») и «на оборот» раздельно (STT) уводили n410 в
+    спорный стоп с закрытым срезом тулов."""
+    assert match(text, IDLE, VOICES) == _step(FASTER), text
+
+
+@pytest.mark.parametrize("text, rest, follow", [
+    ("хватит тянуть, теперь наоборот — замолчи", "замолчи", "silence"),
+    ("хватит тянуть, теперь наоборот — стоп", "стоп", "stop_all"),
+    ("хватит тянуть, теперь наоборот — остановись", "остановись", "stop_all"),
+    ("хватит тянуть, теперь наоборот, погромче", "погромче", "volume"),
+])
+def test_another_tier1_word_after_on_the_contrary_is_not_swallowed(text, rest, follow):
+    """Ревью #4113: слово после «наоборот» глоталось любое - стоп, тишина и громкость пропадали молча. Слово другой
+    команды Tier-1 - не пересказ: оно остаётся остатком и исполняется своей грамматикой."""
+    command = match(text, IDLE, VOICES)
+    assert command == _step(FASTER, rest=rest), text
+    assert match(command.rest, IDLE, VOICES).kind == follow
+
+
+@pytest.mark.parametrize("text", ["хватит так тараторить", "Робот, хватит так тараторить!"])
+def test_enough_with_so_before_the_manner_is_a_step(text):
+    assert match(text, IDLE, VOICES) == _step(SLOWER), text
 
 
 @pytest.mark.parametrize("text, command", [
@@ -145,10 +190,23 @@ def test_enough_dragging_is_not_a_clear_stop_anywhere():
 
 
 def test_enough_with_a_manner_the_grammar_does_not_cover_is_a_disputed_stop():
-    """«хватит тянуть резину» - не шаг (лишнее слово) и не ясный стоп: спорный, решает модель, речь не рвётся."""
+    """«хватит тянуть резину» - не шаг (лишнее слово) и не ясный стоп: спорный, решает модель, речь не рвётся, а тул
+    темпа у модели в срезе (манера речи открывает группу голоса)."""
     command = match("хватит тянуть резину", IDLE, VOICES)
     assert command.kind == "stop_all" and command.disputed
     assert on_interrupt("Робот, хватит тянуть резину", IDLE) == NO_INTERRUPT
+    assert "set_speed" in {t.name for t in available_tools(IDLE, text="хватит тянуть резину")}
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, стой! Спешишь, врежешься", "стой, тороплюсь", "замолчи, тараторка", "стоп тяни", "хватит тянет",
+])
+def test_other_stop_words_before_a_manner_stem_are_a_clear_stop(text):
+    """Ревью #4113: исключение «стоп-слово + основа манеры» делало спорным любой стоп («стой, тороплюсь»). Не ясный
+    стоп - только ведущее слово манеры («хватит») перед её точной формой."""
+    assert stop_verdict(text) == STOP_CLEAR, text
+    command = match(text, IDLE, VOICES)
+    assert command.kind in ("stop_all", "silence") and not command.disputed, text
 
 
 def test_speech_manners_do_not_shadow_the_speech_stop_scope():
@@ -207,11 +265,14 @@ class Ports:
         return None
 
 
-def _run(ports, text):
+def _engine(ports):
     ids = iter(f"t{n}" for n in range(1, 100))
-    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids),
-                        voices=lambda: VOICES)
-    return asyncio.run(engine.run(Addressed(text, VOICE)))
+    return TurnEngine(Session("personality"), ports, system_prompt="Ты робот.", new_id=lambda: next(ids),
+                      voices=lambda: VOICES)
+
+
+def _run(ports, text):
+    return asyncio.run(_engine(ports).run(Addressed(text, VOICE)))
 
 
 def test_n410_from_stt_speeds_up_by_code_without_stop_and_without_llm():
@@ -281,6 +342,25 @@ def test_bass_and_then_a_tale_runs_the_step_by_code_and_gives_the_rest_to_the_ll
     assert [text for text, _ in ports.said] == [phrases.text("pitch.lower"), "Жила-была Красная Шапочка."]
 
 
+def test_complaint_you_rattle_on_goes_to_the_llm_with_the_speed_tool_and_the_phrase_comes_from_the_result():
+    """«Ты тараторишь» - не Tier-1 (ревью #4113): решает модель, ``set_speed`` у неё в срезе, а фраза об исходе - по
+    результату тула, не речь модели."""
+    claim = Command(speech="Хорошо, буду медленнее.", actions=(ToolCall("set_speed", {"action": "slower"}),))
+    ports = Ports([Answer(claim, "deepseek")])
+    _run(ports, "Робот, ты тараторишь")
+    assert "set_speed" in ports.asked[0][1]
+    assert ports.executed == [[("set_speed", {"action": "slower"})]]
+    assert ports.said == [(phrases.text("speed.slower"), None)]
+
+
+def test_silence_after_on_the_contrary_runs_after_the_step_instead_of_being_swallowed():
+    ports = Ports()
+    engine = _engine(ports)
+    agg = asyncio.run(engine.run(Addressed("Робот, хватит тянуть, теперь наоборот — замолчи", VOICE)))
+    assert ports.executed == [[("set_speed", {"action": "faster"})]] and agg.llm_calls == 0
+    assert engine.session.snapshot.top("Silence") is not None
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Срез тулов: слова темпа и тона открывают тулы голоса (если реплика всё же уходит к LLM)
 # ---------------------------------------------------------------------------------------------------------------
@@ -295,7 +375,18 @@ def test_pace_and_pitch_words_open_the_voice_tools(text):
 
 
 def test_pace_words_are_the_step_table():
-    """Одна таблица: слова скорости среза и музыкальные двусмысленные - из ``VOICE_STEP.requests``."""
+    """Одна таблица: слова скорости среза и музыкальные двусмысленные - из ``VOICE_STEP.requests``; глаголы только о
+    речи («тараторь») в двусмысленные не входят."""
     speed = {s for (tool, _), stems in kn.VOICE_STEP.requests.items() if tool == "set_speed" for s in stems}
-    assert speed <= set(kn.VOICE_PACE_STEMS) <= set(kn.TOOL_GROUPS["voice"].stems)
-    assert set(kn.VOICE_STEP_STEMS) <= set(kn.TOOL_GROUPS["voice"].stems)
+    speech_only = {s for s in speed if s.startswith(kn.VOICE_STEP.speech_only)}
+    assert speech_only and speed - speech_only <= set(kn.VOICE_PACE_STEMS) <= set(kn.TOOL_GROUPS["voice"].stems)
+    assert not speech_only & set(kn.MUSIC_AMBIGUOUS_STEMS)
+    assert set(kn.VOICE_STEP_STEMS) | set(kn.VOICE_STEP.speech_only) <= set(kn.TOOL_GROUPS["voice"].stems)
+
+
+@pytest.mark.parametrize("text", ["ты тараторишь", "Робот, ты мямлишь"])
+def test_speech_only_words_keep_the_voice_tools_under_playing_music(text):
+    """Ревью #4113: «тарато» попало в слова скорости, а они под играющей музыкой двусмысленны (темп трека) - жалоба
+    на речь теряла тулы голоса. Глагол только о речи голос не теряет."""
+    playing = _snap(music=MusicStateRef("playing", title="Still Dre"))
+    assert "set_speed" in {t.name for t in available_tools(playing, text=text)}, text

@@ -22,7 +22,7 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, name_tokens,
-                                  stop_command, strip_wake_word, without_forms)
+                                  speech_manner, stop_command, strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name)`` голосов активного провайдера (реестр ``tts_voice_registry`` — у вызывающего).
@@ -31,6 +31,8 @@ Voices = Sequence[Tuple[str, str]]
 Step = Tuple[str, str]
 #: Служебные слова шага голоса: общие грамматики, ведущие перед стопом («ладно», «всё») и свои (ё → е, как слова).
 _STEP_FILLER = frozenset(w.replace("ё", "е") for w in (*kn.GRAMMAR_FILLER, *kn.STOP_LEAD_WORDS, *kn.VOICE_STEP.filler))
+#: Основы громкости Tier-1 (все намерения): такое слово после «наоборот» или «как» — не пересказ шага голоса.
+_VOLUME_WORDS: Tuple[str, ...] = tuple(stem for stems in kn.VOLUME_STEMS.values() for stem in stems)
 
 
 @dataclass(frozen=True)
@@ -122,18 +124,36 @@ def _step_part(words: Sequence[str], parse: _StepParse) -> Optional[_StepParse]:
     """Одна часть фразы по таблице ``VOICE_STEP``; чужое слово — ``None`` (часть не покрыта)."""
     i = 0
     while i < len(words):
-        manner = _manner(words, i)
-        if parse.inverse or parse.simile:  # пересказ после «наоборот» и образ «как …» покрыты целиком
-            liken = _request(words[i], kn.VOICE_STEP.likeness) if parse.simile else None
-            parse = _with(replace(parse, inverse=False), _request(words[i]) or liken)
-        elif manner is not None:  # «хватит тянуть», «не тараторь»: два слова — одна просьба
-            parse, i = _with(replace(parse, manner=manner, owned=True), manner), i + 1
+        manner = speech_manner(words, i)
+        if parse.inverse or parse.simile:  # пересказ после «наоборот» и образ «как …»
+            parse = _retold(words[i], parse)
+        elif manner is not None:  # «хватит тянуть», «не тараторь», «хватит так тараторить»: одна просьба
+            step, i = manner
+            parse = _with(replace(parse, manner=step, owned=True), step)
         else:
             parse = _step_word(words[i], parse)
-            if parse is None:
-                return None
+        if parse is None:
+            return None
         i += 1
     return parse
+
+
+def _retold(word: str, parse: _StepParse) -> Optional[_StepParse]:
+    """Слово после «наоборот» (пересказ противоположной манеры, одно) или после «как» (образ, до конца части).
+    Слово другой команды Tier-1 — не пересказ и не образ (``None``: «…теперь наоборот — замолчи» — тишина остатком,
+    а не проглоченное слово); служебные слова перед пересказом его ждут («наоборот, давай ораторь»)."""
+    if _claimed_elsewhere(word):
+        return None
+    if parse.simile:
+        return _with(replace(parse, inverse=False), _request(word) or _request(word, kn.VOICE_STEP.likeness))
+    if word in _STEP_FILLER:
+        return parse
+    return _with(replace(parse, inverse=False), _request(word))
+
+
+def _claimed_elsewhere(word: str) -> bool:
+    """Слово другой команды Tier-1 этого модуля: стоп, тишина, громкость."""
+    return word in kn.STOP_WORDS or _starts(word, kn.SILENCE_WORDS) or _starts(word, _VOLUME_WORDS)
 
 
 def _step_word(word: str, parse: _StepParse) -> Optional[_StepParse]:
@@ -147,13 +167,6 @@ def _step_word(word: str, parse: _StepParse) -> Optional[_StepParse]:
     if word in kn.VOICE_STEP.simile:
         return replace(parse, simile=True)
     return parse if word in _STEP_FILLER else None
-
-
-def _manner(words: Sequence[str], i: int) -> Optional[Step]:
-    """Манера речи робота с ведущим словом («хватит тянуть»): шаг, который её исправляет, или ``None``."""
-    if words[i] not in kn.VOICE_STEP.manner_leads or i + 1 >= len(words):
-        return None
-    return next((step for stem, step in kn.VOICE_STEP.manners.items() if words[i + 1].startswith(stem)), None)
 
 
 def _request(word: str, table: Optional[Mapping[Step, Sequence[str]]] = None) -> Optional[Step]:
