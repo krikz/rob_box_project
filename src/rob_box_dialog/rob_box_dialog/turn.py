@@ -496,12 +496,14 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     return said.text if said is not None else None
 
 
-def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str) -> Optional[str]:
+def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
+                    performing: bool = False) -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
-    простом успехе (``respond.audible``, #3953). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
-    (:func:`query_more`, там же отказ чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
+    простом успехе (``respond.audible``, #3953), а при идущем выступлении (``performing``) молчит общий успех запуска
+    музыки (#4075). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели (:func:`query_more`, там же отказ
+    чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks)) if results else None
+    return outcome_phrase(audible(results, speaks, performing)) if results else None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
@@ -776,7 +778,8 @@ def say_late(engine: "TurnEngine", result: ActionResult) -> None:
     ``LATE_SPOKEN_CLASSES`` (музыка заиграла после ``timeout`` - «Включаю музыку.»); тихие успехи и чужие классы
     молчат (#3960)."""
     result = classed(result, result.data)  # аргументы вызова лежат в данных результата поверх ответа тула
-    text = outcome_phrase([result]) if result.cls in kn.LATE_SPOKEN_CLASSES else None
+    late = result.cls in kn.LATE_SPOKEN_CLASSES
+    text = outcome_phrase(audible([result], False, engine.log.performing())) if late else None  # #4075: рэп не рвём
     if not text:
         return
     turn_id = result.turn_id.split("/")[0]
@@ -1036,7 +1039,7 @@ class TurnEngine:
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997). ``unread`` — модель на последней итерации
         ещё просила ``query`` (не исполнен): слов её не слышно — говорит код по данным хода (:func:`_close_unread`)."""
         turn.expression = command_face(cmd.expression, results, turn.text)
-        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
+        outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:
             sad = any(r.status in _FAILED for r in results)
             self._say(turn, outcome, None, "sad" if sad else cmd.expression.emotion)

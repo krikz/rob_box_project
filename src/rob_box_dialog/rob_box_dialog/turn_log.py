@@ -271,6 +271,13 @@ class TurnLog:
         код (:func:`perform_status`), а не слова модели (#3973)."""
         return self.performed(turn_id, "", perform_status(end_reason), segments_done)
 
+    def performing(self) -> bool:
+        """Выступление идёт: его запись в окне стоит на ``PERFORM_STARTED`` - старт владельцем взят
+        (``note_perform_start``), конца (:meth:`performance_ended`: ``block_end`` владельца) ещё не было. Решает код по
+        событиям владельца: по этому признаку исход «музыка пошла» посреди выступления не озвучивается (#4075)."""
+        return any(_is_perform(e) and e.content.get("status") == PERFORM_STARTED
+                   for turn in self._turns.values() for e in turn.entries)
+
     def window(self, exclude: str = "") -> Tuple[WindowEntry, ...]:
         """Окно для LLM: ходы по порядку, новые важнее; лишние по числу и токенам выпадают целиком с начала.
         ``exclude`` — ход, который сейчас спрашивает модель: он считается в размер, но в окно не выдаётся."""

@@ -100,14 +100,24 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
                      emotion="sad" if result.status in _FAILED else None)
 
 
-def audible(results: Sequence[ActionResult], speaks: bool) -> Sequence[ActionResult]:
+def quiet_in_performance(result: ActionResult) -> bool:
+    """Успех запуска музыки, который при идущем выступлении молчит (``knowledge.QUIET_IN_PERFORMANCE_KEYS``, #4075):
+    общая фраза класса «Включаю музыку.» поверх рэпа - шум, а не исход. Решает ключ фразы результата: ожидание
+    генерации и стоп (фразы по данным) и любой провал остаются."""
+    return result.status == "done" and phrase_key(result) in kn.QUIET_IN_PERFORMANCE_KEYS
+
+
+def audible(results: Sequence[ActionResult], speaks: bool, performing: bool = False) -> Sequence[ActionResult]:
     """Исходы к озвучке. Звучит речь модели рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) - их
     простой успех (``done`` без причины) молчит: «Запомнил тебя, Борис» поверх «Приятно познакомиться, Борис» -
     две реплики об одном. Провал и успех с причиной (``already_known``, ``renamed``: исход не тот, что мог
-    подразумевать ответ модели) остаются: слова модели не выдают несделанное за сделанное (Шифу 23.10, #3953)."""
-    if not speaks:
+    подразумевать ответ модели) остаются: слова модели не выдают несделанное за сделанное (Шифу 23.10, #3953).
+    Идёт выступление (``performing``) - общий успех запуска музыки молчит (:func:`quiet_in_performance`, #4075)."""
+    if not speaks and not performing:
         return results
-    return [r for r in results if not (r.status == "done" and not r.reason and r.tool in kn.QUIET_WITH_SPEECH_TOOLS)]
+    return [r for r in results
+            if not (speaks and r.status == "done" and not r.reason and r.tool in kn.QUIET_WITH_SPEECH_TOOLS)
+            and not (performing and quiet_in_performance(r))]
 
 
 def join(results: Sequence[ActionResult], snapshot: Any = None) -> Optional[Utterance]:
