@@ -90,6 +90,8 @@ from rob_box_dialog.music_state import MusicStateMemory
 
 #: ``SpeechEvent.kind`` конца реплики: finished / cancelled / rejected.
 _ENDED = (SpeechEvent.KIND_FINISHED, SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED)
+#: Автор события владельца голоса (``speech_owner.voice_changed``: ответ на ``/voice/tts/voice_request``).
+VOICE_OWNER_AGENT = "system"
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
 _CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
                     DialogControl.Request.ACTION_RESET: RESET}
@@ -170,6 +172,13 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     """Работа хода (задача asyncio) с её контекстом тулов: реплика и её id едут в вызовы тулов этого хода."""
     _TOOL_TURN.set(MappingProxyType(dict(context)))
     return await work
+
+
+def robot_voice_changed(msg: Any) -> bool:
+    """``voice_changed`` сменил голос РОБОТА (#4045): событие владельца голоса — ответ на ``set_voice``/возврат голоса
+    сцены (``agent=system``, без реплики). Подмена голоса одной реплики или сегмента выступления (у события есть
+    ``speech_id``: голос роли сказки недоступен, #4043) голос робота не меняет и в ``session.voice`` не идёт."""
+    return msg.agent == VOICE_OWNER_AGENT and not msg.speech_id
 
 
 def late_outcome(engine: TurnEngine, say: Callable[[ActionResult], Any], result: ActionResult) -> None:
@@ -390,7 +399,11 @@ class DialogNode(Node):
         plan_host.on_speech(self, msg)
         greeting_window.on_speech_event(self, int(msg.kind), msg.speech_id, msg.agent)  # окно ответа (#3776)
         if msg.kind == SpeechEvent.KIND_VOICE_CHANGED:  # голос хранит tts_node; сессия помнит, что он применил
-            self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
+            if robot_voice_changed(msg):
+                self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
+            else:
+                self.get_logger().info(f"🗣️ [voice] подмена голоса реплики speech_id={msg.speech_id[:8]} "
+                                       f"{msg.voice_requested!r}→{msg.voice_applied!r}: голос робота не меняется")
             return
         if msg.agent == kn.TEXT_CHANNEL_AGENT:  # итог say_aloud чата (PR-12b): «Озвучил (N с)» по событию
             self._chats.on_speech(msg)

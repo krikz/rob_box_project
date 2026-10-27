@@ -254,17 +254,21 @@ PASSED = step("n_passed", "Робот, это я не тебе, это Бори�
 
 
 def test_3859_passed_on_addressed_phrase_finishes_the_turn(make_env):
+    """Модель «молчит» на адресованную реплику дважды: мост один раз вернул ей нарушение ``passed_addressed`` (форма
+    хода #4021 — ``passed`` на адресованное не положен), затем ход закрыт исходом ``passed`` — код мычит, finished."""
     env = make_env(lambda env, msgs, tools: {"passed": "not_addressed"})
     report = env.run(PASSED)
     assert report.verdict == dm.PASS, report.fail
-    assert report.said and report.llm_calls == 1
+    assert report.said and report.llm_calls == 1 + kn.COMMAND_RETRIES_MAX
 
 
 def test_3859_regression_passed_as_empty_answer_makes_step_red(make_env, monkeypatch):
     real = command_bridge.to_legacy
 
     def passed_is_empty(result):
-        if not isinstance(result, command_bridge.Invalid) and result.passed:
+        # «промолчать» на адресованную реплику приходит к мосту нарушением формы хода (#4021) — его исход тоже теряем
+        insisted = isinstance(result, command_bridge.Invalid) and result.reason == kn.VIOLATION_PASSED_ADDRESSED
+        if insisted or (not isinstance(result, command_bridge.Invalid) and result.passed):
             return "", (), "empty"
         return real(result)
 

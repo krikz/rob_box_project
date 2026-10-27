@@ -1060,6 +1060,7 @@ def test_3997_only_expression_twice_shows_the_face_and_code_speaks():
     ports = Ports(answers=[Answer(Command(expression=SAD), "deepseek"), Answer(Command(expression=SAD), "deepseek")])
     _run(_engine(ports), N1011)
     assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.SILENT_ANSWER_PHRASE]
+    assert ports.said[0][2] is None, "ничего не провалилось — фраза кода без sad (ревью #4041)"
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
     assert ports.faces == [("done", SAD)]
 

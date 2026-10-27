@@ -5,12 +5,18 @@ LLM на каждом ходе отдаёт ОДНУ команду: речь, �
 :mod:`.knowledge` и JSON-схемам каталога тулов. Невалидно — :class:`Invalid` со списком нарушений (:class:`Violation`)
 без вопроса человеку: ход закрывает провал (рефлекс ``failed``). :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
 tool-результатом, один раз на ответ (мост, решение Шифу 21.10 по #3698; ADR-0148 п.2).
+
+:class:`Form` — форма команды ХОДА (#4021): какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
+(:func:`turn_form`), мост строит по ней схему (:func:`form_schema`), :func:`validate` по ней же судит ответ — одно
+решение кода в одном месте, не правило в промпте.
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
@@ -131,6 +137,50 @@ class Busy:
 Result = Union[Command, Invalid]
 
 
+@dataclass(frozen=True)
+class Form:
+    """Форма команды хода (#4021, ADR-0148 п.2: выбор сужает структура, а не правило в промпте).
+
+    ``passed`` — модели можно «промолчать»: только при подхвате бэклога. Адресованность реплики решил код
+    (``address.py``), и на адресованную реплику молчанием не ответить (решение Шифу 22.10; n813 23.10: «Робот, тишина?»
+    → ``passed`` → «Хм, я задумался…»). ``voice`` — модели можно задать голос реплики (``Command.voice``): человек в
+    этой реплике просил о голосе (``tools_view.voice_asked``; n109 23.10: на вопрос про звуки DeepSeek сам включил
+    female-shaonv). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
+
+    passed: bool = True
+    voice: bool = True
+
+    def closed(self) -> Tuple[str, ...]:
+        """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
+        return tuple(name for name in kn.FORM_FIELDS if not getattr(self, name))
+
+
+#: Форма хода, в котором идёт вызов LLM: ставит ход (:func:`turn_form`), читают мост (схема) и :func:`validate`. Вызов
+#: модели идёт в задаче хода (``Ports.ask`` → цепочка → мост), контекст задачи у хода Личности и чата Telegram свой.
+_FORM: "contextvars.ContextVar[Form]" = contextvars.ContextVar("rob_box_dialog_command_form", default=Form())
+
+
+def current_form() -> Form:
+    """Форма команды хода в работе; вне хода — всё открыто (:class:`Form` по умолчанию)."""
+    return _FORM.get()
+
+
+@contextmanager
+def turn_form(form: Form) -> Iterator[Form]:
+    """Форма команды на время вызовов LLM хода (``TurnEngine._understand``)."""
+    token = _FORM.set(form)
+    try:
+        yield form
+    finally:
+        _FORM.reset(token)
+
+
+def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[str, Any]:
+    """Схема команды без полей, закрытых формой хода (``None`` — текущей): модель их не видит
+    (``knowledge.without_fields``)."""
+    return kn.without_fields(schema, (form or current_form()).closed())
+
+
 @dataclass
 class _Repairs:
     """Что разбор поправил, не отвергая команду: переложенные слоты лица и отброшенные поля экспрессии."""
@@ -237,9 +287,18 @@ def _only(data: Mapping[str, Any], allowed: Collection[str], where: str) -> None
         raise _Bad("unknown_field", f"{where}: {', '.join(map(str, unknown))}", allowed)
 
 
-def _text(data: Mapping[str, Any], key: str) -> Optional[str]:
+def _clean(text: str, where: str, fix: Optional[_Repairs]) -> str:
+    """Текст речи без символов, которых в речи не бывает (``knowledge.SPEECH_DROPPED_CHARS``: U+FFFD — битый UTF-8 в
+    ответе провайдера, n105 #4021); вырезанное — в ``dropped`` (лог ``fields_dropped``), команда не отвергается."""
+    kept = "".join(c for c in text if c not in kn.SPEECH_DROPPED_CHARS)
+    if fix is not None and len(kept) != len(text):
+        fix.dropped.append(f"{where}.U+FFFD")
+    return kept.strip()
+
+
+def _text(data: Mapping[str, Any], key: str, fix: Optional[_Repairs] = None, where: str = "") -> Optional[str]:
     value = _get(data, key, str)
-    return value.strip() or None if value is not None else None
+    return _clean(value, where or key, fix) or None if value is not None else None
 
 
 def _expression(data: Any, where: str, fix: _Repairs) -> Expression:
@@ -280,13 +339,13 @@ def _face(data: Any) -> Any:
     return FaceScene(**slots, duration_s=duration)
 
 
-def _ask(data: Any) -> Optional[Ask]:
+def _ask(data: Any, fix: _Repairs) -> Optional[Ask]:
     if data is None:
         return None
     if not isinstance(data, Mapping):
         raise _Bad("bad_type", "ask")
     _only(data, ("expects", "text"), "ask")
-    return Ask(expects=_get(data, "expects", str, "free") or "free", text=_text(data, "text"))
+    return Ask(expects=_get(data, "expects", str, "free") or "free", text=_text(data, "text", fix, "ask.text"))
 
 
 def _actions(data: Any) -> Tuple[ToolCall, ...]:
@@ -342,7 +401,8 @@ def _perform(data: Any, fix: _Repairs) -> Optional[Performance]:
         raise _Bad("bad_type", "perform.segments")
     per = _get(data, "expression_per_segment", list)
     return Performance(
-        kind=_get(data, "kind", str, "") or "", segments=tuple(s.strip() for s in segments),
+        kind=_get(data, "kind", str, "") or "",
+        segments=tuple(_clean(s, f"perform.segments[{i}]", fix) for i, s in enumerate(segments)),
         backing=_get(data, "backing", str, "none") or "none",
         expression_per_segment=None if per is None else tuple(
             _expression(e, f"perform.expression_per_segment[{i}]", fix) for i, e in enumerate(per)),
@@ -387,7 +447,7 @@ def _command(data: Mapping[str, Any]) -> Command:
     data = _lift_edit(data, fix)
     _only(data, _COMMAND_FIELDS, "command")
     cmd = Command(
-        speech=_text(data, "speech"), voice=_text(data, "voice"), ask=_ask(data.get("ask")),
+        speech=_text(data, "speech", fix), voice=_text(data, "voice", fix), ask=_ask(data.get("ask"), fix),
         actions=_actions(data.get("actions")),
         perform=_perform(data.get("perform"), fix), when=_get(data, "when", str, "after_current") or "after_current",
         edit_pending=bool(_get(data, "edit_pending", bool, False)),
@@ -401,23 +461,27 @@ def _command(data: Mapping[str, Any]) -> Command:
 # ---------------------------------------------------------------------------------------------------------------
 
 
-def validate(cmd: Result, available_tools: Collection[str], session: Any = None, busy: Busy = Busy()) -> Result:
+def validate(cmd: Result, available_tools: Collection[str], session: Any = None, busy: Busy = Busy(),
+             form: Optional[Form] = None) -> Result:
     """Проверить команду до исполнения: тулы видны и есть в таблице классов, аргументы — по схеме каталога,
     enum экспрессии, пределы речи/действий/сегментов, правила ``perform``/``when``/``edit_pending``.
 
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
-    ``busy`` — что занято сейчас. Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
+    ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
+    ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, голос реплики без просьбы о голосе
+    отбрасывается (``dropped``). Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
     так же лишние поля ВЛОЖЕННЫХ объектов аргументов тула (``play_animation.face.emotion``, #3974): без отказа
     команды, с записью в ``dropped``. Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
-    cmd = _drop_nested_extras(cmd)
+    form = form or current_form()
+    cmd = _drop_unasked_voice(_drop_nested_extras(cmd), form)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     checks: Tuple[Callable[[], Any], ...] = (
-        lambda: _check_passed(cmd),
+        lambda: _check_passed(cmd, form),
         lambda: _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech"),
-        lambda: _check_speech(cmd.voice, kn.VOICE_MAX_CHARS, "voice"),
+        lambda: _check_voice(cmd.voice, busy),
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(cmd.actions, set(available_tools), agent),
         lambda: _check_speech_with_actions(cmd, agent),
@@ -502,13 +566,31 @@ def _outcome(check: Callable[[], Any]) -> Any:
         return bad.violation()
 
 
-def _check_passed(cmd: Command) -> None:
+def _check_passed(cmd: Command, form: Form) -> None:
     if cmd.passed is None:
         return
+    if not form.passed:
+        raise _Bad(kn.VIOLATION_PASSED_ADDRESSED, f"passed={cmd.passed}")
     if cmd.passed not in kn.PASSED:
         raise _Bad("bad_enum", f"passed={cmd.passed}", kn.PASSED)
     if cmd.speech or cmd.ask or cmd.actions or cmd.perform:
         raise _Bad("passed_with_content", "молчание вместе с речью или действиями")
+
+
+def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
+    """Голос реплики без просьбы о голосе (форма хода закрыла ``voice``, #4021 n109) — не нарушение, а лишнее поле:
+    реплика звучит текущим голосом робота, поле — в ``dropped`` (лог ``fields_dropped``)."""
+    if cmd.voice is None or form.voice:
+        return cmd
+    return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
+
+
+def _check_voice(voice: Optional[str], busy: Busy) -> None:
+    """Голос реплики — из каталога звучащего провайдера (``Busy.voices``; пусто — не сверяется), как и голоса
+    сегментов (:func:`_check_voices`): чужое имя TTS подменил бы молча (#4021)."""
+    _check_speech(voice, kn.VOICE_MAX_CHARS, "voice")
+    if voice and busy.voices and voice not in busy.voices:
+        raise _Bad("bad_enum", f"voice={voice}", busy.voices)
 
 
 def is_empty(cmd: Command) -> bool:
@@ -714,6 +796,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "too_long": "слишком длинно",
     "control_chars": "управляющие символы в тексте",
     "passed_with_content": "passed — только без речи и действий",
+    kn.VIOLATION_PASSED_ADDRESSED: "реплика адресована тебе — молчать нельзя, поля passed в этом ходе нет: ответь "
+                                   "словами в speech (не понял — переспроси в ask)",
     "bad_ask": "у ask нужен text",
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",

@@ -790,6 +790,13 @@ PERSON_ARG = "speaker_id"
 PERSON_AGENTS: Tuple[str, ...] = ("personality",)
 #: Причина отказа, когда в снимке нет ``person_ref`` (ключ фразы ``local.rejected.no_person``).
 NO_PERSON_REASON = "no_person"
+#: Состояния имени собеседника (``SpeakerRef.name_state``), при которых голос узнан, а чей он - не подтверждено:
+#: ``contested`` - у кандидата конкурент с другим именем (#2809), ``tentative`` - гипотеза голоса без второго канала.
+#: Память о людях с таким собеседником не работает ни на чтение, ни на запись (``memory.bind_person``): вопроса «ты
+#: Саша?» в v2 нет (решение Шифу 26.10, #3993), а чужие факты хуже пустых. Своя причина отказа - не ``no_person``:
+#: «Не узнаю твой голос» тут неправда, голос узнан (score 0.89-0.94 в акте 2b), не подтверждено только имя.
+VOICE_UNCONFIRMED_STATES: Tuple[str, ...] = ("tentative", "contested")
+VOICE_UNCONFIRMED_REASON = "voice_unconfirmed"
 #: Причина отказа, когда к исполнению собеседник снимка сменился: факт сказан другим человеком (#3881).
 SPEAKER_CHANGED_REASON = "speaker_changed"
 #: Авторство прошлой реплики окна (#3881): в историю модели реплика человека уходит с тегом, кто говорил в тот ход
@@ -799,7 +806,7 @@ SPEAKER_TAG = "[говорит: {who}] {text}"
 #: Отказы памяти, которых в окне LLM нет вообще (#3881): отклонённый факт чужого или неузнанного собеседника, оставшись
 #: в окне даже пометкой, переезжает к следующему («зелёный чай» Саши записан Борису). Модель узнаёт исход из фразы кода.
 WINDOW_DROPPED_REJECTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
-    "memory_save": (NO_PERSON_REASON, SPEAKER_CHANGED_REASON),
+    "memory_save": (NO_PERSON_REASON, VOICE_UNCONFIRMED_REASON, SPEAKER_CHANGED_REASON),
 })
 #: Тул -> поле данных события владельца, без которого ``done`` не засчитывается: «Запомнил» говорится только по
 #: ``saved{fact_id}`` памяти (ADR-0148); успех без доказательства - ``rejected{no_evidence}``.
@@ -920,6 +927,13 @@ STT_TRANSIENT_STRIKES_TO_DOWN: int = 3
 #: Фразы, которые выбирает код (решения Шифу 22.10): «промолчать» на адресованную реплику и подтверждение «новой сессии».
 PASSED_ADDRESSED_PHRASE = "understand.nothing_to_say"
 NEW_SESSION_PHRASE = "tier1.new_session"
+#: «Промолчать» (``passed``) - только при подхвате бэклога (#4021, n813 23.10: «Робот, тишина?» → LLM ``passed`` →
+#: «Хм, я задумался…»). Адресованность решил код (``address.py``), и на адресованную реплику схема команды хода
+#: ``passed`` не содержит (``command.Form``); модель всё же прислала - нарушение с этой причиной и повтор моста. Повтор
+#: кончился, а модель «молчит» - исход хода ``passed`` с этим значением (``turn.silence_insisted``): код мычит
+#: ``PASSED_ADDRESSED_PHRASE``, как и раньше.
+VIOLATION_PASSED_ADDRESSED = "passed_addressed"
+PASSED_INSISTED = "nothing_to_say"
 #: Модель и после повтора ответила голой анимацией на адресованную реплику (``VIOLATION_SILENT_ANSWER``, #3995):
 #: анимация исполнена, а говорит код - короткая фраза из каталога, не молчание.
 SILENT_ANSWER_PHRASE = "understand.silent_answer"
@@ -939,6 +953,10 @@ INVALID_COMMAND_PHRASE = "command.invalid_generic"
 #: причины вне таблицы говорят ``INVALID_COMMAND_PHRASE``.
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE})
+#: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
+#: earcon) - ничего не провалилось (ревью #4041: «Угу, я тут.» звучало с ``sad``). Провал исполненного действия
+#: грустит по-прежнему: эмоцию фразы решает его исход.
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER,)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
@@ -962,6 +980,8 @@ PHRASE_KEYS: Tuple[str, ...] = (
     # ``speed_unsupported``/``pitch_unsupported``), звукоподражание
     PROSODY_NORMAL_PHRASE, "local.rejected.speed_unsupported", "local.rejected.pitch_unsupported",
     *SOUND_IMITATIONS.values(),
+    # отказ памяти при узнанном, но не подтверждённом голосе (#3993): своя фраза, не «Не узнаю твой голос»
+    f"local.rejected.{VOICE_UNCONFIRMED_REASON}",
 )
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1498,6 +1518,14 @@ SEGMENT_MAX_CHARS = 400
 WHEN: Tuple[str, ...] = ("after_current", "now")
 ASK_EXPECTS: Tuple[str, ...] = ("yes_no", "name", "free")
 PASSED: Tuple[str, ...] = ("not_addressed", "nothing_to_say", "unclear")
+#: Поля команды, которые закрывает форма хода (``command.Form``, #4021; ADR-0148 п.2 - выбор сужает структура):
+#: ``passed`` - не на адресованную реплику (только подхват бэклога), ``voice`` - голос реплики только по просьбе о
+#: голосе в этой реплике (группа ``TOOL_GROUPS_EXPLICIT`` или названный голос: n109 23.10, DeepSeek сам включил
+#: female-shaonv).
+FORM_FIELDS: Tuple[str, ...] = ("passed", "voice")
+#: Символы, которых в тексте речи не бывает: U+FFFD - битый UTF-8 в ответе провайдера (n105 23.10: «Остально<U+FFFD×2> в
+#: порядке» ушло в TTS). Разбор команды их вырезает (``command._clean``), вырезанное - в ``fields_dropped``.
+SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("\ufffd",)
 #: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
 #: structured_output/JSON-режима и для JSON в тексте.
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")
@@ -1577,18 +1605,31 @@ def with_tool_enum(schema: Mapping[str, Any], offered: Iterable[str]) -> Dict[st
 
 
 def with_voices(schema: Mapping[str, Any], voices: Iterable[str]) -> Dict[str, Any]:
-    """Схема команды, в которой ``perform.voice_per_segment[]`` - голоса звучащего провайдера TTS (#3959, ADR-0148:
-    голос вне каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог один - реестр голосов
-    владельца речи, сюда он приходит через ``Busy.voices``. Пусто - схема без изменений."""
+    """Схема команды, в которой ``perform.voice_per_segment[]`` и голос реплики ``voice`` - голоса звучащего провайдера
+    TTS (#3959, #4021; ADR-0148: голос вне каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог
+    один - реестр голосов владельца речи, сюда он приходит через ``Busy.voices``. Пусто - схема без изменений."""
     names = sorted({v for v in voices if v})
     out = copy.deepcopy(dict(schema))
     if names:
         out["properties"]["perform"]["properties"]["voice_per_segment"]["items"] = _enum(["", *names])
+        if "voice" in out["properties"]:
+            out["properties"]["voice"] = _enum(["", *names])
     return out
 
 
-def prompt_fragment() -> str:
-    """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную).
+def without_fields(schema: Mapping[str, Any], fields: Iterable[str]) -> Dict[str, Any]:
+    """Схема команды без полей верхнего уровня ``fields`` - закрытых формой хода (``command.Form``, ``FORM_FIELDS``:
+    на адресованную реплику нет ``passed``, без просьбы о голосе нет ``voice``). Модель видит только то, что можно."""
+    out = copy.deepcopy(dict(schema))
+    for name in fields:
+        out["properties"].pop(name, None)
+    return out
+
+
+def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
+    """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную). ``schema`` — схема
+    команды этого хода (форма хода закрыла ``passed``/``voice``, #4021): строки о полях, которых в ней нет, не пишутся —
+    промпт не предлагает того, чего нет в схеме. ``None`` — полная схема.
 
     Об итоге действий говорит код по событию исполнителя (§4.1, PR-7): ``speech`` при действиях — нарушение
     (``VIOLATION_SPEECH_WITH_ACTIONS``), ответ по сути рядом с действиями («включи звук и расскажи шутку») —
@@ -1599,30 +1640,33 @@ def prompt_fragment() -> str:
         return "{" + ", ".join(values) + "}"
 
     face = "; ".join(f"{slot} ∈ {_set(v)}" for slot, v in FACE_SCENE_SLOTS.items())
-    lines: List[str] = [
-        "Ответ — одна команда (JSON-объект) с полями:",
-        f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда невалидна):"
-        " о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) — в perform."
-        f" Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними звучит.",
-        "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет.",
-        f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}.",
-        f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
-        f" {' и '.join(SINGLE_ACTION_CLASSES)}.",
-        f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
-        f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech (speech при нём не"
-        " пиши, даже с actions). Звучит и при"
-        " actions: ответ по сути (сказка, стих, анекдот), не отчёт о действиях. voice_per_segment — голос на"
-        " сегмент, у сказки обязателен (сегмент = реплика одного говорящего, \"\" — рассказчик); set_voice меняет голос робота насовсем — только когда об этом просят.",
-        f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас.",
-        "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты, они заменят"
-        " ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа: {\"edit_pending\": true,"
-        " \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\", \"segments\": [\"А вот и енот — ночной"
-        " бандит…\", \"Комар и енот — два ночных бойца…\"]}}.",
-        f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈ {_set(EARCONS)};"
-        f" face: {face}; duration_s ≤ {FACE_SCENE_MAX_S:g}.",
-        f"- passed ∈ {_set(PASSED)} — честно промолчать.",
+    fields = set((schema or command_schema("json"))["properties"])
+    lines: List[Tuple[str, str]] = [
+        ("", "Ответ — одна команда (JSON-объект) с полями:"),
+        ("speech", f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда"
+                   " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"
+                   f" в perform. Исключение — тихие действия {', '.join(QUIET_WITH_SPEECH_TOOLS)}: speech с ними"
+                   " звучит."),
+        ("voice", "- voice: голос этой реплики (имя голоса, как у speak_text); голос робота не меняет."),
+        ("ask", f"- ask: вопрос с ожиданием ответа, expects ∈ {_set(ASK_EXPECTS)}."),
+        ("actions", f"- actions: ≤ {ACTIONS_MAX} вызовов тулов {{tool, args}}; не больше одного на класс"
+                    f" {' и '.join(SINGLE_ACTION_CLASSES)}."),
+        ("perform", f"- perform: выступление kind ∈ {_set(PERFORM_KINDS)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
+                    f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(PERFORM_BACKINGS)}; вместо speech (speech при"
+                    " нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
+                    " отчёт о действиях. voice_per_segment — голос на сегмент, у сказки обязателен (сегмент = реплика"
+                    " одного говорящего, \"\" — рассказчик); set_voice меняет голос робота насовсем — только когда об"
+                    " этом просят."),
+        ("when", f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас."),
+        ("edit_pending", "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты,"
+                         " они заменят ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа:"
+                         " {\"edit_pending\": true, \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\","
+                         " \"segments\": [\"А вот и енот — ночной бандит…\", \"Комар и енот — два ночных бойца…\"]}}."),
+        ("expression", f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈"
+                       f" {_set(EARCONS)}; face: {face}; duration_s ≤ {FACE_SCENE_MAX_S:g}."),
+        ("passed", f"- passed ∈ {_set(PASSED)} — честно промолчать."),
     ]
-    return "\n".join(lines)
+    return "\n".join(text for field, text in lines if not field or field in fields)
 
 
 # ---------------------------------------------------------------------------------------------------------------

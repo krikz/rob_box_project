@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
-from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, in_reply_window
+from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, attributed_person, in_reply_window
 from rob_box_dialog.knowledge import (
     ADDRESS_FILLER_WORDS,
     COORDINATOR_NAMES,
@@ -177,9 +177,10 @@ def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", f
 
 
 def person_ref_from(registry: Any, utterance_id: Optional[str]) -> str:
-    """``speaker_id`` узнанного диктора этой фразы из реестра биометрии (``peek`` по id); нет — ``""``."""
+    """``speaker_id`` диктора этой фразы из реестра биометрии (``peek`` по id), если голос приписан профилю
+    (``speaker_adapter.attributed_person``: спорный голос — никому, #3993); нет — ``""``."""
     result = registry.peek(utterance_id) if (registry is not None and utterance_id) else None
-    return str(result.get("speaker_id") or "") if isinstance(result, dict) and result.get("is_known") else ""
+    return attributed_person(result) if isinstance(result, dict) else ""
 
 
 def log_label(msg: Any) -> str:
