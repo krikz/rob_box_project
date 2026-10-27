@@ -195,6 +195,7 @@ class _Turn:
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за голый неслышимый ответ (``VIOLATION_SILENT_ANSWER``, #3995)
     expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done`` (#3997)
+    command: str = ""  # Tier-1 разбирает это, а не ``text``: слова после вейка (``Addressed.command``, n811 27.10)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -809,7 +810,7 @@ async def _tier1_then_rest(engine: "TurnEngine", turn: _Turn, command: Tier1Comm
     await engine._tier1(turn, command, snap)
     if not command.rest:
         return
-    turn.text = command.rest
+    turn.text, turn.command = command.rest, ""
     snap = engine.session.snapshot
     engine._log.info(f"{LOG_MARK} остаток после стопа: {turn.text[:80]!r} turn={turn.turn_id}")
     follow = tier1_for(turn.text, snap, engine._voices())
@@ -827,7 +828,7 @@ def turn_work(engine: "TurnEngine", turn: _Turn, snap: SessionSnapshot) -> Await
     reply = tool_ask.reply(engine.session, turn.text, turn.source)
     if reply is not None:
         return answer_tool(engine, turn, reply, snap)
-    tier1 = tier1_for(turn.text, snap, engine._voices())
+    tier1 = tier1_for(turn.command or turn.text, snap, engine._voices())
     if tier1 is not None and not tier1.disputed:
         return _tier1_then_rest(engine, turn, tier1, snap)
     return understand(engine, turn, snap)
@@ -957,7 +958,7 @@ class TurnEngine:
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
-                     background=background_section(addressed))
+                     background=background_section(addressed), command=addressed.command)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
@@ -992,7 +993,7 @@ class TurnEngine:
         self._log.info(f"{LOG_MARK} tier1 kind={command.kind} args={dict(command.args)} turn={turn.turn_id}")
         turn.stage = "done"
         actions = tier1_actions(command, snap)
-        stop = interrupt_for(command, turn.text, snap)
+        stop = interrupt_for(command, turn.command or turn.text, snap)
         if stop.interrupts:
             snap = self._interrupt(turn, stop)
             actions = () if stop_performance(self._ports, str(stop.perform), stop.keep_backing) else stop.music

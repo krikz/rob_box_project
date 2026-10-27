@@ -328,6 +328,55 @@ def test_4020_n709_stop_form_stops_music_by_code_then_the_rest_goes_to_llm():
     assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("Борис уже уснул под неё")
 
 
+def _heard_turn(engine, text):
+    """Реплика с микрофона целиком через адресацию (``address.decide``), как в ноде, — затем ход."""
+    addressed = decide(Heard(text, t=100.0), Backlog(), kn.DEFAULT_WAKE_WORDS)
+    assert isinstance(addressed, Addressed)
+    return _run_addressed(engine, addressed)
+
+
+def test_4085_n811_echo_before_the_wake_still_stops_speech_and_keeps_music():
+    """Марафон 27.10, акт 8 n811: под рэп STT склеил эхо робота с фразой — «четыре недели робот хватит читать а музыку
+    оставь». Вейк снят, эхо осталось первым — стоп был спорным (``tier1 kind=stop_speech`` в логе нет, ход — к LLM).
+    Теперь Tier-1 разбирает команду после вейка: ``stop_speech`` с ``keep_music``, выступление — ``stop`` с
+    ``keep_backing``, ``stop_music`` нет, LLM не зовётся."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    agg = _heard_turn(engine, "четыре недели робот хватит читать а музыку оставь")
+    assert ports.asked == [] and agg.llm_calls == 0 and agg.stage == "done"
+    assert ports.cancels == ["tier1 stop_speech"] and ports.performs == ["stop"] and ports.kept == [True]
+    assert ports.executed == [] and ports.intents == [] and ports.said == []
+    assert engine.session.snapshot.music.state == "playing"
+
+
+def test_4085_bare_enough_after_an_echo_is_still_stop_all_with_stop_music():
+    """«Хватит» — как было: стоп всего, музыка гаснет кодом (выступление её не держит), LLM не зовётся."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    _heard_turn(engine, "у корней старой робот хватит")
+    assert ports.cancels == ["tier1 stop_all"] and ports.performs == ["stop"] and ports.kept == [False]
+    assert ports.executed == [[("stop_music", {})]] and ports.asked == [] and ports.intents == ["stop_motion"]
+
+
+def test_4085_echo_before_the_wake_still_reaches_the_llm_whole_when_not_tier1():
+    """Не Tier-1 после вейка — ход к LLM, и модель видит фразу целиком (слова до вейка — контекст человека)."""
+    ports = Ports(answers=[Answer(Command(speech="Спою!"), "deepseek")])
+    engine = _engine(ports)
+    _heard_turn(engine, "мне грустно, робот, спой что-нибудь")
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("мне грустно, спой что-нибудь")
+
+
+def test_4085_rest_after_an_echoed_stop_is_parsed_on_its_own():
+    """Остаток ясного стопа после эха («…робот хватит, громче») — следующая команда того же хода, не прежний текст."""
+    ports = Ports()
+    engine = _engine(ports)
+    _heard_turn(engine, "четыре недели робот хватит, громче")
+    assert ports.cancels == ["tier1 stop_all"] and ports.asked == []
+    assert ports.executed == [[("set_volume", {"action": "louder"})]]
+
+
 def test_4020_bus_stop_is_not_a_stop():
     ports = Ports(answers=[Answer(Command(speech="Не знаю, где остановка."), "deepseek")])
     engine = _engine(ports)

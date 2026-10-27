@@ -9,7 +9,7 @@ from rob_box_dialog.knowledge import (
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, has_form, has_wake_word, has_word, introduces_self,
-    slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
+    slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word, wake_command,
 )
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
@@ -343,3 +343,25 @@ def test_4020_stop_forms_are_clear_stops(text):
                                   "робот остановкой больше", "остановка автобуса", "робот остановился сам"])
 def test_4020_stop_lookalikes_are_not_stops(text):
     assert stop_verdict(text) == STOP_NONE
+
+
+@pytest.mark.parametrize("text, command", [
+    # n811 27.10: эхо рэпа робота склеилось с фразой человека перед вейком — команда только после вейка
+    ("четыре недели робот хватит читать а музыку оставь", "хватит читать а музыку оставь"),
+    ("старой робот хватит", "хватит"),
+    ("Робот, хватит читать, а музыку оставь.", "хватит читать, а музыку оставь"),
+    ("хватит читать, робот!", "хватит читать"),  # вейк в конце — команда перед ним
+    ("хватит читать", "хватит читать"),  # без вейка — вся фраза
+    ("работает робот-пылесос", "работает робот-пылесос"),  # не вейк
+])
+def test_4085_wake_command_is_what_follows_the_wake(text, command):
+    assert wake_command(text) == command
+
+
+def test_4085_wake_command_follows_the_same_rule_as_stop_command():
+    """Одно правило «команда — после вейка» у Tier-1 реплики и у разбора стопа: что ясный стоп с эхом перед вейком,
+    то ясный стоп и по команде без вейка."""
+    text = "четыре недели робот хватит читать а музыку оставь"
+    assert stop_verdict(text) == STOP_CLEAR
+    assert stop_verdict(wake_command(text)) == STOP_CLEAR
+    assert stop_verdict(strip_wake_word(text)) == STOP_DISPUTED  # так было: вейк снят, эхо осталось — спорный стоп

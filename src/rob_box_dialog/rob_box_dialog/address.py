@@ -32,7 +32,7 @@ from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
     resolve_wake_word_namespaces,
 )
-from rob_box_dialog.words import has_wake_word, slipped_wake_rest, strip_wake_word
+from rob_box_dialog.words import has_wake_word, slipped_wake_rest, strip_wake_word, wake_command
 
 #: Источники реплики (значения ``Utterance.SOURCE_*``; тест сверяет с ``.msg``).
 SOURCE_RESPEAKER, SOURCE_TELEGRAM, SOURCE_OPERATOR = "respeaker", "telegram", "operator"
@@ -66,6 +66,10 @@ class Addressed:
     recent: Tuple[Dict[str, Any], ...] = ()
     #: Адресованный ход с фразой: все фоновые фразы всех авторов за последние ``BACKGROUND_WINDOW_S`` (В23, 23.10, #3892).
     background: Tuple[Dict[str, Any], ...] = ()
+    #: Команда реплики с микрофона для Tier-1 (``words.wake_command``), если она короче ``text``: слова после вейка.
+    #: Слова перед ним — эхо речи робота, склеенное микрофоном (n811 27.10: «четыре недели робот хватит читать…» —
+    #: спорный стоп, LLM вместо ``stop_speech``); модель видит ``text`` целиком. «» — команда и есть ``text``.
+    command: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,12 +133,19 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
             return NotAddressed(COORDINATOR)
         rest = strip_wake_word(text, wake_words)
         return Addressed(rest, heard.source) if rest else NotAddressed(EMPTY)
-    rest = strip_wake_word(text, wake_words) if has_wake_word(text, wake_words) else slipped_wake_rest(text, wake_words)
+    woken = has_wake_word(text, wake_words)
+    rest = strip_wake_word(text, wake_words) if woken else slipped_wake_rest(text, wake_words)
     if rest is None:
         return _wakeless_reply(text, heard, question, greeting, ask)
     if is_bare(rest) and _yes_no_in_window(ask, rest, heard.t):  # «Робот, да» — ответ на вопрос, не голый вейк
         return Addressed(rest, PERFORM_ANSWER)
-    return _woken(rest, heard, backlog)
+    return _woken(rest, heard, backlog, _command(text, rest, wake_words) if woken else "")
+
+
+def _command(text: str, rest: str, wake_words: Sequence[str]) -> str:
+    """Команда для Tier-1 (``Addressed.command``): слова после вейка, если перед ним было что-то ещё; иначе «»."""
+    command = wake_command(text, wake_words)
+    return command if command and command != rest.strip(" ,.!?;:-–—") else ""
 
 
 def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], snap: Any,
@@ -147,12 +158,13 @@ def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequ
                   ask=snap.top("PerformAsk"), hold=snap.top("OperatorHold"))
 
 
-def _woken(rest: str, heard: Heard, backlog: Optional[Backlog]) -> Addressed:
-    """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12)."""
+def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "") -> Addressed:
+    """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12).
+    ``command`` — команда после вейка для Tier-1 (``Addressed.command``)."""
     if not is_bare(rest):
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
-        return Addressed(rest, VOICE, recent=(recent,) if recent else (), background=tuple(since))
+        return Addressed(rest, VOICE, recent=(recent,) if recent else (), background=tuple(since), command=command)
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
