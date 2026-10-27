@@ -98,7 +98,7 @@ class TestPlayAnimationTool:
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 2.0
 
-        # то же правило применяет диалог к ttl запроса лица (animations.clamp_show_seconds)
+        # правило тула (animations.clamp_show_seconds); диалог v2 приводит время к expression.show_seconds (#4083)
         assert mock_node.get_publisher("/voice/animation/request") is None
 
     def test_execute_with_invalid_duration_too_long(self, mock_node):
@@ -112,7 +112,7 @@ class TestPlayAnimationTool:
         assert result.data["animation"] == "happy"
         assert result.data["duration"] == 2.0
 
-        # то же правило применяет диалог к ttl запроса лица (animations.clamp_show_seconds)
+        # правило тула (animations.clamp_show_seconds); диалог v2 приводит время к expression.show_seconds (#4083)
         assert mock_node.get_publisher("/voice/animation/request") is None
 
     @pytest.mark.parametrize("duration", [2.0, 5.0, 10.0, 20.0, 30.0])
@@ -138,7 +138,9 @@ class TestPlayAnimationTool:
         assert result.data["duration"] == 2.0
 
 
-def test_show_seconds_rule_is_one_for_the_tool_and_the_dialogue():
+def test_tool_show_seconds_rule_out_of_range_is_the_minimum():
+    """Правило тула (ответ модели и диалог v1). Диалог v2 держит показ по своему правилу
+    ``rob_box_dialog.expression.show_seconds`` (#4083); свести в одно - после удаления v1 (PR-15)."""
     from rob_box_mcp_tools.animations import SHOW_MAX_S, SHOW_MIN_S, clamp_show_seconds
 
     assert clamp_show_seconds(None) is None

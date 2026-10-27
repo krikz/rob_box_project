@@ -32,7 +32,8 @@ _EXPRESSION_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["propertie
 
 @dataclass(frozen=True)
 class Expression:
-    """Экспрессия хода: эмоция, жест, earcon, сцена лица — enum из :mod:`.knowledge`."""
+    """Экспрессия хода: эмоция, жест, earcon, сцена лица — enum из :mod:`.knowledge`; ``duration_s`` — сколько держать
+    лицо команды, секунды (#4083; к пределам показа его приводит ``expression.show_seconds``), ``None`` — не задано."""
 
     emotion: str = "neutral"
     gesture: Optional[str] = None
@@ -40,6 +41,7 @@ class Expression:
     #: TODO(PR-8, ADR-0150 §5.5.9): исполнитель v2 шлёт ``face.to_dict()`` в ``ExpressionRequest.face_json``; проверка
     #: общая с v1 (``play_animation(face=...)``) - :func:`rob_box_dialog.face_scene.validate`.
     face: Optional[FaceScene] = None
+    duration_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -309,13 +311,28 @@ def _expression(data: Any, where: str, fix: _Repairs) -> Expression:
     data = _lift_face(data, where, fix)
     face = data.get("face")
     return Expression(emotion=_get(data, "emotion", str, "neutral") or "neutral", gesture=_get(data, "gesture", str),
-                      earcon=_get(data, "earcon", str), face=None if face is None else _face(face))
+                      earcon=_get(data, "earcon", str), face=None if face is None else _face(face),
+                      duration_s=_seconds(data.get("duration_s"), where, fix))
+
+
+def _seconds(value: Any, where: str, fix: _Repairs) -> Optional[float]:
+    """Время лица команды (#4083): число больше нуля — как есть (пределы показа ставит ``expression.show_seconds``);
+    ноль, отрицательное и ``NaN`` — время не задано (``None``: обычный ответ держит лицо временем рефлекса, а не
+    показом по просьбе); не число — поле в ``dropped`` (лог ``fields_dropped``), команда не отвергается (§5.5.9:
+    экспрессия команду не валит)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        fix.dropped.append(f"{where}.duration_s")
+        return None
+    return float(value) if value > 0 else None
 
 
 def _lift_face(data: Mapping[str, Any], where: str, fix: _Repairs) -> Mapping[str, Any]:
-    """Лишние поля экспрессии не валят команду (§5.5.9, решение Шифу 21.10 по #3698): слоты лица и ``duration_s``
-    на уровне ``expression`` переезжают в ``expression.face``, если ``face`` не задан и среди них есть хоть один слот;
-    иначе они, как и прочие незнакомые поля, уходят в ``dropped``."""
+    """Лишние поля экспрессии не валят команду (§5.5.9, решение Шифу 21.10 по #3698): слоты лица на уровне
+    ``expression`` переезжают в ``expression.face``, если ``face`` не задан и среди них есть хоть один слот; иначе они,
+    как и прочие незнакомые поля, уходят в ``dropped``. ``duration_s`` на уровне ``expression`` - своё поле экспрессии
+    (время лица команды, #4083), а не лишнее: не переезжает и не выбрасывается."""
     stray = [k for k in data if k not in _EXPRESSION_FIELDS]
     if not stray:
         return data
@@ -609,8 +626,9 @@ def is_empty(cmd: Command) -> bool:
     """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, ни экспрессии, и
     не ``passed``. Экспрессия сверх нейтрали (эмоция, жест, earcon, сцена лица) - полноценная команда «покажи на лице»
     без слов (#3974: «покажи, как тебе грустно»); пустой ответ МОДЕЛИ мост режима команд считает нарушением
-    :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698)."""
-    return cmd.passed is None and cmd.expression == Expression() and not (
+    :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698). Время без лица (``expression.duration_s`` при нейтрали, #4083)
+    показать нечего — команда пустая."""
+    return cmd.passed is None and replace(cmd.expression, duration_s=None) == Expression() and not (
         cmd.speech or cmd.ask or cmd.actions or cmd.perform)
 
 
@@ -864,6 +882,8 @@ def _expression_args(expr: Expression) -> Dict[str, Any]:
     out.update({k: v for k, v in (("gesture", expr.gesture), ("earcon", expr.earcon)) if v is not None})
     if expr.face is not None:
         out["face"] = expr.face.to_dict() if isinstance(expr.face, FaceScene) else expr.face
+    if expr.duration_s is not None:
+        out["duration_s"] = expr.duration_s
     return out
 
 

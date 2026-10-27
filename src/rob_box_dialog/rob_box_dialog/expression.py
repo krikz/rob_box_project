@@ -7,13 +7,17 @@ earcon сыграть на этой стадии. :func:`merge` накладыв
 бывает.
 Кольцо LED в план не входит: его режим исполнитель берёт из ``REFLEXES[stage].ring`` по событию стадии.
 
+Показ по просьбе человека (#4083): время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``), пачка сцен
+одной команды - :func:`queued`, по очереди, каждая своё время, а не перезаписью последней.
+
 Чистый модуль, без ROS: план превращается в ``ExpressionRequest`` клиентом ``rob_box_core.expression_client``.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
-from typing import Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from . import knowledge as kn
 
@@ -127,3 +131,48 @@ def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = N
     if ttl_ms is not None and (scene or face):
         plan = replace(plan, ttl_ms=max(0, int(ttl_ms)))
     return plan
+
+
+def show_seconds(requested: object = None) -> float:
+    """Сколько лицо держит сцену, которую человек попросил показать (#4083, Шифу 27.10: «хотя бы 5–10 секунд»):
+    заказанное время (``play_animation.duration``, ``expression.duration_s``, ``face.duration_s``) в пределах
+    ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]``; не задано (не число, не больше нуля) - ``FACE_SHOW_DEFAULT_S``.
+    Единственное правило времени показа: его применяет ход (``turn.command_face``), время доходит до
+    ``ExpressionRequest.ttl_ms`` и ``duration_s`` сцены лица."""
+    if isinstance(requested, bool) or not isinstance(requested, (int, float)) or not requested > 0:
+        return kn.FACE_SHOW_DEFAULT_S
+    return min(max(float(requested), kn.FACE_SHOW_MIN_S), kn.FACE_SCENE_MAX_S)
+
+
+def held_face(face: Optional[Any], seconds: Optional[float]) -> Optional[Dict[str, Any]]:
+    """Сцена лица LLM (``FaceScene``) для ``ExpressionRequest.face_json``: со временем сцены команды ``seconds``, если
+    оно задано (оверлей гаснет вместе со сценой, а не раньше и не позже); нет сцены - ``None``."""
+    if face is None:
+        return None
+    out = dict(face.to_dict())
+    if seconds is not None:
+        out["duration_s"] = seconds
+    return out
+
+
+def hold_ms(seconds: Optional[float]) -> Optional[int]:
+    """Время сцены команды в ``ttl_ms``; ``None`` - время рефлекса (обычный ответ, показ не просили)."""
+    return None if seconds is None or not math.isfinite(seconds) else int(round(seconds * 1000))
+
+
+def queued(start_s: float, scenes: Sequence[Any]) -> Tuple[Tuple[float, ExpressionPlan], ...]:
+    """Пачка сцен одной команды по очереди (#4083: «покажи по очереди радость, грусть и удивление» - три
+    ``play_animation`` исполнялись разом, последняя перекрывала остальные). ``(через сколько секунд после итога,
+    план)`` для сцен после первой: следующая начинается, когда кончилось время предыдущей (``start_s`` - время первой,
+    уже на лице с итогом ``done``). Время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``). Earcon и жест -
+    только у итога: сцена очереди - эмоция (имя сцены), её сцена лица и время. Сцена-нейтраль (``idle``, ``neutral``,
+    ``talking``: :func:`shows` - нечего показать) запроса не шлёт, но своё время держит: предыдущая сцена кончилась,
+    лицо в покое, следующая - после неё в срок."""
+    out, at = [], show_seconds(start_s)
+    for scene in scenes:
+        seconds = show_seconds(getattr(scene, "duration_s", None))
+        emotion, face = command_scene(getattr(scene, "emotion", "")), held_face(getattr(scene, "face", None), seconds)
+        if emotion or face:
+            out.append((at, ExpressionPlan(emotion=emotion, face=face, ttl_ms=hold_ms(seconds) or 0)))
+        at += seconds
+    return tuple(out)

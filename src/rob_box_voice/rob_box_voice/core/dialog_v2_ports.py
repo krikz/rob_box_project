@@ -10,7 +10,8 @@
   MCP под планировщиком ресурсов), исход — событие владельца из данных результата (``command_turn.owner_event``).
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
 * **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``, на итоге
-  ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997), ``/dialog/intent``.
+  ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997; пачка ``play_animation`` — очередью
+  сцен за итогом, ``expression.queued``, #4083), ``/dialog/intent``.
 
 Модуль без класса ноды: ROS-хост ``dialog_node`` (ч.8e2) отдаёт сюда себя и собранные объекты.
 """
@@ -18,8 +19,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
-from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
@@ -28,10 +30,10 @@ from rob_box_dialog.command import Busy, Command, Expression, Invalid, Result, T
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor
-from rob_box_dialog.expression import ExpressionPlan, merge, reflex
+from rob_box_dialog.expression import ExpressionPlan, held_face, hold_ms, merge, queued, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.turn import Answer, Shown
+from rob_box_dialog.turn import Answer
 from rob_box_harness.core.agent_core import answering_provider
 from rob_box_harness.core.tool_loop.command_turn import owner_event
 from rob_box_llm.errors import ProviderError
@@ -98,18 +100,35 @@ def stage_plan(stage: str, cls: Optional[str] = None,
                expression: Optional[Expression] = None) -> Optional[ExpressionPlan]:
     """Рефлекс стадии (``expression.reflex``), окрашенный экспрессией команды (#3997): эмоция, жест и сцена лица LLM
     (``FaceScene.to_dict()``) через ``expression.merge`` - красит только ``speaking``/``done``, провал побеждает.
-    Отдельного запроса лицу нет: команда из одной ``expression`` и исполненный ``play_animation`` (``turn.Shown``: его
-    сцена и ``duration`` - время сцены, #4049) доходят до лица рефлексом ``done``."""
+    Отдельного запроса лицу нет: команда из одной ``expression`` и исполненный ``play_animation`` (``turn.Shown``,
+    #4049) доходят до лица рефлексом ``done``. Время сцены - ``expression.duration_s``, решённое ходом
+    (``turn.command_face``, #4083: показ по просьбе ≥ ``FACE_SHOW_MIN_S``, а не 3 с рефлекса); не задано - время
+    рефлекса."""
     plan = reflex(stage, cls)
     if expression is None:
         return plan
-    face = expression.face.to_dict() if expression.face is not None else None
-    return merge(plan, stage, expression.emotion, expression.gesture, face, _hold_ms(expression))
+    seconds = expression.duration_s
+    return merge(plan, stage, expression.emotion, expression.gesture, held_face(expression.face, seconds),
+                 hold_ms(seconds))
 
 
-def _hold_ms(expression: Optional[Expression]) -> Optional[int]:
-    """Время сцены итога: у исполненного ``play_animation`` (``turn.Shown``) - его ``duration``; иначе как у рефлекса."""
-    return expression.hold_ms if isinstance(expression, Shown) else None
+def show_queue(stage: str, expression: Optional[Expression]) -> Tuple[Tuple[float, ExpressionPlan], ...]:
+    """Сцены пачки ``play_animation`` после первой (``turn.Shown.then``, #4083): ``(через сколько секунд, план)`` —
+    по очереди за сценой итога ``done`` (``expression.queued``). На другой стадии и без пачки — пусто."""
+    then = getattr(expression, "then", ()) if stage == "done" else ()
+    return queued(expression.duration_s, then) if expression is not None and then else ()
+
+
+def _call_later(delay_s: float, fire: Callable[[], None]) -> Any:
+    """Таймер очереди лица: в asyncio-loop хода (``dialog_node``: loop ноды крутится в своём потоке, ход — его задача),
+    вне loop — поток-таймер. У обоих есть ``cancel()``."""
+    try:
+        return asyncio.get_running_loop().call_later(delay_s, fire)
+    except RuntimeError:
+        timer = threading.Timer(delay_s, fire)
+        timer.daemon = True
+        timer.start()
+        return timer
 
 
 def to_message(message: Any) -> LLMMessage:
@@ -151,8 +170,12 @@ class V2Ports:
     def __init__(self, node: Any, llm: Any, counter: CallCounter, tools: Any, *, agent: str = "personality",
                  settings: Optional[LLMSettings] = None, intent_pub: Any = None,
                  log: Callable[[str], None] = lambda line: None, epoch: Optional[Callable[[], int]] = None,
-                 performer: Callable[[], Any] = lambda: None) -> None:
+                 performer: Callable[[], Any] = lambda: None,
+                 later: Callable[[float, Callable[[], None]], Any] = _call_later) -> None:
         self._node = node
+        #: Таймер очереди лица (#4083): ``later(через_с, fire) -> handle.cancel()``; тест подменяет его своим.
+        self._later = later
+        self._queue: List[Any] = []
         self._llm = llm
         self._counter = counter
         self._tools = tools
@@ -225,20 +248,51 @@ class V2Ports:
               expression: Optional[Expression] = None) -> None:
         """Событие стадии (``/dialog/turn_event``) и рефлекс кода (лицо/кольцо/earcon) без LLM. ``expression`` -
         экспрессия команды на итоге хода (``turn.done_expression``: не в тишине, не у отменённого): красит рефлекс
-        (:func:`stage_plan`), жест и сцена лица LLM уходят в том же ``ExpressionRequest``; строка ``🎭 [turn-v2]``."""
+        (:func:`stage_plan`), жест и сцена лица LLM уходят в том же ``ExpressionRequest``; строка ``🎭 [turn-v2]``.
+        Пачка ``play_animation`` (#4083) — остальные сцены по очереди за итогом (:func:`show_queue`), каждая своим
+        запросом в свой срок; любая следующая стадия (новый ход, стоп) недопоказанную очередь снимает."""
         status = _STATUS.get(status, status)
+        self._drop_queue(stage, turn_id)
         expression_client.turn_event(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent, stage=stage,
                                      status=status, reason=reason, llm_calls=llm_calls, llm_provider=provider,
                                      source=source)
         plan = stage_plan(stage, cls, expression)
         if plan is not None and expression is not None:
-            held = f" ttl_ms={plan.ttl_ms}" if _hold_ms(expression) is not None else ""
+            held = f" ttl_ms={plan.ttl_ms}" if expression.duration_s is not None else ""
             self._log(f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion} gesture={plan.gesture or '-'} "
                       f"face={'llm' if plan.face else '-'}{held} turn={turn_id}")
         if plan is not None:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
                                       emotion=plan.emotion, gesture=plan.gesture, earcon=plan.earcon, face=plan.face,
                                       ttl_ms=plan.ttl_ms)
+        self._queue_shows(turn_id, epoch, show_queue(stage, expression))
+
+    def _queue_shows(self, turn_id: str, epoch: int, shows: Sequence[Tuple[float, ExpressionPlan]]) -> None:
+        """Сцены пачки — таймерами в свой срок (строка ``🎭 [turn-v2] очередь лица`` для живой проверки)."""
+        if not shows:
+            return
+        steps = ", ".join(f"{p.emotion or 'face'} через {at:g} с на {p.ttl_ms / 1000:g} с" for at, p in shows)
+        self._log(f"🎭 [turn-v2] очередь лица: {steps} turn={turn_id}")
+        for at, plan in shows:
+            self._queue.append(self._later(at, lambda p=plan: self._show_queued(turn_id, epoch, p)))
+
+    def _show_queued(self, turn_id: str, epoch: int, plan: ExpressionPlan) -> None:
+        """Сцена очереди пришла в свой срок: ``ExpressionRequest`` без earcon и жеста — только сцена и её время."""
+        if self._queue:
+            self._queue.pop(0)
+        self._log(f"🎭 [turn-v2] лицо из очереди: emotion={plan.emotion or '-'} face={'llm' if plan.face else '-'} "
+                  f"ttl_ms={plan.ttl_ms} turn={turn_id}")
+        expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent, emotion=plan.emotion,
+                                  face=plan.face, ttl_ms=plan.ttl_ms)
+
+    def _drop_queue(self, stage: str, turn_id: str) -> None:
+        """Новая стадия (следующий ход, стоп): недопоказанные сцены пачки снимаются — лицо отдаёт новому ходу."""
+        if not self._queue:
+            return
+        pending, self._queue = self._queue, []
+        for handle in pending:
+            handle.cancel()
+        self._log(f"🎭 [turn-v2] очередь лица снята: {len(pending)} сцен (стадия {stage} turn={turn_id})")
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
         speech_client.cancel(self._node, agent=self._agent, epoch=epoch, reason=reason, boundary=boundary)
@@ -295,4 +349,4 @@ def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any,
 
 
 __all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
-           "follow_for", "stage_plan", "to_message", "to_result", "tool_schema"]
+           "follow_for", "show_queue", "stage_plan", "to_message", "to_result", "tool_schema"]
