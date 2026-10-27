@@ -48,6 +48,8 @@ AGGREGATE_MARK = "📊 [turn]"
 USER, ASSISTANT, TOOL = "user", "assistant", "tool"
 #: Тул-запись исхода выступления в окне (``recent_actions``: ``{"tool": "perform", "status": ..., "data": {"kind"}}``).
 PERFORM_TOOL = "perform"
+#: Класс исхода выступления для наблюдателя исходов (``knowledge.ACTION_CLASSES``).
+PERFORM_CLASS = "action.perform"
 #: Статус выступления в окне: идёт / досказано / остановил человек («хватит», «стой») / оборвано без его слова.
 PERFORM_STARTED, PERFORM_DONE = "started", "done"
 PERFORM_STOPPED, PERFORM_INTERRUPTED = "stopped_by_user", "interrupted"
@@ -183,14 +185,23 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
     return MappingProxyType(out)
 
 
+#: Наблюдатель исходов (``TurnLog(on_outcome=...)``): ``(ref, класс, запись окна)``; ``ref`` — id вызова
+#: (``ActionResult.turn_id``) или ``<ход>/perform`` выступления. Его ведёт журнал смены (``shift_log``, #4076).
+OnOutcome = Callable[[str, str, Mapping[str, Any]], None]
+
+
 class TurnLog:
-    """Ходы одной сессии агента: что сказал человек, что прозвучало, чем кончились действия."""
+    """Ходы одной сессии агента: что сказал человек, что прозвучало, чем кончились действия.
+
+    ``on_outcome`` получает каждый исход, что журнал принял (результат, выступление; поздний итог — даже когда ход уже
+    выпал из окна): журнал смены живёт дольше сессии и окна (#4076)."""
 
     def __init__(self, max_turns: int = kn.TURN_WINDOW_MAX_TURNS, max_tokens: int = kn.TURN_WINDOW_MAX_TOKENS,
-                 estimate: Callable[[str], int] = estimate_tokens) -> None:
+                 estimate: Callable[[str], int] = estimate_tokens, on_outcome: Optional[OnOutcome] = None) -> None:
         self._max_turns = max_turns
         self._max_tokens = max_tokens
         self._estimate = estimate
+        self._on_outcome = on_outcome
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
         self._performs: Dict[str, str] = {}  # turn_id → kind выступления, запись которого в окне ещё можно обновить
@@ -241,7 +252,9 @@ class TurnLog:
         не идёт: модель не должна помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
         if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
             return
-        entry = self._add(turn_id, WindowEntry(TOOL, _tool_content(result)))
+        content = _tool_content(result)
+        self._outcome(result.turn_id, result.cls, content)
+        entry = self._add(turn_id, WindowEntry(TOOL, content))
         if entry is not None:
             self._actions[result.turn_id] = (turn_id, entry, result)
 
@@ -251,12 +264,14 @@ class TurnLog:
         не заиграла.», ``phrase_of`` — как её строит ход) из окна уходит — и прозвучавшая, и та, что ещё звучит: модель
         на следующем ходу видит правду, а не таймаут (n809, #3960). Фраза позднего итога входит в окно обычным путём
         (:meth:`said` → :meth:`spoken`). Действия нет в журнале (ход выпал из окна, новая сессия) — ``False``."""
+        content = _tool_content(result)
+        self._outcome(result.turn_id, result.cls, content)
         known = self._actions.get(result.turn_id)
         turn = self._turns.get(known[0]) if known is not None else None
         if turn is None:
             return False
         _, entry, before = known
-        fresh = WindowEntry(TOOL, _tool_content(result))
+        fresh = WindowEntry(TOOL, content)
         turn.entries = [fresh if e is entry else e for e in turn.entries]
         self._actions[result.turn_id] = (turn.turn_id, fresh, result)
         said = phrase_of(before) if before.status == "timeout" else None
@@ -276,6 +291,7 @@ class TurnLog:
         if segments_done is not None:
             data["segments_done"] = int(segments_done)
         entry = WindowEntry(TOOL, MappingProxyType({"tool": PERFORM_TOOL, "status": status, "data": data}))
+        self._outcome(f"{turn_id}/{PERFORM_TOOL}", PERFORM_CLASS, entry.content)
         slot = next((i for i, e in enumerate(turn.entries) if _is_perform(e)), None)
         if slot is None:
             turn.entries.append(entry)
@@ -340,6 +356,10 @@ class TurnLog:
         self._performs.clear()
         self._actions.clear()
 
+    def _outcome(self, ref: str, cls: str, content: Mapping[str, Any]) -> None:
+        if self._on_outcome is not None:
+            self._on_outcome(ref, cls, content)
+
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
         return lead + list(turn.entries) + _action_reply(lead, turn.entries, turn.faced)
@@ -364,6 +384,6 @@ class TurnLog:
             self._performs.pop(gone, None)
 
 
-__all__ = ["AGGREGATE_MARK", "ASSISTANT", "PERFORM_DONE", "PERFORM_INTERRUPTED", "PERFORM_STARTED", "PERFORM_STOPPED",
-           "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER", "WindowEntry", "perform_status", "phrase_label",
-           "speaker_label"]
+__all__ = ["AGGREGATE_MARK", "ASSISTANT", "OnOutcome", "PERFORM_CLASS", "PERFORM_DONE", "PERFORM_INTERRUPTED",
+           "PERFORM_STARTED", "PERFORM_STOPPED", "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER",
+           "WindowEntry", "perform_status", "phrase_label", "speaker_label"]

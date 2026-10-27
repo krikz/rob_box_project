@@ -623,10 +623,12 @@ CONTEXT_BUDGET_TOKENS: Mapping[str, int] = MappingProxyType({
 #: причина), а не текстом в репликах (§7.3, PR-8 #3702).
 #: ``background_since_reply`` — все фоновые фразы всех авторов за ``BACKGROUND_WINDOW_S``, каждая с ``who`` и
 #: ``age_s`` (В23, 23.10; ``Backlog.background_since_reply``): чужие реплики, не просьбы к роботу.
+#: ``shift_log`` — журнал смены (#4076, ``shift_log.ShiftLog.section``): кто приходил, что звучало, что робот сделал,
+#: с фразой-итогом кода; только когда человек спрашивает о смене (``SHIFT_ASK_STEMS``/``SHIFT_ASK_FORMS``).
 #: ``operator_journal`` — журнал ТАРС (§7.4, #3297): записи моложе своего ``ttl`` и сводка за сутки с датой.
 CONTEXT_SECTIONS: Tuple[str, ...] = (
     "user_profile", "speaker", "speaker_memory", "tts_context", "speech_gender", "position", "providers", "music_state",
-    "performance", "recent_unaddressed", "background_since_reply", "recent_actions", "operator_journal",
+    "performance", "recent_unaddressed", "background_since_reply", "recent_actions", "shift_log", "operator_journal",
 )
 
 
@@ -1658,6 +1660,37 @@ CEILING_PHRASE = "understand.ceiling"
 #: Цепочка провайдеров отказала (провайдер не жив) - фраза с его именем сразу, а не ожидание потолка.
 PROVIDER_FAILED_PHRASE = "understand.provider_failed"
 PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values())
+#: Журнал смены (#4076, решение Шифу 27.10 «можно просто вести лог событий и туда смотреть»; ``shift_log``): в памяти
+#: процесса, не дольше окна и не больше записей кольца; новая сессия разговора его не чистит, рестарт процесса - да.
+SHIFT_LOG_WINDOW_S = 12 * 3600.0
+SHIFT_LOG_MAX_EVENTS = 500
+#: Тот же человек (или незнакомый голос/лицо) после такой паузы - новый приход, а не продолжение прежнего.
+SHIFT_VISIT_GAP_S = 15 * 60.0
+#: Записей каждого вида в разделе ``shift_log`` (новые): раздел живёт в бюджете снимка (``CONTEXT_BUDGET_TOKENS``).
+SHIFT_SECTION_MAX_ITEMS = 6
+#: Исходы, которые журнал не пишет: обещание (``pending``: итог придёт поздним исходом и заменит запись).
+SHIFT_SKIP_STATUSES: Tuple[str, ...] = ("pending",)
+#: Тулы, исход которых журнал не пишет (кроме чтения - класса ``query``): анимация к каждой реплике - шум, не событие.
+SHIFT_SKIP_TOOLS: Tuple[str, ...] = INAUDIBLE_TOOLS
+#: Статусы действия, которые фраза-итог считает «не вышло» (остальные записанные - «выполнено»).
+SHIFT_FAILED_STATUSES: Tuple[str, ...] = ("rejected", "timeout")
+#: Вопрос о смене (основы с левой границей слова): «подведи итог ночи», «кто к нам приходил», «что мы слушали», «чем
+#: ты занимался, пока меня не было». Только по нему раздел ``shift_log`` идёт модели (бюджет снимка).
+SHIFT_ASK_STEMS: Tuple[str, ...] = (
+    "итог", "приходил", "заходил", "приезжал", "навещал", "кто был", "кто тут был", "кто здесь был", "что было",
+    "что тут было", "что здесь было", "слушали", "что играл", "что звучал", "что ты включал", "что ты делал",
+    "чем ты занимал", "чем занимал", "пока меня не было", "без меня", "за смену", "за день", "за вечер", "за ночь")
+#: Целые слова вопроса о смене (``words.has_form``): «ночь» - не основа, «ночной билд» о смене не спрашивает.
+SHIFT_ASK_FORMS: Tuple[str, ...] = ("ночь", "ночи", "ночью", "смена", "смену", "смены", "смене")
+#: Фраза-итог журнала (строит код из записей, ``shift_log.summary``): пустой журнал - честное «ничего не записано».
+SHIFT_EMPTY_PHRASE = "shift.empty"
+SHIFT_SUMMARY_PHRASE = "shift.summary"
+#: Части фразы-итога по разделам журнала (порядок - порядок частей во фразе).
+SHIFT_PART_PHRASES: Mapping[str, str] = MappingProxyType({
+    "people": "shift.people", "unknown": "shift.unknown", "music": "shift.music",
+    "performances": "shift.performances", "actions": "shift.actions", "silence": "shift.silence",
+})
+PHRASE_KEYS = PHRASE_KEYS + (SHIFT_EMPTY_PHRASE, SHIFT_SUMMARY_PHRASE, *SHIFT_PART_PHRASES.values())
 #: Окно истории для LLM (§7.3): не больше стольких ходов и токенов (оценка ``rob_box_core.token_estimate``);
 #: старые ходы выпадают целиком, ход не режется посередине.
 TURN_WINDOW_MAX_TURNS = 12
