@@ -1,280 +1,941 @@
-# Карта удаления старого пути диалога (v1) для PR-15 (#3711) — состояние на 23.10.2026
+# Карта удаления старого пути диалога (v1) для PR-15 (#3711) — пересверка на `d076b8b55` (27.10.2026)
 
-Карточка PR-15 эпика #3683: [#3711](https://github.com/krikz/rob_box_project/issues/3711) (текст и комментарий про
-джойстик teleop), хвосты из [#3704](https://github.com/krikz/rob_box_project/issues/3704) (PR-10b, удаление
-`DialogueStateMachine`), [#3705](https://github.com/krikz/rob_box_project/issues/3705) (PR-11),
-[#3706](https://github.com/krikz/rob_box_project/issues/3706) (PR-12a). План ADR:
-[`docs/adr/0150-dialog-v2-session-command-event.md`](../adr/0150-dialog-v2-session-command-event.md) §11 PR-15, §12, §14 A4/A6/A8.
-Парный документ — [`acceptance_2026-10-23.md`](acceptance_2026-10-23.md) (скелет приёмки PR-14).
+Карточка PR-15 эпика #3683: [#3711](https://github.com/krikz/rob_box_project/issues/3711), хвосты из
+[#3704](https://github.com/krikz/rob_box_project/issues/3704) (PR-10b, `DialogueStateMachine`),
+[#3705](https://github.com/krikz/rob_box_project/issues/3705) (PR-11), [#3706](https://github.com/krikz/rob_box_project/issues/3706)
+(PR-12a). План ADR: [`docs/adr/0150-dialog-v2-session-command-event.md`](../adr/0150-dialog-v2-session-command-event.md) §11 PR-15,
+§12, §14 A4/A6/A8, §16. Парный документ — [`acceptance_2026-10-23.md`](acceptance_2026-10-23.md) (приёмка PR-14).
 
-Всё в документе — факты из кода `origin/develop @ 8178e2809` (23.10.2026). Команды и их вывод — в приложении. Код не
-менялся, робот не использовался. Размеры «строк» — `wc -l` (физические строки, включая пустые и комментарии); «без
-тестов» — как в карточке (ADR-AF-0013: формальный потолок ADR — 3000 строк или 50 коммитов, ориентир эпика — 600).
-Оценки без измерения помечены словом «оценка».
+**База:** `origin/develop @ d076b8b55` (проверено перед работой: `git rev-parse origin/develop` →
+`d076b8b55972edc430eb49a98e9702903b1624d3`). Прошлая карта снята на `8178e2809` (23.10, влита PR #3910).
+**Одна метрика размера — `wc -l`** (физические строки с пустыми и комментариями; скрипт считает `\n` в blob, это то же,
+что `git show <ref>:<path> | wc -l`, сверка — приложение А.0). Размер метода — диапазон строк по AST (с декораторами).
+Код не менялся, робот не использовался. Оценки без измерения помечены словом «оценка».
 
-## 1. Что в карточке устарело и что это меняет
+**Как пересобрать факты** (оба скрипта лежат рядом с картой, их вывод целиком — в приложении):
 
-1. **`core/turn.py` и `turn_speech_gate.py` не существуют** (`git ls-files` → пусто для обоих). `src/rob_box_dialog/rob_box_dialog/turn.py`
-   (хост хода v2) — живой код v2, **удалять нельзя**. Из семейства `turn_*` в `rob_box_voice/core` есть `turn_speech.py`,
-   `turn_stages.py`, `turn_tools.py`, `turn_reflexes.py`, `turn_context.py`, `turn_identity.py`.
-2. **`prompt_sections.py` не существует** (`git ls-files | grep prompt_sections` → пусто); промпт v2 уже собирает
-   `rob_box_dialog.knowledge.prompt_fragment()`.
-3. **`dialogue_node.py` — 4700 строк** (в карточке 7 956; частично разобран ранее), `DialogueNode` — WMC 525, 112 методов.
-4. **`/voice/stt/result` в коде нет** (grep по `src docker scripts architecture` вне тестов и документов → 0; остались
-   упоминания в `scripts/lint/test_ownership_check.py`, `architecture/runtime-baseline.json` и в устаревшем
-   `.planning/`). Пункт карточки про этот топик уже выполнен PR-2.
-5. **`/voice/dialogue/state` при `dialog_engine: v2` никто не пишет**: единственный писатель — `dialogue_node.py:615`
-   (`create_publisher(String, "/voice/dialogue/state")`); в `dialog_node.py`, `core/dialog_v2_ports.py`, `rob_box_dialog/*`
-   такой публикации нет (grep → 0). Читатели (`led_node`, `command_node`, `quest_node`, `arbiter_node`, `aggregator`,
-   `streams/voice_state.py`, `bridge_protocol.py`, `mock_robot.ts`) при v2 не получают ничего. Аналогично
-   `/voice/dialogue/response` пишет только `dialogue_node` v1: `context_aggregator_node` (перцепция) и `tts_node`-вход при v2
-   тоже без писателя. Это нужно учесть **до** включения v2 по умолчанию (PR-14), а не после удаления.
-6. **В v2-хосте нет аналогов (grep по `dialog_node.py`, `core/dialog_v2_ports.py`, `rob_box_dialog/*` → 0)** для:
-   встречи лицом `core/meeting.py` («главная фича» по слову Шифу 21.10 — приветствие знакомого после долгой разлуки),
-   стартового приветствия `startup_greeting.py`, фида статуса ТАРС `tars_status_feed.py`, `speaker_profiles.py`
-   (`SpeakerTracker`, `extract_speaker_name`, `format_speaker_context`). Удаляя `dialogue_node.py`, мы потеряем эти функции,
-   если не перенести их или не принять решение их отбросить (решение Шифу, п. 7 D1).
-7. **Промпты `master_prompt_compact.txt` и `telegram_chat_prompt.txt` читает и v2** (`dialog_node.py:92,100`,
-   `config/dialog_node.yaml`), поэтому «`RULE #` = 0» меняет поведение живого v2, а не только v1 (15 вхождений: 8 + 7).
-8. **Четыре модуля из карточки только частично v1**: `dialogue_guards.py` (2 функции использует `tts_node`, константу —
-   `track_start_guard`), `speak_helpers.py` (3 функции использует `tts_node`), `dialogue_helpers.py`
-   (`sanitize_speaker_name` использует `speaker_turn`, а через него — v2), `dialogue_text.py` (использует `stt_node`).
-   Они сокращаются, а не удаляются.
-9. **Флаг `dialog_engine` — отдельный объём**: 44 строки с `dialog_engine` вне тестов в 17 файлах кроме самого
-   `rob_box_core/dialog_engine.py` (ноды, launch×2, yaml×4, скрипты запуска). После его снятия откат на v1 невозможен (ADR §16).
+```bash
+python docs/dialog/pr15_map_facts.py --ref origin/develop --old 8178e2809   # AST-граф, множество, размеры, части
+bash docs/dialog/pr15_map_greps.sh origin/develop 8178e2809                  # grep-критерии карточек, топики, флаг
+```
+
+## 0. Что исправлено в этой редакции (ревью PR #4080, блокеры B1–B6)
+
+| # | Было в редакции `23cf3bb69` | Стало |
+|---|---|---|
+| B1 | 15d удаляла `core/greeting_window.py` | **Не удаляется**: его импортирует живой v2 (`dialog_node.py:79`, `core/dialog_v2_parity.py:22`). Читателей 5, из них 2 в v2 (§3) |
+| B2 | 15c удаляла `core/turn_context.py` целиком | Удаляются только `context_sections` и три помощника (строки 37–76, ≈40). `tts_state` остаётся на месте: его читает v2 (`core/plan_host.py:32`). Решение «куда» — §3, строка `turn_context` |
+| B3 | размеры «27.10» посчитаны `Measure-Object -Line` (без пустых строк), Δ фиктивные | Всё пересчитано `wc -l`. Пометка «изм.» только там, где blob реально отличается (приложение А, раздел «Размеры»): изменились `meeting` 213→53, `startup_greeting` 41→14, `tars_status_feed` 115→41, `tier1_host` 230→236, `turn_context` 68→79, `turn_tools` (111→111, содержимое), а `dialogue_node.py`, `stt_admission.py`, `speak_helpers.py`, `dialogue_guards.py`, `dialogue_helpers.py`, `speech_compat.py`, `conversation_history.py` и DSM не изменились побайтно |
+| B4 | граф, множество и читатели — от 23.10; D1–D8 не внесены; порядок частей старый | Граф перестроен скриптом `pr15_map_facts.py` (приложен); множество — **20 файлов / 7 687 строк**; читатели String-топиков перегенерированы с учётом #3917; 15-0e и 15-0f отмечены сделанными; D1–D8 внесены как принятые (§7); новый порядок частей с зависимостями — §6 |
+| B5 | хвосты §8 «почти сняты» | Пересчитаны командами из карточек: #3704 10 = 10, #3706 51 = 51, #3705 — маркеры v1 на месте (14 строк); «Bug [A-F]» 26 = 26 (команда карточки сломана, §8). Владельцы #3704 — `dialogue_node`, `supervisor_node`, DSM |
+| B6 | зависимости вне `src` не учтены | Граф теперь включает `scripts/`, `tools/`, `.github/`: гард `scripts/lint/dialogue_skip_reasons.py` (`G-Lint Code.yml:72`), REPL `scripts/dialogue/chat.py`, `e2e_voice_test.sh:676,681`, строковое имя `dialogue_node` в v2 (`mcp_auth.py:85`, `slice_policy.yaml:26`) вписаны в части 15p, 15m3a, 15r0, 15s; `llm_skip_reasons.py` — сирота после гарда (15m3a) |
+
+Новое по пересверке (не было в ревью): (1) порядок «листья → корень» из карты 23.10 ломает импорт v1 уже на 15a и 15c
+(§6.1); (2) откат флагом на v1 перестаёт работать с первой части, режущей `dialogue_node.py`, а не с 15s (§6.1, Q1);
+(3) в `rob_box_harness` живёт второй цикл хода v1 — класс `AgentCore` (1 569 строк) и 5 модулей-сирот (1 080 строк) — в
+карте 23.10 его не было (Q4); (4) критерий «`Bug \[A-F\]`» карточки всегда даёт 0 (Q5); (5) v1-топики идентичности
+`/voice/speaker/{merge,observe,epithet}` при v2 мёртвые (Q6); (6) критерий `[TG:` = 0 из #3706 противоречит логу v2
+(`address.py:194` пишет `[TG:<id>]` в строку `🎤 STT`, §8).
+
+## 1. Что изменилось в коде между картами (23.10 → 27.10)
+
+1. Коммитов `8178e2809..d076b8b55` — 208, из них 48 трогают `rob_box_voice/rob_box_voice`, `rob_box_dialog/rob_box_dialog`
+   и `rob_box_harness/core` (приложение Б, «коммиты»).
+2. **PR #3916** (`dab053510`, issue #3912 открыта): паритет D1 — логика встречи лицом, стартовой фразы и фида ТАРС перенесена в
+   `rob_box_dialog.meeting`, `startup`, `status_feed`; v2 вызывает её из `dialog_node.py:302–304`
+   (`parity.start_v2_status_feeds`, `subscribe_meeting`, `arm_startup_greeting`). Модули v1 стали обёртками:
+   `core/meeting.py` 213→53, `startup_greeting.py` 41→14, `core/tars_status_feed.py` 115→41. Тесты — юнит
+   (`test_dialog_v2_parity.py`); **на роботе не проверено** (ни в PR #3916, ни позже).
+3. **PR #3917** (`fd1e4fa55`, #3911): читатели состояния голоса на контрактах v2. `command_node` и
+   `quest/streams/voice_state.py` старый топик `/voice/dialogue/state` больше не читают; таблица состояний — одна,
+   `rob_box_core/voice_state.py` (`VoiceStateTracker`, адаптер v1 `on_legacy` + `LEGACY_STATE`); `led_node` получил
+   `SessionState`; `context_aggregator_node` читает `SpeechRequest` (`perception/core/robot_speech.py`), старая подписка
+   на `/voice/dialogue/response` оставлена до PR-15 (комментарий «Удалит PR-15»). Адаптеры v1 в quest, arbiter, led,
+   context_aggregator уходят вместе с `dialogue_node` (часть 15p2).
+4. **PR #3962** (`58187f868`, #3708 PR-13b): тулы ТАРС; путь v1 `AgentCore` в `supervisor_node.py` на месте.
+5. Изменились файлы, которые v2 стал использовать: `core/turn_context.py` 68→79 (`tts_state` читает `core/plan_host.py:32`),
+   `core/tier1_host.py` 230→236, `core/plan_host.py` 161→193, `dialog_node.py` 444→531, `core/dialog_v2_ports.py` 225→298,
+   новый `core/dialog_v2_parity.py` (171).
+6. Множество v1 сократилось с 22 файлов / 8 089 строк до **20 / 7 687**. Из них −255 строк — те же 20 файлов (−261 перенос
+   #3916 в `rob_box_dialog`, +6 `tier1_host`), остальное (−147) — `greeting_window` и `turn_context` **перестали быть
+   удаляемыми**, потому что их стал читать v2. Это не сделанная работа.
+7. Не сдвинулись: `Bug [A-F]` 26 (8 вне тестов), `RULE #` 8 + 7, хвост #3704 10, хвост #3706 51, маркеры #3705 14 строк.
+   Выросли: `#NNNN` в `rob_box_dialog` 158 → 369 строк (401 вхождение), флаг `dialog_engine` 52 → 75 строк (19 → 27 файлов,
+   одна и та же команда, приложение Б).
 
 ## 2. Как собрана карта (и её пределы)
 
-- Граф импортов: AST всех `*.py` в `src/` (1 333 файла, 3 962 ребра). «Читатели (AST)» — файлы, которые импортируют модуль
-  напрямую; реэкспорт через `__init__.py` не считается читателем. «grep» — `grep -rlw <имя>` по `src docker scripts
-  architecture tests` (`*.py *.yaml *.yml *.sh *.cfg *.txt *.json *.ts`, `Dockerfile`), без файла-модуля; в grep попадают
-  и комментарии, поэтому он даёт верхнюю границу.
-- «Замкнутое v1-множество»: файлы, у которых **все** не-тестовые читатели лежат внутри множества, начиная с
-  `dialogue_node.py`. Таких файлов 22 (8 089 строк с `dialogue_node.py`), плюс `conversation_history.py` (255 строк, читатель —
-  только реэкспорт в `core/__init__.py`, который сам нигде не используется).
-- Динамические загрузки (строковые `importlib`, `ament` entry points кроме `setup.py`, `launch`) графом не видны; их я
-  искал grep'ом отдельно: `dialogue_node` в `setup.py:49` и двух launch-файлах (`voice_assistant.launch.py:116`,
-  `voice_assistant_headless.launch.py:90`).
-- Тесты считаются по AST-импорту. Тесты, которые только подменяют модуль строкой (`sys.modules`, `patch("...")`), в счёт
-  не вошли; поэтому «60 файлов» по grep против «47» по AST для `dialogue_node`.
+- **Граф** — AST всех отслеживаемых `*.py` репозитория на ссылке (`git ls-tree` + `git cat-file`, рабочая копия не читается):
+  1 798 файлов (в `src` 1 375), 4 429 рёбер «файл → файл» (из `src` 4 033). Той же методикой на `8178e2809`: 1 712 (1 333),
+  4 059 (3 721). Число «3 962 ребра» из карты 23.10 не воспроизводится: тот скрипт не сохранён; сравнивать только числа
+  одного скрипта.
+- **Ребро**: `import a.b`, `from a import b` (относительные и ленивые внутри функций тоже); `from pkg import Name`, где
+  `pkg/__init__.py` реэкспортирует `Name`, даёт ребро к подмодулю. Импорт под `TYPE_CHECKING` считается.
+- **Читатель** модуля — не-тестовый файл с ребром к нему, **в том числе вне `src`** (`scripts/`, `tools/`, `.github/`);
+  `__init__.py`-реэкспорт читателем не считается, но печатается (его правят при удалении). Тест — путь с каталогом
+  `test`/`tests`, `test_*.py`, `conftest.py`.
+- **Замкнутое v1-множество** — неподвижная точка от `dialogue_node.py`: добавляется не-тестовый модуль `src`, у которого
+  есть читатель и **все** читатели уже в множестве.
+- **Чего граф не видит** (ищется grep'ом, `pr15_map_greps.sh`): точки входа `setup.py`, launch-файлы, строковые имена нод и
+  топиков, пути к файлам в скриптах и workflow (`dialogue_skip_reasons.py` читает `dialogue_node.py` по пути), `self.<атрибут>`
+  из `__init__` и вызовы методов друг друга внутри `DialogueNode` (раздел «Что не проверено»).
 
 ## 3. Файлы и модули v1
 
-«Часть» — номер из раздела 6. «Тестов» — файлов, импортирующих модуль (AST), и их строк.
+«Читатели» — AST, не-тест (вне `src` — отдельно). «Тесты» — файлов, импортирующих модуль, и их строк. «Часть» — по
+стратегии R из §6 (через «/» — часть по стратегии L, если отличается).
 
-| Файл | Строк | Читатели (AST, не-тест; grep не-тест / тест) | Чем заменён в v2 | grep-критерий удаления | Часть | Риск |
+| Файл (`rob_box_voice/rob_box_voice/…`) | Строк | Читатели | Тесты | Чем заменён в v2 | Критерий удаления | Часть |
 |---|---|---|---|---|---|---|
-| `src/rob_box_voice/rob_box_voice/dialogue_node.py` | 4700 | 1 (`stt_admission_host.py`, под `TYPE_CHECKING`); `setup.py:49`, 2 launch; grep 131 / 166. Тестов 47 (10 650 строк) | `dialog_node.py` (444) + `core/dialog_v2_ports.py` (225) + `rob_box_dialog/turn.py` | `ls .../dialogue_node.py` → нет; `grep -rn "dialogue_node import\|rob_box_voice.dialogue_node" src docker scripts --include=*.py --include=*.yaml --include=*.sh` вне комментариев = 0; `grep -n dialogue_node src/rob_box_voice/setup.py` = 0 | 15a–15p (по методам) | высокий: корень v1; режется 16 частями |
-| `config/dialogue_node.yaml` ×2 (`src/rob_box_voice/config/`, `docker/sound/config/voice_assistant/`) | 141 + 141 | `launch×2`, `startup_greeting` (поле в yaml) | `config/dialog_node.yaml` | `ls` обеих копий → нет | 15p | низкий |
-| `core/dialogue_stage_mixin.py` | 81 | 1 (`dialogue_node.py`) / 1 / 2 | `rob_box_dialog/turn_log.py`, `core/dialog_v2_ports.py` | `grep -rlw dialogue_stage_mixin src --include=*.py` вне тестов = 0 | 15e | низкий |
-| `core/turn_stages.py` | 275 | 2 (`dialogue_node`, `dialogue_stage_mixin`) / 3 / 3. Тестов 2 (907) | стадии хода и рефлексы: `core/dialog_v2_ports.py` + `rob_box_dialog/expression.py` | `grep -rlw turn_stages …` = 0 | 15e | средний: рефлексы `addressed/thinking/…` (A17) должны остаться в v2 — сверить |
-| `core/turn_tools.py` | 111 | 2 (`dialogue_stage_mixin`, `turn_stages`) / 2 / 1 | `rob_box_dialog/execute.py` (исполнение) | `grep -rlw turn_tools …` = 0 | 15e | низкий |
-| `core/turn_reflexes.py` | 130 | 2 (`turn_stages`, `turn_tools`) / 2 / 1 | `rob_box_dialog/expression.py` (`reflex()`) | `grep -rlw turn_reflexes …` = 0 | 15e | низкий |
-| `core/turn_context.py` | 68 | 2 (`dialogue_node`, `tier1_host`) / 4 / 4 | `rob_box_dialog/context.py` | `grep -rlw turn_context src --include=*.py` вне тестов — только `llm_adapter.py` (другая сущность, проверить) | 15c | низкий |
-| `core/turn_identity.py` | 146 | 1 (`dialogue_node`) / 2 / 2. Тестов 2 (359) | раздел `speaker` снимка: `rob_box_dialog/speaker_adapter.py`, `context.py` | `grep -rlw turn_identity …` = 0 (останется упоминание в `knowledge.py` — комментарий) | 15h | средний: `user_profile_lines` (имя, профиль) — убедиться, что v2 кладёт то же в контекст |
-| `core/turn_speech.py` | 163 | 1 (`dialogue_node`) / 2 / 1. Тестов 1 (94) | `rob_box_dialog/respond.py` (фраза по событию) | `grep -rlw turn_speech …` = 0 | 15h | низкий. `final_text_for_speech` уходит, нормализация TTS остаётся в `tts_node` (ср. `speak_helpers`) |
-| `core/stt_admission.py` | 840 | 4 (`dialogue_node`, `dialogue_stage_mixin`, `stt_admission_host`, `tier1_host`) / 6 / 8. Тестов 6 (2 156) | `rob_box_dialog/address.py`, `backlog.py`, `grammar.py`; `stt_node` → `InterruptRequest` | `grep -rlw stt_admission …` вне тестов = 0; `grep -rn "parse_tg_prefix" src` вне тестов = 0 (сейчас в нём 19 из 51 вхождений `[TG:`/`tg_chat_id`/`parse_tg_prefix`) | 15a (шаги 545–840) + 15m (ядро 1–544) | средний: самый большой файл; в 600 строк не влезает целиком, поэтому разрезан на два PR |
-| `core/stt_admission_host.py` | 261 | 1 (`dialogue_node`) / 1 / 0 | `rob_box_voice/dialog_node.py` (тонкий хост) | `grep -rlw stt_admission_host …` = 0 | 15d | низкий (тестов нет) |
-| `core/tier1_host.py` | 230 | 3 (`dialogue_node`, `stt_admission_host`, `tools_view_host`) / 3 / 3. Тестов 2 (432) | `rob_box_dialog/grammar.py` + `interrupt.py` | `grep -rlw tier1_host …` = 0 | 15c | средний: «спорный стоп» (В19) — проверить, что у v2 есть аналог `stop_verdict` |
-| `core/tools_view_host.py` | 34 | 1 (`dialogue_node`) / 1 / 2 | `rob_box_dialog/tools_view.py` | `grep -rlw tools_view_host …` = 0 | 15c | низкий |
-| `core/stop_chooser.py` | 85 | 2 (`dialogue_node`, `tier1_host`) / 4 / 2. Тестов 1 (112) | `rob_box_dialog/interrupt.py` (`stop_verdict`) | `grep -rlw stop_chooser src --include=*.py` вне тестов = 0 (ссылки в `identity_dedup.py`, `interrupt_request.py` — комментарии/имя класса, проверить) | 15c | средний |
-| `core/greeting_window.py` | 79 | 3 (`dialogue_stage_mixin`, `meeting`, `stt_admission_host`) / 4 / 2. Тестов 1 (154) | `rob_box_dialog/greeting_reply.py` (окно ответа на приветствие) | `grep -rlw greeting_window …` = 0 | 15d | средний: окно ответа 15 с (решение Шифу 21.10) — сверить поведение |
-| `core/identity_dedup.py` | 83 | 1 (`dialogue_node`) / 2 / 1 | `rob_box_dialog/speaker_adapter.py` | `grep -rlw identity_dedup …` = 0 | 15f | низкий |
-| `core/session_epoch.py` | 62 | 1 (`dialogue_node`) / 1 / 5. Тестов 2 (197) | эпоха — у `tts_node` (`SpeechCancel`, `interrupt.py`) | `grep -rlw session_epoch …` вне тестов = 0 | 15j | средний: «0 действий старой эпохи» (A12) должна держаться на стороне владельца речи |
-| `core/media_plan_run.py` | 128 | 1 (`dialogue_node`) / 3 / 8. Тестов 8 (1 309) | `rob_box_dialog/plan/*` + `core/plan_host.py` | `grep -rlw media_plan_run src --include=*.py` вне тестов = 0 (остаётся имя в `media_router.py` — комментарий) | 15i | средний: 8 тестовых файлов — 3 из них могут проверять общую `media_router` и требуют переноса, а не удаления |
-| `core/library_command.py` | 63 | 1 (`media_plan_run`) / 3 / 1 | `core/media_router.py` (остаётся, используется `music_turn`) | `grep -rlw library_command …` = 0 | 15i | низкий |
-| `core/meeting.py` | 213 | 1 (`dialogue_node`) / 6 (слово «meeting» шире) / 4. Тестов 2 (432) | **нет аналога в v2** (grep `meeting\|greet` в `dialog_node.py`, `dialog_v2_ports.py` = 0; есть только `greeting_reply.py` — ответ на приветствие) | `ls` → нет | 15b (после решения D1) | **высокий**: удаление = потеря приветствия по встрече |
-| `startup_greeting.py` | 41 | 1 (`dialogue_node`) / 2 / 3. Тестов 3 (456) | **нет аналога в v2** (grep 0) | `ls` → нет | 15b (D1) | средний: потеря стартовой фразы |
-| `core/tars_status_feed.py` | 115 | 1 (`dialogue_node`) / 1 / 1. Тестов 1 (70) | **нет аналога в v2** (grep 0) | `ls` → нет | 15b (D1) | средний: фид статуса LLM/вейков для ТАРС |
-| `speaker_profiles.py` | 181 | 1 (`dialogue_node`) / 2 (`epithets.py` — в комментарии) / 2. Тестов 2 (439) | `rob_box_dialog/speaker_adapter.py` (частично; `SpeakerTracker` — нет аналога по имени) | `ls` → нет | 15g | средний |
-| `core/conversation_history.py` | 255 | 0 прямых (только реэкспорт в `core/__init__.py`; `voice_memory.py:28,30` обращается к атрибуту `self.conversation_history`, а не к классу) / 4 / 2. Тестов 1 (250) | `rob_box_dialog/session.py` (кадры) + `context.py` | `ls` → нет; `grep -n conversation_history src/rob_box_voice/rob_box_voice/core/__init__.py` = 0 | 15a | низкий (читателей нет) |
-| `core/speech_compat.py` | 74 | 2 (`tts_node`, `speech_owner`) / 6 / 2. Тестов 2 (562) | `rob_box_core/speech_client.say` (SpeechRequest) | `ls` → нет; `grep -rn "speech_compat\|attach_legacy" src` вне тестов и комментариев = 0 | 15q (после teleop 15-0d) | высокий: последний писатель `/voice/tts/request` — джойстик teleop (Main Pi) |
-| `core/speak_helpers.py` | 594 → остаётся ≈ 97 | 2 (`dialogue_node`, `tts_node`) / 5 / 13. Тестов 11 (1 627) | нормализация TTS остаётся в `tts_node`; фраза о недоступном языке — `rob_box_dialog/phrases` | `grep -c "re.compile" …/speak_helpers.py` → 18 → цель 0 (остаются `strip_bracket_asides`, `strip_markdown`, `unsupported_language_notice`, `provider_speaks` ≈ 97 строк функций) | 15q | средний: регексы 18 → 0 не достигаются простым переносом; см. D2 |
-| `core/dialogue_guards.py` | 169 → остаётся ≈ 27 функций + 2 регекса и константа | 5 (`dialogue_node`, `stt_admission_host`, `track_start_guard`, `tts_node`, `turn_speech`) / 10 / 4. Тестов 3 (325) | защита SSML (`is_system_template_regurgitated_in_ssml`, `is_tool_call_markup`) нужна `tts_node`; `MUSIC_STARTING_TOOLS` — `track_start_guard` | `grep -c "re.compile" …` 2 → 2 (см. D2) | 15s | средний: A8 «`re.compile` → 0» без решения Шифу не достижим |
-| `core/dialogue_helpers.py` | 142 → остаётся 19 (`sanitize_speaker_name`) | 2 (`dialogue_node`, `speaker_turn`) / 4 / 3. Тестов 1 (176) | `speaker_turn` (v2) остаётся читателем | `grep -rn "EMOTION_TO_ANIMATION\|detect_pitch_intent\|generate_fallback_response" src` вне тестов = 0 | 15r | низкий |
-| `core/dialogue_text.py` | 48 | 2 (`dialogue_node`, `stt_node`) / 5 / 12 | остаётся (читает `stt_node`) | — | не удаляется | — |
-| `src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py` | 469 | 8 (`__init__`, `agent_core`, `assembly`, `meeting`, `stt_admission_host`, `tier1_host`, `supervisor_node`, `dialogue_node`) / 10 / 37. Тестов 35 (12 315, с пересечением с тестами ноды) | кадры стека: `rob_box_dialog/session.py`, `scenes.py`; `DialogControl.srv` (PR-10a #3851) | `ls` → нет; `grep -rn "DialogueStateMachine\|dialogue_state_machine\|_pause_reason\|check_silence_timeout" src --include=*.py` вне тестов: **34 → 0** (22 → 0 со всеми тестами для критерия #3704 «`"/dialogue/control`…») | 15r | высокий: потребитель вне v1 — ТАРС (`supervisor_node`, `AgentCore(dsm=…)`) |
+| `dialogue_node.py` | 4 700 | `core/stt_admission_host.py` (под `TYPE_CHECKING`); `setup.py:49`, launch ×2; путь в `scripts/lint/dialogue_skip_reasons.py:12–14` | 47 (10 685) | `dialog_node.py` (531) + `core/dialog_v2_ports.py` (298) + `rob_box_dialog/turn.py` | `ls` → нет; `grep -n dialogue_node src/rob_box_voice/setup.py` = 0; `ros2 node list` без `/dialogue_node` | 15p / 15b…15p |
+| `config/dialogue_node.yaml` ×2 (`src/rob_box_voice/config/`, `docker/sound/config/voice_assistant/`) | 141 + 141 | launch ×2 | — | `config/dialog_node.yaml` | `ls` обеих → нет | 15p |
+| `core/dialogue_stage_mixin.py` | 81 | `dialogue_node` (база класса `DialogueNode`) | 1 (836) | `rob_box_dialog/turn_log.py`, `core/dialog_v2_ports.py` | `grep -rlw dialogue_stage_mixin src scripts --include=*.py` вне тестов = 0 | 15m2 |
+| `core/turn_stages.py` | 275 | `dialogue_node`, `dialogue_stage_mixin` | 2 (1 026) | `core/dialog_v2_ports.py` + `rob_box_dialog/expression.py` | то же по имени = 0 | 15m2 |
+| `core/turn_tools.py` | 111 | `dialogue_stage_mixin`, `turn_stages` | 0 | `rob_box_dialog/execute.py` | = 0 | 15m2 |
+| `core/turn_reflexes.py` | 130 | `turn_stages`, `turn_tools` | 0 | `rob_box_dialog/expression.py` (`reflex()`) | = 0 | 15m2 |
+| `core/stt_admission.py` | 840 | `dialogue_node` (`DefaultSttAdmission`, `:127`, `:457`), `dialogue_stage_mixin`, `stt_admission_host`, `tier1_host` | 6 (2 156) | `rob_box_dialog/address.py`, `backlog.py`, `grammar.py` | = 0; `parse_tg_prefix` вне тестов = 0 | 15m3a (545–840) + 15m3b (1–544) |
+| `core/stt_admission_host.py` | 261 | `dialogue_node` | 0 | `dialog_node.py` | = 0 | 15m1 |
+| `core/tier1_host.py` | 236 | `dialogue_node`, `stt_admission_host` (рантайм-импорт `:36`), `tools_view_host` | 2 (432) | `rob_box_dialog/grammar.py` + `interrupt.py` | = 0 | 15m1 |
+| `core/tools_view_host.py` | 34 | `dialogue_node` | 1 (74) | `rob_box_dialog/tools_view.py` | = 0 | 15m1 |
+| `core/stop_chooser.py` | 85 | `dialogue_node`, `tier1_host` | 1 (112) | `rob_box_dialog/interrupt.py` (`stop_verdict`) | = 0 | 15m5 |
+| `core/media_plan_run.py` | 128 | `dialogue_node` | 8 (1 309) | `rob_box_dialog/plan/*` + `core/plan_host.py` | = 0 | 15m4 |
+| `core/library_command.py` | 63 | `media_plan_run` | 1 (236) | `core/media_router.py` | = 0 | 15m4 |
+| `core/turn_speech.py` | 163 | `dialogue_node` | 1 (94) | `rob_box_dialog/respond.py` | = 0 | 15m4 |
+| `core/turn_identity.py` | 146 | `dialogue_node` | 2 (359) | `rob_box_dialog/speaker_adapter.py`, `context.py` | = 0 | 15m4 |
+| `core/meeting.py` | 53 | `dialogue_node` | 2 (208) | **#3916**: `rob_box_dialog.meeting` + `dialog_v2_parity.subscribe_meeting` | `ls` → нет | 15m4 |
+| `core/identity_dedup.py` | 83 | `dialogue_node` | 1 (234) | `rob_box_dialog/speaker_adapter.py` | = 0 | 15m5 |
+| `core/session_epoch.py` | 62 | `dialogue_node` | 2 (197) | эпоха у `tts_node` (`SpeechCancel`, `interrupt.py`) | = 0 | 15m5 |
+| `core/tars_status_feed.py` | 41 | `dialogue_node` | 1 (37) | **#3916**: `rob_box_dialog.status_feed` + `dialog_v2_parity.start_v2_status_feeds` | `ls` → нет | 15m5 |
+| `startup_greeting.py` | 14 | `dialogue_node` | 2 (407) | **#3916**: `rob_box_dialog.startup` + `dialog_v2_parity.arm_startup_greeting` | `ls` → нет | 15m5 |
+| `speaker_profiles.py` | 181 | `dialogue_node` | 2 (439) | не переносится (D1a): «кто говорит» — `speaker_id_node` → `SpeakerRef` | `ls` → нет | 15m5 |
+| **Итого множество** | **7 687** | 20 файлов (`dialogue_node` 4 700 + 19 модулей 2 987) | | | | |
 
-Модули вне замкнутого множества, которые карточка не называет, но у которых **нет не-тестовых читателей** (AST): `core/llm_config.py`
-(257 строк, читатель — только тест), `core/voice_memory_init.py` (113), `core/skip_reason_checker.py` (35, тест), `utils/github_summary.py`
-(297, тест). Это не v1-диалог в явном виде и не входит в PR-15; по правилу «мёртвое — удалять с grep-доказательством»
-их можно добавить в часть 15a с отдельного разрешения (D6).
+Модули вне множества (не удаляются целиком, сокращаются или удаляются по отдельному решению):
+
+| Файл | Строк | Читатели | Тесты | Что с ним | Часть |
+|---|---|---|---|---|---|
+| `core/greeting_window.py` | 79 | `dialog_node` (`:79`), `core/dialog_v2_parity` (`:22`), `dialogue_stage_mixin`, `meeting`, `stt_admission_host` | 1 (154) | **Остаётся на месте (B1)**: окно ответа на приветствие v2. После 15m1/15m2/15m4 его читатели — только v2. Перенос в `rob_box_dialog` в PR-15 не нужен (живой v2 не трогаем без нужды) | — |
+| `core/turn_context.py` | 79 | `plan_host` (v2, `tts_state`), `tier1_host` (`tts_state`), `dialogue_node` (`context_sections`) | 0 | **B2**: удаляются `_tts_context`, `_position`, `_performance`, `context_sections` (строки 37–76, ≈40) и их импорты; `tts_state` (22–35) **остаётся в этом файле** — так импорт v2 не меняется. Переименование файла (например, в `core/tts_state.py`) — не в PR-15 | 15m4 |
+| `core/conversation_history.py` | 255 | нет (реэкспорт `core/__init__.py`) | 1 (250) | удалить | 15a1 |
+| `core/llm_config.py` | 256 | нет | 1 (265) | удалить (D6) | 15a2 |
+| `core/voice_memory_init.py` | 113 | нет | 1 (156) | удалить (D6) | 15a2 |
+| `utils/github_summary.py` | 297 | нет | 0 | удалить (D6) | 15a1 |
+| `core/skip_reason_checker.py` | 35 | **`scripts/lint/dialogue_skip_reasons.py:9`** (гард CI, `G-Lint Code.yml:70–72`) | 1 (54) | **не мёртвый (B6)**: гард проверяет ключи `_llm_skipped_counter` в `dialogue_node.py` по пути. Удаляется вместе с гардом и шагом workflow в 15p | 15p |
+| `core/llm_skip_reasons.py` | 47 | `dialogue_node`, `dialogue_stage_mixin`, `skip_reason_checker` | 11 (1 998) | сирота после 15p и 15m2 | 15m3a |
+| `core/faq_loader.py` | 151 | нет (реэкспорт `core/__init__.py`) | 1 | мёртвый, не в D6 — **Q3** | 15a3 (если Q3 «да») |
+| `core/speech_formatter.py` | 262 | нет (реэкспорт `core/__init__.py`) | 1 | мёртвый, не в D6 — **Q3** | 15a3 (если Q3 «да») |
+| `core/speech_compat.py` | 74 | `tts_node`, `speech_owner` | 2 (653) | удалить после teleop (15-0d) и корня (15p) | 15q |
+| `core/speak_helpers.py` | 594 | `dialogue_node`, `tts_node`, **`scripts/dialogue/chat.py:571`** | 11 (1 627) | остаются `strip_bracket_asides`, `strip_markdown`, `unsupported_language_notice`, `provider_speaks` (97 строк функций по AST) — нормализация перед синтезом (D2); удаление до −497 | 15q |
+| `core/dialogue_guards.py` | 169 | `dialogue_node`, `stt_admission_host`, `turn_speech`, `track_start_guard`, `tts_node` | 3 (325) | остаются `is_system_template_regurgitated_in_ssml`, `is_tool_call_markup` (`tts_node`) и `MUSIC_STARTING_TOOLS`; 169 → ≈70 (оценка 23.10) | 15s |
+| `core/dialogue_helpers.py` | 142 | `dialogue_node`, `speaker_turn` (`sanitize_speaker_name`) | 1 (176) | остаётся `sanitize_speaker_name` (19); удаление до −123 | 15m5 |
+| `core/dialogue_text.py` | 48 | `dialogue_node`, `stt_node`, `scripts/dialogue/chat.py`, `scripts/music/live_dj/router_offline.py` | 9 (1 950) | остаётся | — |
+| `rob_box_harness/core/dialogue_state_machine.py` | 469 | `dialogue_node`, `meeting`, `stt_admission_host`, `tier1_host`, `agent_core` (`:50`, `:616`), `assembly` (`:50`, поле `AgentSpec.dsm` `:152` — **`AgentSpec` строит и v2**), `supervisor_node` (`:1971`, `:2305`), **`scripts/dialogue/chat.py:451,562,633`**; реэкспорт `harness/core/__init__.py:10–19` | 35 (12 231; 15 общих с тестами множества) | удалить; из `AgentSpec` убрать поле `dsm` (v2 его не передаёт) | 15r1 |
+| `rob_box_harness/core/agent_core.py`, класс `AgentCore` | 1 569 из 2 349 | `dialogue_node`, `assembly.build_agent`, `scripts/dialogue/chat.py`; v2 берёт из модуля только `answering_provider` (7 строк, `dialog_v2_ports.py:35`) | 31 (9 615) на модуль | второй цикл хода v1 — **Q4** | 15r3 (если Q4 «да») |
 
 ## 4. Топики и контракты
 
-| Топик / контракт | Писатель сейчас | Читатели (файлов, не-тест) | Чем заменён | grep-критерий | Часть | Риск |
+Счёт — `git grep -F` по `src docker scripts architecture tools .github` вне тестов (строк / файлов, приложение Б);
+`.md`-файлы и комментарии внутри этих каталогов в счёт попадают. «Рантайм» — аудит `run 40499068353` (§10).
+
+| Топик | Писатель | Кто ещё держит топик (вне тестов) | Чем заменён | Критерий | Часть | Рантайм 27.10 |
 |---|---|---|---|---|---|---|
-| `/voice/dialogue/state` (String JSON) | `dialogue_node.py:615` (1); **при v2 — никто** | 12 файлов: `led_node` (3), `command_node` (1), `quest_node` (3), `quest/streams/voice_state.py` (1), `arbiter_node` (2), `supervisor/core/aggregator.py` (3), `supervisor/core/__init__.py` (1, комментарий), `bridge_protocol.py` (1), `webxr_client/src/dev/mock_robot.ts` (1), `agent_core.py` (1, комментарий), `scripts/agent_flow/create_avatar_issues.sh` (2, текст) | `/dialog/session` (`SessionState`, уже публикуется v2) и `/dialog/turn_event` (`TurnEvent`) | `grep -rFn "/voice/dialogue/state" src docker scripts --include=*.py --include=*.ts --include=*.yaml` вне тестов = 0 | 15-0a (читатели) → 15p (писатель) | высокий: меняет проводной формат `voice_state (0x1202)` для шлема Quest; гард «G-Bridge-Protocol-Drift» |
-| `/voice/tts/state` (String) | `tts_node.py:1344` | `face_node` (3), `face_director` (1), `audio_node` (2), `stt_node` (1), `speech_compat` (1, комментарий), `scripts/maintenance/scene_set/replay.py` (1), `face_node.yaml` (1, комментарий) | `SpeechEvent` (`/voice/speech/event`) | то же, `grep -rFn "/voice/tts/state"` вне тестов = 0 | 15-0b → 15t | средний: `face_node` помечает его как «transitional source of speaking» (`face_director.py:208`) |
-| `/voice/tts/finished` (String) | `tts_node.py:1346` (12 упоминаний) | `quest_node` (2), `quest/core/tars_stages.py` (2), `tars_stage_relay.py` (2), `quest/server/ws_server.py` (1), `supervisor_node` (4), `supervisor/tars_stage.py` (1), `speaker_id_node` (2), `mcp_server` (2), `speak_helpers` (3), `dialogue_node` (2), `speech_owner` (1), `speech_compat` (1), `scripts/maintenance/scene_set/conductor.py` (2), `replay.py` (1) | `SpeechEvent finished` по `speech_id` | `grep -rFn "/voice/tts/finished"` вне тестов = 0 | 15-0c → 15t | средний: `mcp_server` и `quest` коррелируют по `speech_id` (#3253) |
-| `/voice/dialogue/response` (String JSON) | `dialogue_node.py` (3); при v2 — никто | `telegram_node` (4), `context_aggregator_node` (2), `tts_node` (5), `agent_core` (2, комментарий), `speech_compat` (3), `speak_helpers` (1), `internal_dialogue.launch.py` (1), `scripts/example_voice_usage.py` (1), `dialog_engine.py` (1), `dialog_engine.yaml` ×2 (комментарий) | `/dialog/output` (`DialogOutput`, PR-12a) для Telegram; для `context_aggregator` — решение (см. D4) | `grep -rFn "/voice/dialogue/response" src --include=*.py` вне тестов = 0 | 15-0e → 15p/15q | средний: в `runtime-baseline.json` запись `multiple_writers|/voice/dialogue/response` держит долг PR-15 |
-| `/voice/tts/request` (String JSON) | `rob_box_teleop` (джойстик, `joystick_control_node.py:419`), `scripts/maintenance/scene_set/conductor.py:231`; вход `tts_node.dialogue_callback` | `tts_node` (подписка через `speech_compat.attach_legacy`), `scripts/diagnostics/watchdog-tts.sh` | `rob_box_core.speech_client.say` → `SpeechRequest` | `grep -rFn "/voice/tts/request" src --include=*.py` вне тестов и комментариев = 0; запись `multiple_writers|/voice/tts/request` в `runtime-baseline.json` удалена | 15-0d → 15q | высокий: Main Pi (teleop), пересборка образа |
-| `/voice/tts/control` (String `STOP`) | `speech_compat`/внешние | `tts_node` | `SpeechCancel` | запись `multiple_writers|/voice/tts/control` в `runtime-baseline.json` удалена | 15q | средний: проверить писателей вне `src/` |
-| `/dialogue/control`, `/dialogue/control_ack` (String JSON) | `supervisor_node` (28 упоминаний; при v2 не публикует) | `dialogue_node` (11) | `DialogControl.srv` (PR-10a) | `grep -rn '"/dialogue/control' src --include=*.py --include=*.ts` вне тестов = 0 (сейчас: `supervisor_node` 28, `dialogue_node` 11, `webxr_client` 2, `dialog_engine.yaml`/`dialogue_node.yaml` — комментарии); запись `dead_output|/dialogue/control_ack` в `runtime-baseline.json` и `seam_baseline.json` удалена | 15r | средний |
-| `/voice/stt/result` | — | — | уже заменён `/voice/stt/utterance` | `grep -rn "voice/stt/result" src docker scripts` вне тестов = 0 (**уже выполнено**) | — | — |
-| `architecture/ownership.yml` | комментарий у `/dialog/output` («его удалит PR-15»), блок `dialogue_node` в `nodes:`, комментарий про `speech_compat` (строка 94) | — | — | `grep -n "dialogue_node\|speech_compat" architecture/ownership.yml` = 0 | 15t | низкий |
-| Бюджеты | `scripts/lint/cc_budget_baseline.json`, `class_budget_baseline.json` (`DialogueNode` WMC 525, 112 методов), `seam_baseline.json`, `seam_allowlist.json`, `runtime-baseline.json` | — | пересчитать вниз после каждой части | `python scripts/lint/class_budget.py` без `dialogue_node.py` | каждая часть + 15u | низкий |
+| `/voice/dialogue/state` (23 / 13) | `dialogue_node.py` (1); при v2 никто | адаптеры v1 (TEMP, #3917): `led_node` 3, `arbiter_node` 3, `quest_node` 3, `rob_box_core/voice_state.py` 3 (`on_legacy`, `LEGACY_STATE`), `supervisor/core/aggregator.py` 2; `bridge_protocol.py` 1 (`source=`), `mock_robot.ts` 1, `agent_core` 1, `supervisor/core/__init__` 1, `SessionState.msg` 1 (комментарии); `create_avatar_issues.sh` 2, `led_face_lab/preview_template.html` 1. **Ушли**: `command_node`, `quest/streams/voice_state.py` | `SessionState` + `TurnEvent` + `SpeechEvent` через `voice_state.watch()` (#3917) | `grep -rFn "/voice/dialogue/state" src docker scripts --include=*.py --include=*.ts --include=*.yaml` вне тестов = 0 | 15-0a′ (bridge, mock, runner) → 15p2 (адаптеры) | `dead_input` (новый): читатели `/avatar_arbiter`, `/led_node`, `/quest_node` |
+| `/voice/dialogue/response` (46 / 26) | `dialogue_node.py` (3); при v2 никто | `telegram_node` 4 (ветка v1 `_subscribe_replies`, `:132`), `context_aggregator_node` 3 (TEMP `:220–223`), `tts_node` 5, `speech_compat` 3, `agent_core` 2, `speak_helpers` 1, `robot_speech.py` 1, `dialog_engine.py`/`.yaml` ×2, `e2e_voice_test.sh` 1, `tools/gui/*` 2, документы `src/*/docs`, `README` | Telegram — `/dialog/output` (PR-12a); `context_aggregator` — `SpeechRequest` (#3917, D4) | `grep -rFn "/voice/dialogue/response" src --include=*.py` вне тестов = 0 | 15p2 (aggregator), 15s (telegram), 15q/15t (`tts_node`) | `dead_input` (новый): `/context_aggregator`; запись `multiple_writers` — `resolved` |
+| `/voice/tts/state` (16 / 12) | `tts_node.py:1371` | `face_node` 3, `face_director` 1, `audio_node` 2, `stt_node` 1, `speech_compat` 1, `replay.py` 1, `face_node.yaml` 1 (комм.), `led_face_lab` 2, документы | `SpeechEvent` (`/voice/speech/event`) | `grep -rFn "/voice/tts/state"` вне тестов = 0 | 15-0b → 15t | — |
+| `/voice/tts/finished` (39 / 16) | `tts_node.py:1373` (12 строк) | `supervisor_node` 4, `speak_helpers` 3, `speaker_id_node` 2, `dialogue_node` 2, `tars_stage_relay` 2, `quest_node` 2, `core/tars_stages` 2, `mcp_server` 2, `conductor.py` 2, `speech_owner` 1, `speech_compat` 1, `tars_stage.py` 1, `ws_server` 1, `replay.py` 1 | `SpeechEvent finished` по `speech_id` | = 0 | 15-0c → 15t | — |
+| `/voice/tts/request` (64 / 23) | джойстик `rob_box_teleop` (`joystick_logic` 2, `joystick_control_node` 1), `scene_set/conductor.py` 1; вход `tts_node` 18 через `speech_compat.attach_legacy` (`tts_node.py:1277`) | `utterance.py` 4, `tts_params.py` 3, `speech_client.py` 1, `mcp_server` 1, `supervisor_node` 1, `watchdog-tts.sh` 5, `tools/gui` 2+2, `audio_capture_harness` 2+2, `ownership_check.py` 1, `runtime-baseline.json` 1 | `speech_client.say` → `SpeechRequest` | вне тестов и комментариев = 0 | 15-0d → 15q | запись `multiple_writers` — `resolved` |
+| `/voice/tts/control` (7 / 4) | `speech_compat` | `tts_node` 2 | `SpeechCancel` | = 0 | 15q | `dead_input` (новый): `/tts_node`; `multiple_writers` — `resolved` |
+| `/dialogue/control`, `/dialogue/control_ack` (49 / 12) | `supervisor_node` 28 (путь v1 ТАРС) | `dialogue_node` 11, `webxr_client` 2 (`main.ts`, `voice_pipeline_cmd.ts`), yaml ×3 (комм.), `seam_baseline.json`, `runtime-baseline.json` | `DialogControl.srv` (PR-10a) | `grep -rn '"/dialogue/control' src --include=*.py --include=*.ts` вне тестов = 0 | 15p (`dialogue_node`), 15r2 (`supervisor_node`) | `dead_output /dialogue/control_ack` — `resolved` |
+| `/voice/stt/speaker` | `stt_node.py:513` | читатель только `dialogue_node.py:710` (метки Yandex, D1a) | `Utterance.speaker_tag`/биометрия | писатель удалён, запись в `ownership.yml:140–146` удалена | 15t | `dead_output` (новый): `/stt_node` |
+| `/voice/speaker/{merge,observe,epithet}`, `/voice/speaker/epithet_request` | `dialogue_node.py:724,735,743` пишет, `:740` читает; v2 не пишет | `speaker_id_node` читает merge/observe/epithet, пишет epithet_request; владелец в `ownership.yml:179,185,191` — `dialogue_node` | **нет в v2 — Q6** | — | Q6 | `dead_input` merge/observe/epithet, `dead_output` epithet_request (новые) |
+| `architecture/ownership.yml` | 34 упоминания `dialogue_node`: блок `nodes.dialogue_node` (`:34–38`), владелец 4 топиков (`:163,179,185,191`), `writers_allowed`/`readers`; `speech_compat` (`:88`, комментарий `:95`) | — | — | `grep -c dialogue_node architecture/ownership.yml` = 0 | 15p (блок узла и списки), 15t | — |
+| Бюджеты | `cc_budget_baseline.json:16,110`, `class_budget_baseline.json:74` (`DialogueNode`), `seam_baseline.json`, `seam_allowlist.json:17`, `runtime-baseline.json` | — | пересчитать вниз | записи `dialogue_node.py` = 0 | 15p, 15t, 15w | — |
 
 ## 5. Читатели, которые надо перевести до удаления
 
-Образы: **voice-assistant**, **supervisor** (общий для `supervisor` и `avatar-arbiter`), **quest**, **telegram-bot** — Sound Pi;
-**led-matrix** — Vision Pi; **teleop** — Main Pi; **perception** — Main Pi (и `sensor-bridge` на Sound Pi).
+Образы: **voice-assistant**, **supervisor** (`supervisor` и `avatar-arbiter`), **quest**, **telegram-bot** — Sound Pi;
+**led-matrix** — Vision Pi; **teleop**, **perception** — Main Pi.
 
-| Часть | Что переводим | Читатели (строк в файле) | Образы, которые пересобираем | Размер правки |
+| Часть | Что переводим | Состояние 27.10 | Читатели (`wc -l` файла) | Образы | Размер правки |
+|---|---|---|---|---|---|
+| 15-0a | `/voice/dialogue/state` → `SessionState`/`TurnEvent`/`SpeechEvent` | **в основном сделано #3917**: `quest_node` (3 182) и `arbiter_node` (1 518) — `voice_state.watch()` + адаптер `on_legacy`; `led_node` (326) — `SessionState` + строка v1; `command_node` (380) — подписка удалена; `streams/voice_state.py` (33) — только отправка | осталось (15-0a′): `bridge_protocol.py` (1 510; `source="/voice/dialogue/state"`), `webxr_client/src/dev/mock_robot.ts` (944), `docker/vision/test/scenario_runner/runner.py` (864), вход `snapshot().voice_state` арбитра (решение координатора в #3711); адаптеры v1 — в 15p2 | quest, supervisor | оценка 30–80 (протокол шлема — гард `G-Bridge-Protocol-Drift`) |
+| 15-0b | `/voice/tts/state` → `SpeechEvent` | не начато | `face_node.py` (274), `face_director.py` (369), `audio_node.py` (1 187), `stt_node.py` (1 894); скрипт `replay.py` | led-matrix, voice-assistant | оценка 80–150 |
+| 15-0c | `/voice/tts/finished` → `SpeechEvent finished` | не начато | `quest_node.py`, `core/tars_stages.py` (184), `tars_stage_relay.py` (145), `server/ws_server.py`, `supervisor_node.py` (3 065), `supervisor/tars_stage.py`, `speaker_id_node.py` (2 505), `mcp_server.py` (1 557); скрипты `conductor.py`, `replay.py` | voice-assistant, quest, supervisor | оценка 100–200 |
+| 15-0d | teleop: `speech_client.say` вместо JSON `/voice/tts/request` (D8) | не начато | `joystick_control_node.py` (443), `joystick_logic.py` (102); тесты `test_issue_3107_tts_request.py`, `test_joystick_*.py`. Образец сборки — `docker/sound/quest/Dockerfile:192` (`COPY --from=msgs /ws/install /ws/install`) и `:211–212` (`src/rob_box_dialog_msgs`, `src/rob_box_core` в сборке) | **teleop (Main Pi)** — единственная пересборка Main Pi, предупредить координатора | оценка 60 + Dockerfile 10 |
+| 15-0e | `/voice/dialogue/response` | **сделано по сути**: `context_aggregator_node` (712) читает `SpeechRequest` (`robot_speech.py`, 36) — #3917, D4; TEMP-подписка v1 → 15p2. `telegram_node` (688): ветка v1 `_subscribe_replies` (`:132`) живёт под флагом → 15s | — | — | — |
+| 15-0f | паритет D1 | **сделано #3916** (`dab053510`): встреча лицом, стартовая фраза, фид ТАРС; юнит-тесты; **на роботе не проверено**. Отличие: в v1 `_on_vision_event` ещё зовёт `note_face` и `note_face_seen` (`dialogue_node.py:4161`, `:4174`) — у v2 потребителя нет, это `FaceSightings` #3920 (открыта, после эпика) | — | — | — |
+
+Путь v1 ТАРС (`supervisor_node.py`, по AST): `_dialogue_control_publisher` 13, `_publish_dialogue_control` 33,
+`_dialogue_control_swap` 48, `_ensure_agent_core` 14, `_build_agent_core_sync` 83 = **191** строка; ветка v1 `agent_path`
+— `operator_turns.py:235–240`; часть 15r2.
+
+## 6. План частей (новый порядок)
+
+### 6.1. Почему порядок 23.10 не годится
+
+1. **Импорт v1 ломается раньше, чем карта ожидала.** Модуль можно удалить, только когда удалены все его импортёры. Это не
+   выполнялось: 15a удаляла хвост `stt_admission.py` (545–840), а `DefaultSttAdmission` из него `dialogue_node` строит в
+   `__init__` (`:127`, `:457`); 15c удаляла `tier1_host.py`, а его на рантайме импортирует `stt_admission_host.py:36`
+   (удалялся позже, в 15d). Вывод скрипта «где `dialogue_node.py` использует имена модулей v1» (приложение А) показывает и
+   остальное: `tools_view_host` нужен методу части 15k, `turn_identity` и `speaker_profiles` — 15l, `session_epoch` — 15j,
+   15l и `__init__`, `turn_speech` — 15h, 15k, 15l. Модули из 15c/15d/15e/15g/15h карты 23.10 удалять в своих частях нельзя.
+2. **Откат флагом на v1 умирает с первой части, режущей `dialogue_node.py`.** Каждая такая часть лишает v1 функции
+   (после 15c v1 не слышит реплику), поэтому `dialog_engine: v1` перестаёт быть рабочим запасом задолго до 15s. Промпт
+   этапа ставит вердикт PR-14 только перед 15p и 15s — это решение надо уточнить (**Q1**).
+
+### 6.2. Порядок
+
+Стратегия **R (рекомендую)**: после вердикта PR-14 сначала удаляется корень `dialogue_node.py` (одна часть, чистое удаление),
+затем модули-сироты по графу «импортёр раньше импортируемого». Каждое промежуточное состояние импортируется целиком, перекрёстные
+вызовы методов `DialogueNode` анализировать не нужно. Цена — часть 15p ≈ 5 060 строк: больше потолка AF-0013 (3 000), нужна
+метка `big-bang-override` от товарища Шифу. Стратегия **L** (если метки нет) — в §6.3.
+
+«Строк» — удаляемые не-тестовые строки (`wc -l` файлов; диапазоны AST; «оценка» — не измерено). Тесты удаляются в тех же PR и
+в размер не входят. Каждая часть меняет образ **voice-assistant**, если не сказано иное. Смоук каждой части: `ros2 node list`
+(есть `/dialog_node`, нет `/dialogue_node`), последние 50 строк `docker logs voice-assistant` без `Traceback`; «фразы» —
+инъекция `Робот, …` в `/voice/stt/utterance` (без пунктуации, один `ssh`, стенд свободен).
+
+**Этап 1 — можно вливать до вердикта PR-14** (v1 не трогается):
+
+| Часть | Что | Строк | Образы | Зависит от | Что проверить |
+|---|---|---|---|---|---|
+| 15-0a′ | остаток 15-0a: `bridge_protocol.py` `source`, `mock_robot.ts`, `scenario_runner/runner.py`, вход `snapshot().voice_state` арбитра | оценка 30–80 | quest, supervisor | — | шлем: `voice_state (0x1202)` меняется на «Робот, который час» (listening → thinking → speaking → idle) |
+| 15-0b | `/voice/tts/state` → `SpeechEvent` | оценка 80–150 | led-matrix, voice-assistant | — | лицо открывает рот на «Робот, расскажи скороговорку», `audio_node` не пишет поверх речи |
+| 15-0c | `/voice/tts/finished` → `SpeechEvent finished` | оценка 100–200 | voice-assistant, quest, supervisor | — | ТАРС: 3 команды с озвучкой, стадии в шлеме; `mcp_server` `speak_text` дожидается конца речи |
+| 15-0d | teleop → `speech_client.say` (D8) | оценка 70 | **teleop (Main Pi)** | — | кнопка голоса джойстика — фраза звучит; в `ros2 topic info /voice/tts/request` писателей 0 |
+| 15a1 | `core/conversation_history.py` (255), `utils/github_summary.py` (297), реэкспорт в `core/__init__.py` | 552 | voice-assistant | — | смоук; `grep -rlw "conversation_history\|github_summary" src scripts --include=*.py` вне тестов = 0 (атрибут `self.conversation_history` в `voice_memory.py:28,30` — другая сущность) |
+| 15a2 | `core/llm_config.py` (256), `core/voice_memory_init.py` (113) — D6 | 369 | voice-assistant | — | смоук; grep по именам = 0 |
+| 15a3 | `core/faq_loader.py` (151), `core/speech_formatter.py` (262) — **только если Q3 «да»** | 413 | voice-assistant | — | смоук |
+
+**Гейт: вердикт товарища Шифу по PR-14 (#3710) и ответ на Q1.**
+
+**Этап 2 — после вердикта**, стратегия R:
+
+| Часть | Что | Строк | Образы | Зависит от | Что проверить |
+|---|---|---|---|---|---|
+| 15p | корень: `dialogue_node.py` (4 700); `setup.py:49`; `config/dialogue_node.yaml` ×2 (282); ветки `dialogue_node` в `voice_assistant.launch.py:114–120` и `voice_assistant_headless.launch.py:88–93`; блок `nodes.dialogue_node` и списки в `ownership.yml`; гард skip-reasons: `scripts/lint/dialogue_skip_reasons.py` (36), `core/skip_reason_checker.py` (35), шаг `G-Lint Code.yml:70–72`, тест `test_dialogue_skip_reasons.py`; записи в `cc_budget_baseline.json:16,110`, `class_budget_baseline.json:74`; тексты `/dialogue_node` в `.github/e2e/scenarios/turn_occasion_meeting_v1.json:23`, `docker/vision/test/config/voice_assistant_test.yaml:6`; 47 тестов ноды по AST (10 685 строк) и ещё 7, которые ссылаются на ноду строкой (`patch("rob_box_voice.dialogue_node…")`, всего 54 по grep) | 5 053 измерено + оценка 20–60 (launch, ownership, baselines) | voice-assistant; **метка `big-bang-override`** | вердикт PR-14, Q1 | смоук + набор из 10 фраз; `ls …/dialogue_node.py` → нет. **Не трогать**: `PERSONALITY_SENDER = "dialogue_node"` (`mcp_auth.py:85` ← `dialog_node.py:211`) и ключ `dialogue_node:` в `slice_policy.yaml:26` — это подпись и срез тулов живого v2; переименование — отдельное решение |
+| 15p2 | адаптеры v1 в читателях (TEMP #3917): `quest_node.py:2145–2150, 2473–2474`, `arbiter_node.py:352, 1004–1005`, `led_node.py:29, 175`, `context_aggregator_node.py:220–223, 440`, `rob_box_core/voice_state.py` (`LEGACY_STATE`, `on_legacy`) | оценка 80–150 | quest, supervisor, perception, voice-assistant | 15p | LED-кольцо гаснет на «Робот, хватит», шлем показывает состояние, в памяти перцепции есть «ответы робота» |
+| 15m1 | `core/stt_admission_host.py` (261), `core/tier1_host.py` (236), `core/tools_view_host.py` (34) | 531 | voice-assistant | 15p | «Робот, стой», «Робот, хватит», «Робот, покажи анимацию стоп» (спорный стоп — не стоп) |
+| 15m2 | `core/dialogue_stage_mixin.py` (81), `turn_stages.py` (275), `turn_tools.py` (111), `turn_reflexes.py` (130) | 597 | voice-assistant | 15p | «Робот, который час»: стадии `addressed → thinking → done`, рефлекс LED и earcon |
+| 15m3a | `core/stt_admission.py` строки 545–840 (296) + `core/llm_skip_reasons.py` (47) | 343 | voice-assistant | 15m1, 15m2 | смоук |
+| 15m3b | `core/stt_admission.py` строки 1–544 (весь файл) | 544 | voice-assistant | 15m3a | смоук; `grep -rn parse_tg_prefix src` вне тестов = 0 |
+| 15m4 | `core/media_plan_run.py` (128), `library_command.py` (63), `turn_speech.py` (163), `turn_identity.py` (146), `meeting.py` (53); `turn_context.py` строки 37–76 (≈40, B2) | 593 | voice-assistant | 15p | «Робот, включи музыку», «Робот, выключи музыку»; знакомый в кадре → приветствие v2 (#3916) |
+| 15m5 | `speaker_profiles.py` (181), `core/identity_dedup.py` (83), `session_epoch.py` (62), `stop_chooser.py` (85), `tars_status_feed.py` (41), `startup_greeting.py` (14); `dialogue_helpers.py` до −123 (остаётся `sanitize_speaker_name`) | 589 | voice-assistant | 15p, 15m1 | рестарт → стартовая фраза v2; ТАРС видит статус LLM; e2e-режим БД дикторов: «Робот, меня зовут Саша» |
+| 15r0 | REPL v1 `scripts/dialogue/` (`chat.py` 777, `local_tools.py` 209, `run.sh` 39, `run.ps1` 54, `README.md` 118) — B6: импортирует DSM и `strip_done_marker`. Аналог v2 — `scripts/dialog/dry_stand.py` (#3906) | 1 197 (чистое удаление каталога скриптов; > 600 — с разрешения координатора или двумя PR) | образ не меняется | 15p | `python scripts/dialog/dry_stand.py --help` работает |
+| 15q | `core/speech_compat.py` (74), `core/speak_helpers.py` до −497; `attach_legacy` (`tts_node.py:1277`), `meta_from_legacy` (`speech_owner.py:100`). Нормализация перед синтезом — один модуль рядом с `tts_node` (D2), число `re.compile` фиксируется в PR (сейчас 18 + 2) | ≤ 571 + оценка 25 | voice-assistant | 15-0d, 15p, 15r0 | `/say` из Telegram (русский и CJK), скороговорка с markdown — звёздочки не звучат, джойстик |
+| 15r2 | путь v1 ТАРС: 5 методов `supervisor_node.py` (191 по AST), `/dialogue/control*` в `supervisor_node` (28 строк), ветка v1 `agent_path` (`operator_turns.py:235–240`) | 191 + оценка 30–60 | supervisor | 15p | ТАРС: 8 команд как в #3708; `hold`/`resume` через `DialogControl`; «замолчи» → «говори» |
+| 15r1 | `rob_box_harness/core/dialogue_state_machine.py` (469); импорт и поле DSM в `agent_core.py:50–53, 616`, `assembly.py:50, 152` (`AgentSpec.dsm` — общий с v2, поле убрать), реэкспорт `harness/core/__init__.py:10–19`, `supervisor_node.py:2305` | 469 + оценка 20–40 | voice-assistant, supervisor | 15p, 15m1, 15m4, 15r0, 15r2 | ТАРС и Личность: по 3 фразы; `pytest -v src/rob_box_harness` |
+| 15r3 | **только если Q4 «да»**: класс `AgentCore` (`agent_core.py:586–2154`, 1 569), `DialogResult` (99), `assembly.build_agent` (109), сироты `tool_loop/{confirmation 70, outcomes 102, output_format 117, retry 171}` и `core/acceptance.py` (620); `answering_provider` (7) перенести к v2 | ≈ 2 860 измерено + помощники v1 в `agent_core` (не измерено) → 5 PR | voice-assistant, supervisor | 15r1, 15r2, 15r0 | `pytest -v src/rob_box_harness src/rob_box_voice`; 10 фраз |
+| 15s | флаг `dialog_engine`: 75 строк в 27 файлах (без `rob_box_core/dialog_engine.py`), `dialog_engine.py` (77), `dialog_engine.yaml` ×2, `scripts/robot_dev/dialog_engine.sh`, ветка v1 `telegram_node` (`:132`, `:562`), ветка v1 в `e2e_voice_test.sh:634–691` (сброс сессии через `/dialogue_node`, `:676`, `:681`), `operator_prompt.py` (импорт `:18`, правило `V1` `:29`); `dialogue_guards.py` 169 → ≈70; `dialog_node` в launch ×2 обычным `Node(executable=…, name='dialog_node')` — снимет `unplaced_nodes` (§10) | оценка 350–450 | voice-assistant, supervisor, telegram-bot, perception (`node_monitor`) | 15p, 15p2, 15r2 | рестарт трёх контейнеров: 3 фразы голосом, 3 сообщения в Telegram (`Клод …`, `/say`), 3 команды ТАРС; `ros2 param get /dialog_node dialog_engine` → параметра нет |
+| 15t | String-топики в `tts_node`: `/voice/tts/state` (`:1371`), `/voice/tts/finished` (`:1373`, 12 строк), JSON-вход `dialogue_callback` (`:2064`, если его не читает путь `SpeechRequest` — не проверено); `/voice/stt/speaker` (`stt_node.py:513`, `ownership.yml:140–146`); записи `ownership.yml` (`speech_compat` `:88, 95`), `runtime-baseline.json`, `seam_baseline.json`, `seam_allowlist.json` | оценка 150–250 | voice-assistant | 15-0b, 15-0c, 15q | `ros2 topic info` по каждому: писателей 0; аудит без этих записей; 5 фраз с LED, лицом, шлемом |
+| 15u | промпты: `RULE #` 8 + 7 → 0 (D3, A/B) | оценка 80–150 | voice-assistant | — (не зависит от удаления) | A/B: набор честности ≥ 60 фраз до и после (A3 не хуже), A1/A14 по `turn_metrics.py` |
+| 15v | `#NNNN` в `rob_box_dialog/rob_box_dialog`: 369 строк → ≤ 20; `Bug [A-F]` остаток (`media_command_grammar.py` 1, `dialogue_guards.py` 1) → 0 | оценка ≈350 строк правок комментариев → 2 PR | — | 15p…15m5 | `pytest -v src/rob_box_dialog`, смоук |
+| 15w | `test_issue_*`: в `rob_box_voice/test` 83 (28 уходят с v1-множеством, ещё 2 с DSM; ≈53 переписать на поведение), в других пакетах `src` 34, в `tests/` 24; 12 смешанных тестов (приложение А); `CONTEXT.md` по ADR §13; baseline `cc_budget`/`class_budget`/`seam` вниз | оценка 200–400 | — | все | `pytest -v` всех пакетов; гарды `cc_budget`, `class_budget`, `seam_without_consumer`, `cc_budget_refs`, `ownership_check`; `L: Architecture Audit` |
+
+Счёт частей (R): до вердикта 6 (+1 при Q3), после — 18 (15p, 15p2, 15m1, 15m2, 15m3a, 15m3b, 15m4, 15m5, 15r0, 15q, 15r2,
+15r1, 15s, 15t, 15u, 15v ×2, 15w) и ещё 5 при Q4. Ориентир 600 строк превышают: 15p (5 053+, метка), 15r0 (1 197, скрипты), 15r3 (по Q4).
+
+### 6.3. Стратегия L (если метки `big-bang-override` нет)
+
+`dialogue_node.py` режется по методам — диапазоны AST те же, что 23.10 (файл не менялся побайтно): 15b 154, 15c 148,
+15d 207, 15f 482, 15g 318, 15h 206, 15i 208, 15j 412, 15k 465, 15l 327, 15n 509, 15o 230 (+ `__init__` 484 и 550 строк вне
+методов — 15p). В части L удаляются **только методы `DialogueNode` и использующие их строки `__init__`**; модули v1 удаляются
+после 15p теми же частями 15m1–15m5, что в R (иначе ломается импорт, §6.1). Перекрёстные вызовы `self._…` между частями не
+проверены (раздел «Что не проверено»). Частей на 12 больше, чем в R; все — после вердикта PR-14.
+
+## 7. Решения (приняты; промпт этапа 0, раздел 3) и вопросы к товарищу Шифу
+
+| # | Решение | Состояние на `d076b8b55` | Где в плане |
+|---|---|---|---|
+| D1a | `SpeakerTracker`, метки Yandex `speaker_tag` — удалить, не переносить (Шифу 23.10, комментарий #3711 6360247947) | на месте: `speaker_profiles.py` (181) | 15m5; писатель `/voice/stt/speaker` — 15t |
+| D1b | встреча лицом — перенести в v2 | **слито #3916** (`dab053510`): `rob_box_dialog.meeting`, `dialog_node.py:303`; юнит-тесты; на роботе не проверено. Без `FaceSightings` (#3920) | обёртка v1 `core/meeting.py` (53) — 15m4 |
+| D1c | стартовое приветствие — перенести | **слито #3916**: `rob_box_dialog.startup`, `dialog_node.py:304`; на роботе не проверено | `startup_greeting.py` (14) — 15m5 |
+| D1d | фид статуса ТАРС — перенести | **слито #3916**: `rob_box_dialog.status_feed`, `dialog_node.py:302`; PR-13b #3708 влит отдельно (`58187f868`) | `core/tars_status_feed.py` (41) — 15m5 |
+| D2 | `re.compile` = 0 в слое диалога (`rob_box_dialog`, `dialog_node`); нормализация перед синтезом — один модуль рядом с `tts_node`, число фиксируется в PR | `speak_helpers.py` 18, `dialogue_guards.py` 2 | 15q, 15s |
+| D3 | `RULE #` → 0 отдельным PR с A/B (≥ 60 фраз до и после; откат, если A3 хуже) | 8 + 7 | 15u |
+| D4 | `context_aggregator_node` — перевести с `/voice/dialogue/response` | **сделано #3917**, но на `SpeechRequest` (запрошенная речь агента `personality`, `commit=true`), а не на `SpeechEvent`/`/dialog/output`, как сказано в D4. Если нужна именно сказанная речь — отдельная правка | TEMP-подписка — 15p2 |
+| D5 | после 15s откат только гитом; 15s — последней из функциональных частей, после вердикта PR-14 | см. Q1: фактически откат флагом умирает раньше | 15s |
+| D6 | мёртвые модули удалить в 15a с grep-доказательством | `llm_config` (256), `voice_memory_init` (113), `utils/github_summary` (297) — читателей нет. **`skip_reason_checker` не мёртвый** (B6): его импортирует гард CI `scripts/lint/dialogue_skip_reasons.py:9` | 15a1, 15a2; `skip_reason_checker` и гард — 15p |
+| D7 | в PR-15 закрыть только хвосты v1 (`discard_last_reply`, `_HISTORY_MARKER_RE`, `_META_PREFIX_RE`); `voice_memory.db` — отдельная карточка | хвосты **на месте**: `_HISTORY_MARKER_RE` 2 (`speak_helpers.py:34,154`), `_META_PREFIX_RE` 2 (`:74,215`), `discard_last_reply` 10 (`agent_core` 6, `dialogue_node` 3, `turn_speech` 1); `voice_memory.db` 47 строк в 15 файлах — карточка [#4082](https://github.com/krikz/rob_box_project/issues/4082) | 15q, 15p, 15m4; `agent_core` — 15r3 (Q4): без неё 6 строк останутся |
+| D8 | teleop → `speech_client.say`, сборка `rob_box_dialog_msgs` + `rob_box_core` в `docker/main/teleop/Dockerfile` по образцу quest | не начато | 15-0d |
+
+**Вопросы к товарищу Шифу (новые, по этой пересверке):**
+
+- **Q1. Гейт и стратегия.** (а) Любая часть, режущая `dialogue_node.py` или модули из его импортов, — только после вердикта
+  PR-14 (иначе откат флагом на v1 умирает раньше 15s)? Рекомендую **да**. (б) Корень одним PR с меткой `big-bang-override`
+  (стратегия R, ≈5 060 строк чистого удаления) или 12 PR по методам (L)? Рекомендую **R**.
+- **Q2. Критерий §6 «Architecture Audit без `multiple_writers`» недостижим.** Из 14 записей 6 новых — топики-запросы и события
+  исполнителей v2, писателей много по замыслу ADR-0150 (§10). Предложение: в `ownership.yml` у таких топиков поле
+  `multi_writer: by_design` со ссылкой на раздел ADR и списком `runtime_writers` (имена рантайм-нод);
+  `tools/architecture_runtime_findings.py` не считает `multiple_writers`, если рантайм-писатели ⊆ `runtime_writers`; критерий
+  PR-15 — «0 `multiple_writers` по топикам диалога вне объявленных и 0 записей с `debt` на PR-15». Запасной вариант без кода —
+  внести ключи в `runtime-baseline.json` с `debt: "by-design ADR-0150 §…"` и критерий «нет записей с долгом PR-15».
+- **Q3.** Ещё два мёртвых модуля `rob_box_voice/core`, не названных в D6: `faq_loader.py` (151) и `speech_formatter.py` (262) —
+  читателей нет, только реэкспорт `core/__init__.py` и по одному тесту. Удалить в 15a3?
+- **Q4.** Второй цикл хода v1 — класс `AgentCore` (1 569 строк) с `assembly.build_agent` и 5 модулями-сиротами (1 080):
+  после 15p/15r0/15r2 его читателей нет, v2 берёт из `agent_core.py` только `answering_provider`. Удалить в PR-15 (15r3, ≈5 PR)
+  или отдельной карточкой после эпика? Без него критерий #3705 (`discard_last_reply`) останется ≠ 0 (6 строк в `agent_core`).
+- **Q5.** Критерий `grep -rn "Bug \[A-F\]" …` в #3711 и в §6 промпта ищет литерал «`[A-F]`» и всегда даёт 0. Заменить на
+  `grep -rnE "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py` (сейчас 26, вне тестов 8)?
+- **Q6.** Топики идентичности v1 `/voice/speaker/{merge,observe,epithet}` (владелец `dialogue_node`) и
+  `/voice/speaker/epithet_request` при v2 мёртвые (аудит §10): v2 их не пишет и не читает. Их ведут методы v1
+  `_publish_confirmed_identity_growth`, `_publish_speaker_observation`, `_on_epithet_request`, `_generate_epithet`.
+  Перенести в v2 (как D1) или удалить вместе с подписками `speaker_id_node`?
+
+## 8. Хвосты PR-10b, PR-11, PR-12a — команды карточек на `d076b8b55` (raw — приложение Б)
+
+| Карточка | Команда карточки | 23.10 → 27.10 (вне тестов) | Где лежит остаток | Часть |
 |---|---|---|---|---|
-| 15-0a | `/voice/dialogue/state` → `SessionState`/`TurnEvent` | `led_node.py` (308), `command_node.py` (396), `quest_node.py` (3203), `streams/voice_state.py` (176), `arbiter_node.py` (1518), `core/aggregator.py` (185), `bridge_protocol.py` (1510), `webxr_client/src/dev/mock_robot.ts` | voice-assistant, quest, supervisor | оценка 150–300 строк (протокол шлема — отдельное согласование; не измерял) |
-| 15-0b | `/voice/tts/state` → `SpeechEvent` | `face_node.py` (265), `face_director.py` (350), `audio_node.py` (1187), `stt_node.py` (1894) | led-matrix, voice-assistant | оценка 80–150 |
-| 15-0c | `/voice/tts/finished` → `SpeechEvent finished` | `quest_node.py`, `core/tars_stages.py` (184), `tars_stage_relay.py` (145), `supervisor_node.py` (3057), `speaker_id_node.py` (2386), `mcp_server.py`; скрипты `conductor.py`, `replay.py` | voice-assistant, quest, supervisor | оценка 100–200 |
-| 15-0d | teleop: `speech_client.say` вместо JSON `/voice/tts/request` (по комментарию к #3711: добавить сборку `rob_box_dialog_msgs` + `rob_box_core` в `docker/main/teleop/Dockerfile` по образцу `docker/sound/quest/Dockerfile`, строки 197–198) **или** убрать голос джойстика | `joystick_control_node.py` (443), `joystick_logic.py` (102); тесты `test_issue_3107_tts_request.py`, `test_joystick_*.py` | **teleop (Main Pi)** | оценка 60 строк + Dockerfile 10 строк |
-| 15-0e | `/voice/dialogue/response` → `/dialog/output` или `SpeechEvent` | `telegram_node.py` (688; ветка v1 `_subscribe_replies`), `context_aggregator_node.py` (714; «ответы робота» для контекста) | telegram-bot, perception | оценка 40–80 |
-| 15-0f | Паритет v2: встреча лицом, стартовое приветствие, фид статуса ТАРС, `SpeakerTracker` (если Шифу решит сохранить) | перенос `meeting.py` (213) + `startup_greeting.py` (41) + `tars_status_feed.py` (115) + части `speaker_profiles.py` в `dialog_node`/`rob_box_dialog` | voice-assistant | зависит от D1; оценка 300–400 строк переноса |
-
-Что есть и что ещё нужно по ТАРС (supervisor): путь v1 `AgentCore` в `supervisor_node.py` (`_dialogue_control_publisher` 13,
-`_publish_dialogue_control` 33, `_dialogue_control_swap` 47, `_ensure_agent_core` 14, `_build_agent_core_sync` 81 — всего 188 строк
-по AST) и ветка `agent_path` в `operator_turns.py:228`; удаляется в части 15r вместе с `DialogueStateMachine` (ТАРС работает на общем
-движке при v2 с PR-13a, но `AgentCore(dsm=…)` ещё на месте).
-
-## 6. План частей
-
-Правило размера: «строк» = удаляемые не-тестовые строки (`wc -l` файлов + диапазоны методов по AST), порог 600; тесты
-удаляются в тех же PR и не входят в размер. Порядок — от тех, у кого читателей нет, к корню (`__init__` и шапка
-`dialogue_node.py` — в последней). Каждая часть, кроме оговоренных, меняет образ **voice-assistant** (Sound Pi).
-Цифры по `dialogue_node.py` — `slices2.py` по AST (приложение); `__init__` режется постепенно, строки его убираемых блоков
-в частях не учтены (оценка +30…80 на часть; поэтому последняя часть меньше расчётной).
-
-«Фразы» — инъекция `Робот, …` в `/voice/stt/utterance` на Sound Pi (без пунктуации, один `ssh`, стенд свободен — по правилам
-карточки); смоук для каждой части: `ros2 node list` (есть `/dialog_node`, нет `/dialogue_node`) и последние 50 строк
-`docker logs voice-assistant` без `Traceback`.
-
-| Часть | Что удаляется | Строк (без тестов) | Тестов (файлов, оценка) | Образы | Зависит от | Что проверить на образе (3–10 фраз) |
-|---|---|---|---|---|---|---|
-| **15-0a…15-0f** | перевод читателей и паритет (раздел 5) | не удаление; оценка 700–1100 строк правок суммарно | — | см. раздел 5 | PR-14 (v2 дефолт) частично нужны **до** него | см. разделы 5 и 7: на каждый образ — 3–5 фраз и просмотр читателя (LED-кольцо, шлем Quest, лицо) |
-| **15a** | `core/conversation_history.py` (255) + реэкспорт в `core/__init__.py`; хвост `core/stt_admission.py` строки 545–840 (шаги допуска и `default_steps`, 296) | 551 | 1 + часть 6 тестов допуска | voice-assistant | — | смоук: «Робот, который час», «Робот, сколько у тебя заряда», «Робот, расскажи короткую шутку» |
-| **15b** | `core/meeting.py` (213), `startup_greeting.py` (41), `core/tars_status_feed.py` (115); методы `_on_startup_greeting*`, `_subscribe_vision_events`, `_on_vision_event`, `_cancel_greeting_timer` (154) | 523 | 6 | voice-assistant | **15-0f / решение D1** | если перенесено: знакомый, не виденный > 20 ч, входит в кадр → одна фраза с именем без вейка; рестарт ноды → стартовая фраза; ТАРС показывает статус LLM (панель). Если отброшено — только смоук |
-| **15c** | `core/tier1_host.py` (230), `stop_chooser.py` (85), `tools_view_host.py` (34), `turn_context.py` (68); методы `_on_stt`, `_finish_stt_admission`, `_resume_stt_after_media`, `_dispatch_cleaned` (148) | 565 | 7 | voice-assistant | 15a | «Робот, стой»; «Робот, хватит»; «Робот, замолчи» → потом «Робот, говори»; «Робот, тише»; «Робот, покажи анимацию стоп» (спорный стоп — не стоп); «Робот, хватит, расскажи анекдот» (стоп + команда) |
-| **15d** | `core/stt_admission_host.py` (261), `core/greeting_window.py` (79); мелкие обработчики `_on_vad`, `vad_callback`, `_handle_silence`, `_on_command_feedback`, `_on_tts_finished`, `_on_tts_provider_state`, `_on_odom_snapshot`, `_publish_state`, `_map_emotion_to_animation`, `_is_llm_unavailable_error`, `_generate_fallback_response`, `_detect_pitch_intent`, `_on_mcp_tools_update`, `_on_perception_update` (207) | 547 | 3 | voice-assistant | 15c | фраза без вейка («который час») — молчит и уходит в бэклог; голое «Робот» → по правилу В12′; «рома, сколько времени» не будит (В18); приветствие и ответ без вейка в окне 15 с |
-| **15e** | `core/dialogue_stage_mixin.py` (81), `turn_stages.py` (275), `turn_tools.py` (111), `turn_reflexes.py` (130) | 597 | 3 | voice-assistant | 15c | «Робот, который час»: в логе стадии `addressed → thinking → speaking → done`, рефлекс ≤ 300 мс, LED-кольцо и earcon; ход с ошибкой тула (отключить тул на стенде) → стадия `failed` |
-| **15f** | методы идентичности `_ask_identity_if_ambiguous` … `_current_acquaintance` и `_resolve_speaker_for_utterance` … `_confirm_tentative_speaker` (482), `core/identity_dedup.py` (83) | 565 | 3 | voice-assistant | 15d | **только e2e-режим БД дикторов** (`e2e_mode`, не боевая `speakers.db`): «Робот, меня зовут Саша», «Робот, как меня зовут», «Робот, это ты?»-ветка (≤ 1 вопрос на собеседника) |
-| **15g** | методы `_publish_confirmed_identity_growth` … `_publish_speaker_observation` (318), `speaker_profiles.py` (181) | 499 | 3 | voice-assistant | 15f | e2e-режим: регистрация, `Робот, кто это сказал` (диктор в бэклоге), эпитеты; без записи в боевую БД |
-| **15h** | `core/turn_identity.py` (146), `core/turn_speech.py` (163); методы `_voice_turn_text`, `_release_turn_speech`, `_music_reply_context`, `_publish_turn_text`, `_publish_response`, `_publish_response_batch`, `_speak_direct`, функции `_clean_name`, `identity_question`, `classify_identity_confirmation` (206) | 515 | 4 | voice-assistant | 15g | «Робот, расскажи скороговорку», «Робот, повтори последнюю фразу», «Робот, который час» → в `SpeechEvent started` нет служебного текста; Telegram `/say` (test chat) |
-| **15i** | `core/media_plan_run.py` (128), `core/library_command.py` (63); методы `_music_playing_now` … `_execute_media_tool_result`, `_on_music_state`, `_on_sound_state` (208) | 399 | 9 (проверить 3 теста `media_router`) | voice-assistant | 15e | «Робот, включи музыку», «Робот, сыграй что-нибудь для души», «Робот, стоп» посреди трека, «Робот, добавь бит», «Робот, выключи музыку» (стенд свободен, громко — по согласованию) |
-| **15j** | `core/session_epoch.py` (62); методы управления сессией: `_on_dialogue_control` … `_publish_control_ack`, `_session_epoch_gate` … `_finalize_turn_dsm`, `_reset_dialogue_session` … `_maybe_record_session_end` (412) | 474 | 4 | voice-assistant | 15i | «Робот, новая сессия» (подтверждение вслух), `DialogControl hold` → «Робот, который час» не слушается → `resume`; «Робот, стой» посреди длинной реплики (≤ 300 мс) |
-| **15k** | ход v1: `_handle_llm_error`, `_invoke_llm_with_telemetry`, `_prepare_user_input_context`, `_handle_result` (465) | 465 | оценка 6 | voice-assistant | 15h | набор из 10: «который час», «сколько заряда», «что видишь», «статус», «расскажи анекдот», «включи звук», «покажи анимацию радуги», «Робот, и про енота» в рэпе; `honesty_audit.py` по логу |
-| **15l** | ход v1: `_dispatch_turn`, `_build_dynamic_system_context`, `_handle_speaker_turn`, `_run_turn` (327) | 327 | оценка 4 | voice-assistant | 15k | те же 10 фраз; `turn_metrics.py` по логу (A1/A2) |
-| **15m** | ядро `core/stt_admission.py`, строки 1–544 (типы, протоколы, `SttAdmission`) | 544 | 5 | voice-assistant | 15d, 15a | как 15d; плюс `Робот` без продолжения через 20 с |
-| **15n** | сборка и разбор настроек: `_parse_provider_chain` … `_music_state_mem`, `parameters_callback` (509) | 509 | оценка 3 | voice-assistant | 15l | старт ноды с каждым провайдером цепочки (`llm_providers`): 3 фразы, по одной на провайдера |
-| **15o** | `_declare_params`, `shutdown_asyncio_loop`, `destroy_node`, `main` (230) + импорты/шапка 1–297 | 527 | — | voice-assistant | 15n | смоук + корректная остановка контейнера (`docker stop` ≤ 10 с, без `Traceback`) |
-| **15p** | `__init__` (484) и остаток шапки (≈ 253 вне методов); сам `dialogue_node.py`; entry point `setup.py:49`; `config/dialogue_node.yaml` ×2 (141 + 141); ветка `dialogue_node` в launch×2; запись `dialogue_node` в `ownership.yml` | ≤ 737 + 282 (конфиги); фактически меньше (части a–o вынули часть `__init__`) | оставшиеся тесты ноды | voice-assistant | 15a–15o | смоук + 10 фраз набора; `ls src/rob_box_voice/rob_box_voice/dialogue_node.py` → нет; `grep -c "Bug [A-F]\b" dialogue_node.py` — файла нет |
-| **15q** | `core/speech_compat.py` (74), `core/speak_helpers.py` (594 → ≈ 97: −497); `attach_legacy` в `tts_node.py:1250`, `meta_from_legacy` в `speech_owner.py:100` | 571 + хвосты `tts_node` (оценка 25) | 13 | voice-assistant | 15-0d, 15p | `/say` из Telegram (русский и CJK → `unsupported_script`), «Робот, расскажи скороговорку» с markdown/скобками в тексте ответа (звёздочки не произносятся), джойстик: голосовая реплика (если оставлена) |
-| **15r** | `harness/core/dialogue_state_machine.py` (469) и его читатели (`agent_core`, `assembly`, `__init__`, `supervisor_node`); путь v1 `AgentCore` ТАРС в `supervisor_node.py` (188) и `agent_path` v1-ветка; `core/dialogue_helpers.py` (142 → 19: −123) | 469 + 123 + 188 ≈ 780 → делится на 15r1 (DSM + dialogue_helpers = 592) и 15r2 (путь v1 ТАРС ≈ 190–250, оценка) | 37 (DSM) | voice-assistant, **supervisor** | 15p | ТАРС: 8 команд как в #3708 (батарея, время, статус, что видит, «скажи вслух», громкость, анимация, стоп); `hold/resume` от ТАРС; «замолчи» → «говори» |
-| **15s** | флаг `dialog_engine`: `rob_box_core/dialog_engine.py` (77), 44 строки в 17 файлах (`tts_node`, `dialog_node`, `telegram_node`, `supervisor_node`, `operator_turns`, `operator_admin`, `node_monitor`, launch×2, `setup.py`, `start_supervisor.sh`, `start_telegram_bot.sh`), `dialog_engine.yaml` ×2; ветка v1 `_subscribe_replies` в `telegram_node`; `dialogue_guards.py` 169 → ≈ 70 | оценка 280–350 | оценка 4 | voice-assistant, supervisor, telegram-bot, **led-matrix/teleop — не затрагиваются** | 15p, 15r | рестарт всех трёх контейнеров: 3 фразы голосом, 3 сообщения в Telegram (`Клод …`, `/say`), 3 команды ТАРС; `ros2 param get /dialog_node dialog_engine` → параметра нет |
-| **15t** | String-топики: публикации `/voice/tts/state` и `/voice/tts/finished` в `tts_node` (≈ 12 упоминаний), запись об адаптере в `ownership.yml`, записи `multiple_writers` / `dead_output` в `runtime-baseline.json`, `seam_baseline.json`, `seam_allowlist.json` | оценка 150–250 | оценка 5 | voice-assistant | 15-0b, 15-0c, 15q | `ros2 topic info` по каждому: писателей 0; «L: Architecture Audit» без `multiple_writers` по диалогу (A6); 5 фраз с LED-кольцом, лицом, шлемом |
-| **15u** | промпты: `RULE #` 15 → 0 в `master_prompt_compact.txt`, `telegram_chat_prompt.txt`; генерация из `knowledge.prompt_fragment()` + персона | оценка 80–150 (правка текста) | 5 тестов промпта | voice-assistant | D3 | **A/B на живом v2**: набор честности ≥ 60 фраз до и после (A3 не хуже), A1/A14 по `turn_metrics.py` |
-| **15v** | `#NNNN` в `rob_box_dialog/rob_box_dialog`: 158 → ≤ 20 (правка комментариев, `knowledge.py` 47, `speaker_adapter.py` 20, `command.py` 12, `address.py` 12, …); `Bug [A-F]` в оставшихся (`dialogue_guards.py` 1, `media_command_grammar.py` 1) → 0 | оценка 140 строк правок | — | образ не меняется по поведению | 15p | `pytest -v src/rob_box_dialog`, смоук |
-| **15w** | тесты по номерам issue: 77 `test_issue_*` в `rob_box_voice/test`, 28 из них удаляются с v1-модулями, 49 переписываются на поведение модулей (+30 в других пакетах src, +17 в `tests/`); `CONTEXT.md` по §13; пересчёт baseline `cc_budget`/`class_budget`/`seam` | оценка 200–400 (CONTEXT.md, baselines) | 49 + 12 смешанных переписать | — | 15v | `pytest -v` всех пакетов, 5 гардов (`cc_budget`, `class_budget`, `seam_without_consumer`, `cc_budget_refs`, `dialogue_skip_reasons`), `L: Architecture Audit` |
-
-12 «смешанных» тестов (импортируют и v1-модули, и `rob_box_dialog`/`dialog_node`) нельзя просто удалить, их надо переписать
-(список в приложении).
-
-## 7. Решения, нужные от товарища Шифу до старта PR-15
-
-- **D1.** Паритет v2: приветствие по встрече лицом (`meeting.py`), стартовая фраза, фид статуса ТАРС, `SpeakerTracker` — переносим в
-  v2 или отбрасываем? Без решения часть 15b блокирована.
-- **D2.** A8 «`re.compile` → 0»: две защитные регулярки SSML в `tts_node` (`dialogue_guards.py`) и 18 в `speak_helpers.py`
-  (из них функции `strip_bracket_asides`, `strip_markdown`, `unsupported_language_notice` нужны `tts_node`) — простой перенос не даёт 0;
-  принять «≤ N, но не в слое диалога» или переписать структурно?
-- **D3.** `RULE #` = 0 меняет промпт живого v2 (15 вхождений в двух файлах): допустим A/B-прогон набора честности до/после.
-- **D4.** `context_aggregator_node` читает `/voice/dialogue/response` («ответы робота» в контекст перцепции): заменить на `/dialog/output` /
-  `SpeechEvent` или отказаться от этого входа?
-- **D5.** После 15s откат `dialog_engine: v1` невозможен — подтвердить, что откатываться будем гитом, а не флагом.
-- **D6.** Мёртвые модули без читателей вне карточки (`llm_config.py` 257, `voice_memory_init.py` 113, `skip_reason_checker.py` 35,
-  `utils/github_summary.py` 297) — включать в 15a?
-- Критерий #3705 `voice_memory.db` слишком широк: grep даёт 45 вхождений в 12 файлах, включая `rob_box_music`, `waypoint_*`,
-  `speaker_id_node` (5), `mcp_server` (19). Закрывается ли он в PR-15 или это отдельная карточка памяти (ADR-0055 `harness_voice.db`)?
-
-## 8. Хвосты PR-10b, PR-11, PR-12a (по комментариям эпика) — состояние grep на develop
-
-| Карточка | Критерий из карточки | Сейчас (вне тестов) | Что остаётся | Часть |
-|---|---|---|---|---|
-| #3704 PR-10b | `ls …/dialogue_state_machine.py` → нет; `grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py` = 0 | файл есть (в `rob_box_harness/core/`, а не `rob_box_voice/core/`, как в карточке); grep: 10 вхождений в 3 файлах (`dialogue_state_machine.py` 2, `supervisor_node.py` 2, `dialogue_node.py` 6); шире `DialogueStateMachine\|dialogue_state_machine\|…` — 34 | DSM, `/dialogue/control*`, `_pause_reason` | 15r (+15j) |
-| #3705 PR-11 | `grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py` = 0 | 59 вхождений в 16 файлах: `_HISTORY_MARKER_RE` и `_META_PREFIX_RE` по 2 в `speak_helpers.py`; `_SPEAKER_TAG_RE` 0; `discard_last_reply` 10 (`agent_core` 6, `dialogue_node` 3, `turn_speech` 1); `voice_memory.db` 45 (см. раздел 7, последний пункт) | маркеры и `discard_last_reply` уходят с v1 (15q, 15h, 15k); `voice_memory.db` — вопрос | 15h, 15k, 15q |
-| #3706 PR-12a | `grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py` = 0; `grep '"/voice/dialogue/response"\|"/voice/sound/stop"' src/rob_box_telegram` = 0 | 51 вхождение в 9 файлах: `stt_admission.py` 19, `dialogue_node.py` 18, `speak_helpers.py` 4, `turn_identity.py` 3, `telegram_node.py` 2, `address.py` 2, `utterance.py` 1, `speech_compat.py` 1, `tier1_host.py` 1; второй grep по `rob_box_telegram` — 2 | v1-путь Telegram: `telegram_node._subscribe_replies` и `_on_response` | 15s (+15a/15m, 15h) |
-| #3708 PR-13b (не PR-15, для контекста) | `_utterance_fallback.py` → нет; `GRIP_TTS_REQUEST_TOPIC` = 0 | файла нет; `GRIP_TTS_REQUEST_TOPIC` 0 — **уже выполнено** | — | — |
+| #3704 PR-10b | `ls src/rob_box_voice/rob_box_voice/core/dialogue_state_machine.py` → нет | путь карточки неверный: файла там нет и не было; DSM — `src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py` (есть) | — | 15r1 |
+| | `grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py` = 0 | **10 → 10** (всего 22 → 22) | `dialogue_node` 6, `supervisor_node` 2, `dialogue_state_machine` 2 | 15p, 15r2, 15r1 |
+| #3705 PR-11 | `grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py` = 0 | **59 → 61** (всего 144 → 150) | v1-хвосты 14: `speak_helpers.py:34,74,154,215`; `discard_last_reply` — `agent_core.py` 6, `dialogue_node.py:3225,3233,3241`, `turn_speech.py:13`. `voice_memory.db` 47 (было 45) — отдельная карточка #4082 (D7) | 15q, 15p, 15m4, 15r3 (Q4) |
+| #3706 PR-12a | `grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py` вне тестов = 0 | **51 → 51** | `stt_admission` 19 (15m3), `dialogue_node` 18 (15p), `speak_helpers` 4 (15q), `turn_identity` 3 (15m4), `tier1_host` 1 (15m1), `speech_compat` 1 (15q), `telegram_node` 2 (`:225` комм., `:562` ветка v1 → 15s), `utterance.py:180` (комм.), **`rob_box_dialog/address.py:187,194` — живой v2 пишет `[TG:<id>]` в лог `🎤 STT`** (по этой строке координатор узнаёт сет Шифу) | критерий надо сузить: исключить формат лога v2 — решение координатора |
+| | `grep -rn '"/voice/dialogue/response"\|"/voice/sound/stop"' src/rob_box_telegram` = 0 | 2 вне тестов | `telegram_node.py:132` (ветка v1 → 15s); `:279` — писатель `/voice/sound/stop` работает и при v2 (не v1-хвост; замена — команда владельцу, вне удаления v1) | 15s; `:279` — отдельно |
+| #3711 | `Bug [A-F]` (Q5), `#NNNN`, `RULE #` | 26 (8) → 26 (8); 158 → 369 строк; 8 + 7 → 8 + 7 | `dialogue_node` 4, `turn_speech` 1, `session_epoch` 1 (уходят с v1); `media_command_grammar` 1, `dialogue_guards` 1 (15v) | 15p, 15m4, 15m5, 15v, 15u |
+| #3708 PR-13b | влит `58187f868` — не хвост PR-15 | — | — | — |
 
 ## 9. Сводка
 
-- **Удаляется целиком или сокращается (измерено):** файлы v1 — 8 344 строки (`dialogue_node.py` 4 700 + 21 модуль 3 389 +
-  `conversation_history.py` 255) в частях 15a–15p; `speech_compat.py` 74 + сокращение `speak_helpers.py` на 497 (15q);
-  `dialogue_state_machine.py` 469 + сокращение `dialogue_helpers.py` на 123 (15r) = **9 507 строк** с точностью до
-  `__init__`-блоков. Не измерено (оценка): путь v1 ТАРС 190–250, флаг `dialog_engine` и `dialogue_guards` 280–350,
-  String-топики в `tts_node` 150–250, комментарии `#NNNN` 140, промпты 80–150, CONTEXT.md и baseline 200–400,
-  конфиги `dialogue_node.yaml` 282.
-- **Тесты, уходящие вместе с v1:** 72 файла, 16 136 строк (AST-импорт v1-модулей, без DSM-тестов, которые пересекаются);
-  35 файлов (12 315 строк) используют `DialogueStateMachine`; 12 «смешанных» тестов переписываются, 49 из 77 `test_issue_*` в
-  `rob_box_voice/test` остаются и переписываются на поведение.
-- **Частей:** удаления **16** (15a–15p, по `dialogue_node.py` и модулям) + **7** (15q, 15r1, 15r2, 15s, 15t, 15u, 15v) + 15w
-  (тесты/CONTEXT/baseline) = **24**; перед ними **6** подготовительных (15-0a…15-0f). В порог 600 не укладываются
-  без оговорок: 15p (до 737 + конфиги, оценка уменьшится при вынимании `__init__` по частям) и 15r (780 → разделена на 15r1/15r2).
-- **Какие образы пересобирать:** voice-assistant — все части 15a–15u; **supervisor** — 15-0a, 15-0c, 15r, 15s; **quest** —
-  15-0a, 15-0c; **telegram-bot** — 15-0e, 15s; **led-matrix (Vision Pi)** — 15-0b; **teleop (Main Pi)** — 15-0d;
-  **perception** — 15-0e (если решено по D4). Пересборка Main Pi — единственная в 15-0d.
-- **Что нужно решить до старта:** D1–D6 (раздел 7).
+- **Удаляется целиком (измерено `wc -l`)**: множество v1 7 687 (`dialogue_node.py` 4 700 + 19 модулей 2 987),
+  `conversation_history` 255, D6 666 (`llm_config` 256 + `voice_memory_init` 113 + `github_summary` 297), гард skip-reasons
+  118 (`dialogue_skip_reasons.py` 36 + `skip_reason_checker` 35 + `llm_skip_reasons` 47), `dialogue_node.yaml` ×2 282,
+  `speech_compat` 74, DSM 469, путь v1 ТАРС 191 (AST) = **9 742**; плюс REPL `scripts/dialogue/` 1 197 (15r0) = 10 939.
+- **Сокращается (верхняя граница по AST)**: `speak_helpers` до −497, `dialogue_helpers` до −123, `turn_context` ≈ −40.
+- **По решениям Q3/Q4**: `faq_loader` + `speech_formatter` 413; `AgentCore` и сироты ≈ 2 860.
+- **Не измерено (оценка)**: перевод читателей 15-0a′…15-0d 270–500; launch/ownership/baselines в 15p 20–60; адаптеры 15p2
+  80–150; флаг 15s 350–450; String-топики в `tts_node` 150–250; `#NNNN` ≈350 строк комментариев; промпты 80–150; CONTEXT.md
+  и baselines 200–400.
+- **Сравнение с 23.10 в том же объёме** (множество + `conversation_history` + `speech_compat` + `speak_helpers` + DSM +
+  `dialogue_helpers` + часть `turn_context`): 9 507 → **9 145** (−362 = −261 перенос #3916 в `rob_box_dialog` + 6 `tier1_host`
+  − 79 `greeting_window` больше не удаляется − 28 `turn_context` удаляется лишь частично). Удалено за эти дни — 0 строк v1.
+- **Тесты**: импортируют множество (+D6, гард) 73 файла, 16 209 строк; DSM — 35 файлов, 12 231 строка (15 общих);
+  смешанных (v1 + v2) — 12, их переписывают, а не удаляют; ноды `dialogue_node` — 47 файлов, 10 685 строк.
+- **Образы**: voice-assistant — почти все части; **supervisor** — 15-0a′, 15-0c, 15p2, 15r2, 15r1, 15s; **quest** — 15-0a′,
+  15-0c, 15p2; **telegram-bot** — 15s; **perception** — 15p2, 15s; **led-matrix (Vision Pi)** — 15-0b; **teleop (Main Pi)** —
+  15-0d (единственная пересборка Main Pi).
+- **До старта этапа 1 решать нечего** (D1–D8 приняты); **до этапа 2** — Q1, Q2, Q4; Q3, Q5, Q6 — по ходу.
 
-## Приложение. Команды и вывод
+## 10. Рантайм-аудит 27.10 (`L: Architecture Audit`, run 40499068353, develop `d076b8b55`)
 
-Среда: worktree на `origin/develop @ 8178e2809`, Windows. Скрипты разбора (AST-граф, срезы по методам) — одноразовые, в репозиторий
-не добавлены; ниже — их результат и эквивалентные команды.
+Источник: лог шага «Runtime findings» и артефакт `architecture-local-runtime` (`runtime-findings.json`). Сводка:
+`{"dead_input": 30, "dead_output": 80, "duplicate_publishers": 2, "findings": 126, "multiple_writers": 14, "new": 20,
+"resolved_since_baseline": 20}`; граф: `"unplaced_nodes": ["dialog_node"]`. Выборка по диалогу — приложение В.
 
-1. Существование файлов из карточки: `git ls-files | grep -E "(^|/)(turn[a-z_]*|dialogue_[a-z_]*|speak_helpers|speech_compat|conversation_history|stt_admission[a-z_]*|dialogue_state_machine)\.py$"` →
-   `src/rob_box_dialog/rob_box_dialog/turn.py`, `turn_log.py`, `src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py`,
-   `src/rob_box_voice/rob_box_voice/core/{conversation_history,dialogue_guards,dialogue_helpers,dialogue_stage_mixin,dialogue_text,speak_helpers,speech_compat,stt_admission,stt_admission_host,turn_context,turn_identity,turn_reflexes,turn_speech,turn_stages,turn_tools}.py`,
-   `src/rob_box_voice/rob_box_voice/dialogue_node.py`, `scripts/dialog/turn_metrics.py`, `scripts/lint/dialogue_skip_reasons.py`.
-   `core/turn.py` и `turn_speech_gate.py` в списке отсутствуют.
-
-2. Размеры: `wc -l` — `dialogue_node.py` 4700, `dialog_node.py` 444, `core/dialog_v2_ports.py` 225, `stt_admission.py` 840,
-   `speak_helpers.py` 594, `dialogue_state_machine.py` 469, `supervisor_node.py` 3057, `telegram_node.py` 688.
-   Остальные — в таблице раздела 3 (значения получены тем же `wc -l`).
-
-3. Методы `DialogueNode` по AST (начало, конец, строк): `__init__` 407–890 (484), `_declare_params` 891–1067 (177), `_run_turn` 3005–3176 (172),
-   `_handle_result` 3660–3968 (309) и т. д.; всего 112 методов, 4267 строк класса; вне методов — 550 строк.
-   Разрезка по частям: `15a 551 / 15b 523 / 15c 565 / 15d 547 / 15e 597 / 15f 565 / 15g 499 / 15h 515 / 15i 399 / 15j 474 / 15k 465 / 15l 327 / 15m 544 / 15n 509 / 15o 527`,
-   остаток `__init__` + шапка 737; сумма 15a–15o = 7 607, плюс 737 = 8 344.
-
-4. Замкнутое v1-множество (AST): 22 файла, 8 089 строк (с `dialogue_node.py`); файлы: `dialogue_stage_mixin`, `greeting_window`, `identity_dedup`,
-   `library_command`, `media_plan_run`, `meeting`, `session_epoch`, `stop_chooser`, `stt_admission`, `stt_admission_host`, `tars_status_feed`,
-   `tier1_host`, `tools_view_host`, `turn_context`, `turn_identity`, `turn_reflexes`, `turn_speech`, `turn_stages`, `turn_tools`, `speaker_profiles`,
-   `startup_greeting`, `dialogue_node` (+ `harness/identity/base.py`, который AST ошибочно включил через `from rob_box_harness.identity.base import FaceSignal`;
-   он общий — его читают `identity/__init__` и через него `encounter`, `mcp_server`, `identity_seam` — в карту не входит).
-
-5. Читатели и критерии карточек (вне тестов):
-   - `grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py` → `dialogue_state_machine.py` 2, `supervisor_node.py` 2, `dialogue_node.py` 6;
-   - `grep -rn "DialogueStateMachine\|dialogue_state_machine\|_pause_reason\|check_silence_timeout" src --include=*.py` → 34 строки (`harness/core/__init__` 3, `agent_core` 4, `assembly` 2, `dialogue_state_machine` 8, `quest/streams/voice_state` 1, `supervisor_node` 5, `meeting` 1, `stt_admission_host` 1, `tier1_host` 1, `dialogue_node` 8);
-   - `grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py` → 51;
-   - `grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py` → 59;
-   - `grep -c "RULE #" src/rob_box_voice/prompts/*.txt` → `master_prompt_compact.txt` 8, `telegram_chat_prompt.txt` 7;
-   - `grep -rc "#[0-9]\{4\}" src/rob_box_dialog/rob_box_dialog` (сумма) → 158;
-   - `grep -rn "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py` → 26 (8 вне тестов).
-
-6. Топики, читатели вне тестов (`grep -rFn "<топик>" src docker scripts …`): `/voice/dialogue/state` — 12 файлов (3+3+3+2+2+1+1+1+1+1+1+1 по `led_node`, `aggregator`, `quest_node`, `arbiter_node`, `create_avatar_issues.sh`, `dialogue_node`, `command_node`, `core/__init__`, `mock_robot.ts`, `voice_state.py`, `agent_core`, `bridge_protocol`);
-   `/voice/tts/state` — 7 файлов-читателей и писатель `tts_node`; `/voice/tts/finished` — 15 файлов вместе с писателем; `/voice/dialogue/response` — 12 файлов; `/voice/tts/request` — писатели `joystick_control_node.py`, `scene_set/conductor.py`.
-
-7. Команда запуска гардов на этом дереве: `python scripts/lint/class_budget.py` → `DialogueNode WMC=525 methods=112`, `class_budget: OK`;
-   `python scripts/lint/ownership_check.py` → `OK - 25 топиков диалога в коде имеют владельца, 27 записей в ownership.yml`.
-
-8. 12 смешанных тестов (импортируют и v1-модули, и `rob_box_dialog`/`dialog_node`): `test/identity_v17_legacy.py`,
-   `unit/core/test_adr0149_pr6_media_router_v2.py`, `test_command_bridge.py`, `test_greeting_window.py`, `test_identity_dedup.py`,
-   `test_stop_chooser.py`, `test_stt_admission.py`, `test_tools_view_host.py`, `unit/node/test_address_backlog.py`,
-   `test_issue_2828_identity_question_collision.py`, `test_issue_3801_one_voice_one_person.py`, `test_speaker_turn_v17.py` (все в `src/rob_box_voice/test/`).
+- **`dead_input` (новые)**: `/voice/dialogue/state` (`/avatar_arbiter`, `/led_node`, `/quest_node`) и `/voice/dialogue/response`
+  (`/context_aggregator`) — это TEMP-адаптеры v1 из #3917, подтверждают 15-0a/15-0e, уходят в 15p2; `/voice/tts/control`
+  (`/tts_node`) — 15q; `/voice/speaker/{merge,observe,epithet}` (`/speaker_id_node`) — Q6.
+- **`dead_output` (новые) по диалогу**: `/voice/stt/speaker` (`/stt_node`, читатель был только у v1) — 15t;
+  `/voice/speaker/epithet_request` — Q6. Вне PR-15, к сведению: `/voice/expression/event` (писатели face/led/sound, у v2 нет
+  подписчика), `/mcp/tools`, `/voice/sound/state`, `/perception/observations`.
+- **`multiple_writers` (новые, 6)**: `/voice/speech/request` (`avatar_supervisor`, `dialog_node`, `mcp_server`, `stt_node`,
+  `telegram_node`), `/voice/stt/utterance` (`stt_node`, `telegram_node`), `/voice/providers/state` (`dialog_node`, `mcp_server`,
+  `stt_node`, `tts_node`), `/voice/tts/voice_request` (`dialog_node`, `mcp_server`; **в `ownership.yml` не объявлен**),
+  `/voice/expression/event` (`face_node`, `led_node`, `sound_node`), `/perception/observations` (`vision_face`, `vision_hailo`).
+  В `ownership.yml` четыре из них уже описаны со списком писателей и пометкой «by-design» (`writers_allowed`,
+  `:130–138`, `:216–268`), `/voice/tts/voice_request` и `/perception/observations` там нет; аудит `ownership.yml` не читает. Предложение — Q2.
+- **`resolved_since_baseline`** среди прочих: `multiple_writers` `/voice/tts/request`, `/voice/tts/control`,
+  `/voice/dialogue/response`, `dead_output /dialogue/control_ack` — их записи в `runtime-baseline.json` можно снимать (15t).
+- **`duplicate_publishers /mcp/execute` ×2 в `/dialog_node`** — находка. По коду это не «старый провайдер тулов»: `dialog_node`
+  создаёт два `LLMToolCallAdapter` — Личности (`build_tools`, `dialog_node.py:213`) и чата Telegram (`build_chat_tools`, `:222`),
+  каждый заводит свой издатель (`llm_adapter.py:151`). Разбор — карточка [#4081](https://github.com/krikz/rob_box_project/issues/4081).
+- **`unplaced_nodes: ["dialog_node"]`**: ноду создаёт `rob_box_core/dialog_engine.py:71` словарём (`"name": "dialog_node"`), а
+  `tools/architecture_runtime_graph.py:260` ищет в launch-файлах только `name='…'`. Уходит в 15s, когда `dialog_node`
+  станет обычным `Node(...)` в launch ×2.
 
 ## Что не проверено
 
-- Ничего не запускалось на роботе и в CI; ни одна часть не реализована, размеры частей — расчёт по строкам файлов и диапазонам методов AST, а не по
-  готовым дифам. Фактический дифф частей будет отличаться (удаление импортов, правка `__init__`, тесты).
-- Не доказано, что методы внутри одной части не вызываются из соседней (перекрёстные вызовы `self._…`) — это проверяется
-  `pyflakes`/тестами при реализации; v1 при v2 не стартует, но тесты ноды до удаления гоняют методы.
-- Не проверялось, что `tts_node.dialogue_callback` (252 строки; «ЕДИНЫЙ вход синтезатора») не используется путём `SpeechRequest`. Поэтому он **не включён** в 15q;
-  его удаление — отдельная проверка.
-- Не сверялось семантическое соответствие замен v2 (рефлексы, `stop_verdict`, окно ответа 15 с, `user_profile_lines`) — столбец «чем заменён»
-  — по имени и назначению модуля, не по сравнению поведения.
-- Оценки правок читателей (раздел 5), путей ТАРС/флага/топиков и промптов — не измерены, помечены «оценка».
-- Не запускались `markdownlint` (в репозитории не настроен) и полный `pytest -v`.
+- На роботе ничего не запускалось; из CI — только проверки самого PR #4080 (run_id — в описании PR, не в карте). Ни одна
+  часть не реализована. Размеры частей — `wc -l` файлов и диапазоны AST, а не готовые дифы; правки `__init__`, импортов и
+  тестов дадут другой дифф.
+- Граф видит только Python. Импорты из TypeScript (`webxr_client`), shell и YAML ищутся grep'ом по именам и могут быть
+  неполными; тесты, ссылающиеся на ноду строкой, посчитаны отдельно (54 по grep против 47 по AST).
+- Перекрёстные вызовы методов `DialogueNode` друг друга (`self._…`) и атрибуты из `__init__` скрипт не отслеживает: для
+  стратегии L это главный риск, для R — нет (корень удаляется целиком).
+- Не доказано, что JSON-вход `tts_node.dialogue_callback` не нужен пути `SpeechRequest` — поэтому он в 15t помечен «не
+  проверено».
+- Семантическое соответствие замен v2 (рефлексы, `stop_verdict`, окно ответа 15 с, `user_profile_lines`, встреча лицом #3916)
+  не сверялось поведением — столбец «чем заменён» по назначению модуля. Живой проверки #3916 нет ни у кого.
+- Оценки 15-0a′…15-0d, 15p2, 15s, 15t, 15u, 15v, 15w не измерены. Размер 15r3 — без помощников v1 внутри `agent_core.py`.
+- Список «смешанных» тестов — по AST-импорту (v1-множество + `rob_box_dialog.*`/`dialog_node`/`dialog_v2_*`); тесты,
+  подменяющие модули строкой (`sys.modules`, `patch("…")`), в счёт не попали.
+- Число рёбер графа 23.10 (3 962) не воспроизводится — старый скрипт не сохранён; сравнивать только числа `pr15_map_facts.py`.
+- `markdownlint` не запускался (в репозитории не настроен); `flake8` по `pr15_map_facts.py` — чисто (приложение А.0).
+- Предложение Q2 (критерий `multiple_writers`) — схема, не код; не проверено, что `ownership_check.py` примет новое поле без
+  правки.
+
+## Приложение А. `python docs/dialog/pr15_map_facts.py --ref origin/develop --old 8178e2809`
+
+### А.0. Сверка метрики и линт скрипта
+
+```text
+$ git show 8178e2809:src/rob_box_voice/rob_box_voice/dialogue_node.py | wc -l
+4700
+$ git show origin/develop:src/rob_box_voice/rob_box_voice/dialogue_node.py | wc -l
+4700
+$ git show 8178e2809:src/rob_box_voice/rob_box_voice/core/stt_admission.py | wc -l
+840
+$ git show origin/develop:src/rob_box_voice/rob_box_voice/core/stt_admission.py | wc -l
+840
+$ git show 8178e2809:src/rob_box_voice/rob_box_voice/core/meeting.py | wc -l
+213
+$ git show origin/develop:src/rob_box_voice/rob_box_voice/core/meeting.py | wc -l
+53
+$ git rev-parse 8178e2809:src/rob_box_voice/rob_box_voice/dialogue_node.py origin/develop:src/rob_box_voice/rob_box_voice/dialogue_node.py
+4aa550f038cb732dc6b0c2fca8c599b95346baad
+4aa550f038cb732dc6b0c2fca8c599b95346baad
+(те же числа в выводе скрипта ниже — он считает b"\n" в blob)
+
+$ python -m flake8 --max-line-length=120 --extend-ignore=E203,W503,E501 docs/dialog/pr15_map_facts.py; echo flake8=$?
+flake8=0
+```
+
+### А.1. Вывод скрипта
+
+```text
+## ref origin/develop = d076b8b55; old 8178e2809 = 8178e2809
+py-файлов: всего 1798, в src 1375; рёбер (файл→файл) всего 4429, из src 4033
+
+### Замкнутое v1-множество от dialogue_node.py: 20 файлов, 7687 строк (wc -l)
+     81  core/dialogue_stage_mixin.py                  читатели 1: dialogue_node.py | тестов 1 (836 строк)
+     83  core/identity_dedup.py                        читатели 1: dialogue_node.py | тестов 1 (234 строк)
+     63  core/library_command.py                       читатели 1: core/media_plan_run.py | тестов 1 (236 строк)
+    128  core/media_plan_run.py                        читатели 1: dialogue_node.py | тестов 8 (1309 строк)
+     53  core/meeting.py                               читатели 1: dialogue_node.py | тестов 2 (208 строк)
+     62  core/session_epoch.py                         читатели 1: dialogue_node.py | тестов 2 (197 строк)
+     85  core/stop_chooser.py                          читатели 2: core/tier1_host.py, dialogue_node.py | тестов 1 (112 строк)
+    840  core/stt_admission.py                         читатели 4: core/dialogue_stage_mixin.py, core/stt_admission_host.py, core/tier1_host.py, dialogue_node.py | тестов 6 (2156 строк)
+    261  core/stt_admission_host.py                    читатели 1: dialogue_node.py | тестов 0 (0 строк)
+     41  core/tars_status_feed.py                      читатели 1: dialogue_node.py | тестов 1 (37 строк)
+    236  core/tier1_host.py                            читатели 3: core/stt_admission_host.py, core/tools_view_host.py, dialogue_node.py | тестов 2 (432 строк)
+     34  core/tools_view_host.py                       читатели 1: dialogue_node.py | тестов 1 (74 строк)
+    146  core/turn_identity.py                         читатели 1: dialogue_node.py | тестов 2 (359 строк)
+    130  core/turn_reflexes.py                         читатели 2: core/turn_stages.py, core/turn_tools.py | тестов 0 (0 строк)
+    163  core/turn_speech.py                           читатели 1: dialogue_node.py | тестов 1 (94 строк)
+    275  core/turn_stages.py                           читатели 2: core/dialogue_stage_mixin.py, dialogue_node.py | тестов 2 (1026 строк)
+    111  core/turn_tools.py                            читатели 2: core/dialogue_stage_mixin.py, core/turn_stages.py | тестов 0 (0 строк)
+   4700  dialogue_node.py                              читатели 1: core/stt_admission_host.py | тестов 47 (10685 строк)
+    181  speaker_profiles.py                           читатели 1: dialogue_node.py | тестов 2 (439 строк)
+     14  startup_greeting.py                           читатели 1: dialogue_node.py | тестов 2 (407 строк)
+
+### Сироты после удаления множества + D6 + гарда skip-reasons: 1
+     47  core/llm_skip_reasons.py
+
+### Модули карты вне множества: размер, читатели (не-тест), тесты
+    255  core/conversation_history.py                  в множестве=нет; читатели 0:  | реэкспорт: core/__init__.py | тестов 1 (250 строк)
+     74  core/speech_compat.py                         в множестве=нет; читатели 2: core/speech_owner.py, tts_node.py | тестов 2 (653 строк)
+    594  core/speak_helpers.py                         в множестве=нет; читатели 3: dialogue_node.py, scripts/dialogue/chat.py, tts_node.py | тестов 11 (1627 строк)
+    169  core/dialogue_guards.py                       в множестве=нет; читатели 5: core/stt_admission_host.py, core/track_start_guard.py, core/turn_speech.py, dialogue_node.py, tts_node.py | тестов 3 (325 строк)
+    142  core/dialogue_helpers.py                      в множестве=нет; читатели 2: core/speaker_turn.py, dialogue_node.py | тестов 1 (176 строк)
+     48  core/dialogue_text.py                         в множестве=нет; читатели 4: dialogue_node.py, scripts/dialogue/chat.py, scripts/music/live_dj/router_offline.py, stt_node.py | тестов 9 (1950 строк)
+     79  core/greeting_window.py                       в множестве=нет; читатели 5: core/dialog_v2_parity.py, core/dialogue_stage_mixin.py, core/meeting.py, core/stt_admission_host.py, dialog_node.py | тестов 1 (154 строк)
+     79  core/turn_context.py                          в множестве=нет; читатели 3: core/plan_host.py, core/tier1_host.py, dialogue_node.py | тестов 0 (0 строк)
+     47  core/llm_skip_reasons.py                      в множестве=нет; читатели 3: core/dialogue_stage_mixin.py, core/skip_reason_checker.py, dialogue_node.py | тестов 11 (1998 строк)
+     35  core/skip_reason_checker.py                   в множестве=нет; читатели 1: scripts/lint/dialogue_skip_reasons.py | тестов 1 (54 строк)
+    256  core/llm_config.py                            в множестве=нет; читатели 0:  | тестов 1 (265 строк)
+    113  core/voice_memory_init.py                     в множестве=нет; читатели 0:  | тестов 1 (156 строк)
+    297  utils/github_summary.py                       в множестве=нет; читатели 0:  | тестов 0 (0 строк)
+    531  dialog_node.py                                в множестве=нет; читатели 0:  | тестов 2 (1019 строк)
+    298  core/dialog_v2_ports.py                       в множестве=нет; читатели 4: dialog_node.py, rob_box_supervisor/rob_box_supervisor/operator_turns.py, scripts/dialog/dry_marathon.py, scripts/dialog/dry_stand.py | тестов 4 (1389 строк)
+    171  core/dialog_v2_parity.py                      в множестве=нет; читатели 2: core/tars_status_feed.py, dialog_node.py | тестов 1 (203 строк)
+    193  core/plan_host.py                             в множестве=нет; читатели 3: core/dialogue_stage_mixin.py, dialog_node.py, dialogue_node.py | тестов 3 (723 строк)
+    469  rob_box_harness/rob_box_harness/core/dialogue_state_machine.py в множестве=нет; читатели 8: core/meeting.py, core/stt_admission_host.py, core/tier1_host.py, dialogue_node.py, rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/assembly.py, rob_box_supervisor/rob_box_supervisor/supervisor_node.py, scripts/dialogue/chat.py | реэкспорт: rob_box_harness/rob_box_harness/core/__init__.py | тестов 35 (12231 строк)
+
+### Мёртвые модули rob_box_voice (нет не-тестовых читателей ни в src, ни вне; не точка входа)
+    255  core/conversation_history.py  (тестов 1; реэкспорт core/__init__.py)
+    151  core/faq_loader.py  (тестов 1; реэкспорт core/__init__.py)
+    256  core/llm_config.py  (тестов 1)
+    262  core/speech_formatter.py  (тестов 1; реэкспорт core/__init__.py)
+    113  core/voice_memory_init.py  (тестов 1)
+    297  utils/github_summary.py  (тестов 0)
+
+### Тесты, импортирующие v1-множество (+D6, гард): 73 файлов, 16209 строк; из них смешанных (импортируют и v2: rob_box_dialog., rob_box_voice.dialog_node, rob_box_voice.core.dialog_v2_): 12
+     37  src/rob_box_voice/test/identity_v17_legacy.py
+    229  src/rob_box_voice/test/unit/core/test_adr0149_pr6_media_router_v2.py
+    836  src/rob_box_voice/test/unit/core/test_command_bridge.py
+    154  src/rob_box_voice/test/unit/core/test_greeting_window.py
+    234  src/rob_box_voice/test/unit/core/test_identity_dedup.py
+    112  src/rob_box_voice/test/unit/core/test_stop_chooser.py
+    917  src/rob_box_voice/test/unit/core/test_stt_admission.py
+     74  src/rob_box_voice/test/unit/core/test_tools_view_host.py
+    243  src/rob_box_voice/test/unit/node/test_address_backlog.py
+    265  src/rob_box_voice/test/unit/node/test_issue_2828_identity_question_collision.py
+    247  src/rob_box_voice/test/unit/node/test_issue_3801_one_voice_one_person.py
+    268  src/rob_box_voice/test/unit/node/test_speaker_turn_v17.py
+Тесты DSM (AST, вкл. реэкспорт через rob_box_harness.core): 35 файлов, 12231 строк; пересечение с тестами множества: 15
+Читатели DSM (не-тест): core/meeting.py, core/stt_admission_host.py, core/tier1_host.py, dialogue_node.py, rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/assembly.py, rob_box_supervisor/rob_box_supervisor/supervisor_node.py, scripts/dialogue/chat.py | реэкспорт: rob_box_harness/rob_box_harness/core/__init__.py
+test_issue_*: всего 141; rob_box_voice/test 83 (из них импортируют v1-множество 28, v1 или DSM 30); другие пакеты src 34; tests/ 24
+
+### Размеры wc -l: 8178e2809 → d076b8b55 (blob равен = файл не менялся)
+    255 →   255  =     core/conversation_history.py
+      - →   171  изм.  core/dialog_v2_parity.py
+    225 →   298  изм.  core/dialog_v2_ports.py
+    169 →   169  =     core/dialogue_guards.py
+    142 →   142  =     core/dialogue_helpers.py
+     81 →    81  =     core/dialogue_stage_mixin.py
+     48 →    48  =     core/dialogue_text.py
+     79 →    79  =     core/greeting_window.py
+     83 →    83  =     core/identity_dedup.py
+     63 →    63  =     core/library_command.py
+    256 →   256  =     core/llm_config.py
+     47 →    47  =     core/llm_skip_reasons.py
+    128 →   128  =     core/media_plan_run.py
+    213 →    53  изм.  core/meeting.py
+    161 →   193  изм.  core/plan_host.py
+     62 →    62  =     core/session_epoch.py
+     35 →    35  =     core/skip_reason_checker.py
+    594 →   594  =     core/speak_helpers.py
+     74 →    74  =     core/speech_compat.py
+     85 →    85  =     core/stop_chooser.py
+    840 →   840  =     core/stt_admission.py
+    261 →   261  =     core/stt_admission_host.py
+    115 →    41  изм.  core/tars_status_feed.py
+    230 →   236  изм.  core/tier1_host.py
+     34 →    34  =     core/tools_view_host.py
+     68 →    79  изм.  core/turn_context.py
+    146 →   146  =     core/turn_identity.py
+    130 →   130  =     core/turn_reflexes.py
+    163 →   163  =     core/turn_speech.py
+    275 →   275  =     core/turn_stages.py
+    111 →   111  изм.  core/turn_tools.py
+    113 →   113  =     core/voice_memory_init.py
+    444 →   531  изм.  dialog_node.py
+   4700 →  4700  =     dialogue_node.py
+    469 →   469  =     rob_box_harness/rob_box_harness/core/dialogue_state_machine.py
+    181 →   181  =     speaker_profiles.py
+     41 →    14  изм.  startup_greeting.py
+    297 →   297  =     utils/github_summary.py
+Граф на 8178e2809 той же методикой: py-файлов 1712, в src 1333; рёбер 4059, из src 3721
+Множество на 8178e2809: 22 файлов, 8089 строк; ушли: core/greeting_window.py, core/turn_context.py; пришли: —
+
+### dialogue_node.py по AST: 112 методов DialogueNode, 4047 строк в методах; класс 396–4662; функций модуля 4; файл 4700 строк
+  15b:   6 методов/функций,  154 строк
+  15c:   4 методов/функций,  148 строк
+  15d:  14 методов/функций,  207 строк
+  15f:  14 методов/функций,  482 строк
+  15g:  11 методов/функций,  318 строк
+  15h:  10 методов/функций,  206 строк
+  15i:  11 методов/функций,  208 строк
+  15j:  18 методов/функций,  412 строк
+  15k:   4 методов/функций,  465 строк
+  15l:   4 методов/функций,  327 строк
+  15n:  15 методов/функций,  509 строк
+  15o:   4 методов/функций,  230 строк
+  15p:   1 методов/функций,  484 строк
+  не распределены по частям (0): 
+  вне методов и функций: 550 строк
+
+### Где dialogue_node.py использует имена из модулей v1 (часть: методы); импорт в шапке не считается
+  core/dialogue_stage_mixin.py ← шапка: <модуль>
+  core/identity_dedup.py ← 15p: __init__
+  core/library_command.py ← только импорт / не используется в dialogue_node
+  core/media_plan_run.py ← 15i: _execute_media_plan, _execute_play_named
+  core/meeting.py ← 15b: _on_vision_event; 15o: _declare_params
+  core/session_epoch.py ← 15j: _session_epoch_gate; 15l: _run_turn; 15p: __init__
+  core/stop_chooser.py ← 15p: __init__
+  core/stt_admission.py ← 15c: _finish_stt_admission, _on_stt, _resume_stt_after_media; 15p: __init__
+  core/stt_admission_host.py ← 15c: _on_stt
+  core/tars_status_feed.py ← 15p: __init__
+  core/tier1_host.py ← 15j: _stop_music_by_owner
+  core/tools_view_host.py ← 15k: _invoke_llm_with_telemetry
+  core/turn_identity.py ← 15l: _build_dynamic_system_context
+  core/turn_reflexes.py ← только импорт / не используется в dialogue_node
+  core/turn_speech.py ← 15h: _publish_turn_text, _release_turn_speech; 15k: _handle_result; 15l: _run_turn
+  core/turn_stages.py ← 15p: __init__
+  core/turn_tools.py ← только импорт / не используется в dialogue_node
+  speaker_profiles.py ← 15l: _handle_speaker_turn; 15p: __init__
+  startup_greeting.py ← 15b: _on_startup_greeting_speak
+  core/greeting_window.py ← только импорт / не используется в dialogue_node
+  core/turn_context.py ← 15l: _build_dynamic_system_context
+  core/speak_helpers.py ← 15h: _publish_response, _publish_response_batch, _publish_turn_text, _speak_direct; 15k: _handle_result; 15p: __init__
+  core/dialogue_guards.py ← 15k: _handle_result
+  core/dialogue_helpers.py ← 15d: _detect_pitch_intent, _generate_fallback_response, _map_emotion_to_animation; 15f: _apply_speaker_identity, _current_acquaintance; 15g: _tentative_identity_parts; 15h: fn:_clean_name; 15j: _maybe_log_skip_summary; 15l: _build_dynamic_system_context; 15n: _confident_speaker_name; шапка: <модуль>
+  core/llm_skip_reasons.py ← 15p: __init__; шапка: <модуль>
+  rob_box_harness/rob_box_harness/core/dialogue_state_machine.py ← 15b: _on_startup_greeting; 15c: _on_stt; 15d: _handle_silence; 15j: _apply_operator_pause, _apply_operator_resume, _finalize_turn_dsm, _publish_control_ack, _reset_dialogue_session; 15k: _invoke_llm_with_telemetry; 15p: __init__
+
+### Цикл хода v1 в rob_box_harness: что осиротеет, если удалить ещё scripts/dialogue/{chat,local_tools}.py, agent_core.py (класс AgentCore) и DSM
+    620  rob_box_harness/rob_box_harness/core/acceptance.py ← rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/tool_loop/confirmation.py; тестов 2
+     70  rob_box_harness/rob_box_harness/core/tool_loop/confirmation.py ← rob_box_harness/rob_box_harness/core/agent_core.py; тестов 1
+    102  rob_box_harness/rob_box_harness/core/tool_loop/outcomes.py ← rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/tool_loop/output_format.py; тестов 1
+    117  rob_box_harness/rob_box_harness/core/tool_loop/output_format.py ← rob_box_harness/rob_box_harness/core/agent_core.py; тестов 1
+    171  rob_box_harness/rob_box_harness/core/tool_loop/retry.py ← rob_box_harness/rob_box_harness/core/agent_core.py; тестов 1
+  итого сирот: 5 файлов, 1080 строк
+   2349  core/agent_core.py — читатели: core/dialog_v2_ports.py, dialogue_node.py, rob_box_harness/rob_box_harness/core/assembly.py, rob_box_harness/rob_box_harness/core/tool_loop/retry.py, scripts/dialogue/chat.py; тестов 31 (9615 строк)
+    461  core/assembly.py — читатели: core/dialog_v2_ports.py, dialogue_node.py, rob_box_supervisor/rob_box_supervisor/operator_turns.py, rob_box_supervisor/rob_box_supervisor/supervisor_node.py; тестов 1 (501 строк)
+    247  core/tool_loop/command_turn.py — читатели: core/dialog_v2_ports.py, rob_box_harness/rob_box_harness/core/agent_core.py; тестов 1 (346 строк)
+     99  core/tool_loop/text_classify.py — читатели: dialogue_node.py, rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/tool_loop/retry.py, scripts/research/minimax_model_compat_probe.py; тестов 2 (677 строк)
+    620  core/acceptance.py — читатели: rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/core/tool_loop/confirmation.py; тестов 2 (992 строк)
+    465  core/confirmation_policy.py — читатели: rob_box_harness/rob_box_harness/core/acceptance.py, rob_box_harness/rob_box_harness/core/agent_core.py, rob_box_harness/rob_box_harness/decision/acceptance_escalation.py, rob_box_harness/rob_box_harness/decision/evaluation.py, scripts/research/jev_eval.py; тестов 6 (1679 строк)
+  agent_core.py верхний уровень: PromptStats 88–107 (20); _raw_user_utterance 154–179 (26); _executed_actions_block 244–273 (30); _extract_track_name 399–424 (26); _extract_music_call_args 427–452 (26); DialogResult 461–559 (99); AgentCore 586–2154 (1569); _is_hallucinated_speak_text 2197–2242 (46); _suppressed_speak_text_result 2265–2284 (20); _recover_written_tool_calls 2287–2325 (39)
+
+### Определения верхнего уровня (начало–конец, строк)
+  core/stt_admission.py (840): parse_tg_prefix 59–109 (51); parse_speaker_event 112–143 (32); SttContext 151–200 (50); SttOutcomeKind 203–222 (20); SttOutcome 225–244 (20); drop 251–253 (3); handled 256–262 (7); SttAdmissionHost 270–392 (123); SttStep 400–425 (26); SttAdmission 428–536 (109); EmptyTextStep 544–553 (10); RejectedMarkerStep 556–573 (18); SilencedStateStep 576–587 (12); AddressStep 590–619 (30); _recent_phrases 622–628 (7); BareWakeStep 631–641 (11); Tier1Step 644–675 (32); CommandIntentGateStep 678–698 (21); MediaCommandStep 701–717 (17); TakeTurnStep 720–734 (15); DispatchTriggerStep 737–757 (21); default_steps 765–796 (32); DefaultSttAdmission 826–840 (15)
+  core/turn_context.py (79): tts_state 22–35 (14); _tts_context 38–42 (5); _position 45–49 (5); _performance 52–56 (5); context_sections 59–76 (18)
+  core/speak_helpers.py (594): strip_bracket_asides 123–142 (20); strip_history_marker 150–154 (5); strip_thinking_blocks 157–175 (19); strip_meta_markers 178–219 (42); strip_done_marker 222–254 (33); strip_markdown 284–309 (26); split_into_chunks 313–344 (32); provider_speaks 378–396 (19); unsupported_language_notice 399–430 (32); build_ssml_payload 433–492 (60); EffectAwaiterRegistry 495–581 (87)
+  core/dialogue_helpers.py (142): map_emotion_to_animation 43–50 (8); generate_fallback_response 53–76 (24); detect_pitch_intent 79–90 (12); sanitize_speaker_name 93–111 (19); format_llm_skipped_summary 114–142 (29)
+  core/dialogue_guards.py (169): is_system_template_regurgitated_in_ssml 94–111 (18); is_tool_call_markup 161–169 (9)
+```
+
+## Приложение Б. `bash docs/dialog/pr15_map_greps.sh origin/develop 8178e2809`
+
+```text
+REF=origin/develop d076b8b55  OLD=8178e2809 8178e2809
+рабочее дерево = origin/develop по src scripts docker architecture tools tests .github
+
+=== #3704 PR-10b (DSM) ===
+$ ls src/rob_box_voice/rob_box_voice/core/dialogue_state_machine.py   # путь из карточки
+ls: cannot access 'src/rob_box_voice/rob_box_voice/core/dialogue_state_machine.py': No such file or directory
+$ ls src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py   # фактический путь
+src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py
+$ grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py
+  всего 22, вне тестов 10
+      6 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      2 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+      2 src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py
+  на 8178e2809: всего 22, вне тестов 10
+
+=== #3705 PR-11 (маркеры памяти) ===
+$ grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py
+  всего 150, вне тестов 61
+  _HISTORY_MARKER_RE: вне тестов 2
+  _SPEAKER_TAG_RE: вне тестов 0
+  _META_PREFIX_RE: вне тестов 2
+  discard_last_reply: вне тестов 10
+  voice_memory.db: вне тестов 47
+  _HISTORY_MARKER_RE / _META_PREFIX_RE / discard_last_reply вне тестов:
+src/rob_box_harness/rob_box_harness/core/agent_core.py:255
+src/rob_box_harness/rob_box_harness/core/agent_core.py:318
+src/rob_box_harness/rob_box_harness/core/agent_core.py:699
+src/rob_box_harness/rob_box_harness/core/agent_core.py:1107
+src/rob_box_harness/rob_box_harness/core/agent_core.py:1195
+src/rob_box_harness/rob_box_harness/core/agent_core.py:2104
+src/rob_box_voice/rob_box_voice/core/speak_helpers.py:34
+src/rob_box_voice/rob_box_voice/core/speak_helpers.py:74
+src/rob_box_voice/rob_box_voice/core/speak_helpers.py:154
+src/rob_box_voice/rob_box_voice/core/speak_helpers.py:215
+src/rob_box_voice/rob_box_voice/core/turn_speech.py:13
+src/rob_box_voice/rob_box_voice/dialogue_node.py:3225
+src/rob_box_voice/rob_box_voice/dialogue_node.py:3233
+src/rob_box_voice/rob_box_voice/dialogue_node.py:3241
+  voice_memory.db вне тестов по файлам:
+     18 src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py
+      5 src/rob_box_voice/rob_box_voice/speaker_id_node.py
+      4 src/rob_box_voice/rob_box_voice/utils/legacy_voice_facts.py
+      3 src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_adapter.py
+      2 src/rob_box_voice/rob_box_voice/utils/identity_seam.py
+      2 src/rob_box_voice/rob_box_voice/core/voice_memory_init.py
+      2 src/rob_box_voice/rob_box_voice/core/voice_memory.py
+      2 src/rob_box_music/rob_box_music/diversity.py
+      2 src/rob_box_mcp_tools/rob_box_mcp_tools/core/rtttl_library.py
+      2 src/rob_box_harness/rob_box_harness/memory/voice_memory_adapter.py
+      1 src/rob_box_voice/rob_box_voice/dialog_node.py
+      1 src/rob_box_voice/rob_box_voice/core/speaker_memory.py
+      1 src/rob_box_music/rob_box_music/works.py
+      1 src/rob_box_mcp_tools/rob_box_mcp_tools/waypoint_store.py
+      1 src/rob_box_core/rob_box_core/e2e_mode.py
+  на 8178e2809: всего 144, вне тестов 59
+
+=== #3706 PR-12a (Telegram v1) ===
+$ grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py
+  всего 154, вне тестов 51
+     19 src/rob_box_voice/rob_box_voice/core/stt_admission.py
+     18 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      4 src/rob_box_voice/rob_box_voice/core/speak_helpers.py
+      3 src/rob_box_voice/rob_box_voice/core/turn_identity.py
+      2 src/rob_box_telegram/rob_box_telegram/telegram_node.py
+      2 src/rob_box_dialog/rob_box_dialog/address.py
+      1 src/rob_box_voice/rob_box_voice/core/tier1_host.py
+      1 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      1 src/rob_box_core/rob_box_core/utterance.py
+  на 8178e2809: всего 154, вне тестов 51
+$ grep -rn '"/voice/dialogue/response"\|"/voice/sound/stop"' src/rob_box_telegram
+src/rob_box_telegram/rob_box_telegram/telegram_node.py:132:        return node.create_subscription(String, "/voice/dialogue/response", node._on_response, _RE,
+src/rob_box_telegram/rob_box_telegram/telegram_node.py:279:        self._voice_stop_pub = self.create_publisher(String, "/voice/sound/stop", _RE)
+src/rob_box_telegram/test/test_telegram_bridge.py:566:        sub = next(s for s in node._created_subscriptions if s.topic == "/voice/dialogue/response")
+src/rob_box_telegram/test/test_telegram_bridge.py:572:        self.assertNotIn("/voice/dialogue/response", topics)
+src/rob_box_telegram/test/test_telegram_bridge.py:581:        self.assertNotIn("/voice/dialogue/response", [s.topic for s in node._created_subscriptions])
+
+=== #3711 критерии ===
+$ grep -rn "Bug \[A-F\]" src/rob_box_voice src/rob_box_dialog --include=*.py | wc -l   # как в карточке
+  0   <- в BRE «\[» — литерал «[»: команда ищет текст «Bug [A-F]» и всегда даёт 0
+$ grep -rnE "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py   # по смыслу: Bug A … Bug F
+  всего 26, вне тестов 8
+      4 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      1 src/rob_box_voice/rob_box_voice/core/turn_speech.py
+      1 src/rob_box_voice/rob_box_voice/core/session_epoch.py
+      1 src/rob_box_voice/rob_box_voice/core/media_command_grammar.py
+      1 src/rob_box_voice/rob_box_voice/core/dialogue_guards.py
+  на 8178e2809: всего 26, вне тестов 8
+$ grep -rc "#[0-9]\{4\}" src/rob_box_dialog/rob_box_dialog | awk -F: '{s+=$2} END {print s}'
+  строк: 369
+  вхождений (grep -o): 401
+  git grep -c (строки): origin/develop 369, 8178e2809 158
+$ grep -rlE "rob_box_voice\.dialogue_node|from rob_box_voice import dialogue_node|dialogue_node import" src tests --include=*.py   # тесты ноды по строке
+  тестовых файлов: 54 (по AST-импорту — 47, приложение А; разница — patch("…")/sys.modules)
+$ grep -c "RULE #" src/rob_box_voice/prompts/*.txt
+src/rob_box_voice/prompts/master_prompt_compact.txt:8
+src/rob_box_voice/prompts/telegram_chat_prompt.txt:7
+$ grep -c 're.compile' speak_helpers.py dialogue_guards.py
+src/rob_box_voice/rob_box_voice/core/speak_helpers.py:18
+src/rob_box_voice/rob_box_voice/core/dialogue_guards.py:2
+
+=== String-топики v1: файлы вне тестов и docs (src docker scripts architecture tools .github) ===
+--- /voice/dialogue/state: строк 23, файлов 13
+      3 src/rob_box_voice/rob_box_voice/led_node.py
+      3 src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py
+      3 src/rob_box_quest/rob_box_quest/quest_node.py
+      3 src/rob_box_core/rob_box_core/voice_state.py
+      2 src/rob_box_supervisor/rob_box_supervisor/core/aggregator.py
+      2 scripts/agent_flow/create_avatar_issues.sh
+      1 tools/led_face_lab/preview_template.html
+      1 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      1 src/rob_box_supervisor/rob_box_supervisor/core/__init__.py
+      1 src/rob_box_quest/webxr_client/src/dev/mock_robot.ts
+      1 src/rob_box_harness/rob_box_harness/core/agent_core.py
+      1 src/rob_box_dialog_msgs/msg/SessionState.msg
+      1 src/rob_box_core/rob_box_core/bridge_protocol.py
+--- /voice/dialogue/response: строк 46, файлов 26
+      5 src/rob_box_voice/rob_box_voice/tts_node.py
+      4 src/rob_box_voice/docs/PHASE2_IMPLEMENTATION.md
+      4 src/rob_box_telegram/rob_box_telegram/telegram_node.py
+      3 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      3 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      3 src/rob_box_perception/rob_box_perception/context_aggregator_node.py
+      3 src/rob_box_perception/README.md
+      2 src/rob_box_voice/docs/PHASE3_STT_IMPLEMENTATION.md
+      2 src/rob_box_harness/rob_box_harness/core/agent_core.py
+      1 tools/gui/robot_control_gui_simple.py
+      1 tools/gui/robot_control_gui.py
+      1 tools/gui/README_GUI.md
+      1 src/rob_box_voice/scripts/example_voice_usage.py
+      1 src/rob_box_voice/rob_box_voice/core/speak_helpers.py
+      1 src/rob_box_voice/docs/VOICE_OPTIMIZATION.md
+      1 src/rob_box_voice/docs/ARCHITECTURE_OVERVIEW.md
+      1 src/rob_box_voice/config/dialog_engine.yaml
+      1 src/rob_box_perception/rob_box_perception/core/robot_speech.py
+      1 src/rob_box_dialog_msgs/msg/SpeechRequest.msg
+      1 src/rob_box_dialog_msgs/msg/DialogOutput.msg
+      1 src/rob_box_core/rob_box_core/dialog_engine.py
+      1 docker/sound/config/voice_assistant/dialog_engine.yaml
+      1 architecture/runtime-baseline.json
+      1 architecture/ownership.yml
+      1 architecture/minimax-provider.md
+      1 .github/workflows/scripts/e2e_voice_test.sh
+--- /voice/tts/state: строк 16, файлов 12
+      3 src/rob_box_animations/rob_box_animations/face_node.py
+      2 tools/led_face_lab/preview_template.html
+      2 src/rob_box_voice/rob_box_voice/audio_node.py
+      1 src/rob_box_voice/rob_box_voice/tts_node.py
+      1 src/rob_box_voice/rob_box_voice/stt_node.py
+      1 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      1 src/rob_box_dialog_msgs/msg/SpeechEvent.msg
+      1 src/rob_box_animations/rob_box_animations/face_director.py
+      1 src/rob_box_animations/README.md
+      1 scripts/maintenance/scene_set/replay.py
+      1 docker/vision/config/led_matrix/face_node.yaml
+      1 architecture/minimax-provider.md
+--- /voice/tts/finished: строк 39, файлов 16
+     12 src/rob_box_voice/rob_box_voice/tts_node.py
+      4 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+      3 src/rob_box_voice/rob_box_voice/core/speak_helpers.py
+      2 src/rob_box_voice/rob_box_voice/speaker_id_node.py
+      2 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      2 src/rob_box_quest/rob_box_quest/tars_stage_relay.py
+      2 src/rob_box_quest/rob_box_quest/quest_node.py
+      2 src/rob_box_quest/rob_box_quest/core/tars_stages.py
+      2 src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py
+      2 scripts/maintenance/scene_set/conductor.py
+      1 src/rob_box_voice/rob_box_voice/core/speech_owner.py
+      1 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      1 src/rob_box_supervisor/rob_box_supervisor/tars_stage.py
+      1 src/rob_box_quest/rob_box_quest/server/ws_server.py
+      1 scripts/maintenance/scene_set/replay.py
+      1 architecture/minimax-provider.md
+--- /voice/tts/request: строк 64, файлов 23
+     18 src/rob_box_voice/rob_box_voice/tts_node.py
+      5 scripts/diagnostics/watchdog-tts.sh
+      4 src/rob_box_perception/README.md
+      4 src/rob_box_core/rob_box_core/utterance.py
+      4 scripts/lint/test_ownership_check.py
+      3 src/rob_box_voice/rob_box_voice/tts_params.py
+      3 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      2 tools/gui/robot_control_gui_simple.py
+      2 tools/gui/robot_control_gui.py
+      2 tools/gui/README_GUI.md
+      2 tools/audio_capture_harness/audio_capture_harness.py
+      2 tools/audio_capture_harness/README.md
+      2 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      2 src/rob_box_teleop/rob_box_teleop/joystick_logic.py
+      1 src/rob_box_teleop/rob_box_teleop/joystick_control_node.py
+      1 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+      1 src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py
+      1 src/rob_box_dialog_msgs/msg/SpeechRequest.msg
+      1 src/rob_box_core/rob_box_core/speech_client.py
+      1 scripts/maintenance/scene_set/conductor.py
+      1 scripts/lint/ownership_check.py
+      1 architecture/runtime-baseline.json
+      1 architecture/ownership.yml
+--- /voice/tts/control: строк 7, файлов 4
+      3 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      2 src/rob_box_voice/rob_box_voice/tts_node.py
+      1 src/rob_box_dialog_msgs/msg/SpeechCancel.msg
+      1 architecture/runtime-baseline.json
+--- /dialogue/control: строк 49, файлов 12
+     28 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+     11 src/rob_box_voice/rob_box_voice/dialogue_node.py
+      1 src/rob_box_voice/config/dialogue_node.yaml
+      1 src/rob_box_voice/config/dialog_engine.yaml
+      1 src/rob_box_quest/webxr_client/src/wire/voice_pipeline_cmd.ts
+      1 src/rob_box_quest/webxr_client/src/main.ts
+      1 src/rob_box_dialog_msgs/srv/DialogControl.srv
+      1 src/rob_box_dialog_msgs/msg/TurnEvent.msg
+      1 scripts/lint/test_ownership_check.py
+      1 scripts/lint/seam_baseline.json
+      1 docker/sound/config/voice_assistant/dialog_engine.yaml
+      1 architecture/runtime-baseline.json
+
+=== флаг dialog_engine (вне тестов, без rob_box_core/dialog_engine.py) ===
+  строк 75, файлов 27
+     10 src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py
+      7 scripts/robot_dev/dialog_engine.sh
+      5 src/rob_box_supervisor/rob_box_supervisor/operator_prompt.py
+      5 .github/workflows/scripts/e2e_voice_test.sh
+      4 src/rob_box_voice/rob_box_voice/dialog_node.py
+      4 src/rob_box_voice/rob_box_voice/core/speech_compat.py
+      4 src/rob_box_voice/config/dialog_engine.yaml
+      4 docker/sound/config/voice_assistant/dialog_engine.yaml
+      3 src/rob_box_voice/rob_box_voice/tts_node.py
+      3 src/rob_box_voice/launch/voice_assistant.launch.py
+      3 src/rob_box_supervisor/rob_box_supervisor/operator_turns.py
+      3 src/rob_box_perception/rob_box_perception/utils/node_monitor.py
+      2 src/rob_box_voice/config/dialog_node.yaml
+      2 src/rob_box_telegram/rob_box_telegram/telegram_node.py
+      2 src/rob_box_mcp_tools/rob_box_mcp_tools/tools/operator_admin.py
+      2 docker/sound/config/voice_assistant/voice_assistant_headless.launch.py
+      2 docker/sound/config/voice_assistant/dialog_node.yaml
+      1 src/rob_box_voice/setup.py
+      1 src/rob_box_voice/rob_box_voice/led_node.py
+      1 src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py
+      1 src/rob_box_quest/rob_box_quest/quest_node.py
+      1 src/rob_box_perception/rob_box_perception/core/robot_speech.py
+      1 src/rob_box_perception/rob_box_perception/context_aggregator_node.py
+      1 src/rob_box_core/rob_box_core/voice_state.py
+      1 docker/sound/scripts/telegram_bot/start_telegram_bot.sh
+      1 docker/sound/scripts/supervisor/start_supervisor.sh
+      1 .github/workflows/scripts/e2e_events.py
+  на 8178e2809: строк 52, файлов 19
+
+=== зависимости вне src (B6) ===
+.github/workflows/G-Lint Code.yml:72:          PYTHONPATH=src/rob_box_voice:src/rob_box_dialog python scripts/lint/dialogue_skip_reasons.py
+scripts/lint/dialogue_skip_reasons.py:9:from rob_box_voice.core.skip_reason_checker import find_unknown_skip_reasons
+scripts/dialogue/chat.py:53:    "rob_box_dialog",  # knowledge table (wake words, silence) for dialogue_text and the harness DSM
+scripts/dialogue/chat.py:56:    "rob_box_voice",  # only pure helpers (dialogue_text); never the node
+scripts/dialogue/chat.py:451:        from rob_box_harness.core.dialogue_state_machine import DialogueStateMachine
+scripts/dialogue/chat.py:562:        from rob_box_harness.core.dialogue_state_machine import (
+scripts/dialogue/chat.py:566:        from rob_box_voice.core.dialogue_text import (
+scripts/dialogue/chat.py:571:        from rob_box_voice.core.speak_helpers import strip_done_marker, strip_markdown
+scripts/dialogue/chat.py:633:        from rob_box_harness.core.dialogue_state_machine import DialogueStateKind
+scripts/music/live_dj/router_offline.py:23:from rob_box_voice.core.dialogue_text import strip_wake_word
+--- имя ROS-ноды /dialogue_node вне src (не путь к файлу):
+.github/e2e/scenarios/turn_occasion_meeting_v1.json:23:      "ros2 node info /dialogue_node показывает подписку на /vision/hailo/events",
+.github/workflows/scripts/e2e_voice_test.sh:644:#      «новая сессия», но молча — ros2 param set /dialogue_node
+.github/workflows/scripts/e2e_voice_test.sh:676:    robot_ros "ros2 param get /dialogue_node e2e_session_reset_token --no-daemon" 2>/dev/null \
+.github/workflows/scripts/e2e_voice_test.sh:681:    robot_ros "ros2 param set /dialogue_node e2e_session_reset_token $token --no-daemon" >/dev/null 2>&1
+.github/workflows/scripts/e2e_voice_test.sh:689:    echo "           проверь вручную: ssh <robot> \"docker exec voice-assistant bash -lc 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; ros2 param get /dialogue_node e2e_session_reset_token --no-daemon'\"" >&2
+docker/vision/test/config/voice_assistant_test.yaml:6:/dialogue_node:
+scripts/lint/seam_allowlist.json:17:    "/voice/music/event": "ADR-0149 §2.3, PR-4 (#3312): события владельца плеера v2 (started/rejected), публикуются владельцем плеера v2. Подписчики — SetSession/dialogue_node в PR-5/PR-6 той же миграции (ADR-0149 §9); до них наблюдатель — живая проверка `ros2 topic echo /voice/music/event`. Запись удалить в PR, где появится подписчик.",
+scripts/robot_dev/dialog_engine.sh:5:#   scripts/robot_dev/dialog_engine.sh status  # только показать значение и строки dialog_node/dialogue_node из логов
+--- строковое имя dialogue_node в живом v2 (подпись /mcp/execute и срез тулов):
+src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_auth.py:85:PERSONALITY_SENDER = "dialogue_node"
+src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_auth.py:90:DEFAULT_ALLOWED_SENDERS = frozenset({PERSONALITY_SENDER, TELEGRAM_SENDER, "avatar_supervisor", "harness"})
+src/rob_box_voice/rob_box_voice/dialog_node.py:211:    from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER  # noqa: PLC0415
+src/rob_box_voice/rob_box_voice/dialog_node.py:213:    return plan_host.make_tool_executor(node, _mcp_provider(node, PERSONALITY_SENDER), lambda *_: None)
+src/rob_box_mcp_tools/rob_box_mcp_tools/data/slice_policy.yaml:4:# (``dialogue_node``, ``avatar_supervisor``, ``harness``) перечисляет,
+src/rob_box_mcp_tools/rob_box_mcp_tools/data/slice_policy.yaml:24:  # ЛLM-личность (dialogue_node): всё, что умеет робот в обычном
+src/rob_box_mcp_tools/rob_box_mcp_tools/data/slice_policy.yaml:26:  dialogue_node:
+src/rob_box_mcp_tools/rob_box_mcp_tools/data/slice_policy.yaml:117:  # срезах. Sender'у ``dialogue_node`` это всё равно доступно через
+--- v1 собирает допуск реплики из хвоста stt_admission (DefaultSttAdmission):
+src/rob_box_voice/rob_box_voice/dialogue_node.py:127:    DefaultSttAdmission,
+src/rob_box_voice/rob_box_voice/dialogue_node.py:457:        self._stt_admission: SttAdmission = DefaultSttAdmission(
+src/rob_box_voice/rob_box_voice/dialogue_node.py:2034:        # ``self._stt_admission = DefaultSttAdmission(...)``.
+src/rob_box_voice/rob_box_voice/dialogue_node.py:2037:            admission = DefaultSttAdmission(logger=self.get_logger())
+
+=== /mcp/execute: где создаются издатели (для находки duplicate_publishers) ===
+src/rob_box_mcp_tools/rob_box_mcp_tools/llm_adapter.py:151:        self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
+src/rob_box_voice/rob_box_voice/dialog_node.py:191:def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
+src/rob_box_voice/rob_box_voice/dialog_node.py:198:    adapter = LLMToolCallAdapter(node, sender=sender, turn_context=tool_turn_context)
+src/rob_box_voice/rob_box_voice/dialog_node.py:213:    return plan_host.make_tool_executor(node, _mcp_provider(node, PERSONALITY_SENDER), lambda *_: None)
+src/rob_box_voice/rob_box_voice/dialog_node.py:222:    return PlanToolExecutor(_mcp_provider(node, TELEGRAM_SENDER, True), personality_tools.planner)
+
+=== коммиты между картами ===
+  все коммиты 8178e2809..origin/develop: 208
+  в src/rob_box_voice src/rob_box_dialog src/rob_box_harness src/rob_box_core: 58
+  только в файлах карты (rob_box_voice/rob_box_voice, rob_box_dialog/rob_box_dialog, harness/core): 48
+```
+
+## Приложение В. Рантайм-аудит run 40499068353: новые записи, `multiple_writers`, `resolved`
+
+Команды: `gh run view 40499068353 --log` (сводки шагов) и `gh run download 40499068353 -n architecture-local-runtime`
+(файл `runtime-findings.json`); выборка — Python по полям `new`, `type`, `resolved`.
+
+```text
+captured_from=remote:MainPi+VisionPi+SoundPi baseline_used=True
+summary {"findings": 126, "repo_scope": 47, "new": 20, "resolved_since_baseline": 20, "type_mismatch": 0, "qos_incompatible": 0, "dead_input": 30, "dead_output": 80, "multiple_writers": 14, "duplicate_publishers": 2}
+
+# новые (new=true), все типы:
+NEW  dead_input           /face_node/scene  {"subscribers": ["/face_node"]}
+NEW  dead_input           /voice/dialogue/response  {"subscribers": ["/context_aggregator"]}
+NEW  dead_input           /voice/dialogue/state  {"subscribers": ["/avatar_arbiter", "/led_node", "/quest_node"]}
+NEW  dead_input           /voice/speaker/epithet  {"subscribers": ["/speaker_id_node"]}
+NEW  dead_input           /voice/speaker/merge  {"subscribers": ["/speaker_id_node"]}
+NEW  dead_input           /voice/speaker/observe  {"subscribers": ["/speaker_id_node"]}
+NEW  dead_input           /voice/tts/control  {"subscribers": ["/tts_node"]}
+NEW  dead_output          /mcp/tools  {"publishers": ["/mcp_server"]}
+NEW  dead_output          /perception/observations  {"publishers": ["/vision_face", "/vision_hailo"]}
+NEW  dead_output          /voice/expression/event  {"publishers": ["/face_node", "/led_node", "/sound_node"]}
+NEW  dead_output          /voice/sound/state  {"publishers": ["/sound_node"]}
+NEW  dead_output          /voice/speaker/epithet_request  {"publishers": ["/speaker_id_node"]}
+NEW  dead_output          /voice/stt/speaker  {"publishers": ["/stt_node"]}
+NEW  multiple_writers     /perception/observations  {"publishers": ["/vision_face", "/vision_hailo"]}
+NEW  multiple_writers     /voice/expression/event  {"publishers": ["/face_node", "/led_node", "/sound_node"]}
+NEW  multiple_writers     /voice/providers/state  {"publishers": ["/dialog_node", "/mcp_server", "/stt_node", "/tts_node"]}
+NEW  multiple_writers     /voice/speech/request  {"publishers": ["/avatar_supervisor", "/dialog_node", "/mcp_server", "/stt_node", "/telegram_node"]}
+NEW  multiple_writers     /voice/stt/utterance  {"publishers": ["/stt_node", "/telegram_node"]}
+NEW  multiple_writers     /voice/tts/voice_request  {"publishers": ["/dialog_node", "/mcp_server"]}
+NEW  duplicate_publishers /mcp/execute /dialog_node {"node": "/dialog_node", "publishers": 2}
+
+# multiple_writers и duplicate_publishers из baseline (не новые):
+base multiple_writers     /avatar/preview_voice/audio  {"publishers": ["/avatar_supervisor", "/tts_node"]}
+base multiple_writers     /avatar/preview_voice/error  {"publishers": ["/avatar_supervisor", "/tts_node"]}
+base multiple_writers     /avatar/preview_voice/result  {"publishers": ["/avatar_supervisor", "/tts_node"]}
+base multiple_writers     /avatar/tars/panel_request  {"publishers": ["/avatar_supervisor", "/mcp_server"]}
+base multiple_writers     /cmd_vel  {"publishers": ["/behavior_server", "/controller_server"]}
+base multiple_writers     /vision/hailo/events  {"publishers": ["/vision_face", "/vision_hailo"]}
+base multiple_writers     /voice/sound/stop  {"publishers": ["/quest_node", "/telegram_node"]}
+base multiple_writers     /voice/sound/trigger  {"publishers": ["/health_monitor", "/mcp_server"]}
+base duplicate_publishers /cmd_vel /behavior_server {"node": "/behavior_server", "publishers": 4}
+
+# resolved_since_baseline:
+  dead_input|/voice/current_dialogue_id|
+  dead_input|/voice/state|
+  dead_input|/voice_animation_player/load_animation|
+  dead_output|/camera/camera/depth/image_rect_raw|
+  dead_output|/dialogue/control_ack|
+  dead_output|/tts/speak|
+  dead_output|/voice/stt/request|
+  dead_output|/voice_animation_player/status|
+  duplicate_publishers|/panel_image|/voice_animation_player
+  duplicate_publishers|/voice/animation/request|/mcp_server
+  duplicate_publishers|/voice/generated_music/state|/mcp_server
+  duplicate_publishers|/voice/sound/stop|/mcp_server
+  duplicate_publishers|/voice/tts/set_provider|/mcp_server
+  multiple_writers|/avatar/command|
+  multiple_writers|/voice/dialogue/response|
+  multiple_writers|/voice/dj_mode|
+  multiple_writers|/voice/generated_music/state|
+  multiple_writers|/voice/speaker/register|
+  multiple_writers|/voice/tts/control|
+  multiple_writers|/voice/tts/request|
+
+# лог шага «Render runtime architecture graph» (gh run view 40499068353 --log):
+{"connected_topics": 92, "container_edges": 54, "containers": 18, "hidden_helper_nodes": 12, "hidden_infra_topics": 19, "runtime_nodes": 52, "shown_nodes": 43, "unplaced_nodes": ["dialog_node"], "unresolved_class_nodes": 23}
+```

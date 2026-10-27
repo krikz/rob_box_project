@@ -7,7 +7,7 @@
 # =============================================================================
 pyyaml
 requests
-omegaconf==2.3.1
+omegaconf==2.4.0
 
 # =============================================================================
 # Async HTTP server (rob_box_quest ws-server; раньше и voice-action-server — удалён в ADR-0150 PR-7c ч.4в)
@@ -19,7 +19,7 @@ omegaconf==2.3.1
 # Pin explicitly so apt-resolved python3-aiohttp vs pip-aiohttp drift can't
 # reintroduce the regression.
 # =============================================================================
-aiohttp>=3.14.3,<4.0
+aiohttp>=3.14.5,<4.0
 
 # =============================================================================
 # Audio processing
@@ -79,7 +79,7 @@ pyusb
 # — libtorch_cuda.so / libc10_cuda.so / libnvpl_blas_* / libarm_compute*.
 # =============================================================================
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.14.0+cpu
+torch==2.14.1+cpu
 torchaudio==2.11.0+cpu
 scipy
 
@@ -101,10 +101,10 @@ scikit-learn
 # Issue #1101 — runtime pin: resemblyzer 0.1.4 → librosa → numba импортирует
 # `coverage.types` (Tracer API). Debian Bullseye ships coverage 6.2 без
 # `types` submodule → AttributeError: module 'coverage' has no attribute
-# 'types' → embed_audio returns None. Pin coverage>=7.0 (где types.Tracer
-# сохранён). Также pin pyyaml>=6.0 (resemblyzer models.yaml требует C-парсер).
-coverage>=7.0
-pyyaml>=6.0
+# 'types' → embed_audio returns None. Pin coverage>=7.17.0 (где types.Tracer
+# сохранён). Также pin pyyaml>=6.0.3 (resemblyzer models.yaml требует C-парсер).
+coverage>=7.17.0
+pyyaml>=6.0.3
 
 # =============================================================================
 # gRPC for Yandex Cloud API v3 (STT + TTS)
@@ -120,8 +120,8 @@ yandex-cloud-ml-sdk  # Yandex Cloud TTS/STT gRPC API v3 (anton voice!)
 # Dialogue system: OpenAI Agents SDK (wraps DeepSeek/Qwen via base_url)
 # Used in: rob_box_voice/dialogue_node.py
 # =============================================================================
-openai>=2.53.0,<3.0.0
-openai-agents>=0.19.4,<1.0.0
+openai>=3.37.0,<4.0.0
+openai-agents>=0.24.0,<1.0.0
 # =============================================================================
 # Music synthesis: Renardo (Python FoxDot successor) + SuperCollider via OSC
 # Used in: rob_box_mcp_tools/tools/music.py (engine/renardo_runtime.py, stop_music...)
@@ -135,4 +135,4 @@ renardo-lib
 # 0/мусор — используем ТОЛЬКО ddgs (>=9.0.0, проверено на роботе 11.08).
 # Used by Compositor agent before handle_music to learn about
 # artist style, BPM, key, instruments.
-ddgs>=9.14.4
+ddgs>=9.16.1
