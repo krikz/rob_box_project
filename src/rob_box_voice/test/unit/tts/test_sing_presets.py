@@ -28,7 +28,7 @@ ALL_VOICES = [(p, v) for p, vs in PROVIDER_VOICES.items() for v in vs]
 
 
 def test_catalog_size_is_what_adr_says() -> None:
-    assert {p: len(v) for p, v in PROVIDER_VOICES.items()} == {"yandex": 13, "minimax": 10, "silero": 5}
+    assert {p: len(v) for p, v in PROVIDER_VOICES.items()} == {"yandex": 13, "minimax": 15, "silero": 5}
 
 
 def test_table_covers_exactly_the_catalog() -> None:

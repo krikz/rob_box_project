@@ -75,6 +75,14 @@ class TestSpeakTextVoiceParam:
         payloads = _published_tts_payloads(tool)
         assert all(p.get("voice") == "male-qn-qingse" for p in payloads)
 
+    def test_cast_voice_by_russian_name_is_resolved_by_code(self, mock_node):
+        """#4086: «Весельчак» - имя из каталога MiniMax; в запрос уходит id, `voice_used` называет применённый."""
+        tool = SpeakTextTool(mock_node)
+        result = tool.execute(text="Привет", voice="Весельчак")
+        assert result.data["voice_used"] == "English_Jovialman"
+        assert result.data["voice_fell_back"] is False
+        assert all(p.get("voice") == "English_Jovialman" for p in _published_tts_payloads(tool))
+
     def test_unknown_voice_falls_back_to_default(self, mock_node):
         tool = SpeakTextTool(mock_node)
         result = tool.execute(text="Привет", voice="terminator_3000")
@@ -158,6 +166,17 @@ class TestSetVoiceTool:
         assert result.success is True
         assert result.data["voice_applied"] == "female-shaonv"
         assert "Говорю голосом female-shaonv" in result.message
+
+    def test_set_voice_passes_the_name_as_said_and_code_of_the_owner_finds_the_id(self, mock_node):
+        """#4086: тул не угадывает голос по имени сам - просит владельца («Весельчак»), id находит реестр владельца."""
+        self.outcome = VoiceOutcome("applied", "Весельчак", "English_Jovialman", "minimax")
+        result = SetVoiceTool(mock_node).execute(voice="Весельчак")
+        assert self.calls == [("Весельчак", "")]
+        assert result.success is True
+        assert result.data["voice_requested"] == "Весельчак"
+        assert result.data["voice_applied"] == "English_Jovialman"
+        assert "English_Jovialman" in result.data["available"]
+        assert "Говорю голосом English_Jovialman" in result.message
 
     def test_set_voice_unknown_voice_is_owner_decision(self, mock_node):
         self.outcome = VoiceOutcome("fallback", "terminator_3000", "male-qn-qingse", "minimax", "voice_unavailable")

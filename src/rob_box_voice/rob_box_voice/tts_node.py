@@ -1921,23 +1921,22 @@ class TTSNode(Node):
     def _resolve_set_voice_provider(
         payload: dict[str, Any], voice_id: str
     ) -> str | None:
-        """Резолв провайдера: явный hint → registry fallback.
+        """Провайдер голоса ПО КАТАЛОГУ (#4086): явный hint или первый провайдер, у которого голос есть.
 
-        Возвращает ``"yandex"`` / ``"minimax"`` / ``"silero"`` или
-        ``None``. Registry может отсутствовать — тогда fallback
-        молча пропускается (он best-effort).
+        Возвращает ``"yandex"`` / ``"minimax"`` / ``"silero"`` или ``None`` — голоса нет в каталоге. Hint
+        голос не оправдывает: id вне каталога провайдера топик не принимает. Раньше при явном ``provider``
+        в ``minimax_voice`` уходило что угодно, а синтез потом без шума (одна строка WARN) брал дефолт.
+        Эксперимент с голосом вне каталога — ``ros2 param set`` (``parameters_callback``). Реестра нет —
+        ``None``: проверить нечем, значит и принять нельзя.
         """
-        provider_raw = payload.get("provider")
-        if isinstance(provider_raw, str) and provider_raw.strip():
-            return provider_raw.strip().lower()
+        hint = payload.get("provider")
+        explicit = isinstance(hint, str) and bool(hint.strip())
         try:
             from .tts_voice_registry import voices_for as _voices_for  # noqa: PLC0415
         except Exception:  # noqa: BLE001 — registry недоступен
             return None
-        for p in ("yandex", "minimax", "silero"):
-            if voice_id in _voices_for(p):
-                return p
-        return None
+        candidates = (str(hint).strip().lower(),) if explicit else ("yandex", "minimax", "silero")
+        return next((p for p in candidates if voice_id in _voices_for(p)), None)
 
     @staticmethod
     def _param_for_set_voice_provider(provider: str) -> tuple[str, str] | None:
@@ -1988,6 +1987,8 @@ class TTSNode(Node):
         ``/voice/tts/set_voice``, и этот handler применяет голос.
 
         Wire-формат: ``{"voice_id": str, "provider"?: str, "source"?: str}``.
+        ``voice_id`` обязан быть голосом каталога (``_resolve_set_voice_provider``, #4086): иначе warning,
+        голос не меняется.
         Логика вынесена в ``_parse_set_voice_payload``,
         ``_resolve_set_voice_provider``, ``_param_for_set_voice_provider``,
         ``_apply_set_voice`` — этот метод остаётся диспетчером
@@ -2009,8 +2010,9 @@ class TTSNode(Node):
         provider = self._resolve_set_voice_provider(payload, voice_id)
         if not provider:
             self.get_logger().warning(
-                f"⚠️ [voice-vr 21] set_voice: cannot resolve provider for "
-                f"voice_id={voice_id!r}; dropping"
+                f"⚠️ [voice-vr 21] set_voice: voice_id={voice_id!r} нет в каталоге голосов "
+                f"(provider={payload.get('provider')!r}: провайдер неизвестен или голос вне каталога); "
+                f"dropping, голос не меняю"
             )
             return
         mapped = self._param_for_set_voice_provider(provider)

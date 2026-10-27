@@ -65,6 +65,27 @@ def test_unknown_voice_keeps_provider_default_and_event_reports_fallback(tmp_pat
     assert events == [("r2", "alena", "male-qn-qingse", "minimax", "voice_unavailable")]
 
 
+def test_cast_voice_asked_by_russian_name_is_applied_as_catalog_id(tmp_path):
+    """#4086 «говори голосом Весельчак»: владелец применяет id каталога, событие несёт и просьбу, и применённое."""
+    owner, node, events = _owner(tmp_path)
+    _request(owner, request_id="r7", voice="Весельчак")
+    assert node.voices == {"minimax": "English_Jovialman"}
+    assert events == [("r7", "Весельчак", "English_Jovialman", "minimax", "")]
+    assert read_state(str(tmp_path / "tts_voice_state.json"))["applied"] == "English_Jovialman"  # переживёт рестарт
+
+
+def test_cast_voice_asked_by_id_is_applied(tmp_path):
+    owner, node, events = _owner(tmp_path)
+    _request(owner, request_id="r8", voice="English_Jovialman", provider="minimax")
+    assert node.voices == {"minimax": "English_Jovialman"} and events[0][2:] == ("English_Jovialman", "minimax", "")
+
+
+def test_unknown_name_is_not_guessed_event_reports_it(tmp_path):
+    owner, node, events = _owner(tmp_path)
+    _request(owner, request_id="r9", voice="Терминатор")
+    assert events == [("r9", "Терминатор", "male-qn-qingse", "minimax", "voice_unavailable")]
+
+
 def test_cross_provider_switches_chain_and_applies_voice(tmp_path):
     owner, node, events = _owner(tmp_path)
     _request(owner, request_id="r3", voice="zahar", provider="yandex")
