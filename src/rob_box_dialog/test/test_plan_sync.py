@@ -107,8 +107,9 @@ def test_verdicts_follow_the_backing_state():
     assert track.verdict("started", "t1", 0.0) == "ignore"  # не просили
     track.request(0.0, 30.0)
     assert track.verdict("nearly_finished", "x", 0.5) == "ignore"
-    assert track.verdict("rejected", None, 0.5) == "rejected"
-    assert track.verdict("started", "t1", 1.0) == "started"
+    assert track.verdict("started", "t1", 0.7) == "ignore"  # событие плеера до исхода запроса — не наше (#4085)
+    assert track.verdict("rejected", None, 0.5, own=True) == "rejected"
+    assert track.verdict("started", "t1", 1.0, own=True) == "started"  # исход НАШЕГО запроса — ответ тула
     track.started("t1", {"bpm": 120, "beat_at": 2.0, "bar_beats": 4})
     assert track.grid is not None
     assert track.verdict("nearly_finished", "t1", 3.0) == "nearly"
@@ -125,8 +126,9 @@ def test_late_started_is_ours_only_shortly_after_giving_up():
     track = BackingTrack("beat")
     track.request(0.0, 30.0)
     track.fail("timeout", 6.0)
-    assert track.verdict("started", "late", 7.0) == "late"
-    assert track.verdict("started", "users_track", 6.0 + kn.PERFORM_BACKING_START_S + 0.1) == "ignore"
+    assert track.verdict("started", "users_track", 7.0) == "ignore"  # чужой трек от плеера — не «поздний» (#4085)
+    assert track.verdict("started", "late", 7.0, own=True) == "late"
+    assert track.verdict("started", "users_track", 6.0 + kn.PERFORM_BACKING_START_S + 0.1, own=True) == "ignore"
     playing = BackingTrack("beat")
     playing.request(0.0, 30.0)
     playing.started("t1", {})

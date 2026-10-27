@@ -333,3 +333,93 @@ def test_3901_not_minimax_reads_as_before_and_says_why(loop):
     host.start(LINED_RAP, "t1")
     assert [plain_text(r.text) for r in node.requests()] == list(LINED_RAP.segments)  # сразу и без пауз
     assert any("разметка пауз выключена (синтез неизвестен, не MiniMax)" in line for line in node.logs)
+
+
+# --- #4085: выступление снимает только свою подложку ---------------------------------------------------------------
+
+TALE = Performance(kind="tale", segments=("Жил-был енот у реки.", "Он мыл бельё по ночам.", "И всё у него сияло."),
+                   backing="none")
+
+
+def _read_to_the_end(host: PerformHost, node: _Node) -> None:
+    """Владелец речи: пред-синтез готов, каждая отданная на звучание реплика звучит и кончается."""
+    for request in [r for r in node.requests() if not r.commit]:
+        host.on_speech("synthesized", request.speech_id, duration_ms=700)
+    heard: set = set()
+    for _ in range(50):
+        host.tick()
+        due = [r for r in node.requests() if r.commit and r.speech_id not in heard]
+        if not due:
+            return
+        for request in due:
+            heard.add(request.speech_id)
+            host.on_speech("started", request.speech_id, duration_ms=700)
+            host.on_speech("finished", request.speech_id)
+
+
+def _wired(loop: Any, backing: Dict[str, Any]) -> tuple:
+    """Как в ноде (``plan_host.make_tool_executor``): исполнитель тулов хода и хост выступления на нём."""
+    from rob_box_voice.core.plan_tools import PlanToolExecutor
+
+    tools = _Tools(backing)
+
+    class _Underlying:
+        async def execute(self, call: Any) -> ToolResult:
+            return await tools.run(call)
+
+    executor, node, events = PlanToolExecutor(_Underlying()), _Node(), []
+    executor.performer = PerformHost(node, executor.execute_owned, lambda: loop, events.append,
+                                     kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
+    return executor, executor.performer, node, tools
+
+
+def test_4085_music_ordered_during_a_beatless_tale_is_the_persons_and_plays_on_after_it(loop):
+    """Прослушивание PR-14 27.10 (#4085): сказка без бита; посреди неё «Робот, поставь фоном спокойный бит на Ренардо»
+    — LLM зовёт ``request_music(intent=track)``. Раньше исполнитель тулов подменял вызов битом выступления
+    (``intent=backing``, ``mood=groove``, длина — до конца сказки), и конец сказки через секунду звал
+    ``stop_music{bar}``. Теперь вызов уходит как просил человек, выступление трек не присваивает, конец сказки музыку
+    не трогает."""
+    from rob_box_llm.provider import ToolCall
+
+    executor, host, node, tools = _wired(loop, {"ok": True, "started": True, "track_id": "req11344:02:A"})
+    host.start(TALE, "t1")
+    _settle(loop)
+    assert tools.calls == [] and not host.owns_backing
+    asked = ToolCall(id="c1", name="request_music",
+                     arguments={"intent": "track", "text": "спокойный бит на Ренардо", "engine": "renardo",
+                                "mood": "calm"})
+    result = asyncio.run(executor.execute(asked))
+    host.on_music_event("started", "req11344:02:A", {"bpm": 136.0, "beat_at": 1001.0, "bar_beats": 4.0})
+    assert result.is_error is False and result.data == {"ok": True, "started": True, "track_id": "req11344:02:A"}
+    assert [(c.name, c.arguments) for c in tools.calls] == [("request_music", asked.arguments)]
+    assert not host.owns_backing and host.block.backing.state == "none"
+    _read_to_the_end(host, node)
+    _settle(loop)
+    assert host.block.ended and host.block.end_reason == "done"
+    assert [c.name for c in tools.calls] == ["request_music"]  # stop_music нет: трек человека играет дальше
+
+
+def test_4085_own_beat_is_outroed_at_the_end_of_the_performance(loop):
+    """Бит, который заказало само выступление (``Performance.backing``), снимается его концом — outro на такте."""
+    executor, host, node, tools = _wired(loop, STARTED)
+    host.start(RAP, "t1")
+    _settle(loop)
+    assert host.owns_backing
+    _read_to_the_end(host, node)
+    _settle(loop)
+    assert host.block.ended and host.block.end_reason == "done"
+    assert [(c.name, c.arguments.get("boundary")) for c in tools.calls][1:] == [("stop_music", "bar")]
+
+
+def test_4085_foreign_started_before_the_tool_answer_is_not_the_beat(loop):
+    """Плеер сообщил о чужом треке, пока бит выступления ещё не встал: исход своего запроса — только ответ тула
+    (#4085: владение по ``track_id``), чужой трек своим не становится."""
+    host, node, tools, _ = _host(loop, {"ok": False, "reason": "busy"})
+    host.start(RAP, "t1")
+    host.on_music_event("started", "person", {"bpm": 90.0, "beat_at": 1001.0, "bar_beats": 4.0})
+    assert host.block.backing.track_id == "" and host.block.backing.grid is None
+    _settle(loop)
+    assert host.block.backing.state == "failed" and not host.owns_backing  # ответ тула: busy — читаем поверх
+    _read_to_the_end(host, node)
+    _settle(loop)
+    assert host.block.ended and [c.name for c in tools.calls] == ["request_music"]

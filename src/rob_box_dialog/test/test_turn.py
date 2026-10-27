@@ -18,7 +18,7 @@ from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.execute import Executor, OwnerEvent
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session, SpeakerRef
 from rob_box_dialog.turn import (RECENT_ACTIONS, Answer, TurnEngine, done_expression, finish_stage, outcome_phrase,
-                                 stop_performance, tier1_actions, words_owed)
+                                 stop_performance, tier1_actions, tier1_of, words_owed)
 from rob_box_dialog.grammar import Tier1Command
 
 
@@ -336,6 +336,142 @@ def test_4020_n709_stop_form_stops_music_by_code_then_the_rest_goes_to_llm():
     _run(engine, "Робот, останови, Борис уже уснул под неё")
     assert ports.cancels == ["tier1 stop_all"] and ports.executed[0] == [("stop_music", {})]
     assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("Борис уже уснул под неё")
+
+
+def _heard_turn(engine, text):
+    """Реплика с микрофона целиком через адресацию (``address.decide``), как в ноде, — затем ход."""
+    addressed = decide(Heard(text, t=100.0), Backlog(), kn.DEFAULT_WAKE_WORDS)
+    assert isinstance(addressed, Addressed)
+    return _run_addressed(engine, addressed)
+
+
+def test_4085_n811_echo_before_the_wake_still_stops_speech_and_keeps_music():
+    """Марафон 27.10, акт 8 n811: под рэп STT склеил эхо робота с фразой — «четыре недели робот хватит читать а музыку
+    оставь». Вейк снят, эхо осталось первым — стоп был спорным (``tier1 kind=stop_speech`` в логе нет, ход — к LLM).
+    Теперь Tier-1 разбирает команду после вейка: ``stop_speech`` с ``keep_music``, выступление — ``stop`` с
+    ``keep_backing``, ``stop_music`` нет, LLM не зовётся."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    agg = _heard_turn(engine, "четыре недели робот хватит читать а музыку оставь")
+    assert ports.asked == [] and agg.llm_calls == 0 and agg.stage == "done"
+    assert ports.cancels == ["tier1 stop_speech"] and ports.performs == ["stop"] and ports.kept == [True]
+    assert ports.executed == [] and ports.intents == [] and ports.said == []
+    assert engine.session.snapshot.music.state == "playing"
+
+
+def test_4085_bare_enough_after_an_echo_is_still_stop_all_with_stop_music():
+    """«Хватит» — как было: стоп всего, музыка гаснет кодом (выступление её не держит), LLM не зовётся."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    _heard_turn(engine, "у корней старой робот хватит")
+    assert ports.cancels == ["tier1 stop_all"] and ports.performs == ["stop"] and ports.kept == [False]
+    assert ports.executed == [[("stop_music", {})]] and ports.asked == [] and ports.intents == ["stop_motion"]
+
+
+def test_4085_echo_before_the_wake_still_reaches_the_llm_whole_when_not_tier1():
+    """Не Tier-1 после вейка — ход к LLM, и модель видит фразу целиком (слова до вейка — контекст человека)."""
+    ports = Ports(answers=[Answer(Command(speech="Спою!"), "deepseek")])
+    engine = _engine(ports)
+    _heard_turn(engine, "мне грустно, робот, спой что-нибудь")
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("мне грустно, спой что-нибудь")
+
+
+def test_4085_rest_after_an_echoed_stop_is_parsed_on_its_own():
+    """Остаток ясного стопа после эха («…робот хватит, громче») — следующая команда того же хода, не прежний текст."""
+    ports = Ports()
+    engine = _engine(ports)
+    _heard_turn(engine, "четыре недели робот хватит, громче")
+    assert ports.cancels == ["tier1 stop_all"] and ports.asked == []
+    assert ports.executed == [[("set_volume", {"action": "louder"})]]
+
+
+def test_4111_stop_before_the_wake_with_words_after_it_is_still_a_reflex():
+    """Ревью #4111: команда ДО вейка и слова после — Tier-1 фразы целиком, как до #4085. «Стоп, Робот, пожалуйста» —
+    ``stop_all`` кодом (речь гаснет, музыка — ``stop_music``), LLM не зовётся; слова после вейка («пожалуйста») —
+    не команда, по ним Tier-1 не разбирается."""
+    ports = KeepPorts()
+    engine = _engine(ports)
+    _with_music(engine)
+    agg = _heard_turn(engine, "Стоп, Робот, пожалуйста")
+    assert ports.cancels == ["tier1 stop_all"] and ports.asked == [] and agg.llm_calls == 0
+    assert ports.executed == [[("stop_music", {})]] and ports.performs == ["stop"] and ports.intents == ["stop_motion"]
+
+
+def test_4111_silence_before_the_wake_with_words_after_it_is_still_silence():
+    ports = Ports()
+    engine = _engine(ports)
+    _heard_turn(engine, "Замолчи, Робот, пожалуйста")
+    assert ports.cancels == ["tier1 silence"] and ports.asked == []
+    assert engine.session.snapshot.top("Silence") is not None
+
+
+def test_4111_enough_before_the_wake_stops_and_the_rest_goes_to_the_llm():
+    """«Хватит, Робот, я устал» — стоп кодом, остаток («я устал») — реплика того же хода к LLM."""
+    ports = Ports(answers=[Answer(Command(speech="Отдыхай."), "deepseek")])
+    engine = _engine(ports)
+    _with_music(engine)
+    _heard_turn(engine, "Хватит, Робот, я устал")
+    assert ports.cancels == ["tier1 stop_all"] and ports.executed[0] == [("stop_music", {})]
+    assert len(ports.asked) == 1 and ports.asked[0][0][-1]["content"].endswith("я устал")
+
+
+@pytest.mark.parametrize("text, tool, action", [
+    ("Громче, Робот, пожалуйста", "set_volume", "louder"),
+    ("Тише, Робот, ну пожалуйста", "set_volume", "quieter"),
+])
+def test_4111_volume_before_the_wake_with_words_after_it_is_still_tier1(text, tool, action):
+    ports = Ports()
+    _heard_turn(_engine(ports), text)
+    assert ports.asked == [] and ports.executed == [[(tool, {"action": action})]]
+
+
+def test_4111_new_session_before_the_wake_with_words_after_it_is_still_tier1():
+    ports = Ports()
+    engine = _engine(ports)
+    _heard_turn(engine, "Новый разговор, Робот, пожалуйста")
+    assert ports.asked == [] and ports.said[-1][0] in phrases.catalog()[kn.NEW_SESSION_PHRASE]
+
+
+def test_4111_music_named_before_the_wake_turns_the_music_down_not_the_voice():
+    """«Сделай музыку, Робот, потише», пока робот говорит: канал назван до вейка — громкость музыки. Разбор одних слов
+    после вейка («потише») выбрал бы голос (робот говорит) — тихо не тот адресат."""
+    ports = Ports()
+    engine = _engine(ports)
+    snap = engine.session.snapshot
+    engine.session._snap = snap.__class__(**{**vars(snap), "speaking": True})
+    _heard_turn(engine, "Сделай музыку, Робот, потише")
+    assert ports.asked == [] and ports.executed == [[("set_music_volume", {"action": "quieter"})]]
+
+
+def test_4111_halt_word_before_the_wake_reaches_the_interrupt_policy():
+    """«Стой, Робот, пожалуйста» — ``stop_all`` по фразе целиком, и политика перебивания читает тот же текст: «стой» —
+    ``halt`` (речь обрывается сейчас, движение — ``stop_motion``), а не мягкий стоп по словам после вейка."""
+    ports = Ports()
+    engine = _engine(ports)
+    _heard_turn(engine, "Стой, Робот, пожалуйста")
+    assert ports.cancels == ["tier1 stop_all"] and ports.asked == []
+    assert [boundary for _, boundary in ports.boundaries] == ["now"] and ports.intents == ["stop_motion"]
+
+
+@pytest.mark.parametrize("text, after_wake, kind, parsed", [
+    ("стоп, пожалуйста", "пожалуйста", "stop_all", "стоп, пожалуйста"),  # целое ясно — слова после вейка не нужны
+    ("четыре недели хватит читать а музыку оставь", "хватит читать а музыку оставь", "stop_speech",
+     "хватит читать а музыку оставь"),  # целое спорно (эхо) — запасной разбор после вейка
+    ("у корней старой хватит", "хватит", "stop_all", "хватит"),  # целое спорно, после вейка голый стоп
+    ("я тут подумал громче", "громче", "volume", "громче"),  # целое не Tier-1, после вейка — команда
+])
+def test_4111_tier1_of_reads_the_whole_phrase_first_and_after_wake_as_fallback(text, after_wake, kind, parsed):
+    command, said = tier1_of(text, after_wake, Session("personality").snapshot)
+    assert command is not None and not command.disputed and command.kind == kind and said == parsed
+
+
+def test_4111_tier1_of_keeps_a_disputed_whole_when_the_words_after_the_wake_are_not_tier1():
+    """Спорное целое без ясной команды после вейка — так и остаётся спорным (В19: решает Chooser/LLM)."""
+    command, said = tier1_of("спой песню про стоп", "спой песню про стоп", Session("personality").snapshot)
+    assert command is not None and command.disputed and said == "спой песню про стоп"
+    assert tier1_of("мне грустно спой", "спой", Session("personality").snapshot) == (None, "мне грустно спой")
 
 
 def test_4020_bus_stop_is_not_a_stop():

@@ -442,7 +442,8 @@ def test_slipped_bare_wake_is_bare_wake_only_for_unambiguous_forms():
 @pytest.mark.parametrize("wake", ["рома", "роман"])
 def test_roma_and_roman_still_wake_after_slip_tolerance(wake):
     assert decide(_heard(f"{wake} покажи анимацию"), Backlog(), WAKES) == Addressed("покажи анимацию", VOICE)
-    assert decide(_heard(f"привет, {wake} включи музыку"), Backlog(), WAKES) == Addressed("привет, включи музыку", VOICE)
+    assert decide(_heard(f"привет, {wake} включи музыку"), Backlog(), WAKES) == Addressed(
+        "привет, включи музыку", VOICE, command="включи музыку")  # Tier-1 — по команде после вейка (#4085)
 
 
 def test_slipped_wake_does_not_lift_silence():
@@ -457,3 +458,24 @@ def test_slipped_wake_does_not_lift_silence():
     assert match(out.text, silenced) is None
     unsilence = decide(_heard("роботу, говори"), Backlog(), WAKES)
     assert match(unsilence.text, silenced).kind == "unsilence"
+
+
+@pytest.mark.parametrize("text, rest, command", [
+    # n811 27.10: эхо рэпа робота перед вейком — модель видит фразу целиком, Tier-1 разбирает команду после вейка
+    ("четыре недели робот хватит читать а музыку оставь", "четыре недели хватит читать а музыку оставь",
+     "хватит читать а музыку оставь"),
+    ("мне грустно, робот, спой что-нибудь", "мне грустно, спой что-нибудь", "спой что-нибудь"),
+    ("Робот, хватит читать, а музыку оставь.", "хватит читать, а музыку оставь.", ""),  # вейк первым — команда = text
+    ("хватит читать, робот", "хватит читать,", ""),  # вейк в конце
+    ("роботы хватит", "хватит", ""),  # искажённый вейк первым словом (#3996)
+])
+def test_4085_addressed_command_is_the_part_after_the_wake(text, rest, command):
+    decision = decide(_heard(text), Backlog(), DEFAULT_WAKE_WORDS)
+    assert isinstance(decision, Addressed) and decision.source == VOICE
+    assert (decision.text, decision.command) == (rest, command)
+
+
+def test_4085_telegram_text_has_no_separate_command():
+    """Эхо речи робота — склейка микрофона: у Telegram и оператора текст хода и есть команда."""
+    decision = decide(_heard("скажи ему, робот, хватит", source="telegram"), None, DEFAULT_WAKE_WORDS)
+    assert isinstance(decision, Addressed) and decision.command == ""

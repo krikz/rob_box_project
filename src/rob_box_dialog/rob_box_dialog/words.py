@@ -407,6 +407,16 @@ def _clear_at(tokens: Sequence[str], lead: int) -> bool:
     return _is_stop(tokens[lead]) and after not in STOP_QUESTION_PARTICLES
 
 
+def wake_command(text: str, wake_words: Optional[Sequence[str]] = None) -> str:
+    """Команда фразы с вейком — то, что ПОСЛЕ него (вейк в конце фразы — перед ним, вейка нет — вся фраза), без
+    крайних знаков: слова перед вейком — хвост речи самого робота, который микрофон склеил с фразой человека (n811
+    27.10: «четыре недели робот хватит читать а музыку оставь» под рэп). То же правило, что у :func:`stop_command`,
+    — запасной разбор Tier-1 реплики с микрофона, когда фраза целиком не Tier-1 или спорна
+    (``address.Addressed.command``, ``turn.tier1_of``)."""
+    words = DEFAULT_WAKE_WORDS if wake_words is None else tuple(wake_words)
+    return _command_part(text, words).strip(" ,.!?;:-–—")
+
+
 def _command_part(text: str, words: Tuple[str, ...]) -> str:
     """Текст после первого вейка; вейк в конце фразы или без вейка — вся фраза без него."""
     match = _pattern(words, _RIGHT).search(text or "") if words else None
