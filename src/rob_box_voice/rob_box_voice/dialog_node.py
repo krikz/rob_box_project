@@ -35,6 +35,7 @@ import asyncio
 import contextvars
 import functools
 import json
+import logging
 import threading
 import time
 import uuid
@@ -303,6 +304,7 @@ class DialogNode(Node):
 
     def __init__(self) -> None:
         super().__init__("dialog_node")
+        self._package_logs = RosLogHandler.attach(self.get_logger())  # INFO python-логгеров rob_box_dialog (#4061)
         declare_params(self)
         self.engine_flag = dialog_engine.declare(self)
         self.last_turn: Any = None  # concurrent.futures.Future последнего хода (журнал, тесты)
@@ -558,6 +560,7 @@ class DialogNode(Node):
     def shutdown(self) -> None:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5.0)
+        self._package_logs.close()
 
 
 class _RosLog:
@@ -565,6 +568,58 @@ class _RosLog:
 
     def __init__(self, logger: Any) -> None:
         self.info, self.warning, self.error = logger.info, logger.warning, logger.error
+
+
+#: Пакет, чьи python-логгеры (``logging.getLogger(__name__)`` в ``execute``, ``turn``, ``chats``, ``plan.*``) нода
+#: пускает в свой лог: у python logging без обработчика INFO не выводится вовсе (#4061).
+DIALOG_LOGGER = "rob_box_dialog"
+
+
+class RosLogHandler(logging.Handler):
+    """Python-логгеры пакета ``rob_box_dialog`` -> логгер ROS ноды (#4061): одно место решает, куда они пишут.
+
+    Живой робот 27.10: строка ``📨 [execute] событие …`` (#3960/#4042) в ``docker logs`` не появилась ни разу, хотя тулы
+    вызывались, - ``Executor`` пишет в ``logging.getLogger(__name__)``, а у python logging без обработчика уровня INFO
+    нет (только WARNING и выше, через ``lastResort``). Передавать ``log=`` каждому модулю по отдельности - значит терять
+    строки тех, кому его забыли дать (``turn.py``, ``plan.rap_pauses``); обработчик на логгер пакета берёт их все.
+    """
+
+    def __init__(self, ros_logger: Any, package: str = DIALOG_LOGGER) -> None:
+        super().__init__(logging.INFO)
+        self._ros = ros_logger
+        self._package = logging.getLogger(package)
+        self._was_level = self._package.level
+
+    @classmethod
+    def attach(cls, ros_logger: Any, package: str = DIALOG_LOGGER) -> "RosLogHandler":
+        """Подключить к логгеру пакета; обработчик прежнего запуска ноды (тесты, перезапуск в одном процессе) снят."""
+        for old in [h for h in logging.getLogger(package).handlers if isinstance(h, cls)]:
+            old.close()
+        handler = cls(ros_logger, package)
+        handler._package.addHandler(handler)
+        handler._package.setLevel(logging.INFO)
+        return handler
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Запись -> метод логгера ROS своего уровня. Ветки разнесены по строкам намеренно: rclpy не даёт менять
+        уровень вызова из одной и той же строки кода (``Logger severity cannot be changed between calls``)."""
+        try:
+            text = self.format(record)
+            if record.levelno >= logging.ERROR:
+                self._ros.error(text)
+            elif record.levelno >= logging.WARNING:
+                self._ros.warning(text)
+            else:
+                self._ros.info(text)
+        except Exception:  # noqa: BLE001 — сбой логирования ход не роняет (контракт logging)
+            self.handleError(record)
+
+    def close(self) -> None:
+        """Отвязать от логгера пакета и вернуть ему прежний уровень (повторно безопасно)."""
+        if self in self._package.handlers:
+            self._package.removeHandler(self)
+            self._package.setLevel(self._was_level)
+        super().close()
 
 
 def main(args: Optional[List[str]] = None) -> None:
