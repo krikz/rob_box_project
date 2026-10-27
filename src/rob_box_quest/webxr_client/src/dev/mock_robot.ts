@@ -835,8 +835,10 @@ export const DEFAULT_STREAMS: Readonly<Record<string, MockStreamSource>> = Objec
   voice_state: {
     topicId: 0x1202,
     kind: "ros_topic",
-    source: "/voice/dialogue/state",
-    description: "SIM: состояние диалога (idle)",
+    // Зеркало STREAM_CATALOG["voice_state"].source (rob_box_core.bridge_protocol): состояние голоса сервер
+    // складывает из TurnEvent, SpeechEvent и SessionState. Совпадение держит test_bridge_protocol.py.
+    source: "/dialog/turn_event, /voice/speech/event, /dialog/session",
+    description: "SIM: состояние голоса (idle)",
     defaultQuality: "med",
     rateHz: 0.2,
     produce: (robot) => encodeVoiceState(robot.voiceState, robot.now()),
