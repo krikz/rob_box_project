@@ -12,6 +12,10 @@
 уходят в снимок плеера (``PlayerOwner.update_dj`` → ``dj`` в ``/voice/music/state`` → ``<music_state>``) и в
 ``dj_set.status`` (``get_music_state``): на «что играет / когда будет X» отвечает код по фактам, а не догадка LLM
 по теме (06.10: «Марио реально играет» при хуках tetris_2/spacecha).
+
+Сет из генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSet``) плана не имеет — его трек приходит файлом кэша:
+факты отдаёт :meth:`TransitionLines.prepare_item` (номер, длина, тема, название мелодии трека; энергий нет — фаза по
+месту трека в сете), дальше всё то же — одна фраза на ``started``, LLM только красит (#4006).
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ def _thread(fn: Callable[[], None]) -> None:
 class _Entry:
     no: int
     seed: int
-    plan: SetPlan
+    tracks: int  # длина сета: треков плана или слотов сета из генерации
     hook_id: Optional[str]
     facts: Optional[dl.LineFacts] = None
     llm: Optional[str] = None
@@ -96,17 +100,40 @@ class TransitionLines:
 
     def prepare(self, track_id: str, no: int, plan: SetPlan, hook_id: Optional[str]) -> None:
         """Компоновка трека ``no``: факты и фраза LLM — в фоне (не на пути звука)."""
-        entry = _Entry(no, plan.seed + no, plan, hook_id)
+        entry = _Entry(no, plan.seed + no, len(plan.tracks), hook_id)
+        self._add(track_id, entry, lambda: self._plan_facts(entry, plan, hook_id))
+
+    def prepare_item(self, track_id: str, no: int, *, tracks: int, theme: str, hook: Optional[str],
+                     seed: int = 0) -> None:
+        """Трек ``no`` из ``tracks`` сета без плана (сет из генерации, ADR-0158 PR-8): ``hook`` — название мелодии
+        трека для голоса (``None`` — названной мелодии у трека нет). Энергий плана нет — фаза по месту трека: первый,
+        ровно, финал (``dl.facts_for`` без энергий). Остальное — как у :meth:`prepare` (#4006)."""
+        entry = _Entry(no, seed + no, int(tracks), hook)
+        self._add(track_id, entry, lambda: self._item_facts(entry, theme, hook))
+
+    def _add(self, track_id: str, entry: _Entry, facts: Callable[[], dl.LineFacts]) -> None:
         with self._lock:
             self._entries[track_id] = entry
-        self._spawn(lambda: self._prepare(track_id, entry, plan, hook_id))
+        self._spawn(lambda: self._prepare(track_id, entry, facts))
 
-    def _prepare(self, track_id: str, entry: _Entry, plan: SetPlan, hook_id: Optional[str]) -> None:
+    def _plan_facts(self, entry: _Entry, plan: SetPlan, hook_id: Optional[str]) -> dl.LineFacts:
+        """Факты трека плана: название мелодии-хука, энергии треков 1..N (фаза дуги), названия мелодий плана."""
+        hook = (self._titles([hook_id]).get(hook_id) or None) if hook_id else None  # одна запись — быстро
+        energies = [plan.track(n).energy for n in range(1, max(entry.no, len(plan.tracks)) + 1)]
+        facts = dl.facts_for(entry.no, len(plan.tracks), plan.profile.theme, hook, energies)
+        self._plan_titles(plan)
+        return facts
+
+    def _item_facts(self, entry: _Entry, theme: str, hook: Optional[str]) -> dl.LineFacts:
+        """Факты трека без плана; его мелодия — в названия сета (её LLM буквами писать нельзя, только ``{hook}``)."""
+        if hook:
+            with self._lock:
+                self._title_map.setdefault(hook, hook)
+        return dl.facts_for(entry.no, entry.tracks, theme, hook, ())
+
+    def _prepare(self, track_id: str, entry: _Entry, facts: Callable[[], dl.LineFacts]) -> None:
         try:
-            hook = (self._titles([hook_id]).get(hook_id) or None) if hook_id else None  # одна запись — быстро
-            energies = [plan.track(n).energy for n in range(1, max(entry.no, len(plan.tracks)) + 1)]
-            entry.facts = dl.facts_for(entry.no, len(plan.tracks), plan.profile.theme, hook, energies)
-            self._plan_titles(plan)
+            entry.facts = facts()
             entry.known.set()
             self._next_composed(entry)
             entry.facts = replace(entry.facts, names=self._names())
@@ -190,7 +217,7 @@ class TransitionLines:
         facts = entry.facts
         with self._lock:
             fields: Dict[str, Any] = {
-                "track_no": entry.no, "tracks": len(entry.plan.tracks),
+                "track_no": entry.no, "tracks": entry.tracks,
                 "played": [[no, title] for no, _h, title in self._played if no < entry.no and title],
                 "next_melodies": [], "next_known": False, "not_found": list(self._missing)}
             if facts is not None:
@@ -227,7 +254,7 @@ class TransitionLines:
         компоновки (``compose.upcoming_hooks``: скомпонованные треки как сыграют, прочие по ``compose.hook_order`` с
         историей сета и прошлых сетов, #3497); своей копии очереди здесь нет. Нет ``forecast`` или тема без найденных
         мелодий (пул выбирает сид) — честно пусто. Длиннее остатка сета список не бывает."""
-        left = len(entry.plan.tracks) - entry.no
+        left = entry.tracks - entry.no
         if self.forecast is None or left <= 0:
             return []
         titles = [self._title_map.get(h, "") if h else "" for h in self.forecast(entry.no + 1, left)]
