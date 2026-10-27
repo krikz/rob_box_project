@@ -758,7 +758,12 @@ class RegisterSpeakerTool(MCPTool):
         import json
         from std_msgs.msg import String
 
-        # Step 1 — if old_name provided, rename the existing entry first.
+        # Step 1 — if old_name provided, rename the existing entry first. Issue #4095: переименование по old_name
+        # проходит гейт (:func:`rename_gate`) ДО публикации - профиль не получает имя, которым человек себя не называл,
+        # и чужой профиль не переименовывается чужим голосом.
+        refused = self._rename_refusal(old_name, name, self_intro_name, known_speaker_name)
+        if refused is not None:
+            return refused
         self._publish_rename(old_name, name)
 
         if name is None or name.strip() == "":
@@ -871,8 +876,8 @@ class RegisterSpeakerTool(MCPTool):
         import json
         from std_msgs.msg import String
 
-        old_clean = (old_name or "").strip()
-        if old_clean.lower() in {"", "null", "none"} or len(old_clean) < 2:
+        old_clean = _rename_source(old_name)
+        if old_clean is None:
             return
         rename_msg = String()
         rename_msg.data = json.dumps(
@@ -883,6 +888,43 @@ class RegisterSpeakerTool(MCPTool):
         self.log_info(
             f"[register_speaker] rename {old_clean!r} → "
             f"{(name or '').strip()!r}"
+        )
+
+    def _rename_refusal(
+        self,
+        old_name: str | None,
+        name: str | None,
+        self_intro_name: str | None,
+        known_speaker_name: str | None,
+    ) -> MCPToolResult | None:
+        """Issue #4095 — отказ переименования по ``old_name`` (:func:`rename_gate`) или ``None`` (переименовываем).
+
+        Ответ — исход для диалога v2 (``status=rejected`` + ``reason`` = ключ фразы кода ``identity.rejected.<reason>``),
+        запрос на ``/voice/speaker/rename`` не уходит: живая /data общая с людьми, профиль нельзя портить."""
+        old_clean = _rename_source(old_name)
+        verdict = None if old_clean is None else rename_gate(old_clean, name, self_intro_name, known_speaker_name)
+        if verdict is None:
+            return None
+        shown = (name or "").strip()
+        self.log_warning(
+            f"[register_speaker] #4095 ОТКАЗ переименования {old_clean!r} → {shown!r} ({verdict}): "
+            f"голос уверенно узнан как {known_speaker_name!r}, в реплике человек назвал себя {self_intro_name!r}"
+        )
+        if verdict == "not_own_profile":
+            message = (
+                f"Профиль '{old_clean}' НЕ переименован: по голосу это {known_speaker_name}, а не {old_clean}. "
+                "Чужой профиль голосом другого человека не переименовывается. Не говори, что запомнил новое имя."
+            )
+        else:
+            message = (
+                f"Профиль '{old_clean}' НЕ переименован в '{shown}': в этой реплике человек так себя не называл. "
+                "Не говори, что запомнил новое имя; если в реплике был факт о человеке — сохрани его через memory_save."
+            )
+        return MCPToolResult(
+            success=False,
+            data={"error": verdict, "status": "rejected", "reason": verdict, "received": shown,
+                  "old_name": old_clean, "known_speaker": known_speaker_name},
+            message=message,
         )
 
     def _gate_result(
@@ -939,6 +981,43 @@ class RegisterSpeakerTool(MCPTool):
 
 def _name_key(name: str | None) -> str:
     return (name or "").strip().casefold().replace("ё", "е")
+
+
+def _rename_source(old_name: str | None) -> str | None:
+    """Имя профиля, который просят переименовать (``register_speaker(old_name=…)``), или ``None``: пусто, литерал
+    ``null``/``none`` и однобуквенное «имя» переименованием не считаются (Issue #1101) - одно правило для публикации
+    :meth:`RegisterSpeakerTool._publish_rename` и гейта :func:`rename_gate`."""
+    old_clean = (old_name or "").strip()
+    if old_clean.lower() in {"", "null", "none"} or len(old_clean) < 2:
+        return None
+    return old_clean
+
+
+def rename_gate(
+    old_name: str,
+    name: str | None,
+    self_intro_name: str | None,
+    known_speaker_name: str | None,
+) -> str | None:
+    """Issue #4095 — можно ли переименовать профиль ``old_name`` в ``name`` (``register_speaker(old_name=…)``).
+
+    ``None`` — переименовываем как раньше. Иначе код причины (ключ фразы кода ``identity.rejected.<код>``):
+
+    * ``"not_own_profile"`` — голос уверенно узнан как ``known_speaker_name``, а ``old_name`` — другой профиль:
+      «зови меня Тамара» голосом Нины не переименует профиль Саши.
+    * ``"not_self_introduction"`` — профиль голоса свой, а новое имя человек себе не называл: то же правило, что у
+      регистрации (:func:`register_speaker_gate`), одно знание. «Запомни, что Саша любит чай» голосом Нины не сделает
+      Нину Сашей.
+
+    Граница та же, что у регистрации: голос не узнан уверенно (``known_speaker_name=None``) или хода нет (Telegram,
+    синтетика) — гейт молчит, поправка «я не X, я Y» работает как раньше; пустое новое имя ничего не переименовывает.
+    """
+    known = _name_key(known_speaker_name)
+    if not known or not _name_key(name):
+        return None
+    if _name_key(old_name) != known:
+        return "not_own_profile"
+    return register_speaker_gate(name, self_intro_name, None, known_speaker_name)
 
 
 def register_speaker_gate(
