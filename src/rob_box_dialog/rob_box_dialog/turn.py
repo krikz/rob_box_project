@@ -556,7 +556,9 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     исполняются, об исходе говорит код (:func:`_salvaged_phrase`); исполнять нечего - честная фраза
     ``INVALID_COMMAND_PHRASE``. Ход ``done``. Среди спасённых есть ``query`` (класс ВЫЗОВА: ``music_library list``,
     #4050) и итерации ещё есть (не ``last``) - его данные возвращаются модели тем же путём, что у исполненной команды
-    (:func:`query_more`), и она отвечает словами; итераций нет - фраза кода по данным (:func:`query_fallback`).
+    (:func:`query_more`), и она отвечает словами; итераций нет - фраза кода по данным (:func:`query_fallback`). Все
+    спасённые ``query`` - озвученные отказы чтения памяти (``memory.voiced_refusals``): фразу сказал :func:`query_more`,
+    читать модели нечего - ход ``done`` здесь же (ревью PR #4067: итог ``addressed`` давал рефлекс «услышал»).
     ``expression`` - лицо команды, исполняемой после нарушения ``silent_answer`` (#3997): красит итог вместе с её
     действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
@@ -570,13 +572,15 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     if engine._stale(turn, "results"):
         return None
     turn.expression = command_face(expression, results)
-    queried = [r.tool for r in results if r.cls == _QUERY]
-    if queried and not last:
-        log.warning(f"{LOG_MARK} невалидная команда {why}: спасённый query {queried} → данные модели, ещё итерация "
-                    f"turn={turn.turn_id}")
-        return query_more(engine, turn, results)
+    read = not last and any(r.cls == _QUERY for r in results)
+    more = query_more(engine, turn, results) if read else None
+    if more is not None:
+        log.warning(f"{LOG_MARK} невалидная команда {why}: спасённый query {[r.tool for r in turn.queried]} → данные "
+                    f"модели, ещё итерация turn={turn.turn_id}")
+        return more
     turn.stage, turn.status, turn.reason = "done", "done", f"invalid_salvaged:{why}"[:60]
-    engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, invalid_emotion(invalid, results))
+    if not read:  # прочитанное, но не отданное модели - озвученный отказ памяти: его фразу уже сказал query_more
+        engine._say(turn, _salvaged_phrase(engine, turn, invalid, results), None, invalid_emotion(invalid, results))
     return None
 
 
@@ -893,8 +897,10 @@ class TurnEngine:
     async def _act(self, turn: _Turn, cmd: Command, snap: SessionSnapshot, last: bool) -> Optional[str]:
         """Исполнить команду. В исходах есть ``query`` и итерации ещё есть — вернуть его данные модели
         (:func:`query_more`), и рядом с действиями тоже (#4065: ``[play_animation, music_library list]`` без речи
-        молчал); слова команды, написанные до данных, не звучат — модель ответит по данным. Голый неслышимый ответ на
-        адресованную реплику — нарушение для модели вместо исполнения (#3995)."""
+        молчал); слова команды, написанные до данных, не звучат — модель ответит по данным, и экспрессия такой команды
+        итог не красит: красит исполненное (сцена ``play_animation``, :func:`command_face`), голый ``query`` лицо
+        итога не трогает (ревью PR #4067). Голый неслышимый ответ на адресованную реплику — нарушение для модели
+        вместо исполнения (#3995)."""
         turn.stage = "done"
         if cmd.passed:
             turn.reason = "passed"
@@ -911,7 +917,7 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if not last and any(r.cls == _QUERY for r in results):
-            turn.expression = command_face(cmd.expression, results)
+            turn.expression = command_face(turn.expression, results)
             return query_more(self, turn, results, cmd.expression.emotion)
         self._speak(turn, cmd, results, unread=len(runnable) < len(cmd.actions))
         return None

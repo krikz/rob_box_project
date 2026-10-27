@@ -20,7 +20,7 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, Form, Invalid, ToolCall, parse, validate
+from rob_box_dialog.command import Command, Expression, Form, Invalid, Performance, ToolCall, parse, validate
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, Shown, TurnEngine
@@ -130,6 +130,45 @@ def test_4065_salvaged_and_executed_mixed_query_go_one_way_4050():
     assert [r["tool"] for r in _rows(ports)] == ["music_library"]
 
 
+#: Ревью PR #4067: «что ты обо мне помнишь?» неузнанным голосом, спасённый ``memory_context`` отклонён до владельца.
+N_OWN_MEMORY = "Робот, что ты обо мне помнишь?"
+CONTEXT_CALL = ToolCall("memory_context", {})
+BELL_CALL = ToolCall("play_sound", {"sound": "ui_bell"})
+
+
+@pytest.mark.parametrize("salvage", [(CONTEXT_CALL,), (CONTEXT_CALL, BELL_CALL)], ids=["refusal_only", "with_bell"])
+def test_pr4067_salvaged_refused_memory_read_before_the_last_iteration_closes_the_turn_done(salvage):
+    """Блокер ревью PR #4067: спасённые ``query`` невалидной команды - только озвученный отказ чтения памяти, итерации
+    ещё есть. Фраза кода звучит одна, читать модели нечего - второго вызова LLM нет, и ход закрыт ``done`` (было:
+    итог ``addressed`` - рефлекс «услышал» и лицо «слушаю» после фразы отказа)."""
+    ports = Ports([Answer(Invalid("speech_with_actions", salvage=salvage), "deepseek", calls=2)],
+                  {"memory_context": ("rejected", {}, kn.NO_PERSON_REASON)})
+    agg = _run(ports, N_OWN_MEMORY)
+    assert len(ports.asked) == 1 and len(ports.said) == 1 and ports.said[0][2] == "sad"
+    assert ports.said[0][0].startswith(phrases.text("query.rejected.no_person"))
+    assert (agg.stage, agg.status) == ("done", "done")
+    assert ports.stages[-1] == ("done", "done", "invalid_salvaged:speech_with_actions")
+    assert ports.faces == [], "провал чтения лицо итога не красит"
+
+
+def test_pr4067_bare_query_expression_does_not_paint_the_done_face():
+    """Ревью PR #4067: экспрессия команды с голым ``query`` написана до данных, как и её слова, - итог она не красит
+    (как до PR): данные модели, её ответ невалиден - фраза кода по данным под рефлекс ``done`` без ``happy``."""
+    happy = Answer(Command(actions=(LIST_CALL,), expression=Expression(emotion="happy")), "deepseek")
+    ports = Ports([happy, Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
+    _run(ports)
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
+    assert ports.faces == [], "экспрессия до данных итог не красит"
+
+
+def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
+    """Исполненный ``play_animation`` рядом с ``query`` красит итог своей сценой (#4049), даже когда ответ модели по
+    данным невалиден и говорит код."""
+    ports = Ports([_mixed(), Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
+    _run(ports)
+    assert ports.faces == [("done", Shown(emotion="sad"))]
+
+
 def test_4065_invalid_answer_after_the_mixed_data_is_said_from_the_data_3883():
     """Страховка #3883 как раньше: данные смешанной команды у модели, её ответ невалиден и после повтора - говорит
     код по данным запроса; list повторно не исполняется."""
@@ -178,6 +217,29 @@ def test_4065_words_next_to_query_wait_for_the_data(actions):
     ports = Ports([early, Answer(Command(speech=ANSWER), "deepseek")], LIBRARY_DONE)
     _run(ports, session=Session(kn.TEXT_CHANNEL_AGENT))
     assert [t for t, _, _ in ports.said] == [ANSWER] and len(ports.asked) == 2
+    assert [r["tool"] for r in _rows(ports)] == ["music_library"]
+
+
+class PerformPorts(Ports):
+    """Владелец выступления берёт его (``status: started``) и записывает, что ему отдали."""
+
+    def __init__(self, answers=(), outcomes=None):
+        super().__init__(answers, outcomes)
+        self.performed = []
+
+    def perform(self, turn_id, epoch, perf, edit):
+        self.performed.append(perf.kind)
+        return {"status": "started"}
+
+
+def test_pr4067_perform_next_to_query_waits_for_the_data():
+    """Ревью PR #4067 (негативный кейс): выступление рядом с ``query`` написано до данных - владельцу оно не уходит,
+    данные - модели, звучит её ответ по ним (то же правило (в), что и для речи)."""
+    rap = Answer(Command(actions=(LIST_CALL,), perform=Performance("rap", ("Йо, сейчас гляну в библиотеку!",))),
+                 "deepseek")
+    ports = PerformPorts([rap, Answer(Command(speech=ANSWER), "deepseek")], LIBRARY_DONE)
+    _run(ports)
+    assert ports.performed == [] and [t for t, _, _ in ports.said] == [ANSWER] and len(ports.asked) == 2
     assert [r["tool"] for r in _rows(ports)] == ["music_library"]
 
 
