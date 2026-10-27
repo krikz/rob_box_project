@@ -374,6 +374,7 @@ def keyword_hit(logs: str, kw: str) -> bool:
 #   _do_register:            ✅ Speaker '{name}' registered (id=…)
 #   _do_register (ADR-0127): ⚠️ Speaker '{name}' (id=…) — голос похож на уже известного …
 #   _do_register:            🔗 Speaker '{name}' merged into existing profile (id=…)
+#   _do_register (#3858):    🏷️ [issue #3858] '{name}' представился — имя присвоено профилю без имени (id=…)
 #   _on_register_request:    register_request for '{name}' has no utterance_id
 #   _register_after_wait:    register_request for '{name}': no embedding for utterance=…
 #   _do_register (#2769):    Registration of '{name}' rejected — audio too short
@@ -391,6 +392,10 @@ _REG_ACCEPTED_RES = (
     # ADR-0127: голос похож на чужой, имя другое — заведён ОТДЕЛЬНЫЙ профиль.
     # Это принятая регистрация (данные целы); переспрос проверяют n722/n723.
     re.compile(r"Speaker '([^']*)' \(id=[0-9a-f]*\) — голос похож на уже известного"),
+    # #3858 (unnamed_profiles_enabled=true): первая фраза незнакомого голоса >= 3 с уже завела безымянный профиль,
+    # представление присваивает имя ЕМУ. Строки «✅ … registered» тогда нет, а профиль с именем есть и дубля нет --
+    # это принятая регистрация (не склейка с чужим профилем: _REG_MERGED_RE её не видит).
+    re.compile(r"\[issue #3858\] '([^']*)' представился — имя присвоено профилю без имени \(id=[0-9a-f]*\)"),
 )
 _REG_MERGED_RE = re.compile(
     r"Speaker '([^']*)' merged into existing profile \(id=[0-9a-f]*\)"

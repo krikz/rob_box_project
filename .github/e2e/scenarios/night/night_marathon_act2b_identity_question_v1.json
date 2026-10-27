@@ -59,7 +59,7 @@
     {
       "label": "n704_sasha_after_gap_no_question",
       "voice": "anton",
-      "text": "Робот, ты ещё здесь, помнишь меня?",
+      "text": "Робот, ты ещё здесь, помнишь меня? Мы недавно уже говорили.",
       "sleep_before_sec": 150,
       "patterns": [
         "👤 Speaker: 'Саша' confidence=(0\\.[89]|1\\.)"

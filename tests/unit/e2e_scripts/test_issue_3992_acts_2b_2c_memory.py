@@ -16,6 +16,7 @@ Run:
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -123,11 +124,18 @@ MERGED_SASHA = _l(
 NINA_NEW_NAMELESS = _l(
     "speaker_id_node", "👤 Speaker: безымянный профиль id=5e6f7a8b (новый, кличка 'Соседка') (412 ms)"
 )
-NINA_CLAIMED = _l(
-    "speaker_id_node",
-    "🏷️ [issue #3858] 'Нина' представился — имя присвоено профилю без имени "
-    "(id=5e6f7a8b), дубля нет, кличка и накопленное остались",
-)
+
+
+def _claimed_unnamed(name: str, sid8: str = "5e6f7a8b") -> str:
+    """speaker_id_node._do_register, ветка outcome.claimed_unnamed (#3858): имя присвоено безымянному профилю."""
+    return _l(
+        "speaker_id_node",
+        f"🏷️ [issue #3858] '{name}' представился — имя присвоено профилю без имени "
+        f"(id={sid8}), дубля нет, кличка и накопленное остались",
+    )
+
+
+NINA_CLAIMED = _claimed_unnamed("Нина")
 NINA_REGISTERED = _l("speaker_id_node", "✅ Speaker 'Нина' registered (id=5e6f7a8b)")
 
 
@@ -251,6 +259,20 @@ def test_confirmed_pattern_needs_confidence_at_least_0_8():
     assert etm.patterns_missing(_verdict("Саша", 0.76), pattern) == pattern
 
 
+def test_n704_phrase_is_long_enough_for_a_confident_verdict():
+    """n704 идёт после паузы 150 с с порогом confidence >= 0.8: 34 символа (~2 с речи) — мало для уверенного вердикта.
+
+    Нижняя граница 50 символов — как у соседних реплик Саши (n702: 62); верхняя — бюджет VAD-окна 15 с (<= 96 символов).
+    Реплика обращена к роботу, имени не называет и тот же смысл («ты ещё здесь, помнишь меня?»).
+    """
+    step = _steps(ACT2B)["n704_sasha_after_gap_no_question"]
+    text = step["text"]
+    assert 50 <= len(text) <= 96, len(text)
+    assert text.startswith("Робот,") and "помнишь меня" in text
+    assert not introduces_self(text) and introduced_name(name_tokens(text)) is None
+    assert step["sleep_before_sec"] == 150
+
+
 @pytest.mark.parametrize(
     "speech, ok",
     [
@@ -353,8 +375,30 @@ def test_n722_second_profile_on_same_voice_is_red():
 
 
 def test_n722_is_known_red_until_3801_is_ported_to_v2():
+    """Красный ожидается ПО КОДУ и вживую не проверен (LLM может и не вызвать register_speaker) — так и написано;
+    карточка порта правила — #4054, до удаления v1 (#3711)."""
     known_red = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]["_known_red"]
     assert "#3801" in known_red and "#3711" in known_red
+    assert "#4054" in known_red
+    assert "ожидаемо красный (по коду, не проверено" in known_red
+    assert "красный по делу" not in known_red, "'по делу' — утверждение о проверенном; живого прогона нет"
+    assert "карточки на порт нет" not in known_red, "карточка есть: #4054"
+
+
+@pytest.mark.parametrize("label, name", [("n201_sasha_intro_long", "Саша"), ("n204_boris_intro_long", "Борис")])
+def test_act2_introduction_claiming_nameless_profile_is_confirmed(label, name):
+    """#3858, unnamed_profiles_enabled=true: первая фраза нового голоса >= 3 с завела безымянный профиль, представление
+    присвоило имя ЕМУ — строки «✅ … registered» нет. Харнесс называл это «NOT confirmed», хотя робот прав
+    (при STOP_ON_FOUNDATION_FAIL=1 раннер оборвал бы марафон на акте 2)."""
+    acc = _steps(ACT2)[label]["acceptance"]
+    assert etm.registration_expected(acc), "шаг обязан доказывать регистрацию: флага require_registration_accepted нет"
+    log = _register_call(name) + _claimed_unnamed(name) + _tts(f"Приятно познакомиться, {name}.")
+    verdict = etm.step_verdict(acc, log, label=label)
+    assert verdict["pass"], verdict["reason"]
+    assert verdict["registration"]["accepted"] == [name]
+    # без строки присвоения (и без «registered») регистрация не доказана — красный, как и был
+    bare = etm.step_verdict(acc, _register_call(name) + _tts("Приятно познакомиться."), label=label)
+    assert not bare["pass"] and "NOT confirmed" in bare["reason"]
 
 
 def test_n723_one_name_per_voice():
@@ -366,6 +410,35 @@ def test_n723_one_name_per_voice():
 
 
 # ── строки лога, на которые опираются паттерны, есть в коде робота ───────────
+
+
+def _logged_by_branch(branch_test: str, placeholders: dict) -> str:
+    """Сообщение, которое speaker_id_node логирует в ветке ``if <branch_test>:`` — собрано из f-строки ИСХОДНИКА.
+
+    Подстановки — по тексту выражения (``name``, ``sid[:8]``); неизвестная подстановка — KeyError, а не пустое место.
+    """
+    source = SPEAKER_ID_NODE.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.If) and ast.get_source_segment(source, node.test) == branch_test:
+            message = node.body[0].value.args[0]  # self.get_logger().info(f"…")
+            return "".join(
+                (
+                    placeholders[ast.get_source_segment(source, part.value)]
+                    if isinstance(part, ast.FormattedValue)
+                    else part.value
+                )
+                for part in message.values
+            )
+    raise AssertionError(f"ветка `if {branch_test}:` не найдена в {SPEAKER_ID_NODE}")
+
+
+def test_claimed_unnamed_fixture_is_the_line_speaker_id_node_logs():
+    """Фикстура _claimed_unnamed — не «похожая» строка, а f-строка ветки outcome.claimed_unnamed из исходника,
+    и ровно её харнесс обязан принимать как регистрацию (#3858)."""
+    real = _logged_by_branch("outcome.claimed_unnamed", {"sid[:8]": "5e6f7a8b", "name": "Нина"})
+    assert _claimed_unnamed("Нина") == _l("speaker_id_node", real)
+    outcome = etm.registration_outcome(_l("speaker_id_node", real))
+    assert outcome == {"accepted": ["Нина"], "merged": [], "rejected": []}
 
 
 def test_log_formats_exist_in_speaker_id_node():
