@@ -341,18 +341,23 @@ def test_pr4055_borscht_with_memory_as_a_condition_keeps_the_turn_going_to_the_w
 
 
 def test_pr4055_refusal_next_to_an_action_is_said_on_a_question_about_own_memory():
-    """Смешанная команда ``[memory_search (отказ), play_sound]``: данные её модели не возвращаются — на вопрос о памяти
-    о себе отказ говорит код (раньше не звучал нигде), звук исполнен; на посторонний — как было, только звук."""
+    """Смешанная команда ``[memory_search (отказ), play_sound]``: на вопрос о памяти о себе отказ говорит код одной
+    репликой со звукоподражанием звонка, читать модели больше нечего — второго вызова нет; на посторонний вопрос отказ —
+    данные модели (#4065: смешанная команда тоже возвращает ``query``), звонок сказан кодом, модель отвечает."""
     mixed = Command(actions=(ToolCall("memory_search", {"query": "чай"}), ToolCall("play_sound", {"sound": "ui_bell"})))
     ports = Ports([Answer(mixed, "deepseek")], outcomes={"memory_search": NO_PERSON})
     _run(ports, "помнишь, что я пью? и позвони в колокольчик")
-    assert len(ports.said) == 1 and ports.said[0][2] == "sad"
+    assert len(ports.said) == 1 and ports.said[0][2] == "sad" and len(ports.asked) == 1
     said = ports.said[0][0]
     assert said.startswith(phrases.text("query.rejected.no_person")), "отказ первым, затем звукоподражание звонка"
     assert ports.executed == [[("memory_search", {"query": "чай"}), ("play_sound", {"sound": "ui_bell"})]]
-    foreign = Ports([Answer(mixed, "deepseek")], outcomes={"memory_search": NO_PERSON})
+    foreign = Ports([Answer(mixed, "deepseek"), Answer(Command(speech=GAGARIN_ANSWER), "deepseek")],
+                    outcomes={"memory_search": NO_PERSON})
     _run(foreign, "кто такой Гагарин? и позвони в колокольчик")
     assert not any(own in text for own in OWN_PHRASES for text, _, _ in foreign.said)
+    assert foreign.said[-1][0] == GAGARIN_ANSWER and len(foreign.asked) == 2
+    rows = json.loads(foreign.asked[1][0][-1]["content"])[kn.QUERY_RESULTS_FIELD]
+    assert [r["tool"] for r in rows] == ["memory_search"], "модели — только данные query, не исход звонка"
 
 
 # -- ревью PR #4055: спасённый query с отказом — не «нашёл ответ» ------------------------------------------------

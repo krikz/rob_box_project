@@ -864,9 +864,11 @@ def test_rejected_memory_save_is_absent_from_the_next_speakers_window_3881():
 
 
 def test_memory_save_is_rejected_when_the_speaker_changed_during_the_turn_3881():
-    """Ход начат репликой Саши, к исполнению в снимке уже Борис: факт не уходит владельцу ни за кого."""
+    """Ход начат репликой Саши, к исполнению в снимке уже Борис: факт не уходит владельцу ни за кого. Данные
+    ``get_current_time`` смешанной команды уходят модели (#4065) — второй ответ модели."""
     box = {}
-    ports = MemoryPorts([Answer(Command(actions=(_FACT, ToolCall("get_current_time", {}))), "x")],
+    ports = MemoryPorts([Answer(Command(actions=(_FACT, ToolCall("get_current_time", {}))), "x"),
+                         Answer(Command(speech="Сейчас пять часов."), "x")],
                         on_ask=lambda: box["e"].session.set_speaker(
                             SpeakerRef(person_ref="spk-boris", name="Борис", name_state="confirmed")))
     engine = box["e"] = _engine(ports)
