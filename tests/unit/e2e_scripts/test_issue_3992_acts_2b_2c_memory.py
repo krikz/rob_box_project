@@ -173,6 +173,25 @@ def test_scenario_text_keeps_speaker_db_isolation_anchor(act_file):
     assert "memory_save" not in raw
 
 
+@pytest.mark.parametrize("act_file", [ACT2B, ACT2C])
+def test_hand_written_act_names_its_cast_for_the_privacy_filter(act_file):
+    """Ревью PR #4052: e2e-БД дикторов уходит в публичные артефакты, и харнесс (``collect_e2e_speaker_db``) выносит из
+    неё только имена поля ``cast`` сценария. Без поля скрыты ВСЕ имена, в том числе Саша и Борис из акта 2, которых
+    эти акты узнают. Формат тот же, что у генератора: ``list(gen.CAST.values())``."""
+    cast = _act(act_file).get("cast")
+    assert cast == list(_gen().CAST.values()), cast
+    assert {"Саша", "Борис"} <= set(cast)
+
+
+def test_every_marathon_scenario_has_a_cast_field():
+    """Страховка от следующего рукописного акта (2d…): сценарий без ``cast`` тихо прячет имена всего каста."""
+    names = [p.name for p in sorted(NIGHT.glob("night_marathon_act*_v1.json")) if "_acceptance_" not in p.name]
+    assert len(names) >= 12, names  # 10 актов + 2b + 2c
+    expected = list(_gen().CAST.values())
+    no_cast = [n for n in names if _act(n).get("cast") != expected]
+    assert not no_cast, no_cast
+
+
 def test_known_voices_are_judged_by_confirmed_verdict_and_never_asked():
     for label, step in _steps(ACT2B).items():
         name = CAST.get(step["voice"])
