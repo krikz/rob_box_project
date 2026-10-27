@@ -34,28 +34,28 @@ ls src/rob_box_voice/rob_box_voice/core/dialogue_state_machine.py 2>&1
 echo '$ ls src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py   # фактический путь'
 ls src/rob_box_harness/rob_box_harness/core/dialogue_state_machine.py 2>&1
 echo "\$ grep -rn '\"/dialogue/control\\|_pause_reason\\|check_silence_timeout' src --include=*.py"
-grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py > $TMP/3704.txt
-echo "  всего $(count < $TMP/3704.txt), вне тестов $(grep -v "$NT" $TMP/3704.txt | count)"
-grep -v "$NT" $TMP/3704.txt | per_file
+grep -rn '"/dialogue/control\|_pause_reason\|check_silence_timeout' src --include=*.py > "$TMP"/3704.txt
+echo "  всего $(count < "$TMP"/3704.txt), вне тестов $(grep -v "$NT" "$TMP"/3704.txt | count)"
+grep -v "$NT" "$TMP"/3704.txt | per_file
 old_count '"/dialogue/control|_pause_reason|check_silence_timeout' 'src/*.py'
 
 echo; echo "=== #3705 PR-11 (маркеры памяти) ==="
 echo '$ grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py'
-grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py > $TMP/3705.txt
-echo "  всего $(count < $TMP/3705.txt), вне тестов $(grep -v "$NT" $TMP/3705.txt | count)"
+grep -rn "_HISTORY_MARKER_RE\|_SPEAKER_TAG_RE\|_META_PREFIX_RE\|discard_last_reply\|voice_memory.db" src --include=*.py > "$TMP"/3705.txt
+echo "  всего $(count < "$TMP"/3705.txt), вне тестов $(grep -v "$NT" "$TMP"/3705.txt | count)"
 for p in _HISTORY_MARKER_RE _SPEAKER_TAG_RE _META_PREFIX_RE discard_last_reply 'voice_memory.db'; do
-  echo "  $p: вне тестов $(grep -v "$NT" $TMP/3705.txt | grep -c -- "$p")"
+  echo "  $p: вне тестов $(grep -v "$NT" "$TMP"/3705.txt | grep -c -- "$p")"
 done
 echo "  _HISTORY_MARKER_RE / _META_PREFIX_RE / discard_last_reply вне тестов:"
-grep -v "$NT" $TMP/3705.txt | grep -e _HISTORY_MARKER_RE -e _META_PREFIX_RE -e discard_last_reply | cut -d: -f1,2
-echo "  voice_memory.db вне тестов по файлам:"; grep -v "$NT" $TMP/3705.txt | grep 'voice_memory.db' | per_file
+grep -v "$NT" "$TMP"/3705.txt | grep -e _HISTORY_MARKER_RE -e _META_PREFIX_RE -e discard_last_reply | cut -d: -f1,2
+echo "  voice_memory.db вне тестов по файлам:"; grep -v "$NT" "$TMP"/3705.txt | grep 'voice_memory.db' | per_file
 old_count '_HISTORY_MARKER_RE|_SPEAKER_TAG_RE|_META_PREFIX_RE|discard_last_reply|voice_memory.db' 'src/*.py'
 
 echo; echo "=== #3706 PR-12a (Telegram v1) ==="
 echo '$ grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py'
-grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py > $TMP/3706.txt
-echo "  всего $(count < $TMP/3706.txt), вне тестов $(grep -v "$NT" $TMP/3706.txt | count)"
-grep -v "$NT" $TMP/3706.txt | per_file
+grep -rn "\[TG:\|tg_chat_id\|parse_tg_prefix" src --include=*.py > "$TMP"/3706.txt
+echo "  всего $(count < "$TMP"/3706.txt), вне тестов $(grep -v "$NT" "$TMP"/3706.txt | count)"
+grep -v "$NT" "$TMP"/3706.txt | per_file
 old_count '\[TG:|tg_chat_id|parse_tg_prefix' 'src/*.py'
 echo "\$ grep -rn '\"/voice/dialogue/response\"\\|\"/voice/sound/stop\"' src/rob_box_telegram"
 grep -rn '"/voice/dialogue/response"\|"/voice/sound/stop"' src/rob_box_telegram
@@ -65,9 +65,9 @@ echo '$ grep -rn "Bug \[A-F\]" src/rob_box_voice src/rob_box_dialog --include=*.
 echo "  $(grep -rn "Bug \[A-F\]" src/rob_box_voice src/rob_box_dialog --include=*.py | count)" \
   "  <- в BRE «\\[» — литерал «[»: команда ищет текст «Bug [A-F]» и всегда даёт 0"
 echo '$ grep -rnE "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py   # по смыслу: Bug A … Bug F'
-grep -rnE "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py > $TMP/bug.txt
-echo "  всего $(count < $TMP/bug.txt), вне тестов $(grep -v "$NT" $TMP/bug.txt | count)"
-grep -v "$NT" $TMP/bug.txt | per_file
+grep -rnE "Bug [A-F]\b" src/rob_box_voice src/rob_box_dialog --include=*.py > "$TMP"/bug.txt
+echo "  всего $(count < "$TMP"/bug.txt), вне тестов $(grep -v "$NT" "$TMP"/bug.txt | count)"
+grep -v "$NT" "$TMP"/bug.txt | per_file
 old_count 'Bug [A-F]\b' 'src/rob_box_voice/*.py' 'src/rob_box_dialog/*.py'
 echo "\$ grep -rc \"#[0-9]\\{4\\}\" src/rob_box_dialog/rob_box_dialog | awk -F: '{s+=\$2} END {print s}'"
 grep -rc "#[0-9]\{4\}" src/rob_box_dialog/rob_box_dialog | awk -F: '{s+=$2} END {print "  строк: " s}'
@@ -86,19 +86,19 @@ echo; echo "=== String-топики v1: файлы вне тестов и docs (
 for t in /voice/dialogue/state /voice/dialogue/response /voice/tts/state /voice/tts/finished /voice/tts/request \
          /voice/tts/control /dialogue/control; do
   git grep -n -F -e "$t" "$REF" -- src docker scripts architecture tools .github \
-    | sed "s|^$REF:||" | grep -v "$NT" > $TMP/topic.txt
-  echo "--- $t: строк $(count < $TMP/topic.txt), файлов $(cut -d: -f1 $TMP/topic.txt | sort -u | count)"
-  per_file < $TMP/topic.txt
+    | sed "s|^$REF:||" | grep -v "$NT" > "$TMP"/topic.txt
+  echo "--- $t: строк $(count < "$TMP"/topic.txt), файлов $(cut -d: -f1 "$TMP"/topic.txt | sort -u | count)"
+  per_file < "$TMP"/topic.txt
 done
 
 echo; echo "=== флаг dialog_engine (вне тестов, без rob_box_core/dialog_engine.py) ==="
 git grep -n -e dialog_engine "$REF" -- src docker scripts .github | sed "s|^$REF:||" | grep -v "$NT" \
-  | grep -v '^src/rob_box_core/rob_box_core/dialog_engine.py:' > $TMP/engine.txt
-echo "  строк $(count < $TMP/engine.txt), файлов $(cut -d: -f1 $TMP/engine.txt | sort -u | count)"
-per_file < $TMP/engine.txt
+  | grep -v '^src/rob_box_core/rob_box_core/dialog_engine.py:' > "$TMP"/engine.txt
+echo "  строк $(count < "$TMP"/engine.txt), файлов $(cut -d: -f1 "$TMP"/engine.txt | sort -u | count)"
+per_file < "$TMP"/engine.txt
 git grep -n -e dialog_engine "$OLD" -- src docker scripts .github | sed "s|^$OLD:||" | grep -v "$NT" \
-  | grep -v '^src/rob_box_core/rob_box_core/dialog_engine.py:' > $TMP/engine_old.txt
-echo "  на $OLD: строк $(count < $TMP/engine_old.txt), файлов $(cut -d: -f1 $TMP/engine_old.txt | sort -u | count)"
+  | grep -v '^src/rob_box_core/rob_box_core/dialog_engine.py:' > "$TMP"/engine_old.txt
+echo "  на $OLD: строк $(count < "$TMP"/engine_old.txt), файлов $(cut -d: -f1 "$TMP"/engine_old.txt | sort -u | count)"
 
 echo; echo "=== зависимости вне src (B6) ==="
 git grep -n -e skip_reason_checker -e dialogue_skip_reasons "$REF" -- scripts .github | sed "s|^$REF:||"
