@@ -175,6 +175,30 @@ def test_speech_agents_cover_dialog_engine_agents():
     assert set(knowledge.AGENTS) <= set(speech_client.SPEECH_AGENTS)
 
 
+@pytest.mark.parametrize("kind, ended", [
+    (0, False),   # queued
+    (1, False),   # synthesized
+    (2, False),   # started
+    (3, False),   # progress
+    (4, True),    # finished
+    (5, True),    # cancelled
+    (6, False),   # voice_changed
+    (7, True),    # rejected
+    (-1, False),
+    (99, False),
+])
+def test_is_speech_end_is_the_one_definition_of_an_ended_utterance(kind, ended):
+    """PR-15 15-0c хвосты (#3711): «реплика закончилась» - один предикат; читатели конца речи (speaker_id_node, дирижёр
+    сцен, speak_text, ``SpeakingWatch``) зовут его, а не держат свою таблицу видов. Конец - ровно ключи ``KIND_STATUS``."""
+    assert speech_client.is_speech_end(types.SimpleNamespace(kind=kind)) is ended
+    assert ended is (kind in speech_client.KIND_STATUS)
+
+
+def test_is_speech_end_tolerates_events_without_a_kind():
+    assert speech_client.is_speech_end(types.SimpleNamespace()) is False
+    assert speech_client.is_speech_end(M.SpeechEvent(kind=M.SpeechEvent.KIND_FINISHED)) is True
+
+
 @pytest.mark.parametrize("kind, reason, seconds, expected", [
     (2, "", 0.0, ("pending", None, 0)),
     (4, "", 11.6, ("done", None, 12)),

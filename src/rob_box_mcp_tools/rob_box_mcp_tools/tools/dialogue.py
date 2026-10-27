@@ -119,17 +119,15 @@ class SpeakTextTool(MCPTool):
         import threading
         self.pending_speeches_lock = threading.Lock()
 
-    #: Финальные виды SpeechEvent (``rob_box_dialog_msgs/SpeechEvent.kind``).
-    _FINAL_KINDS = {4: "finished", 5: "cancelled", 7: "rejected"}
-
     def _on_speech_event(self, ev) -> None:
         """Итог нашего чанка от владельца речи: лог с ПОЛНЫМ текстом (issue #1709).
 
-        Чужие реплики (общий топик) и промежуточные события пропускаются.
+        Чужие реплики (общий топик) и промежуточные события пропускаются. Что такое «конец реплики» и его
+        статус (``done``/``cancelled``/``rejected``) - ``speech_client.is_speech_end`` / ``KIND_STATUS`` (PR-15 15-0c).
         """
-        kind = self._FINAL_KINDS.get(int(getattr(ev, "kind", -1)))
-        if kind is None:
+        if not speech_client.is_speech_end(ev):
             return
+        status = speech_client.KIND_STATUS[int(ev.kind)]
         with self.pending_speeches_lock:
             known = self.pending_speeches.pop(ev.speech_id, None)
         if known is None:
@@ -138,8 +136,8 @@ class SpeakTextTool(MCPTool):
             speech_id=ev.speech_id,
             text=known["text"],
             voice=known["voice"],
-            success=kind == "finished",
-            error=None if kind == "finished" else f"{kind}:{ev.reason}",
+            success=status == "done",
+            error=None if status == "done" else f"{status}:{ev.reason}",
             known=True,
         )
 

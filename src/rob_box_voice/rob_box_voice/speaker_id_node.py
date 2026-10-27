@@ -284,12 +284,12 @@ def _label(match: SpeakerMatch) -> str:
 def on_speech_end(callback):
     """Подписчик ``SpeechEvent``, зовущий ``callback()`` только на финал реплики робота (PR-15 15-0c #3711).
 
-    Финал — ``finished``, ``cancelled`` или ``rejected``: одна таблица ``speech_client.KIND_STATUS``;
+    Финал — ``finished``, ``cancelled`` или ``rejected``: ``speech_client.is_speech_end``;
     ``queued``/``synthesized``/``started``/``progress``/``voice_changed`` — реплика ещё ждёт или звучит.
     """
 
     def on_event(event: SpeechEvent) -> None:
-        if int(getattr(event, "kind", -1)) in speech_client.KIND_STATUS:
+        if speech_client.is_speech_end(event):
             callback()
 
     return on_event

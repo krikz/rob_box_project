@@ -199,7 +199,14 @@ KIND_STARTED = 2
 #: Итог реплики по виду события: статус результата действия (``knowledge.ACTION_STATUSES``). Единственная таблица:
 #: ею читают итог ``say_aloud`` (тул, ожидающий начала) и хост чата (поздний итог по ``speech_id``).
 KIND_STATUS = {4: "done", 5: "cancelled", 7: "rejected"}
-_KIND_ENDED = tuple(KIND_STATUS)  # finished, cancelled, rejected
+
+
+def is_speech_end(event: Any) -> bool:
+    """Это событие конца реплики: ``finished``, ``cancelled`` или ``rejected`` (:data:`KIND_STATUS`)? ``queued`` /
+    ``synthesized`` / ``started`` / ``progress`` / ``voice_changed`` - реплика ещё ждёт или звучит. Единственное
+    место, где «конец» определён: читатели конца речи (``speaker_id_node``, дирижёр сцен, ``speak_text``, фронт
+    ``SpeakingWatch``) зовут его, а не держат свою копию таблицы видов (PR-15 15-0c, #3711)."""
+    return int(getattr(event, "kind", -1)) in KIND_STATUS
 
 
 def event_outcome(event: Any) -> Tuple[str, Optional[str], int]:
@@ -239,7 +246,7 @@ class SpeakingWatch:
         kind, sid = int(getattr(event, "kind", -1)), str(getattr(event, "speech_id", "") or "")
         if kind == KIND_STARTED:
             self._live[sid] = self._clock()
-        elif kind in _KIND_ENDED:
+        elif is_speech_end(event):
             self._live.pop(sid, None)
         now = self.speaking
         return now if now != was else None
@@ -286,6 +293,7 @@ __all__ = [
     "build_request",
     "cancel",
     "event_outcome",
+    "is_speech_end",
     "prepare",
     "say",
     "watch_speaking",
