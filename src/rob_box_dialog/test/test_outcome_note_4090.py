@@ -103,17 +103,36 @@ def test_late_music_outcome_carries_its_note_too():
 
 
 def test_whole_reply_of_the_owner_replaces_the_launch_phrase_and_beats_the_note():
-    """Порядок как у ``media_phrases.launch_text`` v1: реплика целиком (трек кэша, «песня пишется») — вместо фразы
-    исхода; фраза моста под песню («…песня ещё пишется, играю своё.») при ней не звучит."""
+    """Порядок как у ``media_phrases.launch_text`` v1: реплика целиком (трек кэша) — вместо фразы исхода, фраза
+    ``note`` при ней не звучит."""
     cache = "Ставлю песню из сочинённого раньше: «Кот и ёж»."
     said = _music_turn("request_music", {"intent": "track", "text": "спой про кота"},
-                       ("done", None, {"ok": True, "source_message": cache}))
+                       ("done", None, {"ok": True, "source_message": cache, "source_note": NEAREST}))
     assert said == [cache]
-    wait = "Пишу песню, пою голосом Russian_ReliableMan — минуты полторы."
-    said = _music_turn("generate_music", {"kind": "robot_song"},
-                       ("done", None, {"ok": True, "pending": "song", "source_message": wait,
-                                       "source_note": "Сгенерировать сейчас не могу: песня ещё пишется, играю своё."}))
-    assert said == [wait]
+
+
+BRIDGE_NOTE = "Сгенерировать сейчас не могу: песня ещё пишется, играю своё."
+
+
+@pytest.mark.parametrize("tool,args,data", [
+    ("generate_music", {"kind": "robot_song"},
+     {"ok": True, "pending": "song", "track_id": "bridge-1", "source": "synth", "style": "club",
+      "source_message": "Пишу песню, пою голосом Russian_ReliableMan — минуты полторы. Пока играет своё.",
+      "source_note": BRIDGE_NOTE}),
+    ("request_music", {"intent": "track", "text": "сгенерируй метал"},
+     {"ok": True, "pending": "instrumental", "track_id": "bridge-2", "style": "breaks",
+      "source_message": "Сочиняю новый трек, метал — секунд 50. Пока играет своё — брейкбит.", "source_note": NEAREST}),
+    ("generate_music", {"kind": "robot_song"},
+     {"ok": True, "pending": "song", "source_message": "Пишу песню.", "source_note": BRIDGE_NOTE}),
+])
+def test_song_being_written_says_the_wait_phrase_of_the_dialog_table_not_the_owner_text(tool, args, data):
+    """Ревью PR #4107: «песня пишется» — фраза таблицы диалога по данным (``knowledge.GEN_WAIT``, #4104), одна. Фраза
+    владельца (``source_message`` «Пишу песню …» и ``source_note`` моста) её не подменяет и к ней не добавляется —
+    иначе в v2 две реализации одной фразы."""
+    said = _music_turn(tool, args, ("done", None, data), "сгенерируй новую песню")
+    key = kn.GEN_WAIT.key(data)
+    assert key and len(said) == 1 and said[0] in set(phrases.catalog()[key]), said
+    assert data["source_message"] not in said[0] and data["source_note"] not in said[0]
 
 
 def test_owner_text_fields_belong_to_action_tools_of_the_catalog():

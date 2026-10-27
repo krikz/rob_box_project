@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.execute import Executor
@@ -135,7 +136,8 @@ def test_model_slot_engine_synth_is_kept_when_the_person_named_the_synthesizer(c
 
 def test_song_being_written_over_a_synth_bridge_says_the_wait_phrase_not_the_bridge_note(tmp_path):
     """Песня пишется, мост — синтез (кэша нет): в данных исхода и фраза моста «…песня ещё пишется, играю своё.», и
-    фраза ожидания. Вслух — фраза ожидания целиком, как в v1 (``media_phrases.launch_text``), без противоречия."""
+    фраза ожидания владельца. Вслух — фраза ожидания из таблицы диалога по данным (``GEN_WAIT``, #4104), одна: ни
+    фраза моста, ни «Пишу песню …» владельца к ней не добавляются (ревью PR #4107)."""
     from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 
     from .test_adr0158_pr7_song import FakeStudio
@@ -146,8 +148,9 @@ def test_song_being_written_over_a_synth_bridge_says_the_wait_phrase_not_the_bri
     text, results, calls = _spoken(req, "request_music", {"intent": "track", "text": heard}, heard)
     data = calls[0].data
     assert calls[0].success and data["pending"] == "song" and data.get("source_note")  # мост сказал бы своё
-    assert results[0].status == "done" and text == data["source_message"]
-    assert "Пишу песню" in text and data["source_note"] not in text
+    key = kn.GEN_WAIT.key(results[0].data)
+    assert results[0].status == "done" and key and text in set(phrases.catalog()[key]), (key, text)
+    assert data["source_note"] not in text and data["source_message"] not in text
 
 
 def test_two_songs_on_the_synthesizer_are_live_singing_not_a_paid_instrumental():
@@ -160,3 +163,29 @@ def test_two_songs_on_the_synthesizer_are_live_singing_not_a_paid_instrumental()
     assert not result.success and result.data["route"] == "live:song"
     assert result.data["reason"] == tools_v2.SOURCE_DECLINED and LIVE_TOOL_TEXT in (result.error or "")
     assert rig.owner.now_playing().get("playing") is not True
+
+
+class _ModelCalled(BaseException):
+    """Модель чойсера позвана там, где путь решает код (``BaseException`` проходит сквозь ``DeterministicChooser``)."""
+
+
+class _NoModel:
+    def choose(self, question, *, deadline_ms=0):
+        raise _ModelCalled(f"модель чойсера позвана: {question.text}")
+
+
+@pytest.mark.parametrize("heard", ["Робот, рэп под бит.", "Робот рэп под бит", "робот рэп под бит, пожалуйста"])
+def test_elliptic_order_after_the_wake_word_is_the_same_with_or_without_a_comma(heard):
+    """Ревью PR #4107: STT часто не ставит запятую после обращения. Диалог v2 снимает вейк-слово до пути пения
+    (``address.decide`` → текст хода; тот же текст — ``heard_text`` тула, ``dialog_node.voice_turn_context``), и
+    «Робот рэп под бит» — та же просьба, что «Робот, рэп под бит.»: клетка «синт + пение» кодом, без модели."""
+    from rob_box_dialog.address import Addressed, decide
+    from rob_box_dialog.backlog import Heard
+    from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS
+    from rob_box_mcp_tools.engine.sing_route import SingRouteHost
+    from rob_box_music.choice import DeterministicChooser
+
+    decision = decide(Heard(heard, 0.0), None, DEFAULT_WAKE_WORDS)
+    assert isinstance(decision, Addressed) and decision.text.lower().startswith("рэп под бит"), decision
+    host = SingRouteHost(DeterministicChooser(_NoModel()), lambda: [], lambda line: None)
+    assert host(decision.text, (), False) == "live:rap"

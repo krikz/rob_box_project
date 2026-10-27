@@ -418,14 +418,24 @@ def _filler(word: str) -> bool:
             or word.endswith(kn.SING_OBJECT_ADJ_ENDINGS))
 
 
+def _counted(clause: Sequence[str], j: int) -> bool:
+    """Перед ``clause[j]`` — слово количества (``SING_QUANTITY_WORDS``) не дальше трёх слов, между ними только
+    прилагательные мн. ч. (``SING_PLURAL_ADJ_ENDINGS``: «две новые песни»); существительное между ними («пару копий
+    песни») — не счёт этой песни."""
+    k, stop = j - 1, max(0, j - 3)
+    while k > stop and clause[k] not in kn.SING_QUANTITY_WORDS and clause[k].endswith(kn.SING_PLURAL_ADJ_ENDINGS):
+        k -= 1
+    return k >= stop and clause[k] in kn.SING_QUANTITY_WORDS
+
+
 def _object_word(clause: Sequence[str], j: int) -> str:
-    """Вид дополнения ``clause[j]`` или «»: мн. ч. («песни», «песен») — только после слова количества не дальше трёх
-    слов («сгенерируй две песни»), иначе это и родительный («слова песни»), и чужие песни («запиши песни Цоя»)."""
+    """Вид дополнения ``clause[j]`` или «»: мн. ч. («песни», «песен») — только после слова количества
+    (:func:`_counted`: «сгенерируй две песни»), иначе это и родительный («слова песни»), и чужие песни («запиши песни
+    Цоя»)."""
     word = clause[j]
     if word in _OBJECT_KIND:
         return _OBJECT_KIND[word]
-    counted = any(w in kn.SING_QUANTITY_WORDS for w in clause[max(0, j - 3):j])
-    return _PLURAL_KIND.get(word, "") if counted else ""
+    return _PLURAL_KIND.get(word, "") if _counted(clause, j) else ""
 
 
 def _object_at(clause: Sequence[str], i: int, step: int) -> int:
@@ -530,7 +540,8 @@ def _edited(phrase: _Phrase, start: int, clause: Sequence[str], i: int, j: int) 
     «снова»), правка перед парой, предлог правки между глаголом и песней («запиши на флешку песню») или хвост после
     пары («слышнее», «на репите», «без шума», «с эхом», «на диктофон», «которую я спою»)."""
     between = range(i + 1, j) if j > i else range(0)
-    return (phrase.repeat or _edit_before(clause, min(i, j))
+    repeat = phrase.repeat and not any(w in kn.ENGINE_TOPIC_LEADS for w in clause)  # с темой — новый заказ
+    return (repeat or _edit_before(clause, min(i, j))
             or any(clause[k] in kn.SING_EDIT_PREPOSITIONS and not _order_tail(clause, k) for k in between)
             or _edit_after(phrase, start + max(i, j) + 1))
 
@@ -567,34 +578,65 @@ def _verb_kind(phrase: _Phrase, start: int, clause: Sequence[str], i: int) -> st
     return rule.bare
 
 
-def _names_synth(words: Sequence[str]) -> bool:
-    """Синт назван: слово движка (``MUSIC_ENGINES``, не после отрицания и не тема) или подложка («под бит» —
-    строка ``synth`` ``SING_ROUTE_MARKERS``)."""
-    return bool(_engine_hits(words, True)) or any(_marked(words, entry) for entry in _ROUTE_MARKERS[SYNTH])
+def _sentences(phrase: _Phrase) -> List[List[str]]:
+    """Слова каждого предложения фразы (граница — ``.!?;``; запятая и тире — внутри предложения)."""
+    out: List[List[str]] = [[]]
+    for token in phrase.tokens:
+        if token in _SENTENCE_ENDS:
+            out.append([])
+        elif _is_word(token):
+            out[-1].append(token)
+    return [words for words in out if words]
 
 
-def _elliptic(clause: Sequence[str]) -> str:
-    """Просьба спеть без глагола (#4090 C): часть фразы начинается (после служебных слов и «давай») с дополнения-песни
-    или рэпа, и синт назван в ней же — «рэп под бит», «песню на Ренардо»: клетка «синт + пение» вилки. «Включи рэп
-    под бит» — часть начинается с глагола, не пение."""
-    k = 0
-    while k < len(clause) and (clause[k] in kn.SING_OBJECT_FILLERS or clause[k] in kn.SING_JOINT_ASKS):
-        k += 1
-    kind = _OBJECT_KIND.get(clause[k], "") if k < len(clause) else ""
-    return kind if kind in ("song", "rap") and _names_synth(clause[k + 1:]) else ""
+def _marker_spans(words: Sequence[str], entry: str) -> List[Tuple[int, int]]:
+    """Где в словах стоит запись маркера (``SING_ROUTE_MARKERS``: одно слово — основа, несколько — подряд, точно)."""
+    parts = entry.split()
+    if len(parts) == 1:
+        return [(i, i + 1) for i, w in enumerate(words) if w.startswith(entry)]
+    return [(i, i + len(parts)) for i in range(len(words)) if _phrase_at(words, i, parts)]
+
+
+def _synth_named(words: Sequence[str]) -> Set[int]:
+    """Позиции слов, которыми назван синт: слова движка (``MUSIC_ENGINES``, не после отрицания и не тема) с предлогом
+    прямо перед ними («на синтезаторе», «на Ренардо», ``SING_OBJECT_PREPOSITIONS``) и подложка («под бит» — строка
+    ``synth`` ``SING_ROUTE_MARKERS``)."""
+    spans = [(first, end) for _key, first, end in _engine_hits(words, True)]
+    spans += [span for entry in _ROUTE_MARKERS[SYNTH] for span in _marker_spans(words, entry)]
+    named = {n for first, end in spans for n in range(first, end)}
+    return named | {n - 1 for n in named if n and words[n - 1] in kn.SING_OBJECT_PREPOSITIONS}
+
+
+def _ellipsis_word(word: str) -> bool:
+    """Слово, которое просьбу без глагола не меняет: служебное (``SING_OBJECT_FILLERS``: «мне», «пожалуйста», «плиз»,
+    «своим голосом») или «давай» (``SING_JOINT_ASKS``)."""
+    return word in kn.SING_OBJECT_FILLERS or word in kn.SING_JOINT_ASKS
+
+
+def _elliptic(words: Sequence[str]) -> str:
+    """Просьба спеть без глагола (#4090 C) — предложение ``words`` и есть заказ, целиком: синт назван
+    (:func:`_synth_named`), а кроме него и служебных слов (:func:`_ellipsis_word`) в предложении ровно одно слово —
+    дополнение-песня или рэп (``SING_ELLIPSIS_OBJECTS``): «рэп под бит», «давай песню на Ренардо», «рэп под бит,
+    пожалуйста» — клетка «синт + пение» вилки. Любое другое слово — отрицание («песню на синтезаторе не пой», «не
+    надо», «хватит»), оценка («рэп под бит классный», «рэп под бит — это круто»), сказуемое («мне нравится», «мы
+    слушали вчера»), глагол не пения («включи рэп под бит») — и это не просьба спеть: «» (решает модель; ревью
+    PR #4107: код не делает обратное сказанному). Обращение («Робот, …») снимает диалог v2 до пути пения
+    (``rob_box_dialog.address.decide``: текст хода и ``heard_text`` тула — без вейк-слова)."""
+    named = _synth_named(words)
+    rest = [w for n, w in enumerate(words) if n not in named and not _ellipsis_word(w)]
+    kind = _OBJECT_KIND.get(rest[0], "") if len(rest) == 1 else ""
+    return kind if named and kind in kn.SING_ELLIPSIS_OBJECTS else ""
 
 
 def _asked_verbs(text: str) -> List[Tuple[str, str]]:
     """``(глагол, вид пения)`` каждой просьбы спеть во фразе: глагол и его прямое дополнение в одной части фразы
-    (:func:`_clauses`); просьба без глагола (:func:`_elliptic`) — с пустым глаголом."""
+    (:func:`_clauses`); просьба без глагола (:func:`_elliptic`, предложение целиком) — с пустым глаголом."""
     phrase = _phrase(text)
     found: List[Tuple[str, str]] = []
     for start, clause in _clauses(phrase):
         found.extend((clause[i], kind) for i in range(len(clause)) for kind in (_verb_kind(phrase, start, clause, i),)
                      if kind)
-        kind = _elliptic(clause)
-        if kind:
-            found.append(("", kind))
+    found.extend(("", kind) for kind in map(_elliptic, _sentences(phrase)) if kind)
     return found
 
 
@@ -637,10 +679,7 @@ def _negated(words: Sequence[str], i: int) -> bool:
 def _marked(words: Sequence[str], entry: str) -> bool:
     """Запись маркера (``SING_ROUTE_MARKERS``: одно слово — основа, несколько — подряд) в речи не после отрицания:
     «но не нейросетью» путь не называет."""
-    parts = entry.split()
-    if len(parts) == 1:
-        return any(w.startswith(entry) and not _negated(words, i) for i, w in enumerate(words))
-    return any(_phrase_at(words, i, parts) and not _negated(words, i) for i in range(len(words)))
+    return any(not _negated(words, i) for i, _end in _marker_spans(words, entry))
 
 
 def fork_cell(row: str, sung: bool) -> kn.ForkCell:
