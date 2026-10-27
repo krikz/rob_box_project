@@ -1032,8 +1032,9 @@ class GenerateMusicTool(MCPTool):
             allowed = f"есть {list(GEN_KINDS)} и {list(GEN_STYLE_CHOICES)}"
             return MCPToolResult(success=False, error=f"kind={kind!r}/style={style!r}: {allowed}")
         heard = source_ask(heard_text or theme or "")
-        # тул «сгенерируй» сам просит иной путь, чем «играй сам»: движок здесь — только названный по имени («Ренардо»),
-        # а «вживую»/«на синтезаторе» (слова по смыслу) в генерации и песне — не просьба к синтезу (#4070)
+        # тул «сгенерируй» сам просит иной путь, чем «играй сам»: движок здесь — названный по имени («Ренардо») или
+        # словом движка («на синтезаторе» = «на Ренардо», решение Шифу 27.10, #4090 D: синт играет бесплатно, без
+        # KIE), а «вживую» (слово по смыслу) в генерации и песне — не просьба к синтезу (#4070)
         ask = replace(heard, generated=True, vocal=heard.vocal or kind != "instrumental",
                       robot_voice=heard.robot_voice or kind == "robot_song", genre=heard.genre or style or "",
                       engine=ask_engine(heard_text or theme or "", by_meaning=False))

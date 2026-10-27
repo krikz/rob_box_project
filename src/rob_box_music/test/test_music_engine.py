@@ -266,7 +266,7 @@ def test_no_style_or_genre_word_of_the_tables_names_the_engine():
 def test_every_style_tail_of_the_table_cancels_the_bare_synt_and_only_it():
     """«На синт» перед второй половиной составного стиля (``SYNTH_STYLE_TAILS``) — стиль, а не путь. Отмена держится
     за запись «на синт»: «на синте вейв» и «вживую поп» хвостов не знают, путь на них остаётся."""
-    assert kn.SYNTH_STYLE_TAILS and kn.MUSIC_ENGINES["synth"].words["на синт"] == kn.SYNTH_STYLE_TAILS
+    assert kn.SYNTH_STYLE_TAILS and kn.MUSIC_ENGINES["synth"].name_words["на синт"] == kn.SYNTH_STYLE_TAILS
     for tail in kn.SYNTH_STYLE_TAILS:
         assert ask_engine(f"сыграй на синт {tail}") == "", tail
         assert blank_engine(f"сыграй на синт {tail}") == f"сыграй на синт {tail}", tail
@@ -278,12 +278,16 @@ def test_every_style_tail_of_the_table_cancels_the_bare_synt_and_only_it():
 def test_every_entry_of_the_engine_table_names_the_engine():
     """Таблица не врёт сама себе: каждая основа, слово и ядро узнаётся в речи, записи строчные и без «ё»."""
     for engine in kn.MUSIC_ENGINES.values():
-        assert engine.words and engine.stems and engine.cores
-        for entry in (*engine.stems, *engine.words):
+        assert engine.words and engine.name_words and engine.stems and engine.cores
+        assert not set(engine.words) & set(engine.name_words)  # слово — либо как имя, либо по смыслу
+        for entry in (*engine.stems, *engine.words, *engine.name_words):
             assert ask_engine(f"сыграй {entry}") == engine.key, entry
+        for entry in (*engine.stems, *engine.name_words):  # имя и слова движка — при любом пути (#4090 D)
+            assert ask_engine(f"сгенерируй трек {entry}") == engine.key, entry
         for core in engine.cores:  # слово не начинается ни с одной основы — узнано ядром
             assert ask_engine(f"сыграй на во{core}а") == engine.key, core
-        assert all(word == word.lower().replace("ё", "е") for word in (*engine.stems, *engine.words, *engine.cores))
+        assert all(word == word.lower().replace("ё", "е")
+                   for word in (*engine.stems, *engine.words, *engine.name_words, *engine.cores))
 
 
 def test_bare_synt_needs_the_preposition_because_it_is_the_first_half_of_a_style():
@@ -308,13 +312,13 @@ def test_engine_word_by_meaning_leaves_the_theme_and_only_it():
     assert ask_engine(two) == "synth"
 
 
-#: Просьбы иного пути со словами по смыслу «вживую»/«на синтезаторе» (ревью #4071, блокирующее): человек не просил
-#: движок — «спой вживую» это спеть, «сгенерируй вживую» это генерация. Раньше: ``engine=synth`` → «Спеть сейчас не
-#: могу: названный движок так не играет» (движок не назван) и молчаливое сужение генерации до ``synth:club``.
+#: Просьбы иного пути со словами по смыслу «вживую»/«живьём» (ревью #4071, блокирующее): человек не просил движок —
+#: «спой вживую» это спеть, «сгенерируй вживую» это генерация. Раньше: ``engine=synth`` → «Спеть сейчас не могу:
+#: названный движок так не играет» (движок не назван) и молчаливое сужение генерации до ``synth:club``. «На
+#: синтезаторе», «на синте» сюда больше не входят: это слово движка, как имя (решение Шифу 27.10, #4090 D).
 OTHER_PATH_WITH_MEANING_WORDS = [
-    "спой песню вживую", "спой вживую", "Робот, спой живьём", "спой песню на синтезаторе", "спой на синте",
-    "сыграй песню своим голосом вживую", "сгенерируй трек вживую", "сгенерируй вживую", "сгенерируй на синтезаторе",
-    "сочини вживую", "сочини что-нибудь на синтезаторе", "сыграй новую вживую", "поставь новый трек на синте",
+    "спой песню вживую", "спой вживую", "Робот, спой живьём", "сыграй песню своим голосом вживую",
+    "сгенерируй трек вживую", "сгенерируй вживую", "сочини вживую", "сыграй новую вживую",
 ]
 
 
@@ -326,19 +330,26 @@ def test_meaning_words_do_not_name_the_engine_when_another_path_is_asked(text):
 
 
 @pytest.mark.parametrize("text", ["спой на ренардо", "сгенерируй на индардо", "спой на рем дарда", "сочини на ренардо",
-                                  "сыграй новую на нарен дарда"])
+                                  "сыграй новую на нарен дарда",
+                                  # #4090 D: «синтезатор/синт» — слово движка, как имя
+                                  "спой песню на синтезаторе", "спой на синте", "сгенерируй на синтезаторе",
+                                  "сочини что-нибудь на синтезаторе", "поставь новый трек на синте",
+                                  "сгенерируй трек на синтезаторе"])
 def test_the_name_of_the_engine_names_it_whatever_path_is_asked(text):
-    """Имя «Ренардо» (и искажения STT) — прямое слово про движок: оно называет его и в просьбе иного пути."""
+    """Имя «Ренардо» (и искажения STT) и слова движка «на синтезаторе», «на синте» — прямые слова про движок: они
+    называют его и в просьбе иного пути (решение Шифу 27.10 17:07 UTC: «на синтезаторе» = «на Ренардо»)."""
     ask = source_ask(text)
     assert ask.asks_path and ask.engine == "synth"
 
 
 def test_by_meaning_override_is_for_the_caller_that_knows_the_path():
-    """Тул «сгенерируй» сам просит иной путь, даже когда слов про него в реплике нет: ``by_meaning=False``."""
+    """Тул «сгенерируй» сам просит иной путь, даже когда слов про него в реплике нет: ``by_meaning=False`` снимает
+    только слова по смыслу («вживую»); имя и слова движка («на синте») остаются."""
     assert ask_engine("сыграй вживую") == "synth" and ask_engine("сыграй вживую", by_meaning=False) == ""
     assert ask_engine("сыграй на ренардо", by_meaning=False) == "synth"
     assert ask_engine("спой вживую", by_meaning=True) == "synth"
-    assert engine_words("сыграй на синте", by_meaning=False) == []
+    assert engine_words("сыграй живьём", by_meaning=False) == []
+    assert ask_engine("сыграй на синте", by_meaning=False) == "synth"
 
 
 def test_sing_live_is_live_singing_not_a_generation_and_not_a_false_decline():

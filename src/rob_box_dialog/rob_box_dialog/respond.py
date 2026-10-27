@@ -111,13 +111,26 @@ def _slots(result: ActionResult) -> Mapping[str, Any]:
     return slots
 
 
+def _with_owner_text(result: ActionResult, text: str) -> str:
+    """Фраза исхода с фразой кода владельца из данных успешного исхода (``knowledge.OUTCOME_OWNER_TEXT``, #4090):
+    реплика целиком (``whole``) — вместо фразы исхода, иначе фраза ``note`` — перед ней."""
+    fields = kn.OUTCOME_OWNER_TEXT.get(result.tool)
+    if result.status != "done" or fields is None:
+        return text
+    whole = str(result.data.get(fields.whole) or "").strip()
+    note = str(result.data.get(fields.note) or "").strip()
+    return whole or " ".join(part for part in (note, text) if part)
+
+
 def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[Utterance]:
     """Реплика по результату исполнителя. Вариант фразы выбирается по ``turn_id`` (повторяемо в тестах), адресат —
-    наушник для агента оператора, иначе динамики (телеграм-агент берёт из реплики только текст)."""
+    наушник для агента оператора, иначе динамики (телеграм-агент берёт из реплики только текст). Фраза кода владельца
+    из данных исхода (:func:`_with_owner_text`) — целиком или перед фразой исхода."""
     key = phrase_key(result)
     if key is None:
         return None
     text = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
+    text = _with_owner_text(result, text)
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,
                      emotion=outcome_emotion((result,)))
