@@ -23,9 +23,18 @@ reliably emit words from the general emotion vocabulary (``excited``,
 ``neutral``, ``confused``) and because Russian input reaches the tools
 directly; normalising them is friendlier than rejecting them. But they are
 not animations, so they must never be advertised as valid values.
+
+#4103: the dialogue needs the same vocabulary — it builds the queue of
+scenes for «покажи по очереди радость, грусть и удивление» from the
+person's words — and ``rob_box_dialog`` must not import this ROS package.
+So the table itself (``KNOWN_ANIMATIONS``, ``ANIMATION_ALIASES``,
+``animation_name``) lives in ``rob_box_dialog.knowledge``; this module
+re-exports it and keeps the tool-side rules (fallback, show seconds).
 """
 
 from __future__ import annotations
+
+from rob_box_dialog.knowledge import ANIMATION_ALIASES, KNOWN_ANIMATIONS, animation_name
 
 __all__ = [
     "ANIMATION_ALIASES",
@@ -39,79 +48,16 @@ __all__ = [
 #: ``play_animation``: допустимая длительность показа, секунды; вне диапазона - ``SHOW_MIN_S``.
 SHOW_MIN_S, SHOW_MAX_S = 2.0, 30.0
 
-#: Every name the ``play_animation`` tool offers; each resolves to a face scene.
-KNOWN_ANIMATIONS: tuple[str, ...] = (
-    "accelerating",
-    "ambulance",
-    "angry",
-    "braking",
-    "charging",
-    "error",
-    "fire_truck",
-    "happy",
-    "idle",
-    "low_battery",
-    "police_lights",
-    "road_service",
-    "sad",
-    "sleep",
-    "surprised",
-    "talking",
-    "thinking",
-    "turn_left",
-    "turn_right",
-    "victory",
-    "wakeup",
-)
-
-#: Names that are *not* animations but are normalised to one. Russian labels
-#: come from direct speech; the English ones from the LLM's emotion
-#: vocabulary (MiniMax M3 emits ``excited`` constantly).
-ANIMATION_ALIASES: dict[str, str] = {
-    # Русские названия
-    "нейтрально": "idle",
-    "нейтральная": "idle",
-    "нейтральный": "idle",
-    "радость": "happy",
-    "радостный": "happy",
-    "счастливый": "happy",
-    "грустный": "sad",
-    "грусть": "sad",
-    "печаль": "sad",
-    "злой": "angry",
-    "злость": "angry",
-    "возбужденный": "happy",
-    "возбуждение": "happy",
-    "смущенный": "thinking",
-    "смущение": "thinking",
-    "растерянный": "thinking",
-    # Эмоции из общего словаря LLM, которых нет среди анимаций
-    "neutral": "idle",
-    "excited": "happy",
-    "confused": "thinking",
-    "laughing": "happy",
-    "smiling": "happy",
-    # ``dancing`` раньше маппился в "excited" — такой анимации не
-    # существует, поэтому нормализация всё равно скатывалась в fallback.
-    "dancing": "happy",
-    "singing": "happy",
-    # LLM часто пишет "talk" вместо "talking"
-    "talk": "talking",
-}
-
 
 def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str:
     """Resolve *animation* to a name the player can actually render.
 
-    Applies the alias map case-insensitively; anything still unknown
-    becomes *fallback*. Callers that need to report the substitution should
-    compare the result against their input.
+    One rule with the dialogue (``rob_box_dialog.knowledge.animation_name``):
+    the alias map applies case-insensitively; anything still unknown becomes
+    *fallback*. Callers that need to report the substitution should compare
+    the result against their input.
     """
-    if not animation:
-        return fallback
-    candidate = str(animation).strip().lower()
-    candidate = ANIMATION_ALIASES.get(candidate, candidate)
-    return candidate if candidate in KNOWN_ANIMATIONS else fallback
+    return animation_name(animation) or fallback
 
 
 def clamp_show_seconds(duration: float | None) -> float | None:

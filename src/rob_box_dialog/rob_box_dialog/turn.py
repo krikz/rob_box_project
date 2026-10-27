@@ -13,7 +13,9 @@
 * голое «робот» без бэклога — только рефлекс ``addressed``, 0 вызовов LLM, 0 речи (§7.3 п.1); с подхватом бэклога
   (В12″) — модель получает подхваченные фразы каждую со своим автором (``[говорит: …]`` на момент фразы, не
   того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
-* Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия), спорный стоп (В19) идёт в LLM;
+* Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия, очередь показа лица «покажи по очереди
+  радость, грусть и удивление» — ``play_animation`` на сцену, лицо итога и его очередь, #4103), спорный стоп (В19)
+  идёт в LLM;
 * вопрос тула («Удалить «X»? Скажи «да, удаляй».», ``knowledge.TOOL_QUESTIONS``) — окно ответа в сессии
   (``tool_ask``, #4062): ответ «да, удаляй» исполняет код подтверждённым вызовом, фраза — из результата тула; «нет» —
   фраза кода; другие слова — к LLM с тулом вопроса в срезе. Вопрос — не провал: фраза и лицо не грустят
@@ -79,7 +81,7 @@ from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performa
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
-from rob_box_dialog.expression import face_label, show_seconds, shows
+from rob_box_dialog.expression import face_label, show_seconds, shown_scene, shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
@@ -239,9 +241,10 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
     """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, «говори нормально» — сброс скорости и
-    тона (``set_speed``/``set_pitch`` ``normal``, #4022), стоп всего — музыка, если играет
-    (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и оговорка «музыку оставь» (#3994)
-    музыку не трогают."""
+    тона (``set_speed``/``set_pitch`` ``normal``, #4022), очередь показа — ``play_animation`` на каждую сцену по
+    порядку реплики (#4103: та же дорога исполнения, что у вызовов модели; окно LLM видит исход), стоп всего — музыка,
+    если играет (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и оговорка «музыку
+    оставь» (#3994) музыку не трогают."""
     if command.kind == "volume":
         tool = kn.VOLUME_CHANNELS[command.args["channel"]].tool
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
@@ -249,6 +252,8 @@ def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[Too
         return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
     if command.kind == kn.PROSODY_NORMAL_KIND:
         return tuple(ToolCall(tool, {"action": kn.PROSODY_NORMAL_ARG}) for tool in kn.PROSODY_RESET_TOOLS)
+    if command.kind == kn.SHOW_QUEUE_KIND:  # #4103: сцены по порядку реплики, время - по умолчанию показа
+        return tuple(ToolCall(kn.SHOW_TOOL, {"animation": name}) for name in command.args["scenes"])
     return stop_music_calls(snapshot) if stops_music(command) else ()
 
 
@@ -351,8 +356,9 @@ def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expres
     """Экспрессия команды для рефлекса итога (#3997, ADR-0148: решает код): лицо команды красит ``done``. ``None`` —
     рефлекс как есть: ход не ``done`` или отменён (перебивание, ``stale_epoch``), в кадре ``Silence`` (лицо там —
     заклеенный рот, #3984), у команды нечего показать: ни сцены (``expression.shows``), ни очереди пачки за ней
-    (``Shown.then``, #4083: пачка ``[idle, happy]`` - первая сцена-нейтраль оставляет ``done`` обычным рефлексом, а
-    очередь всё равно идёт в свой срок, а не теряется вместе с первой сценой)."""
+    (``Shown.then``, #4083: пачка ``[talking, happy]`` - первой сцене нечего показать без речи, ``done`` - обычный
+    рефлекс, а очередь всё равно идёт в свой срок, а не теряется вместе с первой сценой). Нейтраль показа (``idle``) -
+    сцена: лицо покоя на своё время (``expression.shown_scene``, #4103), а не рефлекс ``happy``."""
     face = turn.expression
     if face is None or turn.stage != "done" or turn.status == "cancelled" or snapshot.top("Silence") is not None:
         return None
@@ -391,8 +397,8 @@ def shown_face(expression: Optional[Expression], data: Mapping[str, Any]) -> Opt
         return expression
     seconds = show_seconds(_asked_seconds(duration, face))
     face = replace(face, duration_s=seconds) if face is not None else None
-    if animation:
-        return Shown(emotion=str(animation), face=face, duration_s=seconds)
+    if animation:  # нейтраль - лицо покоя на своё время, а не рефлекс done (#4103)
+        return Shown(emotion=shown_scene(str(animation)), face=face, duration_s=seconds)
     return replace(expression or Expression(), face=face, duration_s=seconds)
 
 
@@ -456,14 +462,33 @@ def prosody_phrase(results: Sequence[ActionResult]) -> str:
     return outcome_phrase(results) or ""
 
 
+def show_queue_phrase(results: Sequence[ActionResult]) -> Optional[str]:
+    """Фраза очереди показа (#4103): все сцены приняты - слов нет, ответ - лицо (прямая просьба показать, решение Шифу
+    26.10; речь рисовала бы рот поверх первой сцены). Хоть одна не принята - фраза исхода по РЕЗУЛЬТАТУ тула
+    (``respond.join``), а не молчание."""
+    if all(r.status == "done" for r in results):
+        return None
+    return outcome_phrase(results) or phrases.text("local.rejected")
+
+
+def tier1_face(command: Tier1Command, results: Sequence[ActionResult], text: str) -> Optional[Expression]:
+    """Лицо итога хода Tier-1: у очереди показа (#4103) - сцены исполненных ``play_animation`` по порядку реплики
+    (:func:`command_face`: первая на итоге ``done``, остальные - ``Shown.then``, каждая своё время
+    ``expression.show_seconds``); провал - рефлекс как есть. У остальных видов лица команды нет."""
+    return command_face(None, results, text) if command.kind == kn.SHOW_QUEUE_KIND else None
+
+
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
                  pick: Callable[[str], str] = lambda key: "") -> Optional[str]:
     """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
-    новая сессия — вариант из каталога; стоп и тишина молчат; голос говорит сам тул (SpeechEvent)."""
+    новая сессия — вариант из каталога; очередь показа — лицом, слова только о провале (:func:`show_queue_phrase`);
+    стоп и тишина молчат; голос говорит сам тул (SpeechEvent)."""
     if command.kind == "new_session":
         return pick(kn.NEW_SESSION_PHRASE)
     if command.kind == kn.PROSODY_NORMAL_KIND:
         return prosody_phrase(results)
+    if command.kind == kn.SHOW_QUEUE_KIND:
+        return show_queue_phrase(results)
     if command.kind != "volume":
         return None
     prefix = "music" if command.args["channel"] == "music" else "voice"
@@ -1005,6 +1030,7 @@ class TurnEngine:
             self.log.reset()
             turn.epoch = self.session.snapshot.epoch  # сам ход — в новой сессии: его подтверждение не «устарело»
         results = await self._execute(turn, actions, snap)
+        turn.expression = tier1_face(command, results, turn.text)  # очередь показа красит итог done (#4103)
         said = tier1_phrase(command, results, self._pick)
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
@@ -1184,5 +1210,6 @@ class TurnEngine:
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
            "Shown", "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage", "hand_perform",
            "held_expression", "host_sections", "shown_face",
-           "invalid_emotion", "outcome_phrase", "query_fallback", "stop_performance", "tier1_actions", "tier1_for",
-           "tier1_phrase", "turn_work", "answer_tool", "voices_passed", "words_owed"]
+           "invalid_emotion", "outcome_phrase", "query_fallback", "show_queue_phrase", "stop_performance",
+           "tier1_actions", "tier1_face", "tier1_for", "tier1_phrase", "turn_work", "answer_tool", "voices_passed",
+           "words_owed"]

@@ -209,24 +209,33 @@ def _collect_class_constants(tree: ast.Module) -> dict[str, dict[str, ast.AST]]:
     return out
 
 
-#: Package-level modules whose literal constants tool schemas may reference.
+#: Package-level modules whose literal constants tool schemas may reference,
+#: with the names taken from each (``None`` — every literal constant).
 #: Kept as an explicit list rather than "resolve any import" so the generator
-#: never silently guesses at a value it cannot actually see.
-SHARED_CONSTANT_MODULES = (TOOLS_DIR.parent / "animations.py",)
+#: never silently guesses at a value it cannot actually see. The dialogue's
+#: knowledge module is read for the animation vocabulary only: its hundreds
+#: of other constants must not leak into tool schemas by name.
+SHARED_CONSTANT_MODULES: tuple[tuple[pathlib.Path, tuple[str, ...] | None], ...] = (
+    (TOOLS_DIR.parent / "animations.py", None),
+    (REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py", ("KNOWN_ANIMATIONS",)),
+)
 
 
 def _collect_shared_constants() -> dict[str, Any]:
     """Constants that tools in different files legitimately share.
 
-    ``KNOWN_ANIMATIONS`` lives in ``rob_box_mcp_tools.animations`` precisely
-    so ``speak_text`` and ``play_animation`` cannot disagree; the generator
-    has to follow that import to render either enum.
+    ``KNOWN_ANIMATIONS`` is declared once, in ``rob_box_dialog.knowledge``
+    (#4103: the dialogue builds the show queue from it too), and re-exported
+    by ``rob_box_mcp_tools.animations`` so ``speak_text`` and
+    ``play_animation`` cannot disagree; the generator has to follow that
+    import to render either enum.
     """
     shared: dict[str, Any] = {}
-    for module in SHARED_CONSTANT_MODULES:
+    for module, names in SHARED_CONSTANT_MODULES:
         if not module.exists():
             continue
-        shared.update(_collect_module_constants(ast.parse(module.read_text(encoding="utf-8"))))
+        constants = _collect_module_constants(ast.parse(module.read_text(encoding="utf-8")))
+        shared.update(constants if names is None else {n: constants[n] for n in names if n in constants})
     return shared
 
 

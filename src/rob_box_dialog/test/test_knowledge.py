@@ -107,8 +107,7 @@ def test_action_classes_follow_adr_5_1():
 
 
 def test_emotions_and_gestures_are_scenes_of_player_or_lab():
-    known = set(_literal(REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "animations.py",
-                         "KNOWN_ANIMATIONS"))
+    known = set(kn.KNOWN_ANIMATIONS)  # словарь тулов - здесь же, один источник (#4103)
     lab = set(_literal(FACE / "states.py", "SCENES"))
     assert set(kn.LAB_SCENES) <= lab
     scenes = known | set(kn.LAB_SCENES)
@@ -167,8 +166,7 @@ def test_session_budgets():
 
 
 def test_reflexes_use_known_scenes_ring_modes_and_earcons():
-    known = set(_literal(REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "animations.py",
-                         "KNOWN_ANIMATIONS"))
+    known = set(kn.KNOWN_ANIMATIONS)  # словарь тулов - здесь же, один источник (#4103)
     scenes = known | set(kn.LAB_SCENES)
     for stage, reflex in kn.REFLEXES.items():
         assert set(reflex.face) <= scenes, stage
