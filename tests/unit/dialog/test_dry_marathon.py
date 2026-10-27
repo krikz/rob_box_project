@@ -132,8 +132,8 @@ def _battery_rule(env, msgs, tools):
 
 def old_groups_for_music_first(real):
     """Старый порядок среза (#3857): играющая сцена вытесняет названную человеком группу."""
-    def groups(snapshot, text, carry=()):
-        groups_now = real(snapshot, text, carry)
+    def groups(snapshot, text, carry=(), asked=()):
+        groups_now = real(snapshot, text, carry, asked)
         return tuple(g for g in groups_now if g == "music") + tuple(g for g in groups_now if g != "music")
     return groups
 
