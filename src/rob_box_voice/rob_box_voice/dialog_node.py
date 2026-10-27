@@ -84,6 +84,7 @@ from .core.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
 from .core.speaker_memory import SpeakerMemory
 from .core.speaker_turn import note_backlog_voice
+from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
 from .tts_voice_registry import robot_default_voice
 from rob_box_dialog.music_state import MusicStateMemory
@@ -337,6 +338,7 @@ class DialogNode(Node):
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
+                                  voices=functools.partial(tts_voices, self),  # реестр имён Tier-1 «голос <имя>» (#4086)
                                   events=self._open_events(), log=_RosLog(self.get_logger()),
                                   sing=build_sing(self, self._reporter.all_states))  # путь пения до модели (#4079)
         self._ports.on_late = functools.partial(late_outcome, self._engine,

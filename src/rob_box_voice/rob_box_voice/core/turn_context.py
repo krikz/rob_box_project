@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from rob_box_voice.core.provider_reporter import reporter_context
 from rob_box_voice.tts_voice_registry import (
@@ -15,6 +15,7 @@ from rob_box_voice.tts_voice_registry import (
     default_voice_for,
     format_tts_context,
     known_provider,
+    named_voices_for,
     voice_info_for,
 )
 
@@ -33,6 +34,13 @@ def tts_state(node: Any) -> Tuple[str, str]:
             provider = ""
     provider = provider or ROBOT_DEFAULT_PROVIDER
     return provider, getattr(node, "_actual_tts_voice", None) or default_voice_for(provider)
+
+
+def tts_voices(node: Any) -> List[Tuple[str, str]]:
+    """``(voice_id, display_name)`` голосов звучащего провайдера (:func:`tts_state`) - реестр имён для Tier-1 «включи
+    голос <имя>» (``grammar._voice``, #4086). Одна функция для v1 (``tier1_host``) и v2 (``dialog_node``): v2 без неё
+    звал ``TurnEngine`` без ``voices=``, реестр был пуст, и «говори голосом Весельчак» уходил модели."""
+    return named_voices_for(tts_state(node)[0])
 
 
 def _tts_context(provider: str, voice: str) -> str:
@@ -76,4 +84,4 @@ def context_sections(node: Any, profile: str, recent: Optional[Any] = None,
     }
 
 
-__all__ = ["context_sections", "tts_state"]
+__all__ = ["context_sections", "tts_state", "tts_voices"]
