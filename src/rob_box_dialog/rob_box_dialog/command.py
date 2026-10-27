@@ -316,14 +316,16 @@ def _expression(data: Any, where: str, fix: _Repairs) -> Expression:
 
 
 def _seconds(value: Any, where: str, fix: _Repairs) -> Optional[float]:
-    """Время лица команды (#4083): число — как есть (пределы показа ставит ``expression.show_seconds``); не число —
-    поле в ``dropped`` (лог ``fields_dropped``), команда не отвергается (§5.5.9: экспрессия команду не валит)."""
+    """Время лица команды (#4083): число больше нуля — как есть (пределы показа ставит ``expression.show_seconds``);
+    ноль, отрицательное и ``NaN`` — время не задано (``None``: обычный ответ держит лицо временем рефлекса, а не
+    показом по просьбе); не число — поле в ``dropped`` (лог ``fields_dropped``), команда не отвергается (§5.5.9:
+    экспрессия команду не валит)."""
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         fix.dropped.append(f"{where}.duration_s")
         return None
-    return float(value)
+    return float(value) if value > 0 else None
 
 
 def _lift_face(data: Mapping[str, Any], where: str, fix: _Repairs) -> Mapping[str, Any]:

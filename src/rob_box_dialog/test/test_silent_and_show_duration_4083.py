@@ -234,6 +234,43 @@ def test_queued_face_scene_lives_as_long_as_its_scene():
     assert at == 5.0 and plan.emotion == "" and plan.face["duration_s"] == 9.0 and plan.ttl_ms == 9000
 
 
+#: Ревью #4088: пачка, первая сцена которой сама ничего не показывает.
+N_NEUTRAL_FIRST = "покажи по очереди нейтральное лицо и радость"
+
+
+@pytest.mark.parametrize("first", ["idle", "neutral", "talking"])
+def test_batch_whose_first_scene_shows_nothing_keeps_its_queue(first):
+    """Ревью #4088 (блокер): ``[play_animation idle, play_animation happy]`` терял очередь целиком — ``done_expression``
+    смотрел только на первую сцену, ход закрывался без лица и без слов (``faces == [] and said == []``). Теперь
+    первая сцена-нейтраль оставляет ``done`` обычным рефлексом, а ``happy`` идёт очередью — когда кончилось время
+    первой, со своим временем ≥ минимума."""
+    ports = Ports([Answer(Command(actions=(_animation(first), _animation("happy"))), "deepseek")])
+    agg = _run(ports, N_NEUTRAL_FIRST)
+    assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
+    (stage, done), = ports.faces
+    assert stage == "done"
+    assert done == Shown(emotion=first, duration_s=DEFAULT, then=(Shown(emotion="happy", duration_s=DEFAULT),))
+    assert _done_plan(done) == reflex("done"), "первая сцена-нейтраль: на итоге обычный рефлекс done"
+    steps = queued(done.duration_s, done.then)
+    assert [(at, p.emotion, p.ttl_ms) for at, p in steps] == [(DEFAULT, "happy", int(DEFAULT * 1000))]
+
+
+def test_neutral_scene_inside_the_queue_keeps_its_time_and_sends_nothing():
+    """Сцена-нейтраль в середине пачки запроса лицу не шлёт (лицо и так в покое, когда кончилась предыдущая), но
+    своё время держит: следующая сцена — после неё в срок, а не раньше."""
+    scenes = [Shown(emotion="idle", duration_s=6.0), Shown(emotion="sad", duration_s=7.0)]
+    assert [(at, p.emotion, p.ttl_ms) for at, p in queued(5.0, scenes)] == [(11.0, "sad", 7000)]
+    assert queued(5.0, [Shown(emotion="idle"), Shown(emotion="talking")]) == ()
+
+
+def test_batch_of_only_neutral_scenes_is_the_plain_done_reflex():
+    """Пачка из одних нейтралей: итог — рефлекс ``done``, очереди нет (ни одного запроса лицу сверх рефлекса)."""
+    ports = Ports([Answer(Command(actions=(_animation("idle"), _animation("neutral"))), "deepseek")])
+    _run(ports, N_NEUTRAL_FIRST)
+    (_, done), = ports.faces
+    assert _done_plan(done) == reflex("done") and queued(done.duration_s, done.then) == ()
+
+
 def test_failed_action_in_the_batch_shows_no_scene():
     res = [ActionResult("t/0", 0, "personality", "play_animation", "action.local", "done", None, {"animation": "sad"}),
            ActionResult("t/1", 0, "personality", "stop_music", "action.media", "rejected")]

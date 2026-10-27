@@ -471,6 +471,66 @@ def test_4083_show_queue_only_for_done_with_a_batch():
     assert show_queue("done", None) == ()
 
 
+def test_4083_batch_with_a_neutral_first_scene_still_reaches_the_face():
+    """Ревью #4088 (блокер): «покажи по очереди нейтральное лицо и радость» → ``[play_animation idle, play_animation
+    happy]``: раньше лицу не уходило ничего (ни итога с эмоцией, ни очереди), ход молча закрывался. Теперь итог
+    ``done`` — обычный рефлекс (первая сцена — нейтраль), ``happy`` — запросом из очереди, когда кончилось время
+    первой (8 с), на 8 с."""
+    lines = []
+    call = _command_call({"actions": _animations("idle", "happy")})
+    ports, node, later = _queued_ports([LLMResponse(tool_calls=(call,))], lines)
+    agg = asyncio.run(TurnEngine(Session("personality"), ports).run(
+        Addressed("покажи по очереди нейтральное лицо и радость", VOICE)))
+    assert (agg.stage, agg.status) == ("done", "finished") and "/voice/speech/request" not in node.pubs
+    done = _done_request(node)
+    assert (done.emotion, done.ttl_ms, done.earcon) == (reflex("done").emotion, reflex("done").ttl_ms,
+                                                        reflex("done").earcon)
+    default = kn.FACE_SHOW_DEFAULT_S
+    assert [d for d, _ in later.calls] == [default]
+    before = len(node.pubs["/voice/expression/request"].sent)
+    later.fire_all()
+    (queued,) = node.pubs["/voice/expression/request"].sent[before:]
+    assert (queued.emotion, queued.ttl_ms, queued.turn_id) == ("happy", int(default * 1000), agg.turn_id)
+
+
+def test_4083_queue_timer_in_a_real_asyncio_loop_fires_on_time_and_the_next_stage_cancels_it():
+    """Ревью #4088: таймер очереди без подмены (``_call_later``) в настоящем asyncio-loop — как в ``dialog_node``
+    (``loop.run_forever`` в своём потоке, ход — его задача): сцена очереди приходит в свой срок, следующая стадия
+    снимает недопоказанную, снятая лицу ничего не шлёт."""
+    from rob_box_dialog.expression import ExpressionPlan
+
+    lines, counter, node = [], CallCounter(), _Node()
+    ports = V2Ports(node, _LLM([], counter), counter, _Tools(), log=lines.append)
+    shows = ((0.01, ExpressionPlan(emotion="sad", ttl_ms=5000)),
+             (0.3, ExpressionPlan(emotion="surprised", ttl_ms=5000)))
+
+    async def scenario():
+        ports._queue_shows("t1", 0, shows)
+        await asyncio.sleep(0.1)
+        fired = [r.emotion for r in node.pubs["/voice/expression/request"].sent if r.turn_id == "t1"]
+        ports.stage("t2", 0, "addressed", "started")
+        await asyncio.sleep(0.4)
+        return fired
+
+    fired = asyncio.run(scenario())
+    assert fired == ["sad"], "первая сцена очереди пришла в свой срок"
+    assert [r.emotion for r in node.pubs["/voice/expression/request"].sent if r.turn_id == "t1"] == ["sad"]
+    assert "🎭 [turn-v2] очередь лица снята: 1 сцен (стадия addressed turn=t2)" in lines
+
+
+def test_4083_queue_timer_outside_a_loop_is_a_thread_timer_that_cancels():
+    """Вне asyncio-loop (стадия из ROS-потока) таймер очереди — поток-таймер с тем же ``cancel()``."""
+    import threading
+
+    from rob_box_voice.core.dialog_v2_ports import _call_later
+
+    fired, late = threading.Event(), threading.Event()
+    _call_later(0.01, fired.set)
+    assert fired.wait(2.0)
+    _call_later(0.05, late.set).cancel()
+    assert not late.wait(0.3)
+
+
 # -- #4050: спасённый query невалидной команды — данные модели, ответ звучит -----------------------------------------
 
 LIBRARY_LIST = Invalid("speech_with_actions", salvage=(CommandCall("music_library", {"action": "list"}),))

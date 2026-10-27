@@ -165,12 +165,14 @@ def queued(start_s: float, scenes: Sequence[Any]) -> Tuple[Tuple[float, Expressi
     ``play_animation`` исполнялись разом, последняя перекрывала остальные). ``(через сколько секунд после итога,
     план)`` для сцен после первой: следующая начинается, когда кончилось время предыдущей (``start_s`` - время первой,
     уже на лице с итогом ``done``). Время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``). Earcon и жест -
-    только у итога: сцена очереди - эмоция (имя сцены), её сцена лица и время."""
+    только у итога: сцена очереди - эмоция (имя сцены), её сцена лица и время. Сцена-нейтраль (``idle``, ``neutral``,
+    ``talking``: :func:`shows` - нечего показать) запроса не шлёт, но своё время держит: предыдущая сцена кончилась,
+    лицо в покое, следующая - после неё в срок."""
     out, at = [], show_seconds(start_s)
     for scene in scenes:
         seconds = show_seconds(getattr(scene, "duration_s", None))
-        face = held_face(getattr(scene, "face", None), seconds)
-        out.append((at, ExpressionPlan(emotion=command_scene(getattr(scene, "emotion", "")), face=face,
-                                       ttl_ms=hold_ms(seconds) or 0)))
+        emotion, face = command_scene(getattr(scene, "emotion", "")), held_face(getattr(scene, "face", None), seconds)
+        if emotion or face:
+            out.append((at, ExpressionPlan(emotion=emotion, face=face, ttl_ms=hold_ms(seconds) or 0)))
         at += seconds
     return tuple(out)

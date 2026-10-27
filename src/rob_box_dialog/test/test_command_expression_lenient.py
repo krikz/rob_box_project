@@ -73,6 +73,14 @@ def test_4083_duration_that_is_not_a_number_is_dropped_and_the_command_stays(bad
     assert cmd.dropped == ("expression.duration_s",)
 
 
+@pytest.mark.parametrize("unset", [0, 0.0, -3, float("nan")])
+def test_4083_duration_zero_or_below_is_not_set(unset):
+    """Ревью #4088: ``duration_s=0`` на обычное «привет» давал лицу 8 с показа вместо рефлекса — ноль, отрицательное и
+    ``NaN`` значат «время не задано» (``None``), поле не выбрасывается в ``dropped``, команда исполняется."""
+    cmd = validate(parse({"speech": "Привет!", "expression": {"emotion": "happy", "duration_s": unset}}), ALL)
+    assert isinstance(cmd, Command) and cmd.expression.duration_s is None and cmd.dropped == ()
+
+
 def test_4083_duration_without_a_face_is_still_an_empty_command():
     """Время без лица (нейтраль) показать нечего — команда пустая, как и без времени (мост: ``empty_command``)."""
     assert cm.is_empty(parse({"expression": {"duration_s": 6}}))

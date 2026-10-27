@@ -295,11 +295,14 @@ def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command)
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Экспрессия команды для рефлекса итога (#3997, ADR-0148: решает код): лицо команды красит ``done``. ``None`` —
     рефлекс как есть: ход не ``done`` или отменён (перебивание, ``stale_epoch``), в кадре ``Silence`` (лицо там —
-    заклеенный рот, #3984), у команды нечего показать (``expression.shows``)."""
+    заклеенный рот, #3984), у команды нечего показать: ни сцены (``expression.shows``), ни очереди пачки за ней
+    (``Shown.then``, #4083: пачка ``[idle, happy]`` - первая сцена-нейтраль оставляет ``done`` обычным рефлексом, а
+    очередь всё равно идёт в свой срок, а не теряется вместе с первой сценой)."""
     face = turn.expression
     if face is None or turn.stage != "done" or turn.status == "cancelled" or snapshot.top("Silence") is not None:
         return None
-    return face if shows(face.emotion, face.gesture, face.face) else None
+    queue = face.then if isinstance(face, Shown) else ()
+    return face if shows(face.emotion, face.gesture, face.face) or queue else None
 
 
 @dataclass(frozen=True)
