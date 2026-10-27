@@ -91,9 +91,8 @@ nodes:
     package: rob_box_core
     # PR-3 (#3688): единственный клиент речи (say/cancel), один публикатор на ноду.
     # say: mcp_server (speak_text, say), stt_node («не расслышал»), telegram_node,
-    # supervisor_node (грип); cancel: dialogue_node, quest_node (stt_node речь не глушит с PR-5 #3694).
-    # Ещё на старом JSON /voice/tts/request (адаптер speech_compat): джойстик
-    # rob_box_teleop - в образе teleop нет rob_box_dialog_msgs.
+    # supervisor_node (грип), joystick_control_node (rob_box_teleop, автор system; PR-15 часть 15-0d:
+    # образ teleop собирает rob_box_dialog_msgs); cancel: dialogue_node, quest_node (stt_node речь не глушит с PR-5 #3694).
     source: [src/rob_box_core/rob_box_core/speech_client.py]
   provider_publisher:
     owner: voice
