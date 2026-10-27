@@ -39,6 +39,12 @@
 # Оценка сознательно пессимистична: она отвергнет пограничную реплику, которая
 # «иногда проходит». Это и есть цель — шаг-лотерея не является проверкой.
 #
+# ОДНА модель на все голоса не годится (#4077 П2, прогон 27.10). Темп плавает по голосам: Саша (anton) 0.163 с/симв
+# в худшем (n607: 76 символов = 12.38 с), Борис (ermil) 0.118, а старые 0.0981 пропускали фразы до 112 символов.
+# Ночной марафон (scenarios/night) поэтому судит scripts/e2e/phrase_budget.py -- замер реплики из словаря
+# scripts/e2e/phrase_eq_measured.json (пока текст и голос те же), без замера -- худший темп голоса. Остальные
+# сценарии идут по прежней единой модели ниже.
+#
 # Запуск: bash scripts/testing/test_e2e_scenario_playable.sh
 # Exit:   0 = PASS, 1 = есть непроигрываемые реплики.
 set -u
@@ -136,6 +142,12 @@ scenarios = sorted(
 if not scenarios:
     fails.append("не нашёл ни одного сценария — тест сломан?")
 
+sys.path.insert(0, str(repo / "scripts" / "e2e"))
+import phrase_budget as pb  # noqa: E402
+
+phrase_store = pb.load_store(str(repo / "scripts" / "e2e" / "phrase_eq_measured.json"))
+night_dir = repo / ".github" / "e2e" / "scenarios" / "night"
+
 checked = over = warned = 0
 for path in scenarios:
     try:
@@ -162,6 +174,20 @@ for path in scenarios:
             continue
         est = len(text) * SEC_PER_CHAR
         sid = step.get("label") or step.get("id") or step.get("name") or f"#{idx}"
+        if night_dir in path.parents:
+            found = pb.verdict(sid, step.get("voice") or "anton", text, phrase_store)
+            if found.level == pb.TOO_LONG:
+                over += 1
+                fails.append(
+                    f"{path.relative_to(repo)} шаг {sid}: {found.describe()} — окно VAD отбросит или впритык "
+                    f"(потолок {pb.EQ_ERROR_S:g} с по замеру, {pb.EQ_TIGHT_S:g} с по оценке). Сократи до "
+                    f"{pb.char_limit(found.voice)} символов, разбей на два шага или обнови замеры "
+                    f"(gen_night_marathon.py --learn)."
+                )
+            elif found.level == pb.TIGHT:
+                warned += 1
+                notes.append(f"{path.relative_to(repo)} шаг {sid}: {found.describe()} — запас меньше секунды")
+            continue
         if est > budget:
             over += 1
             fails.append(
@@ -177,6 +203,7 @@ for path in scenarios:
                 f"(~{est:.1f}s, запас {budget - est:.1f}s) — на грани окна VAD"
             )
 
+print("  ночной марафон: замер из scripts/e2e/phrase_eq_measured.json либо худший темп голоса (phrase_budget.py)")
 print(f"  проверено реплик: {checked}, за бюджетом: {over}, на грани: {warned}")
 
 if notes:

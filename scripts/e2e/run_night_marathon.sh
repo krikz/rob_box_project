@@ -171,6 +171,18 @@ printf '%s\n' "$plan" | while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn
     log "  акт $a_n  «$a_title»  ($a_steps шагов, $a_stab)$([ "$a_phase" != - ] && echo "  → режим e2e марафона: $a_phase")$([ "$a_hold" = hold ] && echo '  → режим e2e держит для следующего (наследует)')"
 done
 
+# --- сценарий годен ДО диспатча (#4077 П2) -------------------------------------
+# Реплика, не влезающая в окно VAD робота (бюджет 12.5 с), краснела `FAIL scenario_too_long` посреди акта (27.10: n302,
+# n702 -- и шесть шагов про несуществующую песню следом). `--check` генератора сверяет длину каждой реплики с замером
+# (scripts/e2e/phrase_eq_measured.json) или оценкой по голосу и JSON на диске с генератором. Раннер локальный: REF не
+# обновляет скрипт и сценарии, проверяется ваш чекаут (ff develop перед стартом). Красный -- марафон не стартует.
+if ! gen_check="$("$PY" "$SCRIPT_DIR/gen_night_marathon.py" --check 2>&1)"; then
+    printf '%s\n' "$gen_check" >&2
+    echo "FATAL: сценарий марафона не прошёл gen_night_marathon.py --check (реплика не влезает в окно VAD или JSON устарел) -- не стартую" >&2
+    exit 2
+fi
+printf '%s\n' "$gen_check" | while IFS= read -r _line; do log "gen --check: ${_line}"; done
+
 if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN=1 — ничего не запускаю"
     exit 0
