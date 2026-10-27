@@ -635,6 +635,15 @@ FACE_SHOW_STEMS: Tuple[str, ...] = ("покаж",)
 FACE_SHOW_WHAT_STEMS: Tuple[str, ...] = (
     "эмоц", "настроени", "радост", "радуе", "весел", "весёл", "счаст", "грус", "печал", "злост", "удивл", "побед",
     "как тебе", "лицо", "лицом", "мордочк", "рожиц")
+#: «Без слов» человек попросил сам (#4083, Шифу 27.10) - ОДНА таблица: ответ одним лицом (``expression``) или голой
+#: анимацией тогда не нарушение ``VIOLATION_SILENT_ANSWER`` (``tools_view.silent_asked`` → ``needs_words``), ход
+#: закрывается без речи, а сцена держится как показ по просьбе (``FACE_SHOW_*_S``). Живой лог 27.10 08:20: «покажи
+#: молча, что ты задумался» → ``silent_answer`` → «Молчу и думаю.». Формы - целым словом или фразой
+#: (``words.has_form``): «не молчи» и «помолчи» сюда не попадают. ``SILENT_SHOW_FORMS`` просят без слов только рядом
+#: с «покажи» (``FACE_SHOW_STEMS``): «тихо покажи радость»; «тихо» одно - про громкость, не про слова.
+SILENT_ASK_FORMS: Tuple[str, ...] = (
+    "молча", "молчком", "без слов", "без слова", "не говори", "не говоря", "ничего не говори", "беззвучно")
+SILENT_SHOW_FORMS: Tuple[str, ...] = ("тихо", "тихонько", "тихонечко")
 #: Единственная таблица глаголов движения базы: только названные ими тулы ``MOTION_TOOLS`` попадают в срез хода и
 #: исполняются. Направления без глагола («налево», «вперёд») движение не открывают. Матч — по левой границе слова.
 MOTION_VERB_STEMS: Tuple[str, ...] = (
@@ -1076,6 +1085,14 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 })
 FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
+#: Показ по просьбе человека (#4083, Шифу 27.10: «показывает анимации не микросекунды, а полноценно, хотя бы 5–10
+#: секунд»): сцена ``play_animation`` и лицо команды, когда лицо просили (``tools_view.show_asked``) или модель задала
+#: ``expression.duration_s``, держится не меньше ``FACE_SHOW_MIN_S`` и не больше ``FACE_SCENE_MAX_S`` (ADR §5.5.9);
+#: без заказанного времени - ``FACE_SHOW_DEFAULT_S`` (то же, что по умолчанию у ``face_director`` для запроса без
+#: ``ttl_ms``). Одно правило - ``expression.show_seconds``; пачка сцен одной команды идёт по очереди, каждая своё время
+#: (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога - её время.
+FACE_SHOW_MIN_S = 5.0
+FACE_SHOW_DEFAULT_S = 8.0
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
 FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
                    " напротив робота. Только значения из списков, свободных цветов и форм нет. bg - фон под глазами"
@@ -1679,8 +1696,13 @@ def face_schema() -> Dict[str, Any]:
 
 
 def _expression_schema() -> Dict[str, Any]:
+    """Схема экспрессии команды. ``duration_s`` - сколько держать лицо команды (эмоцию и сцену ``face``), секунды
+    (#4083): модель кладёт его на уровень ``expression`` (марафон 23.10: ``fields_dropped=['expression.duration_s']``,
+    8 с превращались в 3 с рефлекса); время приводит к ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]`` код
+    (``expression.show_seconds``)."""
     return _object({
         "emotion": _enum(EMOTIONS), "gesture": _enum(GESTURES), "earcon": _enum(EARCONS), "face": face_schema(),
+        "duration_s": {"type": "number", "minimum": 0, "maximum": FACE_SCENE_MAX_S},
     })
 
 
@@ -1797,7 +1819,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
                          " {\"edit_pending\": true, \"perform\": {\"kind\": \"rap\", \"backing\": \"beat\","
                          " \"segments\": [\"А вот и енот — ночной бандит…\", \"Комар и енот — два ночных бойца…\"]}}."),
         ("expression", f"- expression: emotion ∈ {_set(EMOTIONS)}; gesture ∈ {_set(GESTURES)}; earcon ∈"
-                       f" {_set(EARCONS)}; face: {face}; duration_s ≤ {FACE_SCENE_MAX_S:g}."),
+                       f" {_set(EARCONS)}; face: {face}; duration_s — сколько секунд держать лицо,"
+                       f" {FACE_SHOW_MIN_S:g}–{FACE_SCENE_MAX_S:g}."),
         ("passed", f"- passed ∈ {_set(PASSED)} — честно промолчать."),
     ]
     return "\n".join(text for field, text in lines if not field or field in fields)

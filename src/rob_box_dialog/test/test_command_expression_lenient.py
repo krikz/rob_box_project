@@ -27,9 +27,10 @@ LIVE_7C = [
                                    "tint": "warm"}},
      FaceScene(eyes="wide", mouth="grin", tint="warm", rear="party"),
      ("expression.eyes", "expression.mouth", "expression.rear", "expression.tint"), ()),
-    # 19:44:02 «расскажи короткую сказку разными голосами» — detail='expression: duration_s' (сцена уже в face)
+    # 19:44:02 «расскажи короткую сказку разными голосами» — detail='expression: duration_s' (сцена уже в face).
+    # #4083: ``duration_s`` экспрессии — своё поле (время лица команды), больше не выбрасывается.
     ("сказка", {"perform": _TALE, "expression": {"emotion": "happy", "face": {"eyes": "open"}, "duration_s": 8}},
-     FaceScene(eyes="open"), (), ("expression.duration_s",)),
+     FaceScene(eyes="open"), (), ()),
 ]
 
 
@@ -42,15 +43,48 @@ def test_live_7c_commands_are_valid_now(phrase, raw, face, moved, dropped):
     assert cmd.expression.emotion == "happy"
 
 
-def test_duration_moves_together_with_slots():
+def test_4083_expression_duration_is_kept_not_dropped():
+    """Марафон 23.10 21:53:48 (DeepSeek): ``{"emotion": "sleepy", "face": {…}, "duration_s": 4}`` давал
+    ``fields_dropped=['expression.duration_s']`` — время лица команды терялось. Теперь это поле экспрессии."""
+    raw = {"speech": "Тихо. Я тоже помолчу — если понадоблюсь, скажи.",
+           "expression": {"emotion": "sleepy", "face": {"eyes": "half", "mouth": "flat", "tint": "cold"},
+                          "duration_s": 4}}
+    cmd = validate(parse(raw), ALL)
+    assert isinstance(cmd, Command) and cmd.dropped == () and cmd.moved == ()
+    assert cmd.expression.duration_s == 4.0 and cmd.expression.face == FaceScene(eyes="half", mouth="flat", tint="cold")
+
+
+def test_duration_stays_on_the_expression_when_slots_move():
     cmd = validate(parse({"expression": {"eyes": "closed", "tempo": "slow", "duration_s": 12}}), ALL)
-    assert cmd.expression.face == FaceScene(eyes="closed", tempo="slow", duration_s=12)
-    assert cmd.moved == ("expression.eyes", "expression.tempo", "expression.duration_s") and cmd.dropped == ()
+    assert cmd.expression.face == FaceScene(eyes="closed", tempo="slow") and cmd.expression.duration_s == 12.0
+    assert cmd.moved == ("expression.eyes", "expression.tempo") and cmd.dropped == ()
 
 
-def test_duration_alone_is_dropped_not_made_into_an_empty_scene():
+def test_duration_alone_is_the_time_of_the_emotion_not_an_empty_scene():
     cmd = validate(parse({"speech": "Ок", "expression": {"emotion": "sad", "duration_s": 3}}), ALL)
-    assert cmd.expression.face is None and cmd.dropped == ("expression.duration_s",) and cmd.moved == ()
+    assert cmd.expression.face is None and cmd.expression.duration_s == 3.0
+    assert cmd.dropped == () and cmd.moved == ()
+
+
+@pytest.mark.parametrize("bad", ["долго", True, [5], {"s": 5}])
+def test_4083_duration_that_is_not_a_number_is_dropped_and_the_command_stays(bad):
+    cmd = validate(parse({"speech": "Ок", "expression": {"emotion": "sad", "duration_s": bad}}), ALL)
+    assert isinstance(cmd, Command) and cmd.expression.duration_s is None
+    assert cmd.dropped == ("expression.duration_s",)
+
+
+@pytest.mark.parametrize("unset", [0, 0.0, -3, float("nan")])
+def test_4083_duration_zero_or_below_is_not_set(unset):
+    """Ревью #4088: ``duration_s=0`` на обычное «привет» давал лицу 8 с показа вместо рефлекса — ноль, отрицательное и
+    ``NaN`` значат «время не задано» (``None``), поле не выбрасывается в ``dropped``, команда исполняется."""
+    cmd = validate(parse({"speech": "Привет!", "expression": {"emotion": "happy", "duration_s": unset}}), ALL)
+    assert isinstance(cmd, Command) and cmd.expression.duration_s is None and cmd.dropped == ()
+
+
+def test_4083_duration_without_a_face_is_still_an_empty_command():
+    """Время без лица (нейтраль) показать нечего — команда пустая, как и без времени (мост: ``empty_command``)."""
+    assert cm.is_empty(parse({"expression": {"duration_s": 6}}))
+    assert not cm.is_empty(parse({"expression": {"emotion": "sad", "duration_s": 6}}))
 
 
 def test_slots_next_to_a_given_face_do_not_overwrite_it():
@@ -87,6 +121,13 @@ def test_bridge_args_carry_the_moved_scene_inside_face():
     assert args["expression"] == {"emotion": "happy", "face": {"rear": "party", "duration_s": 5.0}}
     again = parse(args)
     assert again.moved == () and again.dropped == () and again.expression == cmd.expression
+
+
+def test_4083_bridge_args_carry_the_expression_duration():
+    cmd = parse({"speech": "Смотри", "expression": {"emotion": "sad", "duration_s": 8}})
+    args = cm.to_args(cmd)
+    assert args["expression"] == {"emotion": "sad", "duration_s": 8.0}
+    assert parse(args).expression == cmd.expression
 
 
 def test_unknown_command_level_field_is_still_invalid():

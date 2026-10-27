@@ -26,11 +26,13 @@
   (``tools_view.needs_words``, #3995), не исполняется: модель получает нарушение ``VIOLATION_SILENT_ANSWER``
   следующей итерацией (≤ ``COMMAND_RETRIES_MAX`` повторов); повтор кончился — анимация и фраза кода, не молчание;
   команда из одной ``expression`` — тот же класс (#3997): по прямой просьбе («покажи, как тебе грустно») лицо молча,
-  иначе повтор;
+  иначе повтор; человек сам просил без слов («молча», «без слов», ``tools_view.silent_asked``, #4083) — лицом и
+  анимацией одинаково без речи и без нарушения;
 * экспрессия команды (эмоция, жест, сцена лица LLM) красит рефлекс итога ``done`` (:func:`done_expression` →
   ``Ports.stage(..., expression=)`` → ``expression.merge``), отдельного запроса лицу нет; исполненный ``play_animation``
   красит его своей сценой, сценой лица и временем (:func:`shown_face`, #4049: тул лицо не трогает); в тишине и у
-  отменённого хода — рефлекс как есть (#3997);
+  отменённого хода — рефлекс как есть (#3997); показ по просьбе держится ``expression.show_seconds`` (≥
+  ``FACE_SHOW_MIN_S``, а не 3 с рефлекса), пачка ``play_animation`` — очередью (``Shown.then``, #4083);
 * действия — владельцам; ``speech`` при действиях не звучит (§4.1), звучит фраза кода об исходе и ``perform``;
 * ``query`` — данные обратно модели, не больше ``knowledge.LLM_QUERY_ITERATIONS_MAX`` итераций, и рядом с действиями
   тоже (#4065: ``[play_animation, music_library list]`` — действия исполнены, об их исходе говорит код, модели уходят
@@ -56,7 +58,7 @@ import logging
 import random
 import time
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from rob_box_core.tool_catalog import get_tool
@@ -72,13 +74,13 @@ from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performa
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
-from rob_box_dialog.expression import shows
+from rob_box_dialog.expression import show_seconds, shows
 from rob_box_dialog.grammar import Tier1Command, match
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, audible, classed, join
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import speaker_block
-from rob_box_dialog.tools_view import available_tools, needs_words, voice_asked
+from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
@@ -341,56 +343,87 @@ def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command)
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Экспрессия команды для рефлекса итога (#3997, ADR-0148: решает код): лицо команды красит ``done``. ``None`` —
     рефлекс как есть: ход не ``done`` или отменён (перебивание, ``stale_epoch``), в кадре ``Silence`` (лицо там —
-    заклеенный рот, #3984), у команды нечего показать (``expression.shows``)."""
+    заклеенный рот, #3984), у команды нечего показать: ни сцены (``expression.shows``), ни очереди пачки за ней
+    (``Shown.then``, #4083: пачка ``[idle, happy]`` - первая сцена-нейтраль оставляет ``done`` обычным рефлексом, а
+    очередь всё равно идёт в свой срок, а не теряется вместе с первой сценой)."""
     face = turn.expression
     if face is None or turn.stage != "done" or turn.status == "cancelled" or snapshot.top("Silence") is not None:
         return None
-    return face if shows(face.emotion, face.gesture, face.face) else None
+    queue = face.then if isinstance(face, Shown) else ()
+    return face if shows(face.emotion, face.gesture, face.face) or queue else None
 
 
 @dataclass(frozen=True)
 class Shown(Expression):
-    """Лицо итога после исполненного ``play_animation`` (#4049): сцена анимации (``emotion``), её сцена лица LLM и
-    ``hold_ms`` - сколько держать сцену (``duration`` тула; ``0`` - по умолчанию лица). Не команда модели: схема
-    команды - поля :class:`~rob_box_dialog.command.Expression`, время показа модель задаёт аргументом тула."""
+    """Лицо итога после исполненных ``play_animation`` (#4049, #4083): сцена первого вызова (``emotion``), её сцена лица
+    LLM и время ``duration_s`` (``expression.show_seconds``); ``then`` - сцены остальных вызовов той же команды, по
+    очереди после неё, каждая своё время (``expression.queued``): пачка не перезаписывает друг друга. Не команда
+    модели: схема команды - поля :class:`~rob_box_dialog.command.Expression`."""
 
-    hold_ms: int = 0
+    then: Tuple[Expression, ...] = ()
 
 
-def _show_seconds(duration: Any) -> float:
-    """Заказанное время показа из данных ``play_animation`` (тул уже применил своё правило длительности); нет - 0."""
-    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration <= 0:
-        return 0.0
-    return min(float(duration), kn.FACE_SCENE_MAX_S)
+def _asked_seconds(duration: Any, face: Optional[face_scene.FaceScene]) -> Any:
+    """Заказанное время сцены: ``duration`` вызова (или ``expression.duration_s``), иначе ``duration_s`` её сцены лица,
+    иначе не задано (``None``) — тогда ``expression.show_seconds`` берёт время по умолчанию."""
+    if duration is not None:
+        return duration
+    return face.duration_s if face is not None else None
 
 
 def shown_face(expression: Optional[Expression], data: Mapping[str, Any]) -> Optional[Expression]:
-    """Лицо итога после исполненного ``play_animation`` (#4049; ADR-0150 PR-3b: тул лицо не трогает, показывает
-    диалог). ``animation`` (тул уже свёл его к имени сцены лица) - сцена итога вместо эмоции и жеста команды (жест
-    ``face_node`` показал бы поверх сцены) со своей сценой лица LLM и временем ``duration`` (:class:`Shown`; нет -
-    ``0``, по умолчанию лица); заказанное время важнее ``duration_s`` сцены лица, как у v1 (``turn_tools.face_dict``).
-    Только ``face`` - сцена лица поверх экспрессии команды. Ни того ни другого - экспрессия команды как есть."""
+    """Сцена одного исполненного ``play_animation`` (#4049; ADR-0150 PR-3b: тул лицо не трогает, показывает
+    диалог). ``animation`` (тул уже свёл его к имени сцены лица) - сцена вместо эмоции и жеста команды (жест
+    ``face_node`` показал бы поверх сцены) со своей сценой лица LLM (:class:`Shown`). Только ``face`` - сцена лица
+    поверх экспрессии команды. Время - ``duration`` вызова, иначе ``duration_s`` его сцены лица, по правилу показа
+    ``expression.show_seconds`` (#4083: не меньше ``FACE_SHOW_MIN_S``; сцена лица гаснет вместе со сценой). Ни того ни
+    другого - экспрессия команды как есть."""
     animation, duration, raw = (data.get(key) for key in kn.SHOW_FIELDS)
     face = face_scene.validate(raw)[0] if raw is not None else None
-    seconds = _show_seconds(duration)
-    if face is not None and seconds:
-        face = replace(face, duration_s=seconds)
+    if not animation and face is None:
+        return expression
+    seconds = show_seconds(_asked_seconds(duration, face))
+    face = replace(face, duration_s=seconds) if face is not None else None
     if animation:
-        return Shown(emotion=str(animation), face=face, hold_ms=int(seconds * 1000))
-    return replace(expression or Expression(), face=face) if face is not None else expression
+        return Shown(emotion=str(animation), face=face, duration_s=seconds)
+    return replace(expression or Expression(), face=face, duration_s=seconds)
 
 
-def command_face(expression: Optional[Expression], results: Sequence[ActionResult]) -> Optional[Expression]:
-    """Экспрессия исполненной команды для итога хода (#3997); исполненный ``play_animation`` красит итог своей сценой
-    (:func:`shown_face`, #4049: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``; последний вызов главнее).
-    Провал действия её не показывает (``None`` — рефлекс как есть): «радостно» о провале не бывает, как и в
-    ``expression.merge``. Одно правило для исполненной команды (``TurnEngine._speak``) и для действий, исполненных
-    после нарушения (:func:`_close_invalid`)."""
+def _in_order(scenes: Sequence[Expression]) -> Expression:
+    """Сцены исполненных ``play_animation`` по порядку вызовов: первая - лицо итога, остальные - его очередь
+    (``Shown.then``), а не перезапись последней (#4083)."""
+    first = scenes[0]
+    return Shown(**{f.name: getattr(first, f.name) for f in fields(Expression)}, then=tuple(scenes[1:]))
+
+
+def held_expression(expression: Optional[Expression], text: str) -> Optional[Expression]:
+    """Лицо команды без ``play_animation`` (#4083): время - заказанное моделью (``expression.duration_s``) или, когда
+    человек просил показать лицо (``tools_view.show_asked``: «покажи, как тебе грустно», «покажи молча, что ты
+    задумался»), по правилу показа ``expression.show_seconds`` (не меньше ``FACE_SHOW_MIN_S``, а не 3 с рефлекса
+    ``done``); сцена лица - то же время. Обычный ответ (показ не просили, время не задано) - время рефлекса, как
+    было."""
+    if expression is None or not shows(expression.emotion, expression.gesture, expression.face):
+        return expression
+    if expression.duration_s is None and not show_asked(text):
+        return expression
+    seconds = show_seconds(_asked_seconds(expression.duration_s, expression.face))
+    face = replace(expression.face, duration_s=seconds) if expression.face is not None else None
+    return replace(expression, face=face, duration_s=seconds)
+
+
+def command_face(expression: Optional[Expression], results: Sequence[ActionResult],
+                 text: str = "") -> Optional[Expression]:
+    """Экспрессия исполненной команды для итога хода (#3997); исполненные ``play_animation`` красят итог своими
+    сценами по очереди (:func:`shown_face`, #4049: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``;
+    #4083: пачка — первая сцена на итоге, остальные в ``Shown.then``), иначе лицо команды со временем показа
+    (:func:`held_expression`, ``text`` — реплика человека). Провал действия её не показывает (``None`` — рефлекс как
+    есть): «радостно» о провале не бывает, как и в ``expression.merge``. Одно правило для исполненной команды
+    (``TurnEngine._speak``) и для действий, исполненных после нарушения (:func:`_close_invalid`)."""
     if any(r.status in _FAILED for r in results):
         return None
-    for shown in (r for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"):
-        expression = shown_face(expression, shown.data)
-    return expression
+    shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
+    scenes = [s for s in shown if s is not None and s is not expression]
+    return _in_order(scenes) if scenes else held_expression(expression, text)
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> None:
@@ -621,7 +654,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):
         return None
-    turn.expression = command_face(expression, results)
+    turn.expression = command_face(expression, results, turn.text)
     read = not last and any(r.cls == _QUERY for r in results)
     more = query_more(engine, turn, results) if read else None
     if more is not None:
@@ -969,7 +1002,7 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if not last and any(r.cls == _QUERY for r in results):
-            turn.expression = command_face(turn.expression, results)
+            turn.expression = command_face(turn.expression, results, turn.text)
             return query_more(self, turn, results, cmd.expression.emotion)
         self._speak(turn, cmd, results, unread=len(runnable) < len(cmd.actions))
         return None
@@ -978,7 +1011,7 @@ class TurnEngine:
         """Сначала фраза кода об исходе (провал — грустно), затем слова модели, что звучат (§4.1). Экспрессия команды
         запоминается для рефлекса ``done`` (:func:`command_face`, #3997). ``unread`` — модель на последней итерации
         ещё просила ``query`` (не исполнен): слов её не слышно — говорит код по данным хода (:func:`_close_unread`)."""
-        turn.expression = command_face(cmd.expression, results)
+        turn.expression = command_face(cmd.expression, results, turn.text)
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent)
         if outcome:
             sad = any(r.status in _FAILED for r in results)
@@ -1062,6 +1095,6 @@ class TurnEngine:
 
 __all__ = ["Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY", "Shown",
            "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage", "hand_perform",
-           "host_sections", "shown_face",
+           "held_expression", "host_sections", "shown_face",
            "invalid_emotion", "outcome_phrase", "query_fallback", "stop_performance", "tier1_actions", "tier1_for",
            "tier1_phrase", "voices_passed", "words_owed"]

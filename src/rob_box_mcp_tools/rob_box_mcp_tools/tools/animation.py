@@ -130,7 +130,8 @@ class PlayAnimationTool(MCPTool):
                 )
             data["animation"] = resolved
 
-        # Валидация длительности - вне диапазона ставится минимальная (то же правило применяет диалог)
+        # Валидация длительности - вне диапазона ставится минимальная (правило тула и v1; диалог v2 приводит её к
+        # своему времени показа expression.show_seconds, #4083 - см. animations.clamp_show_seconds)
         if duration is not None:
             original_duration, duration = duration, clamp_show_seconds(duration)
             if duration != original_duration:

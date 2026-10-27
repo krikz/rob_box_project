@@ -21,7 +21,7 @@ from typing import Iterable, List, Mapping, Optional, Tuple
 import numpy as np
 
 from rob_box_dialog import expression as _expression
-from rob_box_dialog.knowledge import FACE_SCENE_MAX_S
+from rob_box_dialog.knowledge import FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S
 
 from .face import rear as R
 from .face.dsl import DSL_KEY, DSL_SPEC
@@ -37,7 +37,8 @@ MUSIC_DEFAULT_BPM = 118.0
 #: A requested emotion while the robot speaks becomes the tone of the talking
 #: face (the mouth keeps following the voice).
 MOOD_OF = {'happy': 'happy', 'victory': 'happy', 'wink': 'happy', 'talk_happy': 'happy', 'surprised': 'excited'}
-REQUEST_DEFAULT_S = 8.0
+#: Requested scene without ``ttl_ms``: the same default as a show asked by a person in the dialogue (#4083).
+REQUEST_DEFAULT_S = FACE_SHOW_DEFAULT_S
 REQUEST_MAX_S = 60.0
 
 

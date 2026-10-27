@@ -166,7 +166,7 @@ def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
     данным невалиден и говорит код."""
     ports = Ports([_mixed(), Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     _run(ports)
-    assert ports.faces == [("done", Shown(emotion="sad"))]
+    assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))]
 
 
 def test_4065_invalid_answer_after_the_mixed_data_is_said_from_the_data_3883():
@@ -190,7 +190,8 @@ def test_4065_mixed_on_the_last_iteration_without_words_is_said_by_code_from_the
     assert ports.executed[-1] == [("play_animation", {"animation": "sad"})], "query на последней итерации не исполнен"
     assert ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, "sad")]
     assert (agg.stage, agg.status) == ("done", "done") and ports.stages[-1] == ("done", "done", "query_fallback:ceiling")
-    assert ports.faces == [("done", Shown(emotion="sad"))], "исполненная анимация красит итог (#4049)"
+    assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))], \
+        "исполненная анимация красит итог (#4049) временем показа (#4083)"
 
 
 def test_4065_action_after_the_data_is_the_answer_and_no_fallback_follows():

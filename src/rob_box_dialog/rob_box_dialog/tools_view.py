@@ -8,8 +8,8 @@
 темп», «жёстче») под играющей музыкой открывают music, а не voice; «я Саша» открывает people; названия звуков («сирена») —
 sound (#3976; таблицы — ``knowledge``). Голос (``set_voice`` /
 ``set_tts_provider``) виден только при явной голосовой просьбе в этой же реплике (#3744). Голый неслышимый ответ
-(анимация или одна ``expression`` без слов), когда лицо словами не просили (:func:`face_asked`), - :func:`needs_words`
-(#3995, #3997).
+(анимация или одна ``expression`` без слов), когда ни лицо словами не просили (:func:`face_asked`), ни ответа без слов
+(:func:`silent_asked`, #4083), - :func:`needs_words` (#3995, #3997).
 """
 
 from __future__ import annotations
@@ -93,8 +93,9 @@ def needs_words(text: str, cmd: "Command") -> bool:
     """Ответ модели не слышен, а человек ждёт слов (#3995, #3997): нет ни речи, ни вопроса, ни выступления, ни
     ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а ответ есть - действия или одна
     ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``; или один earcon - короткий
-    сигнал, не слова: ревью #4041), и лицо человек словами не просил (группы ``FACE_ASK_GROUP`` нет в
-    :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»).
+    сигнал, не слова: ревью #4041), и ни лицо человек словами не просил (группы ``FACE_ASK_GROUP`` нет в
+    :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»), ни ответа без слов
+    (:func:`silent_asked`, #4083: «покажи молча, что ты задумался» - лицом или анимацией одинаково, без речи).
 
     Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
     динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
@@ -105,7 +106,23 @@ def needs_words(text: str, cmd: "Command") -> bool:
     face = cmd.expression
     if not cmd.actions and not shows(face.emotion, face.gesture, face.face) and face.earcon is None:
         return False
-    return kn.FACE_ASK_GROUP not in requested_groups(text)
+    return not show_asked(text)
+
+
+def silent_asked(text: str) -> bool:
+    """Просил ли человек ответить без слов (#4083): форма из ``knowledge.SILENT_ASK_FORMS`` («молча», «без слов», «не
+    говори») или «тихо» рядом с «покажи» (``SILENT_SHOW_FORMS`` + ``FACE_SHOW_STEMS``: «тихо покажи радость»). Целыми
+    словами: «не молчи» и «помолчи» без слов не просят (тишину решает Tier-1). Таблица одна - ``knowledge``."""
+    if has_form(text or "", kn.SILENT_ASK_FORMS):
+        return True
+    return has_form(text or "", kn.SILENT_SHOW_FORMS) and has_word(text or "", kn.FACE_SHOW_STEMS)
+
+
+def show_asked(text: str) -> bool:
+    """Просил ли человек показать лицо: словами о лице (группа ``FACE_ASK_GROUP``, :func:`face_asked`) или ответа без
+    слов (:func:`silent_asked`). Тогда ответ лицом без речи - норма (:func:`needs_words`), а лицо команды держится как
+    показ по просьбе (``turn.command_face``, ``expression.show_seconds``: не меньше ``FACE_SHOW_MIN_S``)."""
+    return kn.FACE_ASK_GROUP in requested_groups(text) or silent_asked(text)
 
 
 def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()) -> bool:
@@ -204,4 +221,4 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
 
 
 __all__ = ["available_tools", "command_groups", "face_asked", "groups_for", "motion_named", "motion_refusal",
-           "needs_words", "requested_groups", "voice_asked", "widen_for"]
+           "needs_words", "requested_groups", "show_asked", "silent_asked", "voice_asked", "widen_for"]

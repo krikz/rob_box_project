@@ -117,7 +117,10 @@ def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str
 def clamp_show_seconds(duration: float | None) -> float | None:
     """Длительность показа ``play_animation``: ``None`` - по умолчанию лица; вне ``[SHOW_MIN_S, SHOW_MAX_S]`` - минимум.
 
-    Единственное правило: его применяют и тул (ответ модели), и диалог (ExpressionRequest.ttl_ms).
+    Правило тула: его применяют ответ тула модели и диалог v1 (``turn_tools.show_seconds``). Диалог v2 приводит
+    время из данных тула к своему правилу показа ``rob_box_dialog.expression.show_seconds`` (#4083: не меньше
+    ``FACE_SHOW_MIN_S``), поэтому 60 с у v2 дают 2 с тула, а на лице 5 с, а не 30. Свести в одно правило - после
+    удаления v1 (PR-15): тест v1 (``test_turn_stages``) держит нынешнее «вне диапазона - минимум».
     """
     if duration is None:
         return None
