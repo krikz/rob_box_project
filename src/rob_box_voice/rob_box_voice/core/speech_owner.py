@@ -378,7 +378,8 @@ class SpeechOwner:
             self.ledger.set_duration(rec, total_s)
 
     def terminal(self, speech_id: str, success: bool, error: Optional[str], queued: bool) -> None:
-        """Финал реплики из единой воронки ``/voice/tts/finished``."""
+        """Финал реплики из единой воронки финалов ``tts_node._publish_tts_finished`` (там же старый String-топик v1
+        до части 15t PR-15); событие — только у реплик, принятых в журнал (``admit``)."""
         rec = None if queued else self.ledger.close(speech_id)
         if rec is None:
             return
