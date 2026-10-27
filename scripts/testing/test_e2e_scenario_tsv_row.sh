@@ -132,82 +132,84 @@ done < "$PARSED2"
 [ "$act2_bad_required" -eq 0 ] && ok "act2: required_question='0' у ВСЕХ 20 шагов"
 [ "$act2_bad_sleep" -eq 0 ] && ok "act2: sleep_before_sec='0.0' у ВСЕХ 20 шагов"
 
+# Сверка строк TSV с ожиданиями: $1 — tsv, $2 — имя случая, $3 — сколько строк ждём.
+# Ожидания — ассоциативные массивы want_when/want_required/want_sleep (по label).
+check_rows_exact() {
+    local parsed="$1" name="$2" want_rows="$3" rows_seen=0 mismatches=0
+    local exp_when exp_req exp_sleep
+    while IFS=$'\x1f' eval "$E2E_SCENARIO_ROW_READ"; do
+        [ -z "$idx" ] && continue
+        rows_seen=$((rows_seen + 1))
+        if [ -z "${want_when[$label]+x}" ]; then
+            mismatches=$((mismatches + 1))
+            bad "$name: незнакомый label '$label' — сценарий поменялся, обнови ожидания теста"
+            continue
+        fi
+        exp_when="${want_when[$label]}"
+        exp_req="${want_required[$label]}"
+        exp_sleep="${want_sleep[$label]}"
+        if [ "$when_robot_asked" != "$exp_when" ]; then
+            mismatches=$((mismatches + 1))
+            bad "$name шаг '$label': when_robot_asked='$when_robot_asked', ожидали '$exp_when'"
+        fi
+        if [ "$required_question" != "$exp_req" ]; then
+            mismatches=$((mismatches + 1))
+            bad "$name шаг '$label': required_question='$required_question', ожидали '$exp_req'"
+        fi
+        if [ "$sleep_before_sec" != "$exp_sleep" ]; then
+            mismatches=$((mismatches + 1))
+            bad "$name шаг '$label': sleep_before_sec='$sleep_before_sec', ожидали '$exp_sleep'"
+        fi
+    done < "$parsed"
+    [ "$rows_seen" -eq "$want_rows" ] \
+        && ok "$name: прочитано $want_rows строк через реальный read-цикл" \
+        || bad "$name: прочитано $rows_seen строк, ожидали $want_rows"
+    [ "$mismatches" -eq 0 ] && ok "$name: when_robot_asked/required_question/sleep_before_sec ТОЧНО совпадают с scenario.json для всех $want_rows шагов"
+}
+
 # =============================================================================
-# CASE 2 — night_marathon_act2b_identity_question_v1.json: смесь шагов с
-# заполненными и пустыми новыми полями. Проверяем ТОЧНОЕ соответствие
-# scenario.json (не просто "не пусто").
+# CASE 2 — night_marathon_act2b_identity_question_v1.json (#3992: узнавание без
+# переспроса): вопроса личности нет, when_robot_asked/required_question пусты,
+# но посреди акта стоит шаг с паузой (sleep_before_sec=150) — непустое поле
+# между пустыми. Проверяем ТОЧНОЕ соответствие scenario.json.
 # =============================================================================
 PARSED2B="$WORKDIR/act2b.tsv"
 parse_scenario_to_tsv "$ACT2B" "$PARSED2B"
 
-declare -A want_when=(
-    [n701_sasha_intro]=""
-    [n702_sasha_followup]=""
-    [n703_sasha_confirm_yes]="Саш.*это ты|это ты.*Саш"
-    [n704_sasha_no_repeat_question]=""
-    [n705_sasha_after_gap]=""
-    [n706_sasha_confirm_no]="Саш.*это ты|это ты.*Саш"
-    [n707_sasha_after_no]=""
-    [n708_boris_intro]=""
-    [n709_gena_intro]=""
-    [n710_gena_reply_if_asked]="как (тебя )?зовут|представиться|назов"
-)
-declare -A want_required=(
-    [n701_sasha_intro]="0"
-    [n702_sasha_followup]="0"
-    [n703_sasha_confirm_yes]="1"
-    [n704_sasha_no_repeat_question]="0"
-    [n705_sasha_after_gap]="0"
-    [n706_sasha_confirm_no]="1"
-    [n707_sasha_after_no]="0"
-    [n708_boris_intro]="0"
-    [n709_gena_intro]="0"
-    [n710_gena_reply_if_asked]="0"
-)
-declare -A want_sleep=(
-    [n701_sasha_intro]="0.0"
-    [n702_sasha_followup]="0.0"
-    [n703_sasha_confirm_yes]="0.0"
-    [n704_sasha_no_repeat_question]="0.0"
-    [n705_sasha_after_gap]="150.0"
-    [n706_sasha_confirm_no]="0.0"
-    [n707_sasha_after_no]="0.0"
-    [n708_boris_intro]="0.0"
-    [n709_gena_intro]="0.0"
-    [n710_gena_reply_if_asked]="0.0"
-)
+declare -A want_when=() want_required=() want_sleep=()
+for label in n701_sasha_back_recognized n702_sasha_recognized_no_question n703_sasha_memory_from_act2 \
+        n704_sasha_after_gap_no_question n705_boris_back_recognized n706_boris_recognized_no_question \
+        n707_boris_memory_from_act2 n708_sasha_not_boris n709_grisha_drop_in n710_grisha_not_named_by_voice; do
+    want_when[$label]=""
+    want_required[$label]="0"
+    want_sleep[$label]="0.0"
+done
+want_sleep[n704_sasha_after_gap_no_question]="150.0"
+check_rows_exact "$PARSED2B" "act2b" 10
 
-act2b_rows_seen=0
-act2b_mismatches=0
-while IFS=$'\x1f' eval "$E2E_SCENARIO_ROW_READ"; do
-    [ -z "$idx" ] && continue
-    act2b_rows_seen=$((act2b_rows_seen + 1))
-    if [ -z "${want_when[$label]+x}" ]; then
-        act2b_mismatches=$((act2b_mismatches + 1))
-        bad "act2b: незнакомый label '$label' — сценарий поменялся, обнови ожидания теста"
-        continue
-    fi
-    exp_when="${want_when[$label]}"
-    exp_req="${want_required[$label]}"
-    exp_sleep="${want_sleep[$label]}"
-    if [ "$when_robot_asked" != "$exp_when" ]; then
-        act2b_mismatches=$((act2b_mismatches + 1))
-        bad "act2b шаг '$label': when_robot_asked='$when_robot_asked', ожидали '$exp_when'"
-    fi
-    if [ "$required_question" != "$exp_req" ]; then
-        act2b_mismatches=$((act2b_mismatches + 1))
-        bad "act2b шаг '$label': required_question='$required_question', ожидали '$exp_req'"
-    fi
-    if [ "$sleep_before_sec" != "$exp_sleep" ]; then
-        act2b_mismatches=$((act2b_mismatches + 1))
-        bad "act2b шаг '$label': sleep_before_sec='$sleep_before_sec', ожидали '$exp_sleep'"
-    fi
-done < "$PARSED2B"
-
-[ "$act2b_rows_seen" -eq 10 ] \
-    && ok "act2b: прочитано 10 строк через реальный read-цикл" \
-    || bad "act2b: прочитано $act2b_rows_seen строк, ожидали 10"
-[ "$act2b_mismatches" -eq 0 ] && ok "act2b: when_robot_asked/required_question/sleep_before_sec ТОЧНО совпадают с scenario.json для всех 10 шагов"
+# =============================================================================
+# CASE 3 — смесь ВСЕХ трёх полей в одном сценарии (до #3992 её давал акт 2b с
+# вопросом личности; реальных сценариев с when_robot_asked больше нет, а
+# граница python-вывод -> bash-read у поля осталась). Сценарий — временный
+# файл, разбор — тот же parse_scenario_to_tsv + E2E_SCENARIO_ROW_READ.
+# Пустое поле стоит ПЕРЕД заполненными — сигнатура регресса #2824.
+# =============================================================================
+MIXED="$WORKDIR/mixed_v1.json"
+cat > "$MIXED" <<'JSON'
+{"steps": [
+  {"label": "m1_plain", "voice": "anton", "text": "Робот, привет."},
+  {"label": "m2_asked", "voice": "anton", "text": "Робот, да, это я.", "when_robot_asked": "Саш.*это ты|это ты.*Саш", "required_question": true},
+  {"label": "m3_gap", "voice": "anton", "text": "Робот, ты здесь?", "sleep_before_sec": 150},
+  {"label": "m4_if_asked", "voice": "zahar", "text": "Робот, это пока не важно.", "when_robot_asked": "как (тебя )?зовут|назов"},
+  {"label": "m5_plain", "voice": "ermil", "text": "Робот, пока."}
+]}
+JSON
+PARSEDM="$WORKDIR/mixed.tsv"
+parse_scenario_to_tsv "$MIXED" "$PARSEDM"
+want_when=([m1_plain]="" [m2_asked]="Саш.*это ты|это ты.*Саш" [m3_gap]="" [m4_if_asked]="как (тебя )?зовут|назов" [m5_plain]="")
+want_required=([m1_plain]="0" [m2_asked]="1" [m3_gap]="0" [m4_if_asked]="0" [m5_plain]="0")
+want_sleep=([m1_plain]="0.0" [m2_asked]="0.0" [m3_gap]="150.0" [m4_if_asked]="0.0" [m5_plain]="0.0")
+check_rows_exact "$PARSEDM" "mixed" 5
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

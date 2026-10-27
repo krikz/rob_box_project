@@ -493,8 +493,9 @@ def test_inherit_flag_is_bool_everywhere():
     ],
 )
 def test_marathon_acts_declare_dependency_explicitly(act_file, inherits):
-    """2b/2c заявлены САМОДОСТАТОЧНЫМИ — сбрасываются; 3-10 продолжают
-    историю ночи (манифест, акт 10 пересказывает ночь) — наследуют."""
+    """2b/2c окно диалога сбрасывают (узнают по голосу и памяти, а не по
+    истории; каст дикторов — от акта 2, его держит раннер, #3972, #3992);
+    3-10 продолжают историю ночи (манифест, акт 10 пересказывает ночь) — наследуют."""
     data = json.loads((NIGHT / act_file).read_text(encoding="utf-8"))
     assert data.get("inherits_previous_act", False) is inherits
 

@@ -2,20 +2,18 @@
   "name": "night_marathon_act2c_voice_conflict_question_acceptance_v1",
   "schema_version": 1,
   "_comment": [
-    "GATE-1 (ADR-0022 §4.1) агрегат для акта «Вы разные люди?» (issue #2828).",
-    "register_speaker обязан прозвучать за акт (Саша n721, Борис n722) —",
-    "без двух профилей voice_conflict не из чего получиться.",
-    "Настоящая проверка ФАКТА переспроса — per-step required_question в n723",
-    "(when_robot_asked). С #3765 вопрос звучит после ответа хода (не вместо),",
-    "ответ ждётся 15 с — n723 приходит позже окна и не должен ничего склеить."
+    "GATE-1 (ADR-0022 §4.1) агрегат акта «Один голос — одна личность» (#3992; смысл #3801).",
+    "register_speaker обязан прозвучать за акт: Нина (n721) — новый голос другого регистра, свой профиль.",
+    "Что второго профиля на тот же голос нет, проверяет шаг n722 (must_not_call register_speaker);",
+    "в dialog v2 он красный по делу до порта #3801 (_known_red в сценарии)."
   ],
   "expected_tool_calls": [
     "register_speaker"
   ],
   "must_not_call": [],
   "voice_provenance": {
-    "voice": "anton/ermil",
-    "tts": "auto (yandex|minimax|silero, см. E2E_TTS_PROVIDER_ORDER)",
+    "voice": "arina",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }
