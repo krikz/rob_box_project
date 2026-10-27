@@ -48,6 +48,7 @@ from rob_box_mcp_tools.tools.dialogue import (  # noqa: E402
     _validate_provider,
 )
 from rob_box_mcp_tools.voice_request import VoiceOutcome  # noqa: E402
+from rob_box_voice.tts_voice_registry import PROVIDER_VOICES  # noqa: E402
 
 
 def _published_payloads(tool, topic: str) -> list[dict]:
@@ -265,7 +266,8 @@ class TestListTtsVoicesTool:
         by_name = {p["provider"]: p for p in data["providers"]}
         assert set(by_name) == set(SUPPORTED_TTS_PROVIDERS)
         assert [p["provider"] for p in data["providers"] if p["active"]] == ["minimax"]
-        assert by_name["minimax"]["voices_count"] == 15 and by_name["yandex"]["voices_count"] == 13
+        # число голосов - из реестра, не вписано руками: новый голос каталога (#4086) не ломает тест
+        assert {n: p["voices_count"] for n, p in by_name.items()} == {n: len(v) for n, v in PROVIDER_VOICES.items()}
         for p in data["providers"]:
             assert {s["gender"] for s in p["samples"]} == {"male", "female"}
             assert p["label"] and all(s["name"] and "legacy" not in s["name"] for s in p["samples"])
