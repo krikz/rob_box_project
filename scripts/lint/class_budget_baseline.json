@@ -48,8 +48,8 @@
       "methods": 54
     },
     "src/rob_box_supervisor/rob_box_supervisor/arbiter_node.py:AvatarArbiter": {
-      "wmc": 93,
-      "methods": 34
+      "wmc": 92,
+      "methods": 33
     },
     "src/rob_box_supervisor/rob_box_supervisor/supervisor_node.py:AvatarSupervisor": {
       "wmc": 321,

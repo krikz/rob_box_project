@@ -75,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
+from rob_box_dialog_msgs.msg import SpeechEvent  # noqa: E402
 
 
 class _Embed:
@@ -428,13 +429,24 @@ def test_growth_session_closes_after_gap_timeout(node, monkeypatch):
     assert node._growth_session is None, "сессия обязана закрыться по таймауту"
 
 
-def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
+def _deliver_speech_event(node, kind_name: str, speech_id: str = "чужая-реплика") -> None:
+    """``SpeechEvent`` владельца речи вида ``KIND_<kind_name>`` (заглушка из настоящего ``.msg``, conftest) — в тот же
+    подписчик, что вешает ``SpeakerIdNode.__init__``: ``on_speech_end(node._on_speech_end)``."""
+    event = SpeechEvent(kind=getattr(SpeechEvent, f"KIND_{kind_name}"), speech_id=speech_id, agent="personality")
+    sid_node.on_speech_end(node._on_speech_end)(event)
+
+
+@pytest.mark.parametrize("kind_name", ["FINISHED", "CANCELLED", "REJECTED"])
+def test_speech_end_resets_gap_so_robot_monologue_is_not_idle(node, kind_name):
     """Речь робота НЕ должна засчитываться человеку в простой (issue #2747).
 
     Регрессия на прогон 35781881888: галереи Саши и Бориса остались по
     одному вектору при потолке 5, потому что разрыв мерился от прошлой
     реплики ЧЕЛОВЕКА и включал время, пока робот произносил ответ
     («закрыта по таймауту 33.7s > 30.0s» и «61.7s > 30.0s»).
+
+    Конец речи — любой финал реплики у владельца речи (``SpeechEvent`` finished/cancelled/rejected, PR-15 15-0c
+    #3711): чья реплика (``speech_id``) — неважно, очередь снова за человеком.
     """
     base = _embedding(26)
     node._do_register("Деньчик", base, speaker_id=None)
@@ -442,7 +454,7 @@ def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
 
     # Робот говорил дольше, чем всё окно разрыва, и только потом договорил.
     node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
-    node._on_tts_finished(types.SimpleNamespace(data="speech-id-не-важен"))
+    _deliver_speech_event(node, kind_name)
 
     node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
     node._process_utterance(b"\x00\x00" * 1000)
@@ -451,11 +463,26 @@ def test_tts_finished_resets_gap_so_robot_monologue_is_not_idle(node):
     assert node._db.gallery_size(sid) == 2, "после ответа робота реплика обязана дописаться"
 
 
-def test_tts_finished_without_session_is_noop(node):
+@pytest.mark.parametrize("kind_name", ["QUEUED", "SYNTHESIZED", "STARTED", "PROGRESS", "VOICE_CHANGED"])
+def test_speech_not_ended_does_not_reset_gap(node, kind_name):
+    """Реплика ещё в очереди или звучит — робот не договорил: отсчёт паузы не сдвигается, сессия закрывается по
+    таймауту, как без речи робота."""
+    base = _embedding(27)
+    node._do_register("Деньчик", base, speaker_id=None)
+    node._growth_session["last_utterance_at"] -= node._growth_session_gap_sec + 1.0
+    _deliver_speech_event(node, kind_name)
+
+    node._db.embed_audio_ex = MagicMock(return_value=_Embed(_degraded(base, 0.1, 2500)))
+    node._process_utterance(b"\x00\x00" * 1000)
+
+    assert node._growth_session is None, f"{kind_name} — не конец речи, разрыв больше окна закрывает сессию"
+
+
+def test_speech_end_without_session_is_noop(node):
     """Речь робота сама по себе не открывает growth-сессию: она ничего не
     говорит о том, КТО стоит у микрофона."""
     assert node._growth_session is None
-    node._on_tts_finished(types.SimpleNamespace(data="speech-id"))
+    _deliver_speech_event(node, "FINISHED")
     assert node._growth_session is None
 
 

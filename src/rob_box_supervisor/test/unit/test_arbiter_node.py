@@ -14,7 +14,7 @@ SetAvatarMode).
 перемещение без изменения логики, #1987):
 - Нода создаётся с name="avatar_arbiter" и параметром mode="monitor".
 - /avatar/state publisher создан (latched QoS).
-- Подписки на /odom, /device/snapshot, /voice/dialogue/state созданы.
+- Подписки на /odom, /device/snapshot созданы; голоса арбитр не слушает (#3711).
 - Сервисы на АБСОЛЮТНЫХ именах /avatar_arbiter/acquire_floor /
   release_floor / set_avatar_mode (типизированный IDL — AV-12).
 - AcquireFloor в monitor → granted=false, applied=false, reason=monitor.
@@ -339,17 +339,21 @@ class TestAvatarArbiterTopology(unittest.TestCase):
         topics = [s.topic for s in self.node._subscriptions]
         self.assertIn("/device/snapshot", topics)
 
-    def test_voice_dialogue_state_subscription_registered(self) -> None:
-        """AV-6 acceptance: подписка на ``/voice/dialogue/state`` (НЕ /voice/state)."""
-        topics = [s.topic for s in self.node._subscriptions]
-        self.assertIn("/voice/dialogue/state", topics)
-        self.assertNotIn("/voice/state", topics)
+    def test_arbiter_does_not_subscribe_to_voice_state(self) -> None:
+        """#3711: ``snapshot().voice_state`` никто не читал, схема ``/avatar/state`` его не несёт - входа нет.
 
-    def test_voice_state_v2_subscriptions_registered(self) -> None:
-        """issue #3911: при dialog_engine=v2 топик v1 пуст — состояние идёт из TurnEvent/SpeechEvent/SessionState."""
+        Ни старый топик ``/voice/dialogue/state`` (v1), ни контракты диалога v2, из которых состояние голоса
+        собирает ``rob_box_core.voice_state`` (ход, речь, сессия), арбитру не нужны.
+        """
         topics = [s.topic for s in self.node._subscriptions]
-        for topic in ("/dialog/turn_event", "/voice/speech/event", "/dialog/session"):
-            self.assertIn(topic, topics)
+        for topic in (
+            "/voice/dialogue/state",
+            "/voice/state",
+            "/dialog/turn_event",
+            "/voice/speech/event",
+            "/dialog/session",
+        ):
+            self.assertNotIn(topic, topics)
 
     def test_services_registered(self) -> None:
         names = [s.name for s in self.node._services]
@@ -617,7 +621,6 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
         # Трипнуть через aggregator (имитация heartbeat-watchdog).
         self.node._aggregator.update_odom(1.0, 2.0)
         self.node._aggregator.update_device_snapshot(battery_pct=80.0)
-        self.node._aggregator.update_voice_state("listening")
         self.node._aggregator.record_dead_man_trip("quest")
 
         # Запустить timer-callback вручную (без rclpy.spin).
@@ -643,58 +646,18 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
         self.assertEqual(snap.last_event["client_id"], "quest")
 
     def test_subscription_callbacks_feed_aggregator(self) -> None:
-        """Сообщения в /odom, /device/snapshot, /voice/dialogue/state обновляют state."""
+        """Сообщения в /odom, /device/snapshot обновляют state."""
         self.node._on_odom_msg(_make_odometry_msg(5.0, -3.0))
         self.node._on_device_snapshot_msg(_make_string_msg(json.dumps({"battery_pct": 73.2})))
-        self.node._on_voice_state_msg(_make_string_msg("DIALOGUE"))
         snap = self.node._aggregator.snapshot()
         self.assertEqual(snap.pose_xy, (5.0, -3.0))
         self.assertEqual(snap.battery_pct, 73.2)
-        self.assertEqual(snap.voice_state, "speaking")
-
-    def test_voice_state_v1_string_payload_feeds_aggregator(self) -> None:
-        """v1 (TEMP до PR-15): голая строка из dialogue_node (имя ``DialogueStateKind``)."""
-        self.node._on_voice_state_msg(_make_string_msg("LISTENING"))
-        self.assertEqual(self.node._aggregator.snapshot().voice_state, "listening")
-        self.node._on_voice_state_msg(_make_string_msg("SILENCED"))
-        self.assertEqual(self.node._aggregator.snapshot().voice_state, "idle")
-
-    def test_voice_state_v2_events_feed_aggregator(self) -> None:
-        """issue #3911: на v2 арбитр видит ход, речь и тишину через подписки ``watch`` (и пишет смену в лог)."""
-        from rob_box_dialog_msgs.msg import SceneFrame, SessionState, SpeechEvent, TurnEvent
-
-        def deliver(topic: str, msg: Any) -> None:
-            next(s for s in self.node._subscriptions if s.topic == topic).callback(msg)
-
-        def voice() -> Any:
-            return self.node._aggregator.snapshot().voice_state
-
-        self.assertIsNone(voice())
-        deliver("/dialog/turn_event", TurnEvent(agent="personality", stage="thinking", status="started"))
-        self.assertEqual(voice(), "thinking")
-        deliver("/dialog/turn_event", TurnEvent(agent="personality", stage="done", status="finished"))
-        self.assertEqual(voice(), "idle")
-        deliver("/voice/speech/event", SpeechEvent(agent="personality", kind=2, speech_id="s1"))
-        self.assertEqual(voice(), "speaking")
-        deliver("/voice/speech/event", SpeechEvent(agent="personality", kind=4, speech_id="s1"))
-        self.assertEqual(voice(), "idle")
-        deliver("/dialog/session", SessionState(agent="personality", scenes=[SceneFrame(kind="Silence")]))
-        self.assertEqual(voice(), "idle")
-        self.assertEqual(self.node._voice.current.detail, "silenced")
-
-    def test_voice_state_v2_ignores_other_agents(self) -> None:
-        from rob_box_dialog_msgs.msg import TurnEvent
-
-        sub = next(s for s in self.node._subscriptions if s.topic == "/dialog/turn_event")
-        sub.callback(TurnEvent(agent="telegram", stage="thinking", status="started"))
-        self.assertIsNone(self.node._aggregator.snapshot().voice_state)
 
     def test_garbage_subscription_payload_does_not_crash(self) -> None:
         """Битые сообщения в топиках не валят ноду (best-effort parse)."""
         # Просто не должно быть исключений.
         self.node._on_odom_msg(_make_string_msg("not-json"))
         self.node._on_device_snapshot_msg(_make_string_msg(""))
-        self.node._on_voice_state_msg(_make_string_msg("{}"))
 
     def test_odom_callback_reads_odometry_pose(self) -> None:
         """issue #3104: callback берёт pose.pose.position.x/y из Odometry."""

@@ -41,6 +41,7 @@ import yaml
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rob_box_core import voice_state
 from rob_box_dialog_msgs.msg import Utterance
 from std_msgs.msg import Bool, String
 
@@ -57,8 +58,6 @@ TOPIC_VAD = "/audio/vad"
 TOPIC_RESPONSE = "/voice/dialogue/response"
 TOPIC_ANIMATION = "/voice/animation/request"
 TOPIC_SOUND = "/voice/sound/trigger"
-
-TOPIC_DIALOGUE_STATE = "/voice/dialogue/state"
 
 # S8 (scheduler-segments-merge, issue #968) — MERGE assertions.
 # /voice/tts/control carries "STOP" when dialogue_node cuts TTS off
@@ -248,14 +247,15 @@ class ScenarioRunner(Node):
         # Персистентный таймстамп последнего response — НЕ сбрасывается при clear_received().
         # Используется в wait_for_quiet() чтобы дождаться тишины (LLM закончил отвечать).
         self._last_any_response_ts: float = time.time() - 10.0
-        # Текущее состояние dialogue_node ("idle" / "listening" / "dialogue").
-        # Обновляется из /voice/dialogue/state. Используется в wait_for_idle().
-        self._dialogue_state: str = "idle"
+        # Состояние голоса ("idle" / "listening" / "thinking" / "speaking") - итог rob_box_core.voice_state из
+        # TurnEvent, SpeechEvent и SessionState: те же таблицы, что у шлема Quest и кольца LED, своей копии
+        # таблицы здесь нет. Читается в wait_for_idle() из трекера (он сам снимает потерянный конец речи).
+        self._voice = voice_state.VoiceStateTracker()
+        voice_state.watch(self, self._voice, lambda _state: None)  # смену watch() сам пишет в лог узла
 
         self.create_subscription(String, TOPIC_RESPONSE, self._on_response, 10)
         self.create_subscription(String, TOPIC_ANIMATION, self._on_animation, 10)
         self.create_subscription(String, TOPIC_SOUND, self._on_sound, 10)
-        self.create_subscription(String, TOPIC_DIALOGUE_STATE, self._on_dialogue_state, 10)
 
         # S8 — assert_tts_not_stopped.
         self._tts_control_events: list[str] = []
@@ -263,9 +263,9 @@ class ScenarioRunner(Node):
 
         self.get_logger().info("ScenarioRunner ready (mock MCP enabled)")
 
-    def _on_dialogue_state(self, msg: String):
-        self._dialogue_state = msg.data.lower().strip()
-        self.get_logger().debug(f"[state] {self._dialogue_state}")
+    @property
+    def _voice_state(self) -> str:
+        return self._voice.current.state
 
     def _on_response(self, msg: String):
         self._last_any_response_ts = time.time()  # Персистентный — не сбрасывается clear_received()
@@ -473,10 +473,10 @@ class ScenarioRunner(Node):
         return False
 
     def wait_for_idle(self, first_non_idle_timeout_s: float = 5.0, idle_timeout_s: float = 55.0) -> bool:
-        """Ждать пока dialogue_node вернётся в состояние 'idle'.
+        """Ждать пока состояние голоса вернётся в 'idle'.
 
-        Надёжнее wait_for_quiet(): проверяет реальное состояние state machine
-        вместо тайм-аutа тишины. Диалог завершён ⟺ state == 'idle'.
+        Надёжнее wait_for_quiet(): проверяет реальное состояние хода и речи
+        (rob_box_core.voice_state) вместо тайм-аута тишины. Ход завершён ⟺ state == 'idle'.
 
         Алгоритм:
           1. Ждём до first_non_idle_timeout_s пока нода уйдёт из idle
@@ -493,7 +493,7 @@ class ScenarioRunner(Node):
         # Фаза 1: ждём пока нода выйдет из idle (начнёт обрабатывать запрос)
         deadline1 = time.time() + first_non_idle_timeout_s
         while time.time() < deadline1:
-            if self._dialogue_state != "idle":
+            if self._voice_state != "idle":
                 break
             time.sleep(0.1)
         else:
@@ -505,17 +505,17 @@ class ScenarioRunner(Node):
         deadline2 = time.time() + idle_timeout_s
         rescue_sent = False
         while time.time() < deadline2:
-            if self._dialogue_state == "idle":
+            if self._voice_state == "idle":
                 # Дополнительная пауза чтобы убедиться что idle стабильный (не транзитный)
                 time.sleep(0.5)
-                if self._dialogue_state == "idle":
+                if self._voice_state == "idle":
                     return True
 
             # Rescue: только для 'listening' — нода застряла ожидая STT после listen_for_response.
-            # Для 'dialogue' rescue НЕ делаем: пусть dialogue_timeout (15s в тест-конфиге)
-            # сам переведёт ноду в IDLE. Rescue в DIALOGUE = новый LLM вызов = накопление
-            # истории = следующий сценарий получает перегруженный контекст.
-            if not rescue_sent and self._dialogue_state == "listening":
+            # Для 'thinking'/'speaking' rescue НЕ делаем: ход закроется сам (TurnEvent done, конец речи).
+            # Rescue там = новый LLM вызов = накопление истории = следующий сценарий получает
+            # перегруженный контекст.
+            if not rescue_sent and self._voice_state == "listening":
                 elapsed = idle_timeout_s - (deadline2 - time.time())
                 silence = time.time() - self._last_any_response_ts
                 if elapsed > 10.0 and silence > 5.0:
@@ -532,7 +532,7 @@ class ScenarioRunner(Node):
             time.sleep(0.2)
 
         self.get_logger().warning(
-            f"[wait_for_idle] timeout {idle_timeout_s}s — state='{self._dialogue_state}', proceeding anyway"
+            f"[wait_for_idle] timeout {idle_timeout_s}s — state='{self._voice_state}', proceeding anyway"
         )
         return False
 

@@ -118,16 +118,33 @@ def parse_script(raw: Mapping[str, Any]) -> Script:
     return Script(scene, participants, steps, dict(raw.get("expected") or {}), str(raw.get("description") or ""))
 
 
-def say_text(node: Any, text: str) -> str:
-    """Реплика дирижёра → ``SpeechRequest`` через единый клиент речи (автор ``system``); вернуть ``speech_id``.
+# ── речь робота: помощники речи v2 (ADR-0150 §6.1, PR-15 15-0c #3711) ────────
 
-    JSON в ``/voice/tts/request`` дирижёр больше не пишет (PR-15 часть 15-0d): SSML и экранирование делает
-    ``Utterance``, ``tts_node`` принимает тот же запрос, что у живого v2. Импорт ленивый: ``--dry-run`` идёт без ROS.
-    """
+
+def speech_ends(node: Any) -> Any:
+    """Ожидания конца реплики по её ``speech_id``: первое ``SpeechEvent`` finished|cancelled|rejected
+    (``speech_client.KIND_STATUS``) с тем же id. Чужая реплика, закончившаяся раньше, дирижёра не будит."""
+    from rob_box_core import speech_client
+    from rob_box_dialog_msgs.msg import SpeechEvent
+    from rob_box_mcp_tools.owner_event import OwnerEvents
+
+    return OwnerEvents(node, SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, key_of=lambda m: m.speech_id,
+                       accept=lambda m: int(m.kind) in speech_client.KIND_STATUS)
+
+
+def say_and_wait(node: Any, ends: Any, text: str, timeout_s: float) -> bool:
+    """Сказать ``text`` роботом и ждать конца ЭТОЙ реплики; ``False`` — конца нет за ``timeout_s``.
+
+    Реплику отдаёт единственный клиент речи ``speech_client.say`` (агент ``system`` — служебные фразы, сессию не
+    ведёт); SSML с экранированием строит ``Utterance`` (без SSML ``tts_node`` молчит, память speak-through-robot)."""
     from rob_box_core import speech_client
     from rob_box_core.utterance import Utterance
 
-    return speech_client.say(node, Utterance(text=text), agent=speech_client.SYSTEM_AGENT)
+    def publish(speech_id: str) -> None:
+        speech_client.say(node, Utterance(text=text, speech_id=speech_id), agent=speech_client.SYSTEM_AGENT)
+
+    _speech_id, event = ends.ask(publish, timeout_s)
+    return event is not None
 
 
 # ── пустой кадр ──────────────────────────────────────────────────────────────
@@ -215,7 +232,7 @@ def assemble_scene(
 
 
 class Runtime:
-    """rclpy: TTS с ожиданием finished, наблюдения, камера, STT для согласия."""
+    """rclpy: реплика с ожиданием её конца (``SpeechEvent`` по ``speech_id``), наблюдения, камера, STT для согласия."""
 
     def __init__(self, anchors_of) -> None:
         import rclpy
@@ -225,18 +242,17 @@ class Runtime:
         from rob_box_dialog_msgs.msg import Utterance
         from rob_box_perception_msgs.msg import Observation
         from sensor_msgs.msg import CompressedImage
-        from std_msgs.msg import String
 
         rclpy.init()
         self.node = rclpy.create_node("scene_conductor")
+        # Публикатор заранее: первая команда сцены не теряется, пока Zenoh сводит нового писателя.
         speech_client.prepare(self.node, "request")
-        self._finished = threading.Event()
+        self._speech_ends = speech_ends(self.node)
         self._lock = threading.Lock()
         self.watcher: Optional[EmptyWatcher] = None
         self.region: Optional[Tuple[float, float]] = None
         self.anchors_of = anchors_of
         self.stt: List[Tuple[float, str]] = []
-        self.node.create_subscription(String, "/voice/tts/finished", lambda _m: self._finished.set(), 10)
         self.node.create_subscription(Observation, "/perception/observations", self._on_obs, 10)
         self.node.create_subscription(CompressedImage, CAMERA_TOPIC, self._on_frame, qos_profile_sensor_data)
         self.node.create_subscription(Utterance, "/voice/stt/utterance", self._on_stt, 10)
@@ -259,9 +275,7 @@ class Runtime:
         self.stt.append((time.time(), msg.text))
 
     def say(self, text: str, timeout_s: float = 25.0) -> bool:
-        self._finished.clear()
-        say_text(self.node, text)
-        return self._finished.wait(timeout_s)
+        return say_and_wait(self.node, self._speech_ends, text, timeout_s)
 
     def wait_empty(
         self, hold_s: float, timeout_s: float, region: Optional[Tuple[float, float]] = None
@@ -306,7 +320,7 @@ class Conductor:
 
     def speak(self, text: str) -> float:
         if text and not self.rt.say(text):
-            self.log(f"WARN: нет /voice/tts/finished за 25 с: {text!r}")
+            self.log(f"WARN: нет конца реплики (SpeechEvent) за 25 с: {text!r}")
         return time.time()
 
     def wait_empty_or_nag(self, nag: str, region: Optional[Tuple[float, float]] = None) -> float:
