@@ -375,7 +375,7 @@ def test_n721_conflict_with_known_voice_is_red():
     assert step["patterns"][0] in missing
 
 
-#: Строка хозяина голосов из отчёта PR #4087 (#4054): профиль переименован, второго нет. В develop её ещё нет.
+#: Строка хозяина голосов (#4054, PR #4087, ``speaker_id_node``): профиль переименован, второго нет.
 RENAMED = _l(
     "speaker_id_node",
     "✏️ [#4054] один голос — одна личность: голос фразы уверенно 'Нина' (id=5e6f7a8b, score=0.930), назвался "
@@ -436,19 +436,22 @@ def test_n722_rename_line_is_required_not_just_the_phrase():
     assert _judge(step, wrong_name + _tts(RENAMED_PHRASES[0]))[1] == step["patterns"], "переименовали не в то имя"
 
 
-def test_n722_is_red_until_pr_4087_lands_and_says_so():
-    """Красный ожидается до влития PR #4087 (#4054): строка ``[#4054]`` есть только в его ветке — паттерн взят из отчёта
-    PR, не из лога живого робота. Это и написано; утверждения «проверено» нет."""
+def test_n722_is_red_until_the_robot_runs_pr_4087_and_says_so():
+    """Красный ожидается, пока на роботе нет образа с PR #4087 (#4054): влит в develop, но живой робот строку ``[#4054]``
+    ещё не писал. Это и написано; утверждения «проверено на роботе» нет."""
     known_red = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]["_known_red"]
     assert "#4087" in known_red and "#4054" in known_red
-    assert "не из лога робота" in known_red
+    assert "не проверен" in known_red and "живой робот её ещё не писал" in known_red
     assert "#3801" not in known_red, "правило #3801 в v2 порту уже не ожидание"
 
 
-@pytest.mark.xfail(strict=False, reason="строка ✏️ [#4054] появится в speaker_id_node с PR #4087 (в develop её нет): "
-                                        "паттерн n722 пока взят из отчёта PR; после влития тест станет XPASS")
-def test_rename_marker_exists_in_speaker_id_node():
-    assert "[#4054] один голос — одна личность" in SPEAKER_ID_NODE.read_text(encoding="utf-8")
+def test_rename_marker_is_the_line_speaker_id_node_logs():
+    """Паттерн n722 собран из f-строки хозяина голосов (PR #4087): поменяли строку — тест краснеет раньше марафона."""
+    source = SPEAKER_ID_NODE.read_text(encoding="utf-8")
+    assert 'f"✏️ [#4054] один голос — одна личность: голос фразы уверенно {owner.name!r}' in source
+    assert "назвался {clean!r} — профиль переименован {owner.name!r} → {clean!r}" in source
+    pattern = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]["patterns"][0]
+    assert etm.patterns_missing(RENAMED, [pattern]) == []
 
 
 @pytest.mark.parametrize("label, name", [("n201_sasha_intro_long", "Саша"), ("n204_boris_intro_long", "Борис")])
