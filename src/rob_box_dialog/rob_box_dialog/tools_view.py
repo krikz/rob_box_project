@@ -24,7 +24,7 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.expression import shows
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import has_form, has_word, introduces_self, without_forms
+from rob_box_dialog.words import has_form, has_speech_manner, has_word, introduces_self, without_forms
 
 if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
     from rob_box_dialog.command import Command
@@ -207,6 +207,8 @@ def _named(text: str, field: str) -> set:
         names.add(kn.SELF_INTRO_GROUP)
     if field == "stems" and face_asked(text):  # «покажи победу»: «покажи» без «победы» лицо не просит
         names.add(kn.FACE_ASK_GROUP)
+    if field == "stems" and has_speech_manner(text):  # «хватит тянуть резину» - про темп речи (#4074)
+        names.add(kn.VOICE_STEP_GROUP)
     return names
 
 

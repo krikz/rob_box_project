@@ -1,7 +1,8 @@
 """Tier-1: закрытая грамматика команд без LLM (ADR-0150 §4.2, §6.3, §18.3 В19; карточка #3696).
 
-:func:`match` — стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона),
-новая сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица, #4103).
+:func:`match` — шаг темпа и тона речи («говори басом», «тараторь», «хватит тянуть, теперь наоборот — тараторь»,
+#4074), стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона), новая
+сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица, #4103).
 Команда должна быть покрыта грамматикой ЦЕЛИКОМ: лишнее слово — не Tier-1, решает следующий шаг (медиа-грамматика
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
@@ -14,18 +15,24 @@ v1 или LLM). Работает в любом состоянии, включа�
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
-from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, has_form, has_word, name_tokens, stop_command,
-                                  strip_wake_word, without_forms)
+from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, name_tokens,
+                                  speech_manner, stop_command, strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name)`` голосов активного провайдера (реестр ``tts_voice_registry`` — у вызывающего).
 Voices = Sequence[Tuple[str, str]]
+#: Шаг голоса: ``(тул, действие)`` — ключ ``knowledge.VOICE_STEP.requests``.
+Step = Tuple[str, str]
+#: Служебные слова шага голоса: общие грамматики, ведущие перед стопом («ладно», «всё») и свои (ё → е, как слова).
+_STEP_FILLER = frozenset(w.replace("ё", "е") for w in (*kn.GRAMMAR_FILLER, *kn.STOP_LEAD_WORDS, *kn.VOICE_STEP.filler))
+#: Основы громкости Tier-1 (все намерения): такое слово после «наоборот» или «как» — не пересказ шага голоса.
+_VOLUME_WORDS: Tuple[str, ...] = tuple(stem for stems in kn.VOLUME_STEMS.values() for stem in stems)
 
 
 @dataclass(frozen=True)
@@ -46,7 +53,7 @@ def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
     body = strip_wake_word(text or "")
-    for rule in (_stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue):
+    for rule in (_voice_step, _stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
         if command is not None and not (silenced and kn.TIER1_KINDS[command.kind]):
             return command
@@ -70,6 +77,106 @@ def _words(text: str) -> List[str]:
 
 def _starts(word: str, stems: Sequence[str]) -> bool:
     return any(word.startswith(stem.replace("ё", "е")) for stem in stems)
+
+
+@dataclass(frozen=True)
+class _StepParse:
+    """Разбор шага голоса по частям фразы: шаги принятых частей и то, что переходит через границу части (манера
+    речи для «наоборот», ждёт ли слово-пересказ после «наоборот»). ``owned`` — просьба о речи: речевой глагол,
+    манера («хватит тянуть») или просьба-глагол («тараторь»)."""
+
+    steps: Tuple[Step, ...] = ()
+    owned: bool = False
+    manner: Optional[Step] = None
+    inverse: bool = False
+    simile: bool = False
+
+
+def _voice_step(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
+    """Шаг темпа или тона речи (#4074, ADR-0148: решает код) → ``voice_step{steps}``, тот же голос робота.
+
+    «говори басом, как диктор в старом кино» → ``set_pitch lower``; «тараторь», «говори помедленнее» → ``set_speed``;
+    «хватит тянуть, теперь наоборот — тараторь» — не стоп, а ``set_speed faster``: манера речи после «хватит/не»
+    (``VOICE_STEP.manners``) и одно слово-пересказ после «наоборот» (STT: «ораторь»). Части фразы делят союзы и
+    знаки (:func:`~rob_box_dialog.words.clauses`); первая часть покрыта таблицей ЦЕЛИКОМ, непокрытая часть после
+    границы — новая просьба (``rest``: «говори басом и расскажи сказку»). Без речевого глагола или манеры («быстрее»
+    под музыку — темп трека), с отрицанием («не говори быстрее»), без шага («говори как пират») и при двух действиях
+    одного тула («быстрее и медленнее») — не Tier-1."""
+    parse, parts = _StepParse(), clauses(text, kn.VOICE_STEP.joins)
+    for n, part in enumerate(parts):
+        parsed = _step_part(tuple(word for word, _, _ in part), replace(parse, simile=False))
+        if parsed is None:
+            return _step_command(parse, text[part[0][1]:]) if n else None
+        parse = parsed
+    return _step_command(parse, "")
+
+
+def _step_command(parse: _StepParse, rest: str) -> Optional[Tier1Command]:
+    """Команда шага по принятым частям: есть шаг, просьба о речи и на каждый тул одно действие."""
+    tools = {tool for tool, _ in parse.steps}
+    if not parse.steps or not parse.owned or len(tools) != len(parse.steps):
+        return None
+    steps = tuple(step for step in kn.VOICE_STEP.requests if step in parse.steps)
+    return Tier1Command(kn.VOICE_STEP_KIND, MappingProxyType({"steps": steps}), rest=rest.strip(" ,.!?;:-–—"))
+
+
+def _step_part(words: Sequence[str], parse: _StepParse) -> Optional[_StepParse]:
+    """Одна часть фразы по таблице ``VOICE_STEP``; чужое слово — ``None`` (часть не покрыта)."""
+    i = 0
+    while i < len(words):
+        manner = speech_manner(words, i)
+        if parse.inverse or parse.simile:  # пересказ после «наоборот» и образ «как …»
+            parse = _retold(words[i], parse)
+        elif manner is not None:  # «хватит тянуть», «не тараторь», «хватит так тараторить»: одна просьба
+            step, i = manner
+            parse = _with(replace(parse, manner=step, owned=True), step)
+        else:
+            parse = _step_word(words[i], parse)
+        if parse is None:
+            return None
+        i += 1
+    return parse
+
+
+def _retold(word: str, parse: _StepParse) -> Optional[_StepParse]:
+    """Слово после «наоборот» (пересказ противоположной манеры, одно) или после «как» (образ, до конца части).
+    Слово другой команды Tier-1 — не пересказ и не образ (``None``: «…теперь наоборот — замолчи» — тишина остатком,
+    а не проглоченное слово); служебные слова перед пересказом его ждут («наоборот, давай ораторь»)."""
+    if _claimed_elsewhere(word):
+        return None
+    if parse.simile:
+        return _with(replace(parse, inverse=False), _request(word) or _request(word, kn.VOICE_STEP.likeness))
+    if word in _STEP_FILLER:
+        return parse
+    return _with(replace(parse, inverse=False), _request(word))
+
+
+def _claimed_elsewhere(word: str) -> bool:
+    """Слово другой команды Tier-1 этого модуля: стоп, тишина, громкость."""
+    return word in kn.STOP_WORDS or _starts(word, kn.SILENCE_WORDS) or _starts(word, _VOLUME_WORDS)
+
+
+def _step_word(word: str, parse: _StepParse) -> Optional[_StepParse]:
+    request = _request(word)
+    if request is not None:
+        return _with(replace(parse, owned=parse.owned or _starts(word, kn.VOICE_STEP.self_owned)), request)
+    if word in kn.VOICE_STEP.owners:
+        return replace(parse, owned=True)
+    if word in kn.VOICE_STEP.inverse and parse.manner is not None:
+        return replace(parse, inverse=True)
+    if word in kn.VOICE_STEP.simile:
+        return replace(parse, simile=True)
+    return parse if word in _STEP_FILLER else None
+
+
+def _request(word: str, table: Optional[Mapping[Step, Sequence[str]]] = None) -> Optional[Step]:
+    """Шаг, который просит слово: по основам просьб (``VOICE_STEP.requests``) или другой таблицы шагов (образы)."""
+    words = kn.VOICE_STEP.requests if table is None else table
+    return next((step for step, stems in words.items() if _starts(word, stems)), None)
+
+
+def _with(parse: _StepParse, step: Optional[Step]) -> _StepParse:
+    return parse if step is None or step in parse.steps else replace(parse, steps=parse.steps + (step,))
 
 
 def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:

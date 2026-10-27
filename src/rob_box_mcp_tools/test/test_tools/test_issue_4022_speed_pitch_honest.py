@@ -300,3 +300,27 @@ def test_every_action_the_schema_offers_is_handled(monkeypatch, tool_cls):
 
 def test_both_tools_declare_the_parameter_server_as_their_owner_event():
     assert SetSpeedTool.event_source == SetPitchTool.event_source == "srv:/tts_node/set_parameters"
+
+
+# ── #4074: «басом» - режим тона того же голоса; normal снимает его у любого провайдера ──────────────────────────
+
+
+@pytest.mark.parametrize("provider", ["yandex", "silero"])
+def test_normal_pitch_lifts_the_stored_mode_even_where_the_voice_has_no_pitch(monkeypatch, provider):
+    """Бас поставлен на MiniMax (0.8), потом голос Алёны (Yandex, тона нет): «обычным голосом» снимает шаг с оси, а не
+    отказывает - иначе бас вернулся бы вместе с голосом MiniMax."""
+    server = TtsParamServer(pitch_shift=0.8, chipmunk_mode=False)
+    result = _make(SetPitchTool, monkeypatch, server, provider).execute("normal")
+    assert result.success and result.data["status"] == "done"
+    assert server.params["pitch_shift"] == 1.0 and server.writes == [("pitch_shift", 1.0)]
+
+
+def test_pitch_already_normal_answers_with_the_at_limit_reason_the_dialog_reads(monkeypatch):
+    from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
+
+    server = TtsParamServer(pitch_shift=1.0, chipmunk_mode=False)
+    result = _make(SetPitchTool, monkeypatch, server, "yandex").execute("normal")
+    assert result.success and server.writes == [] and result.data["reason"] == VOICE_STEP_AT_LIMIT
+    low = TtsParamServer(pitch_shift=0.5, chipmunk_mode=False)
+    result = _make(SetPitchTool, monkeypatch, low, "minimax").execute("lower")
+    assert result.data["reason"] == VOICE_STEP_AT_LIMIT and low.writes == []
