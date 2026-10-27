@@ -22,12 +22,10 @@ Usage in DialogueNode:
     # Init once at node startup
     self.voice_memory = VoiceMemory(db_path="/data/voice_memory.db")
 
-    # Reload context from previous sessions
+    # Reload context from previous sessions (turns go into the caller's own history;
+    # the old ConversationHistory class was removed in PR-15 15a1, #3711)
     for turn in self.voice_memory.load_recent_turns(limit=15, exclude_current_session=True):
-        if turn["role"] == "user":
-            self.conversation_history.add_user_message(turn["content"])
-        else:
-            self.conversation_history.add_assistant_message(turn["content"])
+        restored.append((turn["role"], turn["content"]))
 
     # After every user message:
     self.voice_memory.save_turn("user", text)
@@ -575,7 +573,7 @@ class VoiceMemory:
         """
         Return recent turns in chronological order (oldest first).
 
-        Intended for startup context restoration into ConversationHistory.
+        Intended for startup context restoration: the caller puts the turns into its own history.
 
         Args:
             limit:                    Max number of turns.
