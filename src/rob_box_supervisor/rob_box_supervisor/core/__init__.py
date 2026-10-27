@@ -9,7 +9,7 @@ AV-6 (issue #1600) — Phase 1 monitor helpers used by
 ``supervisor_node.py``:
 
 - :class:`StateAggregator` — assembles ``/avatar/state`` from inputs
-  (``/odom``, ``/device/snapshot``, ``/voice/dialogue/state``).
+  (``/odom``, ``/device/snapshot``).
 - :class:`DeadManCounter` — ``dead_man_trips_total{client_id}`` counter
   (ADR-0028 §6 Q4, Phase 1 metric).
 

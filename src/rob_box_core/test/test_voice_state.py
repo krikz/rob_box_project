@@ -247,13 +247,17 @@ class _Node:
         self.subs.append((msg_type, topic, callback, qos))
 
 
-def test_watch_subscribes_three_contracts_and_reports_changes(monkeypatch):
+def _stub_rclpy_qos(monkeypatch):
     qos = types.ModuleType("rclpy.qos")
     qos.QoSProfile = lambda **kw: types.SimpleNamespace(**kw)
     qos.DurabilityPolicy = types.SimpleNamespace(TRANSIENT_LOCAL="transient_local")
     qos.ReliabilityPolicy = types.SimpleNamespace(RELIABLE="reliable")
     monkeypatch.setitem(sys.modules, "rclpy", types.ModuleType("rclpy"))
     monkeypatch.setitem(sys.modules, "rclpy.qos", qos)
+
+
+def test_watch_subscribes_three_contracts_and_reports_changes(monkeypatch):
+    _stub_rclpy_qos(monkeypatch)
     node, seen = _Node(), []
     tracker = vs.VoiceStateTracker()
 
@@ -272,3 +276,17 @@ def test_watch_subscribes_three_contracts_and_reports_changes(monkeypatch):
     by_topic["/dialog/session"][1](session("Silence"))
     assert seen == [vs.VoiceState("listening"), vs.VoiceState("speaking"), vs.VoiceState("idle", "silenced")]
     assert node.log == ["voice_state -> listening", "voice_state -> speaking", "voice_state -> idle (silenced)"]
+
+
+def test_bridge_catalog_names_the_topics_watch_subscribes(monkeypatch):
+    """Стрим ``voice_state`` (0x1202) в каталоге моста называет те же топики, из которых ``watch`` собирает состояние
+    шлема: ``stream_list`` не врёт, а старого ``/voice/dialogue/state`` там нет (#3711, 15-0a')."""
+    from rob_box_core.bridge_protocol import get_stream
+
+    _stub_rclpy_qos(monkeypatch)
+    node = _Node()
+    vs.watch(node, vs.VoiceStateTracker(), lambda state: None)
+
+    source = get_stream("voice_state").source
+    assert set(source.split(", ")) == {topic for _msg_type, topic, _cb, _qos in node.subs}
+    assert "/voice/dialogue/state" not in source

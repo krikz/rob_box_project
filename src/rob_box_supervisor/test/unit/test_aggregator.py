@@ -17,7 +17,6 @@ class TestStateAggregator(unittest.TestCase):
         self.assertIsInstance(snap, AvatarState)
         self.assertIsNone(snap.pose_xy)
         self.assertIsNone(snap.battery_pct)
-        self.assertIsNone(snap.voice_state)
         self.assertEqual(snap.dead_man_trips_total, {})
         self.assertGreater(snap.ts_ms, 0)
 
@@ -32,10 +31,12 @@ class TestStateAggregator(unittest.TestCase):
         snap = self.agg.snapshot()
         self.assertEqual(snap.battery_pct, 87.5)
 
-    def test_update_voice_state(self) -> None:
-        self.agg.update_voice_state("listening")
+    def test_snapshot_has_no_voice_state_input(self) -> None:
+        """#3711: вход состояния голоса удалён - его никто не читал, схема ``/avatar/state`` его не несёт."""
+        self.assertFalse(hasattr(self.agg, "update_voice_state"))
         snap = self.agg.snapshot()
-        self.assertEqual(snap.voice_state, "listening")
+        self.assertFalse(hasattr(snap, "voice_state"))
+        self.assertNotIn("voice_state", snap.to_msgpack_dict())
 
     def test_record_dead_man_trip_increments(self) -> None:
         self.assertEqual(self.agg.record_dead_man_trip("quest"), 1)
@@ -55,7 +56,6 @@ class TestStateAggregator(unittest.TestCase):
     def test_msgpack_dict_round_trip(self) -> None:
         self.agg.update_odom(3.0, 4.0)
         self.agg.update_device_snapshot(battery_pct=42.0)
-        self.agg.update_voice_state("speaking")
         self.agg.record_dead_man_trip("quest")
         snap = self.agg.snapshot()
         d = snap.to_msgpack_dict()
@@ -64,7 +64,6 @@ class TestStateAggregator(unittest.TestCase):
         parsed = json.loads(text)
         self.assertEqual(parsed["pose_xy"], [3.0, 4.0])
         self.assertEqual(parsed["battery_pct"], 42.0)
-        self.assertEqual(parsed["voice_state"], "speaking")
         self.assertEqual(parsed["dead_man_trips_total"], {"quest": 1})
         self.assertEqual(parsed["last_event"]["client_id"], "quest")
 
