@@ -429,6 +429,7 @@ def test_n722_second_profile_on_same_voice_is_red():
 def test_n722_rename_line_is_required_not_just_the_phrase():
     """Фраза «мы знакомы» без строки переименования (робот просто сказал, ничего не сделав) — красный."""
     step = _steps(ACT2C)["n722_nina_second_name_no_duplicate"]
+    assert step["patterns"] and "#4054" in step["patterns"][0], "строка переименования обязательна"
     _, missing = _judge(step, _verdict("Нина", 0.93) + _tts(RENAMED_PHRASES[0]))
     assert missing == step["patterns"]
     wrong_name = RENAMED.replace("→ 'Тамара'", "→ 'Тина'")
