@@ -133,7 +133,7 @@ def _ensure_optional_deps(monkeypatch):
     """autouse: rclpy/vosk/grpc/yandex замоканы для каждого теста."""
     import rob_box_voice  # noqa: F401
 
-    for cached in ["rob_box_voice.stt_node", "rob_box_voice.dialogue_node"]:
+    for cached in ["rob_box_voice.stt_node"]:
         sys.modules.pop(cached, None)
         _leaf = cached.split(".")[-1]
         if hasattr(rob_box_voice, _leaf):

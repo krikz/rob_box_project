@@ -1,7 +1,8 @@
 """Флаг ``dialog_engine`` (ADR-0150 §11, PR-8 #3702): значения, чтение yaml, две копии, выбор нод launch-ом.
 
 Launch-файлы грузятся с подменой ``launch``/``launch_ros`` (записывающие заглушки): тест видит ровно тот список нод,
-который launch отдаёт ROS, и их порядок. При ``v1`` он обязан совпасть со списком до флага.
+который launch отдаёт ROS, и их порядок. PR-15 (#3711, часть 15p): нода v1 удалена — ``v1`` в launch даёт громкую
+ошибку, а не запуск несуществующего исполняемого файла.
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ LAUNCHES = {
     "headless": REPO / "docker" / "sound" / "config" / "voice_assistant" / "voice_assistant_headless.launch.py",
     "src": REPO / "src" / "rob_box_voice" / "launch" / "voice_assistant.launch.py",
 }
-#: Ноды launch-файлов до флага (develop @ 881374044), по порядку.
-NODES_BEFORE = {
-    "headless": ["audio_node", "led_node", "dialogue_node", "tts_node", "stt_node", "sound_node", "command_node",
+#: Ноды launch-файлов по порядку (нода диалога — ``dialog_node`` на месте удалённой ноды v1, PR-15 15p).
+NODES = {
+    "headless": ["audio_node", "led_node", "dialog_node", "tts_node", "stt_node", "sound_node", "command_node",
                  "speaker_id_node", "mcp_server"],
-    "src": ["audio_node", "led_node", "dialogue_node", "tts_node", "stt_node", "sound_node", "command_node",
+    "src": ["audio_node", "led_node", "dialog_node", "tts_node", "stt_node", "sound_node", "command_node",
             "speaker_id_node", "mcp_server"],
 }
 
@@ -147,22 +148,23 @@ def _config(tmp_path, value):
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_v1_keeps_node_list_and_order(monkeypatch, tmp_path, which):
-    names, tts = _nodes(monkeypatch, which, _config(tmp_path, "v1"))
-    assert names == NODES_BEFORE[which]
-    assert {"dialog_engine": "v1"} in tts.kwargs["parameters"]
+def test_launch_v1_is_a_loud_error_not_a_missing_executable(monkeypatch, tmp_path, which):
+    """PR-15 15p: ноды v1 нет — ``v1`` в yaml роняет сборку launch понятной ошибкой (откат только гитом)."""
+    with pytest.raises(ValueError, match="v1 удалён"):
+        _nodes(monkeypatch, which, _config(tmp_path, "v1"))
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
 def test_launch_without_flag_file_is_default_v2(monkeypatch, tmp_path, which):
     names, _ = _nodes(monkeypatch, which, tmp_path)
-    assert names == ["dialog_node" if n == "dialogue_node" else n for n in NODES_BEFORE[which]]
+    assert names == NODES[which]
 
 
 @pytest.mark.parametrize("which", sorted(LAUNCHES))
-def test_launch_v2_starts_dialog_node_instead_of_dialogue_node(monkeypatch, tmp_path, which):
+def test_launch_v2_starts_dialog_node(monkeypatch, tmp_path, which):
     names, tts = _nodes(monkeypatch, which, _config(tmp_path, "v2"))
-    assert names == ["dialog_node" if n == "dialogue_node" else n for n in NODES_BEFORE[which]]
+    assert names == NODES[which]
+    assert "dialogue_node" not in names
     assert {"dialog_engine": "v2"} in tts.kwargs["parameters"]
 
 
@@ -171,7 +173,7 @@ def test_launch_v2_dialog_node_gets_its_yaml_and_flag(monkeypatch, tmp_path):
     cfg = _config(tmp_path, "v2")
     tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
                 "parameters": ["tts_node.yaml"]}
-    dialog, tts = de.launch_nodes({"config_dir": str(cfg)}, _Node(name="dialogue_node"), tts_args)
+    dialog, tts = de.launch_nodes({"config_dir": str(cfg)}, tts_args)
     assert (dialog.kwargs["executable"], dialog.name) == ("dialog_node", "dialog_node")
     assert dialog.kwargs["parameters"] == [str(cfg / "dialog_node.yaml"), {"dialog_engine": "v2"}]
 
@@ -185,7 +187,7 @@ def test_launch_v2_dialog_node_gets_the_music_chooser_of_the_mcp_server(monkeypa
                                          encoding="utf-8")
     tts_args = {"package": "rob_box_voice", "executable": "tts_node", "name": "tts_node", "namespace": "",
                 "parameters": ["tts_node.yaml"]}
-    dialog, _tts = de.launch_nodes({"config_dir": str(cfg)}, _Node(name="dialogue_node"), tts_args)
+    dialog, _tts = de.launch_nodes({"config_dir": str(cfg)}, tts_args)
     assert dialog.kwargs["parameters"][1] == {"dialog_engine": "v2", "music_chooser": "deterministic"}
 
 

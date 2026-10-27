@@ -1,37 +1,17 @@
-"""test_voice_persistence_auto_voice.py — voice persistence in the auto-voice path.
+"""test_voice_persistence_auto_voice.py — голос в полезной нагрузке SSML.
 
-Regression guard for the bug where ``set_voice('Russian_ReliableMan')`` was
-persisted only inside mcp_server's in-memory voice store (used by the
-``speak_text`` MCP tool) but **dropped** by the dialogue_node auto-voice path.
+``build_ssml_payload`` несёт ``voice``, когда он задан, и не несёт без него (обратная совместимость).
 
-When the LLM answers with plain text (no ``speak_text`` tool call),
-``dialogue_node`` voices the reply itself through
-``_publish_response()`` / ``_publish_response_batch()`` -> ``build_ssml_payload()``.
-That path never carried ``voice``, so ``tts_node`` received ``voice=None`` and
-fell back to the provider default (``male-qn-qingse``) — while the LLM kept
-claiming it speaks ``Russian_ReliableMan`` (its ``[TTS] current_voice`` context).
-
-Checks:
-
-1. ``build_ssml_payload`` includes ``voice`` when provided and omits it otherwise
-   (back-compat).
-2. PR-4 ч.3: ``_publish_response`` / ``_publish_response_batch`` НЕ несут голос - текущий голос ведёт tts_node (VoiceOwner).
+PR-15 (#3711, часть 15p): проверки публикации ответа нодой диалога v1 (``_publish_response`` /
+``_publish_response_batch``) удалены вместе с ней; текущий голос ведёт tts_node (VoiceOwner, PR-4 ч.3).
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
-
-import pytest
 
 from rob_box_voice.core.speak_helpers import build_ssml_payload
-from rob_box_voice.dialogue_node import DialogueNode
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  build_ssml_payload: voice in / out
-# ─────────────────────────────────────────────────────────────────────────────
 
 class TestBuildSsmlPayloadVoice:
     def test_includes_voice_when_provided(self):
@@ -43,32 +23,3 @@ class TestBuildSsmlPayloadVoice:
     def test_omits_voice_by_default(self):
         payload = json.loads(build_ssml_payload("привет"))
         assert "voice" not in payload
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _publish_response / _publish_response_batch: current_voice propagation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _bare_node(**attrs):
-    n = object.__new__(DialogueNode)
-    n._active_tg_chat_id = None
-    n._response_pub = MagicMock()
-    for key, value in attrs.items():
-        setattr(n, key, value)
-    return n
-
-
-class TestPublishResponseVoice:
-    def test_single_chunk_without_current_voice_omits_field(self):
-        n = _bare_node()
-        n._publish_response("привет")
-        payload = json.loads(n._response_pub.publish.call_args.args[0].data)
-        assert "voice" not in payload
-
-    def test_batch_without_current_voice_omits_field(self):
-        n = _bare_node()
-        n._publish_response_batch(["один", "два"])
-        published = [c.args[0].data for c in n._response_pub.publish.call_args_list]
-        assert len(published) == 2
-        for raw in published:
-            assert "voice" not in json.loads(raw)

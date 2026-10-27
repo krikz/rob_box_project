@@ -112,7 +112,7 @@ def test_music_engine_flag_is_gone():
     """PR-15: флага выбора движка нет ни в нодах, ни в launch-файлах, ни в конфигах."""
     paths = [
         "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
-        "src/rob_box_voice/rob_box_voice/dialogue_node.py",
+        "src/rob_box_voice/rob_box_voice/dialog_node.py",  # PR-15 15p: нода v1 удалена, диалог — v2
         "docker/sound/config/voice_assistant/voice_assistant_headless.launch.py",
         "src/rob_box_voice/launch/voice_assistant.launch.py",
     ]

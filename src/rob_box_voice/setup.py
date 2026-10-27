@@ -19,7 +19,7 @@ setup(
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml') + glob('config/*.json')),
         # ADR-0066 §6.3 — voice style presets (config/presets/*.txt) теперь
-        # читаются ``grip_pipeline`` супервизора (а не dialogue_node), но
+        # читаются ``grip_pipeline`` супервизора (а не нодой диалога), но
         # install-share нужен — оставляем шаг data_files для ROS-share.
         (os.path.join('share', package_name, 'config', 'presets'),
             glob('config/presets/*.txt')),
@@ -45,9 +45,7 @@ setup(
         'console_scripts': [
             'audio_node = rob_box_voice.audio_node:main',
             'led_node = rob_box_voice.led_node:main',
-            # Phase 2: Dialogue + TTS
-            'dialogue_node = rob_box_voice.dialogue_node:main',
-            # ADR-0150 PR-8 (#3702): хост диалога v2, стартует при dialog_engine: v2
+            # Диалог: хост v2 (ADR-0150 PR-8 #3702); нода v1 удалена в PR-15 (#3711, часть 15p)
             'dialog_node = rob_box_voice.dialog_node:main',
             'tts_node = rob_box_voice.tts_node:main',
             # Phase 3: STT (Speech-to-Text)

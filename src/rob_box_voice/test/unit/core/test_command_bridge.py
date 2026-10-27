@@ -7,13 +7,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-import re
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 import pytest
-import yaml
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Invalid
@@ -342,21 +339,6 @@ def test_wrapper_for_wraps_only_listed_providers_and_logs_the_mode() -> None:
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice (по capabilities адаптера)"]
     assert cb.wrapper_for("")(deepseek) is deepseek
     assert cb.command_providers(["minimax", " "]) == frozenset({"minimax"})
-
-
-_REPO = Path(__file__).resolve().parents[5]
-_NODE_YAMLS = (_REPO / "src/rob_box_voice/config/dialogue_node.yaml",
-               _REPO / "docker/sound/config/voice_assistant/dialogue_node.yaml")
-
-
-def test_command_mode_default_has_one_source_in_knowledge() -> None:
-    """Значение по умолчанию - одно (``knowledge``): параметр берёт его оттуда, yaml его не дублируют."""
-    src = (_REPO / "src/rob_box_voice/rob_box_voice/dialogue_node.py").read_text(encoding="utf-8")
-    match = re.search(r"declare_parameter\(\s*[\"']llm_command_providers[\"']\s*,\s*([^)]+?)\s*\)", src)
-    assert match and match.group(1) == "COMMAND_PROVIDERS_DEFAULT"
-    for path in _NODE_YAMLS:
-        params = yaml.safe_load(path.read_text(encoding="utf-8"))["dialogue_node"]["ros__parameters"]
-        assert not params.get("llm_command_providers"), f"{path}: второй источник значения (пустая строка - выключатель)"
 
 
 def test_command_mode_is_on_by_default_for_deepseek_and_minimax_fallback() -> None:

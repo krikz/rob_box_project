@@ -1,9 +1,13 @@
-# voice_assistant_test.yaml — конфигурация dialogue_node для тестового окружения
+# voice_assistant_test.yaml — конфигурация ноды диалога для тестового окружения (L: Integration Tests)
 #
 # LLM: Ollama (qwen2.5:0.5b) — локальный, без API key
 # OpenAI-совместимый endpoint на порту 11435
+#
+# PR-15 (#3711, часть 15p): нода диалога v1 удалена, нода диалога — dialog_node (v2). Ключи ниже — параметры
+# v1, dialog_node их не объявляет; стенд (start_voice_test.sh, healthcheck в docker-compose.test.yml) ещё
+# запускает ноду v1 и до перевода на dialog_node не стартует — перевод стенда отдельной карточкой.
 
-/dialogue_node:
+/dialog_node:
   ros__parameters:
     provider: "deepseek"
     api_key: "ollama"
@@ -22,7 +26,7 @@
 
     # wake_words намеренно НЕ здесь: единственное объявление —
     # rob_box_voice.core.dialogue_text.DEFAULT_WAKE_WORDS, откуда его берут
-    # дефолты dialogue_node и stt_node. Копия в YAML — это ровно то, что
+    # дефолты нод диалога и stt_node. Копия в YAML — это ровно то, что
     # разъехалось в #1252 и стоило #1734.
     silence_words: "стоп,тихо,замолчи"
 
