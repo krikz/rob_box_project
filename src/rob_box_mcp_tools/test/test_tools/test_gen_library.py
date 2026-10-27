@@ -4,6 +4,7 @@ test_gen_library.py — тесты библиотеки сгенерирован
 Issue #1392 / ADR-0158 PR-1: покрыто
   * engine/gen/library.py — CRUD, поиск, play_count (прежний контракт)
   * tools/gen_library.py — один тул music_library (ADR-0158 PR-9)
+  * #4025: info / update / delete — только по id из ответа list / search, delete — через вопрос человеку
 
 Клиент MiniMax Music и тул ``generate_music`` удалены (API 410 Gone с
 20.08.2026); новый клиент KIE — ``test_gen_kie_suno.py``, новая схема и
@@ -290,10 +291,21 @@ class TestListSearchInfo:
         assert not _tool(library).execute(action="search", query="").success
 
     def test_info_returns_full_metadata(self, library):
-        track = library.list_tracks(sort_by="rating")["tracks"][0]
-        info = _tool(library).execute(action="info", track_id=track["id"])
+        tool = _tool(library)
+        track = tool.execute(action="list", sort_by="rating").data["tracks"][0]
+        info = tool.execute(action="info", track_id=track["id"])
         assert info.success and info.data["title"] == "Утро" and info.data["exists_on_disk"] is True
-        assert not _tool(library).execute(action="info", track_id=NO_ID).success
+        assert not tool.execute(action="info", track_id=NO_ID).success
+
+
+class _Clock:
+    """Часы теста: время идёт, только когда его двигают."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
 
 
 class TestUpdateDelete:
@@ -301,7 +313,10 @@ class TestUpdateDelete:
     def setup(self, tmp_path):
         lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
         saved = lib.save_track(audio_bytes=b"x", prompt="x", title="Original", rating=2)
-        return SimpleNamespace(library=lib, track_id=saved["id"], tool=_tool(lib))
+        clock = _Clock()
+        tool = _tool(lib, clock=clock)
+        assert tool.execute(action="list").success  # id назван в ответе тула (#4025)
+        return SimpleNamespace(library=lib, track_id=saved["id"], tool=tool, clock=clock)
 
     def test_update_changes_named_fields_only_and_meta_json(self, setup):
         result = setup.tool.execute(action="update", track_id=setup.track_id, tags="любимый, свадьба", mood="romantic")
@@ -317,10 +332,170 @@ class TestUpdateDelete:
         assert not setup.tool.execute(action="update", track_id=NO_ID, title="x").success
 
     def test_delete_removes_track_and_says_so(self, setup):
-        result = setup.tool.execute(action="delete", track_id=setup.track_id)
+        assert not setup.tool.execute(action="delete", track_id=setup.track_id).success  # сначала вопрос
+        setup.clock.now += 5.0  # человек ответил «да»
+        result = setup.tool.execute(action="delete", track_id=setup.track_id, confirm=True)
         assert result.success and result.message == "Удалил «Original» из библиотеки."
+        assert result.data == {"track_id": setup.track_id, "title": "Original"}
         assert setup.library.count == 0
-        assert not setup.tool.execute(action="delete", track_id=setup.track_id).success
+        assert not setup.tool.execute(action="delete", track_id=setup.track_id, confirm=True).success
+
+
+class TestNamedTracks:
+    """#4025 (n707/n710 23.10): info / update / delete принимают только id, который тул сам назвал в list / search."""
+
+    @pytest.fixture
+    def setup(self, tmp_path):
+        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+        mine = lib.save_track(audio_bytes=b"x", prompt="x", title="Мой")["id"]
+        stranger = lib.save_track(audio_bytes=b"y", prompt="y", title="Чужой")["id"]  # есть в библиотеке, не называли
+        clock = _Clock()
+        return SimpleNamespace(library=lib, mine=mine, stranger=stranger, clock=clock, tool=_tool(lib, clock=clock))
+
+    @pytest.mark.parametrize("action,extra", [("info", {}), ("update", {"title": "Взломан"}),
+                                              ("delete", {"confirm": True})])
+    def test_existing_but_never_named_id_is_refused(self, setup, action, extra):
+        """Существующий трек, id которого в разговоре не звучал: отказ ``unknown_track``, трек не тронут."""
+        result = setup.tool.execute(action=action, track_id=setup.stranger, **extra)
+        assert not result.success
+        assert result.data["status"] == "rejected" and result.data["reason"] == "unknown_track"
+        assert result.data["track_id"] == setup.stranger
+        assert setup.library.count == 2
+        assert setup.library.get_track_info(setup.stranger)["title"] == "Чужой"
+
+    def test_id_made_up_out_of_thin_air_is_refused_the_same_way(self, setup):
+        result = setup.tool.execute(action="delete", track_id=NO_ID)
+        assert not result.success and result.data["reason"] == "unknown_track"
+
+    def test_info_does_not_name_an_id(self, setup):
+        """n707 -> n710: ``info`` по чужому id отказывает сам, а значит и не открывает дорогу ``delete``."""
+        assert setup.tool.execute(action="info", track_id=setup.stranger).data["reason"] == "unknown_track"
+        again = setup.tool.execute(action="delete", track_id=setup.stranger, confirm=True)
+        assert not again.success and again.data["reason"] == "unknown_track" and setup.library.count == 2
+
+    def test_list_names_the_ids_it_returned(self, setup):
+        named = setup.tool.execute(action="list", limit=1).data["tracks"][0]["id"]
+        assert setup.tool.execute(action="info", track_id=named).success
+        other = ({setup.mine, setup.stranger} - {named}).pop()
+        assert setup.tool.execute(action="info", track_id=other).data["reason"] == "unknown_track"
+
+    def test_search_names_the_ids_it_found(self, setup):
+        refused = setup.tool.execute(action="update", track_id=setup.mine, title="Новый")
+        assert refused.data["reason"] == "unknown_track"
+        found = setup.tool.execute(action="search", query="x")
+        assert found.data["total"] == 1 and found.data["tracks"][0]["id"] == setup.mine
+        assert setup.tool.execute(action="update", track_id=setup.mine, title="Новый").success
+        other = setup.tool.execute(action="update", track_id=setup.stranger, title="Новый")
+        assert other.data["reason"] == "unknown_track"
+
+    def test_play_and_rate_keep_their_contract(self, setup):
+        """Не названный id для ``rate`` допустим по-прежнему: правило касается необратимого и правки."""
+        assert setup.tool.execute(action="rate", track_id=setup.stranger, verdict="like").success
+
+    def test_window_forgets_the_oldest(self):
+        window = _mm.NamedTracks(limit=2)
+        window.name(["a", "b"])
+        assert "a" in window  # обращение освежает
+        window.name(["c"])
+        assert "a" in window and "c" in window and "b" not in window
+        window.name(["", None])  # пустое имя - не id
+        assert "" not in window
+
+
+class TestDeleteNeedsAnAnswer:
+    """#4025: удаление необратимо (кредиты KIE 0, восстановить нечем) - тул сам спрашивает, ``confirm`` без вопроса не в счёт."""
+
+    @pytest.fixture
+    def setup(self, tmp_path):
+        lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
+        track_id = lib.save_track(audio_bytes=b"x", prompt="x", title="Дождь")["id"]
+        other_id = lib.save_track(audio_bytes=b"y", prompt="y", title="Ветер")["id"]
+        clock = _Clock()
+        tool = _tool(lib, clock=clock)
+        tool.execute(action="list")
+        return SimpleNamespace(library=lib, track_id=track_id, other_id=other_id, clock=clock, tool=tool)
+
+    def delete(self, setup, track_id=None, **kwargs):
+        return setup.tool.execute(action="delete", track_id=track_id or setup.track_id, **kwargs)
+
+    def test_without_confirm_it_asks_by_title_and_deletes_nothing(self, setup):
+        result = self.delete(setup)
+        assert not result.success
+        assert result.data["status"] == "rejected" and result.data["reason"] == "needs_confirmation"
+        assert result.data["title"] == "Дождь" and result.data["track_id"] == setup.track_id
+        assert result.data["question"] == result.message == "Удалить «Дождь»? Скажи «да, удаляй»."
+        assert setup.library.count == 2
+
+    def test_confirm_after_the_question_deletes(self, setup):
+        self.delete(setup)
+        setup.clock.now += 6.0  # робот договорил вопрос, человек ответил, речь распозналась
+        result = self.delete(setup, confirm=True)
+        assert result.success and result.message == "Удалил «Дождь» из библиотеки."
+        assert setup.library.count == 1
+        assert setup.library.get_track_info(setup.track_id)["success"] is False
+
+    def test_confirm_without_a_question_is_a_question(self, setup):
+        """Модель сразу прислала ``confirm=true`` - вопроса не было, поэтому спрашиваем, а не удаляем."""
+        result = self.delete(setup, confirm=True)
+        assert not result.success and result.data["reason"] == "needs_confirmation"
+        assert setup.library.count == 2
+
+    def test_confirm_in_the_same_breath_is_not_an_answer(self, setup):
+        """Цепочка «удали, удали с confirm» одной командой: человек ещё не мог ответить."""
+        self.delete(setup)
+        setup.clock.now += 0.3
+        early = self.delete(setup, confirm=True)
+        assert not early.success and early.data["reason"] == "needs_confirmation" and setup.library.count == 2
+        setup.clock.now += 3.0  # ранний confirm срок вопроса не сбросил: от вопроса прошло 3.3 с
+        assert self.delete(setup, confirm=True).success and setup.library.count == 1
+
+    def test_stale_question_is_asked_again(self, setup):
+        self.delete(setup)
+        setup.clock.now += 121.0
+        late = self.delete(setup, confirm=True)
+        assert not late.success and late.data["reason"] == "needs_confirmation" and setup.library.count == 2
+        setup.clock.now += 5.0
+        assert self.delete(setup, confirm=True).success
+
+    def test_confirm_for_another_track_asks_about_that_one(self, setup):
+        self.delete(setup)
+        setup.clock.now += 6.0
+        other = self.delete(setup, track_id=setup.other_id, confirm=True)
+        assert not other.success and other.data["title"] == "Ветер" and setup.library.count == 2
+        setup.clock.now += 6.0
+        assert self.delete(setup, track_id=setup.other_id, confirm=True).success
+        assert setup.library.get_track_info(setup.track_id)["success"] is True  # первый трек цел
+
+    def test_the_answer_is_spent_once(self, setup):
+        self.delete(setup)
+        setup.clock.now += 6.0
+        assert self.delete(setup, confirm=True).success
+        setup.clock.now += 6.0
+        again = self.delete(setup, track_id=setup.other_id, confirm=True)  # прежний ответ другого трека не купит
+        assert not again.success and again.data["reason"] == "needs_confirmation" and setup.library.count == 1
+
+    @pytest.mark.parametrize("confirm", [False, "", 0, "нет", None, "yes", 1])
+    def test_only_true_counts(self, setup, confirm):
+        self.delete(setup)
+        setup.clock.now += 6.0
+        result = self.delete(setup, confirm=confirm)
+        assert not result.success and result.data["reason"] == "needs_confirmation" and setup.library.count == 2
+
+    def test_string_true_from_a_sloppy_model_counts(self, setup):
+        self.delete(setup)
+        setup.clock.now += 6.0
+        assert self.delete(setup, confirm="true").success
+
+    def test_untitled_track_is_still_asked_about(self, setup):
+        untitled = setup.library.save_track(audio_bytes=b"z", prompt="z")["id"]
+        setup.tool.execute(action="list")
+        result = self.delete(setup, track_id=untitled)
+        assert result.data["reason"] == "needs_confirmation" and result.message.startswith("Удалить")
+
+    def test_schema_offers_a_boolean_confirm(self, setup):
+        confirm = next(p for p in setup.tool.parameters if p.name == "confirm")
+        assert confirm.type == "boolean" and not confirm.required and confirm.default is False
+        assert "needs_confirmation" in setup.tool.description and "unknown_track" in setup.tool.description
 
 
 class TestRate:

@@ -1,37 +1,77 @@
 #!/usr/bin/env python3
-"""web_search.py — MCP tool for DuckDuckGo web search (issue #1101).
+"""web_search.py — MCP tool ``search_web``: поиск в интернете для свежих данных (issues #1101, #4026).
 
-Wraps the DuckDuckGo instant-answer API so the LLM can get fresh/current
-information: weather, news, prices, sports scores, local info, facts —
-anything that requires data newer than the LLM's training cutoff.
+LLM получает фактуру, которой нет в её обучающей выборке: погода, новости, цены, спорт, местные факты.
 
-The tool runs a synchronous HTTP call inside ``execute()`` — no async, no
-ROS topics (unlike speak_text / register_speaker). Returns a JSON blob with
-up to ``max_results`` snippets (~280 chars each).
+Бэкенды по порядку (ADR-0148: какой отвечает и что значит ответ — решает код, а не модель):
+
+1. ``ddgs`` — DuckDuckGo. Пустая выдача (``DDGSException("No results found.")``) — честное «ничего не нашёл»,
+   дальше не идём. Любой другой сбой (сеть, rate-limit, пакет не установлен) — бэкенд недоступен.
+2. ``deepseek`` — ``POST https://api.deepseek.com/v1/tools/search`` (``Authorization: Bearer $DEEPSEEK_API_KEY``,
+   тело ``{query, count}``, ответ ``results[]`` с ``title / url / snippet / summary``). Модели отдаётся ``summary``
+   (он написан для модели), ``snippet`` — запасной. Нет ключа — ступень пропускается со строкой в логе.
+3. Оба недоступны — ``success=False``, ``data.status="rejected"``, ``data.reason="search_unavailable"``: сбой связи
+   не выглядит для LLM как «0 результатов» (n907/n908 23.10: 4 вызова LLM впустую и «поиск ничего не выдал»).
+
+Какой бэкенд ответил — в логе (``backend=``) и в ``data.backend``.
+
+Тул синхронный: HTTP внутри ``execute()``, без ROS-топиков.
 
 Usage (from LLM tool-call):
     search_web(query="погода в Батайске сегодня", max_results=3)
-    → {"query": "...", "results": [{"title":"...","body":"...","url":"..."}], ...}
+    → {"query": "...", "results": [{"title":"...","body":"...","url":"..."}], "backend": "ddgs"}
 """
 
 from __future__ import annotations
 
 import json
-from typing import List
+import os
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Tuple
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 
+if TYPE_CHECKING:
+    from ..engine.gen.kie_suno import Transport
+
+#: Имена бэкендов в логе и в ``data.backend``.
+BACKEND_DDGS = "ddgs"
+BACKEND_DEEPSEEK = "deepseek"
+#: Причина отказа, когда не ответил ни один бэкенд (поле ``reason`` результата: по нему диалог выбирает фразу).
+SEARCH_UNAVAILABLE = "search_unavailable"
+DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
+DEEPSEEK_KEY_ENV = "DEEPSEEK_API_KEY"
+#: API: запрос 1-128 символов. Тул отдаёт ответ в пределах дедлайна класса ``query`` (15 с): DDGS ждёт до 10 с,
+#: поэтому DeepSeek (замер 26.10: 0,7 с) получает не больше 4 с.
+DEEPSEEK_QUERY_MAX = 128
+DEEPSEEK_TIMEOUT_S = 4.0
+#: Честная причина по HTTP-коду DeepSeek (остальные - просто код).
+_DEEPSEEK_HTTP_WHY = {401: "ключ отвергнут", 402: "на балансе пусто", 429: "лимит запросов"}
+
+
+class _BackendDown(Exception):
+    """Бэкенд не смог ответить (сеть, лимит, нет ключа, не установлен) - это не «ничего не найдено»."""
+
 
 class SearchWebTool(MCPTool):
-    """DuckDuckGo general-purpose web search tool."""
+    """Поиск в интернете: DuckDuckGo, запасной - DeepSeek (``/v1/tools/search``)."""
 
     _MAX_RESULTS: int = 10
     _SNIPPET_CHARS: int = 280
+    #: ``summary`` DeepSeek написан для модели и длиннее сниппета DDG; обрезка - потолок на токены.
+    _SUMMARY_CHARS: int = 500
 
-    def __init__(self, node) -> None:
+    def __init__(
+        self,
+        node,
+        *,
+        transport: Optional["Transport"] = None,
+        environ: Optional[Mapping[str, str]] = None,
+    ) -> None:
         super().__init__(node)
         self._ddgs_available: bool = False  # True after first successful import
         self._ddgs_cls: type | None = None  # cached DDGS class reference
+        self._transport = transport  # HTTP DeepSeek; ``None`` - боевой urllib (см. _http), тесты подставляют свой
+        self._environ = os.environ if environ is None else environ
         self.log_info("🔍 SearchWebTool registered (ddgs import deferred)")
 
     # ── Tool metadata ────────────────────────────────────────────────────
@@ -93,7 +133,7 @@ class SearchWebTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    # ── Execution ────────────────────────────────────────────────────────
+    # ── DuckDuckGo ───────────────────────────────────────────────────────
 
     def _ddgs_text(self, DDGS_cls, query: str, max_results: int) -> list:
         """Сырая выдача DDGS; пустая выдача — ``[]``, а не исключение (issue #3242).
@@ -118,49 +158,85 @@ class SearchWebTool(MCPTool):
             self.log_info(f"[search_web] query={query[:60]!r} → 0 results ({type(exc).__name__})")
             return []
 
+    def _ddgs_class(self):
+        """Класс DDGS или ``None``, если пакета нет.
+
+        Issue #1101 — lazy ddgs import with self-healing. Module-level import
+        sometimes fails at mcp_server startup (race with pip install, stale
+        .pyc, or sys.path ordering). Retry on EVERY call until successful —
+        Python caches successful imports internally, so the retry cost is
+        negligible (dict lookup). Once imported, reuse the cached class.
+        """
+        if self._ddgs_available is True:
+            return self._ddgs_cls
+        for pkg in ("ddgs", "duckduckgo_search"):
+            try:
+                mod = __import__(pkg, fromlist=["DDGS"])
+            except ImportError:
+                continue
+            self._ddgs_cls = mod.DDGS
+            self._ddgs_available = True
+            return self._ddgs_cls
+        self.log_error(
+            "[search_web] ddgs import FAILED: "
+            "both 'ddgs' and 'duckduckgo_search' unavailable"
+        )
+        return None
+
+    def _search_ddgs(self, query: str, max_results: int) -> List[dict]:
+        ddgs_cls = self._ddgs_class()
+        if ddgs_cls is None:
+            raise _BackendDown("пакет ddgs не установлен")
+        try:
+            raw = self._ddgs_text(ddgs_cls, query, max_results)
+        except Exception as exc:  # noqa: BLE001 — сеть, rate-limit, смена разметки: бэкенд не ответил
+            raise _BackendDown(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+        return [
+            row for row in (
+                _row(r.get("title"), r.get("body"), r.get("href"), self._SNIPPET_CHARS) for r in raw
+            ) if row
+        ]
+
+    # ── DeepSeek ─────────────────────────────────────────────────────────
+
+    def _http(self) -> "Transport":
+        """Транспорт HTTP. Боевой - тот же ``urllib_transport``, что у клиента KIE (одна реализация): импорт ленивый,
+        чтобы ``tools/__init__`` не тянул ``rob_box_music`` на импорте (``music.py`` там под ``try`` по той же причине)."""
+        if self._transport is None:
+            from ..engine.gen.kie_suno import urllib_transport
+
+            self._transport = urllib_transport
+        return self._transport
+
+    def _search_deepseek(self, query: str, max_results: int) -> List[dict]:
+        key = str(self._environ.get(DEEPSEEK_KEY_ENV) or "").strip()
+        if not key:
+            raise _BackendDown(f"нет ключа {DEEPSEEK_KEY_ENV} — ступень пропущена")
+        body = json.dumps({"query": query[:DEEPSEEK_QUERY_MAX], "count": max_results}, ensure_ascii=False)
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        try:
+            status, raw = self._http()("POST", DEEPSEEK_SEARCH_URL, headers, body.encode("utf-8"), DEEPSEEK_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 — сеть: бэкенд не ответил
+            raise _BackendDown(f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+        if status != 200:
+            why = _DEEPSEEK_HTTP_WHY.get(status)
+            raise _BackendDown(f"HTTP {status}" + (f" ({why})" if why else ""))
+        results = _deepseek_results(raw)
+        return [
+            row for row in (
+                _row(r.get("title"), r.get("summary") or r.get("snippet"), r.get("url"), self._SUMMARY_CHARS,
+                     date=r.get("date"))
+                for r in results if isinstance(r, dict)
+            ) if row
+        ]
+
+    # ── Execution ────────────────────────────────────────────────────────
+
     def execute(
         self,
         query: str,
         max_results: int = 5,
     ) -> MCPToolResult:
-        # Issue #1101 — lazy ddgs import with self-healing.
-        # Module-level import sometimes fails at mcp_server startup (race
-        # with pip install, stale .pyc, or sys.path ordering). Retry on
-        # EVERY execute() call until successful — Python caches successful
-        # imports internally, so the retry cost is negligible (dict lookup).
-        # Once imported, reuse the cached class reference.
-        DDGS_cls = None
-        if self._ddgs_available is True:
-            # Fast path: already resolved, reuse cached class.
-            DDGS_cls = self._ddgs_cls
-        else:
-            # Try both import paths; cache the class on first success.
-            for pkg in ("ddgs", "duckduckgo_search"):
-                try:
-                    mod = __import__(pkg, fromlist=["DDGS"])
-                    DDGS_cls = mod.DDGS
-                    self._ddgs_cls = DDGS_cls
-                    self._ddgs_available = True
-                    break
-                except ImportError:
-                    continue
-            if DDGS_cls is None:
-                self.log_error(
-                    "[search_web] ddgs import FAILED: "
-                    "both 'ddgs' and 'duckduckgo_search' unavailable"
-                )
-
-        if DDGS_cls is None:
-            return MCPToolResult(
-                success=False,
-                error="duckduckgo_search not installed",
-                message=(
-                    "Поиск в интернете недоступен — duckduckgo-search не "
-                    "установлен на роботе. Попроси оператора выполнить "
-                    "`pip install duckduckgo-search` в Docker-образе."
-                ),
-            )
-
         query = (query or "").strip()
         if not query:
             return MCPToolResult(
@@ -168,56 +244,80 @@ class SearchWebTool(MCPTool):
                 error="empty_query",
                 message="Пустой поисковый запрос — уточни, что искать.",
             )
-
         max_results = max(1, min(int(max_results or 5), self._MAX_RESULTS))
 
-        try:
-            raw = self._ddgs_text(DDGS_cls, query, max_results)
-        except Exception as exc:  # noqa: BLE001
-            self.log_error(f"[search_web] DDGS error: {type(exc).__name__}: {exc}")
-            return MCPToolResult(
-                success=False,
-                error=f"{type(exc).__name__}: {exc}",
-                data={"query": query, "results": []},
-                message=(
-                    f"DuckDuckGo недоступен — проверь, есть ли интернет "
-                    f"на роботе. Ошибка: {type(exc).__name__}"
-                ),
-            )
-
-        snippets: list[dict] = []
-        for r in raw:
-            title = (r.get("title") or "").strip()
-            body = (r.get("body") or "").strip()
-            if not body:
+        failures: List[Tuple[str, str]] = []
+        for backend, search in ((BACKEND_DDGS, self._search_ddgs), (BACKEND_DEEPSEEK, self._search_deepseek)):
+            try:
+                rows = search(query, max_results)
+            except _BackendDown as down:
+                failures.append((backend, str(down)))
+                self.log_warning(f"[search_web] query={query[:60]!r} backend={backend} недоступен: {down}")
                 continue
-            if len(body) > self._SNIPPET_CHARS:
-                body = body[:self._SNIPPET_CHARS].rstrip() + "..."
-            href = (r.get("href") or "").strip()
-            snippets.append({"title": title, "body": body, "url": href})
+            return self._answer(query, backend, rows)
+        return self._unavailable(query, failures)
 
-        if not snippets:
+    def _answer(self, query: str, backend: str, rows: List[dict]) -> MCPToolResult:
+        """Бэкенд ответил: пустая выдача - честное «ничего не нашёл по этой строке», иначе строки для LLM."""
+        payload = {"query": query, "results": rows, "backend": backend}
+        if not rows:
             return MCPToolResult(
                 success=True,
-                data={"query": query, "results": []},
+                data=payload,
                 # 07.10: пустая выдача по одной строке («"танец маленьких утят" ноты RTTTL OR melody») стала
                 # у робота «в сети нет». Код называет, что именно искали.
                 message=(
-                    f"DuckDuckGo по строке {query!r} вернул 0 результатов — "
+                    f"Поиск ({backend}) по строке {query!r} вернул 0 результатов — "
                     "это про эту строку, а не про то, что такого нет в сети. "
                     "Попробуй переформулировать или уточнить."
                 ),
             )
-
-        result_json = json.dumps(
-            {"query": query, "results": snippets},
-            ensure_ascii=False,
-        )
         self.log_info(
-            f"[search_web] query={query[:60]!r} → {len(snippets)} results"
+            f"[search_web] query={query[:60]!r} → {len(rows)} results backend={backend}"
         )
         return MCPToolResult(
             success=True,
-            data={"query": query, "results": snippets},
-            message=result_json,
+            data=payload,
+            message=json.dumps(payload, ensure_ascii=False),
         )
+
+    def _unavailable(self, query: str, failures: List[Tuple[str, str]]) -> MCPToolResult:
+        """Не ответил ни один бэкенд: отказ с причиной, а не «0 результатов» (ADR-0148, #4026)."""
+        detail = "; ".join(f"{backend}: {why}" for backend, why in failures)
+        self.log_error(f"[search_web] query={query[:60]!r} {SEARCH_UNAVAILABLE}: {detail}")
+        return MCPToolResult(
+            success=False,
+            error=f"{SEARCH_UNAVAILABLE}: {detail}",
+            message="Поиск в интернете сейчас недоступен — это сбой связи, а не «ничего не найдено».",
+            data={
+                "status": "rejected",
+                "reason": SEARCH_UNAVAILABLE,
+                "query": query,
+                "results": [],
+                "tried": [backend for backend, _ in failures],
+            },
+        )
+
+
+def _row(title: Any, text: Any, url: Any, limit: int, date: Any = None) -> Optional[dict]:
+    """Строка выдачи для LLM: ``{title, body, url[, date]}``; без текста строки нет."""
+    body = str(text or "").strip()
+    if not body:
+        return None
+    if len(body) > limit:
+        body = body[:limit].rstrip() + "..."
+    row = {"title": str(title or "").strip(), "body": body, "url": str(url or "").strip()}
+    if date:
+        row["date"] = str(date)
+    return row
+
+
+def _deepseek_results(raw: bytes) -> list:
+    """``results[]`` ответа DeepSeek; тело не JSON или без ``results`` - бэкенд не ответил."""
+    try:
+        results = json.loads(raw).get("results")
+    except (ValueError, AttributeError) as exc:
+        raise _BackendDown(f"ответ не разобрать: {type(exc).__name__}") from exc
+    if not isinstance(results, list):
+        raise _BackendDown("в ответе нет results[]")
+    return results

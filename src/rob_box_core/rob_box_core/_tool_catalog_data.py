@@ -979,9 +979,12 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        '(стоп — stop_music); rate — «этот трек нравится / не нравится» '
                        '(verdict like / dislike; трек, который не нравится, больше не '
                        'включается, но не удаляется); update — переименовать, теги, '
-                       'настроение, жанр, заметка; delete — удалить трек насовсем. '
-                       'track_id бери из list / search, не выдумывай. Ответ содержит '
-                       'фразу, которую надо сказать.',
+                       'настроение, жанр, заметка; delete — удалить трек насовсем: без '
+                       'confirm тул только спрашивает (needs_confirmation), '
+                       'confirm=true — после «да» человека. track_id для info / update '
+                       '/ delete — только из ответа list / search этого разговора, не '
+                       'выдумывай (иначе unknown_track). Ответ содержит фразу, которую '
+                       'надо сказать.',
         'parameters': {   'type': 'object',
                           'properties': {   'action': {   'type': 'string',
                                                           'description': 'Что сделать '
@@ -996,7 +999,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                       'delete']},
                                             'track_id': {   'type': 'string',
                                                             'description': 'UUID трека '
-                                                                           'из list / '
+                                                                           'из ответа '
+                                                                           'list / '
                                                                            'search '
                                                                            '(info, '
                                                                            'play, '
@@ -1071,7 +1075,25 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                             'notes': {   'type': 'string',
                                                          'description': 'Для update: '
                                                                         'заметка.',
-                                                         'default': ''}},
+                                                         'default': ''},
+                                            'confirm': {   'type': 'boolean',
+                                                           'description': 'Для delete: '
+                                                                          'true — '
+                                                                          'только '
+                                                                          'после того, '
+                                                                          'как человек '
+                                                                          'ответил '
+                                                                          '«да» на '
+                                                                          'вопрос '
+                                                                          '«Удалить '
+                                                                          '…?» (его '
+                                                                          'задаёт сам '
+                                                                          'тул ответом '
+                                                                          'needs_confirmation). '
+                                                                          'Без вопроса '
+                                                                          'не '
+                                                                          'засчитывается.',
+                                                           'default': False}},
                           'required': ['action'],
                           'additionalProperties': False},
         'signature': {   'params': ['action', 'track_id'],
