@@ -12,8 +12,14 @@
 * другие слова («да, удали оба») — ход к LLM, тул вопроса открыт в срезе (:func:`asked_tools` →
   ``tools_view.available_tools``) без круга ``tool_not_available → widen_for``.
 
-Окно снимают: ответ, новый вопрос (заменяет прежний), исход того же вызова, не вопрос (модель подтвердила сама), срок,
-новая сессия (``Session.reset``). Чистый модуль: часы — у сессии.
+Отвечает только реплика из :data:`ANSWER_SOURCES` (голос с вейком, Telegram, оператор): «да» без вейка на ДРУГОЙ
+вопрос робота («это ты, Саша?», «выключить и зачитать?», приветствие) и подхват бэклога окна не видят (ревью PR #4100:
+такое «да» удаляло трек).
+
+Окно снимают: ответ, новый вопрос тула (заменяет прежний), исход того же вызова, не вопрос (модель подтвердила сама),
+срок, новая сессия (``Session.reset``), а владелец сессии - и новый вопрос робота, тишину, оператора
+(``knowledge.TOOL_ASK_CLOSED_BY``), вопрос модели (``Session.set_pending_ask``), стоп (``Session.replace_epoch``).
+Чистый модуль: часы — у сессии.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from types import MappingProxyType
 from typing import Any, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.address import SOURCE_OPERATOR, SOURCE_TELEGRAM, VOICE
 from rob_box_dialog.command import ToolCall
 from rob_box_dialog.respond import ActionResult, asks
 from rob_box_dialog.session import Session
@@ -32,6 +39,10 @@ from rob_box_dialog.words import strip_wake_word
 _TOKEN = re.compile(r"\w+")
 #: Поля данных кадра окна (``SceneFrame.payload``; ``/dialog/session`` отдаёт их JSON-ом).
 _TOOL, _REASON, _ARGS = "tool", "reason", "args"
+#: Кто может ответить на вопрос тула (``Addressed.source``): голос с вейком, Telegram, оператор. Не отвечают
+#: ``identity_answer``, ``greeting_reply``, ``perform_answer`` («да» без вейка в окне ДРУГОГО вопроса робота),
+#: ``backlog_pickup`` (чужая фоновая фраза), ``bare_wake`` (слов нет): необратимое чужим «да» не подтверждается.
+ANSWER_SOURCES: Tuple[str, ...] = (VOICE, SOURCE_TELEGRAM, SOURCE_OPERATOR)
 
 
 def _norm(word: str) -> str:
@@ -150,9 +161,10 @@ def _starts(word: str, stems: Sequence[str]) -> bool:
     return any(word.startswith(_norm(stem)) for stem in stems)
 
 
-def reply(session: Session, text: str) -> Optional[Reply]:
-    """Ответ человека на открытый вопрос тула (:func:`pending`, :func:`answer`) или ``None``."""
-    asked = pending(session)
+def reply(session: Session, text: str, source: str) -> Optional[Reply]:
+    """Ответ человека на открытый вопрос тула (:func:`pending`, :func:`answer`) или ``None``: вопроса нет, реплика
+    не из :data:`ANSWER_SOURCES` или не ответ по грамматике."""
+    asked = pending(session) if source in ANSWER_SOURCES else None
     if asked is None:
         return None
     verdict = answer(text, asked.question)
@@ -165,4 +177,5 @@ def describe(asked: Asked) -> str:
     return f"{asked.tool} {asked.reason} {' '.join(args)}".strip()
 
 
-__all__ = ["Asked", "Reply", "answer", "asked_tools", "close", "describe", "note", "pending", "reply"]
+__all__ = ["ANSWER_SOURCES", "Asked", "Reply", "answer", "asked_tools", "close", "describe", "note", "pending",
+           "reply"]

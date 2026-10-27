@@ -13,18 +13,21 @@ import pytest
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog import tool_ask
-from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, Expression, ToolCall
-from rob_box_dialog.respond import ActionResult, asks, failed, phrase_from_result, phrase_key
+from rob_box_dialog.address import (BACKLOG_PICKUP, BARE_WAKE, GREETING_REPLY, IDENTITY_ANSWER, PERFORM_ANSWER,
+                                    SOURCE_OPERATOR, SOURCE_TELEGRAM, VOICE, Addressed)
+from rob_box_dialog.command import Ask, Command, Expression, ToolCall
+from rob_box_dialog.respond import ActionResult, asks, failed, outcome_emotion, phrase_from_result, phrase_key
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import available_tools
-from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_dialog.turn import Answer, TurnEngine, command_face
 
 QUESTION = "Удалить «Кот и ёж»? Скажи «да, удаляй»."  # литерал, а не сборка из каталога: ловит дрейф ru.yaml
 DELETED = "Удалил «Кот и ёж» из библиотеки."
 KEPT = "Не удаляю."
 NEUTRAL = Expression().emotion  # лицо команды модели по умолчанию
+ASKING = "neutral"  # эмоция речи вопроса тула - литерал: ловит дрейф ToolQuestion.emotion
 ASK_DELETE = ToolCall("music_library", {"action": "delete", "track_id": "t-1"})
+CONFIRM_DELETE = ("music_library", {"action": "delete", "track_id": "t-1", "confirm": True})
 
 
 class Library:
@@ -49,12 +52,14 @@ class Library:
 
 class Ports:
     """Транспорт хода: ответы LLM по очереди; исполнитель отдаёт результат как настоящий (класс ТУЛА, данные =
-    аргументы вызова поверх ответа тула); речь записывается с эмоцией."""
+    аргументы вызова поверх ответа тула); речь записывается с эмоцией. ``during_execute`` - что случится, пока тул
+    отвечает (стоп)."""
 
     def __init__(self, library, answers=()):
         self.library = library
         self.answers = list(answers)
         self.asked, self.executed, self.said = [], [], []
+        self.during_execute = None
 
     async def ask(self, messages, tools, timeout_s):
         self.asked.append([t.name for t in tools])
@@ -62,6 +67,8 @@ class Ports:
 
     async def execute(self, actions, snapshot, turn_id):
         self.executed.append([(a.tool, dict(a.args)) for a in actions])
+        if self.during_execute is not None:
+            self.during_execute()
         out = []
         for n, a in enumerate(actions):
             status, reason, data = self.library(dict(a.args))
@@ -103,8 +110,13 @@ def _engine(ports, clock=None):
     return TurnEngine(session, ports, system_prompt="Ты робот.", new_id=lambda: next(ids))
 
 
-def _run(engine, text):
-    return asyncio.run(engine.run(Addressed(text, VOICE)))
+def _run(engine, text, source=VOICE):
+    return asyncio.run(engine.run(Addressed(text, source, pickup=source == BACKLOG_PICKUP)))
+
+
+def _confirmed(ports):
+    """Подтверждённые вызовы удаления, что ушли исполнителю."""
+    return [c for batch in ports.executed for c in batch if c[1].get("confirm")]
 
 
 def _asked_to_delete(answers=(), expression=Expression()):
@@ -133,22 +145,32 @@ def test_tool_question_is_said_and_opens_the_answer_window():
     assert frame.ttl_until == pytest.approx(engine.clock.now + kn.TOOL_ASK_TTL_S)
 
 
-@pytest.mark.parametrize("face", [Expression(), Expression(emotion="happy")])
-def test_question_is_not_a_failure_so_it_is_not_said_sadly(face):
-    """Вопрос на подтверждение - не провал: фраза без ``sad``, лицо команды не снято (как у провала)."""
+QUESTION_RESULT = ActionResult("t1/0", 0, "personality", "music_library", "action.local", "rejected",
+                               "needs_confirmation", {"action": "delete", "track_id": "t-1", "title": "Кот и ёж"})
+
+
+@pytest.mark.parametrize("face", [Expression(), Expression(emotion="happy"), Expression(emotion="sad")])
+def test_question_is_said_with_the_questions_emotion_not_the_models(face):
+    """Вопрос на подтверждение - не провал и не настроение модели (ревью PR #4100: с ``happy`` модели вопрос звучал
+    радостно): речь - эмоцией вопроса (нейтрально), лицо модели итог не красит (как у провала)."""
     engine, ports, _ = _asked_to_delete(expression=face)
-    assert ports.said == [(QUESTION, face.emotion)]
-    assert ports.said[0][1] != "sad"
+    assert ports.said == [(QUESTION, ASKING)]
+    assert command_face(face, [QUESTION_RESULT]) is None
 
 
 def test_question_result_is_asking_and_a_real_refusal_is_still_sad():
-    question = ActionResult("t1/0", 0, "personality", "music_library", "action.local", "rejected", "needs_confirmation",
-                            {"action": "delete", "track_id": "t-1", "title": "Кот и ёж"})
     refusal = ActionResult("t1/0", 0, "personality", "music_library", "action.local", "rejected", "disk_on_fire",
                            {"action": "delete", "track_id": "t-1"})
-    assert asks(question) and not failed(question) and phrase_from_result(question).emotion != "sad"
-    assert phrase_from_result(question).text == QUESTION
+    assert asks(QUESTION_RESULT) and not failed(QUESTION_RESULT)
+    assert phrase_from_result(QUESTION_RESULT).text == QUESTION
+    assert phrase_from_result(QUESTION_RESULT).emotion == ASKING == outcome_emotion([QUESTION_RESULT], "happy")
     assert not asks(refusal) and failed(refusal) and phrase_from_result(refusal).emotion == "sad"
+    assert outcome_emotion([QUESTION_RESULT, refusal], "happy") == "sad", "провал рядом с вопросом - грустно"
+
+
+def test_question_emotion_is_a_face_and_not_sadness():
+    for question in kn.TOOL_QUESTIONS.values():
+        assert question.emotion in kn.EMOTIONS and question.emotion != "sad"
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -204,7 +226,7 @@ def test_tool_asking_again_on_the_confirmed_call_reopens_the_window():
     library.asked.clear()
     _run(engine, "да, удаляй")
     assert library.tracks["t-1"] == "Кот и ёж"
-    assert ports.said[-1] == (QUESTION, None)
+    assert ports.said[-1] == (QUESTION, ASKING), "вопрос тула и на пути ответа - эмоцией вопроса"
     assert tool_ask.pending(engine.session) is not None
     _run(engine, "да, удаляй")
     assert "t-1" not in library.tracks and ports.said[-1] == (DELETED, None)
@@ -213,8 +235,103 @@ def test_tool_asking_again_on_the_confirmed_call_reopens_the_window():
 def test_yes_in_silence_confirms_nothing():
     engine, ports, library = _asked_to_delete()
     engine.session.push_scene("Silence", "user")
+    assert tool_ask.pending(engine.session) is None, "тишина снимает окно"
     _run(engine, "да, удаляй")
-    assert library.tracks["t-1"] == "Кот и ёж" and len(ports.executed) == 1 and ports.said == [(QUESTION, NEUTRAL)]
+    assert library.tracks["t-1"] == "Кот и ёж" and len(ports.executed) == 1 and ports.said == [(QUESTION, ASKING)]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# чужое «да» необратимое не подтверждает (ревью PR #4100, блокирующее)
+# ---------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("source", [IDENTITY_ANSWER, GREETING_REPLY, PERFORM_ANSWER, BACKLOG_PICKUP])
+def test_yes_from_another_window_or_the_backlog_deletes_nothing(source):
+    """(a) «да» без вейка в окне ДРУГОГО вопроса робота («это ты, Саша?», приветствие, «выключить и зачитать?») или
+    подхваченная из бэклога чужая фраза - ответ не тулу: трек цел, подтверждения нет, ход идёт своим путём."""
+    engine, ports, library = _asked_to_delete([Answer(Command(speech="Угу."), "deepseek")])
+    _run(engine, "да", source)
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == []
+    assert tool_ask.pending(engine.session) is not None, "окно ждёт ответа от того, кто может ответить"
+
+
+@pytest.mark.parametrize("source, answers", [
+    (VOICE, True), (SOURCE_TELEGRAM, True), (SOURCE_OPERATOR, True),
+    (IDENTITY_ANSWER, False), (GREETING_REPLY, False), (PERFORM_ANSWER, False), (BACKLOG_PICKUP, False),
+    (BARE_WAKE, False),
+])
+def test_who_may_answer_the_tools_question(source, answers):
+    engine, _, _ = _asked_to_delete()
+    assert (tool_ask.reply(engine.session, "да, удаляй", source) is not None) is answers
+
+
+def test_answer_sources_are_the_addressed_sources_that_carry_a_wake_or_a_channel():
+    assert set(tool_ask.ANSWER_SOURCES) == {VOICE, SOURCE_TELEGRAM, SOURCE_OPERATOR}
+
+
+def test_models_new_question_takes_the_yes_away_from_the_tool():
+    """(b) После вопроса тула модель спросила своё («Тогда, может, включить что-нибудь другое?», ``expects=yes_no``):
+    «да» - ответ ей, а не подтверждение удаления."""
+    other = Command(speech="Тогда, может, включить что-нибудь другое?",
+                    ask=Ask(expects="yes_no", text="Тогда, может, включить что-нибудь другое?"))
+    later = [Answer(Command(speech="Хорошо."), "deepseek") for _ in range(2)]
+    engine, ports, library = _asked_to_delete([Answer(other, "deepseek"), *later])
+    _run(engine, "а что ещё есть")
+    assert engine.session.snapshot.pending_ask is not None and tool_ask.pending(engine.session) is None
+    _run(engine, "да")
+    _run(engine, "да, удаляй")
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == []
+
+
+def test_stop_closes_the_tools_question():
+    """(c) «Робот, стоп» после вопроса: окно снято, следующее «да, удаляй» - обычная реплика к LLM, трек цел."""
+    engine, ports, library = _asked_to_delete([Answer(Command(speech="Что удалить?"), "deepseek")])
+    _run(engine, "стоп")
+    assert tool_ask.pending(engine.session) is None
+    agg = _run(engine, "да, удаляй")
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == [] and agg.llm_calls == 1
+
+
+def test_silence_turn_closes_the_tools_question_for_good():
+    """«Робот, помолчи» после вопроса, затем «Робот, говори»: окно не вернулось, «да, удаляй» трек не удаляет."""
+    engine, ports, library = _asked_to_delete([Answer(Command(speech="Что удалить?"), "deepseek")])
+    _run(engine, "помолчи")
+    assert engine.session.snapshot.top("Silence") is not None and tool_ask.pending(engine.session) is None
+    _run(engine, "говори")
+    assert engine.session.snapshot.top("Silence") is None
+    _run(engine, "да, удаляй")
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == []
+
+
+@pytest.mark.parametrize("kind, set_by", [("Identity", "code"), ("GreetingReply", "code"), ("PerformAsk", "code"),
+                                          ("Silence", "user"), ("OperatorHold", "operator")])
+def test_robots_other_question_silence_or_operator_close_the_window(kind, set_by):
+    """Кадр нового вопроса робота, тишины или оператора снимает окно, и снятие кадра его не возвращает."""
+    assert kind in kn.TOOL_ASK_CLOSED_BY
+    engine, ports, library = _asked_to_delete([Answer(Command(speech="Что удалить?"), "deepseek")])
+    engine.session.push_scene(kind, set_by)
+    assert tool_ask.pending(engine.session) is None
+    engine.session.pop_scene(kind)
+    assert tool_ask.pending(engine.session) is None
+    _run(engine, "да, удаляй")
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == []
+
+
+def test_frames_that_are_not_questions_keep_the_window():
+    """Сцена диджея или персоны - не вопрос: окно ждёт ответа дальше."""
+    engine, _, _ = _asked_to_delete()
+    engine.session.push_scene("DJ", "code")
+    assert tool_ask.pending(engine.session) is not None
+    assert not {"DJ", "Persona", kn.TOOL_ASK_SCENE} & set(kn.TOOL_ASK_CLOSED_BY)
+
+
+def test_stop_while_the_tool_answers_opens_no_window():
+    """Стоп пришёл, пока тул отвечал: вопрос не прозвучит (эпоха сменилась) - и окна под него нет."""
+    library = Library()
+    ports = Ports(library, [Answer(Command(actions=(ASK_DELETE,)), "deepseek")])
+    engine = _engine(ports)
+    ports.during_execute = engine.session.replace_epoch
+    _run(engine, "удали из библиотеки трек «Кот и ёж»")
+    assert ports.said == [] and tool_ask.pending(engine.session) is None
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -260,9 +377,10 @@ QUESTION_RULE = kn.TOOL_QUESTIONS[("music_library", "needs_confirmation")]
 
 
 @pytest.mark.parametrize("text, verdict", [
-    ("да", True), ("Робот, да, удаляй", True), ("удаляй эту песню", True), ("ну давай", True),
-    ("да, удаляй трек", True),
+    ("да", True), ("Робот, да, удаляй", True), ("удаляй эту песню", True), ("да, давай, удаляй", True),
+    ("да, удаляй трек", True), ("ага", True), ("угу", True), ("подтверждаю", True), ("да, уверен", True),
     ("нет", False), ("не надо", False), ("нет, не удаляй", False), ("отмена", False), ("да, но не эту", False),
+    ("не уверен", False),
     ("да, удали все", None), ("удали два", None), ("да, удали оба", None), ("да, но потом", None), ("стой", None),
     ("хватит", None), ("", None), ("робот", None), ("эту песню", None), ("включи музыку", None),
 ])
@@ -270,10 +388,26 @@ def test_answer_grammar_covers_the_whole_phrase(text, verdict):
     assert tool_ask.answer(text, QUESTION_RULE) is verdict
 
 
+@pytest.mark.parametrize("text", ["ладно", "ну ладно", "да ладно", "ок", "окей", "хорошо", "конечно", "точно",
+                                  "давай", "ну давай"])
+def test_neutral_agreement_does_not_confirm_an_irreversible_delete(text):
+    """Ревью PR #4100: «ладно», «ок», «хорошо», «конечно», «точно», «давай» поодиночке удаляли трек. Это не явное
+    «да» на «Удалить?» («ну ладно» - часто «забудь»): не ответ, решает LLM."""
+    assert tool_ask.answer(text, QUESTION_RULE) is None
+
+
+@pytest.mark.parametrize("text", ["ладно", "ок", "хорошо", "давай"])
+def test_neutral_agreement_in_the_window_deletes_nothing_by_code(text):
+    engine, ports, library = _asked_to_delete([Answer(Command(speech="Так удалить или нет?"), "deepseek")])
+    agg = _run(engine, text)
+    assert library.tracks["t-1"] == "Кот и ёж" and _confirmed(ports) == [] and agg.llm_calls == 1
+
+
 def test_answer_words_do_not_swallow_stop_and_do_not_overlap():
     words = set(kn.TOOL_ANSWER_YES) | set(kn.TOOL_ANSWER_NO) | set(kn.TOOL_ANSWER_FILLER)
     assert not words & set(kn.STOP_WORDS), "стоп при открытом вопросе остаётся стопом Tier-1"
     assert not set(kn.TOOL_ANSWER_YES) & set(kn.TOOL_ANSWER_NO)
+    assert not set(kn.TOOL_ANSWER_YES) & {"ладно", "ок", "окей", "хорошо", "конечно", "точно", "давай"}
 
 
 @pytest.mark.parametrize("key", list(kn.TOOL_QUESTIONS))

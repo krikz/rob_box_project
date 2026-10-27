@@ -560,6 +560,13 @@ class TestDialogSpeaksTheToolsQuestion:
                               {"action": "delete", "track_id": "t-1"})
         assert phrase_key(result) == f"music.library_fail.{reason}"
 
+    def test_a_refusal_reason_outside_the_list_is_a_code_error(self):
+        """Ревью PR #4100: список причин ведётся руками - новая причина мимо него прошла бы мимо сверки с каталогом и
+        молча говорила бы «С библиотекой музыки не вышло.». ``_refused`` её не пропускает."""
+        with pytest.raises(ValueError, match="disk_on_fire"):
+            _mm._refused("disk_on_fire", "Диск горит.")
+        assert _mm._refused(_mm.UNKNOWN_TRACK, "нет такого").data["reason"] == "unknown_track"
+
     def test_the_question_is_known_to_the_dialog_and_its_window_fits_the_tools(self):
         from rob_box_dialog import knowledge as dkn
 

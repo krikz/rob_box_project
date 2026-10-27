@@ -326,7 +326,11 @@ class MusicLibraryTool(MCPTool):
 
 
 def _refused(reason: str, error: str, **data: Any) -> MCPToolResult:
-    """Честный отказ: статус ``rejected`` и причина - в данных, фразу об исходе строит код по ``reason`` (ADR-0148)."""
+    """Честный отказ: статус ``rejected`` и причина - в данных, фразу об исходе строит код по ``reason`` (ADR-0148).
+    Причина вне :data:`REFUSAL_REASONS` - ошибка кода (``ValueError``), а не тихий откат диалога на общее «С библиотекой
+    музыки не вышло.»: сверку причин с каталогом фраз держит ``test_gen_library`` (ревью PR #4100)."""
+    if reason not in REFUSAL_REASONS:
+        raise ValueError(f"music_library: причина отказа {reason!r} не в REFUSAL_REASONS {REFUSAL_REASONS}")
     return MCPToolResult(success=False, error=error, message=error, data={"status": "rejected", "reason": reason, **data})
 
 
