@@ -429,12 +429,14 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
     ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``).
-    Возвращает лицо итога (``None`` - рефлекс как есть): ход записывает его в окно (``TurnLog.faced``, #4073)."""
+    Возвращает лицо, которое порт получил (``None`` - рефлекс как есть или порт лица не принимает): ход записывает его в
+    окно (``TurnLog.faced``, #4073), и запись «показано» не опережает показ - у чата и шлема оператора лица нет."""
     face = done_expression(turn, snapshot)
-    extra = {"expression": face} if face is not None and _accepts(ports.stage, "expression") else {}
+    shown = face if face is not None and _accepts(ports.stage, "expression") else None
+    extra = {"expression": shown} if shown is not None else {}
     ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
                 provider=turn.provider, **extra)
-    return face
+    return shown
 
 
 def prosody_phrase(results: Sequence[ActionResult]) -> str:

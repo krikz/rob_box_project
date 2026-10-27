@@ -207,3 +207,38 @@ def test_finish_stage_hands_back_the_face_the_reflex_saw():
     assert finish_stage(ports, turn, snap) == SAD and ports.shown == ["sad"]
     turn.status = "cancelled"
     assert finish_stage(ports, turn, snap) is None and ports.shown == ["sad"]
+
+
+# -- порт без лица (чат телеграма, шлем оператора): «показано» не пишется (ревью #4104) ---------------------------------
+
+
+class NoFacePorts(Ports):
+    """Порт, чей ``stage`` лица не принимает (как ``ChatPorts`` и порты шлема оператора): итог хода лицо не показывает."""
+
+    def stage(self, turn_id, epoch, stage, status, reason="", cls=None, llm_calls=0, provider="", source=""):
+        pass
+
+
+def test_face_the_port_cannot_show_is_not_written_to_the_window_as_shown():
+    """Лицо в команде есть, а порт его не принимает: человек не получил ничего, и модель не должна считать, что ответила
+    лицом («код пишет успех, которого не было», ADR-0148). Реплика без ответа в окне - честная картина хода."""
+    ports = NoFacePorts([Answer(Command(expression=SAD), "deepseek")])
+    engine = _engine(ports)
+    asyncio.run(engine.run(Addressed(N_SAD, VOICE)))
+    assert ports.said == [] and ports.shown == []
+    assert _dialogue(engine.log.window()) == [(USER, N_SAD)], "ни слов, ни действий, ни показанного лица"
+
+
+def test_finish_stage_hands_back_nothing_when_the_port_takes_no_face():
+    """Возвращается лицо, которое порт реально получил: ``None`` и у порта без ``expression``, и у настоящего
+    ``ChatPorts`` (чат телеграма)."""
+    from rob_box_dialog.chats import ChatPorts
+    from rob_box_dialog.deadline import TurnDeadline
+    from rob_box_dialog.turn import _Turn, finish_stage
+
+    snap = Session("personality").snapshot
+    turn = _Turn("t1", 0, N_SAD, VOICE, TurnDeadline(30.0), stage="done", expression=SAD)
+    chat = ChatPorts(base=None, chat_id=7, send=lambda *args: None, log=lambda line: None)
+    assert finish_stage(NoFacePorts([]), turn, snap) is None
+    assert finish_stage(chat, turn, snap) is None
+    assert finish_stage(Ports([]), turn, snap) == SAD, "порт с лицом - как было"
