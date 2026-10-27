@@ -6,7 +6,10 @@
   говорил и откуда — в снимке сессии, не в тексте); ход подхвата бэклога (В12″) пишет вместо одной реплики все
   подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
-  прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен;
+  прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Ход отработан действиями,
+  а ответа словами в окне нет — реплику робота строит код из исходов этих действий
+  (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»), иначе реплика человека висит
+  в истории без ответа и модель повторяет прошлое действие (#4066);
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные); поздний итог
   действия (:meth:`TurnLog.late`) заменяет его запись на месте, а фраза кода об опровергнутом ``timeout`` из окна
   уходит (#3960: «Музыка пока не заиграла.», а трек заиграл через 1,4 с);
@@ -136,6 +139,27 @@ def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEnt
         rest = rest.replace(said, " ")
     rest = " ".join(rest.split())
     return WindowEntry(ASSISTANT, rest) if rest else None
+
+
+def _action_label(record: Mapping[str, Any]) -> str:
+    """Одно действие хода словами кода: ``play_animation sad — сделано``, ``play_sound robot_alert — отказ (busy)``."""
+    tool, status, reason = str(record.get("tool", "")), str(record.get("status", "")), record.get("reason")
+    field_name = kn.WINDOW_ACTION_ARG.get(tool)
+    arg = (record.get("data") or {}).get(field_name) if field_name else None
+    head = f"{tool} {arg}" if arg not in (None, "") else tool
+    said = kn.WINDOW_ACTION_STATUS.get(status, status)
+    return f"{head} — {said} ({reason})" if reason else f"{head} — {said}"
+
+
+def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry]) -> List[WindowEntry]:
+    """Ход отработан действиями, а ответа словами в окне нет: реплика робота из исходов этих действий (#4066).
+    Без неё реплика человека висит в истории без ответа, и модель «догоняет» её - повторяет прошлое действие. Строится
+    при каждой выдаче окна, поэтому поздний итог (:meth:`TurnLog.late`) и конец выступления видны в ней сразу. Ход
+    без реплики человека, без действий или с прозвучавшим ответом - без неё."""
+    if not lead or any(e.role == ASSISTANT for e in entries):
+        return []
+    labels = [_action_label(e.content) for e in entries if e.role == TOOL]
+    return [WindowEntry(ASSISTANT, kn.WINDOW_ACTIONS_REPLY.format(actions="; ".join(labels)))] if labels else []
 
 
 def _tool_content(result: Any) -> Mapping[str, Any]:
@@ -269,7 +293,7 @@ class TurnLog:
 
     def _entries(self, turn: _Turn) -> List[WindowEntry]:
         lead = list(turn.heard) or ([WindowEntry(USER, turn.user, turn.speaker)] if turn.user else [])
-        return lead + list(turn.entries)
+        return lead + list(turn.entries) + _action_reply(lead, turn.entries)
 
     def _tokens(self, turns: List[List[WindowEntry]]) -> int:
         return sum(self._estimate(e.text()) for t in turns for e in t)

@@ -48,8 +48,7 @@ def test_tool_result_is_structure_not_text():
     log = TurnLog()
     log.begin("t1", 0, "звук")
     log.result("t1", _result(status="rejected", reason="busy", data={"name": "boop"}))
-    entry = log.window()[-1]
-    assert entry.role == TOOL
+    (entry,) = [e for e in log.window() if e.role == TOOL]
     assert dict(entry.content) == {"tool": "play_sound", "status": "rejected", "reason": "busy",
                                    "data": {"name": "boop"}}
     assert entry.text() == '{"tool":"play_sound","status":"rejected","reason":"busy","data":{"name":"boop"}}'
@@ -136,9 +135,11 @@ def test_perform_outcome_closes_the_request_in_window():
     assert log.performed("t1", "tale", "started")
     assert log.performed("t1", "tale", perform_status("halt"), segments_done=3)
     window = log.window()
-    assert [e.role for e in window] == [USER, TOOL], "одна запись на выступление, статус обновлён на месте"
+    assert [e.role for e in window] == [USER, TOOL, ASSISTANT], "одна запись на выступление, статус обновлён на месте"
     assert dict(window[1].content) == {"tool": "perform", "status": "stopped_by_user",
                                        "data": {"kind": "tale", "segments_done": 3}}
+    assert window[2] == WindowEntry(ASSISTANT, "[ответ действием: perform tale — остановил человек]"), (
+        "в истории модели просьба закрыта репликой кода, а не висит без ответа (#4066)")
 
 
 def test_perform_end_reasons_map_to_honest_statuses():
@@ -217,7 +218,10 @@ def test_late_outcome_drops_the_timeout_phrase_that_is_still_being_spoken():
     log = _n809_log()
     assert log.late(_music("done"), _phrase)
     assert log.spoken("s1", 24) == "Музыка пока не заиграла."
-    assert [e.role for e in log.window()] == [USER, TOOL]
+    window = log.window()
+    assert [e.role for e in window] == [USER, TOOL, ASSISTANT]
+    assert window[-1].content == "[ответ действием: request_music — сделано]", (
+        "опровергнутой фразы в окне нет; ход закрыт репликой кода из позднего итога (#4066)")
 
 
 def test_late_outcome_keeps_other_words_of_the_robot():

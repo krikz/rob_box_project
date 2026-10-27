@@ -1004,7 +1004,8 @@ def test_stopped_tale_is_not_an_open_request_for_the_next_turn_3973():
     ports.perform_outcome = {"status": "pending", "block_id": "perform-t1"}
     engine = _engine(ports)
     _run(engine, "расскажи сказку про красную шапочку")
-    assert ports.said == [] and [e.role for e in engine.log.window()] == ["user", "tool"], "старт - запись в окне"
+    assert ports.said == [] and [e.role for e in engine.log.window()] == ["user", "tool", "assistant"], (
+        "старт - запись в окне, просьба закрыта репликой кода (#4066)")
     engine.log.performance_ended("t1", "halt", 3)  # block_end владельца: «стой»
     _run(engine, "сейчас же ничего не играет, верно?")
     snapshot = ports.asked[1][0][-1]["content"]
