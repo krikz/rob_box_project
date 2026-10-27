@@ -5,7 +5,9 @@
     "Акт 1 — базовый прогрев. Красный здесь = робот не отвечает вообще,",
     "дальше по актам идти бессмысленно (раннер останавливает марафон).",
     "get_perception_context и faq_search намеренно ВНЕ gate — они зависят",
-    "от железа стенда и профиля FAQ (см. dialogue-coverage-map §3)."
+    "от железа стенда и профиля FAQ (см. dialogue-coverage-map §3).",
+    "recover=[silenced]: акт проверяет САМ вейк -- потерянный вейк харнесс не лечит",
+    "«Робот!» (no_wake), шаг честно красный; тишину, оставленную прошлым прогоном, снимать можно."
   ],
   "expected_tool_calls": [
     "get_current_time",
@@ -15,7 +17,7 @@
   "must_not_call": [],
   "voice_provenance": {
     "voice": "anton",
-    "tts": "yandex",
+    "tts": "minimax",
     "volume": 100,
     "llm": "minimax-m3"
   }

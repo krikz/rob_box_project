@@ -56,7 +56,7 @@
       "act": 4,
       "title": "Робот учится говорить",
       "stability": "flaky-known",
-      "steps": 12,
+      "steps": 13,
       "scenario_file": ".github/e2e/scenarios/night/night_marathon_act4_voice_prosody_v1.json",
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act4_voice_prosody_acceptance_v1.json"
     },
@@ -109,5 +109,5 @@
       "acceptance_file": ".github/e2e/scenarios/night/night_marathon_act10_finale_memory_acceptance_v1.json"
     }
   ],
-  "total_steps": 134
+  "total_steps": 135
 }

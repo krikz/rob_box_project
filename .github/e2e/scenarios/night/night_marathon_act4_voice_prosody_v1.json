@@ -30,9 +30,16 @@
       "voice": "anton",
       "text": "Робот, а каким голосом ты говоришь прямо сейчас?",
       "patterns": [
-        "SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+        "SpeechEvent synthesized speech_id=.* provider=minimax\\b"
       ],
-      "_why": "v2 (#3880, run 39878786968): v1-строка `TTS current_voice` не пишется; факт ответа голосом -- `SpeechEvent synthesized … provider=`."
+      "acceptance": {
+        "expected_keywords": [
+          "minimax|минимакс|мини макс|мини-макс|qingse|цинсе"
+        ],
+        "expected_tool_calls": [],
+        "must_not_call": [],
+        "_comment": "R6 разбора 26.10: прежний `SpeechEvent synthesized … provider=<любой>` совпадал с каждым ходом. Результат теперь: ответ ЗВУЧИТ голосом по умолчанию (MiniMax, `tts_node.yaml` minimax_voice male-qn-qingse; харнесс возвращает голос и параметры до акта) и НАЗЫВАЕТ его -- провайдер или голос (23.10: «Сейчас я на MiniMax, и голос у меня male-qn-qingse»). Если робот ушёл в фолбек Yandex, шаг красный -- это и есть находка (голосовой стек деградирует молча)."
+      }
     },
     {
       "label": "n403_set_voice_alena",
@@ -54,9 +61,9 @@
       "voice": "anton",
       "text": "Робот, скажи этим голосом что-нибудь бодрое, чтобы я услышал разницу.",
       "patterns": [
-        "SpeechEvent synthesized speech_id=.* provider=[A-Za-z0-9_-]+"
+        "SpeechEvent synthesized speech_id=.* provider=yandex\\b"
       ],
-      "_why": "v2 (#3880): см. n402 -- `SpeechEvent synthesized … provider=` вместо `current_voice`."
+      "_why": "R6: результат -- реплика синтезирована ГОЛОСОМ ИЗ n403. Алёна есть только у Yandex (`tts_voice_registry`: yandex:alena), голос робота по умолчанию -- MiniMax, значит «этим голосом» = `SpeechEvent synthesized … provider=yandex`. Не сменил голос в n403 -- здесь тоже честно красный."
     },
     {
       "label": "n405_set_voice_jane",
@@ -87,7 +94,7 @@
     {
       "label": "n407_volume_up",
       "voice": "anton",
-      "text": "Робот, говори погромче, дядя Гриша глуховат и стоит в коридоре.",
+      "text": "Робот, говори погромче, тётя Гриша глуховата и стоит в коридоре.",
       "patterns": [],
       "acceptance": {
         "expected_tool_calls": [
@@ -113,45 +120,46 @@
       "label": "n409_speed_down",
       "voice": "anton",
       "text": "Робот, говори помедленнее, я за тобой записываю.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "set_speed"
-        ],
-        "must_not_call": []
-      }
+      "patterns": [
+        "(minimax_speed|yandex_speed) изменён: 0\\.[0-9]+"
+      ],
+      "_why": "Эффект, а не вызов (разбор 26.10: ложный PASS -- set_speed писал yandex_speed, а звучал MiniMax). #4039: тул меняет ось АКТИВНОГО провайдера, нода пишет `🎚️ minimax_speed изменён: 0.8` -- скорость стала ниже нормы (харнесс вернул ось к норме до акта)."
     },
     {
       "label": "n410_speed_up",
       "voice": "anton",
       "text": "Робот, ладно, хватит тянуть, теперь наоборот — тараторь.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "set_speed"
-        ],
-        "must_not_call": []
-      }
+      "patterns": [
+        "(minimax_speed|yandex_speed) изменён: (1\\.[0-9]+|2)(\\s|$)"
+      ],
+      "_why": "«Тараторь» -- быстрее НОРМЫ: после n409 (0.8) один шаг возвращает лишь 1.0 (обычная речь), это не эффект просьбы. 23.10 LLM звала set_speed дважды параллельно, оба прочитали 0.8 и записали 1.0 -- такой ход здесь красный по делу."
     },
     {
       "label": "n411_pitch_bass",
       "voice": "anton",
       "text": "Робот, говори басом, как диктор в старом кино.",
-      "patterns": [],
-      "acceptance": {
-        "expected_tool_calls": [
-          "set_pitch"
-        ],
-        "must_not_call": [],
-        "_comment": "v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких инструментов нет» -- проверка была слабой (паттерн `set_pitch|set_voice` матчил список тулов). Теперь нужен реальный вызов set_pitch (`Запрос выполнения: set_pitch`). У провайдера без set_pitch шаг честно красный -- акт flaky-known."
-      }
+      "patterns": [
+        "(pitch_shift) изменён: 0\\.[0-9]+"
+      ],
+      "_why": "v2 (#3880, run 39878786968): шаг проходил OK при ответе «таких инструментов нет». #4039: тон слышен у MiniMax (`voice_setting.pitch`) без chipmunk_mode; эффект -- `🎚️ pitch_shift изменён: 0.8` (ниже нормы). У провайдера без тона тул честно отказывает -- шаг красный, акт flaky-known."
+    },
+    {
+      "label": "n411b_prosody_normal",
+      "voice": "anton",
+      "text": "Робот, всё, верни обычную скорость речи и обычный тон.",
+      "patterns": [
+        "(minimax_speed|yandex_speed) изменён: 1(\\s|$)|\\[set_speed\\] Speed \\[[a-z]+, [a-z_]+\\]: Скорость уже нормальная",
+        "(pitch_shift) изменён: 1(\\s|$)|\\[set_pitch\\] Pitch \\[[a-z]+, pitch_shift\\]: Голос уже нормальный"
+      ],
+      "_why": "Сброс просодии перед сказкой (акт возвращает робота в исходное). Отдельного маркера сброса пока нет -- проверяем значения осей: скорость и тон снова 1 (`изменён: 1`) либо тул прочитал, что ось уже на норме (`Скорость уже нормальная` / `Голос уже нормальный`: честное «уже», не каскад от n410/n411)."
     },
     {
       "label": "n412_skazka_multivoice",
       "voice": "anton",
-      "text": "Робот, расскажи сказку про Красную Шапочку, говори за каждого персонажа своим голосом.",
+      "text": "Робот, расскажи короткую сказку про Красную Шапочку, говори за каждого персонажа своим голосом.",
       "patterns": [
-        "🧾 \\[command\\] .*actions=\\[[^]]*perform|SpeechEvent voice_changed .*applied="
+        "выступление старт kind=tale\\b",
+        "\\[perform\\] [^ ]*: конец \\(done\\)|PlanEvent block_end .*reason=done"
       ],
       "acceptance": {
         "expected_keywords": [
@@ -159,9 +167,8 @@
         ],
         "expected_tool_calls": [],
         "must_not_call": [],
-        "_comment": "v2 (#3880, run 39878786968): сказку делает `perform kind=tale` с `voice_per_segment`, тула set_voice нет -- ждём `perform` в действиях команды или `SpeechEvent voice_changed` (строка `voice_used` -- v1/MiniMax). Сокращено под бюджет VAD 15с (run 35658231116); просьба про Красную Шапочку и смену голоса на персонажа сохранены. #1532: сказка должна быть полной и реально менять голос. Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя."
-      },
-      "retry_acceptance": 1
+        "_comment": "#3971 R4 (23.10 22:04:48): v1-паттерн `actions=[…perform…]` не совпадал с логом v2 (command_bridge пишет actions=[]), верная сказка давала PATTERN_MISS, ретрай заказывал вторую (2.5 мин). Теперь результат по событиям владельца: `выступление старт kind=tale` И конец `perform-: конец (done)` / `PlanEvent block_end … reason=done`. Ретрая НЕТ: после старта выступления повтор заказал бы второе. Конец ждём по событиям: сегменты ставятся в очередь сразу (`SpeechEvent queued`), харнесс ждёт, пока все закроются, -- это и есть block_end; но его потолок -- E2E_REACTION_WINDOW×E2E_MAX_ATTEMPTS (≈2 мин), поэтому просим КОРОТКУЮ сказку (23.10: 917 символов -- 99 с, 1519 -- 160 с не влезли). #1532: сказка полная, голоса персонажей -- `voice_per_segment` (без него код -- нарушение, #3966). Стем «красн» ловит «красную»/«красная» и запрещает generic «жила-была» без героя."
+      }
     }
   ]
 }

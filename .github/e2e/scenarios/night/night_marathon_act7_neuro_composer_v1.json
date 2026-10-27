@@ -52,7 +52,7 @@
         ],
         "music": ""
       },
-      "_known_red": "квота KIE: при `<providers>` music_gen health != ok (run 132908: health=quota весь марафон) честный ответ робота -- `perform song`, а не generate_music. Харнесс условий по снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), поэтому шаг красный по делу, пока Шифу не пополнит KIE."
+      "_known_red": "только при квоте KIE (`[cover] баланс KIE: 0`): при `<providers>` music_gen health != ok (run 132908: health=quota весь марафон) честный ответ робота -- `perform song`, а не generate_music. Харнесс условий по снимку не умеет (дамп LLM-запроса с `<providers>` вырезается из лога шага), поэтому под квотой шаг красный по делу. 26.10 баланс есть (1712) -- шаг обязан быть зелёным."
     },
     {
       "label": "n703_merge_komar",
@@ -108,7 +108,12 @@
         "expected_tool_calls": [
           "music_library"
         ],
-        "must_not_call": []
+        "must_not_call": [],
+        "_comment": "n706-n710 -- жизнь ПЕСНИ ЭТОГО ПРОГОНА (n702). R21 разбора 26.10: при `[cover] баланс KIE: 0` песни нет, шаги краснеют каскадом, а delete бьёт по чужому треку -- их место SKIP KIE_QUOTA (`_skip_when`; харнесс поле пока не читает -- см. шапку генератора)."
+      },
+      "_skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
       }
     },
     {
@@ -121,6 +126,10 @@
           "music_library"
         ],
         "must_not_call": []
+      },
+      "_skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
       }
     },
     {
@@ -139,9 +148,16 @@
         "must_not_call": [
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "_comment": "#3971: воспроизведение засчитывается по `Инструмент music_library выполнен успешно` + `[music v2] started`."
       },
       "retry_acceptance": 1,
+      "_skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+      },
       "_result_markers": {
         "tools": [
           "music_library"
@@ -155,7 +171,7 @@
       "text": "Робот, останови, Борис уже уснул под неё.",
       "patterns": [
         "✅ Инструмент stop_music выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=",
+        "🎵 \\[music v2\\] stop track_id=[a-z0-9]",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
@@ -165,7 +181,11 @@
         "must_not_call": [
           "stage=timeout"
         ],
-        "_comment": "Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру `[music v2] stop`, а не по слову «остановил»."
+        "_comment": "Опять же: останавливаем ровно то, что сами включили в n708. #3971: по маркеру `[music v2] stop` с id трека (не `track_id=None`), а не по слову «остановил»."
+      },
+      "_skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
       },
       "_result_markers": {
         "tools": [
@@ -177,16 +197,30 @@
     {
       "label": "n710_gen_delete",
       "voice": "anton",
-      "text": "Робот, удали последний трек из библиотеки, он всё-таки так себе.",
+      "text": "Робот, удали из библиотеки эту песню про енота, она всё-таки так себе.",
       "patterns": [
-        "music_library"
+        "music_library с параметрами \\{.*'action': 'delete'",
+        "✅ Инструмент music_library выполнен успешно",
+        "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {
         "expected_tool_calls": [
           "music_library"
         ],
-        "must_not_call": [],
-        "_comment": "Уборка за собой + проверка, что «последний» робот определяет через список, а не наугад."
+        "must_not_call": [
+          "stage=timeout"
+        ],
+        "_comment": "Уборка за собой. R21 (23.10 22:39:22): «удали ПОСЛЕДНИЙ трек» без песни этого прогона удалило чужой трек и осталось зелёным. Теперь просьба называет песню этого прогона (про енота): id робот берёт из поиска/списка, без такой песни удалять нечего. Результат -- запрос `delete` и успех music_library. Под квотой KIE шаг не играется (`_skip_when`), destructive delete вслепую не гоняем."
+      },
+      "_skip_when": {
+        "reason": "KIE_QUOTA",
+        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)"
+      },
+      "_result_markers": {
+        "tools": [
+          "music_library"
+        ],
+        "music": ""
       }
     },
     {
@@ -206,6 +240,9 @@
           "generate_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "_comment": "Контроль отсутствия регрессии коллизии имён: после серии gen_* робот обязан вернуться к живому синтезу. #3971: `Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: трек из кэша без Renardo давал ложный PASS; кэш от Renardo по логу `started` не отличить -- это известный предел шага)."
       },
       "retry_acceptance": 1,
@@ -222,7 +259,7 @@
       "text": "Робот, всё, глуши.",
       "patterns": [
         "✅ Инструмент stop_music выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=",
+        "🎵 \\[music v2\\] stop track_id=[a-z0-9]",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {

@@ -45,6 +45,9 @@
           "generate_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "_comment": "Живой синтез, НЕ нейрогенерация: generate_music здесь — выбор не того тула (коллизия имён, PR #1372). #3971: PASS только при `Инструмент request_music выполнен успешно` + `[music v2] started` (run 132908: трек из кэша + «не понял» давал ложный PASS)."
       },
       "retry_acceptance": 2,
@@ -88,6 +91,9 @@
           "stop_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "expected_tool_calls": [],
         "_comment": "Эволюция трека без перезапуска: stop_music здесь = робот глушит и начинает заново вместо развития. #3971: в v2 тулов живой правки Renardo нет -- честная попытка это dj_set|request_music|generate_music (run 132908: робот звал dj_set, харнесс ждал request_music); успех тула обязателен."
       },
@@ -97,7 +103,7 @@
           "request_music",
           "generate_music"
         ],
-        "music": ""
+        "music": "changed"
       }
     },
     {
@@ -113,6 +119,9 @@
           "stop_music",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "expected_tool_calls": [],
         "_comment": "#3971: см. n504 -- любой из dj_set|request_music|generate_music, но с успехом тула."
       },
@@ -122,7 +131,7 @@
           "request_music",
           "generate_music"
         ],
-        "music": ""
+        "music": "changed"
       }
     },
     {
@@ -140,6 +149,9 @@
           "set_pitch",
           "stage=timeout"
         ],
+        "must_not_say": [
+          "Музыка пока не заиграла"
+        ],
         "expected_tool_calls": [],
         "_comment": "#3976: «ускорь темп» под музыкой -- про музыку, а не про голос робота; set_speed/set_pitch (стем «темп» открывает группу voice) -- реальный баг. Шаг остаётся красным, пока его не починят: запрет и обязательный музыкальный тул держат это честно."
       },
@@ -149,7 +161,7 @@
           "request_music",
           "generate_music"
         ],
-        "music": ""
+        "music": "changed"
       }
     },
     {
@@ -175,7 +187,7 @@
       "text": "Робот, всё, глуши музыку, у меня уши в трубочку.",
       "patterns": [
         "✅ Инструмент stop_music выполнен успешно",
-        "🎵 \\[music v2\\] stop track_id=",
+        "🎵 \\[music v2\\] stop track_id=[a-z0-9]",
         "📊 \\[turn\\] .*stage=done status=finished"
       ],
       "acceptance": {

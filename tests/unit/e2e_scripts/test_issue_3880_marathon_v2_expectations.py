@@ -151,8 +151,8 @@ def test_act3_backlog_flow_is_bare_robot_pickup():
     labels = list(steps)
     assert labels.index("n305b_bare_robot_pickup") == labels.index("n305_bg_valera_unknown") + 1
     assert labels.index("n310_execute_backlog_lru") == labels.index("n309_bg_command_valera") + 1
-    # диктора проверяет ответ робота, а не строка бэклога
-    assert steps["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", "незнаком"]
+    # диктора проверяет ответ робота, а не строка бэклога (#3971, разбор 26.10: «неопознан» -- тоже честная метка)
+    assert steps["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", "незнаком|неопознан"]
     assert "patterns" in steps["n306_who_was_talking"] and not steps["n306_who_was_talking"]["patterns"]
 
 
@@ -189,26 +189,28 @@ def test_harness_reads_silent_ok_from_the_scenario(tmp_path, label):
 ACT4 = "night_marathon_act4_voice_prosody_v1.json"
 SYNTH_LINE = ("[tts_node-5] [INFO] [1790801812.0]: 🗣️ SpeechEvent synthesized speech_id=91b3cb4b agent=tars "
               "epoch=1 text_len=40 duration_ms=2100 provider=minimax")
-COMMAND_LINE = ("[dialog_node-4] [INFO] [1790801812.0]: 🧾 [command] provider=minimax mode=tool verdict=ok "
-                "actions=['perform'] speech_dropped=0")
-VOICE_CHANGED_LINE = ("[tts_node-5] [INFO] [1790801812.0]: 🗣️ SpeechEvent voice_changed request=ab12 "
-                      "requested='alena' applied='ermil' provider=yandex reason=")
+TALE_START_LINE = ("[dialog_node-4] [INFO] [1790801812.0]: 🧭 [turn-v2] выступление старт kind=tale backing=calm "
+                   "segments=7 → {'status': 'pending', 'block_id': 'perform-ee2404b9048f'} turn=ee2404b9048f")
+TALE_END_LINE = ("[dialog_node-4] [INFO] [1790801912.0]: 🎤 [perform] perform-: конец (done) сегментов 7, символов 917, "
+                 "synced=True, подложка stopped")
 
 
 def test_act4_voice_steps_use_v2_markers():
+    """#3880 + #3971 (разбор 26.10, R4/R6): провайдер реплики назван (не «любой»), сказка -- по событиям выступления."""
     g = _gen()
     steps = _steps(ACT4)
-    for label in ("n402_current_voice", "n404_speak_after_set"):
-        assert steps[label]["patterns"] == [g.SPEECH_PROVIDER], label
-    assert _hit(g.SPEECH_PROVIDER, SYNTH_LINE)
-    assert not _hit(g.SPEECH_PROVIDER, STARTED_LINE)
+    assert steps["n402_current_voice"]["patterns"] == [g.spoken_by("minimax")]
+    assert steps["n404_speak_after_set"]["patterns"] == [g.spoken_by("yandex")]
+    assert _hit(g.spoken_by("minimax"), SYNTH_LINE)
+    assert not _hit(g.spoken_by("yandex"), SYNTH_LINE)
+    assert not _hit(g.spoken_by("minimax"), STARTED_LINE)
     tale = steps["n412_skazka_multivoice"]
-    assert tale["patterns"] == [g.TALE_VOICES]
+    assert tale["patterns"] == [g.perform_started("tale"), g.PERFORM_DONE]
     assert "set_voice" not in tale["acceptance"].get("expected_tool_calls", [])
-    assert _hit(g.TALE_VOICES, COMMAND_LINE) and _hit(g.TALE_VOICES, VOICE_CHANGED_LINE)
-    assert not _hit(g.TALE_VOICES, "🧾 [command] provider=minimax mode=tool verdict=ok actions=['set_speed']")
+    assert _hit(g.perform_started("tale"), TALE_START_LINE) and _hit(g.PERFORM_DONE, TALE_END_LINE)
+    assert not _hit(g.PERFORM_DONE, TALE_END_LINE.replace("(done)", "(stopped)"))
     pitch = steps["n411_pitch_bass"]
-    assert pitch["acceptance"]["expected_tool_calls"] == ["set_pitch"] and not pitch["patterns"]
+    assert pitch["patterns"] == [g.prosody_changed((g.PITCH_PARAM,), g.BELOW_NORMAL)]
     syn = (ROOT / "src/rob_box_voice/rob_box_voice/core/speech_owner.py").read_text(encoding="utf-8")
     assert 'self._emit("synthesized", rec, duration_ms=int(duration_s * 1000), provider=provider)' in syn
     assert 'f"applied={applied!r} provider={provider} reason={reason}"' in syn
