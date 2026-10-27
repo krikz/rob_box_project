@@ -61,7 +61,8 @@ _SCHEMA_IN_PROMPT: Tuple[CommandMode, ...] = ("json_mode", "json_in_text")
 V1_TRANSPORT_NOTE = (
     "Форма ответа в этом режиме важнее правил о speak_text и done выше: тула speak_text нет — всё, что человек должен "
     "услышать, клади в поле speech; сказку, стих, рэп, анекдот — в perform.segments (куплет или абзац на сегмент), "
-    "голос персонажа — в perform.voice_per_segment; о результате действий не говори — его скажет код; done не пиши."
+    "героев с репликами — в perform.cast и role_per_segment (голоса им даёт код); о результате действий не говори — его "
+    "скажет код; done не пиши."
 )
 
 Log = Callable[[str], None]

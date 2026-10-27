@@ -256,17 +256,33 @@ def known_provider(name: object) -> str:
 #: Язык голосов, которыми звучат роли выступления: реплики русские, чужой язык у голоса - чужой акцент (#3998).
 ROLE_VOICE_LANGUAGE = "ru"
 
+#: Голоса каста марафона (#3992; в каталоге робота с #4086): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
+#: ``.github/workflows/scripts/e2e_voice_lib.sh``). Робот говорит ими только по просьбе (``set_voice``), а роли
+#: выступления ими не звучат (#4084): герой сказки голосом Саши — это «Саша» для опознания по голосу. Ключ - как у
+#: ``VOICE_METADATA``. Сверка с харнессом - ``test_issue_4084_role_voices.py``.
+CAST_VOICES: frozenset[str] = frozenset({
+    "minimax:English_Jovialman", "minimax:English_WiseScholar", "minimax:Chinese (Mandarin)_Gentle_Senior",
+    "minimax:English_Whispering_girl", "minimax:Portuguese_StrictBoss",
+})
+
 
 def role_voices_for(provider: str, narrator: str = "") -> list[str]:
-    """Голоса для РОЛЕЙ выступления (сказка и т.п.): русские голоса каталога звучащего провайдера, кроме голоса
-    рассказчика.
+    """Голоса для РОЛЕЙ выступления (сказка, анекдот, басня): русские голоса каталога звучащего провайдера, кроме
+    голоса рассказчика и голосов каста марафона (``CAST_VOICES``, #4084).
 
-    Единственная таблица - ``VOICE_METADATA.language``: legacy-китайские ``male-qn-qingse``/``female-shaonv`` MiniMax и
+    Язык - ``VOICE_METADATA.language``: legacy-китайские ``male-qn-qingse``/``female-shaonv`` MiniMax и
     английский/немецкий ``john``/``lea`` Yandex в роли не попадают (#3998: сказка звучала китайским голосом на русском
-    тексте). ``narrator`` - голос, которым звучит пустая строка в ``voice_per_segment`` (текущий голос робота): роль не
-    должна звучать так же, как рассказчик. ``voices_for`` не меняется: ``set_voice`` и обзоры голосов видят весь каталог.
+    тексте). ``narrator`` - текущий голос робота, им звучит рассказчик: роль не должна звучать так же. Порядок -
+    каталога: роли голос даёт код (``rob_box_dialog.cast``), первый свободный нужного пола. ``voices_for`` не
+    меняется: ``set_voice`` и обзоры голосов видят весь каталог.
     """
-    return [v for v in voices_for(provider) if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator]
+    return [v for v in voices_for(provider)
+            if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator and f"{provider}:{v}" not in CAST_VOICES]
+
+
+def gender_of(provider: str, voice_id: str) -> str:
+    """Пол голоса по каталогу (``male``/``female``/``neutral``); голос неизвестен - ``""``."""
+    return str((VOICE_METADATA.get(f"{provider}:{voice_id}") or {}).get("gender") or "")
 
 
 def default_voice_for(provider: str) -> str:

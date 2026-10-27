@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
+from rob_box_dialog.cast import voiced
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, BackingTrack, MusicStop
 from rob_box_dialog.plan.estimate import SpeechRate
@@ -395,6 +396,8 @@ class PerformBlock:
         self._last_event = 0.0
         #: Провайдер TTS (фактический у хоста): паузы по сетке строк — только у понимающих ``<#x#>`` (О11).
         self.tts_provider = tts_provider
+        #: Роли выступления и их голоса (``ключ роли → голос``, #4084): правка не перекрашивает их — это ``Busy.cast``.
+        self.cast: Dict[str, str] = voiced(perf.role_per_segment, perf.voice_per_segment)
 
     # -- что видят хост, валидатор и LLM ----------------------------------------------------------------------------
 
@@ -488,6 +491,7 @@ class PerformBlock:
         Опоздала (сегмент уже звучит) — отказ с фразой ``perform.edit_rejected``; выступления нет — отказ молча."""
         out, reason = self.speech.edit(perf) if self.phase in ("starting", "running") else ([], "not_running")
         if not reason:
+            self.cast.update(voiced(perf.role_per_segment, perf.voice_per_segment))
             return out
         self.log(f"правка с сегмента {perf.from_segment} отклонена ({reason})")
         rejected: List[Effect] = [self._event("rejected", perf.from_segment, reason=reason)]

@@ -23,7 +23,7 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_voice.tts_voice_registry import known_provider, role_voices_for
+from rob_box_voice.tts_voice_registry import gender_of, known_provider, role_voices_for
 
 from . import perform_ask
 from .music_player_state import parse_music_event
@@ -180,13 +180,16 @@ def on_music_event(node: Any, msg: Any) -> None:
 
 
 def perform_busy(node: Any) -> Busy:
-    """Что занято для валидатора команды: идущее выступление и его ACTIVE-сегмент (``edit_pending``), и голоса РОЛЕЙ —
-    русские голоса звучащего провайдера без рассказчика (:func:`role_voices_for`, #3998): из них схема команды строит
-    перечень ``voice_per_segment``, и тем же перечнем валидатор отвергает чужое имя (``bad_enum``)."""
+    """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
+    (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
+    без рассказчика и каста марафона (:func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления
+    (``rob_box_dialog.cast``), им же сверяется голос реплики ``voice``."""
     host = performer(node)
     provider, narrator = tts_state(node)
-    return Busy(active_segment=None if host is None else host.active_segment,
-                voices=tuple(role_voices_for(provider, narrator)))
+    voices = tuple(role_voices_for(provider, narrator))
+    return Busy(active_segment=None if host is None else host.active_segment, voices=voices,
+                voice_genders=tuple((voice, gender_of(provider, voice)) for voice in voices),
+                cast=tuple((getattr(host, "cast", None) or {}).items()))
 
 
 __all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",

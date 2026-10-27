@@ -1712,6 +1712,19 @@ VOICE_MAX_CHARS = 64
 ACTIONS_MAX = 3
 PERFORM_KINDS: Tuple[str, ...] = ("rap", "song", "tale", "poem")
 PERFORM_BACKINGS: Tuple[str, ...] = ("beat", "calm", "none")
+#: Виды выступления, у которых бывают роли (#4084): сказка и анекдот (``tale``), басня (``poem``). Песня и рэп ролей не
+#: имеют — все куплеты звучат голосом робота (Шифу 27.10: «каждый куплет разными голосами без причины — это очень
+#: напрягает; роли только когда нужны роли»). Голоса ролям даёт код (:mod:`rob_box_dialog.cast`), не модель.
+PERFORM_ROLE_KINDS: Tuple[str, ...] = ("tale", "poem")
+#: Пол роли (``perform.cast[].gender``): по нему код берёт голос каталога ролей; ``""`` — не задан (любой голос).
+ROLE_GENDERS: Tuple[str, ...] = ("male", "female")
+#: Пол голоса каталога, который подходит роли любого пола (Yandex ``omazh``/``rush``), — после голосов её пола.
+ROLE_VOICE_ANY_GENDER = "neutral"
+#: Ролей (кроме рассказчика) не больше: у самого бедного каталога ролей (Silero без голоса рассказчика) — 4 голоса.
+PERFORM_CAST_MAX = 4
+ROLE_NAME_MAX_CHARS = 40
+#: Имена рассказчика (ключом роли, ``cast.role_key``): его реплики звучат голосом робота (``""``), не голосом роли.
+PERFORM_NARRATOR_ROLES: Tuple[str, ...] = ("", "рассказчик", "рассказчица", "автор", "повествователь", "narrator")
 SEGMENTS_MIN = 2
 SEGMENTS_MAX = 12
 SEGMENT_MAX_CHARS = 400
@@ -1798,13 +1811,17 @@ def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False) -
     """Схема команды в форме пути пения: ``perform.kind`` и ``perform.backing`` — перечни пути, ``perform`` обязателен
     на живом пении (ADR-0148 п.2: выбор сужает структура, а не правило в промпте). Подложку вне перечня пути на живом
     пении валидатор ставит первой из перечня — синт (или поверх играющего, ``over_music``) решает код
-    (``command._fit_sing_backing``). Не пение — без изменений."""
+    (``command._fit_sing_backing``). Путь, где можно только петь (песня, рэп), — без полей ролей ``ROLE_FIELDS``: всё
+    звучит голосом робота (#4084). Не пение — без изменений."""
     form = SING_FORMS.get(sing_family(route, over_music))
     out = copy.deepcopy(dict(schema))
     perform = out.get("properties", {}).get("perform")
     if form is None or perform is None:
         return out
     perform["properties"]["kind"] = _enum(sing_kinds(route))
+    if not set(sing_kinds(route)) & set(PERFORM_ROLE_KINDS):  # песня и рэп — голосом робота, ролей нет (#4084)
+        for name in ROLE_FIELDS:
+            perform["properties"].pop(name, None)
     if form.backings:
         perform["properties"]["backing"] = _enum(form.backings)
     if form.needs_perform:
@@ -1840,6 +1857,23 @@ def _expression_schema() -> Dict[str, Any]:
     })
 
 
+#: Поля ролей выступления в схеме команды (#4084): модель называет героев и чья реплика в сегменте, голоса — решение кода.
+ROLE_FIELDS: Tuple[str, ...] = ("cast", "role_per_segment")
+
+
+def _role_schema() -> Dict[str, Any]:
+    """Роли выступления: ``cast`` — герои с репликами (имя и пол), ``role_per_segment`` — чья реплика в каждом сегменте
+    (``""`` — рассказчик). Голоса ролей в схеме нет: его даёт код (:mod:`rob_box_dialog.cast`), у роли он один на всё
+    выступление — а ``voice_per_segment`` от модели был «голосом на куплет» (#4084: песня про енота — двумя голосами)."""
+    role = _object({"name": {"type": "string", "maxLength": ROLE_NAME_MAX_CHARS}, "gender": _enum(ROLE_GENDERS)},
+                   required=("name", "gender"))
+    return {
+        "cast": {"type": "array", "maxItems": PERFORM_CAST_MAX, "items": role},
+        "role_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX,
+                             "items": {"type": "string", "maxLength": ROLE_NAME_MAX_CHARS}},
+    }
+
+
 def command_schema(mode: str = "json") -> Dict[str, Any]:
     """JSON-схема команды LLM из таблиц этого модуля: ``json`` — сама схема, ``tool`` — тул ``command``.
 
@@ -1861,8 +1895,7 @@ def command_schema(mode: str = "json") -> Dict[str, Any]:
                          "items": {"type": "string", "maxLength": SEGMENT_MAX_CHARS}},
             "backing": _enum(PERFORM_BACKINGS),
             "expression_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX, "items": expression},
-            "voice_per_segment": {"type": "array", "maxItems": SEGMENTS_MAX,
-                                  "items": {"type": "string", "maxLength": VOICE_MAX_CHARS}},
+            **_role_schema(),
         }, required=("kind", "segments")),
         "when": _enum(WHEN),
         "edit_pending": {"type": "boolean"},
@@ -1890,15 +1923,14 @@ def with_tool_enum(schema: Mapping[str, Any], offered: Iterable[str]) -> Dict[st
 
 
 def with_voices(schema: Mapping[str, Any], voices: Iterable[str]) -> Dict[str, Any]:
-    """Схема команды, в которой ``perform.voice_per_segment[]`` и голос реплики ``voice`` - голоса звучащего провайдера
-    TTS (#3959, #4021; ADR-0148: голос вне каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог
-    один - реестр голосов владельца речи, сюда он приходит через ``Busy.voices``. Пусто - схема без изменений."""
+    """Схема команды, в которой голос реплики ``voice`` - голоса звучащего провайдера TTS (#4021; ADR-0148: голос вне
+    каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог один - реестр голосов владельца речи, сюда
+    он приходит через ``Busy.voices``. Голосов сегментов выступления в схеме нет: их даёт код по ролям (#4084). Пусто -
+    схема без изменений."""
     names = sorted({v for v in voices if v})
     out = copy.deepcopy(dict(schema))
-    if names:
-        out["properties"]["perform"]["properties"]["voice_per_segment"]["items"] = _enum(["", *names])
-        if "voice" in out["properties"]:
-            out["properties"]["voice"] = _enum(["", *names])
+    if names and "voice" in out["properties"]:
+        out["properties"]["voice"] = _enum(["", *names])
     return out
 
 
@@ -1909,6 +1941,19 @@ def without_fields(schema: Mapping[str, Any], fields: Iterable[str]) -> Dict[str
     for name in fields:
         out["properties"].pop(name, None)
     return out
+
+
+def _roles_line(perform: Mapping[str, Any]) -> str:
+    """Строка промпта о ролях выступления — из тех же таблиц, что схема; схема хода без ролей (живое пение) — только
+    «одним голосом робота»."""
+    sung = "песня и рэп — одним голосом робота, ролей у них нет"
+    if "cast" not in perform:
+        return f" Всё выступление — голосом робота ({sung})."
+    return (f" Роли — только когда в тексте есть герои с репликами ({', '.join(PERFORM_ROLE_KINDS)}; {sung}): cast —"
+            f" герои (name и gender ∈ {{{', '.join(ROLE_GENDERS)}}}, ≤ {PERFORM_CAST_MAX}), role_per_segment — чья"
+            " реплика в каждом сегменте (\"\" — рассказчик; сегмент = реплика одного говорящего). Голоса ролям даёт"
+            " код: у героя один голос на всё выступление. У сказки cast обязателен (героев нет — [])."
+            )
 
 
 def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
@@ -1944,9 +1989,8 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
         ("perform", f"- perform: выступление kind ∈ {_set(kinds)}, {SEGMENTS_MIN}–{SEGMENTS_MAX} сегментов"
                     f" по ≤ {SEGMENT_MAX_CHARS} символов, backing ∈ {_set(backings)}; вместо speech (speech при"
                     " нём не пиши, даже с actions). Звучит и при actions: ответ по сути (сказка, стих, анекдот), не"
-                    " отчёт о действиях. voice_per_segment — голос на сегмент, у сказки обязателен (сегмент = реплика"
-                    " одного говорящего, \"\" — рассказчик); set_voice меняет голос робота насовсем — только когда об"
-                    " этом просят."),
+                    " отчёт о действиях." + _roles_line(perform) + " set_voice меняет голос робота насовсем — только"
+                    " когда об этом просят."),
         ("when", f"- when ∈ {_set(WHEN)}: after_current — после текущего (по умолчанию), now — сейчас."),
         ("edit_pending", "- edit_pending: true — правка идущего выступления: в perform.segments только новые куплеты,"
                          " они заменят ещё не начатые (с какого — решает код). Пример — «и про енота» посреди рэпа:"
