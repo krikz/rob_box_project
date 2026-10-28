@@ -278,6 +278,14 @@ music.gen_wait.track.bridge: ["Сочиняю трек — будет через
 music.gen_wait.track: ["Сочиняю трек — будет через пару минут.",
                        "Подожди немного: трек будет через пару минут.",
                        "Трек пишется, это пара минут."]
+# Правка играющего (#4029, knowledge.TOOL_PHRASES edit_music): фразу исхода строит код музыки из исхода
+# (rob_box_music.track_edit.edit_text: сделано, предел, честный отказ с предложением) - слот {message} результата.
+# edit_heard - тот же текст, когда исход слышен сам (поменялся бит выступления): во время выступления он молчит
+# (knowledge.QUIET_IN_PERFORMANCE_KEYS), вне выступления говорится.
+music.edit_said: &edit_said ["{message}"]
+music.edit_heard: *edit_said
+music.edit_fail: ["Не получилось поменять музыку — играет как было."]
+music.edit_timeout: ["Не дождался такта — не знаю, поменялась ли музыка."]
 music.not_started: *not_started
 
 # --- встреча лицом и старт (перенос v1 #3912: core/meeting.py, startup_greeting.py — тексты как есть) ----------

@@ -256,6 +256,45 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
+        'event_source': 'inproc:player_owner',
+        'name': 'edit_music',
+        'description': 'Поменять ИГРАЮЩУЮ музыку на ходу, не заказывая новую: '
+                       'быстрее/медленнее, тяжелее (металличнее), мрачнее, светлее, '
+                       'мягче, больше или меньше баса, «играй дальше в том же духе». '
+                       'Свой бит и бит выступления меняются на ближайшем такте, '
+                       'выступление не прерывается; готовую запись так не изменить — '
+                       'тул честно скажет, что может. Что сказать, вернёт тул.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'change': {   'type': 'string',
+                                                          'description': 'Что '
+                                                                         'поменять, '
+                                                                         'если человек '
+                                                                         'сказал это '
+                                                                         'не прямыми '
+                                                                         'словами',
+                                                          'enum': [   'faster',
+                                                                      'slower',
+                                                                      'heavier',
+                                                                      'darker',
+                                                                      'brighter',
+                                                                      'softer',
+                                                                      'other_timbre',
+                                                                      'more_bass',
+                                                                      'less_bass',
+                                                                      'develop']}},
+                          'required': [],
+                          'additionalProperties': False},
+        'signature': {   'params': ['change', 'turn_id', 'heard_text'],
+                         'required': [],
+                         'accepts_kwargs': False},
+        'skill': ('composer', 'dj')},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': False,
+        'idempotent': False,
+        'starts_music': False,
+        'execution_type': 'fast',
         'event_source': '',
         'name': 'estimate_tts_duration',
         'description': 'Оценить длительность TTS-озвучки для заданного текста в '

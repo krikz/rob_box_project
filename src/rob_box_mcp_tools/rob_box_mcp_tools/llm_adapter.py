@@ -62,6 +62,8 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
     "request_music": ("turn_id", "heard_text"),
     # ADR-0158 PR-3: путь (синтез / кэш / генерация / отказ) решает код по словам реплики, не по пересказу LLM.
     "generate_music": ("turn_id", "heard_text"),
+    # #4029: виды правки играющего («потяжелее», «ускорь») решает код по словам реплики, слот LLM — запасной.
+    "edit_music": ("turn_id", "heard_text"),
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]

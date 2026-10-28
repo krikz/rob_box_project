@@ -119,7 +119,7 @@ class SourceAsk:
     """Слоты просьбы о пути (ADR-0158 §2.2): ``generated`` «сгенерируй», ``vocal`` петь, ``robot_voice`` «своим
     голосом», ``fresh`` «новую», ``own`` «сочини», ``genre`` — ключ ``GEN_STYLES`` или «», ``engine`` — ключ
     ``MUSIC_ENGINES``, названный человеком («на Ренардо», «на синтезаторе», «вживую»), или «»; ``tweak`` — просьба
-    правит играющее («ускорь», «добавь баса», «развивай»: ``ENGINE_TWEAK_WORDS``), а не заказывает другое; ``live`` —
+    правит играющее («ускорь», «добавь баса», «развивай»: ``TRACK_EDITS``), а не заказывает другое; ``live`` —
     петь вживую названо словами («спой под синт», «спой вживую», #4079): вид исполнения (``song``/``rap``) или «»."""
 
     generated: bool = False
@@ -163,18 +163,12 @@ def _phrase_at(words: Sequence[str], i: int, parts: Sequence[str]) -> bool:
     return list(words[i:i + len(parts)]) == list(parts)
 
 
-def _has_phrase(words: Sequence[str], entry: str) -> bool:
-    """Запись таблицы в речи: одно слово — основа (начало слова), несколько — эти слова подряд, точно."""
-    parts = entry.split()
-    if len(parts) == 1:
-        return _has(words, parts)
-    return any(_phrase_at(words, i, parts) for i in range(len(words)))
-
-
 def ask_tweak(text: str) -> bool:
-    """Просьба правит играющее: в словах есть запись ``ENGINE_TWEAK_WORDS`` («ускорь», «добавь баса», «в том же духе»)."""
-    words = _words(text)
-    return any(_has_phrase(words, entry) for group in kn.ENGINE_TWEAK_WORDS.values() for entry in group)
+    """Просьба правит играющее («ускорь», «добавь баса», «в том же духе»): вид правки ``TRACK_EDITS`` в словах — тем же
+    чтением, что правка играющего (``track_edit.edits_in``: части реплики, отрицание, направление баса; #4029)."""
+    from .track_edit import edits_in
+
+    return bool(edits_in(text))
 
 
 def _names_engine(engine: kn.MusicEngine, word: str) -> bool:
@@ -291,7 +285,7 @@ def settle_engine(ask: SourceAsk, slot: Optional[str], playing: str = "",
       прибавляет: слот, которого слова не подтверждают («сыграй на балалайке» + ``engine=synth``), отбрасывается
       с причиной в строке, иначе молчаливое сужение пути до синтеза (кэш и генерация не рассматриваются).
     * Не названного движка заказ наследует играющий (``playing``, снимок плеера) только когда просьба **правит
-      играющее** (``SourceAsk.tweak``, ``ENGINE_TWEAK_WORDS``: «ускорь», «добавь баса», «развивай» под синтезом — движок
+      играющее** (``SourceAsk.tweak``, ``TRACK_EDITS``: «ускорь», «добавь баса», «развивай» под синтезом — движок
       тот же), не называет путь (``SourceAsk.plain``) и не называет своего предмета (``own_subject``: пьеса по
       названию или инструмент реплики). Всякая прочая просьба — «сыграй ещё», «включи музыку», «поставь Нирвану»,
       «про космос», «что-нибудь другое», громкость — идёт обычным путём: кавер и кэш остаются кандидатами, синтез

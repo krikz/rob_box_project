@@ -959,7 +959,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "edit_without_active_perform": "править нечего: выступление не идёт, убери edit_pending",
     "now_vs_uninterruptible": "when=now нельзя: занятое действие не прерывается, нужен after_current",
     kn.VIOLATION_SING_ROUTE: "путь пения уже решён кодом: live — спой сам в perform (вид из перечня, бит ставит код), "
-                             "генерацию и трек не зови; generate — позови generate_music, песню выступлением не пой",
+                             "генерацию и трек не зови; generate — позови generate_music, песню выступлением не пой; "
+                             "edit — музыка играет и её правят: позови edit_music, новый трек, сет и генерацию не "
+                             "заказывай",
 })
 
 

@@ -271,13 +271,17 @@ class PlayerOwner:
         self.publish_state()
         return {"ok": True, "track_id": last}
 
-    def update_dj(self, track_id: str, fields: Mapping[str, Any]) -> bool:
-        """Факты играющего трека сета (мелодия, план дальше) — в поле ``dj`` снимка. Трек уже сменился или сета
-        нет — ничего: снимок не получает факты чужого трека."""
+    def update_dj(self, track_id: str, fields: Mapping[str, Any], *, set_only: bool = True) -> bool:
+        """Факты играющего трека сета (мелодия, план дальше) — в поле ``dj`` снимка; ``set_only=False`` — и своего
+        трека вне сета (правка на ходу, #4029: темп и название после ``edit_music``). Трек уже сменился (или сета нет,
+        а ждут факты сета) — ничего: снимок не получает факты чужого трека. ``bpm`` фактов — и темп звучащего трека
+        (проход формы в снимке)."""
         with self._lock:
-            if (self._current or {}).get("track_id") != track_id or not self._dj.get("enabled"):
+            current = self._current or {}
+            if current.get("track_id") != track_id or (set_only and not self._dj.get("enabled")):
                 return False
             self._dj = {**self._dj, **fields}
+            current["bpm"] = fields.get("bpm", current.get("bpm"))
         self.publish_state()
         return True
 
