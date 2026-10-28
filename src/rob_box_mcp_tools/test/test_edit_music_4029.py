@@ -307,6 +307,12 @@ def _host():
         ("в комнате стало темнее", ""),
         ("мощнее поворачивай", ""),
         ("Робот, сделай басы потише", "edit:less_bass"),  # ревью PR #4116: направление баса — из слов
+        # #4172, n506 28.10 (живой лог): хвост после «ускорь» темы не называет — путь правки всё равно
+        ("ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("роботы ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("Робот, ускорь речь, а то мы засыпаем", ""),  # речь названа: скорость голоса
+        ("стоп музыка, мы засыпаем", ""),
+        ("выключай музыку", ""),
     ],
 )
 def test_host_decides_the_edit_route_under_playing_music(text, route):
@@ -352,6 +358,19 @@ def test_shifu_case_turn_form_closes_new_music_and_requires_the_edit():
     assert validate(talk, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE  # слова без правки — не исход
     edit = validate(parse({"actions": [{"tool": "edit_music", "args": {"change": "heavier"}}]}), tools, form=form)
     assert isinstance(edit, Command) and edit.actions[0].tool == "edit_music"
+
+
+def test_n506_speedup_with_a_tail_cannot_end_in_stop_music():
+    """#4172: «ускорь там потом мы тут засыпаем оба» под музыкой — форма хода требует ``edit_music``; выключение
+    музыки (живой лог: ``stop_music``) для этого хода — нарушение формы, а не исход."""
+    form, tools = _form_under_music("ускорь там потом мы тут засыпаем оба")
+    assert form.sing == "edit:faster" and "edit_music" in tools
+    stop = parse({"actions": [{"tool": "stop_music", "args": {"boundary": "bar"}}]})
+    assert validate(stop, tools, form=form).reason == dkn.VIOLATION_SING_ROUTE
+    edit = validate(parse({"actions": [{"tool": "edit_music", "args": {"change": "faster"}}]}), tools, form=form)
+    assert isinstance(edit, Command) and edit.actions[0].tool == "edit_music"
+    form, _tools = _form_under_music("выключай музыку")  # явный стоп - как раньше, без пути правки
+    assert form.sing == ""
 
 
 def test_n505_darker_turn_is_an_edit_and_n502_order_in_silence_is_untouched():

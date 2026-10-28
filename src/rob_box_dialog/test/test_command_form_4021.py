@@ -24,6 +24,9 @@ from rob_box_dialog.turn import Answer, TurnEngine, command_form, invalid_emotio
 
 ALL = [t.name for t in TOOL_CATALOG]
 ADDRESSED = Form(passed=False, voice=False)  # адресованная реплика без просьбы о голосе
+#: Форма, которую ход строит из такой реплики (``command_form``): музыку в ней не просили - подложка сказки, анекдота и
+#: стиха закрыта (#4152); ``ADDRESSED`` - форма, поданная валидатору «вручную», подложку не трогает.
+ADDRESSED_TURN = Form(passed=False, voice=False, backing=False)
 N813 = "тишина"  # текст хода n813 после вейка (22:55:19.87 STT «робот тишина»)
 N109 = "а какие звуки ты умеешь играть"  # вопрос про звуки, голос не просили
 N105_SPEECH = "Остально\ufffd\ufffd в порядке"  # 21:11:01.576
@@ -183,26 +186,27 @@ def _turn(ports, addressed, voices=None):
 def test_n813_addressed_turn_asks_the_model_without_passed_and_resets_the_form():
     ports = _FormPorts([Answer(Command(speech="Тишина так тишина."), "deepseek")])
     _turn(ports, Addressed(N813, VOICE))
-    assert ports.forms == [ADDRESSED]
+    assert ports.forms == [ADDRESSED_TURN]
     assert cm.current_form() == Form(), "после хода форма не течёт в чужие вызовы"
 
 
 def test_backlog_pickup_turn_keeps_passed_in_the_form():
     ports = _FormPorts([Answer(Command(passed="not_addressed"), "deepseek")])
     _turn(ports, Addressed("мы тут о своём", "backlog_pickup", True, ()))
-    assert ports.forms == [Form(passed=True, voice=False)] and ports.said == []
+    assert ports.forms == [Form(passed=True, voice=False, backing=False)] and ports.said == []
 
 
 def test_n109_voice_is_open_only_when_the_voice_is_asked_in_this_reply():
     asked = _FormPorts([Answer(Command(speech="Хорошо."), "deepseek")])
     _turn(asked, Addressed("скажи это голосом алёны", VOICE))
-    assert asked.forms == [Form(passed=False, voice=True)]
+    assert asked.forms == [Form(passed=False, voice=True, backing=False)]
     named = _FormPorts([Answer(Command(speech="Хорошо."), "deepseek")])
     _turn(named, Addressed("скажи как шаонв", VOICE), voices=lambda: (("female-shaonv", "шаонв"),))
-    assert named.forms == [Form(passed=False, voice=True)]
+    assert named.forms == [Form(passed=False, voice=True, backing=False)]
     plain = _FormPorts([Answer(Command(speech="Сирену, звонок."), "deepseek")])
     _turn(plain, Addressed(N109, VOICE))
-    assert plain.forms == [ADDRESSED]
+    # «играть» - слово группы music (``tools_view.music_asked``, #4152): подложка выступления у такой реплики не закрыта
+    assert plain.forms == [Form(passed=False, voice=False, backing=True)]
 
 
 JOVIALMAN = ("English_Jovialman", "Весельчак", "Джовиалмен", "Джовиалмэн")  # (id, display_name, *алиасы) реестра
@@ -222,7 +226,8 @@ def test_command_form_sees_the_display_name_and_every_alias_of_a_voice_separatel
 
     snap = Session("personality").snapshot
     registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
-    assert command_form(_Turn("t1", 0, text, VOICE, deadline=None), snap, registry) == Form(passed=False, voice=True)
+    assert command_form(_Turn("t1", 0, text, VOICE, deadline=None), snap, registry) == Form(
+        passed=False, voice=True, backing=False)
 
 
 def test_command_form_keeps_the_voice_closed_when_no_name_of_the_registry_is_said():
@@ -230,7 +235,8 @@ def test_command_form_keeps_the_voice_closed_when_no_name_of_the_registry_is_sai
 
     snap = Session("personality").snapshot
     registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
-    assert command_form(_Turn("t1", 0, "Робот, скажи как диктор", VOICE, deadline=None), snap, registry) == ADDRESSED
+    form = command_form(_Turn("t1", 0, "Робот, скажи как диктор", VOICE, deadline=None), snap, registry)
+    assert form == ADDRESSED_TURN
 
 
 def test_form_of_a_turn_is_a_pure_function_of_the_turn():
