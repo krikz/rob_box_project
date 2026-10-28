@@ -166,7 +166,7 @@ def test_watchdog_ends_a_speechless_performance_with_a_code_phrase_and_stops_the
     assert sim.block.ended and sim.block.end_reason == "stalled"
     end_t = next(t for t, e in sim.effects if getattr(e, "kind", "") == "block_end")
     assert end_t - lead_in_end == pytest.approx(kn.PERFORM_SILENCE_MAX_S, abs=0.2)
-    assert sim.music_stops() == [MusicStop("now", "stalled")]
+    assert sim.music_stops() == [MusicStop("now", "stalled", "trk1")]  # снимается свой бит, по id (#4085)
     (end,) = sim.events("block_end")
     assert (end.reason, end.segment_no, end.spoken_chars) == ("stalled", 0, 0)
     sim.run(30)
