@@ -184,6 +184,18 @@ speak_aloud.rejected.operator_hold: ["Не озвучил: оператор за
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
 
+# --- пульт робота из чата Telegram (#4040, knowledge.CHAT_OUTLETS): что робот сделал — фраза кода в чат --------------
+remote.perform.song: ["Пою на роботе: «{line}»"]
+remote.perform.rap: ["Читаю рэп на роботе: «{line}»"]
+remote.perform.tale: ["Рассказываю на роботе: «{line}»"]
+remote.perform.poem: ["Читаю стихи на роботе: «{line}»"]
+remote.perform.edit: ["Добавил к выступлению робота: «{line}»"]
+remote.perform.backing: ["Добавил бит к выступлению робота."]
+remote.show: ["Показываю на роботе: {face}."]
+remote.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+# отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
+perform.rejected.operator_hold: *remote_held
+
 perform.backing_started: ["Поехали!"]
 perform.finished: *done
 perform.no_backing: ["Бит не завёлся — читаю без него."]
