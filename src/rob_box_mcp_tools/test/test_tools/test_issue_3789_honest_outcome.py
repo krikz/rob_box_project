@@ -243,3 +243,116 @@ def test_navigate_tool_says_arrived_on_succeeded(nav):
     client, _ = _client_with(ao.GOAL_STATUS_SUCCEEDED)
     res = _coords_tool(nav, client).execute(1.0, 2.0)
     assert res.success is True and res.message.startswith("Приехал")
+
+
+# ---------------------------------------------------------------- stop_navigation (хвост #3789)
+
+
+def _cancel_resp(code, canceling=()):
+    return types.SimpleNamespace(return_code=code, goals_canceling=list(canceling))
+
+
+@pytest.mark.unit
+def test_cancel_confirmed_only_when_server_is_canceling_goals():
+    out = ao.classify_cancel_response(_cancel_resp(ao.CANCEL_ERROR_NONE, [object()]))
+    assert (out.success, out.kind, out.message) == (True, ao.CANCEL_CONFIRMED, "Останавливаюсь")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "code",
+    [ao.CANCEL_ERROR_NONE, ao.CANCEL_ERROR_UNKNOWN_GOAL_ID, ao.CANCEL_ERROR_GOAL_TERMINATING],
+)
+def test_cancel_with_no_goal_to_cancel_is_honest_idle_success(code):
+    out = ao.classify_cancel_response(_cancel_resp(code))
+    assert (out.success, out.kind) == (True, ao.CANCEL_NO_ACTIVE_GOAL)
+    assert "и так стою" in out.message
+    assert out.message != "Останавливаюсь"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("code", [ao.CANCEL_ERROR_REJECTED, 42, None])
+def test_cancel_rejected_or_unknown_code_is_failure(code):
+    out = ao.classify_cancel_response(_cancel_resp(code, [object()]))
+    assert (out.success, out.kind) == (False, ao.CANCEL_REFUSED)
+    assert out.error and "Останавливаюсь" not in out.message
+
+
+class _RaisingFuture(_Future):
+    def result(self):
+        raise RuntimeError("сервер упал")
+
+
+class _CancelClient:
+    def __init__(self, ready=True, future=None):
+        self.ready = ready
+        self.future = future
+        self.calls = 0
+
+    def wait_for_service(self, timeout_sec=0.0):
+        return self.ready
+
+    def call_async(self, request):
+        self.calls += 1
+        return self.future
+
+
+def _stop(nav, client):
+    nav._CANCEL_ALL_TIMEOUT_SEC = 0.05
+    tool = nav.StopNavigationTool.__new__(nav.StopNavigationTool)
+    tool.node = MagicMock()
+    tool.cancel_client = client
+    return tool.execute()
+
+
+@pytest.mark.unit
+def test_stop_navigation_confirmed_by_server_reply(nav):
+    client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_NONE, [object()])))
+    res = _stop(nav, client)
+    assert res.success is True and res.message == "Останавливаюсь"
+    assert res.data == {"outcome": ao.CANCEL_CONFIRMED} and client.calls == 1
+
+
+@pytest.mark.unit
+def test_stop_navigation_without_active_goal_says_so(nav):
+    client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_UNKNOWN_GOAL_ID)))
+    res = _stop(nav, client)
+    assert res.success is True and "и так стою" in res.message
+    assert res.data == {"outcome": ao.CANCEL_NO_ACTIVE_GOAL}
+
+
+@pytest.mark.unit
+def test_stop_navigation_server_rejected_cancel_is_failure(nav):
+    client = _CancelClient(future=_Future(_cancel_resp(ao.CANCEL_ERROR_REJECTED)))
+    res = _stop(nav, client)
+    assert res.success is False and res.data == {"outcome": ao.CANCEL_REFUSED}
+    assert "Останавливаюсь" not in res.message
+
+
+@pytest.mark.unit
+def test_stop_navigation_service_missing_is_failure_without_call(nav):
+    client = _CancelClient(ready=False)
+    res = _stop(nav, client)
+    assert res.success is False and res.data == {"outcome": ao.SVC_UNAVAILABLE}
+    assert client.calls == 0 and "Останавливаюсь" not in res.message
+
+
+@pytest.mark.unit
+def test_stop_navigation_no_reply_in_time_is_failure(nav):
+    client = _CancelClient(future=_Future(None, done=False))
+    res = _stop(nav, client)
+    assert res.success is False and res.data == {"outcome": ao.SVC_TIMEOUT}
+    assert "Останавливаюсь" not in res.message
+
+
+@pytest.mark.unit
+def test_stop_navigation_empty_reply_is_failure(nav):
+    res = _stop(nav, _CancelClient(future=_Future(None)))
+    assert res.success is False and res.data == {"outcome": ao.SVC_NO_RESPONSE}
+
+
+@pytest.mark.unit
+def test_stop_navigation_future_exception_is_failure(nav):
+    res = _stop(nav, _CancelClient(future=_RaisingFuture(None)))
+    assert res.success is False and res.data == {"outcome": ao.SVC_NO_RESPONSE}
+    assert "сервер упал" in res.error

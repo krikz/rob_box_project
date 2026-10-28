@@ -39,6 +39,17 @@ SVC_UNAVAILABLE = "unavailable"
 SVC_TIMEOUT = "timeout"
 SVC_NO_RESPONSE = "no_response"
 
+# action_msgs/srv/CancelGoal: коды ответа (часть опубликованного интерфейса ROS 2).
+CANCEL_ERROR_NONE = 0
+CANCEL_ERROR_REJECTED = 1
+CANCEL_ERROR_UNKNOWN_GOAL_ID = 2
+CANCEL_ERROR_GOAL_TERMINATING = 3
+
+# Виды исхода отмены цели (дополняют SVC_* — те же значения для сбоя вызова).
+CANCEL_CONFIRMED = "cancel_confirmed"
+CANCEL_NO_ACTIVE_GOAL = "no_active_goal"
+CANCEL_REFUSED = "cancel_refused"
+
 
 @dataclass(frozen=True)
 class Outcome:
@@ -112,3 +123,29 @@ def classify_service_call(
         reason = getattr(response, "message", "") or "без причины"
         return Outcome(SVC_ERROR, False, f"{label}: сервис вернул отказ ({reason})")
     return Outcome(SVC_OK, True)
+
+
+def classify_cancel_response(response: Any) -> Outcome:
+    """Ответ ``CancelGoal`` (отмена всех целей) → исход; успех только по ответу сервера.
+
+    * ``ERROR_NONE`` и есть отменяемые цели — отмена принята сервером;
+    * ``ERROR_NONE`` без целей, ``UNKNOWN_GOAL_ID``, ``GOAL_TERMINATING`` — отменять
+      было нечего (цель уже завершилась или её не было): это успех, но другой —
+      фраза «и так стою», а не «останавливаюсь»;
+    * ``REJECTED`` и любой незнакомый код — сервер не принял отмену, это неуспех.
+
+    Сбой самого вызова (нет сервиса, таймаут, пустой ответ) разбирает
+    ``classify_service_call`` до этой функции.
+    """
+    code = getattr(response, "return_code", None)
+    canceling = getattr(response, "goals_canceling", None)
+    if code == CANCEL_ERROR_NONE and canceling:
+        return Outcome(CANCEL_CONFIRMED, True, None, "Останавливаюсь")
+    if code in (CANCEL_ERROR_NONE, CANCEL_ERROR_UNKNOWN_GOAL_ID, CANCEL_ERROR_GOAL_TERMINATING):
+        return Outcome(CANCEL_NO_ACTIVE_GOAL, True, None, "Я и так стою: активной цели нет")
+    return Outcome(
+        CANCEL_REFUSED,
+        False,
+        f"Nav2 не принял отмену цели (код {code!r})",
+        "Не уверен, что остановился: навигация не подтвердила отмену",
+    )
