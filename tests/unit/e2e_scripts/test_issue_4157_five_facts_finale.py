@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """#4157 (просьба Шифу 28.10): шаг ``n1010_five_facts`` в финале марафона -- «назови пять фактов обо мне».
 
-Шаг проверяет механизм, а не полноту (решение Шифу): память вызвана и вернула хит, в речи не меньше двух фактов Саши
-из n203, общей заглушки каталога нет. Судит тот же код, что у живого харнесса: ``e2e_tool_match.step_verdict``
+Шаг проверяет механизм, а не полноту (решение Шифу): в речи оба факта Саши из n203, общей заглушки каталога нет.
+Вызов ``memory_search`` с хитом снят в #4176 (память могла прийти из снимка ``<speaker_memory>``): см.
+``test_issue_4176_harness_marathon2.py``. Судит тот же код, что у живого харнесса: ``e2e_tool_match.step_verdict``
 (acceptance) и ``patterns_missing`` (patterns). Строки лога -- формат строк робота; источник строки памяти
 (f-строка ``MemorySearchTool.execute``) держит тест ниже.
 
@@ -92,8 +93,8 @@ def test_n1010_sits_between_memory_after_reset_and_goodnight_with_sashas_voice()
 def test_n1010_checks_the_mechanism_not_the_count_of_facts():
     step = _step()
     acc = step["acceptance"]
-    assert acc["expected_tool_calls"] == ["memory_search"]
-    assert step["patterns"] == [gen.MEMORY_SEARCH_HITS]
+    assert acc["expected_tool_calls"] == [], "#4176: вызов memory_search не требуется, факты в речи -- и есть память"
+    assert step["patterns"] == []
     assert acc["expected_keywords"] == gen.SASHA_FACTS and len(gen.SASHA_FACTS) == 2
     assert (
         "#4157" in acc["_comment"]
@@ -210,15 +211,17 @@ def test_turn_closed_by_code_is_red_even_with_the_facts_said():
     assert not got["pass"] and got["acc"]["forbidden_calls"] == [gen.TURN_FALLBACK]
 
 
-def test_memory_not_called_is_red():
-    """Факты без вызова памяти -- из окна (ответы n1008/n1009 уже держат лук и чай): механизм не доказан."""
+def test_memory_not_called_is_green_when_both_facts_are_said():
+    """#4176 (марафон-2 28.10): память пришла из снимка ``<speaker_memory>`` без вызова тула -- механизм сработал.
+    Цена: факты могли прийти и из окна (n1008/n1009), по логу шага их не отличить."""
     got = _verdict(_log(FACTS_SAID, called=False, hits=""))
-    assert not got["pass"] and got["acc"]["missing_expected_calls"] == ["memory_search"]
+    assert got["pass"], got
 
 
-def test_memory_called_but_empty_is_red():
-    got = _verdict(_log(FACTS_SAID, hits=NO_HITS))
-    assert not got["pass"] and got["missing"] == [gen.MEMORY_SEARCH_HITS]
+def test_memory_called_but_empty_with_both_facts_said_is_green_and_without_them_red():
+    assert _verdict(_log(FACTS_SAID, hits=NO_HITS))["pass"]
+    got = _verdict(_log("Я многое о тебе помню, Саша.", hits=NO_HITS))
+    assert not got["pass"] and got["acc"]["missing_keywords"] == gen.SASHA_FACTS
 
 
 def test_silence_is_red():

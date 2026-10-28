@@ -689,14 +689,6 @@
       "how": "play",
       "run": "40475565313"
     },
-    "n707_gen_track_info": {
-      "voice": "anton",
-      "chars": 64,
-      "text_sha1": "0efab8fed9a9",
-      "eq_s": 9.27,
-      "how": "play",
-      "run": "40482613938"
-    },
     "n708_gen_play": {
       "voice": "anton",
       "chars": 43,
