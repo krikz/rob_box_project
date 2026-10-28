@@ -169,7 +169,8 @@ def test_estimate_does_not_underrate_any_played_phrase_of_the_27_10_run():
     store = pb.load_store(gen.PHRASE_STORE_PATH)
     long_ones = [(k, v) for k, v in store.items() if v["chars"] >= 55]
     # #3971: замер n809 снят -- реплика сменилась («на синтезаторе»), замер был чужой
-    assert len(long_ones) >= 60
+    # Шифу 28.10: замер n210 снят -- фразу обернули вейком («Робот, … , робот.»), текст другой; новый даст --learn
+    assert len(long_ones) >= 59
     for label, entry in long_ones:
         assert entry["eq_s"] <= entry["chars"] * pb.sec_per_char(entry["voice"]), label
 
