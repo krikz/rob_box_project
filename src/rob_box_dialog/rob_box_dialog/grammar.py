@@ -27,9 +27,9 @@ from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, 
                                   speech_manner, stop_command, strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
-#: ``(voice_id, имена)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` — у вызывающего):
-#: имена — слова через пробел, русское ``display_name`` и кириллические алиасы голоса (``VOICE_ALIASES``).
-Voices = Sequence[Tuple[str, str]]
+#: ``(voice_id, display_name, *алиасы)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` -
+#: у вызывающего): русское название и каждый кириллический алиас голоса (``VOICE_ALIASES``) - отдельными элементами.
+Voices = Sequence[Tuple[str, ...]]
 #: Шаг голоса: ``(тул, действие)`` — ключ ``knowledge.VOICE_STEP.requests``.
 Step = Tuple[str, str]
 #: Служебные слова шага голоса: общие грамматики, ведущие перед стопом («ладно», «всё») и свои (ё → е, как слова).
@@ -282,11 +282,24 @@ def _volume_word(word: str) -> bool:
                 or any(_starts(word, stems) for stems in kn.VOLUME_CHANNEL_STEMS.values()))
 
 
-def _voice_tokens(voice_id: str, display: str) -> List[str]:
-    """Слова-имена голоса: имена из реестра (``display``: русское название и кириллические алиасы, #4114) и хвост id по
-    границам регистра («English_WiseScholar» → «wise», «scholar»)."""
+def _voice_tokens(voice_id: str, names: Sequence[str]) -> List[str]:
+    """Слова-имена голоса: слова ``names`` (русское название, при втором круге - и алиасы) и хвост id по границам
+    регистра («English_WiseScholar» → «wise», «scholar»)."""
     split = re.sub(r"([a-z])([A-Z])", r"\1 \2", voice_id.split("_", 1)[-1])
-    return _words(f"{display} {split}")
+    return _words(f"{' '.join(names)} {split}")
+
+
+def _voice_hits(names: Sequence[str], voices: Voices, aliased: bool) -> List[str]:
+    """id голосов реестра, у которых для КАЖДОГО слова фразы есть слово-имя с теми же первыми ``VOICE_STEM_LEN``
+    буквами. ``aliased=False`` - имена голоса, как их знал Tier-1 до алиасов (русское название и хвост id); ``True`` -
+    плюс кириллические алиасы (``VOICE_ALIASES``)."""
+    n = kn.VOICE_STEM_LEN
+    hits = []
+    for vid, display, *aliases in voices:
+        tokens = _voice_tokens(vid, (display, *aliases) if aliased else (display,))
+        if all(any(len(w) >= n and t[:n] == w[:n] for t in tokens) for w in names):
+            hits.append(vid)
+    return hits
 
 
 def _is_default_voice(names: Sequence[str]) -> bool:
@@ -297,7 +310,12 @@ def _is_default_voice(names: Sequence[str]) -> bool:
 
 def _voice(text: str, _snapshot: SessionSnapshot, voices: Voices) -> Optional[Tier1Command]:
     """«включи голос надёжного мужика» → ``set_voice{voice}``: каждое слово вне служебных совпадает (первые
-    ``VOICE_STEM_LEN`` букв) со словом ОДНОГО голоса реестра; не нашлось или двое — не Tier-1 (решает LLM)."""
+    ``VOICE_STEM_LEN`` букв) со словом ОДНОГО голоса реестра; не нашлось или двое — не Tier-1 (решает LLM).
+
+    Круги (#4114): сначала имена голоса как до алиасов (русское название и хвост id) - нашёлся хоть один голос,
+    решает этот круг, даже если голосов несколько (двое - не Tier-1); алиасы (``VOICE_ALIASES``: «джовиалмен»)
+    читаются, только когда без них не нашёлся никто. Так слово алиаса не уводит от голоса, к которому слово вело
+    раньше: «гёрл» (``Whispering_girl``) и «героиня» (``Russian_BrightHeroine``) делят три первые буквы."""
     words = _words(text)
     if not any(w.startswith(kn.VOICE_NOUN_STEM) for w in words):
         return None
@@ -306,9 +324,7 @@ def _voice(text: str, _snapshot: SessionSnapshot, voices: Voices) -> Optional[Ti
         return None
     if _is_default_voice(names):
         return Tier1Command("set_voice", MappingProxyType({"voice": kn.VOICE_DEFAULT_ARG}))
-    n = kn.VOICE_STEM_LEN
-    hits = [vid for vid, display in voices
-            if all(any(len(w) >= n and t[:n] == w[:n] for t in _voice_tokens(vid, display)) for w in names)]
+    hits = _voice_hits(names, voices, aliased=False) or _voice_hits(names, voices, aliased=True)
     return Tier1Command("set_voice", MappingProxyType({"voice": hits[0]})) if len(hits) == 1 else None
 
 
