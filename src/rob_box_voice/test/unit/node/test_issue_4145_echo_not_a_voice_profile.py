@@ -151,22 +151,27 @@ def _verdict(node, utterance_id: str, echo: bool) -> None:
     _drain(node)
 
 
-def test_echo_of_robot_speech_creates_no_profile_and_no_result(node):
-    """Сцена лога: незнакомый «голос» 4.98 с во время речи робота. До вердикта — ни профиля, ни результата; вердикт
-    «эхо» — профиля нет и не будет, результат не публикуется (это не человек)."""
+def test_echo_of_robot_speech_creates_no_profile(node):
+    """Сцена лога: незнакомый «голос» 4.98 с во время речи робота. Опознание («не узнан») уходит сразу — профилей оно
+    не меняет; профиля нет ни до вердикта, ни после вердикта «эхо», второго результата (``enroll``) нет.
+    """
     _robot_speaks(node)
     uid = _hear(node, _embedding(76), voiced_sec=4.98, seed=1)
-    assert node._db.list_speakers() == [] and node._result_pub.messages == []
+    assert node._db.list_speakers() == []
+    assert [(m["utterance_id"], m["is_known"]) for m in node._result_pub.messages] == [
+        (uid, False)
+    ]
     _verdict(node, uid, echo=True)
     node._echo_verdicts.expire()
     assert node._db.list_speakers() == []
     assert node._db.unnamed.count() == 0
-    assert node._result_pub.messages == []
+    assert len(node._result_pub.messages) == 1
     lines = [c.args[0] for c in node.test_log.info.call_args_list]
     assert any(
         f"utterance_id={uid} — эхо речи робота, профиль не завожу и не обновляю" in line
         for line in lines
     )
+    assert not any("🆕 [issue #3858]" in line for line in lines)
 
 
 def test_echo_with_a_full_table_evicts_nobody(node):
@@ -193,18 +198,64 @@ def test_echo_does_not_grow_an_open_gallery(node):
 
 
 def test_human_phrase_near_robot_speech_gets_its_profile_after_the_verdict(node):
-    """Человек перебил робота: фраза ушла в диалог (вердикт «человек») — профиль без имени и результат, как раньше."""
+    """Новый голос перебил робота: опознание («не узнан») — сразу, до ``Utterance``; фраза ушла в диалог (вердикт
+    «человек») — профиль без имени и его результат ``enroll``, как раньше."""
     _robot_speaks(node)
     uid = _hear(node, _embedding(42), voiced_sec=4.5, seed=4)
-    assert node._result_pub.messages == []
+    assert node._db.list_speakers() == []
+    (identified,) = node._result_pub.messages
+    assert identified["utterance_id"] == uid and identified["is_known"] is False
     _verdict(node, uid, echo=False)
     (profile,) = node._db.list_speakers()
-    (result,) = node._result_pub.messages
+    _identified, enrolled = node._result_pub.messages
     assert (
-        result["source"] == "enroll"
-        and result["speaker_id"] == profile["id"]
-        and result["utterance_id"] == uid
+        enrolled["source"] == "enroll"
+        and enrolled["speaker_id"] == profile["id"]
+        and enrolled["utterance_id"] == uid
     )
+
+
+def test_barge_in_result_reaches_the_dialog_before_its_utterance(node):
+    """Ревью #4161 (блокирующее): Саша перебивает робота «Робот, что скажешь». Диалог считает автора фразы
+    (``person_ref``) и собеседника хода в момент её ``Utterance`` — значит ``SpeakerResult`` фразы обязан прийти
+    раньше. Шина записывает порядок: опознание Саши уходит, когда считан эмбеддинг, а ``Utterance`` (вердикт
+    ``stt_node``) приходит позже; профили (рост галереи) меняются только после вердикта.
+    """
+    sasha = _embedding(7)
+    node._db.register("Саша", sasha, duration_sec=5.0)
+    order = []
+    node._result_pub.publish = lambda msg: order.append(
+        ("speaker", speaker_result_to_payload(msg))
+    )
+    node._apply_growth_session = MagicMock(
+        side_effect=lambda *_a: order.append(("growth", None))
+    )
+    _robot_speaks(node)
+    uid = _hear(node, sasha, voiced_sec=2.6, seed=7)
+    order.append(("utterance", uid))  # stt_node распознал фразу и отдал её диалогу
+    _verdict(node, uid, echo=False)
+    assert [kind for kind, _ in order] == ["speaker", "utterance", "growth"]
+    result = order[0][1]
+    assert (
+        result["utterance_id"] == uid
+        and result["name"] == "Саша"
+        and result["is_known"] is True
+    )
+
+
+def test_no_verdict_in_time_creates_no_profile_and_no_late_result(node):
+    """STT не дал фразе рядом с речью ни ``Utterance``, ни эха (пустой текст): за срок вердикта профиль не заводится,
+    и позднего ``enroll`` в случайный момент нет — опознание ушло сразу (ревью #4161).
+    """
+    _robot_speaks(node)
+    uid = _hear(node, _embedding(44), voiced_sec=4.5, seed=6)
+    node.test_clock.t += echo_window.VERDICT_TIMEOUT_S + 1.0
+    node._echo_verdicts.expire()
+    _drain(node)
+    assert node._db.list_speakers() == []
+    assert [(m["utterance_id"], m["is_known"]) for m in node._result_pub.messages] == [
+        (uid, False)
+    ]
 
 
 def test_phrase_in_silence_gets_its_profile_at_once_as_before(node):

@@ -757,7 +757,8 @@ class STTNode(Node):
         admission = self._echo.admit(duration) if source == _SRC_RESPEAKER else echo_window.OPEN
         if admission.note:
             self.get_logger().info(admission.note)
-        if admission.dropped:
+        if admission.dropped:  # речь робота (software-AEC): не человек и для биометрии — эхо (#4145)
+            self._echo.publish_echo(compute_utterance_id(audio_bytes), "")
             return
         self._admission = admission  # промежуточные результаты STT идут в диалог только через него (_offer_interrupt)
 
@@ -846,9 +847,8 @@ class STTNode(Node):
 
         # Эхо собственной речи робота (core/echo_window.py): голос звучал только в эхо-окне (#4072), короткий обрывок
         # при речи (ревью #4122) или слова фразы повторяют звучавшую рядом реплику робота (#4145). Ясный стоп с вейком
-        # идёт всегда; эхо — молча, без «не
-        # расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в /voice/stt/echo: биометрия не заводит и
-        # не растит из него профиль.
+        # идёт всегда; эхо — молча, без «не расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в
+        # /voice/stt/echo: биометрия не заводит и не растит из него профиль.
         echo = admission.echo(text, self.wake_words, duration)
         if echo is not None:
             self.get_logger().info(echo.note)

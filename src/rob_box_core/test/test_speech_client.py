@@ -161,6 +161,20 @@ def test_watch_speaking_subscribes_to_speech_event_and_reports_only_edges():
     assert not watch.speaking
 
 
+def test_watch_speaking_with_own_watch_feeds_it_every_event_and_reports_its_edges():
+    """#4145: журнал речи эхо-окна помнит ``speech_id`` реплик — свой наблюдатель (``watch``) получает каждое событие
+    той же подпиской, фронт — его ответ; вторую подписку на SpeechEvent никто не пишет."""
+    subs, edges, seen = {}, [], []
+    node = types.SimpleNamespace(create_subscription=lambda t, topic, cb, depth: subs.setdefault(topic, (t, cb)))
+    inner = speech_client.SpeakingWatch(speech_client.ANY_AGENT)
+    journal = types.SimpleNamespace(on_event=lambda event: seen.append(event.speech_id) or inner.on_event(event))
+    assert speech_client.watch_speaking(node, edges.append, watch=journal) is journal
+    _msg_type, callback = subs[speech_client.SPEECH_EVENT_TOPIC]
+    for kind, sid in [(0, "a"), (2, "a"), (4, "a")]:
+        callback(M.SpeechEvent(kind=kind, speech_id=sid, agent="telegram"))
+    assert seen == ["a", "a", "a"] and edges == [True, False]
+
+
 def test_speaking_watch_of_one_agent_ignores_others_and_unknown_agent_is_refused():
     watch = speech_client.SpeakingWatch("personality")
     assert watch.on_event(types.SimpleNamespace(kind=2, speech_id="x", agent="operator")) is None

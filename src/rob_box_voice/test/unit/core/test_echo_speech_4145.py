@@ -166,6 +166,75 @@ def test_two_robot_words_are_not_enough_for_echo(window, clock):
     assert admission.echo("друзья, слышали?", WAKE, 5.38) is None
 
 
+#: Реплика робота со служебными словами «а ты что» (зонд ревью #4161, ``probe_fp.py``).
+ASKING = (
+    "А ты что думаешь? Я вот считаю, что наше ПТУ лучшее в городе, приходите учиться"
+)
+
+
+def _long_speech(
+    window: ew.EchoWindow, clock: Clock, text: str, sid: str = "s-ask"
+) -> ew.Admission:
+    """Длинная реплика ``text`` звучит, голос в микрофоне с 1,0 до 2,4 с, фраза 1,6 с доехала, робот ещё говорит."""
+    clock.at(-0.2)
+    window.journal.on_request(_request(text, sid=sid))
+    _robot(
+        window, clock, [(0.0, "started", sid), (1.0, "vad", True), (2.4, "vad", False)]
+    )
+    clock.at(2.5)
+    return window.admit(duration_s=1.6)
+
+
+def test_wake_the_robot_did_not_say_is_a_human_not_echo(window, clock):
+    """Ревью #4161: «робот а ты что» во время длинной речи совпадала с ней служебными словами 3 из 4 и терялась эхом.
+    Вейк, которого в реплике робота нет, — голос человека: фраза идёт как раньше (бэклог/перебивание).
+    """
+    admission = _long_speech(window, clock, ASKING)
+    assert admission.spoken == (ew.Spoken("s-ask", ASKING),)
+    assert words_in_order("робот а ты что", ASKING) == 3
+    assert admission.echo("робот а ты что", WAKE, 1.6) is None
+    assert (
+        admission.echo("а ты что думаешь", WAKE, 1.6) is not None
+    )  # без вейка — эхо, как и было
+
+
+def test_wake_the_robot_said_itself_is_still_compared(window, clock):
+    """Робот сам сказал «робот» («Я робот Роббокс…»): эхо этих слов с вейком — всё равно эхо."""
+    said = "Я робот Роббокс, а ты что скажешь про наше ПТУ"
+    admission = _long_speech(window, clock, said, sid="s-self")
+    assert admission.echo("я робот роббокс а ты что скажешь", WAKE, 1.6) is not None
+
+
+def test_answer_with_the_options_of_the_question_that_went_into_silence_is_a_human(
+    window, clock
+):
+    """Ревью #4161 (``probe_fp.py``): «Рассказать сказку про колобка или про репку?» — ответ «сказку про репку» начался
+    в эхо-окне и ушёл в тишину. Эхо собственного голоса за эхо-окном не звучит: в фразе человек, слова не сверяются.
+    Голос с 4,5 по 6,7 с, фраза доехала через 3 с тишины: PCM 5,2 с — журнал речи вопрос робота видит.
+    """
+    question = "Рассказать сказку про колобка или про репку?"
+    _robot(
+        window,
+        clock,
+        [
+            (-0.2, "request", question),
+            (0.0, "started", SPEECH_ID),
+            (3.0, "finished", SPEECH_ID),
+            (4.5, "vad", True),
+            (GRACE_S + 3.0 + 1.2, "vad", False),
+        ],
+    )
+    clock.at(GRACE_S + 3.0 + 1.2 + 3.0)
+    assert window.journal.sounded(5.2) == (ew.Spoken(SPEECH_ID, question),)
+    admission = window.admit(duration_s=5.2)
+    assert admission.verdict == ew.PASS and admission.spoken == ()
+    for answer in ("сказку про репку", "расскажи сказку про колобка"):
+        assert (
+            ew.echo_of(answer, (ew.Spoken(SPEECH_ID, question),)) is not None
+        )  # по словам — «эхо»
+        assert admission.echo(answer, WAKE, 5.2) is None, answer
+
+
 def test_echo_heard_during_speech_and_delivered_after_its_end_is_still_echo(
     window, clock
 ):
@@ -312,8 +381,12 @@ def test_phrase_in_silence_changes_profiles_at_once_as_before(clock):
     run.assert_called_once_with()
 
 
-def test_no_verdict_in_time_changes_profiles_as_before(verdicts, clock):
-    """Текста нет (STT пуст) или фраза отброшена до распознавания: вердикта нет за VERDICT_TIMEOUT_S — как раньше."""
+def test_no_verdict_in_time_changes_no_profile_and_publishes_nothing_late(
+    verdicts, clock
+):
+    """Ревью #4161: текста нет (STT пуст или короткий) — вердикта нет за VERDICT_TIMEOUT_S. Фраза рядом с речью робота
+    не стала репликой человека: профили не меняются и позднего результата ``enroll`` в случайный момент нет.
+    """
     run = MagicMock()
     verdicts.hold.heard("u-mute", 5.0)
     verdicts.hold.settle("u-mute", run)
@@ -322,7 +395,58 @@ def test_no_verdict_in_time_changes_profiles_as_before(verdicts, clock):
     assert verdicts.submitted == []
     clock.t += 2.0
     verdicts.hold.expire()
-    assert verdicts.submitted == [run]
+    run.assert_not_called()
+    assert verdicts.submitted == []
+    line = verdicts.log.info.call_args.args[0]
+    assert (
+        "вердикта по utterance_id=u-mute нет за 20с" in line
+        and "профиль не завожу и не обновляю" in line
+    )
+
+
+def test_embedding_after_the_deadline_finds_the_timed_out_phrase(verdicts, clock):
+    """Холодный энкодер (#2885) досчитал эмбеддинг позже срока, вердикта так и не было: профили не меняются, как и у
+    фразы, досчитанной вовремя (запись срока помнится до вытеснения)."""
+    run = MagicMock()
+    verdicts.hold.heard("u-cold", 5.0)
+    clock.t += ew.VERDICT_TIMEOUT_S + 1.0
+    verdicts.hold.expire()
+    assert verdicts.hold.waits("u-cold")
+    verdicts.hold.settle("u-cold", run)
+    run.assert_not_called()
+    assert not verdicts.hold.waits("u-cold")
+
+
+def test_human_verdict_after_the_deadline_changes_nothing_and_says_so(verdicts, clock):
+    """STT распознал фразу позже срока: профиль по ней уже не менялся — строка в лог, изменения не исполняются."""
+    run = MagicMock()
+    verdicts.hold.heard("u-slow", 5.0)
+    verdicts.hold.settle("u-slow", run)
+    clock.t += ew.VERDICT_TIMEOUT_S + 1.0
+    verdicts.hold.expire()
+    verdicts.hold.on_verdict("u-slow", False)
+    run.assert_not_called()
+    assert "пришёл после срока" in verdicts.log.info.call_args.args[0]
+    verdicts.log.warning.assert_not_called()
+
+
+def test_phrase_without_embedding_is_forgotten(verdicts):
+    """Эмбеддинга нет (``embed_audio`` вернул None) — менять в профилях нечего: ожидание снимается сразу, не висит до
+    вытеснения (ревью #4161)."""
+    verdicts.hold.heard("u-noemb", 5.0)
+    assert verdicts.hold.waits("u-noemb")
+    verdicts.hold.forget("u-noemb")
+    assert not verdicts.hold.waits("u-noemb")
+
+
+def test_held_phrases_are_bounded(verdicts):
+    """Сколько бы фраз ни ждало вердикта, биометрия помнит не больше VERDICTS_KEPT — старейшие забываются."""
+    for i in range(ew.VERDICTS_KEPT + 5):
+        verdicts.hold.heard(f"u-{i}", 5.0)
+    assert not verdicts.hold.waits("u-0") and verdicts.hold.waits(
+        f"u-{ew.VERDICTS_KEPT + 4}"
+    )
+    assert len(verdicts.hold._held) == ew.VERDICTS_KEPT
 
 
 def test_echo_verdict_for_a_phrase_biometry_did_not_hold_is_loud(clock):

@@ -14,7 +14,7 @@ from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS,
 )
 from rob_box_dialog.speaker_adapter import VoiceTag, voice_tag
-from rob_box_dialog.turn import recent_section
+from rob_box_dialog.turn import background_section, recent_section
 
 
 def _h(text, t, doa=None, person="", voice_s=0.0, faces=("f1",)):
@@ -238,3 +238,16 @@ def test_author_of_a_backlog_phrase_reaches_the_wake_turn_snapshot_4145():
     assert recent["text"] == "включи что нибудь весёлое"
     assert recent["speaker_id"] == "spk-76b59285" and recent["same_as_caller"] is True
     assert recent["who"] == "незнакомый голос"  # имени нет — вслух не называем, но автор известен по id
+
+
+def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
+    """Ревью #4161: в `background_since_reply` снимка хода с вейком у двух безымянных голосов `who` один и тот же
+    («незнакомый голос») — различает их `speaker_id` профиля, у каждой фразы."""
+    backlog = Backlog()
+    for i, (uid, sid) in enumerate((("u-1", "spk-a"), ("u-2", "spk-b"))):
+        backlog.add(Heard(text=f"фраза {uid}", t=90.0 + i, voice_s=3.0, utterance_id=uid))
+        backlog.note_voice(uid, voice_tag({"is_known": True, "speaker_id": sid, "epithet": "Гость", "confidence": 0.8}))
+    wake = Heard(text="Робот, кто тут говорил", t=100.0, voice_s=3.0)
+    section = background_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
+    assert [(p["who"], p["speaker_id"]) for p in section] == [("незнакомый голос", "spk-a"),
+                                                              ("незнакомый голос", "spk-b")]

@@ -26,10 +26,13 @@
 речи, чтобы человек мог перебить, а голос робота, который ReSpeaker не вычел, STT распознал его же словами
 («дорогие друзья слушайте и не говорите что не слышали»). Фраза легла в бэклог как реплика человека, биометрия завела
 из неё профиль «Наблюдатель». Теперь журнал речи (:class:`SpeechJournal`: текст реплики — из ``SpeechRequest`` по
-``speech_id``, когда звучала — из ``SpeechEvent``) даёт фразе, звучавшей рядом с речью, реплики робота; после
-распознавания :meth:`Admission.echo` сверяет с ними её слова (:func:`echo_of`) — эхо не идёт ни в бэклог, ни к
-модели. Решение одно, его слушает и биометрия: эхо уходит в :data:`ECHO_TOPIC`, ``speaker_id_node`` по фразе рядом с
-речью ждёт вердикта (:class:`EchoVerdicts`) и по эху профиль не заводит и не растит.
+``speech_id``, когда звучала — из ``SpeechEvent``) даёт фразе, чей голос звучал только рядом с речью (во время неё
+или в эхо-окне), реплики робота; после распознавания :meth:`Admission.echo` сверяет с ними её слова (:func:`echo_of`)
+— эхо не идёт ни в бэклог, ни к модели. Голос, дошедший до тишины после эхо-окна, и вейк, которого робот не говорил,
+— человек: такие фразы эхом по словам не считаются. Решение одно, его слушает и биометрия: эхо уходит в
+:data:`ECHO_TOPIC`; ``speaker_id_node`` по фразе рядом с речью сразу публикует опознание (профилей оно не меняет), а
+изменения профилей исполняет только по вердикту «человек» (:class:`EchoVerdicts`) — эхо профиль не заводит и не
+растит.
 
 Длина окна — одна константа знания ``knowledge.IDENTITY_MIC_GRACE_S`` (дефолт параметра ``stt_node.tts_grace_s``).
 """
@@ -86,15 +89,19 @@ ECHO_MIN_WORDS = 3
 ECHO_WORD_SHARE = 0.6
 #: Сколько последних реплик робота помнит журнал речи.
 JOURNAL_SIZE = 32
-#: Биометрия ждёт вердикта ``stt_node`` по фразе рядом с речью робота не дольше (распознавание с повтором и запасным
-#: Vosk); не дождалась — текста нет или фраза отброшена до распознавания — профили как раньше.
+#: Изменения профилей по фразе рядом с речью робота ждут вердикта ``stt_node`` не дольше (распознавание с повтором и
+#: запасным Vosk). Не дождались — фраза не стала репликой человека (пустой или короткий текст STT, распознавание
+#: зависло): профили не меняются. Результат опознания такой фразы уходит сразу, его срок не держит.
 VERDICT_TIMEOUT_S = 20.0
 #: Окно «рядом с речью» у биометрии шире, чем у ``stt_node``: то же PCM ноды получают с разницей в миллисекунды.
 VERDICT_SLACK_S = 1.0
-#: Сколько вердиктов, пришедших раньше эмбеддинга, помнит биометрия (холодный энкодер считает до ~50 с, #2885).
+#: Сколько фраз рядом с речью помнит биометрия: вердикт мог прийти раньше эмбеддинга (холодный энкодер считает до
+#: ~50 с, #2885), а эмбеддинг — позже срока; старейшие сверх этого забываются.
 VERDICTS_KEPT = 64
 #: Как часто биометрия снимает просроченное ожидание вердикта.
 VERDICT_TICK_S = 1.0
+#: Итог фразы рядом с речью робота у биометрии: реплика человека (профили меняются как раньше), эхо, вердикта нет.
+HUMAN, ECHO, NO_VERDICT = "human", "echo", "no_verdict"
 
 VAD_TOPIC = "/audio/vad"
 #: Фраза ReSpeaker, признанная эхом речи робота (``Utterance``): её слушает биометрия (#4145).
@@ -141,14 +148,21 @@ class Echo:
     speech_id: str = ""
 
 
-def echo_of(text: str, spoken: Sequence[Spoken]) -> Optional[Echo]:
+def echo_of(
+    text: str, spoken: Sequence[Spoken], wake_words: Sequence[str] = ()
+) -> Optional[Echo]:
     """Реплика робота, чьи слова фраза в основном повторяет (#4145); ``None`` — не эхо, фраза идёт как раньше.
 
     Эхо — не меньше :data:`ECHO_MIN_WORDS` слов фразы идут в реплике по порядку и это не меньше
-    :data:`ECHO_WORD_SHARE` её слов; нормализация слов одна — :mod:`rob_box_dialog.words`.
+    :data:`ECHO_WORD_SHARE` её слов; нормализация слов одна — :mod:`rob_box_dialog.words`. Вейк во фразе, которого
+    нет в реплике робота, — голос человека, не эхо: с такой репликой фраза не сверяется (ревью #4161: «робот а ты
+    что» во время длинной речи совпадала служебными словами 3 из 4).
     """
     total = len(name_tokens(text))
+    woken = bool(wake_words) and has_wake_word(text, wake_words)
     for said in spoken:
+        if woken and not has_wake_word(said.text, wake_words):
+            continue
         same = words_in_order(text, said.text)
         if same >= ECHO_MIN_WORDS and same >= ECHO_WORD_SHARE * total:
             return Echo(
@@ -261,7 +275,8 @@ class Admission:
         * не прошла :meth:`keeps` (голос только в эхо-окне, #4072, или короткий обрывок при речи, ревью #4122) — эхо;
         * ясный стоп с вейком (:func:`stop_passes`) идёт всегда — «стоп важнее»;
         * слова фразы в основном повторяют реплику робота, звучавшую рядом с ней (:func:`echo_of`, #4145) — эхо;
-          фраза человека, не совпадающая со словами робота, идёт как раньше (бэклог, перебивание).
+          фраза человека, не совпадающая со словами робота, и фраза с вейком, которого робот не говорил, идут как
+          раньше (бэклог, перебивание).
 
         Промежуточным результатам STT хватает :meth:`keeps`: по partial с вейком диалог рвёт речь, только если это
         ясный стоп, а он проходит и здесь.
@@ -271,7 +286,7 @@ class Admission:
             return Echo(self.echo_note(text, duration_s))
         if stop_passes(text, wake_words):
             return None
-        return echo_of(text, self.spoken)
+        return echo_of(text, self.spoken, wake_words)
 
 
 def _no_echo_sink(utterance_id: str, text: str) -> None:
@@ -344,8 +359,11 @@ class EchoWindow:
         return places
 
     def admit(self, duration_s: float) -> Admission:
-        """Решение по доставленной фразе ReSpeaker (длина ``duration_s``) — до распознавания. Голос звучал рядом с
-        речью робота (не только в тишине) — к решению приложены реплики робота из журнала (#4145).
+        """Решение по доставленной фразе ReSpeaker (длина ``duration_s``) — до распознавания. Голос звучал только рядом
+        с речью робота (во время неё или в эхо-окне) — к решению приложены реплики робота из журнала (#4145). Голос
+        дошёл до тишины после эхо-окна — в фразе звучал человек (эхо собственного голоса за эхо-окном не звучит),
+        слова с речью робота не сверяются: ответ «сказку про репку» на «Рассказать сказку про колобка или про
+        репку?», начатый в эхо-окне, — реплика человека (ревью #4161).
         """
         heard = self.heard()
         admission = decide(
@@ -354,7 +372,7 @@ class EchoWindow:
             duration_s=duration_s,
             aec_mode=self.aec_mode,
         )
-        if heard - {FREE}:
+        if FREE not in heard:
             return replace(admission, spoken=self.journal.sounded(duration_s))
         return admission
 
@@ -428,10 +446,7 @@ def watch(
 
     window = EchoWindow(grace_s, aec_mode, clock, publish_echo, plain_text)
 
-    def on_speech_event(event: Any) -> None:
-        speaking = window.journal.on_event(event)
-        if speaking is None:
-            return
+    def on_speech(speaking: bool) -> None:
         window.on_speech(speaking)
         if aec_mode == "software":
             node.get_logger().info(_SOFTWARE_EDGE_LOG[speaking])
@@ -440,9 +455,7 @@ def watch(
                 _HARDWARE_EDGE_LOG[speaking].format(grace_s=window.grace_s)
             )
 
-    node.create_subscription(
-        msgs.SpeechEvent, speech_client.SPEECH_EVENT_TOPIC, on_speech_event, _QOS_DEPTH
-    )
+    speech_client.watch_speaking(node, on_speech, watch=window.journal)
     node.create_subscription(
         msgs.SpeechRequest,
         speech_client.SPEECH_REQUEST_TOPIC,
@@ -458,27 +471,45 @@ def watch(
 # --- биометрия слушает то же решение (#4145) -------------------------------------------------------------------------
 
 
-def _call(run: Callable[[], None]) -> None:
+def _call(run: Callable[[], Any]) -> None:
     run()
 
 
+def _ignore_front(_speaking: bool) -> None:
+    """Биометрии нужен только журнал речи, фронт «звучит» ей не нужен."""
+
+
+@dataclass
+class _Held:
+    """Фраза рядом с речью робота у биометрии: срок вердикта, вердикт (``None`` — ещё нет) и изменения профилей
+    (``None`` — эмбеддинг ещё считается)."""
+
+    deadline: float
+    verdict: Optional[str] = None
+    changes: Optional[Callable[[], Any]] = None
+
+
 class EchoVerdicts:
-    """Биометрия слушает решение ``stt_node`` об эхе (#4145): фраза, звучавшая рядом с речью робота, меняет профили
-    (рост галереи, профиль без имени) и даёт результат только после вердикта по ней; эхо не меняет ничего.
+    """Биометрия слушает решение ``stt_node`` об эхе (#4145). Результат опознания фразы рядом с речью робота уходит
+    сразу — он профилей не меняет и доходит до диалога раньше её ``Utterance``, как у любой фразы (ревью #4161:
+    адресация и собеседник хода берут голос фразы в момент её ``Utterance``). Ждут вердикта только изменения профилей
+    (рост галереи, профиль без имени и его результат ``enroll``):
 
-    Сравнения здесь нет — решение одно, у ``stt_node`` (:meth:`Admission.echo`); эмбеддинг готов раньше текста,
-    поэтому биометрия по такой фразе ждёт. Вердикт — ``Utterance`` фразы в :data:`UTTERANCE_TOPIC` (человек: фраза
-    ушла в диалог) или в :data:`ECHO_TOPIC` (эхо); не пришёл за :data:`VERDICT_TIMEOUT_S` (текста нет, фраза
-    отброшена до распознавания) — как раньше. Фраза в тишине (журнал речи пуст рядом с ней) не ждёт — как раньше.
+    * ``Utterance`` фразы в :data:`UTTERANCE_TOPIC` — реплика человека: профили меняются как раньше;
+    * ``Utterance`` в :data:`ECHO_TOPIC` — эхо собственной речи робота: не меняется ничего;
+    * вердикта нет за :data:`VERDICT_TIMEOUT_S` (пустой или короткий текст STT, распознавание зависло) — фраза не
+      стала репликой человека: профили тоже не меняются, позднего результата в случайный момент нет.
 
-    ``submit`` — исполнитель биометрии (однопоточный пул ``speaker_id_node``): решение, пришедшее из ROS-колбэка,
-    исполняется там же, где считались эмбеддинги."""
+    Фраза в тишине (журнал речи пуст рядом с ней) ничего не ждёт — как раньше. Сравнения здесь нет — решение одно, у
+    ``stt_node`` (:meth:`Admission.echo`). ``submit`` — исполнитель биометрии (однопоточный пул ``speaker_id_node``):
+    изменения по вердикту из ROS-колбэка исполняются там же, где считались эмбеддинги.
+    """
 
     def __init__(
         self,
         grace_s: float,
         *,
-        submit: Callable[[Callable[[], None]], Any],
+        submit: Callable[[Callable[[], Any]], Any],
         log: Any,
         clock: Callable[[], float] = time.monotonic,
         timeout_s: float = VERDICT_TIMEOUT_S,
@@ -487,80 +518,102 @@ class EchoVerdicts:
         self.timeout_s = float(timeout_s)
         self._submit, self._log, self._clock = submit, log, clock
         self._lock = threading.Lock()
-        self._waiting: Dict[str, float] = {}  # фраза рядом с речью -> срок вердикта
-        self._verdicts: Dict[str, bool] = {}  # вердикт пришёл раньше эмбеддинга: эхо ли
-        self._held: Dict[str, Callable[[], None]] = (
-            {}
-        )  # эмбеддинг готов, вердикта ещё нет
+        self._held: Dict[str, _Held] = {}
 
     def heard(self, utterance_id: str, seconds: float) -> None:
-        """Фраза доехала (PCM длиной ``seconds``): звучала рядом с речью робота — её профили ждут вердикта."""
+        """Фраза доехала (PCM длиной ``seconds``): звучала рядом с речью робота — её изменения профилей ждут вердикта."""
         if utterance_id and self.journal.sounded(seconds + VERDICT_SLACK_S):
             with self._lock:
-                self._waiting[utterance_id] = self._clock() + self.timeout_s
+                held = _Held(self._clock() + self.timeout_s)
+                _remember(self._held, utterance_id, held, VERDICTS_KEPT)
 
-    def settle(self, utterance_id: str, run: Callable[[], None]) -> None:
-        """Биометрия фразы готова: ``run`` (рост галереи, профиль, результат) — сейчас, после вердикта или никогда."""
+    def waits(self, utterance_id: str) -> bool:
+        """Изменения профилей по фразе ждут вердикта ``stt_node`` (фраза звучала рядом с речью робота)."""
         with self._lock:
-            echo = self._verdicts.pop(utterance_id, None)
-            if echo is None and utterance_id in self._waiting:
-                self._held[utterance_id] = run
+            return utterance_id in self._held
+
+    def settle(self, utterance_id: str, changes: Callable[[], Any]) -> None:
+        """Эмбеддинг фразы готов: ``changes`` — сейчас (фраза в тишине или вердикт «человек» уже пришёл), после
+        вердикта или никогда (эхо, вердикта нет в срок)."""
+        with self._lock:
+            held = self._held.get(utterance_id)
+            if held is not None and held.verdict is None:
+                held.changes = changes
                 return
-            self._waiting.pop(utterance_id, None)
-        self._finish(utterance_id, bool(echo), _call, run)
+            self._held.pop(utterance_id, None)
+        self._finish(
+            utterance_id, HUMAN if held is None else held.verdict, changes, _call
+        )
 
     def on_verdict(self, utterance_id: str, echo: bool) -> None:
         """Вердикт ``stt_node`` по фразе: человек — профили как раньше, эхо — не трогать."""
+        verdict = ECHO if echo else HUMAN
         with self._lock:
-            if utterance_id not in self._waiting:
-                self._unexpected(utterance_id, echo)
+            held = self._held.get(utterance_id)
+            pending = held is not None and held.verdict is None
+            if pending and held.changes is None:
+                # эмбеддинг ещё считается: вердикт его дождётся
+                held.verdict = verdict
                 return
-            run = self._held.pop(utterance_id, None)
-            if run is None:  # эмбеддинг ещё считается: вердикт его дождётся
-                _remember(self._verdicts, utterance_id, echo, VERDICTS_KEPT)
-                return
-            del self._waiting[utterance_id]
-        self._finish(utterance_id, echo, self._submit, run)
+            if pending:
+                del self._held[utterance_id]
+        if not pending:
+            self._unexpected(utterance_id, echo, late=held is not None)
+            return
+        self._finish(utterance_id, verdict, held.changes, self._submit)
 
     def expire(self) -> None:
-        """Вердикт не пришёл в срок (текста нет, фраза отброшена до распознавания): профили — как раньше."""
+        """Срок вердикта вышел: фраза не стала репликой человека — изменения профилей не исполняются. Итог помнится до
+        вытеснения: его найдут и эмбеддинг, досчитанный позже срока, и вердикт, опоздавший к нему.
+        """
         now = self._clock()
         with self._lock:
             due = [
-                u
-                for u, deadline in self._waiting.items()
-                if deadline <= now and u not in self._verdicts
+                (u, h, h.changes)
+                for u, h in self._held.items()
+                if h.verdict is None and h.deadline <= now
             ]
-            runs = [(u, self._held.pop(u, None)) for u in due]
-            for u in due:
-                del self._waiting[u]
-        for utterance_id, run in runs:
-            if run is not None:
-                self._log.info(
-                    f"🔁 [echo] биометрия: вердикта по utterance_id={utterance_id} нет за {self.timeout_s:.0f}с — "
-                    "профиль как раньше"
-                )
-                self._submit(run)
+            for _utterance_id, held, _changes in due:
+                held.verdict, held.changes = NO_VERDICT, None
+        for utterance_id, _held, changes in due:
+            if changes is not None:
+                self._finish(utterance_id, NO_VERDICT, changes, _call)
+
+    def forget(self, utterance_id: str) -> None:
+        """Фраза до изменений профилей не дошла (эмбеддинга нет, фраза ушла в регистрацию по имени): ждать нечего."""
+        with self._lock:
+            self._held.pop(utterance_id, None)
 
     def _finish(
         self,
         utterance_id: str,
-        echo: bool,
-        call: Callable[[Callable[[], None]], Any],
-        run: Callable,
+        verdict: Optional[str],
+        changes: Callable[[], Any],
+        call: Callable[[Callable[[], Any]], Any],
     ) -> None:
-        if echo:
+        if verdict == HUMAN:
+            call(changes)
+        elif verdict == ECHO:
             self._log.info(
                 f"🔁 [echo] биометрия: фраза utterance_id={utterance_id} — эхо речи робота, профиль не завожу и не "
                 "обновляю"
             )
-            return
-        call(run)
+        else:
+            self._log.info(
+                f"🔁 [echo] биометрия: вердикта по utterance_id={utterance_id} нет за {self.timeout_s:.0f}с — фраза "
+                "рядом с речью робота не стала репликой человека, профиль не завожу и не обновляю"
+            )
 
-    def _unexpected(self, utterance_id: str, echo: bool) -> None:
-        """Вердикт по фразе, которой биометрия не ждала: человек — обычное дело (фраза в тишине); эхо — окна речи у
-        нод разошлись, профиль мог измениться — громко."""
-        if echo and utterance_id:
+    def _unexpected(self, utterance_id: str, echo: bool, *, late: bool) -> None:
+        """Вердикт по фразе, которой биометрия не ждала. Человек — обычное дело (фраза в тишине); человек после срока —
+        профиль по ней не менялся; эхо — окна речи у нод разошлись, профиль мог измениться — громко.
+        """
+        if late and not echo:
+            self._log.info(
+                f"🔁 [echo] биометрия: вердикт «человек» по utterance_id={utterance_id} пришёл после срока "
+                f"{self.timeout_s:.0f}с — профиль по фразе не менялся"
+            )
+        elif echo and utterance_id and not late:
             self._log.warning(
                 f"⚠️ [echo] эхо utterance_id={utterance_id}, а биометрия его не ждала (окно речи разошлось) — "
                 "профиль мог измениться"
@@ -570,21 +623,17 @@ class EchoVerdicts:
 def listen(
     node: Any,
     *,
-    submit: Callable[[Callable[[], None]], Any],
+    submit: Callable[[Callable[[], Any]], Any],
     grace_s: float = kn.IDENTITY_MIC_GRACE_S,
     clock: Callable[[], float] = time.monotonic,
 ) -> EchoVerdicts:
-    """Подписать биометрию на речь робота (``SpeechEvent``) и вердикты ``stt_node``: фраза человека
-    (:data:`UTTERANCE_TOPIC`) и эхо (:data:`ECHO_TOPIC`); просроченное ожидание снимает таймер.
+    """Подписать биометрию на речь робота (``SpeechEvent`` через ``speech_client.watch_speaking``) и вердикты
+    ``stt_node``: фраза человека (:data:`UTTERANCE_TOPIC`) и эхо (:data:`ECHO_TOPIC`); просроченное ожидание снимает
+    таймер.
     """
     msgs = _dialog_msgs()
     verdicts = EchoVerdicts(grace_s, submit=submit, log=node.get_logger(), clock=clock)
-    node.create_subscription(
-        msgs.SpeechEvent,
-        speech_client.SPEECH_EVENT_TOPIC,
-        verdicts.journal.on_event,
-        _QOS_DEPTH,
-    )
+    speech_client.watch_speaking(node, _ignore_front, watch=verdicts.journal)
     node.create_subscription(
         msgs.Utterance,
         UTTERANCE_TOPIC,
@@ -601,17 +650,35 @@ def listen(
     return verdicts
 
 
+def _verdicts_of(node: Any) -> Optional[EchoVerdicts]:
+    """Слушатель вердиктов биометрии; у ноды из тестов (``object.__new__``) его нет — всё как раньше."""
+    return getattr(node, "_echo_verdicts", None)
+
+
 def heard(node: Any, utterance_id: str, seconds: float) -> None:
-    """Биометрия получила фразу: отметить, ждёт ли она вердикта (нода без слушателя — из тестов — не ждёт)."""
-    verdicts = getattr(node, "_echo_verdicts", None)
+    """Биометрия получила фразу: отметить, ждут ли её изменения профилей вердикта."""
+    verdicts = _verdicts_of(node)
     if verdicts is not None:
         verdicts.heard(utterance_id, seconds)
 
 
-def settle(node: Any, utterance_id: str, run: Callable[[], None]) -> None:
-    """Биометрия фразы готова: :meth:`EchoVerdicts.settle`; нода без слушателя (из тестов) — сразу, как раньше."""
-    verdicts = getattr(node, "_echo_verdicts", None)
+def waits(node: Any, utterance_id: str) -> bool:
+    """Изменения профилей по фразе ждут вердикта :meth:`EchoVerdicts.waits`; ноде без слушателя ждать нечего."""
+    verdicts = _verdicts_of(node)
+    return verdicts is not None and verdicts.waits(utterance_id)
+
+
+def settle(node: Any, utterance_id: str, changes: Callable[[], Any]) -> None:
+    """Изменения профилей по фразе: :meth:`EchoVerdicts.settle`; нода без слушателя — сразу, как раньше."""
+    verdicts = _verdicts_of(node)
     if verdicts is None:
-        run()
+        changes()
         return
-    verdicts.settle(utterance_id, run)
+    verdicts.settle(utterance_id, changes)
+
+
+def forget(node: Any, utterance_id: Optional[str]) -> None:
+    """Фраза до изменений профилей не дошла: :meth:`EchoVerdicts.forget` (``None`` — у фразы нет id, ждать нечего)."""
+    verdicts = _verdicts_of(node)
+    if verdicts is not None and utterance_id:
+        verdicts.forget(utterance_id)

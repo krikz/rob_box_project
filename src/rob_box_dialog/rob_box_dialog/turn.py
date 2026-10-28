@@ -233,9 +233,10 @@ def recent_section(addressed: Addressed) -> Tuple[Mapping[str, Any], ...]:
 
 
 def background_section(addressed: Addressed) -> Tuple[Mapping[str, Any], ...]:
-    """Раздел ``background_since_reply``: кто (:func:`phrase_label`), что, сколько секунд назад — и только это."""
-    return tuple({"who": phrase_label(p.get("speaker") or {}), "text": p.get("text", ""), "age_s": p.get("age_s")}
-                 for p in addressed.background)
+    """Раздел ``background_since_reply``: кто (:func:`phrase_label` и ``speaker_id`` — профиль голоса или ``unknown``,
+    два безымянных голоса так различимы, #4145), что, сколько секунд назад — и только это."""
+    return tuple({"who": phrase_label(p.get("speaker") or {}), "speaker_id": p.get("speaker_id"),
+                  "text": p.get("text", ""), "age_s": p.get("age_s")} for p in addressed.background)
 
 
 def user_text(turn: "_Turn") -> str:

@@ -258,11 +258,14 @@ class SpeakingWatch:
         return bool(self._live)
 
 
-def watch_speaking(node: Any, on_change: Callable[[bool], None], agent: str = ANY_AGENT) -> SpeakingWatch:
+def watch_speaking(node: Any, on_change: Callable[[bool], None], agent: str = ANY_AGENT,
+                   watch: Optional[Any] = None) -> Any:
     """Подписать узел на ``/voice/speech/event``: ``on_change(speaking)`` — на каждый фронт «звучит» речи ``agent``
     (по умолчанию любого автора — всё, что играет динамик). Эхо-гейты микрофона (``audio_node``, ``stt_node``)
-    держат только реакцию на фронт; что такое «звучит» — :class:`SpeakingWatch`. Возвращает наблюдателя."""
-    watch = SpeakingWatch(agent)
+    держат только реакцию на фронт; что такое «звучит» — :class:`SpeakingWatch`. ``watch`` — свой наблюдатель с тем же
+    ``on_event(event) -> Optional[bool]`` поверх :class:`SpeakingWatch` (журнал речи эхо-окна помнит ещё и
+    ``speech_id`` реплик, #4145); нет — :class:`SpeakingWatch` агента. Возвращает наблюдателя."""
+    watch = SpeakingWatch(agent) if watch is None else watch
 
     def on_event(event: Any) -> None:
         speaking = watch.on_event(event)
