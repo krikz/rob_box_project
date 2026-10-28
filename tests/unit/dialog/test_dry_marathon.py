@@ -616,13 +616,14 @@ def test_budget_stops_before_the_step_that_would_overshoot(make_env):
     assert report.verdict == dm.NOT_RUN and env.inner.calls == []
 
 
-def test_voice_owner_speaks_the_outcome_itself_and_the_log_line_is_checkable(make_env):
-    """Смену голоса озвучивает сам тул (``OUTCOME_SPOKEN_ELSEWHERE``): ход не молчит, строка ``[set_voice]`` в логе."""
+def test_voice_outcome_is_said_once_by_the_dialog_and_the_log_line_is_checkable(make_env):
+    """Тул смены голоса молчит, исход говорит диалог по его данным (``knowledge.VOICE_DONE``): ход не молчит и не
+    говорит дважды, строка ``[set_voice]`` в логе."""
     args = {"actions": [{"tool": "set_voice", "args": {"voice": "alena", "provider": "yandex"}}]}
     env = make_env(lambda env, msgs, tools: args)
     report = env.run(step("n403", "Робот, говори голосом Алёны.", expect_tools=["set_voice"], voice_changed=True))
     assert report.verdict == dm.PASS, report.fail
-    assert report.said == ["Говорю голосом alena."]
+    assert report.said == ["Говорю голосом Алёна."]
     assert "[set_voice] voice='alena' provider=yandex" in report.log and env.stand.voice_provider == "yandex"
 
 
@@ -641,7 +642,7 @@ def test_cast_voice_named_by_catalog_name_is_applied_by_id_like_the_owner_does(m
     heard = env.hear("Робот, говори голосом Весельчак.")
     assert heard.outcomes == [("set_voice", "done", None)]
     assert env.stand.voice_provider == "minimax" and env.stand.session.snapshot.voice.applied == "English_Jovialman"
-    assert "English_Jovialman" in heard.said[0]
+    assert "Весельчак" in heard.said[0] and "English_Jovialman" not in heard.said[0]
 
 
 def test_expect_backlog_step_fails_when_the_phrase_is_addressed(make_env):

@@ -211,13 +211,58 @@ def test_robot_never_spoke_is_free(window, clock):
 # --- речь сейчас и AEC: как было до #4072 ---------------------------------------------------------------------------
 
 
-def test_hardware_short_blip_while_speaking_is_dropped_before_stt(window, clock):
+def test_hardware_short_blip_while_speaking_is_recognized_and_cut_unless_it_is_a_stop(
+    window, clock
+):
+    """Короткая фраза (< 0,8 с) при звучащей речи больше не режется ДО STT (ревью #4122: «Робот, стоп» бывает короче
+    порога, и в паузе между сегментами он пропадал): её распознают, а пропускают только ясный стоп с вейком — щелчок и
+    эхо до диалога по-прежнему не доходят."""
     _script(
         window, clock, [(0.0, "speech", True), (1.0, "vad", True), (1.2, "vad", False)]
     )
     clock.at(1.3)
     admission = window.admit(duration_s=0.5)
-    assert admission.verdict == ew.DROP_SHORT and admission.dropped
+    assert admission.verdict == ew.SHORT_STOP_ONLY and not admission.dropped
+    for blip in ("", None, "щелчок", "робот", "хватит", "робот расскажи сказку"):
+        assert not admission.keeps(blip, WAKE), blip
+    assert admission.keeps("Робот, стоп.", WAKE)
+    assert admission.keeps("робот хватит", WAKE)
+    assert "Короткая фраза" in admission.echo_note("щелчок", 0.5)
+    assert "эхо-окн" not in admission.echo_note("щелчок", 0.5)
+
+
+def test_short_stop_said_in_the_pause_and_delivered_while_the_next_segment_speaks_passes(
+    window, clock
+):
+    """Сцена ревью #4122: «Робот, стоп» 0,6 с в паузе между сегментами; фраза доехала через speech_continuation, когда
+    следующий сегмент уже звучит (``speaking``) и она короче порога - раньше DROP_SHORT выбрасывал её до STT.
+    """
+    _script(
+        window,
+        clock,
+        [
+            (0.0, "speech", True),
+            (8.0, "speech", False),
+            (8.3, "vad", True),
+            (8.9, "vad", False),
+            (9.8, "speech", True),  # следующий сегмент
+        ],
+    )
+    clock.at(10.0)  # доставка до конца следующего сегмента
+    admission = window.admit(duration_s=0.6)
+    assert not admission.dropped and admission.verdict in ew.STOP_ONLY_VERDICTS
+    assert admission.keeps("Робот, стоп.", WAKE)
+    assert not admission.keeps("и тогда", WAKE)
+
+
+def test_short_phrase_without_vad_fronts_while_speaking_is_a_stop_candidate_too(
+    window, clock
+):
+    _script(window, clock, [(0.0, "speech", True)])
+    clock.at(2.0)
+    admission = window.admit(duration_s=0.4)
+    assert admission.verdict == ew.SHORT_STOP_ONLY
+    assert admission.keeps("робот стоп", WAKE) and not admission.keeps("робот", WAKE)
 
 
 def test_hardware_long_phrase_while_speaking_goes_on_as_barge_in(window, clock):

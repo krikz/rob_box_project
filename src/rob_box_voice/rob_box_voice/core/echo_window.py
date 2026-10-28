@@ -17,8 +17,10 @@
 * голос звучал только в эхо-окне — это эхо собственного голоса или хвост реплики: фраза распознаётся, но проходит
   только ясная стоп-команда с вейком (:func:`stop_passes`, «стоп важнее»); остальное — молча, без «не расслышал»
   (петля #989);
-* иначе — как раньше: software-AEC глушит фразы, пока робот говорит; hardware-AEC режет короткий обрывок при
-  звучащей речи (< :data:`SHORT_DURING_SPEECH_S`), остальное идёт дальше — перебивание через вейк решает диалог.
+* иначе — как раньше: software-AEC глушит фразы, пока робот говорит; hardware-AEC короткий обрывок при звучащей речи
+  (< :data:`SHORT_DURING_SPEECH_S`) распознаёт, но пропускает только ясный стоп с вейком: «Робот, стоп» бывает короче
+  порога, и режь мы его до STT — стоп в паузе между сегментами пропал бы (ревью #4122); щелчок и эхо до диалога не
+  доходят, как и раньше. Остальное идёт дальше — перебивание через вейк решает диалог.
 
 Длина окна — одна константа знания ``knowledge.IDENTITY_MIC_GRACE_S`` (дефолт параметра ``stt_node.tts_grace_s``).
 """
@@ -37,9 +39,11 @@ SPEECH, GRACE, FREE = "speech", "grace", "free"
 
 #: Вердикты :meth:`EchoWindow.admit`.
 PASS = "pass"
-STOP_ONLY = "stop_only"
+STOP_ONLY = "stop_only"  # голос звучал только в эхо-окне после речи робота
+SHORT_STOP_ONLY = "short_stop_only"  # короткая фраза при звучащей речи (hardware-AEC)
 DROP_SPEAKING = "drop_speaking"
-DROP_SHORT = "drop_short"
+#: Вердикты, после которых фраза идёт дальше только как ясный стоп с вейком (``Admission.keeps``).
+STOP_ONLY_VERDICTS = (STOP_ONLY, SHORT_STOP_ONLY)
 
 #: Короче этого фраза при звучащей речи робота — эхо/щелчок (hardware-AEC, #989).
 SHORT_DURING_SPEECH_S = 0.8
@@ -80,14 +84,23 @@ class Admission:
     @property
     def dropped(self) -> bool:
         """Фраза отброшена до распознавания."""
-        return self.verdict in (DROP_SPEAKING, DROP_SHORT)
+        return self.verdict == DROP_SPEAKING
 
     def keeps(self, text: Optional[str], wake_words: Sequence[str]) -> bool:
-        """После распознавания: фраза идёт дальше? Из эхо-окна — только ясный стоп с вейком."""
-        return self.verdict != STOP_ONLY or stop_passes(text or "", wake_words)
+        """После распознавания (и на каждом промежуточном результате STT): фраза идёт дальше? Из эхо-окна и короткая при
+        звучащей речи — только ясный стоп с вейком. Пока фраза не пропущена, диалог о ней не знает: ни результата,
+        ни ``/dialog/interrupt_request`` (``stt_node._offer_interrupt``)."""
+        return self.verdict not in STOP_ONLY_VERDICTS or stop_passes(
+            text or "", wake_words
+        )
 
     def echo_note(self, text: Optional[str], duration_s: float) -> str:
-        """Строка лога отброшенной после распознавания фразы из эхо-окна."""
+        """Строка лога отброшенной после распознавания фразы: эхо-окно или короткий обрывок при речи робота."""
+        if self.verdict == SHORT_STOP_ONLY:
+            return (
+                f"🔇 [hardware AEC] Короткая фраза {duration_s:.2f}с {text or ''!r} во время TTS и не стоп с вейком — "
+                "молчу (эхо или щелчок)"
+            )
         return (
             f"🔇 [issue 989/#4072] Эхо-окно: фраза {duration_s:.2f}с {text or ''!r} звучала только после речи "
             "робота и не стоп с вейком — молчу (эхо собственного голоса)"
@@ -178,16 +191,17 @@ def decide(
             DROP_SPEAKING,
             f"🔇 [software AEC] Игнор фразы {duration_s:.2f}с: робот говорит",
         )
-    if speaking and duration_s < SHORT_DURING_SPEECH_S:
-        return Admission(
-            DROP_SHORT,
-            f"🔇 [hardware AEC] Игнор короткой фразы {duration_s:.2f}с — TTS активен",
-        )
     if heard and set(heard) <= {GRACE}:
         return Admission(
             STOP_ONLY,
             f"🔇 [issue 989/#4072] Фраза {duration_s:.2f}с звучала только в эхо-окне после речи робота — "
             "распознаю, пропущу только стоп с вейком",
+        )
+    if speaking and duration_s < SHORT_DURING_SPEECH_S:
+        return Admission(
+            SHORT_STOP_ONLY,
+            f"🔇 [hardware AEC] Короткая фраза {duration_s:.2f}с при звучащем TTS — распознаю, пропущу только стоп "
+            "с вейком",
         )
     if speaking:
         return Admission(
