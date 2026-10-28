@@ -186,6 +186,25 @@ SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks"
              ("persona", "persona"), ("source", "source"))
 
 
+#: Ключи раздела, что описывают ИГРАЮЩЕЕ (``MusicStateMemory.section`` при ``playing=yes``): после стопа их нет.
+_PLAYING_ONLY = ("track", "repeat", "ends_in_s", *(attr for attr, _ in SET_ATTRS))
+
+
+def after_stop(section: Optional[Mapping[str, str]]) -> Dict[str, str]:
+    """Раздел ``music_state`` после того, как музыку выключил стоп-тул ЭТОГО хода (``_Turn.music_stopped``, исход
+    ``done`` владельца плеера): снимок плеера ``/voice/music/state`` приходит позже стопа (в n709 остаток фразы уходил
+    модели через 30 мс после стопа), и раздел с прежним ``playing=yes`` вернул бы её к «музыка играет». Играющее
+    убирается, ``playing=no``, играющий трек - в ``last_track`` (остановлен, только что). Раздел уже «не играет» - как
+    есть."""
+    data = dict(section or {})
+    if data.get("playing") != "yes":
+        return data
+    track = data.get("track")
+    out = {k: v for k, v in data.items() if k not in _PLAYING_ONLY and k != "playing"}
+    out = {"playing": "no", **out}
+    return {**out, "last_track": track, "last_ended": ENDED_STOPPED, "last_ended_ago_s": "0"} if track else out
+
+
 def _track_title(info: Mapping[str, Any]) -> str:
     """Как названа играющая дорожка в разделе (``track``): короткое описание из фактов, которое строит владелец плеера
     (``brief``: «название», стиль, темп - без номера и id, #4060); снимок без него (сервер старее подписчика) - ``title``."""
@@ -211,6 +230,7 @@ def _now(now: Optional[float]) -> float:
 
 
 __all__ = [
+    "after_stop",
     "ENDED_FINISHED",
     "ENDED_REPLACED",
     "ENDED_STOPPED",

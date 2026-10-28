@@ -24,6 +24,8 @@ from rob_box_dialog.knowledge import (
     INTRO_NOT_A_NAME,
     KNOWN_FIRST_NAMES,
     LISTEN_ONLY_FORMS,
+    MUSIC_PROMISE_WINDOW,
+    MUSIC_PROMISES,
     NAME_CASE_MIN_STEM,
     NAME_CASE_STEMS,
     NAME_CASE_SURE_TAILS,
@@ -53,6 +55,7 @@ from rob_box_dialog.knowledge import (
     WAKE_SLIP_POLITE,
     WAKE_SLIP_TARGETS,
     WAKE_SLIP_VARIANTS,
+    MusicPromise,
     SlipGate,
 )
 
@@ -265,6 +268,28 @@ def asked_level(text: str) -> str:
     ``quieter``; «потише, не очень громко» — ``quieter`` (оба говорят одно). Слова — :func:`level_phrases`."""
     asked = {direction for _first, _last, direction in level_phrases(name_tokens(text))}
     return asked.pop() if len(asked) == 1 else ""
+
+
+def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
+    """Обещает ли фраза ``tokens`` (:func:`name_tokens`) это действие: глагол из ``alone``, либо глагол из ``with_near`` и
+    в ``MUSIC_PROMISE_WINDOW`` словах с любой стороны слово с основой из ``near``."""
+    for i, token in enumerate(tokens):
+        if token in promise.alone:
+            return True
+        if token in promise.with_near:
+            around = (*tokens[max(0, i - MUSIC_PROMISE_WINDOW):i], *tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW])
+            if any(word.startswith(promise.near) for word in around):
+                return True
+    return False
+
+
+def music_promises(text: str) -> Tuple[str, ...]:
+    """Виды обещаний действия с музыкой в речи робота (ключи ``knowledge.MUSIC_PROMISES``: ``volume``, ``stop``,
+    ``start``) - по словам, не по подстроке: «сделаю потише», «включу музыку», «выключу трек». Прошедшее («музыку
+    выключил»), инфинитив и вопрос («включить музыку?») не обещание. Решает код по словам фразы (ADR-0148): есть ли
+    тул, что обещание исполняет, судит валидатор команды (``command._check_music_promise``)."""
+    tokens = name_tokens(text)
+    return tuple(kind for kind, promise in MUSIC_PROMISES.items() if _promises(tokens, promise))
 
 
 def words_in_order(heard: str, said: str) -> int:

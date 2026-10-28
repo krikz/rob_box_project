@@ -103,6 +103,7 @@ from rob_box_dialog.expression import face_label, show_seconds, shown_scene, sho
 from rob_box_dialog.grammar import Tier1Command, Voices, match
 from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
+from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
                                     reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot
@@ -110,7 +111,8 @@ from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, s
 from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
-from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
+from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
+                                     speaker_label)
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога хода v2 (вход, решение, итог).
@@ -139,6 +141,19 @@ def host_sections(snap: SessionSnapshot, music: Any, providers: Sequence[Any] = 
     again = bool(person) and person == memory.profiled_person(snap.speaker)
     sections = {"speaker": speaker_block(snap.speaker), "providers": list(providers), "music_state": music.section()}
     return {**sections, "speaker_memory": block} if again and block else sections
+
+
+def recent_results(past: Sequence[Any], own: Sequence[Any], owner: Optional[str]) -> List[Mapping[str, Any]]:
+    """Раздел ``recent_actions`` снимка хода: исходы действий прошлых ходов окна (``past``), затем исходы самого хода
+    (``own``: ``TurnLog.results_of``) с меткой ``knowledge.THIS_TURN_FIELD``. Свои исходы нужны остатку фразы после
+    ясного стопа: окно исключает ход, что спрашивает модель, и стоп музыки, исполненный кодом ДО её вызова в этом же
+    ходе, иначе в снимке не было бы (n709 28.10: «сделаю потише» по музыке, которую код только что остановил, #4020 п.6).
+    Исход тула памяти другого владельца памяти не идёт (``memory.foreign_result``, #4023)."""
+    def mine(entry: Any) -> bool:
+        return not memory.foreign_result(entry.content, entry.owner, owner)
+
+    return [*(dict(e.content) for e in past if e.role == TOOL and mine(e)),
+            *({**e.content, kn.THIS_TURN_FIELD: True} for e in own if mine(e))]
 
 
 def _follow_as_user(data: str) -> Sequence[Any]:
@@ -1688,9 +1703,9 @@ class TurnEngine:
         past = self.log.window(exclude=turn.turn_id)  # реплика этого хода — последним сообщением, со снимком
         history = [e for e in past if e.role != TOOL]
         sections = dict(self._sections(snap, turn.text))
-        owner = memory.memory_owner(snap)
-        recent = [dict(e.content) for e in past
-                  if e.role == TOOL and not memory.foreign_result(e.content, e.owner, owner)]
+        if turn.music_stopped:  # стоп этого хода: снимок плеера придёт позже, а модель не должна читать «играет» (#4020 п.6)
+            sections["music_state"] = after_stop(sections.get("music_state"))
+        recent = recent_results(past, results_of(self.log, turn.turn_id), memory.memory_owner(snap))
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
@@ -1742,5 +1757,5 @@ __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_
            "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
-           "query_fallback", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
+           "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
            "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]
