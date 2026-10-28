@@ -185,7 +185,7 @@ def test_song_about_a_theme_is_not_a_named_song_even_if_a_piece_matched(tmp_path
 
 
 def test_catalog_confirmed_work_counts_as_named():
-    """``work_confirmed`` (LLM или звучание подтвердили произведение каталогом) — человек назвал пьесу, даже если слова
+    """``work_confirmed`` (LLM или кэш подтвердили произведение каталогом) — человек назвал пьесу, даже если слова
     заказа в её названии не стоят (русское название, переведённое LLM); пьесы нет — не названа."""
     ref = WorkRef(title=(WorkWord(alts=("polet",)),))
     chosen = WorkCandidate("flightof", RTTTL, "Flight Of The Bumblebee", "Rimsky-Korsakov", 0.0)

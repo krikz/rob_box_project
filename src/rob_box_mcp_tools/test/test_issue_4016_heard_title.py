@@ -3,15 +3,21 @@
 Живой прогон 24.10 (Sound Pi): «робот спой раннинг ап дэд хилл на балалайке и гуслях» → ``непонятые=['спой',
 'раннинг','балалайке','гуслях'] → «хилл»`` (LLM-разбор опоздал: 3–8 с против окна 1.5 с) → «King Of The Hill». Теперь:
 непонятых слов названия больше понятых — код ищет запись архива, чьё название звучит этими словами (транслит одной
-функцией + звуковой ключ), без ожидания LLM; не нашлось и LLM не подтвердила — фраза кода «не уверен, что это за
-песня — «…»?», а не пьеса по обрывку. Тесты — на настоящем архиве RTTTL.
+функцией + звуковой ключ), пока LLM думает; LLM опоздала — играет находка; не нашлось и LLM не подтвердила — фраза
+кода «не уверен, что это за песня — «…»?», а не пьеса по обрывку. Тесты — на настоящем архиве RTTTL.
 
 Ревью PR #4124: переспрос не должен ломать заказы, которые на develop играли верно, — пояснение после названия
 («имперский марш дарта вейдера», «марио только быстрее») не делает название неясным; жанровое слово в начале названия
 («рок эраунд зе клок») звучит; двухсловное название не собирается из слов вразбивку («си … хэлл» — не «Say Hello»).
+
+Ревью PR #4124, круг 2: слова-связки перед понятым именем («что-то похожее на марио», «без сета, просто Баха») не
+переспрашиваются — понятое имя называет мелодию само; находка на слух — догадка, её сверяют кэш и LLM (назвали другое —
+решают они); частичное слабое совпадение («уи вил рок ю» → «Rock With You») и исполнитель не целиком — не находка.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,9 +26,10 @@ from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.request_slots import Catalog, RequestSlotParser, doubt_text
 from rob_box_mcp_tools.engine.search import (HEARD_SLACK_WORD, ThemeHits, _aligned, _vocab, find, heard_title,
-                                             phonetic_key, terms, warm_heard)
-from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, NOT_FOUND, RequestMusicTool
+                                             names_itself, phonetic_key, terms, warm_heard)
+from rob_box_mcp_tools.engine.tools_v2 import DjSetTool, NOT_FOUND, RequestMusicTool, _classic_outcome
 from rob_box_music import knowledge as kn
+from rob_box_music.request_slots import RequestSlots
 from rob_box_voice.core.media_command_grammar import parse_media_command
 
 from .test_adr0158_pr7_song import FakeStudio
@@ -99,12 +106,14 @@ def test_unknown_title_is_not_guessed_from_one_word(archive):
 
 # ── разбор заказа: на слух без LLM, иначе — честный переспрос ──────────────────────────────────────────────────
 
-def test_live_phrase_resolves_by_sound_without_waiting_for_llm(archive):
-    llm = FakeLLM(delay=5.0)  # LLM 24.10 отвечала 3–8 с: её не ждём вовсе
+def test_live_phrase_resolves_by_sound_when_llm_is_late(archive):
+    """24.10 LLM отвечала 3–8 с при окне 1.5 с: не успела — играет находка на слух. Находка — догадка кода, не
+    подтверждение (ревью #4124, круг 2): LLM спрошена, ``work_confirmed`` у находки нет."""
+    llm = FakeLLM(outcome="late")
     parser, log = _parser(archive, llm)
     slots = _parse(parser, LIVE_PHRASE)
-    assert llm.calls == [] and slots.source == "sound" and slots.doubt == ""
-    assert slots.query == slots.work == "Running Up That Hill" and slots.work_confirmed
+    assert llm.calls == [LIVE_PHRASE] and slots.source == "sound" and slots.by_sound and slots.doubt == ""
+    assert slots.query == slots.work == "Running Up That Hill" and not slots.work_confirmed
     assert find(archive, slots.query).record["name"] == "runningu"  # строка поиска ведёт к хуку runningu
     assert "source=sound" in log.lines[-1] and "«Running Up That Hill»" in log.lines[-1]
 
@@ -216,6 +225,150 @@ def test_weak_key_word_is_heard_only_next_to_its_neighbour(archive):
     for text, title in (("лет ит би", "Let It Be"), ("уопс ай дид ит эгейн", "Oops I Did It again"),
                         ("хайвэй ту хэлл", "Highway To Hell"), ("тайм ту сэй гудбай", "Time To Say Goodbye")):
         assert heard_title(archive, text).name == title, text
+
+
+# ── ревью #4124, круг 2: слова-связки перед названием или автором — не переспрос ────────────────────────────────
+
+#: Заказы, которые на develop играли верно (зонд ревью: полный тул, настоящий архив): слова-связки перед понятым словом,
+#: которое само называет мелодию (алиас реестра) или автора (``knowledge.COMPOSER_RU``), и строка поиска develop.
+#: «сыграй без сета, просто Баха» — фраза живой проверки ROBOT_SIX (``test_adr0157_pr1_instrument_slot.py``). «Ещё
+#: раз марио»: непонятых слов у ``terms`` нет (короткие отброшены) — строка поиска develop — фраза целиком.
+FILLERS = [("сыграй что-то похожее на марио но медленнее", "mario"), ("сыграй что-нибудь похожее на марио", "mario"),
+           ("сыграй что-то вроде марио", "mario"), ("давай ту самую штуку из марио", "mario"),
+           ("сыграй мне ещё раз марио", "сыграй мне ещё раз марио"), ("сыграй что-то похожее на тетрис", "tetris"),
+           ("сыграй тот самый тетрис", "tetris"), ("сыграй без сета, просто Баха", "баха"),
+           ("сыграй просто какую-нибудь вещь баха", "баха"), ("без всяких сетов сыграй моцарта", "моцарта"),
+           ("сыграй маленькую ночную серенаду моцарта", "моцарта"), ("сыграй времена года вивальди", "вивальди"),
+           ("сыграй что-нибудь вроде вивальди", "вивальди"), ("сыграй на ре нардо космос", "космос")]
+
+
+@pytest.mark.parametrize("text, query", FILLERS)
+def test_filler_words_before_a_known_name_are_not_asked_back(archive, text, query):
+    """Ревью #4124, круг 2: три непонятых слова-связки («что-то похожее на», «тот самый», «без сета, просто») перед
+    понятым словом давали переспрос, хотя понятое само называет мелодию или автора. Решает код
+    (``search.names_itself``), а не таблица слов-связок: разбор как на develop — и без LLM, и с опоздавшей LLM (бой
+    24.10: late=4/4)."""
+    heard = heard_title(archive, parse_media_command(text).name or text, text)
+    assert heard.named and not heard.truncated and heard.record is None  # и на слух не ищется: название понятно
+    for llm in (None, FakeLLM(outcome="late")):
+        slots = _parse(_parser(archive, llm)[0], text)
+        assert slots.doubt == "" and slots.query == query and slots.source == "code", (text, slots)
+
+
+@pytest.mark.parametrize("text", ["сыграй без сета, просто Баха", "сыграй что-то похожее на марио но медленнее",
+                                  "сыграй тот самый тетрис"])
+def test_tool_plays_filler_phrases_instead_of_asking_back(tmp_path, archive, text):
+    req, _rig_ = _request(tmp_path, archive)
+    result = req.execute(intent="melody", text=text, heard_text=f"Робот, {text}")
+    assert "doubt" not in (result.data or {}) and "Не уверен" not in str(result.error or ""), result
+
+
+def test_names_itself_is_the_registry_or_a_composer_not_a_title_word(archive):
+    """Алиас реестра (латиница: «марио» → mario), семя-понятие («космос»), фамилия композитора («баха» → bach) — имя;
+    слово, которое архив знает только как слово названий («хилл» → hill), и цифра — нет."""
+    def named(word):
+        return [names_itself(t) for t in terms(archive, word)]
+
+    assert named("марио") == [True] and named("космос") == [True] and named("баха") == [True]
+    assert named("вивальди") == [True] and named("хилл") == [False] and named("4") == [False]
+
+
+# ── ревью #4124, круг 2: находка на слух — догадка, её сверяют LLM и кэш; слабая или частичная — не находка ─────
+
+@pytest.mark.parametrize("text, answer, confirmed", [
+    ("сыграй уи вил рок ю", {"composer": "Queen", "work": "We Will Rock You"}, "We Will Rock You"),
+    ("сыграй раннинг ап дэд хилл", {"composer": "Kate Bush", "work": "Running Up That Hill"},
+     "Running Up That Hill")])
+def test_llm_in_time_confirms_the_work_itself(archive, text, answer, confirmed):
+    """LLM вовремя подтвердила каталогом то же произведение — находка подтверждена; строка поиска — название записи, а
+    не «автор LLM + название» (у раннинга в архиве кавер Within Temptation: develop с такой LLM отвечал «Пьес автора
+    «Bush hill» у меня не нашлось»)."""
+    llm = FakeLLM(answers={text: answer})
+    slots = _parse(_parser(archive, llm)[0], text)
+    assert llm.calls == [text] and slots.source == "llm" and slots.work_confirmed and slots.work == confirmed
+    assert slots.query == confirmed
+
+
+def test_unclear_title_asks_llm_before_asking_back(archive):
+    """«ты ди си хэлл»: ``terms`` отбросил короткие «ты ди си» — непонятых для LLM не было, и заказ сразу шёл в
+    переспрос. Переспрос — только после LLM: вовремя назвала «Highway To Hell» — играет оно."""
+    text = "сыграй ты ди си хэлл"
+    llm = FakeLLM(answers={text: {"composer": "AC/DC", "work": "Highway To Hell"}})
+    slots = _parse(_parser(archive, llm)[0], text)
+    assert llm.calls == [text] and slots.doubt == "" and slots.work_confirmed and slots.work == "Highway To Hell"
+    assert _parse(_parser(archive)[0], text).doubt == "ты ди си хэлл"  # без LLM — честный переспрос
+
+
+def test_llm_that_named_another_work_overrules_the_sound_guess(archive):
+    """«тико тико» звучит как запись «Tick Tick», а LLM вовремя назвала «Tico Tico no Fuba» — её в архиве нет: решает
+    разбор LLM (как на develop — ``not_found`` дальше), а не находка на слух; переспроса нет — понятых слов нет."""
+    text = "сыграй тико тико"
+    assert heard_title(archive, "тико тико").name == "Tick Tick"  # без LLM находка та же (ложная, см. тело PR)
+    llm = FakeLLM(answers={text: {"work": "Tico Tico no Fuba"}})
+    slots = _parse(_parser(archive, llm)[0], text)
+    assert llm.calls == [text] and slots.source == "llm" and not slots.by_sound
+    assert slots.query == "тико тико" and not slots.work_confirmed and slots.rejected == ("work=Tico Tico no Fuba",)
+    assert slots.doubt == ""
+
+
+def test_llm_is_asked_before_the_sound_search_and_thinks_meanwhile(archive):
+    """Ревью #4124 (скорость): поиск на слух — сотни мс (строки поиска по архиву). Есть непонятые слова — вопрос LLM
+    уходит до него, и окно ожидания LLM (1.5 с) с поиском не складывается."""
+    llm, order = FakeLLM(outcome="late"), []
+
+    class Spy(Catalog):
+        def heard(self, text, said=""):
+            order.append(len(llm.calls))
+            return super().heard(text, said)
+
+    parser = RequestSlotParser(lambda text: terms(archive, text), Spy(lambda: archive, NoScores()), ask=llm,
+                               spawn=lambda fn: fn())
+    assert _parse(parser, "сыграй раннинг ап дэд хилл").by_sound and order == [1]
+
+
+def test_silent_llm_leaves_the_sound_guess(archive):
+    """LLM ответила, но ни произведения, ни автора не назвала — находке на слух не возражает: играет она, без
+    подтверждения каталогом."""
+    llm = FakeLLM()  # ответ без слотов
+    slots = _parse(_parser(archive, llm)[0], "сыграй раннинг ап дэд хилл")
+    assert llm.calls and slots.by_sound and slots.query == "Running Up That Hill" and not slots.work_confirmed
+
+
+@pytest.mark.parametrize("text, wrong", [("уи вил рок ю", "Rock With You"), ("ты ди си хэлл", "Say Hello"),
+                                         ("вот эту ну там где та та та", "Out Of Time"),
+                                         ("во поле берёза стояла", "Belle Perez")])
+def test_weak_or_partial_sound_match_is_not_a_find(archive, text, wrong):
+    """Ревью #4124, круг 2 (зонд: 5 неверных находок из 26): название, которое звучит лишь частью услышанных слов,
+    засчитывается только сильным (согласных в ключах прозвучавших слов не меньше ``HEARD_EVIDENCE_MIN``); исполнитель
+    — только целиком."""
+    assert heard_title(archive, text).name != wrong
+
+
+def test_sound_match_strength_rules():
+    assert _aligned("Rock With You", _keys("уи", "вил", "рок", "ю")) is None  # «рок» + «ю» — 2 согласных из 4 слов
+    assert _aligned("We Will Rock You", _keys("уи", "вил", "рок", "ю")) is not None  # все слова — название
+    assert _aligned("Say Hello", _keys("ты", "ди", "си", "хэлл")) is None
+    assert _aligned("I Got You Babe", _keys("ай", "гот", "ю", "бейб")) is not None  # слабое, но целиком
+    assert _aligned("Highway To Hell", _keys("эй", "си", "ди", "си", "хайвэй", "ту", "хэлл")) is not None  # h+t+hl
+    assert _aligned("Belle Perez", _keys("поле", "береза", "стояла"), whole=True) is None  # исполнитель — целиком
+    assert _aligned("Rolling Stones", _keys("роллинг", "стоунз"), whole=True) is not None
+
+
+def test_partner_word_finds_the_title_a_common_anchor_hides(archive):
+    """«рок» — слово сотен записей: «We Will Rock You» в первые полсотни по одному «rock» не попадал, и находкой была
+    «Rock With You». Строка поиска «rock will» (опора + напарник ``HEARD_PARTNER_MIN``) находит саму запись."""
+    assert heard_title(archive, "уи вил рок ю").name == "We Will Rock You"
+
+
+def test_sound_match_counts_as_named_for_a_sing_request():
+    """Название узнано на слух (``RequestSlots.by_sound``) — пьесу назвал человек (``played["named"]``, #4015): «спой
+    раннинг ап дэд хилл» — чужая песня по названию, хотя каталог её не подтвердил."""
+    pick = SimpleNamespace(program="p", title="Running Up That Hill", melody_id="runningu", bpm=100, key="C",
+                           history={}, track={}, work="Running Up That Hill")
+    staged = _classic_outcome(None, "Running Up That Hill", (pick, {"named": False}, [], 1), None, True)
+    assert staged["played"]["named"] is True
+    assert _classic_outcome(None, "x", (pick, {"named": False}, [], 1), None)["played"]["named"] is False
+    assert RequestSlots(source="sound").by_sound and not RequestSlots(source="llm").by_sound
 
 
 def test_sound_index_is_warmed_at_start_not_in_the_first_order(archive):

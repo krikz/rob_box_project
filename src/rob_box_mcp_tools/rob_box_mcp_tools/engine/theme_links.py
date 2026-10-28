@@ -67,9 +67,10 @@ def tool_payload(response: Any, name: str = tq.SUBMIT_TOOL) -> Any:
     raise tq.QueriesInvalid(f"нет вызова {name}")
 
 
-def in_time(spawn: Callable[[Callable[[], None]], None], wait_s: float, run: Callable[[], Any]) -> Tuple[bool, Any]:
-    """``(успел, результат)``: ``run`` — в своём потоке (``spawn``), ждём не дольше ``wait_s``; опоздал — ``(False,
-    None)``, а ``run`` доработает в фоне (опоздавший ответ LLM дописывается в хранилище/кэш сам)."""
+def later(spawn: Callable[[Callable[[], None]], None], run: Callable[[], Any]) -> Callable[[float], Tuple[bool, Any]]:
+    """``run`` — сразу в своём потоке (``spawn``); вернувшаяся функция ``wait(s)`` — ``(успел, результат)``, ждёт не
+    дольше ``s``; опоздал — ``(False, None)``, а ``run`` доработает в фоне. Пока LLM думает, код делает своё (разбор на
+    слух, #4016)."""
     box: Dict[str, Any] = {}
     done = threading.Event()
 
@@ -80,7 +81,13 @@ def in_time(spawn: Callable[[Callable[[], None]], None], wait_s: float, run: Cal
             done.set()
 
     spawn(task)
-    return (True, box.get("value")) if done.wait(wait_s) else (False, None)
+    return lambda wait_s: (True, box.get("value")) if done.wait(wait_s) else (False, None)
+
+
+def in_time(spawn: Callable[[Callable[[], None]], None], wait_s: float, run: Callable[[], Any]) -> Tuple[bool, Any]:
+    """``(успел, результат)``: ``run`` — в своём потоке (``spawn``), ждём не дольше ``wait_s``; опоздал — ``(False,
+    None)``, а ``run`` доработает в фоне (опоздавший ответ LLM дописывается в хранилище/кэш сам)."""
+    return later(spawn, run)(wait_s)
 
 
 class ThemeLinks:
@@ -213,5 +220,5 @@ class ThemeLinks:
                        named=named)
 
 
-__all__ = ["ASK_DEADLINE_S", "GENERIC_MATCHES", "PER_QUERY", "Ask", "ThemeLinks", "in_time",
+__all__ = ["ASK_DEADLINE_S", "GENERIC_MATCHES", "PER_QUERY", "Ask", "ThemeLinks", "in_time", "later",
            "tool_payload", "verify"]

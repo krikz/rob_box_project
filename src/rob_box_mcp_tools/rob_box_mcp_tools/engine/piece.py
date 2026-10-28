@@ -128,8 +128,9 @@ def chosen_of(pick: Optional[ClassicPick], candidates: Sequence[WorkCandidate]) 
 
 def named_pick(ref: WorkRef, chosen: Optional[WorkCandidate], confirmed: bool = False, whole: bool = False) -> bool:
     """Пьесу назвал человек (#4015, ``played["named"]``): каталог подтвердил произведение заказа (``confirmed`` —
-    ``RequestSlots.work_confirmed``: LLM или звучание, #3609/#4016), слово названия заказа, которое архив знает, стоит
-    в названии выбранной (``WorkWord.named_in``), или она нашлась поиском по названию целиком (``whole``).
+    ``RequestSlots.work_confirmed``: LLM или кэш её разборов, #3609; находка на слух — нет, её «названо» ставит
+    ``tools_v2._classic_outcome``, #4016), слово названия заказа, которое архив знает, стоит в названии выбранной
+    (``WorkWord.named_in``), или она нашлась поиском по названию целиком (``whole``).
     ``title_match`` для этого не годится: слово без написания в архиве ``WorkRef.rtttl`` засчитывает найденным (запись
     нашёл поиск). Пьеса, подобранная по жанру, автору или «ближайшему» («спой что-нибудь классическое»), — не
     названная; просьбу сочинить песню («спой о море») решает грамматика (``tools_v2.song_asked``)."""

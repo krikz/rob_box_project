@@ -32,9 +32,15 @@ def edit_distance(a: str, b: str) -> int:
 
 
 def within_one(word: str, form: str) -> bool:
-    """Слова различаются не больше чем одной правкой (замена, вставка, удаление буквы); длины, разные больше чем на
-    букву, отсекаются до счёта."""
-    return abs(len(word) - len(form)) <= 1 and edit_distance(word, form) <= 1
+    """Слова различаются не больше чем одной правкой (замена, вставка, удаление буквы); до счёта отсекаются длины,
+    разные больше чем на букву, и непустые слова (не оба из одной буквы), у которых не совпадает ни первая, ни
+    последняя буква: одна правка оставляет на месте хотя бы одну из них (ревью #4124: перебор форм инструментов на
+    каждое слово заказа — до 25 мс)."""
+    if abs(len(word) - len(form)) > 1:
+        return False
+    if word and form and len(word) + len(form) > 2 and word[0] != form[0] and word[-1] != form[-1]:
+        return False
+    return edit_distance(word, form) <= 1
 
 
 def near(word: str, vocab: Iterable[str]) -> Optional[str]:

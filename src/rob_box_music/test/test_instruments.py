@@ -15,7 +15,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.arrange.compose import compose
 from rob_box_music.arrange.song import song_track
 from rob_box_music.instruments import (
-    instrument_of, lead_choice, near, neighbors, shifted, split_instrument, within_one,
+    edit_distance, instrument_of, lead_choice, near, neighbors, shifted, split_instrument, within_one,
 )
 from rob_box_music.set_plan import seeded_plan
 from rob_box_music.theme import seeded_profile
@@ -87,6 +87,24 @@ def test_within_one_is_one_edit():
     assert within_one("сыгай", "сыграй") and within_one("сыграйй", "сыграй")
     assert not within_one("сфгрпй", "сыграй") and not within_one("сыг", "сыграй")
     assert near("сфграй", ["включи", "сыграй"]) == "сыграй" and near("сыгр", ["сыграй"]) is None
+
+
+def test_within_one_prefilter_keeps_the_edit_distance_answer():
+    """Ревью #4124: отсев по первой и последней букве — только ускорение (одна правка оставляет на месте хотя бы одну
+    из них); ответ тот же, что у ``edit_distance`` — на случайных парах и на парах в одну правку, пустые включительно."""
+    rng = random.Random(4124)
+    letters = "абвг"
+
+    def word():
+        return "".join(rng.choice(letters) for _ in range(rng.randint(0, 6)))
+
+    def edited(w):
+        i, letter = rng.randint(0, len(w)), rng.choice(letters)
+        return rng.choice([w[:i] + letter + w[i:], w[:i] + w[i + 1:], w[:i] + letter + w[i + 1:]])
+
+    pairs = [(word(), word()) for _ in range(20000)] + [(w, edited(w)) for w in (word() for _ in range(20000))]
+    for a, b in pairs:
+        assert within_one(a, b) == (edit_distance(a, b) <= 1), (a, b)
 
 
 @pytest.mark.parametrize("words,key,rest", [

@@ -53,6 +53,12 @@ class RequestSlots:
     rejected: Tuple[str, ...] = field(default=())
     doubt: str = ""
 
+    @property
+    def by_sound(self) -> bool:
+        """Название узнано на слух (``source=sound``, #4016): человек назвал пьесу, а какую — код нашёл по звучанию
+        слов; пьеса названа, но каталог не подтвердил, что именно эта (``work_confirmed`` нет, ревью #4124)."""
+        return self.source == "sound"
+
     def describe(self) -> str:
         """Слоты для строки лога: ``composer=Wagner work=«Ride Of The Valkyries» instrument=— …``."""
         work = f"«{self.work}»{'✓' if self.work_confirmed else ''}" if self.work else "—"

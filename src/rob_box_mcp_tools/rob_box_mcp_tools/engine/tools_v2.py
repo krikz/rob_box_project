@@ -989,7 +989,7 @@ class RequestMusicTool(MCPTool):
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
                          f"{self._pieces.memory.recent()} → {_piece_line(pick, played)}; "
                          f"отказы: {'; '.join(reasons) or '—'}")
-        return _classic_outcome(self._owner, work, (pick, played, reasons, count), slot_lead)
+        return _classic_outcome(self._owner, work, (pick, played, reasons, count), slot_lead, slots.by_sound)
 
 
 def warm_order(pieces: PieceChain, slots: Optional[RequestSlotParser]) -> None:
@@ -1004,9 +1004,11 @@ def warm_order(pieces: PieceChain, slots: Optional[RequestSlotParser]) -> None:
 
 
 def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], List[str], int],
-                     slot_lead: Optional[LeadChoice]) -> Dict[str, Any]:
+                     slot_lead: Optional[LeadChoice], heard: bool = False) -> Dict[str, Any]:
     """Исход заказа пьесы по выбору ``PieceChain.play`` (``chosen`` — ``(pick, played, reasons, count)``): собранная
-    пьеса или отказ с фразой кода (вынесено из ``RequestMusicTool._stage_classic``: бюджет класса, ADR-0145)."""
+    пьеса или отказ с фразой кода (вынесено из ``RequestMusicTool._stage_classic``: бюджет класса, ADR-0145).
+    ``heard`` — название узнано на слух (``RequestSlots.by_sound``): пьесу назвал человек (``played["named"]``), хотя
+    каталог её не подтвердил («спой раннинг ап дэд хилл» — чужая песня по названию, #4015)."""
     pick, played, reasons, count = chosen
     if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
         from rob_box_voice.core.media_phrases import no_more_text
@@ -1022,8 +1024,8 @@ def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], L
     if pick is None:
         return owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
     return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-            "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
-            "work": pick.work, **lead_data(slot_lead)}
+            "bpm": pick.bpm, "key": pick.key, "played": {**played, "named": bool(played.get("named")) or heard},
+            "history": dict(pick.history), "track": pick.track, "work": pick.work, **lead_data(slot_lead)}
 
 
 def _doubt_refusal(heard: str) -> Dict[str, Any]:
