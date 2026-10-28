@@ -32,9 +32,14 @@ from ..core.action_outcome import (
     NAV_REJECTED,
     NAV_SERVER_UNAVAILABLE,
     NAV_TIMEOUT,
+    classify_cancel_response,
     classify_nav_status,
+    classify_service_call,
     nav_outcome,
 )
+
+_CANCEL_ALL_LABEL = "Nav2 cancel_goal"
+_CANCEL_ALL_TIMEOUT_SEC = 5.0
 
 
 def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
@@ -91,6 +96,16 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
     if not outcome.success:
         return _nav_failure(outcome.kind, status)
     return MCPToolResult(success=True)
+
+
+def _future_response(future, completed: bool):
+    """``(ответ, текст ошибки)`` будущего вызова сервиса; ``result()`` rclpy может бросить."""
+    if not completed:
+        return None, None
+    try:
+        return future.result(), None
+    except Exception as exc:  # noqa: BLE001 - исключение будущего = вызов не удался
+        return None, str(exc) or type(exc).__name__
 
 
 def _lookup_pose(pose_getter, logger) -> Optional[Dict[str, float]]:
@@ -355,15 +370,36 @@ class StopNavigationTool(MCPTool):
     def execute(self) -> MCPToolResult:
         self.log_info("Остановка навигации")
 
-        if not self.cancel_client.wait_for_service(timeout_sec=0.5):
-            return MCPToolResult(success=False, error="Cancel service недоступен")
+        ready = self.cancel_client.wait_for_service(timeout_sec=0.5)
+        response, completed, error = None, False, None
+        if ready:
+            request = CancelGoal.Request()
+            request.goal_info = GoalInfo()  # нулевые uuid и время — отменить все цели
+            future = self.cancel_client.call_async(request)
+            completed = wait_future(future, timeout_sec=_CANCEL_ALL_TIMEOUT_SEC)
+            response, error = _future_response(future, completed)
 
-        request = CancelGoal.Request()
-        request.goal_info = GoalInfo()
-        self.cancel_client.call_async(request)
+        # Успех — только по ответу сервера отмены (#3789, ADR-0148): фразу строит код.
+        call = classify_service_call(
+            ready=ready, completed=completed, response=response, label=_CANCEL_ALL_LABEL, error=error
+        )
+        if not call.success:
+            self.log_warning(f"⚠️ {call.error}")
+            return MCPToolResult(
+                success=False,
+                error=call.error,
+                message="Не уверен, что остановился: отмена навигации не подтверждена",
+                data={"outcome": call.kind},
+            )
 
-        self.log_info("Команда отмены отправлена")
-        return MCPToolResult(success=True, message="Останавливаюсь")
+        outcome = classify_cancel_response(response)
+        if not outcome.success:
+            self.log_warning(f"⚠️ {outcome.error}")
+            return MCPToolResult(
+                success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
+            )
+        self.log_info(f"Отмена подтверждена: {outcome.kind}")
+        return MCPToolResult(success=True, message=outcome.message, data={"outcome": outcome.kind})
 
 
 # ============================================================
