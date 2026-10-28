@@ -581,6 +581,10 @@ class RosLogHandler(logging.Handler):
     вызывались, - ``Executor`` пишет в ``logging.getLogger(__name__)``, а у python logging без обработчика уровня INFO
     нет (только WARNING и выше, через ``lastResort``). Передавать ``log=`` каждому модулю по отдельности - значит терять
     строки тех, кому его забыли дать (``turn.py``, ``plan.rap_pauses``); обработчик на логгер пакета берёт их все.
+
+    Запись принадлежит логгеру ROS, а не корневому обработчику python (28.10: строка ``📨 [execute] …`` шла в лог дважды -
+    через этот обработчик и второй раз через корневой с префиксом ``[… - rob_box_dialog.execute:228 - INFO]``):
+    ``attach`` ставит логгеру пакета ``propagate=False``, ``close`` возвращает прежнее значение.
     """
 
     def __init__(self, ros_logger: Any, package: str = DIALOG_LOGGER) -> None:
@@ -588,6 +592,7 @@ class RosLogHandler(logging.Handler):
         self._ros = ros_logger
         self._package = logging.getLogger(package)
         self._was_level = self._package.level
+        self._was_propagate = self._package.propagate
 
     @classmethod
     def attach(cls, ros_logger: Any, package: str = DIALOG_LOGGER) -> "RosLogHandler":
@@ -597,6 +602,7 @@ class RosLogHandler(logging.Handler):
         handler = cls(ros_logger, package)
         handler._package.addHandler(handler)
         handler._package.setLevel(logging.INFO)
+        handler._package.propagate = False  # строка уже в логе ROS: корневой обработчик python её не дублирует
         return handler
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -614,10 +620,11 @@ class RosLogHandler(logging.Handler):
             self.handleError(record)
 
     def close(self) -> None:
-        """Отвязать от логгера пакета и вернуть ему прежний уровень (повторно безопасно)."""
+        """Отвязать от логгера пакета и вернуть ему прежние уровень и ``propagate`` (повторно безопасно)."""
         if self in self._package.handlers:
             self._package.removeHandler(self)
             self._package.setLevel(self._was_level)
+            self._package.propagate = self._was_propagate
         super().close()
 
 
