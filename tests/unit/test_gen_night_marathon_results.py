@@ -523,8 +523,13 @@ def test_vacuum_patterns_replaced_by_results():
     for label in ("n205a_boris_warmup", "n205b_boris_warmup_spartak", "n205c_boris_warmup_tease"):
         assert _verdict(label, "\n".join([_speaker("Борис", 0.88), DONE]))["pass"], label
         assert not _verdict(label, "\n".join([_speaker("Саша", 0.88), DONE]))["pass"], label
+    # Решение Шифу 28.10 («пусть сохраняет»): на «запоминай» робот вправе записать сводку о Саше в память -- запрета
+    # memory_save у n202a нет; шаг судит механизм (голос опознан), а не запись факта.
     saved = "\n".join([_speaker("Саша", 0.93), "✅ Инструмент memory_save выполнен успешно", DONE])
-    assert not _verdict("n202a_sasha_warmup", saved)["pass"], "незапрошенный memory_save из бэклога"
+    assert _verdict("n202a_sasha_warmup", saved)["pass"], "запись в память на «запоминай» -- не провал (28.10)"
+    assert "memory_save" not in _acc("n202a_sasha_warmup")["must_not_call"]
+    unknown = "\n".join(["👤 Speaker: unknown (311 ms)", "✅ Инструмент memory_save выполнен успешно", DONE])
+    assert not _verdict("n202a_sasha_warmup", unknown)["pass"], "запись в память не заменяет опознание голоса"
     synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=%s"
     honest = "\n".join([_tts("Сейчас я на MiniMax, голос male-qn-qingse."), synth % "minimax", DONE])
     assert _verdict("n402_current_voice", honest)["pass"]
