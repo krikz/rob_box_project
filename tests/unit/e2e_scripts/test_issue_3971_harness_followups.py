@@ -295,6 +295,7 @@ def test_scenario_loop_does_not_play_skipped_step_and_summary_counts_it(tmp_path
         extract_function("ensure_outdir"),
         extract_function("emit_step"),
         extract_function("mark_fail_kind"),
+        extract_function("check_music_compare"),  # #3971: сверка вида результата
         extract_function("write_summary"),
         'run_step() { echo "PLAYED[$3]"; return 0; }',
         "parse_transcript() { :; }",
