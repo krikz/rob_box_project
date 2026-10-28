@@ -334,6 +334,14 @@ def test_short_budget_skips_whole_slots_for_every_variant(base, parts):
     assert report["skipped"] and "Не запущено (бюджет LLM" in um.render(report)
 
 
+def test_variants_of_one_slot_get_the_same_cap(base, parts):
+    results = fake_plan(base, parts, ["A", "C"], [1, 2], 2, 600)
+    by_slot = {}
+    for r in results:
+        by_slot.setdefault((r.part, r.run), set()).add(r.cap)
+    assert all(len(caps) == 1 for caps in by_slot.values()), by_slot
+
+
 def test_stability_ignores_not_run_and_not_evaluated():
     def rep(label, verdict):
         return dm.StepReport("9", label, "т", dm.TEXT, [], verdict=verdict)

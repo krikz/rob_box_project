@@ -318,7 +318,8 @@ def skipped_run(variant: str, slot: Slot, why: str) -> VariantRun:
 async def run_plan(variants: Sequence[str], slots: Sequence[Slot], make: StandFactory, budget: int,
                    max_retries: Optional[int]) -> List[VariantRun]:
     """Слоты по порядку. Слот идёт, если остатка хватит всем вариантам по самому дорогому сделанному проходу (+ запас
-    шага); иначе весь слот ``NOT_RUN``. Внутри слота остаток делится поровну между вариантами (как в этапе 1)."""
+    шага); иначе весь слот ``NOT_RUN``. Внутри слота у каждого варианта один и тот же потолок - остаток на начало слота
+    поровну; недобранное вариантом переходит в следующие слоты, а не соседу по слоту."""
     spent, costliest, done = 0, 0, []
     for slot in slots:
         remaining = budget - spent
@@ -327,8 +328,8 @@ async def run_plan(variants: Sequence[str], slots: Sequence[Slot], make: StandFa
             why = f"бюджет LLM: проход не запущен (остаток {remaining} < {need} на {len(variants)} вариант(а))"
             done += [skipped_run(v, slot, why) for v in variants]
             continue
-        for n, variant in enumerate(variants):
-            cap = (budget - spent) // (len(variants) - n)
+        cap = remaining // len(variants)
+        for variant in variants:
             result = await run_variant(variant, slot, make, cap, max_retries)
             spent += result.llm_calls
             costliest = max(costliest, result.llm_calls)
@@ -378,11 +379,15 @@ def deepseek_balance() -> Optional[Dict[str, Any]]:
     return {"currency": str(info.get("currency")), "total": float(info.get("total_balance"))}
 
 
-def deepseek_spend(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def deepseek_spend(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]], calls: int) -> Dict[str, Any]:
+    """Цена прогона по балансу аккаунта. Баланс не получен или не сдвинулся при вызовах - цена «не измерена», а не 0."""
     if before is None or after is None or before["currency"] != after["currency"]:
         return {"before": before, "after": after, "spent": None, "note": "баланс не получен - цена не измерена"}
-    return {"before": f"{before['total']:.4f} {before['currency']}", "after": f"{after['total']:.4f} {after['currency']}",
-            "spent": f"{before['total'] - after['total']:.4f} {before['currency']}",
+    out = {"before": f"{before['total']:.4f} {before['currency']}", "after": f"{after['total']:.4f} {after['currency']}"}
+    if calls and before["total"] == after["total"]:
+        return {**out, "spent": None, "note": f"баланс не сдвинулся за {calls} вызовов (обновляется с задержкой или "
+                                              f"аккаунт в минусе) - по балансу цена не измерена"}
+    return {**out, "spent": f"{before['total'] - after['total']:.4f} {before['currency']}",
             "note": "разница баланса аккаунта до и после прогона; ключ общий - в неё входят и чужие вызовы этого ключа"}
 
 
@@ -489,7 +494,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         make = real_factory(args, jev_factory(args) if uv.C in variants else None)
     before = None if args.fake else deepseek_balance()
     results = asyncio.run(run_plan(variants, slots, make, args.budget, args.max_retries))
-    spend = None if args.fake else deepseek_spend(before, deepseek_balance())
+    spend = None if args.fake else deepseek_spend(before, deepseek_balance(), sum(r.llm_calls for r in results))
     live = live_section(results, corpus, Path(args.live_dir)) if args.live_dir else None
     report = build_report(results, corpus, args, live, loaded, spend)
     print(render(report))

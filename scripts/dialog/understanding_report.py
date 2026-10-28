@@ -381,9 +381,9 @@ def price_lines(meta: Dict[str, Any]) -> List[str]:
     ds = meta.get("deepseek") or {}
     if not ds:
         return ["- DeepSeek: не измерялась (фейковый провайдер)."]
-    return [f"- DeepSeek: баланс до {ds.get('before')}, после {ds.get('after')}, потрачено {ds.get('spent')} "
-            f"({ds.get('note')}); вызовов LLM {meta.get('llm_calls_total')}, входных токенов по ходам "
-            f"{meta.get('prompt_tokens_total')}."]
+    return [f"- DeepSeek: баланс до {ds.get('before')}, после {ds.get('after')}, потрачено "
+            f"{ds.get('spent') or 'не измерено'} ({ds.get('note')}); вызовов LLM {meta.get('llm_calls_total')}, входных "
+            f"токенов по ходам (usage API, выходные стенд не считает) {meta.get('prompt_tokens_total')}."]
 
 
 def render_live(live: Dict[str, Any]) -> List[str]:
