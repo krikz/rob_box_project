@@ -29,7 +29,8 @@ scenes for «покажи по очереди радость, грусть и у
 person's words — and ``rob_box_dialog`` must not import this ROS package.
 So the table itself (``KNOWN_ANIMATIONS``, ``ANIMATION_ALIASES``,
 ``animation_name``) lives in ``rob_box_dialog.knowledge``; this module
-re-exports it and keeps the tool-side rules (fallback, show seconds).
+re-exports it and keeps the tool-side rule (fallback). Show seconds is one rule for the tool and the
+dialogue: ``rob_box_dialog.expression.show_seconds`` (#4089).
 """
 
 from __future__ import annotations
@@ -39,14 +40,8 @@ from rob_box_dialog.knowledge import ANIMATION_ALIASES, KNOWN_ANIMATIONS, animat
 __all__ = [
     "ANIMATION_ALIASES",
     "KNOWN_ANIMATIONS",
-    "SHOW_MAX_S",
-    "SHOW_MIN_S",
-    "clamp_show_seconds",
     "normalize_animation",
 ]
-
-#: ``play_animation``: допустимая длительность показа, секунды; вне диапазона - ``SHOW_MIN_S``.
-SHOW_MIN_S, SHOW_MAX_S = 2.0, 30.0
 
 
 def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str:
@@ -58,17 +53,3 @@ def normalize_animation(animation: str | None, *, fallback: str = "idle") -> str
     the result against their input.
     """
     return animation_name(animation) or fallback
-
-
-def clamp_show_seconds(duration: float | None) -> float | None:
-    """Длительность показа ``play_animation``: ``None`` - по умолчанию лица; вне ``[SHOW_MIN_S, SHOW_MAX_S]`` - минимум.
-
-    Правило тула: его применяют ответ тула модели и диалог v1 (``turn_tools.show_seconds``). Диалог v2 приводит
-    время из данных тула к своему правилу показа ``rob_box_dialog.expression.show_seconds`` (#4083: не меньше
-    ``FACE_SHOW_MIN_S``), поэтому 60 с у v2 дают 2 с тула, а на лице 5 с, а не 30. Свести в одно правило - после
-    удаления v1 (PR-15): тест v1 (``test_turn_stages``) держит нынешнее «вне диапазона - минимум».
-    """
-    if duration is None:
-        return None
-    seconds = float(duration)
-    return seconds if SHOW_MIN_S <= seconds <= SHOW_MAX_S else SHOW_MIN_S

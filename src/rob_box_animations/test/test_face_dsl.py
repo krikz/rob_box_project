@@ -179,6 +179,16 @@ def test_valid_face_json_starts_the_scene_and_is_answered_started():
     assert node.director._overlay[0] == {'eyes': 'wide', 'tint': 'red'}
 
 
+def test_face_json_without_time_is_held_by_the_one_show_default():
+    """#4089: сцена без ``duration_s`` держится умолчанием показа (одно число с диалогом), а не своим."""
+    from rob_box_dialog.knowledge import FACE_SHOW_DEFAULT_S
+    node = _face_node()
+    node._on_expression(_expression(face_json='{"eyes": "wide"}'))
+    slots, until = node.director._overlay
+    assert slots == {'eyes': 'wide'}
+    assert until - time.time() == pytest.approx(FACE_SHOW_DEFAULT_S, abs=1.0)
+
+
 def test_invalid_face_json_is_dropped_the_rest_still_runs_and_skipped_invalid_face_is_sent():
     node = _face_node()
     node._on_expression(_expression(emotion='happy', face_json='{"eyes": "neon"}'))
