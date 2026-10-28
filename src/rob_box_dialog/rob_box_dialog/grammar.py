@@ -26,7 +26,8 @@ from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, 
                                   speech_manner, stop_command, strip_wake_word, without_forms)
 
 _TOKEN = re.compile(r"\w+")
-#: ``(voice_id, display_name)`` голосов активного провайдера (реестр ``tts_voice_registry`` — у вызывающего).
+#: ``(voice_id, имена)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` — у вызывающего):
+#: имена — слова через пробел, русское ``display_name`` и кириллические алиасы голоса (``VOICE_ALIASES``).
 Voices = Sequence[Tuple[str, str]]
 #: Шаг голоса: ``(тул, действие)`` — ключ ``knowledge.VOICE_STEP.requests``.
 Step = Tuple[str, str]
@@ -280,6 +281,8 @@ def _volume_word(word: str) -> bool:
 
 
 def _voice_tokens(voice_id: str, display: str) -> List[str]:
+    """Слова-имена голоса: имена из реестра (``display``: русское название и кириллические алиасы, #4114) и хвост id по
+    границам регистра («English_WiseScholar» → «wise», «scholar»)."""
     split = re.sub(r"([a-z])([A-Z])", r"\1 \2", voice_id.split("_", 1)[-1])
     return _words(f"{display} {split}")
 

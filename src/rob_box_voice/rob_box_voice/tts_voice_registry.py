@@ -244,11 +244,18 @@ def voices_for(provider: str) -> list[str]:
 
 
 def named_voices_for(provider: str) -> list[tuple[str, str]]:
-    """``(voice_id, display_name)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос в реестре
-    (``rob_box_dialog.grammar``, #4086). Имя - русское ``display_name`` из ``VOICE_METADATA``, нет записи - сам id.
-    Одно знание для v1 (``tier1_host``) и v2 (``dialog_node``); провайдер неизвестен - пустой список."""
-    return [(vid, (VOICE_METADATA.get(f"{provider}:{vid}") or {}).get("display_name", vid))
-            for vid in voices_for(provider)]
+    """``(voice_id, имена)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос в реестре
+    (``rob_box_dialog.grammar``, #4086). Имена - слова через пробел: русское ``display_name`` из ``VOICE_METADATA`` (нет
+    записи - сам id) и записи ``VOICE_ALIASES`` («Весельчак Джовиалмен Джовиалмэн»): кириллическая запись латинского
+    имени, как её слышит STT, - тоже имя голоса (ревью PR #4114: «говори голосом джовиалмен»). Хвост id («Jovialman»)
+    грамматика берёт сама. Одно знание об именах - ``VOICE_ALIASES`` (его же читает ``voice_id_by_name``); для v1
+    (``tier1_host``) и v2 (``dialog_node``) список один; провайдер неизвестен - пустой список."""
+    out = []
+    for vid in voices_for(provider):
+        key = f"{provider}:{vid}"
+        shown = (VOICE_METADATA.get(key) or {}).get("display_name", vid)
+        out.append((vid, " ".join((shown, *VOICE_ALIASES.get(key, ())))))
+    return out
 
 
 def known_provider(name: object) -> str:

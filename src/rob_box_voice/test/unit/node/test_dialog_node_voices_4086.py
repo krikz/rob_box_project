@@ -35,7 +35,12 @@ from rob_box_llm.provider import LLMResponse, ToolResult  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core.tier1_host import Tier1Runner  # noqa: E402
 from rob_box_voice.core.turn_context import tts_voices  # noqa: E402
-from rob_box_voice.tts_voice_registry import PROVIDER_VOICES, VOICE_METADATA, named_voices_for  # noqa: E402
+from rob_box_voice.tts_voice_registry import (  # noqa: E402
+    PROVIDER_VOICES,
+    VOICE_ALIASES,
+    VOICE_METADATA,
+    named_voices_for,
+)
 
 TIME = type(M.TurnEvent().stamp)
 
@@ -87,6 +92,10 @@ def _say(made, text):
     ("Робот, говори голосом Весельчак", "English_Jovialman"),
     ("Робот, говори голосом Jovialman", "English_Jovialman"),
     ("Робот, включи голос надёжного мужика", "Russian_ReliableMan"),
+    # кириллические алиасы (VOICE_ALIASES, ревью PR #4114): так голос называет STT
+    ("Робот, говори голосом джовиалмен", "English_Jovialman"),
+    ("Робот, говори голосом Джовиалмэн", "English_Jovialman"),
+    ("Робот, включи голос Вайз Скулар", "English_WiseScholar"),
 ])
 def test_minimax_voice_by_name_is_set_by_code_without_llm(node, phrase, voice):
     _say(node, phrase)
@@ -120,11 +129,28 @@ def test_ambiguous_or_unknown_name_goes_to_the_model(node, phrase):
 # -- функция реестра имён: одна для v1 и v2 ---------------------------------------------------------------------------
 
 
-def test_registry_pairs_are_catalog_ids_with_russian_display_names():
+def test_registry_pairs_are_catalog_ids_with_russian_display_names_and_aliases():
     pairs = dict(named_voices_for("minimax"))
     assert list(pairs) == PROVIDER_VOICES["minimax"], "все голоса каталога, в порядке каталога"
-    assert pairs["English_Jovialman"] == "Весельчак" == VOICE_METADATA["minimax:English_Jovialman"]["display_name"]
+    display = VOICE_METADATA["minimax:English_Jovialman"]["display_name"]
+    assert display == "Весельчак" and pairs["English_Jovialman"].split() == [display, "Джовиалмен", "Джовиалмэн"]
+    assert pairs["Russian_ReliableMan"] == VOICE_METADATA["minimax:Russian_ReliableMan"]["display_name"], "нет алиасов - одно имя"
     assert named_voices_for("unknown") == []
+
+
+def test_every_alias_of_the_registry_is_a_name_the_tier1_grammar_resolves():
+    """Одно знание об именах - ``VOICE_ALIASES``: каждый алиас реестра, названный вслух, грамматика Tier-1 сводит к его
+    голосу кодом (``set_voice``), без модели."""
+    from rob_box_dialog.grammar import match
+    from rob_box_dialog.session import Session
+
+    snapshot = Session("personality").snapshot
+    for key, aliases in VOICE_ALIASES.items():
+        provider, voice = key.split(":", 1)
+        voices = named_voices_for(provider)
+        for alias in aliases:
+            command = match(f"говори голосом {alias}", snapshot, voices)
+            assert command is not None and command.kind == "set_voice" and command.args["voice"] == voice, (key, alias)
 
 
 def test_tts_voices_follow_the_sounding_provider_then_the_parameter_then_the_robot_default():
