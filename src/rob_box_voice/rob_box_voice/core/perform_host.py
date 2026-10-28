@@ -5,8 +5,8 @@
 * ``Say`` → ``SpeechRequest`` (``speech_client.say``: пред-синтез ``commit=false`` или звучание в ``at``;
   ``boundary=sentence`` — «хватит» дочитывает предложение, X5);
 * ``Cancel`` → ``SpeechCancel`` реплики по ``speech_id``;
-* ``Backing`` → ``request_music(intent=backing)``, ``MusicStop`` → ``stop_music(boundary)`` — исполнителем тулов
-  напрямую (:meth:`PlanToolExecutor.execute_owned`): это код выступления, а не ход LLM — без допуска плана и без
+* ``Backing`` → ``request_music(intent=backing)``, ``MusicStop`` → ``stop_music(boundary, track_id)`` — исполнителем
+  тулов напрямую (:meth:`PlanToolExecutor.execute_owned`): это код выступления, а не ход LLM — без допуска плана и без
   речи «музыки хода»; исход запуска подложки (``started``/``rejected``/``busy``) — из ответа тула
   (``PerformBlock.on_backing``: только он делает трек своей подложкой, #4085), остальное (``nearly_finished``,
   ``finished``, ``idle``, чужой ``started``) — из ``/voice/music/event`` (``PerformBlock.on_music``);
