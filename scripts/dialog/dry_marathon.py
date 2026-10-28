@@ -48,6 +48,8 @@ STEP_CALLS_RESERVE = 8
 
 TEXT, ACOUSTIC = "text", "acoustic"
 PASS, FAIL, NOT_RUN = "PASS", "FAIL", "NOT_RUN"
+#: Судья или стенд упали на шаге (исключение, пустой лог): вердикта нет - «не оценено», а не FAIL (#4163).
+NOT_EVALUATED = "NOT_EVALUATED"
 
 #: Паттерны шага, которые ловят строки акустических владельцев (STT, биометрия, синтез) и владельцев, чьих строк фейки
 #: сухого стенда не пишут (ревью #4046: шаг с ними на стенде красный всегда): ``tts_node`` («<ось> изменён:», ответ тула
@@ -91,6 +93,10 @@ class StepReport:
     fakes: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     log: str = ""
+    #: Ход за попытку: время, токены, Tier-1, срез тулов, что добавил мост, выбор классификатора (замер #4163).
+    turns: List[Dict[str, Any]] = field(default_factory=list)
+    #: Вердикт первой попытки (``verdict`` - после повторов ``retry_acceptance``, как у живого харнесса).
+    first_verdict: str = ""
 
 
 def load_act(key: str) -> Act:
@@ -172,16 +178,39 @@ async def run_step(stand: DryStand, act: str, step: Dict[str, Any], prev_speech:
             report.fail.append(f"бюджет LLM исчерпан ({stand.counter.calls}/{budget})")
             report.verdict = NOT_RUN if attempt == 1 else report.verdict
             break
-        heard = await stand.hear(step["text"], step.get("voice", ""))
-        report.attempts, report.addressed, report.log = attempt, heard.addressed, heard.log
-        report.tools, report.said, report.fakes = heard.tools, heard.said, sorted(heard.touched)
-        report.llm_calls += heard.llm_calls
-        report.notes = [f"{t}: {st}" + (f"({why})" if why else "") for t, st, why in heard.outcomes if st != "done"]
-        fails = check_step(step, heard)
+        try:
+            heard = await stand.hear(step["text"], step.get("voice", ""))
+            report.attempts, report.addressed, report.log = attempt, heard.addressed, heard.log
+            report.tools, report.said, report.fakes = heard.tools, heard.said, sorted(heard.touched)
+            report.llm_calls += heard.llm_calls
+            report.turns.append(turn_stats(heard))
+            report.notes = [f"{t}: {st}" + (f"({why})" if why else "")
+                            for t, st, why in heard.outcomes if st != "done"]
+            if not heard.log.strip():
+                raise RuntimeError("у шага нет лога: судить не по чему")
+            fails = check_step(step, heard)
+        except Exception as exc:  # noqa: BLE001 — упал стенд или судья: вердикта нет, это не FAIL модели (#4163)
+            report.fail, report.verdict = [f"не оценено: {type(exc).__name__}: {exc}"], NOT_EVALUATED
+            break
         report.fail, report.verdict = fails, (FAIL if fails else PASS)
+        report.first_verdict = report.first_verdict or report.verdict
         if not fails or etm.retry_block_reason(heard.log):
             break
     return report, "\n".join(report.said)
+
+
+def turn_stats(heard: Any) -> Dict[str, Any]:
+    """Данные хода для замера понимания: время, вызовы и токены LLM, Tier-1, срез тулов, добавленное мостом, выбор Jev."""
+    route = heard.route
+    return {"addressed": heard.addressed, "latency_ms": heard.latency_ms, "llm_calls": heard.llm_calls,
+            "tokens": heard.tokens, "tier1": heard.tier1, "offered": list(heard.offered),
+            "widened": list(heard.widened), "tools": list(heard.tools), "calls": [list(c) for c in heard.calls],
+            "asked_yes": heard.asked_yes, "said": list(heard.said), "outcomes": [list(o) for o in heard.outcomes],
+            "route": None if route is None else {"group": route.group, "confidence": route.confidence,
+                                                 "accepted": route.accepted, "error": route.error,
+                                                 "latency_ms": route.latency_ms,
+                                                 "input_tokens": route.input_tokens,
+                                                 "output_tokens": route.output_tokens}}
 
 
 async def run_act(stand: DryStand, act: Act, budget: int, max_retries: Optional[int],
@@ -215,7 +244,8 @@ def tally(reports: Sequence[StepReport]) -> Dict[str, int]:
             "text_pass": sum(r.verdict == PASS for r in text), "text_fail": sum(r.verdict == FAIL for r in text),
             "acoustic_info_pass": sum(r.verdict == PASS for r in acoustic),
             "acoustic_info_fail": sum(r.verdict == FAIL for r in acoustic),
-            "not_run": sum(r.verdict == NOT_RUN for r in reports)}
+            "not_run": sum(r.verdict == NOT_RUN for r in reports),
+            "not_evaluated": sum(r.verdict == NOT_EVALUATED for r in reports)}
 
 
 def render(acts: Dict[str, Sequence[StepReport]], llm_calls: int, budget: int) -> str:
@@ -264,14 +294,22 @@ class LogRelay:
             self.target.emit(line)
 
 
-def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Optional[float]) -> DryStand:
-    """Стенд с настоящей цепочкой LLM (ключи из окружения; нет ключа — ``RuntimeError`` от сборки цепочки)."""
+def build_real_stand(providers: Sequence[str], workdir: Path, deadline_s: Optional[float], *,
+                     variant: str = "A", router: Any = None, memory_path: Optional[Path] = None,
+                     model: str = "", clock: Any = None) -> DryStand:
+    """Стенд с настоящей цепочкой LLM (ключи из окружения; нет ключа — ``RuntimeError`` от сборки цепочки).
+
+    ``variant``/``router`` - кто понимает фразу (``understanding_variants``), ``memory_path`` - постоянная e2e-память
+    консоли, ``model`` - модель цепочки (одна на все её провайдеры: у фолбека с другим API свою не задать)."""
+    from rob_box_llm.provider import LLMSettings  # noqa: PLC0415
     from rob_box_voice.core.dialog_v2_ports import CallCounter, assemble_llm  # noqa: PLC0415
 
     relay, counter = LogRelay(), CallCounter()
     llm, system = assemble_llm(providers, counter, prompt_dir=PROMPT_DIR,
-                               system_prompt_file="master_prompt_compact.txt", log=relay)
-    stand = DryStand(llm, counter, system, workdir)
+                               system_prompt_file="master_prompt_compact.txt",
+                               settings=LLMSettings(model=model) if model else None, log=relay)
+    stand = DryStand(llm, counter, system, workdir, variant=variant, router=router, memory_path=memory_path,
+                     clock=clock)
     relay.target = stand
     if deadline_s:
         stand.engine._deadline_s = deadline_s  # noqa: SLF001 — бюджет хода сети песочницы, не знание робота

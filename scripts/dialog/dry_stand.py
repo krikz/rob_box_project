@@ -15,12 +15,16 @@
 
 Чего стенд не видит по построению: STT (опечатки распознавания, «Робби»), настоящая биометрия, звук, тайминги
 перебивания, гонки ROS. Такие шаги помечает ``dry_marathon.classify_step``.
+
+Вариант понимания (карточка #4163, :mod:`understanding_variants`): ``DryStand(variant="A"|"B"|"C")`` на время реплики
+подменяет в движке Tier-1 и срез тулов - кто понимает фразу, код по словам (A) или модель (B, C). Боевой код не тронут.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
+import re
 import sys
 import tempfile
 import types
@@ -46,16 +50,17 @@ ensure_paths()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
+import understanding_variants as uv  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
     Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
 )
 from rob_box_dialog.backlog import Backlog  # noqa: E402
-from rob_box_dialog.e2e_events import open_events  # noqa: E402
+from rob_box_dialog.e2e_events import inside_robot_data, open_events  # noqa: E402
 from rob_box_dialog.music_state import MusicStateMemory  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
-from rob_box_dialog.turn import TurnEngine, host_sections  # noqa: E402
+from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
@@ -91,6 +96,17 @@ class FakeClock:
 
     def wall(self) -> datetime:
         return datetime.fromtimestamp(self._t)
+
+
+class LiveClock(FakeClock):
+    """Часы консоли: время суток для человека - настоящее (``get_current_time`` не врёт про «час сорок ночи»), а
+    сессия и бэклог идут по той же модели времени, что и в марафоне (речь и паузы), от настоящего «сейчас»."""
+
+    def __init__(self) -> None:
+        super().__init__(datetime.now())
+
+    def wall(self) -> datetime:
+        return datetime.now().astimezone()
 
 
 @dataclass
@@ -130,15 +146,19 @@ class _FakeRosNode:
         return self._logger
 
 
-def load_memory_tools() -> types.ModuleType:
-    """``rob_box_mcp_tools.tools.memory`` без ``tools/__init__`` (тот тянет rclpy через navigation): пакет-заглушка с
+def load_tool_module(module: str) -> types.ModuleType:
+    """``rob_box_mcp_tools.tools.<module>`` без ``tools/__init__`` (тот тянет rclpy через navigation): пакет-заглушка с
     ``__path__``, сам модуль — настоящий."""
     name = "rob_box_mcp_tools.tools"
     if name not in sys.modules:
         stub = types.ModuleType(name)
         stub.__path__ = [str(_SRC / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "tools")]
         sys.modules[name] = stub
-    return importlib.import_module(f"{name}.memory")
+    return importlib.import_module(f"{name}.{module}")
+
+
+def load_memory_tools() -> types.ModuleType:
+    return load_tool_module("memory")
 
 
 # ── Биометрия диктора (фейк) ──────────────────────────────────────────────────────────────────────────────────────
@@ -282,14 +302,17 @@ class FakeTools:
     # -- чтение состояния робота (query) --------------------------------------------------------------------------
 
     def _t_get_current_time(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        """Те же поля и та же пропись времени, что у настоящего тула (``system.GetCurrentTimeTool``: ``format_time_ru``,
+        время суток по часу), от часов стенда: марафон - ночь мастерской, консоль - настоящее время."""
+        system = load_tool_module("system")
         now = self._stand.clock.wall()
         weekdays = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
         months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
                   "ноября", "декабря"]
         return True, {"time": now.strftime("%H:%M"), "date": f"{now.day} {months[now.month - 1]} {now.year}",
-                      "weekday": weekdays[now.weekday()], "period": "ночь", "iso": now.isoformat(timespec="seconds"),
-                      "timezone": "Europe/Moscow",
-                      "formatted_time": f"{now.hour} часов {now.minute} минут ночи"}
+                      "weekday": weekdays[now.weekday()], "period": system._hour_period(now.hour),  # noqa: SLF001
+                      "iso": now.isoformat(timespec="seconds"), "timezone": str(now.tzinfo or "Europe/Moscow"),
+                      "formatted_time": system.format_time_ru(now)}
 
     def _t_get_battery_level(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return True, {"battery_level": 87.0, "warning": False}
@@ -497,17 +520,62 @@ class HearResult:
     touched: Set[str] = field(default_factory=set)
     #: Исходы действий хода из e2e-БД: ``(тул, статус, причина)`` — «вызван» ещё не «исполнен» (``rejected{…}``).
     outcomes: List[Tuple[str, str, Optional[str]]] = field(default_factory=list)
+    #: Вид Tier-1, которым ход закрыт кодом без LLM (``knowledge.TIER1_KINDS``); ``""`` - ход шёл к модели.
+    tier1: str = ""
+    #: Время хода по движку (реплика → итог, с ожиданием LLM и исполнителей), мс; у варианта C плюс ответ классификатора.
+    latency_ms: int = 0
+    #: Токены вызовов LLM хода (от провайдера, если прислал ``usage``; фейк - 0).
+    tokens: int = 0
+    #: Тулы, которые увидела модель (срез хода); ход без LLM - пусто. Тулы, добавленные мостом позже, - в ``widened``.
+    offered: List[str] = field(default_factory=list)
+    #: Тулы вне среза, которые мост добавил в запрос после ``tool_not_available`` (``tools_view.widen_for``, #3960).
+    widened: List[str] = field(default_factory=list)
+    #: Вариант понимания, на котором шёл ход (``understanding_variants``), и выбор классификатора (вариант C).
+    variant: str = uv.A
+    route: Any = None
+    #: Вызовы тулов хода с аргументами (``tools`` - только имена) и ответ человека «да» на вопрос тула (подтверждение).
+    calls: List[Tuple[str, Dict[str, Any]]] = field(default_factory=list)
+    asked_yes: bool = False
+
+
+_TIER1_LINE = re.compile(re.escape(LOG_MARK) + r" tier1 kind=(\w+)")
+_ASKED_YES_LINE = re.compile(re.escape(LOG_MARK) + " " + re.escape(ASK_MARK) + " ответ да")
+_WIDENED_LINE = re.compile(r"tool_not_available → в запрос добавлены тулы \[(.*?)\]")
+
+
+def tier1_kind(log: str) -> str:
+    """Вид Tier-1 хода по строке движка ``🧭 [turn-v2] tier1 kind=…`` (та же строка, что читает живой харнесс)."""
+    found = _TIER1_LINE.search(log)
+    return found.group(1) if found else ""
+
+
+def widened_tools(log: str) -> List[str]:
+    """Тулы, которые мост добавил в запрос ``tool_not_available → …`` (строки моста команд в логе хода)."""
+    return [name.strip(" '\"") for line in _WIDENED_LINE.findall(log) for name in line.split(",") if name.strip(" '\"")]
 
 
 class DryStand:
     """Один «робот» без железа: сессия, бэклог, память, движок хода. ``llm`` — уже собранная цепочка с мостом команд
-    (``assemble_llm``) или фейковый провайдер в обёртке моста; ``counter`` считает её настоящие вызовы."""
+    (``assemble_llm``) или фейковый провайдер в обёртке моста; ``counter`` считает её настоящие вызовы.
+
+    ``variant`` - кто понимает фразу (``understanding_variants``: ``A`` как на роботе, ``B`` модель, ``C`` классификатор
+    ``router``); подмена Tier-1 и среза тулов живёт только на время реплики. ``memory_path`` - файл e2e-памяти, который
+    переживает прогон (консоль ``--db``); вне боевой ``/data``. ``clock`` - часы: по умолчанию ночь мастерской
+    (:class:`FakeClock`, марафон), у консоли - настоящее время (:class:`LiveClock`)."""
 
     def __init__(self, llm: Any, counter: CallCounter, system_prompt: str, workdir: Path,
-                 wake: Optional[Sequence[str]] = None) -> None:
+                 wake: Optional[Sequence[str]] = None, *, variant: str = uv.A, router: Any = None,
+                 memory_path: Optional[Path] = None, clock: Optional[FakeClock] = None) -> None:
         self.workdir = Path(workdir)
         self.workdir.mkdir(parents=True, exist_ok=True)
-        self.clock = FakeClock()
+        self.variant = uv.check(variant)
+        if self.variant == uv.C and router is None:
+            raise ValueError("вариант C без классификатора (router): нечем выбирать группу тулов")
+        self.router = router
+        if memory_path is not None and inside_robot_data(str(memory_path)):
+            raise ValueError(f"память {memory_path} внутри боевой /data: она общая с живыми людьми, e2e-память - вне неё")
+        self._memory_path = Path(memory_path) if memory_path is not None else None
+        self.clock = clock or FakeClock()
         self.counter = counter
         self.llm = llm
         self.system_prompt = system_prompt
@@ -553,6 +621,9 @@ class DryStand:
     def _new_memory(self) -> VoiceMemory:
         self._memory_gen += 1
         path = self.workdir / f"voice_memory_{self._memory_gen}.e2e.db"
+        if self._memory_path is not None and self._memory_gen == 1:  # консоль ``--db``: память переживает запуск
+            self._memory_path.parent.mkdir(parents=True, exist_ok=True)
+            path = self._memory_path
         # Ollama в сухом прогоне нет: векторный поиск выключен (FTS5 работает), порт закрыт — отказ мгновенный
         return VoiceMemory(str(path), ollama_base_url="http://127.0.0.1:9", ollama_timeout=0.2)
 
@@ -578,16 +649,18 @@ class DryStand:
 
     # -- вход -----------------------------------------------------------------------------------------------------
 
-    def _utterance_msg(self, text: str, started: float, ended: float, uid: str) -> Any:
+    def _utterance_msg(self, text: str, started: float, ended: float, uid: str, source: str = "respeaker") -> Any:
         def stamp(t: float) -> Any:
             return types.SimpleNamespace(sec=int(t), nanosec=int((t % 1) * 1e9))
 
-        return types.SimpleNamespace(text=text, source="respeaker", started_at=stamp(started), ended_at=stamp(ended),
+        return types.SimpleNamespace(text=text, source=source, started_at=stamp(started), ended_at=stamp(ended),
                                      utterance_id=uid, chat_id=0)
 
-    async def hear(self, text: str, voice_id: str = "", *, gap_s: float = STEP_GAP_S) -> HearResult:
+    async def hear(self, text: str, voice_id: str = "", *, gap_s: float = STEP_GAP_S,
+                   source: str = "respeaker") -> HearResult:
         """Реплика человека голосом ``voice_id``: STT → биометрия → адресация → (ход | бэклог). Как ``_on_utterance``
-        и ``_on_speaker`` хоста ``dialog_node``, только с фейковой биометрией и моделью времени."""
+        и ``_on_speaker`` хоста ``dialog_node``, только с фейковой биометрией и моделью времени. ``source`` - откуда
+        реплика (``address.SOURCE_*``): ``operator`` адресован без вейка - так говорит консоль ``scripts/dialogue``."""
         self._log = StepLog()
         self.touched = set()
         calls_before = self.counter.calls
@@ -597,7 +670,7 @@ class DryStand:
         self._utterances += 1
         uid = f"dry-u{self._utterances}"
         self.current_voice_id = voice_id
-        msg = self._utterance_msg(text, started, ended, uid)
+        msg = self._utterance_msg(text, started, ended, uid, source)
         self.emit(f"🎤 STT: {log_label(msg)}")
         bio = self.speakers.result_for(voice_id) if voice_id else {"is_known": False}
         if bio.get("is_known"):
@@ -624,16 +697,36 @@ class DryStand:
         self.clock.advance(BACKLOG_GAP_S)
         return HearResult(heard.text, False, decision.reason, log=self._log.text, touched=set(self.touched))
 
+    async def _route(self, decision: Addressed) -> Any:
+        """Выбор группы тулов классификатором до хода (вариант C); у других вариантов выбора нет. Ход, который закроет
+        Tier-1 безопасности (стоп, тишина - код решает первым, до модели), Jev не зовёт."""
+        if self.variant != uv.C:
+            return None
+        snap, safety = self.session.snapshot, uv.safety_match()
+        for said in (decision.text, decision.command):
+            command = safety(said, snap) if said else None
+            if command is not None and not command.disputed:
+                return None
+        return await self.router.choose(decision.text, snap.music_playing)
+
     async def _turn(self, decision: Addressed, text: str, calls_before: int) -> HearResult:
         self.tools.calls.clear()
         self.speech.all.clear()
-        agg = await self.engine.run(decision)
+        route = await self._route(decision)
+        offered: List[Tuple[str, ...]] = []
+        with uv.installed(self.variant, offered, lambda: route.as_pair() if route is not None else None):
+            agg = await self.engine.run(decision)
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
         self.clock.advance(spoken_s)
+        log = self._log.text
         return HearResult(text, True, source=decision.source, aggregate=agg,
                           said=[s.text for s in self.speech.all], tools=[name for name, _ in self.tools.calls],
-                          llm_calls=self.counter.calls - calls_before, log=self._log.text,
-                          touched=set(self.touched), outcomes=self._outcomes(agg.turn_id))
+                          llm_calls=self.counter.calls - calls_before, log=log,
+                          touched=set(self.touched), outcomes=self._outcomes(agg.turn_id), tier1=tier1_kind(log),
+                          latency_ms=agg.latency_ms + int(getattr(route, "latency_ms", 0) or 0), tokens=agg.tokens,
+                          offered=list(offered[0]) if offered else [], widened=widened_tools(log),
+                          variant=self.variant, route=route, calls=[(n, dict(a)) for n, a in self.tools.calls],
+                          asked_yes=_ASKED_YES_LINE.search(log) is not None)
 
     def _outcomes(self, turn_id: str) -> List[Tuple[str, str, Optional[str]]]:
         """Исходы действий хода — читателем e2e-БД, которым пользуются ``turn_metrics`` и ``honesty_audit``."""
@@ -648,5 +741,7 @@ def new_workdir(prefix: str = "dry_marathon_") -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
 
-__all__ = ["DryPorts", "DryStand", "FakeClock", "FakeSpeakers", "FakeSpeech", "FakeTools", "HearResult", "NO_FAKE",
-           "StepLog", "TOOL_OWNERS", "ensure_paths", "load_memory_tools", "new_workdir"]
+__all__ = ["DryPorts", "DryStand", "FakeClock", "LiveClock", "FakeSpeakers", "FakeSpeech", "FakeTools", "HearResult", "NO_FAKE",
+           "StepLog", "TOOL_OWNERS", "ensure_paths", "load_memory_tools", "load_tool_module", "new_workdir",
+           "tier1_kind",
+           "widened_tools"]

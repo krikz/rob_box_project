@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Локальный текстовый чат с диалоговой системой РОББОКСа (без ROS2).
+    Консоль диалога РОББОКСа на ходе v2 (сухой стенд, без ROS2 и без робота).
 
 .DESCRIPTION
     Выбирает интерпретатор (.venv в корне репозитория → python3.12+ →
@@ -10,7 +10,8 @@
 .EXAMPLE
     .\scripts\dialogue\run.ps1
     .\scripts\dialogue\run.ps1 --providers deepseek --debug
-    .\scripts\dialogue\run.ps1 --once "роббокс, привет" --wake-word
+    .\scripts\dialogue\run.ps1 --once "Сколько у тебя заряда?" --once "Робот, стоп"
+    .\scripts\dialogue\run.ps1 --db $HOME\.rob_box\console_memory.e2e.db --variant B
 #>
 
 $ErrorActionPreference = "Stop"
