@@ -366,11 +366,8 @@ def _set_styles_values() -> list[str]:
     return list(_knowledge().GEN_STYLES)
 
 
-def _face_param() -> dict[str, Any]:
-    """``play_animation.face`` — объект-сцена лица из ``rob_box_dialog.knowledge.face_schema()`` (ADR-0150 §5.5.9).
-
-    Та же схема, что у ``Command.expression.face``; зеркалит ``tools/animation.py::_face_parameter``.
-    """
+def _dialog_knowledge() -> Any:
+    """``rob_box_dialog.knowledge`` из дерева репо (одна таблица знания диалога), без установки пакета."""
     import importlib.util
 
     path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "knowledge.py"
@@ -380,7 +377,21 @@ def _face_param() -> dict[str, Any]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    schema = module.face_schema()
+    return module
+
+
+def _duration_param() -> dict[str, Any]:
+    """``play_animation.duration`` — описание из ``knowledge.FACE_SHOW_DURATION_HINT`` (#4089: одно правило времени)."""
+    return {"name": "duration", "type": "number", "description": _dialog_knowledge().FACE_SHOW_DURATION_HINT,
+            "required": False}
+
+
+def _face_param() -> dict[str, Any]:
+    """``play_animation.face`` — объект-сцена лица из ``rob_box_dialog.knowledge.face_schema()`` (ADR-0150 §5.5.9).
+
+    Та же схема, что у ``Command.expression.face``; зеркалит ``tools/animation.py::_face_parameter``.
+    """
+    schema = _dialog_knowledge().face_schema()
     props: dict[str, Any] = {
         name: {"name": name, "type": "string", "description": f"Слот лица «{name}»", "required": False,
                "enum": list(sub["enum"])}
@@ -396,6 +407,7 @@ def _face_param() -> dict[str, Any]:
 #: ``(tool_name, param_name)`` → resolver целого параметра-объекта, схема которого строится из таблицы знания.
 DYNAMIC_PARAMS = {
     ("play_animation", "face"): _face_param,
+    ("play_animation", "duration"): _duration_param,
 }
 
 

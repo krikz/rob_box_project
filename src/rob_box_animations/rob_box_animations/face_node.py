@@ -190,8 +190,9 @@ class FaceNode(Node):
             self.get_logger().warn(f'face_json отброшен ({why}): {msg.face_json[:160]!r}')
             self._answer(msg.turn_id, False, face_scene.INVALID_REASON)
             return
-        self.director.apply_face(face.slots(), face.duration_s, time.time())
-        self.get_logger().info(f'сцена LLM: {face.slots()} на {face.duration_s:g} с')
+        seconds = expression.show_seconds() if face.duration_s is None else face.duration_s  # без времени - умолчание #4089
+        self.director.apply_face(face.slots(), seconds, time.time())
+        self.get_logger().info(f'сцена LLM: {face.slots()} на {seconds:g} с')
         if answer:
             self._answer(msg.turn_id, True, '')
 

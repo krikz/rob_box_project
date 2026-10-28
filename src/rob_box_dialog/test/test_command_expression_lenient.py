@@ -118,7 +118,7 @@ def test_bridge_args_carry_the_moved_scene_inside_face():
     """Мост v1 отдаёт команду исполнителю через ``to_args`` — сцена уже на своём месте, второй разбор чистый."""
     cmd = parse({"actions": [_SOUND], "expression": {"emotion": "happy", "rear": "party"}})
     args = cm.to_args(cmd)
-    assert args["expression"] == {"emotion": "happy", "face": {"rear": "party", "duration_s": 5.0}}
+    assert args["expression"] == {"emotion": "happy", "face": {"rear": "party"}}
     again = parse(args)
     assert again.moved == () and again.dropped == () and again.expression == cmd.expression
 

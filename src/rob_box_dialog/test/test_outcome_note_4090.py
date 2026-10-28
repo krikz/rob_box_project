@@ -137,4 +137,4 @@ def test_song_being_written_says_the_wait_phrase_of_the_dialog_table_not_the_own
 
 def test_owner_text_fields_belong_to_action_tools_of_the_catalog():
     for tool, fields in kn.OUTCOME_OWNER_TEXT.items():
-        assert kn.TOOL_CLASSES[tool].startswith("action.") and fields.whole and fields.note, tool
+        assert kn.TOOL_CLASSES[tool].startswith("action.") and fields.note, tool

@@ -154,7 +154,7 @@ def _owner_text(result: ActionResult) -> Tuple[str, str]:
     fields = kn.OUTCOME_OWNER_TEXT.get(result.tool)
     if result.status != "done" or fields is None or _tool_key(result) is not None:
         return "", ""
-    return (str(result.data.get(fields.whole) or "").strip(), str(result.data.get(fields.note) or "").strip())
+    return tuple(str(result.data.get(key) or "").strip() if key else "" for key in (fields.whole, fields.note))
 
 
 def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[Utterance]:

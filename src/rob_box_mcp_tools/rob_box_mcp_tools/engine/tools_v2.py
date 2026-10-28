@@ -57,6 +57,7 @@ from rob_box_music.source import (CACHE, GEN_KINDS, GENERATE, SYNTH, Route, Sour
                                   source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
+from .brief import split_brief, unsupported, unsupported_note
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
 from .chooser_model import DETERMINISTIC_MODE, chooser_from_env
 from .classic import ClassicPick, classic_picker
@@ -159,6 +160,30 @@ def asks_more(heard_text: Optional[str]) -> bool:
 def lead_data(lead: Optional[LeadChoice]) -> Dict[str, Any]:
     """Поля результата об инструменте: по ним голосовая сторона строит фразу (``media_phrases.instrument_text``)."""
     return {"instrument": lead.asked, "instrument_played": lead.played} if lead else {}
+
+
+def brief_args(heard_text: Optional[str], heard_tracks: Optional[int], style: Optional[str],
+               styles: Optional[List[str]]) -> Tuple[Optional[str], Optional[int], Optional[str], Optional[List[str]], str]:
+    """Подробный промт (#3845, :mod:`brief`): ``(реплика, длина, стиль, стили, фраза о неиспользованном)`` для ``dj_set``.
+    Тема, длина, стиль и громкость - из просьбы (первый абзац), а не из роли/BPM/нот/таблицы; стили спецификации, что
+    движок знает (``source.set_genres``), заменяют ``auto`` и пустые ``styles``; темп, тональность и ноты называет
+    ``brief.unsupported`` - код скажет, что они не использованы. Короткая реплика - без изменений."""
+    brief = split_brief(heard_text)
+    if not brief.spec:
+        return heard_text, heard_tracks, style, styles, ""
+    from rob_box_music.source import set_genres
+    from rob_box_voice.core.set_length_words import heard_set_length
+
+    named = style if style not in (None, AUTO_STYLE) else (match_style_text(brief.spec) or style)
+    return (brief.head, heard_set_length(brief.head), named, styles or list(set_genres(brief.spec)[0]) or None,
+            unsupported_note(unsupported(brief.spec)))
+
+
+def spec_noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
+    """Фраза о неиспользованной спецификации промта - после фразы пути (``source_note``), если сет заиграл."""
+    if not note or not result.get("ok"):
+        return result
+    return {**result, "source_note": " ".join(p for p in (result.get("source_note"), note) if p)}
 
 
 def set_style(style: Optional[str], theme: str, heard_text: Optional[str] = None) -> str:
@@ -518,10 +543,11 @@ class DjSetTool(MCPTool):
         ADR-0148), ход, запустивший сет (:meth:`started_in_turn`), и реплика хода: тема LLM не из неё (взята из
         истории диалога, 06.10 18:04) — тема реплики (``theme_grounding``). ``styles``/``minutes`` LLM — подсказка:
         стили и время из слов человека решает код (``GenSetMaker.plan``)."""
-        tracks = heard_tracks or tracks
         refusal = set_refusal(heard_text, self.running) if action == "start" else None
         if refusal is not None:
             return tool_result(refusal, "сет не начался")
+        heard_text, heard_tracks, style, styles, spec_note = brief_args(heard_text, heard_tracks, style, styles)
+        tracks = heard_tracks or tracks
         if action == "start":  # «диджей X» одним видом: и от роутера, и от LLM
             theme, persona = self._set_slots(theme, persona_title(persona) or None, heard_text)
         with self._lock:
@@ -539,7 +565,7 @@ class DjSetTool(MCPTool):
                                      hints=(styles, minutes))
             else:
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
-        result = confirmed(result, self._confirm)  # ждём started вне замка
+        result = confirmed(spec_noted(result, spec_note), self._confirm)  # ждём started вне замка
         self._session_turn = turn_id if result.get("ok") else None
         return with_level(tool_result(result, "сет не начался"), heard_text, self.level,
                           self.node.get_logger() if self.node is not None else _LOG)

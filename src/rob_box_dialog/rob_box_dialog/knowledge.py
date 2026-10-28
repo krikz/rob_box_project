@@ -1330,6 +1330,10 @@ MUSIC_STOP_TOOLS: Mapping[str, Optional[Tuple[str, str]]] = MappingProxyType({
     "stop_music": None, "dj_set": ("action", "stop"),
 })
 STOPPED_EARLIER_FIELD = "stopped_earlier"
+#: Метка исхода в ``recent_actions`` снимка: действие исполнено ЭТИМ ходом до вызова модели (остаток фразы после ясного
+#: стопа - ``turn._tier1_then_rest``: «хватит, борис уже уснул под неё», n709): модель видит, что музыку уже
+#: остановил код, а не думает, что она ещё играет и её можно «сделать потише».
+THIS_TURN_FIELD = "this_turn"
 DJ_STOP = ByData(("action", "was_playing", STOPPED_EARLIER_FIELD), {
     ("stop", False, None): "music.stop_idle", ("stop", False, True): "music.stop_ok",
     ("stop", True, None): "music.stop_ok", ("stop", None, None): "music.stop_ok",
@@ -1458,17 +1462,20 @@ class OwnerText:
 
     Фраза владельца — только там, где таблица диалога по данным (:data:`TOOL_PHRASES`) об исходе молчит: исход, о
     котором она говорит сама («песня пишется» — :data:`GEN_WAIT`), звучит одной её фразой, без ``whole`` и
-    ``note`` владельца (одна реализация фразы об одном факте)."""
+    ``note`` владельца (одна реализация фразы об одном факте). ``dj_set`` - только ``note`` (#3845: «Из промта не
+    использую: темп, тональность…», «играю своё» синтез-запаса): сет говорит фраза исхода, фраза запуска владельца
+    (``source_message`` со списком стилей) в v2 не нужна."""
 
-    whole: str
-    note: str
+    whole: str = ""
+    note: str = ""
 
 
 #: Тулы, чей успех говорит фраза кода владельца из данных исхода (:class:`OwnerText`). Живой прогон 27.10 18:58 UTC
 #:: «сыграй метал на Ренардо» — заиграл брейкбит, фраза кода лежала в ``source_note``, а прозвучало только
 #: «Включаю музыку.» — тихая подмена. Тул -> поля.
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
-    tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")})
+    **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
+    "dj_set": OwnerText(note="source_note")})
 #: Действия, чей успех - сам себе доказательство: фразы об исходе done нет (§4.1; Шифу 21.10: «включил щелчок и ещё
 #: сказал, что он заиграл, бред же»). Неудача (rejected/timeout) говорится одной фразой кода. Исключение - звукоподражание
 #: (:data:`SOUND_IMITATIONS`).
@@ -1570,6 +1577,18 @@ REMOTE_OWED_HINT = ("человек просит сделать это РОБО�
                     " человек спрашивает или просит справку, а не действие робота, — ответь словами в speech, как"
                     " раньше: робот ничего не делает")
 REMOTE_OWED_PHRASE = "remote.nothing_done"
+#: Нарушение «обещал действие с музыкой или громкостью, а тула нет» (:data:`MUSIC_PROMISES`). Повтор с подсказкой
+#: :data:`MUSIC_PROMISE_HINT`; повтора нет - ложные слова модели не звучат, говорит код правду по состоянию
+#: (:data:`MUSIC_PROMISE_PHRASES`, ``turn.music_promise_key``): ход сам выключил музыку (``stopped``), музыка не играет
+#: (``silent``), играет, а обещание не исполнено (``playing``). Фразы - не заглушка «не понял»: модель поняла.
+VIOLATION_MUSIC_PROMISE = "music_promise"
+MUSIC_PROMISE_HINT = ("в speech обещано действие с музыкой или громкостью, а в actions нет тула, что его исполняет: слова"
+                      " без действия - неправда о состоянии. Музыку и её громкость меняет только тул (stop_music,"
+                      " set_music_volume, request_music, dj_set, edit_music); тула нет в перечне хода - не обещай. Музыка"
+                      " уже остановлена или уже играет (music_state, recent_actions выше) - скажи как есть, без обещаний")
+MUSIC_PROMISE_PHRASES: Mapping[str, str] = MappingProxyType({
+    "stopped": "command.music_promise.stopped", "silent": "command.music_promise.silent",
+    "playing": "command.music_promise.playing"})
 #: Нарушение «неизвестного собеседника назвали чужим именем» (n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -1704,7 +1723,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_RE
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()
       for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
@@ -1928,16 +1947,21 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "fx": ("slash", "glitch", "boot", "power_down"),
     "feat": ("loading_eyes",),
 })
-FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
 #: Показ по просьбе человека (Шифу 27.10: «показывает анимации не микросекунды, а полноценно, хотя бы 5–10
 #: секунд»): сцена ``play_animation`` и лицо команды, когда лицо просили (``tools_view.show_asked``) или модель задала
 #: ``expression.duration_s``, держится не меньше ``FACE_SHOW_MIN_S`` и не больше ``FACE_SCENE_MAX_S`` (ADR §5.5.9);
 #: без заказанного времени - ``FACE_SHOW_DEFAULT_S`` (то же, что по умолчанию у ``face_director`` для запроса без
-#: ``ttl_ms``). Одно правило - ``expression.show_seconds``; пачка сцен одной команды идёт по очереди, каждая своё время
-#: (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога - её время.
+#: ``ttl_ms``). Одно правило - ``expression.show_seconds`` (#4089): его читают диалог (``turn.command_face``), тул
+#: ``play_animation`` (``data.duration``) и ``face_node`` (сцена без времени); пачка сцен одной команды идёт по очереди,
+#: каждая своё время (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога -
+#: её время.
 FACE_SHOW_MIN_S = 5.0
 FACE_SHOW_DEFAULT_S = 8.0
+#: Описание параметра ``duration`` тула ``play_animation`` (#4089): пределы и умолчание - из тех же чисел, а не словами
+#: в коде тула.
+FACE_SHOW_DURATION_HINT = (f"Сколько секунд держать анимацию: от {FACE_SHOW_MIN_S:g} до {FACE_SCENE_MAX_S:g}; меньше"
+                           f" - {FACE_SHOW_MIN_S:g}, больше - {FACE_SCENE_MAX_S:g}; не задано - {FACE_SHOW_DEFAULT_S:g}")
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
 FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
                    " напротив робота. Только значения из списков, свободных цветов и форм нет. bg - фон под глазами"
@@ -2362,6 +2386,65 @@ VIOLATION_SPEECH_WITH_ACTIONS = "speech_with_actions"
 #: не добавляем), провал говорит код. Остальные действия (звук, музыка, движение, громкость, голос) - прежнее правило
 #: ``VIOLATION_SPEECH_WITH_ACTIONS``. Единственная таблица: валидатор, фраза хода и промпт читают её.
 QUIET_WITH_SPEECH_TOOLS: Tuple[str, ...] = ("memory_save", "register_speaker", "play_animation")
+
+
+@dataclass(frozen=True)
+class MusicPromise:
+    """Обещание действия с музыкой в речи («сделаю потише», «включу музыку», «выключу музыку»): ``alone`` - глаголы 1-го
+    лица (будущее и настоящее), что обещают это сами; ``with_near`` - глаголы, что обещают, только если в
+    ``MUSIC_PROMISE_WINDOW`` словах рядом (с любой стороны) есть слово с основой из ``near`` («сделаю» + «потише»,
+    «включу» + «музыку»); ``tools`` - тулы, что обещание исполняют; ``perform`` - выступление (песня под подложку)
+    тоже исполняет. Слова - целые, строчные, без «ё»; основа ``near`` - начало слова."""
+
+    alone: Tuple[str, ...] = ()
+    with_near: Tuple[str, ...] = ()
+    near: Tuple[str, ...] = ()
+    tools: Tuple[str, ...] = ()
+    perform: bool = False
+
+
+#: Слова о музыке, рядом с которыми глагол «включу/выключу/поставлю» обещает музыку (уже, чем ``MUSIC_STEMS``: «бит» -
+#: «битва», «сет» - «сетка»): существительные музыки.
+MUSIC_PROMISE_NOUNS: Tuple[str, ...] = ("музык", "музон", "трек", "песн", "мелоди", "ритм", "подложк", "саундтрек")
+#: Основы названий стилей, куда обещают свернуть музыку («сворачиваю в рок», «переключу на джаз»); начало слова. Короткие
+#: основы, что начинают обычные слова («поп» - «попробую»), берутся с дефисом или удлинённой формой.
+MUSIC_STYLE_STEMS: Tuple[str, ...] = (
+    "рок", "метал", "джаз", "блюз", "панк", "диско", "техно", "хаус", "транс", "фанк", "регги", "амбиент", "классик",
+    "электрон", "рэп", "хип-хоп", "хипхоп", "поп-", "попс", "инди", "фолк", "кантри", "баллад", "лаунж", "дабстеп",
+    "стил", "жанр")
+#: Окно слов вокруг глагола обещания, в котором ищется его предмет (``MusicPromise.near``).
+MUSIC_PROMISE_WINDOW = 3
+#: Обещание действия с музыкой без тула, что его исполняет (n709 марафона-3 28.10: музыку уже остановил код,
+#: а модель сказала «Раз Борис уснул — сделаю потише», тула не было): слова без действия - ложь о состоянии. Тул
+#: исполняет, а о результате говорит код (``respond``), не модель. Единственная таблица: валидатор команды
+#: (``command._check_music_promise``) сверяет по словам (``words.music_promise``). Прошедшее («музыку выключил») не обещание:
+#: после кодового стопа оно - правда. Ключ - вид обещания; громкость - оба канала (``VOLUME_CHANNELS``), стоп - тулы стопа
+#: (``MUSIC_STOP_TOOLS``), старт - заказ, сет, генерация, библиотека, правка.
+MUSIC_PROMISES: Mapping[str, MusicPromise] = MappingProxyType({
+    "volume": MusicPromise(
+        alone=("убавлю", "убавляю", "убавим", "прибавлю", "прибавляю", "прибавим", "приглушу", "приглушаю", "приглушим"),
+        with_near=("сделаю", "сделаем", "делаю", "поправлю"),
+        near=(*VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *VOLUME_LEVEL_WORDS["louder"],
+              *VOLUME_LEVEL_WORDS["quieter"], *VOLUME_NOUN_STEMS),
+        tools=tuple(ch.tool for ch in VOLUME_CHANNELS.values() if ch.tool)),
+    "stop": MusicPromise(
+        with_near=("выключу", "выключаю", "выключим", "остановлю", "останавливаю", "остановим", "вырублю", "заглушу",
+                   "уберу", "убираю", "прекращу", "прекращаю"),
+        near=MUSIC_PROMISE_NOUNS, tools=tuple(MUSIC_STOP_TOOLS)),
+    "start": MusicPromise(
+        with_near=("включу", "включаю", "включим", "поставлю", "ставлю", "поставим", "запущу", "запускаю", "запустим",
+                   "заведу", "заведем", "сыграю"),
+        near=MUSIC_PROMISE_NOUNS,
+        tools=("request_music", "dj_set", "generate_music", "music_library", "edit_music"), perform=True),
+    # сменить направление или стиль играющего («сворачиваю в рок», «уведу в сторону джаза», «переключу на техно»):
+    # предмет - название стиля или слово о музыке, иначе «сверну налево» - не про музыку
+    "switch": MusicPromise(
+        with_near=("сворачиваю", "сворачиваем", "сверну", "свернем", "уведу", "уведем", "увожу", "уводим", "переключаю",
+                   "переключу", "переключим", "переключаемся", "поверну", "повернем", "поворачиваю", "меняю", "сменю",
+                   "сменим", "поменяю"),
+        near=(*MUSIC_PROMISE_NOUNS, *MUSIC_STYLE_STEMS),
+        tools=("dj_set", "request_music", "edit_music", "generate_music", "music_library")),
+})
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
 #: ретрай мимо команды (ночной замер 22.10, ход 4: звук потерян). Молчать честно — ``passed``.

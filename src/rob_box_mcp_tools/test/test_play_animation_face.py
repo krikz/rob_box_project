@@ -41,7 +41,7 @@ def test_runtime_schema_matches_the_catalog():
 
 def test_execute_accepts_face_with_or_without_animation():
     out = _tool().execute(face={"eyes": "wide", "mouth": "teeth"})
-    assert out.success and out.data == {"face": {"eyes": "wide", "mouth": "teeth", "duration_s": 5.0}}
+    assert out.success and out.data == {"face": {"eyes": "wide", "mouth": "teeth"}}  # время не задано (#4089)
     both = _tool().execute(animation="happy", duration=6, face='{"blink": "wink_right"}')
     assert both.success and both.data["animation"] == "happy" and both.data["face"]["blink"] == "wink_right"
 
