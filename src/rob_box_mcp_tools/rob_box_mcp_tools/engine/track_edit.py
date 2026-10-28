@@ -4,8 +4,9 @@
 по рецепту (:class:`LiveRecipe`: план, номер трека плана, мелодии и материалы темы, лид инструмента, дека). Правка
 пересобирает тот же трек с другим темпом, семьёй тембров или уровнем баса — форма та же — и владелец плеера
 (``PlayerOwner.retune``) ставит программу в те же слоты на ближайшей границе такта: без остановки, без нового
-``started`` и без генерации, выступление поверх бита держит сетку. Готовая запись, пьеса, сет, тишина — честный
-отказ кодом (``knowledge.EDIT_REFUSALS``). Фраза исхода — из исхода (``track_edit.edit_text``).
+``started`` и без генерации, выступление поверх бита держит сетку. Диджей-сет правка настроения («помягче», #4173)
+продолжает в другом стиле (``knowledge.SET_VIBES``, ``tools_v2.restyle_set``). Готовая запись, пьеса, прочие правки
+сета, тишина — честный отказ кодом (``knowledge.EDIT_REFUSALS``). Фраза исхода — из исхода (``track_edit.edit_text``).
 """
 
 from __future__ import annotations
@@ -43,6 +44,9 @@ RECIPES_KEPT = 8
 _SOURCE_KIND = {"generated": FILE, "piece": PIECE, "melody": PIECE}
 #: ``(событие «встала», срок) -> встала ли``: настоящий поток ждёт ``threading.Event``, тест крутит клок симулятора.
 Wait = Callable[[threading.Event, float], bool]
+#: ``стиль -> результат dj_set`` (``ok``, ``track_id``…): идущий сет продолжается в этом стиле
+#: (``tools_v2.restyle_set``).
+Restyle = Callable[[str], Mapping[str, Any]]
 
 
 def synth_title(label: str, bpm: float) -> str:
@@ -85,9 +89,16 @@ def _target(snap: Mapping[str, Any], recipe: Optional[LiveRecipe]) -> EditTarget
             recipe.bass_db,
             bool(snap.get("backing")),
         )
-    if snap.get("enabled"):
-        return EditTarget(SET)
+    if snap.get("enabled"):  # сет: его стиль — для смены настроения (``knowledge.SET_VIBES``, #4173)
+        return EditTarget(SET, style=str(snap.get("style") or ""))
     return EditTarget(_SOURCE_KIND.get(str(snap.get("source") or ""), OTHER))
+
+
+def with_note(data: Dict[str, Any], note: str) -> Dict[str, Any]:
+    """Фраза исхода правки и за ней фраза кода пути (``note``: смена стиля сета ждёт генерацию — что играет пока)."""
+    if not note or not data.get("ok"):
+        return data
+    return {**data, "message": f"{data['message']} {note}".strip(), "heard": False}
 
 
 class TrackEditor:
@@ -100,8 +111,11 @@ class TrackEditor:
         log: Callable[[], Any] = lambda: _LOG,
         wait: Wait = lambda done, seconds: done.wait(seconds),
         wait_s: float = EDIT_WAIT_S,
+        restyle: Optional[Restyle] = None,
     ) -> None:
         self._owner = owner
+        #: Смена настроения идущего сета (``tools_v2.restyle_set``, #4173); нет — правка сета честно не встаёт.
+        self.restyle = restyle
         #: Клок и деки Renardo (``RenardoAdapter``): ставит ``mcp_server``; нет — правка звука честно недоступна.
         self.adapter = adapter
         self._log = log
@@ -129,16 +143,38 @@ class TrackEditor:
             recipe = self._recipes.get(track_id)
         target = _target(snap, recipe)
         plan = plan_edit(asked, target)
-        reason = ""
+        reason = note = ""
         if plan.changes_sound and recipe is not None:
             plan, reason = self._apply(track_id, recipe, plan)
+        elif plan.restyle:
+            plan, track_id, note = self._restyle(plan, track_id)
         self._log().info(
             f"🎚️ [edit] {'слова' if named else 'слот'} {list(asked)} играет={target.kind}"
             f"{' (подложка)' if target.backing else ''} track_id={track_id or '—'} → "
             f"сделано={list(plan.applied)} предел={list(plan.limited)} дальше={list(plan.kept)} "
             f"отказ={plan.refused or reason or '—'}"
         )
-        return self._result(plan, target, track_id, reason)
+        return with_note(self._result(plan, target, track_id, reason), note)
+
+    def _restyle(self, plan: EditPlan, track_id: str) -> Tuple[EditPlan, str, str]:
+        """Сет продолжается в стиле ``plan.restyle`` (#4173: «помягче» под сетом меняет его настроение, а не отказ и не
+        новый трек): ``(исход, играющий трек, фраза кода пути сета)`` — ``source_message`` сета («пока дописываю
+        лоуфай — вот вам синтвейв»): что играет, пока пишется новый стиль. Не заиграл — честный отказ
+        ``set_vibe_failed`` (новый сет мог снять идущий: «играет как было» не говорим)."""
+        result: Mapping[str, Any] = {"ok": False, "reason": "unavailable"}
+        if self.restyle is not None:
+            try:
+                result = self.restyle(plan.restyle)
+            except Exception as exc:  # noqa: BLE001 — отказ громкий, фраза исхода — из исхода
+                self._log().warning(f"⚠️ [edit] смена стиля сета упала: {type(exc).__name__}: {exc}")
+                result = {"ok": False, "reason": "error"}
+        self._log().info(
+            f"🎚️ [edit] сет → стиль {plan.restyle}: {'заиграл' if result.get('ok') else 'не заиграл'} "
+            f"track_id={result.get('track_id') or '—'} reason={result.get('reason') or '—'}"
+        )
+        if result.get("ok"):
+            return plan, str(result.get("track_id") or track_id), str(result.get("source_message") or "")
+        return replace(plan, applied=(), restyle="", refused="set_vibe_failed"), track_id, ""
 
     def _apply(self, track_id: str, recipe: LiveRecipe, plan: EditPlan) -> Tuple[EditPlan, str]:
         """Пересобрать трек с правкой и поставить его на такт; ``(исход, причина сбоя или «»)``. Программа звучит так
@@ -230,6 +266,8 @@ class TrackEditor:
         }
         if target.kind == SYNTH:
             data["bpm"] = int(plan.bpm)
+        if plan.restyle:  # сет продолжился в этом стиле (#4173)
+            data["set_style"] = plan.restyle
         if plan.refused:
             data["refused"] = plan.refused
         if not data["ok"]:
@@ -237,4 +275,4 @@ class TrackEditor:
         return data
 
 
-__all__ = ["EDIT_WAIT_S", "LiveRecipe", "RECIPES_KEPT", "TrackEditor", "synth_title"]
+__all__ = ["EDIT_WAIT_S", "LiveRecipe", "RECIPES_KEPT", "Restyle", "TrackEditor", "synth_title", "with_note"]

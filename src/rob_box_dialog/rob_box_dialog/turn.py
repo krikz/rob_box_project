@@ -223,6 +223,7 @@ class _Turn:
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult
     music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет»
+    unvoiced: Tuple[ActionResult, ...] = ()  # исходы действий хода, о которых код ещё не сказал (Tier-1 стоп молчит)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -902,18 +903,30 @@ def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[st
     return more
 
 
-def _close_unread(turn: _Turn, acted: bool) -> str:
+def unvoiced(said: Optional[str], results: Sequence[ActionResult]) -> Tuple[ActionResult, ...]:
+    """Исходы действий Tier-1, о которых код не сказал (стоп и тишина молчат, :func:`tier1_phrase`): их скажет
+    :func:`_close_unread`, если модель на остаток фразы только повторит исполненное (марафон-4 n608)."""
+    return () if said else tuple(r for r in results if r.cls != _QUERY)
+
+
+def _close_unread(turn: _Turn, results: Sequence[ActionResult]) -> Tuple[str, Optional[str]]:
     """Модель на последней итерации ещё просит ``query`` (его уже не исполняют, :func:`_runnable`) или только
     повторяет исполненное в ходе (:func:`unrepeated`), а её слов не слышно: ответа она не дала
-    (:func:`unanswered`). Запрос в ходе был - ход ``done``, говорит код по данным запроса (В21: на
-    адресованное не молчим: ``[play_animation, music_library list]`` - анимация исполнена, фраза кода по данным).
-    Запроса не было: действия исполнены (``acted``) - их итог уже сказан, исполнять было нечего - провал без речи."""
+    (:func:`unanswered`). ``(фраза кода, эмоция)``. Запрос в ходе был - ход ``done``, говорит код по данным запроса
+    (В21: на адресованное не молчим: ``[play_animation, music_library list]`` - анимация исполнена, фраза кода по
+    данным). Запроса не было: действия хода исполнены (``results`` этой команды или ``_Turn.acted`` раньше в ходе) -
+    ход сделал, что просили; об исходе, который ещё никто не сказал (``_Turn.unvoiced``: Tier-1 стоп молчит, а модель
+    на остаток фразы повторила тот же стоп - марафон-4 n608), говорит код по исходу (ADR-0148), иначе он уже сказан.
+    Исполнять было нечего - провал без речи."""
     if turn.queried:
         turn.stage, turn.status, turn.reason = "done", "done", "query_fallback:ceiling"
-        return query_fallback(turn.queried)
-    if not acted:
+        return query_fallback(turn.queried), query_emotion(turn.queried, "sad")
+    if not results and not turn.acted:
         turn.stage, turn.status, turn.reason = "failed", "failed", "nothing_to_do"
-    return ""
+        return "", None
+    unvoiced, turn.unvoiced = turn.unvoiced, ()
+    said = join(unvoiced)
+    return (said.text, said.emotion) if said is not None else ("", None)
 
 
 def read_refusal(refused: Sequence[ActionResult]) -> Optional[Utterance]:
@@ -1544,6 +1557,7 @@ class TurnEngine:
         said = tier1_phrase(command, results, self._pick, self.log.last_spoken(exclude=turn.turn_id))  # повтор
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
+        turn.unvoiced += unvoiced(said, results)  # стоп молчит: исход скажет код, если модель повторит то же (n608)
 
     def _interrupt(self, turn: _Turn, stop: Interrupt) -> SessionSnapshot:
         """REPLACE (§6.2): речь эпохи хода — отмена (граница по слову), движение — ``stop_motion``, эпоха + 1.
@@ -1642,8 +1656,9 @@ class TurnEngine:
             self._say(turn, text, voice or None, cmd.expression.emotion)
         if cmd.ask is not None and not cmd.actions:
             self.session.set_pending_ask(cmd.ask)
-        if unread and not lines and not owned:  # модель ещё читала (query сверх лимита), а её слов не слышно
-            self._say(turn, _close_unread(turn, acted=bool(results)), None, query_emotion(turn.queried, "sad"))
+        if unread and not lines and not owned:  # модель ещё читала (query сверх лимита) или повторила исполненное
+            said, emotion = _close_unread(turn, results)
+            self._say(turn, said, None, emotion)
 
     async def _execute(self, turn: _Turn, actions: Sequence[ToolCall], snap: SessionSnapshot) -> List[ActionResult]:
         if not actions:

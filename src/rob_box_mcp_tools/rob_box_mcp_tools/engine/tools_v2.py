@@ -38,6 +38,7 @@ import logging
 import threading
 import time
 from dataclasses import replace
+from functools import partial
 from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
 
 from rob_box_music import knowledge as kn
@@ -706,6 +707,18 @@ class DjSetTool(MCPTool):
         return MCPToolResult(success=True, data={**session.stop("user_stop"), "was_playing": True})
 
 
+def restyle_set(dj: DjSetTool, style: str) -> Dict[str, Any]:
+    """Идущий сет — дальше в стиле ``style`` (#4173: «помягче» под сетом меняет настроение сета): тема и персона
+    идущего сета, остаток его длины (``DjSetTool.set_length``) — тот же путь, что смена темы посреди сета (#3400).
+    Решает правка (``track_edit.plan_edit``, ``knowledge.SET_VIBES``), а не модель; реплики хода нет — её слова не
+    становятся темой. Сета нет — ``ok: false``."""
+    last = dj._last_dj  # noqa: SLF001 — тема и персона идущего сета
+    if not dj.running or last is None:
+        return {"ok": False, "reason": "no_set"}
+    result = dj.execute("start", theme=last[0], persona=last[1], style=style)
+    return {**(result.data or {}), "ok": bool(result.success)}
+
+
 class RequestMusicTool(MCPTool):
     """«Поставь клубный трек» v2: один club-трек из ``compose``/``render``, без LLM на пути звука."""
 
@@ -748,7 +761,7 @@ class RequestMusicTool(MCPTool):
         #: Громкость музыки по словам заказа («только негромко»): шаг мастер-фейдера ставит ``mcp_server`` (``order_level``).
         self.level: Optional[LevelSetter] = None
         #: Правка играющего (#4029): рецепты своих синт-треков (трек и подложка) — тул ``edit_music``.
-        self.editor = TrackEditor(owner, log=self._log)
+        self.editor = TrackEditor(owner, log=self._log, restyle=partial(restyle_set, dj))  # «помягче» под сетом
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
