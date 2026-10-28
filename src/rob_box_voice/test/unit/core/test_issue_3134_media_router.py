@@ -119,7 +119,7 @@ def test_dj_grammar(text: str, persona: str, closed: bool) -> None:
 
 
 def test_wide_stop_detector_still_catches_mixed_phrases() -> None:
-    # Силенс-гейт, command-гейт и Bug F пользуются широким детектором.
+    # Силенс-гейт, command-гейт и пост-гуард стопа пользуются широким детектором.
     assert is_music_stop_command("выключи музыку и включи Oakenfold")
     assert is_music_stop_command("стоп диджей блядь")
     assert not is_music_stop_command("для робота-диджея")

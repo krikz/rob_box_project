@@ -366,24 +366,12 @@ _SILENT_FINISH_REASONS: frozenset[str] = frozenset(
 # phrase threshold AND the user request was NOT a vocal one (rap / poem /
 # song — there backing mode legitimately calls speak_text × N).
 #
-# ⚠️ НЕ сводить с ``MUSIC_GUARD_VOCAL_KEYWORDS`` из
-# :mod:`rob_box_voice.core.dialogue_guards`. Имена похожи, вопросы разные:
-#
-# * здесь — «просил ли пользователь голос ВООБЩЕ?». На «да» гард
-#   галлюцинированных текстов не глушит ``speak_text``, потому что
-#   бэкинг-режим законно зовёт его несколько раз;
-# * там — «просил ли пользователь голос БЕЗ бита?». Список у́же
-#   намеренно: для речитатива (рэп / зачитай / частушка) бит обязателен,
-#   и music-guard Bug C (issue #992) должен нуднуть модель, если она не
-#   вызвала тул запуска музыки.
-#
-# Слить их — значит молча снять требование бита с рэпа. Инвариант
-# «voice — строгое подмножество harness» закреплён тестом
-# ``test_harness_vocal_keywords_are_a_strict_superset``
-# (src/rob_box_voice/test/unit/core/test_dialogue_guards.py).
-#
-# Раньше здесь стояло «Mirrors rob_box_voice.core.dialogue_guards
-# heuristic», что читалось как «списки обязаны совпадать» — неверно.
+# Вопрос здесь — «просил ли пользователь голос ВООБЩЕ?». На «да» гард
+# галлюцинированных текстов не глушит ``speak_text``, потому что
+# бэкинг-режим законно зовёт его несколько раз. Список единственный:
+# голосовой музыкальный гард (``rob_box_voice.core.dialogue_guards``,
+# вопрос «голос БЕЗ бита?») удалён в PR-15 части 15-core (#3711), второго
+# списка, с которым его надо было бы сверять, больше нет.
 _VOCAL_REQUEST_KEYWORDS: tuple = (
     "спой", "пой ", "песня", "песню", "рэп", "реп", "rap",
     "зачитай", "зачита", "зачитывай", "стих", "стишок", "стихотворен",
@@ -962,9 +950,9 @@ class AgentCore:
                 # exactly that raw value (see ``_raw_user_utterance``
                 # docstring).
                 # Issue #2967 — force a tool call on a DJ auto-transition's
-                # first attempt (base tick AND its Bug-B synchronous
-                # retries all carry ``is_dj_auto=True``, see
-                # ``dialogue_node._dispatch_dj_turn``): the live DJ set
+                # first attempt (the base tick and any synchronous retry
+                # of it carried ``is_dj_auto=True`` in the old v1 dialogue
+                # node, removed in PR-15 part 15p, #4120): the live DJ set
                 # showed minimax answering with plain text and no tool
                 # call 2-3 times before the retry finally landed
                 # ``compose_music``.
@@ -973,8 +961,9 @@ class AgentCore:
                 # of MiniMax-M3 showed ``tool_choice="required"`` (and the
                 # named-function form) silently ignored — HTTP 200, no
                 # tool_calls, no error; MiniMax documents only
-                # ``auto``/``none``. DJ-auto correctness therefore still
-                # depends ENTIRELY on the Bug-B synchronous retry. The
+                # ``auto``/``none``. DJ-auto correctness therefore
+                # depended ENTIRELY on the synchronous retry of the old
+                # music guard (removed with the v1 path, #3711). The
                 # forced tool_choice is kept only in case a future
                 # provider/model honours it, not as a guarantee.
                 # See docs/adr/0143-minimax-tool-choice-not-supported.md.
@@ -1070,7 +1059,7 @@ class AgentCore:
         # live 01.09 — псевдо-вызов текстом (``<compose_music composition
         # here>``) ничего не сделал и озвучен быть не может. Ловим ЗДЕСЬ,
         # внутри цикла: модель получает корректирующий ретрай сразу, а не
-        # через внешний Bug-C гуард двумя ходами позже.
+        # через внешний музыкальный гуард двумя ходами позже.
         if _is_pseudo_tool_call(response.content or ""):
             return True
         # Issue #1253 — interrupted / filtered generation is not a valid
@@ -1118,8 +1107,8 @@ class AgentCore:
         fake-confirmation turn before it becomes a few-shot example for
         the next similar request. Removed directly from the in-memory window.
 
-        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (Bug D/E,
-        music, tool-skipped…), не только из music-путей: иначе после ответа
+        Issue #3145 — зовётся для ЛЮБОГО ретрая гуарда (music,
+        tool-skipped…), не только из music-путей: иначе после ответа
         ретрая в окне два assistant подряд (живой лог 28.09 — 28 мест), и
         модель перечитывает собственную неправду как пример. Снимается
         ТОЛЬКО ответ, записанный последним :meth:`process_input`
@@ -1295,13 +1284,13 @@ class AgentCore:
         ``speak_text`` per the cycle-end contract). Used by DJ
         auto-transitions: the live DJ set showed minimax replying with
         plain text and no tool call on the first attempt 2-3 times in a
-        row before the Bug-B synchronous retry finally landed a
+        row before the synchronous guard retry finally landed a
         ``compose_music`` call. Against the production MiniMax provider
         the override is currently a NO-OP (issue #3135, ADR-0143): a
         live probe of MiniMax-M3 showed ``tool_choice="required"`` and
         the named-function form silently ignored (HTTP 200, no
         tool_calls, no error; only ``auto``/``none`` are documented).
-        DJ-auto turns therefore still rely ENTIRELY on the Bug-B retry;
+        DJ-auto turns therefore relied ENTIRELY on that guard retry;
         the override is kept only in case a future provider/model
         honours it, not because it guarantees a tool call today.
 
