@@ -19,7 +19,7 @@ from rob_box_dialog.command import Command, Invalid, ToolCall, explain, parse, u
 from rob_box_dialog.music_state import after_stop
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import MusicStateRef, Session
-from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_dialog.turn import Answer, TurnEngine, music_promise_key
 from rob_box_dialog.words import music_promises
 
 N709 = "Раз Борис уснул — сделаю потише, чтобы не разбудить. Енот-механик пусть дослушивает шёпотом."
@@ -120,9 +120,27 @@ def test_the_past_tense_after_a_code_stop_is_not_a_violation():
     assert isinstance(cmd, Command) and cmd.speech == "Музыку выключил, Борис спит."
 
 
-def test_the_phrase_after_the_exhausted_retry_is_in_the_catalog_and_is_not_a_promise():
-    said = phrases.text(kn.INVALID_COMMAND_PHRASES[kn.VIOLATION_MUSIC_PROMISE])
-    assert said and music_promises(said) == ()
+def test_the_phrases_after_the_exhausted_retry_are_in_the_catalog_and_are_not_promises():
+    assert set(kn.MUSIC_PROMISE_PHRASES) == {"stopped", "silent", "playing"}
+    for key in kn.MUSIC_PROMISE_PHRASES.values():
+        assert key in kn.PHRASE_KEYS
+        said = phrases.text(key)
+        assert said and music_promises(said) == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# фраза после неудавшегося повтора: правда по состоянию, строит код (решение Шифу по п.1, ADR-0148)
+# ---------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stopped, playing, said", [
+    (True, False, "Музыку я уже выключил."),                                # ход сам выключил музыку (n709)
+    (True, True, "Музыку я уже выключил."),                                 # снимок плеера ещё прежний - стоп хода сильнее
+    (False, False, "Сейчас музыка не играет."),
+    (False, True, "Сделать с музыкой ничего не получилось — скажи ещё раз, что нужно."),
+])
+def test_the_phrase_of_a_broken_music_promise_is_the_truth_about_the_state(stopped, playing, said):
+    assert phrases.text(music_promise_key(stopped, playing)) == said
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -184,10 +202,10 @@ def _context(messages):
     return messages[-1]["content"]
 
 
-def _run(ports, text):
+def _run(ports, text, music="playing"):
     ids = iter(f"t{n}" for n in range(1, 100))
     session = Session("personality")
-    session.set_music(MusicStateRef("playing"))
+    session.set_music(MusicStateRef(music))
     engine = TurnEngine(session, ports, system_prompt="Ты робот.", new_id=lambda: next(ids),
                         sections=lambda _snap, _text: {"music_state": dict(STALE_MUSIC)})
     asyncio.run(engine.run(Addressed(text, VOICE)))
@@ -206,6 +224,26 @@ def test_the_remainder_after_a_clear_stop_sees_the_stop_of_its_own_turn():
     actions = _recent_actions(context)
     assert [(a["tool"], a["status"], a.get(kn.THIS_TURN_FIELD)) for a in actions] == [("stop_music", "done", True)]
     assert actions[0]["data"]["was_playing"] is True
+
+
+PROMISE = Invalid(kn.VIOLATION_MUSIC_PROMISE, "speech обещает volume без тула")
+
+
+def test_n709_after_the_retry_the_code_says_the_music_is_already_off():
+    """Остаток после стопа, модель и после повтора обещает «потише» (невалидная команда): звучит правда кода."""
+    ports = Ports([Answer(PROMISE, "deepseek")])
+    _run(ports, "Робот, останови, борис уже уснул под нее")
+    assert ports.executed == ["stop_music"]
+    assert ports.said[-1] == "Музыку я уже выключил." and N709 not in ports.said
+
+
+def test_without_a_stop_of_the_turn_the_code_says_the_state_of_the_player():
+    ports = Ports([Answer(PROMISE, "deepseek")])
+    _run(ports, "Робот, борис уже уснул под нее")  # музыка играет по снимку сессии, стопа в ходе нет
+    assert ports.executed == [] and ports.said == [phrases.text(kn.MUSIC_PROMISE_PHRASES["playing"])]
+    quiet = Ports([Answer(PROMISE, "deepseek")])
+    _run(quiet, "Робот, борис уже уснул под нее", music="idle")
+    assert quiet.said == ["Сейчас музыка не играет."]
 
 
 def test_a_plain_turn_without_a_stop_keeps_the_player_section_and_has_no_own_actions():

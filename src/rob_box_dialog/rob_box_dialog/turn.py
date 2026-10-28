@@ -1163,7 +1163,18 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
     snap = engine.session.snapshot
     if said or (results and not words_owed(snap, turn.text, Command(actions=tuple(invalid.salvage)))):
         return said or ""
+    if invalid.reason == kn.VIOLATION_MUSIC_PROMISE:
+        return engine._pick(music_promise_key(turn.music_stopped, snap.music_playing))
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
+
+
+def music_promise_key(stopped: bool, playing: bool) -> str:
+    """Ключ фразы кода после обещания действия с музыкой без тула и после повтора (#4020 п.6, ADR-0148: об исходе говорит
+    код по событию владельца, а не слова модели): ход сам выключил музыку (``_Turn.music_stopped``, исход ``done`` стоп-тула)
+    - «Музыку я уже выключил.»; музыка не играет (снимок сессии) - «Сейчас музыка не играет.»; играет, а обещание не
+    исполнено - «Сделать с музыкой ничего не получилось…». Стоп хода сильнее снимка: снимок плеера приходит позже стопа."""
+    state = "stopped" if stopped else "playing" if playing else "silent"
+    return kn.MUSIC_PROMISE_PHRASES[state]
 
 
 def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
@@ -1757,5 +1768,5 @@ __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_
            "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
-           "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
+           "music_promise_key", "query_fallback", "recent_results", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
            "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]

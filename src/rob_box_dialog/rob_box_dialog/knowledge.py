@@ -1576,14 +1576,17 @@ REMOTE_OWED_HINT = ("человек просит сделать это РОБО�
                     " раньше: робот ничего не делает")
 REMOTE_OWED_PHRASE = "remote.nothing_done"
 #: Нарушение «обещал действие с музыкой или громкостью, а тула нет» (:data:`MUSIC_PROMISES`, #4020 п.6). Повтор с подсказкой
-#: :data:`MUSIC_PROMISE_HINT`; повтора нет - фраза кода :data:`MUSIC_PROMISE_PHRASE` (``INVALID_COMMAND_PHRASES``): ложные
-#: слова модели не звучат.
+#: :data:`MUSIC_PROMISE_HINT`; повтора нет - ложные слова модели не звучат, говорит код правду по состоянию
+#: (:data:`MUSIC_PROMISE_PHRASES`, ``turn.music_promise_key``): ход сам выключил музыку (``stopped``), музыка не играет
+#: (``silent``), играет, а обещание не исполнено (``playing``). Фразы - не заглушка «не понял»: модель поняла.
 VIOLATION_MUSIC_PROMISE = "music_promise"
 MUSIC_PROMISE_HINT = ("в speech обещано действие с музыкой или громкостью, а в actions нет тула, что его исполняет: слова"
                       " без действия - неправда о состоянии. Музыку и её громкость меняет только тул (stop_music,"
                       " set_music_volume, request_music, dj_set, edit_music); тула нет в перечне хода - не обещай. Музыка"
                       " уже остановлена или уже играет (music_state, recent_actions выше) - скажи как есть, без обещаний")
-MUSIC_PROMISE_PHRASE = "command.music_promise"
+MUSIC_PROMISE_PHRASES: Mapping[str, str] = MappingProxyType({
+    "stopped": "command.music_promise.stopped", "silent": "command.music_promise.silent",
+    "playing": "command.music_promise.playing"})
 #: Нарушение «неизвестного собеседника назвали чужим именем» (#4184, n210: «Понял, Саша.» Грише при ``name_state``
 #: ``unknown``, а Саша — из истории разговора): обращение по имени к человеку, чьё имя не ``confirmed``, - выдумка, как
 #: бы ни звали других (``foreign_name``). Повтор с подсказкой :data:`FOREIGN_NAME_HINT`; повтора нет - имя из речи
@@ -1710,8 +1713,7 @@ SPEECH_CUT_PHRASE = "command.speech_cut"
 INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "command.too_long",
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
-                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
-                                                               VIOLATION_MUSIC_PROMISE: MUSIC_PROMISE_PHRASE})
+                                                               VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось (ревью #4041: «Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -1720,7 +1722,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_RE
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     LISTEN_ONLY_PHRASE,
-    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(), *MUSIC_PROMISE_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()
       for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
