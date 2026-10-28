@@ -8,6 +8,8 @@ test_animation.py - Unit тесты для инструментов анимац
 import pytest
 from unittest.mock import Mock, patch
 
+from rob_box_dialog import knowledge as kn
+
 # Mock std_msgs перед импортом tools
 import sys
 sys.modules['std_msgs'] = Mock()
@@ -96,9 +98,9 @@ class TestPlayAnimationTool:
         # Теперь должно быть успешно с минимальной длительностью
         assert result.success is True
         assert result.data["animation"] == "happy"
-        assert result.data["duration"] == 2.0
+        assert result.data["duration"] == kn.FACE_SHOW_MIN_S
 
-        # правило тула (animations.clamp_show_seconds); диалог v2 приводит время к expression.show_seconds (#4083)
+        # правило показа одно с диалогом (expression.show_seconds, #4089)
         assert mock_node.get_publisher("/voice/animation/request") is None
 
     def test_execute_with_invalid_duration_too_long(self, mock_node):
@@ -110,12 +112,12 @@ class TestPlayAnimationTool:
         # Теперь должно быть успешно с минимальной длительностью
         assert result.success is True
         assert result.data["animation"] == "happy"
-        assert result.data["duration"] == 2.0
+        assert result.data["duration"] == kn.FACE_SCENE_MAX_S
 
-        # правило тула (animations.clamp_show_seconds); диалог v2 приводит время к expression.show_seconds (#4083)
+        # правило показа одно с диалогом (expression.show_seconds, #4089)
         assert mock_node.get_publisher("/voice/animation/request") is None
 
-    @pytest.mark.parametrize("duration", [2.0, 5.0, 10.0, 20.0, 30.0])
+    @pytest.mark.parametrize("duration", [5.0, 10.0, 20.0, 30.0])
     def test_execute_with_edge_case_durations(self, mock_node, duration):
         """Параметризованный тест граничных значений длительности."""
         tool = PlayAnimationTool(mock_node)
@@ -125,25 +127,38 @@ class TestPlayAnimationTool:
         assert result.success is True
         assert result.data["duration"] == duration
 
-    @pytest.mark.parametrize("invalid_duration", [0.0, -5.0, 1.5, 31.0, 100.0])
-    def test_execute_with_out_of_range_durations_clamped_to_min(self, mock_node, invalid_duration):
-        """Параметризованный тест - все значения вне диапазона устанавливаются в минимум."""
-        tool = PlayAnimationTool(mock_node)
+    @pytest.mark.parametrize("asked, shown", [
+        (60.0, 30.0), (35.0, 30.0), (1.0, 5.0), (1.5, 5.0), (0.0, 8.0), (-5.0, 8.0), (12.5, 12.5)])
+    def test_execute_with_out_of_range_durations_follow_the_show_rule(self, mock_node, asked, shown):
+        """Вне ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]`` - к ближайшему краю, не в минимум; ноль и минус - умолчание."""
+        result = PlayAnimationTool(mock_node).execute(animation="happy", duration=asked)
 
-        result = tool.execute(animation="happy", duration=invalid_duration)
-
-        # Должно быть успешно с минимальной длительностью
         assert result.success is True
-        assert result.data["animation"] == "happy"
-        assert result.data["duration"] == 2.0
+        assert result.data["duration"] == shown
+
+    def test_execute_without_duration_leaves_it_unset(self, mock_node):
+        """Время не задано - в данных его нет: умолчание ставит правило показа у диалога, тул чисел не выдумывает."""
+        result = PlayAnimationTool(mock_node).execute(animation="happy")
+
+        assert result.success is True and "duration" not in result.data
+
+    def test_duration_description_comes_from_the_knowledge(self, mock_node):
+        by_name = {p.name: p for p in PlayAnimationTool(mock_node).parameters}
+
+        assert by_name["duration"].description == kn.FACE_SHOW_DURATION_HINT
+        assert all(f"{n:g}" in kn.FACE_SHOW_DURATION_HINT
+                   for n in (kn.FACE_SHOW_MIN_S, kn.FACE_SCENE_MAX_S, kn.FACE_SHOW_DEFAULT_S))
 
 
-def test_tool_show_seconds_rule_out_of_range_is_the_minimum():
-    """Правило тула (ответ модели и диалог v1). Диалог v2 держит показ по своему правилу
-    ``rob_box_dialog.expression.show_seconds`` (#4083); свести в одно - после удаления v1 (PR-15)."""
-    from rob_box_mcp_tools.animations import SHOW_MAX_S, SHOW_MIN_S, clamp_show_seconds
+@pytest.mark.parametrize("asked, seconds", [(60, 30.0), (1, 5.0), (None, 8.0), (12, 12.0), (0, 8.0)])
+def test_tool_and_dialogue_hold_the_scene_by_one_rule(mock_node, asked, seconds):
+    """#4089: тул и диалог не расходятся во времени показа: 60 -> 30, 1 -> 5, без времени -> 8 (умолчание показа)."""
+    from rob_box_dialog.expression import show_seconds
+    from rob_box_dialog.turn import shown_face
 
-    assert clamp_show_seconds(None) is None
-    assert clamp_show_seconds(5.0) == 5.0
-    assert clamp_show_seconds(SHOW_MIN_S) == SHOW_MIN_S and clamp_show_seconds(SHOW_MAX_S) == SHOW_MAX_S
-    assert clamp_show_seconds(SHOW_MIN_S - 0.1) == SHOW_MIN_S and clamp_show_seconds(SHOW_MAX_S + 0.1) == SHOW_MIN_S
+    data = PlayAnimationTool(mock_node).execute(animation="happy", duration=asked).data
+
+    assert show_seconds(asked) == seconds
+    assert data.get("duration", seconds) == seconds, "тул отдаёт то же число, что правило"
+    assert shown_face(None, data).duration_s == seconds, "диалог держит сцену то же время"
+    assert shown_face(None, {"animation": "happy", "duration": asked}).duration_s == seconds, "и по сырым данным"

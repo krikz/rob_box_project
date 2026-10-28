@@ -205,7 +205,7 @@ def test_play_animation_face_goes_to_the_face_as_validated_slots_with_the_ordere
     assert rig.requests[-1]["face"] == {"eyes": "wide", "mouth": "teeth", "tint": "red", "duration_s": 6.0}
     assert (rig.requests[-1]["emotion"], rig.requests[-1]["ttl_ms"]) == ("", 6000)
     rig.stages.tool_call("play_animation", {"animation": "sleep", "face": '{"blink": "wink_left"}'})
-    assert rig.requests[-1]["face"] == {"blink": "wink_left", "duration_s": 5.0}
+    assert rig.requests[-1]["face"] == {"blink": "wink_left"}   # время не задано - face_node берёт умолчание показа (#4089)
     assert rig.requests[-1]["emotion"] == "sleep"          # анимация и сцена лица - вместе
 
 
@@ -381,10 +381,13 @@ def real_tool_animations(monkeypatch):
     return module
 
 
-def test_show_seconds_is_the_rule_of_the_tool(real_tool_animations):
+def test_show_seconds_is_the_one_show_rule_of_the_dialogue():
+    from rob_box_dialog.expression import show_seconds
+
     assert tt.show_seconds(None) == 0.0
     assert tt.show_seconds(6) == 6.0 and tt.show_seconds("12") == 12.0
-    assert tt.show_seconds(1) == 2.0 and tt.show_seconds(300) == 2.0     # вне [2, 30] - минимум, как в туле
+    assert tt.show_seconds(60) == 30.0 and tt.show_seconds(1) == 5.0     # #4089: пределы [5, 30], как у диалога v2
+    assert all(tt.show_seconds(asked) == show_seconds(asked) for asked in (1, 6, 12, 30, 300))
     assert tt.show_seconds("долго") == 0.0
 
 
@@ -400,7 +403,7 @@ def test_without_the_tool_package_there_is_no_scene_and_no_crash(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "rob_box_mcp_tools.animations", None)      # import -> ImportError
-    assert tt.scene_for_animation("happy") == "" and tt.show_seconds(6) == 0.0
+    assert tt.scene_for_animation("happy") == "" and tt.show_seconds(6) == 6.0   # время - из диалога, не из пакета тулов
 
 
 def test_error_reason_takes_the_error_field_or_the_start_of_the_text():

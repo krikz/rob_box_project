@@ -409,7 +409,7 @@ def _face(data: Any) -> Any:
     if not isinstance(data, Mapping) or set(data) - set(FACE_FIELDS):
         return data
     slots = {k: data[k] for k in kn.FACE_SCENE_SLOTS if k in data}
-    duration = data.get("duration_s", kn.FACE_SCENE_DEFAULT_S)
+    duration = data.get("duration_s")
     return FaceScene(**slots, duration_s=duration)
 
 

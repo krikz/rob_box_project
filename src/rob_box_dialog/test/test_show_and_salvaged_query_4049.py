@@ -155,7 +155,7 @@ def test_4049_shown_face_rules():
     sad = {"animation": "sad", "duration": 6, "face": {"eyes": "half", "duration_s": 2}}
     assert shown_face(None, sad) == Shown(emotion="sad", face=FaceScene(eyes="half", duration_s=6.0), duration_s=6.0)
     only_face = shown_face(Expression(emotion="happy", gesture="wink"), {"face": {"tint": "warm"}})
-    held = kn.FACE_SCENE_DEFAULT_S  # своё время сцены лица (5 с) — уже не меньше минимума показа
+    held = kn.FACE_SHOW_DEFAULT_S  # сцена лица без своего времени (#4089): умолчание показа, одно на всех
     assert only_face == Expression(emotion="happy", gesture="wink", face=FaceScene(tint="warm", duration_s=held),
                                    duration_s=held)
     assert shown_face(Expression(emotion="sad"), {"face": {"eyes": "no-such"}}) == Expression(emotion="sad")

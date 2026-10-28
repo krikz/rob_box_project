@@ -2,7 +2,7 @@
 
 :class:`ToolWatch` смотрит на вызов тула до ``/mcp/execute`` и на его итог после. Тул лицо не трогает: имя сцены из аргумента
 ``animation`` (``speak_text`` / ``play_animation``) видит диалог, красит ею рефлексы ``speaking``/``done``, а
-``play_animation`` показывает сцену сразу и на заказанное время (правило длительности - одно, у тула).
+``play_animation`` показывает сцену сразу и на заказанное время (правило длительности - общее, expression.show_seconds).
 Без ROS; словарь анимаций тулов подгружается лениво (пакета может не быть в образе).
 """
 
@@ -35,13 +35,13 @@ def scene_for_animation(name: str) -> str:
 
 
 def show_seconds(duration: Any) -> float:
-    """Сколько держать сцену ``play_animation``: правило тула (``clamp_show_seconds``); ``0`` - по умолчанию лица."""
+    """Сколько держать сцену ``play_animation``: общее правило показа (``expression.show_seconds``, #4089);
+    ``0`` - время не задано, по умолчанию лица."""
     if duration is None:
         return 0.0
     try:
-        from rob_box_mcp_tools.animations import clamp_show_seconds  # noqa: PLC0415 - пакет есть не в каждом образе
-        return clamp_show_seconds(float(duration)) or 0.0
-    except (ImportError, TypeError, ValueError):
+        return ex.show_seconds(float(duration))
+    except (TypeError, ValueError):
         return 0.0
 
 

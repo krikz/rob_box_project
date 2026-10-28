@@ -39,19 +39,21 @@ class FaceScene:
     bg: Optional[str] = None
     fx: Optional[str] = None
     feat: Optional[str] = None
-    duration_s: float = kn.FACE_SCENE_DEFAULT_S
+    duration_s: Optional[float] = None  # не задано - время по умолчанию ``expression.show_seconds`` (#4089)
 
     def slots(self) -> Dict[str, str]:
         """Заданные слоты (без длительности), в порядке таблицы."""
         return {s: getattr(self, s) for s in kn.FACE_SCENE_SLOTS if getattr(self, s) is not None}
 
     def to_dict(self) -> Dict[str, Any]:
-        """Слоты и ``duration_s`` - как их ждёт ``ExpressionRequest.face_json``."""
+        """Слоты и ``duration_s`` (если задано) - как их ждёт ``ExpressionRequest.face_json``."""
+        if self.duration_s is None:
+            return self.slots()
         return {**self.slots(), "duration_s": self.duration_s}
 
 
 def problem(face: Any) -> str:
-    """Что не так со сценой (``""`` - всё в порядке): не сцена, слот вне enum, длительность вне ``(0, 30]``."""
+    """Что не так со сценой (``""`` - всё в порядке): не сцена, слот вне enum, длительность (если задана) вне ``(0, 30]``."""
     if not isinstance(face, FaceScene):
         return "not_a_scene"
     for slot, allowed in kn.FACE_SCENE_SLOTS.items():
@@ -59,6 +61,8 @@ def problem(face: Any) -> str:
         if value is not None and value not in allowed:
             return f"{slot}={value}"
     duration = face.duration_s
+    if duration is None:
+        return ""
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not 0 < duration <= kn.FACE_SCENE_MAX_S:
         return f"duration_s={duration}"
     return ""
@@ -80,7 +84,6 @@ def validate(data: Any) -> Tuple[Optional[FaceScene], str]:
     if unknown:
         return None, f"unknown_field={unknown[0]}"
     kwargs = {k: data[k] for k in FIELDS if k in data}
-    kwargs.setdefault("duration_s", kn.FACE_SCENE_DEFAULT_S)
     scene = FaceScene(**kwargs)
     why = problem(scene) or ("" if scene.slots() else "empty")
     return (None, why) if why else (scene, "")

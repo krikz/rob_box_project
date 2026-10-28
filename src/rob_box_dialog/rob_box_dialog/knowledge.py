@@ -1930,16 +1930,21 @@ FACE_SCENE_SLOTS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "fx": ("slash", "glitch", "boot", "power_down"),
     "feat": ("loading_eyes",),
 })
-FACE_SCENE_DEFAULT_S = 5.0
 FACE_SCENE_MAX_S = 30.0
 #: Показ по просьбе человека (#4083, Шифу 27.10: «показывает анимации не микросекунды, а полноценно, хотя бы 5–10
 #: секунд»): сцена ``play_animation`` и лицо команды, когда лицо просили (``tools_view.show_asked``) или модель задала
 #: ``expression.duration_s``, держится не меньше ``FACE_SHOW_MIN_S`` и не больше ``FACE_SCENE_MAX_S`` (ADR §5.5.9);
 #: без заказанного времени - ``FACE_SHOW_DEFAULT_S`` (то же, что по умолчанию у ``face_director`` для запроса без
-#: ``ttl_ms``). Одно правило - ``expression.show_seconds``; пачка сцен одной команды идёт по очереди, каждая своё время
-#: (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога - её время.
+#: ``ttl_ms``). Одно правило - ``expression.show_seconds`` (#4089): его читают диалог (``turn.command_face``), тул
+#: ``play_animation`` (``data.duration``) и ``face_node`` (сцена без времени); пачка сцен одной команды идёт по очереди,
+#: каждая своё время (``expression.queued``), а не перезаписью. Рефлекс ``done`` сцену вызова не обрезает: время итога -
+#: её время.
 FACE_SHOW_MIN_S = 5.0
 FACE_SHOW_DEFAULT_S = 8.0
+#: Описание параметра ``duration`` тула ``play_animation`` (#4089): пределы и умолчание - из тех же чисел, а не словами
+#: в коде тула.
+FACE_SHOW_DURATION_HINT = (f"Сколько секунд держать анимацию: от {FACE_SHOW_MIN_S:g} до {FACE_SCENE_MAX_S:g}; меньше"
+                           f" - {FACE_SHOW_MIN_S:g}, больше - {FACE_SCENE_MAX_S:g}; не задано - {FACE_SHOW_DEFAULT_S:g}")
 #: Описание схемы сцены для LLM (идёт в схему, не в промпт). ``left``/``right`` - со стороны человека напротив робота.
 FACE_SCENE_HINT = ("Слоты лица; всё, что не задано, берётся из текущей сцены. left/right - со стороны человека"
                    " напротив робота. Только значения из списков, свободных цветов и форм нет. bg - фон под глазами"
