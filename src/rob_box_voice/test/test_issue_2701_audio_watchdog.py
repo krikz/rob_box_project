@@ -188,7 +188,6 @@ def _make_audio_node_stub(**param_overrides):
         speech_prefetch=1.5,
         speech_min_duration=0.3,
         speech_max_duration=10.0,
-        tts_grace_s=2.5,
         music_vad_threshold=6.0,
         music_vad_min_db=-35.0,
         barge_in_with_music=True,
@@ -460,7 +459,6 @@ class TestEmptySpeechStreakDetector:
     def test_single_empty_speech_does_not_reopen(self, audio_node):
         """Один случай «0.00с» — это штатный шум VAD, не повод дёргать поток."""
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.audio_stall_empty_speech_count = 3
         audio_node._reopen_audio_stream = MagicMock()
@@ -474,7 +472,6 @@ class TestEmptySpeechStreakDetector:
         """Главный сценарий issue #2701 п.2: K=3 «0.00с» подряд →
         переоткрытие потока."""
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.audio_stall_empty_speech_count = 3
         audio_node._reopen_audio_stream = MagicMock()
@@ -489,7 +486,6 @@ class TestEmptySpeechStreakDetector:
         """Счётчик сбрасывается на первой успешно принятой фразе — ровно
         как требует issue #2701."""
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.audio_stall_empty_speech_count = 3
         audio_node._reopen_audio_stream = MagicMock()
@@ -528,7 +524,6 @@ class TestEmptySpeechStreakDetector:
         """Отказ по длительности (не 0с, а, скажем, слишком долгая фраза)
         — штатное поведение VAD, не должен путаться со «стримом завис»."""
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.speech_max_duration = 0.1  # искусственно узкое окно
         audio_node.audio_stall_empty_speech_count = 3
@@ -587,31 +582,34 @@ class TestNoFalsePositiveDuringTtsMute:
         watchdog'у (тот следит только за callback), но регрессия здесь
         сломала бы предпосылку "callback снаружи TTS не гейтится"."""
         audio_node.tts_active = True
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
 
         assert audio_node._vad_gated(True) is True
 
-    def test_empty_speech_streak_not_falsely_incremented_by_tts_grace(self, audio_node):
-        """В grace-периоде после TTS (issue #989) VAD программно False —
-        is_speeching никогда не включается, поэтому «пустых» веток в
-        check_vad_and_doa просто не бывает: streak не растёт впустую."""
+    def test_phrase_right_after_tts_is_captured_and_not_a_stall(self, audio_node):
+        """#4072: после реплики микрофон не глохнет (эхо-окно — у stt_node):
+        VAD сразу после TTS включает накопление, живой поток наполняет
+        буфер, фраза уходит в STT, streak «пустых» не растёт."""
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.get_direction = MagicMock(return_value=None)
         audio_node.music_active = False
-        audio_node.tts_active = False
-        audio_node._tts_ended_at = time.monotonic()  # только что закончился TTS
         audio_node.audio_stall_empty_speech_count = 3
         audio_node._reopen_audio_stream = MagicMock()
+        audio_node._on_robot_speech(True)
+        audio_node._on_robot_speech(False)  # реплика только что кончилась
 
-        # Аппаратный VAD дребезжит True/False во время grace — не должно
-        # попасть в is_speeching вообще (_vad_gated возвращает False).
-        for vad_hw in (True, False, True):
-            audio_node.respeaker.get_vad = MagicMock(return_value=vad_hw)
-            audio_node.check_vad_and_doa()
-            assert audio_node.is_speeching is False
+        audio_node.respeaker.get_vad = MagicMock(return_value=True)
+        audio_node.check_vad_and_doa()
+        assert audio_node.is_speeching is True
+        audio_node.audio_callback(_speech_chunk(0x57), 4096, {}, 0)
+        audio_node.audio_callback(_speech_chunk(0x58), 4096, {}, 0)
 
+        clock.advance(audio_node.speech_continuation + 0.1)
+        audio_node.respeaker.get_vad = MagicMock(return_value=False)
+        audio_node.check_vad_and_doa()
+
+        audio_node.speech_audio_pub.publish.assert_called()
         assert audio_node._empty_speech_streak == 0
         audio_node._reopen_audio_stream.assert_not_called()
 

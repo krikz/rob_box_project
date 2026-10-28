@@ -184,7 +184,6 @@ def _make_audio_node_stub(**param_overrides):
         speech_prefetch=1.5,  # issue #1117: было 1.0 (фикс #15)
         speech_min_duration=0.3,
         speech_max_duration=10.0,
-        tts_grace_s=2.5,
         music_vad_threshold=6.0,
         music_vad_min_db=-35.0,
     )
@@ -498,7 +497,6 @@ class TestSpeechStoppedTimeInit:
         # Мокаем железо: VAD=False (тишина)
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.get_vad = MagicMock(return_value=False)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
 
         audio_node.check_vad_and_doa()
@@ -512,7 +510,6 @@ class TestSpeechStoppedTimeInit:
         clock = _install_fake_clock(audio_node, start_ns=10 * 10**9)
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.get_vad = MagicMock(return_value=True)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
 
         # pre-roll наполнен (последняя секунда до речи)
@@ -541,7 +538,6 @@ class TestLongSpeechIsSplitNotDropped:
         audio_node.speech_audio_buffer = b"\x10\x00" * int(16000 * seconds)
         _install_fake_clock(audio_node, start_ns=10 * 10**9)
         audio_node.speech_stopped_time = _FakeTime(0)
-        audio_node._tts_ended_at = 0.0
         audio_node.music_active = False
         audio_node.respeaker.is_connected = MagicMock(return_value=True)
         audio_node.respeaker.get_vad = MagicMock(return_value=False)

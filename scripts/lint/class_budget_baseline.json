@@ -60,7 +60,7 @@
       "methods": 31
     },
     "src/rob_box_voice/rob_box_voice/audio_node.py:AudioNode": {
-      "wmc": 127,
+      "wmc": 125,
       "methods": 24
     },
     "src/rob_box_voice/rob_box_voice/core/faq_store.py:FAQStore": {
@@ -80,8 +80,8 @@
       "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
-      "wmc": 213,
-      "methods": 40
+      "wmc": 207,
+      "methods": 39
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
       "wmc": 599,

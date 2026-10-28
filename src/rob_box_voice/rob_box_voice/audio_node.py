@@ -78,11 +78,9 @@ class AudioNode(Node):
         self.declare_parameter('audio_heartbeat_file', '/tmp/rob_box_audio_heartbeat')
         self.declare_parameter('device_name', 'ReSpeaker 4 Mic Array')
 
-        # Issue 989 Fix B: grace period после окончания TTS — не начинать
-        # накопление речи (и не публиковать VAD=True) пока робот говорит
-        # или в течение tts_grace_s секунд после. Иначе эхо собственного
-        # голоса/музыки захватывается как «речь» и замыкает петлю.
-        self.declare_parameter('tts_grace_s', 2.5)
+        # Issue 989 Fix B (эхо-окно после речи робота) здесь больше не живёт (#4072): микрофон слышит всегда,
+        # а что звучало только в окне после реплики, решает stt_node (core/echo_window.py). Глухой VAD в паузе
+        # между сегментами выступления съедал «Робот, хватит».
         # Issue 989 Fix C: при активной музыке поднимаем порог VAD на
         # ReSpeaker (GAMMAVAD_SR) и дополнительно гейтим по уровню RMS —
         # музыка не должна триггерить VAD как речь.
@@ -128,8 +126,7 @@ class AudioNode(Node):
         self.audio_heartbeat_file = str(
             self.get_parameter('audio_heartbeat_file').value or ''
         )
-        # Issue 989: параметры анти-эхо.
-        self.tts_grace_s = float(self.get_parameter('tts_grace_s').value)
+        # Issue 989: параметры анти-эхо (музыка; эхо-окно речи — у stt_node, #4072).
         self.music_vad_threshold = float(self.get_parameter('music_vad_threshold').value)
         self.music_vad_min_db = float(self.get_parameter('music_vad_min_db').value)
         # Issue #1764: см. declare_parameter ниже.
@@ -155,8 +152,8 @@ class AudioNode(Node):
         # Issue 989: подписки на речь робота и музыку для анти-эхо гейтов.
         # /voice/speech/event — речь робота (PR-15 15-0b #3711, раньше старый
         # String-топик состояния TTS): «говорит», пока звучит реплика любого агента
-        # (SpeakingWatch: started ... finished|cancelled|rejected). Конец речи
-        # открывает grace period (Fix B).
+        # (SpeakingWatch: started ... finished|cancelled|rejected). На фронтах
+        # чистится pre-roll; эхо-окно после речи — у stt_node (#4072).
         self._robot_speech = watch_speaking(self, self._on_robot_speech)
         # /voice/music/state — снимок плеера от mcp_server (Fix C, с #3133 —
         # JSON, ADR-0141): при активной музыке поднимаем порог VAD, чтобы бит
@@ -264,10 +261,8 @@ class AudioNode(Node):
         self._vad_doa_warn_period_ns: int = int(60.0 * 1e9)  # 60 секунд
 
         # Issue 989: анти-эхо состояние.
-        # TTS: True пока звучит речь робота (SpeechEvent started); на конце
-        # (finished/cancelled/rejected) запоминаем момент для grace period.
+        # TTS: True пока звучит речь робота (SpeechEvent started ... finished/cancelled/rejected).
         self.tts_active: bool = False
-        self._tts_ended_at: float = 0.0  # монотонное время окончания TTS
         # Музыка: True когда mcp_server сообщил "playing" на /voice/music/state.
         self.music_active: bool = False
         # Текущий уровень сигнала (dB) для программного гейта VAD (Fix C).
@@ -833,44 +828,40 @@ class AudioNode(Node):
         )
 
     # ------------------------------------------------------------------
-    # Issue 989: анти-эхо гейты (Fix B — grace после TTS, Fix C — музыка)
+    # Issue 989: анти-эхо гейты (Fix C — музыка; эхо-окно речи — stt_node, #4072)
     # ------------------------------------------------------------------
     def _on_robot_speech(self, speaking: bool) -> None:
-        """Фронт речи робота (``SpeechEvent``): пока звучит — не трогаем VAD.
+        """Фронт речи робота (``SpeechEvent``): VAD не трогаем ни во время речи, ни после неё.
 
         «Звучит» решает ``SpeakingWatch`` (реплика любого агента от
         ``started`` до ``finished|cancelled|rejected``, ``watch_speaking``);
-        здесь — только реакция на фронты. Issue 989 Fix B: на начале речи
-        сбрасываем накопленный буфер (это почти наверняка эхо предыдущей
-        фразы), на конце запоминаем момент для grace period (tts_grace_s).
+        здесь — только реакция на фронты: чистим pre-roll, чтобы хвост
+        прошлого звука не встал в начало следующего захвата (иначе STT
+        склеит «…роберт» из обрывка).
 
         Issue 993 barge-in: НЕ гейтим VAD пока робот говорит — wake-word
         gate в диалоге отсекает эхо собственного голоса, а пользователь
         может перебить рэп/ответ командой «робот, добавь музыку».
+
+        #4072: после речи VAD тоже не гейтится, и начатая фраза на фронте
+        не сбрасывается. Выступление звучит сегментами с паузой 1–2 с:
+        глухой микрофон в паузе и сброс буфера на старте следующего
+        сегмента съедали «Робот, хватит» (до STT доезжало «замолчи»).
+        Эхо собственного голоса после реплики режет stt_node: фраза,
+        чей голос звучал только в эхо-окне, проходит лишь ясным стопом
+        с вейком (core/echo_window.py).
         """
         if speaking:
             self.get_logger().info(
                 "🔇 [issue 993] TTS активен — VAD пропускает речь "
                 "(barge-in через wake-word gate)"
             )
-            # Сбрасываем незавершённое накопление — это эхо, не речь.
-            self.speech_audio_buffer = b""
-            self.is_speeching = False
-            # Pre-roll тоже чистим: старый буфер мог содержать хвост
-            # предыдущей фразы, который не должен попасть в начало
-            # следующего захвата (иначе STT склеит «…роберт» из обрывка).
-            self.speech_prefetch_buffer = b""
-            self.tts_active = True
         else:
-            self._tts_ended_at = time.monotonic()
             self.get_logger().info(
-                f"🔇 [issue 989] TTS закончился — grace {self.tts_grace_s}s"
+                "🔇 [issue 989/#4072] TTS закончился — VAD слушает, эхо-окно решает stt_node"
             )
-            # Pre-roll очищаем ПОСЛЕ TTS: если этого не сделать, первый
-            # захват после ответа робота получит pre-roll с хвостом
-            # собственного голоса → STT слышит «…роберт» вместо «робот».
-            self.speech_prefetch_buffer = b""
-            self.tts_active = False
+        self.speech_prefetch_buffer = b""
+        self.tts_active = bool(speaking)
 
     def _on_music_state(self, msg: String) -> None:
         """Состояние музыки от mcp_server (Fix C).
@@ -941,15 +932,14 @@ class AudioNode(Node):
     def _vad_gated(self, vad: bool) -> bool:
         """Применить анти-эхо гейты к аппаратному VAD.
 
-        Возвращает эффективное значение VAD с учётом:
-        - TTS grace period (issue 989 Fix B): в течение tts_grace_s после
-          окончания TTS — False (эхо собственного голоса).
-          НЕ гейтим VAD пока робот говорит (issue 993 barge-in): эхо
-          отсекается wake-word gate в dialogue_node._on_stt_result
-          (строка ~411 «has_wake_word»), поэтому во время рэпа/ответа
-          пользователь может перебить робот командой «робот, …» —
-          barge-in работает.
-        - активной музыки (Fix C): требуем программный порог по RMS
+        Возвращает эффективное значение VAD с учётом активной музыки
+        (Fix C): программный порог по RMS.
+
+        Речь робота VAD не гейтит — ни во время неё (issue 993 barge-in:
+        пользователь перебивает рэп/ответ командой «робот, …»), ни после
+        (#4072: в паузе между сегментами выступления микрофон был глух).
+        Эхо собственного голоса после реплики режет stt_node по тому, где
+        звучал голос фразы (core/echo_window.py), а не глухота здесь.
 
         Issue #1764 (TRACK/Renardo barge-in): если barge_in_with_music=True
         И музыка активна — НЕ гейтим VAD по RMS. AEC на ReSpeaker Ch1
@@ -960,15 +950,6 @@ class AudioNode(Node):
         Legacy-поведение (barge_in_with_music=False) сохранено для
         сценариев без AEC (микрофон сырой, e2e через стену).
         """
-        # Issue 993 barge-in: пока TTS активен — НЕ гейтим. Эхо
-        # отсекается wake-word gate в dialogue_node.
-        if self.tts_active:
-            # VAD дальше пройдёт проверки (если vad=True и музыка не
-            # слишком громкая). Это разрешает пользователю перебить рэп.
-            pass
-        elif time.monotonic() - self._tts_ended_at < self.tts_grace_s:
-            # После TTS в течение tts_grace_s — это эхо.
-            return False
         if not vad:
             return False
         if self.music_active:
@@ -1008,7 +989,7 @@ class AudioNode(Node):
             if vad is None:
                 return  # Ошибка чтения, пропускаем
 
-            # Issue 989: анти-эхо гейты (TTS grace + музыка strict mode).
+            # Issue 989: анти-эхо гейт музыки (strict mode); эхо-окно речи — у stt_node (#4072).
             vad_eff = self._vad_gated(bool(vad))
 
             if vad_eff != self.prev_vad:

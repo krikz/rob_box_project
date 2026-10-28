@@ -211,6 +211,7 @@ from rob_box_voice.core.occasion import (
     OccasionGate,
     VerdictKind,
 )
+from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
 from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
 from rob_box_voice.core.utterance_id import compute_utterance_id
 from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
@@ -223,6 +224,7 @@ _SRC_WAKE = "wake"  # /audio/quest_wake → /avatar/stt/result (агент оп�
 
 # Вейк-слова — одна таблица rob_box_dialog (ADR-0150 PR-1/PR-5): адресация решает address, своих копий нет.
 from rob_box_dialog import address  # noqa: E402 — как соседние импорты после констант
+from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_voice.core.dialogue_text import has_wake_word, strip_wake_word  # noqa: E402
 
 from rob_box_core.utterance import Utterance as SpokenUtterance
@@ -363,12 +365,10 @@ class STTNode(Node):
         # собственного TTS снова триггерит VAD → бесконечный цикл).
         self.declare_parameter("unclear_cooldown_s", 5.0)
 
-        # Grace period после окончания TTS (issue 989 Fix B): 2-3 секунды
-        # игнорируем ВСЕ фразы от audio_node — робот должен «дослушать» эхо
-        # собственного голоса, а не триггериться на него. Раньше было 0.3s
-        # и только для коротких фраз (<0.8s), из-за чего эхо TTS длиной
-        # >0.8s снова попадало в STT и замыкало петлю «не расслышал».
-        self.declare_parameter("tts_grace_s", 2.5)
+        # Эхо-окно после речи робота (issue 989 Fix B, #4072): фраза, чей голос звучал ТОЛЬКО в нём, — эхо
+        # собственного голоса; проходит лишь ясный стоп с вейком (core/echo_window.py). Окно одно на микрофон
+        # (audio_node больше не глохнет), значение — одна константа знания, YAML его не дублирует.
+        self.declare_parameter("tts_grace_s", kn.IDENTITY_MIC_GRACE_S)
 
         self.yandex_api_key = self.get_parameter("yandex_api_key").value or os.environ.get("YANDEX_API_KEY", "")
         self.yandex_language = self.get_parameter("yandex_language").value
@@ -478,8 +478,9 @@ class STTNode(Node):
         )
 
         # Речь робота (чтобы не слышать себя): SpeechEvent реплики любого агента, «звучит» решает SpeakingWatch
-        # (PR-15 15-0b #3711, раньше старый String-топик состояния TTS); здесь - реакция на фронт.
-        self._robot_speech = speech_client.watch_speaking(self, self._on_robot_speech)
+        # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
+        # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py).
+        self._echo = echo_window.watch(self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool)
         # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
         # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
         # Направление на говорящего — DOA ReSpeaker, снятый во время речи (VAD), по окну фразы.
@@ -525,9 +526,7 @@ class STTNode(Node):
         self._vosk_available = False
         self._vosk_load_lock = threading.Lock()
 
-        # Состояние
-        self.is_robot_speaking = False  # Флаг: робот говорит (только для aec_mode=software)
-        self._tts_ended_at: float = 0.0  # Время окончания TTS (для grace period)
+        # Состояние (речь робота и эхо-окно — в self._echo)
         # Issue #1077 — speaker_tag последней распознанной фразы (Yandex
         # speaker_analysis). None для Vosk fallback. Сбрасывается на старте
         # каждой фразы в speech_audio_callback.
@@ -702,28 +701,6 @@ class STTNode(Node):
             self.publish_state("error")
             return False
 
-    def _on_robot_speech(self, speaking: bool) -> None:
-        """Фронт речи робота (``SpeechEvent``): «говорит» от ``started`` до ``finished|cancelled|rejected``.
-
-        software mode: выключаем STT пока робот говорит.
-        hardware mode: только логируем; AEC на чипе XVF-3000 фильтрует эхо.
-        Конец речи — и отмена (STOP/barge-in), и отказ: ``is_robot_speaking`` не залипает в ``True``, иначе ниже
-        (hardware-AEC, конфиг робота) фразы короче 0.8 с молча отбрасывались бы — «робот», «стоп», «да».
-        """
-        software = self.aec_mode == "software"
-        if speaking:
-            if software:
-                self.get_logger().info("🔇 [software AEC] Робот говорит - распознавание отключено")
-            else:
-                self.get_logger().debug("🎤 [hardware AEC] Робот говорит - XVF-3000 фильтрует эхо")
-        else:
-            self._tts_ended_at = time.monotonic()
-            if software:
-                self.get_logger().info("🎙️ [software AEC] Робот замолчал - распознавание включено")
-            else:
-                self.get_logger().debug("🎙️ [hardware AEC] Робот замолчал")
-        self.is_robot_speaking = speaking
-
     def speech_audio_callback(self, msg: AudioData) -> None:
         """Фраза от audio_node (ReSpeaker) → /voice/stt/utterance (личность)."""
         self._process_audio(msg, source=_SRC_RESPEAKER)
@@ -767,37 +744,13 @@ class STTNode(Node):
         audio_bytes = bytes(msg.data)
         duration = len(audio_bytes) / (self.sample_rate * 2)  # 16-bit = 2 bytes
 
-        if source != _SRC_RESPEAKER:
-            # Источник шлема: AEC/grace не нужны (см. docstring выше).
-            pass
-        elif self.aec_mode == "software":
-            # Программная подавление эха: дропаем всё пока робот говорит
-            if self.is_robot_speaking:
-                self.get_logger().info(f"🔇 [software AEC] Игнор фразы {duration:.2f}с: робот говорит")
-                return
-        else:
-            # Аппаратное AEC: XVF-3000 фильтрует эхо в чипе, но не справляется
-            # с громкой музыкой/собственным TTS (issue 989). Grace period после
-            # окончания TTS: игнорируем ВСЕ фразы (не только короткие <0.8s),
-            # чтобы эхо собственного голоса не замкнуло петлю «не расслышал».
-            time_since_tts = time.monotonic() - self._tts_ended_at
-            if time_since_tts < self.tts_grace_s:
-                self.get_logger().info(
-                    f"🔇 [issue 989] Игнор фразы {duration:.2f}с — grace "
-                    f"{time_since_tts:.2f}с/{self.tts_grace_s}с после TTS "
-                    "(эхо собственного голоса)"
-                )
-                return
-            if self.is_robot_speaking:
-                if duration < 0.8:
-                    self.get_logger().info(
-                        f"🔇 [hardware AEC] Игнор короткой фразы {duration:.2f}с — TTS активен"
-                    )
-                    return
-                self.get_logger().info(
-                    f"🎤 [hardware AEC] Фраза {duration:.2f}с во время TTS — "
-                    "обрабатываем (возможно прерывание)"
-                )
+        # AEC и эхо-окно — только ReSpeaker (шлему не нужны, см. docstring выше): решает core/echo_window.py
+        # по тому, где звучал голос фразы (речь робота / эхо-окно / тишина), а не по моменту доставки (#4072).
+        admission = self._echo.admit(duration) if source == _SRC_RESPEAKER else echo_window.OPEN
+        if admission.note:
+            self.get_logger().info(admission.note)
+        if admission.dropped:
+            return
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
         # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
@@ -881,6 +834,13 @@ class STTNode(Node):
             attempts = []
             # ADR-0076: фиксируем пустые попытки для wake-сборщика.
             self._last_attempts = []
+
+        # Голос фразы звучал только в эхо-окне после речи робота: дальше идёт лишь ясный стоп с вейком (#4072),
+        # остальное — эхо, молча и без «не расслышал» (петля #989).
+        if not admission.keeps(text, self.wake_words):
+            self.get_logger().info(admission.echo_note(text, duration))
+            self.publish_state("ready")
+            return
 
         # Публикация результата по источнику (wake-роутер, #1990)
         if text and not is_short_phrase(text, min_chars=self.min_text_chars):

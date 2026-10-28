@@ -878,20 +878,21 @@ class TestSpeakUnclear:
 
 
 class TestTTSGracePeriod:
-    """Issue 989 Fix B: grace period после TTS — игнорируем ВСЕ фразы."""
+    """Issue 989 Fix B + #4072: эхо-окно после речи робота (core/echo_window.py).
+
+    Фраза, чей голос звучал только в окне, — эхо: распознаётся, но дальше идёт
+    лишь ясный стоп с вейком; остальное — молча, без «не расслышал». Фронтов
+    VAD в этих тестах нет — место голоса берётся в момент доставки.
+    """
 
     def test_default_tts_grace_is_2_5s(self, stt_node):
         assert stt_node.tts_grace_s == 2.5
+        assert stt_node._echo.grace_s == 2.5
 
     def test_phrase_inside_grace_is_ignored(self, stt_node):
-        """Фраза, пришедшая в течение tts_grace_s после TTS → игнор
-        (эхо собственного голоса), STT не вызывается, «не расслышал» нет."""
-        import time as _time
-
-        stt_node.aec_mode = "hardware"
-        stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = False
-        stt_node._tts_ended_at = _time.monotonic() - 1.0  # 1с назад — внутри grace
+        """Эхо в окне после TTS → не публикуется, «не расслышал» нет."""
+        stt_node._echo.on_speech(True)
+        stt_node._echo.on_speech(False)  # реплика только что кончилась
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
@@ -902,19 +903,28 @@ class TestTTSGracePeriod:
         msg.data = [0] * (16000 * 2)  # 1с PCM
         stt_node.speech_audio_callback(msg)
 
-        # Внутри grace — фраза не доходит до распознавания
-        stt_node._recognize_with_fallback.assert_not_called()
-        assert stt_node.utterance_pub.publish.call_count == 0
+        stt_node._recognize_with_fallback.assert_called_once()  # стоп ли это — видно только по тексту
+        assert stt_node.publish_result.call_count == 0
         assert stt_node._speech_client_pubs["request"].publish.call_count == 0
+
+    def test_stop_with_wake_word_inside_grace_passes(self, stt_node):
+        """#4072: «Робот, хватит» в паузе между сегментами выступления — проходит."""
+        stt_node._echo.on_speech(True)
+        stt_node._echo.on_speech(False)
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робот хватит", []))
+        stt_node.publish_result = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2)
+        stt_node.speech_audio_callback(msg)
+
+        assert stt_node.publish_result.call_args.args[0] == "робот хватит"
 
     def test_phrase_outside_grace_is_processed(self, stt_node):
         """Фраза после истечения grace обрабатывается нормально."""
         import time as _time
 
-        stt_node.aec_mode = "hardware"
-        stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = False
-        stt_node._tts_ended_at = _time.monotonic() - 10.0  # 10с назад — вне grace
+        stt_node._echo.ended_at = _time.monotonic() - 10.0  # 10с назад — вне окна
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
@@ -989,16 +999,13 @@ class TestWakeWordInterruptRequest:
     def test_full_chain_barge_in_stop_tts(self, stt_node):
         """Полная цепочка: «робот хватит» во время TTS → InterruptRequest с id фразы.
 
-        Симулируем: TTS активен (is_robot_speaking=True), hardware AEC,
+        Симулируем: TTS активен (эхо-окно: робот говорит), hardware AEC,
         фраза 2с (≥0.8s) → speech_audio_callback → publish_result (реальный)
         → запрос перебивания с utterance_id по PCM (тот же, что в Utterance).
         """
         from rob_box_voice.core.utterance_id import compute_utterance_id
 
-        stt_node.aec_mode = "hardware"
-        stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = True  # TTS активен
-        stt_node._tts_ended_at = 0.0  # «давно» — не в grace (это НЕ хвост TTS)
+        stt_node._echo.on_speech(True)  # TTS активен
         stt_node._recognize_with_fallback = MagicMock(
             return_value=("робот хватит", [])
         )
@@ -1025,10 +1032,7 @@ class TestWakeWordInterruptRequest:
         Не путать с barge-in: короткие всплески собственного голоса
         (эхо) режутся, длинная команда пользователя (≥0.8s) проходит.
         """
-        stt_node.aec_mode = "hardware"
-        stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = True
-        stt_node._tts_ended_at = 0.0
+        stt_node._echo.on_speech(True)  # TTS активен
         stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
@@ -1272,8 +1276,6 @@ class TestTelemetryPhraseToAccept:
         """При успешном распознавании пишется telemetry-строка с latency."""
         stt_node.aec_mode = "hardware"
         stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = False
-        stt_node._tts_ended_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=("робок привет", []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
@@ -1302,8 +1304,6 @@ class TestTelemetryPhraseToAccept:
         """При отклонении (None) telemetry-строка НЕ пишется."""
         stt_node.aec_mode = "hardware"
         stt_node.tts_grace_s = 2.5
-        stt_node.is_robot_speaking = False
-        stt_node._tts_ended_at = 0.0
         stt_node._recognize_with_fallback = MagicMock(return_value=(None, []))
         stt_node.utterance_pub = MagicMock()
         stt_node.state_pub = MagicMock()
