@@ -4,7 +4,7 @@
  "part": 2,
  "base": {
   "name": "understanding_marathon_part1",
-  "corpus_sha256": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103"
+  "corpus_sha256": "5caf89c739cd158b8467201bc94541c1dd0ed302b2117c57f785c05dca4b3039"
  },
  "generator": "scripts/dialog/understanding_corpus/build_paraphrases.py",
  "method": {
@@ -96,20 +96,30 @@
   "repointed": {
    "measured_sha256": "56f5836f701cd79180e804d451088a386735984b5f85eb621758389265416601",
    "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
-   "to_base": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103",
+   "to_base": "5caf89c739cd158b8467201bc94541c1dd0ed302b2117c57f785c05dca4b3039",
    "dropped_steps": [
     "3/n309_bg_command_valera",
     "7/n707_gen_track_info"
    ]
-  }
+  },
+  "dropped_rows": [
+   {
+    "id": "3/n306_who_was_talking",
+    "text": "Робот, поведай, кто только что на фоне говорил: кого ты узнал по голосу, а кого так и не узнал?",
+    "problems": [
+     "подсказывает ответ: слово из ожиданий шага «незнаком|неопознан|не узнал|не узнаю|не узнан|не знаю, кто|не знаю кто|не знаю, кого|не знаю кого»"
+    ]
+   }
+  ]
  },
  "counts": {
   "steps": 86,
-  "alternatives": 258,
+  "alternatives": 257,
   "excluded": 4,
-  "steps_with_3": 86,
-  "steps_with_2": 0,
-  "steps_with_1": 0
+  "steps_with_3": 85,
+  "steps_with_2": 1,
+  "steps_with_1": 0,
+  "steps_below_min": 0
  },
  "excluded": [
   {
@@ -133,7 +143,7 @@
    "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Робот, расскажи, что это за трек: кто, про что и сколько длится.» → «Робот, расскажи про песню про енота: кто, про что, сколько длится.», альтернативы старого текста к новому шагу не относятся"
   }
  ],
- "corpus_sha256": "5c5f34ca70445a8fb13bf3e14c3762be86f2834039e94eeb25f8056ae02ee36d",
+ "corpus_sha256": "a2ccef2356b3bcf73f36aa8f94dc6e2ca6a589af5acaa66e82ce0902f62d3273",
  "alternatives": {
   "1/n101_wake_cold_start": [
    {
@@ -427,9 +437,6 @@
    },
    {
     "text": "Робот, ответь, кто сейчас на фоне разговаривал: кого ты распознал по голосу, а кого не смог?"
-   },
-   {
-    "text": "Робот, поведай, кто только что на фоне говорил: кого ты узнал по голосу, а кого так и не узнал?"
    }
   ],
   "3/n307_count_voices": [

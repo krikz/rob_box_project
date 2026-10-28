@@ -2170,6 +2170,40 @@ step_wake_replay() {  # $1=label $2=safe
     step_wait_after_play "$BEFORE" 0
 }
 
+# step_stt_replay LABEL SAFE — #4196 (n411/n506 марафона-3: STT «говори» -> «гарри», «темп» исказил): ход БЫЛ, но принятая
+# фраза (``✅ ПРИНЯТО``) разошлась с фразой шага по ключевому слову (поле ``stt_keys``) -- судить робота по входу, которого
+# человек не говорил, нельзя. Шаг, которому разрешён ``stt_replay`` (``recover``), играет свою фразу ЕЩЁ РАЗ, один раз за
+# шаг; судит судья e2e_events.py (``stt``). Окно шага (STEP_BEFORE: паттерны, acceptance, music_compare) начинается с
+# повтора -- искажённый ход не судится. Итог шага -- «OK recovered_stt_replay», маркер E2E_RECOVER stt_replay <шаг>; повтор
+# снова искажён -- второго нет, шаг судится как есть. Восстановленный другим видом шаг не сверяется: первый ПРИНЯТО окна --
+# уже «Робот!» подхвата или реплика тишины, а не фраза шага. Выход как у step_wake_replay: E2E_WAIT_RC/E2E_REPLY_*
+# последнего ожидания, BEFORE -- начало его окна.
+step_stt_replay() {  # $1=label $2=safe
+    local label="$1" safe="$2" heard out
+    recover_allowed stt_replay || return 0
+    [ -z "${E2E_STEP_STT_REPLAYED:-}" ] || return 0
+    [ -z "${E2E_STEP_RECOVERED:-}" ] || return 0
+    [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] || return 0
+    heard="$(${ROBOT_SSH} "docker logs voice-assistant --since '${BEFORE}' 2>&1" 2>/dev/null \
+        | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | head -1 \
+        | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r')"
+    [ -n "$heard" ] || return 0
+    out="$(python3 "$(_events_py)" stt --scenario "$SCENARIO_FILE" --label "$label" --heard "$heard" 2>&1)" || {
+        log "STEP ${label}: ❌ сверка ПРИНЯТО со словами шага не разобрана: ${out}"
+        return 0
+    }
+    [ "$(printf '%s\n' "$out" | _ev_kv stt_ok)" = "0" ] || return 0
+    E2E_STEP_STT_REPLAYED=1
+    E2E_STEP_RECOVERED="stt_replay"
+    recover_mark stt_replay "$label" "heard=«${heard}» missing=$(printf '%s\n' "$out" | _ev_kv missing)"
+    BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+    E2E_LAST_PLAY_SINCE="$BEFORE"
+    STEP_BEFORE="$BEFORE"
+    log "STEP ${label}: STT исказил фразу (услышано «${heard}», нет слов: $(printf '%s\n' "$out" | _ev_kv missing)) -- фраза шага ещё раз (stt_replay), окно шага с повтора"
+    play_eq_wav "$OUT_DIR/cmd_${safe}_eq.wav"
+    step_wait_after_play "$BEFORE" 0
+}
+
 # presynth_recovery_phrases ROWS — #3989: фразы восстановления голосами акта -- в кэш синтеза до первого PLAY:
 # «Робот!» обязано прозвучать, пока фраза шага свежая для подхвата бэклога (BACKLOG_PICKUP_S = 20 с), а сеть
 # билд-машины мигает (#3875). Не вышло -- не отказ акта: step_recover синтезирует сам.
@@ -2500,6 +2534,8 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         [ "${E2E_WAIT_RC:-0}" = "4" ] && step_recover "$label" "$text" "$voice" "$safe"
         # Решение Шифу 28.10 (n210): вейк так и не пробился -- шаг, которому разрешён wake_replay, повторяет свою фразу.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] && step_wake_replay "$label" "$safe"
+        # #4196: ход был, но STT исказил ключевое слово фразы шага (поле stt_keys) -- шаг с stt_replay играет фразу ещё раз.
+        [ "${E2E_WAIT_RC:-0}" = "0" ] && step_stt_replay "$label" "$safe"
 
         if [ "$E2E_WAIT_MODE" = "event" ] && [ "${E2E_DIALOG_ENGINE:-v1}" = "v2" ]; then
             # #3954: v2 -- ОДИН судья, e2e_events.py (ПРИНЯТО + `📊 [turn]` + SpeechEvent). check_cycle с его
@@ -3158,6 +3194,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_RECOVER_KINDS="$(step_recover_kinds "$label")"
         E2E_STEP_RECOVERED=""
         E2E_STEP_WAKE_REPLAYED=""
+        E2E_STEP_STT_REPLAYED=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).

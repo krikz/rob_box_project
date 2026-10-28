@@ -187,6 +187,7 @@ def test_repoint_keeps_only_measured_texts_of_unchanged_steps(base, parts):
     old["acts"][0]["steps"][2]["step"]["text"] = "Робот, сколько времени?"  # n103 - «в старой части 1» другой текст
     old["corpus_sha256"] = "1" * 64
     data = {**json.loads(json.dumps(parts[2])), "base": {"name": "x", "corpus_sha256": "1" * 64}}
+    data["method"].pop("repointed", None)  # первый перевес; цепочку повторного - в следующем тесте
     out = alt.repoint(data, old, base)
     assert out["base"]["corpus_sha256"] == base["corpus_sha256"]
     assert "1/n103_time" not in out["alternatives"] and out["method"]["repointed"]["dropped_steps"] == ["1/n103_time"]
@@ -194,6 +195,41 @@ def test_repoint_keeps_only_measured_texts_of_unchanged_steps(base, parts):
     assert out["counts"]["alternatives"] == data["counts"]["alternatives"] - len(data["alternatives"]["1/n103_time"])
     with pytest.raises(SystemExit, match="собрана против"):
         alt.repoint(data, base, base)
+
+
+def test_second_repoint_keeps_the_chain_to_the_measured_corpus(base, parts):
+    """#4196: часть 1 пересобрана ещё раз, ни один шаг не сменился - хеш ИЗМЕРЕННОГО корпуса и первая часть 1 прежние,
+    убранные шаги копятся (иначе ``measured_sha256`` == ``corpus_sha256`` и подмножество измеренного не доказать)."""
+    data = json.loads(json.dumps(parts[2]))
+    first = data["method"]["repointed"]
+    old = {**json.loads(json.dumps(base)), "corpus_sha256": data["base"]["corpus_sha256"]}
+    out = alt.repoint(data, old, {**base, "corpus_sha256": "2" * 64})
+    again = out["method"]["repointed"]
+    assert again["measured_sha256"] == first["measured_sha256"] and again["from_base"] == first["from_base"]
+    assert again["to_base"] == "2" * 64 and again["dropped_steps"] == first["dropped_steps"]
+    assert out["alternatives"] == data["alternatives"]
+
+
+def test_drop_failing_removes_only_rows_that_stopped_passing_and_adds_no_text(base, parts):
+    data = json.loads(json.dumps(parts[2]))
+    sid = "3/n306_who_was_talking"
+    bad = {"text": "Робот, а кого ты не узнал по голосу?"}  # слово ожиданий «не узнал» в перефразе - подсказка ответа
+    data["alternatives"][sid].append(bad)
+    out = build_paraphrases.drop_failing(data, base)
+    assert bad not in out["alternatives"][sid] and out["method"]["dropped_rows"][-1]["text"] == bad["text"]
+    others = {k: v for k, v in data["alternatives"].items() if k != sid}
+    assert {k: v for k, v in out["alternatives"].items() if k != sid} == others
+    assert out["counts"]["alternatives"] == data["counts"]["alternatives"]  # в файле было 257, добавленную строку сняли
+    for row in out["alternatives"][sid]:
+        assert row in data["alternatives"][sid]
+
+
+def test_drop_failing_refuses_to_leave_a_step_below_the_minimum(base, parts):
+    data = json.loads(json.dumps(parts[2]))
+    sid = "3/n306_who_was_talking"
+    data["alternatives"][sid] = [{"text": "Робот, а кого ты не узнал?"}, {"text": "Робот, кого ты не узнаёшь, не узнал?"}]
+    with pytest.raises(SystemExit, match="top-up"):
+        build_paraphrases.drop_failing(data, base)
 
 
 @pytest.mark.parametrize("part", [2, 3, 4])
