@@ -161,6 +161,39 @@ def test_leading_speedup_imperative_is_an_edit_with_any_tail(text, route):
     assert edit_route(text, playing=False) == ""
 
 
+N607 = "робот помягче поставь спокойно валера уснет за рулем"
+
+
+@pytest.mark.parametrize(
+    "text,route",
+    [
+        # #4173, n607 28.10 (живой лог): «помягче поставь…» под сетом заказало новый трек и убило сет - это правка
+        (N607, "edit:softer"),
+        ("помягче поставь спокойно валера уснет за рулем", "edit:softer"),
+        ("Робот, поставь помягче", "edit:softer"),
+        ("поставь спокойнее", "edit:softer"),
+        ("Робот, включи ка побыстрее", "edit:faster"),
+        # настоящий заказ нового остаётся заказом: между глаголом и словом правки названо своё, или названо «другое»
+        ("поставь джаз помягче", ""),
+        ("Робот, поставь что-нибудь помрачнее", ""),
+        ("включи другую, побыстрее", ""),
+        ("поставь музыку и сделай помягче", ""),
+        ("поставь трек", ""),
+        # «спокойнее» без глагола и музыки - не правка музыки (лицо, поведение)
+        ("будь спокойнее", ""),
+    ],
+)
+def test_play_verb_next_to_the_edit_word_is_an_edit_of_what_plays(text, route):
+    assert edit_route(text, playing=True) == route
+    assert edit_route(text, playing=False) == ""
+
+
+def test_new_order_is_a_play_verb_away_from_the_edit_word_or_a_word_of_another_one():
+    assert not new_order(N607) and not new_order("Робот, поставь помягче")
+    assert new_order("поставь джаз помягче") and new_order("поставь что-нибудь") and new_order("включи другую")
+    assert set(kn.EDIT_NEW_ORDER_WORDS) == set(kn.EDIT_PLAY_VERBS) | set(kn.EDIT_NEW_ORDER_OBJECTS)
+
+
 def test_a_question_is_not_a_request():
     assert asks("Это тот же трек?") and asks("Робот, а какой это темп") and asks("ускорил ли ты бит")
     assert not asks("можешь сделать бит потяжелее?") and not asks("Робот, сделай атмосферу помрачнее, как в киберпанке")

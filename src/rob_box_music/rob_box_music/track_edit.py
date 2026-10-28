@@ -142,6 +142,34 @@ def _leads_with(clause: Sequence[str]) -> Tuple[str, ...]:
     return tuple(kind for kind, edit in kn.TRACK_EDITS.items() if lead in edit.lead)
 
 
+def _play_verbs(clause: Sequence[str]) -> List[int]:
+    """Позиции глаголов «включить музыку» (``knowledge.EDIT_PLAY_VERBS``) в части реплики."""
+    return [i for i, word in enumerate(clause) if word in kn.EDIT_PLAY_VERBS]
+
+
+def _leans(clause: Sequence[str], at: int) -> bool:
+    """Глагол на позиции ``at`` стоит вплотную к слову правки: до него или после, между ними - только обращение и
+    служебные слова (``knowledge.EDIT_TOPIC``): «помягче поставь», «поставь потяжелее», «Робот, включи ка побыстрее»;
+    «поставь джаз помягче» - между ними «джаз», это заказ джаза."""
+    spare = set(kn.EDIT_TOPIC.address) | set(kn.EDIT_TOPIC.fillers)
+    for first, end, _kind in _matches(clause):
+        if end <= at:  # слово правки раньше глагола
+            gap = clause[end:at]
+        elif first > at:  # позже
+            gap = clause[at + 1 : first]
+        else:
+            continue
+        if all(word in spare for word in gap):
+            return True
+    return False
+
+
+def _plays_edit(clause: Sequence[str]) -> bool:
+    """Часть реплики просит править играющее глаголом «включить»: хоть один такой глагол стоит вплотную к слову правки
+    (:func:`_leans`, #4173: «помягче поставь, спокойно» под сетом). Глагол называет играющую музыку, как слово «трек»."""
+    return any(_leans(clause, at) for at in _play_verbs(clause))
+
+
 def _only_edits(clauses: Sequence[Sequence[str]]) -> bool:
     """Вся реплика — правка: кроме записей ``TRACK_EDITS`` только обращение и служебные слова («Робот, давай
     побыстрее»). «Иди быстрее», «расскажи сказку побыстрее» — нет: там есть своё дело."""
@@ -177,15 +205,20 @@ def music_edits(text: str) -> Tuple[str, ...]:
         kind
         for clause in clauses
         for kind in _clause_edits(clause)
-        if _names_music(clause) or (bare and kn.TRACK_EDITS[kind].bare) or kind in _leads_with(clause)
+        if _names_music(clause) or _plays_edit(clause) or (bare and kn.TRACK_EDITS[kind].bare)
+        or kind in _leads_with(clause)
     )
     return tuple(dict.fromkeys(kinds))
 
 
 def new_order(text: str) -> bool:
-    """Реплика заказывает другую музыку («поставь что-нибудь помрачнее», «включи другую»): слово правки там — каким
-    быть новому треку, а не правка играющего."""
-    return bool(set(_words(text)) & set(kn.EDIT_NEW_ORDER_WORDS))
+    """Реплика заказывает другую музыку («поставь что-нибудь помрачнее», «включи другую», «поставь джаз»): слово правки
+    там - каким быть новому треку, а не правка играющего. Заказ - слово «другая/новая/что-нибудь»
+    (``knowledge.EDIT_NEW_ORDER_OBJECTS``) или глагол «включить» (``knowledge.EDIT_PLAY_VERBS``) не вплотную к слову
+    правки: «помягче поставь» (#4173) - правка, «поставь джаз помягче» - заказ."""
+    if set(_words(text)) & set(kn.EDIT_NEW_ORDER_OBJECTS):
+        return True
+    return any(not _leans(clause, at) for clause in _parts(text) for at in _play_verbs(clause))
 
 
 def edit_route(text: str, playing: bool) -> str:

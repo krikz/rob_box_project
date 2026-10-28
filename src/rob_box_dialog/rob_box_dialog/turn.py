@@ -103,7 +103,8 @@ from rob_box_dialog.expression import face_label, show_seconds, shown_scene, sho
 from rob_box_dialog.grammar import Tier1Command, Voices, match
 from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
-from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
+from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
+                                    reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
@@ -221,6 +222,7 @@ class _Turn:
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется (#4069 п.1)
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть (#4069 п.8)
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult (#4141)
+    music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет» (#4173)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -1515,6 +1517,7 @@ class TurnEngine:
         turn.deadline.grant(action_term(actions))
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
+        turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе (#4173)
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется (#4069 п.1)
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне (#4023)
         for result in results:
