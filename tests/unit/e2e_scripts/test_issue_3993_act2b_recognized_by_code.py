@@ -141,3 +141,16 @@ def test_contested_voice_gets_no_lie_and_no_candidate_name(label):
     assert "не запомнил" not in said and "Саш" not in said and "Борис" not in said and "?" not in said
     verdict = etm.step_verdict(step.get("acceptance") or {}, _log(CONTESTED, said), label=label)
     assert verdict["pass"] is False  # expected_keywords: имени нет - честный красный шаг
+
+
+def test_grisha_enrolled_from_this_very_phrase_is_not_told_her_voice_is_remembered():
+    """Круг 1 ревью PR #4121 (блокер): если профиль тёти Гриши заведён из САМОЙ реплики n710 (речь ≥ 3 с, #3858
+    ``source=enroll``), голос слышен впервые - код говорит «по голосу пока не узнаю», а не «голос твой помню»; судья
+    шага (имена и факты Саши и Бориса не звучат) это пропускает."""
+    label = BY_CODE[3]
+    step = _steps()[label]
+    enrolled = {**CONFIRMED[step["voice"]], "confidence": 0.0, "source": "enroll"}
+    agg, ports = _code_turn(step["text"], enrolled)
+    assert ports.asked == [] and agg.llm_calls == 0 and ports.said == ["По голосу пока не узнаю."]
+    verdict = etm.step_verdict(step.get("acceptance") or {}, _log(enrolled, ports.said[0]), label=label)
+    assert verdict["pass"], verdict["reason"]

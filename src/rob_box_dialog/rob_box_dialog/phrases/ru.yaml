@@ -53,6 +53,8 @@ query.rejected: ["Не нашёл ответа."]
 # «что ты обо мне помнишь?» - не «запоминать не буду» записи и не «не нашёл ответа»
 query.rejected.no_person: ["Не узнаю твой голос, поэтому не знаю, что о тебе помню."]
 query.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — не буду гадать, что помню."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
+query.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не знаю, что о тебе помню."]
 # отказ ЧТЕНИЯ по причине тула (#4025, #4026): поиск в интернете не ответил - это не «ничего не нашёл»; info по
 # выдуманному id трека (update/delete того же - music.library_fail.unknown_track, один текст)
 query.rejected.search_unavailable: ["Не смог проверить в интернете: поиск сейчас не ответил."]
@@ -73,6 +75,8 @@ local.rejected: ["Не вышло."]
 local.timeout: ["Не дождался подтверждения — не знаю, вышло ли."]
 # память о людях (knowledge.PERSON_SCOPED_TOOLS / DONE_EVIDENCE): отказ без собеседника и успех без saved
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
+local.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не запомню."]
 # голос узнан, а чей - не подтверждено (спор/гипотеза, knowledge.VOICE_UNCONFIRMED_STATES, #3993): без вопроса «ты Саша?»
 # (решение Шифу 26.10) и без неправды «не узнаю голос»
 local.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — запоминать не буду."]

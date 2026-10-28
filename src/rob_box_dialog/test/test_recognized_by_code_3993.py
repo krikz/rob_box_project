@@ -6,13 +6,16 @@
 недавно уже говорили» - тоже часть вопроса), закрывается фразой кода по ``name_state`` снимка: узнан с именем /
 знакомый, не уверен чей (без имени кандидата) / профиль без имени / не узнаю. LLM не зовётся. Ревью PR #4121: на
 настоящих фразах акта 2b прежний матч «реплика целиком = глагол + дополнение» не срабатывал ни разу - они здесь
-(``ACT2B``), как положительные и как честно отрицательные.
+(``ACT2B``), как положительные и как честно отрицательные. Круг 1 ревью PR #4121: профиль, заведённый из этой же
+фразы (#3858, ``source=enroll``), - голос слышен впервые, ответ «не узнаю» (``ENROLLED_NOW``); утверждения и обрывки
+STT («ты же меня знаешь», «знаешь, что меня…») - ход модели.
 """
 
 import asyncio
 
 import pytest
 
+from rob_box_core.speaker_wire import SOURCE_ENROLL
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
@@ -29,6 +32,11 @@ TENTATIVE = {"is_known": True, "speaker_id": "spk-sasha", "name": None, "confide
              "tentative_name": "Саша", "tentative_kind": "single"}
 CONFIRMED = {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.944}
 NAMELESS = {"is_known": True, "speaker_id": "spk-guest-3", "name": None, "epithet": "Гость"}
+#: Ревью PR #4121 (круг 1, блокер): незнакомый голос, фраза ≥ 3 с - speaker_id_node (#3858, в бою
+#: ``unnamed_profiles_enabled: true``) заводит профиль без имени ИЗ ЭТОЙ ЖЕ фразы и публикует его так
+#: (``_publish_result(enrolled, source=SOURCE_ENROLL)``). Реплика n702 23.10 - «речь=3.96s».
+ENROLLED_NOW = {"is_known": True, "speaker_id": "spk-guest-4", "name": None, "epithet": "Гость", "confidence": 0.0,
+                "source": SOURCE_ENROLL}
 UNKNOWN = {"is_known": False}
 
 YES_SASHA = "Узнал — ты Саша."
@@ -77,12 +85,29 @@ def test_recognition_question_vocabulary(text):
     assert asks_recognized(text)
 
 
+@pytest.mark.parametrize("text", ["ты меня не помнишь?", "не узнал меня?", "ты не узнал меня теперь",
+                                  "ты меня узнаешь, да?", "а ты знаешь меня?", "ты знаешь, кто я такой?"])
+def test_negated_and_tagged_recognition_question(text):
+    """Круг 1 ревью PR #4121: отрицание глагола узнавания и переспрос в конце - всё ещё вопрос узнавания."""
+    assert asks_recognized(text)
+
+
 @pytest.mark.parametrize("text", ["ты меня узнал? включи музыку", "узнай погоду", "что ты обо мне помнишь?",
                                   "ты узнал, что Саша любит чай?", "как меня зовут?", "узнал", "ты меня слышишь?",
                                   "узнал узнал меня", "", "откуда ты меня знаешь?", "что ты про меня помнишь?",
                                   "ты знаешь, кто такой Гагарин?", "помнишь, что я люблю зелёный чай?",
                                   "мы уже знакомы?", "ты меня узнал? кстати, какая погода"])
 def test_not_the_recognition_question(text):
+    assert not asks_recognized(text)
+
+
+@pytest.mark.parametrize("text", ["ты меня не знаешь", "да ты меня знаешь", "ну ты меня знаешь", "ты же меня знаешь",
+                                  "знаешь что меня", "ты помнишь что меня", "ты меня не помнишь и не запомнил",
+                                  "ты знаешь что у меня", "ты меня или нет узнал"])
+def test_statement_or_stt_fragment_goes_to_the_model(text):
+    """Круг 1 ревью PR #4121 (зонд probe_live): утверждение («да/ну/же ты меня знаешь», «ты меня не знаешь») и обрывок
+    STT («знаешь, что меня…») - не вопрос «узнал ли»: «Узнал — ты Саша.» на них звучит странно, ход модели, как до
+    #3993. «Да» - переспрос только в конце, «что» - только в «ну что», «не знаешь» - не глагол узнавания."""
     assert not asks_recognized(text)
 
 
@@ -104,6 +129,25 @@ def test_reply_by_name_state():
     assert recognition_reply("ты меня узнал?", _ref(UNKNOWN)) == ("unknown", NOT_KNOWN)
     assert recognition_reply("ты меня узнал?", None)[0] == "unknown"
     assert recognition_reply("включи музыку", _ref(CONFIRMED)) is None
+
+
+@pytest.mark.parametrize("label, text", [("short", "ты меня узнал?")] + ACT2B_BY_CODE,
+                         ids=["short"] + [a[0] for a in ACT2B_BY_CODE])
+def test_voice_enrolled_from_this_very_phrase_is_not_recognized(label, text):
+    """Круг 1 ревью PR #4121 (блокер): профиль без имени, заведённый из ЭТОЙ фразы (``source=enroll``), - голос слышен
+    впервые: «Голос твой помню» ему - неправда (обратная сторона лжи #3993). Ответ - «по голосу пока не узнаю», как
+    незнакомцу; профиль для памяти при этом свой (``person_ref`` есть)."""
+    ref = _ref(ENROLLED_NOW)
+    assert (ref.person_ref, ref.first_heard) == ("spk-guest-4", True)
+    assert recognition_reply(strip_wake_word(text), ref) == ("unknown", NOT_KNOWN)
+
+
+def test_next_phrase_of_the_enrolled_voice_is_the_nameless_profile():
+    """Следующая фраза того же голоса - обычное узнавание (``source`` нет): робот его уже слышал - «голос помню»."""
+    first = _ref(ENROLLED_NOW)
+    again = speaker_ref({**ENROLLED_NOW, "confidence": 0.86, "source": None}, now=2.0, prev=first)
+    assert (again.person_ref, again.first_heard, again.since) == ("spk-guest-4", False, first.since)
+    assert recognition_reply("ты меня узнал?", again) == ("nameless", NAMELESS_SAID)
 
 
 @pytest.mark.parametrize("result", [CONTESTED, TENTATIVE])
@@ -187,8 +231,9 @@ def test_recognition_question_is_answered_by_code_without_llm(result, said):
 
 
 @pytest.mark.parametrize("label, text", ACT2B_BY_CODE, ids=[a[0] for a in ACT2B_BY_CODE])
-@pytest.mark.parametrize("result, said", [(CONTESTED, UNSURE), (CONFIRMED, YES_SASHA), (NAMELESS, NAMELESS_SAID)],
-                         ids=["contested", "confirmed", "nameless"])
+@pytest.mark.parametrize("result, said", [(CONTESTED, UNSURE), (CONFIRMED, YES_SASHA), (NAMELESS, NAMELESS_SAID),
+                                          (ENROLLED_NOW, NOT_KNOWN)],
+                         ids=["contested", "confirmed", "nameless", "enrolled_now"])
 def test_act2b_question_is_answered_by_code_without_llm(label, text, result, said):
     """Акт 2b через ход: реплика без вейка (как у ``address.decide``) - 0 вызовов LLM, фраза кода по снимку. Спорный
     голос 23.10 (0.944, имя скрыто) - «знакомый, не уверен», а не «голос не запомнил, но имя знаю — Саша»."""

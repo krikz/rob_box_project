@@ -98,7 +98,17 @@ def phrase_key(result: ActionResult) -> Optional[str]:
     base = _tool_key(result) or kn.ACTION_CLASSES[result.cls].phrases.get(result.status)
     if base is None:
         return None
-    return phrases.first_key(f"{base}.{result.reason}" if result.reason else None, base)
+    reason = _phrase_reason(result)
+    return phrases.first_key(f"{base}.{reason}" if reason else None, base)
+
+
+def _phrase_reason(result: ActionResult) -> Optional[str]:
+    """Причина для ключа фразы: ``no_person`` агента без собеседника-голоса (чат Telegram, ТАРС - не
+    ``knowledge.PERSON_AGENTS``) - своя, ``knowledge.NO_PERSON_UNVOICED_REASON``: «Не узнаю твой голос» им неправда,
+    их голос никто не узнаёт (ревью PR #4121). Остальные - причина результата как есть."""
+    if result.reason == kn.NO_PERSON_REASON and result.agent not in kn.PERSON_AGENTS:
+        return kn.NO_PERSON_UNVOICED_REASON
+    return result.reason
 
 
 def _slots(result: ActionResult) -> Mapping[str, Any]:

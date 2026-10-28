@@ -15,6 +15,8 @@
 :func:`name_state` - что результат фразы говорит об имени собеседника
 (``confirmed``/``tentative``/``contested``/``nameless``/``unknown``): одно
 правило для диалога и MCP (#4023), выводится из полей сообщения.
+:func:`first_heard` - профиль без имени заведён из этой же фразы (#3858):
+голос слышен впервые, узнан он быть не мог (#3993).
 """
 
 from __future__ import annotations
@@ -50,6 +52,10 @@ NAME_CONTESTED = "contested"  # голос похож на знакомого, �
 NAME_NAMELESS = "nameless"  # профиль без имени, с кличкой (#3858): голос свой, имени нет
 NAME_UNKNOWN = "unknown"  # голос не узнан или не оценён
 
+# ``source`` результата фразы, которым ``speaker_id_node`` сообщает «профиль без имени заведён из ЭТОЙ фразы» (#3858):
+# сходства ни с кем не было, голос слышен впервые. Писатель и читатели берут значение отсюда.
+SOURCE_ENROLL = "enroll"
+
 
 def name_state(payload: Mapping[str, Any]) -> str:
     """Состояние имени результата биометрии фразы (словарь :func:`speaker_result_to_payload`).
@@ -68,6 +74,15 @@ def name_state(payload: Mapping[str, Any]) -> str:
     if payload.get("tentative_name"):
         return NAME_TENTATIVE
     return NAME_NAMELESS
+
+
+def first_heard(payload: Mapping[str, Any]) -> bool:
+    """Профиль без имени заведён из этой же фразы (#3858, ``source`` = :data:`SOURCE_ENROLL`): голос слышен впервые.
+
+    Состояние имени у такого результата - :data:`NAME_NAMELESS` (профиль свой, факты пишутся в него), но узнавать
+    голос было не по чему: «ты меня узнал?» на нём - «не узнаю», а не «голос помню» (#3993, ревью PR #4121).
+    """
+    return name_state(payload) == NAME_NAMELESS and payload.get("source") == SOURCE_ENROLL
 
 
 # Ключ словаря -> поле сообщения для скалярных значений, одинаковых по смыслу
