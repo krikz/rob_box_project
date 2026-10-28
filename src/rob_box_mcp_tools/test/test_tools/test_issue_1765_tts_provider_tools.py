@@ -229,6 +229,26 @@ class TestSetTtsProviderTool:
         assert result.success is True and result.data["noop"] is True and result.data["status"] == "noop"
         assert fake_requests.calls == []
 
+    @pytest.mark.parametrize("provider, spoken", [("yandex", "Яндекс"), ("minimax", "MiniMax"), ("silero", "Silero")])
+    def test_same_provider_is_said_by_its_catalog_name_not_by_id(self, mock_node, fake_requests, provider, spoken) -> None:
+        """Данные НАСТОЯЩЕГО тула (ветка ``noop``) -> событие хода -> фраза диалога (``knowledge.VOICE_DONE``): провайдер
+        звучит названием каталога («Яндекс»), а не id латиницей («yandex»); слот строит тот же ``outcome_data``, что и
+        у остальных исходов (ревью #4133)."""
+        from types import SimpleNamespace
+
+        from rob_box_dialog import knowledge as kn
+        from rob_box_dialog.respond import ActionResult, phrase_from_result
+        from rob_box_harness.core.tool_loop.command_turn import owner_event
+
+        _active(mock_node, provider)
+        result = SetTtsProviderTool(mock_node).execute(provider=provider)
+        assert result.data["provider_label"] == spoken and fake_requests.calls == []
+        event = owner_event(SimpleNamespace(turn_id="t", args={"provider": provider}),
+                            SimpleNamespace(data=result.data, is_error=not result.success, content=result.message or ""))
+        action = ActionResult("t/0", 0, "personality", "set_tts_provider", kn.TOOL_CLASSES["set_tts_provider"],
+                              event.status, event.reason, event.data)
+        assert phrase_from_result(action).text == f"Я уже говорю через {spoken}."
+
     def test_unknown_and_empty_provider(self, mock_node, fake_requests) -> None:
         bad = SetTtsProviderTool(mock_node).execute(provider="elevenlabs")
         assert bad.success is False and bad.data["error"] == "provider_unknown"

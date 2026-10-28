@@ -1211,6 +1211,10 @@ DJ_STOP = ByData(("action", "was_playing"), {
     ("stop", False): "music.stop_idle", ("stop", True): "music.stop_ok", ("stop", None): "music.stop_ok",
 })
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
+#: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом», #4074), снятый вместе с ним,
+#: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``). Ключ живёт здесь один:
+#: ``VOICE_DONE`` берёт его отсюда же.
+VOICE_DEFAULT_PHRASE = "voice.applied_default"
 #: Смена голоса (``set_voice``, ``set_tts_provider``): фразу строит диалог по ДАННЫМ исхода, который тул взял у владельца
 #: голоса (``SpeechEvent voice_changed``), а не тул своим ``speak_text``. Живое 28.10 00:48:51 («говори обычным голосом»):
 #: тул сказал «Я и так говорю своим обычным голосом.», а код сброса тона следом «Тон голоса обычный.» - две реплики на один
@@ -1219,16 +1223,13 @@ DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
 #: (``True``/``False``; нет применённого голоса - поля нет). Слоты фраз - ``voice_name``, ``requested_name``,
 #: ``provider_label``: названия вслух (``rob_box_mcp_tools.voice_request.outcome_data``), а не id латиницей.
 VOICE_DONE = ByData(("status", "voice_default"), {
-    ("applied", True): "voice.applied_default", ("applied", False): "voice.applied",
+    ("applied", True): VOICE_DEFAULT_PHRASE, ("applied", False): "voice.applied",
     ("already_default", True): "voice.already_default", ("noop", None): "voice.provider_same",
 })
 VOICE_FAILED = ByData(("status", "voice_default"), {
     ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
     ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
 })
-#: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом», #4074), снятый вместе с ним,
-#: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``).
-VOICE_DEFAULT_PHRASE = "voice.applied_default"
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),

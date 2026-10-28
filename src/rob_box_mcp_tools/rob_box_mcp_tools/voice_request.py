@@ -37,7 +37,9 @@ except ImportError:  # pragma: no cover - минимальные окружен�
 
 @dataclass(frozen=True)
 class VoiceOutcome:
-    """Исход запроса: ``applied`` - голос применён как просили, ``fallback`` - применён другой, ``timeout`` - тишина."""
+    """Исход запроса: ``applied`` - голос применён как просили, ``fallback`` - применён другой, ``timeout`` - тишина.
+    Владельцу ничего не просили (данные тула для фразы, :func:`outcome_data`): ``already_default`` - голос и так
+    обычный, ``noop`` - провайдер и так тот, что просили."""
 
     status: str
     requested: str

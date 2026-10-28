@@ -1417,12 +1417,12 @@ class SetTtsProviderTool(MCPTool):
             # Уже на нужном — no-op, но не ошибка: LLM мог перепутать
             # активного. Возвращаем текущее состояние, чтобы LLM не
             # крутил ретраи.
+            # Слоты фразы («Я уже говорю через Яндекс.») - тот же ``outcome_data``, что у остальных исходов: название
+            # провайдера из каталога, а не id латиницей.
             return MCPToolResult(
                 success=True,
                 data={
-                    "status": "noop",
-                    "provider": target_provider,
-                    "provider_label": target_provider,
+                    **outcome_data(VoiceOutcome("noop", "", "", target_provider)),
                     "default_voice": default_voice_for(target_provider),
                     "provider_switched": False,
                     "noop": True,
