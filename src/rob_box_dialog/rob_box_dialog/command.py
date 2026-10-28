@@ -542,9 +542,41 @@ def _lift_edit(data: Mapping[str, Any], fix: _Repairs) -> Mapping[str, Any]:
     return out
 
 
+#: Запись в ``dropped``: ``args`` на уровне команды выброшены целиком (нет единственного действия, куда их положить).
+STRAY_ARGS = "command.args"
+
+
+def _lift_args(data: Mapping[str, Any], fix: _Repairs) -> Mapping[str, Any]:
+    """Аргументы действия на уровне команды (n411 марафона-4 28.10: ``{"args": {"action": "lower"}, "actions":
+    [{"tool": "set_pitch", "args": {"action": "lower"}}], "speech": ...}``) не валят команду: поля схемы тут нет.
+    Единственное действие команды - аргументы переезжают в него (``moved``: ``command.args.<имя>``), своё значение
+    действия главнее (``dropped``: то же имя). Действий нет или несколько, или ``args`` не объект - выбросить целиком
+    (``dropped``: :data:`STRAY_ARGS`); действие, которого модель хотела, но не назвала, поймает
+    :func:`_check_args_without_action`."""
+    if "args" not in data:
+        return data
+    out = {k: v for k, v in data.items() if k != "args"}
+    stray, actions = data["args"], data.get("actions")
+    if not stray:  # пустые аргументы ("", null, {}) терять нечего
+        return out
+    if not (isinstance(stray, Mapping) and isinstance(actions, list) and len(actions) == 1
+            and isinstance(actions[0], Mapping)):
+        fix.dropped.append(STRAY_ARGS)
+        return out
+    own = dict(_args(actions[0].get("args")))
+    for name, value in stray.items():
+        if name in own:
+            fix.dropped.append(f"{STRAY_ARGS}.{name}")
+        else:
+            own[name] = value
+            fix.moved.append(f"{STRAY_ARGS}.{name}")
+    out["actions"] = [{**actions[0], "args": own}]
+    return out
+
+
 def _command(data: Mapping[str, Any]) -> Command:
     fix = _Repairs()
-    data = _lift_edit(data, fix)
+    data = _lift_args(_lift_edit(data, fix), fix)
     _only(data, _COMMAND_FIELDS, "command")
     cmd = Command(
         speech=_text(data, "speech", fix), voice=_text(data, "voice", fix), ask=_ask(data.get("ask"), fix),
@@ -600,6 +632,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
         lambda: _check_music_promise(cmd),
+        lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
         lambda: _check_when(cmd.when, busy),
@@ -956,6 +989,14 @@ def _check_music_promise(cmd: Command) -> None:
         raise _Bad(kn.VIOLATION_MUSIC_PROMISE, f"speech обещает {', '.join(broken)} без тула")
 
 
+def _check_args_without_action(cmd: Command) -> None:
+    """Модель положила аргументы действия на уровень команды, а самого действия нет (:func:`_lift_args` выбросил
+    их целиком): она хотела действие, но не назвала тул - команда без него молча ничего не сделает. Нарушение
+    ``VIOLATION_ARGS_WITHOUT_ACTION`` - повтор с подсказкой; рядом с действием или выступлением выброс безвреден."""
+    if STRAY_ARGS in cmd.dropped and not cmd.actions and cmd.perform is None:
+        raise _Bad(kn.VIOLATION_ARGS_WITHOUT_ACTION, "args на уровне команды, а actions нет")
+
+
 def _check_ask(ask: Optional[Ask]) -> None:
     if ask is None:
         return
@@ -1184,6 +1225,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
                                   f"больше нечем; лицо и анимация слов не заменяют — ответь словами по этим данным в "
                                   f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
     kn.VIOLATION_MUSIC_PROMISE: kn.MUSIC_PROMISE_HINT,
+    kn.VIOLATION_ARGS_WITHOUT_ACTION: "аргументы пишутся только внутри действия: {\"actions\": [{\"tool\": <тул>, "
+                                      "\"args\": {...}}]}; на уровне команды их нет, и без тула ничего не сделано",
     "bad_ask": "у ask нужен text",
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",
