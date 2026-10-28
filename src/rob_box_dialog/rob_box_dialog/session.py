@@ -18,8 +18,8 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Ask
 
 #: Состояния имени собеседника (ADR-0130 §2.6): по имени обращаться можно только при ``confirmed``. ``contested`` —
-#: голос похож на знакомого, но кто из похожих — спорно (#2809): имени и профиля нет, как у незнакомца (#4023, #3993).
-#: Значения — словарь ``speaker_wire.NAME_*`` (#4141); профиль без имени (``nameless``) здесь — ``unknown`` с
+#: голос похож на знакомого, но кто из похожих — спорно: имени и профиля нет, как у незнакомца.
+#: Значения — словарь ``speaker_wire.NAME_*``; профиль без имени (``nameless``) здесь — ``unknown`` с
 #: ``person_ref`` (``speaker_adapter.speaker_ref``).
 NAME_STATES: Tuple[str, ...] = (NAME_UNKNOWN, NAME_TENTATIVE, NAME_CONFIRMED, NAME_CONTESTED)
 
@@ -54,8 +54,8 @@ class SpeakerRef:
     azimuth_deg: Optional[float] = None
     since: float = 0.0
     channels: Tuple[str, ...] = ("voice",)
-    #: Профиль ``person_ref`` заведён из этой же фразы (#3858, ``speaker_wire.first_heard``): голос слышен впервые -
-    #: «узнан» он быть не мог (#3993, ревью PR #4121). Следующая фраза того же голоса - уже обычное узнавание.
+    #: Профиль ``person_ref`` заведён из этой же фразы (``speaker_wire.first_heard``): голос слышен впервые -
+    #: «узнан» он быть не мог. Следующая фраза того же голоса - уже обычное узнавание.
     first_heard: bool = False
 
 
@@ -104,7 +104,7 @@ class SessionSnapshot:
     @property
     def music_playing(self) -> bool:
         """Музыка звучит: играющий трек в снимке плеера или кадр диджея. Единственная проверка «играет» диалога v2:
-        срез тулов, путь пения и ворота искажённого вейка (``address.decide_in_session``, #3975) читают её отсюда."""
+        срез тулов, путь пения и ворота искажённого вейка (``address.decide_in_session``) читают её отсюда."""
         return self.top("DJ") is not None or self.music.state == "playing"
 
 
@@ -152,7 +152,7 @@ class Session:
     def push_scene(self, kind: str, set_by: str, ttl_s: Optional[float] = None,
                    payload: Optional[Mapping[str, Any]] = None) -> SceneFrame:
         """Положить кадр; TTL по умолчанию — из :mod:`.knowledge` (тишина пользователя, вопрос личности). Кадр из
-        ``knowledge.TOOL_ASK_CLOSED_BY`` (новый вопрос робота, тишина, оператор) снимает окно вопроса тула (#4062)."""
+        ``knowledge.TOOL_ASK_CLOSED_BY`` (новый вопрос робота, тишина, оператор) снимает окно вопроса тула."""
         if kind not in kn.SCENE_KINDS or set_by not in kn.SCENE_SETTERS:
             raise ValueError(f"push_scene: unknown kind/set_by {kind!r}/{set_by!r}")
         ttl = _DEFAULT_TTL_S.get((kind, set_by)) if ttl_s is None else ttl_s
@@ -174,7 +174,7 @@ class Session:
         return None
 
     def arm_scene(self, kind: str, ttl_s: float, payload: Optional[Mapping[str, Any]] = None) -> Optional[SceneFrame]:
-        """Верхнему кадру вида ``kind`` задать TTL от сейчас и дополнить данные (кадр ждал события, #3771).
+        """Верхнему кадру вида ``kind`` задать TTL от сейчас и дополнить данные (кадр ждал события).
         Нет такого кадра — ``None``, событие не шлётся."""
         scenes = list(self._snap.scenes)
         for i in range(len(scenes) - 1, -1, -1):
@@ -202,7 +202,7 @@ class Session:
     def replace_epoch(self) -> int:
         """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий
         прошлой эпохи больше не исполняются; сцены, вопрос и всё остальное — как были (это не новая сессия), кроме
-        окна вопроса тула: после «стоп» «да» необратимое не подтверждает (#4062, ревью PR #4100)."""
+        окна вопроса тула: после «стоп» «да» необратимое не подтверждает."""
         self._commit("replace_epoch", epoch=self._snap.epoch + 1, scenes=_without_tool_ask(self._snap.scenes))
         return self._snap.epoch
 
@@ -226,7 +226,7 @@ class Session:
 
     def set_pending_ask(self, ask: Optional[Ask]) -> None:
         """Вопрос робота словами модели. Новый вопрос снимает окно вопроса тула: «да» после него — ответ ему, а не
-        подтверждение удаления (#4062, ревью PR #4100)."""
+        подтверждение удаления."""
         scenes = _without_tool_ask(self._snap.scenes) if ask is not None else self._snap.scenes
         self._commit("set_pending_ask", pending_ask=ask, scenes=scenes)
 

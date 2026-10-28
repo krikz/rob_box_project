@@ -1,4 +1,4 @@
-"""#4020 п.6: речь о действии или состоянии музыки без тула, что его исполняет (ADR-0148: фразу о состоянии строит код).
+"""Речь о действии или состоянии музыки без тула, что его исполняет (ADR-0148: фразу о состоянии строит код).
 
 Марафон-3 28.10, акт 7, n709 («Робот, останови, борис уже уснул под нее»): ясный стоп (Tier-1 ``stop_all``) выключил
 музыку кодом, остаток фразы «борис уже уснул под нее» ушёл модели, и та ответила «Раз Борис уснул — сделаю потише, чтобы
@@ -22,6 +22,7 @@ from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine, music_promise_key
 from rob_box_dialog.words import music_promises
 
+N604 = "Понял, Саша: сворачиваю в рок."
 N709 = "Раз Борис уснул — сделаю потише, чтобы не разбудить. Енот-механик пусть дослушивает шёпотом."
 TOOLS = ("stop_music", "set_music_volume", "set_volume", "request_music", "dj_set", "music_library", "edit_music",
          "play_animation", "generate_music")
@@ -45,6 +46,10 @@ TOOLS = ("stop_music", "set_music_volume", "set_volume", "request_music", "dj_se
     ("Включу музыку.", ("start",)),
     ("Поставлю что-нибудь спокойное, песню про енота.", ("start",)),
     ("Включу музыку, а потом сделаю потише.", ("volume", "start")),
+    (N604, ("switch",)),                                          # n604 марафона-4 дословно
+    ("Плавно уведу в сторону джаза.", ("switch",)),
+    ("Переключаю на техно.", ("switch",)),
+    ("Сменю стиль на что-нибудь потяжелее.", ("switch",)),
 ])
 def test_promises_of_an_action_with_the_music_are_found_by_words(text, kinds):
     assert set(music_promises(text)) == set(kinds)
@@ -60,6 +65,11 @@ def test_promises_of_an_action_with_the_music_are_found_by_words(text, kinds):
     "Поставлю будильник на семь.",            # «поставлю» без слов о музыке
     "Останавливаю движение.",                 # «останавливаю» не о музыке
     "Музыка сейчас не играет.",
+    "Свернул в рок, как просили.",            # прошедшее
+    "Переключить на джаз?",                   # вопрос, инфинитив
+    "Сверну налево, к кухне.",                # поворот, не музыка
+    "Переключаю свет.",
+    "Сменю тему, попробуем другое.",          # «поп» в «попробуем» - не стиль
     "Битва была жаркой, выключу свет.",       # «бит» в «битве» и «выключу» не про музыку
     "",
 ])
@@ -69,7 +79,7 @@ def test_other_phrases_are_not_promises(text):
 
 def test_the_promise_words_live_in_one_table():
     """Слова-обещания - одно знание (``knowledge.MUSIC_PROMISES``): ни одного регулярного выражения в самом поиске."""
-    assert set(kn.MUSIC_PROMISES) == {"volume", "stop", "start"}
+    assert set(kn.MUSIC_PROMISES) == {"volume", "stop", "start", "switch"}
     assert set(kn.MUSIC_PROMISES["volume"].tools) == {"set_volume", "set_music_volume"}
     assert set(kn.MUSIC_PROMISES["stop"].tools) == set(kn.MUSIC_STOP_TOOLS)
     assert all(word == word.lower() and "ё" not in word and " " not in word
@@ -106,6 +116,24 @@ def test_the_promise_with_its_tool_is_kept_by_the_command():
 def test_the_tool_without_words_is_a_valid_command():
     cmd = validate(parse({"actions": [{"tool": "set_music_volume", "args": {"action": "quieter"}}]}), TOOLS)
     assert isinstance(cmd, Command) and [a.tool for a in cmd.actions] == ["set_music_volume"]
+
+
+def test_the_n604_switch_promise_without_a_tool_is_a_violation():
+    result = validate(parse({"speech": N604}), TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_MUSIC_PROMISE
+    assert unkept_promises(parse({"speech": N604})) == ("switch",)
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("dj_set", {"action": "start", "theme": "рок"}),
+    ("request_music", {"intent": "track", "text": "рок", "genre": "rock"}),
+    ("edit_music", {"change": "heavier"}),
+])
+def test_the_switch_promise_with_its_tool_is_kept(tool, args):
+    cmd = parse({"speech": N604, "actions": [{"tool": tool, "args": args}]})
+    assert unkept_promises(cmd) == ()
+    result = validate(cmd, TOOLS)
+    assert kn.VIOLATION_MUSIC_PROMISE not in {v.reason for v in getattr(result, "all", ())}
 
 
 def test_a_tool_of_another_kind_does_not_keep_the_promise():
