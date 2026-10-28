@@ -50,6 +50,7 @@ try:
         ProviderDeadCache,
         ProviderPolicy,
         STTAuthError,
+        STTDeadlineFinal,
         STTQuotaError,
         STTTimeoutError,
         effective_provider,
@@ -75,6 +76,11 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
 
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
+
+    class STTDeadlineFinal(STTTimeoutError):  # type: ignore[no-redef]
+        def __init__(self, text, message=""):
+            super().__init__(message or text)
+            self.text = text
 
     class STTAuthError(Exception):  # type: ignore[no-redef]
         pass
@@ -139,15 +145,22 @@ class _NodeSTTAdapter:
         return self._recognize(data)
 
 
-def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float) -> BaseException:
+def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float, segments=None) -> BaseException:
     """gRPC-код Yandex → типизированная ошибка ``stt_fallback``.
 
     Нужно кэшу «мёртвых»: по строке ошибки нельзя отличить «кончились
     деньги» (RESOURCE_EXHAUSTED — лежит надолго) от «моргнула сеть»
     (UNAVAILABLE — лежит секунды).
+
+    #4175: ``DEADLINE_EXCEEDED`` при уже закрытой сервером фразе (непустой final + EOU, решает
+    :func:`text_kept_on_deadline` по ``segments``) - :class:`STTDeadlineFinal` с её текстом, а не голый таймаут:
+    готовый результат не выбрасываем. Остальные коды и неполные стримы - как раньше.
     """
     code = exc.code()
     if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        kept = text_kept_on_deadline(segments, deadline_exceeded=True) if segments is not None else None
+        if kept:
+            return STTDeadlineFinal(kept)
         return STTTimeoutError(f"Yandex STT deadline exceeded ({timeout_s}s)")
     if code in (grpc.StatusCode.UNAUTHENTICATED, grpc.StatusCode.PERMISSION_DENIED):
         return STTAuthError(f"Yandex STT auth failure: {code} {exc.details()}")
@@ -239,7 +252,7 @@ from rob_box_voice.core.occasion import (
 from rob_box_voice.core import echo_window  # noqa: E402 — как соседние импорты после блока try/except
 from rob_box_voice.core.stt_utterance import fill_respeaker_utterance, final_provider
 from rob_box_voice.core.utterance_id import compute_utterance_id
-from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector
+from rob_box_voice.core.yandex_stt_segments import YandexSegmentCollector, text_kept_on_deadline
 
 # #1990 (оператор-agent 05) — источники аудио для wake-роутера (_process_audio).
 # Namespace вейк-слов привязан к источнику, а не только к тексту (целевая §7.1).
@@ -610,7 +623,7 @@ class STTNode(Node):
             self.get_logger().error(f"❌ Ошибка инициализации Yandex STT: {e}")
             self.yandex_stub = None
 
-    def _on_yandex_stream_error(self, exc, context: str) -> BaseException:
+    def _on_yandex_stream_error(self, exc, context: str, segments=None) -> BaseException:
         """gRPC-ошибка стрима Yandex STT → лог + типизированное исключение.
 
         Issue #2924: 23.09 с 23:22 по 23:39 каждый вызов стоял до дедлайна
@@ -622,13 +635,16 @@ class STTNode(Node):
         DEADLINE_EXCEEDED канал пересоздаём: следующая фраза пойдёт по
         свежему соединению, а не по тому, что висит. Цена — один TLS-хендшейк.
         Старый канал закрывается в фоне (#4135, :meth:`_reset_yandex_channel`).
+
+        #4175: если по дедлайну сервер уже закрыл фразу (непустой final + EOU, :func:`text_kept_on_deadline`),
+        возвращается :class:`STTDeadlineFinal` с её текстом, а не голый таймаут - готовый результат не выбрасываем.
         """
         self.get_logger().warning(
             f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
         )
         if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
             self._reset_yandex_channel()
-        return _map_grpc_error(exc, self.yandex_timeout_s)
+        return _map_grpc_error(exc, self.yandex_timeout_s, segments)
 
     def _reset_yandex_channel(self) -> None:
         """Открыть новый канал Yandex STT сразу, старый отпустить в фоне (issue #2924, #4135).
@@ -1746,6 +1762,7 @@ class STTNode(Node):
                 f"partials={partial_count} eou={eou_events} "
                 f"segments={segments.segment_count} "
                 f"stream=[{segments.trace()}]",
+                segments,
             )
 
         final_text = segments.text()

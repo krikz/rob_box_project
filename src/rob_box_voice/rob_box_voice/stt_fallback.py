@@ -192,6 +192,22 @@ class STTTimeoutError(TimeoutError):
     """
 
 
+class STTDeadlineFinal(STTTimeoutError):
+    """Дедлайн gRPC истёк, но сервер успел закрыть фразу (final + EOU) - ``text`` готов (#4175).
+
+    Подкласс :class:`STTTimeoutError`: любой код, не знающий про него, видит обычный ``timeout``. Знает :func:`_measure`:
+    попытка принимается как ``ok`` с пометкой :data:`NOTE_DEADLINE_FINAL`, а не отбрасывается по таймауту.
+    """
+
+    def __init__(self, text: str, message: str = "") -> None:
+        super().__init__(message or f"deadline exceeded, but utterance closed by EOU: {text!r}")
+        self.text = text
+
+
+# Пометка попытки в ``[stt_attempt]``: ``ok`` получен по дедлайну из уже закрытой фразы (#4175).
+NOTE_DEADLINE_FINAL = "deadline_final"
+
+
 class STTHungError(STTTimeoutError):
     """Попытка не вернулась за предел сторожа своей политики (худший случай вызова + запас) — брошена (#4135).
 
@@ -542,6 +558,7 @@ class STTAttempt:
     error: Optional[str] = None
     attempt_index: int = 0  # 0..max_retries
     hung: bool = False  # #4135: вызов не вернулся (брошен сторожем) или пропущен, пока висит прошлый
+    note: Optional[str] = None  # #4175: пометка к ok (NOTE_DEADLINE_FINAL) - в [stt_attempt] и метрике
 
     @property
     def ok(self) -> bool:
@@ -559,6 +576,8 @@ class STTAttempt:
             out["text"] = self.text
         if self.error is not None:
             out["error"] = self.error
+        if self.note is not None:
+            out["note"] = self.note
         return out
 
 
@@ -621,6 +640,10 @@ def _measure(
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if watched.hung:
         return None, elapsed_ms, f"timeout>{timeout_s}s hung: не вернулся за {limit_s:.1f}s", STTHungError(name)
+    if isinstance(watched.exc, STTDeadlineFinal):
+        # #4175: стрим не закрылся до дедлайна, но фразу сервер закрыл (final + EOU) - принимаем, не отбрасываем
+        # по ``elapsed_ms > timeout_s`` ниже: дедлайн gRPC срабатывает ровно на ``timeout_s``.
+        return watched.exc.text, elapsed_ms, None, watched.exc
     if isinstance(watched.exc, STTTimeoutError):
         # Провайдер сам сообщил о превышении deadline (gRPC DEADLINE_EXCEEDED).
         return None, elapsed_ms, f"timeout>{timeout_s}s", watched.exc
@@ -793,6 +816,7 @@ def _run_provider(
                 error=error,
                 attempt_index=attempt_idx,
                 hung=isinstance(exc, STTHungError),
+                note=NOTE_DEADLINE_FINAL if isinstance(exc, STTDeadlineFinal) else None,
             )
         )
 
@@ -1055,7 +1079,8 @@ def summarize_attempts(attempts: Sequence[STTAttempt]) -> str:
         text_suffix = ""
         if a.text:
             text_suffix = f" '{a.text[:20]}'"
-        parts.append(f"{a.provider}:{a.reason}({a.latency_ms}ms{text_suffix})")
+        note_suffix = f" {a.note}" if a.note else ""
+        parts.append(f"{a.provider}:{a.reason}({a.latency_ms}ms{note_suffix}{text_suffix})")
     return "->".join(parts)
 
 
@@ -1087,8 +1112,9 @@ def log_attempts(
         # пришлось лезть на робота двумя пробниками. Строка уже лежала в
         # STTAttempt.error — её просто выбрасывали.
         a_error = f" error='{a.error[:120]}'" if a.error else ""
+        a_note = f" note={a.note}" if a.note else ""
         logger.info(
             f"[stt_attempt_metric] provider={a.provider} reason={a.reason} "
             f"latency_ms={a.latency_ms} attempt={a.attempt_index} "
-            f"text={a_text}{a_error}"
+            f"text={a_text}{a_error}{a_note}"
         )

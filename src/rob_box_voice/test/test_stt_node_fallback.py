@@ -2087,10 +2087,11 @@ class TestIssue2924YandexStreamDeadline:
         node = stt_node_no_vosk
         node.yandex_channel = MagicMock()
         node.initialize_yandex = MagicMock()
+        # Без eou_update: фраза не закрыта, поэтому дедлайн по-прежнему даёт таймаут (с EOU - см. #4175,
+        # test/unit/stt/test_issue_4175_yandex_deadline_keeps_final.py).
         responses = [
             _yandex_response("partial", "робот здравствуй"),
             _yandex_response("final", "робот здравствуй", 0),
-            _yandex_response("eou_update"),
         ]
         node.yandex_stub.RecognizeStreaming.side_effect = lambda gen, metadata=None, timeout=None: self._stream(
             responses, rpc_error()
@@ -2102,7 +2103,7 @@ class TestIssue2924YandexStreamDeadline:
 
         warnings = self._warnings(caplog)
         assert any(
-            "responses=3" in m and "partials=1" in m and "eou=1" in m and "segments=1" in m for m in warnings
+            "responses=2" in m and "partials=1" in m and "eou=0" in m and "segments=1" in m for m in warnings
         ), warnings
 
     def test_unavailable_does_not_reset_channel(self, stt_node_no_vosk, monkeypatch):
