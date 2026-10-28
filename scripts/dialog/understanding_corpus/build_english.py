@@ -174,9 +174,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--raw", default="", help="каталог сырых ответов модели (вне репозитория)")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--top-up", action="store_true", help="взять переводы из файла, перепроверить и дописать недостающие")
+    ap.add_argument("--repoint-from", default="", help="старый marathon.json: перевесить файл на текущую часть 1 без "
+                                                       "новых текстов (alternatives.repoint)")
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    if args.repoint_from:
+        alt.repoint_file(PART, Path(args.out), Path(args.repoint_from), bp.load_base())
+        return 0
     if args.check:
         return check(Path(args.out))
     if args.list:

@@ -158,9 +158,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--artifacts", default=str(DEFAULT_ARTIFACTS), help="каталог tests/e2e/_artifacts с night_*")
     ap.add_argument("--check", action="store_true", help="сверить файл: хеш; с логами - пересборка совпадает")
+    ap.add_argument("--repoint-from", default="", help="старый marathon.json: перевесить файл на текущую часть 1 без "
+                                                       "новых строк из логов (alternatives.repoint)")
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    if args.repoint_from:
+        base = json.loads(build_marathon.CORPUS.read_text(encoding="utf-8"))
+        alt.repoint_file(PART, Path(args.out), Path(args.repoint_from), base)
+        return 0
     if args.check:
         base = json.loads(build_marathon.CORPUS.read_text(encoding="utf-8"))
         have = alt.load_part(PART, base, Path(args.out))

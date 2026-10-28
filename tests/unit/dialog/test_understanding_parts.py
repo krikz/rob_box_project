@@ -177,8 +177,34 @@ def test_frozen_paraphrases_pass_every_check(base, parts):
 
 def test_bare_wake_steps_are_excluded_with_a_reason(base, parts):
     excluded = {e["id"]: e["reason"] for e in parts[2]["excluded"]}
-    assert set(excluded) == {"3/n305b_bare_robot_pickup", "3/n310_execute_backlog_lru"}
-    assert all("голое вейк-слово" in r for r in excluded.values())
+    assert {"3/n305b_bare_robot_pickup", "3/n310_execute_backlog_lru"} <= set(excluded)
+    assert all("голое вейк-слово" in r or "текст шага сменился" in r for r in excluded.values())
+
+
+def test_repoint_keeps_only_measured_texts_of_unchanged_steps(base, parts):
+    """Перевес на пересобранную часть 1: ни одного нового текста, убраны только шаги со сменившимся текстом."""
+    old = json.loads(json.dumps(base))
+    old["acts"][0]["steps"][2]["step"]["text"] = "Робот, сколько времени?"  # n103 - «в старой части 1» другой текст
+    old["corpus_sha256"] = "1" * 64
+    data = {**json.loads(json.dumps(parts[2])), "base": {"name": "x", "corpus_sha256": "1" * 64}}
+    out = alt.repoint(data, old, base)
+    assert out["base"]["corpus_sha256"] == base["corpus_sha256"]
+    assert "1/n103_time" not in out["alternatives"] and out["method"]["repointed"]["dropped_steps"] == ["1/n103_time"]
+    assert all(out["alternatives"][k] == v for k, v in data["alternatives"].items() if k != "1/n103_time")
+    assert out["counts"]["alternatives"] == data["counts"]["alternatives"] - len(data["alternatives"]["1/n103_time"])
+    with pytest.raises(SystemExit, match="собрана против"):
+        alt.repoint(data, base, base)
+
+
+@pytest.mark.parametrize("part", [2, 3, 4])
+def test_repointed_parts_are_subsets_of_the_measured_corpus(parts, part):
+    """После пересборки части 1 в develop файл части хранит хеш измеренного корпуса и только его тексты."""
+    repointed = parts[part]["method"].get("repointed")
+    if repointed is None:
+        pytest.skip("часть не перевешивалась")
+    assert repointed["measured_sha256"] != parts[part]["corpus_sha256"]
+    dropped = {e["id"] for e in parts[part]["excluded"] if "текст шага сменился" in e["reason"]}
+    assert dropped == set(repointed["dropped_steps"]) and not dropped & set(parts[part]["alternatives"])
 
 
 def test_manual_rejects_are_not_in_the_frozen_file(parts):
@@ -207,7 +233,7 @@ def test_stt_filter_counts_add_up_and_excluded_lines_carry_no_text(parts):
     unique = method.pop("transcript_lines_unique")
     method = {k: v for k, v in method.items() if not k.startswith("карточка") and k != "взято из карточек"}
     assert sum(method.values()) == unique
-    assert all(set(e) == {"issue", "id", "reason"} for e in parts[3]["excluded"])  # без текста: там может быть чужая речь
+    assert all("text" not in e for e in parts[3]["excluded"])  # без текста: там может быть чужая речь
 
 
 @pytest.mark.parametrize("original, heard, why", [

@@ -116,6 +116,57 @@ def base_ref(base: Dict[str, Any]) -> Dict[str, str]:
     return {"name": base["name"], "corpus_sha256": base["corpus_sha256"]}
 
 
+def repoint(data: Dict[str, Any], old_base: Dict[str, Any], new_base: Dict[str, Any]) -> Dict[str, Any]:
+    """Перевесить замороженную часть на пересобранную часть 1 БЕЗ новых текстов: остаются альтернативы шагов, чей текст
+    в части 1 не изменился (и шаг по-прежнему оцениваемый); у остальных альтернативы убираются с причиной - они про
+    другую фразу. Так в репозитории остаётся подмножество ровно того корпуса, что мерился."""
+    if data["base"]["corpus_sha256"] != old_base["corpus_sha256"]:
+        raise SystemExit(f"часть собрана против {data['base']['corpus_sha256'][:12]}, а старая часть 1 - "
+                         f"{old_base['corpus_sha256'][:12]}")
+    old, new = index_of(old_base), index_of(new_base)
+    keep: Dict[str, List[Dict[str, Any]]] = {}
+    dropped: List[Dict[str, Any]] = []
+    for sid, rows in data["alternatives"].items():
+        before, after = old[sid]["step"]["text"], (new.get(sid) or {}).get("step", {}).get("text")
+        if after == before and new[sid]["scored"]:
+            keep[sid] = rows
+            continue
+        dropped.append({"id": sid, "alternatives_dropped": len(rows),
+                        "reason": f"часть 1 пересобрана ({old_base['corpus_sha256'][:12]} → "
+                                  f"{new_base['corpus_sha256'][:12]}): текст шага сменился «{before}» → «{after}», "
+                                  f"альтернативы старого текста к новому шагу не относятся"})
+    method = {**data["method"], "repointed": {"measured_sha256": data["corpus_sha256"],
+                                              "from_base": old_base["corpus_sha256"],
+                                              "to_base": new_base["corpus_sha256"],
+                                              "dropped_steps": [d["id"] for d in dropped]}}
+    excluded = [*data.get("excluded", []), *dropped]
+    return {**data, "base": base_ref(new_base), "method": method, "excluded": excluded, "alternatives": keep,
+            "counts": recount(data["counts"], keep, excluded)}
+
+
+def recount(counts: Dict[str, Any], alternatives: Dict[str, List[Dict[str, Any]]],
+            excluded: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Счётчики части после правки списка альтернатив: те же ключи, новые значения."""
+    sizes = [len(r) for r in alternatives.values()]
+    fresh = {"steps": len(alternatives), "alternatives": sum(sizes), "excluded": len(excluded),
+             "max_per_step": max(sizes or [0]), "steps_below_min": sum(s < 2 for s in sizes),
+             "from_issues": sum(1 for rows in alternatives.values() for r in rows
+                                if (r.get("source") or {}).get("kind") == "issue"),
+             **{f"steps_with_{n}": sizes.count(n) for n in (1, 2, 3)}}
+    return {k: fresh.get(k, v) for k, v in counts.items()}
+
+
+def repoint_file(part: int, path: Path, old_base_path: Path, new_base: Dict[str, Any]) -> str:
+    """CLI-обёртка :func:`repoint` для сборщиков (``--repoint-from <старый marathon.json>``); вернуть новый хеш."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    old_base = json.loads(Path(old_base_path).read_text(encoding="utf-8"))
+    out = repoint(data, old_base, new_base)
+    sha = write_part(Path(path), out)
+    print(f"часть {part}: перевешена на часть 1 {new_base['corpus_sha256'][:12]}, {out['counts']}, sha256 {sha[:12]} "
+          f"(мерилась {data['corpus_sha256'][:12]}); убраны шаги: {out['method']['repointed']['dropped_steps']}")
+    return sha
+
+
 # ── Подстановка в марафон ─────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -309,5 +360,5 @@ def check_translation(original: str, alt: str, wakes: Sequence[str]) -> List[str
 
 __all__ = ["EN_WAKE", "NAME_STEMS", "PARTS", "TITLES", "alternative_for", "anchors", "base_ref", "capitalized_inside",
            "check_paraphrase", "check_translation", "digest", "generic_groups", "index_of", "leading_wake", "leak_groups",
-           "load_part", "names_in", "norm", "numbers_in", "part_corpus", "part_path", "quotes_in", "substituted",
-           "wakes_in", "write_part"]
+           "load_part", "names_in", "norm", "numbers_in", "part_corpus", "part_path", "quotes_in", "recount",
+           "repoint", "repoint_file", "substituted", "wakes_in", "write_part"]

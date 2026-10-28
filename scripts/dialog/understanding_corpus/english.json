@@ -12,10 +12,10 @@
   "temperature": 0.3,
   "prompt_sha256": "0786459f3ad611d935a87e7ce97650849e0551eda682461d3fdb244e1c1feb21",
   "wake": "Robbox",
-  "generated_utc": "2026-10-28 21:34:42",
+  "generated_utc": "2026-10-28 19:21:07",
   "rounds": 3,
   "top_up": true,
-  "kept_from_previous": 48,
+  "kept_from_previous": 46,
   "rejected": [
    {
     "id": "1/n108_perception",
@@ -72,30 +72,25 @@
     "problems": [
      "числа: было [3], стало [1, 3]"
     ]
-   },
-   {
-    "id": "3/n309_bg_command_valera",
-    "en": "Start a two-minute DJ set on the synthesizer, calm.",
-    "problems": [
-     "числа: было [2], стало []"
-    ]
-   },
-   {
-    "id": "3/n309_bg_command_valera",
-    "en": "Start a two-minute DJ set on the synthesizer, something calm.",
-    "problems": [
-     "числа: было [2], стало []"
-    ]
    }
   ],
-  "calls": 10,
-  "input_tokens": 6473,
-  "output_tokens": 2111
+  "calls": 7,
+  "input_tokens": 5203,
+  "output_tokens": 1958,
+  "repointed": {
+   "measured_sha256": "118d1b348ed3a71086ef43224252aaa5eac420d21d90b7d42b03719153e5008e",
+   "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
+   "to_base": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103",
+   "dropped_steps": [
+    "3/n309_bg_command_valera",
+    "7/n707_gen_track_info"
+   ]
+  }
  },
  "counts": {
-  "steps": 48,
-  "alternatives": 48,
-  "excluded": 42
+  "steps": 46,
+  "alternatives": 46,
+  "excluded": 44
  },
  "excluded": [
   {
@@ -265,9 +260,19 @@
   {
    "id": "10/n1011_goodnight",
    "reason": "ожидание - только «ход завершён и робот что-то сказал»: на тулах и логе не держится"
+  },
+  {
+   "id": "3/n309_bg_command_valera",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.» → «Запусти диджей-сет на синтезаторе на две минуты, спокойный.», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "7/n707_gen_track_info",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Робот, расскажи, что это за трек: кто, про что и сколько длится.» → «Робот, расскажи про песню про енота: кто, про что, сколько длится.», альтернативы старого текста к новому шагу не относятся"
   }
  ],
- "corpus_sha256": "55c774743f26dfdfa4e41e6a195f011ee1739fe6f8ccb2b9bd8819a34485fbd3",
+ "corpus_sha256": "7017ed85802d25e769ab202f2a3520ae62033caf9157478a4f51ff5d05180d59",
  "alternatives": {
   "1/n102_session_reset": [
    {
@@ -391,13 +396,6 @@
   "3/n308_bg_command_boris": [
    {
     "text": "Listen, just put on some music already, the silence is pressing on my ears.",
-    "why": "паттерны лога (1), бэклог",
-    "code_phrases_forbidden": []
-   }
-  ],
-  "3/n309_bg_command_valera": [
-   {
-    "text": "Start a DJ set on the synthesizer for two minutes, something calm.",
     "why": "паттерны лога (1), бэклог",
     "code_phrases_forbidden": []
    }
@@ -558,13 +556,6 @@
   "7/n705_gen_search_rain": [
    {
     "text": "Robbox, find something about rain in your library.",
-    "why": "тулы ['music_library']",
-    "code_phrases_forbidden": []
-   }
-  ],
-  "7/n707_gen_track_info": [
-   {
-    "text": "Robbox, tell me about the song about the raccoon: who, what it's about, how long it is.",
     "why": "тулы ['music_library']",
     "code_phrases_forbidden": []
    }
