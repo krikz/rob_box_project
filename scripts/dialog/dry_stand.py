@@ -5,10 +5,11 @@
 (Tier-1 / команда LLM → исполнение → фраза кода) → окно озвученного. Настоящими остаются: грамматика и адресация,
 сессия, бэклог с авторством, срез тулов, цепочка LLM с мостом команд (``dialog_v2_ports.assemble_llm``), исполнитель
 действий (``V2Ports`` + ``Executor``), тулы памяти (``rob_box_mcp_tools.tools.memory`` поверх настоящего
-``VoiceMemory`` во временной e2e-БД).
+``VoiceMemory`` во временной e2e-БД), раздел ``speaker_memory`` хода (настоящий ``SpeakerMemory`` хоста, #3919).
 
-Фейковые владельцы, которые отвечают событием сразу (:class:`FakeTools`, :class:`FakeSpeech`, :class:`FakeSpeakers`):
-речь, музыка, голос/темп/громкость, лицо, биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
+Фейковые владельцы, которые отвечают событием сразу (:class:`FakeTools`, :class:`FakeSpeech`, :class:`FakeSpeakers`,
+:class:`FakePlayer`, :class:`FakeLibrary`): речь, музыка (дека, сет, библиотека), голос/темп/громкость, лицо,
+биометрия диктора, статус робота. Что они знают о мире — таблицей здесь; в
 отчёт каждого шага попадает, каких владельцев ход коснулся (``DryStand.touched``). Лог шага (:class:`StepLog`) — в
 форматах строк живого робота (источники указаны у каждой строки): по нему работает та же
 ``e2e_tool_match.step_verdict``, что у ``check_acceptance`` на стенде.
@@ -53,10 +54,11 @@ import e2e_db  # noqa: E402
 import understanding_variants as uv  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
-    Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
+    BARE_WAKE, Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
 )
 from rob_box_dialog.backlog import Backlog  # noqa: E402
 from rob_box_dialog.e2e_events import inside_robot_data, open_events  # noqa: E402
+from rob_box_dialog.memory import profiled_person  # noqa: E402
 from rob_box_dialog.music_state import MusicStateMemory  # noqa: E402
 from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
@@ -65,6 +67,7 @@ from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
+from rob_box_voice.core.speaker_memory import SpeakerMemory  # noqa: E402
 from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
 from rob_box_voice.tts_voice_registry import (  # noqa: E402
     ROBOT_DEFAULT_PROVIDER, default_voice_for, providers_overview, robot_default_voice, voice_id_by_name, voices_for,
@@ -415,60 +418,252 @@ class FakeTools:
     def _t_play_sound(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return True, {"status": "done", "sound": args.get("sound") or args.get("name")}
 
-    def _music_start(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        title = str(args.get("title") or args.get("query") or args.get("prompt") or args.get("theme") or "трек")
-        track = self._stand.player.start(title)
-        return True, {"status": "done", "event": "started", "track_id": track, "title": title}
+    @staticmethod
+    def _music_title(args: Dict[str, Any]) -> str:
+        return str(args.get("title") or args.get("text") or args.get("query") or args.get("prompt")
+                   or args.get("theme") or args.get("style") or "трек")
 
     def _t_request_music(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        return self._music_start(args)
+        title = self._music_title(args)
+        return True, {"status": "done", "event": "started", "track_id": self._stand.player.request(title),
+                      "title": title}
 
     def _t_generate_music(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        return self._music_start(args)
+        """Генерация: трек ложится в библиотеку и играет (мост ожидания на роботе играет сразу, песня - следом)."""
+        title = self._music_title(args)
+        track = self._stand.library.add(title, kind=str(args.get("kind") or "instrumental"),
+                                        genre=str(args.get("style") or ""))
+        deck = self._stand.player.library(track["id"], title)
+        return True, {"status": "done", "event": "started", "track_id": deck, "library_id": track["id"],
+                      "title": title}
 
     def _t_dj_set(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        return self._music_start(args)
+        """``DjSetTool``: ``stop`` - сет, а без сета - дека (``was_playing`` - была ли музыка, по нему фраза
+        ``knowledge.DJ_STOP``); ``start`` - новый сет снимает идущий."""
+        player, action = self._stand.player, str(args.get("action") or "start")
+        if action == "stop":
+            if not player.set_running:
+                result = player.stop("user_stop")
+                return True, {**result, "was_playing": result["track_id"] is not None}
+            return True, {**player.close_set("user_stop"), "was_playing": True}
+        if action != "start":
+            return False, {"status": "rejected", "reason": f"action={action!r}: есть только start и stop"}
+        theme = str(args.get("theme") or "")
+        return True, {**player.start_set(theme), "theme": theme}
 
     def _t_music_library(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        return self._music_start(args)
+        """``MusicLibraryTool`` над :class:`FakeLibrary`: list / search / info / play. Играет только ``play`` (у
+        живого ``starts_music`` - флаг одного действия). Правки библиотеки стенд не ведёт - честный ``no_fake_owner``."""
+        library, action = self._stand.library, str(args.get("action") or "")
+        track_id = str(args.get("track_id") or "")
+        if action == "list":
+            tracks = library.list_tracks(int(args.get("limit") or 20))
+            return True, {"tracks": tracks, "total": library.count, "shown": len(tracks),
+                          "sort_by": args.get("sort_by") or "recent"}
+        if action == "search":
+            query = str(args.get("query") or "")
+            tracks = library.search_tracks(query, int(args.get("limit") or 5))
+            return True, {"query": query, "tracks": tracks, "total": len(tracks)}
+        if action in ("info", "play") and not track_id:
+            return False, {"status": "rejected", "reason": f"для '{action}' нужен track_id (из list / search)"}
+        if action == "info":
+            info = library.info(track_id)
+            return (True, info) if info else (False, {"status": "rejected", "reason": "unknown_track",
+                                                      "track_id": track_id})
+        if action == "play":
+            track = library.get(track_id)
+            if track is None:
+                return False, {"status": "rejected", "reason": "track_not_found", "track_id": track_id}
+            deck = self._stand.player.library(track_id, track["title"])
+            return True, {"ok": True, "track_id": deck, "library_id": track_id, "title": track["title"],
+                          "duration_s": track["duration_ms"] / 1000.0}
+        return False, {"status": "rejected", "reason": NO_FAKE, "tool": "music_library", "action": action}
 
     def _t_stop_music(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        stopped = self._stand.player.stop()
-        return True, {"status": "done", "stopped": stopped}
+        """``StopMusicTool``: с ``track_id`` - снять только его; иначе сет и дека через владельцев
+        (``MCPServer._stop_deck``), а в тишине - явный стоп деки всё равно (строка ``track_id=None``, как у живого).
+        ``was_playing`` - играло ли до стопа: по нему диалог выбирает фразу (``knowledge.TOOL_PHRASES``)."""
+        player = self._stand.player
+        track_id = str(args.get("track_id") or "")
+        if track_id:
+            if track_id != player.track_id:
+                return True, {"was_playing": False, "stopped": False, "track_id": track_id}
+            player.stop("user_stop")
+            return True, {"was_playing": True, "stopped": True, "track_id": track_id}
+        was_playing = player.playing or player.set_running
+        player.close_set("user_stop")
+        if player.playing:
+            player.stop("user_stop")
+        if not was_playing:
+            player.stop("user_stop")
+        return True, {"was_playing": was_playing}
+
+
+#: Темп и форма трека на деке стенда: поля строки ``started`` (звука нет, значения - только форма строки).
+STAND_BPM = 100.0
+STAND_FORM_BEATS = 64.0
 
 
 class FakePlayer:
-    """Владелец плеера: играет/молчит; каждое изменение — снимок ``/voice/music/state`` в сессию и память музыки."""
+    """Владелец плеера v2 (``engine/player_owner.py`` ``PlayerOwner`` и сет ``engine/session.py`` ``SetSession``):
+    одна дека, что на ней и идёт ли сет. Строки - в форматах живого и в тех же случаях: ``started`` - трек встал на
+    деку; ``stop`` - на КАЖДЫЙ стоп владельца, в тишине тоже (``track_id=None``, живой 26.10 20:57:50); стоп сета -
+    строка сета, затем стоп деки. id треков - как у живого: сет ``setNNNNN:01:A``, заказ ``reqNNNNN:01:A``, трек
+    библиотеки ``gen_<id8>_<время>``. Каждое изменение - снимок ``/voice/music/state`` в сессию и память музыки."""
 
     def __init__(self, stand: "DryStand") -> None:
         self._stand = stand
         self._track: Optional[str] = None
         self._title: Optional[str] = None
+        self._dj: Dict[str, Any] = {"enabled": False}
+        self._set_id: Optional[str] = None
         self._n = 0
 
-    def deck(self) -> Dict[str, Any]:
-        return {"playing": self._track is not None, "track_id": self._track, "title": self._title}
-
-    def start(self, title: str) -> str:
-        self._n += 1
-        self._track, self._title = f"dry-track-{self._n}", title
-        self._publish()
+    @property
+    def track_id(self) -> Optional[str]:
         return self._track
 
-    def stop(self) -> bool:
-        was = self._track is not None
-        self._track = self._title = None
-        self._publish()
-        return was
+    @property
+    def playing(self) -> bool:
+        return self._track is not None
 
-    def _publish(self) -> None:
+    @property
+    def set_running(self) -> bool:
+        return self._set_id is not None
+
+    def busy(self) -> bool:
+        """Играет трек или включён сет - как «busy» предусловия акта харнесса (``_e2e_music_stop_py``)."""
+        return self.playing or bool(self._dj.get("enabled"))
+
+    def deck(self) -> Dict[str, Any]:
+        return {"playing": self.playing, "track_id": self._track, "title": self._title, "dj": dict(self._dj)}
+
+    def _seq(self) -> int:
+        self._n += 1
+        return self._n
+
+    def play(self, track_id: str, title: str, dj: Optional[Mapping[str, Any]] = None) -> str:
+        """``PlayerOwner.play`` и его ``started``: трек на деке, строка старта, снимок."""
+        self._track, self._title = track_id, title
+        self._dj = {**(dj or {}), "enabled": bool((dj or {}).get("enabled"))}
+        # player_owner.py: f"🎵 [music v2] started track_id={track_id} " + поля старта ``k=v`` через пробел
+        self._stand.emit(f"🎵 [music v2] started track_id={track_id} clock_beat=0.0 start_beat=0.0 phase_in_form=0 "
+                         f"late_beats=0.0 bpm={STAND_BPM} deck=A form_beats={STAND_FORM_BEATS} players_aligned=True "
+                         f"latency_s=0.0")
+        self.publish()
+        return track_id
+
+    def start(self, title: str) -> str:
+        """Трек на деке без сета (как заказ ``request_music``)."""
+        return self.request(title)
+
+    def request(self, title: str) -> str:
+        """``RequestMusicTool``: идущий сет закрывается (``close_set("request_music")``), заказ - на деку."""
+        self.close_set("request_music")
+        return self.play(f"req{self._seq():05d}:01:A", title, {"title": title, "source": "synth"})
+
+    def library(self, library_id: str, title: str) -> str:
+        """``engine/gen/library_play.py``: идущий сет закрывается (``music_library``), трек кэша - на деку."""
+        self.close_set("music_library")
+        self._seq()
+        return self.play(f"gen_{library_id[:8]}_{int(self._stand.clock.now())}", title,
+                         {"title": title, "source": "generated", "library_id": library_id})
+
+    def start_set(self, theme: str) -> Dict[str, Any]:
+        """``DjSetTool._start``: идущий сет снимается (``new_set``), новый ставит свой первый трек."""
+        self.close_set("new_set")
+        set_id = f"set{self._seq():05d}"
+        self._set_id = set_id
+        track = self.play(f"{set_id}:01:A", f"сет «{theme}»" if theme else "диджей-сет",
+                          {"enabled": True, "theme": theme, "source": "synth"})
+        return {"ok": True, "track_id": track, "set_id": set_id}
+
+    def close_set(self, reason: str) -> Optional[Dict[str, Any]]:
+        """``DjSetTool.close_set`` → ``SetSession.stop``: строка сета, затем стоп деки. Сета нет - ничего."""
+        if self._set_id is None:
+            return None
+        set_id, self._set_id = self._set_id, None
+        # session.py: f"🎧 [set v2] {self.set_id} stop reason={reason}"
+        self._stand.emit(f"🎧 [set v2] {set_id} stop reason={reason}")
+        return {**self.stop(reason), "set_id": set_id}
+
+    def stop(self, reason: str = "user_stop") -> Dict[str, Any]:
+        """``PlayerOwner.stop``: дека пуста, строка ``stop`` всегда (в тишине - ``track_id=None``), снимок ``idle``."""
+        last = self._track
+        self._track = self._title = None
+        self._dj = {"enabled": False}
+        # player_owner.py: f"🎵 [music v2] stop track_id={last} reason={reason}"
+        self._stand.emit(f"🎵 [music v2] stop track_id={last} reason={reason}")
+        self.publish()
+        return {"ok": True, "track_id": last}
+
+    def publish(self) -> None:
+        """Latched-снимок ``/voice/music/state`` (после старта, стопа и при запуске ноды)."""
         stand = self._stand
-        payload = build_music_state_payload(playing=self._track is not None, track_id=self._track, ts=stand.clock.now())
+        payload = build_music_state_payload(playing=self.playing, track_id=self._track, dj=dict(self._dj),
+                                            ts=stand.clock.now())
         snap = parse_music_state(payload)
         stand.music_mem.observe_state(snap, now=stand.clock.now())
         stand.music_mem.observe_track_name(self._title)
         stand.session.set_music(MusicStateRef("playing" if self._track else "idle", track_id=self._track,
                                               title=self._title))
+
+
+#: Что лежит в библиотеке сгенерированной музыки робота до прогона (``/data/music_library``): знание фейка о мире.
+LIBRARY_SEED: Tuple[Mapping[str, Any], ...] = (
+    {"title": "Дождь над мастерской", "kind": "instrumental", "genre": "ambient", "mood": "спокойное",
+     "tags": ("дождь", "ночь")},
+    {"title": "Ночная пайка", "kind": "instrumental", "genre": "lofi", "mood": "уютное", "tags": ("мастерская",)},
+)
+#: Поля строки списка, как ``gen_library._brief`` (без текстов песен и служебных полей).
+LIBRARY_BRIEF = ("id", "title", "kind", "genre", "mood", "tags", "rating", "play_count", "duration_ms", "created_at",
+                 "last_played_at")
+
+
+class FakeLibrary:
+    """Владелец библиотеки сгенерированной музыки (``tools/gen_library.py``): список, поиск, подробности трека.
+    Генерация кладёт трек сюда. ``info`` - только по id, который библиотека сама назвала в ответе list / search
+    (``NamedTracks``, #4025); иначе ``unknown_track``."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self._tracks: List[Dict[str, Any]] = []
+        self._named: Set[str] = set()
+        for seed in LIBRARY_SEED:
+            self.add(**seed)
+
+    @property
+    def count(self) -> int:
+        return len(self._tracks)
+
+    def add(self, title: str, kind: str = "instrumental", genre: str = "", mood: str = "",
+            tags: Sequence[str] = ()) -> Dict[str, Any]:
+        track = {"id": str(uuid.uuid4()), "title": title, "kind": kind, "genre": genre, "mood": mood,
+                 "tags": list(tags), "rating": 0, "play_count": 0, "duration_ms": 150000,
+                 "created_at": self._clock.now(), "last_played_at": None}
+        self._tracks.insert(0, track)  # recent - свежие первыми
+        return track
+
+    def get(self, track_id: str) -> Optional[Dict[str, Any]]:
+        return next((t for t in self._tracks if t["id"] == track_id), None)
+
+    def _named_brief(self, tracks: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        self._named.update(t["id"] for t in tracks)
+        return [{k: t.get(k) for k in LIBRARY_BRIEF} for t in tracks]
+
+    def list_tracks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        return self._named_brief(self._tracks[:max(1, min(100, limit))])
+
+    def search_tracks(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Подстрока без регистра по названию, жанру, настроению, тегам (у живого - и по prompt / lyrics / notes)."""
+        needle = query.strip().lower()
+        found = [t for t in self._tracks if needle and needle in " ".join(
+            [t["title"], t["genre"], t["mood"], *t["tags"]]).lower()]
+        return self._named_brief(found[:max(1, min(20, limit))])
+
+    def info(self, track_id: str) -> Optional[Dict[str, Any]]:
+        track = self.get(track_id) if track_id in self._named else None
+        return {**track, "success": True} if track else None
 
 
 # ── Порты хода ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -589,13 +784,16 @@ class DryStand:
         self._utterances = 0
         self._memory_gen = 0
         self.memory = self._new_memory()
+        self.speaker_memory = self._new_speaker_memory()
+        self._turn_memory: Tuple[Optional[str], Optional[Mapping[str, Any]]] = (None, None)
         self.ros_node = _FakeRosNode(self.emit, self.memory)
         self.speech = FakeSpeech(self.emit)
         self.session = Session(kn.AGENTS[0], clock=self.clock.now)
         self.backlog = Backlog()
         self.music_mem = MusicStateMemory()
+        self.library = FakeLibrary(self.clock)
         self.player = FakePlayer(self)
-        self.player.stop()  # плеер при старте публикует latched-снимок «idle»: раздел music_state не «unknown»
+        self.player.publish()  # плеер при старте публикует latched-снимок «idle»: раздел music_state не «unknown»
         self.tools = FakeTools(self)
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
@@ -611,7 +809,21 @@ class DryStand:
         self.touched.add(owner)
 
     def _sections(self, snap: Any, _text: str) -> Mapping[str, Any]:
-        return host_sections(snap, self.music_mem)
+        """Разделы снимка, как ``dialog_node._sections``: собеседник, музыка и ``speaker_memory`` хода (#3919)."""
+        return host_sections(snap, self.music_mem, (), self._turn_memory)
+
+    async def _note_speaker(self, decision: Addressed) -> None:
+        """Начало хода, как ``dialog_node._note_speaker`` (#3919): подтверждённому собеседнику - его профиль и факты
+        из e2e-памяти в раздел ``speaker_memory`` снимка (настоящий ``SpeakerMemory``, строка ``🧠 [speaker-memory]``)."""
+        speaker = self.session.snapshot.speaker
+        counts = decision.source != BARE_WAKE and bool(decision.text.strip())  # пустой ход - не диалог (как у v1)
+        section = await self.speaker_memory.section(speaker) if counts else None
+        self._turn_memory = (profiled_person(speaker), section)
+
+    def _new_speaker_memory(self) -> SpeakerMemory:
+        """Память собеседника хоста в режиме e2e: профиль - в памяти процесса, факты - из e2e-памяти стенда."""
+        return SpeakerMemory("", "", e2e_facts_db=str(self.memory.db_path), is_e2e=lambda: True,
+                             log=_EngineLog(self.emit))
 
     async def _phrase_voice(self, uid: str, _wait_s: float) -> Optional[Mapping[str, Any]]:
         """Голос фразы по её id, как ``UtteranceSpeakerRegistry.resolve`` хоста: фейковая биометрия здесь приходит до
@@ -628,14 +840,27 @@ class DryStand:
         return VoiceMemory(str(path), ollama_base_url="http://127.0.0.1:9", ollama_timeout=0.2)
 
     def reset_memory(self) -> None:
-        """Акт, который пишет в память, начинается с чистой e2e-памяти (``activate_e2e_memory_db``, #2781, #2890)."""
+        """Чистая e2e-память фактов (``enter_e2e_mode`` харнесса стирает e2e-БД, #2781, #2890); профили собеседников
+        хоста в e2e - тоже заново (``dialog_node._apply_e2e_mode`` → ``SpeakerMemory.reset_e2e``)."""
         self.memory.close()
         self.memory = self._new_memory()
         self.ros_node.voice_memory = self.memory
+        self.speaker_memory = self._new_speaker_memory()
 
     def reset_speakers(self) -> None:
-        """Акт, который регистрирует дикторов, стирает каст (``activate_e2e_speaker_db``, #2750)."""
+        """Чистая e2e-БД дикторов: каст стёрт (``enter_e2e_mode`` харнесса, #2750)."""
         self.speakers = FakeSpeakers()
+
+    def stop_music_for_act(self) -> str:
+        """Предусловие акта харнесса (``ensure_music_stopped_for_act``, #3871/#4027): играет трек или сет - стоп теми
+        же тулами, что у харнесса (``dj_set stop``, затем ``stop_music``). Строки стопа - в лог харнесса, не шага.
+        Вердикт - как у харнесса: ``was_idle`` | ``stopped``."""
+        self._log = StepLog()
+        if not self.player.busy():
+            return "was_idle"
+        self.tools._t_dj_set({"action": "stop"})  # noqa: SLF001 - вызов тула мимо хода, как /mcp/execute харнесса
+        self.tools._t_stop_music({})  # noqa: SLF001
+        return "stopped"
 
     def reset_session(self) -> None:
         """``/dialog/control reset`` перед актом (``reset_dialog_v2_session_for_act``): эпоха + 1, окно ходов пусто."""
@@ -714,6 +939,7 @@ class DryStand:
         self.speech.all.clear()
         route = await self._route(decision)
         offered: List[Tuple[str, ...]] = []
+        await self._note_speaker(decision)
         with uv.installed(self.variant, offered, lambda: route.as_pair() if route is not None else None):
             agg = await self.engine.run(decision)
         spoken_s = self.speech.settle(self.engine, kn.AGENTS[0])
@@ -741,7 +967,8 @@ def new_workdir(prefix: str = "dry_marathon_") -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
 
-__all__ = ["DryPorts", "DryStand", "FakeClock", "LiveClock", "FakeSpeakers", "FakeSpeech", "FakeTools", "HearResult", "NO_FAKE",
+__all__ = ["DryPorts", "DryStand", "FakeClock", "LiveClock", "FakeLibrary", "FakePlayer", "FakeSpeakers", "FakeSpeech",
+           "FakeTools", "HearResult", "NO_FAKE",
            "StepLog", "TOOL_OWNERS", "ensure_paths", "load_memory_tools", "load_tool_module", "new_workdir",
            "tier1_kind",
            "widened_tools"]
