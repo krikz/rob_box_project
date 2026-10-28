@@ -777,18 +777,18 @@ def _query_followup() -> list:
 
 def test_retry_after_query_says_data_received_not_nothing_done() -> None:
     """#3883: речь длиннее потолка после выполненного запроса - подсказка повтора «данные получены, сократи до N»."""
-    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_MAX_CHARS + 63)),))
+    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_ACCEPT_MAX_CHARS + 63)),))
     good = LLMResponse(tool_calls=(_command_call(speech="Коротко."),))
     inner = _Inner(DEEPSEEK_CAPS, [long, good])
     out = _run(cb.CommandModeLLM(inner, [].append).complete(_query_followup(), tools=TOOLS))
     assert out.content == "Коротко." and len(inner.requests) == 2
     hint = inner.requests[1]["messages"][-1].content
-    assert "too_long" in hint and str(kn.SPEECH_MAX_CHARS) in hint
+    assert kn.VIOLATION_SPEECH_TOO_LONG in hint and str(kn.SPEECH_MAX_CHARS) in hint
     assert "получены" in hint and "ничего не сделано" not in hint
 
 
 def test_retry_without_query_keeps_the_plain_hint() -> None:
-    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_MAX_CHARS + 1)),))
+    long = LLMResponse(tool_calls=(_command_call(speech="а" * (kn.SPEECH_ACCEPT_MAX_CHARS + 1)),))
     good = LLMResponse(tool_calls=(_command_call(speech="Коротко."),))
     inner = _Inner(DEEPSEEK_CAPS, [long, good])
     _run(cb.CommandModeLLM(inner, [].append).complete(_messages(), tools=TOOLS))

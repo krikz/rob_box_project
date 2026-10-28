@@ -101,8 +101,9 @@ def test_empty_speech_is_no_speech():
 
 
 def test_speech_limit_and_control_chars():
-    assert ok({"speech": "а" * kn.SPEECH_MAX_CHARS}).speech
-    bad({"speech": "а" * (kn.SPEECH_MAX_CHARS + 1)}, "too_long")
+    # просим модель о SPEECH_MAX_CHARS, звучит до SPEECH_ACCEPT_MAX_CHARS включительно (#4137)
+    assert ok({"speech": "а" * kn.SPEECH_ACCEPT_MAX_CHARS}).speech
+    bad({"speech": "а" * (kn.SPEECH_ACCEPT_MAX_CHARS + 1)}, kn.VIOLATION_SPEECH_TOO_LONG)
     bad({"speech": "привет\x07"}, "control_chars")
     assert ok({"speech": "две\nстроки"}).speech == "две\nстроки"
 
@@ -439,7 +440,7 @@ def test_thousands_of_random_commands_never_raise():
         res = validate(parse(_random_raw(rng)), ALL, rng.choice(sessions), rng.choice(busies))
         seen[type(res)] += 1
         if isinstance(res, Command):
-            assert res.speech is None or len(res.speech) <= kn.SPEECH_MAX_CHARS
+            assert res.speech is None or len(res.speech) <= kn.SPEECH_ACCEPT_MAX_CHARS
             assert len(res.actions) <= kn.ACTIONS_MAX
             assert all(a.tool in kn.TOOL_CLASSES for a in res.actions)
             assert not (res.perform and res.speech)
