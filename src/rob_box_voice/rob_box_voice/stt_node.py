@@ -73,12 +73,6 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     ProviderDeadCache = None  # type: ignore[assignment]
     ProviderPolicy = None  # type: ignore[assignment]
 
-    def effective_provider(chain, dead_cache, guard):  # type: ignore[no-redef]
-        return chain[0] if chain else None
-
-    def hung_providers(chain, guard):  # type: ignore[no-redef]
-        return {}
-
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
 
