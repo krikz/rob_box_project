@@ -3352,6 +3352,9 @@ class SetVibe:
 #: Шифу ждёт смену настроения). Треки сета на ходу не пересобираются, но сет меняет настроение сменой стиля: та же
 #: тема и персона, остаток длины — в стиле отсюда (``dj_set`` start посреди сета, #3400; решает код —
 #: ``track_edit.plan_edit``, а не модель). Вид правки не в таблице — честный отказ ``EDIT_REFUSALS["set"]``.
+#: Причина «генерации нет» у смены настроения сета (``source.gen_block``, ``source.REASON_WORDS``): платную генерацию
+#: она не заказывает (решение 29.10, иначе каждый прогон n607 марафона — деньги) — кэш стиля, иначе сет синтезом.
+SET_VIBE_NO_GEN = "set_vibe"
 SET_VIBES: Mapping[str, SetVibe] = {
     "softer": SetVibe("lofi", "сделал сет спокойнее — дальше лоуфай", "сет и так спокойный — играет лоуфай"),
     "heavier": SetVibe("rock", "сделал сет тяжелее — дальше рок", "сет и так тяжёлый — играет рок"),
@@ -3437,4 +3440,4 @@ __all__ += ["ENGINE_AUTO", "ENGINE_NEGATIONS", "ENGINE_NEGATION_BRIDGES", "ENGIN
             "MusicEngine"]
 __all__ += ["EDIT_BASS_DB_RANGE", "EDIT_BASS_FORMS", "EDIT_NEGATIONS", "EDIT_NEW_ORDER_OBJECTS", "EDIT_NEW_ORDER_WORDS",
             "EDIT_NEXT_TIMBRE", "EDIT_PLAY_VERBS", "EDIT_OPPOSED_GROUPS", "EDIT_REFUSALS", "EDIT_TEMPO_STEP", "EDIT_TOPIC", "EditTopicWords", "TRACK_EDITS",
-            "TRACK_EDIT_GROUPS", "TrackEdit", "SET_VIBES", "SetVibe"]
+            "TRACK_EDIT_GROUPS", "TrackEdit", "SET_VIBES", "SET_VIBE_NO_GEN", "SetVibe"]

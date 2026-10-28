@@ -639,11 +639,13 @@ class DjSetTool(MCPTool):
     def _start(self, theme: str, persona: Optional[str], style: str = kn.DEFAULT_STYLE,
                tracks: Optional[int] = None, window: Optional[str] = None,
                heard_text: Optional[str] = None,
-               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None)) -> Dict[str, Any]:
+               hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False) -> Dict[str, Any]:
         """Сет: путь каждого трека — кэш, генерация (:func:`generated_set`); синтез-сет (ADR-0149) — только запас
-        (В13), тогда фраза кода ``source_note`` говорит почему."""
+        (В13), тогда фраза кода ``source_note`` говорит почему. ``free`` — без платной генерации (смена настроения
+        сета, :func:`restyle_set`)."""
         length, why = self.set_length(tracks)
-        generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints)
+        generated, fallback = generated_set(self, theme, (style, window), persona, (length, why), heard_text, hints,
+                                            free)
         if generated is not None:
             return generated
         style, window = fallback.style, fallback.window
@@ -737,12 +739,17 @@ def restyle_set(dj: DjSetTool, style: str) -> Dict[str, Any]:
     """Идущий сет — дальше в стиле ``style`` (#4173: «помягче» под сетом меняет настроение сета): тема и персона
     идущего сета, остаток его длины (``DjSetTool.set_length``) — тот же путь, что смена темы посреди сета (#3400).
     Решает правка (``track_edit.plan_edit``, ``knowledge.SET_VIBES``), а не модель; реплики хода нет — её слова не
-    становятся темой. Сета нет — ``ok: false``."""
+    становятся темой. Платной генерации смена настроения не заказывает (решение 29.10: иначе каждый прогон n607 —
+    деньги): путь трека — кэш стиля, кэш не закрывает остаток — сет синтезом (``free``, :func:`synth_instead`).
+    Сета нет — ``ok: false``."""
     last = dj._last_dj  # noqa: SLF001 — тема и персона идущего сета
     if not dj.running or last is None:
         return {"ok": False, "reason": "no_set"}
-    result = dj.execute("start", theme=last[0], persona=last[1], style=style)
-    return {**(result.data or {}), "ok": bool(result.success)}
+    with dj._lock:  # noqa: SLF001 — как ``execute``: один сет за раз
+        result = dj._start(last[0], last[1], style, free=True)  # noqa: SLF001
+    result = confirmed(result, dj._confirm)  # noqa: SLF001 — ждём started вне замка
+    dj._session_turn = None  # noqa: SLF001
+    return {**result, "ok": bool(result.get("ok"))}
 
 
 class RequestMusicTool(MCPTool):
@@ -1225,17 +1232,32 @@ def noted(result: Dict[str, Any], note: str) -> Dict[str, Any]:
     return {**result, "source_note": note} if note and result.get("ok") else result
 
 
+def synth_instead(plan: Any, key: str, window: Optional[str], free: bool) -> Optional[SynthFallback]:
+    """Синтез-сет вместо сета из кэша: ни у одного трека нет пути кэша/генерации — запас первым стилем, который синтез
+    играет, с фразой почему (В13); такого нет — ``None`` (отказ сета). Смена настроения (``free``, #4173: без платной
+    генерации): кэш стиля закрывает весь остаток — сет из кэша (``None``), иначе сет синтезом в самом стиле
+    настроения (``key`` — ключ ``STYLES``: синт его играет) на весь остаток, молча (почему не генерация — не
+    новость)."""
+    from .gen.gen_session import synth_set_note
+
+    if free:
+        return None if plan.routes and len(plan.played()) == len(plan.routes) else SynthFallback(key, window)
+    fallback = plan.synth_style()
+    if fallback is None or plan.played():
+        return None
+    return SynthFallback(fallback, window if fallback == key else None, synth_set_note(plan.gen_reason(), fallback))
+
+
 def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], persona: Optional[str],
                   length: Tuple[int, str], heard_text: Optional[str],
-                  hints: Tuple[Optional[List[str]], Optional[int]] = (None, None),
+                  hints: Tuple[Optional[List[str]], Optional[int]] = (None, None), free: bool = False,
                   ) -> Tuple[Optional[Dict[str, Any]], SynthFallback]:
     """Сет из кэша и генерации (ADR-0158 PR-8, решение Шифу 14.10 — любой сет: тема, стиль, auto) →
     ``(результат, …)``; ни у одного трека нет пути кэша/генерации — ``(None, запас)``: синтез-сет первым стилем,
     который синтез играет, с фразой почему; исполнителя нет — ``(None, запас)`` стилем сета без фразы, как раньше.
     Синтез стили сета не играет (джаз, рок без денег и кэша) — отказ с фразой кода, идущий сет не снят.
-    ``style`` — ``(стиль сета, окно)``, ``length`` — ``(длина, откуда)``."""
-    from .gen.gen_session import synth_set_note
-
+    ``style`` — ``(стиль сета, окно)``, ``length`` — ``(длина, откуда)``; ``free`` — без платной генерации
+    (смена настроения сета, #4173: путь трека — только кэш, иначе синтез, :func:`synth_instead`)."""
     key, window = style
     makers = dj.gen_sets
     if makers is None:
@@ -1245,11 +1267,10 @@ def generated_set(dj: DjSetTool, theme: str, style: Tuple[str, Optional[str]], p
     covers = (theme_covers(dj, theme, dj._seed(), log,  # noqa: SLF001 — В14/В16: каверы произведений темы
                            library_records(dj.library)) if theme and makers.cover_ready() else [])
     plan = makers.plan(theme, genre, heard_text, length[0], named=length[1] == "названо", styles=hints[0] or (),
-                       minutes=hints[1], covers=covers)
-    fallback = plan.synth_style()
-    if not plan.played() and fallback is not None:  # окно — у стиля сета, не у стиля запаса
-        return None, SynthFallback(fallback, window if fallback == key else None,
-                                   synth_set_note(plan.gen_reason(), fallback))
+                       minutes=hints[1], covers=covers, gen_failed=kn.SET_VIBE_NO_GEN if free else "")
+    instead = synth_instead(plan, key, window, free)  # окно — у стиля сета, не у стиля запаса
+    if instead is not None:
+        return None, instead
     seed = dj._seed()  # noqa: SLF001 — тот же сид, что у сета синтезом
     set_id = f"gen{seed % 100000:05d}"
     reasoner = dj._reasoner  # noqa: SLF001

@@ -94,13 +94,6 @@ def _target(snap: Mapping[str, Any], recipe: Optional[LiveRecipe]) -> EditTarget
     return EditTarget(_SOURCE_KIND.get(str(snap.get("source") or ""), OTHER))
 
 
-def with_note(data: Dict[str, Any], note: str) -> Dict[str, Any]:
-    """Фраза исхода правки и за ней фраза кода пути (``note``: смена стиля сета ждёт генерацию — что играет пока)."""
-    if not note or not data.get("ok"):
-        return data
-    return {**data, "message": f"{data['message']} {note}".strip(), "heard": False}
-
-
 class TrackEditor:
     """Рецепты своих синт-треков и правка играющего по ним."""
 
@@ -143,24 +136,24 @@ class TrackEditor:
             recipe = self._recipes.get(track_id)
         target = _target(snap, recipe)
         plan = plan_edit(asked, target)
-        reason = note = ""
+        reason = ""
         if plan.changes_sound and recipe is not None:
             plan, reason = self._apply(track_id, recipe, plan)
         elif plan.restyle:
-            plan, track_id, note = self._restyle(plan, track_id)
+            plan, track_id = self._restyle(plan, track_id)
         self._log().info(
             f"🎚️ [edit] {'слова' if named else 'слот'} {list(asked)} играет={target.kind}"
             f"{' (подложка)' if target.backing else ''} track_id={track_id or '—'} → "
             f"сделано={list(plan.applied)} предел={list(plan.limited)} дальше={list(plan.kept)} "
             f"отказ={plan.refused or reason or '—'}"
         )
-        return with_note(self._result(plan, target, track_id, reason), note)
+        return self._result(plan, target, track_id, reason)
 
-    def _restyle(self, plan: EditPlan, track_id: str) -> Tuple[EditPlan, str, str]:
+    def _restyle(self, plan: EditPlan, track_id: str) -> Tuple[EditPlan, str]:
         """Сет продолжается в стиле ``plan.restyle`` (#4173: «помягче» под сетом меняет его настроение, а не отказ и не
-        новый трек): ``(исход, играющий трек, фраза кода пути сета)`` — ``source_message`` сета («пока дописываю
-        лоуфай — вот вам синтвейв»): что играет, пока пишется новый стиль. Не заиграл — честный отказ
-        ``set_vibe_failed`` (новый сет мог снять идущий: «играет как было» не говорим)."""
+        новый трек): ``(исход, играющий трек)``. Платной генерации смена не заказывает (``tools_v2.restyle_set``: кэш
+        или синтез); фраза исхода — одна, из ``SET_VIBES``, фраза запуска нового сета к ней не добавляется. Не
+        заиграл — честный отказ ``set_vibe_failed`` (новый сет мог снять идущий: «играет как было» не говорим)."""
         result: Mapping[str, Any] = {"ok": False, "reason": "unavailable"}
         if self.restyle is not None:
             try:
@@ -173,8 +166,8 @@ class TrackEditor:
             f"track_id={result.get('track_id') or '—'} reason={result.get('reason') or '—'}"
         )
         if result.get("ok"):
-            return plan, str(result.get("track_id") or track_id), str(result.get("source_message") or "")
-        return replace(plan, applied=(), restyle="", refused="set_vibe_failed"), track_id, ""
+            return plan, str(result.get("track_id") or track_id)
+        return replace(plan, applied=(), restyle="", refused="set_vibe_failed"), track_id
 
     def _apply(self, track_id: str, recipe: LiveRecipe, plan: EditPlan) -> Tuple[EditPlan, str]:
         """Пересобрать трек с правкой и поставить его на такт; ``(исход, причина сбоя или «»)``. Программа звучит так
@@ -275,4 +268,4 @@ class TrackEditor:
         return data
 
 
-__all__ = ["EDIT_WAIT_S", "LiveRecipe", "RECIPES_KEPT", "Restyle", "TrackEditor", "synth_title", "with_note"]
+__all__ = ["EDIT_WAIT_S", "LiveRecipe", "RECIPES_KEPT", "Restyle", "TrackEditor", "synth_title"]

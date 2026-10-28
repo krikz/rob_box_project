@@ -160,7 +160,7 @@ class SourceRouter:
 
     def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "",
                     works: Sequence[CoverWork] = (), seconds: Optional[float] = None,
-                    minimum: int = 1) -> List[Route]:
+                    minimum: int = 1, gen_failed: str = "") -> List[Route]:
         """Путь каждого трека сета (ADR-0158 §2.7, В13, В14, В16): у темы есть произведения с нашим материалом
         (``works``, главная тема первой) — кавер произведения трека в его стиле (кэш того же кавера, затем
         ``generate:cover``; произведение — :meth:`SetLedger.work_for`); иначе кэш стиля и темы трека (инструментал,
@@ -170,8 +170,10 @@ class SourceRouter:
         ``seconds`` — сет «на N минут»: ``asks`` — запас просьб (по стилям по кругу), треки берутся, пока конец сета
         (``source.route_seconds``: треки за вычетом кроссфейдов + весь последний) не дойдёт до ``seconds`` минус
         ``SET_FILL_SLACK_S`` (не меньше ``minimum`` треков); лимит задач сета ``GEN_SET_MAX_TASKS`` и отказ пути тоже
-        останавливают набор."""
-        ledger = SetLedger(self.context(asks[0] if asks else None, for_set=True), theme_tags, works)
+        останавливают набор. ``gen_failed`` — генерацию в этом сете не заказывать (причина — в ``gen_block``):
+        смена настроения сета (#4173) берёт только кэш и синтез."""
+        base = self.context(asks[0] if asks else None, for_set=True)
+        ledger = SetLedger(base.without_generate(gen_failed) if gen_failed else base, theme_tags, works)
         out = []
         body = end = 0.0  # секунды сета: треки до этого (без кроссфейда) и конец, если этот трек последний
         for no, ask in enumerate(asks, 1):

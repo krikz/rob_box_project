@@ -89,23 +89,67 @@ def test_failed_restyle_says_so_and_does_not_claim_the_old_set_plays():
     assert "играет как было" not in data["message"]
 
 
-def test_softer_under_a_generated_set_restyles_it_and_says_what_plays_meanwhile(tmp_path, monkeypatch):
-    """Сет из кэша и генерации (марафон-4: ``gen26164``): тот же путь смены стиля - остаток длины в лоуфае, а пока
-    лоуфай пишется, фраза кода пути говорит, что играет (мост синтезом), а не только «сделал»."""
+def _gen_set(tmp_path, monkeypatch, lofi_cached=0, tracks=3):
+    """Идущий рок-сет из кэша и генерации (марафон-4: ``gen26164``) на фейковом KIE; в кэше 2 гранжа и
+    ``lofi_cached`` лоуфаев."""
     from .test_adr0158_pr8_gen_set import Kie, _dj, _fake_audio_track, _lib  # noqa: PLC0415
 
     monkeypatch.setattr("rob_box_mcp_tools.engine.gen.gen_session.audio_track", _fake_audio_track)
-    dj = _dj(_lib(tmp_path, cached=2), Kie())
-    out = dj.execute(action="start", style="rock", tracks=3, heard_text="включи рок-сет на 3 трека")
+    lib = _lib(tmp_path, cached=2)
+    for v in range(lofi_cached):
+        lib.save_track(b"MP3:150.0", prompt="lofi", title=f"Lofi {v}", is_instrumental=True, kind="instrumental",
+                       style_key="lofi", genre="lofi", task_id="LOFI", variant=v, duration_ms=150000)
+    kie = Kie()
+    dj = _dj(lib, kie)
+    out = dj.execute(action="start", style="rock", tracks=tracks, heard_text=f"включи рок-сет на {tracks} трека")
     assert out.success and dj.running
+    jobs = kie.jobs  # заказы самого рок-сета (его 3-й трек), список пополняется на месте
     snap = {"playing": True, "track_id": out.data["track_id"], "enabled": True, "style": "rock"}
-    editor = TrackEditor(Owner(**snap), Deck(), restyle=partial(restyle_set, dj))
+    return dj, kie, jobs, TrackEditor(Owner(**snap), Deck(), restyle=partial(restyle_set, dj))
 
-    data = editor.edit((), HEARD)
+
+def _calm_jobs(jobs):
+    """Заказы KIE в стиле настроения (лоуфай): смена настроения их делать не должна."""
+    return [j for j in jobs if "lo-fi" in repr(j).lower() or "lofi" in repr(j).lower()]
+
+
+def _set_candidates(caplog):
+    return [r.getMessage() for r in caplog.records if "[source] сет" in r.getMessage()]
+
+
+def test_softer_under_a_generated_set_with_no_calm_cache_plays_calm_synth_and_orders_nothing(
+        tmp_path, monkeypatch, caplog):
+    """Решение 29.10: смена настроения не заказывает платную генерацию (иначе каждый прогон n607 - деньги). Лоуфая в
+    кэше нет - сет синтезом в лоуфае на остаток, KIE не вызывается, фраза - только исход, без «дописываю»."""
+    dj, kie, jobs, editor = _gen_set(tmp_path, monkeypatch)
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        data = editor.edit((), HEARD)
 
     assert data["ok"] is True and data["set_style"] == "lofi" and dj.running
-    note = "Пока я дописываю лоуфай — вот вам синтвейв, секунд 30."
-    assert data["message"] == f"Сделал сет спокойнее — дальше лоуфай. {note}" and data["heard"] is False
+    assert data["message"] == "Сделал сет спокойнее — дальше лоуфай."
+    assert not _calm_jobs(jobs), "смена настроения заказала генерацию"
+    lines = _set_candidates(caplog)
+    assert lines and not any("generate:" in line for line in lines), lines
+    assert dj._session.set_id.startswith("set")  # noqa: SLF001 — сет синтезом, не из генерации
+    assert dj._session.tracks == 2  # noqa: SLF001 — остаток рок-сета (3 трека, играет первый)
+
+
+def test_softer_under_a_generated_set_takes_calm_tracks_from_the_cache_without_ordering(
+        tmp_path, monkeypatch, caplog):
+    """Лоуфай в кэше закрывает остаток сета - сет из кэша, кандидатов ``generate:*`` нет, KIE не вызывается."""
+    dj, kie, jobs, editor = _gen_set(tmp_path, monkeypatch, lofi_cached=2)
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        data = editor.edit((), HEARD)
+
+    assert data["ok"] is True and data["set_style"] == "lofi" and dj.running
+    assert not _calm_jobs(jobs)
+    lines = _set_candidates(caplog)
+    assert lines and not any("generate:" in line for line in lines), lines
+    assert all("→ cache:" in line for line in lines), lines
+    assert dj._session.set_id.startswith("gen")  # noqa: SLF001 — сет из кэша
+    assert data["message"] == "Сделал сет спокойнее — дальше лоуфай."  # фраза запуска сета не добавляется
 
 
 @pytest.mark.parametrize("kinds,style,expect", [
