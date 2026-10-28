@@ -210,7 +210,7 @@ def test_4050_salvaged_query_without_iterations_left_is_said_by_code_from_the_da
 
 def test_4050_model_invalid_again_after_the_salvaged_data_still_speaks():
     """И после данных модель ответила невалидно — код говорит по данным запроса (#3883), не молчит."""
-    ports = Ports([_invalid_list(), _invalid_list("too_long")], outcomes={"music_library": ("done", TRACKS, None)})
+    ports = Ports([_invalid_list(), _invalid_list(kn.VIOLATION_SPEECH_TOO_LONG)], outcomes={"music_library": ("done", TRACKS, None)})
     _run(ports, N_LIBRARY)
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
     assert ports.executed == [[("music_library", {"action": "list"})]], "повторный list не исполняется"

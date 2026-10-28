@@ -445,3 +445,21 @@ def test_tool_route_of_a_live_request_is_live_not_a_generation():
     assert decline_text(route) == LIVE_TOOL_TEXT and "отсюда не выйдет" in LIVE_TOOL_TEXT
     assert "вслух" in LIVE_TOOL_TEXT and "«Робот, спой под синт»" in LIVE_TOOL_TEXT
     assert "Генерацию для этого не запускаю" in LIVE_TOOL_TEXT
+
+
+def test_a_named_voice_of_the_registry_narrows_the_bare_sing_to_live():
+    """Ревью #4153: «спой голосом Алисы про кабана» — кандидатами были живое и генерация, чойсер (``music_chooser:
+    chain`` на роботе) мог выбрать Suno, форма закрывала выступление, и голос молча терялся. Голос реестра назван
+    (``SingContext.voiced`` — решает диалог) — только живое: этим голосом поёт робот сам, кодом, без модели."""
+    voiced = SingContext(voiced=True)
+    assert [o.id for o in sing_candidates("спой голосом Алисы про кабана", voiced)] == ["live:song"]
+    assert choose_sing("спой голосом Алисы про кабана", voiced, DeterministicChooser(NoModel())).by == "code"
+    assert [o.id for o in sing_candidates("спой голосом Алисы про кабана", SingContext())] == [
+        "live:song", "generate:song:V6"], "без названного голоса — как раньше, решает чойсер"
+
+
+def test_an_explicit_generation_keeps_its_route_next_to_a_named_voice():
+    """Путь, названный словами («с Suno», «сгенерируй песню»), сильнее голоса: человек просил именно генерацию."""
+    voiced = SingContext(voiced=True)
+    assert [o.id for o in sing_candidates("спой с Suno голосом Алисы", voiced)] == ["generate:song:V6"]
+    assert [o.id for o in sing_candidates("спой голосом Алисы на синтезаторе", voiced)] == ["live:song"]

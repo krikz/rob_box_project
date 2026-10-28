@@ -67,17 +67,25 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
                                      on_ask=lambda title: perform_ask.open_window(node, title),
-                                     tts_provider=lambda: _tts_provider(node))
+                                     tts_provider=lambda: _tts_provider(node),
+                                     speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
 
 
 def note_perform_end(node: Any, event: PlanEvent) -> None:
     """Конец выступления - журналу ходов движка dialog v2 (#3973): просьба «расскажи сказку» закрыта исходом, и LLM не
-    исполняет её заново на чужую реплику. У ноды без движка (v1) выступления в журнал не пишутся."""
+    исполняет её заново на чужую реплику. Выступление на роботе одно - и у Личности, и у пульта чата Telegram
+    (``chats.ChatTurns``, #4142 п.2): его запись «идёт» закрывается и в окне каждого чата, иначе модель чата видела
+    «выступление идёт», пока ход не выпадал из окна. У ноды без движка (v1) выступления в журнал не пишутся."""
+    if event.kind != "block_end":
+        return
     engine = getattr(node, "_engine", None)
-    if event.kind == "block_end" and engine is not None:
+    if engine is not None:
         engine.log.performance_ended(event.turn_id, event.reason, event.segment_no)
+    chats = getattr(node, "_chats", None)
+    if chats is not None:
+        chats.performance_ended(event.turn_id, event.reason, event.segment_no)
 
 
 def _foreign_music(node: Any) -> str:

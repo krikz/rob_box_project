@@ -11,8 +11,12 @@ from rob_box_dialog.address import (
 )
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.doa import DoaTrack
-from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, RISKY_WAKE_WORDS
+from rob_box_dialog.knowledge import (
+    BACKGROUND_WINDOW_S, BACKLOG_PICKUP_S, BACKLOG_TTL_S, DEFAULT_WAKE_WORDS, RISKY_WAKE_WORDS,
+)
 from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.speaker_adapter import VoiceTag
+from rob_box_dialog.turn import background_section
 
 WAKES = list(DEFAULT_WAKE_WORDS)
 COMMANDS = [
@@ -123,11 +127,91 @@ def test_bare_wake_takes_every_fresh_phrase_in_order():
     assert [p["text"] for p in out.picked] == ["слушай я хотела рассказать", "как собрать полку для книг"]
 
 
-def test_bare_wake_with_empty_or_stale_backlog_is_reflex_only():
-    backlog = _backlog_with("девяносто пять градусов", t=70.0, doa=90.0, voice_s=2.0)
+def test_bare_wake_with_empty_or_outdated_backlog_is_reflex_only():
+    """Рефлекс «слушаю» без LLM: бэклога нет, нет самого бэклога или фраза старше окна бэклога (3 минуты)."""
+    backlog = _backlog_with("девяносто пять градусов", t=100.0 - BACKGROUND_WINDOW_S - 1.0, doa=90.0, voice_s=2.0)
     assert decide(_heard("робот", t=100.0, doa=90.0), backlog, WAKES) == Addressed("", BARE_WAKE)
     assert decide(_heard("робот", t=100.0), Backlog(), WAKES) == Addressed("", BARE_WAKE)
     assert decide(_heard("робот", t=100.0), None, WAKES) == Addressed("", BARE_WAKE)
+
+
+@pytest.mark.parametrize("age_s, picked", [(29.0, True), (170.0, True), (BACKGROUND_WINDOW_S, True),
+                                           (BACKGROUND_WINDOW_S + 10.0, False)])
+def test_3975_bare_wake_reaches_back_the_whole_backlog_window(age_s, picked):
+    """#3975 (Шифу 28.10: «окно бэклога 3 минуты вообще»): живьём 27.10 голое «Робот» через 29 с после «роботы ускорь
+    темп» дало ``pickup n=0``. Дальность подхвата - всё окно бэклога; за окном - рефлекс."""
+    backlog = _backlog_with("роботы ускорь темп", t=1000.0 - age_s, doa=90.0, voice_s=2.0)
+    out = decide(_heard("Робот", t=1000.0, doa=270.0), backlog, WAKES)
+    if picked:
+        assert (out.text, out.source, out.pickup) == ("роботы ускорь темп", BACKLOG_PICKUP, True)
+        assert backlog.background_phrases(1000.0) == 0, "подхваченная фраза уходит из бэклога"
+    else:
+        assert out == Addressed("", BARE_WAKE)
+
+
+def test_3975_pickup_window_is_the_backlog_window_not_a_second_number():
+    assert BACKLOG_PICKUP_S == BACKGROUND_WINDOW_S == BACKLOG_TTL_S
+
+
+def test_3975_far_pickup_takes_the_last_phrase_not_the_whole_window():
+    """Свежего нет: берётся последняя фраза окна, а не три минуты чужих разговоров мастерской; остальное - в снимок
+    хода с автором и возрастом (``background``), в бэклоге остаётся."""
+    backlog = _backlog_with("новости про погоду", t=840.0, doa=250.0, voice_s=3.0)
+    backlog.add(_heard("ты уже ужинал", t=900.0, doa=10.0, voice_s=2.0))
+    backlog.add(_heard("включи что нибудь спокойное", t=960.0, doa=90.0, voice_s=3.0))
+    out = decide(_heard("Робот", t=1000.0, doa=90.0), backlog, WAKES)
+    assert (out.text, out.source) == ("включи что нибудь спокойное", BACKLOG_PICKUP)
+    assert [p["text"] for p in out.picked] == ["включи что нибудь спокойное"]
+    left = [(p["text"], p["age_s"]) for p in out.background]
+    assert left == [("новости про погоду", 160.0), ("ты уже ужинал", 100.0)]
+    assert backlog.background_phrases(1000.0) == 2
+
+
+def test_3975_far_pickup_takes_the_chunks_of_the_last_story():
+    """Рассказ длиннее 15 с режется на куски (#3763): далёкий подхват берёт все примыкающие куски, а не один."""
+    backlog = _backlog_with("слушай я хотела рассказать", t=860.0, doa=58.0, voice_s=14.8)
+    backlog.add(_heard("как собрать полку для книг", t=863.0, doa=54.0, voice_s=9.8))
+    out = decide(_heard("робот", t=1000.0, doa=299.0), backlog, WAKES)
+    assert [p["text"] for p in out.picked] == ["слушай я хотела рассказать", "как собрать полку для книг"]
+
+
+def test_3975_fresh_phrase_keeps_the_old_pickup_and_does_not_drag_the_far_one():
+    """Есть свежее (моложе ``BACKLOG_FRESH_S``) - всё как с 21.10: берётся оно; дальняя фраза остаётся фоном."""
+    backlog = _backlog_with("новости про погоду", t=900.0, doa=250.0, voice_s=3.0)
+    backlog.add(_heard("покажи анимацию", t=990.0, doa=90.0, voice_s=2.0))
+    out = decide(_heard("Робот", t=1000.0, doa=90.0), backlog, WAKES)
+    assert [p["text"] for p in out.picked] == ["покажи анимацию"]
+    assert [p["text"] for p in out.background] == ["новости про погоду"]
+
+
+def test_3975_phrase_heard_before_an_addressed_turn_is_not_picked_up_from_afar():
+    """«Включи музыку» без вейка, затем «Робот, включи музыку» (исполнено): голое «Робот» через минуту не должно
+    исполнять то же ещё раз - фраза до адресованного хода уже была в снимке того хода."""
+    backlog = _backlog_with("включи музыку", t=1000.0, doa=90.0, voice_s=2.0)
+    assert decide(_heard("Робот, включи музыку", t=1005.0, doa=90.0), backlog, WAKES).source == VOICE
+    assert decide(_heard("Робот", t=1045.0, doa=90.0), backlog, WAKES) == Addressed("", BARE_WAKE)
+    backlog.add(_heard("а теперь потише", t=1050.0, doa=90.0, voice_s=2.0))
+    assert decide(_heard("Робот", t=1100.0, doa=90.0), backlog, WAKES).text == "а теперь потише"
+
+
+def test_3975_second_bare_wake_does_not_pick_up_what_the_first_one_left_behind():
+    backlog = _backlog_with("новости про погоду", t=840.0, doa=250.0, voice_s=3.0)
+    backlog.add(_heard("включи что нибудь спокойное", t=960.0, doa=90.0, voice_s=3.0))
+    assert decide(_heard("Робот", t=1000.0, doa=90.0), backlog, WAKES).source == BACKLOG_PICKUP
+    assert decide(_heard("Робот", t=1010.0, doa=90.0), backlog, WAKES) == Addressed("", BARE_WAKE)
+
+
+def test_3975_woken_turn_sees_far_unaddressed_phrases_with_their_author():
+    """«Робот, на ренардо» - не сходится по смыслу: начало просьбы ушло в бэклог. Модель видит его данными: в снимке
+    хода раздел ``background_since_reply`` (всё окно, ``who``, ``age_s``), без правила в промпте."""
+    backlog = Backlog()
+    backlog.add(Heard(text="сыграй мне что нибудь спокойное", t=830.0, doa_deg=90.0, voice_s=3.0, utterance_id="u1"))
+    backlog.note_voice("u1", VoiceTag("known", person_ref="p1", name="Борис", score=0.86))
+    out = decide(_heard("Робот, на ренардо", t=1000.0, doa=90.0), backlog, WAKES)
+    assert out.source == VOICE and out.text == "на ренардо"
+    assert out.recent == (), "recent_unaddressed - только свежее (моложе BACKLOG_FRESH_S)"
+    assert background_section(out) == ({"who": "Борис", "text": "сыграй мне что нибудь спокойное", "age_s": 170.0},)
+    assert backlog.background_phrases(1000.0) == 1, "из бэклога не уходит: подхват голым «Робот» по-прежнему возможен"
 
 
 def test_wake_with_a_phrase_never_takes_the_backlog():
@@ -539,6 +623,19 @@ def test_3975_music_does_not_change_a_real_wake_or_other_slips():
     assert _in_session("работа тишина", session) == Addressed("тишина", VOICE)
     assert _in_session("роботы еще куплет добавь", session) == Addressed("еще куплет добавь", VOICE)
     assert _in_session("роботы еще куплет добавь", _session("idle")) == Addressed("еще куплет добавь", VOICE)
+
+
+#: n812, 28.10 07:03:19 (dev-7ec08dd): «Робот, теперь и музыку выключай.» → STT «роботы пере музыку выключай» под музыкой.
+#: Не разбудило, харнесс сказал «Робот!» (``recovered_no_wake``) - #4136 п.3.
+@pytest.mark.parametrize("session", [_session("playing"), _session("idle", dj=True)], ids=["player-playing", "dj-scene"])
+def test_4136_n812_stop_verb_after_a_slipped_wake_wakes_under_music_only(session):
+    assert _in_session("роботы пере музыку выключай", session) == Addressed("пере музыку выключай", VOICE)
+    assert _in_session("роботы пере музыку выключай", _session("idle")) == NotAddressed(NO_WAKE)
+
+
+@pytest.mark.parametrize("text", ["роботы стоят", "роботы выключаются", "роботы очень любят музыку"])
+def test_4136_n812_other_robot_talk_does_not_wake_under_music(text):
+    assert _in_session(text, _session("playing", dj=True)) == NotAddressed(NO_WAKE), text
 
 
 def test_3975_decide_takes_music_from_the_flag_and_defaults_to_silence():

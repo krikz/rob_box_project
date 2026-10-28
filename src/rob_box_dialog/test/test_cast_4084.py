@@ -13,6 +13,8 @@
 
 import pytest
 
+from perform_sim import Sim
+
 from rob_box_core.tool_catalog import TOOL_CATALOG
 from rob_box_dialog import cast as cs
 from rob_box_dialog import knowledge as kn
@@ -66,9 +68,12 @@ def _command(perform, busy=BUSY, form=None):
 
 
 def _voices_heard(perform, busy=BUSY, form=None):
-    """Голоса запросов речи владельца выступления — по одному на сегмент, в порядке звучания."""
-    block = PerformBlock(_command(perform, busy, form).perform, "b-4084", log=lambda _: None)
-    return [say.voice for say in block.start(0.0) if isinstance(say, Say) and not say.key]
+    """Голоса запросов пред-синтеза владельца выступления — по одному на сегмент, в порядке звучания. Пред-синтез
+    уходит окном (#4151), поэтому выступление прогоняется целиком на фейковых владельцах (:mod:`perform_sim`)."""
+    sim = Sim(_command(perform, busy, form).perform)
+    sim.start()
+    sim.run(600)
+    return [say.voice for _, say in sim.effects if isinstance(say, Say) and not say.key and not say.commit]
 
 
 # --- песня и рэп — голосом робота ---------------------------------------------------------------------------------

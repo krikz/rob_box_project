@@ -68,6 +68,27 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]
 
+#: Топик запросов выполнения тулов и атрибут ноды, под которым лежит её единственный издатель в него.
+EXECUTE_TOPIC = "/mcp/execute"
+_EXECUTE_PUB_ATTR = "_mcp_execute_publisher"
+_EXECUTE_PUB_LOCK = threading.Lock()
+
+
+def shared_execute_publisher(node: Any, qos_profile: Any) -> Any:
+    """Издатель ``/mcp/execute`` ноды - один на ноду (#4081, ``architecture/ownership.yml``: как ``speech_client``).
+
+    ``dialog_node`` строит два адаптера (Личность и агент чата Telegram, у каждого своя подпись ``sender`` и свой срез
+    тулов), и раньше каждый заводил свой издатель: ``duplicate_publishers /mcp/execute /dialog_node`` в рантайм-аудите
+    27.10. Подпись, срез и ожидание ответов остаются за адаптером - от издателя они не зависят. Первый адаптер ноды
+    создаёт издателя, остальные берут его же; QoS у всех один (RELIABLE, KEEP_LAST 10)."""
+    with _EXECUTE_PUB_LOCK:
+        shared = vars(node).get(_EXECUTE_PUB_ATTR) if hasattr(node, "__dict__") else None
+        if shared is None:
+            shared = node.create_publisher(String, EXECUTE_TOPIC, qos_profile)
+            if hasattr(node, "__dict__"):
+                setattr(node, _EXECUTE_PUB_ATTR, shared)
+        return shared
+
 
 def apply_turn_context(
     tool_name: str,
@@ -149,8 +170,8 @@ class LLMToolCallAdapter:
             depth=10
         )
 
-        # Publisher для запросов выполнения инструментов
-        self.execute_pub = node.create_publisher(String, "/mcp/execute", qos_profile)
+        # Publisher для запросов выполнения инструментов - один на ноду, общий у всех её адаптеров (#4081)
+        self.execute_pub = shared_execute_publisher(node, qos_profile)
 
         # Подпись запросов общим секретом — mcp_server отклоняет
         # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
@@ -202,19 +223,26 @@ class LLMToolCallAdapter:
             result = json.loads(msg.data)
             request_id = result.get("request_id", "")
 
-            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8] if request_id else 'empty'}")
-
             if not request_id:
                 self.node.get_logger().warn("⚠️ Получен результат без request_id")
                 return
 
-            # Сохраняем результат в кэш
-            self.results_cache[request_id] = result
-            self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+            # /mcp/result слышат все адаптеры ноды и другие ноды (#4081): в ответе нет отправителя, хозяин запроса -
+            # тот, кто его выпустил и ждёт (событие, колбэк или async-исполнитель). Чужой ответ молча пропускаем:
+            # иначе он оседал бы в кэшах навсегда, а строки лога шли бы дважды.
+            if not (request_id in self.result_events or request_id in self.pending_requests
+                    or self.async_executor.expects(request_id)):
+                return
 
-            # Уведомляем ждущий поток через Event
-            if request_id in self.result_events:
-                self.result_events[request_id].set()
+            self.node.get_logger().info(f"📩 on_result вызван для request_id: {request_id[:8]}")
+
+            # Синхронный вызов забирает ответ из кэша и ждёт Event (``execute_tool_call_sync``); запросу с колбэком кэш
+            # не нужен: его никто не заберёт
+            event = self.result_events.get(request_id)
+            if event is not None:
+                self.results_cache[request_id] = result
+                self.node.get_logger().info(f"💾 Результат сохранён в кэш для {request_id[:8]}")
+                event.set()
                 self.node.get_logger().info(f"✅ Event установлен для {request_id[:8]}")
 
             # Уведомляем async executor

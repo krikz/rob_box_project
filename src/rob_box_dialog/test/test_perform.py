@@ -571,11 +571,15 @@ def test_context_block_has_done_and_active_verbatim_and_first_pending_number():
 
 
 def test_lost_events_end_the_block():
-    """Владелец речи молчит (ни synthesized, ни rejected): выступление не висит вечно — снимается по сроку."""
+    """Сегмент звучит без длительности (поток, #3930), а ``finished`` не пришёл и событий больше нет: выступление не
+    висит вечно — снимается по сроку ``RESOURCE_STALE_S``. Владелец, молчащий с самого начала (ни synthesized, ни
+    rejected), снимается раньше — сторожем речи (#4151, ``test_perform_long_4151``)."""
     block = PerformBlock(rap(backing="none"), "b1", log=lambda _: None)
-    block.start(0.0)
+    first = next(e for e in block.start(0.0) if isinstance(e, Say))
+    block.on_speech("synthesized", first.speech_id, 0.5, duration_ms=0)
+    block.on_speech("started", first.speech_id, 1.0, duration_ms=0)
     assert block.tick(kn.RESOURCE_STALE_S - 1) == []
-    effects = block.tick(kn.RESOURCE_STALE_S + 1)
+    effects = block.tick(kn.RESOURCE_STALE_S + 2)
     assert block.ended and block.end_reason == "lost"
     assert [e.kind for e in effects if hasattr(e, "kind")][-1] == "block_end"
 

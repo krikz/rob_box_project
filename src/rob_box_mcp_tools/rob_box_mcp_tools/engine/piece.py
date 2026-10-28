@@ -121,6 +121,24 @@ def composer_gap(ref: WorkRef, count: int) -> Dict[str, Any]:
     return {COMPOSER_MISSING: True, "composer": " ".join(w.said or w.spellings[0] for w in ref.composer)}
 
 
+def chosen_of(pick: Optional[ClassicPick], candidates: Sequence[WorkCandidate]) -> Optional[WorkCandidate]:
+    """Кандидат, из которого собрана пьеса ``pick``; пьесы нет или она не из кандидатов — ``None``."""
+    return next((c for c in candidates if pick is not None and c.id == pick.melody_id), None)
+
+
+def named_pick(ref: WorkRef, chosen: Optional[WorkCandidate], confirmed: bool = False, whole: bool = False) -> bool:
+    """Пьесу назвал человек (#4015, ``played["named"]``): каталог подтвердил произведение заказа (``confirmed`` —
+    ``RequestSlots.work_confirmed``: LLM или кэш её разборов, #3609; находка на слух — нет, её «названо» ставит
+    ``tools_v2._classic_outcome``, #4016), слово названия заказа, которое архив знает, стоит в названии выбранной
+    (``WorkWord.named_in``), или она нашлась поиском по названию целиком (``whole``).
+    ``title_match`` для этого не годится: слово без написания в архиве ``WorkRef.rtttl`` засчитывает найденным (запись
+    нашёл поиск). Пьеса, подобранная по жанру, автору или «ближайшему» («спой что-нибудь классическое»), — не
+    названная; просьбу сочинить песню («спой о море») решает грамматика (``tools_v2.song_asked``)."""
+    if whole:
+        return ref.named or confirmed
+    return chosen is not None and (confirmed or any(word.named_in(chosen.title) for word in ref.title))
+
+
 class PieceChain:
     """Цепочка одиночной пьесы ``request_music(melody)``: что играть и в каком порядке пробовать."""
 
@@ -166,9 +184,11 @@ class PieceChain:
             return self._play_fresh(work, key, seed, lead, confirmed)
         pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead, confirmed)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
+        named = named_pick(ref, chosen, confirmed)
         if pick is None:
             old = whole_name(self._classic, ref, work, seed, lead)
             pick, count = (old, count + 1) if old.found else (None, count)
+            named = named_pick(ref, None, confirmed, old.found)  # не нашлось и здесь — «ближайшее» не названо
         if pick is None:
             near, more, extra = self._near_pick(work, key, seed, lead, [c.id for c, _why in failed])
             pick, failed, count, replacement = near, failed + more, count + extra, work if near else None
@@ -176,7 +196,8 @@ class PieceChain:
         if pick is None:
             return None, composer_gap(ref, count), reasons, count
         played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
-                  "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
+                  "replacement_for": replacement, "scores_failed": sum(c.kind == SCORE for c, _why in failed),
+                  "named": named}
         return pick, played, reasons, count
 
     def _play_fresh(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], confirmed: bool = False):
@@ -194,7 +215,8 @@ class PieceChain:
         if pick is None:
             return None, ({"repeats": repeats} if repeats else {}), reasons, len(candidates)
         played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
-                  "replacement_for": None, "scores_failed": sum(c.kind == SCORE for c, _why in failed)}
+                  "replacement_for": None, "scores_failed": sum(c.kind == SCORE for c, _why in failed),
+                  "named": named_pick(ref, chosen_of(pick, fresh), confirmed)}
         return pick, played, reasons, len(candidates)
 
     def candidates(self, work: str, key: str = "") -> Tuple[WorkRef, List[WorkCandidate], Dict[str, Any]]:
@@ -230,8 +252,7 @@ class PieceChain:
         stages = zip(("кандидаты", "выбор", "сборка"), marks, marks[1:])  # бюджет старта 2.5 с (#3577)
         self._log().info(f"🎼 [classic] время «{work}»: "
                          + ", ".join(f"{name} {(b - a) * 1000:.0f} мс" for name, a, b in stages))
-        chosen = next((c for c in order if pick is not None and c.id == pick.melody_id), None)
-        return pick, failed, len(candidates), ref, chosen
+        return pick, failed, len(candidates), ref, chosen_of(pick, order)
 
     def _near_pick(self, work: str, key: str, seed: int, lead: Optional[LeadChoice], tried: Iterable[str]):
         """Ближайшее по словам заказа (композитор: «Токката Баха» → мелодии «Баха»): каждое слово — прямым поиском,

@@ -115,6 +115,57 @@ def test_attach_again_replaces_the_previous_handler_and_close_restores_the_logge
     assert PACKAGE.level == logging.NOTSET
 
 
+class _Root(logging.Handler):
+    """Корневой обработчик python (его ставит рантайм или pytest): ловит всё, что дошло до корня."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+@pytest.fixture()
+def root():
+    handler, logger = _Root(), logging.getLogger()
+    logger.addHandler(handler)
+    was = logger.level
+    logger.setLevel(logging.DEBUG)
+    yield handler
+    logger.setLevel(was)
+    logger.removeHandler(handler)
+
+
+def test_a_line_is_logged_once_not_again_through_the_root_handler(root):
+    """28.10: строка ``📨 [execute] …`` шла в лог дважды - через логгер ROS и через корневой обработчик python
+    (``[… - rob_box_dialog.execute:228 - INFO]``). Запись логгера пакета принадлежит логгеру ROS: до корня не доходит."""
+    ros = _RosLogger()
+    handler = dn.RosLogHandler.attach(ros)
+    try:
+        logging.getLogger("rob_box_dialog.execute").info(f"{EXECUTE_LINE} play_animation t-1/0 done")
+        logging.getLogger("rob_box_dialog.turn").warning("предупреждение хода")
+        assert [text for _level, text in ros.lines] == [f"{EXECUTE_LINE} play_animation t-1/0 done", "предупреждение хода"]
+        assert root.messages == []
+    finally:
+        handler.close()
+    logging.getLogger("rob_box_dialog.execute").info("после close")  # обработчика нет - корень слышит, как раньше
+    assert root.messages == ["после close"] and len(ros.lines) == 2
+
+
+def test_close_restores_propagate_even_after_a_reattach():
+    """Перезапуск ноды в том же процессе: второй ``attach`` снимает первый обработчик, ``propagate`` возвращается к
+    значению ДО первой ноды (не застревает в ``False`` от первого обработчика)."""
+    assert PACKAGE.propagate is True
+    one = dn.RosLogHandler.attach(_RosLogger())
+    assert PACKAGE.propagate is False
+    two = dn.RosLogHandler.attach(_RosLogger())
+    assert PACKAGE.propagate is False
+    two.close()
+    one.close()  # повторно безопасно: обработчика уже нет
+    assert PACKAGE.propagate is True
+
+
 def test_a_failing_ros_logger_does_not_break_the_logging_call(capsys):
     class _Broken(_RosLogger):
         def info(self, text):

@@ -317,21 +317,47 @@ def test_llm_called_speed_tool_gets_the_code_phrase_from_the_result_not_done():
     assert ports.said == [(phrases.text("speed.faster"), None)]
 
 
-def test_ordinary_voice_lifts_the_bass_mode_and_says_so_only_when_the_pitch_changed():
-    """«Обычным голосом» после «басом»: голос говорит сам тул, сброс тона - фраза кода, только если тон менялся."""
-    lifted = Ports()
-    _run(lifted, "Робот, говори обычным голосом")
-    assert lifted.executed == [[("set_voice", {"voice": kn.VOICE_DEFAULT_ARG}), ("set_pitch", {"action": "normal"})]]
-    assert lifted.said == [(phrases.text("pitch.normal"), None)]
-    already = Ports(outcomes={"set_pitch": ("done", kn.VOICE_STEP_AT_LIMIT, {"status": "done"})})
-    _run(already, "Робот, говори обычным голосом")
-    assert already.said == []  # тон и так обычный - о голосе сказал тул
+#: Что тул ``set_voice`` кладёт в результат (``rob_box_mcp_tools.voice_request.outcome_data``): голос применён / голос и так
+#: обычный; тул не говорит, фразу строит код. Тон: изменился (``done``) / уже на норме (``done`` + ``at_limit``).
+DEFAULT_APPLIED = ("done", None, {"status": "applied", "voice_default": True, "voice_name": "Qingse"})
+DEFAULT_ALREADY = ("done", None, {"status": "already_default", "voice_default": True, "voice_name": "Qingse"})
+PITCH_LIFTED = ("done", None, {"status": "done"})
+PITCH_ALREADY_NORMAL = ("done", kn.VOICE_STEP_AT_LIMIT, {"status": "done"})
+ORDINARY = [[("set_voice", {"voice": kn.VOICE_DEFAULT_ARG}), ("set_pitch", {"action": "normal"})]]
+
+
+@pytest.mark.parametrize("voice, pitch, key", [
+    (DEFAULT_ALREADY, PITCH_LIFTED, "voice.applied_default"),   # живое 28.10 00:48:51: было две реплики
+    (DEFAULT_APPLIED, PITCH_LIFTED, "voice.applied_default"),
+    (DEFAULT_APPLIED, PITCH_ALREADY_NORMAL, "voice.applied_default"),
+    (DEFAULT_ALREADY, PITCH_ALREADY_NORMAL, "voice.already_default"),
+])
+def test_ordinary_voice_is_one_phrase_built_from_the_results_of_voice_and_pitch(voice, pitch, key):
+    """«Говори обычным голосом» после «басом»: ОДНА реплика кода по результатам ``set_voice`` и ``set_pitch``, а не
+    фраза тула плюс «Тон голоса обычный.»; «Я и так говорю…» - только если и тон был на норме (иначе это неправда)."""
+    ports = Ports(outcomes={"set_voice": voice, "set_pitch": pitch})
+    _run(ports, "Робот, говори обычным голосом")
+    assert ports.executed == ORDINARY
+    assert ports.said == [(phrases.text(key), None)]
+    assert phrases.text("pitch.normal") not in ports.said[0][0]
+
+
+def test_ordinary_voice_failure_is_said_and_a_lifted_pitch_is_not_hidden_by_it():
+    refused = ("rejected", "voice_unavailable", {"status": "fallback", "reason": "voice_unavailable",
+                                                 "requested_name": "Qingse", "voice_name": "Алёна",
+                                                 "voice_default": False})
+    ports = Ports(outcomes={"set_voice": refused, "set_pitch": PITCH_LIFTED})
+    _run(ports, "Робот, говори обычным голосом")
+    [(said, _voice)] = ports.said
+    assert said == f"{phrases.text('voice.unavailable', requested_name='Qingse', voice_name='Алёна')} "                    f"{phrases.text('pitch.normal')}"
 
 
 def test_named_voice_does_not_touch_the_pitch():
-    ports = Ports()
+    applied = ("done", None, {"status": "applied", "voice_default": False, "voice_name": "Надёжный мужчина"})
+    ports = Ports(outcomes={"set_voice": applied})
     _run(ports, "Робот, говори голосом надёжного мужика")
-    assert ports.executed == [[("set_voice", {"voice": "Russian_ReliableMan"})]] and ports.said == []
+    assert ports.executed == [[("set_voice", {"voice": "Russian_ReliableMan"})]]
+    assert ports.said == [("Говорю голосом Надёжный мужчина.", None)]
 
 
 def test_bass_and_then_a_tale_runs_the_step_by_code_and_gives_the_rest_to_the_llm():

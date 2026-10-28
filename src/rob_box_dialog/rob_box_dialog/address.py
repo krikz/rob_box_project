@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
@@ -75,6 +75,10 @@ class Addressed:
     #: Починки STT по закрытой таблице (``heard.repair``, #4017): «что было» → «что стало» для строки лога хода;
     #: ``text`` и ``command`` уже починены.
     stt_fixes: Tuple[str, ...] = ()
+    #: id фразы STT (``Utterance.utterance_id``, тот же хеш звука, что у SpeakerResult), из которой взят текст хода: по
+    #: нему ход берёт голос ЭТОЙ фразы (ответ на «ты меня узнал?», #4141). У подхвата бэклога и голого вейка - «»: текст
+    #: хода не из этой фразы.
+    utterance_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,7 +136,23 @@ def decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str],
     ``PerformAsk`` (О9′): фраза без вейка, похожая на ответ, — ход. ``hold`` — кадр ``OperatorHold``: пока он
     есть, голос с микрофона не адресован никому (Telegram и оператор — другие агенты, их кадр не касается).
     ``music_playing`` — играет ли музыка: под ней искажённый вейк пропускает и правку музыки («роботы ускорь темп»,
-    #3975; ворота ``under_music`` в ``knowledge.WAKE_SLIP_GATES``)."""
+    #3975; ворота ``under_music`` в ``knowledge.WAKE_SLIP_GATES``). Ход из самой фразы помнит её id
+    (``Addressed.utterance_id``, :func:`_of_phrase`)."""
+    return _of_phrase(_decide(heard, backlog, wake_words, question, greeting, ask, hold, music_playing), heard)
+
+
+def _of_phrase(decision: Decision, heard: Heard) -> Decision:
+    """Ход, текст которого — сама фраза ``heard`` (не подхват бэклога и не голый вейк), — с её ``utterance_id``: по нему
+    ход находит SpeakerResult этой фразы (#4141)."""
+    if isinstance(decision, Addressed) and not decision.pickup and decision.source != BARE_WAKE:
+        return replace(decision, utterance_id=heard.utterance_id)
+    return decision
+
+
+def _decide(heard: Heard, backlog: Optional[Backlog], wake_words: Sequence[str], question: Optional[SceneFrame],
+            greeting: Optional[SceneFrame], ask: Optional[SceneFrame], hold: Optional[SceneFrame],
+            music_playing: bool) -> Decision:
+    """Тело :func:`decide`: адресована ли реплика и какой у хода текст."""
     text = (heard.text or "").strip()
     if _held(heard, hold):
         return NotAddressed(HELD)
@@ -176,13 +196,18 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
         said, after_wake = repair(rest), repair(command)
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
+        if backlog is not None:
+            backlog.note_addressed(heard.t)  # фоновое до этой фразы модель видит в снимке хода: издалека не подхватывать
         return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
                          command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
+    # что не вошло в рассказ, остаётся в бэклоге и идёт в снимок с автором и возрастом (#3975): «не сходится по смыслу -
+    # часть могла уйти в бэклог» модель видит данными, не правилом
     return Addressed(" ".join(e.text for e in taken), BACKLOG_PICKUP, True,
-                     tuple(Backlog.label(e, heard) for e in taken))
+                     tuple(Backlog.label(e, heard) for e in taken),
+                     background=tuple(backlog.background_since_reply(heard)))
 
 
 def _seconds(stamp: Any) -> float:

@@ -66,7 +66,14 @@ def test_outcome_phrase_is_built_by_code_from_the_event() -> None:
 
 def test_outcome_phrase_skips_queries_and_outcomes_spoken_elsewhere() -> None:
     assert outcome_phrase([_result("get_current_time", "done")]) is None
-    assert outcome_phrase([_result("set_voice", "done"), _result("request_music", "done")]) is None
+    assert outcome_phrase([_result("dj_set", "done"), _result("request_music", "done")]) is None
+
+
+def test_voice_outcome_is_said_from_the_result_because_the_voice_tools_are_silent() -> None:
+    """Тулы голоса не говорят сами (одна фраза на ход): v1-цикл команд берёт ту же таблицу, что и v2 (``VOICE_DONE``)."""
+    data = {"status": "applied", "voice_default": False, "voice_name": "Весельчак"}
+    voice = ActionResult("t/0", 0, "personality", "set_voice", kn.TOOL_CLASSES["set_voice"], "done", None, data)
+    assert outcome_phrase([voice]) == "Говорю голосом Весельчак."
 
 
 def test_missing_slot_falls_back_to_a_generic_failure_not_a_crash() -> None:

@@ -47,7 +47,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import e2e_db  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
-from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.address import (  # noqa: E402
     Addressed, NotAddressed, decide_in_session, heard_from, log_label, wake_words,
 )
@@ -58,6 +57,7 @@ from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import TurnEngine, host_sections  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_voice.core.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_voice.core.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
 from rob_box_voice.core.voice_memory import VoiceMemory  # noqa: E402
@@ -336,17 +336,17 @@ class FakeTools:
     def _t_get_current_pose(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return True, {"x": 1.2, "y": 0.4, "yaw": 0.1, "frame": "map"}
 
-    def _voice_outcome(self, status: str, requested: str, applied: str, provider: str, phrase: str,
-                       ok: bool) -> Tuple[bool, Dict[str, Any]]:
-        """Исход смены голоса: тул сам озвучивает фразу кода новым голосом (``_say_outcome``) и пишет строку лога."""
+    def _voice_outcome(self, status: str, requested: str, applied: str, provider: str, reason: str = "",
+                       ok: bool = True) -> Tuple[bool, Dict[str, Any]]:
+        """Исход смены голоса, как у тула: строка лога и данные исхода (``voice_request.outcome_data``); тул не говорит -
+        фразу строит диалог по этим данным (``knowledge.VOICE_DONE``)."""
         stand = self._stand
         # dialogue.py (SetVoiceTool): f"[set_voice] voice={…!r} provider={…} default={…} switched=… status=…"
         stand.emit(f"[set_voice] voice={applied!r} provider={provider} default={default_voice_for(provider)} "
                    f"switched={provider != stand.voice_provider} status={status}")
-        stand.speech.say("", stand.session.snapshot.epoch, phrase, applied)
-        data = {"status": status, "voice_requested": requested, "voice_applied": applied, "provider": provider,
+        data = {**outcome_data(VoiceOutcome(status, requested, applied, provider, reason)),
                 "available": voices_for(provider)}
-        return ok, data if ok else {**data, "reason": f"voice_{status}"}
+        return ok, data
 
     def _t_set_voice(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         stand = self._stand
@@ -357,15 +357,12 @@ class FakeTools:
         if voice.lower() == kn.VOICE_DEFAULT_ARG:  # «обычный голос» - голос робота по умолчанию (#3803)
             provider, voice = robot_default_voice()
             if (stand.voice_provider, stand.session.snapshot.voice.applied) in ((provider, voice), (provider, None)):
-                return self._voice_outcome("already_default", voice, voice, provider,
-                                           phrases.text("voice.already_default"), True)
+                return self._voice_outcome("already_default", voice, voice, provider)
         current = stand.session.snapshot.voice.applied or default_voice_for(stand.voice_provider)
         voice = voice_id_by_name(provider, voice) or voice  # имя каталога («Весельчак») -> id, как у владельца (#4086)
         if voice not in voices_for(provider):
-            return self._voice_outcome("unavailable", voice, current, stand.voice_provider,
-                                       phrases.text("voice.unavailable", requested=voice, applied=current), False)
-        outcome = self._voice_outcome("applied", voice, voice, provider, phrases.text("voice.applied", voice=voice),
-                                      True)
+            return self._voice_outcome("fallback", voice, current, stand.voice_provider, "voice_unavailable", False)
+        outcome = self._voice_outcome("applied", voice, voice, provider)
         stand.voice_provider = provider
         stand.session.set_voice(voice, voice, provider)
         return outcome
@@ -378,7 +375,7 @@ class FakeTools:
         stand.voice_provider = provider
         voice = default_voice_for(provider)
         stand.session.set_voice(voice, voice, provider)
-        return True, {"status": "applied", "provider": provider, "voice_applied": voice}
+        return True, outcome_data(VoiceOutcome("applied", "", voice, provider))
 
     def _t_set_volume(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return True, {"old_volume": 70, "new_volume": 80 if str(args.get("action")) == "louder" else 60}
@@ -516,6 +513,7 @@ class DryStand:
         self.system_prompt = system_prompt
         self.wake = list(wake) if wake is not None else wake_words(str(WAKE_WORDS_YAML))[0]
         self.speakers = FakeSpeakers()
+        self.phrase_voices: Dict[str, Mapping[str, Any]] = {}  # биометрия фразы по её id (реестр хоста, #4141)
         self.voice_provider = ROBOT_DEFAULT_PROVIDER
         self.current_voice_id = ""
         self.touched: Set[str] = set()
@@ -534,7 +532,7 @@ class DryStand:
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
         self.engine = TurnEngine(self.session, self.ports, system_prompt=system_prompt, sections=self._sections,
-                                 events=self.events, log=_EngineLog(self.emit))
+                                 events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
 
     # -- служебное ------------------------------------------------------------------------------------------------
 
@@ -546,6 +544,11 @@ class DryStand:
 
     def _sections(self, snap: Any, _text: str) -> Mapping[str, Any]:
         return host_sections(snap, self.music_mem)
+
+    async def _phrase_voice(self, uid: str, _wait_s: float) -> Optional[Mapping[str, Any]]:
+        """Голос фразы по её id, как ``UtteranceSpeakerRegistry.resolve`` хоста: фейковая биометрия здесь приходит до
+        STT, ждать нечего."""
+        return self.phrase_voices.get(uid)
 
     def _new_memory(self) -> VoiceMemory:
         self._memory_gen += 1
@@ -605,6 +608,7 @@ class DryStand:
             self.emit("👤 Speaker: unknown (400 ms)")  # speaker_id_node.py: f"👤 Speaker: unknown ({elapsed:.0f} ms)"
         person = str(bio.get("speaker_id") or "") if bio.get("is_known") else ""
         heard = heard_from(msg, now=ended, person_ref=person)
+        self.phrase_voices[uid] = {**bio, "utterance_id": uid}
         self.session.set_speaker(speaker_ref(bio, now=ended, prev=self.session.snapshot.speaker))
         decision = decide_in_session(heard, self.backlog, self.wake, self.session.snapshot)
         if isinstance(decision, NotAddressed):

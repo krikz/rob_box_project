@@ -103,11 +103,17 @@ class _Ports:
 
 
 def _code_turn(text: str, result: dict):
+    """Ход шага: биометрия его фразы пришла раньше STT (собеседник сессии - по ней), ход берёт её по ``utterance_id``
+    (#4141, как ``UtteranceSpeakerRegistry.resolve`` хоста)."""
     session = Session("personality")
     session.set_speaker(speaker_ref(result, now=1.0))
     ports = _Ports()
-    agg = asyncio.run(TurnEngine(session, ports, system_prompt="Ты робот.").run(
-        Addressed(strip_wake_word(text), VOICE)))
+
+    async def phrase_voice(uid, wait_s):
+        return {**result, "utterance_id": uid} if uid == "u-step" else None
+
+    engine = TurnEngine(session, ports, system_prompt="Ты робот.", phrase_voice=phrase_voice)
+    agg = asyncio.run(engine.run(Addressed(strip_wake_word(text), VOICE, utterance_id="u-step")))
     return agg, ports
 
 

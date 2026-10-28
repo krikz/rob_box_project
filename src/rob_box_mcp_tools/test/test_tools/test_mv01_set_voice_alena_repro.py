@@ -90,7 +90,8 @@ class TestMv01SetVoiceAlenaRepro:
         assert result.data["voice_requested"] == "alena"
         assert result.data["voice_applied"] == "male-qn-qingse"
         assert "alena" not in result.data["available"]
-        assert "Голос alena недоступен, остаюсь на male-qn-qingse" in result.message
+        # исход - данными: фразу «Голос alena недоступен, остаюсь на …» строит диалог (knowledge.VOICE_FAILED)
+        assert (result.data["status"], result.data["reason"]) == ("fallback", "voice_unavailable")
         assert "установлен" not in result.message
 
     def test_speak_text_alena_silently_falls_back_on_minimax(self, mock_node):

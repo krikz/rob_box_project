@@ -146,7 +146,7 @@ def test_act3_backlog_flow_is_bare_robot_pickup():
         assert steps[label]["patterns"] == [r"\[backlog\] accumulated reason=no_wake"], label
     for label in ("n305b_bare_robot_pickup", "n310_execute_backlog_lru"):
         assert steps[label]["text"] == "Робот.", label
-        assert "sleep_before_sec" not in steps[label], "пауза съест окно подхвата BACKLOG_PICKUP_S=20 с"
+        assert "sleep_before_sec" not in steps[label], "пауза съест границу свежего подхвата BACKLOG_FRESH_S=20 с"
         assert any("llm_calls=[1-9]" in p for p in steps[label]["patterns"]), label
     labels = list(steps)
     assert labels.index("n305b_bare_robot_pickup") == labels.index("n305_bg_valera_unknown") + 1
@@ -158,7 +158,10 @@ def test_act3_backlog_flow_is_bare_robot_pickup():
 
 def test_pickup_window_constants_match_the_scenario_comment():
     kn = (ROOT / "src/rob_box_dialog/rob_box_dialog/knowledge.py").read_text(encoding="utf-8")
-    assert "BACKLOG_PICKUP_S = 20.0" in kn, "сценарий акта 3 рассчитан на окно подхвата 20 с"
+    # #3975: дальность подхвата - всё окно бэклога (3 мин), а «по любому» (всё свежее, чужое тоже) осталось 20 с:
+    # LRU акта 3 (n308 старше 20 с - не берётся, берётся n309) держится на BACKLOG_FRESH_S
+    assert "BACKLOG_FRESH_S = 20.0" in kn, "сценарий акта 3 рассчитан на границу «свежего» подхвата 20 с"
+    assert "BACKLOG_PICKUP_S = BACKGROUND_WINDOW_S" in kn, "дальность подхвата - окно бэклога, не вторая цифра"
 
 
 def test_n210_no_longer_forbids_register_speaker():

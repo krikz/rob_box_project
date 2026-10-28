@@ -264,6 +264,21 @@ def _gen_set_maker(node: Any, cover: Any) -> Any:
                        balance=cover.balance, log=node.get_logger, cover=cover)
 
 
+def _music_level_step(node: Any) -> Callable[[str], Any]:
+    """Шаг громкости музыки для заказа (``engine.order_level``): тот же тул ``set_music_volume`` (мастер-фейдер scsynth),
+    что зовёт LLM; берётся из реестра в момент шага - он регистрируется отдельно и только при поднятом звуковом сервере."""
+
+    def step(action: str) -> Any:
+        tool = node.registry.get_tool("set_music_volume")
+        if tool is None:
+            from .base import MCPToolResult
+
+            return MCPToolResult(success=False, error="set_music_volume не зарегистрирован (звукового сервера нет)")
+        return tool.execute(action=action)
+
+    return step
+
+
 def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     """ADR-0149 §9, PR-4b — владелец плеера v2 (с PR-13b — единственный музыкальный путь).
 
@@ -318,6 +333,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
                                   confirm, lambda: music_busy(owner, dj_set), log=node.get_logger())
     node._backing_deck = request.backing
     request.editor.adapter = adapter  # #4029: правка играющего — в слоты деки на такте клока Renardo
+    dj_set.level = request.level = _music_level_step(node)  # «только негромко» в заказе — шаг фейдера музыки (#4136)
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
     node.registry.register(EditMusicTool(node, request))  # #4029: правка играющего на такте, не новый трек

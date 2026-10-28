@@ -213,7 +213,7 @@ def test_library_list_on_the_ceiling_is_said_from_the_data_without_sadness():
 
 def test_library_list_after_an_invalid_answer_is_said_from_the_data():
     """Страховка #3883: данные list у модели, её ответ невалиден и после повтора — код говорит по данным, без грусти."""
-    ports = Ports([_cmd(LIST_CALL), Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY)
+    ports = Ports([_cmd(LIST_CALL), Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY)
     _run(ports, "Робот, что у тебя в музыкальной библиотеке?")
     assert ports.said == [(SUMMARY, None, None)] and ports.faces == []
 

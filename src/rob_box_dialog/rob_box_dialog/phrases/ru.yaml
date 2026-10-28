@@ -40,10 +40,14 @@ provider.subject.llm: ["{provider}"]
 provider.subject.stt: ["{provider} (распознавание речи)"]
 provider.subject.tts: ["{provider} (озвучка)"]
 provider.subject.music_gen: ["{provider} (генерация музыки)"]
-voice.applied: ["Говорю голосом {voice}."]
-voice.unavailable: ["Голос {requested} недоступен, остаюсь на {applied}."]
-voice.rejected: ["Не получилось сменить голос: провайдер {provider} не подходит."]
+# Смена голоса (knowledge.VOICE_DONE / VOICE_FAILED): слоты строит тул из каталога голосов - название вслух, не id
+voice.applied: ["Говорю голосом {voice_name}."]
+voice.applied_default: ["Говорю своим обычным голосом."]
+voice.unavailable: ["Голос {requested_name} недоступен, остаюсь на {voice_name}."]
+voice.unavailable_default: ["Голос {requested_name} недоступен, остаюсь на обычном."]
+voice.rejected: ["Не получилось сменить голос: провайдер {provider_label} не подходит."]
 voice.already_default: ["Я и так говорю своим обычным голосом."]
+voice.provider_same: ["Я уже говорю через {provider_label}."]
 voice.timeout: ["Не дождался подтверждения смены голоса, не знаю, какой сейчас."]
 provider.no_fallback: ["Запасного нет — потерпи, пока вернётся."]
 
@@ -71,6 +75,8 @@ command.invalid_generic: ["Не понял, как это сделать. Ска
 # сюда не доводят: ход компактнее, потом её ужимает код (#4137); здесь - сегмент выступления или речь рядом с другим
 # нарушением.
 command.too_long: ["Ответ вышел слишком длинным — спроси покороче, пожалуйста."]
+# Речь, оборванную кодом посреди предложения (#4137, перечень голосов), кончает эта пометка: названо не всё.
+command.speech_cut: ["и так далее."]
 
 local.done: &done ["Готово."]
 local.rejected: ["Не вышло."]
@@ -79,7 +85,7 @@ local.timeout: ["Не дождался подтверждения — не зн�
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
 # ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
 local.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не запомню."]
-# голос узнан, а чей - не подтверждено (спор/гипотеза, knowledge.VOICE_UNCONFIRMED_STATES, #3993): без вопроса «ты Саша?»
+# голос узнан, а чей - не подтверждено (спор/гипотеза, speaker_wire.NAME_UNCONFIRMED, #3993): без вопроса «ты Саша?»
 # (решение Шифу 26.10) и без неправды «не узнаю голос»
 local.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — запоминать не буду."]
 local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
@@ -159,13 +165,16 @@ identity.merged: ["Понял, это ты. Объединил записи — 
 identity.kept_apart: ["Понял, вы разные люди. Запомню обоих."]
 identity.merge_unclear: ["Не понял ответ — пока оставлю записи раздельно."]
 identity.retry_voice: ["Только голос твой я запомнить не успел — скажи, пожалуйста, ещё пару слов."]
-# #3993 (решение Шифу 26.10): на «ты меня узнал?» отвечает код по собеседнику снимка (knowledge.RECOGNIZED_REPLIES).
+# #3993 (решение Шифу 26.10): на «ты меня узнал?» отвечает код по голосу ЭТОЙ фразы (knowledge.RECOGNIZED_PHRASE,
+# #4141): ключ — speaker.recognized.<состояние имени speaker_wire.NAME_*> или .unheard (SpeakerResult фразы не пришёл).
 # Спорный голос и гипотеза — без вопроса «ты Саша?» и без имени кандидата.
 # Без «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны (ревью PR #4121).
 speaker.recognized.confirmed: ["Узнал — ты {name}."]
-speaker.recognized.unconfirmed: ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.tentative: &recognized_unconfirmed ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.contested: *recognized_unconfirmed
 speaker.recognized.nameless: ["Голос твой помню, а имени не знаю."]
 speaker.recognized.unknown: ["По голосу пока не узнаю."]
+speaker.recognized.unheard: ["Пока не уверен, кто ты: голос этой фразы не успел разобрать."]
 # #3801 (решение Шифу 21.10): один голос — одна личность; имя меняется фразой; подтверждение — шаблоном нормальной длины.
 identity.same_voice: ["Не обманывай — по голосу ты {known}. Хочешь, чтобы я звал тебя иначе, скажи: «зови меня {name}»."]
 identity.one_voice: ["Голос-то один и тот же — значит, и человек один, второй записи не будет. Хочешь другое имя — скажи: «зови меня {name}»."]
@@ -186,7 +195,7 @@ speak_aloud.rejected.operator_hold: ["Не озвучил: оператор за
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
 
-# --- пульт робота из чата Telegram (#4040, knowledge.CHAT_OUTLETS): что робот сделал — фраза кода в чат --------------
+# --- пульт робота из чата Telegram (#4040, #4142, chats.ChatPorts): что робот сделал — фраза кода в чат ---------------
 remote.perform.song: ["Пою на роботе: «{line}»"]
 remote.perform.rap: ["Читаю рэп на роботе: «{line}»"]
 remote.perform.tale: ["Рассказываю на роботе: «{line}»"]
@@ -194,7 +203,12 @@ remote.perform.poem: ["Читаю стихи на роботе: «{line}»"]
 remote.perform.edit: ["Добавил к выступлению робота: «{line}»"]
 remote.perform.backing: ["Добавил бит к выступлению робота."]
 remote.show: ["Показываю на роботе: {face}."]
-remote.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+# лицо не показано (knowledge.REMOTE_SHOW_REFUSALS): фраза по причине, а не «Показываю»
+remote.show.rejected.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+remote.show.rejected.silenced: ["Не показал на роботе: у него тишина, рот заклеен. Снять — «Робот, говори»."]
+# просили сделать роботом, а команда и после повтора ничего на нём не сделала (knowledge.VIOLATION_REMOTE_OWED):
+# факт кода рядом со словами модели, а не вместо них (ревью #4153: справку не подменяем)
+remote.nothing_done: ["На роботе ничего не сделал."]
 # отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
 perform.rejected.operator_hold: *remote_held
 
@@ -208,6 +222,8 @@ perform.no_backing.error: ["С битом ошибка — читаю без н�
 perform.ask_replace_music: ["Сейчас играет {title}, выключить и зачитать?"]
 # правка выступления опоздала: куплет, с которого просили менять, уже звучит (ADR §16, риск MERGE в PENDING)
 perform.edit_rejected: ["Этот куплет уже пошёл — дочитаю как было."]
+# сторож выступления (#4151): чтение не началось или встало, речи нет дольше knowledge.PERFORM_SILENCE_MAX_S — снято
+perform.stalled: ["Чтение встало — выступление снимаю."]
 
 # --- план (§5.6.4): «в очереди» по PlanEvent queued{after, eta} — фразу строит код (plan.plan_events) -----------
 plan.queued: ["{verb} после {after}."]

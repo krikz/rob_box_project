@@ -11,8 +11,10 @@
 (``engine.gen.instrumental.InstrumentalMaker``: ``gen_ready`` для просьбы без пения при готовом исполнителе;
 живой прогон 14.10 — «сгенерируй рок» уходил в кэш с ``not_wired``).
 
-Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>``; сет — по
-строке на каждый трек (:meth:`SourceRouter.route_slots`, решение Шифу 14.10: кэш → генерация → синтез на каждый трек).
+Одна строка лога на заказ: ``[source] <просьба> кандидаты=[…] → <путь> (<кто выбрал>) gen=<почему нет>
+[work=«<названное>»|piece=«<подобранное кодом>»]`` (``work`` — что назвали, #4015; в конце строки: начало строки
+читает генератор марафона, ``tests/unit/test_gen_night_marathon_results.py``); сет — по строке на каждый трек
+(:meth:`SourceRouter.route_slots`, решение Шифу 14.10: кэш → генерация → синтез на каждый трек).
 """
 
 from __future__ import annotations
@@ -77,6 +79,12 @@ def day_left(library: Any) -> float:
     from .gen.budget import Budget
 
     return Budget(library).remaining_today()
+
+
+def _named(work: Optional[CoverWork]) -> str:
+    """Пьеса заказа — в строку лога ``[source]`` (#4015: причину отказа видно без чтения кода): названная человеком —
+    `` work=«…»``, подобранная кодом (жанр, «что-нибудь», ``CoverWork.named``) — `` piece=«…»``; пьесы нет — «»."""
+    return f" {'work' if work.named else 'piece'}=«{work.title}»" if work is not None else ""
 
 
 def _set_attempt(_route: Route) -> str:
@@ -147,7 +155,7 @@ class SourceRouter:
         route = choose_with_fallback(ask, ctx, self._chooser, attempt=attempt, piece=piece, work=work)
         listed: List[str] = [o.id for o in options]
         self._log().info(f"🎚️ [source] {ask.describe()} кандидаты={listed} → {route.id} ({route.provider or 'code'}) "
-                         f"gen={reason or 'ok'}")
+                         f"gen={reason or 'ok'}{_named(work)}")
         return route
 
     def route_slots(self, asks: Sequence[SourceAsk], theme_tags: str = "",
@@ -177,7 +185,7 @@ class SourceRouter:
             end, body = body + route_seconds(route, True), body + route_seconds(route)
             of = no if seconds else f"{no}/{len(asks)}"
             self._log().info(f"🎚️ [source] сет {of}: {ask.describe()} кандидаты={[o.id for o in options]} "
-                             f"→ {route.id} ({route.provider or 'code'}) gen={reason or 'ok'}"
+                             f"→ {route.id} ({route.provider or 'code'}) gen={reason or 'ok'}{_named(work)}"
                              + (" (второй вариант задачи)" if route.kind == GENERATE and free else ""))
             out.append(route)
         return out
@@ -190,12 +198,14 @@ class SourceRouter:
 
     def _executable(self, route: Route) -> str:
         """Кавер, песня и инструментал исполняются в фоне после выбора (мост играет сразу): выбор остаётся;
-        исполнителя нет — ``not_wired``."""
+        ``not_wired`` — только когда исполнителя этого вида нет. Названное произведение тут ни при чём (#4015: «спой
+        <название>» при живой студии давало ``not_wired``): песню на чужое кандидаты не строят до выбора
+        (``source.NAMED_SONG``)."""
         kind = gen_kind(route.id)
         if kind == "cover":
             return ""
         executor = self._instrumental if kind == "instrumental" else self._studio
-        return "" if executor is not None and route.work is None else "not_wired"
+        return "" if executor is not None else "not_wired"
 
 
 class SetLedger:

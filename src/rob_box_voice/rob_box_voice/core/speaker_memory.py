@@ -51,7 +51,9 @@ def read_voice_facts(db_path: str, speaker_id: str, limit: int) -> List[str]:
 
 
 class SpeakerMemory:
-    """Профиль и факты собеседника хода. Путь пустой - этой части нет (а не молчаливый ``/data`` по умолчанию)."""
+    """Профиль и факты собеседника хода. Путь пустой - этой части нет: сам класс умолчания не знает. Боевой путь фактов
+    нода берёт у хозяина файла (``rob_box_core.tools_db.tools_db_path``: env ``VOICE_MEMORY_DB_PATH``, иначе ``/data``)
+    и передаёт сюда; тесты ноды задают env на временный файл, чтобы не открыть настоящую БД хоста."""
 
     def __init__(self, profile_db: str, facts_db: str, *, e2e_facts_db: str = "",
                  is_e2e: Callable[[], bool] = lambda: False, log: Any = None) -> None:

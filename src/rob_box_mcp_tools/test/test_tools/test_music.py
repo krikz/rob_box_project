@@ -203,16 +203,29 @@ class TestGetMusicStateTool:
         """Живой лог #3613: ``[music v2] started req99682…`` — а ответ «Диджей-сета не было. Renardo: доступен…»."""
         owner = music_node._player_owner
         owner.play(_program("req99682:03:A", bpm=124.0),
-                   dj={"enabled": False, "title": "космос · 124 BPM", "name": "космос", "source": "synth",
+                   dj={"enabled": False, "title": "космос · 124 BPM", "source": "synth",
                        "style": "club", "bpm": 124})
         music_node.clock.now += 65
         result = self._tool(music_node).execute()
         assert result.data["playing"] is True
         assert result.data["deck"]["track_id"] == "req99682:03:A"
         assert result.data["deck"]["source"] == "synth"
-        assert result.message.startswith("Сейчас играет «космос» — клуб, синтез Ренардо, 124 удара в минуту.")
+        # #4060: у своего синт-трека названия нет - ни слов заказа, ни метки деки «космос · 124 BPM» в кавычках
+        assert result.message.startswith("Сейчас играет музыка — клуб, синтез Ренардо, 124 удара в минуту.")
+        assert "BPM" not in result.message and "космос" not in result.message
         assert "Играет уже 1 минуту 5 секунд" in result.message and "повторяется" in result.message
         assert "Диджей-сета не было" not in result.message and "паттерн" not in result.message
+
+    def test_4060_order_words_of_an_old_server_are_not_told_as_the_title_of_a_synth_track(self, music_node):
+        """Живой 28.10 06:13: «Сейчас играет «какую нибудь спокойную музыку»» - слова заказа не название."""
+        music_node._player_owner.play(
+            _program("req99682:03:A", bpm=120.0),
+            dj={"enabled": False, "title": "клубный трек · 120 BPM", "name": "какую нибудь спокойную музыку",
+                "source": "synth", "style": "club", "bpm": 120})
+        music_node.clock.now += 5
+        message = self._tool(music_node).execute().message
+        assert message.startswith("Сейчас играет музыка — клуб, синтез Ренардо, 120 ударов в минуту.")
+        assert "спокойную" not in message
 
     def test_4060_generated_track_is_told_by_title_and_style_not_by_id_or_a_tempo_the_deck_invented(self, music_node):
         """Шифу 27.10: «что именно сейчас играет, а не номер трека»; темп деки файла (130) - не темп файла."""

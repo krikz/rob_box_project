@@ -78,11 +78,18 @@ def test_music_state_track_of_a_generated_set_track_is_title_and_style_not_id_or
 def test_music_state_track_of_a_club_track_has_no_bpm_label_but_style_and_tempo_words():
     """Раньше ``track: клубный трек · 136 BPM`` (стиля не было вовсе, темп англ. меткой)."""
     _owner, raw = _playing("req99682:03:A", {
-        "enabled": False, "title": "клубный трек · 136 BPM", "name": "клубный трек", "source": "synth",
-        "style": "club", "bpm": 136}, bpm=136.0)
+        "enabled": False, "title": "клубный трек · 136 BPM", "source": "synth", "style": "club", "bpm": 136}, bpm=136.0)
     line = _track_line(raw)
-    assert line == "«клубный трек», клуб, синтез Ренардо, 136 ударов в минуту"
+    assert line == "трек в стиле клуб, синтез Ренардо, 136 ударов в минуту"
     assert "BPM" not in line and "req99682" not in line
+
+
+def test_4060_order_words_never_become_the_title_of_a_synth_track_in_the_music_state():
+    """Живой 28.10: снимок старого сервера кладёт слова заказа в ``name`` - раздел ``track`` их названием не берёт."""
+    _owner, raw = _playing("req99682:03:A", {
+        "enabled": False, "title": "клубный трек · 120 BPM", "name": "какую нибудь спокойную музыку",
+        "source": "synth", "style": "club", "bpm": 120}, bpm=120.0)
+    assert _track_line(raw) == "трек в стиле клуб, синтез Ренардо, 120 ударов в минуту"
 
 
 def test_synth_set_track_without_melody_is_told_by_style_and_tempo():

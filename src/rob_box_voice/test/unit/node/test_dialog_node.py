@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import socket
 import sys
 import threading
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rob_box_core import speech_client
+from rob_box_core import speech_client, tools_db
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 M = install_dialog_msgs_stub()
@@ -61,7 +62,11 @@ class _Tools:
 
 
 @pytest.fixture()
-def node(monkeypatch):
+def node(monkeypatch, tmp_path):
+    # путь БД памяти инструментов нода берёт при старте (``rob_box_core.tools_db``): без env тест открывал бы настоящую
+    # ``/data/voice_memory.db`` хоста, где он идёт (на роботе - живые факты людей). Тест, что задал путь сам до ноды,
+    # его и получит.
+    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, os.environ.get(tools_db.TOOLS_DB_ENV) or str(tmp_path / "tools_isolated.db"))
     llm = _LLM([LLMResponse(content="Привет, я робот.")])
     chat_llm = _LLM([LLMResponse(content="Привет из чата.")])
     tools = _Tools()
@@ -102,6 +107,14 @@ def test_wiring_v2_topics_and_no_v1_dialogue_topics(node):
     for legacy in ("/voice/dialogue/response", "/voice/tts/request", "/dialogue/control", "/dialogue/control_ack"):
         assert legacy not in subs | pubs, legacy
     assert node.engine_flag == "v2"  # дефолт v2 (Шифу 23.10); параметр есть; какую ноду стартовать, решает launch по dialog_engine.yaml
+
+
+def test_node_fixture_never_points_the_facts_reader_at_the_host_voice_memory_db(request, monkeypatch, tmp_path):
+    """Хвост ревью #4131: фикстура ``node`` не открывает настоящую ``/data/voice_memory.db`` хоста, где идут тесты."""
+    monkeypatch.delenv(tools_db.TOOLS_DB_ENV, raising=False)
+    made = request.getfixturevalue("node")
+    assert made._speaker_memory._facts_db == str(tmp_path / "tools_isolated.db")
+    assert made._speaker_memory._facts_db != tools_db.TOOLS_DB_DEFAULT
 
 
 def test_addressed_utterance_runs_turn_and_speaks(node):
@@ -984,3 +997,45 @@ def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_windo
         assert waited >= kn.TURN_CEILING_S, "транспорт ждёт итог тула с поздним итогом дольше срока класса"
     finally:
         made.shutdown()
+
+
+# -- «Ты меня узнал?» по голосу ЭТОЙ фразы (#4141): живой реестр биометрии ноды и ``_on_speaker`` ---------------------
+
+SASHA_4141 = {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.93}
+TOO_SHORT_4141 = {"is_known": False, "inconclusive": True, "reason": "too_short_for_biometry"}
+
+
+def _speech_texts(made):
+    return [s.text for s in _published(made, "/voice/speech/request")]
+
+
+def test_short_question_keeps_the_recognized_speaker_and_is_answered_by_code_4141(node):
+    """Саша подтверждён, «Робот, ты меня узнал?» короче 1 с речи: ``speaker_id_node`` публикует ``inconclusive`` -
+    собеседник сессии остаётся Сашей (#2863), ответ кода «Узнал — ты Саша.» (раньше «По голосу пока не узнаю.»)."""
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_speaker(_voice({**TOO_SHORT_4141, "utterance_id": "u-q"}))
+    assert node._session.snapshot.speaker.person_ref == "spk-sasha"
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-q"))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Узнал — ты Саша.</speak>"] and node.test_llm.calls == 0
+
+
+def test_new_voice_whose_biometry_is_late_hears_not_sure_4141(node, monkeypatch):
+    """Новый голос спрашивает после Саши, SpeakerResult его фразы за окно не пришёл - «не уверен», не имя Саши."""
+    monkeypatch.setattr(dn.kn, "RECOGNIZED_VOICE_WAIT_S", 0.2)
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-new"))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Пока не уверен, кто ты: голос этой фразы не успел разобрать.</speak>"]
+    assert node.test_llm.calls == 0
+
+
+def test_biometry_of_this_phrase_after_stt_decides_the_answer_4141(node):
+    """STT раньше биометрии: ход ждёт SpeakerResult своей фразы по ``utterance_id`` - ответ по нему (Борис), а не по
+    собеседнику сессии на начало хода (Саша)."""
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-b"))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.91,
+                             "utterance_id": "u-b"}))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Узнал — ты Борис.</speak>"]
