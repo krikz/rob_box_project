@@ -171,7 +171,8 @@ def test_estimate_does_not_underrate_any_played_phrase_of_the_27_10_run():
     # #3971: замер n809 снят -- реплика сменилась («на синтезаторе»), замер был чужой
     # Шифу 28.10: замер n210 снят -- фразу обернули вейком («Робот, … , робот.»), текст другой; новый даст --learn
     # #4176: замер n707 снят -- песня названа во фразе («про енота»), текст другой; новый даст --learn
-    assert len(long_ones) >= 58
+    # #4176: замер n309 снят -- команда просит диджей-сет «на две минуты» (длинная музыка перед n312), текст другой
+    assert len(long_ones) >= 57
     for label, entry in long_ones:
         assert entry["eq_s"] <= entry["chars"] * pb.sec_per_char(entry["voice"]), label
 

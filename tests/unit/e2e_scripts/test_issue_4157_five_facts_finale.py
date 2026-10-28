@@ -95,7 +95,8 @@ def test_n1010_checks_the_mechanism_not_the_count_of_facts():
     acc = step["acceptance"]
     assert acc["expected_tool_calls"] == [], "#4176: вызов memory_search не требуется, факты в речи -- и есть память"
     assert step["patterns"] == []
-    assert acc["expected_keywords"] == gen.SASHA_FACTS and len(gen.SASHA_FACTS) == 2
+    assert acc["expected_keywords"] == [gen.SASHA_ANY_FACT], "#4176/#4186: достаточно одного факта Саши"
+    assert len(gen.SASHA_FACTS) == 2
     assert (
         "#4157" in acc["_comment"]
         and "28.10" in acc["_comment"]
@@ -182,16 +183,20 @@ def test_two_facts_from_memory_with_a_hit_are_green(said):
     assert got["pass"], got
 
 
+@pytest.mark.parametrize("said", ["Ты не ешь лук.", "Ты пьёшь зелёный чай."])
+def test_one_fact_is_enough_since_4186(said):
+    """Решение Шифу 28.10 (#4186): главное -- не заглушка; одного факта из памяти Саши достаточно."""
+    assert _verdict(_log(said))["pass"]
+
+
 @pytest.mark.parametrize(
     "said, why",
     [
-        ("Ты не ешь лук.", "один факт из двух"),
-        ("Ты пьёшь зелёный чай.", "один факт из двух"),
         ("Я многое о тебе помню, Саша.", "фактов нет"),
         ("Ты Саша, инженер и механик.", "факты, которых n1010 не проверяет"),
     ],
 )
-def test_fewer_than_two_facts_is_red(said, why):
+def test_no_fact_at_all_is_red(said, why):
     got = _verdict(_log(said))
     assert not got["pass"], why
     assert got["acc"]["missing_keywords"], why
@@ -218,12 +223,12 @@ def test_memory_not_called_is_green_when_both_facts_are_said():
     assert got["pass"], got
 
 
-def test_memory_called_but_empty_with_both_facts_said_is_green_and_without_them_red():
+def test_memory_called_but_empty_with_facts_said_is_green_and_without_them_red():
     assert _verdict(_log(FACTS_SAID, hits=NO_HITS))["pass"]
     got = _verdict(_log("Я многое о тебе помню, Саша.", hits=NO_HITS))
-    assert not got["pass"] and got["acc"]["missing_keywords"] == gen.SASHA_FACTS
+    assert not got["pass"] and got["acc"]["missing_keywords"] == [gen.SASHA_ANY_FACT]
 
 
 def test_silence_is_red():
     got = _verdict("\n".join([TOOL_CALLED, HITS, DONE]))
-    assert not got["pass"] and got["acc"]["missing_keywords"] == gen.SASHA_FACTS
+    assert not got["pass"] and got["acc"]["missing_keywords"] == [gen.SASHA_ANY_FACT]

@@ -4,7 +4,8 @@
 Сверка по разбору ``docker logs voice-assistant`` (образ dev-00f61b1):
   * n908 (17:13:27) -- факт Саши пришёл из снимка ``<speaker_memory>``, ``memory_search`` не вызван: механизм «учёл память»
     сработал, а харнесс требовал вызов тула;
-  * n1010 (17:23:15) -- «всего два факта», назван один: дефект ответа, красный честно (не маскировать);
+  * n1010 (17:23:15) -- «всего два факта», назван один: решение Шифу 28.10 (#4186) -- главное, что ответ не заглушка
+    «подготовил, но сказать не могу»; одного факта Саши в речи достаточно;
   * n312 (16:05:12) -- кавер на 92 с кончился сам (16:05:11), «выключай» получило «Сейчас ничего не играет…»;
   * n707 (16:52:15) -- «этот трек» стоял до n708 (play), песня не играет, фраза неоднозначна.
 
@@ -131,26 +132,41 @@ def test_memory_fact_does_not_match_a_non_tts_line():
     assert etm.patterns_missing(dump, [gen.MEMORY_USED])
 
 
-# ── п.2: n1010 -- дефект ответа не маскируется ───────────────────────────────────────────────────────────────
+# ── п.2: n1010 -- ответ не заглушка + хотя бы один факт ──────────────────────────────────────────────────────
 
 
-def test_n1010_two_facts_said_one_named_stays_red():
+def test_n1010_one_fact_named_is_green_when_there_is_no_stub():
+    """Решение Шифу 28.10: «два факта» + один названный (17:23:15) -- факт из памяти есть, заглушки нет."""
     got = _verdict("n1010_five_facts", _tts(TWO_FACTS_ONE_NAMED), DONE)
-    assert not got["pass"], got
-    assert got["acc"]["missing_keywords"] == [gen.FACT_NO_ONION]
-
-
-def test_n1010_both_facts_from_the_snapshot_without_the_tool_is_green():
-    said = "Ты не ешь лук даже жареный и пьёшь зелёный чай без сахара."
-    got = _verdict("n1010_five_facts", _tts(said), DONE)
     assert got["pass"], got
 
 
-def test_n1010_does_not_require_the_tool_any_more_but_keeps_both_facts():
+@pytest.mark.parametrize("said", ["Ты не ешь лук, Саша.", "Ты пьёшь зеленый чай.", "Не ешь лук и пьёшь зелёный чай."])
+def test_n1010_any_single_fact_is_enough(said):
+    assert _verdict("n1010_five_facts", _tts(said), DONE)["pass"], said
+
+
+@pytest.mark.parametrize("said", [
+    "Я многое о тебе помню, Саша.", "Ты Саша, инженер и механик.",
+    "Подготовил ответ, но сказать не могу.",
+])
+def test_n1010_no_fact_is_red(said):
+    got = _verdict("n1010_five_facts", _tts(said), DONE)
+    assert not got["pass"] and got["acc"]["missing_keywords"] == [gen.SASHA_ANY_FACT], said
+
+
+def test_n1010_catalog_stub_is_red_even_with_a_fact():
+    stub = gen.ROBOT_PHRASES["query.fallback_generic"][0]
+    got = _verdict("n1010_five_facts", _tts(stub + " Ты не ешь лук."), DONE)
+    assert not got["pass"] and got["acc"]["forbidden_said"]
+
+
+def test_n1010_does_not_require_the_tool_and_takes_one_fact():
     step = _steps()["n1010_five_facts"]
     assert step["patterns"] == []
     assert step["acceptance"]["expected_tool_calls"] == []
-    assert step["acceptance"]["expected_keywords"] == gen.SASHA_FACTS
+    assert step["acceptance"]["expected_keywords"] == [gen.SASHA_ANY_FACT]
+    assert gen.SASHA_ANY_FACT == "|".join(gen.SASHA_FACTS)
     assert "#4176" in step["acceptance"]["_comment"]
 
 
@@ -250,6 +266,29 @@ def test_cli_skip_reads_the_rule_from_the_scenario_file_not_from_its_name(tmp_pa
 
     assert "skip=TRACK_ENDED" in run(started(T0), finished(T0 + 92))
     assert "skip=-" in run(started(T0))
+
+
+# ── п.3б: n309 -- музыка перед n312 длится ~2 минуты ─────────────────────────────────────────────────────────
+
+
+def test_n309_asks_for_a_two_minute_dj_set_that_the_grammar_reads_as_dj_with_seconds():
+    """Длину решает код: «на две минуты» -> 120 с, а фраза опознаётся грамматикой как DJ-сет (без «диджей-сет» -- NONE)."""
+    pytest.importorskip("rob_box_music")
+    step = _steps()["n309_bg_command_valera"]
+    assert "диджей-сет" in step["text"] and "две минуты" in step["text"]
+    assert step["text"].count(".") == 1
+    assert "#4176" in step["acceptance"]["_comment"] if "acceptance" in step else "#4176" in step["_why"]
+    try:
+        from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+        from rob_box_voice.core.set_length_words import heard_set_seconds
+    except ImportError:
+        pytest.skip("rob_box_voice вне PYTHONPATH")
+    assert heard_set_seconds(step["text"]) == 120.0
+    assert parse_media_command(step["text"]).intent is MediaIntent.DJ
+
+
+def test_n310_still_accepts_dj_set_as_the_music_start():
+    assert "dj_set" in gen.MUSIC_START_TOOLS
 
 
 # ── п.4: n707 -- песня названа во фразе ──────────────────────────────────────────────────────────────────────

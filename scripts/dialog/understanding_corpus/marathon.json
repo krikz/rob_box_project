@@ -5,20 +5,20 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "969f5311c18fb8a33e60cdb9733d17943b2af25a",
+  "last_commit": "511611162963a598bf512bfb45cbf7eb41dfb70f",
   "sha256": {
-   "night_marathon_act10_finale_memory_v1.json": "6bc0c5e039f0f16243815458f3c23a5f0ba2cb05bd1e2620f24269268630bb3f",
-   "night_marathon_act1_wakeup_v1.json": "e65ea279c1b1a787da077f12af7d6b9a118b6b704af78f799a3d7616e22d2c7f",
-   "night_marathon_act2_acquaintance_v1.json": "956ded0a35fbd13a316d62f7e485d5afaef548f8ff34ac26db7f330748bdbc42",
+   "night_marathon_act10_finale_memory_v1.json": "87fb13a607b04d4d548a47954eec052352c1f56b0b63b15ce567d0f3e28b4d8e",
+   "night_marathon_act1_wakeup_v1.json": "9215d03c68aeae4defeb3856da24665b60cb0cddaf7d8711a6410388707a1684",
+   "night_marathon_act2_acquaintance_v1.json": "0537e33d304f71f4100263638940b9cb5d2c14fb08d9df92fd9964a115498f6b",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
-   "night_marathon_act3_backlog_diarization_v1.json": "23eb46222b3b32484a85235b065955ee603a5f6c70ddee84f3b9431c949264da",
-   "night_marathon_act4_voice_prosody_v1.json": "b1266595eb03dfa0dba9334a84a7521da954500ebef906e6d0abf503c9dca5a4",
-   "night_marathon_act5_renardo_live_v1.json": "eb7bdfe7183175db24521fce2fe5f67fba00dcd124fe19ca399ff00b7c44d48d",
-   "night_marathon_act6_dj_booth_v1.json": "6ba0f21a964a353ccff7e2cba118d7ba651bce58e5ed1655b2b8138b73fe37e2",
-   "night_marathon_act7_neuro_composer_v1.json": "66399f0ea486fe44cf2be930612404d64e7e4eb21a57b34011fb6060907a29d2",
-   "night_marathon_act8_barge_in_v1.json": "030e84cac478bd988066f0891f357182bdd137a506822030d1d339e6f8ed07d9",
-   "night_marathon_act9_world_outside_v1.json": "1aa81d4d5170404cab5aed4df96754eeac40b3fe4b16a82dddc67a917ed81334"
+   "night_marathon_act3_backlog_diarization_v1.json": "a13a38a2513d1847e48ff0c033e15431d1f12075a2cdcdd85b2c3b46dd1abe3c",
+   "night_marathon_act4_voice_prosody_v1.json": "a84735e8f809f7d2800942a6a8cfe0260f54ea9116fff373c4668e343974b8f7",
+   "night_marathon_act5_renardo_live_v1.json": "6efce720f7ddf1dd94eb4cf726dd0f16e6cfea2c2cbdcf5e25168858f919e0c7",
+   "night_marathon_act6_dj_booth_v1.json": "1224f7d49a13411586d0107a85ca11a6517f627f4c330d0be95818468c01796d",
+   "night_marathon_act7_neuro_composer_v1.json": "2dfbf5763c3a74e6dde75eec30b9265b4f1ab2d123c099cc5f222e56d6bd3f10",
+   "night_marathon_act8_barge_in_v1.json": "597bb4f47d185dccfbd5fde5997f2c4020d8df28fe8c4a8f313c440db081594f",
+   "night_marathon_act9_world_outside_v1.json": "b9174ce55bef26493e4cf9bc68ba5666b23642c744795b5f7bc9c0cbda5cd8f8"
   }
  },
  "counts": {
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
+ "corpus_sha256": "5806e471fb495e5aab3b569c2ab807a876981411a24d6be8fb02b52032153bc2",
  "acts": [
   {
    "act": "1",
@@ -1468,7 +1468,7 @@
      "step": {
       "label": "n309_bg_command_valera",
       "voice": "filipp",
-      "text": "Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.",
+      "text": "Только не электронщину, запусти диджей-сет на две минуты, спокойный.",
       "patterns": [
        "\\[backlog\\] accumulated reason=no_wake"
       ],
@@ -1561,6 +1561,11 @@
         "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку.",
         "Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ]
+      },
+      "skip_when": {
+       "reason": "TRACK_ENDED",
+       "log": "\\[music v2\\] finished track_id=",
+       "deck": "ended"
       },
       "music_compare": "stopped"
      }
@@ -2608,7 +2613,7 @@
      "step": {
       "label": "n707_gen_track_info",
       "voice": "anton",
-      "text": "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
+      "text": "Робот, расскажи про песню про енота: кто, про что, сколько длится.",
       "sleep_before_sec": 60,
       "patterns": [],
       "acceptance": {
@@ -3364,11 +3369,10 @@
       "label": "n908_search_borsch_memory",
       "voice": "anton",
       "text": "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь.",
-      "patterns": [],
+      "patterns": [
+       "✅ Инструмент memory_search выполнен успешно|🔊 TTS:.*text=.*([Бб]ез лука|[Нн]е (ешь|ем|ел|ест|любишь)[ ,.!—-]|[Зз]елёный чай|[Зз]еленый чай|[Бб]ез сахара)"
+      ],
       "acceptance": {
-       "expected_tool_calls": [
-        "memory_search"
-       ],
        "must_not_call": [
         "stage=done status=done"
        ],
@@ -3377,7 +3381,8 @@
        ],
        "expected_keywords": [
         "свёкл|свекл|капуст|картош|бульон|мяс|говяд|свинин|морков|сметан|лук|овощ|варит|вари|томат"
-       ]
+       ],
+       "expected_tool_calls": []
       },
       "retry_acceptance": 1
      }
@@ -3647,13 +3652,8 @@
       "label": "n1010_five_facts",
       "voice": "anton",
       "text": "Робот, назови пять фактов обо мне, которые ты знаешь.",
-      "patterns": [
-       "\\[memory_search\\] query=.* [1-9][0-9]* results"
-      ],
+      "patterns": [],
       "acceptance": {
-       "expected_tool_calls": [
-        "memory_search"
-       ],
        "must_not_call": [
         "stage=done status=done"
        ],
@@ -3661,9 +3661,9 @@
         "Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
        "expected_keywords": [
-        "лук",
-        "зелён|зелен"
-       ]
+        "лук|зелён|зелен"
+       ],
+       "expected_tool_calls": []
       }
      }
     },

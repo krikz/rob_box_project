@@ -361,14 +361,6 @@
       "how": "play",
       "run": "40477457939"
     },
-    "n309_bg_command_valera": {
-      "voice": "filipp",
-      "chars": 68,
-      "text_sha1": "a978a178d7d3",
-      "eq_s": 7.48,
-      "how": "play",
-      "run": "40477457939"
-    },
     "n310_execute_backlog_lru": {
       "voice": "anton",
       "chars": 6,
