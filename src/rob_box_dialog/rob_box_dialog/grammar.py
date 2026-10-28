@@ -2,7 +2,8 @@
 
 :func:`match` — шаг темпа и тона речи («говори басом», «тараторь», «хватит тянуть, теперь наоборот — тараторь»,
 #4074), стоп, тишина и её снятие, громкость по каналу, голос, «говори нормально» (сброс скорости и тона), новая
-сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица, #4103).
+сессия, да/нет на вопрос робота, «покажи по очереди радость, грусть и удивление» (очередь сцен лица, #4103),
+«повтори, я не расслышал» (повтор последней озвученной реплики, #4028).
 Команда должна быть покрыта грамматикой ЦЕЛИКОМ: лишнее слово — не Tier-1, решает следующий шаг (медиа-грамматика
 v1 или LLM). Работает в любом состоянии, включая SILENCED, — тогда отдаёт только незвучащие виды
 (``knowledge.TIER1_KINDS``). Слова — из :mod:`.knowledge`, сверка по границам слов — :mod:`.words`.
@@ -54,7 +55,8 @@ def match(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional
     """Tier-1 команда во фразе (вейк уже снят или ещё стоит — без разницы) или ``None``."""
     silenced = snapshot.top("Silence") is not None
     body = strip_wake_word(text or "")
-    for rule in (_voice_step, _stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue):
+    for rule in (_voice_step, _stop, _new_session, _unsilence, _volume, _voice, _prosody, _answer, _show_queue,
+                 _repeat):
         command = rule((text or "") if rule is _stop else body, snapshot, voices)
         if command is not None and not (silenced and kn.TIER1_KINDS[command.kind]):
             return command
@@ -372,4 +374,25 @@ def show_queue_scenes(text: str) -> Tuple[str, ...]:
     return tuple(name for name, _ in groupby(scenes))
 
 
-__all__ = ["Tier1Command", "Voices", "match", "show_queue_scenes", "volume_channel"]
+def _repeat(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
+    """«Повтори», «повтори последнее ещё раз, я не расслышал», «скажи ещё раз» → ``repeat`` (#4028): последнюю
+    озвученную реплику робота говорит код, без LLM (во время выступления модель правкой не заменяет его сегменты)."""
+    return Tier1Command(kn.REPEAT_KIND) if repeat_asked(text) else None
+
+
+def repeat_asked(text: str) -> bool:
+    """Фраза покрыта ЦЕЛИКОМ просьбами повтора и служебными словами :data:`~rob_box_dialog.knowledge.REPEAT`, и
+    просьба в ней есть. Лишнее слово («повтори песню», «повтори за мной») или «ещё раз» без просьбы - ``False``."""
+    words, i, asked = name_tokens(text), 0, False
+    while i < len(words):
+        ask = next((a for a in kn.REPEAT.asks if words[i:i + len(a)] == a), None)
+        if ask is not None:
+            i, asked = i + len(ask), True
+        elif words[i] in kn.REPEAT.filler:
+            i += 1
+        else:
+            return False
+    return asked
+
+
+__all__ = ["Tier1Command", "Voices", "match", "repeat_asked", "show_queue_scenes", "volume_channel"]

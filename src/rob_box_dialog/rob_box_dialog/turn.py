@@ -15,8 +15,9 @@
   (В12″) — модель получает подхваченные фразы каждую со своим автором (``[говорит: …]`` на момент фразы, не
   того, кто сказал «робот»), и они остаются в окне прошлыми репликами (#3892);
 * Tier-1 — исполняет код (стоп, тишина, громкость, голос, новая сессия, очередь показа лица «покажи по очереди
-  радость, грусть и удивление» — ``play_animation`` на сцену, лицо итога и его очередь, #4103), спорный стоп (В19)
-  идёт в LLM;
+  радость, грусть и удивление» — ``play_animation`` на сцену, лицо итога и его очередь, #4103; «повтори, я не
+  расслышал» — последняя озвученная реплика робота дословно, ``TurnLog.last_spoken``, #4028: модель не зовётся и
+  идущее выступление не правит), спорный стоп (В19) идёт в LLM;
 * вопрос тула («Удалить «X»? Скажи «да, удаляй».», ``knowledge.TOOL_QUESTIONS``) — окно ответа в сессии
   (``tool_ask``, #4062): ответ «да, удаляй» исполняет код подтверждённым вызовом, фраза — из результата тула; «нет» —
   фраза кода; другие слова — к LLM с тулом вопроса в срезе. Вопрос — не провал: фраза и лицо не грустят
@@ -540,13 +541,23 @@ def tier1_face(command: Tier1Command, results: Sequence[ActionResult], text: str
     return command_face(None, results, text) if command.kind == kn.SHOW_QUEUE_KIND else None
 
 
+def repeat_phrase(last_spoken: str) -> str:
+    """«Повтори» (#4028, ADR-0148: решает код): последняя озвученная реплика робота дословно; робот в этой сессии ещё
+    ничего не сказал - честная фраза кода, а не тишина и не выдумка модели."""
+    return last_spoken or phrases.text(kn.REPEAT_NOTHING_PHRASE)
+
+
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
-                 pick: Callable[[str], str] = lambda key: "") -> Optional[str]:
+                 pick: Callable[[str], str] = lambda key: "", last_spoken: str = "") -> Optional[str]:
     """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
     шаг голоса — по исходам тулов («Говорю ниже.», ось на границе — «Ниже уже некуда…», отказ — его фраза, #4074);
     новая сессия — вариант из каталога; очередь показа — лицом, слова только о провале (:func:`show_queue_phrase`);
-    стоп и тишина молчат; голос говорит сам тул (SpeechEvent), а снятый вместе с ним режим тона — код, только если
-    тон правда менялся или сброс не вышел (ось уже на норме — молчит)."""
+    «повтори» — ``last_spoken`` дословно (последняя озвученная реплика робота, ``TurnLog.last_spoken``, #4028), а
+    повторять нечего — фраза кода ``REPEAT_NOTHING_PHRASE``; стоп и тишина молчат; голос говорит сам тул
+    (SpeechEvent), а снятый вместе с ним режим тона — код, только если тон правда менялся или сброс не вышел (ось уже
+    на норме — молчит)."""
+    if command.kind == kn.REPEAT_KIND:
+        return repeat_phrase(last_spoken)
     if command.kind == "new_session":
         return pick(kn.NEW_SESSION_PHRASE)
     if command.kind == kn.PROSODY_NORMAL_KIND:
@@ -1172,7 +1183,7 @@ class TurnEngine:
         self.log.mark(turn.turn_id, kn.WINDOW_SILENCE_MARKS.get(command.kind, ""))  # тишина вкл/выкл без слов (#4106)
         results = await self._execute(turn, actions, snap)
         turn.expression = tier1_face(command, results, turn.text)  # очередь показа красит итог done (#4103)
-        said = tier1_phrase(command, results, self._pick)
+        said = tier1_phrase(command, results, self._pick, self.log.last_spoken(exclude=turn.turn_id))  # повтор #4028
         if said and self.session.snapshot.top("Silence") is None:
             self._say(turn, said)
 
