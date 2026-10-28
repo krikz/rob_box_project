@@ -13,7 +13,6 @@ import pytest
 
 from rob_box_core import speech_client
 from rob_box_core.msg_stub import install_dialog_msgs_stub
-from rob_box_voice.core import speech_compat
 from rob_box_voice.core.speech_owner import (
     FRAME_MS,
     SpeechLedger,
@@ -437,14 +436,6 @@ def test_epoch_cancel_drops_held_presynth_and_says_cancelled(setup):
     assert owner.ledger.get("sid-1") is None
 
 
-def test_legacy_stop_drops_held_presynth(setup):
-    node, owner, _ = setup
-    _presynth_node(node)
-    node.subs["/voice/speech/request"](_request(commit=False, interruptible=True))
-    owner.cancel_all("STOP")
-    assert owner.claim_presynth("sid-1") is None
-
-
 def test_presynth_then_commit_true_goes_to_pipeline(setup):
     node, owner, _ = setup
     _presynth_node(node)
@@ -493,28 +484,18 @@ def test_streamed_envelope_follows_first_sound_and_duration_arrives_late(setup):
     assert len(second.levels) == 3  # 0.1 с по 40 мс
 
 
-# -- адаптер v1 -------------------------------------------------------------------
+# -- метаданные чанка ---------------------------------------------------------------
 
 
-def test_legacy_meta_reads_agent_and_epoch():
-    assert SpeechMeta.from_chunk({"ssml": "x", "epoch": 7}) == SpeechMeta(agent="personality", epoch=7)
-    assert SpeechMeta.from_chunk({"priority": "operator"}).agent == "operator"
-    assert SpeechMeta.from_chunk({"agent": "telegram", "epoch": "bad"}) == SpeechMeta(agent="telegram")
+def test_chunk_without_speech_meta_gets_the_defaults():
+    """Чанк не из ``SpeechRequest`` (метаданных ``_speech`` нет) — агент «personality», эпоха 0. Старых JSON-входов,
+    которые выводили агента из ``priority``/``epoch``, у ноды больше нет (PR-15 часть 15-core, #3711)."""
+    assert SpeechMeta.from_chunk({"ssml": "x", "epoch": 7, "priority": "operator"}) == SpeechMeta()
 
 
-def test_legacy_stop_cancels_everything_and_projects_state(setup):
-    node, owner, _ = setup
-    node._speech = owner
-    owner.admit(_chunk(agent="operator", epoch=9), "s")
-    speech_compat.on_control(node, types.SimpleNamespace(data="STOP"))
-    assert owner.is_cancelled("s") and node.interrupts == 1 and node.states == ["stopped"]
-
-
-def test_legacy_ignore_stop_ms_is_not_accepted(setup):
-    node, owner, _ = setup
-    node._speech = owner
-    speech_compat.on_control(node, types.SimpleNamespace(data="IGNORE_" + "STOP_MS:700"))
-    assert node.interrupts == 0 and node.states == []
+def test_chunk_meta_is_taken_from_the_speech_field():
+    meta = SpeechMeta.from_chunk({"_speech": {"agent": "telegram", "epoch": 3, "interruptible": False}})
+    assert (meta.agent, meta.epoch, meta.interruptible) == ("telegram", 3, False)
 
 
 # -- проводка в tts_node --------------------------------------------------------------

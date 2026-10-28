@@ -568,7 +568,7 @@ class ChatSession:
             has_wake_word,
             strip_wake_word,
         )
-        from rob_box_voice.core.speak_helpers import strip_done_marker, strip_markdown
+        from rob_box_voice.tts_text_clean import strip_markdown
 
         if self.args.wake_word:
             if not has_wake_word(text.lower(), DEFAULT_WAKE_WORDS):
@@ -605,10 +605,8 @@ class ChatSession:
         else:
             # На роботе речь идёт через speak_text, а текст самого ответа
             # модели — это хвост цикла: маркер «done» и markdown, которые
-            # dialogue_node срезает перед авто-TTS теми же хелперами
-            # (иначе TTS буквально произносит «дан»).
+            # tts_node срезает перед синтезом (markdown — тем же ``strip_markdown``).
             spoken = strip_markdown((result.spoken_text or "").strip())
-            spoken = strip_done_marker(spoken).strip()
             if spoken.lower() in _DONE_MARKERS:
                 spoken = ""
             if spoken and not self._spoken:

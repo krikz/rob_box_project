@@ -8,7 +8,7 @@ tts_node синтезировал её со статическим `minimax_lang
 французский текст русской фонетикой.
 
 Здесь закреплены три звена:
-  1. поле `language` в payload `/voice/dialogue/response`;
+  1. поле `language` в `SpeechRequest` → чанк конвейера (`chunk_from_request`);
   2. проброс payload → dialogue_callback → worker → _synthesize_and_play;
   3. поведение провайдеров: minimax получает language_boost, а yandex и
      silero (в нашей раскладке оба ru-only) — честную фразу-отказ вместо
@@ -19,7 +19,6 @@ tts_node синтезировал её со статическим `minimax_lang
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -34,11 +33,10 @@ from test.unit.tts.conftest import _install_all_mocks  # noqa: E402
 
 _install_all_mocks()
 
-from rob_box_voice.core.speak_helpers import (  # noqa: E402
-    build_ssml_payload,
-    unsupported_language_notice,
-)
+from rob_box_core.msg_stub import install_dialog_msgs_stub  # noqa: E402
+from rob_box_voice.core.speech_owner import chunk_from_request  # noqa: E402
 from rob_box_voice.tts_node import TTSNode  # noqa: E402
+from rob_box_voice.tts_voice_registry import unsupported_language_notice  # noqa: E402
 from test.unit.tts.test_voice_selection import _playback_node  # noqa: E402
 
 
@@ -58,18 +56,26 @@ def _run(node, *, voice=None, language=None, text="hello") -> None:
     )
 
 
-# ── Звено 1: поле в payload ─────────────────────────────────────────────────
+# ── Звено 1: поле в запросе речи ────────────────────────────────────────────
+
+M = install_dialog_msgs_stub()
 
 
-def test_payload_carries_language_when_set() -> None:
-    payload = json.loads(build_ssml_payload("bonjour", language="fr"))
-    assert payload["language"] == "fr"
+def _speech_request(**fields):
+    req = M.SpeechRequest()
+    req.speech_id, req.text, req.agent, req.commit = "sid-1", "bonjour", "personality", True
+    for key, value in fields.items():
+        setattr(req, key, value)
+    return req
 
 
-def test_payload_omits_language_when_absent() -> None:
+def test_chunk_carries_language_when_set() -> None:
+    assert chunk_from_request(_speech_request(language="fr"))["language"] == "fr"
+
+
+def test_chunk_omits_language_when_absent() -> None:
     """Обычная реплика робота язык не указывает — поведение прежнее."""
-    payload = json.loads(build_ssml_payload("привет"))
-    assert "language" not in payload
+    assert "language" not in chunk_from_request(_speech_request())
 
 
 # ── Звено 3: что умеет каждый провайдер ─────────────────────────────────────

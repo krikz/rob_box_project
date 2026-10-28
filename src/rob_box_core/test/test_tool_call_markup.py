@@ -1,31 +1,24 @@
-"""Issue #2760 — разметка вызова тула не должна звучать.
+"""Issue #2760 — разметка вызова тула не должна звучать (``rob_box_core.tool_call_markup``).
 
-Живой прогон 35704637846 (акт 2, шаги n204/n206 — оба про сохранение
-факта): MiniMax-M3 вернула вызов тулов ТЕКСТОМ при ``tools=[]``, и он
-прошёл весь тракт::
+Живой прогон 35704637846 (акт 2, шаги n204/n206 — оба про сохранение факта):
+MiniMax-M3 вернула вызов тулов ТЕКСТОМ при ``tools=[]``, и он прошёл весь тракт::
 
     [dialogue_node] 📤 LLM OUTPUT: '<functioncalls>\\n<invoke name="registerspeaker">…'
     [tts_node] 🔊 TTS: batch=9b15b85e 1/2, text='<functioncalls>…'
 
 Штатный путь лечения — восстановление намерения внутри цикла тулов
-(``rob_box_harness.core.tool_loop.markup_recovery``). Этот guard —
-последний рубеж: если разметка всё-таки доехала до выхода в TTS
-(например, имя тула не опознано), её не озвучивает tts_node (ретрай LLM в
-dialogue_node удалён в ADR-0150 PR-7 ч.7d-2, #3698).
+(``rob_box_harness.core.tool_loop.markup_recovery``). Предикат ниже — последний рубеж: если разметка всё-таки доехала
+до выхода в TTS (например, имя тула не опознано), её не озвучивает ``tts_node``.
 
-Корпус строк ЗДЕСЬ И в ``rob_box_harness/test/test_issue_2760_tool_call_markup.py``
-намеренно одинаковый: регекс продублирован через границу пакетов (harness
-не может импортировать voice), и расхождение поймается тем, что один из
-двух наборов покраснеет.
+Регекс одна копия (PR-15 часть 15-core, #3711): ``tts_node`` и harness (``text_classify``) импортируют его из
+``rob_box_core``; до этого он дублировался через границу пакетов, и расхождение ловил одинаковый корпус двух тестов.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.core.dialogue_guards import (
-    is_tool_call_markup,
-)
+from rob_box_core.tool_call_markup import TOOL_CALL_MARKUP_RE, is_tool_call_markup
 
 
 LIVE_N206 = (
@@ -76,3 +69,11 @@ class TestDetector:
     )
     def test_speech_is_not_markup(self, text) -> None:
         assert is_tool_call_markup(text) is False
+
+
+def test_harness_and_tts_node_share_the_one_regex() -> None:
+    """Второй копии нет: harness реэкспортирует тот же объект, а не свой компилированный регекс."""
+    from rob_box_harness.core.tool_loop import text_classify
+
+    assert text_classify.TOOL_CALL_MARKUP_RE is TOOL_CALL_MARKUP_RE
+    assert text_classify.is_tool_call_markup is is_tool_call_markup

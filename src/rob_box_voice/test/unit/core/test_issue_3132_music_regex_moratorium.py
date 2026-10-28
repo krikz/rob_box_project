@@ -50,8 +50,11 @@ _CORE_DIR = Path(__file__).resolve().parents[3] / "rob_box_voice" / "core"
 # ``dialogue_guards.py`` (34 -> 21: user_wants_music & Co, музыкальные
 # ActionClaimRule, unknown-melody, Renardo-код, hallucinated MIDI);
 # ``music_guard.py`` удалён целиком.
+#
+# PR-15 часть 15-core (#3711): ``dialogue_guards.py`` удалён целиком. Два его оставшихся регекса были не музыкальными
+# (отказ TTS на ``<system>``-шаблоне и разметке вызова тула): первый переехал в ``tts_text_clean.py``, второй — одной
+# копией в ``rob_box_core.tool_call_markup``. Мораторий остаётся на грамматике медиакоманд.
 _MAX_RE_COMPILE: dict[str, int] = {
-    "dialogue_guards.py": 2,
     "media_command_grammar.py": 8,
 }
 

@@ -202,7 +202,6 @@ def test_shared_params_of_both_config_copies_are_the_live_music_chooser():
 def test_flag_value_lives_only_in_dialog_engine_module():
     """Значения флага не копируются: launch-файлы и ноды берут их из ``rob_box_core.dialog_engine``."""
     users = [LAUNCHES["headless"], LAUNCHES["src"],
-             REPO / "src" / "rob_box_voice" / "rob_box_voice" / "core" / "speech_compat.py",
              REPO / "src" / "rob_box_telegram" / "rob_box_telegram" / "telegram_node.py",
              REPO / "src" / "rob_box_supervisor" / "rob_box_supervisor" / "supervisor_node.py"]
     for path in users:
