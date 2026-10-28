@@ -3,8 +3,8 @@
 Живой случай 27.10 (dev-0d94634): «Робот, спой песню про енота» - куплеты через один голосом ``Russian_ReliableMan`` и
 ``Russian_HandsomeChildhoodFriend``; анекдот - пять голосов на трёх героев. Голос каждого сегмента выбирала модель.
 
-Теперь: каталог ролей (``tts_voice_registry.role_voices_for``: русские голоса звучащего провайдера без рассказчика и
-без голосов каста марафона ``CAST_VOICES``) с полом голоса -> ``plan_host.perform_busy`` -> валидатор команды
+Теперь: каталог ролей (``tts_voice_registry.role_voices_for``: русские голоса звучащего провайдера без рассказчика;
+голоса каста марафона нерусские, поэтому в него не входят) с полом голоса -> ``plan_host.perform_busy`` -> валидатор команды
 (``rob_box_dialog.cast``: голос героя - по полу, один на всё выступление; песня и рэп - голосом робота) ->
 ``PerformHost`` -> ``SpeechRequest.voice``. Правка идущего выступления видит роли и голоса хоста (``Busy.cast``).
 """
@@ -20,16 +20,17 @@ from typing import Any, Dict, List
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_core.tool_catalog import TOOL_CATALOG
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import Command, parse, validate
+from rob_box_dialog.command import Command, Invalid, parse, validate
 
 from rob_box_voice.core import plan_host
 from rob_box_voice.core.perform_host import PerformHost
 from rob_box_voice.tts_voice_registry import (
-    CAST_VOICES,
     PROVIDER_VOICES,
+    ROLE_VOICE_LANGUAGE,
     VOICE_METADATA,
     default_voice_for,
     gender_of,
+    language_of,
     role_voices_for,
 )
 
@@ -153,27 +154,30 @@ def _perform(node: _Node, perform: Dict[str, Any]) -> List[str]:
 # -- каталог ролей ------------------------------------------------------------------------------------------------
 
 
-def test_cast_voices_never_voice_a_role_of_any_provider():
-    for provider in PROVIDER_VOICES:
-        roles = set(role_voices_for(provider, default_voice_for(provider)))
-        assert not {f"{provider}:{v}" for v in roles} & CAST_VOICES, provider
-
-
-def test_cast_voices_are_in_the_catalogue_with_metadata():
-    for key in CAST_VOICES:
-        provider, voice = key.split(":", 1)
-        assert voice in PROVIDER_VOICES[provider] and key in VOICE_METADATA, key
-
-
-def test_cast_voices_are_the_people_voices_of_the_e2e_harness():
-    """Источник каста - ``map_tts_voice`` харнесса: голос человека там с просодией ``id:pitch:speed`` (#3931)."""
+def _harness_people_voices() -> set:
+    """Голоса людей e2e-харнесса (каст марафона): единственный источник - ``map_tts_voice`` харнесса, голос человека там
+    с просодией ``id:pitch:speed`` (#3931). Отдельного списка каста в реестре нет (ревью PR #4112)."""
     text = E2E_LIB.read_text(encoding="utf-8")
     arm_start = text.index("        minimax)", text.index("map_tts_voice() {"))
     arm = text[arm_start : text.index("            ;;", arm_start)]
-    people = {
-        spec.split(":")[0] for spec in re.findall(r"printf '([^'%][^':]*:[^']*)'", arm)
-    }
-    assert people and {f"minimax:{v}" for v in people} == CAST_VOICES, sorted(people)
+    return {spec.split(":")[0] for spec in re.findall(r"printf '([^'%][^':]*:[^']*)'", arm)}
+
+
+def test_harness_people_voices_are_in_the_catalogue_with_a_native_language_that_is_not_a_role_language():
+    """Каст не входит в роли самим фильтром языка (``role_voices_for``): голос харнесса в каталоге с нативным нерусским
+    языком. Харнесс получит русский голос - тест красный раньше, чем герой сказки зазвучит «Сашей» (#4084)."""
+    people = _harness_people_voices()
+    assert people, "голоса людей в map_tts_voice не нашлись - изменился разбор харнесса"
+    for voice in people:
+        assert voice in PROVIDER_VOICES["minimax"] and f"minimax:{voice}" in VOICE_METADATA, voice
+        assert language_of("minimax", voice) not in ("", ROLE_VOICE_LANGUAGE), voice
+
+
+def test_harness_people_voices_never_voice_a_role_of_any_provider():
+    people = {f"minimax:{v}" for v in _harness_people_voices()}
+    for provider in PROVIDER_VOICES:
+        roles = {f"{provider}:{v}" for v in role_voices_for(provider, default_voice_for(provider))}
+        assert roles and not roles & people, provider
 
 
 def test_busy_carries_the_gender_of_every_role_voice():
@@ -224,3 +228,25 @@ def test_an_edit_of_the_running_tale_keeps_the_heroes_voices():
     wolf, fox, hedgehog = res.perform.voice_per_segment
     assert (fox, hedgehog) == (voices[2], voices[1])
     assert wolf and wolf not in voices
+
+
+def test_an_edit_with_more_new_heroes_than_free_voices_is_refused_not_given_the_narrators_voice():
+    """Ревью PR #4112: каталог Silero - четыре голоса ролей; два держат ёж и лиса идущей сказки. Правка с тремя новыми
+    героями: свободных голосов два - нарушение ``bad_cast`` (сверка шла со всем каталогом, и третий герой получил бы
+    голос рассказчика). Двое новых - проходят и берут свободные голоса."""
+    node = _performing_node("silero")
+    voices = _perform(node, TALE)
+    assert len(set(voices) - {""}) == 2 and len(plan_host.perform_busy(node).voices) == 4
+
+    def edit(heroes):
+        roles = [name for name in heroes]
+        return {"edit_pending": True, "perform": {"kind": "tale", "segments": [f"Реплика {n}." for n in roles],
+                                                  "cast": [{"name": n} for n in heroes], "role_per_segment": roles}}
+
+    busy = plan_host.perform_busy(node)
+    refused = validate(parse(edit(["Лиса", "Волк", "Сова", "Кот"])), ALL_TOOLS, busy=busy)
+    assert isinstance(refused, Invalid) and refused.reason == "bad_cast"
+    assert "свободных голосов для них 2" in refused.violations[0].detail
+    accepted = _judge(node, edit(["Лиса", "Волк", "Сова"]))
+    fox, wolf, owl = accepted.perform.voice_per_segment
+    assert fox == voices[2] and wolf and owl and len({fox, wolf, owl}) == 3 and not {wolf, owl} & set(voices)

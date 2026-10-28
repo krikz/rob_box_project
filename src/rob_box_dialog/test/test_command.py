@@ -576,6 +576,47 @@ def test_more_speaking_heroes_than_role_voices_is_a_violation_4084():
     assert len(set(ok(raw, busy=POOL).perform.voice_per_segment) - {""}) == 3
 
 
+def test_voices_held_by_the_running_performance_are_not_free_for_new_heroes_4112():
+    """Правка идущей сказки (ревью PR #4112): герои выступления (``Busy.cast``) держат свои голоса, и новым героям
+    правки каталог считается без них. Каталог из четырёх голосов, два заняты: двое новых героев - можно, трое - нарушение
+    (раньше сверка шла со ВСЕМ каталогом, и третий получил бы голос рассказчика)."""
+    held = cm.Busy(frozenset({"action.perform"}), active_segment=1, voices=("alena", "zahar", "filipp", "arina"),
+                   cast=(("волк", "alena"), ("лиса", "zahar")))
+    names = ("волк", "кот", "пёс", "жаба")
+
+    def edit(heroes):
+        cast = [{"name": n} for n in heroes]
+        roles = ["", *heroes]
+        return {"edit_pending": True, "perform": {"kind": "tale", "segments": ["Дальше."] * len(roles), "cast": cast,
+                                                  "role_per_segment": roles}}
+
+    res = bad(edit(names), "bad_cast", busy=held)
+    assert "свободных голосов для них 2" in res.violations[0].detail and "идущего выступления" in res.violations[0].detail
+    cmd = ok(edit(names[:3]), busy=held)  # волк держит свой голос, кот и пёс берут два свободных
+    voices = dict(zip(cmd.perform.role_per_segment, cmd.perform.voice_per_segment))
+    assert voices["волк"] == "alena" and {voices["кот"], voices["пёс"]} == {"filipp", "arina"} and voices[""] == ""
+
+
+def test_hero_of_the_running_performance_does_not_ask_for_a_new_voice_4112():
+    """Все герои правки уже звучат своими голосами: свободных голосов нет, и это не нарушение."""
+    held = cm.Busy(frozenset({"action.perform"}), active_segment=1, voices=("alena", "zahar"),
+                   cast=(("волк", "alena"), ("лиса", "zahar")))
+    raw = {"edit_pending": True, "perform": {"kind": "tale", "segments": ["Волк: — Я тут.", "Лиса: — И я."],
+                                             "cast": [{"name": "Лиса"}, {"name": "Волк"}],
+                                             "role_per_segment": ["Волк", "Лиса"]}}
+    assert ok(raw, busy=held).perform.voice_per_segment == ("alena", "zahar")
+
+
+def test_role_list_of_a_wrong_length_names_the_models_field_not_the_codes_4112():
+    """Роли не по числу сегментов: нарушение называет ``role_per_segment`` - поле, которое пишет модель. Голоса сегментов
+    решает код (``voice_per_segment``), модель такого поля не видит."""
+    raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS, "cast": [{"name": "Волк", "gender": "male"}],
+                       "role_per_segment": ["", "Волк"]}}
+    res = bad(raw, "bad_segments", busy=POOL)
+    assert res.violations[0].detail == "role_per_segment не по числу сегментов"
+    assert "voice_per_segment" not in cm.explain(res) and "role_per_segment" in cm.explain(res)
+
+
 def test_role_names_length_is_checked_4084():
     long = "я" * (kn.ROLE_NAME_MAX_CHARS + 1)
     raw = {"perform": {"kind": "tale", "segments": TALE_SEGMENTS[:2], "cast": [{"name": long}],

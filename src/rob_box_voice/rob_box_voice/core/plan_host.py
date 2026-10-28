@@ -197,8 +197,9 @@ def robot_voice(node: Any, provider: str, fallback: str) -> str:
 def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
-    без рассказчика (голос робота, :func:`robot_voice`) и каста марафона (:func:`role_voices_for`, #3998, #4084): из
-    него код даёт голос роли выступления (``rob_box_dialog.cast``), им же сверяется голос реплики ``voice``."""
+    без рассказчика (голос робота, :func:`robot_voice`; голоса каста марафона нерусские и в каталог ролей не входят,
+    :func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления (``rob_box_dialog.cast``), им же
+    сверяется голос реплики ``voice``."""
     host = performer(node)
     provider, fallback = tts_state(node)
     voices = tuple(role_voices_for(provider, robot_voice(node, provider, fallback)))

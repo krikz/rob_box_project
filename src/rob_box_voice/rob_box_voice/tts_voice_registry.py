@@ -271,28 +271,21 @@ def known_provider(name: object) -> str:
 #: Язык голосов, которыми звучат роли выступления: реплики русские, чужой язык у голоса - чужой акцент (#3998).
 ROLE_VOICE_LANGUAGE = "ru"
 
-#: Голоса каста марафона (#3992; в каталоге робота с #4086): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
-#: ``.github/workflows/scripts/e2e_voice_lib.sh``). Робот говорит ими только по просьбе (``set_voice``), а роли
-#: выступления ими не звучат (#4084): герой сказки голосом Саши — это «Саша» для опознания по голосу. Ключ - как у
-#: ``VOICE_METADATA``. Сверка с харнессом - ``test_issue_4084_role_voices.py``.
-CAST_VOICES: frozenset[str] = frozenset({
-    "minimax:English_Jovialman", "minimax:English_WiseScholar", "minimax:Chinese (Mandarin)_Gentle_Senior",
-    "minimax:English_Whispering_girl", "minimax:Portuguese_StrictBoss",
-})
-
 
 def role_voices_for(provider: str, narrator: str = "") -> list[str]:
     """Голоса для РОЛЕЙ выступления (сказка, анекдот, басня): русские голоса каталога звучащего провайдера, кроме
-    голоса рассказчика и голосов каста марафона (``CAST_VOICES``, #4084).
+    голоса рассказчика.
 
     Язык - ``VOICE_METADATA.language``: legacy-китайские ``male-qn-qingse``/``female-shaonv`` MiniMax и
     английский/немецкий ``john``/``lea`` Yandex в роли не попадают (#3998: сказка звучала китайским голосом на русском
-    тексте). ``narrator`` - текущий голос робота, им звучит рассказчик: роль не должна звучать так же. Порядок -
-    каталога: роли голос даёт код (``rob_box_dialog.cast``), первый свободный нужного пола. ``voices_for`` не
-    меняется: ``set_voice`` и обзоры голосов видят весь каталог.
+    тексте). Тем же фильтром в роли не идут голоса каста марафона (``English_Jovialman`` и др., #3992, #4086): ими
+    харнесс e2e озвучивает людей, их язык в каталоге нативный (en/zh/pt), и герой сказки голосом Саши был бы «Сашей» для
+    опознания по голосу (#4084). Отдельного списка каста нет - один источник, язык голоса; что каждый голос харнесса
+    нерусский, держит ``test_issue_4084_role_voices.py``. ``narrator`` - текущий голос робота, им звучит рассказчик:
+    роль не должна звучать так же. Порядок - каталога: роли голос даёт код (``rob_box_dialog.cast``), первый свободный
+    нужного пола. ``voices_for`` не меняется: ``set_voice`` и обзоры голосов видят весь каталог.
     """
-    return [v for v in voices_for(provider)
-            if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator and f"{provider}:{v}" not in CAST_VOICES]
+    return [v for v in voices_for(provider) if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator]
 
 
 def gender_of(provider: str, voice_id: str) -> str:
