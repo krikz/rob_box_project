@@ -203,15 +203,19 @@ def llm_use(items: Sequence[Item]) -> Dict[str, Any]:
 
 
 def stability(runs: Sequence[Run], index: Dict[str, Entry]) -> Dict[str, Any]:
+    """Доля оцениваемых шагов с одним вердиктом во всех прогонах. Считаются только вердикты PASS/FAIL: «не оценено» и
+    ``NOT_RUN`` (стенд упал, бюджет кончился) - не вердикт модели; шаг входит, если судим хотя бы в двух прогонах."""
     if len(runs) < 2:
-        return {"runs": len(runs), "same_verdict_share": None, "note": "N=1: устойчивость не измерена"}
+        return {"runs": len(runs), "same_verdict_share": None, "steps": 0, "note": "N=1: устойчивость не измерена"}
     verdicts: Dict[str, List[str]] = {}
     for run in runs:
         for item_id, _, report in scored_items(run, index):
-            verdicts.setdefault(item_id, []).append(report.verdict)
-    full = [v for v in verdicts.values() if len(v) == len(runs)]
-    same = sum(len(set(v)) == 1 for v in full)
-    return {"runs": len(runs), "same_verdict_share": same / len(full) if full else None, "steps": len(full)}
+            if report.verdict in (dm.PASS, dm.FAIL):
+                verdicts.setdefault(item_id, []).append(report.verdict)
+    judged = [v for v in verdicts.values() if len(v) >= 2]
+    same = sum(len(set(v)) == 1 for v in judged)
+    return {"runs": len(runs), "same_verdict_share": same / len(judged) if judged else None, "steps": len(judged),
+            "note": "" if judged else "нет шагов, судимых хотя бы в двух прогонах"}
 
 
 # ── Сводка варианта ───────────────────────────────────────────────────────────────────────────────────────────────

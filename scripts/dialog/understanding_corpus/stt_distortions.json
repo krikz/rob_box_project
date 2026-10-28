@@ -1,0 +1,1265 @@
+{
+ "name": "understanding_stt_part3",
+ "schema": 1,
+ "part": 3,
+ "base": {
+  "name": "understanding_marathon_part1",
+  "corpus_sha256": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103"
+ },
+ "generator": "scripts/dialog/understanding_corpus/build_stt.py",
+ "method": {
+  "artifacts": "tests/e2e/_artifacts/night_*/act*.log (TRANSCRIPT) + ISSUE_ROWS",
+  "min_similarity": 0.5,
+  "edge_words": 2,
+  "filter": {
+   "transcript_lines_unique": 362,
+   "акустический шаг: в метрику не входит": 89,
+   "слова совпали с исходником (разница только в регистре и знаках)": 94,
+   "взято": 100,
+   "старая редакция фразы сценария": 43,
+   "метки нет в части 1": 29,
+   "мало общего с исходником (< 0.5): могла попасть чужая речь или музыка": 6,
+   "≥ 2 лишних слов по краям: могла попасть речь живого человека": 1,
+   "взято из карточек": 2
+  },
+  "repointed": {
+   "measured_sha256": "bc2b53bb54ac04ab582dcf924a09488b36fbb64105c2f2a58fb2c6c3b4baabf7",
+   "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
+   "to_base": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103",
+   "dropped_steps": [
+    "3/n309_bg_command_valera"
+   ]
+  }
+ },
+ "counts": {
+  "steps": 51,
+  "alternatives": 100,
+  "max_per_step": 5,
+  "from_issues": 2
+ },
+ "excluded": [
+  {
+   "issue": 4028,
+   "id": "8/n808_repeat_last",
+   "reason": "в цитате нет вейка, а ход на роботе был адресован: по цитате не понять, срезал вейк STT или автор карточки"
+  },
+  {
+   "issue": 4127,
+   "id": "6/n604_dj_rock",
+   "reason": "в карточке только фрагмент («в сторону рака … подруг»), целой строки нет; целая строка этого шага есть в логах актов"
+  },
+  {
+   "issue": 4050,
+   "id": "7/n704_music_library",
+   "reason": "строка с заглавной и пунктуацией - цитата старой редакции сценария, не вывод STT"
+  },
+  {
+   "id": "3/n309_bg_command_valera",
+   "alternatives_dropped": 2,
+   "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.» → «Запусти диджей-сет на синтезаторе на две минуты, спокойный.», альтернативы старого текста к новому шагу не относятся"
+  }
+ ],
+ "corpus_sha256": "d3b5ac85ac13d35b5f11ef9bedf7eb7b62faec1341e1941517ccdfb147e32189",
+ "alternatives": {
+  "1/n101_wake_cold_start": [
+   {
+    "text": "Робот, ты меня слышишь? Отвечай коротко. Я только что зашел в мастерскую.",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39951105934",
+     "file": "night_20261023_120829/act1_39951105934.log",
+     "line": 398
+    },
+    "runs_seen": 1,
+    "similarity": 0.964
+   },
+   {
+    "text": "ты меня слышишь ответь коротко я только что зашел в мастерскую",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40714399871",
+     "file": "night_20261028_151706/act1_40714399871.log",
+     "line": 416
+    },
+    "runs_seen": 1,
+    "similarity": 0.954
+   }
+  ],
+  "1/n103_time": [
+   {
+    "text": "Роман, который сейчас час.",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39951105934",
+     "file": "night_20261023_120829/act1_39951105934.log",
+     "line": 425
+    },
+    "runs_seen": 1,
+    "similarity": 0.875
+   }
+  ],
+  "1/n104_battery": [
+   {
+    "text": "сколько у тебя осталось заряда до утра дотянешь",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39985229892",
+     "file": "night_20261023_161509/act1_39985229892.log",
+     "line": 428
+    },
+    "runs_seen": 1,
+    "similarity": 0.94
+   }
+  ],
+  "1/n105_status": [
+   {
+    "text": "робот положил статус все ли у тебя работает ничего не отвалилось",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39985229892",
+     "file": "night_20261023_161509/act1_39985229892.log",
+     "line": 436
+    },
+    "runs_seen": 1,
+    "similarity": 0.976
+   }
+  ],
+  "1/n106_alt_wake_roboks": [
+   {
+    "text": "роблокс а на второе имя ты тоже отзываешься",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39937320548",
+     "file": "night_20261023_101118/act1_39937320548.log",
+     "line": 440
+    },
+    "runs_seen": 2,
+    "similarity": 0.988
+   },
+   {
+    "text": "а на второе имя ты тоже отзываешься",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39985229892",
+     "file": "night_20261023_161509/act1_39985229892.log",
+     "line": 455
+    },
+    "runs_seen": 1,
+    "similarity": 0.909
+   }
+  ],
+  "1/n108_perception": [
+   {
+    "text": "робот робот что ты сейчас видишь вокруг себя опиши в двух словах",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40594263484",
+     "file": "night_20261027_222154/act1_40594263484.log",
+     "line": 489
+    },
+    "runs_seen": 2,
+    "similarity": 0.951
+   },
+   {
+    "text": "Роберт, что ты сейчас видишь вокруг себя? Опиши в двух словах.",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39951105934",
+     "file": "night_20261023_120829/act1_39951105934.log",
+     "line": 479
+    },
+    "runs_seen": 1,
+    "similarity": 0.974
+   },
+   {
+    "text": "ну вот что ты сейчас видишь вокруг себя опиши в двух словах",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39985229892",
+     "file": "night_20261023_161509/act1_39985229892.log",
+     "line": 483
+    },
+    "runs_seen": 1,
+    "similarity": 0.94
+   },
+   {
+    "text": "робот что ты сейчас видишь вокруг себя опишу в двух словах",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40024460056",
+     "file": "night_20261023_210648/act1_40024460056.log",
+     "line": 471
+    },
+    "runs_seen": 1,
+    "similarity": 0.983
+   }
+  ],
+  "1/n110_silence_baseline": [
+   {
+    "text": "провод у тебя сейчас играет какая нибудь музыка",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39985229892",
+     "file": "night_20261023_161509/act1_39985229892.log",
+     "line": 510
+    },
+    "runs_seen": 1,
+    "similarity": 0.946
+   }
+  ],
+  "2/n201b_sasha_backstory": [
+   {
+    "text": "я собирал тебе блок питания и переделывал левый мотор запомни мой голос как следовать",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39987661909",
+     "file": "night_20261023_161509/act2_39987661909.log",
+     "line": 395
+    },
+    "runs_seen": 1,
+    "similarity": 0.964
+   }
+  ],
+  "2/n204b_boris_voice_note": [
+   {
+    "text": "запомни мой голос отдельно от сашиного мы очень по разному звучит",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39962806336",
+     "file": "night_20261023_132908/act2_39962806336.log",
+     "line": 501
+    },
+    "runs_seen": 5,
+    "similarity": 0.985
+   },
+   {
+    "text": "Запоминаемый голос, отдельно от сашиного, мы очень по-${разному}$ звучим.",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39945193396",
+     "file": "night_20261023_111626/act2_39945193396.log",
+     "line": 489
+    },
+    "runs_seen": 1,
+    "similarity": 0.939
+   },
+   {
+    "text": "запомни мой голос о доме цешино мы очень по разному звучны",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39987661909",
+     "file": "night_20261023_161509/act2_39987661909.log",
+     "line": 484
+    },
+    "runs_seen": 1,
+    "similarity": 0.829
+   },
+   {
+    "text": "запомни мой голос отдельно от сашиным мы очень по разному звучим",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40025514095",
+     "file": "night_20261023_210648/act2_40025514095.log",
+     "line": 477
+    },
+    "runs_seen": 1,
+    "similarity": 0.961
+   }
+  ],
+  "2/n204c_boris_voice_reason": [
+   {
+    "text": "я не хочу чтобы ты нас путал когда мы оба будем тебе чтото говорить",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39934329778",
+     "file": "night_20261023_094632/act2_39934329778.log",
+     "line": 511
+    },
+    "runs_seen": 2,
+    "similarity": 0.993
+   },
+   {
+    "text": "я не хочу чтобы ты не спутал когда мы оба будем тебе что то говорить",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39962806336",
+     "file": "night_20261023_132908/act2_39962806336.log",
+     "line": 511
+    },
+    "runs_seen": 2,
+    "similarity": 0.971
+   }
+  ],
+  "2/n206_boris_memory": [
+   {
+    "text": "Робот, запомни про меня: Борис болит за Спартак и всегда приносит пиццу.",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39945193396",
+     "file": "night_20261023_111626/act2_39945193396.log",
+     "line": 546
+    },
+    "runs_seen": 1,
+    "similarity": 0.978
+   },
+   {
+    "text": "запомни про меня борис балуев за спартак и всегда приносит пиццу",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39987661909",
+     "file": "night_20261023_161509/act2_39987661909.log",
+     "line": 553
+    },
+    "runs_seen": 1,
+    "similarity": 0.91
+   }
+  ],
+  "2/n207_recall_sasha": [
+   {
+    "text": "как меня зовут и что ты про меня уже знаешь",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39987661909",
+     "file": "night_20261023_161509/act2_39987661909.log",
+     "line": 569
+    },
+    "runs_seen": 1,
+    "similarity": 0.935
+   }
+  ],
+  "2/n209_recall_boris": [
+   {
+    "text": "а про меня что помнишь",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39987661909",
+     "file": "night_20261023_161509/act2_39987661909.log",
+     "line": 585
+    },
+    "runs_seen": 1,
+    "similarity": 0.88
+   },
+   {
+    "text": "Робота, про меня что помнишь?",
+    "source": {
+     "kind": "issue",
+     "issue": 2779,
+     "where": "лог контейнера, n209 третья попытка (текст шага не менялся с 7a8292b45, 10.09)"
+    },
+    "runs_seen": 1,
+    "similarity": 0.982
+   }
+  ],
+  "2/n213_memory_search_tea_after_reset": [
+   {
+    "text": "робот поищу у себя в памяти что я говорил про чай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39962806336",
+     "file": "night_20261023_132908/act2_39962806336.log",
+     "line": 630
+    },
+    "runs_seen": 1,
+    "similarity": 0.98
+   },
+   {
+    "text": "а робот поищи у себя в памяти что я говорил про чай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40748624730",
+     "file": "night_20261028_183655/act2_40748624730.log",
+     "line": 661
+    },
+    "runs_seen": 1,
+    "similarity": 0.98
+   }
+  ],
+  "3/n301_wake_open": [
+   {
+    "text": "робот мы тут сейчас немного пошумим ты просто слушай не влезай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39994261742",
+     "file": "night_20261023_161509/act3_39994261742.log",
+     "line": 378
+    },
+    "runs_seen": 1,
+    "similarity": 0.984
+   },
+   {
+    "text": "вот мы тут сейчас немного пошумим ты просто слушай и не влезай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40028869024",
+     "file": "night_20261023_210648/act3_40028869024.log",
+     "line": 394
+    },
+    "runs_seen": 1,
+    "similarity": 0.968
+   },
+   {
+    "text": "мы сейчас не многое прошёл мимо ты просто слушай не вылезай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40720471332",
+     "file": "night_20261028_151706/act3_40720471332.log",
+     "line": 415
+    },
+    "runs_seen": 1,
+    "similarity": 0.829
+   },
+   {
+    "text": "мы тут сейчас немного большую мимо ты просто слушай не вылезай",
+    "source": {
+     "kind": "issue",
+     "issue": 4175,
+     "where": "марафон-2 28.10, docker logs voice-assistant 15:58:01.884, вторая попытка n301"
+    },
+    "runs_seen": 1,
+    "similarity": 0.873
+   }
+  ],
+  "3/n303_bg_boris": [
+   {
+    "text": "саша у тебя разведка виновата надо было звездой разводить а не с лифом через плату",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39994261742",
+     "file": "night_20261023_161509/act3_39994261742.log",
+     "line": 401
+    },
+    "runs_seen": 1,
+    "similarity": 0.951
+   },
+   {
+    "text": "саша у тебя разводка ламината надо было звездой разводить а не шлейфом через плату",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40028869024",
+     "file": "night_20261023_210648/act3_40028869024.log",
+     "line": 416
+    },
+    "runs_seen": 1,
+    "similarity": 0.963
+   }
+  ],
+  "3/n304_bg_grisha_unknown": [
+   {
+    "text": "молодые люди спать собирайтесь третий час ночи у меня обход свет горит железка говорит",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39936001538",
+     "file": "night_20261023_100031/act3_39936001538.log",
+     "line": 439
+    },
+    "runs_seen": 1,
+    "similarity": 0.988
+   },
+   {
+    "text": "молодые люди спать собираетесь третий час ночи у меня вход свет горит железка говорит",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39994261742",
+     "file": "night_20261023_161509/act3_39994261742.log",
+     "line": 414
+    },
+    "runs_seen": 1,
+    "similarity": 0.982
+   },
+   {
+    "text": "молодые люди спать собираетесь третий час ночи у меня обход цвет горит и железка говорит",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40028869024",
+     "file": "night_20261023_210648/act3_40028869024.log",
+     "line": 429
+    },
+    "runs_seen": 1,
+    "similarity": 0.977
+   }
+  ],
+  "3/n305_bg_valera_unknown": [
+   {
+    "text": "мне бы подпись получить и уехать",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40477457939",
+     "file": "night_20261027_082157/act3_40477457939.log",
+     "line": 435
+    },
+    "runs_seen": 1,
+    "similarity": 0.52
+   },
+   {
+    "text": "я курьер мне бы подпись получить и уехать",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40599087240",
+     "file": "night_20261027_222154/act3_40599087240.log",
+     "line": 466
+    },
+    "runs_seen": 1,
+    "similarity": 0.621
+   },
+   {
+    "text": "я курьер мне бы подпись получить и уехать встаю уже двадцать минут слушаю ваш спор про землю",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40670046552",
+     "file": "night_20261028_092532/act3_40670046552.log",
+     "line": 463
+    },
+    "runs_seen": 1,
+    "similarity": 0.984
+   },
+   {
+    "text": "я курьер мне бы подпись получить",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40720471332",
+     "file": "night_20261028_151706/act3_40720471332.log",
+     "line": 470
+    },
+    "runs_seen": 1,
+    "similarity": 0.52
+   }
+  ],
+  "3/n306_who_was_talking": [
+   {
+    "text": "робот скажи кто сейчас говорил на фоне кого ты узнал по голосу а кого нет алло",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39936001538",
+     "file": "night_20261023_100031/act3_39936001538.log",
+     "line": 476
+    },
+    "runs_seen": 1,
+    "similarity": 0.967
+   },
+   {
+    "text": "робот скажи кто сейчас говорил на фоне кого ты узнал кого ты узнал по голосу а кого нет",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39967709466",
+     "file": "night_20261023_132908/act3_39967709466.log",
+     "line": 464
+    },
+    "runs_seen": 1,
+    "similarity": 0.912
+   },
+   {
+    "text": "робот скажи кто сейчас говорил на фоне кого ты узнал кого то узнал по голосу а кого нет",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39994261742",
+     "file": "night_20261023_161509/act3_39994261742.log",
+     "line": 451
+    },
+    "runs_seen": 1,
+    "similarity": 0.912
+   }
+  ],
+  "3/n308_bg_command_boris": [
+   {
+    "text": "слушай включи ты уже какую нибудь музыку а то тишина давит мне уши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39936001538",
+     "file": "night_20261023_100031/act3_39936001538.log",
+     "line": 497
+    },
+    "runs_seen": 1,
+    "similarity": 0.977
+   },
+   {
+    "text": "слушай включи ты уже какую нибудь музыку а то тишины давят на уши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39967709466",
+     "file": "night_20261023_132908/act3_39967709466.log",
+     "line": 485
+    },
+    "runs_seen": 1,
+    "similarity": 0.969
+   },
+   {
+    "text": "слушай включи тоже какую нибудь музыку а то тишины дают на уши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39994261742",
+     "file": "night_20261023_161509/act3_39994261742.log",
+     "line": 472
+    },
+    "runs_seen": 1,
+    "similarity": 0.929
+   }
+  ],
+  "3/n311_who_asked": [
+   {
+    "text": "ты робот а кто именно просил включить музыку",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40720471332",
+     "file": "night_20261028_151706/act3_40720471332.log",
+     "line": 585
+    },
+    "runs_seen": 1,
+    "similarity": 0.965
+   }
+  ],
+  "4/n407_volume_up": [
+   {
+    "text": "работ говори погромче тетя гриша глуховата инстует в коридоре",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40478630310",
+     "file": "night_20261027_082157/act4_40478630310.log",
+     "line": 461
+    },
+    "runs_seen": 1,
+    "similarity": 0.934
+   },
+   {
+    "text": "робот сговоры погромче тети а крыша глуховата и стоит в коридоре",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40600213057",
+     "file": "night_20261027_222154/act4_40600213057.log",
+     "line": 474
+    },
+    "runs_seen": 1,
+    "similarity": 0.912
+   },
+   {
+    "text": "робот сговоры погромче тетя крыша глуховатая стоит в коридоре",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40671347983",
+     "file": "night_20261028_092532/act4_40671347983.log",
+     "line": 476
+    },
+    "runs_seen": 1,
+    "similarity": 0.918
+   },
+   {
+    "text": "робот сговоры погромче тетя гриша глуховатый стоит в коридоре",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40724180163",
+     "file": "night_20261028_151706/act4_40724180163.log",
+     "line": 483
+    },
+    "runs_seen": 1,
+    "similarity": 0.934
+   }
+  ],
+  "4/n408_volume_down": [
+   {
+    "text": "робот нет все таки потише а то а то разбудишь весь этаж",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40478630310",
+     "file": "night_20261027_082157/act4_40478630310.log",
+     "line": 472
+    },
+    "runs_seen": 1,
+    "similarity": 0.952
+   }
+  ],
+  "5/n501_silence_check": [
+   {
+    "text": "сейчас же ничего не играет верно",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39970638025",
+     "file": "night_20261023_132908/act5_39970638025.log",
+     "line": 394
+    },
+    "runs_seen": 1,
+    "similarity": 0.914
+   },
+   {
+    "text": "робот сейчас же ничего не играет вяна",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40031774932",
+     "file": "night_20261023_210648/act5_40031774932.log",
+     "line": 385
+    },
+    "runs_seen": 1,
+    "similarity": 0.933
+   },
+   {
+    "text": "робот робот сейчас же ничего не играет верно",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40480199644",
+     "file": "night_20261027_082157/act5_40480199644.log",
+     "line": 391
+    },
+    "runs_seen": 1,
+    "similarity": 0.927
+   }
+  ],
+  "5/n503_confirm_playing": [
+   {
+    "text": "а робот что сейчас звучит",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40480199644",
+     "file": "night_20261027_082157/act5_40480199644.log",
+     "line": 418
+    },
+    "runs_seen": 2,
+    "similarity": 0.958
+   }
+  ],
+  "5/n504_add_bass": [
+   {
+    "text": "робот продолжай развивать эту тему и добавь басы пожирнее",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39970638025",
+     "file": "night_20261023_132908/act5_39970638025.log",
+     "line": 427
+    },
+    "runs_seen": 1,
+    "similarity": 0.982
+   },
+   {
+    "text": "робот продолжай развивать эту тему и добавь басса пожирнее",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39997123614",
+     "file": "night_20261023_161509/act5_39997123614.log",
+     "line": 417
+    },
+    "runs_seen": 1,
+    "similarity": 0.991
+   }
+  ],
+  "5/n505_vibe_dark": [
+   {
+    "text": "робот сделал атмосферу помрачнее как в кибер банке",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39997123614",
+     "file": "night_20261023_161509/act5_39997123614.log",
+     "line": 430
+    },
+    "runs_seen": 1,
+    "similarity": 0.949
+   },
+   {
+    "text": "робот сделал я атмосферу помрачнее как в киберпанке",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40601587460",
+     "file": "night_20261027_222154/act5_40601587460.log",
+     "line": 453
+    },
+    "runs_seen": 1,
+    "similarity": 0.96
+   }
+  ],
+  "5/n506_faster": [
+   {
+    "text": "роботы ускорь там потом мы тут засыпаем оба",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40480199644",
+     "file": "night_20261027_082157/act5_40480199644.log",
+     "line": 462
+    },
+    "runs_seen": 2,
+    "similarity": 0.874
+   },
+   {
+    "text": "робот ускорить темп а то мы тут засыпаем оба",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39997123614",
+     "file": "night_20261023_161509/act5_39997123614.log",
+     "line": 444
+    },
+    "runs_seen": 1,
+    "similarity": 0.955
+   },
+   {
+    "text": "робот и ускорь там потом мы тут засыпаем оба оба",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40601587460",
+     "file": "night_20261027_222154/act5_40601587460.log",
+     "line": 468
+    },
+    "runs_seen": 1,
+    "similarity": 0.87
+   },
+   {
+    "text": "роботы ускорь там потом мы тут засыпаем оба оба",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40673202763",
+     "file": "night_20261028_092532/act5_40673202763.log",
+     "line": 471
+    },
+    "runs_seen": 1,
+    "similarity": 0.835
+   }
+  ],
+  "5/n511_stop_music": [
+   {
+    "text": "врубай все глуши музыку у меня уши в трубочку",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40601587460",
+     "file": "night_20261027_222154/act5_40601587460.log",
+     "line": 497
+    },
+    "runs_seen": 2,
+    "similarity": 0.921
+   },
+   {
+    "text": "робот все глушу музыку у меня уши в трубочку",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40031774932",
+     "file": "night_20261023_210648/act5_40031774932.log",
+     "line": 479
+    },
+    "runs_seen": 1,
+    "similarity": 0.977
+   }
+  ],
+  "6/n603_confirm_dj_playing": [
+   {
+    "text": "рада что сейчас крутится",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39998267213",
+     "file": "night_20261023_161509/act6_39998267213.log",
+     "line": 417
+    },
+    "runs_seen": 1,
+    "similarity": 0.857
+   }
+  ],
+  "6/n604_dj_rock": [
+   {
+    "text": "робот уводи в сторону рока тетя гриша подруг добреет",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40481144618",
+     "file": "night_20261027_082157/act6_40481144618.log",
+     "line": 430
+    },
+    "runs_seen": 4,
+    "similarity": 0.952
+   }
+  ],
+  "6/n605_dj_set_plan": [
+   {
+    "text": "робот поставь сайт из трех треков объявляй каждый",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40602478441",
+     "file": "night_20261027_222154/act6_40602478441.log",
+     "line": 451
+    },
+    "runs_seen": 3,
+    "similarity": 0.969
+   }
+  ],
+  "6/n606_wake_under_dj": [
+   {
+    "text": "ну вот и сколько у тебя заряда осталось",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39998267213",
+     "file": "night_20261023_161509/act6_39998267213.log",
+     "line": 459
+    },
+    "runs_seen": 1,
+    "similarity": 0.883
+   }
+  ],
+  "6/n607_vibe_chill": [
+   {
+    "text": "робот помягче поставь спокойно валера уснет за рулем",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40602478441",
+     "file": "night_20261027_222154/act6_40602478441.log",
+     "line": 478
+    },
+    "runs_seen": 3,
+    "similarity": 0.99
+   }
+  ],
+  "6/n608_dj_off": [
+   {
+    "text": "робот хватит диджей выключай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39972271495",
+     "file": "night_20261023_132908/act6_39972271495.log",
+     "line": 493
+    },
+    "runs_seen": 6,
+    "similarity": 0.931
+   },
+   {
+    "text": "робот хватит диджейд выключай",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40481144618",
+     "file": "night_20261027_082157/act6_40481144618.log",
+     "line": 488
+    },
+    "runs_seen": 1,
+    "similarity": 0.915
+   }
+  ],
+  "6/n609_silence_after_dj": [
+   {
+    "text": "робот тишина на столе",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40032694109",
+     "file": "night_20261023_210648/act6_40032694109.log",
+     "line": 496
+    },
+    "runs_seen": 1,
+    "similarity": 0.878
+   }
+  ],
+  "7/n704_music_library": [
+   {
+    "text": "что у тебя вообще лежит в музыкальной библиотеке",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39973531231",
+     "file": "night_20261023_132908/act7_39973531231.log",
+     "line": 456
+    },
+    "runs_seen": 1,
+    "similarity": 0.941
+   },
+   {
+    "text": "правда что у тебя вообще лежит в музыкальной библиотеке",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40033620645",
+     "file": "night_20261023_210648/act7_40033620645.log",
+     "line": 453
+    },
+    "runs_seen": 1,
+    "similarity": 0.917
+   }
+  ],
+  "7/n705_gen_search_rain": [
+   {
+    "text": "робот робот найди у себя в библиотеке что нибудь про дождь",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40675258147",
+     "file": "night_20261028_092532/act7_40675258147.log",
+     "line": 439
+    },
+    "runs_seen": 1,
+    "similarity": 0.945
+   }
+  ],
+  "7/n708_gen_play": [
+   {
+    "text": "робот включи эту песню про енота сначала",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39973531231",
+     "file": "night_20261023_132908/act7_39973531231.log",
+     "line": 505
+    },
+    "runs_seen": 3,
+    "similarity": 0.988
+   },
+   {
+    "text": "а робот включи эту песню про енота с начала",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40603538496",
+     "file": "night_20261027_222154/act7_40603538496.log",
+     "line": 482
+    },
+    "runs_seen": 3,
+    "similarity": 0.976
+   },
+   {
+    "text": "а робот включи эту песню про енота сначала",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40482613938",
+     "file": "night_20261027_082157/act7_40482613938.log",
+     "line": 470
+    },
+    "runs_seen": 1,
+    "similarity": 0.964
+   }
+  ],
+  "7/n712_stop_all": [
+   {
+    "text": "робот заглуши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40603538496",
+     "file": "night_20261027_222154/act7_40603538496.log",
+     "line": 532
+    },
+    "runs_seen": 2,
+    "similarity": 0.786
+   },
+   {
+    "text": "робот со глуши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39973531231",
+     "file": "night_20261023_132908/act7_39973531231.log",
+     "line": 567
+    },
+    "runs_seen": 1,
+    "similarity": 0.897
+   },
+   {
+    "text": "робот всох в глуши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40033620645",
+     "file": "night_20261023_210648/act7_40033620645.log",
+     "line": 569
+    },
+    "runs_seen": 1,
+    "similarity": 0.848
+   },
+   {
+    "text": "роботься глуши",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40482613938",
+     "file": "night_20261027_082157/act7_40482613938.log",
+     "line": 581
+    },
+    "runs_seen": 1,
+    "similarity": 0.828
+   },
+   {
+    "text": "робот заглушил",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40729367896",
+     "file": "night_20261028_151706/act7_40729367896.log",
+     "line": 515
+    },
+    "runs_seen": 1,
+    "similarity": 0.759
+   }
+  ],
+  "8/n802_long_count": [
+   {
+    "text": "робот посчитай вслух от одного до сорока не торопясь с выражением",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40604623184",
+     "file": "night_20261027_222154/act8_40604623184.log",
+     "line": 415
+    },
+    "runs_seen": 4,
+    "similarity": 0.985
+   },
+   {
+    "text": "робот посчитал вслух от одного до сорока не торопясь и с выражением",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39976513947",
+     "file": "night_20261023_132908/act8_39976513947.log",
+     "line": 412
+    },
+    "runs_seen": 1,
+    "similarity": 0.985
+   },
+   {
+    "text": "робот посчитай вслух от одного до сорока не торопяйся с выражением",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40484087795",
+     "file": "night_20261027_082157/act8_40484087795.log",
+     "line": 402
+    },
+    "runs_seen": 1,
+    "similarity": 0.962
+   }
+  ],
+  "8/n810_rap_over_music": [
+   {
+    "text": "робот а теперь под этот быт зачитай короткий рэп про енотика",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40604623184",
+     "file": "night_20261027_222154/act8_40604623184.log",
+     "line": 541
+    },
+    "runs_seen": 1,
+    "similarity": 0.983
+   }
+  ],
+  "8/n813_silence_final": [
+   {
+    "text": "работа тишина",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39976513947",
+     "file": "night_20261023_132908/act8_39976513947.log",
+     "line": 563
+    },
+    "runs_seen": 1,
+    "similarity": 0.88
+   }
+  ],
+  "9/n901_sound_catalog": [
+   {
+    "text": "робот напомни какие какие звуки у тебя есть в наборе",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40650193961",
+     "file": "night_20261028_071733/act9_40650193961.log",
+     "line": 400
+    },
+    "runs_seen": 1,
+    "similarity": 0.939
+   }
+  ],
+  "9/n902_sound_doorbell": [
+   {
+    "text": "робот включи звук дверного звонка а тетя гриша опять идет с обходом",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40650193961",
+     "file": "night_20261028_071733/act9_40650193961.log",
+     "line": 411
+    },
+    "runs_seen": 1,
+    "similarity": 0.985
+   }
+  ],
+  "9/n903_sound_siren_anim": [
+   {
+    "text": "а теперь сирену и мигалку покажи напугаем валеру",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40485969934",
+     "file": "night_20261027_082157/act9_40485969934.log",
+     "line": 423
+    },
+    "runs_seen": 2,
+    "similarity": 0.941
+   },
+   {
+    "text": "а а теперь сирену и мигалку покажи напугаем валеру",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40606273738",
+     "file": "night_20261027_222154/act9_40606273738.log",
+     "line": 429
+    },
+    "runs_seen": 2,
+    "similarity": 0.942
+   },
+   {
+    "text": "робот а теперь серену и мигалку покажи напугаем валеру",
+    "source": {
+     "kind": "artifact",
+     "run_id": "39978370124",
+     "file": "night_20261023_132908/act9_39978370124.log",
+     "line": 420
+    },
+    "runs_seen": 1,
+    "similarity": 0.981
+   }
+  ],
+  "10/n1003_memory_search_food": [
+   {
+    "text": "робот поищем в памяти что я не ем",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40487496420",
+     "file": "night_20261027_082157/act10_40487496420.log",
+     "line": 414
+    },
+    "runs_seen": 1,
+    "similarity": 0.954
+   }
+  ],
+  "10/n1004_who_am_i_before_reset": [
+   {
+    "text": "вот как меня зовут",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40037984806",
+     "file": "night_20261023_210648/act10_40037984806.log",
+     "line": 427
+    },
+    "runs_seen": 1,
+    "similarity": 0.895
+   }
+  ],
+  "10/n1005_music_state_final": [
+   {
+    "text": "робот музыка у тебя и сейчас точно выключена",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40487496420",
+     "file": "night_20261027_082157/act10_40487496420.log",
+     "line": 436
+    },
+    "runs_seen": 1,
+    "similarity": 0.977
+   }
+  ],
+  "10/n1008_memory_survives_reset": [
+   {
+    "text": "робота что я не ем ты помнишь",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40607989257",
+     "file": "night_20261027_222154/act10_40607989257.log",
+     "line": 488
+    },
+    "runs_seen": 3,
+    "similarity": 0.983
+   }
+  ],
+  "10/n1009_memory_context_after_reset": [
+   {
+    "text": "робот поющий в памяти какой чай я пью",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40607989257",
+     "file": "night_20261027_222154/act10_40607989257.log",
+     "line": 499
+    },
+    "runs_seen": 3,
+    "similarity": 0.959
+   },
+   {
+    "text": "робот поищу в памяти какой чай я пью",
+    "source": {
+     "kind": "artifact",
+     "run_id": "40037984806",
+     "file": "night_20261023_210648/act10_40037984806.log",
+     "line": 485
+    },
+    "runs_seen": 1,
+    "similarity": 0.972
+   }
+  ]
+ }
+}
