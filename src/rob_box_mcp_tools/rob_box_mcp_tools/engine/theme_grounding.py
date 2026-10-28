@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
+from rob_box_dialog.words import level_word
 from rob_box_music import knowledge as kn
 from rob_box_music.theme import match_style
 from rob_box_music.universes import is_mood, universe_of, universe_spans, words_of
@@ -32,6 +33,7 @@ from rob_box_music.universes import is_mood, universe_of, universe_spans, words_
 from .search import _PART_RE, blank_style, content_stems, genre_of
 
 _AND = frozenset({"и", "and"})
+_NOT = "не"
 
 
 def _theme_word(words: List[str], i: int, request: frozenset) -> bool:
@@ -41,14 +43,28 @@ def _theme_word(words: List[str], i: int, request: frozenset) -> bool:
         return True
     if word in kn.GENRE_FILLER:
         return i > 0 and bool(genre_of(words[i - 1]))  # «классической музыки» — жанр словами человека
-    if word in request or match_style([word]) is not None:
+    if word in request or match_style([word]) is not None or level_word(word):  # громкость — уровень заказа, не тема
         return False
     return word.isdigit() or bool(content_stems(word))  # цифра темы — слово («mambo nr 5»), длину уже вырезали
 
 
+def _kept(words: List[str], request: frozenset) -> List[bool]:
+    """Какие слова реплики остаются в теме: слова темы (:func:`_theme_word`); «и» - только между словами темы, «не» -
+    только перед словом темы (слово громкости уходит с «не», слово темы остаётся с ним)."""
+    keep = [w not in _AND and _theme_word(words, i, request) for i, w in enumerate(words)]
+    for i, word in enumerate(words):
+        if word in _AND:
+            keep[i] = any(keep[:i]) and any(keep[i + 1:])
+        elif word == _NOT:
+            keep[i] = i + 1 < len(words) and keep[i + 1]
+    return keep
+
+
 def heard_theme(text: str) -> str:
-    """Тема из реплики человека: слова без просьбы, «ты диджей X», стиля и длины сета; «и» между словами темы и
-    запятые остаются (границы частей темы-перечисления, ``search.theme_parts``). Значимых слов нет — ``""``."""
+    """Тема из реплики человека: слова без просьбы, «ты диджей X», стиля, громкости и длины сета; «и» между словами
+    темы и запятые остаются (границы частей темы-перечисления, ``search.theme_parts``). «Не» связано со словом после
+    него: слово громкости уходит из темы вместе с «не» («только не громко» - громкость, не тема «...громко»), слово темы
+    остаётся с ним («не космос» не станет «космос»). Значимых слов нет - ``""``."""
     from rob_box_voice.core.media_command_grammar import SET_REQUEST_WORDS, dj_persona_span
     from rob_box_voice.core.set_length_words import split_set_length, tokens  # длину сета разбирает одна грамматика
 
@@ -58,11 +74,7 @@ def heard_theme(text: str) -> str:
         rest = rest[:persona[0]] + " " * (persona[1] - persona[0]) + rest[persona[1]:]
     rest = blank_style(rest)
     toks = tokens(rest)
-    words = [t[0] for t in toks]
-    keep = [w not in _AND and _theme_word(words, i, SET_REQUEST_WORDS) for i, w in enumerate(words)]
-    for i, word in enumerate(words):  # «и» — только между словами темы
-        if word in _AND:
-            keep[i] = any(keep[:i]) and any(keep[i + 1:])
+    keep = _kept([t[0] for t in toks], SET_REQUEST_WORDS)
     out = ""
     last_end = 0
     for (word, start, end), kept in zip(toks, keep):

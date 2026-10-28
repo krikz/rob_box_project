@@ -41,7 +41,7 @@ import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
@@ -80,6 +80,9 @@ class WindowEntry:
     #: У ``tool``: чья память была у хода, когда тул исполнялся (``memory.memory_owner`` снимка исполнения): исход тула
     #: памяти другого владельца в ``recent_actions`` не идёт (``memory.foreign_result``, #4023).
     owner: Optional[str] = None
+    #: у ``assistant``: прозвучавшая реплика - заглушка ожидания («Сейчас, соображаю.», ``knowledge.PROGRESS_PHRASES``):
+    #: в окне модели она есть, а в «повтори» (:meth:`TurnLog.last_spoken`) не входит - это не ответ (#4136, n808)
+    filler: bool = field(default=False, compare=False)
 
     def text(self) -> str:
         """Как запись уходит модели (и как считается её размер): данные ``tool`` — компактным JSON."""
@@ -156,7 +159,7 @@ def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEnt
     for said in superseded:
         rest = rest.replace(said, " ")
     rest = " ".join(rest.split())
-    return WindowEntry(ASSISTANT, rest, voiced=entry.voiced) if rest else None
+    return WindowEntry(ASSISTANT, rest, voiced=entry.voiced, filler=entry.filler) if rest else None
 
 
 def _supersede(turn: "_Turn", said: Optional[str]) -> None:
@@ -168,9 +171,10 @@ def _supersede(turn: "_Turn", said: Optional[str]) -> None:
 
 
 def _last_voiced(turns: Sequence["_Turn"], exclude: str) -> str:
-    """Озвученные реплики робота последнего хода, где он говорил (кроме ``exclude``), по порядку - одной строкой."""
+    """Озвученные реплики робота последнего хода, где он говорил (кроме ``exclude``), по порядку - одной строкой.
+    Заглушки ожидания (``WindowEntry.filler``) - не ответ: ход, который сказал одну заглушку, не «говорил»."""
     for turn in reversed(turns):
-        said = " ".join(e.content for e in turn.entries if e.voiced)
+        said = " ".join(e.content for e in turn.entries if e.voiced and not e.filler)
         if said and turn.turn_id != exclude:
             return said
     return ""
@@ -253,6 +257,7 @@ class TurnLog:
         self._on_outcome = on_outcome
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
         self._speech: Dict[str, Tuple[str, str]] = {}  # speech_id → (turn_id, текст)
+        self._fillers: Set[str] = set()  # speech_id реплик, отданных как заглушка ожидания (:meth:`said`, ``filler``)
         self._performs: Dict[str, str] = {}  # turn_id → kind выступления, запись которого в окне ещё можно обновить
         #: ``ActionResult.turn_id`` действия (``<ход>/<n>``) → (ход, его запись в окне, исход) — для :meth:`late`.
         self._actions: Dict[str, Tuple[str, WindowEntry, Any]] = {}
@@ -265,24 +270,29 @@ class TurnLog:
         self._turns[turn_id] = _Turn(turn_id, int(epoch), (text or "").strip(), speaker, heard=lead)
         self._trim()
 
-    def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False) -> None:
+    def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False, filler: bool = False) -> None:
         """Агент отдал реплику владельцу речи. В окно она попадёт по :meth:`spoken`; ``delivered`` — текстовый
-        канал (телеграм): текст доставлен целиком сразу."""
+        канал (телеграм): текст доставлен целиком сразу. ``filler`` — заглушка ожидания (промежуточная фраза кода,
+        ``turn.progress_due``): в окне есть, повтором («повтори») не становится (#4136, n808)."""
         if turn_id not in self._turns or not text:
             return
         if delivered:
-            self._add(turn_id, WindowEntry(ASSISTANT, text, voiced=True))
+            self._add(turn_id, WindowEntry(ASSISTANT, text, voiced=True, filler=filler))
         else:
             self._speech[speech_id] = (turn_id, text)
+            if filler:
+                self._fillers.add(speech_id)
 
     def spoken(self, speech_id: str, spoken_chars: int) -> Optional[str]:
         """Реплика отзвучала (``finished``/``cancelled``/``rejected``): в окно — озвученная часть. Чужая или
         старой сессии реплика — ``None``, ничего не меняется."""
         turn_id, text = self._speech.pop(speech_id, (None, ""))
+        filler = speech_id in self._fillers
+        self._fillers.discard(speech_id)
         part = text[:max(0, int(spoken_chars or 0))].strip()
         if turn_id is None or not part:
             return None
-        self._add(turn_id, WindowEntry(ASSISTANT, part, voiced=True))
+        self._add(turn_id, WindowEntry(ASSISTANT, part, voiced=True, filler=filler))
         return part
 
     def speech(self, speech_id: str) -> Optional[Tuple[str, str]]:
@@ -293,7 +303,8 @@ class TurnLog:
         """Последняя ОЗВУЧЕННАЯ реплика робота в журнале сессии (#4028, Tier-1 «повтори»): то, что прозвучало
         (:meth:`spoken`; у текстового канала - доставленный текст) в последнем ходе, где робот говорил, по порядку.
         Метки кода в окне («[ответ действием: …]», «[рот заклеен — молчу]») - не слова робота, их не повторяем; фразу,
-        которую опроверг поздний итог (:meth:`late`), - тоже. ``exclude`` - ход, который просит повтор. Робот ещё
+        которую опроверг поздний итог (:meth:`late`), - тоже; заглушку ожидания («Сейчас, соображаю.», ``filler``) -
+        тоже: повтор говорит ответ, а не «соображаю» (#4136, n808). ``exclude`` - ход, который просит повтор. Робот ещё
         ничего не сказал (новая сессия) - «»."""
         return _last_voiced(list(self._turns.values()), exclude)
 
@@ -409,6 +420,7 @@ class TurnLog:
         """Новая сессия: окно и ожидающие реплики очищены."""
         self._turns.clear()
         self._speech.clear()
+        self._fillers.clear()
         self._performs.clear()
         self._actions.clear()
 
@@ -436,6 +448,7 @@ class TurnLog:
         while len(self._turns) > self._max_turns:
             gone, _ = self._turns.popitem(last=False)
             self._speech = {sid: v for sid, v in self._speech.items() if v[0] != gone}
+            self._fillers &= set(self._speech)
             self._actions = {ref: v for ref, v in self._actions.items() if v[0] != gone}
             self._performs.pop(gone, None)
 

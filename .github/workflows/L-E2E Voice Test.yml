@@ -990,6 +990,10 @@ jobs:
       - name: Upload recording
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        # Сетевой сбой загрузки артефакта (28.10, run 40646896010: `Failed to CreateArtifact: Unable to make request:
+        # ECONNRESET`) красил акт при `E2E_VERDICT PASS` (#4136): вердикт акта решает шаг «Verdict from atomic harness»,
+        # а не доставка артефактов.
+        continue-on-error: true
         with:
           name: e2e-voice-recording-${{ github.run_id }}
           # Берём любой .wav из собранных артефактов. Если .wav файлов нет
@@ -1002,6 +1006,7 @@ jobs:
       - name: Upload logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-logs-${{ github.run_id }}
           # Лог docker voice-assistant (runner-side) + логи харнесса только
@@ -1025,6 +1030,7 @@ jobs:
       - name: Upload model.json
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-model-${{ github.run_id }}
           # model.json пишется двумя местами:
@@ -1039,6 +1045,7 @@ jobs:
       - name: Upload e2e artifacts archive (full debug bundle)
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-artifacts-${{ github.run_id }}
           # Полный архив всего что собрали: verdict.txt, scenario, step_N.log,
@@ -1069,6 +1076,7 @@ jobs:
       - name: Upload acceptance evidence (issue #1077)
         if: ${{ always() && inputs.acceptance_feature == 'speaker_profile' }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-acceptance-${{ github.run_id }}
           path: /tmp/e2e_acceptance_${{ github.run_id }}.txt
@@ -1082,6 +1090,7 @@ jobs:
       - name: Upload timing breakdown (JSON — issue #1396)
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-timing-${{ github.run_id }}
           path: /tmp/e2e_timing.json
@@ -1097,6 +1106,7 @@ jobs:
         #     несуществующий путь с if-no-files-found=ignore (не валим job).
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
+        continue-on-error: true
         with:
           name: e2e-voice-diff-${{ github.run_id }}
           path: ${{ env.DIFF_FILE || format('/tmp/e2e_pr_diff_{0}.patch', github.run_id) }}

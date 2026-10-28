@@ -1,4 +1,5 @@
-"""Выступление в ноде v1 (ADR-0150 §5.6.3, PR-7c ч.3 #3700): автомат ``PerformBlock`` ↔ владельцы речи и музыки.
+"""Выступление в ноде диалога v2 (``dialog_node``; ADR-0150 §5.6.3, PR-7c ч.3 #3700): автомат ``PerformBlock`` ↔ владельцы
+речи и музыки.
 
 Решает ``rob_box_dialog.plan.perform``, хост только исполняет его эффекты и кормит его событиями:
 
@@ -132,7 +133,8 @@ class EffectRunner:
 
 
 class PerformHost:
-    """Одно выступление ноды v1: старт по команде LLM, правка, «хватит»/«стой», события владельцев, таймер."""
+    """Одно выступление ноды диалога v2: старт по команде модели (``Command.perform``), правка, «хватит»/«стой», события
+    владельцев, таймер."""
 
     def __init__(self, node: Any, run_tool: RunTool, loop: Callable[[], Optional[asyncio.AbstractEventLoop]],
                  emit: Callable[[PlanEvent], None], output_latency_ms: int,

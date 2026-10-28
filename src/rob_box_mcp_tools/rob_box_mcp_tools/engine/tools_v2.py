@@ -70,6 +70,7 @@ from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .instrumental_order import InstrumentalOrder
+from .order_level import LevelSetter, with_level
 from .source_route import SourceRouter
 from .track_edit import LiveRecipe, TrackEditor, synth_title
 from .theme_grounding import heard_theme, set_slots
@@ -460,6 +461,8 @@ class DjSetTool(MCPTool):
         #: Сет из кэша и генерации (ADR-0158 PR-8, ``engine.gen.gen_session.GenSetMaker``): любой сет (тема, стиль,
         #: auto) — путь каждого трека чойсером: кэш → генерация → синтез-запас (В13, 14.10); ``None`` — только синтез.
         self.gen_sets: Any = None
+        #: Громкость музыки по словам заказа («сет потише»): шаг мастер-фейдера ставит ``mcp_server`` (``order_level``).
+        self.level: Optional[LevelSetter] = None
 
     @property
     def name(self) -> str:
@@ -537,7 +540,8 @@ class DjSetTool(MCPTool):
                 return MCPToolResult(success=False, error=f"action={action!r}: есть только start и stop")
         result = confirmed(result, self._confirm)  # ждём started вне замка
         self._session_turn = turn_id if result.get("ok") else None
-        return tool_result(result, "сет не начался")
+        return with_level(tool_result(result, "сет не начался"), heard_text, self.level,
+                          self.node.get_logger() if self.node is not None else _LOG)
 
     def _set_slots(self, theme: Optional[str], persona: Optional[str],
                    heard_text: Optional[str]) -> Tuple[str, Optional[str]]:
@@ -741,6 +745,8 @@ class RequestMusicTool(MCPTool):
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
         #: Подложка выступления (``intent=backing``, ADR-0150 PR-7c): ставит ``mcp_server`` — ей нужен клок адаптера.
         self.backing: Optional[BackingDeck] = None
+        #: Громкость музыки по словам заказа («только негромко»): шаг мастер-фейдера ставит ``mcp_server`` (``order_level``).
+        self.level: Optional[LevelSetter] = None
         #: Правка играющего (#4029): рецепты своих синт-треков (трек и подложка) — тул ``edit_music``.
         self.editor = TrackEditor(owner, log=self._log)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
@@ -816,7 +822,8 @@ class RequestMusicTool(MCPTool):
         ``backing`` — подложка выступления (:mod:`.backing_deck`, ADR-0150 PR-7c)."""
         if intent == BACKING_INTENT:
             return tool_result(backing_order(self.backing, mood, min_seconds), "бит не заиграл")
-        return self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine)
+        result = self.order(intent, text, mood, genre, turn_id, heard_text, engine=engine)
+        return with_level(result, heard_text or text, self.level, self._log())  # «негромко» в заказе - код, #4136
 
     def order(self, intent: str = "track", text: str = "", mood: Optional[str] = None, genre: Optional[str] = None,
               turn_id: Optional[str] = None, heard_text: Optional[str] = None,

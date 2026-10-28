@@ -34,8 +34,9 @@ from rob_box_dialog.knowledge import (
     STOP_WORDS,
     TIER1_POLICY,
     VOICE_STEP,
+    VOLUME_LEVEL_WORDS,
+    VOLUME_STEMS,
     WAKE_SLIP_AMBIGUOUS,
-    WAKE_SLIP_CUE_WINDOW,
     WAKE_SLIP_GATES,
     WAKE_SLIP_NEVER,
     WAKE_SLIP_PLURAL,
@@ -111,13 +112,13 @@ def _is_cue(token: str, gate: SlipGate) -> bool:
 
 def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
     """Есть ли в ``tail`` (всё, что идёт за ведущим словом) знак ворот: слово целиком из ``forms`` или начинающееся с
-    основы из ``stems``. Ворота без знака пропускают всегда. ``gate.reach`` - где искать: в ближайших
-    ``WAKE_SLIP_CUE_WINDOW`` словах (по умолчанию) либо только сразу за ведущим, не считая вежливых слов
+    основы из ``stems``. Ворота без знака пропускают всегда. ``gate.reach`` - где искать: в ближайших ``gate.window``
+    словах (по умолчанию ``WAKE_SLIP_CUE_WINDOW``) либо только сразу за ведущим, не считая вежливых слов
     (``REACH_NEXT``); ``REACH_END_OR_NEXT`` пропускает и фразу, которая кончилась на ведущем."""
     if not (gate.forms or gate.stems):
         return True
     if gate.reach not in (REACH_NEXT, REACH_END_OR_NEXT):
-        return any(_is_cue(t, gate) for t in tail[:WAKE_SLIP_CUE_WINDOW])
+        return any(_is_cue(t, gate) for t in tail[:gate.window])
     rest = tuple(itertools.dropwhile(lambda t: t in WAKE_SLIP_POLITE, tail))
     if not rest:
         return gate.reach == REACH_END_OR_NEXT
@@ -127,20 +128,41 @@ def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
 def _gate_lead(token: str, gate: SlipGate) -> bool:
     """Ведущее слово ворот: слово целиком из ``leads`` либо основа из ``lead_stems`` с окончанием из ``lead_endings``
     («ускор» + «ь», «быстр» + «ее»; «ускоряются» и «быстро» - не просьба)."""
-    return token in gate.leads or any(
+    return gate.open_lead or token in gate.leads or any(
         token.startswith(stem) and token[len(stem):] in gate.lead_endings for stem in gate.lead_stems)
 
 
-def _gates_open(rest: str, music_playing: bool = False) -> bool:
-    """Открыты ли ворота за искажённым словом: первое слово остатка - ведущее ворот и знак есть в ближайших
-    ``WAKE_SLIP_CUE_WINDOW`` словах после него (ё → е, как в таблицах). Ворота правки музыки (``under_music``) в счёт
-    идут, только пока музыка играет. Единственное правило для «работа/рада/роботы»: таблицы в
-    :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
-    tokens = name_tokens(rest)
+def _gates_at(tokens: Sequence[str], music_playing: bool, music_only: bool = False) -> bool:
+    """Открыта ли хоть одна из ворот ``WAKE_SLIP_GATES`` на фразе ``tokens``. Ворота правки музыки (``under_music``) в
+    счёт идут, только пока музыка играет; ``music_only`` - смотрим одни они (за наречием-приставкой, :func:`_gate_prefix`).
+    """
     if not tokens:
         return False
-    return any(_gate_lead(tokens[0], gate) and _gate_cue(tokens[1:], gate)
-               for gate in WAKE_SLIP_GATES if music_playing or not gate.under_music)
+    for gate in WAKE_SLIP_GATES:
+        if (gate.under_music and not music_playing) or (music_only and not gate.under_music):
+            continue
+        if not _gate_lead(tokens[0], gate):
+            continue
+        if _gate_prefix(tokens[1:], gate, music_playing) if gate.prefix else _gate_cue(tokens[1:], gate):
+            return True
+    return False
+
+
+def _gate_prefix(tail: Sequence[str], gate: SlipGate, music_playing: bool) -> bool:
+    """Ворота наречия-приставки (``gate.prefix``: «ещё», «снова»): дальше ворота правки музыки проверяются заново с
+    того, что идёт после приставки и вежливых слов («ещё чуть быстрее» = «быстрее»). Приставка ничего не решает сама:
+    «ещё быстрее нас считают» и «ещё громче всех» закрыты, как «быстрее нас считают» и «громче всех»."""
+    rest = tuple(itertools.dropwhile(lambda t: t in WAKE_SLIP_POLITE, tail))
+    return _gates_at(rest, music_playing, music_only=True)
+
+
+def _gates_open(rest: str, music_playing: bool = False) -> bool:
+    """Открыты ли ворота за искажённым словом: первое слово остатка (ё → е, как в таблицах) - ведущее ворот и знак ворот
+    есть там, где велит ворота (``SlipGate.reach``: в ближайших ``window`` словах, сразу за ведущим, либо фраза
+    кончилась на нём); ведущим может быть любое слово (``open_lead``) или наречие-приставка (``prefix``), за которой
+    ворота правки проверяются заново. Ворота правки музыки и стопа (``under_music``) - только пока музыка играет.
+    Единственное правило для «работа/рада/роботы»: таблицы в :data:`rob_box_dialog.knowledge.WAKE_SLIP_GATES`."""
+    return _gates_at(name_tokens(rest), music_playing)
 
 
 def slipped_wake_rest(text: str, wake_words: Optional[Sequence[str]] = None, *,
@@ -187,6 +209,32 @@ def without_forms(text: str, forms: Sequence[str]) -> Tuple[str, bool]:
 def name_tokens(text: str) -> Tuple[str, ...]:
     """Слова фразы в нижнем регистре, ё → е (как в таблицах имён)."""
     return tuple(t for t in (w.lower().replace("ё", "е").strip("-") for w in _TOKEN.findall(text or "")) if t)
+
+
+#: Обратное направление: слово с «не» перед ним значит противоположное («не громко» — тише).
+_OPPOSITE_LEVEL = {"louder": "quieter", "quieter": "louder"}
+
+
+def level_word(token: str) -> str:
+    """Направление громкости, которое называет слово заказа музыки: ``louder``/``quieter`` или ``""``. Основа из
+    ``VOLUME_STEMS`` («потише», «погромче», «убавь») либо слово целиком из ``VOLUME_LEVEL_WORDS`` («негромко», «тихо»);
+    ё → е, регистр не важен. Единственное место, где слово называется словом громкости: тема заказа
+    (``theme_grounding.heard_theme``) и уровень заказа (:func:`asked_level`) читают его."""
+    word = (token or "").lower().replace("ё", "е")
+    for intent in _OPPOSITE_LEVEL:
+        if word in VOLUME_LEVEL_WORDS[intent] or word.startswith(VOLUME_STEMS[intent]):
+            return intent
+    return ""
+
+
+def asked_level(text: str) -> str:
+    """Уровень музыки, который просит заказ: ``quieter``/``louder`` или ``""`` (не просил, либо просил то и другое —
+    выбирать нечем). «Поставь ровный ритм, только негромко» и «…только не громко» — ``quieter`` (слово с «не» перед ним
+    значит обратное); «поставь потише» — ``quieter``. Слова — :func:`level_word`."""
+    tokens = name_tokens(text)
+    asked = {_OPPOSITE_LEVEL[kind] if i and tokens[i - 1] == "не" else kind
+             for i, token in enumerate(tokens) if (kind := level_word(token))}
+    return asked.pop() if len(asked) == 1 else ""
 
 
 def nominative_name(word: str) -> str:
