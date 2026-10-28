@@ -103,6 +103,10 @@ COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 # (context_aggregator_node читает Utterance); package.xml нужен rosdep, чтобы
 # ключ резолвился из workspace, а не искался в apt.
 COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #4001/#4002: battery_state_node и context_aggregator берут кривую заряда из
+# rob_box_core.battery (единственное место знания, его же использует
+# rob_box_mcp_tools); package.xml нужен rosdep по той же причине, что выше.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. Устанавливаем ROS зависимости через rosdep (кэшируется если package.xml не изменился)
@@ -149,6 +153,9 @@ COPY --from=msgs /ws/install /ws/install
 COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 
 # 6. Только ТЕПЕРЬ копируем весь исходный код (изменяется часто)
+# rob_box_core - ВЕСЬ пакет, не отдельные файлы: setup.py тащит data_files
+# (config/, resource/), выборочный COPY ломает сборку (образец - docker/main/teleop).
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
 # 7. Сборка ноды (msgs уже собраны слоем выше)
@@ -162,7 +169,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # лежали в том же слое.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception \
+    --packages-select rob_box_core rob_box_perception \
     --cmake-args \
     -DCMAKE_BUILD_TYPE=Release
 

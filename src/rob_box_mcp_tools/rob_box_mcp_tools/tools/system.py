@@ -651,12 +651,27 @@ class GetCurrentTimeTool(MCPTool):
         return MCPToolResult(success=True, data=data, message=message)
 
 
+def battery_percent_from_state(percentage, present=True) -> Optional[float]:
+    """``BatteryState.percentage`` (ROS-конвенция 0..1) -> проценты 0..100.
+
+    ``None`` = неизвестно: ``present=False``, NaN, отрицательное (ROS: -1 = «неизвестно»)
+    или вне 0..1 (не по контракту, процентов тут угадывать не надо).
+    """
+    if not present or percentage is None:
+        return None
+    fraction = float(percentage)
+    if not 0.0 <= fraction <= 1.0:  # NaN тоже сюда: сравнения с NaN ложны
+        return None
+    return fraction * 100.0
+
+
 class GetRobotStatusTool(MCPTool):
     """Инструмент для получения статуса робота.
 
     Реальные данные читаются из ROS-топиков:
     - /odom          (nav_msgs/Odometry)     — позиция робота (x, y, theta)
-    - /battery_state (sensor_msgs/BatteryState) — уровень заряда батареи (%)
+    - /battery_state (sensor_msgs/BatteryState) — уровень заряда батареи
+      (percentage 0..1 по конвенции ROS; в статусе отдаётся в процентах 0..100)
 
     Подписки создаются при инициализации инструмента, execute() отдаёт
     последние полученные значения. Если топик не публикует данные — в ответе
@@ -700,11 +715,7 @@ class GetRobotStatusTool(MCPTool):
     def _on_battery(self, msg):
         """Сохранить последний уровень заряда из /battery_state (sensor_msgs/BatteryState)."""
         try:
-            # ROS: percentage == -1.0 означает «неизвестно»
-            if msg.percentage is not None and float(msg.percentage) >= 0.0:
-                self._battery_level = float(msg.percentage)
-            else:
-                self._battery_level = None
+            self._battery_level = battery_percent_from_state(msg.percentage, getattr(msg, "present", True))
             self._data_event.set()
         except Exception as e:
             self.log_warning(f"Ошибка обработки /battery_state: {e}")

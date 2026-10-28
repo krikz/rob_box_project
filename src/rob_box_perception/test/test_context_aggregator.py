@@ -516,10 +516,59 @@ class TestContextAggregator(unittest.TestCase):
         # Проверяем callback
         self.assertTrue(hasattr(self.node, 'on_joint_states'))
 
-        # SKIP: Сложная структура DynamicJointState, нужны моки
-        # Просто проверяем что current_sensors существует
         self.assertIsNotNone(self.node.current_sensors)
         self.assertIsInstance(self.node.current_sensors, dict)
+
+    @staticmethod
+    def _joint_state(joints):
+        """DynamicJointState: joints = [(joint, [(interface, value), ...]), ...] (#4001)."""
+        return _types.SimpleNamespace(
+            joint_names=[name for name, _ in joints],
+            interface_values=[
+                _types.SimpleNamespace(
+                    interface_names=[i for i, _ in ifaces],
+                    values=[v for _, v in ifaces])
+                for _, ifaces in joints
+            ])
+
+    def test_joint_states_battery_voltage_read_from_battery_joint(self):
+        """#4001: joint 'battery' + интерфейс 'voltage' -> current_sensors['battery']."""
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0), ('velocity', 0.5)]),
+            ('battery', [('voltage', 41.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 41.0)
+
+    def test_joint_states_battery_first_joint_order(self):
+        """Порядок joints произвольный: battery может быть первым."""
+        self.node.on_joint_states(self._joint_state([
+            ('battery', [('voltage', 40.5)]),
+            ('left_front_wheel_joint', [('position', 1.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 40.5)
+
+    def test_joint_states_without_battery_keeps_sensors_untouched(self):
+        """Нет joint battery - current_sensors не меняется (не выдумываем напряжение)."""
+        self.node.current_sensors = {'battery': 39.0}
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0), ('velocity', 0.5)]),
+        ]))
+        self.assertEqual(self.node.current_sensors, {'battery': 39.0})
+
+    def test_joint_states_without_battery_does_not_create_key(self):
+        self.node.current_sensors = {}
+        self.node.on_joint_states(self._joint_state([
+            ('left_front_wheel_joint', [('position', 1.0)]),
+        ]))
+        self.assertNotIn('battery', self.node.current_sensors)
+
+    def test_joint_states_zero_voltage_is_not_data(self):
+        """0 В на 10S - «нет данных», ключ не перезаписывается нулём."""
+        self.node.current_sensors = {'battery': 41.0}
+        self.node.on_joint_states(self._joint_state([
+            ('battery', [('voltage', 0.0)]),
+        ]))
+        self.assertEqual(self.node.current_sensors['battery'], 41.0)
 
     def test_memory_window(self):
         """Тест: Ограничение окна памяти для истории."""

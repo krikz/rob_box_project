@@ -47,7 +47,7 @@ def _install_ros_mocks_if_needed():
 
 _install_ros_mocks_if_needed()
 
-from rob_box_mcp_tools.tools.system import GetCurrentTimeTool, GetRobotStatusTool
+from rob_box_mcp_tools.tools.system import GetCurrentTimeTool, GetRobotStatusTool, battery_percent_from_state
 
 
 def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
@@ -62,11 +62,28 @@ def _make_odom_msg(x=1.5, y=-2.25, qz=0.0, qw=1.0):
     return msg
 
 
-def _make_battery_msg(percentage=85.0):
-    """Создать мок sensor_msgs/BatteryState с заданным процентом заряда."""
+def _make_battery_msg(percentage=0.85, present=True):
+    """Создать мок sensor_msgs/BatteryState: percentage 0..1 (ROS-конвенция), present."""
     msg = Mock()
     msg.percentage = percentage
+    msg.present = present
     return msg
+
+
+@pytest.mark.unit
+class TestBatteryPercentFromState:
+    """battery_percent_from_state: ROS-шкала 0..1 -> проценты, неизвестное -> None."""
+
+    @pytest.mark.parametrize("fraction, expected", [(0.0, 0.0), (0.5, 50.0), (0.92, 92.0), (1.0, 100.0)])
+    def test_scale_0_1_to_percent(self, fraction, expected):
+        assert battery_percent_from_state(fraction) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("bad", [None, float("nan"), -1.0, 1.01, 92.0])
+    def test_unknown_is_none(self, bad):
+        assert battery_percent_from_state(bad) is None
+
+    def test_not_present_is_none(self):
+        assert battery_percent_from_state(0.9, present=False) is None
 
 
 @pytest.mark.unit
@@ -120,12 +137,12 @@ class TestGetRobotStatusTool:
         tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
 
         battery_sub = mock_node.get_subscription("/battery_state")
-        battery_sub.callback(_make_battery_msg(percentage=72.5))
+        battery_sub.callback(_make_battery_msg(percentage=0.725))
 
         result = tool.execute()
 
         assert result.success is True
-        assert result.data["battery_level"] == 72.5
+        assert result.data["battery_level"] == pytest.approx(72.5)
         assert result.data["position"] is None
         assert "/odom" in result.data["unavailable_topics"]
 
@@ -138,7 +155,7 @@ class TestGetRobotStatusTool:
         odom_sub.callback(_make_odom_msg(x=1.5, y=-2.25, qz=0.7071067811865476, qw=0.7071067811865476))
 
         battery_sub = mock_node.get_subscription("/battery_state")
-        battery_sub.callback(_make_battery_msg(percentage=42.0))
+        battery_sub.callback(_make_battery_msg(percentage=0.42))
 
         result = tool.execute()
 
@@ -147,7 +164,7 @@ class TestGetRobotStatusTool:
         assert result.data["position"]["x"] == 1.5
         assert result.data["position"]["y"] == -2.25
         assert abs(result.data["position"]["theta"] - (3.141592653589793 / 2.0)) < 1e-6
-        assert result.data["battery_level"] == 42.0
+        assert result.data["battery_level"] == pytest.approx(42.0)
         # ADR-0051 §6: 'systems' больше не захардкожен в 'active'.
         # Если оператору нужен статус нод — это ros2_node_status, не get_robot_status.
         assert result.data["systems"] == {}
@@ -163,6 +180,36 @@ class TestGetRobotStatusTool:
 
         assert result.data["battery_level"] is None
         assert "/battery_state" in result.data.get("unavailable_topics", [])
+
+    @pytest.mark.parametrize(
+        "percentage, present",
+        [
+            (float("nan"), True),  # узел-издатель: нет свежего напряжения
+            (0.92, False),  # present=False перебивает любое число
+            (-1.0, True),
+            (92.0, True),  # процентов вместо 0..1 — не по контракту, не угадываем
+        ],
+    )
+    def test_battery_unknown_variants(self, mock_node, percentage, present):
+        """NaN / present=False / вне 0..1 — батарея недоступна, а не «полная» или «0 %»."""
+        tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
+
+        mock_node.get_subscription("/battery_state").callback(_make_battery_msg(percentage, present))
+
+        result = tool.execute()
+
+        assert result.data["battery_level"] is None
+        assert "/battery_state" in result.data.get("unavailable_topics", [])
+
+    def test_battery_recovers_after_unknown(self, mock_node):
+        """После present=False следующее валидное сообщение снова даёт уровень."""
+        tool = GetRobotStatusTool(mock_node, wait_timeout_sec=0.0)
+        cb = mock_node.get_subscription("/battery_state").callback
+
+        cb(_make_battery_msg(float("nan"), present=False))
+        cb(_make_battery_msg(0.5))
+
+        assert tool.execute().data["battery_level"] == pytest.approx(50.0)
 
     def test_execute_without_node(self):
         """Инструмент без node (например, в unit-тестах) — graceful ошибка недоступности."""
