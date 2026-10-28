@@ -13,8 +13,8 @@ chat_id, голос комнаты к ней не применяется. Это
 
 Владельцы — ``TELEGRAM_OWNER_CHAT_IDS`` (через запятую, env контейнера
 voice-assistant); без неё — :data:`DEFAULT_OWNER_CHAT_IDS`. Остальные
-разрешённые чаты — гости (``RULE #SRC`` промпта: «The operator (Шифу) is
-the DIRECTOR … Other chat users are guests»).
+разрешённые чаты — гости (правило ``owner`` из ``knowledge.PROMPT_RULES`` агента чата: Шифу
+направляет робота).
 
 Модуль без ROS2 — тестируется напрямую.
 """
@@ -30,7 +30,7 @@ OWNER_CHAT_IDS_ENV: str = "TELEGRAM_OWNER_CHAT_IDS"
 #: chat_id товарища Шифу (он же в ``scripts/music/live_dj/s7_styles.sh``).
 DEFAULT_OWNER_CHAT_IDS: frozenset = frozenset({495039871})
 
-#: Имя владельца — как его называет ``RULE #SRC`` в промпте.
+#: Имя владельца — как его называет правило ``owner`` из ``knowledge.PROMPT_RULES``.
 OWNER_NAME: str = "Шифу"
 
 # Issue #2779 — незнакомец получил факты и имя Бориса: биометрия верно
