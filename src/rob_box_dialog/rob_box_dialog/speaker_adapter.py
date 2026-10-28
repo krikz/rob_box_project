@@ -24,6 +24,9 @@
   нормальной длины (:func:`template_step`, :func:`voice_check_step`); что сделать и что сказать — кодом.
 * :func:`confident_name` / :func:`named_self` — контекст хода для гейта ``register_speaker`` (#2925, #4054): кем голос
   фразы УВЕРЕННО узнан и как человек назвал себя в реплике; гейт сверяет с ними имя, которое модель пишет в профиль.
+* :func:`recognition_reply` — ответ на «ты меня узнал?» строит код по собеседнику снимка (#3993, решение Шифу 26.10):
+  узнан с именем, голос знакомый без подтверждения (без вопроса «ты Саша?»), профиль без имени, не узнан (и профиль,
+  заведённый из этой же фразы, ``SpeakerRef.first_heard``: голос слышен впервые).
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -44,6 +47,7 @@ from rob_box_core.speaker_wire import (
     NAME_NAMELESS,
     NAME_TENTATIVE,
     NAME_UNKNOWN,
+    first_heard,
     name_state,
 )
 from rob_box_dialog import knowledge as kn
@@ -53,7 +57,7 @@ from rob_box_dialog.greeting_reply import is_greeting_reply
 from rob_box_dialog.reply_grammar import NAME, NO, YES, Rename, Reply, classify_rename, classify_reply, classify_same
 from rob_box_dialog.session import SceneFrame, SpeakerRef
 from rob_box_dialog.tools_view import command_groups
-from rob_box_dialog.words import same_name, self_intro_name
+from rob_box_dialog.words import name_tokens, same_name, self_intro_name
 
 #: Ключ :class:`AskPolicy` для незнакомца без ``person_ref``.
 STRANGER = "stranger"
@@ -121,7 +125,7 @@ def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[s
         state = "confirmed"  # два канала согласны (ADR-0130 §2.6, ADR-0139)
     since = prev.since if prev is not None and person and prev.person_ref == person else now
     return SpeakerRef(person_ref=person, name=name, name_state=state, azimuth_deg=azimuth_deg,
-                      since=since, channels=channels)
+                      since=since, channels=channels, first_heard=bool(person) and first_heard(result))
 
 
 def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str], bool]:
@@ -210,6 +214,63 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
     if ref is None:
         return {"name": None, "name_state": "unknown"}
     return {"name": ref.name if ref.name_state == "confirmed" else None, "name_state": ref.name_state}
+
+
+def recognition_state(ref: Optional[SpeakerRef]) -> str:
+    """Что код знает о собеседнике для ответа на «ты меня узнал?» (ключ ``knowledge.RECOGNIZED_REPLIES``): спор и
+    гипотеза голоса - состояние имени снимка; имя подтверждено - ``RECOGNIZED_CONFIRMED``; свой профиль без имени
+    (#3858: ``person_ref`` есть, имени нет; и битый «подтверждён» без имени) - ``RECOGNIZED_NAMELESS``; иначе - не
+    узнан. Профиль, заведённый из этой же фразы (``SpeakerRef.first_heard``: голос слышен впервые), - тоже не узнан:
+    «голос твой помню» ему - неправда (ревью PR #4121)."""
+    if ref is not None and ref.name_state in kn.VOICE_UNCONFIRMED_STATES:
+        return ref.name_state
+    if ref is not None and ref.name_state == kn.RECOGNIZED_CONFIRMED and ref.name:
+        return kn.RECOGNIZED_CONFIRMED
+    known_voice = ref is not None and bool(ref.person_ref) and not ref.first_heard
+    return kn.RECOGNIZED_NAMELESS if known_voice else kn.RECOGNIZED_UNKNOWN
+
+
+def _without(words: Sequence[str], spans: Iterable[str]) -> List[str]:
+    """``words`` без вхождений фраз ``spans`` (каждая - слова через пробел, целиком и подряд; длинные первыми)."""
+    cut = sorted((tuple(s.split()) for s in spans), key=len, reverse=True)
+    out: List[str] = []
+    i = 0
+    while i < len(words):
+        hit = next((s for s in cut if tuple(words[i:i + len(s)]) == s), ())
+        out.extend(() if hit else (words[i],))
+        i += len(hit) or 1
+    return out
+
+
+def _untagged(words: Sequence[str], tags: Iterable[str]) -> List[str]:
+    """``words`` без переспроса ``tags`` в самом конце («…, да?», «…или нет?»); в другом месте он - не переспрос."""
+    for tag in sorted((tuple(t.split()) for t in tags), key=len, reverse=True):
+        if tag and tuple(words[-len(tag):]) == tag:
+            return list(words[:-len(tag)])
+    return list(words)
+
+
+def asks_recognized(text: str) -> bool:
+    """В реплике нет ничего, кроме вопроса «ты меня узнал?» (таблица ``knowledge.RECOGNIZED_ASK``): без переспроса в
+    конце (``tags``: «да?», «или нет?»), пояснений (``along``: «я тот же», «мы недавно уже говорили») и связок - одно
+    дополнение или больше («меня», «мой голос», «кто я такой») и глагол узнавания (``verbs``: «узнал», «не узнал»),
+    где угодно в реплике. Любое другое слово (другая просьба, «про меня», «же»/«да» утверждения, «что» придаточного,
+    «не знаешь») - нет: ход идёт модели."""
+    ask = kn.RECOGNIZED_ASK
+    said = [t for t in _without(_untagged(name_tokens(text), ask["tags"]), ask["along"]) if t not in ask["filler"]]
+    verb = _without(said, ask["objects"])
+    return " ".join(verb) in ask["verbs"] and len(verb) < len(said)
+
+
+def recognition_reply(text: str, ref: Optional[SpeakerRef]) -> Optional[Tuple[str, str]]:
+    """Ответ кода на «ты меня узнал?» (#3993, решение Шифу 26.10: по снимку, без выдумки LLM) - ``(состояние, фраза)``
+    по :func:`recognition_state`; реплика - не этот вопрос (:func:`asks_recognized`) - ``None``. Спорный голос и
+    гипотеза - «знакомый, не уверен чей»: без вопроса «ты Саша?» и без имени кандидата."""
+    if not asks_recognized(text):
+        return None
+    state = recognition_state(ref)
+    name = ref.name if ref is not None and state == kn.RECOGNIZED_CONFIRMED else ""
+    return state, phrases.text(kn.RECOGNIZED_REPLIES[state], name=name)
 
 
 def voice_registration(sent: bool, outcome: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:

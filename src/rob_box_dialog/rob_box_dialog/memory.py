@@ -9,6 +9,9 @@
   причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда; о таком отказе чтения памяти
   (:func:`refused_read`) на вопрос о памяти о самом человеке говорит код (:func:`voiced_refusals`, ревью #4053),
   на остальные реплики он - данные модели (ревью PR #4055);
+* :func:`memory_owner` / :func:`foreign_result` - чья память в ходе (одно правило для привязки и для окна) и чужой ли
+  ей исход тула памяти прошлого хода: чужой в ``recent_actions`` снимка не идёт (#4023) - иначе факты Саши доходят до
+  модели в ходе Гриши или спорного голоса, хотя привязка их уже не пускает;
 * :func:`has_evidence` - ``done`` тула из ``knowledge.DONE_EVIDENCE`` засчитывается только с полем доказательства в
   данных события владельца (``saved{fact_id}``): фраза «Запомнил» не бывает без записи.
 * :func:`name_fact` / :func:`name_facts` / :func:`name_outcome` - факт, который лишь повторяет имя ``register_speaker``
@@ -33,19 +36,39 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.words import asks_own_memory, name_tokens
 
 
+def memory_owner(snapshot: Any) -> Optional[str]:
+    """Чья память в ходе этого снимка: ``person_ref`` собеседника агента с голосом (``PERSON_AGENTS``), если голос за
+    ним не под сомнением (``knowledge.VOICE_UNCONFIRMED_STATES``: спор, гипотеза - для памяти гипотеза как спор, #3993:
+    вопроса «ты Саша?» нет, а факт кандидата чужому хуже пустого). Иначе ``None`` - память ничья: ни привязать к ней
+    тул (:func:`bind_person`), ни показать модели исход чужого тула памяти (:func:`foreign_result`, #4023)."""
+    if getattr(snapshot, "agent", None) not in kn.PERSON_AGENTS:
+        return None
+    speaker = getattr(snapshot, "speaker", None)
+    person = getattr(speaker, "person_ref", None)
+    if not person or getattr(speaker, "name_state", None) in kn.VOICE_UNCONFIRMED_STATES:
+        return None
+    return person
+
+
 def bind_person(call: Any, snapshot: Any) -> Optional[Mapping[str, Any]]:
-    """Аргументы вызова с собеседником снимка; ``None`` - тул личный, а собеседника, чьи это факты, в снимке нет:
-    ``person_ref`` пуст или голос не подтверждён (спор, гипотеза - для памяти гипотеза как спор, #3993: вопроса «ты
-    Саша?» нет, а факт кандидата чужому хуже пустого). Почему - :func:`unbound_reason`."""
+    """Аргументы вызова с собеседником снимка; ``None`` - тул личный, а собеседника, чьи это факты, в снимке нет
+    (:func:`memory_owner`: ``person_ref`` пуст или голос не подтверждён). Почему - :func:`unbound_reason`."""
     if call.tool not in kn.PERSON_SCOPED_TOOLS or snapshot.agent not in kn.PERSON_AGENTS:
         return call.args
     if not hasattr(snapshot, "speaker"):  # заглушка снимка режима команд v1 (``command_turn``): собеседник там - у MCP
         return call.args
-    speaker = snapshot.speaker
-    person = getattr(speaker, "person_ref", None)
-    if not person or getattr(speaker, "name_state", None) in kn.VOICE_UNCONFIRMED_STATES:
-        return None
-    return MappingProxyType({**call.args, kn.PERSON_ARG: person})
+    person = memory_owner(snapshot)
+    return None if person is None else MappingProxyType({**call.args, kn.PERSON_ARG: person})
+
+
+def foreign_result(record: Mapping[str, Any], record_owner: Optional[str], owner: Optional[str]) -> bool:
+    """Исход тула памяти прошлого хода (запись ``tool`` окна: ``{tool, status, data}``) - ЧУЖОЙ для хода с владельцем
+    памяти ``owner`` (:func:`memory_owner`): записан при другом владельце (``record_owner``, тоже :func:`memory_owner` -
+    на снимке, с которым тул исполнялся). Такой исход в ``recent_actions`` снимка не идёт (#4023, марафон 27.10: в ходе
+    Гриши лежал ``memory_search`` Саши «Саша пьёт только зелёный чай…», в спорном ходе - ``memory_save`` «Пользователя
+    зовут Тамара»). У спорного и незнакомого голоса ``owner`` - ``None``: чужие ему все исходы памяти узнанных людей.
+    Остальные тулы - не память о людях, не чужие."""
+    return record.get("tool") in kn.PERSON_SCOPED_TOOLS and record_owner != owner
 
 
 def unbound_reason(snapshot: Any) -> str:
@@ -148,5 +171,6 @@ def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[A
     return block or None
 
 
-__all__ = ["bind_person", "has_evidence", "name_fact", "name_facts", "name_outcome", "profiled_person",
-           "refused_read", "speaker_changed", "speaker_memory_block", "unbound_reason", "voiced_refusals"]
+__all__ = ["bind_person", "foreign_result", "has_evidence", "memory_owner", "name_fact", "name_facts", "name_outcome",
+           "profiled_person", "refused_read", "speaker_changed", "speaker_memory_block", "unbound_reason",
+           "voiced_refusals"]

@@ -93,7 +93,7 @@ from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
-from rob_box_dialog.speaker_adapter import speaker_block
+from rob_box_dialog.speaker_adapter import recognition_reply, speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
@@ -608,10 +608,28 @@ def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
     return True
 
 
+def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> bool:
+    """«Ты меня узнал?» (#3993, решение Шифу 26.10): ответ строит код по собеседнику снимка хода
+    (``speaker_adapter.recognition_reply``), LLM не зовётся - модель не выдумает «узнал» спорному голосу и «голос не
+    запомнил» узнанному. Только у агента с голосом (``PERSON_AGENTS``) и не в подхвате бэклога: там вопрос мог задать
+    не тот, кто сказал «робот». Реплика - не этот вопрос - ``False``, ход идёт модели."""
+    if turn.pickup or snap.agent not in kn.PERSON_AGENTS:
+        return False
+    reply = recognition_reply(turn.text, snap.speaker)
+    if reply is None:
+        return False
+    state, said = reply
+    turn.stage, turn.reason = "done", f"{kn.RECOGNIZED_TURN_REASON}:{state}"
+    engine._log.info(f"{LOG_MARK} узнал? {state}: ответ кодом по снимку, LLM не зовётся turn={turn.turn_id}")
+    engine._say(turn, said)
+    return True
+
+
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
-    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`), — в форме команды
-    хода (:func:`command_form`, #4021): схема и валидатор моста видят её на время вызовов LLM этого хода."""
-    if hold_silence(engine, turn):
+    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
+    код (:func:`answer_recognized`), — в форме команды хода (:func:`command_form`, #4021): схема и валидатор моста видят
+    её на время вызовов LLM этого хода."""
+    if hold_silence(engine, turn) or answer_recognized(engine, turn, snap):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
@@ -1315,8 +1333,9 @@ class TurnEngine:
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется (#4069 п.1)
+        owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне (#4023)
         for result in results:
-            self.log.result(turn.turn_id, result)
+            self.log.result(turn.turn_id, result, owner)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
         self._note_asked(turn, actions, results)
@@ -1335,11 +1354,14 @@ class TurnEngine:
     def _messages(self, turn: _Turn, snap: SessionSnapshot) -> List[Any]:
         """Запрос: системный промпт, окно истории (``user``/``assistant``: озвученное и метки кода «[ответ действием:
         …]», «[ответ лицом: …]», «[рот заклеен — молчу]» вместо ответа без слов), снимок хода + реплика человека.
-        Исходы прошлых действий — разделом снимка :data:`RECENT_ACTIONS`, а не репликами (§7.3)."""
+        Исходы прошлых действий — разделом снимка :data:`RECENT_ACTIONS`, а не репликами (§7.3); исход тула памяти
+        другого владельца памяти (спорный голос, другой человек) туда не идёт (``memory.foreign_result``, #4023)."""
         past = self.log.window(exclude=turn.turn_id)  # реплика этого хода — последним сообщением, со снимком
         history = [e for e in past if e.role != TOOL]
         sections = dict(self._sections(snap, turn.text))
-        recent = [dict(e.content) for e in past if e.role == TOOL]
+        owner = memory.memory_owner(snap)
+        recent = [dict(e.content) for e in past
+                  if e.role == TOOL and not memory.foreign_result(e.content, e.owner, owner)]
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
@@ -1387,8 +1409,8 @@ class TurnEngine:
 
 
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "SAD_FACE", "Shown", "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage",
-           "hand_perform", "held_expression", "host_sections", "shown_face",
+           "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
+           "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "invalid_emotion", "outcome_phrase", "query_answer", "query_fallback", "show_queue_phrase",
            "stop_performance", "tier1_actions", "tier1_face", "tier1_for", "tier1_phrase", "turn_work", "answer_tool",
            "unrepeated", "voices_passed", "words_owed"]

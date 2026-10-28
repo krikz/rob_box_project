@@ -13,8 +13,10 @@ import pytest
 from rob_box_core.msg_stub import build_dialog_msgs_module, install_dialog_msgs_stub
 from rob_box_core.speaker_wire import (
     NAME_CONTESTED,
+    SOURCE_ENROLL,
     TENTATIVE_CONTESTED,
     fill_speaker_result,
+    first_heard,
     name_state,
     speaker_result_to_payload,
 )
@@ -159,6 +161,22 @@ def test_name_state_of_phrase_result_survives_the_wire(payload, state):
     """Состояние выводится из полей сообщения — до провода и после одно и то же."""
     assert name_state(payload) == state
     assert name_state(_roundtrip(payload)) == state
+
+
+@pytest.mark.parametrize("payload, first", [
+    # #3858: профиль без имени заведён из этой фразы - голос слышен впервые (ревью PR #4121, #3993)
+    ({"is_known": True, "speaker_id": "s", "name": None, "confidence": 0.0, "epithet": "Гость",
+      "source": SOURCE_ENROLL}, True),
+    # тот же профиль в следующей фразе - обычное узнавание
+    ({"is_known": True, "speaker_id": "s", "name": None, "confidence": 0.86, "epithet": "Гость"}, False),
+    # имя только что зарегистрировано - не «впервые без имени»
+    ({"is_known": True, "speaker_id": "s", "name": "Саша", "source": "register"}, False),
+    ({"is_known": False}, False),
+])
+def test_first_heard_only_for_the_profile_enrolled_from_this_phrase(payload, first):
+    """Признак едет по проводу (поле ``source``) и выводится одним правилом."""
+    assert first_heard(payload) is first
+    assert first_heard(_roundtrip(payload)) is first
 
 
 def test_contested_result_keeps_only_the_candidate_id_and_no_name():
