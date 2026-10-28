@@ -37,6 +37,7 @@ from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
 from rob_box_dialog.expression import shows
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
+from rob_box_dialog.words import music_promises
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
 _COMMAND_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["properties"])
@@ -598,6 +599,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(open_actions, available, agent),
         lambda: _check_speech_with_actions(cmd, agent),
+        lambda: _check_music_promise(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
         lambda: _check_when(cmd.when, busy),
@@ -934,6 +936,26 @@ def _check_speech_with_actions(cmd: Command, agent: str) -> None:
         raise _Bad(kn.VIOLATION_SPEECH_WITH_ACTIONS)
 
 
+def unkept_promises(cmd: Command) -> Tuple[str, ...]:
+    """Виды обещаний действия с музыкой в ``speech`` (``words.music_promises``), которых команда не исполняет: нет тула
+    ``knowledge.MUSIC_PROMISES[вид].tools`` среди ``actions`` и (для вида с ``perform``) выступления. Обещание с тулом
+    держит команда - о результате скажет код."""
+    called = {a.tool for a in cmd.actions}
+    return tuple(kind for kind in music_promises(cmd.speech or "")
+                 if not called & set(kn.MUSIC_PROMISES[kind].tools)
+                 and not (kn.MUSIC_PROMISES[kind].perform and cmd.perform is not None))
+
+
+def _check_music_promise(cmd: Command) -> None:
+    """Речь обещает действие с музыкой или громкостью («сделаю потише», «включу музыку»), а тула, что его исполняет, в
+    команде нет (ADR-0148): слова без действия - ложь о состоянии (n709: музыку уже остановил код, а модель
+    «сделаю потише»). Нарушение ``VIOLATION_MUSIC_PROMISE`` - повтор с подсказкой; прошедшее («музыку выключил») не
+    обещание."""
+    broken = unkept_promises(cmd)
+    if broken:
+        raise _Bad(kn.VIOLATION_MUSIC_PROMISE, f"speech обещает {', '.join(broken)} без тула")
+
+
 def _check_ask(ask: Optional[Ask]) -> None:
     if ask is None:
         return
@@ -1161,6 +1183,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     kn.VIOLATION_SPEECH_REQUIRED: f"молчать нельзя: это последний ответ хода, данные запроса уже выше в окне, читать "
                                   f"больше нечем; лицо и анимация слов не заменяют — ответь словами по этим данным в "
                                   f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
+    kn.VIOLATION_MUSIC_PROMISE: kn.MUSIC_PROMISE_HINT,
     "bad_ask": "у ask нужен text",
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",
