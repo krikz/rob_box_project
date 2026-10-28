@@ -5,22 +5,23 @@
 и публикуют результат.
 
 Откуда напряжение. ``vesc_nexus`` отдаёт батарею в ros2_control как joint
-``battery`` с state-интерфейсом ``voltage`` (вольты шины, 10S LiPo). В
+``battery`` с state-интерфейсом ``voltage`` (вольты шины, 10S Li-ion). В
 ``control_msgs/DynamicJointState`` имя joint лежит в ``joint_names[i]``, а
 ``interface_values[i].interface_names`` содержит только имя интерфейса
 (``voltage``), поэтому строки ``battery/voltage`` там не бывает.
 
-Шкала процентов. ``sensor_msgs/BatteryState.percentage`` по конвенции ROS
-лежит в 0..1 (потребители: ``face_node`` ``battery_percent_scale: 100``,
-``GetRobotStatusTool`` умножает на 100). Формула вольты → доля заряда
-повторяет ``rob_box_mcp_tools.perception_projection.voltage_to_percent``
-(контейнер perception не содержит rob_box_mcp_tools, импортировать её оттуда
-нельзя); совпадение констант и формулы держит тест паритета
-``test/unit/test_battery_state.py``.
+Шкала и кривая. ``sensor_msgs/BatteryState.percentage`` по конвенции ROS
+лежит в 0..1. Кривая «вольты -> заряд» и пороги живут в ОДНОМ месте,
+``rob_box_core.battery`` (его же использует ``rob_box_mcp_tools``); здесь
+только разбор сообщения, сглаживание и сборка полей.
 
-«Нет данных» — не «полная батарея»: нет напряжения (нет joint, ``<= 0``, NaN,
-устарело) → ``present=False`` и ``NaN`` в числовых полях, а не выдуманные 0
-или 1.
+Сглаживание. Под нагрузкой (езда) напряжение проседает на вольты, а процент
+по кривой прыгает. Публикуемый процент считается от экспоненциально
+сглаженного напряжения (постоянная времени ``DEFAULT_SMOOTHING_TAU_S``);
+первая выборка принимается без задержки.
+
+«Нет данных» - не «полная батарея»: нет напряжения (нет joint, ``<= 0``, NaN,
+устарело) -> ``present=False`` и ``NaN`` в числовых полях.
 """
 
 from __future__ import annotations
@@ -28,16 +29,17 @@ from __future__ import annotations
 import math
 from typing import NamedTuple, Optional
 
+from rob_box_core.battery import valid_voltage, voltage_to_fraction
+
 #: joint и интерфейс батареи в ros2_control (vesc_nexus).
 BATTERY_JOINT = 'battery'
 BATTERY_INTERFACE = 'voltage'
 
-#: Границы 10S LiPo (docs/architecture/HARDWARE.md): 10 x 4.2 В и 10 x 3.0 В.
-BATTERY_VOLTAGE_FULL = 42.0
-BATTERY_VOLTAGE_EMPTY = 30.0
-
 #: Через сколько секунд без свежего напряжения считаем данные устаревшими.
 DEFAULT_STALE_S = 5.0
+
+#: Постоянная времени EMA напряжения, секунды (0 - сглаживание выключено).
+DEFAULT_SMOOTHING_TAU_S = 45.0
 
 _NAN = float('nan')
 
@@ -54,19 +56,8 @@ class BatteryFields(NamedTuple):
 NO_BATTERY = BatteryFields(present=False, voltage=_NAN, percentage=_NAN)
 
 
-def valid_voltage(value) -> Optional[float]:
-    """Вольты → float либо ``None``, если это не осмысленное напряжение."""
-    try:
-        volts = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(volts) or math.isinf(volts) or volts <= 0.0:
-        return None
-    return volts
-
-
 def extract_battery_voltage(joint_names, interface_values) -> Optional[float]:
-    """Напряжение из полей ``DynamicJointState`` (``None`` — батареи нет).
+    """Напряжение из полей ``DynamicJointState`` (``None`` - батареи нет).
 
     ``joint_names[i]`` соответствует ``interface_values[i]``; порядок joints
     произвольный, ищем по имени.
@@ -80,19 +71,51 @@ def extract_battery_voltage(joint_names, interface_values) -> Optional[float]:
     return None
 
 
-def voltage_to_fraction(volts) -> Optional[float]:
-    """Вольты → доля заряда 0..1 (ROS-конвенция); ``None`` — нет данных."""
-    volts = valid_voltage(volts)
-    if volts is None:
-        return None
-    span = BATTERY_VOLTAGE_FULL - BATTERY_VOLTAGE_EMPTY
-    return max(0.0, min(1.0, (volts - BATTERY_VOLTAGE_EMPTY) / span))
+def ema_step(previous: Optional[float], sample: float, dt_s: float, tau_s: float) -> float:
+    """Один шаг EMA с постоянной времени ``tau_s`` (не зависит от частоты выборок).
+
+    ``previous is None`` (первая выборка) или ``tau_s <= 0`` - выборка как есть,
+    без задержки. ``dt_s <= 0`` (повторная выборка в тот же момент) - без изменений.
+    """
+    if previous is None or tau_s <= 0.0:
+        return sample
+    if dt_s <= 0.0:
+        return previous
+    alpha = 1.0 - math.exp(-dt_s / tau_s)
+    return previous + alpha * (sample - previous)
 
 
-def battery_fields(volts, age_s: Optional[float],
-                   stale_s: float = DEFAULT_STALE_S) -> BatteryFields:
-    """Поля BatteryState по последнему напряжению и его возрасту в секундах."""
+class VoltageSmoother:
+    """Сглаживатель напряжения: ``update(volts, now_s)`` -> сглаженные вольты."""
+
+    def __init__(self, tau_s: float = DEFAULT_SMOOTHING_TAU_S):
+        """Создать сглаживатель с постоянной времени ``tau_s`` секунд."""
+        self.tau_s = float(tau_s)
+        self.value: Optional[float] = None
+        self._at: Optional[float] = None
+
+    def update(self, volts: float, now_s: float) -> float:
+        """Принять выборку в момент ``now_s`` и вернуть сглаженное значение."""
+        dt = 0.0 if self._at is None else now_s - self._at
+        self.value = ema_step(self.value, volts, dt, self.tau_s)
+        self._at = now_s
+        return self.value
+
+    def reset(self) -> None:
+        """Забыть историю (данные устарели): следующая выборка - без задержки."""
+        self.value = None
+        self._at = None
+
+
+def battery_fields(volts, age_s: Optional[float], stale_s: float = DEFAULT_STALE_S,
+                   smoothed=None) -> BatteryFields:
+    """Поля BatteryState по последнему напряжению и его возрасту в секундах.
+
+    ``voltage`` - последнее измеренное; ``percentage`` - от ``smoothed``
+    (если передано и осмысленно), иначе от ``volts``.
+    """
     volts = valid_voltage(volts)
     if volts is None or age_s is None or age_s > stale_s:
         return NO_BATTERY
-    return BatteryFields(True, volts, voltage_to_fraction(volts))
+    basis = valid_voltage(smoothed)
+    return BatteryFields(True, volts, voltage_to_fraction(volts if basis is None else basis))

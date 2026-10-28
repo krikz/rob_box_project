@@ -21,8 +21,8 @@ import pytest
 
 _HERE = Path(__file__).resolve()
 _PKG_ROOT = _HERE.parents[2]
-_MCP_ROOT = _HERE.parents[3] / 'rob_box_mcp_tools'
-for _root in (_PKG_ROOT, _MCP_ROOT):
+_CORE_ROOT = _HERE.parents[3] / 'rob_box_core'
+for _root in (_PKG_ROOT, _CORE_ROOT):
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
@@ -87,36 +87,33 @@ def test_invalid_voltage_values_are_none(bad):
 
 
 # ---------------------------------------------------------------------------
-# voltage_to_fraction / battery_fields: шкала 0..1 и честное «нет данных»
+# battery_fields: кривая берётся из rob_box_core.battery (одно место знания)
 # ---------------------------------------------------------------------------
 
-def test_fraction_endpoints_and_midpoint():
-    assert bs.voltage_to_fraction(42.0) == pytest.approx(1.0)
-    assert bs.voltage_to_fraction(30.0) == pytest.approx(0.0)
-    assert bs.voltage_to_fraction(36.0) == pytest.approx(0.5)
+def test_curve_is_imported_from_core_not_duplicated():
+    core = importlib.import_module('rob_box_core.battery')
+    assert bs.voltage_to_fraction is core.voltage_to_fraction
+    assert bs.valid_voltage is core.valid_voltage
+    for dup in ('BATTERY_VOLTAGE_FULL', 'BATTERY_VOLTAGE_EMPTY', 'OCV_TABLE'):
+        assert not hasattr(bs, dup), dup
 
 
-def test_fraction_card_example_41v():
-    # Критерий приёмки #4002: 41.0 В -> ~0.92
-    assert bs.voltage_to_fraction(41.0) == pytest.approx(11.0 / 12.0)
-
-
-def test_fraction_is_clamped_to_unit_interval():
-    assert bs.voltage_to_fraction(45.0) == 1.0
-    assert bs.voltage_to_fraction(29.0) == 0.0
-
-
-@pytest.mark.parametrize('bad', [None, 0.0, -1.0, float('nan'), 'abc'])
-def test_fraction_unknown_is_none(bad):
-    assert bs.voltage_to_fraction(bad) is None
-
-
-def test_fields_fresh_voltage():
+def test_fields_fresh_voltage_card_example_41v():
     f = bs.battery_fields(41.0, age_s=0.5)
     assert f.present is True
     assert f.voltage == 41.0
-    assert 0.0 <= f.percentage <= 1.0
-    assert f.percentage == pytest.approx(0.9167, abs=1e-3)
+    assert f.percentage == pytest.approx(0.90)  # кривая Li-ion 10S: 4.10 В/банку = 90 %
+
+
+def test_fields_percentage_from_smoothed_voltage_voltage_stays_raw():
+    f = bs.battery_fields(38.0, 0.1, smoothed=41.0)
+    assert f.voltage == 38.0
+    assert f.percentage == pytest.approx(0.90)
+
+
+def test_fields_invalid_smoothed_falls_back_to_raw():
+    assert bs.battery_fields(41.0, 0.1, smoothed=float('nan')).percentage == pytest.approx(0.90)
+    assert bs.battery_fields(41.0, 0.1, smoothed=None).percentage == pytest.approx(0.90)
 
 
 @pytest.mark.parametrize('volts, age', [
@@ -128,7 +125,7 @@ def test_fields_fresh_voltage():
     (41.0, 5.01),            # устарело
 ])
 def test_fields_without_fresh_voltage_are_not_present(volts, age):
-    f = bs.battery_fields(volts, age)
+    f = bs.battery_fields(volts, age, smoothed=41.0)
     assert f.present is False
     assert math.isnan(f.voltage)
     assert math.isnan(f.percentage)
@@ -147,28 +144,67 @@ def test_no_data_is_never_full_battery():
 
 
 # ---------------------------------------------------------------------------
-# Паритет с rob_box_mcp_tools.perception_projection.voltage_to_percent
+# Сглаживание напряжения (EMA): провалы под нагрузкой не прыгают процентом
 # ---------------------------------------------------------------------------
 
-def _projection():
-    try:
-        return importlib.import_module('rob_box_mcp_tools.perception_projection')
-    except ImportError as exc:  # pragma: no cover
-        pytest.fail(f'rob_box_mcp_tools.perception_projection недоступен: {exc}')
+def test_ema_first_sample_has_no_delay():
+    assert bs.ema_step(None, 41.0, dt_s=1.0, tau_s=45.0) == 41.0
 
 
-def test_constants_match_perception_projection():
-    proj = _projection()
-    assert bs.BATTERY_VOLTAGE_FULL == proj.BATTERY_VOLTAGE_FULL
-    assert bs.BATTERY_VOLTAGE_EMPTY == proj.BATTERY_VOLTAGE_EMPTY
+def test_ema_disabled_when_tau_zero():
+    assert bs.ema_step(41.0, 38.0, dt_s=1.0, tau_s=0.0) == 38.0
 
 
-@pytest.mark.parametrize('volts', [0.0, -1.0, 29.0, 30.0, 33.3, 36.0, 40.0, 41.0, 42.0, 45.0])
-def test_fraction_matches_voltage_to_percent_over_100(volts):
-    proj = _projection()
-    pct = proj.voltage_to_percent(volts)
-    frac = bs.voltage_to_fraction(volts)
-    if pct is None:
-        assert frac is None
-    else:
-        assert frac == pytest.approx(pct / 100.0)
+def test_ema_zero_dt_keeps_previous():
+    assert bs.ema_step(41.0, 38.0, dt_s=0.0, tau_s=45.0) == 41.0
+
+
+def test_ema_moves_toward_sample_by_time_constant():
+    # за dt = tau проходит 1 - 1/e ~ 63.2 % пути
+    v = bs.ema_step(41.0, 37.0, dt_s=45.0, tau_s=45.0)
+    assert v == pytest.approx(41.0 + (37.0 - 41.0) * (1.0 - math.exp(-1.0)))
+    assert 37.0 < v < 41.0
+
+
+def test_ema_does_not_depend_on_sample_rate():
+    """Одна выборка за 10 с = десять за 1 с (то же значение на постоянном входе)."""
+    one = bs.ema_step(41.0, 38.0, 10.0, 45.0)
+    many = 41.0
+    for _ in range(10):
+        many = bs.ema_step(many, 38.0, 1.0, 45.0)
+    assert many == pytest.approx(one)
+
+
+def test_smoother_first_sample_immediate_then_smooths_sag():
+    sm = bs.VoltageSmoother(tau_s=45.0)
+    assert sm.update(41.0, 100.0) == 41.0
+    # просадка под нагрузкой на 3 В на 2 секунды: сглаженное почти не двигается
+    sagged = sm.update(38.0, 102.0)
+    assert 40.8 < sagged < 41.0
+    # и процент почти не прыгает (сырой 38 В дал бы ~ 52 %, сглаженный ~ 90 %)
+    raw_pct = bs.voltage_to_fraction(38.0)
+    smooth_pct = bs.voltage_to_fraction(sagged)
+    assert raw_pct < 0.60 < 0.88 < smooth_pct
+
+
+def test_smoother_follows_a_lasting_change():
+    sm = bs.VoltageSmoother(tau_s=45.0)
+    sm.update(41.0, 0.0)
+    v = 41.0
+    for t in range(1, 301):  # 5 минут устойчиво 39 В
+        v = sm.update(39.0, float(t))
+    assert v == pytest.approx(39.0, abs=0.05)
+
+
+def test_smoother_reset_makes_next_sample_immediate():
+    sm = bs.VoltageSmoother(tau_s=45.0)
+    sm.update(41.0, 0.0)
+    sm.reset()
+    assert sm.value is None
+    assert sm.update(36.0, 1.0) == 36.0
+
+
+def test_smoother_tau_zero_is_passthrough():
+    sm = bs.VoltageSmoother(tau_s=0.0)
+    sm.update(41.0, 0.0)
+    assert sm.update(38.0, 1.0) == 38.0

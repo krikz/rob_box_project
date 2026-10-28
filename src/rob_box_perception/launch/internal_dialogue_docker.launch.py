@@ -74,6 +74,7 @@ def generate_launch_description():
             parameters=[{
                 'publish_rate': 2.0,
                 'stale_timeout': 5.0,
+                'smoothing_tau': 45.0,
             }],
         ),
 

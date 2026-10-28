@@ -59,7 +59,7 @@ class _FakeNode:
 class _BatteryState:
     POWER_SUPPLY_STATUS_UNKNOWN = 0
     POWER_SUPPLY_HEALTH_UNKNOWN = 0
-    POWER_SUPPLY_TECHNOLOGY_LIPO = 3
+    POWER_SUPPLY_TECHNOLOGY_LION = 2
 
     def __init__(self):
         self.header = SimpleNamespace(stamp=None)
@@ -120,9 +120,9 @@ def test_publishes_voltage_and_fraction_when_fresh(node):
     msg = _last(node)
     assert msg.present is True
     assert msg.voltage == 41.0
-    assert msg.percentage == pytest.approx(11.0 / 12.0)
+    assert msg.percentage == pytest.approx(0.90)  # кривая Li-ion 10S
     assert msg.power_supply_status == _BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
-    assert msg.power_supply_technology == _BatteryState.POWER_SUPPLY_TECHNOLOGY_LIPO
+    assert msg.power_supply_technology == _BatteryState.POWER_SUPPLY_TECHNOLOGY_LION
     assert msg.header.stamp == 'stamp'
 
 
@@ -157,10 +157,45 @@ def test_recovers_after_fresh_sample(node):
     node.on_joint_states(_joint_state([('battery', [('voltage', 36.0)])]))
     node.publish_state()
     assert _last(node).present is True
-    assert _last(node).percentage == pytest.approx(0.5)
+    assert _last(node).percentage == pytest.approx(0.15)  # 36 В = 3.6 В/банку
 
 
 def test_zero_voltage_sample_does_not_refresh(node):
     node.on_joint_states(_joint_state([('battery', [('voltage', 0.0)])]))
     node.publish_state()
     assert _last(node).present is False
+
+
+def test_sag_under_load_is_smoothed_but_raw_voltage_published(node):
+    """Просадка 41 -> 37 В на 2 с: voltage сырой, percentage почти не прыгает."""
+    node.on_joint_states(_joint_state([('battery', [('voltage', 41.0)])]))
+    node.clock['t'] += 2.0
+    node.on_joint_states(_joint_state([('battery', [('voltage', 37.0)])]))
+    node.publish_state()
+    msg = _last(node)
+    assert msg.voltage == 37.0
+    assert msg.percentage > 0.80  # сырой 37 В дал бы 0.35
+
+
+def test_first_sample_is_not_delayed_and_stale_resets_smoother(node):
+    node.on_joint_states(_joint_state([('battery', [('voltage', 41.0)])]))
+    node.publish_state()
+    assert _last(node).percentage == pytest.approx(0.90)
+    node.clock['t'] += 60.0  # данные устарели -> история забыта
+    node.publish_state()
+    assert _last(node).present is False
+    node.on_joint_states(_joint_state([('battery', [('voltage', 36.0)])]))
+    node.publish_state()
+    assert _last(node).percentage == pytest.approx(0.15)  # без остатка от 41 В
+
+
+def test_smoothing_tau_zero_disables_smoothing(monkeypatch):
+    clock = {'t': 0.0}
+    monkeypatch.setattr(bsn.time, 'monotonic', lambda: clock['t'])
+    n = bsn.BatteryStateNode()
+    n._smoother.tau_s = 0.0
+    n.on_joint_states(_joint_state([('battery', [('voltage', 41.0)])]))
+    clock['t'] += 2.0
+    n.on_joint_states(_joint_state([('battery', [('voltage', 37.0)])]))
+    n.publish_state()
+    assert n.publishers['/battery_state'].published[-1].percentage == pytest.approx(0.35)

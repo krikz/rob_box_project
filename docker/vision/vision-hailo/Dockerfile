@@ -148,6 +148,10 @@ COPY src/rob_box_perception_msgs/package.xml /ws/src/rob_box_perception_msgs/
 # ADR-0150 PR-2 (#3687): rob_box_perception зависит от rob_box_dialog_msgs
 # (vision_face_node читает SpeakerResult для слияния голос -> лицо).
 COPY src/rob_box_dialog_msgs/package.xml /ws/src/rob_box_dialog_msgs/
+# #4001/#4002: rob_box_perception объявляет exec_depend на rob_box_core (кривая
+# заряда). Узлы батареи в этом образе не запускаются, но rosdep должен
+# резолвить ключ из workspace, а не искать его в apt.
+COPY src/rob_box_core/package.xml /ws/src/rob_box_core/
 COPY src/rob_box_perception/package.xml /ws/src/rob_box_perception/
 
 # 2. rosdep (best-effort — apt-зависимости явно установлены выше)

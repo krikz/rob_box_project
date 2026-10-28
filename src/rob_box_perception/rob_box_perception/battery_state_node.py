@@ -12,8 +12,9 @@ Broadcaster-а батареи в ros2_controllers (Humble) нет: напряж�
 - /dynamic_joint_states (control_msgs/DynamicJointState)
 
 Публикует:
-- /battery_state (sensor_msgs/BatteryState): voltage, percentage 0..1,
-  present. Нет свежего напряжения - present=False и NaN (не «полная»).
+- /battery_state (sensor_msgs/BatteryState): voltage, percentage 0..1
+  (от напряжения, сглаженного EMA), present. Нет свежего напряжения -
+  present=False и NaN (не «полная»).
 
 Вся логика разбора и шкалы - в ``battery_state.py`` (чистые функции).
 """
@@ -27,8 +28,10 @@ from rclpy.node import Node
 
 from rob_box_perception.battery_state import (
     battery_fields,
+    DEFAULT_SMOOTHING_TAU_S,
     DEFAULT_STALE_S,
     extract_battery_voltage,
+    VoltageSmoother,
 )
 
 from sensor_msgs.msg import BatteryState
@@ -42,8 +45,12 @@ class BatteryStateNode(Node):
         super().__init__('battery_state_publisher')
         self.declare_parameter('publish_rate', 2.0)
         self.declare_parameter('stale_timeout', DEFAULT_STALE_S)
+        # Постоянная времени EMA напряжения, с (0 - без сглаживания): процент
+        # не должен прыгать от просадок под нагрузкой во время езды.
+        self.declare_parameter('smoothing_tau', DEFAULT_SMOOTHING_TAU_S)
 
         self._stale_s = float(self.get_parameter('stale_timeout').value)
+        self._smoother = VoltageSmoother(float(self.get_parameter('smoothing_tau').value))
         self._voltage = None
         self._voltage_at = None  # time.monotonic() последнего валидного замера
 
@@ -58,15 +65,19 @@ class BatteryStateNode(Node):
         """Запомнить последнее валидное напряжение батареи."""
         volts = extract_battery_voltage(msg.joint_names, msg.interface_values)
         if volts is not None:
+            now = time.monotonic()
             self._voltage = volts
-            self._voltage_at = time.monotonic()
+            self._voltage_at = now
+            self._smoother.update(volts, now)
 
     def publish_state(self):
         """Опубликовать BatteryState (present=False, если данных нет)."""
         age = None
         if self._voltage_at is not None:
             age = time.monotonic() - self._voltage_at
-        fields = battery_fields(self._voltage, age, self._stale_s)
+        fields = battery_fields(self._voltage, age, self._stale_s, self._smoother.value)
+        if not fields.present:
+            self._smoother.reset()  # данные устарели: следующая выборка - без задержки
         msg = BatteryState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.voltage = fields.voltage
@@ -81,8 +92,8 @@ class BatteryStateNode(Node):
         msg.temperature = nan
         msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_UNKNOWN
         msg.power_supply_health = BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN
-        msg.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LIPO
-        msg.location = '10S LiPo'
+        msg.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LION
+        msg.location = '10S4P Li-ion (2x smartONE 10S2P)'
         self._pub.publish(msg)
 
 
