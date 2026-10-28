@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.core import unnamed_voice  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
-from rob_box_core.speaker_wire import speaker_result_to_payload  # noqa: E402
+from rob_box_core.speaker_wire import first_heard, speaker_result_to_payload  # noqa: E402
 
 UNNAMED_MAX = 3
 
@@ -184,6 +184,8 @@ def test_same_voice_again_is_recognised_by_nickname_without_new_profile(node):
     assert second["epithet"] == first["epithet"]
     assert second["name"] is None
     assert second.get("source") is None, "это опознание, а не заведение профиля"
+    # #3993 (ревью PR #4121): читатели знают «голос слышен впервые» по тому же правилу, что пишет нода
+    assert (first_heard(first), first_heard(second)) == (True, False)
 
 
 def test_two_different_unknown_voices_get_two_profiles_and_two_nicknames(node):

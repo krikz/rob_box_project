@@ -690,7 +690,8 @@ def test_3995_last_iteration_never_asks_again():
     search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
                      follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
     ports = Ports(answers=[*search, _bare(HAPPY)], outcomes={"memory_search": ("done", {"results": []})})
-    agg = _run(_engine(ports), "а ты меня помнишь")
+    # вопрос о фактах идёт модели; «а ты меня помнишь» - вопрос узнавания, на него отвечает код (#3993, PR #4121)
+    agg = _run(_engine(ports), "а что ты про меня помнишь")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
 
@@ -702,7 +703,7 @@ def test_3995_retry_after_query_says_the_data_is_already_there():
                     follow=lambda data: ({"role": "tool", "content": data},))
     ports = Ports(answers=[search, _bare(HAPPY), Answer(Command(speech="Помню тебя, Борис."), "deepseek")],
                   outcomes={"memory_search": ("done", {"results": []})})
-    _run(_engine(ports), "а ты меня помнишь")
+    _run(_engine(ports), "а что ты про меня помнишь")
     note = ports.asked[2][0][-1]["content"]
     assert "данные запроса уже получены" in note and kn.VIOLATION_SILENT_ANSWER in note
     assert [t for t, _, _ in ports.said] == ["Помню тебя, Борис."]
@@ -1239,7 +1240,7 @@ def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_wi
                      follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
     ports = Ports(answers=[*search, Answer(Command(expression=SAD), "deepseek")],
                   outcomes={"memory_search": ("done", {"results": []})})
-    agg = _run(_engine(ports), "а ты меня помнишь")
+    agg = _run(_engine(ports), "а что ты про меня помнишь")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and ports.faces == []
 

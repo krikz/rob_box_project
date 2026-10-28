@@ -103,7 +103,7 @@ from rob_box_dialog_msgs.msg import SpeakerResult, SpeechEvent
 from std_msgs.msg import String
 from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeOwner
-from rob_box_core.speaker_wire import TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
+from rob_box_core.speaker_wire import SOURCE_ENROLL, TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
 from rob_box_core.tools_db import tools_db_path
 
 from .core import epithets, unnamed_voice
@@ -127,9 +127,6 @@ from rob_box_voice.observability import (
 # отдельный топик: старый потребитель просто не видит ключа, а новый
 # топик потребовал бы второго подписчика/publisher'а ради одного флага.
 REGISTER_PURPOSE_GROWTH = "growth"
-# Issue #3858 — ``source`` результата, которым нода сообщает «завёл профиль без имени для этой фразы»
-# (confidence у такого результата 0: сходства ни с кем не было, профиль новый).
-_SOURCE_ENROLL = "enroll"
 # Косинус «эта же фраза уже лежит в галерее» (вектор против самого себя
 # ≈ 1.0): защита от двойной записи, если фразу уже дописала growth-сессия.
 _ALREADY_IN_GALLERY_SCORE = 0.9999
@@ -1384,8 +1381,8 @@ class SpeakerIdNode(Node):
         # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
         # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.
         self.get_logger().info(_verdict_line(match, name_decision, elapsed, enrolled))
-        if enrolled is not None:
-            self._publish_result(enrolled, source=_SOURCE_ENROLL, utterance_id=utterance_id)
+        if enrolled is not None:  # профиль из этой фразы: диалог знает, что голос слышен впервые (#3993)
+            self._publish_result(enrolled, source=SOURCE_ENROLL, utterance_id=utterance_id)
             return
         self._publish_result(
             match,

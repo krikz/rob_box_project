@@ -17,7 +17,7 @@ from rob_box_core import speech_client
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..owner_event import OwnerEvents, owner_events
 from rob_box_dialog.knowledge import VOICE_DEFAULT_ARG
-from rob_box_dialog.words import name_key
+from rob_box_dialog.words import name_key, profile_name
 
 from ..voice_request import VoiceOutcome, outcome_data, resolve_speak_voice, voice_requests
 from ..animations import (
@@ -777,7 +777,8 @@ class RegisterSpeakerTool(MCPTool):
                 data={"ask_required": True, "name": None},
                 message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
             )
-        name_clean = name.strip().capitalize()
+        # Имя в профиль - в именительном падеже (``words.profile_name``): модель пишет «Тамарой» как услышала (#4118).
+        name_clean = profile_name(name)
         # Issue #1101 (live 11.08) — LLM sometimes serialises a real
         # ``null`` JSON value through OpenAI tool-call as the literal
         # string ``"null"`` (or ``"None"``). Without this branch the
@@ -878,14 +879,16 @@ class RegisterSpeakerTool(MCPTool):
         if old_clean is None:
             return
         rename_msg = String()
+        # Новое имя - в именительном падеже, как и при регистрации (``words.profile_name``, #4118).
+        new_name = profile_name(name)
         rename_msg.data = json.dumps(
-            {"old_name": old_clean, "new_name": (name or "").strip() or old_clean},
+            {"old_name": old_clean, "new_name": new_name or old_clean},
             ensure_ascii=False,
         )
         self._speaker_rename_pub.publish(rename_msg)
         self.log_info(
             f"[register_speaker] rename {old_clean!r} → "
-            f"{(name or '').strip()!r}"
+            f"{new_name!r}"
         )
 
     def _rename_refusal(

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, PROVIDER_VOICES, VOICE_METADATA, named_voices_for,
-                                              voice_display_name)
+from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, PROVIDER_VOICES, VOICE_ALIASES, VOICE_METADATA,
+                                              named_voices_for, voice_display_name)
 
 
 @pytest.mark.parametrize("provider, voice, name", [
@@ -39,8 +39,20 @@ def test_every_catalog_voice_has_a_russian_or_named_display_name_not_its_id():
 
 
 def test_tier1_names_and_spoken_names_are_one_knowledge():
+    """Запись Tier-1 - ``(id, название, *алиасы)`` (#4129): название в ней то же, что говорят вслух, алиасы - из
+    ``VOICE_ALIASES`` и только они, порядок голосов - каталога."""
     for provider in PROVIDER_VOICES:
-        assert named_voices_for(provider) == [(v, voice_display_name(provider, v)) for v in PROVIDER_VOICES[provider]]
+        expected = [(v, voice_display_name(provider, v), *VOICE_ALIASES.get(f"{provider}:{v}", ()))
+                    for v in PROVIDER_VOICES[provider]]
+        assert named_voices_for(provider) == expected
+        assert all(entry[1] == voice_display_name(provider, entry[0]) for entry in named_voices_for(provider))
+
+
+def test_alias_voice_keeps_spoken_name_second_and_aliases_after():
+    """Джовиалмен: название вслух - «Весельчак», его кириллические записи идут дальше, а не подменяют название."""
+    entry = next(e for e in named_voices_for("minimax") if e[0] == "English_Jovialman")
+    assert entry[:2] == ("English_Jovialman", voice_display_name("minimax", "English_Jovialman"))
+    assert set(entry[2:]) == set(VOICE_ALIASES["minimax:English_Jovialman"]) and entry[2:]
 
 
 def test_providers_are_named_aloud_not_by_latin_ids():

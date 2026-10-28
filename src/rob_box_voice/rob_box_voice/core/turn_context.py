@@ -36,10 +36,10 @@ def tts_state(node: Any) -> Tuple[str, str]:
     return provider, getattr(node, "_actual_tts_voice", None) or default_voice_for(provider)
 
 
-def tts_voices(node: Any) -> List[Tuple[str, str]]:
-    """``(voice_id, display_name)`` голосов звучащего провайдера (:func:`tts_state`) - реестр имён для Tier-1 «включи
-    голос <имя>» (``grammar._voice``, #4086). Одна функция для v1 (``tier1_host``) и v2 (``dialog_node``): v2 без неё
-    звал ``TurnEngine`` без ``voices=``, реестр был пуст, и «говори голосом Весельчак» уходил модели."""
+def tts_voices(node: Any) -> List[Tuple[str, ...]]:
+    """``(voice_id, display_name, *алиасы)`` голосов звучащего провайдера (:func:`tts_state`) - реестр имён для Tier-1
+    «включи голос <имя>» (``grammar._voice``, #4086). Одна функция для v1 (``tier1_host``) и v2 (``dialog_node``): v2
+    без неё звал ``TurnEngine`` без ``voices=``, реестр был пуст, и «говори голосом Весельчак» уходил модели."""
     return named_voices_for(tts_state(node)[0])
 
 

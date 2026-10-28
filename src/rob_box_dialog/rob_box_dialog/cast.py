@@ -6,7 +6,8 @@
 * у роли один голос на всё выступление, разных голосов звучит ровно столько, сколько ролей с репликами, плюс
   рассказчик — голосом робота (``""``);
 * голос роли — первый свободный голос каталога ролей её пола, затем нейтральный, затем любой; каталог ролей приходит
-  снаружи (``command.Busy``: реестр голосов звучащего провайдера без рассказчика, каста марафона и чужого языка);
+  снаружи (``command.Busy``: реестр голосов звучащего провайдера без рассказчика и чужого языка - каст марафона
+  нерусский, отдельного списка нет);
 * песня и рэп ролей не имеют (``knowledge.PERFORM_ROLE_KINDS``): все куплеты — голосом робота. Живой случай 27.10:
   песня про енота шла двумя голосами через куплет — модель сама раскладывала ``voice_per_segment`` (Шифу: «каждый
   куплет разными голосами без причины — это очень напрягает; роли только когда нужны роли»);
@@ -68,9 +69,14 @@ def speaking(roles: Sequence[str]) -> List[str]:
     return out
 
 
+def _unclaimed(pool: Pool, taken: set) -> List[Tuple[str, str]]:
+    """Голоса каталога (с полом), которых нет в ``taken``, в порядке каталога."""
+    return [(voice, sex) for voice, sex in pool if voice and voice not in taken]
+
+
 def _free(pool: Pool, gender: str, taken: set) -> str:
     """Первый свободный голос каталога: своего пола, затем нейтральный, затем любой; свободных нет — ``""``."""
-    free = [(voice, sex) for voice, sex in pool if voice and voice not in taken]
+    free = _unclaimed(pool, taken)
     wants: Tuple[Optional[str], ...] = (gender, kn.ROLE_VOICE_ANY_GENDER, None) if gender else (None,)
     for want in wants:
         hit = next((voice for voice, sex in free if want is None or sex == want), "")
@@ -110,17 +116,26 @@ def voiced(roles: Optional[Sequence[str]], voices: Optional[Sequence[str]]) -> D
     return {role_key(name): voice for name, voice in zip(roles or (), voices or ()) if role_key(name) and voice}
 
 
+def free_voices(pool: Pool, fixed: Optional[Mapping[str, str]] = None) -> List[str]:
+    """Голоса каталога ролей, не занятые героями идущего выступления (``fixed``: ключ роли → голос): по ним код даёт
+    голоса новым героям (:func:`assign`) и по ним же валидатор считает, хватит ли голосов (:func:`problem`)."""
+    return [voice for voice, _ in _unclaimed(pool, set((fixed or {}).values()))]
+
+
 def problem(kind: str, segments: int, cast: Optional[Sequence[Role]], roles: Optional[Sequence[str]],
-            voices: int) -> Optional[Problem]:
+            pool: Pool = (), fixed: Optional[Mapping[str, str]] = None) -> Optional[Problem]:
     """Нарушение структуры ролей выступления вида с ролями (``has_roles``) или ``None``: у сказки нет ``cast``; герои
     есть, а чья реплика в сегменте — нет; реплика роли не из ``cast``; героев больше ``PERFORM_CAST_MAX``; героев с
-    репликами больше, чем голосов в каталоге ролей (``voices``; 0 — каталог неизвестен, не сверяется)."""
+    репликами, которым ещё нужен голос, больше, чем свободных голосов каталога ролей (``pool``; пуст — каталог
+    неизвестен, не сверяется). Голоса героев идущего выступления (``fixed``, ``Busy.cast``) заняты и из каталога
+    вычитаются, а сами эти герои нового голоса не просят: правка выступления с новым героем при маленьком каталоге
+    (Silero: четыре голоса ролей) иначе давала герою голос рассказчика."""
     if not has_roles(kind):
         return None
     if kind == "tale" and cast is None:
         return TALE_WITHOUT_CAST, f"{segments} сегментов без cast", ()
     names = tuple(dict.fromkeys(role.name for role in cast or () if role_key(role.name)))
-    return _foreign_role(names, roles) or _too_many(names, roles or (), voices)
+    return _foreign_role(names, roles) or _too_many(names, roles or (), pool, fixed or {})
 
 
 def _foreign_role(names: Tuple[str, ...], roles: Optional[Sequence[str]]) -> Optional[Problem]:
@@ -134,16 +149,20 @@ def _foreign_role(names: Tuple[str, ...], roles: Optional[Sequence[str]]) -> Opt
     return None
 
 
-def _too_many(names: Tuple[str, ...], roles: Sequence[str], voices: int) -> Optional[Problem]:
-    """Героев больше ``PERFORM_CAST_MAX``; героев с репликами больше, чем голосов каталога ролей (0 — не сверяется)."""
+def _too_many(names: Tuple[str, ...], roles: Sequence[str], pool: Pool,
+              fixed: Mapping[str, str]) -> Optional[Problem]:
+    """Героев больше ``PERFORM_CAST_MAX``; героев с репликами без голоса больше, чем свободных голосов каталога ролей
+    (каталог пуст — не сверяется). Герой с голосом в ``fixed`` нового голоса не просит (:func:`assign`)."""
     heroes = len({role_key(name) for name in names})
     if heroes > kn.PERFORM_CAST_MAX:
         return BAD_CAST, f"героев {heroes}, можно не больше {kn.PERFORM_CAST_MAX}", ()
-    count = len(speaking(roles))
-    if voices and count > voices:
-        return BAD_CAST, f"героев с репликами {count}, голосов для них {voices}", ()
+    needing = len([key for key in speaking(roles) if not fixed.get(key)])
+    free = len(free_voices(pool, fixed))
+    if pool and needing > free:
+        held = " (остальные заняты героями идущего выступления)" if fixed else ""
+        return BAD_CAST, f"героев с репликами {needing}, свободных голосов для них {free}{held}", ()
     return None
 
 
-__all__ = ["BAD_CAST", "Pool", "Problem", "Role", "TALE_WITHOUT_CAST", "assign", "has_roles", "problem", "role_key",
-           "segment_voices", "speaking", "voiced"]
+__all__ = ["BAD_CAST", "Pool", "Problem", "Role", "TALE_WITHOUT_CAST", "assign", "free_voices", "has_roles", "problem",
+           "role_key", "segment_voices", "speaking", "voiced"]

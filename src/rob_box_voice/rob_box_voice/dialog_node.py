@@ -19,6 +19,8 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 Телеграм (PR-12a #3706, ADR-0150 §9.2): реплика ``Utterance source=telegram`` — не вход Личности, а ход
 телеграм-агента своего чата (``rob_box_dialog.chats``: сессия ``telegram:<chat_id>``, своя история и LLM-цепочка
 ``telegram_*``); ответ и фразы об исходе — ``DialogOutput`` в ``/dialog/output`` (его читает ``telegram_node``).
+Чат — пульт робота (#4040, :class:`RobotRemote`): выступление и ответ лицом агента чата исполняет Личность в своей
+эпохе, в чат — фраза кода об исполнении.
 
 Перебивание (PR-9 #3703, ``rob_box_dialog.interrupt``): ясный стоп — с ``/dialog/interrupt_request`` (ранний
 сегмент STT) или с адресованной реплики — отменяет речь эпохи (граница по слову) и все хода в полёте: отмена задачи
@@ -269,9 +271,30 @@ def build_chat_tools(node: Any, personality_tools: Any) -> Any:
     return PlanToolExecutor(_mcp_provider(node, TELEGRAM_SENDER, True), personality_tools.planner)
 
 
-def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = lambda: False) -> ChatTurns:
+class RobotRemote:
+    """Пульт робота для агента чата (#4040, решение Шифу 28.10: чат Telegram — пульт робота, ``chats.Robot``): то,
+    что чат исполняет РОБОТОМ, идёт портам Личности в ЕЁ эпохе — выступление её хосту (голос робота в колонки, бит;
+    «Робот, хватит» голосом его гасит), лицо — её лицу без стадии хода. Со стороны робот делает это сам: служебного
+    текста агента чата здесь нет. Порты Личности читаются при вызове: нода создаёт их после чатов."""
+
+    def __init__(self, node: Any) -> None:
+        self._node = node
+
+    def perform(self, turn_id: str, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        return self._node._ports.perform(turn_id, self._epoch(), perf, edit)
+
+    def show(self, turn_id: str, expression: Any) -> None:
+        self._node._ports.show(turn_id, self._epoch(), expression)
+
+    def _epoch(self) -> int:
+        return int(self._node._session.snapshot.epoch)
+
+
+def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = lambda: False,
+                robot: Any = None) -> ChatTurns:
     """Телеграм-агент: своя LLM-цепочка, исполнитель — свой под общим планировщиком Личности (те же владельцы),
-    ответ — ``DialogOutput``; ``hold`` — держит ли оператор Личность (отказ ``say_aloud``, §9.2.3)."""
+    ответ — ``DialogOutput``; ``hold`` — держит ли оператор Личность (отказ ``say_aloud``, §9.2.3); ``robot`` — пульт
+    робота (:class:`RobotRemote`, #4040): выступление и ответ лицом чата исполняет робот."""
     counter = CallCounter()
     llm, system = build_llm(node, counter, kn.TEXT_CHANNEL_AGENT)
     pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
@@ -288,7 +311,7 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
         session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id))
         base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
                        epoch=lambda: session.snapshot.epoch)
-        ports = ChatPorts(base, chat_id, send, log, hold)
+        ports = ChatPorts(base, chat_id, send, log, hold, robot)
         chats.adopt(base.executor)
         engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()))  # потолок хода (В31)
         base.on_late = functools.partial(late_outcome, engine, ports.late)
@@ -337,7 +360,8 @@ class DialogNode(Node):
         self._tool_executor = build_tools(self)
         intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", 10)
         self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake,
-                                  hold=lambda: self._session.snapshot.top("OperatorHold") is not None)
+                                  hold=lambda: self._session.snapshot.top("OperatorHold") is not None,
+                                  robot=RobotRemote(self))  # пульт робота (#4040): порты Личности ниже
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self))

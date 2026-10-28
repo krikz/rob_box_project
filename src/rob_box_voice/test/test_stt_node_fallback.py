@@ -2071,6 +2071,10 @@ class TestIssue2924YandexStreamDeadline:
             with pytest.raises(STTTimeoutError):
                 node._recognize_yandex_phase(b"\x00" * 8000, phase="REAL_TIME", enable_speech_analysis=True)
 
+        # #4135: старый канал закрывается в фоне (поток фразы close() не ждёт) — ждём фоновый вызов.
+        deadline = time.monotonic() + 2.0
+        while not old_channel.close.called and time.monotonic() < deadline:
+            time.sleep(0.01)
         old_channel.close.assert_called_once()
         node.initialize_yandex.assert_called_once()
         warnings = self._warnings(caplog)

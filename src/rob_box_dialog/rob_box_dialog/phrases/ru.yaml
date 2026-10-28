@@ -57,6 +57,8 @@ query.rejected: ["Не нашёл ответа."]
 # «что ты обо мне помнишь?» - не «запоминать не буду» записи и не «не нашёл ответа»
 query.rejected.no_person: ["Не узнаю твой голос, поэтому не знаю, что о тебе помню."]
 query.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — не буду гадать, что помню."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
+query.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не знаю, что о тебе помню."]
 # отказ ЧТЕНИЯ по причине тула (#4025, #4026): поиск в интернете не ответил - это не «ничего не нашёл»; info по
 # выдуманному id трека (update/delete того же - music.library_fail.unknown_track, один текст)
 query.rejected.search_unavailable: ["Не смог проверить в интернете: поиск сейчас не ответил."]
@@ -77,6 +79,8 @@ local.rejected: ["Не вышло."]
 local.timeout: ["Не дождался подтверждения — не знаю, вышло ли."]
 # память о людях (knowledge.PERSON_SCOPED_TOOLS / DONE_EVIDENCE): отказ без собеседника и успех без saved
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
+# ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
+local.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не запомню."]
 # голос узнан, а чей - не подтверждено (спор/гипотеза, knowledge.VOICE_UNCONFIRMED_STATES, #3993): без вопроса «ты Саша?»
 # (решение Шифу 26.10) и без неправды «не узнаю голос»
 local.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — запоминать не буду."]
@@ -157,6 +161,13 @@ identity.merged: ["Понял, это ты. Объединил записи — 
 identity.kept_apart: ["Понял, вы разные люди. Запомню обоих."]
 identity.merge_unclear: ["Не понял ответ — пока оставлю записи раздельно."]
 identity.retry_voice: ["Только голос твой я запомнить не успел — скажи, пожалуйста, ещё пару слов."]
+# #3993 (решение Шифу 26.10): на «ты меня узнал?» отвечает код по собеседнику снимка (knowledge.RECOGNIZED_REPLIES).
+# Спорный голос и гипотеза — без вопроса «ты Саша?» и без имени кандидата.
+# Без «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны (ревью PR #4121).
+speaker.recognized.confirmed: ["Узнал — ты {name}."]
+speaker.recognized.unconfirmed: ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.nameless: ["Голос твой помню, а имени не знаю."]
+speaker.recognized.unknown: ["По голосу пока не узнаю."]
 # #3801 (решение Шифу 21.10): один голос — одна личность; имя меняется фразой; подтверждение — шаблоном нормальной длины.
 identity.same_voice: ["Не обманывай — по голосу ты {known}. Хочешь, чтобы я звал тебя иначе, скажи: «зови меня {name}»."]
 identity.one_voice: ["Голос-то один и тот же — значит, и человек один, второй записи не будет. Хочешь другое имя — скажи: «зови меня {name}»."]
@@ -176,6 +187,18 @@ speak_aloud.rejected.unsupported_script: ["Не озвучил: выбранны
 speak_aloud.rejected.operator_hold: ["Не озвучил: оператор занял робота."]
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
+
+# --- пульт робота из чата Telegram (#4040, knowledge.CHAT_OUTLETS): что робот сделал — фраза кода в чат --------------
+remote.perform.song: ["Пою на роботе: «{line}»"]
+remote.perform.rap: ["Читаю рэп на роботе: «{line}»"]
+remote.perform.tale: ["Рассказываю на роботе: «{line}»"]
+remote.perform.poem: ["Читаю стихи на роботе: «{line}»"]
+remote.perform.edit: ["Добавил к выступлению робота: «{line}»"]
+remote.perform.backing: ["Добавил бит к выступлению робота."]
+remote.show: ["Показываю на роботе: {face}."]
+remote.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+# отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
+perform.rejected.operator_hold: *remote_held
 
 perform.backing_started: ["Поехали!"]
 perform.finished: *done
