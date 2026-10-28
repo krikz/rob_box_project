@@ -407,6 +407,37 @@ def test_robot_owed_is_only_for_the_chat_agent_and_only_without_robot_outlets():
     assert not robot_owed(chat, acted, speech), "на роботе в этом ходе уже сделано"
 
 
+# --- 8. #4159 п.3 (ревью #4153): справка-просьба и слово-тема - ответ в чат -------------------------------------------------
+
+#: Справки со словом из ``CHAT_ROBOT_ASK_FORMS``, не вопросы по первому слову (``test_robot_owed_reference_4159.REFERENCES``).
+LOOKUPS = (
+    "Найди, что пишет народ про айфон", "Поищи в интернете сколько народу было на митинге", "Найди статью про толпу",
+    "Научи меня читать вслух", "Расскажи про народ", "Переведи слово вслух на английский", "Объясни слово роботом",
+)
+
+
+@pytest.mark.parametrize("text", LOOKUPS)
+def test_lookup_or_topic_word_is_answered_by_text_in_one_call_without_the_nothing_done_phrase(text):
+    """Решение Шифу 28.10: справки (время, поиск, вопросы) - ответом в чат. Модель ответила текстом: без повтора с
+    нарушением и без «На роботе ничего не сделал» рядом."""
+    host = Host([_answer(Command(speech="Вот что нашёл."))])
+
+    host.say(text)
+
+    assert len(host.base.asked) == 1, "без повтора"
+    assert host.sent == ["Вот что нашёл."]
+
+
+@pytest.mark.parametrize("text", ["Найди анекдот и прочитай вслух", "Расскажи народу анекдот", "Расскажи про космос вслух"])
+def test_search_then_act_is_still_owed_and_retried_when_the_model_only_wrote_text(text):
+    host = Host([_answer(Command(speech=CLAIM)), _answer(Command(speech=CLAIM))])
+
+    host.say(text)
+
+    assert len(host.base.asked) == 2 and host.base.executed == []
+    assert host.sent == [CLAIM, phrases.text(kn.REMOTE_OWED_PHRASE)]
+
+
 # --- 7. ревью #4153 -----------------------------------------------------------------------------------------------
 
 
