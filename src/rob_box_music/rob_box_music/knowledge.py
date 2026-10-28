@@ -3269,7 +3269,8 @@ TRACK_EDITS: Mapping[str, TrackEdit] = {
     "brighter": TrackEdit("timbre", ("светлее", "светлей", "посветлее", "посветлей", "звонче", "позвонче", "веселее",
                                      "повеселее"), timbre="bright", done="сделал звук светлее",
                           limit="уже звучит светло"),
-    "softer": TrackEdit("timbre", ("мягче", "помягче", "теплее", "потеплее"), timbre="warm", done="сделал звук мягче",
+    "softer": TrackEdit("timbre", ("мягче", "помягче", "теплее", "потеплее", "спокойнее", "поспокойнее", "спокойней",
+                                   "поспокойней"), timbre="warm", done="сделал звук мягче",
                         limit="уже звучит мягко"),
     "other_timbre": TrackEdit("timbre", ("тембр",), timbre=EDIT_NEXT_TIMBRE, done="сменил тембр"),
     # бас: направление — слово рядом с «басом» в той же части реплики; «баса» одно — не правка (ревью PR #4116)
@@ -3307,12 +3308,19 @@ EDIT_TOPIC = EditTopicWords(
                     "почему", "зачем", "сколько", "когда", "разве", "неужели"),
     question_particles=("ли",),
 )
-#: Слова заказа ДРУГОЙ музыки (точные слова речи; дефис делит слово: «что-нибудь» — «что», «нибудь»): со словом
+#: Слова, что называют ДРУГУЮ музыку (точные слова речи; дефис делит слово: «что-нибудь» — «что», «нибудь»): со словом
 #: правки рядом это заказ нового трека, а не правка играющего — «поставь что-нибудь помрачнее», «включи другую,
 #: побыстрее». «Сыграй» не здесь: «сыграй побыстрее» — правка.
-EDIT_NEW_ORDER_WORDS: Tuple[str, ...] = (
-    "включи", "включите", "поставь", "поставьте", "заведи", "вруби", "врубай", "другое", "другую", "другой", "другие",
-    "новое", "новую", "новый", "новые", "нибудь")
+EDIT_NEW_ORDER_OBJECTS: Tuple[str, ...] = (
+    "другое", "другую", "другой", "другие", "новое", "новую", "новый", "новые", "нибудь")
+#: Глаголы «включить музыку» (#4173, n607 28.10 «помягче поставь спокойно…» под диджей-сетом заказало новый трек и
+#: убило сет): сам по себе глагол - заказ нового; вплотную к слову правки («помягче поставь», «поставь потяжелее»,
+#: «включи побыстрее») - просьба править играющее: глагол называет играющую музыку (``track_edit._plays_edit``). Между
+#: ними - только обращение и служебные слова (:data:`EDIT_TOPIC` ``address``/``fillers``): «поставь джаз помягче» -
+#: заказ джаза. Слово из :data:`EDIT_NEW_ORDER_OBJECTS` рядом с глаголом - заказ нового при любом порядке слов.
+EDIT_PLAY_VERBS: Tuple[str, ...] = ("включи", "включите", "поставь", "поставьте", "заведи", "вруби", "врубай")
+#: Все слова заказа нового (глаголы + названия другого): для кода, которому важно только наличие.
+EDIT_NEW_ORDER_WORDS: Tuple[str, ...] = EDIT_PLAY_VERBS + EDIT_NEW_ORDER_OBJECTS
 #: Честный отказ правки кодом (#4029, ADR-0148): что играет и почему так не изменить — и что можно вместо, а не платная
 #: генерация молча. Ключ — вид играющего (``track_edit.EditTarget.kind``) или причина.
 EDIT_REFUSALS: Mapping[str, str] = {
@@ -3405,6 +3413,6 @@ __all__ += ["ForkCell", "MUSIC_FORK", "SING_COMPARATIVE_ENDINGS", "SING_COMPARAT
             "SING_RELATIVE_WORDS", "SING_REPEAT_PHRASES", "SING_ELLIPSIS_OBJECTS", "SING_PLURAL_ADJ_ENDINGS"]
 __all__ += ["ENGINE_AUTO", "ENGINE_NEGATIONS", "ENGINE_NEGATION_BRIDGES", "ENGINE_TOPIC_LEADS", "MUSIC_ENGINES",
             "MusicEngine"]
-__all__ += ["EDIT_BASS_DB_RANGE", "EDIT_BASS_FORMS", "EDIT_NEGATIONS", "EDIT_NEW_ORDER_WORDS", "EDIT_NEXT_TIMBRE",
-            "EDIT_OPPOSED_GROUPS", "EDIT_REFUSALS", "EDIT_TEMPO_STEP", "EDIT_TOPIC", "EditTopicWords", "TRACK_EDITS",
+__all__ += ["EDIT_BASS_DB_RANGE", "EDIT_BASS_FORMS", "EDIT_NEGATIONS", "EDIT_NEW_ORDER_OBJECTS", "EDIT_NEW_ORDER_WORDS",
+            "EDIT_NEXT_TIMBRE", "EDIT_PLAY_VERBS", "EDIT_OPPOSED_GROUPS", "EDIT_REFUSALS", "EDIT_TEMPO_STEP", "EDIT_TOPIC", "EditTopicWords", "TRACK_EDITS",
             "TRACK_EDIT_GROUPS", "TrackEdit"]

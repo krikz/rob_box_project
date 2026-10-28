@@ -14,6 +14,10 @@ from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
     ASK_LEAD_SKIP,
+    CHAT_REFERENCE_LEADS,
+    CHAT_ROBOT_ACT_VERBS,
+    CHAT_ROBOT_ASK_FORMS,
+    CHAT_TOPIC_MARKERS,
     DEFAULT_WAKE_WORDS,
     INTRO_ADJECTIVE_ENDINGS,
     INTRO_GREETING_WORDS,
@@ -39,6 +43,7 @@ from rob_box_dialog.knowledge import (
     STOP_WORDS,
     TIER1_POLICY,
     VOICE_STEP,
+    VOLUME_DEGREE_WORDS,
     VOLUME_LEVEL_WORDS,
     VOLUME_STEMS,
     WAKE_SLIP_AMBIGUOUS,
@@ -232,13 +237,33 @@ def level_word(token: str) -> str:
     return ""
 
 
+def level_phrases(words: Sequence[str]) -> Tuple[Tuple[int, int, str], ...]:
+    """Фразы громкости в словах реплики: ``(первое слово, слово громкости, направление)`` на каждое слово громкости
+    (:func:`level_word`). В фразу входят слова степени перед ним (``VOLUME_DEGREE_WORDS``: «слишком», «очень», «так уж») и
+    «не» перед ними: «не» переворачивает направление так же вплотную («не громко»), как со степенью между ними («не
+    слишком громко», «не так уж громко» - ``quieter``; «не очень тихо» - ``louder``). Единственное место, где решается,
+    какие слова реплики - громкость: направление читает :func:`asked_level`, а тему заказа не берут слова фразы
+    (``theme_grounding.heard_theme``) - ни слово громкости, ни «не», ни степень (#4159 п.2, ревью PR #4150)."""
+    said = [(word or "").lower().replace("ё", "е") for word in words]
+    phrases = []
+    for i, word in enumerate(said):
+        kind = level_word(word)
+        if not kind:
+            continue
+        first = i
+        while first and said[first - 1] in VOLUME_DEGREE_WORDS:
+            first -= 1
+        negated = first > 0 and said[first - 1] == "не"
+        phrases.append((first - negated, i, _OPPOSITE_LEVEL[kind] if negated else kind))
+    return tuple(phrases)
+
+
 def asked_level(text: str) -> str:
     """Уровень музыки, который просит заказ: ``quieter``/``louder`` или ``""`` (не просил, либо просил то и другое —
     выбирать нечем). «Поставь ровный ритм, только негромко» и «…только не громко» — ``quieter`` (слово с «не» перед ним
-    значит обратное); «поставь потише» — ``quieter``. Слова — :func:`level_word`."""
-    tokens = name_tokens(text)
-    asked = {_OPPOSITE_LEVEL[kind] if i and tokens[i - 1] == "не" else kind
-             for i, token in enumerate(tokens) if (kind := level_word(token))}
+    значит обратное, и со степенью между ними: «не слишком громко», «не так уж громко»); «поставь потише» —
+    ``quieter``; «потише, не очень громко» — ``quieter`` (оба говорят одно). Слова — :func:`level_phrases`."""
+    asked = {direction for _first, _last, direction in level_phrases(name_tokens(text))}
     return asked.pop() if len(asked) == 1 else ""
 
 
@@ -414,6 +439,30 @@ def asks_question(text: str, wake_words: Optional[Sequence[str]] = None) -> bool
         return True
     marked = "?" in rest or bool(set(tokens) & set(STOP_QUESTION_PARTICLES))
     return marked and lead not in REQUEST_LEADS
+
+
+def asks_reference(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Реплика - справка, а не просьба сделать на роботе (решение Шифу 28.10: «время, поиск, вопросы - ответом в чат»,
+    #4159 п.3): вопрос (:func:`asks_question`) или просьба найти/узнать/перевести/научить (``CHAT_REFERENCE_LEADS``: «найди,
+    что пишет народ») без глагола, которым робота просят что-то сказать или сделать (``CHAT_ROBOT_ACT_VERBS``: «найди
+    анекдот и прочитай вслух» - действие). Слова - как у :func:`name_tokens`."""
+    if asks_question(text, wake_words):
+        return True
+    tokens = name_tokens(strip_wake_word(text, wake_words))
+    lead = next((token for token in tokens if token not in ASK_LEAD_SKIP), "")
+    return lead in CHAT_REFERENCE_LEADS and not set(tokens) & set(CHAT_ROBOT_ACT_VERBS)
+
+
+def asks_robot_to_act(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Просит ли реплика в чате сделать что-то РОБОТОМ (#4142 п.7, #4159 п.3): в ней есть слово из
+    ``CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ») и оно не названо темой (после
+    слов ``CHAT_TOPIC_MARKERS``: «расскажи про народ», «переведи слово вслух» - предмет разговора, не адресат), а реплика -
+    не справка (:func:`asks_reference`: «как управлять роботом?», «найди, что пишет народ»). Решает код по словам человека,
+    а не по ответу модели; верный текстовый ответ на справку в чат не теряется и «ничего не сделал» к нему не клеится."""
+    said = " ".join(name_tokens(text))
+    topics = tuple(f"{marker} {form}" for marker in CHAT_TOPIC_MARKERS for form in CHAT_ROBOT_ASK_FORMS)
+    asked = has_form(without_forms(said, topics)[0], CHAT_ROBOT_ASK_FORMS)
+    return asked and not asks_reference(text, wake_words)
 
 
 @dataclass(frozen=True)

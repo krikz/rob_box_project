@@ -5,7 +5,7 @@ import pytest
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_OFF_WORDS, REACH_NEXT, SILENCE_WORDS,
     STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_CHANNEL_STEMS, VOLUME_LEVEL_WORDS,
-    VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
+    VOLUME_DEGREE_WORDS, VOLUME_NOUN_STEMS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
     WAKE_SLIP_CUE_WINDOW, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
     WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_STOP_FORMS, WAKE_SLIP_STOP_WINDOW,
     WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, WAKE_SLIP_TWEAK_CUE_STEMS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS,
@@ -14,7 +14,7 @@ from rob_box_dialog.knowledge import (
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, asked_level, has_form, has_wake_word, has_word,
-    introduces_self, level_word, slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
+    introduces_self, level_phrases, level_word, slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
     wake_command,
 )
 
@@ -553,6 +553,54 @@ def test_4136_level_words_table_is_lowercase_whole_adverbs_not_stems():
             assert level_word(word) == intent
     assert not set(VOLUME_LEVEL_WORDS["louder"]) & set(VOLUME_LEVEL_WORDS["quieter"])
     assert level_word("громкость") == "" and level_word("тихий") == "" and level_word("") == ""
+
+
+#: #4159 п.2 (ревью PR #4150): «не» + степень + слово громкости - то же обратное направление, что «не» вплотную. Было:
+#: «не слишком громко» / «не очень громко» → louder (противоположное просьбе), «не слишком тихо» → quieter,
+#: «потише, не очень громко» → просьба терялась (оба направления).
+@pytest.mark.parametrize("text, level", [
+    ("включи сет про космос не слишком громко", "quieter"),
+    ("поставь музыку не очень громко", "quieter"),
+    ("поставь ритм не так уж громко", "quieter"),
+    ("поставь ритм не сильно громко", "quieter"),
+    ("поставь ритм не особо громко", "quieter"),
+    ("поставь ритм не особенно громко", "quieter"),
+    ("поставь ритм не очень-то громко", "quieter"),
+    ("не слишком тихо", "louder"),
+    ("поставь ритм не очень тихо", "louder"),
+    ("поставь ритм не так уж тихо", "louder"),
+    ("потише, не очень громко", "quieter"),
+    ("не очень громко и потише", "quieter"),
+    ("погромче, не слишком тихо", "louder"),
+    ("не слишком громко, но и не тихо", ""),  # «не громко» и «не тихо» вместе: середина - выбирать нечем
+    # без «не» степень направления не меняет: «очень тихо» - тихо, «так громко» - громко
+    ("поставь ритм очень тихо", "quieter"), ("поставь ритм так громко", "louder"),
+    # «не» не около слова громкости (другая часть фразы) направление не переворачивает
+    ("не включай танго, поставь громко", "louder"),
+    ("поставь ритм очень", ""), ("не слишком, не очень", ""),
+])
+def test_4159_degree_between_not_and_level_word_still_negates(text, level):
+    assert asked_level(text) == level
+
+
+@pytest.mark.parametrize("words, phrases", [
+    (["сет", "про", "космос", "не", "слишком", "громко"], [(3, 5, "quieter")]),
+    (["не", "так", "уж", "громко"], [(0, 3, "quieter")]),
+    (["потише", "не", "очень", "громко"], [(0, 0, "quieter"), (1, 3, "quieter")]),
+    (["очень", "ё"], []),
+    (["Не", "СЛИШКОМ", "Тихо"], [(0, 2, "louder")]),
+    (["очень", "тихо"], [(0, 1, "quieter")]),
+], ids=["theme-and-level", "so-already", "both-say-quieter", "no-level-word", "case-insensitive", "degree-without-not"])
+def test_4159_level_phrases_cover_not_degree_and_the_level_word(words, phrases):
+    assert list(level_phrases(words)) == phrases
+
+
+def test_4159_degree_words_are_whole_lowercase_words_and_none_names_a_direction():
+    """Слова степени - обычная речь («так», «очень»): сами направления не называют, иначе «так» открыло бы громкость."""
+    for word in VOLUME_DEGREE_WORDS:
+        assert word == word.lower() and "ё" not in word and " " not in word, word
+        assert level_word(word) == "", word
+    assert len(set(VOLUME_DEGREE_WORDS)) == len(VOLUME_DEGREE_WORDS)
 
 
 # --- #4136 п.3 (n812): стоп-слово под музыкой будит искажённый вейк ----------------------------------------------

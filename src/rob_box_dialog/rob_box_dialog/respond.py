@@ -67,6 +67,32 @@ def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
     return result if cls == result.cls else replace(result, cls=cls)
 
 
+def _stops_music(result: ActionResult) -> bool:
+    """Результат тула, что гасит музыку (``knowledge.MUSIC_STOP_TOOLS``), исполненный (``done``)."""
+    if result.status != "done" or result.tool not in kn.MUSIC_STOP_TOOLS:
+        return False
+    marker = kn.MUSIC_STOP_TOOLS[result.tool]
+    return marker is None or result.data.get(marker[0]) == marker[1]
+
+
+def reconcile_stops(stopped: bool, results: Sequence[ActionResult]) -> Tuple[bool, Tuple[ActionResult, ...]]:
+    """Исходы стопа музыки по ходу целиком, а не по одному тулу (#4173, ADR-0148: фраза об исходе - правда о ходе).
+    ``stopped`` - музыку в этом ходе уже выключил стоп прошлого вызова; результаты - по порядку вызовов. Стоп, что
+    застал тишину (``was_playing=False``) после стопа этого же хода, - не «ничего не играет»: музыку выключил ход, и
+    результату ставится ``knowledge.STOPPED_EARLIER_FIELD`` (фраза «Выключил музыку.»). Первый стоп хода, заставший
+    тишину, остаётся «ничего не играет». Возвращает ``(музыку ход выключил, результаты)``."""
+    out = []
+    for result in results:
+        if _stops_music(result):
+            if result.data.get("was_playing") is False:
+                if stopped:
+                    result = replace(result, data=MappingProxyType({**result.data, kn.STOPPED_EARLIER_FIELD: True}))
+            else:
+                stopped = True
+        out.append(result)
+    return stopped, tuple(out)
+
+
 def _tool_key(result: ActionResult) -> Optional[str]:
     """Особый ключ тула (``knowledge.TOOL_PHRASES``): готовый или выбранный по данным результата
     (``knowledge.ByData``)."""

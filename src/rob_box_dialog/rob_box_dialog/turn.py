@@ -81,11 +81,13 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
+                    Sequence, Tuple)
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import face_scene
+from rob_box_dialog import foreign_name
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import phrases
@@ -101,7 +103,8 @@ from rob_box_dialog.expression import face_label, show_seconds, shown_scene, sho
 from rob_box_dialog.grammar import Tier1Command, Voices, match
 from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
-from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
+from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed, join, outcome_emotion,
+                                    reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.words import asks_to_listen
@@ -221,6 +224,7 @@ class _Turn:
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется (#4069 п.1)
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть (#4069 п.8)
     utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult (#4141)
+    music_stopped: bool = False  # ход уже выключил музыку (стоп-тул ``done``): второй стоп не «ничего не играет» (#4173)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -1148,7 +1152,8 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
 
 def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     """Человек в чате просит сделать это РОБОТОМ (``tools_view.robot_asked``: «покекай роботом», «через робота»,
-    «вслух» — и реплика не вопрос: «Как управлять роботом?» — справка, ревью #4153), а команда на роботе ничего не
+    «вслух» — и реплика не справка: «Как управлять роботом?», «найди, что пишет народ», «расскажи про народ» — ответ в
+    чат, решение Шифу 28.10, ревью #4153, #4159 п.3), а команда на роботе ничего не
     делает — только текст в чат (#4142 п.7, классы 1 и 3 #4040: «Покекал: глазами поводил, повертелся» без единого
     тула; «через робота» текстом в чат вместо ``say_aloud``). Решает код по словам ЧЕЛОВЕКА и по структуре команды, а
     не по тексту ответа модели: в команде нет действий, выступления и лица, и прошлые итерации хода на роботе тоже
@@ -1163,13 +1168,30 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     return robot_asked(turn.text)
 
 
-def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> str:
+def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
-    адресованную реплику (:func:`words_owed`, #3995) или только текст в чат на просьбу сделать роботом
-    (:func:`robot_owed`, #4142)."""
+    адресованную реплику (:func:`words_owed`, #3995; и подхват бэклога, #4179), только текст в чат на просьбу сделать
+    роботом (:func:`robot_owed`, #4142) или обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
+    из :func:`foreign_keys`, #4184)."""
     if words_owed(snapshot, turn.text, cmd):
         return kn.VIOLATION_SILENT_ANSWER
-    return kn.VIOLATION_REMOTE_OWED if robot_owed(snapshot, turn, cmd) else ""
+    if robot_owed(snapshot, turn, cmd):
+        return kn.VIOLATION_REMOTE_OWED
+    return kn.VIOLATION_FOREIGN_NAME if foreign_name.offending(cmd, names) else ""
+
+
+def foreign_keys(window: Sequence[Any], turn: "_Turn", cmd: Command, snapshot: SessionSnapshot) -> FrozenSet[str]:
+    """Имена, которыми нельзя обращаться к собеседнику хода (#4184): собеседник неподтверждён
+    (:func:`foreign_name.unconfirmed`), а имена, которые модель видела в разговоре, - авторы реплик окна, подхвата и
+    фона (:func:`foreign_name.name_keys`). Не считаются названные самим человеком в этой реплике и им же в
+    ``register_speaker`` команды: «меня зовут Гриша» - ответ «Понял, Гриша» честен."""
+    if not foreign_name.unconfirmed(snapshot.speaker):
+        return frozenset()
+    seen = [e.speaker for e in window if e.role == USER] + [who for who, _ in turn.heard]
+    seen += [str(p.get("who") or "") for p in (*turn.recent, *turn.background)]
+    said = [turn.text, *(text for _who, text in turn.heard)]
+    said += [str(a.args.get("name") or "") for a in cmd.actions if a.tool == "register_speaker"]
+    return foreign_name.name_keys(seen) - foreign_name.name_keys(said)
 
 
 @dataclass(frozen=True)
@@ -1190,7 +1212,25 @@ _OWED: Mapping[str, _Owed] = {
     kn.VIOLATION_SILENT_ANSWER: _Owed(kn.SILENT_ANSWER_HINT, "без слов на адресованную реплику"),
     kn.VIOLATION_REMOTE_OWED: _Owed(kn.REMOTE_OWED_HINT, "только текст в чат на просьбу сделать роботом",
                                     keeps_words=True),
+    kn.VIOLATION_FOREIGN_NAME: _Owed(kn.FOREIGN_NAME_HINT, "обращение к неподтверждённому собеседнику чужим именем"),
 }
+
+
+def unnamed_without_retry(log: Any, turn: _Turn, cmd: Command, names: Collection[str], last: bool) -> Command:
+    """Обращение по чужому имени, а вернуть команду модели нельзя (последняя итерация, повтор исчерпан): имя из речи
+    вычищает код, фраза остаётся грамотной (#4184, ADR-0148). Повтор есть - команда как есть: нарушение
+    :data:`kn.VIOLATION_FOREIGN_NAME` вернёт её модели (:func:`_answer_owed`)."""
+    called = foreign_name.offending(cmd, names)
+    if not called or retry_left(turn, last):
+        return cmd
+    log.warning(f"{LOG_MARK} {kn.VIOLATION_FOREIGN_NAME}: обращение {list(called)} к неподтверждённому собеседнику и "
+                f"после повтора → имя вычищено из речи turn={turn.turn_id}")
+    return foreign_name.unnamed(cmd, names)
+
+
+def retry_left(turn: _Turn, last: bool) -> bool:
+    """Модели можно вернуть нарушение: итерация не последняя и повторов за ответ ещё не исчерпано."""
+    return not last and turn.retried < kn.COMMAND_RETRIES_MAX
 
 
 async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: SessionSnapshot, last: bool,
@@ -1204,7 +1244,7 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
     код говорит факт по исходу (на роботе ничего не исполнено), не подменяя её ответ (ревью #4153)."""
     owed = _OWED[reason]
     tools = [a.tool for a in cmd.actions] or [f"expression:{cmd.expression.emotion}"]
-    if not last and turn.retried < kn.COMMAND_RETRIES_MAX:
+    if retry_left(turn, last):
         turn.retried += 1
         engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} → повтор с нарушением turn={turn.turn_id}")
         return explain(Invalid(reason, owed.hint), after_query=bool(turn.queried))
@@ -1572,7 +1612,9 @@ class TurnEngine:
                 self._say(turn, self._pick(kn.PASSED_ADDRESSED_PHRASE))
             return None
         fresh = unrepeated(self._log, turn, cmd)
-        owed = owed_reason(self.session.snapshot, turn, fresh)
+        names = foreign_keys(self.log.window(exclude=turn.turn_id), turn, fresh, self.session.snapshot)
+        fresh = unnamed_without_retry(self._log, turn, fresh, names, last)
+        owed = owed_reason(self.session.snapshot, turn, fresh, names)
         if owed:
             return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
@@ -1617,6 +1659,7 @@ class TurnEngine:
         turn.deadline.grant(action_term(actions))
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
+        turn.music_stopped, results = reconcile_stops(turn.music_stopped, results)  # фраза стопа - правда о ходе (#4173)
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется (#4069 п.1)
         owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне (#4023)
         for result in results:
@@ -1697,6 +1740,6 @@ class TurnEngine:
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
            "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
            "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
-           "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer", "query_fallback",
-           "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
+           "foreign_keys", "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer",
+           "query_fallback", "unnamed_without_retry", "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
            "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]
