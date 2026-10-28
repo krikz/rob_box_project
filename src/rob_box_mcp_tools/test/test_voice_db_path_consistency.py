@@ -79,13 +79,25 @@ def _package_sources():
         yield rel, path.read_text(encoding="utf-8", errors="replace")
 
 
-def test_no_second_place_knows_the_file_name_or_reads_the_env():
-    """Имя файла и чтение env - только в ``rob_box_core/tools_db.py``; остальные зовут ``tools_db_path()``."""
+def _leaks(sources):
+    """Файлы, что знают имя файла БД или читают её env мимо ``tools_db``: имя env в двойных или в одинарных кавычках
+    (``os.environ["…"]`` и ``os.environ.get('…')`` - одно и то же, хвост ревью #4131)."""
     file_name = tools_db.TOOLS_DB_DEFAULT.rsplit("/", 1)[1]
     e2e_name = tools_db.TOOLS_E2E_DB_DEFAULT.rsplit("/", 1)[1]
-    leaks = [
+    quoted_env = (f'"{tools_db.TOOLS_DB_ENV}"', f"'{tools_db.TOOLS_DB_ENV}'")
+    return [
         rel
-        for rel, text in _package_sources()
-        if file_name in text or e2e_name in text or f'"{tools_db.TOOLS_DB_ENV}"' in text
+        for rel, text in sources
+        if file_name in text or e2e_name in text or any(quoted in text for quoted in quoted_env)
     ]
-    assert leaks == []
+
+
+def test_no_second_place_knows_the_file_name_or_reads_the_env():
+    """Имя файла и чтение env - только в ``rob_box_core/tools_db.py``; остальные зовут ``tools_db_path()``."""
+    assert _leaks(_package_sources()) == []
+
+
+def test_the_guard_sees_the_env_name_in_either_kind_of_quotes():
+    env = tools_db.TOOLS_DB_ENV
+    assert _leaks([("a.py", f"os.environ.get('{env}')"), ("b.py", f'os.getenv("{env}", "")')]) == ["a.py", "b.py"]
+    assert _leaks([("c.py", f"# {env} в комментарии без кавычек")]) == []

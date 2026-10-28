@@ -332,7 +332,8 @@ def test_track_name_is_not_the_text_of_the_request():
     Finders(dj)
     text = "поставь фоном ровный ритм на Ренардо только не громко"
     data = req.execute(intent="track", text=text, mood="calm", engine="synth", heard_text=RHYTHM).data
-    assert data["name"] == "клубный трек" and data["title"].startswith("клубный трек")
+    # #4060: у своего синт-трека названия нет вовсе - ни слов заказа, ни заглушки «клубный трек» под ``name``
+    assert "name" not in data and data["title"].startswith("клубный трек")
     assert text not in data["title"] and "ренардо" not in data["title"].lower()
 
 

@@ -5,8 +5,10 @@ from rob_box_dialog.knowledge import (
     BACKGROUND_MAX_PHRASES,
     BACKGROUND_PHRASE_MAX_CHARS,
     BACKGROUND_WINDOW_S,
+    BACKLOG_FRESH_S,
     BACKLOG_MAX_ENTRIES,
     BACKLOG_PICKUP_MAX,
+    BACKLOG_PICKUP_S,
     BACKLOG_TTL_S,
 )
 from rob_box_dialog.speaker_adapter import VoiceTag
@@ -84,7 +86,8 @@ def test_earlier_chunk_of_the_same_story_older_than_the_window_still_goes():
     assert [e.text for e in backlog.pickup(Heard(text="робот", t=100.0))] == ["кусок 1", "кусок 2"]
 
 
-def test_tv_phrase_older_than_the_window_does_not_go():
+def test_tv_phrase_older_than_the_fresh_border_does_not_go_with_a_fresh_one():
+    """Есть свежая фраза - старая чужая (ТВ, 40 с) в ход не идёт, хотя окно бэклога её ещё держит (#3975)."""
     backlog = Backlog()
     backlog.add(Heard(text="в эфире новости", t=60.0, voice_s=3.0, doa_deg=250.0))
     backlog.add(Heard(text="покажи анимацию", t=95.0, voice_s=2.0, doa_deg=90.0))
@@ -145,3 +148,45 @@ def test_background_window_is_capped_by_count_and_chars():
     section = backlog.background_since_reply(_h("робот", t=100.0))
     assert len(section) == BACKGROUND_MAX_PHRASES and section[-1]["text"].startswith(f"ф{BACKGROUND_MAX_PHRASES + 2}")
     assert all(len(p["text"]) == BACKGROUND_PHRASE_MAX_CHARS for p in section)
+
+
+def test_3975_nothing_fresh_pickup_reaches_back_to_the_last_phrase_of_the_window():
+    """Свежего (моложе ``BACKLOG_FRESH_S``) нет - достаётся одна последняя фраза окна, остальное остаётся в бэклоге."""
+    backlog = Backlog()
+    backlog.add(_h("чужой разговор", t=800.0, doa=250.0, voice_s=3.0))
+    backlog.add(_h("включи спокойное", t=900.0, doa=90.0, voice_s=2.0))
+    wake_at = 900.0 + BACKLOG_FRESH_S + 9.0
+    taken = backlog.pickup(_h("робот", t=wake_at, doa=90.0))
+    assert [e.text for e in taken] == ["включи спокойное"]
+    assert backlog.background_phrases(wake_at) == 1
+
+
+def test_3975_reach_is_the_backlog_window_and_the_ttl_agrees():
+    assert BACKLOG_PICKUP_S == BACKGROUND_WINDOW_S == BACKLOG_TTL_S > BACKLOG_FRESH_S
+    backlog = Backlog()
+    backlog.add(_h("на самом краю окна", t=1000.0 - BACKLOG_PICKUP_S, voice_s=2.0))
+    assert [e.text for e in backlog.pickup(_h("робот", t=1000.0))] == ["на самом краю окна"]
+    backlog.add(_h("за окном", t=2000.0 - BACKLOG_PICKUP_S - 0.5, voice_s=2.0))
+    assert backlog.pickup(_h("робот", t=2000.0)) == []
+
+
+def test_3975_far_pickup_is_capped_to_the_story_and_the_cap():
+    """Куски одного рассказа далеко не тянутся без конца: потолок ``BACKLOG_PICKUP_MAX`` тот же."""
+    backlog = Backlog()
+    for i in range(BACKLOG_PICKUP_MAX + 3):
+        backlog.add(Heard(text=f"кусок {i}", t=800.0 + 15.0 * i, voice_s=15.0))
+    taken = backlog.pickup(Heard(text="робот", t=800.0 + 15.0 * (BACKLOG_PICKUP_MAX + 3) + 60.0))
+    assert len(taken) == BACKLOG_PICKUP_MAX and taken[-1].text == f"кусок {BACKLOG_PICKUP_MAX + 2}"
+
+
+def test_3975_addressed_turn_hides_earlier_phrases_from_the_far_pickup_until_clear():
+    backlog = Backlog()
+    backlog.add(_h("включи музыку", t=1000.0, voice_s=2.0))
+    backlog.note_addressed(1005.0)
+    assert backlog.pickup(_h("робот", t=1060.0)) == []
+    assert backlog.background_phrases(1060.0) == 1, "для раздела снимка фраза живёт до TTL"
+    backlog.add(_h("новая просьба", t=1070.0, voice_s=2.0))
+    assert [e.text for e in backlog.pickup(_h("робот", t=1100.0))] == ["новая просьба"]
+    backlog.clear()
+    backlog.add(_h("после очистки", t=10.0, voice_s=2.0))
+    assert [e.text for e in backlog.pickup(_h("робот", t=100.0))] == ["после очистки"]

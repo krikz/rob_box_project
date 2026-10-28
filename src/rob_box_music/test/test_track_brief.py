@@ -42,9 +42,29 @@ def test_generated_file_does_not_state_a_tempo_the_deck_does_not_know():
 
 
 def test_synth_track_names_its_engine_and_a_named_engine_is_kept():
-    assert tb.track_brief({"name": "космос", "style": "club", "bpm": 124, "source": "synth"}) == (
-        "«космос», клуб, синтез Ренардо, 124 удара в минуту")
+    assert tb.track_brief({"style": "club", "bpm": 124, "source": "synth"}) == (
+        "трек в стиле клуб, синтез Ренардо, 124 удара в минуту")
     assert tb.engine_word({"engine": "synth"}) == "синтез Ренардо" and tb.engine_word({"source": "piece"}) == ""
+
+
+def test_4060_order_words_of_a_synth_track_are_not_its_title():
+    """Живой 28.10 06:13: ``music_state.track`` = «какую нибудь спокойную музыку», клуб, синтез Ренардо, 120 ударов -
+    слова заказа легли в кавычки как название. Свой синт-трек названия не имеет: стиль, движок, темп."""
+    order = {"name": "какую нибудь спокойную музыку", "style": "club", "bpm": 120, "source": "synth"}
+    assert tb.track_brief(order) == "трек в стиле клуб, синтез Ренардо, 120 ударов в минуту"
+    assert tb.track_name(order) == "" and tb.is_untitled(order)
+    assert tb.track_brief({**order, "name": "клубный трек"}) == tb.track_brief(order), "и «клубный трек» - не название"
+    assert tb.track_brief({"title": "космос · 124 BPM", "style": "club", "source": "synth"}) == (
+        "трек в стиле клуб, синтез Ренардо"), "метка деки «… · 124 BPM» названием не служит"
+
+
+def test_4060_titled_sources_keep_their_title_and_a_set_track_keeps_its_melody():
+    for source in ("generated", "piece", "melody"):
+        assert tb.track_name({"name": "Ночной город", "source": source}) == "Ночной город"
+        assert not tb.is_untitled({"source": source})
+    assert tb.track_name({"name": "заказ", "melody": "Тетрис", "source": "synth"}) == "Тетрис"
+    assert tb.track_brief({"melody": "Тетрис", "style": "chiptune", "bpm": 140, "source": "synth"}) == (
+        "«Тетрис», чиптюн, синтез Ренардо, 140 ударов в минуту")
 
 
 def test_cover_tells_its_original():

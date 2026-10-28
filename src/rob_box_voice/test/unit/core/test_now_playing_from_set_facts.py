@@ -105,7 +105,8 @@ def test_played_melodies_reach_music_state():
 
 # ── #3613: одиночный трек и пьеса деки v2 — «что играет» отвечает код по фактам владельца плеера ──────────────────
 
-CLUB = {"enabled": False, "title": "космос · 124 BPM", "name": "космос", "source": "synth", "style": "club",
+#: Свой синт-трек (#4060): названия нет - ``title`` это метка деки «тема · темп», слова заказа в ``name`` не кладутся.
+CLUB = {"enabled": False, "title": "космос · 124 BPM", "source": "synth", "style": "club",
         "bpm": 124, "started_at": 40.0}
 PIECE = {"enabled": False, "title": "Toccata", "name": "Toccata, Бах", "source": "piece", "bpm": 96,
          "instrument_played": "organ", "started_at": 70.0, "length_s": 120.0}
@@ -121,8 +122,15 @@ def test_live_3613_single_club_track_is_named_by_code(text):
     """Живой лог #3613: при ``[music v2] started req99682…`` LLM сказала «в плеере тишина». Теперь — код, без LLM."""
     plan = MediaRouter().route(text, _track(CLUB))
     assert plan.tool_calls == ()
-    assert plan.say_ok == ("Сейчас играет «космос» — клуб, синтез Ренардо, 124 удара в минуту. "
+    assert plan.say_ok == ("Сейчас играет музыка — клуб, синтез Ренардо, 124 удара в минуту. "
                            "Играет уже 1 минуту и повторяется, пока не скажешь «стоп».")
+
+
+def test_4060_order_words_of_an_old_server_are_not_the_title_of_the_club_track():
+    """Живой 28.10: слова заказа в ``name`` старого сервера («какую нибудь спокойную музыку») названием не служат."""
+    old_server = {**CLUB, "name": "какую нибудь спокойную музыку"}
+    say = MediaRouter().route("что сейчас играет", _track(old_server)).say_ok
+    assert say == MediaRouter().route("что сейчас играет", _track(CLUB)).say_ok and "спокойную" not in say
 
 
 def test_piece_says_source_instrument_and_time_left():

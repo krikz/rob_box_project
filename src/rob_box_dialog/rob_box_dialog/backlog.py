@@ -4,9 +4,11 @@
 :data:`~rob_box_dialog.knowledge.BACKLOG_TTL_S`. Наружу она выходит только двумя путями, оба — решение кода:
 
 * :meth:`Backlog.pickup` — голое «робот» (исправление пропущенного вейка) забирает **всегда** все фразы не старше
-  :data:`~rob_box_dialog.knowledge.BACKLOG_PICKUP_S` и более ранние куски того же рассказа (речь длиннее 15 с
+  :data:`~rob_box_dialog.knowledge.BACKLOG_FRESH_S` и более ранние куски того же рассказа (речь длиннее 15 с
   audio_node режет на куски, #3763), по порядку; они становятся текстом хода и из бэклога уходят (решение Шифу
-  21.10, #3767: «бэклог должен уходить по любому всегда»). «Тот же собеседник» не фильтр, а поле метки;
+  21.10, #3767: «бэклог должен уходить по любому всегда»). Свежего нет — берёт последнюю фразу окна
+  :data:`~rob_box_dialog.knowledge.BACKLOG_PICKUP_S` (3 минуты, решение Шифу 28.10, #3975), которую робот ещё не слышал
+  адресованной, и её куски рассказа. «Тот же собеседник» не фильтр, а поле метки;
 * :meth:`Backlog.recent_unaddressed` — в снимок адресованного хода с фразой не больше одной записи того же
   собеседника (:func:`~rob_box_dialog.speaker_adapter.same_interlocutor`) — телевизор туда не попадает;
 * :meth:`Backlog.background_since_reply` — в снимок адресованного хода с фразой отдельным разделом все фоновые
@@ -28,6 +30,7 @@ from rob_box_dialog.knowledge import (
     BACKGROUND_MAX_PHRASES,
     BACKGROUND_PHRASE_MAX_CHARS,
     BACKGROUND_WINDOW_S,
+    BACKLOG_FRESH_S,
     BACKLOG_MAX_ENTRIES,
     BACKLOG_PICKUP_MAX,
     BACKLOG_PICKUP_S,
@@ -69,6 +72,9 @@ class Backlog:
     def __init__(self, ttl_s: float = BACKLOG_TTL_S, max_entries: int = BACKLOG_MAX_ENTRIES) -> None:
         self.ttl_s, self.max_entries = ttl_s, max_entries
         self._entries: List[Heard] = []
+        #: Когда роботу в последний раз сказали фразу с вейком (или подхватили бэклог): всё, что звучало раньше, он уже
+        #: слышал разделами снимка того хода и голым «робот» издалека не подхватывается (:meth:`_last_unheard`).
+        self._addressed_t = float("-inf")
 
     def add(self, heard: Heard) -> None:
         if not heard.text.strip():
@@ -79,6 +85,11 @@ class Backlog:
 
     def clear(self) -> None:
         self._entries.clear()
+        self._addressed_t = float("-inf")
+
+    def note_addressed(self, t: float) -> None:
+        """Фраза с вейком в момент ``t``: фоновое до неё робот уже видел (снимок того хода) — издалека не подхватывать."""
+        self._addressed_t = max(self._addressed_t, t)
 
     def background_phrases(self, now: float) -> int:
         """Сколько фраз фоновой речи лежит в бэклоге (метрика ``backlog.background_phrases``)."""
@@ -93,9 +104,11 @@ class Backlog:
                 self._entries[i] = replace(entry, person_ref=voice.person_ref, speaker_name=name, voice=voice)
 
     def pickup(self, heard: Heard) -> List[Heard]:
-        """Голое «робот» (В12, #3767): забрать все свежие фразы и примыкающие к ним куски рассказа, по порядку."""
+        """Голое «робот» (В12, #3767): забрать все свежие фразы и примыкающие к ним куски рассказа, по порядку; свежего
+        нет — последнюю фразу окна ``BACKLOG_PICKUP_S`` и её куски (#3975). Подхват тоже считается «слышал»."""
         self._prune(heard.t)
-        fresh = [i for i, e in enumerate(self._entries) if 0.0 <= heard.t - e.t <= BACKLOG_PICKUP_S]
+        fresh = [i for i, e in enumerate(self._entries) if 0.0 <= heard.t - e.t <= BACKLOG_FRESH_S]
+        fresh = fresh or self._last_unheard(heard.t)
         if not fresh:
             return []
         first = fresh[0]
@@ -103,13 +116,21 @@ class Backlog:
             first -= 1
         taken = self._entries[first:fresh[-1] + 1][-BACKLOG_PICKUP_MAX:]
         self._entries = [e for e in self._entries if all(e is not t for t in taken)]
+        self.note_addressed(heard.t)
         return taken
+
+    def _last_unheard(self, now: float) -> List[int]:
+        """Индекс последней фразы окна ``BACKLOG_PICKUP_S``, прозвучавшей после последнего адресованного хода; ``[]`` -
+        такой нет. Одна фраза, а не всё окно: чужие разговоры мастерской за три минуты в ход не тянутся (#3975)."""
+        heard_late = [i for i, e in enumerate(self._entries)
+                      if e.t > self._addressed_t and 0.0 <= now - e.t <= BACKLOG_PICKUP_S]
+        return heard_late[-1:]
 
     def recent_unaddressed(self, heard: Heard) -> Optional[Dict[str, Any]]:
         """Не больше одной свежей записи того же собеседника для снимка адресованного хода; чужого не отдаёт."""
         self._prune(heard.t)
         for entry in reversed(self._entries):
-            if heard.t - entry.t <= BACKLOG_PICKUP_S and same_interlocutor(entry, heard):
+            if heard.t - entry.t <= BACKLOG_FRESH_S and same_interlocutor(entry, heard):
                 return self.label(entry, heard)
         return None
 

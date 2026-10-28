@@ -145,18 +145,6 @@ def club_theme(text: str) -> str:
     return heard_theme(blank_engine(text))
 
 
-def club_name(text: str, theme: str) -> str:
-    """Как назвать одиночный трек на «что играет» — так же, как фраза запуска роутера (``request_ok_text``): название
-    заказа по грамматике («поставь клубный трек» → «клубный трек»), иначе тема, иначе «клубный трек» (#3613: живой
-    прогон 13.10 — «Сейчас играет «поставь клубный трек»»)."""
-    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
-
-    command = parse_media_command(text)
-    if command.intent is MediaIntent.REQUEST_MUSIC and command.name:
-        return command.name
-    return theme or "клубный трек"
-
-
 def asks_more(heard_text: Optional[str]) -> bool:
     """Реплика хода — «продолжай играть Вагнера» / «ещё Баха» (#3599): следующая пьеса автора, не повтор. Решает
     грамматика заказа по имени (``MediaCommand.more``); «ещё раз Калинку» — не она."""
@@ -947,7 +935,6 @@ class RequestMusicTool(MCPTool):
         self.editor.remember(program.track_id, replace(recipe, code=program.code))  # «потяжелее» — правка (#4029)
         title = synth_title(label, plan.bpm)
         return {"program": program, "once": False, "bridge_model": model, "title": title,
-                "name": club_name(text, label),
                 "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
                 "theme_source": profile.source}
 
