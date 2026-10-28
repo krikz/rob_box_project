@@ -371,7 +371,8 @@ class DialogNode(Node):
                                   voices=functools.partial(tts_voices, self),  # реестр имён Tier-1 «голос <имя>» (#4086)
                                   turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в журнал смены
                                   events=self._open_events(), log=_RosLog(self.get_logger()),
-                                  sing=build_sing(self, self._reporter.all_states))  # путь пения до модели (#4079)
+                                  sing=build_sing(self, self._reporter.all_states),  # путь пения до модели (#4079)
+                                  phrase_voice=self._speakers.resolve)  # голос фразы по её id (#4141)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()
@@ -462,7 +463,8 @@ class DialogNode(Node):
         self._turn_memory = (profiled_person(speaker), section)
 
     def _on_speaker(self, msg: Any) -> None:
-        """Биометрия фразы: реестр по ``utterance_id`` и собеседник сессии (имя — только при ``confirmed``)."""
+        """Биометрия фразы: реестр по ``utterance_id`` и собеседник сессии (имя — только при ``confirmed``; фраза без
+        оценки биометрии, ``inconclusive``, собеседника не сбрасывает — решает ``speaker_ref``, #2863/#4141)."""
         data = speaker_result_to_payload(msg)
         if data.get("event"):
             return

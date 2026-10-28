@@ -13,12 +13,15 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Callable, List, Mapping, Optional, Tuple
 
+from rob_box_core.speaker_wire import NAME_CONFIRMED, NAME_CONTESTED, NAME_TENTATIVE, NAME_UNKNOWN
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Ask
 
 #: Состояния имени собеседника (ADR-0130 §2.6): по имени обращаться можно только при ``confirmed``. ``contested`` —
 #: голос похож на знакомого, но кто из похожих — спорно (#2809): имени и профиля нет, как у незнакомца (#4023, #3993).
-NAME_STATES: Tuple[str, ...] = ("unknown", "tentative", "confirmed", "contested")
+#: Значения — словарь ``speaker_wire.NAME_*`` (#4141); профиль без имени (``nameless``) здесь — ``unknown`` с
+#: ``person_ref`` (``speaker_adapter.speaker_ref``).
+NAME_STATES: Tuple[str, ...] = (NAME_UNKNOWN, NAME_TENTATIVE, NAME_CONFIRMED, NAME_CONTESTED)
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,7 @@ class SpeakerRef:
     person_ref: Optional[str] = None
     track_ref: Optional[str] = None
     name: Optional[str] = None
-    name_state: str = "unknown"
+    name_state: str = NAME_UNKNOWN
     azimuth_deg: Optional[float] = None
     since: float = 0.0
     channels: Tuple[str, ...] = ("voice",)

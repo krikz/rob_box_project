@@ -984,3 +984,45 @@ def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_windo
         assert waited >= kn.TURN_CEILING_S, "транспорт ждёт итог тула с поздним итогом дольше срока класса"
     finally:
         made.shutdown()
+
+
+# -- «Ты меня узнал?» по голосу ЭТОЙ фразы (#4141): живой реестр биометрии ноды и ``_on_speaker`` ---------------------
+
+SASHA_4141 = {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.93}
+TOO_SHORT_4141 = {"is_known": False, "inconclusive": True, "reason": "too_short_for_biometry"}
+
+
+def _speech_texts(made):
+    return [s.text for s in _published(made, "/voice/speech/request")]
+
+
+def test_short_question_keeps_the_recognized_speaker_and_is_answered_by_code_4141(node):
+    """Саша подтверждён, «Робот, ты меня узнал?» короче 1 с речи: ``speaker_id_node`` публикует ``inconclusive`` -
+    собеседник сессии остаётся Сашей (#2863), ответ кода «Узнал — ты Саша.» (раньше «По голосу пока не узнаю.»)."""
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_speaker(_voice({**TOO_SHORT_4141, "utterance_id": "u-q"}))
+    assert node._session.snapshot.speaker.person_ref == "spk-sasha"
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-q"))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Узнал — ты Саша.</speak>"] and node.test_llm.calls == 0
+
+
+def test_new_voice_whose_biometry_is_late_hears_not_sure_4141(node, monkeypatch):
+    """Новый голос спрашивает после Саши, SpeakerResult его фразы за окно не пришёл - «не уверен», не имя Саши."""
+    monkeypatch.setattr(dn.kn, "RECOGNIZED_VOICE_WAIT_S", 0.2)
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-new"))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Пока не уверен, кто ты: голос этой фразы не успел разобрать.</speak>"]
+    assert node.test_llm.calls == 0
+
+
+def test_biometry_of_this_phrase_after_stt_decides_the_answer_4141(node):
+    """STT раньше биометрии: ход ждёт SpeakerResult своей фразы по ``utterance_id`` - ответ по нему (Борис), а не по
+    собеседнику сессии на начало хода (Саша)."""
+    node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
+    node._on_utterance(_said("Робот, ты меня узнал?", "u-b"))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.91,
+                             "utterance_id": "u-b"}))
+    node.last_turn.result(timeout=10)
+    assert _speech_texts(node) == ["<speak>Узнал — ты Борис.</speak>"]

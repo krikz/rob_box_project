@@ -79,7 +79,7 @@ local.timeout: ["Не дождался подтверждения — не зн�
 local.rejected.no_person: ["Не узнаю твой голос, поэтому не запомню."]
 # ...у чата Telegram и ТАРС (knowledge.NO_PERSON_UNVOICED_REASON, ревью PR #4121): их голос никто не узнаёт - без «голоса»
 local.rejected.no_person_unvoiced: ["Не знаю, кто ты, поэтому не запомню."]
-# голос узнан, а чей - не подтверждено (спор/гипотеза, knowledge.VOICE_UNCONFIRMED_STATES, #3993): без вопроса «ты Саша?»
+# голос узнан, а чей - не подтверждено (спор/гипотеза, speaker_wire.NAME_UNCONFIRMED, #3993): без вопроса «ты Саша?»
 # (решение Шифу 26.10) и без неправды «не узнаю голос»
 local.rejected.voice_unconfirmed: ["Голос знакомый, но не уверен чей — запоминать не буду."]
 local.rejected.speaker_changed: ["Говорил другой человек, поэтому не запомню."]
@@ -159,13 +159,16 @@ identity.merged: ["Понял, это ты. Объединил записи — 
 identity.kept_apart: ["Понял, вы разные люди. Запомню обоих."]
 identity.merge_unclear: ["Не понял ответ — пока оставлю записи раздельно."]
 identity.retry_voice: ["Только голос твой я запомнить не успел — скажи, пожалуйста, ещё пару слов."]
-# #3993 (решение Шифу 26.10): на «ты меня узнал?» отвечает код по собеседнику снимка (knowledge.RECOGNIZED_REPLIES).
+# #3993 (решение Шифу 26.10): на «ты меня узнал?» отвечает код по голосу ЭТОЙ фразы (knowledge.RECOGNIZED_PHRASE,
+# #4141): ключ — speaker.recognized.<состояние имени speaker_wire.NAME_*> или .unheard (SpeakerResult фразы не пришёл).
 # Спорный голос и гипотеза — без вопроса «ты Саша?» и без имени кандидата.
 # Без «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны (ревью PR #4121).
 speaker.recognized.confirmed: ["Узнал — ты {name}."]
-speaker.recognized.unconfirmed: ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.tentative: &recognized_unconfirmed ["Голос знакомый, но не уверен, чей."]
+speaker.recognized.contested: *recognized_unconfirmed
 speaker.recognized.nameless: ["Голос твой помню, а имени не знаю."]
 speaker.recognized.unknown: ["По голосу пока не узнаю."]
+speaker.recognized.unheard: ["Пока не уверен, кто ты: голос этой фразы не успел разобрать."]
 # #3801 (решение Шифу 21.10): один голос — одна личность; имя меняется фразой; подтверждение — шаблоном нормальной длины.
 identity.same_voice: ["Не обманывай — по голосу ты {known}. Хочешь, чтобы я звал тебя иначе, скажи: «зови меня {name}»."]
 identity.one_voice: ["Голос-то один и тот же — значит, и человек один, второй записи не будет. Хочешь другое имя — скажи: «зови меня {name}»."]

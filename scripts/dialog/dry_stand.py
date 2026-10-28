@@ -516,6 +516,7 @@ class DryStand:
         self.system_prompt = system_prompt
         self.wake = list(wake) if wake is not None else wake_words(str(WAKE_WORDS_YAML))[0]
         self.speakers = FakeSpeakers()
+        self.phrase_voices: Dict[str, Mapping[str, Any]] = {}  # биометрия фразы по её id (реестр хоста, #4141)
         self.voice_provider = ROBOT_DEFAULT_PROVIDER
         self.current_voice_id = ""
         self.touched: Set[str] = set()
@@ -534,7 +535,7 @@ class DryStand:
         self.ports = DryPorts(self, llm, counter, self.tools)
         self.events = open_events(str(self.workdir / "e2e_dialog.db"), "dry-marathon")
         self.engine = TurnEngine(self.session, self.ports, system_prompt=system_prompt, sections=self._sections,
-                                 events=self.events, log=_EngineLog(self.emit))
+                                 events=self.events, log=_EngineLog(self.emit), phrase_voice=self._phrase_voice)
 
     # -- служебное ------------------------------------------------------------------------------------------------
 
@@ -546,6 +547,11 @@ class DryStand:
 
     def _sections(self, snap: Any, _text: str) -> Mapping[str, Any]:
         return host_sections(snap, self.music_mem)
+
+    async def _phrase_voice(self, uid: str, _wait_s: float) -> Optional[Mapping[str, Any]]:
+        """Голос фразы по её id, как ``UtteranceSpeakerRegistry.resolve`` хоста: фейковая биометрия здесь приходит до
+        STT, ждать нечего."""
+        return self.phrase_voices.get(uid)
 
     def _new_memory(self) -> VoiceMemory:
         self._memory_gen += 1
@@ -605,6 +611,7 @@ class DryStand:
             self.emit("👤 Speaker: unknown (400 ms)")  # speaker_id_node.py: f"👤 Speaker: unknown ({elapsed:.0f} ms)"
         person = str(bio.get("speaker_id") or "") if bio.get("is_known") else ""
         heard = heard_from(msg, now=ended, person_ref=person)
+        self.phrase_voices[uid] = {**bio, "utterance_id": uid}
         self.session.set_speaker(speaker_ref(bio, now=ended, prev=self.session.snapshot.speaker))
         decision = decide_in_session(heard, self.backlog, self.wake, self.session.snapshot)
         if isinstance(decision, NotAddressed):

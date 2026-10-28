@@ -5,7 +5,7 @@
 * :func:`bind_person` - тулы ``knowledge.PERSON_SCOPED_TOOLS`` получают ``SpeakerRef.person_ref`` снимка. Что бы ни
   написала модель в аргументе собеседника, подставляется он; в снимке его нет - привязать не к кому, исполнитель
   отвечает ``rejected{no_person}`` и в память не идёт (раньше такой факт становился общим для всех, #1770). Голос
-  узнан, а чей он - не подтверждено (спор, гипотеза: ``knowledge.VOICE_UNCONFIRMED_STATES``) - тоже не к кому, но
+  узнан, а чей он - не подтверждено (спор, гипотеза: ``speaker_wire.NAME_UNCONFIRMED``) - тоже не к кому, но
   причина своя, :func:`unbound_reason` (#3993): «не узнаю голос» тут неправда; о таком отказе чтения памяти
   (:func:`refused_read`) на вопрос о памяти о самом человеке говорит код (:func:`voiced_refusals`, ревью #4053),
   на остальные реплики он - данные модели (ревью PR #4055);
@@ -32,20 +32,21 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
+from rob_box_core.speaker_wire import NAME_CONFIRMED, NAME_UNCONFIRMED
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.words import asks_own_memory, name_tokens
 
 
 def memory_owner(snapshot: Any) -> Optional[str]:
     """Чья память в ходе этого снимка: ``person_ref`` собеседника агента с голосом (``PERSON_AGENTS``), если голос за
-    ним не под сомнением (``knowledge.VOICE_UNCONFIRMED_STATES``: спор, гипотеза - для памяти гипотеза как спор, #3993:
+    ним не под сомнением (``speaker_wire.NAME_UNCONFIRMED``: спор, гипотеза - для памяти гипотеза как спор, #3993:
     вопроса «ты Саша?» нет, а факт кандидата чужому хуже пустого). Иначе ``None`` - память ничья: ни привязать к ней
     тул (:func:`bind_person`), ни показать модели исход чужого тула памяти (:func:`foreign_result`, #4023)."""
     if getattr(snapshot, "agent", None) not in kn.PERSON_AGENTS:
         return None
     speaker = getattr(snapshot, "speaker", None)
     person = getattr(speaker, "person_ref", None)
-    if not person or getattr(speaker, "name_state", None) in kn.VOICE_UNCONFIRMED_STATES:
+    if not person or getattr(speaker, "name_state", None) in NAME_UNCONFIRMED:
         return None
     return person
 
@@ -73,10 +74,10 @@ def foreign_result(record: Mapping[str, Any], record_owner: Optional[str], owner
 
 def unbound_reason(snapshot: Any) -> str:
     """Причина отказа тула памяти без собеседника (:func:`bind_person` вернул ``None``): голос узнан, а чей - не
-    подтверждено (``knowledge.VOICE_UNCONFIRMED_STATES``) - ``voice_unconfirmed`` («Голос знакомый, но не уверен
+    подтверждено (``speaker_wire.NAME_UNCONFIRMED``) - ``voice_unconfirmed`` («Голос знакомый, но не уверен
     чей»); иначе собеседника нет - ``no_person``."""
     state = getattr(getattr(snapshot, "speaker", None), "name_state", None)
-    return kn.VOICE_UNCONFIRMED_REASON if state in kn.VOICE_UNCONFIRMED_STATES else kn.NO_PERSON_REASON
+    return kn.VOICE_UNCONFIRMED_REASON if state in NAME_UNCONFIRMED else kn.NO_PERSON_REASON
 
 
 def refused_read(result: Any) -> bool:
@@ -156,7 +157,7 @@ def profiled_person(speaker: Any) -> Optional[str]:
     """``person_ref``, о котором код ведёт профиль и кладёт факты в снимок; ``None`` - собеседник не уверен/неизвестен
     (догадку по голосу в профиль не пишем: счётчик и факты чужого человека - хуже пустого раздела)."""
     person = getattr(speaker, "person_ref", None)
-    return person if person and getattr(speaker, "name_state", None) == "confirmed" else None
+    return person if person and getattr(speaker, "name_state", None) == NAME_CONFIRMED else None
 
 
 def speaker_memory_block(profile: Optional[Mapping[str, Any]], facts: Iterable[Any]) -> Optional[Dict[str, Any]]:
