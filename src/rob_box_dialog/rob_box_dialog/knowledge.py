@@ -995,7 +995,19 @@ WINDOW_FACE_SCENE = "сцена лица"
 WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
     "play_animation": "animation", "play_sound": "sound", LIBRARY_TOOL: "action", "request_music": "intent",
     "dj_set": "action", "edit_music": "changes", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
+    "generate_music": "kind",
 })
+#: Что именно заказано - поля данных результата после ключевого аргумента (#4069 п.4): у ``request_music`` ключевой
+#: ``intent`` (track/melody) не говорит, что играло, - «request_music track (text: ровный ритм; mood: спокойная)».
+#: Поля нет в данных - его нет и в реплике.
+WINDOW_ACTION_DETAILS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "request_music": ("text", "genre", "mood"), "generate_music": ("style", "theme"), "dj_set": ("theme",),
+})
+#: Исход по ДАННЫМ результата словами этой реплики (#4069 п.4): ключ фразы исхода (``respond.phrase_key`` - та же
+#: таблица :data:`TOOL_PHRASES` по данным, что строит фразу кода) -> слова после статуса. ``stop_music`` при
+#: ``was_playing=False`` - «сделано, ничего не играло», а не голое «сделано»: Tier-1 «хватит» гасит молча, и без этих
+#: слов модель считала бы, что музыка играла и выключена. Ключа нет в таблице - только статус.
+WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло"})
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
 WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
@@ -1277,8 +1289,16 @@ SILENT_ANSWER_PHRASE = "understand.silent_answer"
 #: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
 QUERY_RESULTS_FIELD = "query_results"
 #: Страховка от молчания (#3883, решение Шифу 23.10): речь невалидна и после повтора, а запрос хода выполнен — код
-#: говорит фразу по данным результата. Тул → ключ каталога; слоты строит код (``turn.query_fallback``).
-QUERY_FALLBACK_PHRASES: Mapping[str, str] = MappingProxyType({"list_tts_voices": "query.voices_summary"})
+#: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
+#: код (``turn.query_answer``). ``music_library`` ``list`` (#4069 п.3; живой 27.10: на последней итерации звучала общая
+#: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
+#: фраза о пустой; ``search``/``info`` своей фразы нет - общая.
+QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
+    "list_tts_voices": "query.voices_summary",
+    LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+})
+#: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
+LIBRARY_SUMMARY_NAMES = 3
 #: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
@@ -1298,7 +1318,8 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     *INVALID_COMMAND_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
-    *QUERY_FALLBACK_PHRASES.values(),
+    *(key for entry in QUERY_FALLBACK_PHRASES.values()
+      for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
     "speak_aloud.lost",

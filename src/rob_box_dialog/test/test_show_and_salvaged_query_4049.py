@@ -28,7 +28,7 @@ from rob_box_dialog.face_scene import FaceScene
 from rob_box_dialog.memory import refused_read
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session, SpeakerRef
-from rob_box_dialog.turn import Answer, Shown, TurnEngine, command_face, query_fallback, shown_face
+from rob_box_dialog.turn import SAD_FACE, Answer, Shown, TurnEngine, command_face, query_fallback, shown_face
 from rob_box_dialog.words import asks_own_memory
 
 #: Живой лог 27.10 00:44:37: «Робот, покажи молча, как тебе грустно» → вызов модели.
@@ -143,11 +143,12 @@ def test_4049_the_called_scene_beats_the_command_emotion_and_gesture():
 
 
 def test_4049_unknown_animation_is_an_honest_refusal_and_no_scene():
-    """Анимации нет — тул отказал (``Неизвестная анимация``): код говорит отказ грустно, итог не красится вызовом."""
+    """Анимации нет — тул отказал (``Неизвестная анимация``): код говорит отказ грустно, итог не красится вызовом —
+    лицо итога по грустной фразе, а не рефлекс ``happy`` (#4069 п.8)."""
     ports = Ports([Answer(Command(actions=(ToolCall("play_animation", {"animation": "disco"}),)), "deepseek")],
                   outcomes={"play_animation": ("rejected", {}, None)})
     _run(ports, "покажи анимацию диско")
-    assert ports.said == [(phrases.text("local.rejected"), None, "sad")] and ports.faces == []
+    assert ports.said == [(phrases.text("local.rejected"), None, "sad")] and ports.faces == [("done", SAD_FACE)]
 
 
 def test_4049_shown_face_rules():

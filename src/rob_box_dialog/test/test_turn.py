@@ -1218,14 +1218,15 @@ def test_3997_only_expression_twice_shows_the_face_and_code_speaks():
 
 def test_3997_twice_without_words_and_the_animation_failed_shows_no_command_face():
     """Повтор кончился, анимация команды отказала: «радостно» о провале не бывает — эмоция команды итог не красит,
-    фраза кода грустная (то же правило, что у исполненной команды, ``command_face``)."""
+    фраза кода грустная (то же правило, что у исполненной команды, ``command_face``), и лицо итога — по ней (#4069 п.8:
+    грусть, а не рефлекс ``happy``)."""
     happy = Command(actions=(SLEEP,), expression=Expression(emotion="happy"))
     ports = Ports(answers=[Answer(happy, "deepseek"), Answer(happy, "deepseek")],
                   outcomes={"play_animation": ("rejected", {})})
     _run(_engine(ports), N1011)
     assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
-    assert ports.faces == [] and len(ports.said) == 1 and ports.said[0][2] == "sad"
+    assert ports.faces == [("done", SAD)] and len(ports.said) == 1 and ports.said[0][2] == "sad"
 
 
 def test_3997_only_expression_on_the_last_iteration_after_query_says_the_data_without_the_face():
@@ -1259,7 +1260,7 @@ def test_3997_neutral_expression_and_failed_action_do_not_colour_done():
     failed = Ports(answers=[Answer(Command(actions=stop, expression=Expression(emotion="happy")), "deepseek")],
                    outcomes={"stop_music": ("rejected", {})})
     _run(_engine(failed), "выключи музыку")
-    assert failed.faces == [], "«радостно» о провале не бывает"
+    assert failed.faces == [("done", SAD)], "«радостно» о провале не бывает: лицо итога — грусть фразы (#4069 п.8)"
 
 
 def test_3997_silence_during_the_turn_keeps_the_taped_face():

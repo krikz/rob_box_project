@@ -1,16 +1,18 @@
 """Журнал ходов сессии и окно истории для LLM из того, что прозвучало (ADR-0150 §2.1 п.8, §7.3, §7.4; PR-8 #3702).
 
-В историю модели попадает только то, что человек услышал, и структурные результаты действий:
+В историю модели попадает то, что человек услышал, структурные результаты действий и метки кода в квадратных скобках
+вместо реплики робота, когда ход ответил без слов (действием, лицом, молчанием тишины):
 
 * ``user`` — текст хода как его взял код (без вейка и без маркеров ``[Spkr:]``/``[TG]``/``[URGENT_BACKLOG]``: кто
   говорил и откуда — в снимке сессии, не в тексте); ход подхвата бэклога (В12″) пишет вместо одной реплики все
   подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
-  прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Ход отработан действиями,
-  а ответа словами в окне нет — реплику робота строит код из исходов этих действий
-  (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»), иначе реплика человека висит
-  в истории без ответа и модель повторяет прошлое действие (#4066); ход отвечен одним лицом (``command.expression`` без
-  действий и слов) - ``knowledge.WINDOW_FACE_REPLY``: «[ответ лицом: sad — показано]» (:meth:`TurnLog.faced`, #4073);
+  прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Ход отработан
+  действиями, а ответа словами в окне нет — реплику робота строит код из исходов этих действий
+  (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»; исход по данным —
+  «stop_music — сделано, ничего не играло», #4069 п.4), иначе реплика человека висит в истории без ответа и модель
+  повторяет прошлое действие (#4066); ход отвечен одним лицом (``command.expression`` без действий и слов) -
+  ``knowledge.WINDOW_FACE_REPLY``: «[ответ лицом: sad — показано]» (:meth:`TurnLog.faced`, #4073);
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные); поздний итог
   действия (:meth:`TurnLog.late`) заменяет его запись на месте, а фраза кода об опровергнутом ``timeout`` из окна
   уходит (#3960: «Музыка пока не заиграла.», а трек заиграл через 1,4 с);
@@ -42,7 +44,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core.token_estimate import estimate_tokens
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.respond import ActionResult
+from rob_box_dialog.respond import ActionResult, phrase_key
 
 #: Строка лога агрегата хода (читает ``scripts/dialog`` для метрик §14 без текста турнов).
 AGGREGATE_MARK = "📊 [turn]"
@@ -151,14 +153,35 @@ def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEnt
     return WindowEntry(ASSISTANT, rest) if rest else None
 
 
-def _action_label(record: Mapping[str, Any]) -> str:
-    """Одно действие хода словами кода: ``play_animation sad — сделано``, ``play_sound robot_alert — отказ (busy)``."""
-    tool, status, reason = str(record.get("tool", "")), str(record.get("status", "")), record.get("reason")
+def _action_head(tool: str, data: Mapping[str, Any]) -> str:
+    """Тул, ключевой аргумент (``knowledge.WINDOW_ACTION_ARG``) и что именно заказано
+    (``knowledge.WINDOW_ACTION_DETAILS``, #4069 п.4): ``request_music track (text: ровный ритм; mood: спокойная)``."""
     field_name = kn.WINDOW_ACTION_ARG.get(tool)
-    arg = (record.get("data") or {}).get(field_name) if field_name else None
+    arg = data.get(field_name) if field_name else None
     head = f"{tool} {arg}" if arg not in (None, "") else tool
-    said = kn.WINDOW_ACTION_STATUS.get(status, status)
-    return f"{head} — {said} ({reason})" if reason else f"{head} — {said}"
+    named = kn.WINDOW_ACTION_DETAILS.get(tool, ())
+    details = [f"{name}: {data[name]}" for name in named if data.get(name) not in (None, "")]
+    return f"{head} ({'; '.join(details)})" if details else head
+
+
+def _outcome_note(tool: str, status: str, reason: Any, data: Mapping[str, Any]) -> str:
+    """Исход по ДАННЫМ результата словами окна (``knowledge.WINDOW_OUTCOME_NOTES``, #4069 п.4): по ключу фразы исхода
+    (``respond.phrase_key`` - одна таблица ``TOOL_PHRASES`` по данным и для речи, и для окна). Тула нет в каталоге
+    (запись выступления ``perform``) - слов нет."""
+    if tool not in kn.TOOL_CLASSES:
+        return ""
+    result = ActionResult("", 0, "", tool, kn.call_class(tool, data), status, reason, data)
+    return kn.WINDOW_OUTCOME_NOTES.get(phrase_key(result) or "", "")
+
+
+def _action_label(record: Mapping[str, Any]) -> str:
+    """Одно действие хода словами кода: ``play_animation sad — сделано``, ``play_sound robot_alert — отказ (busy)``,
+    ``stop_music — сделано, ничего не играло`` (исход по данным, #4069 п.4)."""
+    tool, status, reason = str(record.get("tool", "")), str(record.get("status", "")), record.get("reason")
+    data = record.get("data") or {}
+    note = _outcome_note(tool, status, reason, data)
+    said = kn.WINDOW_ACTION_STATUS.get(status, status) + (f", {note}" if note else "")
+    return f"{_action_head(tool, data)} — {said}" + (f" ({reason})" if reason else "")
 
 
 def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry], face: str = "") -> List[WindowEntry]:
