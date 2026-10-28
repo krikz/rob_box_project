@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.works import key_slot
 
+from ..engine import master_gain as mg
 from ..engine.search import find, find_rare
 from ..core.rtttl_library import RtttlLibrary, display_title, match_info
 
@@ -234,6 +235,47 @@ class GetMusicStateTool(MCPTool):
         return MCPToolResult(success=True, data=data, message=message)
 
 
+# ---------------------------------------------------------------------------
+# Громкость музыки: фраза и результат строит код из исхода scsynth (#3790, ADR-0148)
+# ---------------------------------------------------------------------------
+
+#: Почему не вышло (``GainOutcome.reason``) - хвост фразы «не получилось»; без выдуманного процента.
+VOLUME_FAIL_WHY: Dict[str, str] = {
+    mg.NO_MASTER_NODE: "в звуковом сервере нет мастер-фейдера",
+    mg.OSC_ERROR: "звуковой сервер не отвечает",
+    mg.TIMEOUT: "звуковой сервер не подтвердил новый уровень",
+    mg.MISMATCH: "сервер держит другой уровень",
+    mg.SERVER_FAIL: "сервер отказал",
+}
+
+
+def volume_fail_text(outcome: "mg.GainOutcome") -> str:
+    """Честная фраза отказа: «Не получилось поменять громкость музыки (причина).» - ни старого, ни нового процента."""
+    why = VOLUME_FAIL_WHY.get(outcome.reason, outcome.reason or outcome.status)
+    return f"Не получилось поменять громкость музыки ({why})."
+
+
+def volume_ok_text(before: float, after: float, max_gain: float) -> str:
+    """Фраза подтверждённого уровня: «X% → Y%» или «не изменилась» (предел фейдера / уже такая)."""
+    pct = round(after / max_gain * 100)
+    if abs(after - before) < 1e-3:
+        edge = "максимальная" if after >= max_gain else "уже такая"
+        return f"Громкость музыки не изменилась ({edge}, {pct}%)"
+    return f"Громкость музыки: {round(before / max_gain * 100)}% → {pct}%"
+
+
+def volume_result(outcome: "mg.GainOutcome", before: float, max_gain: float) -> MCPToolResult:
+    """Результат тула из исхода: ``success`` - только ``applied`` (сервер вернул заказанный уровень)."""
+    base: Dict[str, Any] = {"outcome": outcome.status, "old_gain": round(before, 3)}
+    if not outcome.applied:
+        text = volume_fail_text(outcome)
+        data = {**base, "applied": False, "reason": outcome.reason, "detail": outcome.detail}
+        return MCPToolResult(success=False, data=data, error=text, message=text)
+    after = float(outcome.confirmed)  # type: ignore[arg-type]
+    data = {**base, "applied": True, "new_gain": round(after, 3), "percent": round(after / max_gain * 100)}
+    return MCPToolResult(success=True, data=data, message=volume_ok_text(before, after, max_gain))
+
+
 class SetMusicVolumeTool(MCPTool):
     """Issue #3125 — громкость МУЗЫКИ (мастер-фейдер scsynth), не голоса.
 
@@ -261,6 +303,9 @@ class SetMusicVolumeTool(MCPTool):
     #: в ноль (для тишины есть ``stop_music``); явный ``level=0`` разрешён.
     MIN_STEP_GAIN: float = 0.05
     MAX_GAIN: float = 1.0
+    #: Исход - ответ scsynth (``/s_get``) владельцу фейдера ``RenardoRuntime`` в процессе mcp_server; результат вызова -
+    #: подтверждённый уровень или отказ (``engine.master_gain``), а не «отправлено» (ADR-0150 §5.2).
+    event_source = "inproc:renardo_runtime"
 
     def __init__(self, node, runtime: Any) -> None:
         super().__init__(node)
@@ -345,27 +390,17 @@ class SetMusicVolumeTool(MCPTool):
         return None, f"Неизвестное действие: {action}"
 
     def execute(self, action: str, level: Optional[float] = None) -> MCPToolResult:
-        """Изменить уровень мастер-фейдера музыки."""
+        """Изменить уровень мастер-фейдера музыки; успех - только по подтверждению scsynth (#3790)."""
         current = float(self._runtime.master_gain)
         target, error = self._target_gain(action, level, current)
         if error is not None:
             return MCPToolResult(success=False, error=error)
-        applied = self._runtime.set_master_gain(target)
+        outcome = self._runtime.apply_master_gain(target)
         self.log_info(
-            f"[set_music_volume] action={action} level={level} "
-            f"master_gain {current:.2f} → {applied:.2f}"
+            f"[set_music_volume] action={action} level={level} master_gain {current:.2f} → "
+            f"{outcome.status}/{outcome.reason or '-'} confirmed={outcome.confirmed}"
         )
-        pct = round(applied / self.MAX_GAIN * 100)
-        if abs(applied - current) < 1e-3:
-            edge = "максимальная" if applied >= self.MAX_GAIN else "уже такая"
-            message = f"Громкость музыки не изменилась ({edge}, {pct}%)"
-        else:
-            message = f"Громкость музыки: {round(current / self.MAX_GAIN * 100)}% → {pct}%"
-        return MCPToolResult(
-            success=True,
-            data={"old_gain": round(current, 3), "new_gain": round(applied, 3), "percent": pct},
-            message=message,
-        )
+        return volume_result(outcome, current, self.MAX_GAIN)
 
 
 class LookupMelodyTool(MCPTool):

@@ -48,7 +48,5 @@
     "/voice/speaker/epithet": "ВРЕМЕННО, PR-15 15p (#3711, 28.10.2026): писателем была только нода v1, удалена. Мёртвая подписка speaker_id_node.py удаляется по Q6 карты docs/dialog/pr15_removal_map.md вместе с этой записью.",
     "/voice/speaker/observe": "ВРЕМЕННО, PR-15 15p (#3711, 28.10.2026): писателем была только нода v1, удалена. Мёртвая подписка speaker_id_node.py удаляется по Q6 карты docs/dialog/pr15_removal_map.md вместе с этой записью."
   },
-  "action_tools_without_event_source": {
-    "set_music_volume": "ADR-0150 §5.2, PR-7 ч.7b (#3698): мастер-фейдер музыки — OSC /n_set 999 gain без ответа scsynth (RenardoRuntime.set_master_gain), подтверждения уровня нет, OSError считается применённым. Подтверждение через /s_get — #3790; запись удалить в том PR."
-  }
+  "action_tools_without_event_source": {}
 }

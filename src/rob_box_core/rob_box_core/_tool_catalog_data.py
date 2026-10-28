@@ -1901,7 +1901,7 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'idempotent': False,
         'starts_music': False,
         'execution_type': 'fast',
-        'event_source': '',
+        'event_source': 'inproc:renardo_runtime',
         'name': 'set_music_volume',
         'description': 'Громкость МУЗЫКИ (трек/DJ-сет: request_music, dj_set), а НЕ '
                        'голоса робота. Юзер просит «громче/тише/погромче/потише» и '
