@@ -37,6 +37,7 @@ from rob_box_dialog.knowledge import (
     STOP_WORDS,
     TIER1_POLICY,
     VOICE_STEP,
+    VOLUME_DEGREE_WORDS,
     VOLUME_LEVEL_WORDS,
     VOLUME_STEMS,
     WAKE_SLIP_AMBIGUOUS,
@@ -230,13 +231,33 @@ def level_word(token: str) -> str:
     return ""
 
 
+def level_phrases(words: Sequence[str]) -> Tuple[Tuple[int, int, str], ...]:
+    """Фразы громкости в словах реплики: ``(первое слово, слово громкости, направление)`` на каждое слово громкости
+    (:func:`level_word`). В фразу входят слова степени перед ним (``VOLUME_DEGREE_WORDS``: «слишком», «очень», «так уж») и
+    «не» перед ними: «не» переворачивает направление так же вплотную («не громко»), как со степенью между ними («не
+    слишком громко», «не так уж громко» - ``quieter``; «не очень тихо» - ``louder``). Единственное место, где решается,
+    какие слова реплики - громкость: направление читает :func:`asked_level`, а тему заказа не берут слова фразы
+    (``theme_grounding.heard_theme``) - ни слово громкости, ни «не», ни степень (#4159 п.2, ревью PR #4150)."""
+    said = [(word or "").lower().replace("ё", "е") for word in words]
+    phrases = []
+    for i, word in enumerate(said):
+        kind = level_word(word)
+        if not kind:
+            continue
+        first = i
+        while first and said[first - 1] in VOLUME_DEGREE_WORDS:
+            first -= 1
+        negated = first > 0 and said[first - 1] == "не"
+        phrases.append((first - negated, i, _OPPOSITE_LEVEL[kind] if negated else kind))
+    return tuple(phrases)
+
+
 def asked_level(text: str) -> str:
     """Уровень музыки, который просит заказ: ``quieter``/``louder`` или ``""`` (не просил, либо просил то и другое —
     выбирать нечем). «Поставь ровный ритм, только негромко» и «…только не громко» — ``quieter`` (слово с «не» перед ним
-    значит обратное); «поставь потише» — ``quieter``. Слова — :func:`level_word`."""
-    tokens = name_tokens(text)
-    asked = {_OPPOSITE_LEVEL[kind] if i and tokens[i - 1] == "не" else kind
-             for i, token in enumerate(tokens) if (kind := level_word(token))}
+    значит обратное, и со степенью между ними: «не слишком громко», «не так уж громко»); «поставь потише» —
+    ``quieter``; «потише, не очень громко» — ``quieter`` (оба говорят одно). Слова — :func:`level_phrases`."""
+    asked = {direction for _first, _last, direction in level_phrases(name_tokens(text))}
     return asked.pop() if len(asked) == 1 else ""
 
 
