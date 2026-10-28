@@ -1,6 +1,6 @@
-"""Раздел ``music_state`` снимка хода для LLM — из снимка плеера (issue #3161, ADR-0141; ADR-0150 §7.3, #3696).
+"""Раздел ``music_state`` снимка хода для LLM — из снимка плеера (ADR-0141; ADR-0150 §7.3).
 
-До #3161 тег собирался эвристикой ``beat``: «играет», если взведён
+Раньше тег собирался эвристикой ``beat``: «играет», если взведён
 cleanup-флаг или живы TTS-батчи. Живой прогон 28.09 22:32: через 10 с
 после «выключи музыку» модель прочла в теге устаревшее «играет» и сказала
 «Сейчас играет клубный трек». Теперь источник один — то, что публикует
@@ -135,7 +135,7 @@ class MusicStateMemory:
         stops_at = snap.stops_at
         started, length = snap.dj_info.get("started_at"), snap.dj_info.get("length_s")
         if stops_at is None and isinstance(started, (int, float)) and isinstance(length, (int, float)):
-            stops_at = float(started) + float(length)  # пьеса v2: один проход формы (#3613)
+            stops_at = float(started) + float(length)  # пьеса v2: один проход формы
         if stops_at is None:
             attrs.append(("repeat", "loop"))
         else:
@@ -188,7 +188,7 @@ SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks"
 
 def _track_title(info: Mapping[str, Any]) -> str:
     """Как названа играющая дорожка в разделе (``track``): короткое описание из фактов, которое строит владелец плеера
-    (``brief``: «название», стиль, темп - без номера и id, #4060); снимок без него (сервер старее подписчика) - ``title``."""
+    (``brief``: «название», стиль, темп - без номера и id); снимок без него (сервер старее подписчика) - ``title``."""
     return str(info.get("brief") or info.get("title") or "") or UNNAMED_TRACK
 
 

@@ -1,33 +1,32 @@
-"""Журнал ходов сессии и окно истории для LLM из того, что прозвучало (ADR-0150 §2.1 п.8, §7.3, §7.4; PR-8 #3702).
+"""Журнал ходов сессии и окно истории для LLM из того, что прозвучало (ADR-0150 §2.1 п.8, §7.3, §7.4; PR-8).
 
 В историю модели попадает то, что человек услышал, структурные результаты действий и метки кода в квадратных скобках
 вместо реплики робота, когда ход ответил без слов (действием, лицом, молчанием тишины):
 
 * ``user`` — текст хода как его взял код (без вейка и без маркеров ``[Spkr:]``/``[TG]``/``[URGENT_BACKLOG]``: кто
   говорил и откуда — в снимке сессии, не в тексте); ход подхвата бэклога (В12″) пишет вместо одной реплики все
-  подхваченные фразы, каждую с её автором на момент самой фразы (#3892);
+  подхваченные фразы, каждую с её автором на момент самой фразы;
 * ``assistant`` — ``text[:spoken_chars]`` по событию владельца речи (``SpeechEvent`` ``finished/cancelled``): не
   прозвучало — нет и в истории; у текстового канала (телеграм) — весь текст, он доставлен. Озвученное помечено
-  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`, #4028). Ход отработан
+  (``WindowEntry.voiced``): его, и только его, повторяет «повтори» (:meth:`TurnLog.last_spoken`). Ход отработан
   действиями, а ответа словами в окне нет — реплику робота строит код из исходов этих действий
   (``knowledge.WINDOW_ACTIONS_REPLY``: «[ответ действием: play_animation sad — сделано]»; исход по данным —
-  «stop_music — сделано, ничего не играло», #4069 п.4), иначе реплика человека висит в истории без ответа и модель
-  повторяет прошлое действие (#4066); ход отвечен одним лицом (``command.expression`` без действий и слов) -
-  ``knowledge.WINDOW_FACE_REPLY``: «[ответ лицом: sad — показано]» (:meth:`TurnLog.faced`, #4073);
+  «stop_music — сделано, ничего не играло»), иначе реплика человека висит в истории без ответа и модель
+  повторяет прошлое действие; ход отвечен одним лицом (``command.expression`` без действий и слов) -
+  ``knowledge.WINDOW_FACE_REPLY``: «[ответ лицом: sad — показано]» (:meth:`TurnLog.faced`);
 * ``tool`` — :class:`~rob_box_dialog.respond.ActionResult` структурой (тул, статус, причина, данные); поздний итог
   действия (:meth:`TurnLog.late`) заменяет его запись на месте, а фраза кода об опровергнутом ``timeout`` из окна
-  уходит (#3960: «Музыка пока не заиграла.», а трек заиграл через 1,4 с);
+  уходит («Музыка пока не заиграла.», а трек заиграл через 1,4 с);
 * ``tool`` ``perform`` — исход выступления (:meth:`TurnLog.performed`): сегменты его владельца звучат мимо реплик хода,
-  и без этой записи просьба «расскажи сказку» висит в окне неотвеченной — модель исполняет её заново на чужую реплику
-  (#3973). Статус пишет код из события владельца (:func:`perform_status`), одна запись на выступление.
+  и без этой записи просьба «расскажи сказку» висит в окне неотвеченной — модель исполняет её заново на чужую реплику. Статус пишет код из события владельца (:func:`perform_status`), одна запись на выступление.
 
 Ход тишины (ход, проглоченный кадром ``Silence``, и Tier-1 включения/снятия тишины) ничего не говорит и не вызывает:
 реплику робота после реплики человека ставит метка кода (:meth:`TurnLog.mark`, ``knowledge.WINDOW_MUTED_MARK``:
-«[рот заклеен — молчу]»; #4106, решение Шифу 27.10), иначе реплика висит без ответа, и после «говори» модель отвечает на
+«[рот заклеен — молчу]», решение Шифу 27.10), иначе реплика висит без ответа, и после «говори» модель отвечает на
 старое.
 
-Отвергнутые команды и невалидный ответ модели в окно не попадают (#3145), как и отказ памяти
-``no_person``/``speaker_changed`` (#3881) — только в агрегат хода. Окно — не больше
+Отвергнутые команды и невалидный ответ модели в окно не попадают, как и отказ памяти
+``no_person``/``speaker_changed`` — только в агрегат хода. Окно — не больше
 ``knowledge.TURN_WINDOW_MAX_TURNS`` ходов и ``TURN_WINDOW_MAX_TOKENS`` токенов, старые ходы выпадают целиком;
 :meth:`TurnLog.reset` (новая сессия) очищает всё, и поздние события речи старой эпохи ничего не добавляют.
 
@@ -74,14 +73,14 @@ class WindowEntry:
 
     role: str
     content: Any
-    speaker: str = ""  # у ``user``: кто говорил в этот ход (метка кода из снимка, #3881)
+    speaker: str = ""  # у ``user``: кто говорил в этот ход (метка кода из снимка)
     #: у ``assistant``: реплика прозвучала (или доставлена текстом) - не метка кода; в сравнении записей не участвует
     voiced: bool = field(default=False, compare=False)
     #: У ``tool``: чья память была у хода, когда тул исполнялся (``memory.memory_owner`` снимка исполнения): исход тула
-    #: памяти другого владельца в ``recent_actions`` не идёт (``memory.foreign_result``, #4023).
+    #: памяти другого владельца в ``recent_actions`` не идёт (``memory.foreign_result``).
     owner: Optional[str] = None
     #: у ``assistant``: прозвучавшая реплика - заглушка ожидания («Сейчас, соображаю.», ``knowledge.PROGRESS_PHRASES``):
-    #: в окне модели она есть, а в «повтори» (:meth:`TurnLog.last_spoken`) не входит - это не ответ (#4136, n808)
+    #: в окне модели она есть, а в «повтори» (:meth:`TurnLog.last_spoken`) не входит - это не ответ (n808)
     filler: bool = field(default=False, compare=False)
 
     def text(self) -> str:
@@ -91,7 +90,7 @@ class WindowEntry:
         return json.dumps(self.content, ensure_ascii=False, separators=(",", ":"), default=_plain)
 
     def for_llm(self) -> Any:
-        """Как запись уходит модели в истории: реплика человека - с тегом авторства (#3881)."""
+        """Как запись уходит модели в истории: реплика человека - с тегом авторства."""
         if self.role == USER and self.speaker:
             return kn.SPEAKER_TAG.format(who=self.speaker, text=self.content)
         return self.content
@@ -103,7 +102,7 @@ def speaker_label(speaker: Any) -> str:
 
 
 def phrase_label(speaker: Mapping[str, Any]) -> str:
-    """Кто сказал фразу бэклога (метка ``speaker_adapter.phrase_speaker`` на момент самой фразы, #3892) словами
+    """Кто сказал фразу бэклога (метка ``speaker_adapter.phrase_speaker`` на момент самой фразы) словами
     той же схемы, что :func:`speaker_label`: узнан — имя, иначе «незнакомый голос» (гипотеза голоса — не имя, A30)."""
     name = speaker.get("name") if speaker.get("identified") else None
     return (name or kn.UNKNOWN_SPEAKER_LABEL).strip()
@@ -141,9 +140,9 @@ class _Turn:
     user: str
     speaker: str = ""
     entries: List[WindowEntry] = field(default_factory=list)
-    heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода (#3892)
+    heard: Tuple[WindowEntry, ...] = ()  # подхват бэклога: фразы с их авторами вместо реплики хода
     superseded: Tuple[str, ...] = ()  # фразы кода об исходе, которые опроверг поздний итог (:meth:`TurnLog.late`)
-    faced: str = ""  # лицо, которым ход ответил без действий и слов (:meth:`TurnLog.faced`, #4073)
+    faced: str = ""  # лицо, которым ход ответил без действий и слов (:meth:`TurnLog.faced`)
 
 
 def _is_perform(entry: WindowEntry) -> bool:
@@ -151,7 +150,7 @@ def _is_perform(entry: WindowEntry) -> bool:
 
 
 def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEntry]:
-    """Реплика робота без фраз кода, которые опроверг поздний итог (#3960); от неё ничего не осталось - ``None``.
+    """Реплика робота без фраз кода, которые опроверг поздний итог; от неё ничего не осталось - ``None``.
     Чужие записи и реплики без этих фраз - как есть."""
     if entry.role != ASSISTANT or not any(said in entry.content for said in superseded):
         return entry
@@ -163,8 +162,8 @@ def _unsaid(entry: WindowEntry, superseded: Sequence[str]) -> Optional[WindowEnt
 
 
 def _supersede(turn: "_Turn", said: Optional[str]) -> None:
-    """Фраза кода, которую опроверг поздний итог (``TurnLog.late``, #3960), уходит из реплик хода: из окна модели и из
-    того, что повторит «повтори» (#4028). Фразы нет - ничего не меняется."""
+    """Фраза кода, которую опроверг поздний итог (``TurnLog.late``), уходит из реплик хода: из окна модели и из
+    того, что повторит «повтори». Фразы нет - ничего не меняется."""
     if said:
         turn.superseded += (said,)
         turn.entries = [e for e in (_unsaid(e, turn.superseded) for e in turn.entries) if e is not None]
@@ -182,7 +181,7 @@ def _last_voiced(turns: Sequence["_Turn"], exclude: str) -> str:
 
 def _action_head(tool: str, data: Mapping[str, Any]) -> str:
     """Тул, ключевой аргумент (``knowledge.WINDOW_ACTION_ARG``) и что именно заказано
-    (``knowledge.WINDOW_ACTION_DETAILS``, #4069 п.4): ``request_music track (text: ровный ритм; mood: спокойная)``."""
+    (``knowledge.WINDOW_ACTION_DETAILS``): ``request_music track (text: ровный ритм; mood: спокойная)``."""
     field_name = kn.WINDOW_ACTION_ARG.get(tool)
     arg = data.get(field_name) if field_name else None
     head = f"{tool} {arg}" if arg not in (None, "") else tool
@@ -192,7 +191,7 @@ def _action_head(tool: str, data: Mapping[str, Any]) -> str:
 
 
 def _outcome_note(tool: str, status: str, reason: Any, data: Mapping[str, Any]) -> str:
-    """Исход по ДАННЫМ результата словами окна (``knowledge.WINDOW_OUTCOME_NOTES``, #4069 п.4): по ключу фразы исхода
+    """Исход по ДАННЫМ результата словами окна (``knowledge.WINDOW_OUTCOME_NOTES``): по ключу фразы исхода
     (``respond.phrase_key`` - одна таблица ``TOOL_PHRASES`` по данным и для речи, и для окна). Тула нет в каталоге
     (запись выступления ``perform``) - слов нет."""
     if tool not in kn.TOOL_CLASSES:
@@ -203,7 +202,7 @@ def _outcome_note(tool: str, status: str, reason: Any, data: Mapping[str, Any]) 
 
 def _action_label(record: Mapping[str, Any]) -> str:
     """Одно действие хода словами кода: ``play_animation sad — сделано``, ``play_sound robot_alert — отказ (busy)``,
-    ``stop_music — сделано, ничего не играло`` (исход по данным, #4069 п.4)."""
+    ``stop_music — сделано, ничего не играло`` (исход по данным)."""
     tool, status, reason = str(record.get("tool", "")), str(record.get("status", "")), record.get("reason")
     data = record.get("data") or {}
     note = _outcome_note(tool, status, reason, data)
@@ -212,10 +211,10 @@ def _action_label(record: Mapping[str, Any]) -> str:
 
 
 def _action_reply(lead: Sequence[WindowEntry], entries: Sequence[WindowEntry], face: str = "") -> List[WindowEntry]:
-    """Ход отработан действиями, а ответа словами в окне нет: реплика робота из исходов этих действий (#4066).
+    """Ход отработан действиями, а ответа словами в окне нет: реплика робота из исходов этих действий.
     Без неё реплика человека висит в истории без ответа, и модель «догоняет» её - повторяет прошлое действие. Строится
     при каждой выдаче окна, поэтому поздний итог (:meth:`TurnLog.late`) и конец выступления видны в ней сразу. Действий
-    нет, но ход ответил лицом (``face``, :meth:`TurnLog.faced`) - реплика о показанном лице (#4073: ответ одним лицом
+    нет, но ход ответил лицом (``face``, :meth:`TurnLog.faced`) - реплика о показанном лице (ответ одним лицом
     тоже ответ, иначе модель «догоняет» его - победа → грусть). Ход без реплики человека, без действий и лица или с
     прозвучавшим ответом - без неё."""
     if not lead or any(e.role == ASSISTANT for e in entries):
@@ -239,7 +238,7 @@ def _tool_content(result: Any) -> Mapping[str, Any]:
 #: Наблюдатель исходов (``TurnLog(on_outcome=...)``): исход как его отдал исполнитель (``ActionResult``, ``turn_id`` —
 #: id вызова ``<ход>/<n>``), выступление — ``ActionResult`` тула ``perform`` класса ``PERFORM_CLASS`` с id
 #: ``<ход>/perform`` и видом в ``data["kind"]``. Наблюдатель судит исход сам (``respond.failed``/``asks``), поэтому
-#: получает результат целиком, а не запись окна. Его ведёт журнал смены (``shift_log``, #4076).
+#: получает результат целиком, а не запись окна. Его ведёт журнал смены (``shift_log``).
 OnOutcome = Callable[[ActionResult], None]
 
 
@@ -247,7 +246,7 @@ class TurnLog:
     """Ходы одной сессии агента: что сказал человек, что прозвучало, чем кончились действия.
 
     ``on_outcome`` получает каждый исход, что журнал принял (результат, выступление; поздний итог — даже когда ход уже
-    выпал из окна): журнал смены живёт дольше сессии и окна (#4076)."""
+    выпал из окна): журнал смены живёт дольше сессии и окна."""
 
     def __init__(self, max_turns: int = kn.TURN_WINDOW_MAX_TURNS, max_tokens: int = kn.TURN_WINDOW_MAX_TOKENS,
                  estimate: Callable[[str], int] = estimate_tokens, on_outcome: Optional[OnOutcome] = None) -> None:
@@ -273,7 +272,7 @@ class TurnLog:
     def said(self, turn_id: str, speech_id: str, text: str, delivered: bool = False, filler: bool = False) -> None:
         """Агент отдал реплику владельцу речи. В окно она попадёт по :meth:`spoken`; ``delivered`` — текстовый
         канал (телеграм): текст доставлен целиком сразу. ``filler`` — заглушка ожидания (промежуточная фраза кода,
-        ``turn.progress_due``): в окне есть, повтором («повтори») не становится (#4136, n808)."""
+        ``turn.progress_due``): в окне есть, повтором («повтори») не становится (n808)."""
         if turn_id not in self._turns or not text:
             return
         if delivered:
@@ -300,25 +299,25 @@ class TurnLog:
         return self._speech.get(speech_id)
 
     def last_spoken(self, exclude: str = "") -> str:
-        """Последняя ОЗВУЧЕННАЯ реплика робота в журнале сессии (#4028, Tier-1 «повтори»): то, что прозвучало
+        """Последняя ОЗВУЧЕННАЯ реплика робота в журнале сессии (Tier-1 «повтори»): то, что прозвучало
         (:meth:`spoken`; у текстового канала - доставленный текст) в последнем ходе, где робот говорил, по порядку.
         Метки кода в окне («[ответ действием: …]», «[рот заклеен — молчу]») - не слова робота, их не повторяем; фразу,
         которую опроверг поздний итог (:meth:`late`), - тоже; заглушку ожидания («Сейчас, соображаю.», ``filler``) -
-        тоже: повтор говорит ответ, а не «соображаю» (#4136, n808). ``exclude`` - ход, который просит повтор. Робот ещё
+        тоже: повтор говорит ответ, а не «соображаю» (n808). ``exclude`` - ход, который просит повтор. Робот ещё
         ничего не сказал (новая сессия) - «»."""
         return _last_voiced(list(self._turns.values()), exclude)
 
     def mark(self, turn_id: str, mark: str) -> bool:
         """Ход закрыт без слов робота по причине кода: ``mark`` (``knowledge.WINDOW_MUTED_MARK``,
-        ``WINDOW_SILENCE_MARKS``) - реплика робота в окне после реплики человека (#4106: ход тишины - «рот заклеен»).
+        ``WINDOW_SILENCE_MARKS``) - реплика робота в окне после реплики человека (ход тишины - «рот заклеен»).
         Решает код по событию хода (``hold_silence``, Tier-1 тишины), не слова модели. Пустая метка или хода нет в
         журнале (выпал из окна, новая сессия) - ``False``, не пишется."""
         return bool(mark) and self._add(turn_id, WindowEntry(ASSISTANT, mark)) is not None
 
     def result(self, turn_id: str, result: Any, owner: Optional[str] = None) -> None:
         """Результат действия хода (``ActionResult``) — структурой; ``owner`` — чья память была у хода при исполнении
-        (``memory.memory_owner``, #4023). Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно не идёт: модель не должна
-        помнить отклонённый факт, чтобы не перенести его в ход другого человека (#3881)."""
+        (``memory.memory_owner``). Отказ памяти из ``WINDOW_DROPPED_REJECTS`` в окно не идёт: модель не должна
+        помнить отклонённый факт, чтобы не перенести его в ход другого человека."""
         if result.status == "rejected" and result.reason in kn.WINDOW_DROPPED_REJECTS.get(result.tool, ()):
             return
         self._outcome(result)
@@ -330,7 +329,7 @@ class TurnLog:
         """Поздний итог действия (``Executor.on_late``: ``done``/``rejected`` после ``timeout`` или ``pending``):
         запись его исхода в окне заменяется итогом владельца на месте. Фраза кода о прежнем ``timeout`` («Музыка пока
         не заиграла.», ``phrase_of`` — как её строит ход) из окна уходит — и прозвучавшая, и та, что ещё звучит: модель
-        на следующем ходу видит правду, а не таймаут (n809, #3960). Фраза позднего итога входит в окно обычным путём
+        на следующем ходу видит правду, а не таймаут (n809). Фраза позднего итога входит в окно обычным путём
         (:meth:`said` → :meth:`spoken`). Действия нет в журнале (ход выпал из окна, новая сессия) — ``False``."""
         self._outcome(result)
         known = self._actions.get(result.turn_id)
@@ -346,10 +345,10 @@ class TurnLog:
 
     def performed(self, turn_id: str, kind: str, status: str, segments_done: Optional[int] = None) -> bool:
         """Исход выступления хода (``kind`` - сказка/рэп/..., ``status`` - ``PERFORM_*``): запись ``tool`` ``perform``
-        закрывает просьбу, на которую выступление отвечает (#3973). Одна запись на выступление: старт кладёт её,
+        закрывает просьбу, на которую выступление отвечает. Одна запись на выступление: старт кладёт её,
         конец/стоп обновляет на месте. Хода нет в журнале (выпал из окна, новая сессия) - ``False``, в окно не пишется,
         но наблюдатель исходов исход получает: журнал смены живёт дольше окна, и его запись «идёт» иначе висела бы
-        вечно (ревью PR #4110)."""
+        вечно."""
         turn = self._turns.get(turn_id)
         data: Dict[str, Any] = {"kind": kind or self._performs.get(turn_id, "")}
         if segments_done is not None:
@@ -369,11 +368,11 @@ class TurnLog:
 
     def performance_ended(self, turn_id: str, end_reason: str, segments_done: int = 0) -> bool:
         """Выступление кончилось (``block_end`` владельца: ``done``/``stopped``/``halt``/``lost``): статус строит
-        код (:func:`perform_status`), а не слова модели (#3973). ``turn_id`` - ход, чей старт открыл блок (его id несёт
+        код (:func:`perform_status`), а не слова модели. ``turn_id`` - ход, чей старт открыл блок (его id несёт
         ``block_end``), но выступление одно за раз, и конец закрывает все записи ``PERFORM_STARTED``: правка идущего
         («добавь куплет», «добавь бит») тоже записана «идёт» своим ходом (``note_perform_start``), а владелец её конец
         под её ход не присылает. Без этого запись правки висела бы «идёт» до выпадения хода из окна, и
-        :meth:`performing` молчал бы об успехе музыки уже после выступления (#4075). Закрыта хоть одна запись -
+        :meth:`performing` молчал бы об успехе музыки уже после выступления. Закрыта хоть одна запись -
         ``True``."""
         status = perform_status(end_reason)
         closed = self.performed(turn_id, "", status, segments_done)
@@ -384,7 +383,7 @@ class TurnLog:
     def faced(self, turn_id: str, face: str) -> bool:
         """Ход ответил лицом: ``face`` - показанное словами кода (``expression.face_label``), как его показал итог хода
         (``turn.done_expression``). Запись в окне - реплика робота после реплики человека, если у хода нет ни действий,
-        ни прозвучавшей речи (:func:`_action_reply`, #4073). Хода нет в журнале (выпал из окна, новая сессия) или
+        ни прозвучавшей речи (:func:`_action_reply`). Хода нет в журнале (выпал из окна, новая сессия) или
         показывать нечего (``face`` пусто) - ``False``, не пишется."""
         turn = self._turns.get(turn_id)
         if turn is None or not face:
@@ -395,7 +394,7 @@ class TurnLog:
     def performing(self) -> bool:
         """Выступление идёт: его запись в окне стоит на ``PERFORM_STARTED`` - старт владельцем взят
         (``note_perform_start``), конца (:meth:`performance_ended`: ``block_end`` владельца) ещё не было. Решает код по
-        событиям владельца: по этому признаку исход «музыка пошла» посреди выступления не озвучивается (#4075)."""
+        событиям владельца: по этому признаку исход «музыка пошла» посреди выступления не озвучивается."""
         return bool(self._started_performs())
 
     def _started_performs(self) -> List[str]:

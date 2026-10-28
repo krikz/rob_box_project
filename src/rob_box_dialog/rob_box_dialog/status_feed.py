@@ -1,4 +1,4 @@
-"""Статус LLM и wake-слов для экрана ТАРС 1 (issue #3253, Ш3б): перенос v1 ``core/tars_status_feed.py`` (#3912).
+"""Статус LLM и wake-слов для экрана ТАРС 1 (Ш3б): перенос v1 ``core/tars_status_feed.py``.
 
 Два latched-топика (их публикует хост: ``dialog_node`` v2 или ``dialogue_node`` v1), чтобы поздний подписчик
 (quest_node → шлем) получил значение:

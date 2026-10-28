@@ -2,14 +2,14 @@
 
 :func:`reflex` читает таблицу :data:`.knowledge.REFLEXES` и отдаёт :class:`ExpressionPlan` - что показать лицу и какой
 earcon сыграть на этой стадии. :func:`merge` накладывает эмоцию, жест и сцену лица команды (в v1 - аргумент
-``animation`` тулов речи, в v2 - ``command.expression`` и сцена исполненного ``play_animation``, #3997, #4049): на
+``animation`` тулов речи, в v2 - ``command.expression`` и сцена исполненного ``play_animation``): на
 ``speaking`` и ``done`` она красит рефлекс, на ``failed`` и ``timeout`` рефлекс побеждает - «радостно» о провале не
 бывает.
 Кольцо LED в план не входит: его режим исполнитель берёт из ``REFLEXES[stage].ring`` по событию стадии.
 
-Показ по просьбе человека (#4083): время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``), пачка сцен
+Показ по просьбе человека: время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``), пачка сцен
 одной команды - :func:`queued`, по очереди, каждая своё время, а не перезаписью последней; сцена показа -
-:func:`shown_scene` (#4103: «нейтральное лицо» - лицо покоя на своё время, а не рефлекс ``happy``).
+:func:`shown_scene` («нейтральное лицо» - лицо покоя на своё время, а не рефлекс ``happy``).
 
 Чистый модуль, без ROS: план превращается в ``ExpressionRequest`` клиентом ``rob_box_core.expression_client``.
 """
@@ -44,7 +44,7 @@ class ExpressionPlan:
 
 
 def music_scene(bpm: Optional[float], track_no: int = 0, elapsed_s: float = 0.0) -> str:
-    """Музыкальная сцена лица (#4010) - единственное место, где она выбирается (``face_director`` и ``executing`` ниже).
+    """Музыкальная сцена лица - единственное место, где она выбирается (``face_director`` и ``executing`` ниже).
 
     Трек начинает сцена по темпу (``MUSIC_SCENE_BPM``; темпа нет - ``MUSIC_DEFAULT_BPM``), дальше сцены ходят по кругу
     ``MUSIC_SCENES`` независимо от темпа: ``track_no`` - сколько раз трек сменился с начала музыки (каждый - шаг),
@@ -88,12 +88,12 @@ def reflex(stage: str, cls: Optional[str] = None, snapshot: Optional[Mapping[str
 
 
 def silent_face() -> str:
-    """Лицо в тишине (#3984): сцена из ``REFLEXES["silenced"]`` (заклеенный рот) - вместо «слушаю/думаю/радость»."""
+    """Лицо в тишине: сцена из ``REFLEXES["silenced"]`` (заклеенный рот) - вместо «слушаю/думаю/радость»."""
     return kn.REFLEXES["silenced"].face[0]
 
 
 def silent_earcon(earcon: Optional[str]) -> str:
-    """Earcon стадии в тишине (#3984): по ``SILENCED_EARCONS`` - «услышал» становится тихим ``muffled``, «готово» молчит.
+    """Earcon стадии в тишине: по ``SILENCED_EARCONS`` - «услышал» становится тихим ``muffled``, «готово» молчит.
 
     Неизвестный earcon в тишине не играет (``""``): громкий звук нельзя протащить мимо таблицы."""
     return kn.SILENCED_EARCONS.get(earcon or "", "")
@@ -116,7 +116,7 @@ def command_scene(emotion: Optional[str]) -> str:
 
 
 def shown_scene(animation: Optional[str]) -> str:
-    """Сцена лица исполненного ``play_animation`` - сцены, которую человек попросил показать (#4103). Нейтраль
+    """Сцена лица исполненного ``play_animation`` - сцены, которую человек попросил показать. Нейтраль
     (``idle``, ``neutral``: «покажи по очереди нейтральное лицо и грусть») - лицо покоя (первая сцена рефлекса
     ``idle``) на своё время, а не «нечего показать» (:data:`NO_EMOTION` - правило экспрессии команды, где нейтраль -
     значение по умолчанию): иначе итог ``done`` красил её рефлексом ``happy`` (живая проверка 27.10 18:55). Остальные
@@ -127,15 +127,15 @@ def shown_scene(animation: Optional[str]) -> str:
 
 def shows(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None) -> bool:
     """Покажет ли экспрессия команды что-то на лице: эмоция сверх ``NO_EMOTION``, жест из ``GESTURES`` или сцена LLM.
-    Нейтраль без жеста и сцены - нечего показать (команда из неё - пустая, а не «лицо без слов», #3997)."""
+    Нейтраль без жеста и сцены - нечего показать (команда из неё - пустая, а не «лицо без слов»)."""
     return bool(command_scene(emotion) or (gesture and gesture in kn.GESTURES) or face)
 
 
 def face_label(emotion: Optional[str], gesture: Optional[str] = None, face: Optional[object] = None,
                words: Optional[Mapping[str, str]] = None) -> str:
-    """Лицо, которое покажет экспрессия команды, словами кода для окна LLM (``knowledge.WINDOW_FACE_REPLY``, #4073): сцена
+    """Лицо, которое покажет экспрессия команды, словами кода для окна LLM (``knowledge.WINDOW_FACE_REPLY``): сцена
     эмоции (:func:`command_scene`), жест из ``GESTURES``, «сцена лица» для сцены LLM - через запятую. Показывать нечего
-    (:func:`shows` ложно) - пусто. ``words`` - слово для имени сцены (фраза чата, ``knowledge.SCENE_WORDS``, #4142);
+    (:func:`shows` ложно) - пусто. ``words`` - слово для имени сцены (фраза чата, ``knowledge.SCENE_WORDS``);
     имени нет в словаре - имя как есть."""
     parts = [command_scene(emotion), gesture if gesture in kn.GESTURES else ""]
     named = [(words or {}).get(part, part) for part in parts if part]
@@ -147,7 +147,7 @@ def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = N
           face: Optional[Mapping[str, object]] = None, ttl_ms: Optional[int] = None) -> Optional[ExpressionPlan]:
     """Наложить эмоцию, жест и сцену лица команды (``FaceScene.to_dict()``, уже проверенная) на рефлекс; на
     ``failed``/``timeout`` и вне ``EMOTION_STAGES`` рефлекс как есть. ``ttl_ms`` - сколько держать сцену команды
-    (``duration`` исполненного ``play_animation``, #4049; ``0`` - по умолчанию лица): только вместе с её сценой - время
+    (``duration`` исполненного ``play_animation``; ``0`` - по умолчанию лица): только вместе с её сценой - время
     рефлекса без сцены команды не меняется."""
     if plan is None or stage not in EMOTION_STAGES:
         return plan
@@ -164,7 +164,7 @@ def merge(plan: Optional[ExpressionPlan], stage: str, emotion: Optional[str] = N
 
 
 def show_seconds(requested: object = None) -> float:
-    """Сколько лицо держит сцену, которую человек попросил показать (#4083, Шифу 27.10: «хотя бы 5–10 секунд»):
+    """Сколько лицо держит сцену, которую человек попросил показать (Шифу 27.10: «хотя бы 5–10 секунд»):
     заказанное время (``play_animation.duration``, ``expression.duration_s``, ``face.duration_s``) в пределах
     ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]``; не задано (не число, не больше нуля) - ``FACE_SHOW_DEFAULT_S``.
     Единственное правило времени показа: его применяет ход (``turn.command_face``), время доходит до
@@ -191,12 +191,12 @@ def hold_ms(seconds: Optional[float]) -> Optional[int]:
 
 
 def queued(start_s: float, scenes: Sequence[Any]) -> Tuple[Tuple[float, ExpressionPlan], ...]:
-    """Пачка сцен одной команды по очереди (#4083: «покажи по очереди радость, грусть и удивление» - три
+    """Пачка сцен одной команды по очереди («покажи по очереди радость, грусть и удивление» - три
     ``play_animation`` исполнялись разом, последняя перекрывала остальные). ``(через сколько секунд после итога,
     план)`` для сцен после первой: следующая начинается, когда кончилось время предыдущей (``start_s`` - время первой,
     уже на лице с итогом ``done``). Время сцены - :func:`show_seconds` (не меньше ``FACE_SHOW_MIN_S``). Earcon и жест -
     только у итога: сцена очереди - эмоция (имя сцены), её сцена лица и время. Нейтраль показа приходит сюда лицом
-    покоя (:func:`shown_scene`, #4103) и шлётся, как любая сцена: «нейтральное лицо» держится своё время. Сцена, которой
+    покоя (:func:`shown_scene`) и шлётся, как любая сцена: «нейтральное лицо» держится своё время. Сцена, которой
     нечего показать (:func:`shows`: ``talking`` без речи, экспрессия без эмоции и сцены лица), запроса не шлёт, но своё
     время держит: следующая - после неё в срок."""
     out, at = [], show_seconds(start_s)

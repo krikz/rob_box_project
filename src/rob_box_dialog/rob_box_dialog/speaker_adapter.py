@@ -1,4 +1,4 @@
-"""Собеседник через один адаптер — шов с ADR-0130 (ADR-0150 §7.5, ADR-0130 §2.5–2.6, ADR-0139; карточка #3695).
+"""Собеседник через один адаптер — шов с ADR-0130 (ADR-0150 §7.5, ADR-0130 §2.5–2.6, ADR-0139).
 
 Диалог сам не гадает, кто говорит: всё знание «кто это и тот ли это человек» — здесь.
 
@@ -6,30 +6,30 @@
   ``rob_box_core.speaker_wire``) и лиц из кадра: ``confirmed`` — только уверенное имя биометрии (отрыв от соседа
   проверяет владелец биометрии) или голос-гипотеза, которую подтвердило лицо с тем же именем (два канала);
   ``tentative`` — гипотеза голоса без второго канала; ``contested`` — голос похож на знакомого, но кто из похожих —
-  спорно (#2809): собеседник без профиля, как незнакомец (#4023), но и не «голос не узнан» (#3993); иначе ``unknown``.
+  спорно: собеседник без профиля, как незнакомец, но и не «голос не узнан»; иначе ``unknown``.
 * :func:`same_interlocutor` — тот ли это собеседник (подхват бэклога голым «робот», В12/В12′): **ИЛИ** по каналам
   ``knowledge.PICKUP_CHANNELS`` — голос длинной фразы узнан; человек, чей голос узнан в фразе бэклога, виден в кадре
   (по имени — у лица и голоса разные id); (слабо) DOA ±60° при ком-то в кадре. Короткому «робот» по голосу не верим,
   а просто «кто-то в кадре» — не признак того же человека (перед роботом сидят и под телевизор; Шифу 21.10).
-  С #3767 — не фильтр подхвата, а поле ``same_as_caller`` метки фразы.
-* :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (#3767, Шифу 21.10): узнан уверенно
+  Теперь не фильтр подхвата, а поле ``same_as_caller`` метки фразы.
+* :func:`voice_tag` / :func:`phrase_speaker` — кто сказал фразу бэклога (Шифу 21.10): узнан уверенно
   (имя биометрии или гипотеза голоса, подтверждённая лицом с тем же именем) — конкретный спикер с id, каналами и
   score; иначе ``неопознанный`` + что есть по голосу: ``bio``, гипотеза/лучший кандидат со score — не имя. Спорный голос
-  (``bio=contested``) — никому, ни ``person_ref`` кандидата, ни его имени (:func:`attributed_person`, #3993).
+  (``bio=contested``) — никому, ни ``person_ref`` кандидата, ни его имени (:func:`attributed_person`).
 * :func:`merge_plan` / :func:`merge_answer` / :func:`merge_phrase` — вопрос «вы разные люди или это ты?» после
-  регистрации (#2828, ADR-0127; #3765): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил, #2829), что
+  регистрации (ADR-0127): что спрашиваем, склеивать ли по ответу (и тот ли человек ответил), что
   робот говорит об исходе — кодом, без подсказки LLM (ADR-0148).
-* :func:`voice_certainty` / :class:`IdentityStep` — #3801 (решение Шифу 21.10): один голос — одна личность
+* :func:`voice_certainty` / :class:`IdentityStep` — решение Шифу 21.10: один голос — одна личность
   (:func:`same_voice_plan`), имя меняется фразой (:func:`rename_step`), неуверенный голос подтверждается шаблоном
   нормальной длины (:func:`template_step`, :func:`voice_check_step`); что сделать и что сказать — кодом.
-* :func:`confident_name` / :func:`named_self` — контекст хода для гейта ``register_speaker`` (#2925, #4054): кем голос
+* :func:`confident_name` / :func:`named_self` — контекст хода для гейта ``register_speaker``: кем голос
   фразы УВЕРЕННО узнан и как человек назвал себя в реплике; гейт сверяет с ними имя, которое модель пишет в профиль.
-* :func:`recognition_reply` — ответ на «ты меня узнал?» строит код по голосу ЭТОЙ фразы (#3993, решение Шифу 26.10;
-  #4141: SpeakerResult по её ``utterance_id``, а не собеседник прошлой фразы): узнан с именем, голос знакомый без
+* :func:`recognition_reply` — ответ на «ты меня узнал?» строит код по голосу ЭТОЙ фразы (решение Шифу 26.10;
+  SpeakerResult по её ``utterance_id``, а не собеседник прошлой фразы): узнан с именем, голос знакомый без
   подтверждения (без вопроса «ты Саша?»), профиль без имени, не узнан (и профиль, заведённый из этой же фразы,
   ``SpeakerRef.first_heard``: голос слышен впервые), результат фразы не пришёл — «не уверен».
-* Короткая фраза без оценки биометрии (``inconclusive``, #2863) собеседника не сбрасывает: :func:`speaker_ref` оставляет
-  прежнего (#4141).
+* Короткая фраза без оценки биометрии (``inconclusive``) собеседника не сбрасывает: :func:`speaker_ref` оставляет
+  прежнего.
 * :class:`AskPolicy` — когда можно спросить имя (В17): не на команду, не на пустой ход, не раньше N-й фразы/T с,
   один раз на собеседника. Команда — по ЗАПРОСУ человека (:func:`~rob_box_dialog.tools_view.command_groups`),
   а не по тому, какие тулы выбрала LLM.
@@ -103,9 +103,9 @@ class FaceSightings:
 
 
 #: Состояние имени результата биометрии (``speaker_wire.name_state``) → ``(SpeakerRef.name_state, приписан ли голос
-#: профилю)``. ``contested`` (#2809: голос похож на знакомого, но в полосе сомнения конкурент с другим именем) — кто
-#: это, не знаем: собеседника-профиля нет, как у незнакомца (чужие факты не читаются и не пишутся, #4023), а снимок
-#: честно говорит «голос похож на знакомый, имя не подтверждено», а не «unknown» (#3993). Профиль без имени (#3858) —
+#: профилю)``. ``contested`` (голос похож на знакомого, но в полосе сомнения конкурент с другим именем) — кто
+#: это, не знаем: собеседника-профиля нет, как у незнакомца (чужие факты не читаются и не пишутся), а снимок
+#: честно говорит «голос похож на знакомый, имя не подтверждено», а не «unknown». Профиль без имени —
 #: свой голос с кличкой: профиль есть, имени нет.
 _REF_STATE: Mapping[str, Tuple[str, bool]] = {
     NAME_CONFIRMED: (NAME_CONFIRMED, True),
@@ -121,10 +121,10 @@ def speaker_ref(result: Mapping[str, Any], *, now: float, face_names: Iterable[s
     """Собеседник этой фразы по правилам ADR-0130 §2.6; пороги биометрии не здесь и не меняются.
 
     Биометрия фразу не оценила (``inconclusive``: речи меньше ``identify_min_voiced_sec``, нет эмбеддинга) - это «не
-    знаю», а не «говорит другой»: собеседник - прежний ``prev`` (контракт #2863,
+    знаю», а не «говорит другой»: собеседник - прежний ``prev`` (контракт
     ``speaker_id_node._inconclusive_reason``: потребители не сбрасывают узнанного диктора). Раньше такая фраза делала
-    узнанного Сашу незнакомцем, и на короткое «ты меня узнал?» код говорил ему «По голосу пока не узнаю» (#4141). Имени
-    сама фраза не получает: метка фразы бэклога - ``voice_tag`` (``inconclusive``, #2829)."""
+    узнанного Сашу незнакомцем, и на короткое «ты меня узнал?» код говорил ему «По голосу пока не узнаю». Имени
+    сама фраза не получает: метка фразы бэклога - ``voice_tag`` (``inconclusive``)."""
     if result.get("inconclusive") and prev is not None:
         return prev
     return _evaluated_ref(result, now, face_names, azimuth_deg, prev)
@@ -156,8 +156,8 @@ def _name_state(result: Mapping[str, Any]) -> Tuple[str, Optional[str], bool]:
 
 def attributed_person(result: Mapping[str, Any]) -> str:
     """``speaker_id`` профиля, которому биометрия приписала голос фразы (таблица ``_REF_STATE``), иначе ``""``. Спор
-    (#2809) — никому: ``speaker_id`` в нём лишь ближайший кандидат, и фраза бэклога (``VoiceTag``, ``Heard``) ему не
-    приписывается (#3993)."""
+ — никому: ``speaker_id`` в нём лишь ближайший кандидат, и фраза бэклога (``VoiceTag``, ``Heard``) ему не
+    приписывается."""
     _state, _name, attributed = _name_state(result)
     return str(result.get("speaker_id") or "") if attributed else ""
 
@@ -167,7 +167,7 @@ class VoiceTag:
     """Что биометрия сказала о фразе: ``bio`` — ``known`` | ``contested`` | ``unknown_voice`` | ``inconclusive``;
     ``name`` — только уверенное имя; ``tentative`` — гипотеза при ``known``; ``candidate`` — лучший кандидат без порога
     у незнакомого. У ``contested`` нет ни ``person_ref``, ни имени, ни кандидата: голос похож на знакомого, а чей —
-    спорно (#3993)."""
+    спорно."""
 
     bio: str
     person_ref: str = ""
@@ -176,7 +176,7 @@ class VoiceTag:
     score: Optional[float] = None
     candidate: str = ""
     candidate_score: Optional[float] = None
-    #: Внутренняя кличка узнанного профиля (#1787) — различает тёзок; плейсхолдер «незнакомца» сюда не кладут.
+    #: Внутренняя кличка узнанного профиля — различает тёзок; плейсхолдер «незнакомца» сюда не кладут.
     epithet: str = ""
 
 
@@ -193,7 +193,7 @@ def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
     if not result.get("is_known"):
         return VoiceTag("unknown_voice", candidate=candidate, candidate_score=cand_score)
     state, name, _attributed = _name_state(result)
-    if state == NAME_CONTESTED:  # голос похож на знакомого, кто из похожих — не решено: фраза — никому (#3993)
+    if state == NAME_CONTESTED:  # голос похож на знакомого, кто из похожих — не решено: фраза — никому
         return VoiceTag("contested")
     return VoiceTag("known", person_ref=attributed_person(result),
                     name=name if state == NAME_CONFIRMED else "", tentative=name if state == NAME_TENTATIVE else "",
@@ -201,7 +201,7 @@ def voice_tag(result: Mapping[str, Any]) -> VoiceTag:
 
 
 def phrase_speaker(voice: Optional[VoiceTag], faces: Iterable[str] = ()) -> Dict[str, Any]:
-    """Кто сказал фразу (#3767): узнан — ``{identified, name, person_ref, channels, score}``; нет —
+    """Кто сказал фразу: узнан — ``{identified, name, person_ref, channels, score}``; нет —
     ``{identified: false, label: неопознанный, bio, candidate?, candidate_score?}``. ``faces`` — кто был в кадре во
     время фразы (имена в нижнем регистре): одно лицо в кадре фразу не подписывает, только подтверждает гипотезу
     голоса."""
@@ -222,7 +222,7 @@ def _identified(voice: VoiceTag, name: str, channels: List[str]) -> Dict[str, An
     out = {"identified": True, "name": name, "person_ref": voice.person_ref, "channels": channels,
            "score": voice.score}
     if voice.epithet:
-        out["epithet"] = voice.epithet  # тёзки: два профиля «Дэнчик» (#1787); вслух не произносится
+        out["epithet"] = voice.epithet  # тёзки: два профиля «Дэнчик»; вслух не произносится
     return out
 
 
@@ -237,11 +237,11 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
 def recognition_state(ref: Optional[SpeakerRef]) -> str:
     """Что код знает о голосе фразы для ответа на «ты меня узнал?» (исход - ``speaker_wire.NAME_*`` или
     ``knowledge.RECOGNIZED_UNHEARD``). ``ref`` - собеседник ЭТОЙ фразы (:func:`recognition_reply`); ``None`` - её
-    SpeakerResult к ответу не пришёл: ``RECOGNIZED_UNHEARD``, а не собеседник прошлой фразы (#4141). Спор и гипотеза
-    голоса - состояние имени; имя подтверждено - ``NAME_CONFIRMED``; свой профиль без имени (#3858: ``person_ref`` есть,
+    SpeakerResult к ответу не пришёл: ``RECOGNIZED_UNHEARD``, а не собеседник прошлой фразы. Спор и гипотеза
+    голоса - состояние имени; имя подтверждено - ``NAME_CONFIRMED``; свой профиль без имени (``person_ref`` есть,
     имени нет; и битый «подтверждён» без имени) - ``NAME_NAMELESS``; иначе - не узнан. Профиль, заведённый из этой же
     фразы (``SpeakerRef.first_heard``: голос слышен впервые), - тоже не узнан: «голос твой помню» ему - неправда (ревью
-    PR #4121)."""
+    )."""
     if ref is None:
         return kn.RECOGNIZED_UNHEARD
     if ref.name_state in NAME_UNCONFIRMED:
@@ -285,11 +285,11 @@ def asks_recognized(text: str) -> bool:
 
 def recognition_reply(result: Optional[Mapping[str, Any]], prev: Optional[SpeakerRef], *,
                       now: float) -> Tuple[str, str]:
-    """Ответ кода на «ты меня узнал?» (:func:`asks_recognized`; #3993, решение Шифу 26.10: без выдумки LLM) -
-    ``(исход, фраза)`` по голосу ЭТОЙ фразы (#4141): ``result`` - её SpeakerResult (по ``utterance_id``), ``None`` -
+    """Ответ кода на «ты меня узнал?» (:func:`asks_recognized`, решение Шифу 26.10: без выдумки LLM) -
+    ``(исход, фраза)`` по голосу ЭТОЙ фразы: ``result`` - её SpeakerResult (по ``utterance_id``), ``None`` -
     не пришёл за окно ``knowledge.RECOGNIZED_VOICE_WAIT_S`` («не уверен»); ``prev`` - собеседник сессии до неё. Кто
     сказал фразу, решает :func:`speaker_ref` - то же правило, что у собеседника сессии: короткая фраза
-    (``inconclusive``) - прежний собеседник (#2863). Исход - :func:`recognition_state`, фраза -
+    (``inconclusive``) - прежний собеседник. Исход - :func:`recognition_state`, фраза -
     ``knowledge.RECOGNIZED_PHRASE.<исход>``. Спорный голос и гипотеза - «знакомый, не уверен чей»: без вопроса «ты
     Саша?» и без имени кандидата."""
     ref = speaker_ref(result, now=now, prev=prev) if result is not None else None
@@ -299,9 +299,9 @@ def recognition_reply(result: Optional[Mapping[str, Any]], prev: Optional[Speake
 
 
 def voice_registration(sent: bool, outcome: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Исход регистрации голоса по самопредставлению этого хода для раздела ``speaker`` (#3793, ADR-0148).
+    """Исход регистрации голоса по самопредставлению этого хода для раздела ``speaker`` (ADR-0148).
 
-    Регистрацию делает код до LLM (#2925), исход ход ждёт (``identity_question.settle_identity``); модель тул
+    Регистрацию делает код до LLM, исход ход ждёт (``identity_question.settle_identity``); модель тул
     ``register_speaker`` в этом ходе не видит и без поля обещала «узнаю по голосу» при отказе ``too_short``.
     ``None`` — регистрации в ходе не было; ``registered: None`` — ответа владельца не дождались (неизвестно)."""
     if not sent:
@@ -318,7 +318,7 @@ def question_frame(person_ref: str, kind: str, name: Optional[str], azimuth_deg:
                    asked_at: Optional[float], speech_id: str = "") -> Dict[str, Any]:
     """Данные кадра ``Identity(ask)`` (§7.2, §7.5 п.2): кого спросили, о чём, с какой стороны и когда.
 
-    ``asked_at`` — когда микрофон снова слышит (конец вопроса + ``IDENTITY_MIC_GRACE_S``); ``None`` — вопрос ещё не договорён (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``, #3771)."""
+    ``asked_at`` — когда микрофон снова слышит (конец вопроса + ``IDENTITY_MIC_GRACE_S``); ``None`` — вопрос ещё не договорён (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``)."""
     return {"person_ref": person_ref, "kind": kind, "name": name, "azimuth_deg": azimuth_deg, "asked_at": asked_at,
             "speech_id": speech_id}
 
@@ -329,7 +329,7 @@ def in_reply_window(asked_at: Any, t: Any, *, in_grace: bool = False) -> bool:
     ещё звучит, окна нет.
 
     ``in_grace`` — окно начинается с КОНЦА вопроса (``asked_at - IDENTITY_MIC_GRACE_S``): для ответа, который эхом
-    вопроса быть не может (целое «да»/«нет» из таблицы на «выключить и зачитать?», #3849: «да» за 25 мс до
+    вопроса быть не может (целое «да»/«нет» из таблицы на «выключить и зачитать?»: «да» за 25 мс до
     ``asked_at`` уходило в бэклог, окно истекало молчаливым «нет»). Окно имени и приветствия — без него (В17)."""
     if asked_at is None:
         return False
@@ -360,7 +360,7 @@ def question_reply(kind: str, text: str) -> Optional[Reply]:
     """Похожа ли фраза на ответ на вопрос вида ``kind`` (кадр ``Identity``): на вопрос склейки (``IDENTITY_MERGE_KINDS``)
     — «это я»/«мы разные» (``YES``/``NO``) или да/нет; на вопрос об имени — имя/да/нет/отказ."""
     rename = classify_rename(text)
-    if rename is not None:  # «меня зовут не X, а Y» — ответ-имя, а не «Не» (#3801)
+    if rename is not None:  # «меня зовут не X, а Y» — ответ-имя, а не «Не»
         return Reply(NAME, rename.name)
     if kind in kn.IDENTITY_MERGE_KINDS + (kn.IDENTITY_SAME_VOICE_KIND,):
         same = classify_same(text)
@@ -370,7 +370,7 @@ def question_reply(kind: str, text: str) -> Optional[Reply]:
 
 
 def merge_plan(ack: Mapping[str, Any], question: str) -> Dict[str, Any]:
-    """Данные вопроса склейки из ack регистрации (#2828): ``new_id`` — профиль этой регистрации, ``known_id`` — с кем его
+    """Данные вопроса склейки из ack регистрации: ``new_id`` — профиль этой регистрации, ``known_id`` — с кем его
     можно спутать (тёзка или похожий голос). Склейка при «это я» — ``new_id`` → ``known_id``: у старого профиля больше
     эмбеддингов и история, его имя и остаётся (``speaker_id_node._on_merge_request``)."""
     other = ack.get("name_twin") or ack.get("voice_conflict") or {}
@@ -393,7 +393,7 @@ def merge_answer(plan: Mapping[str, Any], text: str, speaker: Mapping[str, Any])
     """Решение по ответу на вопрос склейки: ``(same, speaker_ok)``. ``same`` — ``True`` склеить, ``False`` — разные,
     ``None`` — не понять (:func:`said_same`).
     «Да» засчитывается, только если ответил один из двух профилей (``speaker`` — результат биометрии ЭТОЙ фразы,
-    #2829): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
+    ): посторонний голос чужую склейку не подтверждает. Длина фразы не ограничена: её уже приняли как ответ."""
     same = said_same(plan, text)
     current = str(speaker.get("speaker_id") or "") if speaker.get("is_known") else ""
     speaker_ok = bool(current) and current in (plan.get("new_id"), plan.get("known_id"))
@@ -407,7 +407,7 @@ def merge_phrase(plan: Mapping[str, Any], same: Optional[bool]) -> str:
     return phrases.text("identity.kept_apart" if same is False else "identity.merge_unclear")
 
 
-# ── #3801 (решение Шифу 21.10): один голос — одна личность, имя меняется фразой, подтверждение шаблоном ───────────
+# ── решение Шифу 21.10: один голос — одна личность, имя меняется фразой, подтверждение шаблоном ───────────
 #: :func:`voice_certainty`
 VOICE_SURE, VOICE_UNSURE, VOICE_STRANGER = "sure", "unsure", "stranger"
 
@@ -416,7 +416,7 @@ def voice_certainty(speaker: Mapping[str, Any]) -> str:
     """Годится ли голос ЭТОЙ фразы для действий с личностью. ``sure`` — у результата биометрии есть имя (порог 0.72 и
     отрыв от соседа проверил ``speaker_id_node``; порогов здесь нет); ``unsure`` — узнан без имени (гипотеза, спор),
     биометрия фразу не оценила (мало речи) или лучший кандидат не ниже ``IDENTITY_TEMPLATE_MIN_SCORE`` — тогда робот
-    просит шаблон; иначе ``stranger`` (чужой голос: чужую личность не трогает, #2829)."""
+    просит шаблон; иначе ``stranger`` (чужой голос: чужую личность не трогает)."""
     if speaker.get("is_known"):
         return VOICE_SURE if speaker.get("name") and speaker.get("speaker_id") else VOICE_UNSURE
     if speaker.get("inconclusive"):
@@ -427,7 +427,7 @@ def voice_certainty(speaker: Mapping[str, Any]) -> str:
 
 def confident_name(speaker: Optional[Mapping[str, Any]]) -> Optional[str]:
     """Имя, под которым биометрия УВЕРЕННО узнала голос фразы (:func:`voice_certainty` = ``sure``: то же имя, что
-    публикуется вслух, и тот же уверенный исход, по которому ``speaker_id_node`` переименовывает профиль, #4054), иначе
+    публикуется вслух, и тот же уверенный исход, по которому ``speaker_id_node`` переименовывает профиль), иначе
     ``None``: гипотеза, спор, профиль без имени, голос не узнан или результата ещё нет."""
     if not isinstance(speaker, Mapping) or voice_certainty(speaker) != VOICE_SURE:
         return None
@@ -515,7 +515,7 @@ def voice_check_step(frame: Mapping[str, Any], speaker: Mapping[str, Any]) -> Id
 
 
 def greeting_frame(person_ref: str, name: str, speech_id: str) -> Dict[str, Any]:
-    """Данные кадра ``GreetingReply`` (#3776): кого поприветствовали; ``asked_at`` ``None`` — приветствие ещё звучит
+    """Данные кадра ``GreetingReply``: кого поприветствовали; ``asked_at`` ``None`` — приветствие ещё звучит
     (кадр ждёт ``SpeechEvent finished`` речи ``speech_id``)."""
     return {"person_ref": person_ref, "name": name, "asked_at": None, "speech_id": speech_id}
 
@@ -525,7 +525,7 @@ def greeting_open(frame: Optional[SceneFrame]) -> bool:
 
 
 def answer_to_greeting(frame: Optional[SceneFrame], heard: Any) -> str:
-    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10, #3776): окно ``REPLY_WINDOW_S`` открыто, и
+    """Фраза без вейка после приветствия при встрече (решение Шифу 21.10): окно ``REPLY_WINDOW_S`` открыто, и
     это либо ответ по грамматике приветствия (``"grammar"``), либо лицо приветствованного в кадре в момент фразы
     (``"face"``; канал лица надёжен). DOA — не условие. Иначе ``""`` (бэклог)."""
     if not greeting_open(frame) or not kn.GREETING_REPLY_WITHOUT_WAKE:
@@ -604,7 +604,7 @@ class AskPolicy:
 
 
 class TentativeStates:
-    """Гипотеза имени по собеседнику («<Имя>, это ты?», #2809/#2888; ADR-0150 §7.5): спрашивали ли, что он ответил,
+    """Гипотеза имени по собеседнику («<Имя>, это ты?»; ADR-0150 §7.5): спрашивали ли, что он ответил,
     подтверждено ли имя и рос ли профиль. Ключ — ``person_ref``.
 
     Состояние переживает паузу ``answer_window_s``, пока ответа нет (ответ бывает через 84 с — run 35857257981), и
