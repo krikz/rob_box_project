@@ -83,6 +83,7 @@ from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFai
 from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import face_label, show_seconds, shown_scene, shows
 from rob_box_dialog.grammar import Tier1Command, match
+from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
@@ -231,6 +232,13 @@ def log_pickup(log: Any, addressed: Addressed, turn: "_Turn") -> None:
     if addressed.pickup or addressed.source == BARE_WAKE:
         speakers = ",".join(who for who, _ in turn.heard) or "-"
         log.info(f"{PICKUP_MARK} n={len(turn.heard)} speakers={speakers} turn={turn.turn_id}")
+
+
+def log_stt_fixes(log: Any, addressed: Addressed, turn: "_Turn") -> None:
+    """Реплика починена по таблице искажений STT (``heard.repair``, #4017): строка «что было → что стало» — корпус
+    искажений (#4033) и живая проверка; ход идёт уже по починенному тексту."""
+    if addressed.stt_fixes:
+        log.info(f"{HEARD_MARK} {'; '.join(addressed.stt_fixes)} turn={turn.turn_id}")
 
 
 def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Optional[Tier1Command]:
@@ -1035,6 +1043,7 @@ class TurnEngine:
                      background=background_section(addressed), command=addressed.command)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
+        log_stt_fixes(self._log, addressed, turn)
         self._event("user", turn, text=turn.text, data={"source": turn.source})
         self._ports.stage(turn.turn_id, turn.epoch, "addressed", "started", source=turn.source)
         if addressed.source == BARE_WAKE or not turn.text:
