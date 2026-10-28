@@ -45,6 +45,7 @@ from rob_box_music import request_slots as rs
 from rob_box_music.theme_queries import QueriesInvalid
 from rob_box_music.works import WorkRef, WorkWord, theme_phrase
 
+from ..core.translit_ru import strip_version_tail
 from .piece import work_word
 from .search import Heard, Term, heard_title, terms, title_key, warm_heard
 from .theme_links import Ask, later, tool_payload, verify
@@ -220,7 +221,8 @@ class RequestSlotParser:
         return wait
 
     def _checked(self, text: str, missing: List[str]) -> Optional[Dict[str, Any]]:
-        """Ответ LLM по схеме и проверка каталогом: ``{поле: значение, work_confirmed, rejected}`` или ``None``."""
+        """Ответ LLM по схеме и проверка каталогом: ``{поле: значение, work_confirmed, rejected, said}`` или ``None``
+        (``said`` — название от LLM как есть: сверка с находкой на слух, :func:`_agrees`)."""
         system, user = rs.prompt(text, missing)
         outcome, response, detail = self._ask(system, user, rs.tool(), kn.REQUEST_SLOTS_CALL_MS / 1000.0,
                                               ASK_MAX_TOKENS)
@@ -240,7 +242,7 @@ class RequestSlotParser:
         if fields["work"] and not confirmed:
             rejected.append(f"work={fields['work']}")
         return {**fields, "composer": composer, "work": fields["work"] if confirmed else "",
-                "work_confirmed": confirmed, "rejected": tuple(rejected)}
+                "work_confirmed": confirmed, "rejected": tuple(rejected), "said": fields["work"]}
 
     def _merge(self, code: rs.RequestSlots, answer: Mapping[str, Any], words: Sequence[Term]) -> rs.RequestSlots:
         """Слоты грамматики важнее (инструмент «на органе» назван словами); пустые — из проверенного ответа LLM.
@@ -283,8 +285,8 @@ def _sounded(code: rs.RequestSlots, heard: Heard) -> rs.RequestSlots:
 def _settle(code: rs.RequestSlots, merged: rs.RequestSlots, heard: Heard, answer: Optional[Mapping[str, Any]],
             source: str) -> Tuple[rs.RequestSlots, str]:
     """Слоты заказа (``(слоты, источник)``) из код-разбора ``code``, разбора LLM/кэша, проверенного каталогом
-    (``merged``, поля ответа — ``answer``), и находки на слух ``heard`` (ревью #4124, круг 2): LLM подтвердила то же
-    произведение — находка подтверждена; LLM молчит о произведении и авторе или не успела — находка как догадка
+    (``merged``, поля ответа — ``answer``), и находки на слух ``heard`` (ревью #4124, круг 2): LLM назвала то же
+    произведение (:func:`_agrees`) — находка подтверждена; LLM молчит о произведении и авторе или не успела — догадка
     (``source=sound``); LLM назвала другое — решает её разбор; не нашлось, урезано и ничего не подтверждено — переспрос
     (``doubt``)."""
     if heard.record is not None and _agrees(heard, answer):
@@ -297,13 +299,14 @@ def _settle(code: rs.RequestSlots, merged: rs.RequestSlots, heard: Heard, answer
 
 
 def _agrees(heard: Heard, answer: Optional[Mapping[str, Any]]) -> bool:
-    """LLM (или кэш) подтвердила каталогом то же произведение, что нашлось на слух: все слова её названия — в названии
-    находки («Running Up That Hill» — запись Within Temptation; автор LLM «Kate Bush» записи не отменяет: на develop
-    такой разбор кончался отказом «Пьес автора «Bush hill» у меня не нашлось»)."""
-    if answer is None or not answer["work_confirmed"] or heard.field != "title":
+    """LLM (или кэш) назвала то же произведение, что нашлось на слух: все слова названия находки (без хвоста версии)
+    — в её названии («Running Up That Hill» в «Running Up That Hill (A Deal with God)»: полного названия LLM в архиве
+    может не быть — запись находки в нём есть). Автор LLM записи не отменяет: «Kate Bush» при кавере Within
+    Temptation на develop кончался отказом «Пьес автора «Bush hill» у меня не нашлось»."""
+    if answer is None or heard.field != "title":
         return False
-    said = set(title_key(answer["work"]).split())
-    return bool(said) and said <= set(title_key(heard.name).split())
+    found = set(title_key(strip_version_tail(heard.name)).split())
+    return bool(found) and found <= set(title_key(answer.get("said") or answer["work"]).split())
 
 
 def _names(answer: Optional[Mapping[str, Any]]) -> bool:

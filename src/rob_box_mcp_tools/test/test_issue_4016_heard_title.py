@@ -289,6 +289,15 @@ def test_llm_in_time_confirms_the_work_itself(archive, text, answer, confirmed):
     assert slots.query == confirmed
 
 
+def test_llm_title_longer_than_the_record_still_confirms_the_sound_find(archive):
+    """LLM назвала полное название («… (A Deal with God)»), каталог его не подтвердил, но запись находки в архиве есть
+    и её слова — в названии LLM: находка подтверждена, а не переспрос по «хилл»."""
+    text = "сыграй раннинг ап дэд хилл"
+    llm = FakeLLM(answers={text: {"work": "Running Up That Hill (A Deal with God)"}})
+    slots = _parse(_parser(archive, llm)[0], text)
+    assert llm.calls == [text] and slots.work_confirmed and slots.query == "Running Up That Hill" and not slots.doubt
+
+
 def test_unclear_title_asks_llm_before_asking_back(archive):
     """«ты ди си хэлл»: ``terms`` отбросил короткие «ты ди си» — непонятых для LLM не было, и заказ сразу шёл в
     переспрос. Переспрос — только после LLM: вовремя назвала «Highway To Hell» — играет оно."""
