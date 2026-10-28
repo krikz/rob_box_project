@@ -197,9 +197,15 @@ COPY src/rob_box_perception/prompts /ws/src/rob_box_perception/prompts
 COPY src/rob_box_perception/launch /ws/src/rob_box_perception/launch
 
 # 5. весь исходный код (горячий слой). SOURCE_HASH инвалидирует кэш
-# при изменении src/rob_box_perception* (issue #2314 pattern).
+# при изменении src/rob_box_perception* и src/rob_box_core (issue #2314 pattern).
 ARG SOURCE_HASH=unknown
 RUN echo "Source hash: ${SOURCE_HASH}" > /tmp/.source_hash
+# #4167 (#4001/#4002): rob_box_perception зависит от rob_box_core (кривая заряда).
+# Копируем ВЕСЬ пакет, не выборочные файлы: setup.py тащит data_files
+# (config/, resource/) — образец docker/main/perception и docker/main/teleop.
+# Одного package.xml (шаг 1) мало: без собранного rob_box_core в /ws/install
+# colcon падает на ament_python-хуке (package.sh не найден).
+COPY src/rob_box_core /ws/src/rob_box_core
 COPY src/rob_box_perception /ws/src/rob_box_perception
 
 # 6. сборка ноды (msgs уже собраны слоем выше)
@@ -212,7 +218,7 @@ COPY src/rob_box_perception /ws/src/rob_box_perception
 # В одностадийном образе это не проявлялось: /ws/src и /ws/build лежали рядом.
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build \
-    --packages-select rob_box_perception \
+    --packages-select rob_box_core rob_box_perception \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # ============================================================
