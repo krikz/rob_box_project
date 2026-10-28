@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 #: Снимок ``/voice/music/state`` (``MusicPlayerState``): ``ts``, ``track_id``, ``stops_at``, ``finished_track_id``,
 #: ``dj``, ``dj_info``, ``is_playing(now)``.
@@ -130,7 +130,7 @@ class MusicStateMemory:
         dj = "on" if snap.dj else "off"
         if not snap.is_playing(now):
             return [("playing", "no"), ("dj", dj)]
-        title = self._name or str(snap.dj_info.get("title") or "") or UNNAMED_TRACK
+        title = self._name or _track_title(snap.dj_info)
         attrs = [("playing", "yes"), ("track", title)]
         stops_at = snap.stops_at
         started, length = snap.dj_info.get("started_at"), snap.dj_info.get("length_s")
@@ -184,6 +184,12 @@ class MusicStateMemory:
 SET_ATTRS = (("set_theme", "theme"), ("set_track_no", "track_no"), ("set_tracks", "tracks"), ("melody", "melody"),
              ("played", "played"), ("next_melodies", "next_melodies"), ("not_found", "not_found"), ("bpm", "bpm"),
              ("persona", "persona"), ("source", "source"))
+
+
+def _track_title(info: Mapping[str, Any]) -> str:
+    """Как названа играющая дорожка в разделе (``track``): короткое описание из фактов, которое строит владелец плеера
+    (``brief``: «название», стиль, темп - без номера и id, #4060); снимок без него (сервер старее подписчика) - ``title``."""
+    return str(info.get("brief") or info.get("title") or "") or UNNAMED_TRACK
 
 
 def _set_attrs(snap: MusicPlayerState) -> List[Tuple[str, str]]:

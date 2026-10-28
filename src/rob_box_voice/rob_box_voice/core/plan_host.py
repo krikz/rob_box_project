@@ -81,11 +81,13 @@ def note_perform_end(node: Any, event: PlanEvent) -> None:
 
 
 def _foreign_music(node: Any) -> str:
-    """Что играет сейчас (трек, сет) — название для вопроса «выключить и зачитать?» (О9′); тишина — ``""``."""
+    """Что играет сейчас (трек, сет) — описание для вопроса «выключить и зачитать?» (О9′): короткое из фактов трека
+    (``brief``: «название», стиль, темп - без номера и метки заказа, #4060), без него - ``title``; тишина — ``""``."""
     player = getattr(node, "_music_player_state", None)
     if player is None or not (player.is_playing() or player.dj):
         return ""
-    return str((player.dj_info or {}).get("title") or "музыка")
+    info = player.dj_info or {}
+    return str(info.get("brief") or info.get("title") or "музыка")
 
 
 def _tts_provider(node: Any) -> str:

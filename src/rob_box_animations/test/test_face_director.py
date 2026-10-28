@@ -219,6 +219,84 @@ def test_music_scene_by_tempo(bpm, scene):
         assert ctx.beat_phase == pytest.approx(10 * bpm / 60)
 
 
+def _scenes_over(d: FaceDirector, start: float, seconds: int):
+    """The music scene the face shows each second, ``[(t, scene)]``."""
+    return [(t, d.choose(T0 + t)[0]) for t in range(start, start + seconds)]
+
+
+def _changes(shown):
+    return [(t, b) for (_t, a), (t, b) in zip(shown, shown[1:]) if a != b]
+
+
+def test_4010_one_tempo_set_of_three_tracks_shows_more_than_one_music_scene():
+    """24.10: a set at 130 BPM (every track the same tempo) kept ``music_shades`` for the whole hour."""
+    d = awake(voice_timeout_s=1e6)
+    scenes = set()
+    for no in range(3):
+        start = T0 + 8 + no * 60
+        d.on_music_state(_snap(track_id=f'gen62603:0{no}:A', dj={'enabled': True, 'bpm': 130.0, 'started_at': start}), start)
+        scenes |= {d.choose(start + 5)[0]}
+    assert len(scenes) >= 2 and scenes <= {'music_vibe', 'music_groove', 'music_shades'}
+
+
+def test_4010_every_scene_of_the_circle_is_a_rendered_music_scene():
+    from rob_box_animations.face.states import SCENES
+    from rob_box_dialog.knowledge import MUSIC_SCENES
+
+    assert {name for name, spec in SCENES.items() if spec.group == 'music'} == set(MUSIC_SCENES)
+
+
+def test_4010_new_track_starts_on_the_next_scene_of_the_circle_whatever_the_tempo():
+    d = awake(voice_timeout_s=1e6)
+    first = []
+    for no in range(4):
+        start = T0 + 8 + no * 20
+        d.on_music_state(_snap(track_id=f'a:{no}', dj={'enabled': True, 'bpm': 130.0, 'started_at': start}), start)
+        first.append(d.choose(start + 1)[0])
+    assert first == ['music_shades', 'music_vibe', 'music_groove', 'music_shades']
+
+
+def test_4010_scene_changes_by_time_inside_one_long_track_not_faster_than_the_hold():
+    d = awake(voice_timeout_s=1e6)
+    d.on_music_state(_snap(dj={'enabled': True, 'bpm': 130.0, 'started_at': T0 + 8}), T0 + 8)
+    shown = _scenes_over(d, 9, 130)
+    changes = _changes(shown)
+    assert [b for _t, b in changes][:3] == ['music_vibe', 'music_groove', 'music_shades']
+    assert [t for t, _b in changes][:2] == [8 + 30, 8 + 60]            # MUSIC_SCENE_HOLD_S
+    assert all(b - a >= 30 for (a, _), (b, _) in zip(changes, changes[1:]))
+
+
+def test_4010_scene_is_held_for_the_floor_when_a_track_change_falls_next_to_the_time_step():
+    """The time step at 68 s (groove) and the next track at 71 s (its first scene is vibe) would flicker for 3 s."""
+    d = awake(voice_timeout_s=1e6)
+    d.on_music_state(_snap(track_id='a', dj={'enabled': True, 'bpm': 130.0, 'started_at': T0 + 8}), T0 + 8)
+    shown = _scenes_over(d, 9, 62)                       # t = 9..70
+    assert shown[-1] == (70, 'music_groove')
+    d.on_music_state(_snap(track_id='b', dj={'enabled': True, 'bpm': 130.0, 'started_at': T0 + 71}), T0 + 71)
+    shown += _scenes_over(d, 71, 40)                     # t = 71..110
+    assert dict(shown)[72] == 'music_groove' and dict(shown)[83] == 'music_groove'
+    assert dict(shown)[84] == 'music_vibe'               # held until 68 + MUSIC_SCENE_MIN_S
+    changes = [t for t, _b in _changes(shown)]
+    assert all(y - x >= 16 for x, y in zip(changes, changes[1:])), changes
+
+
+def test_4010_snapshot_without_start_time_still_rotates_by_the_time_it_was_seen():
+    d = awake(voice_timeout_s=1e6)
+    d.on_music_state(_snap(dj={'enabled': True, 'bpm': 130.0}), T0 + 8)
+    assert d.choose(T0 + 10)[0] == 'music_shades'
+    assert d.choose(T0 + 8 + 31)[0] == 'music_vibe'
+
+
+def test_4010_silence_forgets_the_set_so_the_next_music_starts_on_the_tempo_scene():
+    d = awake(voice_timeout_s=1e6)
+    for no in range(2):
+        d.on_music_state(_snap(track_id=f'a:{no}', dj={'bpm': 130.0, 'started_at': T0 + 8 + no * 20}), T0 + 8 + no * 20)
+    assert d.choose(T0 + 30)[0] == 'music_vibe'
+    d.on_music_state(_snap(state='idle', track_id=None), T0 + 60)
+    d.on_music_state(_snap(track_id='b:0', dj={'bpm': 130.0, 'started_at': T0 + 90}), T0 + 90)
+    assert d.choose(T0 + 91)[0] == 'music_shades'
+
+
 def test_music_idle_and_finished_track_and_bad_json():
     d = awake()
     d.on_music_state(_snap(stops_at=T0 + 9, dj={'bpm': 118}), T0 + 8)

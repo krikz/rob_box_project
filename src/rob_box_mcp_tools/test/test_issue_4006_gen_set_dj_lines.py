@@ -201,4 +201,6 @@ def test_dj_set_from_cache_speaks_on_every_transition_through_robot_voice(tmp_pa
     _wait(lambda: dj.status().get("track_no") == 3)
     status = dj.status()
     assert status["active"] and status["tracks"] == 3
-    assert status["message"].startswith("Идёт диджей-сет. Сейчас трек 3 из 3")
+    # #4060: ответ «что играет» - название и стиль играющего трека, а не его номер в сете
+    assert status["message"].startswith("Идёт диджей-сет. Сейчас играет «") and "синтвейв" in status["message"]
+    assert "3 из 3" not in status["message"] and "gen40" not in status["message"]

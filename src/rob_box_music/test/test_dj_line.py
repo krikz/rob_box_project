@@ -111,7 +111,7 @@ SET = {"track_no": 2, "tracks": 4, "melody": "Тетрис", "next_melodies": ["
 
 
 def test_now_playing_text_is_built_from_facts():
-    assert dl.now_playing_text(SET) == ("Сейчас трек 2 из 4: «Тетрис». Дальше по плану: «Аладдин», «Контра». "
+    assert dl.now_playing_text(SET) == ("Сейчас играет «Тетрис». Дальше по плану: «Аладдин», «Контра». "
                                         "Не нашлось в библиотеке: «Марио».")
     assert "свой мотив" in dl.now_playing_text({"track_no": 1, "tracks": 4, "melody": ""})
 
@@ -129,7 +129,7 @@ def test_when_text_on_last_track_of_two_track_set():
     expected = "«Тетрис» уже был — трек 1. «Тетрис» в этом сете больше не будет по плану — это последний трек сета."
     assert dl.when_text(last, "тетрис") == expected
     assert dl.when_text(last, "марио").startswith("«Марио Ворлд» играет прямо сейчас — трек 2 из 2")
-    assert dl.now_playing_text(last) == "Сейчас трек 2 из 2: «Марио Ворлд». Это последний трек сета."
+    assert dl.now_playing_text(last) == "Сейчас играет «Марио Ворлд». Это последний трек сета."
 
 
 def test_when_text_next_only_when_next_track_is_composed_with_it():

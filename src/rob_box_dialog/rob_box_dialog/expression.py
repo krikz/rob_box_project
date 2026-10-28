@@ -43,10 +43,17 @@ class ExpressionPlan:
     face: Optional[Mapping[str, object]] = None
 
 
-def _bpm_scene(bpm: Optional[float]) -> Optional[str]:
-    if not bpm or bpm <= 0:
-        return None
-    return next(scene for limit, scene in kn.MUSIC_SCENE_BPM if bpm < limit)
+def music_scene(bpm: Optional[float], track_no: int = 0, elapsed_s: float = 0.0) -> str:
+    """Музыкальная сцена лица (#4010) - единственное место, где она выбирается (``face_director`` и ``executing`` ниже).
+
+    Трек начинает сцена по темпу (``MUSIC_SCENE_BPM``; темпа нет - ``MUSIC_DEFAULT_BPM``), дальше сцены ходят по кругу
+    ``MUSIC_SCENES`` независимо от темпа: ``track_no`` - сколько раз трек сменился с начала музыки (каждый - шаг),
+    ``elapsed_s`` - сколько играет текущий (шаг каждые ``MUSIC_SCENE_HOLD_S``). Чистая функция: тот же вход - та же
+    сцена, ``face_director`` только держит пол ``MUSIC_SCENE_MIN_S``."""
+    tempo = bpm if bpm and bpm > 0 else kn.MUSIC_DEFAULT_BPM
+    first = next(i for i, (limit, _) in enumerate(kn.MUSIC_SCENE_BPM) if tempo < limit)
+    step = max(0, int(track_no)) + int(max(0.0, elapsed_s) // kn.MUSIC_SCENE_HOLD_S)
+    return kn.MUSIC_SCENES[(first + step) % len(kn.MUSIC_SCENES)]
 
 
 def _executing_face(cls: Optional[str], snapshot: Mapping[str, object]) -> str:
@@ -54,7 +61,7 @@ def _executing_face(cls: Optional[str], snapshot: Mapping[str, object]) -> str:
     if cls == "action.motion":
         return MOTION_FACE.get(str(snapshot.get("direction") or ""), MOTION_DEFAULT_FACE)
     if cls == "action.media" and snapshot.get("started"):
-        return _bpm_scene(snapshot.get("bpm")) or kn.EXECUTING_FACE[cls][0]  # type: ignore[arg-type]
+        return music_scene(snapshot.get("bpm"))  # type: ignore[arg-type]
     return kn.REFLEXES["executing"].face[0]
 
 

@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_dialog.plan.sync import beat_heard_at
 from rob_box_music.model import BEATS_PER_BAR
+from rob_box_music.track_brief import track_brief
 from rob_box_voice.core.music_player_state import build_music_event_payload, build_music_state_payload
 
 _LOG = logging.getLogger(__name__)
@@ -63,6 +64,13 @@ def _with_timing(facts: Dict[str, Any], current: Optional[Mapping[str, Any]], on
         if current.get("track_id") == once:
             facts["length_s"] = round(current["form_beats"] * 60.0 / current["bpm"], 1)
     return facts
+
+
+def _with_brief(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """Факты снимка + ``brief`` - короткое описание трека из них (#4060, ``rob_box_music.track_brief``); описывать
+    нечем - поля нет."""
+    brief = track_brief(facts)
+    return {**facts, "brief": brief} if brief else facts
 
 
 def _log_started(log: Any, snap: Mapping[str, Any], line: str) -> None:
@@ -287,12 +295,14 @@ class PlayerOwner:
 
     def _facts(self) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """``(играющий трек, факты для снимка)``: поля ``dj`` (сет или факты заказа — название, источник, стиль, bpm,
-        инструмент) и время звучания трека: ``started_at``, у конечного — ``length_s`` (один проход формы)."""
+        инструмент), время звучания трека: ``started_at``, у конечного — ``length_s`` (один проход формы), и ``brief`` -
+        короткое описание трека из этих фактов (#4060, ``rob_box_music.track_brief``): его читает ``<music_state>`` хода
+        вместо номера и id; описывать нечем - поля нет."""
         with self._lock:
             current = dict(self._current) if self._current else None
             facts = dict(self._dj)
             once = self._once
-        return current, _with_timing(facts, current, once)
+        return current, _with_brief(_with_timing(facts, current, once))
 
     def position(self, track_id: str) -> Optional[Tuple[float, float, float]]:
         """``(доля клока, доля старта, форма)`` играющего ``track_id`` — вход результата по такту поверх моста

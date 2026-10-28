@@ -48,6 +48,7 @@ from rob_box_harness.decision import (
 )
 from rob_box_dialog.phrases import text as _phrase
 from rob_box_music.dj_line import now_playing_text, plain_fold, when_text
+from rob_box_music.track_brief import BRIEF_FACTS
 
 from .media_command_grammar import (
     MEDIA_INTENT_OPTIONS,
@@ -326,8 +327,10 @@ def _dj_plan(command: MediaCommand) -> Optional[MediaPlan]:
     )
 
 
-#: Факты играющего трека сета в снимке (``dj``), которыми код отвечает на «что играет / когда будет X».
-SET_FACTS = ("track_no", "tracks", "theme", "melody", "played", "next_melodies", "next_known", "not_found")
+#: Факты играющего трека сета в снимке (``dj``), которыми код отвечает на «что играет / когда будет X»: место трека в
+#: плане сета и факты его описания (``rob_box_music.track_brief.BRIEF_FACTS``: название, стиль, темп - #4060).
+SET_FACTS = tuple(dict.fromkeys(("track_no", "tracks", "theme", "melody", "played", "next_melodies", "next_known",
+                                 "not_found", *BRIEF_FACTS)))
 
 
 def _fold() -> Any:
