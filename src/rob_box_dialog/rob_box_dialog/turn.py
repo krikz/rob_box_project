@@ -474,10 +474,26 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
         return None
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
     kept, fresh = _scenes_of(earlier), [s for s in shown if s is not None and s is not expression]
-    if kept and fresh and fresh[0] == kept[-1]:  # та же сцена на следующей итерации - дважды не показываем
-        fresh = fresh[1:]
-    scenes = kept + fresh
+    scenes = kept + _without_repeat(kept, fresh)
     return _in_order(scenes) if scenes else held_expression(expression, text)
+
+
+def _scene_key(scene: Expression) -> Tuple[Any, ...]:
+    """Сцена как значение: поля команды ``Expression`` без очереди ``then`` и без вида (``Shown`` или нет)."""
+    return tuple(getattr(scene, f.name) for f in fields(Expression))
+
+
+def _without_repeat(kept: Sequence[Expression], fresh: Sequence[Expression]) -> List[Expression]:
+    """Сцены этой итерации без повтора того, что уже стоит на итоге: самое длинное начало ``fresh``, совпадающее с хвостом
+    ``kept``, отбрасывается. Модель, которая зовёт одно и то же на каждой итерации (``[play_animation sad, list]`` до
+    потолка итераций, #4065), и одну сцену, и список из двух-трёх сцен, не множит показ (ревью PR #4118: сравнивалась
+    только ``fresh[0]`` с ``kept[-1]``, и список ``[victory, sad]`` встал бы второй раз целиком). Сцены в одной команде
+    («покажи победу два раза») не схлопываются: сравниваются итерации, а не соседи внутри ``fresh``."""
+    have, new = [_scene_key(s) for s in kept], [_scene_key(s) for s in fresh]
+    for size in range(min(len(have), len(new)), 0, -1):
+        if have[-size:] == new[:size]:
+            return list(fresh[size:])
+    return list(fresh)
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:

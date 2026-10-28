@@ -139,6 +139,58 @@ def test_same_scene_repeated_by_the_model_on_the_next_iteration_is_shown_once():
     assert face == Shown(emotion="victory", duration_s=5.0)
 
 
+SAD = ToolCall("play_animation", {"animation": "sad", "duration": 6})
+SHOWN_TWICE = Shown(emotion="victory", duration_s=5.0, then=(Shown(emotion="sad", duration_s=6.0),))
+
+
+def test_list_of_two_scenes_repeated_by_the_model_on_every_iteration_is_shown_once():
+    """Ревью PR #4118: сравнивалась только первая новая сцена с последней стоящей, и список ``[victory, sad]``, который
+    модель зовёт на каждой итерации (потолок #4065), множился: victory, sad, victory, sad. Теперь повтор всей
+    последовательности в очередь второй раз не встаёт."""
+    ports = Ports([Answer(Command(actions=(VICTORY, SAD, TIME)), "deepseek"),
+                   Answer(Command(actions=(VICTORY, SAD, TIME)), "deepseek"),
+                   Answer(Command(actions=(VICTORY, SAD, TIME)), "deepseek"),
+                   Answer(Command(speech=SPEECH), "deepseek")])
+    _run(ports)
+    (_, face), = ports.faces
+    assert face == SHOWN_TWICE
+    assert _requests(face) == [(0.0, "victory", 5000), (5.0, "sad", 6000)]
+
+
+def test_repeated_list_with_a_new_scene_at_the_end_adds_only_the_new_scene():
+    """Вторая итерация повторяет стоящее и добавляет своё: стоящий хвост не дублируется, новое встаёт за ним."""
+    happy = ToolCall("play_animation", {"animation": "happy", "duration": 7})
+    ports = Ports([Answer(Command(actions=(VICTORY, SAD, TIME)), "deepseek"),
+                   Answer(Command(actions=(VICTORY, SAD, happy, TIME)), "deepseek"),
+                   Answer(Command(speech=SPEECH), "deepseek")])
+    _run(ports)
+    (_, face), = ports.faces
+    assert [(e, ttl) for _, e, ttl in _requests(face)] == [("victory", 5000), ("sad", 6000), ("happy", 7000)]
+
+
+def test_second_iteration_may_repeat_only_the_last_scene_and_go_on():
+    """Прежнее правило (одна сцена) сохранено: повтор последней стоящей сцены схлопывается, остальное встаёт очередью."""
+    ports = Ports([Answer(Command(actions=(VICTORY, TIME)), "deepseek"),
+                   Answer(Command(actions=(VICTORY, SAD, TIME)), "deepseek"),
+                   Answer(Command(speech=SPEECH), "deepseek")])
+    _run(ports)
+    (_, face), = ports.faces
+    assert face == SHOWN_TWICE
+
+
+def test_scene_by_face_only_repeated_on_the_next_iteration_is_shown_once():
+    """Сцена только лицом (без ``animation``) - обычная ``Expression``, а стоящая на итоге первая сцена - ``Shown``: повтор
+    узнаётся по полям сцены, а не по классу (иначе сцена встала бы в очередь за собой)."""
+    from rob_box_dialog.turn import command_face
+
+    result = ActionResult("t/0", 1, "personality", "play_animation", kn.TOOL_CLASSES["play_animation"], "done", None,
+                          {"face": {"eyes": "wide", "mouth": "flat"}, "duration": 7})
+    first = command_face(None, [result])
+    assert type(first) is Shown and first.then == () and first.duration_s == 7.0 and first.face.eyes == "wide"
+    assert command_face(None, [result], earlier=first) == first
+    assert command_face(None, [result], earlier=command_face(None, [result], earlier=first)) == first
+
+
 def test_one_command_with_the_same_scene_twice_is_still_two_scenes():
     """«Покажи победу два раза» одной командой - две сцены подряд: схлопывается только повтор между итерациями."""
     ports = Ports([Answer(Command(actions=(VICTORY, VICTORY)), "deepseek")])
