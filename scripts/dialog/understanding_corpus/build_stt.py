@@ -167,10 +167,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not Path(args.artifacts).is_dir():
             print(f"часть {PART}: хеш в порядке, {have['counts']}; логов {args.artifacts} нет - пересборку не сверял")
             return 0
-        fresh = alt.digest(build(Path(args.artifacts))["alternatives"])
+        fresh_data = build(Path(args.artifacts))
+        fresh = alt.digest(fresh_data["alternatives"])
         same = fresh == have["corpus_sha256"]
         print(f"часть {PART} {'совпадает' if same else 'РАЗОШЛАСЬ'} с логами: {have['corpus_sha256'][:12]} против "
               f"{fresh[:12]}")
+        if not same:  # логи пополняются каждой ночью: показать, что изменилось, а не просто «разошлась»
+            added = sorted({(sid, r["text"]) for sid, rows in fresh_data["alternatives"].items() for r in rows}
+                           - {(sid, r["text"]) for sid, rows in have["alternatives"].items() for r in rows})
+            print(f"  в логах сейчас: {fresh_data['method']['filter']}; новых строк против файла: {len(added)}")
+            for sid, text in added:
+                print(f"  + {sid}: {text}")
         return 0 if same else 1
     data = build(Path(args.artifacts))
     sha = alt.write_part(Path(args.out), data)
