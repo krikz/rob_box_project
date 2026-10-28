@@ -31,6 +31,8 @@ except ImportError:
 from rob_box_llm.provider import LLMResponse  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 from rob_box_voice.core import dialog_v2_parity as parity  # noqa: E402
+from rob_box_dialog import phrases  # noqa: E402
+from rob_box_dialog.startup import ReadinessWatch, assess  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
 
@@ -56,6 +58,7 @@ def node(monkeypatch):
     except ImportError:  # Windows: лицевых сообщений нет — подписка должна всё равно появиться
         pkg, msg = types.ModuleType("rob_box_perception_msgs"), types.ModuleType("rob_box_perception_msgs.msg")
         msg.VisionEvent = type("VisionEvent", (), {})
+        msg.PerceptionEvent = type("PerceptionEvent", (), {})
         pkg.msg = msg
         monkeypatch.setitem(sys.modules, "rob_box_perception_msgs", pkg)
         monkeypatch.setitem(sys.modules, "rob_box_perception_msgs.msg", msg)
@@ -165,17 +168,45 @@ def test_wakeless_phrase_without_greeting_stays_in_backlog(node):
     assert node.last_turn is None and node.test_llm.calls == 0
 
 
-# -- стартовая фраза ---------------------------------------------------------------------------------------------
+# -- стартовая фраза по готовности узлов (#3913) -----------------------------------------------------------------
+
+VOICE = ["/audio_node", "/stt_node", "/tts_node"]
+REST = ["/context_aggregator", "/camera/camera", "/lslidar_driver_node", "/rtabmap/rtabmap"]
+
 
 def _startup_timer(made):
     return [t for t in made._timers if t.period == 12.0]
 
 
-def test_startup_greeting_earcons_then_phrase(node):
+def _report(active=(), failed=(), missing=()):
+    return types.SimpleNamespace(active_nodes=list(active), failed_nodes=list(failed), missing_nodes=list(missing))
+
+
+def _feed(made, report):
+    (cb,) = [f.callback for t, f in made._subscribers if t == parity.READINESS_TOPIC]
+    cb(report)
+
+
+def _run_to_phrase(made):
+    """12 с -> (опрос готовности) -> heard -> 2 с -> done -> 1,5 с -> фраза; возвращает сказанное."""
+    _startup_timer(made)[0].callback()
+    for period in (2.0, 1.5):
+        step = made._timers[-1]
+        assert step.period == period
+        step.callback()
+    return _said(made)
+
+
+def test_readiness_subscription_exists(node):
+    assert parity.READINESS_TOPIC == "/perception/context_update"
+    assert parity.READINESS_TOPIC in {t for t, _ in node._subscribers}
+
+
+def test_startup_greeting_all_up_says_ready_to_work(node):
+    _feed(node, _report(active=["/dialog_node", *VOICE, *REST]))
     (timer,) = _startup_timer(node)
     timer.callback()
-    earcons = [r.earcon for r in _published(node, "/voice/expression/request")]
-    assert earcons[-1:] == ["heard"]
+    assert [r.earcon for r in _published(node, "/voice/expression/request")][-1:] == ["heard"]
     step2 = node._timers[-1]
     assert step2.period == 2.0
     step2.callback()
@@ -185,8 +216,76 @@ def test_startup_greeting_earcons_then_phrase(node):
     step3.callback()
     said = _said(node)
     assert len(said) == 1 and node._startup_greeting.phrase in said[0].text
-    timer.callback()  # повторный тик — не вторая фраза
+    assert node._startup_greeting.verdict == "ready"
+    assert node._startup_greeting.phrase in phrases.catalog()["startup.ready"]
+    timer.callback()  # повторный тик - не вторая фраза
     assert len(_said(node)) == 1
+
+
+def test_startup_greeting_waits_while_not_ready_then_says_voice_only_at_timeout(node, monkeypatch):
+    now = [1000.0]
+    greeting = node._startup_greeting
+    monkeypatch.setattr(greeting, "_clock", lambda: now[0])
+    greeting._deadline = now[0] + 90.0
+    _feed(node, _report(active=["/dialog_node", *VOICE], missing=REST))
+    _startup_timer(node)[0].callback()
+    assert _published(node, "/voice/expression/request") == [] and _said(node) == []  # ждём: не всё поднялось
+    poll = node._timers[-1]
+    assert poll.period == 1.0
+    now[0] += 30.0
+    poll.callback()
+    assert _published(node, "/voice/expression/request") == []  # 30 с - ещё ждём
+    now[0] += 61.0  # вышло 90 с
+    node._timers[-1].callback()
+    assert [r.earcon for r in _published(node, "/voice/expression/request")] == ["heard"]
+    node._timers[-1].callback()
+    node._timers[-1].callback()
+    said = _said(node)
+    assert len(said) == 1 and "только голос" in said[0].text.lower()
+    assert node._startup_greeting.verdict == "voice_only"
+
+
+def test_startup_greeting_speaks_as_soon_as_everything_comes_up(node, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(node._startup_greeting, "_clock", lambda: now[0])
+    node._startup_greeting._deadline = now[0] + 90.0
+    _feed(node, _report(active=VOICE, missing=REST))
+    _startup_timer(node)[0].callback()
+    assert _said(node) == []
+    now[0] += 5.0
+    _feed(node, _report(active=VOICE + REST))
+    node._timers[-1].callback()  # опрос: теперь всё поднялось - heard без ожидания 90 с
+    assert [r.earcon for r in _published(node, "/voice/expression/request")] == ["heard"]
+
+
+def test_startup_greeting_without_any_report_is_honest_unknown_after_timeout(node, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(node._startup_greeting, "_clock", lambda: now[0])
+    node._startup_greeting._deadline = now[0] + 90.0
+    _startup_timer(node)[0].callback()
+    assert _said(node) == []
+    now[0] += 91.0
+    node._timers[-1].callback()
+    for _ in range(2):
+        node._timers[-1].callback()
+    said = _said(node)
+    assert len(said) == 1 and node._startup_greeting.verdict == "unknown"
+    assert "готов к работе" not in said[0].text.lower()
+
+
+def test_stale_report_is_not_a_fact():
+    got = ReadinessWatch()
+    parity.on_node_report(got, _report(active=VOICE + REST), clock=lambda: 100.0)
+    assert assess(got.snapshot(105.0)).kind == "ready"
+    assert assess(got.snapshot(200.0)).kind == "unknown"
+
+
+def test_operator_text_overrides_the_verdict(node):
+    node._startup_greeting._text = "Всем привет, я на связи"
+    _feed(node, _report(active=VOICE, missing=REST))
+    node._startup_greeting._deadline = 0.0  # время ожидания вышло
+    said = _run_to_phrase(node)
+    assert len(said) == 1 and "Всем привет, я на связи" in said[0].text and node._startup_greeting.verdict == "voice_only"
 
 
 def test_startup_greeting_skipped_when_silenced(node):

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Optional, Tuple
 
 from rob_box_core import expression_client
@@ -17,7 +18,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.meeting import MeetingGreeter, MeetingMarker, greet_on_meeting, parse_meeting_marker
 from rob_box_dialog.meeting import unprompted_quiet
 from rob_box_dialog.shift_log import FACE
-from rob_box_dialog.startup import pick_greeting
+from rob_box_dialog.startup import NodeReport, Readiness, ReadinessWatch, assess, llm_usable, pick_startup_phrase
 from rob_box_dialog.status_feed import StatusFeed, describe_chain, describe_wake
 
 from .greeting_window import open_window
@@ -118,16 +119,46 @@ def _greet(node: Any, marker: MeetingMarker) -> Optional[str]:
     return phrase
 
 
+# -- готовность узлов (#3913) --------------------------------------------------------------------------------------
+
+#: Топик отчёта монитора узлов контекстного агрегатора (Main Pi) - единственный источник «что поднялось».
+READINESS_TOPIC = "/perception/context_update"
+
+
+def subscribe_readiness(node: Any) -> ReadinessWatch:
+    """Подписка на отчёт монитора узлов; импорт сообщения защищён, как у встречи: нет сообщения - отчёта не будет, и
+    стартовая фраза честно скажет «не знаю», а не «всё в норме»."""
+    watch = ReadinessWatch()
+    try:
+        from rob_box_perception_msgs.msg import PerceptionEvent  # noqa: PLC0415
+
+        node.create_subscription(PerceptionEvent, READINESS_TOPIC, lambda msg: on_node_report(watch, msg), 10)
+    except Exception as exc:  # noqa: BLE001
+        node.get_logger().warning(f"⚠️ [старт] отчёт о готовности узлов недоступен ({exc!r}): фраза скажет «не знаю»")
+    return watch
+
+
+def on_node_report(watch: ReadinessWatch, msg: Any, clock: Callable[[], float] = time.monotonic) -> None:
+    """Сообщение агрегатора -> последний отчёт (колбэк горячий: только три списка, остальное в сообщении не читаем)."""
+    watch.observe(NodeReport.from_lists(getattr(msg, "active_nodes", ()) or (), getattr(msg, "failed_nodes", ()) or (),
+                                        getattr(msg, "missing_nodes", ()) or ()), clock())
+
+
 # -- стартовая фраза -----------------------------------------------------------------------------------------------
 
 class StartupGreeting:
-    """Одноразовая фраза после старта (#1003, порядок v1): ждём ``startup_greeting_sec`` → если робот не занят —
-    earcon ``heard`` → 2 с → earcon ``done`` → 1,5 с → фраза. Занят (ход, тишина, удержание) — пропуск, без повтора."""
+    """Одноразовая фраза после старта (#1003, порядок v1 + #3913): ждём ``startup_greeting_sec`` → ждём готовности узлов
+    (опрос раз в ``STARTUP_READY_POLL_S``, не дольше ``STARTUP_READY_TIMEOUT_S`` от старта) → если робот не занят —
+    earcon ``heard`` → 2 с → earcon ``done`` → 1,5 с → фраза по вердикту готовности (``rob_box_dialog.startup``).
+    Занят (ход, тишина, удержание) - пропуск, без повтора."""
 
-    def __init__(self, node: Any, delay_s: float, text: str, quiet: Callable[[], bool]) -> None:
-        self._node, self._text, self._quiet = node, text, quiet
+    def __init__(self, node: Any, delay_s: float, text: str, quiet: Callable[[], bool],
+                 readiness: Callable[[], Readiness], clock: Callable[[], float] = time.monotonic) -> None:
+        self._node, self._text, self._quiet, self._readiness, self._clock = node, text, quiet, readiness, clock
+        self._deadline = clock() + max(delay_s, kn.STARTUP_READY_TIMEOUT_S)
         self._fired = False
         self.phrase: Optional[str] = None
+        self.verdict: Optional[str] = None
         self._timer = node.create_timer(delay_s, self._start)
 
     def _next(self, delay_s: float, step: Callable[[], None]) -> None:
@@ -143,11 +174,23 @@ class StartupGreeting:
         if self._fired:
             return
         self._fired = True
+        self._poll()
+
+    def _poll(self) -> None:
+        """Тихо - пропуск; всё поднялось или время вышло - озвучиваем; иначе ещё секунду ждём."""
         if self._quiet():
             self._node.get_logger().info("Startup greeting: диалог активен — пропускаю приветствие")
             return
+        ready = assess(self._readiness()).kind == "ready"
+        if not ready and self._clock() < self._deadline:
+            self._next(kn.STARTUP_READY_POLL_S, self._poll_tick)
+            return
         self._earcon("heard")
         self._next(kn.STARTUP_GREETING_STEPS_S[0], self._done)
+
+    def _poll_tick(self) -> None:
+        self._timer.cancel()
+        self._poll()
 
     def _done(self) -> None:
         self._earcon("done")
@@ -155,20 +198,26 @@ class StartupGreeting:
 
     def _speak(self) -> None:
         self._timer.cancel()
-        self.phrase = pick_greeting(self._text)
-        self._node.get_logger().info(f"🗣 Startup greeting: {self.phrase!r}")
+        self.phrase, verdict = pick_startup_phrase(self._readiness(), self._text)
+        self.verdict = verdict.kind
+        self._node.get_logger().info(f"🗣 Startup greeting [{verdict.kind}, не поднялось={list(verdict.down)}]: "
+                                     f"{self.phrase!r}")
         self._node._ports.say("", self._node._session.snapshot.epoch, self.phrase)
 
 
 def arm_startup_greeting(node: Any) -> Optional[StartupGreeting]:
-    """Параметры ``startup_greeting_sec`` (0 — выключено) и ``startup_greeting_text`` (пусто — случайная фраза)."""
+    """Параметры ``startup_greeting_sec`` (0 — выключено) и ``startup_greeting_text`` (пусто — фраза по готовности)."""
     delay = float(node.get_parameter("startup_greeting_sec").value or 0.0)
     if delay <= 0:
         return None
-    node.get_logger().info(f"🗣 Startup greeting через {delay:.0f}s")
+    node.get_logger().info(f"🗣 Startup greeting через {delay:.0f}s (после готовности узлов, не позже "
+                           f"{kn.STARTUP_READY_TIMEOUT_S:.0f}s)")
+    watch = subscribe_readiness(node)
     return StartupGreeting(node, delay, str(node.get_parameter("startup_greeting_text").value or ""),
-                           lambda: unprompted_quiet(node._session.snapshot, turn_busy(node)))
+                           lambda: unprompted_quiet(node._session.snapshot, turn_busy(node)),
+                           lambda: watch.snapshot(time.monotonic(), llm_usable(node._reporter.all_states())))
 
 
-__all__ = ["StartupGreeting", "arm_startup_greeting", "catalog_model", "on_vision_event", "start_status_feeds",
-           "start_v2_status_feeds", "subscribe_meeting", "turn_busy"]
+__all__ = ["READINESS_TOPIC", "StartupGreeting", "arm_startup_greeting", "catalog_model", "on_node_report",
+           "on_vision_event", "start_status_feeds", "start_v2_status_feeds", "subscribe_meeting", "subscribe_readiness",
+           "turn_busy"]
