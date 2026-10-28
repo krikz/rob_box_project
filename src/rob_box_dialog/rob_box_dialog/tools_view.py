@@ -16,18 +16,15 @@ sound (таблицы — ``knowledge``). Открытый вопрос тула
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from rob_box_core.tool_catalog import ToolCatalogEntry, get_tool
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.agents import agent_spec, tools_for
-from rob_box_dialog.expression import shows
+from rob_box_dialog.command import Command, bare_answer
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
 from rob_box_dialog.words import asks_robot_to_act, has_form, has_speech_manner, has_word, introduces_self, without_forms
-
-if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
-    from rob_box_dialog.command import Command
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
@@ -101,20 +98,14 @@ def needs_words(text: str, cmd: "Command") -> bool:
     """Ответ модели не слышен, а человек ждёт слов: нет ни речи, ни вопроса, ни выступления, ни
     ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а ответ есть - действия или одна
     ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``; или один earcon - короткий
-    сигнал, не слова), и ни лицо человек словами не просил (группы ``FACE_ASK_GROUP`` нет в
-    :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»), ни ответа без слов
-    (:func:`silent_asked`: «покажи молча, что ты задумался» - лицом или анимацией одинаково, без речи).
+    сигнал, не слова; это ``command.bare_answer``), и ни лицо человек словами не просил (группы
+    ``FACE_ASK_GROUP`` нет в :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»), ни
+    ответа без слов (:func:`silent_asked`: «покажи молча, что ты задумался» - лицом или анимацией одинаково,
+    без речи).
 
     Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
     динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
-    if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
-        return False
-    if any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
-        return False
-    face = cmd.expression
-    if not cmd.actions and not shows(face.emotion, face.gesture, face.face) and face.earcon is None:
-        return False
-    return not show_asked(text)
+    return bare_answer(cmd) and not show_asked(text)
 
 
 def silent_asked(text: str) -> bool:

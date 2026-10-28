@@ -79,8 +79,8 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
-from typing import (Any, Awaitable, Callable, Collection, FrozenSet, List, Mapping, Optional, Protocol, Sequence,
-                    Tuple)
+from typing import (Any, Awaitable, Callable, Collection, FrozenSet, Iterable, List, Mapping, Optional, Protocol,
+                    Sequence, Tuple)
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
@@ -93,7 +93,7 @@ from rob_box_dialog import tool_ask
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
-                                    explain, loud_actions, turn_form)
+                                    explain, fit_speech, loud_actions, turn_form)
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
@@ -105,6 +105,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
                                     reconcile_stops)
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
+from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
@@ -215,6 +216,7 @@ class _Turn:
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за ответ не тот (``VIOLATION_SILENT_ANSWER``, ``…_REMOTE_OWED``)
+    pushed: int = 0  # повторы за словами на последней итерации (``SPEECH_PUSHES_MAX``)
     expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done``
     command: str = ""  # запасной разбор Tier-1 (:func:`tier1_of`): слова после вейка (``Addressed.command``, n811)
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется
@@ -415,12 +417,18 @@ def form_tools(tools: Sequence[Any], form: Form, agent: str) -> Tuple[Any, ...]:
     return tuple(kept)
 
 
-def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command) -> bool:
-    """Команда модели не слышна, а человек ждёт слов: агент говорит в динамики (Личность, не шлем оператора и
-    не чат), реплика адресована - не подхват бэклога и не тишина (:func:`voices_passed`), и сама команда без слов
-    (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
-    return (agent_spec(snapshot.agent).sink == Sink.SPEAKERS and voices_passed(pickup, snapshot)
-            and needs_words(text, cmd))
+def speaks_aloud(snapshot: SessionSnapshot) -> bool:
+    """Кто ждёт слов от хода: агент говорит в динамики (Личность, не шлем оператора и не чат) и не
+    тишина.
+    Подхват бэклога - тоже: он бывает только по голому «робот», человек обратился к роботу (живое 28.10 17:55 и n301:
+    «Робот.» → подхват → ответ одним лицом, тишина)."""
+    return agent_spec(snapshot.agent).sink == Sink.SPEAKERS and snapshot.top("Silence") is None
+
+
+def words_owed(snapshot: SessionSnapshot, text: str, cmd: Command) -> bool:
+    """Команда модели не слышна, а человек ждёт слов: :func:`speaks_aloud` (и при подхвате бэклога), и
+    сама команда без слов (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
+    return speaks_aloud(snapshot) and needs_words(text, cmd)
 
 
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -674,11 +682,24 @@ async def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSn
     return True
 
 
+def answer_listen_only(engine: "TurnEngine", turn: "_Turn") -> bool:
+    """Голое «робот» подхватило из бэклога просьбу слушать и не встревать (марафон-2 n301: «ты просто слушай и не
+    влезай»; ``words.asks_to_listen``): подхват адресован, молчать нельзя, но и отвечать по существу не о чем - код
+    говорит короткое ``LISTEN_ONLY_PHRASE`` («Слушаю»), LLM не зовётся. Другой подхват или не подхват - ``False``."""
+    if not turn.pickup or not asks_to_listen(turn.text):
+        return False
+    turn.stage, turn.reason = "done", kn.LISTEN_ONLY_PHRASE
+    engine._log.info(f"{LOG_MARK} подхват бэклога - просьба слушать {turn.text[:80]!r} → «слушаю» кодом, LLM не "
+                     f"зовётся turn={turn.turn_id}")
+    engine._say(turn, phrases.text(kn.LISTEN_ONLY_PHRASE))
+    return True
+
+
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
     """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
-    код (:func:`answer_recognized`), — в форме команды хода (:func:`command_form`): схема и валидатор моста видят
-    её на время вызовов LLM этого хода."""
-    if hold_silence(engine, turn) or await answer_recognized(engine, turn, snap):
+    код (:func:`answer_listen_only`, :func:`answer_recognized`), — в форме команды хода (:func:`command_form`):
+    схема и валидатор моста видят её на время вызовов LLM этого хода."""
+    if hold_silence(engine, turn) or answer_listen_only(engine, turn) or await answer_recognized(engine, turn, snap):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
@@ -825,6 +846,62 @@ def _offered(tools: Sequence[Any], last: bool) -> Tuple[Any, ...]:
     return tuple(t for t in tools if not last or kn.TOOL_CLASSES.get(t.name) != _QUERY)
 
 
+def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot) -> Form:
+    """Форма вызова модели одной итерации (ADR-0148 п.2: валидатор с понятной ошибкой, а не правило в промпте).
+    Последняя итерация после выполненного запроса: данные у модели, читать больше нечем (:func:`_offered` убрал
+    query-тулы) - ответ без слов нарушает ``VIOLATION_SPEECH_REQUIRED``, и ход даёт модели повторы за словами
+    (:func:`_push_for_words`; живой 28.10 13:40: «скажи обо мне пять фактов» - два поиска по памяти, а ответ
+    последнего вызова - одно лицо; марафон-2 n109, n908).
+    Слов ждут те же, кому их должен :func:`words_owed` (:func:`speaks_aloud`: динамики, не тишина; подхват бэклога
+    голым «робот» - тоже), лицо без слов человек не просил (``tools_view.show_asked``). Путь пения решён кодом
+    (``perform`` или тул пути обязательны) - не трогаем."""
+    owed = (last and bool(turn.queried) and not form.sing and speaks_aloud(snapshot) and not show_asked(turn.text))
+    return replace(form, speech_required=owed)
+
+
+async def _ask_iteration(engine: "TurnEngine", turn: _Turn, messages: Sequence[Any], tools: Sequence[Any],
+                         last: bool) -> "Answer":
+    """Один вызов модели хода в форме ЭТОЙ итерации (:func:`answer_form`): её видят схема и валидатор моста;
+    после вызова снова форма хода."""
+    turn.waiting = "llm"
+    with turn_form(answer_form(current_form(), turn, last, engine.session.snapshot)):
+        return await turn.deadline.wait(engine._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
+
+
+def _push_for_words(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
+    """Последняя итерация после запроса, а модель без слов (``VIOLATION_SPEECH_REQUIRED``; решение Шифу 28.10 по PR
+    «модель не должна молчать… пнуть модель»): данные хода уже в её окне - ещё один вызов с подсказкой нарушения
+    (``command.HINTS``: ответь словами по этим данным, коротко), не больше ``SPEECH_PUSHES_MAX`` на ход и только если до
+    потолка хода осталось ``SPEECH_PUSH_MIN_LEFT_S``. Повторов нет (лимит, время, форма итерации слов не ждёт) -
+    ``None``: тогда говорит код по данным (:func:`query_fallback`) как последняя страховка."""
+    owed = answer_form(current_form(), turn, True, engine.session.snapshot).speech_required
+    if not owed or turn.pushed >= kn.SPEECH_PUSHES_MAX or turn.deadline.left() < kn.SPEECH_PUSH_MIN_LEFT_S:
+        return None
+    turn.pushed += 1
+    engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: последняя итерация без слов → повтор за словами "
+                        f"{turn.pushed}/{kn.SPEECH_PUSHES_MAX} (осталось {turn.deadline.left():.1f} с) "
+                        f"turn={turn.turn_id}")
+    return explain(Invalid(kn.VIOLATION_SPEECH_REQUIRED), after_query=True)
+
+
+#: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
+#: от валидатора моста (форма итерации) и от хода (голый ответ, когда мост команду не судит).
+_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SILENT_ANSWER)
+
+
+def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:
+    """Последняя итерация, а ответ без слов (:data:`_WORDS_MISSED`): подсказка повтора за словами
+    (:func:`_push_for_words`) или ``None`` - повторов больше нет. Модель молчала и после повторов - строка нарушения
+    в лог (страховка кода по данным видна в марафоне)."""
+    if reason not in _WORDS_MISSED:
+        return None
+    more = _push_for_words(engine, turn)
+    if more is None and turn.pushed:
+        engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: без слов и после {turn.pushed} повторов → "
+                            f"страховка: фраза кода по данным turn={turn.turn_id}")
+    return more
+
+
 def _close_unread(turn: _Turn, acted: bool) -> str:
     """Модель на последней итерации ещё просит ``query`` (его уже не исполняют, :func:`_runnable`) или только
     повторяет исполненное в ходе (:func:`unrepeated`), а её слов не слышно: ответа она не дала
@@ -873,7 +950,7 @@ def query_more(engine: "TurnEngine", turn: _Turn, results: Sequence[ActionResult
         engine._log.info(f"{LOG_MARK} query {[r.tool for r in readable]} рядом с действиями "
                          f"{[(r.tool, r.status) for r in acted]} → данные модели, итог действий сказал код "
                          f"turn={turn.turn_id}")
-    turn.queried = readable
+    turn.queried += readable  # всё прочитанное в ходе: фраза кода по данным видит и прошлые итерации
     return _query_data(readable)
 
 
@@ -920,20 +997,84 @@ def _library_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     return {"total": total, "names": ", ".join(names)} if names or total <= 0 else None
 
 
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _facts_slots(texts: Iterable[Any]) -> Optional[Mapping[str, Any]]:
+    """Слоты фразы по данным памяти: первые ``MEMORY_SUMMARY_FACTS`` разных фактов как есть, через «;» (точка в
+    конце факта во фразе лишняя). Фактов нет - ``None``: фразы по данным нет."""
+    cleaned = (" ".join(str(text or "").split()).rstrip(".;").strip() for text in texts)
+    facts = list(dict.fromkeys(fact for fact in cleaned if fact))[:kn.MEMORY_SUMMARY_FACTS]
+    return {"facts": "; ".join(facts)} if facts else None
+
+
+def _score(row: Mapping[str, Any]) -> float:
+    score = row.get("score")
+    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else 0.0
+
+
+def _search_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``memory_search``: записи ``kind=fact`` по убыванию ``score``; реплики прошлых разговоров (``kind=turn``) - не
+    факты о человеке, их фраза не называет."""
+    rows = [r for r in data.get("results") or () if isinstance(r, Mapping) and r.get("kind") == "fact"]
+    return _facts_slots(r.get("content") for r in sorted(rows, key=_score, reverse=True))
+
+
+def _context_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``memory_context``: ``facts`` - факты о собеседнике (``{fact, category, …}``) в порядке владельца памяти."""
+    return _facts_slots(f.get("fact") for f in data.get("facts") or () if isinstance(f, Mapping))
+
+
+def _sounds_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Слоты фразы каталога звуков (``get_sound_info`` без аргументов): сколько звуков всего и по каким
+    категориям (``knowledge.SOUND_CATEGORY_NAMES``; звуки прочих категорий - «другие»). Список одной категории или один
+    звук - слов по данным нет (``None``)."""
+    total, counts = data.get("total_sounds"), data.get("categories")
+    if not _is_count(total) or total <= 0 or not isinstance(counts, Mapping):
+        return None
+    named = [(label, counts.get(key)) for key, label in kn.SOUND_CATEGORY_NAMES.items()]
+    named.append((kn.SOUND_OTHER_NAME, total - sum(n for _, n in named if _is_count(n))))
+    names = ", ".join(f"{label} — {n}" for label, n in named if _is_count(n) and n > 0)
+    return {"total": total, "names": names} if names else None
+
+
+def _web_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``search_web`` (n908): текст (``body``) первой строки выдачи с текстом, без хвостового многоточия обрезки
+    тула. Выдача пуста - ``None``: фразы по данным нет."""
+    bodies = (" ".join(str(r.get("body") or "").split()) for r in data.get("results") or () if isinstance(r, Mapping))
+    text = next((body.rstrip(".…;: ") for body in bodies if body.rstrip(".…;: ")), "")
+    return {"text": text} if text else None
+
+
 #: Слоты фразы кода по данным ``query`` - по тулу таблицы ``knowledge.QUERY_FALLBACK_PHRASES`` (ключи совпадают).
 _QUERY_SLOTS: Mapping[str, Callable[[Mapping[str, Any]], Optional[Mapping[str, Any]]]] = {
-    "list_tts_voices": _voices_slots, kn.LIBRARY_TOOL: _library_slots}
+    "list_tts_voices": _voices_slots, kn.LIBRARY_TOOL: _library_slots, "memory_search": _search_slots,
+    "memory_context": _context_slots, "get_sound_info": _sounds_slots, "search_web": _web_slots}
+
+
+def _answer_sources(results: Sequence[ActionResult]) -> List[ActionResult]:
+    """Выполненные ``query`` хода, по данным которых код может ответить: память о собеседнике
+    (``knowledge.MEMORY_FACTS_TOOLS``) - только когда ход больше ничего не читал (n908: память рядом с ``search_web`` -
+    контекст, а не ответ на «рецепт борща»)."""
+    done = [r for r in results if r.status == "done"]
+    others = [r for r in done if r.tool not in kn.MEMORY_FACTS_TOOLS]
+    return others or done
 
 
 def query_answer(results: Sequence[ActionResult]) -> Optional[str]:
-    """Ответ кода по данным выполненного ``query``: фраза тула (``knowledge.QUERY_FALLBACK_PHRASES``,
-    ключ - по данным вызова) со слотами из данных результата: голоса - сводка по провайдерам, список библиотеки - число
-    треков и 2–3 названия. Фразы по данным нет - ``None``."""
-    for r in results:
-        entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool) if r.status == "done" else None
+    """Ответ кода по данным выполненного ``query``: фраза тула
+    (``knowledge.QUERY_FALLBACK_PHRASES``, ключ - по данным вызова) со слотами из данных результата: голоса - сводка по
+    провайдерам, список библиотеки - число треков и 2–3 названия, память - 2–3 факта (только если ход читал одну её,
+    :func:`_answer_sources`), каталог звуков - сколько и каких категорий, поиск в сети - текст первой строки выдачи.
+    Одно место слотов: что модель прочла и не сказала, называет код. Ответ не длиннее речи, которую слышат
+    (``command.fit_speech``). Фразы по данным нет - ``None``."""
+    for r in _answer_sources(results):
+        entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
         slots = _QUERY_SLOTS[r.tool](r.data) if entry is not None else None
         if slots is not None:
-            return phrases.text(entry.key(r.data) if isinstance(entry, kn.ByData) else entry, **slots)
+            text = phrases.text(entry.key(r.data) if isinstance(entry, kn.ByData) else entry, **slots)
+            return fit_speech(Command(speech=text)).speech
     return None
 
 
@@ -955,6 +1096,9 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     ``expression`` - лицо команды, исполняемой после нарушения ``silent_answer``: красит итог вместе с её
     действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
+    pushed = _missed_words(engine, turn, why) if last else None
+    if pushed is not None:
+        return pushed
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
         turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
@@ -998,7 +1142,7 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
     if queried:
         return " ".join(text for text in (said, query_fallback(queried)) if text)
     snap = engine.session.snapshot
-    if said or (results and not words_owed(snap, turn.pickup, turn.text, Command(actions=tuple(invalid.salvage)))):
+    if said or (results and not words_owed(snap, turn.text, Command(actions=tuple(invalid.salvage)))):
         return said or ""
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
 
@@ -1023,10 +1167,10 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
-    адресованную реплику (:func:`words_owed`), только текст в чат на просьбу сделать роботом
-    (:func:`robot_owed`) или обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи из
-    :func:`foreign_keys`)."""
-    if words_owed(snapshot, turn.pickup, turn.text, cmd):
+    адресованную реплику (:func:`words_owed`; и подхват бэклога), только текст в чат на просьбу сделать
+    роботом (:func:`robot_owed`) или обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
+    из :func:`foreign_keys`)."""
+    if words_owed(snapshot, turn.text, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
@@ -1109,9 +1253,9 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
         return None
     engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} и после повтора → исполняем, говорит код "
                         f"turn={turn.turn_id}")
-    # лицо команды, как и её анимация, показывается — говорит код
-    await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
-    return None
+    # лицо команды, как и её анимация, показывается — говорит код; последняя итерация после запроса - сначала
+    # повтор за словами (:func:`_push_for_words`)
+    return await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
 
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
@@ -1422,16 +1566,15 @@ class TurnEngine:
         return True
 
     async def _understand(self, turn: _Turn, snap: SessionSnapshot) -> None:
-        """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь."""
+        """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь; последняя без
+        слов после запроса - ещё ≤ ``SPEECH_PUSHES_MAX`` вызовов за словами (:func:`_push_for_words`)."""
         self._ports.stage(turn.turn_id, turn.epoch, "thinking", "started")
         offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
-        for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
+        for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX):  # + повторы за словами
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
-            turn.waiting = "llm"
-            answer = await turn.deadline.wait(self._ports.ask(messages, _offered(tools, last), turn.deadline.left()),
-                                              "llm")
+            answer = await _ask_iteration(self, turn, messages, tools, last)
             turn.llm_calls += answer.calls
             turn.provider, turn.tokens = answer.provider or turn.provider, turn.tokens + answer.tokens
             if self._stale(turn, "answer"):

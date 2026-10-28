@@ -35,6 +35,7 @@ from rob_box_dialog import cast as perform_cast
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
+from rob_box_dialog.expression import shows
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
 
 #: Поля команды и экспрессии — из той же схемы, что видит LLM (:func:`knowledge.command_schema`).
@@ -180,14 +181,22 @@ class Form:
     этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
     (``knowledge.SING_FORMS["live_over"]``). ``backing`` — модели можно заказать подложку сказке, анекдоту и стиху
 : только когда человек сам назвал музыку в этой реплике (``tools_view.music_asked``); иначе подложка у этих
-    видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была. По умолчанию всё
-    открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
+    видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была.
+    ``speech_required`` — последняя итерация хода после выполненного запроса (живой 28.10 13:40: «скажи обо мне
+    пять фактов» — девять результатов памяти, а ответ последнего вызова — одно лицо без слов): данные у модели, читать
+    больше нечем; ответ без слов — нарушение валидатора ``VIOLATION_SPEECH_REQUIRED`` (:func:`_check_answered`:
+    до ``SPEECH_PUSHES_MAX`` повторов хода за словами, затем страховка - код говорит по данным,
+    ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с
+    ``VIOLATION_SPEECH_WITH_ACTIONS`` - слышимое действие (звук, музыка) после запроса законно без слов, а со словами -
+    нарушение. Ставит его ход (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим
+    команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
     sing: str = ""
     sing_over: bool = False
     backing: bool = True
+    speech_required: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -559,7 +568,9 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
-    же и голос реплики без просьбы о голосе отбрасываются (``dropped``). Невалидная сцена лица и earcon не из перечня
+    же и голос реплики без просьбы о голосе отбрасываются (``dropped``); форма последней итерации после запроса
+    (``Form.speech_required``): ответ без слов (одно лицо, анимация) - нарушение ``VIOLATION_SPEECH_REQUIRED``
+    (:func:`_check_answered`). Невалидная сцена лица и earcon не из перечня
     отбрасываются (``dropped``), а не валят команду (§5.5.9); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
     тула (``play_animation.face.emotion``) и лишние аргументы верхнего уровня тулов таблицы
     ``knowledge.DROPPABLE`` (``play_animation.animated``): без отказа команды, с записью в ``dropped``.
@@ -581,6 +592,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     open_actions = tuple(a for a in cmd.actions if a.tool not in form.closed_tools())
     checks: Tuple[Callable[[], Any], ...] = (
         lambda: _check_passed(cmd, form),
+        lambda: _check_answered(cmd, form),
         lambda: _check_spoken(cmd.speech, "speech"),
         lambda: _check_voice(cmd.voice, busy),
         lambda: _check_ask(cmd.ask),
@@ -831,6 +843,30 @@ def is_empty(cmd: Command) -> bool:
         cmd.speech or cmd.ask or cmd.actions or cmd.perform)
 
 
+def bare_answer(cmd: Command) -> bool:
+    """Ответ команды не слышен: нет ни речи, ни вопроса, ни выступления, ни ``passed``; все действия -
+    неслышимые (``knowledge.INAUDIBLE_TOOLS``), а ответ есть - эти действия или лицо (эмоция, жест, сцена, один earcon).
+    Единственное место знания, что такое «одно лицо или анимация без слов»: им судят ход (``tools_view.needs_words``:
+    человек ждёт слов) и форма последней итерации (:func:`_check_answered`)."""
+    if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
+        return False
+    if any(a.tool not in kn.INAUDIBLE_TOOLS for a in cmd.actions):
+        return False
+    face = cmd.expression
+    return bool(cmd.actions) or shows(face.emotion, face.gesture, face.face) or face.earcon is not None
+
+
+def _check_answered(cmd: Command, form: Form) -> None:
+    """Последняя итерация после выполненного запроса (``Form.speech_required``): ответ без слов - одно лицо или
+    анимация - нарушение ``VIOLATION_SPEECH_REQUIRED``. Данные у модели, читать больше нечем; ход даёт ей повторы с
+    подсказкой (:func:`words_only`, ``turn._push_for_words``), и без слов после них закрывает код фразой по данным
+    (``turn.query_answer``). Пустая команда - нарушение
+    ``empty_command`` моста; слышимые действия (звук, музыка) и действия, исход которых говорит код, ответом остаются -
+    слова рядом с ними были бы ``VIOLATION_SPEECH_WITH_ACTIONS``."""
+    if form.speech_required and bare_answer(cmd):
+        raise _Bad(kn.VIOLATION_SPEECH_REQUIRED, "на лице или анимации без слов")
+
+
 def _check_speech(text: Optional[str], limit: int, where: str) -> None:
     if text is None:
         return
@@ -857,6 +893,13 @@ def overlong_only(result: Result) -> bool:
     """Команда отвергнута только за длину речи (все нарушения — ``VIOLATION_SPEECH_TOO_LONG``): ей ход компактнее
     (``knowledge.SPEECH_COMPACT_TURNS``), затем :func:`fit_speech`, а не общий повтор и заглушка."""
     return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_TOO_LONG for v in result.all)
+
+
+def words_only(result: Result) -> bool:
+    """Команда отвергнута только за ответ без слов на последней итерации (все нарушения —
+    ``VIOLATION_SPEECH_REQUIRED``): повтор за словами даёт ход (``turn._push_for_words``: он знает потолок
+    хода), мост такую команду отдаёт ходу сразу, без своего повтора."""
+    return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_REQUIRED for v in result.all)
 
 
 def fit_speech(cmd: Command) -> Command:
@@ -1115,6 +1158,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "passed_with_content": "passed — только без речи и действий",
     kn.VIOLATION_PASSED_ADDRESSED: "реплика адресована тебе — молчать нельзя, поля passed в этом ходе нет: ответь "
                                    "словами в speech (не понял — переспроси в ask)",
+    kn.VIOLATION_SPEECH_REQUIRED: f"молчать нельзя: это последний ответ хода, данные запроса уже выше в окне, читать "
+                                  f"больше нечем; лицо и анимация слов не заменяют — ответь словами по этим данным в "
+                                  f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
     "bad_ask": "у ask нужен text",
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",
