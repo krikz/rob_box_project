@@ -193,3 +193,51 @@ def test_recovery_reuses_the_synced_loader_not_a_fire_and_forget_load() -> None:
         "перезаливка при восстановлении обязана идти через reloadKnownPath "
         "(с sync), а не голым path.load"
     )
+
+
+def _arm_master_filter_body(code: str) -> str:
+    start = code.index("var armMasterFilter = {")
+    end = code.index("var serverWasRunning", start)
+    return code[start:end]
+
+
+def test_arm_master_filter_frees_stale_node_before_s_new() -> None:
+    """#3795: рестарт одного voice-assistant оставляет живой узел 999.
+
+    Голый ``/s_new`` с занятым ID падает с ``duplicate node ID``; на шине
+    остаётся узел старого SynthDef. Старый узел обязан быть освобождён ДО
+    ``/s_new``, причём с Server.sync между ними.
+    """
+    body = _arm_master_filter_body(_executable_lines(_script()))
+    free = body.index('"/n_free", masterLimiterNode')
+    s_new = body.index('"/s_new", "masterfilter", masterLimiterNode')
+    assert free < s_new, "/n_free 999 должен идти раньше /s_new masterfilter 999"
+    assert "Server.default.sync" in body[free:s_new], (
+        "между /n_free и /s_new нужен Server.default.sync"
+    )
+
+
+def test_arm_master_filter_reports_armed_only_on_server_confirmation() -> None:
+    """ADR-0148: «armed» строит ответ scsynth, а не факт отправки /s_new."""
+    body = _arm_master_filter_body(_executable_lines(_script()))
+    assert "'/n_go'" in body and "'/n_info'" in body, (
+        "подтверждение узла: /n_go 999 (или /n_info на /n_query)"
+    )
+    assert "'/fail'" in body, "ответ /fail на /s_new должен ловиться"
+    assert "ERROR: Master filter NOT armed" in body, (
+        "при /fail или тишине в лог должна уходить честная ошибка"
+    )
+    armed = body.index("Master filter armed at tail of RootNode")
+    wait = body.index("done.wait")
+    assert wait < armed, "строка armed должна идти ПОСЛЕ ожидания ответа сервера"
+    assert re.search(r"if\(ok\)\s*\{[^}]*Master filter armed", body, re.S), (
+        "строка armed допустима только в ветке подтверждённого узла"
+    )
+
+
+def test_recovery_does_not_claim_success_when_filter_not_armed() -> None:
+    code = _executable_lines(_script())
+    assert "if(armMasterFilter.value)" in code, (
+        "после рестарта scsynth сообщение «восстановлены» обязано зависеть "
+        "от результата armMasterFilter"
+    )
