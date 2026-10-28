@@ -364,7 +364,7 @@ VOICE_STEP_KIND = "voice_step"
 REPEAT_KIND = "repeat"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
-#: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
+#: «Говорю голосом X» говорит код по результату ``set_voice`` (:data:`VOICE_DONE`). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
 #: ``prosody_normal`` и ``voice_step`` звучат: тулы темпа и тона молчат, фразу о результате говорит код.
 #: ``show_queue`` не звучит, но в тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход
@@ -1060,12 +1060,11 @@ NO_PERSON_REASON = "no_person"
 #: в MCP без собеседника, #4023) - ключ фразы своей причины (``respond.phrase_key``): голос этих агентов никто не
 #: узнаёт, «Не узнаю твой голос» им неправда (ревью PR #4121). Исход тула и строки лога остаются ``no_person``.
 NO_PERSON_UNVOICED_REASON = "no_person_unvoiced"
-#: Состояния имени собеседника (``SpeakerRef.name_state``), при которых голос узнан, а чей он - не подтверждено:
-#: ``contested`` - у кандидата конкурент с другим именем (#2809), ``tentative`` - гипотеза голоса без второго канала.
-#: Память о людях с таким собеседником не работает ни на чтение, ни на запись (``memory.bind_person``): вопроса «ты
-#: Саша?» в v2 нет (решение Шифу 26.10, #3993), а чужие факты хуже пустых. Своя причина отказа - не ``no_person``:
-#: «Не узнаю твой голос» тут неправда, голос узнан (score 0.89-0.94 в акте 2b), не подтверждено только имя.
-VOICE_UNCONFIRMED_STATES: Tuple[str, ...] = ("tentative", "contested")
+#: Причина отказа памяти, когда голос узнан, а чей он - не подтверждено (состояния имени
+#: ``rob_box_core.speaker_wire.NAME_UNCONFIRMED``: спор #2809, гипотеза без второго канала). Память о людях с таким
+#: собеседником не работает ни на чтение, ни на запись (``memory.bind_person``): вопроса «ты Саша?» в v2 нет (решение
+#: Шифу 26.10, #3993), а чужие факты хуже пустых. Своя причина - не ``no_person``: «Не узнаю твой голос» тут неправда,
+#: голос узнан (score 0.89-0.94 в акте 2b), не подтверждено только имя.
 VOICE_UNCONFIRMED_REASON = "voice_unconfirmed"
 #: Причины, с которыми тул памяти отклонён КОДОМ до владельца (``memory.unbound_reason``): чей это голос, неизвестно.
 #: Отказ чтения (``memory_search``/``memory_context``, класс ``query``) на вопрос о памяти о самом человеке
@@ -1121,24 +1120,24 @@ RECOGNIZED_ASK: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "filler": ("ты", "вы", "а", "и", "так", "ли", "еще", "скажи", "вообще", "теперь", "сейчас", "по", "голосу",
                "привет", "эй"),
 })
-#: Ответ на :data:`RECOGNIZED_ASK` - состояние для ``speaker_adapter.recognition_state``: имя снимка подтверждено
-#: (``RECOGNIZED_CONFIRMED`` - значение ``SpeakerRef.name_state``), свой профиль без имени (#3858), не узнан (и профиль,
-#: заведённый из этой же фразы, ``SpeakerRef.first_heard``: голос слышен впервые - ревью PR #4121).
-RECOGNIZED_CONFIRMED = "confirmed"
-RECOGNIZED_NAMELESS = "nameless"
-RECOGNIZED_UNKNOWN = "unknown"
-#: Ответ на :data:`RECOGNIZED_ASK` - по собеседнику снимка (``speaker_adapter.recognition_state``): имя подтверждено -
-#: «узнал» с именем; голос узнан, а чей - спорно или гипотеза (``VOICE_UNCONFIRMED_STATES``) - «знакомый, не уверен
-#: чей», без вопроса «ты Саша?» и без имени кандидата; свой профиль без имени (#3858) - голос помню, имени нет; иначе -
-#: «по голосу не узнаю». Фразы - без «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны (ревью PR #4121).
-#: Ключи каталога фраз ``speaker.recognized.<состояние>``.
-RECOGNIZED_REPLIES: Mapping[str, str] = MappingProxyType({
-    RECOGNIZED_CONFIRMED: "speaker.recognized.confirmed",
-    **{state: "speaker.recognized.unconfirmed" for state in VOICE_UNCONFIRMED_STATES},
-    RECOGNIZED_NAMELESS: "speaker.recognized.nameless",
-    RECOGNIZED_UNKNOWN: "speaker.recognized.unknown",
-})
-#: Причина итога хода, ответ на который построил код по :data:`RECOGNIZED_REPLIES` (строка лога и e2e-событие ``turn``).
+#: Ответ на :data:`RECOGNIZED_ASK` - по голосу ЭТОЙ фразы (``speaker_adapter.recognition_reply``, #4141): исход - одно
+#: из состояний имени её SpeakerResult (словарь ``rob_box_core.speaker_wire.NAME_*``; здесь их нет: модуль без
+#: зависимостей) или :data:`RECOGNIZED_UNHEARD`, фраза - ключ каталога ``speaker.recognized.<исход>``: имя подтверждено -
+#: «узнал» с именем; голос узнан, а чей - спорно или гипотеза - «знакомый, не уверен чей», без вопроса «ты Саша?» и без
+#: имени кандидата; свой профиль без имени (#3858) - голос помню, имени нет; не узнан (и профиль, заведённый из этой же
+#: фразы, ``SpeakerRef.first_heard``: голос слышен впервые - ревью PR #4121) - «по голосу не узнаю». Фразы - без
+#: «да»/«нет» в начале: на «ты меня НЕ узнал?» они двусмысленны (ревью PR #4121).
+RECOGNIZED_PHRASE = "speaker.recognized"
+#: Исход «голос этой фразы к ответу не оценён»: SpeakerResult по её ``utterance_id`` не пришёл за
+#: :data:`RECOGNIZED_VOICE_WAIT_S` (или у реплики нет id). Ответ - честное «не уверен», а не собеседник прошлой фразы:
+#: опоздавшая биометрия иначе дала бы новому голосу чужое имя (#4141).
+RECOGNIZED_UNHEARD = "unheard"
+#: Сколько ход ждёт SpeakerResult своей фразы перед ответом на :data:`RECOGNIZED_ASK`: биометрия и STT не упорядочены
+#: (биометрия 0.6-1.9 с после конца фразы, #2829; 23.10 n702 она пришла за 1.3 с до STT), у профиля из этой фразы перед
+#: публикацией ещё запись в БД. Ход начинается после STT, поэтому окно - запас на опоздание, а не вся задержка
+#: биометрии. На роботе не замерено (#4141).
+RECOGNIZED_VOICE_WAIT_S = 2.0
+#: Причина итога хода, ответ на который построил код по голосу фразы (строка лога и e2e-событие ``turn``).
 RECOGNIZED_TURN_REASON = "recognized"
 #: Авторство прошлой реплики окна (#3881): в историю модели реплика человека уходит с тегом, кто говорил в тот ход
 #: (снимок ``SpeakerRef`` на начало хода), а не голой строкой - иначе чужая реплика читается как слова текущего.
@@ -1264,9 +1263,30 @@ DJ_STOP = ByData(("action", "was_playing"), {
     ("stop", False): "music.stop_idle", ("stop", True): "music.stop_ok", ("stop", None): "music.stop_ok",
 })
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
+#: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом», #4074), снятый вместе с ним,
+#: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``). Ключ живёт здесь один:
+#: ``VOICE_DONE`` берёт его отсюда же.
+VOICE_DEFAULT_PHRASE = "voice.applied_default"
+#: Смена голоса (``set_voice``, ``set_tts_provider``): фразу строит диалог по ДАННЫМ исхода, который тул взял у владельца
+#: голоса (``SpeechEvent voice_changed``), а не тул своим ``speak_text``. Живое 28.10 00:48:51 («говори обычным голосом»):
+#: тул сказал «Я и так говорю своим обычным голосом.», а код сброса тона следом «Тон голоса обычный.» - две реплики на один
+#: ход, и первая была неправдой (тон только что менялся). Поля данных: ``status`` - исход тула (``applied`` / ``fallback`` /
+#: ``timeout`` / ``already_default`` / ``noop``), ``voice_default`` - применённый голос и есть обычный голос робота
+#: (``True``/``False``; нет применённого голоса - поля нет). Слоты фраз - ``voice_name``, ``requested_name``,
+#: ``provider_label``: названия вслух (``rob_box_mcp_tools.voice_request.outcome_data``), а не id латиницей.
+VOICE_DONE = ByData(("status", "voice_default"), {
+    ("applied", True): VOICE_DEFAULT_PHRASE, ("applied", False): "voice.applied",
+    ("already_default", True): "voice.already_default", ("noop", None): "voice.provider_same",
+})
+VOICE_FAILED = ByData(("status", "voice_default"), {
+    ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
+    ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
+})
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
+    "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
     "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
     # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media. Тул сказал, что играть
@@ -1455,11 +1475,11 @@ REMOTE_OWED_HINT = ("человек просит сделать это РОБО�
                     " человек спрашивает или просит справку, а не действие робота, — ответь словами в speech, как"
                     " раньше: робот ничего не делает")
 REMOTE_OWED_PHRASE = "remote.nothing_done"
-#: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: голос -
-#: сам тул (``voice_request``, SpeechEvent ``voice_changed``), запуск музыки и библиотека - музыкальный ход ноды
-#: (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует; в v2 (PR-8) - фраза респонда.
+#: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: запуск музыки
+#: и библиотека - музыкальный ход ноды (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует;
+#: в v2 (PR-8) - фраза респонда. Голос здесь больше не значится: тулы голоса молчат, фраза - по их результату
+#: (:data:`VOICE_DONE`), как у ``set_speed``/``set_pitch``.
 OUTCOME_SPOKEN_ELSEWHERE: Mapping[str, str] = MappingProxyType({
-    "set_voice": "tool", "set_tts_provider": "tool",
     "dj_set": "music_turn", "request_music": "music_turn", "generate_music": "music_turn", "music_library": "music_turn",
 })
 #: play_sound при занятом канале (#3698, просьба Шифу 21.10): короткий текущий звук (earcon ~1 с) - запрос ждёт в
@@ -1520,6 +1540,10 @@ INVALID_COMMAND_PHRASE = "command.invalid_generic"
 #: #4137) - своя, не ``too_long`` полей выступления и голоса: одна она у команды - мост просит ход компактнее
 #: (``SPEECH_COMPACT_TURNS``), и после него длинно - речь ужимает код (``command.fit_speech``), а не заглушка.
 VIOLATION_SPEECH_TOO_LONG = "speech_too_long"
+#: Пометка обрыва (#4137, хвост ревью: перечень голосов «…Голос38» звучал как полный): речь, которую ``command.fit_speech``
+#: оборвал посреди предложения, кончается этой фразой каталога - человек слышит, что названо не всё. Обрыв по границе
+#: предложения пометки не просит: оставленные предложения целые.
+SPEECH_CUT_PHRASE = "command.speech_cut"
 #: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез. Речь
 #: одна длинная до хода сюда не доходит (её ужимает код, #4137) - только рядом с другим нарушением, которое не
 #: исправил и повтор; ``too_long`` - сегмент выступления, имя роли или голоса длиннее предела. Единственная таблица
@@ -1535,7 +1559,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER,)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
-    *INVALID_COMMAND_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()
       for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
@@ -1546,6 +1570,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
+    "voice.applied_default", "voice.unavailable_default", "voice.provider_same",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала
@@ -1567,8 +1592,9 @@ PHRASE_KEYS: Tuple[str, ...] = (
     *(f"query.rejected.{reason}" for reason in UNBOUND_REASONS),
     # отказ памяти без собеседника у чата Telegram и ТАРС (ревью PR #4121): без слова «голос»
     *(f"{cls}.rejected.{NO_PERSON_UNVOICED_REASON}" for cls in ("local", "query")),
-    # «ты меня узнал?» - ответ кода по собеседнику снимка (#3993)
-    *RECOGNIZED_REPLIES.values(),
+    # «ты меня узнал?» - ответ кода по голосу фразы (#3993, #4141); фразы по состояниям имени ``speaker_wire.NAME_*``
+    # сверяет ``test_recognized_by_code_3993`` (этот модуль словаря состояний не импортирует)
+    f"{RECOGNIZED_PHRASE}.{RECOGNIZED_UNHEARD}",
 )
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2426,6 +2452,29 @@ FORM_FIELDS: Tuple[str, ...] = ("passed", "voice")
 #: Символы, которых в тексте речи не бывает: U+FFFD - битый UTF-8 в ответе провайдера (n105 23.10: «Остально<U+FFFD×2> в
 #: порядке» ушло в TTS). Разбор команды их вырезает (``command._clean``), вырезанное - в ``fields_dropped``.
 SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("\ufffd",)
+
+
+@dataclass(frozen=True)
+class Droppable:
+    """Что код выбрасывает из команды, а не отвергает её целиком (#4138, n904 28.10; ADR-0148: решает код, а не
+    повтор модели): поле уходит в ``Command.dropped`` (лог ``fields_dropped``), действие исполняется.
+
+    ``expression`` - поля экспрессии, чьё значение не из перечня (``earcon: none``) выбрасывается: звук-сопровождение
+    смысла ответа не несёт. ``tool_args`` - тулы, у которых выбрасывается ЛИШНИЙ аргумент верхнего уровня, которого нет
+    в схеме тула (``play_animation.animated``): тул -> аргументы, несущие смысл вызова; хоть один из них должен быть,
+    иначе без лишнего поля вызов теряет смысл и отвергается, как раньше (``bad_args``).
+
+    Чего в таблице нет, не выбрасывается: ``emotion`` и ``gesture`` могут быть самой просьбой («покажи, как тебе
+    грустно», «подмигни»), а у ``set_volume``, ``request_music`` и прочих лишний аргумент (``channel``, ``genre``)
+    молча менял бы действие. Лишние поля ВЛОЖЕННЫХ объектов аргументов (``play_animation.face.emotion``, #3974) код
+    выбрасывает у любого тула. Нет обязательного аргумента, неизвестный тул - отказ всегда."""
+
+    expression: Tuple[str, ...]
+    tool_args: Mapping[str, Tuple[str, ...]]
+
+
+DROPPABLE = Droppable(expression=("earcon",),
+                      tool_args=MappingProxyType({"play_animation": ("animation", "face")}))
 #: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
 #: structured_output/JSON-режима и для JSON в тексте.
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")

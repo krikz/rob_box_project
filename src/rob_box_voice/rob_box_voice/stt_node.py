@@ -243,6 +243,9 @@ except ImportError:
 class STTNode(Node):
     """Нода для распознавания речи: Yandex STT gRPC v3 (primary) + Vosk (fallback)."""
 
+    #: Решение эхо-окна по фразе, которую распознаём сейчас (``_process_audio``). Вне распознавания и у шлема — открыто.
+    _admission: echo_window.Admission = echo_window.OPEN
+
     def __init__(self, *, occasion_gate: OccasionGate | None = None) -> None:
         # ADR-0101 §3.3.5 / Issue #2536 / PR-E: «unclear cooldown» идёт
         # через единый ``OccasionGate``. ``occasion_gate`` — optional kwarg:
@@ -755,6 +758,7 @@ class STTNode(Node):
             self.get_logger().info(admission.note)
         if admission.dropped:
             return
+        self._admission = admission  # промежуточные результаты STT идут в диалог только через него (_offer_interrupt)
 
         self.get_logger().info(f"🎤 Получена фраза: {duration:.2f}с ({len(audio_bytes)} bytes)")
         # Issue 1076 (телеметрия): фиксируем момент получения фразы, чтобы
@@ -1794,11 +1798,13 @@ class STTNode(Node):
 
         Зовётся на каждом partial Yandex и на финале любого провайдера; одинаковый текст фразы второй раз не
         шлётся. Решает диалог: ясная стоп-команда рвёт речь, остальное — нет. Потоки шлема (ptt/wake) речь
-        личности не перебивают: barge грипа делает quest-сервер.
+        личности не перебивают: barge грипа делает quest-сервер. Фраза, которую эхо-окно пускает только как стоп
+        (голос звучал в окне после речи робота, короткий обрывок при речи — ``Admission.keeps``), до диалога не
+        доходит, пока её текст не стал ясным стопом с вейком: эхо с «робот» внутри не рвёт речь (ревью #4122).
         """
         if self._active_source != _SRC_RESPEAKER:
             return
-        if self._interrupts.offer(text, self._active_utterance_id):
+        if self._interrupts.offer(text, self._active_utterance_id, self._admission):
             self.get_logger().info(
                 f"⚡ [interrupt] request utterance={self._active_utterance_id or '-'} text={text[:60]!r}"
             )

@@ -157,7 +157,7 @@ def test_pr4067_bare_query_expression_does_not_paint_the_done_face():
     (как до PR): данные модели, её ответ невалиден - фраза кода по данным, лицо итога - её грусть («не смог сложить»,
     #4069 п.8), а не ``happy`` команды."""
     happy = Answer(Command(actions=(LIST_CALL,), expression=Expression(emotion="happy")), "deepseek")
-    ports = Ports([happy, Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
+    ports = Ports([happy, Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     _run(ports)
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
     assert ports.faces == [("done", SAD_FACE)], "экспрессия до данных итог не красит"
@@ -166,7 +166,7 @@ def test_pr4067_bare_query_expression_does_not_paint_the_done_face():
 def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
     """Исполненный ``play_animation`` рядом с ``query`` красит итог своей сценой (#4049), даже когда ответ модели по
     данным невалиден и говорит код."""
-    ports = Ports([_mixed(), Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
+    ports = Ports([_mixed(), Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     _run(ports)
     assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))]
 
@@ -174,7 +174,7 @@ def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
 def test_4065_invalid_answer_after_the_mixed_data_is_said_from_the_data_3883():
     """Страховка #3883 как раньше: данные смешанной команды у модели, её ответ невалиден и после повтора - говорит
     код по данным запроса; list повторно не исполняется."""
-    ports = Ports([_mixed(), Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
+    ports = Ports([_mixed(), Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     agg = _run(ports)
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
     assert (agg.stage, agg.status) == ("done", "done") and len(ports.executed) == 1

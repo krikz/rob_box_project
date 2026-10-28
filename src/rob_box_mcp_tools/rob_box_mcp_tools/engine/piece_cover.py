@@ -22,7 +22,7 @@ from rob_box_music.arrange.hook import tune_groups
 from rob_box_music.source import CoverWork, Route, cover_failed_text, cover_ready_text
 
 from .classic import pick_record, rank_scores, score_songs
-from .gen.cover import CoverResult, Sources, melody_notes
+from .gen.cover import RTTTL_SOURCE, CoverResult, Sources, melody_notes
 from .score_library import PlanMaterials
 
 _LOG = logging.getLogger(__name__)
@@ -69,7 +69,8 @@ def _piece_cover(piece: Tuple[str, ...], found: Mapping[str, Tuple[Mapping[str, 
     (``classic.rank_scores``: лучшая первой, а не первая по поиску), до ``SET_COVER_MATERIALS`` сложившихся
     (``score_song``, порог ``CLASSIC_REF_MATCH_MIN``), затем сами RTTTL его хуков (путь пробы Валькирий 13.10). Задачи
     сета берут их по кругу (``gen_session.turn_sources``: разные источники у разных задач), остальные — запас после
-    отказа Suno. ``(произведение, мелодии)`` и строка лога с годностью всех партитур."""
+    отказа Suno (RTTTL хука - только запас, по кругу берутся партитуры). ``(произведение, мелодии)`` и строка лога с
+    годностью всех партитур."""
     title = found[piece[0]][1]
     refs = [str(found[h][0].get("rtttl") or "") for h in piece]
     ranked = rank_scores(loaded, ids, refs) if ids else []
@@ -79,13 +80,13 @@ def _piece_cover(piece: Tuple[str, ...], found: Mapping[str, Tuple[Mapping[str, 
     for hook in piece:
         record = pick_record(found[hook][0], title, theme, seed=seed)
         if record.found:
-            sources.append((f"rtttl:{hook}", record.track))
+            sources.append((f"{RTTTL_SOURCE}{hook}", record.track))
     scores = scores_line(ranked, len(built), len(built) + len(reasons))
     if not sources:
         return None, f"«{title}» — не собрался ({'; '.join(reasons) or 'партитур нет'}; {scores})"
     fit = dict(ranked)
     head = f"{sources[0][0]} {fit[sources[0][0]]:.2f}" if sources[0][0] in fit else sources[0][0]
-    material = sources[0][0].removeprefix("rtttl:")
+    material = sources[0][0].removeprefix(RTTTL_SOURCE)
     return ((CoverWork(title, material, "", title), tuple(sources)),
             f"«{title}» ← {head} (мелодий {len(sources)}: {', '.join(s for s, _t in sources)}; {scores})")
 

@@ -1,16 +1,17 @@
-"""voice_request - запрос смены голоса TTS и фраза по событию (ADR-0150 §8, PR-4 ч.3, #3693).
+"""voice_request - запрос смены голоса TTS и данные его исхода (ADR-0150 §8, PR-4 ч.3, #3693).
 
 Заменяет ``voice_state.VoiceStateStore``: голос хранит один владелец - ``tts_node`` (``VoiceOwner``), здесь только
 просьба ``/voice/tts/voice_request`` и ожидание ``SpeechEvent voice_changed{requested, applied, provider}`` с тем же
-``request_id`` в ``turn_id``. Фраза «Говорю голосом X» / «Голос X недоступен, остаюсь на Y» - из ``phrases/ru.yaml``
-по исходу, а не слова LLM (ADR-0148). Нет события за ``WAIT_S`` - честное «не знаю, применился ли».
+``request_id`` в ``turn_id``. Нет события за ``WAIT_S`` - честное «не знаю, применился ли». Тул фразу не говорит: он
+отдаёт исход данными (:func:`outcome_data`), а фразу «Говорю голосом X» / «Голос X недоступен, остаюсь на Y» строит
+диалог по результату (``rob_box_dialog.knowledge.VOICE_DONE``, ADR-0148): одна фраза на ход, а не тул и код рядом.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .owner_event import OwnerEvents
 
@@ -19,15 +20,26 @@ EVENT_TOPIC = "/voice/speech/event"
 WAIT_S = 4.0
 
 try:
-    from rob_box_voice.tts_voice_registry import resolve_voice
+    from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, resolve_voice, robot_default_voice,
+                                                  voice_display_name)
 except ImportError:  # pragma: no cover - минимальные окружения без rob_box_voice
+    PROVIDER_LABELS: Dict[str, str] = {}
+
     def resolve_voice(provider: str, requested: Optional[str]) -> Tuple[str, bool]:
         return (requested or ""), False
+
+    def robot_default_voice() -> Tuple[str, str]:
+        return "", ""
+
+    def voice_display_name(provider: str, voice_id: str) -> str:
+        return voice_id
 
 
 @dataclass(frozen=True)
 class VoiceOutcome:
-    """Исход запроса: ``applied`` - голос применён как просили, ``fallback`` - применён другой, ``timeout`` - тишина."""
+    """Исход запроса: ``applied`` - голос применён как просили, ``fallback`` - применён другой, ``timeout`` - тишина.
+    Владельцу ничего не просили (данные тула для фразы, :func:`outcome_data`): ``already_default`` - голос и так
+    обычный, ``noop`` - провайдер и так тот, что просили."""
 
     status: str
     requested: str
@@ -80,14 +92,22 @@ def voice_requests(node: Any) -> VoiceRequests:
     return node.__dict__["_voice_requests"]
 
 
-def outcome_phrase(outcome: VoiceOutcome) -> str:
-    """Фраза исхода из ``phrases/ru.yaml`` (код, не LLM)."""
-    from rob_box_dialog import phrases  # noqa: PLC0415
+def outcome_data(outcome: VoiceOutcome) -> Dict[str, Any]:
+    """Данные исхода для фразы диалога (``knowledge.VOICE_DONE`` / ``VOICE_FAILED``): исход владельца и слоты фраз.
 
-    if outcome.status == "timeout":
-        return phrases.text("voice.timeout")
-    if outcome.status == "applied":
-        return phrases.text("voice.applied", voice=outcome.applied)
-    if not outcome.applied:
-        return phrases.text("voice.rejected", provider=outcome.provider or "?")
-    return phrases.text("voice.unavailable", requested=outcome.requested or outcome.applied, applied=outcome.applied)
+    ``status`` - ``applied`` / ``fallback`` / ``timeout`` (``already_default`` - голос и так обычный, владельцу ничего
+    не просили); ``voice_name`` / ``requested_name`` / ``provider_label`` - названия для озвучки из каталога голосов
+    (``tts_voice_registry.voice_display_name``: «Весельчак», а не ``English_Jovialman``; чужое имя - как сказали);
+    ``voice_default`` - применённый голос и есть обычный голос робота (нет применённого - ключа нет); у неудачи -
+    ``reason`` (диалог берёт её из данных результата, а не из текста ошибки)."""
+    data: Dict[str, Any] = {
+        "status": outcome.status, "voice_requested": outcome.requested, "voice_applied": outcome.applied,
+        "provider": outcome.provider, "voice_name": voice_display_name(outcome.provider, outcome.applied),
+        "requested_name": voice_display_name(outcome.provider, outcome.requested),
+        "provider_label": PROVIDER_LABELS.get(outcome.provider, outcome.provider),
+    }
+    if outcome.applied:
+        data["voice_default"] = (outcome.provider, outcome.applied) == robot_default_voice()
+    if outcome.status in ("fallback", "timeout"):
+        data["reason"] = outcome.reason or outcome.status
+    return data
