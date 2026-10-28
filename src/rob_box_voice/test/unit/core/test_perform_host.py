@@ -299,6 +299,50 @@ def test_edit_with_new_segments_and_backing_adds_the_beat_too(loop):
     assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
 
 
+def _over(loop: Any, playing: str, own: Dict[str, Any] = STARTED) -> tuple:
+    """Выступление без своего бита (``backing: none``); плеер сейчас играет ``playing`` (``""`` - тишина)."""
+    node, tools, events = _Node(), _Tools(own), []
+    host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
+                       clock=lambda: node.now_s, playing=lambda: playing)
+    host.start(Performance(kind="rap", segments=RAP.segments, backing="none"), "t1")
+    _settle(loop)
+    assert tools.calls == [] and host.block.backing.state == "none"
+    return host, tools, events
+
+
+def test_4029_tail_edit_of_verses_over_the_persons_music_does_not_order_a_beat(loop):
+    """Живой 28.10 01:19:53 (хвост #4029): рэп поверх трека человека (бита выступления нет), «и про комарика добавь!» -
+    модель вернула в правке куплетов ``backing: beat``, хост заказал бит, плеер ответил ``busy``: лишний вызов и
+    «бит не заиграл» в логе. Теперь правка куплетов подложку не просит: куплеты заменены, подложка прежняя (``none``)."""
+    host, tools, events = _over(loop, "Renardo club")
+    out = host.edit(Performance(kind="rap", segments=("А вот и комарик.", "Писклявый злодей."), backing="beat"))
+    _settle(loop)
+    assert out == {"status": "done"} and tools.calls == []
+    assert [e.segment_no for e in events if e.kind == "segment_replaced"] == [1, 2]
+    assert host.block.backing.state == "none" and not host.owns_backing
+    again = host.start(Performance(kind="rap", segments=("Ещё куплет.",), backing="beat"), "t2")  # то же новым перформом
+    _settle(loop)
+    assert again == {"status": "done"} and tools.calls == [] and host.block.backing.state == "none"
+
+
+def test_4029_tail_edit_of_verses_in_silence_still_orders_the_beat(loop):
+    """Тишина - прежнее поведение (A22 #3700): правка с куплетами и ``backing: beat`` заказывает бит."""
+    host, tools, _ = _over(loop, "")
+    out = host.edit(Performance(kind="rap", segments=("Бит пошёл.", "Комар в такт."), backing="beat"))
+    _settle(loop)
+    assert out == {"status": "done"} and [c.arguments["intent"] for c in tools.calls] == ["backing"]
+
+
+def test_4029_tail_the_beat_alone_stays_a_separate_request_over_the_persons_music(loop):
+    """«Добавь бит» без куплетов (#993) - отдельная просьба человека, не правка куплетов: идёт к плееру, как и было
+    (ответит ``busy`` - выступление прочтёт поверх чужого)."""
+    host, tools, events = _over(loop, "Renardo club", {"ok": False, "reason": "busy"})
+    out = host.edit(Performance(kind="rap", segments=(), backing="beat"))
+    _settle(loop)
+    assert out == {"status": "done", "backing": True} and [c.arguments["intent"] for c in tools.calls] == ["backing"]
+    assert [e for e in events if e.kind == "segment_replaced"] == []
+
+
 def test_context_while_performing_and_none_after(loop):
     host, node, _, _ = _host(loop, STARTED)
     assert host.context() is None and host.active_segment is None

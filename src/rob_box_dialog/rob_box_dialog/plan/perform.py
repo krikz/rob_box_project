@@ -123,6 +123,17 @@ def edit_range(lines: SegmentList, first: int) -> Tuple[str, int, int]:
     return "", max(0, fixed + 1 - first), min(max(first, fixed + 1), lines.top(("pending",) + FIXED) + 1)
 
 
+def edit_asks_backing(perf: Performance, foreign_playing: bool) -> bool:
+    """Просит ли правка идущего выступления подложку (``request_music(intent=backing)``): только когда названа (настроение
+    из ``kn.PERFORM_BACKING_MOODS``) и это не правка куплетов поверх чужой музыки. Живой 28.10 01:19:53: рэп поверх трека,
+    который поставил человек (подложки у выступления нет), «и про комарика добавь!» - модель вернула в правке куплетов
+    ``backing: beat``, хост заказал бит, плеер ответил ``busy`` - лишний вызов и «бит не заиграл» в логе. Играет чужое
+    (``foreign_playing``) - правка с куплетами подложку не заказывает, она остаётся прежней (``none``): бит поверх чужой
+    музыки правкой куплетов не спрашивается, это отдельная просьба («добавь бит» без куплетов, #993 - её решает человек и
+    ответ плеера, как и раньше)."""
+    return perf.backing in kn.PERFORM_BACKING_MOODS and not (perf.segments and foreign_playing)
+
+
 def context_block(block: "PerformBlock", now: float) -> Dict[str, Any]:
     """Блок контекста LLM (риск §16): спетое и звучащее — дословно, номер первого не начатого сегмента, сколько
     осталось звучать, подложка. По нему LLM правит «с того места» (``edit_pending``)."""
@@ -588,4 +599,4 @@ class PerformBlock:
 
 
 __all__ = ["AskReplace", "Cancel", "Effect", "LOG_MARK", "MusicSide", "PerformBlock", "Say", "SpeechSide",
-           "context_block", "edit_range", "presynth", "withdraw"]
+           "context_block", "edit_asks_backing", "edit_range", "presynth", "withdraw"]

@@ -10,7 +10,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.command import Expression, Performance
 from rob_box_dialog.plan.backing import MusicStop
-from rob_box_dialog.plan.perform import Cancel, PerformBlock, Say, context_block
+from rob_box_dialog.plan.perform import Cancel, PerformBlock, Say, context_block, edit_asks_backing
 from rob_box_dialog.plan.runner import LOG_MARK as LOG
 from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog.plan.segments import FIXED
@@ -607,3 +607,21 @@ def test_silence_after_the_question_is_no():
     first = sim.segments_heard()[0]
     assert first.start - t0 >= kn.PERFORM_ASK_WAIT_S - 1  # ждали окно ответа целиком
     assert [h.text for h in sim.segments_heard()] == list(SEGS)
+
+
+@pytest.mark.parametrize("backing, segments, foreign, asks", [
+    # живой 28.10 01:19:53: правка куплетов поверх чужой музыки, модель вернула backing=beat - подложку не просим
+    ("beat", ("А вот и комарик.",), True, False),
+    ("beat", ("А вот и комарик.", "Писклявый злодей."), True, False),
+    # тишина или свой бит: правка куплетов с названной подложкой просит её, как раньше (A22 #3700)
+    ("beat", ("Бит пошёл.",), False, True),
+    # «добавь бит» без куплетов - отдельная просьба, чужая музыка её не отменяет (ответит плеер)
+    ("beat", (), True, True),
+    ("beat", (), False, True),
+    # подложка не названа - не просим ни при каких условиях
+    ("none", ("А вот и комарик.",), True, False),
+    ("none", ("А вот и комарик.",), False, False),
+    ("none", (), False, False),
+])
+def test_4029_tail_edit_asks_for_a_backing_only_when_it_can_get_one(backing, segments, foreign, asks):
+    assert edit_asks_backing(rap(backing, segments), foreign) is asks
