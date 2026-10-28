@@ -27,7 +27,8 @@
   говорит по данным (#4050); ``speech`` рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) законен;
   ``passed`` — тихо;
 * форма команды хода (:func:`command_form`, #4021): ``passed`` есть в схеме только при подхвате бэклога (адресованную
-  реплику модель молчанием не закрывает — нарушение и повтор моста), голос реплики — только по просьбе о голосе;
+  реплику модель молчанием не закрывает — нарушение и повтор моста), голос реплики — только по просьбе о голосе,
+  подложка сказки, анекдота и стиха — только по просьбе о музыке в этой реплике (#4152, ``Form.backing``);
   путь пения (#4079) решает хост до модели (:func:`sing_route`: ``live:song`` — поёт сам, ``perform`` обязателен,
   генерация и трек вне среза; ``generate:…`` — ``generate_music`` обязателен, песня выступлением — нарушение);
 * голый неслышимый ответ (``play_animation`` без слов) на адресованную реплику, где анимацию не просили
@@ -103,8 +104,8 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls,
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
-from rob_box_dialog.tools_view import (available_tools, needs_words, robot_asked, show_asked, voice_asked,
-                                       voice_named)
+from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
+                                       voice_asked, voice_named)
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
@@ -350,10 +351,12 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
     ``(id, название, *алиасы)``, как у Tier-1; id, название и каждый алиас - отдельные имена: слово ищется целиком
     по каждому, а не по склейке); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
-    живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810)."""
+    живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810);
+    подложка сказки, анекдота и стиха (#4152) — только когда человек в этой реплике назвал музыку
+    (``tools_view.music_asked``); песня и рэп ставят её по смыслу (``knowledge.PERFORM_BACKING_BY_KIND``)."""
     names = tuple(name for entry in voices for name in entry if name)
     return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
-                sing_over=bool(sing) and snapshot.music_playing)
+                sing_over=bool(sing) and snapshot.music_playing, backing=music_asked(turn.text))
 
 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
@@ -677,8 +680,9 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
-    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over} "
-                     f"turn={turn.turn_id}")
+    kinds = "" if form.backing else " подложка=песня,рэп"  # сказка, анекдот, стих - без бита, музыку не просили (#4152)
+    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over}"
+                     f"{kinds} turn={turn.turn_id}")
     with turn_form(form):
         await engine._understand(turn, snap)
 

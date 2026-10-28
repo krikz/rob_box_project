@@ -177,13 +177,16 @@ class Form:
     от хоста, ``knowledge.SING_FORMS``): живое — только ``perform`` под синт-подложку, генерация и трек закрыты;
     генерация — ``generate_music``, петь выступлением нельзя. ``sing_over`` — музыка уже играет при живом пении («под
     этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
-    (``knowledge.SING_FORMS["live_over"]``). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1,
-    тесты)."""
+    (``knowledge.SING_FORMS["live_over"]``). ``backing`` — модели можно заказать подложку сказке, анекдоту и стиху
+    (#4152): только когда человек сам назвал музыку в этой реплике (``tools_view.music_asked``); иначе подложка у этих
+    видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была. По умолчанию всё
+    открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
     sing: str = ""
     sing_over: bool = False
+    backing: bool = True
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -564,7 +567,8 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _fit_sing_backing(_drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form), form)
+    cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
+    cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -700,6 +704,22 @@ def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
     if cmd.voice is None or form.voice:
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
+
+
+def _drop_default_backing(cmd: Command, form: Form) -> Command:
+    """Подложка сказке, анекдоту и стиху без просьбы о музыке (#4152, решение Шифу 28.10: музыку включают, когда нужна
+    музыка, - рэп, песня) - не выбор модели: у этих видов бита по умолчанию нет (``knowledge.PERFORM_BACKING_BY_KIND``),
+    поле ``backing`` становится ``none``, оно - в ``dropped`` (лог ``fields_dropped``). Человек назвал музыку в этой
+    реплике (форма хода ``Form.backing``) - подложка модели остаётся. ``none`` подложку не заказывает, поэтому играющая
+    музыка выступлению не мешает и им не трогается. Правка идущего выступления судится так же, вид - из её
+    ``perform.kind``. Значение вне перечня (``bad_enum``) и вид вне таблицы сюда не относятся - их судит
+    :func:`_check_perform`."""
+    perf = cmd.perform
+    if perf is None or form.backing or perf.backing not in kn.PERFORM_BACKING_MOODS:
+        return cmd
+    if kn.PERFORM_BACKING_BY_KIND.get(perf.kind, True):
+        return cmd
+    return replace(cmd, perform=replace(perf, backing="none"), dropped=cmd.dropped + ("perform.backing",))
 
 
 def _fit_sing_backing(cmd: Command, form: Form) -> Command:
