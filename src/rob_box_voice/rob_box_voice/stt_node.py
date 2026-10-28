@@ -52,9 +52,13 @@ try:
         STTAuthError,
         STTQuotaError,
         STTTimeoutError,
+        effective_provider,
+        http_call_limit_s,
+        hung_providers,
         is_short_phrase,
         log_attempts,
         select_recognition,
+        yandex_call_limit_s,
     )
 
     _STT_FALLBACK_AVAILABLE = True
@@ -68,6 +72,12 @@ except ImportError:  # pragma: no cover — модуль всегда есть �
     DEFAULT_MAX_TOTAL_BUDGET_S = 20.0
     ProviderDeadCache = None  # type: ignore[assignment]
     ProviderPolicy = None  # type: ignore[assignment]
+
+    def effective_provider(chain, dead_cache, guard):  # type: ignore[no-redef]
+        return chain[0] if chain else None
+
+    def hung_providers(chain, guard):  # type: ignore[no-redef]
+        return {}
 
     class STTTimeoutError(TimeoutError):  # type: ignore[no-redef]
         pass
@@ -150,6 +160,26 @@ def _map_grpc_error(exc: "grpc.RpcError", timeout_s: float) -> BaseException:
     if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
         return STTQuotaError(f"Yandex STT quota exhausted: {code} {exc.details()}")
     return exc
+
+
+def _minimax_http_timeout():
+    """HTTP-таймауты вызова MiniMax STT по стадиям - один источник и для клиента, и для предела сторожа.
+
+    ``minimax_stt_timeout_s`` - мягкий срок ответа (позже - ``timeout``, текст отброшен); сами вызовы ограничены этими
+    стадиями (pool + connect + write + read), поэтому предел сторожа считается от них (``STTNode._provider_policies``,
+    ревью PR #4140): живой MiniMax отвечает ошибкой/таймаутом за 7-20 с и не «завис».
+    """
+    from rob_box_voice.stt_providers.minimax_provider import DEFAULT_TIMEOUT  # noqa: PLC0415 - httpx лениво
+
+    return DEFAULT_TIMEOUT
+
+
+def _minimax_call_limit_s(node) -> Optional[float]:
+    """Худший случай вызова MiniMax STT по его HTTP-стадиям; ``None`` - провайдер не настроен (httpx не тянем)."""
+    if not getattr(node, "minimax_stt_enabled", False) or not getattr(node, "minimax_stt_api_key", ""):
+        return None
+    return http_call_limit_s(_minimax_http_timeout())
+
 
 # Issue #2158, ADR-0076 — сбор STT-семплов с wake-сегментов шлема для
 # эмпирического пополнения wake-листа ТАРС. Kill-switch через переменную
@@ -1199,6 +1229,7 @@ class STTNode(Node):
                     model=self.minimax_stt_model,
                     language=self.minimax_stt_language or None,
                     sample_rate=self.sample_rate,
+                    timeout=_minimax_http_timeout(),
                 )
                 self.get_logger().info(
                     f"✅ MiniMax STT инициализирован "
@@ -1299,15 +1330,20 @@ class STTNode(Node):
         if ProviderPolicy is None:  # pragma: no cover — без stt_fallback
             return {}
         return {
+            # Предел сторожа попытки (#4135, ревью PR #4140) - худший случай вызова по СВОИМ таймаутам провайдера
+            # (``call_limit_s``) + запас: MiniMax ограничен HTTP-стадиями, Yandex делает две фазы (REAL_TIME и
+            # FULL_DATA) по дедлайну ``yandex_timeout_s`` каждая, Vosk - один проход в ``timeout_s``.
             "minimax": ProviderPolicy(
                 timeout_s=self.minimax_stt_timeout_s,
                 max_retries=self.minimax_stt_max_retries,
                 retry_backoff_s=self.retry_backoff_s,
+                call_limit_s=_minimax_call_limit_s(self),
             ),
             "yandex": ProviderPolicy(
                 timeout_s=self.yandex_timeout_s,
                 max_retries=self.yandex_max_retries,
                 retry_backoff_s=self.retry_backoff_s,
+                call_limit_s=yandex_call_limit_s(self.yandex_timeout_s),
             ),
             # Vosk: повтор мусора даст тот же мусор. Таймаут берём
             # с запасом — на Pi холодный прогон бывает ~2-4с.
@@ -1363,13 +1399,11 @@ class STTNode(Node):
         chain = getattr(self, "provider_chain", None) or list(
             DEFAULT_STT_PROVIDER_CHAIN
         )
-        cache = getattr(self, "_provider_dead_cache", None)
-        if cache is None:
-            return chain[0] if chain else None
-        for name in chain:
-            if not cache.is_dead(name):
-                return name
-        return chain[-1] if chain else None
+        # Провайдер, чей брошенный вызов ещё висит, цепочка не зовёт (``_skip_hung``) - слушает не он, даже когда
+        # TTL его отметки в кэше «мёртвых» истёк (ревью PR #4140, #4135).
+        return effective_provider(
+            chain, getattr(self, "_provider_dead_cache", None), getattr(self, "_hang_guard", None)
+        )
 
     def _load_persisted_provider_state(self) -> None:
         """Восстановить кэш «мёртвых» из файла (аналог tts_node, issue #1229).
@@ -1438,9 +1472,10 @@ class STTNode(Node):
             for name in self.provider_chain
             if cache is not None and cache.is_dead(name)
         }
+        hung = hung_providers(self.provider_chain, getattr(self, "_hang_guard", None))
         self.get_logger().info(
             f"🎧 STT provider → '{effective}' "
-            f"(chain={self.provider_chain}, dead={dead}, reason={reason}, "
+            f"(chain={self.provider_chain}, dead={dead}, hung={hung}, reason={reason}, "
             f"last_attempt={attempts[-1].provider if attempts else None})"
         )
         self._persist_provider_state(

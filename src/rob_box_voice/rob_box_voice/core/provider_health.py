@@ -12,6 +12,7 @@ from typing import Any, List, Tuple
 
 from rob_box_dialog.degrade import ProviderState
 from rob_box_llm.errors import TTSAuthError, TTSConnectionError, TTSRateLimitError, TTSTimeoutError
+from rob_box_voice.stt_fallback import provider_health_class
 
 
 def tts_failure_class(error: BaseException, permanent: bool) -> str:
@@ -55,8 +56,16 @@ def _shared_class(node: Any, name: str) -> str:
 
 
 def stt_provider_states(node: Any) -> List[ProviderState]:
-    """Все провайдеры цепочки STT по кэшу «мёртвых» (класс - ``ProviderDeadCache.health_class``)."""
+    """Все провайдеры цепочки STT: класс - ``stt_fallback.provider_health_class``.
+
+    Кэш «мёртвых» (``ProviderDeadCache.health_class``) плюс сторож зависаний узла (``_hang_guard``): провайдер,
+    чей брошенный вызов ещё не вернулся, - не ``ok``, даже когда TTL его отметки истёк (ревью PR #4140, #4135).
+    """
     cache = getattr(node, "_provider_dead_cache", None)
     if cache is None:
         return []
-    return [ProviderState(name, "stt", cache.health_class(name)) for name in getattr(node, "provider_chain", ())]
+    guard = getattr(node, "_hang_guard", None)
+    return [
+        ProviderState(name, "stt", provider_health_class(name, cache, guard))
+        for name in getattr(node, "provider_chain", ())
+    ]
