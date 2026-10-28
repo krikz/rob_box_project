@@ -11,7 +11,8 @@ tool-результатом, один раз на ответ (мост, реше
 после него длинно — речь ужимает код (:func:`fit_speech`).
 
 Косметику код выбрасывает, а не отвергает команду целиком (#4138): ``knowledge.DROPPABLE`` - единственная таблица того,
-что можно выбросить (earcon не из перечня, лишний аргумент ``play_animation``); выброшенное - в ``Command.dropped``
+что можно выбросить (earcon не из перечня, лишний аргумент ``play_animation``, #4174: необязательный аргумент-подсказка
+тула с значением не из перечня - ``auto`` или выброс, ``DROPPABLE.soft_args``); выброшенное - в ``Command.dropped``
 (лог ``fields_dropped``). Нет обязательного аргумента или тула - команда невалидна, как раньше.
 
 :class:`Form` — форма команды ХОДА (#4021): какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
@@ -562,12 +563,13 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     отбрасываются (``dropped``), а не валят команду (§5.5.9, #4138); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
     тула (``play_animation.face.emotion``, #3974) и лишние аргументы верхнего уровня тулов таблицы
     ``knowledge.DROPPABLE`` (``play_animation.animated``, #4138): без отказа команды, с записью в ``dropped``.
+    Необязательный аргумент-подсказка не из перечня (``request_music.genre``, #4174) - ``auto`` или выброс, тоже с записью.
     Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
+    cmd = _drop_closed_passed(_drop_unasked_voice(_fit_soft_args(_drop_nested_extras(cmd)), form), form)
     # подложка: сначала вид без просьбы о музыке теряет её (#4152), потом путь пения подгоняет остальное (#4079);
     # число лиц по сегментам (#4174) правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
@@ -647,6 +649,41 @@ def _drop_nested_extras(cmd: Command) -> Command:
     if not notes:
         return cmd
     return replace(cmd, actions=tuple(actions), dropped=cmd.dropped + tuple(notes))
+
+
+def _soften_args(call: ToolCall, index: int) -> Tuple[ToolCall, List[str]]:
+    """Вызов, у которого мягкие аргументы (``knowledge.DROPPABLE.soft_args``) не из перечня схемы заменены на ``auto``
+    (если оно в перечне) или выброшены, и записи об этом (``actions[0].request_music.genre['acoustic'->auto]``,
+    ``...mood['x'->]``). Обязательный аргумент схемы и аргумент без перечня не трогаются."""
+    names = kn.DROPPABLE.soft_args.get(call.tool, ())
+    try:
+        props = get_tool(call.tool).parameters
+    except KeyError:  # тула нет в каталоге - скажет _check_actions
+        return call, []
+    args, notes = dict(call.args), []
+    for name in names:
+        allowed = props.get("properties", {}).get(name, {}).get("enum")
+        if not allowed or name not in args or args[name] in allowed or name in props.get("required", ()):
+            continue
+        fallback = kn.SOFT_ARG_NEUTRAL if kn.SOFT_ARG_NEUTRAL in allowed else None
+        notes.append(f"actions[{index}].{call.tool}.{name}[{args[name]!r}->{fallback or ''}]")
+        if fallback is None:
+            del args[name]
+        else:
+            args[name] = fallback
+    return (replace(call, args=MappingProxyType(args)) if notes else call), notes
+
+
+def _fit_soft_args(cmd: Command) -> Command:
+    """Необязательные аргументы-подсказки тулов с неверным значением перечня (``request_music.genre='acoustic'``, n310
+    28.10 #4174: «Не понял, как это сделать» на просьбу о спокойной музыке) не валят команду: ``auto`` или выброс, запись
+    в ``dropped`` (лог ``fields_dropped``) - :func:`_soften_args`. Смысл действия (обязательные поля, ``action``,
+    ``track_id``, ``edit_music.change`` и пр.) по-прежнему проверяет схема."""
+    pairs = [_soften_args(call, i) for i, call in enumerate(cmd.actions)]
+    notes = [note for _, ns in pairs for note in ns]
+    if not notes:
+        return cmd
+    return replace(cmd, actions=tuple(call for call, _ in pairs), dropped=cmd.dropped + tuple(notes))
 
 
 def loud_actions(cmd: Command) -> Tuple[ToolCall, ...]:

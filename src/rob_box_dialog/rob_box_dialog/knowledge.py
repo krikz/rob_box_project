@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import copy
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -2537,17 +2537,33 @@ class Droppable:
     в схеме тула (``play_animation.animated``): тул -> аргументы, несущие смысл вызова; хоть один из них должен быть,
     иначе без лишнего поля вызов теряет смысл и отвергается, как раньше (``bad_args``).
 
+    ``soft_args`` - тулы, у которых НЕОБЯЗАТЕЛЬНЫЙ аргумент с перечнем в схеме - подсказка выбора, а не смысл действия
+    (#4174, n310 28.10: ``request_music.genre='acoustic'`` вне перечня - «Не понял», хотя просили спокойное): тул ->
+    аргументы. Значение вне перечня заменяется на ``auto`` (если оно есть в перечне схемы: «решает код»), иначе аргумент
+    выбрасывается (тул берёт своё значение по умолчанию); поправка - в ``Command.dropped``
+    (``request_music.genre['acoustic'->auto]``), действие исполняется. Обязательные аргументы схемы сюда не попадают
+    (``command.validate`` их не трогает, даже если они в таблице).
+
     Чего в таблице нет, не выбрасывается: ``emotion`` и ``gesture`` могут быть самой просьбой («покажи, как тебе
     грустно», «подмигни»), а у ``set_volume``, ``request_music`` и прочих лишний аргумент (``channel``, ``genre``)
-    молча менял бы действие. Лишние поля ВЛОЖЕННЫХ объектов аргументов (``play_animation.face.emotion``, #3974) код
-    выбрасывает у любого тула. Нет обязательного аргумента, неизвестный тул - отказ всегда."""
+    молча менял бы действие. Так же строги аргументы, несущие смысл действия, даже необязательные: ``edit_music.change``
+    (что именно править), ``music_library.verdict`` (нравится или нет), ``stop_music.boundary``, ``play_animation.animation``.
+    Лишние поля ВЛОЖЕННЫХ объектов аргументов (``play_animation.face.emotion``, #3974) код выбрасывает у любого тула.
+    Нет обязательного аргумента, неизвестный тул - отказ всегда."""
 
     expression: Tuple[str, ...]
     tool_args: Mapping[str, Tuple[str, ...]]
+    soft_args: Mapping[str, Tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}))
 
 
 DROPPABLE = Droppable(expression=("earcon",),
-                      tool_args=MappingProxyType({"play_animation": ("animation", "face")}))
+                      tool_args=MappingProxyType({"play_animation": ("animation", "face")}),
+                      soft_args=MappingProxyType({"request_music": ("mood", "genre", "engine"),
+                                                  "dj_set": ("style",),
+                                                  "generate_music": ("style",)}))
+#: Значение аргумента, которым заменяется непринятое значение мягкого аргумента (``Droppable.soft_args``), если оно есть
+#: в перечне схемы тула: «auto» - решает код.
+SOFT_ARG_NEUTRAL = "auto"
 #: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
 #: structured_output/JSON-режима и для JSON в тексте.
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")
