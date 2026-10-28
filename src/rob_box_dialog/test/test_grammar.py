@@ -377,6 +377,40 @@ def test_voice_by_registry(text, voices, voice):
     assert command == Tier1Command("set_voice", {"voice": voice}), text
 
 
+# Алиасы голоса (#4114): ``(id, display_name, *алиасы)``. «гёрл» делит три первые буквы с «героиня» (BrightHeroine)
+ALIASED = [
+    *VOICES,
+    ("English_Jovialman", "Весельчак", "Джовиалмен", "Джовиалмэн"),
+    ("English_Whispering_girl", "Шёпот", "Виспериг гёрл"),
+]
+
+ALIAS_VOICE = [
+    ("говори голосом джовиалмен", "English_Jovialman"),
+    ("Робот, говори голосом Джовиалмэн", "English_Jovialman"),
+    ("включи голос Весельчак", "English_Jovialman"),
+    ("включи голос Jovialman", "English_Jovialman"),
+    ("включи голос виспериг гёрл", "English_Whispering_girl"),
+    ("включи голос Шёпот", "English_Whispering_girl"),
+    ("весельчак джовиалмен голос", "English_Jovialman"),  # название и алиас вместе - один голос
+    # слово алиаса не уводит от голоса, к которому слово вело раньше (ревью PR #4129: «гёрл» ~ «героиня» по трём буквам)
+    ("включи голос героиня", "Russian_BrightHeroine"),
+    ("Робот, говори голосом героиня", "Russian_BrightHeroine"),
+    ("поставь голос яркой героини", "Russian_BrightHeroine"),
+]
+
+
+@pytest.mark.parametrize("text, voice", ALIAS_VOICE)
+def test_voice_alias_is_a_name_but_does_not_take_a_name_word_of_another_voice(text, voice):
+    assert match(text, IDLE, ALIASED) == Tier1Command("set_voice", {"voice": voice}), text
+
+
+def test_two_voices_by_the_names_of_the_first_round_stay_ambiguous_aliases_do_not_choose():
+    """Первый круг (имена как до алиасов) нашёл двоих - второй круг не читается: алиасы их только добавляют, выбрать
+    одного из двоих не могут."""
+    pairs = [("A_One", "Весёлый парень", "Хэппи"), ("B_Two", "Весёлая девушка")]
+    assert match("включи голос весёлый", IDLE, pairs) is None
+
+
 NOT_VOICE = [
     ("какой у тебя голос", VOICES),
     ("смени голос на какой-нибудь весёлый", VOICES),

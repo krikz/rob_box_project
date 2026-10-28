@@ -243,12 +243,22 @@ def voices_for(provider: str) -> list[str]:
     return list(PROVIDER_VOICES.get(provider, []))
 
 
-def named_voices_for(provider: str) -> list[tuple[str, str]]:
-    """``(voice_id, display_name)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос в реестре
-    (``rob_box_dialog.grammar``, #4086). Имя - русское ``display_name`` из ``VOICE_METADATA``, нет записи - сам id.
-    Одно знание для v1 (``tier1_host``) и v2 (``dialog_node``); провайдер неизвестен - пустой список."""
-    return [(vid, (VOICE_METADATA.get(f"{provider}:{vid}") or {}).get("display_name", vid))
-            for vid in voices_for(provider)]
+def named_voices_for(provider: str) -> list[tuple[str, ...]]:
+    """``(voice_id, display_name, *алиасы)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос
+    в реестре (``rob_box_dialog.grammar``, #4086). ``display_name`` - русское название из ``VOICE_METADATA`` (нет записи
+    - сам id); алиасы - записи ``VOICE_ALIASES`` («Джовиалмен», «Джовиалмэн»): кириллическая запись латинского имени,
+    как её слышит STT, тоже имя голоса (ревью PR #4114: «говори голосом джовиалмен»). Название и каждый алиас -
+    отдельные элементы кортежа, не склейка: ``rob_box_dialog.turn.command_form`` ищет в реплике каждое имя целым
+    словом, а Tier-1 читает алиасы вторым кругом, после названия и хвоста id (``grammar._voice``). Хвост id
+    («Jovialman») грамматика берёт сама. Одно знание об именах - ``VOICE_ALIASES`` (его же читает
+    ``voice_id_by_name``); для v1 (``tier1_host``) и v2 (``dialog_node``) список один; провайдер неизвестен - пустой
+    список."""
+    out: list[tuple[str, ...]] = []
+    for vid in voices_for(provider):
+        key = f"{provider}:{vid}"
+        shown = (VOICE_METADATA.get(key) or {}).get("display_name", vid)
+        out.append((vid, shown, *VOICE_ALIASES.get(key, ())))
+    return out
 
 
 def known_provider(name: object) -> str:
@@ -264,28 +274,21 @@ def known_provider(name: object) -> str:
 #: Язык голосов, которыми звучат роли выступления: реплики русские, чужой язык у голоса - чужой акцент (#3998).
 ROLE_VOICE_LANGUAGE = "ru"
 
-#: Голоса каста марафона (#3992; в каталоге робота с #4086): ими харнесс e2e озвучивает людей (``map_tts_voice`` в
-#: ``.github/workflows/scripts/e2e_voice_lib.sh``). Робот говорит ими только по просьбе (``set_voice``), а роли
-#: выступления ими не звучат (#4084): герой сказки голосом Саши — это «Саша» для опознания по голосу. Ключ - как у
-#: ``VOICE_METADATA``. Сверка с харнессом - ``test_issue_4084_role_voices.py``.
-CAST_VOICES: frozenset[str] = frozenset({
-    "minimax:English_Jovialman", "minimax:English_WiseScholar", "minimax:Chinese (Mandarin)_Gentle_Senior",
-    "minimax:English_Whispering_girl", "minimax:Portuguese_StrictBoss",
-})
-
 
 def role_voices_for(provider: str, narrator: str = "") -> list[str]:
     """Голоса для РОЛЕЙ выступления (сказка, анекдот, басня): русские голоса каталога звучащего провайдера, кроме
-    голоса рассказчика и голосов каста марафона (``CAST_VOICES``, #4084).
+    голоса рассказчика.
 
     Язык - ``VOICE_METADATA.language``: legacy-китайские ``male-qn-qingse``/``female-shaonv`` MiniMax и
     английский/немецкий ``john``/``lea`` Yandex в роли не попадают (#3998: сказка звучала китайским голосом на русском
-    тексте). ``narrator`` - текущий голос робота, им звучит рассказчик: роль не должна звучать так же. Порядок -
-    каталога: роли голос даёт код (``rob_box_dialog.cast``), первый свободный нужного пола. ``voices_for`` не
-    меняется: ``set_voice`` и обзоры голосов видят весь каталог.
+    тексте). Тем же фильтром в роли не идут голоса каста марафона (``English_Jovialman`` и др., #3992, #4086): ими
+    харнесс e2e озвучивает людей, их язык в каталоге нативный (en/zh/pt), и герой сказки голосом Саши был бы «Сашей» для
+    опознания по голосу (#4084). Отдельного списка каста нет - один источник, язык голоса; что каждый голос харнесса
+    нерусский, держит ``test_issue_4084_role_voices.py``. ``narrator`` - текущий голос робота, им звучит рассказчик:
+    роль не должна звучать так же. Порядок - каталога: роли голос даёт код (``rob_box_dialog.cast``), первый свободный
+    нужного пола. ``voices_for`` не меняется: ``set_voice`` и обзоры голосов видят весь каталог.
     """
-    return [v for v in voices_for(provider)
-            if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator and f"{provider}:{v}" not in CAST_VOICES]
+    return [v for v in voices_for(provider) if language_of(provider, v) == ROLE_VOICE_LANGUAGE and v != narrator]
 
 
 def gender_of(provider: str, voice_id: str) -> str:

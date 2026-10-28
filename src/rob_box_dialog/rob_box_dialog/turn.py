@@ -88,7 +88,7 @@ from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import face_label, show_seconds, shown_scene, shows
-from rob_box_dialog.grammar import Tier1Command, match
+from rob_box_dialog.grammar import Tier1Command, Voices, match
 from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
@@ -249,7 +249,7 @@ def log_stt_fixes(log: Any, addressed: Addressed, turn: "_Turn") -> None:
         log.info(f"{HEARD_MARK} {'; '.join(addressed.stt_fixes)} turn={turn.turn_id}")
 
 
-def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Optional[Tier1Command]:
+def tier1_for(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional[Tier1Command]:
     """Команда Tier-1 реплики, если она доступна агенту сессии (``AgentSpec.grammar``): «замолчи» в чате — не
     тишина Личности (решение О2), а слова для LLM телеграм-агента."""
     command = match(text, snapshot, voices)
@@ -257,7 +257,7 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 
 def tier1_of(text: str, after_wake: str, snapshot: SessionSnapshot,
-             voices: Sequence[Tuple[str, str]] = ()) -> Tuple[Optional[Tier1Command], str]:
+             voices: Voices = ()) -> Tuple[Optional[Tier1Command], str]:
     """Tier-1 хода и текст, по которому он сработал (его же читает политика перебивания ``interrupt_for``).
 
     Первым — фраза целиком (``text``): команда до вейка остаётся рефлексом («Стоп, Робот, пожалуйста» — ``stop_all``;
@@ -333,14 +333,14 @@ def silence_insisted(result: Result) -> Result:
     return result
 
 
-def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = (),
-                 sing: str = "") -> Form:
+def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), sing: str = "") -> Form:
     """Форма команды хода (#4021, ADR-0148 п.2): ``passed`` — только при подхвате бэклога (адресованную реплику
     молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
-    пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
+    ``(id, название, *алиасы)``, как у Tier-1; id, название и каждый алиас - отдельные имена: слово ищется целиком
+    по каждому, а не по склейке); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
     живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810)."""
-    names = tuple(name for pair in voices for name in pair if name)
+    names = tuple(name for entry in voices for name in entry if name)
     return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
                 sing_over=bool(sing) and snapshot.music_playing)
 
@@ -500,10 +500,26 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
         return None
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
     kept, fresh = _scenes_of(earlier), [s for s in shown if s is not None and s is not expression]
-    if kept and fresh and fresh[0] == kept[-1]:  # та же сцена на следующей итерации - дважды не показываем
-        fresh = fresh[1:]
-    scenes = kept + fresh
+    scenes = kept + _without_repeat(kept, fresh)
     return _in_order(scenes) if scenes else held_expression(expression, text)
+
+
+def _scene_key(scene: Expression) -> Tuple[Any, ...]:
+    """Сцена как значение: поля команды ``Expression`` без очереди ``then`` и без вида (``Shown`` или нет)."""
+    return tuple(getattr(scene, f.name) for f in fields(Expression))
+
+
+def _without_repeat(kept: Sequence[Expression], fresh: Sequence[Expression]) -> List[Expression]:
+    """Сцены этой итерации без повтора того, что уже стоит на итоге: самое длинное начало ``fresh``, совпадающее с хвостом
+    ``kept``, отбрасывается. Модель, которая зовёт одно и то же на каждой итерации (``[play_animation sad, list]`` до
+    потолка итераций, #4065), и одну сцену, и список из двух-трёх сцен, не множит показ (ревью PR #4118: сравнивалась
+    только ``fresh[0]`` с ``kept[-1]``, и список ``[victory, sad]`` встал бы второй раз целиком). Сцены в одной команде
+    («покажи победу два раза») не схлопываются: сравниваются итерации, а не соседи внутри ``fresh``."""
+    have, new = [_scene_key(s) for s in kept], [_scene_key(s) for s in fresh]
+    for size in range(min(len(have), len(new)), 0, -1):
+        if have[-size:] == new[:size]:
+            return list(fresh[size:])
+    return list(fresh)
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -1106,7 +1122,7 @@ class TurnEngine:
 
     def __init__(self, session: Session, ports: Ports, *, system_prompt: str = "",
                  sections: Optional[Callable[[SessionSnapshot, str], Mapping[str, Any]]] = None,
-                 voices: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None, turn_log: Optional[TurnLog] = None,
+                 voices: Optional[Callable[[], Voices]] = None, turn_log: Optional[TurnLog] = None,
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
                  log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None,

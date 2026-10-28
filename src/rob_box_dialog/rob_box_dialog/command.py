@@ -826,7 +826,9 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     _check_segments(perf, busy)
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
-    for name in ("expression_per_segment", "voice_per_segment", "role_per_segment"):
+    # поля, которые называет модель, - первыми: голоса сегментов решает код из role_per_segment (_voice_roles), и при
+    # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит (#4112)
+    for name in ("expression_per_segment", "role_per_segment", "voice_per_segment"):
         per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
@@ -836,16 +838,17 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
 
 def _check_roles(perf: Performance, busy: Busy) -> None:
     """Роли выступления (#4084, :func:`.cast.problem`): у сказки ``cast`` обязателен (#3959: без ролей она звучала одним
-    голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами не больше,
-    чем голосов ролей. Уже решённая команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не
-    сказка без ролей."""
+    голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами без голоса не
+    больше, чем свободных голосов ролей (голоса героев идущего выступления, ``busy.cast``, заняты). Уже решённая
+    команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не сказка без ролей."""
     for i, name in enumerate((*(r.name for r in perf.cast or ()), *(perf.role_per_segment or ()))):
         _check_speech(name, kn.ROLE_NAME_MAX_CHARS, f"perform.role[{i}]")
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
     if not perf.segments or (perf.voice_per_segment is not None and not busy.voices):
         return
-    found = perform_cast.problem(perf.kind, len(perf.segments), perf.cast, perf.role_per_segment, len(busy.voices))
+    found = perform_cast.problem(perf.kind, len(perf.segments), perf.cast, perf.role_per_segment, busy.role_pool(),
+                                 dict(busy.cast))
     if found is not None:
         raise _Bad(*found)
 
@@ -940,13 +943,14 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "unknown_tool": "такого тула нет",
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
-                    "списки *_per_segment — по числу сегментов",
+                    "списки expression_per_segment и role_per_segment — по числу сегментов",
     perform_cast.TALE_WITHOUT_CAST: "сказка: perform.cast обязателен — герои с репликами (name и gender; героев нет — "
                                     "[]) и role_per_segment — чья реплика в каждом сегменте (\"\" — рассказчик); "
                                     "сегмент = реплика одного говорящего, повествование и каждая реплика героя — "
                                     "отдельные сегменты; голоса героям даст код",
     perform_cast.BAD_CAST: "роли выступления: в role_per_segment — только name героя из cast или \"\" (рассказчик), по "
-                           "одной роли на сегмент, по числу сегментов; героев с репликами не больше, чем голосов",
+                           "одной роли на сегмент, по числу сегментов; героев с репликами не больше, чем свободных "
+                           "голосов (голоса героев идущего выступления заняты)",
     "too_long": "слишком длинно",
     "control_chars": "управляющие символы в тексте",
     "passed_with_content": "passed — только без речи и действий",

@@ -151,6 +151,28 @@ def test_assign_prefers_the_role_gender_then_neutral_then_any_and_never_repeats(
     assert cs.assign(cast, ["a", "b", "c", "d"], pool) == {"a": "f1", "b": "n1", "c": "m1", "d": ""}
 
 
+def test_free_voices_are_the_catalogue_without_the_voices_of_the_running_heroes():
+    pool = (("m1", "male"), ("n1", "neutral"), ("f1", "female"), ("f2", "female"))
+    assert cs.free_voices(pool) == ["m1", "n1", "f1", "f2"]
+    assert cs.free_voices(pool, {"ёж": "m1", "лиса": "f1"}) == ["n1", "f2"]
+    assert cs.free_voices(pool, {"ёж": "gone-from-catalogue"}) == ["m1", "n1", "f1", "f2"]
+
+
+def test_problem_counts_only_heroes_without_a_voice_against_the_free_voices():
+    """Сверка голосов (ревью PR #4112): герой идущего выступления (``fixed``) нового голоса не просит, а его голос
+    из каталога вычтен; каталог пуст - не сверяется."""
+    pool = (("m1", "male"), ("f1", "female"), ("f2", "female"))
+    cast = (cs.Role("ёж"), cs.Role("лиса"), cs.Role("волк"), cs.Role("сова"))
+    roles = ["ёж", "лиса", "волк", "сова"]
+    held = {cs.role_key("ёж"): "m1"}  # Busy.cast - по ключу роли (без регистра, ё = е)
+    assert cs.problem("tale", 3, cast, roles[:3], pool) is None, "трём героям - три голоса"
+    assert cs.problem("tale", 4, cast, roles, pool)[:2] == (cs.BAD_CAST, "героев с репликами 4, свободных голосов для них 3")
+    assert cs.problem("tale", 3, cast, roles[:3], pool, held) is None, "ёж держит свой голос, лиса и волк - два свободных"
+    assert cs.problem("tale", 4, cast, roles, pool, held)[:2] == (
+        cs.BAD_CAST, "героев с репликами 3, свободных голосов для них 2 (остальные заняты героями идущего выступления)")
+    assert cs.problem("tale", 4, cast, roles, (), held) is None, "каталог неизвестен - не сверяется"
+
+
 def test_segment_voices_is_none_without_heroes_and_for_songs():
     cast = (cs.Role("лиса", "female"),)
     assert cs.segment_voices("tale", cast, ["", ""], POOL) is None

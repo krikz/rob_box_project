@@ -205,6 +205,34 @@ def test_n109_voice_is_open_only_when_the_voice_is_asked_in_this_reply():
     assert plain.forms == [ADDRESSED]
 
 
+JOVIALMAN = ("English_Jovialman", "Весельчак", "Джовиалмен", "Джовиалмэн")  # (id, display_name, *алиасы) реестра
+
+
+@pytest.mark.parametrize("text", [
+    "Робот, скажи как Весельчак",  # русское название
+    "Робот, скажи как джовиалмен",  # алиас
+    "Робот, скажи как Джовиалмэн",  # второй алиас
+    "Робот, скажи как English_Jovialman",  # id голоса
+])
+def test_command_form_sees_the_display_name_and_every_alias_of_a_voice_separately_4114(text):
+    """Ревью PR #4129: имена голоса шли склейкой «Весельчак Джовиалмен Джовиалмэн», а ``voice_asked`` (``has_form``
+    ищет слово ровно одной формы) не находил ни название, ни алиас: форма хода закрывала ``voice``, и модель не могла
+    озвучить реплику названным голосом."""
+    from rob_box_dialog.turn import _Turn  # noqa: PLC0415 — внутренняя запись хода
+
+    snap = Session("personality").snapshot
+    registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
+    assert command_form(_Turn("t1", 0, text, VOICE, deadline=None), snap, registry) == Form(passed=False, voice=True)
+
+
+def test_command_form_keeps_the_voice_closed_when_no_name_of_the_registry_is_said():
+    from rob_box_dialog.turn import _Turn  # noqa: PLC0415 — внутренняя запись хода
+
+    snap = Session("personality").snapshot
+    registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
+    assert command_form(_Turn("t1", 0, "Робот, скажи как диктор", VOICE, deadline=None), snap, registry) == ADDRESSED
+
+
 def test_form_of_a_turn_is_a_pure_function_of_the_turn():
     from rob_box_dialog.turn import _Turn  # noqa: PLC0415 — внутренняя запись хода
 
