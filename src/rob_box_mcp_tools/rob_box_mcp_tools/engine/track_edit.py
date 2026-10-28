@@ -223,8 +223,10 @@ class TrackEditor:
             "kept": list(plan.kept),
             "backing": target.backing,
             "message": edit_text(plan),
-            # бит выступления поменялся на такте, и сказать больше нечего: исход слышен сам
-            "heard": target.backing and bool(plan.applied) and not (plan.limited or plan.refused),
+            # правка встала на такте целиком (без предела и отказа), и сказать больше нечего: исход слышен сам - бит
+            # выступления это или трек, который человек поставил, а рэп читают поверх. Молчит ли фраза, решает диалог
+            # по ходу выступления (``knowledge.QUIET_IN_PERFORMANCE_KEYS``); вне выступления она говорится
+            "heard": bool(plan.applied) and not (plan.limited or plan.refused),
         }
         if target.kind == SYNTH:
             data["bpm"] = int(plan.bpm)
