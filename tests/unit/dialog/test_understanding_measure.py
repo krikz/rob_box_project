@@ -264,6 +264,41 @@ def test_no_api_key_ever_reaches_the_report(corpus, monkeypatch, tmp_path):
     assert "secret-should-not-leak" not in blob
 
 
+# ── Правило решения: рост медианы хода (X Шифу 28.10) ─────────────────────────────────────────────────────────────
+
+
+def variant_metrics(median_ms, share=0.8, danger=0):
+    return {"metrics": {"pass": {"share": share}, "danger": {"total": danger}, "latency": {"median_ms": median_ms}}}
+
+
+def test_latency_growth_limit_defaults_to_three_seconds_by_shifu():
+    assert um.MAX_LATENCY_GROWTH_S == 3.0 and um.build_parser().parse_args([]).max_latency_growth_s == 3.0
+    assert um.build_parser().parse_args(["--max-latency-growth-s", "1.5"]).max_latency_growth_s == 1.5
+
+
+@pytest.mark.parametrize("a_ms,b_ms,limit_s,ok", [
+    (1851, 1851 + 3000, 3.0, True),    # ровно X - в допуске
+    (1851, 1851 + 3001, 3.0, False),   # на миллисекунду больше - нет
+    (2000, 1500, 3.0, True),           # B быстрее A
+    (1000, 2500, 1.0, False),          # другой X из флага
+    (None, 2500, 3.0, None),           # медианы A нет - не измерено, а не «0 мс»
+])
+def test_decision_rule_checks_median_latency_growth_against_x(a_ms, b_ms, limit_s, ok):
+    rule = um.decision_rule({"A": variant_metrics(a_ms), "B": variant_metrics(b_ms)}, limit_s)["B"]
+    assert rule["median_latency_ok"] is ok and rule["median_latency_limit_s"] == limit_s
+    assert rule["median_latency_growth_ms"] == (None if a_ms is None else b_ms - a_ms)
+
+
+def test_report_md_prints_x_and_the_latency_verdict(corpus):
+    results = run_fake(corpus, ["A", "B"], 1, 200)
+    report = um.build_report(results, corpus, args_for(variants="A,B", fake="oracle", max_latency_growth_s=2.5), None)
+    text = um.render(report)
+    assert report["meta"]["max_latency_growth_s"] == 2.5
+    assert "рост медианы хода против A - не больше 2.5 с" in text
+    assert f"(допуск 2.5 с: {report['decision_rule']['B']['median_latency_ok']})" in text
+    assert "X не задан" not in text
+
+
 # ── Сверка с живым марафоном ──────────────────────────────────────────────────────────────────────────────────────
 
 LIVE_LINES = {
