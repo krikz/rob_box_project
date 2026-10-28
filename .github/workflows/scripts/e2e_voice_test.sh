@@ -2995,6 +2995,8 @@ if [ -n "$SCENARIO_FILE" ] && [ "$E2E_PRESYNTH_FAILED" != "1" ]; then
     load_recover_policy "$SCENARIO_FILE"
     # Issue #3971 R21 — предусловия шагов (поле skip_when): разбор до первого шага, кривое поле — E2E_FATAL.
     load_skip_rules "$SCENARIO_FILE"
+    # Issue #3710 — шаг про трек песни акта (поле track_ref): разбор до первого шага, кривое поле — E2E_FATAL.
+    load_track_refs "$SCENARIO_FILE"
     [ "$E2E_PRESYNTH" = "1" ] && presynth_recovery_phrases "$OUT_DIR/scenario_presynth.txt"
 fi
 
@@ -3120,6 +3122,11 @@ elif [ -n "$SCENARIO_FILE" ]; then
         # issue #3971 R21 — предусловие внешнего мира (поле skip_when, напр. квота KIE в акте 7): нарушено — шаг
         # не играется (SKIP <причина>, не PASS и не FAIL); речь предыдущего шага для when_robot_asked не трогаем.
         if step_precondition_skip "$label" "${SCENARIO_FILE:-}"; then
+            continue
+        fi
+        # issue #3710 — шаг про трек песни акта (поле track_ref): id из лога заказа песни ([song] … track=) не назван —
+        # песни нет, шаг не играется (SKIP <причина>, не PASS); назван — после шага вызов тула обязан нести этот id.
+        if step_track_ref_skip "$label" "${SCENARIO_FILE:-}"; then
             continue
         fi
         # issue #2809 — when_robot_asked: условный шаг-ответ на переспрос.
@@ -3274,6 +3281,11 @@ for p in json.load(sys.stdin):
             fi
             # issue #3971 — вид результата против музыки ДО шага (поле music_compare): провал — как у паттерна.
             if ! check_music_compare "$label" "${SCENARIO_FILE:-}" "$STEP_BEFORE"; then
+                step_ok=0
+                last_fail_what="patterns"
+            fi
+            # issue #3710 — вызов тула на трек песни акта (поле track_ref): другой id или вызова без id — провал.
+            if ! check_track_ref "$label" "${SCENARIO_FILE:-}" "$STEP_BEFORE"; then
                 step_ok=0
                 last_fail_what="patterns"
             fi

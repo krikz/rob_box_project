@@ -5,20 +5,20 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "f31f6290fec02a80c382f78dc7a3ac4357302cd4",
+  "last_commit": "6e2fe74d040d7fc73cc4bcef1258dfded6189ed3",
   "sha256": {
-   "night_marathon_act10_finale_memory_v1.json": "4458e0714cef6b908de0e8871f078c34025dd510fb292c9b9cf26cc03a84bb94",
+   "night_marathon_act10_finale_memory_v1.json": "6688fca34629a89523795fc5aefac842b4bc2bec7ec423dd2c2f571108bc85eb",
    "night_marathon_act1_wakeup_v1.json": "f7c745898dbd5e1e2c864d8f7fd679fc052d2f6c0405e9bf0c0a39db6237db6b",
    "night_marathon_act2_acquaintance_v1.json": "35425c35cf4e238acedb27c11793e44c29637039efb3020dca76f31a361d23aa",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
-   "night_marathon_act3_backlog_diarization_v1.json": "a3597df27ff6c7d638233c05e6a66c50737d1a2142c61f9fbc998297bfcc227d",
+   "night_marathon_act3_backlog_diarization_v1.json": "7321f7fa705302fea97f8250651e3e6ac9c14bbbe0de09437c3c21bb369297fd",
    "night_marathon_act4_voice_prosody_v1.json": "bd6d3b0505569ea70ea47de717423291480cb45ffc2c26d75ddddbc566369319",
    "night_marathon_act5_renardo_live_v1.json": "8ceee7509e9dba75a4af99578686347df4c8e919a0730422a7e81fcd9f0e9636",
    "night_marathon_act6_dj_booth_v1.json": "1d2eca0582a846322864c8957a2adc5d8e407af1c2dfbd480ec4abcb0355249e",
-   "night_marathon_act7_neuro_composer_v1.json": "0b6a8698debf8b12de4f1d54a13bd2a082ffa1164bf4fd5475785d595f56d56c",
+   "night_marathon_act7_neuro_composer_v1.json": "005d7e6600761768319711eae477ccf88b6eebb5695186ceadceeb3e25eead92",
    "night_marathon_act8_barge_in_v1.json": "a0fb86869ee00a51979fc4355d027fc5cc0fe1e77c8de33b0846c98178236a26",
-   "night_marathon_act9_world_outside_v1.json": "4ab7c352ec1c32dc0921df1a9d38cb9e483c54a87dfb437ff1c21722662db069"
+   "night_marathon_act9_world_outside_v1.json": "857317e264ae484030364ec2c460117c441233dad45de0c054bf90677b33adf0"
   }
  },
  "counts": {
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103",
+ "corpus_sha256": "d59078f7e7b7791ff85227587b79f64585dfe0669b27b2e5636edbcb11d4cb5e",
  "acts": [
   {
    "act": "1",
@@ -2630,6 +2630,13 @@
       "skip_when": {
        "reason": "NO_SONG",
        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
+      },
+      "track_ref": {
+       "reason": "CASCADE_N702",
+       "log": "\\[song\\] .*\\btrack=(\\S+) за \\d+ с",
+       "tool": "music_library",
+       "action": "info",
+       "wait_sec": 240
       }
      }
     },
@@ -2664,6 +2671,12 @@
       "skip_when": {
        "reason": "NO_SONG",
        "log": "\\[cover\\] баланс KIE: 0(\\.0+)?(\\s|$)|\\[song\\] (не вышло|сбой|не заиграла)|\\[source\\] asked=\\[generated[^\\]]*\\] .*→ decline:"
+      },
+      "track_ref": {
+       "reason": "CASCADE_N702",
+       "log": "\\[song\\] .*\\btrack=(\\S+) за \\d+ с",
+       "tool": "music_library",
+       "action": "play"
       }
      }
     },

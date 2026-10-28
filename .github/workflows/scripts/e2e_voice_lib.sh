@@ -1080,6 +1080,80 @@ step_precondition_skip() {
     return 0
 }
 
+# --- issue #3710 / #4077 — шаг про трек песни этого акта (поле track_ref) ---------------------------------------
+# n707 «расскажи про песню» и n708 «включи её» были зелёными на ЛЮБОЙ вызов music_library (27.10). Поле шага
+# ``track_ref`` (e2e_events.py track_ref*) привязывает шаг к id, который назвал сам заказ песни в логе акта
+# (``🎤 [song] … track=<id>``): id нет за wait_sec -- песни n702 нет, шаг не играется (SKIP <причина>, не PASS);
+# id есть -- после шага вызов тула в окне шага (``📥 Запрос выполнения: music_library с параметрами {…}``) обязан
+# нести ЭТОТ track_id при нужном action, иначе паттерн-провал. Судит e2e_events.py; здесь только чтение лога и вывод.
+E2E_TRACK_REFS_FILE="${E2E_TRACK_REFS_FILE:-}"
+E2E_STEP_TRACK_ID=""
+load_track_refs() {  # $1 = файл сценария
+    local err n
+    E2E_TRACK_REFS_FILE="${OUT_DIR:-/tmp}/track_refs.tsv"
+    if ! err="$(python3 "$(_events_py)" trackrefs --scenario "$1" 2>&1 >"$E2E_TRACK_REFS_FILE")"; then
+        echo "E2E_FATAL: поле track_ref сценария не разобрано: ${err:-нет ответа} (issue #3710)" >&2
+        exit 2
+    fi
+    n="$(grep -c . "$E2E_TRACK_REFS_FILE" 2>/dev/null)"
+    [ "${n:-0}" -gt 0 ] && log "🎵 ссылки шагов на трек песни акта (#3710): ${n} шагов с track_ref — ${E2E_TRACK_REFS_FILE}"
+    return 0
+}
+# step_track_ref_skip LABEL SCENARIO -- rc 1: у шага нет track_ref или id песни найден (E2E_STEP_TRACK_ID),
+# играть шаг; rc 0: id песни за wait_sec не появился (или лог не читается), шаг пропущен (E2E_STEP <label> SKIP <причина>
+# уже выведен). Нет id -- шаг НЕ играется: «любой трек» вместо «этой песни» и есть ложный PASS.
+step_track_ref_skip() {
+    local label="$1" scenario="$2" row reason wait deadline out
+    E2E_STEP_TRACK_ID=""
+    [ -n "${E2E_TRACK_REFS_FILE:-}" ] && [ -s "$E2E_TRACK_REFS_FILE" ] || return 1
+    row="$(awk -F'\t' -v l="$label" '$1 == l { sub(/\r$/, "", $3); print $2 "\t" $3; exit }' "$E2E_TRACK_REFS_FILE")"
+    [ -n "$row" ] || return 1
+    reason="${row%%$'\t'*}"
+    wait="${row#*$'\t'}"
+    case "$wait" in ''|*[!0-9]*) wait=0 ;; esac
+    deadline=$(( $(date +%s) + wait ))
+    while :; do
+        out="$(${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '${E2E_RUN_BEFORE:-600s}' 2>&1; true" 2>/dev/null \
+            | python3 "$(_events_py)" trackbind --scenario "$scenario" --label "$label")"
+        if [ "$(printf '%s\n' "$out" | _ev_kv fetch)" != "1" ]; then
+            log "STEP ${label}: ⚠️ id песни акта не проверен (лог робота не прочитан) — шаг не играется, SKIP track_ref_log_unreadable"
+            emit_step "${label} SKIP track_ref_log_unreadable"
+            return 0
+        fi
+        E2E_STEP_TRACK_ID="$(printf '%s\n' "$out" | _ev_kv track)"
+        if [ -n "$E2E_STEP_TRACK_ID" ] && [ "$E2E_STEP_TRACK_ID" != "-" ]; then
+            log "STEP ${label}: песня акта track=${E2E_STEP_TRACK_ID} — $(printf '%s\n' "$out" | _ev_kv evidence)"
+            return 1
+        fi
+        E2E_STEP_TRACK_ID=""
+        [ "$(date +%s)" -ge "$deadline" ] && break
+        log "STEP ${label}: id песни акта ещё не назван ([song] … track=), жду до ${wait} с"
+        sleep 15
+    done
+    log "STEP ${label}: ⏭ SKIP ${reason} — заказ песни акта не назвал track= за ${wait} с. Шаг НЕ играется (не PASS и не FAIL)"
+    emit_step "${label} SKIP ${reason}"
+    return 0
+}
+# check_track_ref LABEL SCENARIO SINCE -- после шага: вызов тула в окне шага несёт id песни акта. rc 0 -- у шага нет
+# track_ref или вызов с этим id есть; rc 1 -- нет (строка PATTERN_MISS в выводе, как у check_music_compare).
+check_track_ref() {
+    local label="$1" scenario="$2" since="$3" out
+    [ -n "${E2E_TRACK_REFS_FILE:-}" ] && [ -s "$E2E_TRACK_REFS_FILE" ] || return 0
+    awk -F'\t' -v l="$label" '$1 == l { found = 1 } END { exit !found }' "$E2E_TRACK_REFS_FILE" || return 0
+    if [ -z "${E2E_STEP_TRACK_ID:-}" ]; then
+        echo "  PATTERN_MISS: track_ref: id песни акта не определён, а шаг сыгран"
+        return 1
+    fi
+    out="$(_events_fetch "$since" 'Запрос выполнения: ' \
+        | python3 "$(_events_py)" trackcheck --scenario "$scenario" --label "$label" --track "$E2E_STEP_TRACK_ID" 2>&1)"
+    if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
+        echo "  PATTERN_OK: track_ref: $(printf '%s\n' "$out" | _ev_kv detail)"
+        return 0
+    fi
+    echo "  PATTERN_MISS: track_ref: $(printf '%s\n' "$out" | _ev_kv detail | grep . || printf '%s' "$out")"
+    return 1
+}
+
 # --- issue #3989 п.5 — тишина не переживает акт ---------------------------------------------------------
 # «Замолчи» ставит сцену Silence на 10 минут, снимает её только «Робот, говори» (решение Шифу 23.10). Акт, оборванный
 # между ними, оставлял следующему молчащего робота, и все шаги, ждущие ответа, краснели «робот молчит». В начале
