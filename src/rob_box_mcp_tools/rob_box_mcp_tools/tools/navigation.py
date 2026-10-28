@@ -27,15 +27,42 @@ if TYPE_CHECKING:
     from ..waypoint_store import WaypointStore
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType, wait_future
+from ..core.action_outcome import (
+    NAV_NO_RESPONSE,
+    NAV_REJECTED,
+    NAV_SERVER_UNAVAILABLE,
+    NAV_TIMEOUT,
+    classify_nav_status,
+    nav_outcome,
+)
+
+
+def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
+    """Неуспех навигации: ошибку и фразу строит код (ADR-0148), не LLM."""
+    outcome = nav_outcome(kind, status)
+    return MCPToolResult(
+        success=False, error=outcome.error, message=outcome.message, data={"outcome": outcome.kind}
+    )
+
+
+def _cancel_goal_best_effort(goal_handle, logger) -> None:
+    """Таймаут не должен оставлять робота ехать дальше, пока мы говорим «не доехал»."""
+    try:
+        goal_handle.cancel_goal_async()
+    except Exception as exc:  # noqa: BLE001 - отмена вторична, ответ об исходе важнее
+        logger.warning(f"Не удалось отменить цель Nav2 после таймаута: {exc}")
 
 
 def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id: str = "map", timeout: float = 120.0):
     """Shared helper: send a NavigateToPose goal and block until completion.
 
+    Успех — только если Nav2 вернул ``GoalStatus.STATUS_SUCCEEDED`` (#3789):
+    ``ABORTED``/``CANCELED``/таймаут/отказ в приёме цели — честный неуспех.
+
     Returns ``MCPToolResult``.
     """
     if not nav_client.wait_for_server(timeout_sec=1.0):
-        return MCPToolResult(success=False, error="Nav2 action server недоступен", message="Навигация недоступна")
+        return _nav_failure(NAV_SERVER_UNAVAILABLE)
 
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
@@ -48,16 +75,21 @@ def _send_nav_goal(nav_client, node, x: float, y: float, theta: float, frame_id:
 
     send_future = nav_client.send_goal_async(goal)
     if not wait_future(send_future, timeout_sec=10.0) or send_future.result() is None:
-        return MCPToolResult(success=False, error="Nav2 не ответил на цель", message="Навигация недоступна")
+        return _nav_failure(NAV_NO_RESPONSE)
 
     goal_handle = send_future.result()
     if not goal_handle.accepted:
-        return MCPToolResult(success=False, error="Nav2 отклонил цель", message="Цель недостижима")
+        return _nav_failure(NAV_REJECTED)
 
     result_future = goal_handle.get_result_async()
     if not wait_future(result_future, timeout_sec=timeout) or result_future.result() is None:
-        return MCPToolResult(success=False, error="Навигация превысила таймаут", message="Не доехал до точки")
+        _cancel_goal_best_effort(goal_handle, node.get_logger())
+        return _nav_failure(NAV_TIMEOUT)
 
+    status = getattr(result_future.result(), "status", None)
+    outcome = classify_nav_status(status)
+    if not outcome.success:
+        return _nav_failure(outcome.kind, status)
     return MCPToolResult(success=True)
 
 
