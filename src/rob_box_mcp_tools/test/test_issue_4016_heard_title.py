@@ -13,6 +13,11 @@
 Ревью PR #4124, круг 2: слова-связки перед понятым именем («что-то похожее на марио», «без сета, просто Баха») не
 переспрашиваются — понятое имя называет мелодию само; находка на слух — догадка, её сверяют кэш и LLM (назвали другое —
 решают они); частичное слабое совпадение («уи вил рок ю» → «Rock With You») и исполнитель не целиком — не находка.
+
+#4159 п.1 (ревью #4124, круг 3; PR влит с этим блокирующим): напев и повтор слога — не название. «сыграй там там там»
+→ «Dam Dam», «та да да дам» → «Di Di Dam», «тико тико» → «Nokia Tune», «спой там там там» → платная песня у студии.
+Теперь сила совпадения — по разным ключам, из одних коротких слов её нет, название одного звучания на слух не
+находится; LLM, ответившая вовремя без того же произведения, находку отменяет. Как на develop до #4124 — ``not_found``.
 """
 
 from __future__ import annotations
@@ -137,10 +142,10 @@ def test_title_confirmed_by_llm_is_played_not_questioned(archive):
 
 # ── заказ целиком: переспрос кода, ни пьесы, ни песни по обрывку ───────────────────────────────────────────────
 
-def _request(tmp_path, archive, studio=None):
+def _request(tmp_path, archive, studio=None, llm=None):
     rig = _rig()
     dj = DjSetTool(None, rig.owner, melodies=lambda ids: {}, finder=lambda theme: _both(HITS, False), seed=lambda: 1)
-    parser = RequestSlotParser(lambda text: terms(archive, text), Catalog(lambda: archive, NoScores()),
+    parser = RequestSlotParser(lambda text: terms(archive, text), Catalog(lambda: archive, NoScores()), ask=llm,
                                spawn=lambda fn: fn())
     return RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 5, records=lambda ids: {},
                             words=lambda word: _both(HITS, False), slots=parser,
@@ -309,10 +314,11 @@ def test_unclear_title_asks_llm_before_asking_back(archive):
 
 
 def test_llm_that_named_another_work_overrules_the_sound_guess(archive):
-    """«тико тико» звучит как запись «Tick Tick», а LLM вовремя назвала «Tico Tico no Fuba» — её в архиве нет: решает
-    разбор LLM (как на develop — ``not_found`` дальше), а не находка на слух; переспроса нет — понятых слов нет."""
+    """LLM вовремя назвала «Tico Tico no Fuba» — её в архиве нет: решает разбор LLM (как на develop до #4124 —
+    ``not_found`` дальше); переспроса нет — понятых слов нет. Находки на слух «Tick Tick» нет и без LLM (#4159):
+    название одного звучания от повтора слова не отличить."""
     text = "сыграй тико тико"
-    assert heard_title(archive, "тико тико").name == "Tick Tick"  # без LLM находка та же (ложная, см. тело PR)
+    assert heard_title(archive, "тико тико").record is None
     llm = FakeLLM(answers={text: {"work": "Tico Tico no Fuba"}})
     slots = _parse(_parser(archive, llm)[0], text)
     assert llm.calls == [text] and slots.source == "llm" and not slots.by_sound
@@ -335,12 +341,16 @@ def test_llm_is_asked_before_the_sound_search_and_thinks_meanwhile(archive):
     assert _parse(parser, "сыграй раннинг ап дэд хилл").by_sound and order == [1]
 
 
-def test_silent_llm_leaves_the_sound_guess(archive):
-    """LLM ответила, но ни произведения, ни автора не назвала — находке на слух не возражает: играет она, без
-    подтверждения каталогом."""
+def test_llm_in_time_with_empty_slots_does_not_confirm_the_sound_guess(archive):
+    """#4159: LLM ответила вовремя, но ни произведения, ни автора не назвала («не знаю», пустые слоты) — находку на
+    слух она не подтверждает: находка отменена, решает разбор LLM. Понятое «хилл» без названия — честный переспрос, а
+    не «Running Up That Hill» по догадке; LLM нет или опоздала — догадка играет
+    (:func:`test_live_phrase_resolves_by_sound_when_llm_is_late`)."""
     llm = FakeLLM()  # ответ без слотов
     slots = _parse(_parser(archive, llm)[0], "сыграй раннинг ап дэд хилл")
-    assert llm.calls and slots.by_sound and slots.query == "Running Up That Hill" and not slots.work_confirmed
+    assert llm.calls and not slots.by_sound and not slots.work_confirmed and slots.doubt == "раннинг ап дэд хилл"
+    late = _parse(_parser(archive, FakeLLM(outcome="late"))[0], "сыграй раннинг ап дэд хилл")
+    assert late.by_sound and late.query == "Running Up That Hill"
 
 
 @pytest.mark.parametrize("text, wrong", [("уи вил рок ю", "Rock With You"), ("ты ди си хэлл", "Say Hello"),
@@ -394,3 +404,59 @@ def test_sound_index_is_warmed_at_start_not_in_the_first_order(archive):
     thread.join(120)
     assert not thread.is_alive() and _vocab(archive)._sounds  # noqa: SLF001
     assert any("прогрев: указатель звучаний" in line for line in log.lines)
+
+
+# ── #4159 п.1: напев и повтор слога — не название; LLM вовремя без того же произведения находку отменяет ──────────
+
+#: Ложные находки на слух ревью #4124, круг 3 (зонд полного тула: на develop до #4124 везде ``not_found``).
+HUMS = [("там там там", "Dam Dam"), ("дум дум дум", "Dam Dam"), ("ту самую там где там там там", "Dam Dam"),
+        ("та да да дам", "Di Di Dam"), ("ну ту самую та да да дам", "Di Di Dam"), ("тико тико", "Tick Tick"),
+        ("бум бум бум", "Boom Boom Boom")]
+
+
+@pytest.mark.parametrize("text, wrong", HUMS)
+def test_hum_or_syllable_repeat_is_not_a_title_by_sound(archive, text, wrong):
+    """Повтор слога — не довод: «там там там» звучит как «Dam Dam» только повтором одного ключа ``tm``."""
+    heard = heard_title(archive, text)
+    assert heard.record is None, (text, heard.name, wrong)
+
+
+def test_sound_match_strength_counts_distinct_keys_and_needs_a_long_word():
+    """Сила совпадения — согласные РАЗНЫХ ключей прозвучавших слов; из одних коротких слов (служебные слова речи и
+    слоги напева) силы нет; название одного звучания на слух не опознаётся даже целиком."""
+    assert _aligned("Dam Dam", _keys("там", "там", "там")) is None  # tm — одно звучание, а не tm+tm=4
+    assert _aligned("Tick Tick", _keys("тико", "тико")) is None  # целиком, но одно звучание
+    assert _aligned("Di Di Dam", _keys("та", "да", "да", "дам")) is None  # t+tm=3: повтор «да» не довод
+    assert _aligned("Good Time", _keys("ту", "самую", "там", "где", "там", "там", "там")) is None  # «где там»
+    assert _aligned("Highway To Hell", _keys("эй", "си", "ди", "си", "хайвэй", "ту", "хэлл")) is not None  # h+t+hl
+    assert _aligned("Rock Around The Clock", _keys("рок", "эраунд", "зе", "клок")) is not None
+    assert _aligned("Running Up That Hill", _keys("раннинг", "ап", "дэд", "хилл")) is not None
+    assert _aligned("Hey Jude", _keys("хэй", "джуд")) is not None  # короткое, но целиком и два звучания
+
+
+def _llm(kind):
+    return {"none": None, "late": FakeLLM(outcome="late"), "empty": FakeLLM()}[kind]
+
+
+@pytest.mark.parametrize("llm", ["none", "late", "empty"])
+@pytest.mark.parametrize("text", ["сыграй там там там", "сыграй та да да дам", "спой там там там", "сыграй тико тико",
+                                  "спой тико тико"])
+def test_hum_is_parsed_as_before_4124_whatever_the_llm(archive, text, llm):
+    """Без LLM, с опоздавшей и с ответившей вовремя пустыми слотами — разбор кода без находки на слух и без переспроса
+    (понятых слов нет: урезать нечего), как на develop до #4124."""
+    slots = _parse(_parser(archive, _llm(llm))[0], text)
+    assert not slots.by_sound and not slots.work_confirmed and slots.doubt == "", (text, llm, slots)
+
+
+@pytest.mark.parametrize("llm", ["none", "late"])
+@pytest.mark.parametrize("text", ["сыграй там там там", "сыграй та да да дам", "спой там там там", "сыграй тико тико",
+                                  "спой тико тико"])
+def test_tool_says_not_found_to_a_hum_and_orders_no_song(tmp_path, archive, text, llm):
+    """Полный заказ: ни чужой мелодии, ни песни у студии (платная генерация — «спой там там там» заказывал её с мостом
+    «Dam Dam»), ни отказа с чужим названием («Спеть «Nokia Tune» не могу»): ``not_found``, как до #4124."""
+    studio = FakeStudio()
+    req, rig = _request(tmp_path, archive, studio, _llm(llm))
+    result = req.execute(intent="melody", text=text, heard_text=f"Робот, {text}")
+    assert not result.success and result.data["reason"] == NOT_FOUND, (text, llm, result)
+    assert studio.requests == [] and not rig.owner.is_playing()
+    assert not any(name in str(result.error) for name in ("Dam Dam", "Di Di Dam", "Nokia Tune", "Tick Tick"))

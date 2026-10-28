@@ -18,10 +18,11 @@
 5. **На слух** (#4016, живой прогон 24.10: «раннинг ап дэд хилл» → «хилл» → «King Of The Hill»): непонятых слов
    названия больше понятых, а понятое само ничего не называет (не «что-то похожее на **марио**», не «просто **Баха**»)
    — код ищет запись архива, чьё название звучит этими словами (``search.heard_title``): «Running Up That Hill».
-   Находка — догадка, не подтверждение: кэш и LLM спрашиваются; назвали другое — решают они, молчат или опоздали —
-   играет находка (``source=sound``, без ``work_confirmed``). Не нашлось, а LLM не подтвердила ни произведение, ни
-   автора — заказ не урезается молча до понятых слов: ``RequestSlots.doubt`` и фраза кода :func:`doubt_text` («не
-   уверен, что это за песня — «…»?»).
+   Находка — догадка, не подтверждение: кэш и LLM спрашиваются; ответили вовремя, но не тем же произведением
+   (другим или ничем — #4159) — решает их разбор; LLM нет или опоздала — играет находка (``source=sound``, без
+   ``work_confirmed``). Название одного звучания («Dam Dam») и повтор слога на слух не находятся (``search._aligned``,
+   ``search._walk``). Не нашлось, а LLM не подтвердила ни произведение, ни автора — заказ не урезается молча до
+   понятых слов: ``RequestSlots.doubt`` и фраза кода :func:`doubt_text` («не уверен, что это за песня — «…»?»).
 
 Одна строка лога на заказ: ``[request-slots] «…» source=code|llm|cache|sound ms=… <слоты> → «запрос» (или
 ``не уверен: «…»``); llm=a/n cache=b p50/p95``. Решение «что играть» — дальше, у ``PieceChain`` (кандидаты по
@@ -129,9 +130,10 @@ class RequestSlotParser:
         понятых (#4016; пояснение после названия — «дарта вейдера», «только быстрее» — не в счёт; понятое слово само
         называет мелодию или автора — «что-то похожее на марио» — тоже) — название по звучанию (``Catalog.heard``).
         Находка на слух — догадка кода, а не подтверждение (ревью #4124, круг 2: «уи вил рок ю» → «Rock With You»):
-        кэш разборов и LLM спрашиваются как обычно; назвали произведение или автора — решают они (проверенные каталогом),
-        молчат или не успели — играет находка, ``work_confirmed`` у неё нет. Не нашлось, а LLM не подтвердила ни
-        произведение, ни автора — ``doubt``: слова, как услышаны, вместо поиска по одним понятым."""
+        кэш разборов и LLM спрашиваются как обычно; ответили, но не тем же произведением (другим или ничем, #4159) —
+        решают они (проверенные каталогом); LLM нет или не успела — играет находка, ``work_confirmed`` у неё нет.
+        Не нашлось, а LLM не подтвердила ни произведение, ни автора — ``doubt``: слова, как услышаны, вместо поиска по
+        одним понятым."""
         started = self._clock()
         words = list(self._words(work))
         missing = unknown(words)
@@ -286,12 +288,13 @@ def _settle(code: rs.RequestSlots, merged: rs.RequestSlots, heard: Heard, answer
             source: str) -> Tuple[rs.RequestSlots, str]:
     """Слоты заказа (``(слоты, источник)``) из код-разбора ``code``, разбора LLM/кэша, проверенного каталогом
     (``merged``, поля ответа — ``answer``), и находки на слух ``heard`` (ревью #4124, круг 2): LLM назвала то же
-    произведение (:func:`_agrees`) — находка подтверждена; LLM молчит о произведении и авторе или не успела — догадка
-    (``source=sound``); LLM назвала другое — решает её разбор; не нашлось, урезано и ничего не подтверждено — переспрос
-    (``doubt``)."""
+    произведение (:func:`_agrees`) — находка подтверждена; ответа нет (LLM нет, не успела, ответ не по схеме) — догадка
+    (``source=sound``); ответ есть, а того же произведения в нём нет (назвала другое или ничего: «не знаю», пустые
+    слоты) — находка отменена, решает разбор LLM (#4159: «та да да дам» при молчащей LLM играл «Di Di Dam»); не
+    нашлось, урезано и ничего не подтверждено — переспрос (``doubt``)."""
     if heard.record is not None and _agrees(heard, answer):
         return replace(merged, query=heard.name, work=heard.name, work_confirmed=True), source
-    if heard.record is not None and not _names(answer):
+    if heard.record is not None and answer is None:
         return _sounded(code, heard), "sound"
     if heard.truncated and not (merged.work_confirmed or merged.composer):
         return replace(merged, doubt=heard.spoken), source
@@ -307,13 +310,6 @@ def _agrees(heard: Heard, answer: Optional[Mapping[str, Any]]) -> bool:
         return False
     found = set(title_key(strip_version_tail(heard.name)).split())
     return bool(found) and found <= set(title_key(answer.get("said") or answer["work"]).split())
-
-
-def _names(answer: Optional[Mapping[str, Any]]) -> bool:
-    """LLM (или кэш её разборов) назвала произведение или автора — подтверждённых каталогом или отброшенных: тогда
-    решает её разбор, а не находка на слух («тико тико» — «Tico Tico no Fuba», которого в архиве нет, а не «Tick Tick»).
-    Молчит о них (только инструмент, стиль, режим) — находке не возражает."""
-    return answer is not None and bool(answer["work"] or answer["composer"] or answer["rejected"])
 
 
 def doubt_text(heard: str) -> str:
