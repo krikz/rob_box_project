@@ -323,15 +323,10 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tupl
     молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
     пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
-    живое пение при играющей музыке (:func:`music_playing`) — поверх неё (``Form.sing_over``, n810)."""
+    живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810)."""
     names = tuple(name for pair in voices for name in pair if name)
     return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
-                sing_over=bool(sing) and music_playing(snapshot))
-
-
-def music_playing(snap: SessionSnapshot) -> bool:
-    """Играет музыка (сет DJ или трек плеера) — по снимку хода: контекст чойсера пути пения и подложка живого пения."""
-    return snap.top("DJ") is not None or snap.music.state == "playing"
+                sing_over=bool(sing) and snapshot.music_playing)
 
 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
@@ -352,7 +347,7 @@ async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     recent = tuple(str(e.content) for e in engine.log.window(exclude=turn.turn_id) if e.role == USER)
     try:
         return await asyncio.get_running_loop().run_in_executor(None, engine._sing, turn.text, recent,
-                                                                music_playing(snap))
+                                                                snap.music_playing)
     except Exception as exc:  # noqa: BLE001 — путь пения не держит ход: без него модель решает как раньше
         engine._log.warning(f"{LOG_MARK} путь пения не решён ({type(exc).__name__}: {exc}) — ход без формы пения "
                             f"turn={turn.turn_id}")

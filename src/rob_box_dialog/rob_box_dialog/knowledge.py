@@ -105,7 +105,7 @@ WAKE_SLIP_ADDRESSEE: Tuple[str, ...] = (
 #: тема из :data:`WAKE_SLIP_TOPIC_STEMS`; «роботы ещё не умеют летать» и «работа дальше пойдёт» не будят.
 WAKE_SLIP_MORE_LEADS: Tuple[str, ...] = ("еще", "дальше", "снова", "опять")
 #: Сколько слов после ведущего смотрим в поисках знака обращения или темы: дальше связь с «работа» уже случайна.
-#: Сами ворота — :data:`WAKE_SLIP_GATES` — собраны ниже, после таблиц музыки: тема берётся оттуда.
+#: Сами ворота — :data:`WAKE_SLIP_GATES` — собраны ниже, после таблиц музыки и правки темпа: слова берутся оттуда.
 WAKE_SLIP_CUE_WINDOW = 6
 #: Рискованные вейки (решение В18): «бот»/«роб» — короткие и звучат внутри чужих фраз. В ``wake_words.yaml`` —
 #: записи ``risky: true``, по умолчанию выключены (``risky_enabled: false``); включаются одной строкой.
@@ -292,25 +292,25 @@ STOP_SCOPE = StopScopeWords(
 @dataclass(frozen=True)
 class SlipGate:
     """Ворота искажённого вейка (:func:`rob_box_dialog.words.slipped_wake_rest`): слово «работа/роботы/рада»
-    будит, когда следующее за ним слово из ``leads`` и (если задан знак) в ближайших ``WAKE_SLIP_CUE_WINDOW`` словах
-    после него есть слово целиком из ``forms`` или слово, начинающееся с основы из ``stems``. Знака нет — ведущего
-    слова достаточно."""
+    будит, когда следующее за ним слово — ведущее ворот и (если задан знак) в ближайших ``WAKE_SLIP_CUE_WINDOW``
+    словах после него есть слово целиком из ``forms`` или слово, начинающееся с основы из ``stems``. Знака нет —
+    ведущего слова достаточно.
 
-    leads: Tuple[str, ...]
+    Ведущее слово — слово целиком из ``leads`` либо основа из ``lead_stems`` с окончанием из ``lead_endings`` («ускор» +
+    «ь»): так просьба («ускорь», «быстрее») отличается от рассказа («ускоряются», «быстро»). ``under_music`` — ворота
+    действуют, только пока играет музыка (``SessionSnapshot.music_playing``): без неё их слова — не про музыку."""
+
+    leads: Tuple[str, ...] = ()
     forms: Tuple[str, ...] = ()
     stems: Tuple[str, ...] = ()
+    lead_stems: Tuple[str, ...] = ()
+    lead_endings: Tuple[str, ...] = ()
+    under_music: bool = False
 
 
 #: Тема, о которой просят робота (знак для ворот 3 и 4): музыка (ТА ЖЕ таблица, что для группы тулов) и «что сейчас
 #: крутится/звучит» (16:15 23.10: «рада что сейчас крутится» вместо «Робот, что сейчас крутится?»).
 WAKE_SLIP_TOPIC_STEMS: Tuple[str, ...] = MUSIC_STEMS + MUSIC_GROUP_EXTRA_STEMS + ("крутит", "звуч")
-#: Все ворота искажённого вейка: слово будит, если открыта ХОТЬ ОДНА. Ведущее слово принадлежит одним воротам.
-WAKE_SLIP_GATES: Tuple[SlipGate, ...] = (
-    SlipGate(WAKE_SLIP_COMMAND_LEADS),
-    SlipGate(WAKE_SLIP_QUESTION_LEADS),
-    SlipGate(WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_TOPIC_STEMS),
-    SlipGate(WAKE_SLIP_MORE_LEADS, stems=WAKE_SLIP_TOPIC_STEMS),
-)
 #: Три канала у трёх владельцев. «Какой канал» решает код: играет музыка → music, звучит речь → tts.
 VOLUME_CHANNELS: Mapping[str, VolumeChannel] = MappingProxyType({
     "tts": VolumeChannel(owner="tts_node", tool="set_volume"),
@@ -801,6 +801,34 @@ SPEECH_OWNER_STEMS: Tuple[str, ...] = (
 #: «быстрее» в ней не про играющую музыку. Путь хода «правка играющего» хост (``rob_box_mcp_tools.engine.sing_route``)
 #: тогда не решает; тему музыки в остальном решает ``rob_box_music.track_edit.music_edits``.
 EDIT_OTHER_OWNER_STEMS: Tuple[str, ...] = SPEECH_OWNER_STEMS + MOTION_VERB_STEMS + MOTION_TURN_STEMS
+#: Правка играющей музыки в начале фразы после искажённого вейка (#3975, живой робот 27.10 14:49: «роботы ускорь темп»
+#: под диджей-сетом не разбудило — ведущих слов ворот 1–4 в нём нет; так же n506 23.10 и 27.10 09:26). Это не новый
+#: список слов: те же основы, которыми Tier-1 и срез тулов зовут правку музыки, — «громче/тише/прибавь/убавь»
+#: (:data:`VOLUME_STEMS`) и «темп/быстрее/ускорь/замедли/жёстче/мягче» (:data:`MUSIC_AMBIGUOUS_STEMS`: через них «ускорь
+#: темп» под музыкой уходит в группу music, а не в голос).
+WAKE_SLIP_TWEAK_STEMS: Tuple[str, ...] = tuple(dict.fromkeys((
+    *VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS)))
+#: Окончания, после которых основа правки — просьба, а не рассказ: повелительное («ускорь/ускорьте/замедли/замедлите/
+#: убавь/подкрути/ускоряй»), сравнительное («быстрее/быстрей/помедленнее»); пусто — основа уже слово («громче», «тише»,
+#: «темп»). «роботы ускоряются», «роботы быстро учатся», «темпы растут» под них не подходят и не будят.
+WAKE_SLIP_TWEAK_ENDINGS: Tuple[str, ...] = ("", "ь", "ьте", "и", "ите", "яй", "яйте", "е", "ее", "ей")
+#: «Добавь» — просьба и про музыку («добавь бас», «добавь бит», «добавь куплет»), и про что угодно («добавь соли»): будит
+#: под музыкой, только если в ближайших словах есть тема — музыка (:data:`WAKE_SLIP_TOPIC_STEMS`), слово правки
+#: (:data:`MUSIC_AMBIGUOUS_STEMS`) или «бас» (:data:`MUSIC_AMBIGUOUS_WORDS`).
+WAKE_SLIP_ADD_LEADS: Tuple[str, ...] = ("добавь", "добавьте")
+#: Все ворота искажённого вейка: слово будит, если открыта ХОТЬ ОДНА. Ведущее слово принадлежит одним воротам. Ворота
+#: правки музыки (``under_music``) действуют только пока музыка играет: без неё «ускорь/быстрее/громче» не про музыку
+#: (темп речи, обычный разговор), и «роботы ускорь» — как раньше, не будит, фраза уходит в бэклог.
+WAKE_SLIP_GATES: Tuple[SlipGate, ...] = (
+    SlipGate(WAKE_SLIP_COMMAND_LEADS),
+    SlipGate(WAKE_SLIP_QUESTION_LEADS),
+    SlipGate(WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_TOPIC_STEMS),
+    SlipGate(WAKE_SLIP_MORE_LEADS, stems=WAKE_SLIP_TOPIC_STEMS),
+    SlipGate(MUSIC_AMBIGUOUS_WORDS, lead_stems=WAKE_SLIP_TWEAK_STEMS, lead_endings=WAKE_SLIP_TWEAK_ENDINGS,
+             under_music=True),
+    SlipGate(WAKE_SLIP_ADD_LEADS, MUSIC_AMBIGUOUS_WORDS, WAKE_SLIP_TOPIC_STEMS + MUSIC_AMBIGUOUS_STEMS,
+             under_music=True),
+)
 #: Русские названия звуков каталога ``sound_pack/sound_catalog.json``: группа тулов ``sound`` открывается не только
 #: словом «звук», но и теми, как человек называет сам звук («сирену и мигалку покажи» - n903 23.10). Пары
 #: (триггеры каталога, основы слов): каталог хранит ``trigger`` и английское/русское описание, разговорных названий в нём нет;

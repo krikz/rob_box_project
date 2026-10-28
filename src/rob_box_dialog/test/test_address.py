@@ -12,7 +12,7 @@ from rob_box_dialog.address import (
 from rob_box_dialog.backlog import Backlog, Heard
 from rob_box_dialog.doa import DoaTrack
 from rob_box_dialog.knowledge import DEFAULT_WAKE_WORDS, RISKY_WAKE_WORDS
-from rob_box_dialog.session import Session
+from rob_box_dialog.session import MusicStateRef, Session
 
 WAKES = list(DEFAULT_WAKE_WORDS)
 COMMANDS = [
@@ -458,6 +458,76 @@ def test_slipped_wake_does_not_lift_silence():
     assert match(out.text, silenced) is None
     unsilence = decide(_heard("роботу, говори"), Backlog(), WAKES)
     assert match(unsilence.text, silenced).kind == "unsilence"
+
+
+# --- #3975: правка играющей музыки после искажённого вейка (ворота ``under_music``) --------------------------------
+
+def _session(music: str = "idle", dj: bool = False) -> Session:
+    """Сессия Личности с музыкой плеера (``idle``/``playing``) и, если ``dj``, кадром диджея."""
+    session = Session("personality", clock=lambda: 100.0)
+    session.set_music(MusicStateRef(music, track_id="t1" if music == "playing" else None))
+    if dj:
+        session.push_scene("DJ", "code")
+    return session
+
+
+def _in_session(text, session):
+    return address.decide_in_session(_heard(text), Backlog(), DEFAULT_WAKE_WORDS, session.snapshot)
+
+
+#: Живые фразы 27.10 и их остаток. 14:49 - инъекция под диджей-сетом (dev-0d94634), 09:26 - n506_faster (dev-d68a784).
+TWEAK_LIVE = [
+    ("роботы ускорь темп", "ускорь темп"),
+    ("роботы ускорь там потом мы тут засыпаем оба", "ускорь там потом мы тут засыпаем оба"),
+]
+
+
+@pytest.mark.parametrize("text,rest", TWEAK_LIVE)
+@pytest.mark.parametrize("session", [_session("playing"), _session("idle", dj=True), _session("playing", dj=True)],
+                         ids=["player-playing", "dj-scene", "both"])
+def test_3975_tweak_under_playing_music_wakes(text, rest, session):
+    assert _in_session(text, session) == Addressed(rest, VOICE)
+
+
+@pytest.mark.parametrize("text,rest", TWEAK_LIVE)
+def test_3975_tweak_without_music_stays_unaddressed(text, rest):
+    """Без музыки ворота правки закрыты - поведение как до карточки: не вейк, фраза уходит в бэклог (``no_wake``)."""
+    assert _in_session(text, _session("idle")) == NotAddressed(NO_WAKE)
+    assert _in_session(text, Session("personality", clock=lambda: 100.0)) == NotAddressed(NO_WAKE)
+
+
+def test_3975_music_that_stopped_closes_the_gate_again():
+    session = _session("playing")
+    assert _in_session("роботы громче", session) == Addressed("громче", VOICE)
+    session.set_music(MusicStateRef("idle"))
+    assert _in_session("роботы громче", session) == NotAddressed(NO_WAKE)
+
+
+@pytest.mark.parametrize("text", [
+    "роботы захватят мир", "роботы ускоряются", "роботы быстро учатся", "работа добавь соли", "рада тебя видеть",
+    "работа не волк", "роботы ещё не умеют летать",
+])
+def test_3975_ordinary_speech_does_not_wake_even_under_music(text):
+    assert _in_session(text, _session("playing", dj=True)) == NotAddressed(NO_WAKE), text
+
+
+@pytest.mark.parametrize("text", [*SLIPPED_NOT_WAKE, *MARATHON_NO_WAKE])
+def test_3975_known_background_corpus_stays_unaddressed_under_music(text):
+    """Корпус фона и обычной речи из #3975/#3996 под играющей музыкой не будит: ворота правки их не задевают."""
+    assert decide(_heard(text), Backlog(), WAKES, music_playing=True) == NotAddressed(NO_WAKE), text
+
+
+def test_3975_music_does_not_change_a_real_wake_or_other_slips():
+    session = _session("playing", dj=True)
+    assert _in_session("Робот, ускорь темп", session) == Addressed("ускорь темп", VOICE)
+    assert _in_session("работа тишина", session) == Addressed("тишина", VOICE)
+    assert _in_session("роботы еще куплет добавь", session) == Addressed("еще куплет добавь", VOICE)
+    assert _in_session("роботы еще куплет добавь", _session("idle")) == Addressed("еще куплет добавь", VOICE)
+
+
+def test_3975_decide_takes_music_from_the_flag_and_defaults_to_silence():
+    assert decide(_heard("роботы ускорь темп"), Backlog(), WAKES) == NotAddressed(NO_WAKE)
+    assert decide(_heard("роботы ускорь темп"), Backlog(), WAKES, music_playing=True) == Addressed("ускорь темп", VOICE)
 
 
 @pytest.mark.parametrize("text, rest, command", [
