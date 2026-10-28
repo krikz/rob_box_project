@@ -23,6 +23,7 @@ from rob_box_dialog.knowledge import (
     INTRO_GREETING_WORDS,
     INTRO_NOT_A_NAME,
     KNOWN_FIRST_NAMES,
+    LISTEN_ONLY_FORMS,
     NAME_CASE_MIN_STEM,
     NAME_CASE_STEMS,
     NAME_CASE_SURE_TAILS,
@@ -35,6 +36,7 @@ from rob_box_dialog.knowledge import (
     REPLY_VERB_ENDINGS,
     REQUEST_LEADS,
     SELF_MEMORY_ASK,
+    SILENCE_WORDS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
     STOP_SCOPE,
@@ -404,6 +406,13 @@ def self_intro_name(text: str) -> Optional[str]:
     реализация: гейт ``register_speaker`` (#2925) сверяет с ним имя, которое модель пишет в профиль голоса."""
     tokens = name_tokens(text)
     return introduced_name(tokens) or _greeted_name(tokens)
+
+
+def asks_to_listen(text: str) -> bool:
+    """Просит ли фраза робота слушать и не встревать (#4179): формы ``knowledge.LISTEN_ONLY_FORMS`` целиком («ты просто
+    слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» -
+    нет."""
+    return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
 
 
 def asks_own_memory(text: str) -> bool:
