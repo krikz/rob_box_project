@@ -101,6 +101,43 @@ def test_asked_level_reads_the_direction_with_negation(text, level):
     assert asked_level(text) == level
 
 
+@pytest.mark.parametrize("text, level", [
+    ("включи сет про космос не слишком громко", "quieter"),
+    ("поставь музыку не очень громко", "quieter"),
+    ("поставь ритм не так уж громко", "quieter"),
+    ("поставь ритм не слишком тихо", "louder"),
+    ("поставь ритм потише, не очень громко", "quieter"),
+])
+def test_4159_degree_between_not_and_the_level_word_keeps_the_direction(text, level):
+    """Ревью PR #4150: «не слишком громко» читалось как louder, «потише, не очень громко» теряло просьбу."""
+    assert asked_level(text) == level
+
+
+@pytest.mark.parametrize("text, theme", [
+    ("включи сет про космос не слишком громко", "космос"),
+    ("включи сет про космос не так уж громко", "космос"),
+    ("включи сет про космос, потише, не очень громко", "космос"),
+])
+def test_4159_the_whole_level_phrase_leaves_the_theme(text, theme):
+    """Фраза громкости целиком - уровень заказа: в теме не остаётся ни «не», ни «слишком/очень/так уж»."""
+    assert heard_theme(text) == theme
+
+
+def test_4159_degree_words_stay_in_the_theme_away_from_a_level_word():
+    """Степень вне фразы громкости - обычное слово темы («очень грустный» не теряет «очень», если оно значимое)."""
+    assert "грустн" in heard_theme("поставь сет про очень грустный дождь")
+
+
+@pytest.mark.parametrize("text", ["включи сет про космос не слишком громко", "поставь ритм потише, не очень громко"])
+def test_4159_not_too_loud_order_steps_the_fader_quieter_once(text):
+    rig = _rig()
+    _dj, req = _tools(rig)
+    fader = req.level = Fader()
+    result = req.execute(intent="track", text=text, engine="synth", heard_text=text)
+    assert result.success
+    assert fader.asked == ["quieter"] and result.data["level"]["asked"] == "quieter"
+
+
 # ── шаг фейдера при старте трека ───────────────────────────────────────────────────────────────────────────────
 
 

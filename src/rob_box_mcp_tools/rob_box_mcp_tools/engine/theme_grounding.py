@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
-from rob_box_dialog.words import level_word
+from rob_box_dialog.words import level_phrases, level_word
 from rob_box_music import knowledge as kn
 from rob_box_music.theme import match_style
 from rob_box_music.universes import is_mood, universe_of, universe_spans, words_of
@@ -50,8 +50,11 @@ def _theme_word(words: List[str], i: int, request: frozenset) -> bool:
 
 def _kept(words: List[str], request: frozenset) -> List[bool]:
     """Какие слова реплики остаются в теме: слова темы (:func:`_theme_word`); «и» - только между словами темы, «не» -
-    только перед словом темы (слово громкости уходит с «не», слово темы остаётся с ним)."""
-    keep = [w not in _AND and _theme_word(words, i, request) for i, w in enumerate(words)]
+    только перед словом темы (слово громкости уходит с «не», слово темы остаётся с ним). Фраза громкости целиком -
+    уровень заказа, не тема: «не слишком громко» уходит со степенью (``words.level_phrases``, #4159 п.2), иначе в теме
+    остались бы «не слишком»."""
+    level = {i for first, last, _kind in level_phrases(words) for i in range(first, last + 1)}
+    keep = [w not in _AND and i not in level and _theme_word(words, i, request) for i, w in enumerate(words)]
     for i, word in enumerate(words):
         if word in _AND:
             keep[i] = any(keep[:i]) and any(keep[i + 1:])

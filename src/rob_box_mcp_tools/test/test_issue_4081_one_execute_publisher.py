@@ -34,10 +34,12 @@ def _load_harness():
 
 _h = _load_harness()
 
-from rob_box_mcp_tools.base import ToolExecutionType  # noqa: E402
-from rob_box_mcp_tools.llm_adapter import EXECUTE_TOPIC, LLMToolCallAdapter, shared_execute_publisher  # noqa: E402
+from rob_box_mcp_tools import llm_adapter  # noqa: E402
+from rob_box_mcp_tools.base import ToolExecutionType, shared_publisher  # noqa: E402
+from rob_box_mcp_tools.llm_adapter import LLMToolCallAdapter  # noqa: E402
 from rob_box_mcp_tools.mcp_auth import PERSONALITY_SENDER, TELEGRAM_SENDER  # noqa: E402
 
+EXECUTE_TOPIC = "/mcp/execute"
 RESULT_TOPIC = "/mcp/result"
 
 
@@ -106,11 +108,22 @@ def test_other_nodes_keep_their_own_publisher():
     assert dialog.created.count(EXECUTE_TOPIC) == supervisor.created.count(EXECUTE_TOPIC) == 1
 
 
-def test_shared_publisher_is_taken_from_the_node_and_works_without_node_dict():
+def test_adapter_takes_its_publisher_from_the_one_shared_publisher_helper_and_keeps_no_cache_of_its_own():
+    """#4159 п.4 (ревью PR #4147): издатель адаптера - ``base.shared_publisher`` (#3108), на который рассчитан
+    ``tools/architecture_audit.py`` (``ROS_HELPER_CALLS``); второго кэша издателя в ``llm_adapter`` нет, и на ноду он
+    своих атрибутов не кладёт."""
     bus = _h._Bus()
     node = _CountingNode(bus)
-    first = shared_execute_publisher(node, 10)
-    assert shared_execute_publisher(node, 10) is first and node.created == [EXECUTE_TOPIC]
+    first = LLMToolCallAdapter(node, sender=PERSONALITY_SENDER)
+    second = LLMToolCallAdapter(node, sender=TELEGRAM_SENDER)
+    assert first.execute_pub is second.execute_pub
+    assert node.created.count(EXECUTE_TOPIC) == 1
+    assert not hasattr(node, "_mcp_execute_publisher"), "кэш издателя - у base.shared_publisher, не атрибут ноды"
+    assert not hasattr(llm_adapter, "shared_execute_publisher") and not hasattr(llm_adapter, "_EXECUTE_PUB_ATTR")
+
+
+def test_node_that_cannot_be_cached_gets_its_own_publisher_per_adapter_like_the_helper_says():
+    """``base.shared_publisher`` без weak-кэша (узел без ``__weakref__``) честно заводит издателя на каждый вызов."""
 
     class _Slotted:
         __slots__ = ("created",)
@@ -122,9 +135,9 @@ def test_shared_publisher_is_taken_from_the_node_and_works_without_node_dict():
             self.created.append(topic)
             return object()
 
-    slotted = _Slotted()  # узел без ``__dict__`` общий издатель не запомнит - каждый вызов честно заводит свой
-    shared_execute_publisher(slotted, 10)
-    shared_execute_publisher(slotted, 10)
+    slotted = _Slotted()
+    shared_publisher(slotted, type(_string_msg()), EXECUTE_TOPIC, 10)
+    shared_publisher(slotted, type(_string_msg()), EXECUTE_TOPIC, 10)
     assert slotted.created == [EXECUTE_TOPIC, EXECUTE_TOPIC]
 
 

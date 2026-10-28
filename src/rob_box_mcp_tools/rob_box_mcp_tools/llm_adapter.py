@@ -31,7 +31,7 @@ from .async_executor import AsyncToolExecutor
 # импортировался из async_executor, где лежала вторая, более бедная
 # копия того же класса (без get_count()/has_tool_calls()).
 from .core.tool_call_accumulator import ToolCallAccumulator
-from .base import ToolExecutionType
+from .base import ToolExecutionType, shared_publisher
 from .mcp_auth import RequestAuthenticator
 
 
@@ -67,27 +67,6 @@ TURN_CONTEXT_ARGS: Mapping[str, Tuple[str, ...]] = {
 }
 
 TurnContextProvider = Callable[[], Mapping[str, Any]]
-
-#: Топик запросов выполнения тулов и атрибут ноды, под которым лежит её единственный издатель в него.
-EXECUTE_TOPIC = "/mcp/execute"
-_EXECUTE_PUB_ATTR = "_mcp_execute_publisher"
-_EXECUTE_PUB_LOCK = threading.Lock()
-
-
-def shared_execute_publisher(node: Any, qos_profile: Any) -> Any:
-    """Издатель ``/mcp/execute`` ноды - один на ноду (#4081, ``architecture/ownership.yml``: как ``speech_client``).
-
-    ``dialog_node`` строит два адаптера (Личность и агент чата Telegram, у каждого своя подпись ``sender`` и свой срез
-    тулов), и раньше каждый заводил свой издатель: ``duplicate_publishers /mcp/execute /dialog_node`` в рантайм-аудите
-    27.10. Подпись, срез и ожидание ответов остаются за адаптером - от издателя они не зависят. Первый адаптер ноды
-    создаёт издателя, остальные берут его же; QoS у всех один (RELIABLE, KEEP_LAST 10)."""
-    with _EXECUTE_PUB_LOCK:
-        shared = vars(node).get(_EXECUTE_PUB_ATTR) if hasattr(node, "__dict__") else None
-        if shared is None:
-            shared = node.create_publisher(String, EXECUTE_TOPIC, qos_profile)
-            if hasattr(node, "__dict__"):
-                setattr(node, _EXECUTE_PUB_ATTR, shared)
-        return shared
 
 
 def apply_turn_context(
@@ -170,8 +149,10 @@ class LLMToolCallAdapter:
             depth=10
         )
 
-        # Publisher для запросов выполнения инструментов - один на ноду, общий у всех её адаптеров (#4081)
-        self.execute_pub = shared_execute_publisher(node, qos_profile)
+        # Publisher для запросов выполнения инструментов - один на ноду, общий у всех её адаптеров (#4081): тот же
+        # ``base.shared_publisher`` (#3108), на который рассчитан tools/architecture_audit.py (ROS_HELPER_CALLS); своего
+        # кэша издателя у адаптера нет. Подпись (``sender``), срез тулов и ожидание ответов остаются за адаптером.
+        self.execute_pub = shared_publisher(node, String, "/mcp/execute", qos_profile)
 
         # Подпись запросов общим секретом — mcp_server отклоняет
         # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
