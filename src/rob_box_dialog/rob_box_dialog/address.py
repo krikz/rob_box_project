@@ -176,13 +176,18 @@ def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "
         said, after_wake = repair(rest), repair(command)
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
+        if backlog is not None:
+            backlog.note_addressed(heard.t)  # фоновое до этой фразы модель видит в снимке хода: издалека не подхватывать
         return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
                          command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
+    # что не вошло в рассказ, остаётся в бэклоге и идёт в снимок с автором и возрастом (#3975): «не сходится по смыслу -
+    # часть могла уйти в бэклог» модель видит данными, не правилом
     return Addressed(" ".join(e.text for e in taken), BACKLOG_PICKUP, True,
-                     tuple(Backlog.label(e, heard) for e in taken))
+                     tuple(Backlog.label(e, heard) for e in taken),
+                     background=tuple(backlog.background_since_reply(heard)))
 
 
 def _seconds(stamp: Any) -> float:
