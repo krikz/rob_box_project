@@ -483,7 +483,8 @@ class STTNode(Node):
 
         # Речь робота (чтобы не слышать себя): SpeechEvent реплики любого агента, «звучит» решает SpeakingWatch
         # (PR-15 15-0b #3711). Эхо-окно после неё (#989, #4072) — по фронтам /audio/vad: фраза, чей голос звучал
-        # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py).
+        # только в окне, — эхо, из неё проходит лишь ясный стоп с вейком (core/echo_window.py). Журнал речи
+        # (SpeechRequest — текст по speech_id) даёт фразе рядом с речью слова робота: их повтор — эхо (#4145).
         self._echo = echo_window.watch(self, grace_s=self.tts_grace_s, aec_mode=self.aec_mode, vad_type=Bool)
         # ADR-0150 PR-5 (#3694) — речь stt_node больше не глушит: на сегмент с вейком публикует
         # /dialog/interrupt_request, решает диалог (ясная стоп-команда — SpeechCancel по эпохе).
@@ -843,10 +844,15 @@ class STTNode(Node):
             # ADR-0076: фиксируем пустые попытки для wake-сборщика.
             self._last_attempts = []
 
-        # Голос фразы звучал только в эхо-окне после речи робота: дальше идёт лишь ясный стоп с вейком (#4072),
-        # остальное — эхо, молча и без «не расслышал» (петля #989).
-        if not admission.keeps(text, self.wake_words):
-            self.get_logger().info(admission.echo_note(text, duration))
+        # Эхо собственной речи робота (core/echo_window.py): голос звучал только в эхо-окне (#4072), короткий обрывок
+        # при речи (ревью #4122) или слова фразы повторяют звучавшую рядом реплику робота (#4145). Ясный стоп с вейком
+        # идёт всегда; эхо — молча, без «не
+        # расслышал» (петля #989), не в диалог (ни бэклога, ни модели) и в /voice/stt/echo: биометрия не заводит и
+        # не растит из него профиль.
+        echo = admission.echo(text, self.wake_words, duration)
+        if echo is not None:
+            self.get_logger().info(echo.note)
+            self._echo.publish_echo(self._active_utterance_id, text)
             self.publish_state("ready")
             return
 

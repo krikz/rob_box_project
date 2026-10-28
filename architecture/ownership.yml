@@ -26,7 +26,8 @@ nodes:
   stt_node:
     owner: voice
     package: rob_box_voice
-    source: [src/rob_box_voice/rob_box_voice/stt_node.py]
+    # #4145: эхо-окно и решение «эхо речи робота» (core/echo_window.py, watch) публикуют /voice/stt/echo из stt_node
+    source: [src/rob_box_voice/rob_box_voice/stt_node.py, src/rob_box_voice/rob_box_voice/core/echo_window.py]
   speaker_id_node:
     owner: voice
     package: rob_box_voice
@@ -129,9 +130,19 @@ topics:
     # telegram_node пишет сообщения чата и кнопки меню (source=telegram|operator);
     # различает писателей поле Utterance.source, не имя топика.
     writers_allowed: [stt_node, telegram_node]
-    # v2 (PR-12a #3706): source=telegram читает dialog_node как вход телеграм-агента, не Личности
-    readers: [dialog_node, context_aggregator_node]
+    # v2 (PR-12a #3706): source=telegram читает dialog_node как вход телеграм-агента, не Личности;
+    # speaker_id_node (#4145): фраза ReSpeaker ушла в диалог - вердикт «не эхо» для профилей (core/echo_window.listen)
+    readers: [dialog_node, context_aggregator_node, speaker_id_node]
     debt: "context_aggregator_node - мёртвый контур internal_dialogue, решение о удалении за координатором (command_node с PR-5 #3694 получает /dialog/intent)"
+  /voice/stt/echo:
+    owner: stt_node
+    type: rob_box_dialog_msgs/Utterance
+    status: live
+    introduced_by: "#4145"
+    # фраза ReSpeaker, признанная эхом речи робота (core/echo_window.Admission.echo): в диалог не идёт;
+    # speaker_id_node по ней профиль не заводит и не растит (core/echo_window.EchoVerdicts)
+    writers_allowed: [stt_node]
+    readers: [speaker_id_node]
   /voice/stt/speaker:
     owner: stt_node
     type: std_msgs/String
@@ -199,7 +210,8 @@ topics:
     status: live
     # публикует только клиент rob_box_core.speech_client.say (вызывающие - в nodes.speech_client)
     writers_allowed: [speech_client]
-    readers: [tts_node]
+    # stt_node (#4145): журнал речи эхо-окна - текст реплики робота по speech_id (core/echo_window.SpeechJournal)
+    readers: [tts_node, stt_node]
   /voice/speech/cancel:
     owner: tts_node
     type: rob_box_dialog_msgs/SpeechCancel

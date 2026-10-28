@@ -16,6 +16,10 @@ Subscribes:
     /voice/speaker/epithet  (String)  — JSON {"speaker_id","epithet"} — кличка,
                                          придуманная LLM (слой 2 гибрида);
                                          принимается после валидации
+    /voice/stt/utterance, /voice/stt/echo (Utterance) — вердикт stt_node по
+                                         фразе рядом с речью робота (#4145,
+                                         core/echo_window.listen): человек —
+                                         профили как раньше, эхо — не трогать
 
 Publishes:
     /voice/speaker/result (rob_box_dialog_msgs/SpeakerResult) — результат
@@ -85,6 +89,7 @@ Parameters:
 """
 
 import collections
+import functools
 import json
 import math
 import threading
@@ -106,7 +111,7 @@ from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import SOURCE_ENROLL, TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
 from rob_box_core.tools_db import tools_db_path
 
-from .core import epithets, unnamed_voice
+from .core import echo_window, epithets, unnamed_voice
 from .core.utterance_id import compute_utterance_id
 from .utils import speaker_embeddings as _se_mod
 from .utils.speaker_embeddings import SpeakerDatabase, SpeakerMatch
@@ -292,6 +297,44 @@ def on_speech_end(callback):
             callback()
 
     return on_event
+
+
+def _settle_phrase(
+    node: "SpeakerIdNode",
+    embedding: np.ndarray,
+    match: Optional[SpeakerMatch],
+    best: Optional[SpeakerMatch],
+    duration_sec: float,
+    utterance_id: Optional[str],
+    elapsed: float,
+) -> None:
+    """Что фраза меняет в профилях и что о ней публикуется: рост галереи growth-сессии, профиль без имени, результат.
+
+    Фраза рядом с речью робота доходит сюда только после вердикта ``stt_node`` (``echo_window.settle``, #4145): эхо
+    собственного голоса не заводит профиль, не растит галерею и результата не даёт — фраза не человека."""
+    # Issue #2747 — рост галереи НЕ зависит от исхода identify() (см. большой комментарий у
+    # speaker_embeddings.GALLERY_WARMUP_SIZE: акустический гейт для этого решения отклонён — same/cross-voice
+    # распределения пересекаются целиком на реальных данных робота). Якорь — непрерывность growth-сессии,
+    # открытой в _do_register().
+    node._apply_growth_session(embedding, match)
+    # Issue #1160 — Prometheus metrics: known/unknown.
+    record_speaker_recognize(known=bool(match), confidence=match.confidence if match else None)
+    name_decision = _name_decision(node, embedding, match)
+    enrolled = unnamed_voice.enroll(node, embedding, match, duration_sec)  # узнанному (и спорному) — нет
+    # Issue #3858 -- вердикт в логе строится ПОСЛЕ решения об имени и совпадает с опубликованным: харнесс
+    # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
+    # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.
+    node.get_logger().info(_verdict_line(match, name_decision, elapsed, enrolled))
+    if enrolled is not None:  # профиль из этой фразы: диалог знает, что голос слышен впервые (#3993)
+        node._publish_result(enrolled, source=SOURCE_ENROLL, utterance_id=utterance_id)
+        return
+    node._publish_result(
+        match,
+        name_decision=name_decision,
+        utterance_id=utterance_id,
+        inconclusive=node._inconclusive_reason(match, duration_sec),
+        candidate=best,
+    )
 
 
 def _verdict_line(
@@ -963,6 +1006,9 @@ class SpeakerIdNode(Node):
             on_speech_end(self._on_speech_end),
             reliable_qos,
         )
+        # #4145 — эхо собственной речи робота не человек: фраза, звучавшая рядом с речью, меняет профили только
+        # после вердикта stt_node (/voice/stt/utterance — человек, /voice/stt/echo — эхо), решение одно у stt_node.
+        self._echo_verdicts = echo_window.listen(self, submit=self._executor.submit)
         self.get_logger().info("🎙️ speaker_id_node ready")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
@@ -1014,6 +1060,8 @@ class SpeakerIdNode(Node):
             f"🎤 Received speech audio: {len(pcm_bytes)} bytes ({len(pcm_bytes)/self._sample_rate/2:.1f}s) "
             f"utterance_id={utterance_id}"
         )
+        # #4145 — фраза звучала рядом с речью робота: профили по ней ждут вердикта stt_node об эхе.
+        echo_window.heard(self, utterance_id, len(pcm_bytes) / self._sample_rate / 2)
         self._executor.submit(self._process_utterance, pcm_bytes, utterance_id)
 
     def _on_register_request(self, msg: String) -> None:
@@ -1363,33 +1411,12 @@ class SpeakerIdNode(Node):
 
         match = self._db.identify(embedding)
         best = self._log_identify_candidates(embedding, voiced_sec=duration_sec)
-        # Issue #2747 — рост галереи НЕ зависит от исхода identify() выше
-        # (см. большой комментарий у speaker_embeddings.GALLERY_WARMUP_SIZE:
-        # акустический гейт для этого решения отклонён — same/cross-voice
-        # распределения пересекаются целиком на реальных данных робота).
-        # Якорь — непрерывность growth-сессии, открытой в _do_register().
-        self._apply_growth_session(embedding, match)
-
-        # Issue #1160 — Prometheus metrics: known/unknown.
-        record_speaker_recognize(
-            known=bool(match),
-            confidence=match.confidence if match else None,
-        )
-        name_decision = _name_decision(self, embedding, match)
-        enrolled = unnamed_voice.enroll(self, embedding, match, duration_sec)  # узнанному (и спорному) — нет
-        # Issue #3858 -- вердикт в логе строится ПОСЛЕ решения об имени и совпадает с опубликованным: харнесс
-        # (must_not_identify_as, ADR-0134) читает эту строку как «кого робот опознал». Раньше строка печатала лучшего
-        # кандидата до решения, и незнакомец в полосе сомнения значился «Борисом» в логе при name=None в результате.
-        self.get_logger().info(_verdict_line(match, name_decision, elapsed, enrolled))
-        if enrolled is not None:  # профиль из этой фразы: диалог знает, что голос слышен впервые (#3993)
-            self._publish_result(enrolled, source=SOURCE_ENROLL, utterance_id=utterance_id)
-            return
-        self._publish_result(
-            match,
-            name_decision=name_decision,
-            utterance_id=utterance_id,
-            inconclusive=self._inconclusive_reason(match, duration_sec),
-            candidate=best,
+        # #4145 — профили фраза меняет в _settle_phrase: сразу, а звучавшая рядом с речью робота — после вердикта
+        # stt_node об эхе (одно решение, core/echo_window.py); эхо собственного голоса профиля не заводит и не растит.
+        echo_window.settle(
+            self,
+            utterance_id or "",
+            functools.partial(_settle_phrase, self, embedding, match, best, duration_sec, utterance_id, elapsed),
         )
 
     def _inconclusive_reason(
