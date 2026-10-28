@@ -19,6 +19,7 @@ from rob_box_dialog.knowledge import (
     INTRO_NOT_A_NAME,
     KNOWN_FIRST_NAMES,
     NAME_CASE_MIN_STEM,
+    NAME_CASE_STEMS,
     NAME_CASE_SURE_TAILS,
     NAME_CASE_TAILS,
     REACH_END_OR_NEXT,
@@ -190,32 +191,67 @@ def name_tokens(text: str) -> Tuple[str, ...]:
 
 def nominative_name(word: str) -> str:
     """Слово-имя (нижний регистр, ё → е, как в :func:`name_tokens`) в именительном падеже: «тамарой» → «тамара», «сашей»
-    → «саша», «борисом» → «борис», «сергеем» → «сергей», «запиши как тамару» → «тамара» (таблицы ``NAME_CASE_TAILS`` /
-    ``NAME_CASE_SURE_TAILS``). Имя из словаря ``KNOWN_FIRST_NAMES`` уже именительное — как есть. Единственное место, где
-    падеж имени приводится к именительному: фраза «зови меня Тамарой» и профиль «Тамара» — одно имя (ревью PR #4108)."""
+    → «саша», «борисом» → «борис», «сергеем» → «сергей», «запиши как тамару» → «тамара», «запиши как бориса» → «борис»,
+    «переименуй в сергея» → «сергей», «львом» → «лев» (таблицы ``NAME_CASE_TAILS`` / ``NAME_CASE_STEMS`` /
+    ``NAME_CASE_SURE_TAILS``).
+
+    Порядок: имя из словаря ``KNOWN_FIRST_NAMES`` уже именительное — как есть («валерия» — женское имя, не «валерий»);
+    иначе форма, из которой слово получается по ``NAME_CASE_TAILS`` и которая есть в словаре (:func:`_dictionary_form`);
+    иначе незнакомое имя — только по однозначному творительному «-ой/-ом» (:func:`_sure_form`); иначе слово как есть.
+    Единственное место, где падеж имени приводится к именительному: фраза «зови меня Тамарой» и профиль «Тамара» — одно
+    имя (ревью PR #4108, #4118)."""
     if word in KNOWN_FIRST_NAMES:
         return word
     return _dictionary_form(word) or _sure_form(word) or word
 
 
 def _dictionary_form(word: str) -> Optional[str]:
-    """Форма из словаря имён, из которой слово получается по ``NAME_CASE_TAILS``, или ``None``."""
+    """Форма из словаря имён, из которой слово получается по ``NAME_CASE_TAILS``, или ``None``. Основа с беглой гласной
+    («львом» → «льв») приводится через ``NAME_CASE_STEMS`` («лев») до сверки со словарём."""
     for tail, replacements in NAME_CASE_TAILS:
         stem = word[:-len(tail)]
         if not (word.endswith(tail) and stem):
             continue
-        found = next((stem + r for r in replacements if stem + r in KNOWN_FIRST_NAMES), None)
+        forms = (NAME_CASE_STEMS.get(stem + r, stem + r) for r in replacements)
+        found = next((form for form in forms if form in KNOWN_FIRST_NAMES), None)
         if found is not None:
             return found
     return None
 
 
 def _sure_form(word: str) -> Optional[str]:
-    """Незнакомое имя в однозначном творительном («аскаром» → «аскар»), иначе ``None`` (``NAME_CASE_SURE_TAILS``)."""
+    """Незнакомое имя (его нет в словаре и по ``NAME_CASE_TAILS`` оно не получилось) в однозначном творительном
+    («аскаром» → «аскар», «никитой» → «никита»), иначе ``None``: слово остаётся как есть. Подходит ЛЮБОЕ слово на
+    «-ой»/«-ом» с основой от ``NAME_CASE_MIN_STEM`` букв (``NAME_CASE_SURE_TAILS``) - беглую гласную здесь не
+    восстановить: имена с ней (``NAME_CASE_STEMS``) разобраны в :func:`_dictionary_form` раньше."""
     for tail, replacement in NAME_CASE_SURE_TAILS.items():
         if word.endswith(tail) and len(word) - len(tail) >= NAME_CASE_MIN_STEM:
             return word[:-len(tail)] + replacement
     return None
+
+
+def profile_name(name: Any) -> str:
+    """Имя для профиля голоса (``register_speaker(name=…)``): без пробелов по краям. Одно слово - с заглавной и в
+    именительном падеже (:func:`nominative_name`): имя, которое модель написала так, как услышала («Тамарой»,
+    «Бориса»), не попадает в профиль падежом - профиль «Тамара», а не «Тамарой». ё остаётся: и в именительном
+    («Алёна»), и при приведении падежа («Алёну» → «Алёна», а не «Алена»: в профиле одно написание имени). Несколько слов
+    («Иван Петров») - как написаны: падеж не трогается и регистр не меняется, только первая буква заглавная. Пусто -
+    пусто."""
+    cleaned = str(name or "").strip()
+    if len(cleaned.split()) != 1:
+        return cleaned[:1].upper() + cleaned[1:]
+    written = cleaned.lower()
+    nominative = nominative_name(written.replace("ё", "е"))
+    return _with_written_yo(written, nominative).capitalize()
+
+
+def _with_written_yo(written: str, nominative: str) -> str:
+    """Именительный с ё слова, как оно написано: «алёну» → «алена» → «алёна». ё сохраняется в общей основе слов (буквы
+    сравниваются как ё → е); заменённое окончание и основа из ``NAME_CASE_STEMS`` («львом» → «лев») - от именительного."""
+    common = 0
+    while common < min(len(written), len(nominative)) and written[common].replace("ё", "е") == nominative[common]:
+        common += 1
+    return written[:common] + nominative[common:]
 
 
 def name_key(name: Any) -> str:

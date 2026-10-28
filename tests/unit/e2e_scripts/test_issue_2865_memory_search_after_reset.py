@@ -149,6 +149,10 @@ def _load_memory_tools() -> types.ModuleType:
     pkg_name = "_issue2865_mcp"
     if f"{pkg_name}.tools.memory" in sys.modules:
         return sys.modules[f"{pkg_name}.tools.memory"]
+    # tools/memory.py берёт причину отказа из rob_box_dialog.knowledge (#4023): модуль чистый (stdlib), пакет - из src
+    dialog_src = str(REPO_ROOT / "src" / "rob_box_dialog")
+    if dialog_src not in sys.path:
+        sys.path.insert(0, dialog_src)
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(MCP_PKG)]
     sub = types.ModuleType(f"{pkg_name}.tools")
@@ -205,7 +209,8 @@ def _search_log(hits: list[dict]) -> str:
     memory_mod = _load_memory_tools()
     node = _Node(_Memory(hits))
     tool = memory_mod.MemorySearchTool(node)
-    result = tool.execute(query="чай")
+    # собеседник есть всегда: без него поиск не идёт (#4023), а v2 кладёт его из снимка
+    result = tool.execute(query="чай", speaker_id="spk-sasha")
     assert result.success, result.message
     return "\n".join(
         f"[INFO] [1790180960.1] [mcp_server]: {line}" for line in node._logger.lines

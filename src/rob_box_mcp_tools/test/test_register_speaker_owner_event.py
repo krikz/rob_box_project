@@ -169,3 +169,54 @@ def test_catalog_names_the_owner_event_source():
     from rob_box_core.tool_catalog import get_tool
 
     assert get_tool("register_speaker").event_source == dialogue_module.SPEAKER_RESULT_TOPIC == "/voice/speaker/result"
+
+
+# --- падеж имени, которое модель пишет в профиль (ревью PR #4118) ---------------------------------------------------
+
+
+def _renames(node):
+    return [body for topic, body in node.sent if topic == "/voice/speaker/rename"]
+
+
+def test_name_written_by_the_model_in_instrumental_goes_to_the_profile_in_nominative(monkeypatch):
+    """«Зови меня Тамарой»: модель передала name='Тамарой' как услышала - владельцу голосов уходит «Тамара», фраза
+    о профиле тоже «Тамара», а не «Тамарой» (``words.profile_name``)."""
+    tool, node = _tool(monkeypatch, _registered)
+    out = tool.execute(name="Тамарой", utterance_id=UTT)
+    assert _registers(node) == [{"name": "Тамара", "utterance_id": UTT}]
+    assert out.data["name"] == "Тамара" and "Тамарой" not in (out.message or "")
+
+
+def test_masculine_accusative_is_nominative_in_the_profile_too(monkeypatch):
+    tool, node = _tool(monkeypatch, _registered)
+    tool.execute(name="бориса", utterance_id=UTT)
+    assert _registers(node) == [{"name": "Борис", "utterance_id": UTT}]
+
+
+def test_rename_to_a_name_in_instrumental_publishes_the_nominative(monkeypatch):
+    tool, node = _tool(monkeypatch, lambda b: _registered(b) if "utterance_id" in b else None)  # rename-пакет без фразы
+    tool.execute(name="Тамарой", old_name="Эйджик", utterance_id=UTT)
+    assert _renames(node) == [{"old_name": "Эйджик", "new_name": "Тамара"}]
+    assert _registers(node) == [{"name": "Тамара", "utterance_id": UTT}]
+
+
+def test_female_name_that_looks_like_a_masculine_genitive_is_registered_as_it_is(monkeypatch):
+    """«Меня зовут Валерия»: женское имя, не «Валерий» (оно стоит в словаре имён)."""
+    tool, node = _tool(monkeypatch, _registered)
+    tool.execute(name="Валерия", utterance_id=UTT)
+    assert _registers(node) == [{"name": "Валерия", "utterance_id": UTT}]
+
+
+def test_yo_of_the_name_survives_the_case_reduction_in_the_profile(monkeypatch):
+    """Ревью PR #4129: «Алёну» (винительный) уходила в профиль «Алена», а «Алёна» - «Алёна»: два написания одного имени."""
+    tool, node = _tool(monkeypatch, _registered)
+    tool.execute(name="Алёну", utterance_id=UTT)
+    assert _registers(node) == [{"name": "Алёна", "utterance_id": UTT}]
+
+
+def test_rename_to_a_name_of_several_words_publishes_it_as_written(monkeypatch):
+    """Ревью PR #4129: ``new_name`` из нескольких слов уходил как написан («Иван Петров»); ``profile_name`` не меняет его
+    ни падежом, ни регистром (было бы «Иван петров»)."""
+    tool, node = _tool(monkeypatch, lambda b: _registered(b) if "utterance_id" in b else None)
+    tool.execute(name="Иван Петров", old_name="Эйджик", utterance_id=UTT)
+    assert _renames(node) == [{"old_name": "Эйджик", "new_name": "Иван Петров"}]

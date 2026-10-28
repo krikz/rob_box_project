@@ -6,6 +6,10 @@ LLM на каждом ходе отдаёт ОДНУ команду: речь, �
 без вопроса человеку: ход закрывает провал (рефлекс ``failed``). :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
 tool-результатом, один раз на ответ (мост, решение Шифу 21.10 по #3698; ADR-0148 п.2).
 
+Речь человеку просим не длиннее ``SPEECH_MAX_CHARS``, а проверяем по ``SPEECH_ACCEPT_MAX_CHARS`` (#4137): длиннее —
+нарушение ``VIOLATION_SPEECH_TOO_LONG``; одно оно у команды (:func:`overlong_only`) — мост даёт модели ход компактнее, и
+после него длинно — речь ужимает код (:func:`fit_speech`).
+
 :class:`Form` — форма команды ХОДА (#4021): какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
 (:func:`turn_form`), мост строит по ней схему (:func:`form_schema`), :func:`validate` по ней же судит ответ — одно
 решение кода в одном месте, не правило в промпте.
@@ -561,7 +565,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     open_actions = tuple(a for a in cmd.actions if a.tool not in form.closed_tools())
     checks: Tuple[Callable[[], Any], ...] = (
         lambda: _check_passed(cmd, form),
-        lambda: _check_speech(cmd.speech, kn.SPEECH_MAX_CHARS, "speech"),
+        lambda: _check_spoken(cmd.speech, "speech"),
         lambda: _check_voice(cmd.voice, busy),
         lambda: _check_ask(cmd.ask),
         lambda: _check_actions(open_actions, available, agent),
@@ -757,6 +761,37 @@ def _check_speech(text: Optional[str], limit: int, where: str) -> None:
         raise _Bad("control_chars", where)
 
 
+def _check_spoken(text: Optional[str], where: str) -> None:
+    """Речь человеку (``speech``, ``ask.text``, #4137): звучит до ``SPEECH_ACCEPT_MAX_CHARS`` включительно, хоть модель
+    и просим о ``SPEECH_MAX_CHARS``; длиннее — своё нарушение ``VIOLATION_SPEECH_TOO_LONG``, не ``too_long``."""
+    if text is not None and len(text) > kn.SPEECH_ACCEPT_MAX_CHARS:
+        raise _Bad(kn.VIOLATION_SPEECH_TOO_LONG, f"{where} {len(text)} > {kn.SPEECH_ACCEPT_MAX_CHARS}")
+    _check_speech(text, kn.SPEECH_ACCEPT_MAX_CHARS, where)
+
+
+def overlong_only(result: Result) -> bool:
+    """Команда отвергнута только за длину речи (все нарушения — ``VIOLATION_SPEECH_TOO_LONG``): ей ход компактнее
+    (``knowledge.SPEECH_COMPACT_TURNS``), затем :func:`fit_speech`, а не общий повтор и заглушка (#4137)."""
+    return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_TOO_LONG for v in result.all)
+
+
+def fit_speech(cmd: Command) -> Command:
+    """Последний запас (#4137, решение Шифу 28.10): речь человеку (``speech``, ``ask.text``) длиннее
+    ``SPEECH_ACCEPT_MAX_CHARS`` и после хода компактнее — первые целые предложения, пока влезают; первое само длиннее —
+    по слову. Режет тот же код, что сегменты выступления (``plan.segments.cut``: строки и предложения, слово неделимо),
+    второго знания о границах предложения нет; хвостовая запятая или тире обрыва по слову не звучат. Не длиннее — как
+    есть."""
+    from rob_box_dialog.plan.segments import cut  # noqa: PLC0415 — plan.segments сам импортирует command
+
+    limit = kn.SPEECH_ACCEPT_MAX_CHARS
+
+    def fit(text: Optional[str]) -> Optional[str]:
+        return cut(text, limit)[0].rstrip(" ,;:—–-") if text is not None and len(text) > limit else text
+
+    ask = None if cmd.ask is None else replace(cmd.ask, text=fit(cmd.ask.text))
+    return replace(cmd, speech=fit(cmd.speech), ask=ask)
+
+
 def _check_speech_with_actions(cmd: Command, agent: str) -> None:
     """``speech`` рядом с действиями не звучит (§4.1): нарушение, а не молчаливая потеря ответа. Вместе с ``perform``
     его уже ловит ``perform_with_speech``; у телеграм-агента ``speech`` - текст в чат, он законен."""
@@ -771,7 +806,7 @@ def _check_ask(ask: Optional[Ask]) -> None:
         raise _Bad("bad_enum", f"ask.expects={ask.expects}", kn.ASK_EXPECTS)
     if (ask.text is None) == (ask.key is None):
         raise _Bad("bad_ask", "у вопроса ровно одно из text/key")
-    _check_speech(ask.text, kn.SPEECH_MAX_CHARS, "ask.text")
+    _check_spoken(ask.text, "ask.text")
 
 
 def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], agent: str) -> None:
@@ -826,7 +861,9 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     _check_segments(perf, busy)
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
-    for name in ("expression_per_segment", "voice_per_segment", "role_per_segment"):
+    # поля, которые называет модель, - первыми: голоса сегментов решает код из role_per_segment (_voice_roles), и при
+    # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит (#4112)
+    for name in ("expression_per_segment", "role_per_segment", "voice_per_segment"):
         per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
@@ -836,16 +873,17 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
 
 def _check_roles(perf: Performance, busy: Busy) -> None:
     """Роли выступления (#4084, :func:`.cast.problem`): у сказки ``cast`` обязателен (#3959: без ролей она звучала одним
-    голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами не больше,
-    чем голосов ролей. Уже решённая команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не
-    сказка без ролей."""
+    голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами без голоса не
+    больше, чем свободных голосов ролей (голоса героев идущего выступления, ``busy.cast``, заняты). Уже решённая
+    команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не сказка без ролей."""
     for i, name in enumerate((*(r.name for r in perf.cast or ()), *(perf.role_per_segment or ()))):
         _check_speech(name, kn.ROLE_NAME_MAX_CHARS, f"perform.role[{i}]")
     for i, voice in enumerate(perf.voice_per_segment or ()):
         _check_speech(voice, kn.VOICE_MAX_CHARS, f"perform.voice_per_segment[{i}]")
     if not perf.segments or (perf.voice_per_segment is not None and not busy.voices):
         return
-    found = perform_cast.problem(perf.kind, len(perf.segments), perf.cast, perf.role_per_segment, len(busy.voices))
+    found = perform_cast.problem(perf.kind, len(perf.segments), perf.cast, perf.role_per_segment, busy.role_pool(),
+                                 dict(busy.cast))
     if found is not None:
         raise _Bad(*found)
 
@@ -940,14 +978,17 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "unknown_tool": "такого тула нет",
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
-                    "списки *_per_segment — по числу сегментов",
+                    "списки expression_per_segment и role_per_segment — по числу сегментов",
     perform_cast.TALE_WITHOUT_CAST: "сказка: perform.cast обязателен — герои с репликами (name и gender; героев нет — "
                                     "[]) и role_per_segment — чья реплика в каждом сегменте (\"\" — рассказчик); "
                                     "сегмент = реплика одного говорящего, повествование и каждая реплика героя — "
                                     "отдельные сегменты; голоса героям даст код",
     perform_cast.BAD_CAST: "роли выступления: в role_per_segment — только name героя из cast или \"\" (рассказчик), по "
-                           "одной роли на сегмент, по числу сегментов; героев с репликами не больше, чем голосов",
+                           "одной роли на сегмент, по числу сегментов; героев с репликами не больше, чем свободных "
+                           "голосов (голоса героев идущего выступления заняты)",
     "too_long": "слишком длинно",
+    kn.VIOLATION_SPEECH_TOO_LONG: f"слишком длинно для речи: пришли ту же команду, а ответ сделай компактнее — не "
+                                  f"длиннее {kn.SPEECH_MAX_CHARS} символов, тот же смысл по тем же данным",
     "control_chars": "управляющие символы в тексте",
     "passed_with_content": "passed — только без речи и действий",
     kn.VIOLATION_PASSED_ADDRESSED: "реплика адресована тебе — молчать нельзя, поля passed в этом ходе нет: ответь "

@@ -16,7 +16,11 @@
   не больше ``knowledge.COMMAND_RETRIES_MAX`` раз на ответ (решение Шифу 21.10 по #3698, как deepseek-harness:
   ``invalid arguments`` с перечнем допустимого). Снова невалидна — исполнителю хода уходит вызов ``command`` с полем
   ``knowledge.COMMAND_INVALID_FIELD``: ход закрывается как провал без речи (рефлекс ``failed``). Пока идёт повтор,
-  робот молчит: ответ ноде уходит один, после повтора.
+  робот молчит: ответ ноде уходит один, после повтора;
+* **речь длиннее, чем звучит** (#4137, решение Шифу 28.10) — единственное нарушение ``VIOLATION_SPEECH_TOO_LONG``
+  (``command.overlong_only``): тот же повтор, но своим счётом ``knowledge.SPEECH_COMPACT_TURNS`` — ход компактнее
+  есть, даже когда повтор потрачен на другое; и после него длинно — речь ужимает код (``command.fit_speech``), строка
+  лога :data:`COMPACT_LOG_MARK`.
 
 Какие провайдеры отвечают командой — строка конфига ``llm_command_providers`` (:func:`wrapper_for`); остальные
 остаются на ``speak_text``. ``"passed": false`` / ``args: ""`` MiniMax нормализует ``command.parse`` (PR-7 #3698).
@@ -33,8 +37,8 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, form_schema,
-                                    is_empty, is_query_data, parse, to_args, validate)
+from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
+                                    form_schema, is_empty, is_query_data, overlong_only, parse, to_args, validate)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -53,6 +57,8 @@ from rob_box_llm.provider import (
 
 #: Маркер строки лога о каждом ответе в режиме команд (читает ``scripts/dialog`` для A14).
 COMMAND_LOG_MARK = "🧾 [command]"
+#: Маркер строк лога о речи длиннее, чем звучит (#4137): ход компактнее и ужатие кодом.
+COMPACT_LOG_MARK = "✂️ [command]"
 #: Префикс id вызова ``command``, который собрал мост (видно в истории и логах исполнителя).
 CALL_ID_PREFIX = "cmd-"
 #: Режимы, где схема команды идёт текстом в промпте (в остальных её несёт тул или ``response_format``).
@@ -128,13 +134,15 @@ def reply_command(content: str, calls: Iterable[ToolCall]) -> Result:
     return from_text
 
 
-def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy(), agent: str = kn.AGENTS[0]) -> Result:
+def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy(), agent: str = kn.AGENTS[0],
+          fit: bool = False) -> Result:
     """Команда ответа провайдера, проверенная по срезу тулов запроса и занятому сейчас (``busy`` — ACTIVE-сегмент
     выступления для ``edit_pending``, PR-7c). Оборванный JSON аргументов — ``truncated``; вызов ``command`` с пустыми
     аргументами — ``bad_json`` (адаптер отдаёт ``{}``, когда JSON не разобрался); команда, которой нечего исполнить и
     нечего сказать (не ``passed``), — ``empty_command``: тот же повтор с объяснением, а не «тихий ответ» для v1-ретрая
     #1217 мимо команды (ночной замер #3698 22.10, ход 4). ``agent`` — чья команда (телеграм: речь при действиях
-    законна, ``say_aloud`` доступен — ``command.validate``)."""
+    законна, ``say_aloud`` доступен — ``command.validate``). ``fit`` — речь ужимает код до проверки
+    (``command.fit_speech``, последний запас #4137)."""
     if response.truncated_tool_args:
         return Invalid("truncated", "аргументы обрезаны по max_tokens")
     if any(c.name == kn.COMMAND_TOOL and not c.arguments for c in response.tool_calls):
@@ -142,7 +150,8 @@ def judge(response: LLMResponse, available: Iterable[str], busy: Busy = Busy(), 
     result = reply_command(response.content, response.tool_calls)
     if not isinstance(result, Command):
         return result
-    checked = validate(_without_speech_tool(result), available, SimpleNamespace(agent=agent), busy=busy)
+    cmd = _without_speech_tool(result)
+    checked = validate(fit_speech(cmd) if fit else cmd, available, SimpleNamespace(agent=agent), busy=busy)
     if isinstance(checked, Command) and is_empty(checked):
         return Invalid(kn.VIOLATION_EMPTY_COMMAND, "нет speech, ask, actions, perform и passed")
     return checked
@@ -178,6 +187,11 @@ def _spoken(cmd: Command) -> str:
     if cmd.perform is not None:
         return "\n".join(s for s in cmd.perform.segments if s)
     return ""
+
+
+def _overlong(invalid: Invalid) -> str:
+    """Что длиннее, чем звучит, — подробности нарушений ``VIOLATION_SPEECH_TOO_LONG`` («speech 400 > 350»)."""
+    return "; ".join(v.detail for v in invalid.all)
 
 
 def _without_speech_tool(cmd: Command) -> Command:
@@ -303,9 +317,11 @@ class CommandModeLLM(LLMProvider):
     async def answer(self, ask: Ask, msgs: List[LLMMessage], offered: Sequence[Mapping[str, Any]],
                      widen: bool = False) -> LLMResponse:
         """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же
-        запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; строка лога на каждый ответ и на повтор.
-        ``widen`` - первый ответ с тулом вне среза (``tool_not_available``) не повторяется как есть: :class:`_Widen`
-        просит запрос с группой этого тула (#3960)."""
+        запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; речь длиннее, чем звучит (одно это нарушение,
+        ``command.overlong_only``) — ход компактнее своим счётом ``SPEECH_COMPACT_TURNS``, а и после него длинно —
+        речь ужимает код (:meth:`_fitted`, #4137). Строка лога на каждый ответ и на повтор. ``widen`` - первый ответ с
+        тулом вне среза (``tool_not_available``) не повторяется как есть: :class:`_Widen` просит запрос с группой этого
+        тула (#3960)."""
         available = frozenset(_tool_name(t) for t in offered)
         response = without_reasoning(await ask(msgs))
         result = self._judged(response, available)
@@ -314,18 +330,39 @@ class CommandModeLLM(LLMProvider):
                               sorted(available))
             if names:
                 raise _Widen(names)
-        for attempt in range(1, kn.COMMAND_RETRIES_MAX + 1):
-            if not isinstance(result, Invalid):
-                break
-            started = time.monotonic()
-            retry = without_reasoning(await ask([*msgs, *retry_messages(response, result, query_done(msgs))]))
-            fixed = self._judged(retry, available)
-            self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in result.all]} "
-                      f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
-            response, result = retry, fixed
+        left = {False: kn.COMMAND_RETRIES_MAX, True: kn.SPEECH_COMPACT_TURNS}  # счёт повторов: общий и на длину
+        attempt = 0
+        while isinstance(result, Invalid) and left[overlong_only(result)] > 0:
+            left[overlong_only(result)] -= 1
+            attempt += 1
+            response, result = await self._retried(ask, msgs, available, response, result, attempt)
+        if isinstance(result, Invalid) and overlong_only(result):
+            result = self._fitted(response, available, result)
         text, calls, _ = to_legacy(result)
         return LLMResponse(content=text, tool_calls=calls, finish_reason="tool_calls" if calls else "stop",
                            usage=response.usage, raw=response.raw)
+
+    async def _retried(self, ask: Ask, msgs: List[LLMMessage], available: Iterable[str], response: LLMResponse,
+                       invalid: Invalid, attempt: int) -> Tuple[LLMResponse, Result]:
+        """Повтор в том же запросе: ответ модели и нарушения словами (:func:`retry_messages`). Речь длиннее, чем
+        звучит, — это ход компактнее: строка :data:`COMPACT_LOG_MARK` до него."""
+        if overlong_only(invalid):
+            self._log(f"{COMPACT_LOG_MARK} {_overlong(invalid)} — прошу компактнее")
+        started = time.monotonic()
+        retry = without_reasoning(await ask([*msgs, *retry_messages(response, invalid, query_done(msgs))]))
+        fixed = self._judged(retry, available)
+        self._log(f"{COMMAND_LOG_MARK} retry={attempt} violations={[v.reason for v in invalid.all]} "
+                  f"→ verdict={to_legacy(fixed)[2]} ({(time.monotonic() - started) * 1000:.0f} мс)")
+        return retry, fixed
+
+    def _fitted(self, response: LLMResponse, available: Iterable[str], invalid: Invalid) -> Result:
+        """Последний запас (#4137): и после хода компактнее речь длиннее, чем звучит, — та же команда с речью, ужатой
+        кодом (``command.fit_speech``: целые предложения с начала), а не заглушка. Строку 🧾 этот ответ уже дал."""
+        fitted = judge(response, available, self._busy(), self._agent, fit=True)
+        said = len(_spoken(fitted)) if isinstance(fitted, Command) else 0
+        self._log(f"{COMPACT_LOG_MARK} {_overlong(invalid)} и после хода компактнее → ужата кодом до {said} символов, "
+                  f"verdict={to_legacy(fitted)[2]}")
+        return fitted
 
     def _judged(self, response: LLMResponse, available: Iterable[str]) -> Result:
         result = judge(response, available, self._busy(), self._agent)
@@ -392,6 +429,7 @@ def wrapper_for(value: Union[str, Iterable[str], None], log: Log = _no_log,
 
 
 __all__ = [
-    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE", "command_providers", "judge",
-    "log_line", "mode_note", "query_done", "reply_command", "retry_messages", "to_legacy", "wrapper_for",
+    "CALL_ID_PREFIX", "COMMAND_LOG_MARK", "COMPACT_LOG_MARK", "CommandModeLLM", "V1_TRANSPORT_NOTE",
+    "command_providers", "judge", "log_line", "mode_note", "query_done", "reply_command", "retry_messages",
+    "to_legacy", "wrapper_for",
 ]

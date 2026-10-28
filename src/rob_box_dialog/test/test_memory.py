@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 from rob_box_core.speaker_wire import fill_speaker_result, speaker_result_to_payload
 from rob_box_dialog import knowledge as kn
@@ -119,6 +121,25 @@ def test_agents_without_interlocutor_keep_their_args():
     owner = Owner()
     [res] = owner.run([ToolCall("memory_save", {"fact": "x"})], _snapshot(agent="telegram", speaker=False))
     assert kn.PERSON_ARG not in owner.requests[0].args and res.status == "done"
+
+
+@pytest.mark.parametrize("agent", ["telegram", "operator"])
+def test_no_person_refusal_of_a_text_chat_does_not_talk_about_the_voice(agent):
+    """Ревью PR #4121: чат Telegram и ТАРС шлют тулы памяти в MCP без собеседника; «кто сейчас» пуст - MCP отвечает
+    ``rejected{no_person}`` (#4023). Фраза кода им - без «голоса»: их голос никто не узнаёт. Исход - как у владельца."""
+    owner = Owner(lambda r: OwnerEvent(r.turn_id, "rejected", kn.NO_PERSON_REASON))
+    save, search = owner.run([ToolCall("memory_save", {"fact": "x"}), ToolCall("memory_search", {"query": "x"})],
+                             _snapshot(agent=agent, speaker=False))
+    assert [(r.status, r.reason) for r in (save, search)] == [("rejected", kn.NO_PERSON_REASON)] * 2
+    assert respond.phrase_from_result(save).text == "Не знаю, кто ты, поэтому не запомню."
+    assert respond.phrase_from_result(search).text == "Не знаю, кто ты, поэтому не знаю, что о тебе помню."
+
+
+def test_no_person_refusal_of_the_voice_agent_keeps_its_voice_phrase():
+    """Голосовой собеседник без ``person_ref`` - «Не узнаю твой голос» остаётся: его голос слушали и не узнали."""
+    owner = Owner(lambda r: OwnerEvent(r.turn_id, "rejected", kn.NO_PERSON_REASON))
+    [search] = owner.run([ToolCall("memory_search", {"query": "x"})], _snapshot())
+    assert respond.phrase_from_result(search).text == "Не узнаю твой голос, поэтому не знаю, что о тебе помню."
 
 
 def test_speaker_memory_block_is_data_capped_by_knowledge():

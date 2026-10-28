@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -125,7 +126,7 @@ def test_lost_end_of_reply_does_not_keep_the_face_talking_forever():
 def test_mouth_follows_the_envelope_window_of_real_speech():
     m = MouthTrack()
     # 40 ms windows: loud, silence, loud
-    m.add('s1', 100.0, 40, [0.2] * 5 + [0.0] * 5 + [0.2] * 5, [])
+    m.add('s1', 100.0, 40, [0.2] * 5 + [0.0] * 5 + [0.2] * 5, [], 100.0)
     opened = [m.level(100.0 + 0.04 * i)[0] for i in range(15)]
     assert max(opened[:5]) > 0.9           # opens with the voice (attack within a couple of frames)
     assert opened[9] < 0.15                # closes in the pause
@@ -135,11 +136,111 @@ def test_mouth_follows_the_envelope_window_of_real_speech():
 
 def test_mouth_vowel_hint_and_cancel_by_speech_id():
     m = MouthTrack()
-    m.add('a', 10.0, 40, [0.5] * 10, [2] * 10)
-    m.add('b', 10.5, 40, [0.5] * 10, [])
+    m.add('a', 10.0, 40, [0.5] * 10, [2] * 10, 10.0)
+    m.add('b', 10.5, 40, [0.5] * 10, [], 10.0)
     assert m.level(10.1)[1] == 'O'
     m.cancel('a')
     assert m.level(10.14)[0] == 0.0
+    assert m.until() == pytest.approx(10.9)
+
+
+# -- streamed reply (#4144): chunks arrive faster than they sound, each with its own t0 ahead of the clock --------------
+CHUNK_FRAMES, FRAME_MS = 17, 40                      # one MiniMax chunk is ~0.66 s; the owner counts in 40 ms frames
+CHUNK_S = CHUNK_FRAMES * FRAME_MS / 1000.0
+TALK_FRAMES = 12                                     # a chunk: 12 loud frames (a word), then 5 quiet ones (a pause)
+CHUNK_LEVELS = [0.5] * TALK_FRAMES + [0.0] * (CHUNK_FRAMES - TALK_FRAMES)
+N_CHUNKS = 60
+OUTPUT_LATENCY_S = 0.3                               # the owner publishes the first chunk this long before it sounds
+
+
+def stream_arrival(k: int, start: float, period_s: float) -> float:
+    """When chunk ``k`` reaches the face: the first one ``OUTPUT_LATENCY_S`` before it sounds, then every ``period_s``."""
+    return start - OUTPUT_LATENCY_S + k * period_s
+
+
+def play_streamed_reply(d: FaceDirector, start: float, period_s: float):
+    """Run a streamed reply of ``N_CHUNKS`` chunks through the director; yield (frame no., mouth level) per 25 fps tick.
+
+    Chunk ``k`` sounds from ``start + k * CHUNK_S`` and arrives at ``stream_arrival``; ticks sample the middle of
+    every 40 ms frame (no float luck at the borders)."""
+    speech(d, STARTED, start - OUTPUT_LATENCY_S)
+    arrived = 0
+    for n in range(N_CHUNKS * CHUNK_FRAMES):
+        now = start + (n + 0.5) * FRAME_MS / 1000.0
+        while arrived < N_CHUNKS and stream_arrival(arrived, start, period_s) <= now:
+            d.on_envelope('s1', start + arrived * CHUNK_S, FRAME_MS, CHUNK_LEVELS, [],
+                          stream_arrival(arrived, start, period_s))
+            arrived += 1
+        d.voice_seen(now)                                              # the voice owner is there all the time
+        key, ctx = d.choose(now)
+        assert key == 'talk_jaw', (n, key)
+        yield n, ctx.mouth_level
+
+
+@pytest.mark.parametrize('period_s', [0.0, 5.0 / N_CHUNKS, CHUNK_S],
+                         ids=['all_at_once', '60_chunks_in_5s', 'in_real_time'])
+def test_streamed_reply_mouth_moves_over_the_whole_speech(period_s):
+    """#4144: chunks come faster than they sound -> the mouth still follows the chunk that sounds NOW, to the very end."""
+    d = awake()
+    levels = dict(play_streamed_reply(d, T0 + 8, period_s))
+    assert len(levels) == N_CHUNKS * CHUNK_FRAMES
+    shut_in_speech = [n for n, lv in levels.items() if n % CHUNK_FRAMES < TALK_FRAMES and lv <= 0.5]
+    assert shut_in_speech == []                                        # open on every loud frame of all 60 chunks
+    still_open_in_pause = [n for n, lv in levels.items() if n % CHUNK_FRAMES == CHUNK_FRAMES - 1 and lv > 0.2]
+    assert still_open_in_pause == []                                   # and shut again at the end of every pause
+
+
+def test_streamed_reply_does_not_keep_chunks_that_have_sounded():
+    """Memory: the played chunks go away by the clock, the track holds the unplayed rest of the reply and ~1 s behind."""
+    d = awake()
+    start = T0 + 8
+    peak = 0
+    for n, _ in play_streamed_reply(d, start, 5.0 / N_CHUNKS):
+        peak = max(peak, len(d.mouth._chunks))
+    assert peak <= N_CHUNKS                                            # never more than the reply itself
+    now = start + N_CHUNKS * CHUNK_S + 5.0
+    d.on_envelope('s2', now, FRAME_MS, CHUNK_LEVELS, [], now)          # the next reply forgets all of the previous one
+    assert len(d.mouth._chunks) == 1
+
+
+def test_ordinary_reply_is_one_chunk_followed_to_its_end():
+    """Not streamed: one chunk with the whole reply, as before."""
+    d = awake()
+    start = T0 + 8
+    d.on_envelope('s1', start + OUTPUT_LATENCY_S, FRAME_MS, [0.4] * 250, [], start)    # 10 s of loud voice
+    speech(d, STARTED, start)
+    for n in range(250):
+        now = start + OUTPUT_LATENCY_S + (n + 0.5) * FRAME_MS / 1000.0
+        d.voice_seen(now)
+        assert d.choose(now)[1].mouth_level > 0.5, n
+    end = start + OUTPUT_LATENCY_S + 10.0
+    speech(d, FINISHED, end)
+    assert d.choose(end + 0.4)[0] == 'talk_jaw'                        # inside the hang after the end
+    assert d.choose(end + 0.7)[0] == 'idle_stare'
+
+
+def test_cancel_of_a_streamed_reply_shuts_the_mouth_at_once():
+    """A25: ``cancelled`` mid-reply with 60 chunks already held -> mouth shut within one frame, face stops talking."""
+    d = awake()
+    start = T0 + 8
+    gen = play_streamed_reply(d, start, 5.0 / N_CHUNKS)
+    for n, level in gen:
+        if n == 3 * CHUNK_FRAMES + 2:                                  # ~2 s in, inside a word
+            assert level > 0.5
+            break
+    cut = start + (n + 1) * FRAME_MS / 1000.0
+    speech(d, CANCELLED, cut)
+    assert d.mouth.level(cut + 0.04)[0] == 0.0
+    assert d.mouth.until() == -math.inf                                # nothing of the reply is left
+    assert d.choose(cut + 0.04)[0] == 'idle_stare'
+
+
+def test_chunk_with_a_garbage_t0_is_not_kept_and_does_not_hold_the_face_talking():
+    """A bad ``t0`` (a day ahead) must neither pile up in memory nor keep ``speaking`` true for a day."""
+    m = MouthTrack()
+    m.add('bad', 10.0 + 86400.0, 40, [0.5] * 10, [], 10.0)
+    assert m.until() == -math.inf
+    m.add('ok', 10.5, 40, [0.5] * 10, [], 10.0)
     assert m.until() == pytest.approx(10.9)
 
 

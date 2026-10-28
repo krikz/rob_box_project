@@ -51,6 +51,9 @@ class SpeakerRef:
     azimuth_deg: Optional[float] = None
     since: float = 0.0
     channels: Tuple[str, ...] = ("voice",)
+    #: Профиль ``person_ref`` заведён из этой же фразы (#3858, ``speaker_wire.first_heard``): голос слышен впервые -
+    #: «узнан» он быть не мог (#3993, ревью PR #4121). Следующая фраза того же голоса - уже обычное узнавание.
+    first_heard: bool = False
 
 
 @dataclass(frozen=True)

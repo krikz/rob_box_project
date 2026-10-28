@@ -88,12 +88,12 @@ from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
 from rob_box_dialog.expression import face_label, show_seconds, shown_scene, shows
-from rob_box_dialog.grammar import Tier1Command, match
+from rob_box_dialog.grammar import Tier1Command, Voices, match
 from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
-from rob_box_dialog.speaker_adapter import speaker_block
+from rob_box_dialog.speaker_adapter import recognition_reply, speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
@@ -158,10 +158,10 @@ class Ports(Protocol):
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "",
               cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "",
-              expression: Optional[Expression] = None) -> None:
+              expression: Optional[Expression] = None) -> Optional[bool]:
         """Событие стадии и рефлекс. ``expression`` (необязательный, #3997) — экспрессия команды на итоге ``done``
-        (:func:`done_expression`): красит рефлекс. Порт без этого параметра (чат, шлем оператора — лица у них нет)
-        зовётся прежним вызовом (:func:`finish_stage`)."""
+        (:func:`done_expression`): красит рефлекс. Порт без этого параметра (шлем оператора — лица у него нет)
+        зовётся прежним вызовом (:func:`finish_stage`); ``False`` в ответ — лицо порт не показал (пульт чата, #4040)."""
         ...
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
@@ -177,8 +177,8 @@ class Ports(Protocol):
 
     def perform(self, turn_id: str, epoch: int, perf: Performance, edit: bool) -> Optional[Mapping[str, Any]]:
         """Выступление — его владельцу (хост ``PerformBlock``: сегменты на тактах, подложка, паузы по сетке строк);
-        исход владельца (``pending``/``done``/``rejected``). ``None`` — владельца выступлений у агента нет (чат,
-        оператор): сегменты звучат репликами хода."""
+        исход владельца (``pending``/``done``/``rejected``). ``None`` — владельца выступлений у агента нет
+        (оператор): сегменты звучат репликами хода. У чата выступление исполняет робот (пульт, #4040)."""
         ...
 
 
@@ -249,7 +249,7 @@ def log_stt_fixes(log: Any, addressed: Addressed, turn: "_Turn") -> None:
         log.info(f"{HEARD_MARK} {'; '.join(addressed.stt_fixes)} turn={turn.turn_id}")
 
 
-def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = ()) -> Optional[Tier1Command]:
+def tier1_for(text: str, snapshot: SessionSnapshot, voices: Voices = ()) -> Optional[Tier1Command]:
     """Команда Tier-1 реплики, если она доступна агенту сессии (``AgentSpec.grammar``): «замолчи» в чате — не
     тишина Личности (решение О2), а слова для LLM телеграм-агента."""
     command = match(text, snapshot, voices)
@@ -257,7 +257,7 @@ def tier1_for(text: str, snapshot: SessionSnapshot, voices: Sequence[Tuple[str, 
 
 
 def tier1_of(text: str, after_wake: str, snapshot: SessionSnapshot,
-             voices: Sequence[Tuple[str, str]] = ()) -> Tuple[Optional[Tier1Command], str]:
+             voices: Voices = ()) -> Tuple[Optional[Tier1Command], str]:
     """Tier-1 хода и текст, по которому он сработал (его же читает политика перебивания ``interrupt_for``).
 
     Первым — фраза целиком (``text``): команда до вейка остаётся рефлексом («Стоп, Робот, пожалуйста» — ``stop_all``;
@@ -333,14 +333,14 @@ def silence_insisted(result: Result) -> Result:
     return result
 
 
-def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Sequence[Tuple[str, str]] = (),
-                 sing: str = "") -> Form:
+def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), sing: str = "") -> Form:
     """Форма команды хода (#4021, ADR-0148 п.2): ``passed`` — только при подхвате бэклога (адресованную реплику
     молчанием не закрыть: схема его не содержит, валидатор моста шлёт нарушение); голос реплики — только когда человек
     в этой реплике просил о голосе (``tools_view.voice_asked``: группа голоса или названный голос реестра ``voices`` —
-    пары ``(id, название)``, как у Tier-1); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
+    ``(id, название, *алиасы)``, как у Tier-1; id, название и каждый алиас - отдельные имена: слово ищется целиком
+    по каждому, а не по склейке); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
     живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810)."""
-    names = tuple(name for pair in voices for name in pair if name)
+    names = tuple(name for entry in voices for name in entry if name)
     return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
                 sing_over=bool(sing) and snapshot.music_playing)
 
@@ -500,23 +500,40 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
         return None
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
     kept, fresh = _scenes_of(earlier), [s for s in shown if s is not None and s is not expression]
-    if kept and fresh and fresh[0] == kept[-1]:  # та же сцена на следующей итерации - дважды не показываем
-        fresh = fresh[1:]
-    scenes = kept + fresh
+    scenes = kept + _without_repeat(kept, fresh)
     return _in_order(scenes) if scenes else held_expression(expression, text)
+
+
+def _scene_key(scene: Expression) -> Tuple[Any, ...]:
+    """Сцена как значение: поля команды ``Expression`` без очереди ``then`` и без вида (``Shown`` или нет)."""
+    return tuple(getattr(scene, f.name) for f in fields(Expression))
+
+
+def _without_repeat(kept: Sequence[Expression], fresh: Sequence[Expression]) -> List[Expression]:
+    """Сцены этой итерации без повтора того, что уже стоит на итоге: самое длинное начало ``fresh``, совпадающее с хвостом
+    ``kept``, отбрасывается. Модель, которая зовёт одно и то же на каждой итерации (``[play_animation sad, list]`` до
+    потолка итераций, #4065), и одну сцену, и список из двух-трёх сцен, не множит показ (ревью PR #4118: сравнивалась
+    только ``fresh[0]`` с ``kept[-1]``, и список ``[victory, sad]`` встал бы второй раз целиком). Сцены в одной команде
+    («покажи победу два раза») не схлопываются: сравниваются итерации, а не соседи внутри ``fresh``."""
+    have, new = [_scene_key(s) for s in kept], [_scene_key(s) for s in fresh]
+    for size in range(min(len(have), len(new)), 0, -1):
+        if have[-size:] == new[:size]:
+            return list(fresh[size:])
+    return list(fresh)
 
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
-    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``).
-    Возвращает лицо, которое порт получил (``None`` - рефлекс как есть или порт лица не принимает): ход записывает его в
-    окно (``TurnLog.faced``, #4073), и запись «показано» не опережает показ - у чата и шлема оператора лица нет."""
+    ``expression``: лицо есть у Личности и у пульта чата (#4040: лицо робота), а шлем оператора зовётся прежним вызовом
+    (как ``stop_performance``). Возвращает лицо, которое порт показал (``None`` - рефлекс как есть, порт лица не
+    принимает или ответил ``False``: чат без пульта, лицо - настроение текста в чат): ход записывает его в окно
+    (``TurnLog.faced``, #4073), и запись «показано» не опережает показ."""
     face = done_expression(turn, snapshot)
     shown = face if face is not None and _accepts(ports.stage, "expression") else None
     extra = {"expression": shown} if shown is not None else {}
-    ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
-                provider=turn.provider, **extra)
-    return shown
+    took = ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
+                       provider=turn.provider, **extra)
+    return None if took is False else shown
 
 
 def prosody_phrase(results: Sequence[ActionResult]) -> str:
@@ -592,10 +609,28 @@ def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
     return True
 
 
+def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> bool:
+    """«Ты меня узнал?» (#3993, решение Шифу 26.10): ответ строит код по собеседнику снимка хода
+    (``speaker_adapter.recognition_reply``), LLM не зовётся - модель не выдумает «узнал» спорному голосу и «голос не
+    запомнил» узнанному. Только у агента с голосом (``PERSON_AGENTS``) и не в подхвате бэклога: там вопрос мог задать
+    не тот, кто сказал «робот». Реплика - не этот вопрос - ``False``, ход идёт модели."""
+    if turn.pickup or snap.agent not in kn.PERSON_AGENTS:
+        return False
+    reply = recognition_reply(turn.text, snap.speaker)
+    if reply is None:
+        return False
+    state, said = reply
+    turn.stage, turn.reason = "done", f"{kn.RECOGNIZED_TURN_REASON}:{state}"
+    engine._log.info(f"{LOG_MARK} узнал? {state}: ответ кодом по снимку, LLM не зовётся turn={turn.turn_id}")
+    engine._say(turn, said)
+    return True
+
+
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
-    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`), — в форме команды
-    хода (:func:`command_form`, #4021): схема и валидатор моста видят её на время вызовов LLM этого хода."""
-    if hold_silence(engine, turn):
+    """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
+    код (:func:`answer_recognized`), — в форме команды хода (:func:`command_form`, #4021): схема и валидатор моста видят
+    её на время вызовов LLM этого хода."""
+    if hold_silence(engine, turn) or answer_recognized(engine, turn, snap):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
@@ -621,10 +656,12 @@ def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
                     performing: bool = False) -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
     простом успехе (``respond.audible``, #3953), а при идущем выступлении (``performing``) молчит общий успех запуска
-    музыки (#4075). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели (:func:`query_more`, там же отказ
-    чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
+    музыки (#4075) — только у агента, чьи фразы звучат в динамиках поверх выступления: чату о запуске музыки на роботе
+    код говорит всегда (пульт, #4040). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
+    (:func:`query_more`, там же отказ чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks, performing)) if results else None
+    over_performance = performing and agent_spec(agent).sink == Sink.SPEAKERS
+    return outcome_phrase(audible(results, speaks, over_performance)) if results else None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
@@ -646,7 +683,8 @@ def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = Tru
 def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any = _LOG) -> Tuple[bool, str]:
     """Выступление команды — его владельцу (``Ports.perform``: такты, подложка, паузы по сетке строк). #3901: v2 читал
     сегменты рэпа репликами хода — без бита и без пауз. ``(взял ли владелец, фраза кода об отказе или "")``; не взял
-    (выступления нет, у агента нет владельца) — сегменты звучат репликами хода."""
+    (выступления нет, у агента нет владельца) — сегменты звучат репликами хода. Фраза отказа — по его причине
+    (``perform.rejected.<причина>``: пульт чата при ``operator_hold``, #4040), причины без ключа — «Не вышло.»."""
     if cmd.perform is None:
         return False, ""
     outcome = ports.perform(turn_id, epoch, cmd.perform, cmd.edit_pending)
@@ -655,7 +693,11 @@ def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any 
     log.info(f"{LOG_MARK} выступление {'правка' if cmd.edit_pending else 'старт'} kind={cmd.perform.kind} "
              f"backing={cmd.perform.backing or '-'} segments={len(cmd.perform.segments)} → {dict(outcome)} "
              f"turn={turn_id}")
-    return True, phrases.text("local.rejected") if outcome.get("status") == "rejected" else ""
+    if outcome.get("status") != "rejected":
+        return True, ""
+    reason = outcome.get("reason")
+    key = phrases.first_key(f"{kn.PERFORM_REJECTED_PHRASE}.{reason}" if reason else None, "local.rejected")
+    return True, phrases.text(str(key))
 
 
 def note_perform_start(log: TurnLog, turn_id: str, cmd: Command, taken: bool) -> None:
@@ -1106,7 +1148,7 @@ class TurnEngine:
 
     def __init__(self, session: Session, ports: Ports, *, system_prompt: str = "",
                  sections: Optional[Callable[[SessionSnapshot, str], Mapping[str, Any]]] = None,
-                 voices: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None, turn_log: Optional[TurnLog] = None,
+                 voices: Optional[Callable[[], Voices]] = None, turn_log: Optional[TurnLog] = None,
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
                  log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None,
@@ -1299,8 +1341,9 @@ class TurnEngine:
         run = execute_for_speaker(self._ports, actions, snap, self.session.snapshot, turn.turn_id, self._log)
         results = await turn.deadline.wait(run, "actions")
         turn.acted += acted_calls(actions, results)  # повтор в этом ходе не исполняется (#4069 п.1)
+        owner = memory.memory_owner(snap)  # чья память у хода при исполнении: исход - только ей в окне (#4023)
         for result in results:
-            self.log.result(turn.turn_id, result)
+            self.log.result(turn.turn_id, result, owner)
             self._event("action", turn, data={"tool": result.tool, "status": result.status, "reason": result.reason,
                                               "cls": result.cls})
         self._note_asked(turn, actions, results)
@@ -1319,11 +1362,14 @@ class TurnEngine:
     def _messages(self, turn: _Turn, snap: SessionSnapshot) -> List[Any]:
         """Запрос: системный промпт, окно истории (``user``/``assistant``: озвученное и метки кода «[ответ действием:
         …]», «[ответ лицом: …]», «[рот заклеен — молчу]» вместо ответа без слов), снимок хода + реплика человека.
-        Исходы прошлых действий — разделом снимка :data:`RECENT_ACTIONS`, а не репликами (§7.3)."""
+        Исходы прошлых действий — разделом снимка :data:`RECENT_ACTIONS`, а не репликами (§7.3); исход тула памяти
+        другого владельца памяти (спорный голос, другой человек) туда не идёт (``memory.foreign_result``, #4023)."""
         past = self.log.window(exclude=turn.turn_id)  # реплика этого хода — последним сообщением, со снимком
         history = [e for e in past if e.role != TOOL]
         sections = dict(self._sections(snap, turn.text))
-        recent = [dict(e.content) for e in past if e.role == TOOL]
+        owner = memory.memory_owner(snap)
+        recent = [dict(e.content) for e in past
+                  if e.role == TOOL and not memory.foreign_result(e.content, e.owner, owner)]
         context = build_context({**sections, RECENT_UNADDRESSED: list(turn.recent),
                                  BACKGROUND_SINCE_REPLY: list(turn.background),
                                  RECENT_ACTIONS: recent[-kn.TURN_WINDOW_MAX_TURNS:]})
@@ -1371,8 +1417,8 @@ class TurnEngine:
 
 
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
-           "SAD_FACE", "Shown", "TurnEngine", "command_face", "command_form", "done_expression", "finish_stage",
-           "hand_perform", "held_expression", "host_sections", "shown_face",
+           "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
+           "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
            "invalid_emotion", "outcome_phrase", "query_answer", "query_fallback", "show_queue_phrase",
            "stop_performance", "tier1_actions", "tier1_face", "tier1_for", "tier1_phrase", "turn_work", "answer_tool",
            "unrepeated", "voices_passed", "words_owed"]
