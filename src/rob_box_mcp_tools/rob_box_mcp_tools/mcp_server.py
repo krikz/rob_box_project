@@ -64,7 +64,7 @@ from .engine.gen.song import STARTED_WAIT_S, SongStudio, current_voice, harness_
 from .engine.player_owner import PlayerOwner
 from .engine.renardo_adapter import V2_CLOCK_LATENCY_S, RenardoAdapter
 from .engine.renardo_runtime import RenardoRuntime
-from .engine.speech_duck import SpeechDuck, duck_controls
+from .engine.speech_duck import TICK_S, SpeechDuck, VoiceSource, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
 from .engine.tools_v2 import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
@@ -345,11 +345,26 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     return owner
 
 
-def _attach_speech_duck(node: Any, runtime: Any) -> Optional[SpeechDuck]:
-    """ADR-0150 О8 (а), PR-7d — музыка приглушается, пока робот говорит в динамики.
+def _voice_duck_source(node: Any) -> Optional[VoiceSource]:
+    """#4155 — голос человека как источник приглушения; ``None``, если выключен параметром ``music_voice_duck``.
 
-    ``/voice/speech/event`` (владелец речи ``tts_node``) → :class:`SpeechDuck` → ``/n_set 999 duck 0|1``; таймер
-    снимает реплики с потерянным финалом. Без звукового сервера — нечего приглушать, подписки нет.
+    «Музыка играет» — дека владельца плеера (``PlayerOwner.is_playing``): под тишину VAD музыку не трогает.
+    """
+    if not bool(node.get_parameter("music_voice_duck").value):
+        return None
+    owner = getattr(node, "_player_owner", None)
+    controls = duck_controls(*(float(node.get_parameter(name).value) for name in (
+        "music_voice_duck_db", "music_voice_duck_attack_ms", "music_voice_duck_release_ms")))
+    return VoiceSource(music_playing=lambda: owner is not None and owner.is_playing(), controls=controls,
+                       hold_s=float(node.get_parameter("music_voice_duck_hold_s").value))
+
+
+def _attach_speech_duck(node: Any, runtime: Any) -> Optional[SpeechDuck]:
+    """ADR-0150 О8 (а), PR-7d — музыка приглушается, пока робот говорит в динамики; #4155 — и пока говорит человек.
+
+    ``/voice/speech/event`` (владелец речи ``tts_node``) и ``/audio/vad`` (``audio_node``, фронты) →
+    :class:`SpeechDuck` → ``/n_set 999 duck 0|1``; таймер снимает реплики с потерянным финалом и отпускает музыку
+    после удержания голоса. Без звукового сервера — нечего приглушать, подписок нет.
     """
     if runtime is None:
         return None
@@ -357,15 +372,23 @@ def _attach_speech_duck(node: Any, runtime: Any) -> Optional[SpeechDuck]:
 
     controls = duck_controls(*(float(node.get_parameter(name).value) for name in (
         "music_duck_db", "music_duck_attack_ms", "music_duck_release_ms")))
-    duck = SpeechDuck(runtime.send_osc, controls, logger=node.get_logger())
+    voice = _voice_duck_source(node)
+    duck = SpeechDuck(runtime.send_osc, controls, logger=node.get_logger(), voice=voice)
     kinds = {getattr(SpeechEvent, f"KIND_{name.upper()}"): name for name in ("started", "finished", "cancelled",
                                                                              "rejected")}
     node.create_subscription(SpeechEvent, "/voice/speech/event",
                              lambda msg: duck.on_event(kinds.get(int(msg.kind), ""), msg.speech_id,
                                                        int(msg.duration_ms)), 20)
-    node.create_timer(1.0, duck.tick)
+    node.create_timer(TICK_S, duck.tick)
     node.get_logger().info("🔉 приглушение музыки под речь: /voice/speech/event → /n_set 999 duck "
                            + " ".join(f"{k}={v:g}" for k, v in controls.items()))
+    if voice is not None:
+        from std_msgs.msg import Bool  # noqa: PLC0415 — как SpeechEvent выше: подписка нужна только с источником
+
+        node.create_subscription(Bool, "/audio/vad", lambda msg: duck.on_vad(bool(msg.data)), 10)
+        node.get_logger().info(
+            f"🔉 приглушение музыки под голос человека: /audio/vad → /n_set 999 duck, удержание {voice.hold_s:g} с, "
+            + " ".join(f"{k}={v:g}" for k, v in voice.controls.items()))
     return duck
 
 
@@ -419,6 +442,13 @@ class MCPServer(Node):
         self.declare_parameter("music_duck_db", music_kn.SPEECH_DUCK["duckDb"])
         self.declare_parameter("music_duck_attack_ms", music_kn.SPEECH_DUCK["duckAttack"] * 1000.0)
         self.declare_parameter("music_duck_release_ms", music_kn.SPEECH_DUCK["duckRelease"] * 1000.0)
+        # #4155: тот же приглушатель и под голос человека (подъём /audio/vad при играющей музыке); числа —
+        # rob_box_music.knowledge.VOICE_DUCK и VOICE_DUCK_HOLD_S. False — источника голоса нет (подписки на VAD тоже).
+        self.declare_parameter("music_voice_duck", True)
+        self.declare_parameter("music_voice_duck_db", music_kn.VOICE_DUCK["duckDb"])
+        self.declare_parameter("music_voice_duck_attack_ms", music_kn.VOICE_DUCK["duckAttack"] * 1000.0)
+        self.declare_parameter("music_voice_duck_release_ms", music_kn.VOICE_DUCK["duckRelease"] * 1000.0)
+        self.declare_parameter("music_voice_duck_hold_s", music_kn.VOICE_DUCK_HOLD_S)
         # ADR-0149: владелец плеера v2 (engine/player_owner.py) — единственный писатель
         # /voice/music/state и /voice/music/event.
         # Clock.latency v2 (#3328): 0.5 с — late-бандлов 250/мин → 0 (PR-2/PR-4 замеры).

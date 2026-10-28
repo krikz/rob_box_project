@@ -976,6 +976,20 @@ TRIM_LAG_S = 0.5
 #: Шифу по замеру A24; ROS-параметры ``music_duck_*`` ``mcp_server`` их перекрывают. Ручку ``duck`` 0/1 держит
 #: только ``engine.speech_duck.SpeechDuck``: в :data:`MASTER_DEFAULTS` её нет — старт трека не снимает приглушение.
 SPEECH_DUCK: Mapping[str, float] = {"duckDb": -9.0, "duckAttack": 0.08, "duckRelease": 0.4}
+#: Приглушение музыки под голос ЧЕЛОВЕКА (#4155, просьба Шифу 28.10: «когда кто-то говорит, музыку сразу чуть тише»):
+#: те же ручки ``duck*`` той же мастер-шины и тот же писатель (``SpeechDuck``), но мельче речи робота: ``чуть тише`` —
+#: −5 дБ (≈ ×0.56 по амплитуде) против −9. Атака 50 мс — спуск по подъёму ``/audio/vad`` (VAD и так опаздывает к началу
+#: слова), отпуск 500 мс — дольше, чем у речи: подъём музыки между словами одной фразы качался бы. Стартовые числа,
+#: утверждаются на слух Шифу; ROS-параметры ``music_voice_duck_*`` ``mcp_server`` их перекрывают. Речь робота глубже и
+#: перекрывает голос: звучат оба — действует :data:`SPEECH_DUCK`, ``duck 0`` — когда кончились оба источника.
+VOICE_DUCK: Mapping[str, float] = {"duckDb": -5.0, "duckAttack": 0.05, "duckRelease": 0.5}
+#: Удержание после спада ``/audio/vad``, с: пауза между словами и дребезг VAD (на сплошной речи 54–75 фронтов за 20 с,
+#: ADR-0137) не отпускают музыку; новый подъём внутри удержания ручку не трогает. Меньше ``speech_continuation``
+#: ``audio_node`` (1.5 с, конец фразы для STT): музыка возвращается не позже, чем фраза уйдёт в распознавание.
+VOICE_DUCK_HOLD_S = 1.2
+#: Предел одного всплеска VAD, с: потерянный спад (``audio_node`` перезапустился, сообщение не дошло) не оставляет
+#: музыку приглушённой навсегда. Совпадает с ``speech_max_duration`` ``audio_node`` (дольше 15 с речь режется на куски).
+VOICE_DUCK_MAX_S = 15.0
 #: Дуга громкости трека: секция → (смещение ``trim`` относительно ``trim`` трека, дБ; подъём на всю секцию?).
 #: Приёмка 02.10: брейк без бочки и баса был лишь на 1.8 дБ тише дропа — выравниватель мастер-шины (``lvlRatio 3``)
 #: поднимал его, и трек звучал ровной полкой (отзыв эксперта 05.10: «нет восхождения, кульминации»). ``trim`` стоит
@@ -1316,6 +1330,7 @@ __all__ += [
     "HAAS_MAX_MS", "KickSound", "LANE_DB_AT_UNIT", "LAYER_MEASURED_DB", "LOUDNESS_SOURCE", "LPF_OPEN",
     "HPF_IN_HZ", "HPF_OPEN",
     "LPF_RANGE_HZ", "LPF_TOP_HZ", "Look", "MASTER_DEFAULTS", "MAX_LAYER_AMP", "SET_LEVELER", "SPEECH_DUCK", "TRIM_LAG_S",
+    "VOICE_DUCK", "VOICE_DUCK_HOLD_S", "VOICE_DUCK_MAX_S",
     "PAD_DETUNE", "PAD_HAAS_MS", "PAD_PAN_BEATS", "PAD_SPREAD", "PAN_HATS", "PAN_PAD_WIDTH", "SYNTH_STEREO",
     "SECTION_TRIM_DB", "SIDECHAIN_SHAPE", "THEME_TIMBRE", "family_of", "PAD_FIGURES", "PadFigure", "PAD_ROBOT_DB",
     "PAD_ROBOT_DB_UNMEASURED", "BASS_ROBOT_DB", "BASS_ROBOT_LOW", "BASS_MIN_LOW", "bass_low_on_robot",

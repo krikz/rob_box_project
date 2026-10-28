@@ -145,7 +145,9 @@ def test_duck_is_a_separate_multiplier_after_limiter_gain_and_trim():
 
 class _Node:
     def __init__(self):
-        self.params = {"music_duck_db": -6.0, "music_duck_attack_ms": 50.0, "music_duck_release_ms": 300.0}
+        self.params = {"music_duck_db": -6.0, "music_duck_attack_ms": 50.0, "music_duck_release_ms": 300.0,
+                       "music_voice_duck": False, "music_voice_duck_db": -4.0, "music_voice_duck_attack_ms": 40.0,
+                       "music_voice_duck_release_ms": 250.0, "music_voice_duck_hold_s": 1.0}
         self.subs, self.timers = [], []
         self._logger = _FakeLogger()
 
