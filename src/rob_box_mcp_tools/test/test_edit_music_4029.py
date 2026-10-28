@@ -279,6 +279,9 @@ def test_edit_music_is_one_narrow_tool_of_the_catalog():
 # --- путь хода: хост решает до модели, форма закрывает заказ нового -------------------------------------------------
 
 
+N607 = "робот помягче поставь спокойно валера уснет за рулем"  # живой лог 28.10 16:43:38, акт 6
+
+
 def _host():
     lines = []
     return SingRouteHost(DeterministicChooser(NoModel()), lambda: [], lines.append), lines
@@ -293,6 +296,8 @@ def _host():
         ("Робот, ускорь темп", "edit:faster"),  # n506
         ("Робот, читай быстрее", ""),  # речь робота названа: скорость голоса, не бит
         ("Робот, поставь что-нибудь помрачнее", ""),  # заказ другого трека
+        (N607, "edit:softer"),  # #4173: «помягче поставь…» под идущим сетом - правка, а не новый трек
+        ("Робот, поставь джаз помягче", ""),  # назван свой джаз: заказ
         # ревью PR #4116: слова правки не про музыку — пути нет (раньше edit:faster/develop/darker и обязательный
         # edit_music: робот не мог ответить словами)
         ("Робот, иди быстрее к двери", ""),
@@ -422,3 +427,15 @@ def test_less_bass_on_our_synth_track_turns_the_bass_down_not_up():
     assert result.success, result
     assert result.data["changes"] == ["less_bass"] and result.data["message"] == "Убавил бас."
     assert len(_events(rig, "started")) == 1  # трек тот же
+
+
+def test_n607_softer_under_a_running_set_closes_the_new_order_and_ends_in_an_honest_refusal():
+    """#4173: «помягче поставь…» под диджей-сетом - форма хода закрывает ``request_music``/``dj_set`` (новый трек убил
+    бы сет и стоил денег), требует ``edit_music``; тул на сете - честный отказ кодом с предложением, звук не тронут."""
+    form, tools = _form_under_music(N607)
+    assert form.sing == "edit:softer" and "edit_music" in tools
+    assert not {"request_music", "generate_music", "dj_set"} & set(tools)
+    snap = {"playing": True, "track_id": "s7:03:B", "source": "synth", "enabled": True}
+    tool = EditMusicTool(None, SimpleNamespace(editor=TrackEditor(Owner(**snap), Deck())))
+    result = tool.execute(heard_text=N607)
+    assert not result.success and result.data["message"] == kn.EDIT_REFUSALS["set"]

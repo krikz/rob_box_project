@@ -1304,8 +1304,18 @@ GEN_WAIT = ByData((GEN_PENDING_FIELD, GEN_BRIDGE_FIELD), {
 #: Остановка диджей-сета (``dj_set`` ``action=stop``, #4075; живой 27.10: «хватит диджеить, выключай» - музыка остановлена,
 #: а робот говорил «Включаю музыку.»): фраза о стопе по тому, играло ли (``was_playing`` - ответ тула), как у ``stop_music``.
 #: Старт сета (``action=start``) вне таблицы - ключ класса: о нём говорит «заиграло» владельца.
-DJ_STOP = ByData(("action", "was_playing"), {
-    ("stop", False): "music.stop_idle", ("stop", True): "music.stop_ok", ("stop", None): "music.stop_ok",
+#: Тулы, что гасят музыку, и их признак в данных результата (#4173): ``stop_music`` - любой вызов, ``dj_set`` - только
+#: ``action=stop``. Два таких тула в ОДНОМ ходе («хватит диджей выключай»: ясный стоп гасит музыку, остаток фразы
+#: идёт модели, и её ``dj_set stop`` застаёт тишину) - второй честно отвечает ``was_playing=False``, но «ничего не
+#: играет» тут неправда: ход музыку только что выключил. Код ставит такому результату :data:`STOPPED_EARLIER_FIELD`
+#: (``respond.reconcile_stops``), фраза читает его.
+MUSIC_STOP_TOOLS: Mapping[str, Optional[Tuple[str, str]]] = MappingProxyType({
+    "stop_music": None, "dj_set": ("action", "stop"),
+})
+STOPPED_EARLIER_FIELD = "stopped_earlier"
+DJ_STOP = ByData(("action", "was_playing", STOPPED_EARLIER_FIELD), {
+    ("stop", False, None): "music.stop_idle", ("stop", False, True): "music.stop_ok",
+    ("stop", True, None): "music.stop_ok", ("stop", None, None): "music.stop_ok",
 })
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
 #: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом», #4074), снятый вместе с ним,
@@ -1337,7 +1347,7 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media. Тул сказал, что играть
     # было нечему (``was_playing=False``, живой прогон 26.10 20:57:50: ``stop track_id=None``) - так и говорим (#4020).
     "stop_music": MappingProxyType({
-        "done": ByData(("was_playing",), {(False,): "music.stop_idle"}, "music.stop_ok"),
+        "done": ByData(("was_playing", STOPPED_EARLIER_FIELD), {(False, None): "music.stop_idle"}, "music.stop_ok"),
         "rejected": "music.stop_fail",
     }),
     # стоп сета - то же, что стоп музыки, а не «Включаю музыку.» старта (#4075); платная генерация - фраза ожидания
