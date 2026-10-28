@@ -34,6 +34,8 @@ from rob_box_dialog.knowledge import (
     STOP_WORDS,
     TIER1_POLICY,
     VOICE_STEP,
+    VOLUME_LEVEL_WORDS,
+    VOLUME_STEMS,
     WAKE_SLIP_AMBIGUOUS,
     WAKE_SLIP_CUE_WINDOW,
     WAKE_SLIP_GATES,
@@ -187,6 +189,32 @@ def without_forms(text: str, forms: Sequence[str]) -> Tuple[str, bool]:
 def name_tokens(text: str) -> Tuple[str, ...]:
     """Слова фразы в нижнем регистре, ё → е (как в таблицах имён)."""
     return tuple(t for t in (w.lower().replace("ё", "е").strip("-") for w in _TOKEN.findall(text or "")) if t)
+
+
+#: Обратное направление: слово с «не» перед ним значит противоположное («не громко» — тише).
+_OPPOSITE_LEVEL = {"louder": "quieter", "quieter": "louder"}
+
+
+def level_word(token: str) -> str:
+    """Направление громкости, которое называет слово заказа музыки: ``louder``/``quieter`` или ``""``. Основа из
+    ``VOLUME_STEMS`` («потише», «погромче», «убавь») либо слово целиком из ``VOLUME_LEVEL_WORDS`` («негромко», «тихо»);
+    ё → е, регистр не важен. Единственное место, где слово называется словом громкости: тема заказа
+    (``theme_grounding.heard_theme``) и уровень заказа (:func:`asked_level`) читают его."""
+    word = (token or "").lower().replace("ё", "е")
+    for intent in _OPPOSITE_LEVEL:
+        if word in VOLUME_LEVEL_WORDS[intent] or word.startswith(VOLUME_STEMS[intent]):
+            return intent
+    return ""
+
+
+def asked_level(text: str) -> str:
+    """Уровень музыки, который просит заказ: ``quieter``/``louder`` или ``""`` (не просил, либо просил то и другое —
+    выбирать нечем). «Поставь ровный ритм, только негромко» и «…только не громко» — ``quieter`` (слово с «не» перед ним
+    значит обратное); «поставь потише» — ``quieter``. Слова — :func:`level_word`."""
+    tokens = name_tokens(text)
+    asked = {_OPPOSITE_LEVEL[kind] if i and tokens[i - 1] == "не" else kind
+             for i, token in enumerate(tokens) if (kind := level_word(token))}
+    return asked.pop() if len(asked) == 1 else ""
 
 
 def nominative_name(word: str) -> str:

@@ -322,7 +322,7 @@ def test_synth_mood_request_does_not_ask_the_llm_about_the_theme():
     result = req.execute(intent="track", text="поставь фоном ровный ритм на Ренардо только не громко",
                          mood="calm", engine="synth", heard_text=RHYTHM)
     assert result.success and result.data["engine"] == "synth"
-    assert finders.calls == {"quick": ["фоном ровный ритм громко"], "track": [], "llm": []}
+    assert finders.calls == {"quick": ["фоном ровный ритм"], "track": [], "llm": []}  # #4136: «не громко» - уровень, не тема
 
 
 def test_track_name_is_not_the_text_of_the_request():

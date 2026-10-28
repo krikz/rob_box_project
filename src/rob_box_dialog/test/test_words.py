@@ -4,15 +4,16 @@ import pytest
 
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS,
-    TIER1_POLICY, UNSILENCE_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
-    WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
-    WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS,
+    TIER1_POLICY, UNSILENCE_WORDS, VOLUME_LEVEL_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS,
+    WAKE_SLIP_COMMAND_LEADS, WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL,
+    WAKE_SLIP_POLITE, WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS,
     WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
     WAKE_SLIP_TWEAK_REQUEST_STEMS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
-    NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, has_form, has_wake_word, has_word, introduces_self,
-    slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word, wake_command,
+    NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, asked_level, has_form, has_wake_word, has_word,
+    introduces_self, level_word, slipped_wake_rest, stop_command, stop_scope, stop_verdict, strip_wake_word,
+    wake_command,
 )
 
 #: Фразы, обращённые к роботу (живые и e2e-искажения STT).
@@ -524,3 +525,29 @@ def test_4085_wake_command_follows_the_same_rule_as_stop_command():
     assert stop_verdict(text) == STOP_CLEAR
     assert stop_verdict(wake_command(text)) == STOP_CLEAR
     assert stop_verdict(strip_wake_word(text)) == STOP_DISPUTED  # так было: вейк снят, эхо осталось — спорный стоп
+
+
+# --- #4136 п.2: громкость в заказе музыки словами (n809 «только не громко») --------------------------------------
+
+@pytest.mark.parametrize("text, level", [
+    ("поставь фоном ровный ритм на синтезаторе только не громко", "quieter"),
+    ("Робот, поставь ровный ритм, только негромко.", "quieter"),
+    ("поставь потише", "quieter"), ("убавь", "quieter"), ("поставь тихо", "quieter"),
+    ("поставь громко", "louder"), ("поставь погромче", "louder"), ("только не тихо", "louder"),
+    ("не тише", "louder"), ("не громче", "quieter"),
+    ("поставь ритм", ""), ("громкость поменьше", ""), ("поставь «Тихий Дон»", ""),
+    ("потише, нет, погромче", ""),
+])
+def test_4136_asked_level_reads_direction_and_negation(text, level):
+    assert asked_level(text) == level
+
+
+def test_4136_level_words_table_is_lowercase_whole_adverbs_not_stems():
+    """Целые наречия, без ё и без основ: по основе «громк» открылась бы «громкость», по «тих» - «Тихий Дон»."""
+    for intent, words in VOLUME_LEVEL_WORDS.items():
+        assert intent in VOLUME_STEMS
+        for word in words:
+            assert word == word.lower() and "ё" not in word and " " not in word, word
+            assert level_word(word) == intent
+    assert not set(VOLUME_LEVEL_WORDS["louder"]) & set(VOLUME_LEVEL_WORDS["quieter"])
+    assert level_word("громкость") == "" and level_word("тихий") == "" and level_word("") == ""
