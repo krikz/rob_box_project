@@ -156,27 +156,36 @@ def _perform(node: _Node, perform: Dict[str, Any]) -> List[str]:
 
 def _harness_people_voices() -> set:
     """Голоса людей e2e-харнесса (каст марафона): единственный источник - ``map_tts_voice`` харнесса, голос человека там
-    с просодией ``id:pitch:speed`` (#3931). Отдельного списка каста в реестре нет (ревью PR #4112)."""
+    с просодией ``id:pitch:speed`` (#3931). Отдельного списка каста в реестре нет (ревью PR #4112).
+    """
     text = E2E_LIB.read_text(encoding="utf-8")
     arm_start = text.index("        minimax)", text.index("map_tts_voice() {"))
     arm = text[arm_start : text.index("            ;;", arm_start)]
-    return {spec.split(":")[0] for spec in re.findall(r"printf '([^'%][^':]*:[^']*)'", arm)}
+    return {
+        spec.split(":")[0] for spec in re.findall(r"printf '([^'%][^':]*:[^']*)'", arm)
+    }
 
 
 def test_harness_people_voices_are_in_the_catalogue_with_a_native_language_that_is_not_a_role_language():
     """Каст не входит в роли самим фильтром языка (``role_voices_for``): голос харнесса в каталоге с нативным нерусским
-    языком. Харнесс получит русский голос - тест красный раньше, чем герой сказки зазвучит «Сашей» (#4084)."""
+    языком. Харнесс получит русский голос - тест красный раньше, чем герой сказки зазвучит «Сашей» (#4084).
+    """
     people = _harness_people_voices()
     assert people, "голоса людей в map_tts_voice не нашлись - изменился разбор харнесса"
     for voice in people:
-        assert voice in PROVIDER_VOICES["minimax"] and f"minimax:{voice}" in VOICE_METADATA, voice
+        assert (
+            voice in PROVIDER_VOICES["minimax"] and f"minimax:{voice}" in VOICE_METADATA
+        ), voice
         assert language_of("minimax", voice) not in ("", ROLE_VOICE_LANGUAGE), voice
 
 
 def test_harness_people_voices_never_voice_a_role_of_any_provider():
     people = {f"minimax:{v}" for v in _harness_people_voices()}
     for provider in PROVIDER_VOICES:
-        roles = {f"{provider}:{v}" for v in role_voices_for(provider, default_voice_for(provider))}
+        roles = {
+            f"{provider}:{v}"
+            for v in role_voices_for(provider, default_voice_for(provider))
+        }
         assert roles and not roles & people, provider
 
 
@@ -236,17 +245,34 @@ def test_an_edit_with_more_new_heroes_than_free_voices_is_refused_not_given_the_
     голос рассказчика). Двое новых - проходят и берут свободные голоса."""
     node = _performing_node("silero")
     voices = _perform(node, TALE)
-    assert len(set(voices) - {""}) == 2 and len(plan_host.perform_busy(node).voices) == 4
+    assert (
+        len(set(voices) - {""}) == 2 and len(plan_host.perform_busy(node).voices) == 4
+    )
 
     def edit(heroes):
         roles = [name for name in heroes]
-        return {"edit_pending": True, "perform": {"kind": "tale", "segments": [f"Реплика {n}." for n in roles],
-                                                  "cast": [{"name": n} for n in heroes], "role_per_segment": roles}}
+        return {
+            "edit_pending": True,
+            "perform": {
+                "kind": "tale",
+                "segments": [f"Реплика {n}." for n in roles],
+                "cast": [{"name": n} for n in heroes],
+                "role_per_segment": roles,
+            },
+        }
 
     busy = plan_host.perform_busy(node)
-    refused = validate(parse(edit(["Лиса", "Волк", "Сова", "Кот"])), ALL_TOOLS, busy=busy)
+    refused = validate(
+        parse(edit(["Лиса", "Волк", "Сова", "Кот"])), ALL_TOOLS, busy=busy
+    )
     assert isinstance(refused, Invalid) and refused.reason == "bad_cast"
     assert "свободных голосов для них 2" in refused.violations[0].detail
     accepted = _judge(node, edit(["Лиса", "Волк", "Сова"]))
     fox, wolf, owl = accepted.perform.voice_per_segment
-    assert fox == voices[2] and wolf and owl and len({fox, wolf, owl}) == 3 and not {wolf, owl} & set(voices)
+    assert (
+        fox == voices[2]
+        and wolf
+        and owl
+        and len({fox, wolf, owl}) == 3
+        and not {wolf, owl} & set(voices)
+    )
