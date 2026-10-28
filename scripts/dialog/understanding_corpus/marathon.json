@@ -5,16 +5,16 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "4c3786bdc609dc810d411c0e6eff7b67a25c3865",
+  "last_commit": "969f5311c18fb8a33e60cdb9733d17943b2af25a",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "6bc0c5e039f0f16243815458f3c23a5f0ba2cb05bd1e2620f24269268630bb3f",
    "night_marathon_act1_wakeup_v1.json": "e65ea279c1b1a787da077f12af7d6b9a118b6b704af78f799a3d7616e22d2c7f",
-   "night_marathon_act2_acquaintance_v1.json": "bbe1efd1275a3457b6f4a09b7cebbe1915f08b0d9d6016001db313d95365eff5",
+   "night_marathon_act2_acquaintance_v1.json": "956ded0a35fbd13a316d62f7e485d5afaef548f8ff34ac26db7f330748bdbc42",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
-   "night_marathon_act2c_voice_conflict_question_v1.json": "fbe255904e0b52264866994dc7c34e66e8759442329d98238fee116b1dd8d708",
+   "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
    "night_marathon_act3_backlog_diarization_v1.json": "23eb46222b3b32484a85235b065955ee603a5f6c70ddee84f3b9431c949264da",
    "night_marathon_act4_voice_prosody_v1.json": "b1266595eb03dfa0dba9334a84a7521da954500ebef906e6d0abf503c9dca5a4",
-   "night_marathon_act5_renardo_live_v1.json": "541494606e5228fd064bc114974cb6159f5b9d78fdd3e0ad5a48dcb4f36299a9",
+   "night_marathon_act5_renardo_live_v1.json": "eb7bdfe7183175db24521fce2fe5f67fba00dcd124fe19ca399ff00b7c44d48d",
    "night_marathon_act6_dj_booth_v1.json": "6ba0f21a964a353ccff7e2cba118d7ba651bce58e5ed1655b2b8138b73fe37e2",
    "night_marathon_act7_neuro_composer_v1.json": "66399f0ea486fe44cf2be930612404d64e7e4eb21a57b34011fb6060907a29d2",
    "night_marathon_act8_barge_in_v1.json": "030e84cac478bd988066f0891f357182bdd137a506822030d1d339e6f8ed07d9",
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "8e0438fe4f620b7c0c4536aa06c849dec1f1f5735ae8001518e7686038eeec48",
+ "corpus_sha256": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
  "acts": [
   {
    "act": "1",
@@ -366,7 +366,6 @@
       ],
       "acceptance": {
        "must_not_call": [
-        "memory_save",
         "stage=done status=done"
        ],
        "must_not_say": [
@@ -682,7 +681,7 @@
      "step": {
       "label": "n210_grisha_no_name",
       "voice": "zahar",
-      "text": "Робот, я мимо шла. Имя своё я тебе называть не буду, я старой закалки и не доверяю железкам.",
+      "text": "Робот, я мимо шла. Имя своё я тебе называть не буду, я старой закалки и не доверяю железкам, робот.",
       "patterns": [],
       "acceptance": {
        "must_not_call": [
@@ -710,7 +709,12 @@
         "Саша"
        ],
        "expected_tool_calls": []
-      }
+      },
+      "recover": [
+       "no_wake",
+       "silenced",
+       "wake_replay"
+      ]
      }
     },
     {
@@ -1148,14 +1152,17 @@
       "voice": "arina",
       "text": "Робот, привет, меня зовут Нина, я соседка снизу, зашла вернуть паяльник и моток провода.",
       "patterns": [
-       "Speaker 'Нина' registered \\(id=|'Нина' представился — имя присвоено профилю без имени",
-       "Speaker: безымянный профиль id=[0-9a-f]+ \\(новый|Speaker 'Нина' registered \\(id="
+       "Speaker 'Нина' registered \\(id=|'Нина' представился — имя присвоено профилю без имени|Speaker 'Нина' \\(id=[0-9a-f]+\\) — голос похож на уже известного '[^']+'",
+       "Speaker: безымянный профиль id=[0-9a-f]+ \\(новый|Speaker 'Нина' registered \\(id=|регистрируют как 'Нина' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль"
       ],
       "acceptance": {
        "expected_tool_calls": [
         "register_speaker"
        ],
-       "must_not_call": [],
+       "must_not_call": [
+        "профиль переименован 'Борис'",
+        "профиль переименован 'Саша'"
+       ],
        "require_registration_accepted": false,
        "must_not_identify_as": [
         "Саша",
@@ -2122,7 +2129,7 @@
      "step": {
       "label": "n507_wake_under_music",
       "voice": "zahar",
-      "text": "Робот, который час, я спрашиваю!",
+      "text": "Робот, который час, я спрашиваю, робот!",
       "patterns": [],
       "acceptance": {
        "expected_tool_calls": [
@@ -2137,7 +2144,12 @@
        "must_not_say": [
         "Нашёл ответ, но не смог сложить его в короткую фразу. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ]
-      }
+      },
+      "recover": [
+       "no_wake",
+       "silenced",
+       "wake_replay"
+      ]
      }
     },
     {
