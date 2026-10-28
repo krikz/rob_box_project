@@ -205,3 +205,18 @@ def test_female_name_that_looks_like_a_masculine_genitive_is_registered_as_it_is
     tool, node = _tool(monkeypatch, _registered)
     tool.execute(name="Валерия", utterance_id=UTT)
     assert _registers(node) == [{"name": "Валерия", "utterance_id": UTT}]
+
+
+def test_yo_of_the_name_survives_the_case_reduction_in_the_profile(monkeypatch):
+    """Ревью PR #4129: «Алёну» (винительный) уходила в профиль «Алена», а «Алёна» - «Алёна»: два написания одного имени."""
+    tool, node = _tool(monkeypatch, _registered)
+    tool.execute(name="Алёну", utterance_id=UTT)
+    assert _registers(node) == [{"name": "Алёна", "utterance_id": UTT}]
+
+
+def test_rename_to_a_name_of_several_words_publishes_it_as_written(monkeypatch):
+    """Ревью PR #4129: ``new_name`` из нескольких слов уходил как написан («Иван Петров»); ``profile_name`` не меняет его
+    ни падежом, ни регистром (было бы «Иван петров»)."""
+    tool, node = _tool(monkeypatch, lambda b: _registered(b) if "utterance_id" in b else None)
+    tool.execute(name="Иван Петров", old_name="Эйджик", utterance_id=UTT)
+    assert _renames(node) == [{"old_name": "Эйджик", "new_name": "Иван Петров"}]

@@ -76,6 +76,17 @@ def test_female_name_written_like_a_masculine_genitive_stays_female(word):
     assert introduced_name(name_tokens(f"меня зовут {word}")) == word
 
 
+@pytest.mark.parametrize("word, male", [
+    ("александра", "александр"), ("валерия", "валерий"), ("виталия", "виталий"), ("влада", "влад"),
+    ("владислава", "владислав"), ("вячеслава", "вячеслав"), ("ярослава", "ярослав"), ("евгения", "евгений"),
+    ("валентина", "валентин"),
+], ids=str)
+def test_known_limit_the_masculine_accusative_equal_to_a_female_name_is_read_as_the_female_name(word, male):
+    """ИЗВЕСТНОЕ ОГРАНИЧЕНИЕ (девять пар, ревью PR #4129): «запиши меня как Александра» - мужской винительный, но то же
+    слово - женское имя из словаря; код не выбирает и оставляет женское. Тест фиксирует границу, а не желаемое."""
+    assert male in kn.KNOWN_FIRST_NAMES and classify_rename(f"запиши меня как {word}") == Rename(word.capitalize())
+
+
 @pytest.mark.parametrize("word", ["кузьма", "фома", "шифа", "станислава", "эльдара", "кроватью", "льву"], ids=str)
 def test_unknown_word_with_an_ambiguous_ending_is_left_as_it_is(word):
     """Слово, которого нет в словаре имён и которое не «-ой»/«-ом» (``_sure_form``), не трогается: гадать по «-а»/«-я»/
@@ -89,11 +100,30 @@ def test_same_name_in_nominative_and_accusative():
 
 
 def test_the_profile_name_is_the_nominative_in_one_place():
-    """``profile_name`` - имя для профиля голоса: падеж приводится, заглавная, ё в именительном сохраняется."""
+    """``profile_name`` - имя для профиля голоса: падеж приводится, заглавная, ё сохраняется."""
     assert [profile_name(n) for n in ("Тамарой", " бориса ", "сергеем", "Львом", "Аскаром")] == [
         "Тамара", "Борис", "Сергей", "Лев", "Аскар"]
-    assert [profile_name(n) for n in ("тамара", "Алёна", "Валерия", "Иван Петров", "ИВАН ПЕТРОВ", "", None)] == [
-        "Тамара", "Алёна", "Валерия", "Иван петров", "Иван петров", "", ""]
+    assert [profile_name(n) for n in ("тамара", "Алёна", "Валерия", "", None)] == ["Тамара", "Алёна", "Валерия", "", ""]
+
+
+@pytest.mark.parametrize("written, name", [
+    ("Алёну", "Алёна"), ("Алёна", "Алёна"), ("алёной", "Алёна"), ("Пётра", "Пётр"), ("Артёма", "Артём"),
+    ("Семёна", "Семён"), ("Фёдора", "Фёдор"),
+], ids=str)
+def test_the_profile_keeps_yo_whichever_case_the_name_was_written_in(written, name):
+    """Ревью PR #4129: «Алёну» давало «Алена», а «Алёна» оставалось «Алёна» - в профиле два написания одного имени
+    (точное сравнение имён в ``speaker_id_node`` их не склеивает, ``name_key`` склеивает)."""
+    assert profile_name(written) == name
+
+
+@pytest.mark.parametrize("written, name", [
+    ("Иван Петров", "Иван Петров"), ("ИВАН ПЕТРОВ", "ИВАН ПЕТРОВ"), ("иван петров", "Иван петров"),
+    ("  Анна-Мария   Фон Дер  ", "Анна-Мария   Фон Дер"), ("Тамарой Ивановой", "Тамарой Ивановой"),
+], ids=str)
+def test_several_words_of_the_profile_name_are_kept_as_written(written, name):
+    """Ревью PR #4129: несколько слов не меняются - ни падеж, ни регистр остальных слов (``capitalize`` делал из
+    «Иван Петров» «Иван петров»); первая буква заглавная."""
+    assert profile_name(written) == name
 
 
 @pytest.mark.parametrize("text, name", [

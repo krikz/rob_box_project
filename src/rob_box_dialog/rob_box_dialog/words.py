@@ -231,17 +231,27 @@ def _sure_form(word: str) -> Optional[str]:
 
 
 def profile_name(name: Any) -> str:
-    """Имя для профиля голоса (``register_speaker(name=…)``): без пробелов по краям, с заглавной, одно слово - в
-    именительном падеже (:func:`nominative_name`). Имя, которое модель написала так, как услышала («Тамарой»,
-    «Бориса»), не попадает в профиль падежом: профиль «Тамара», а не «Тамарой». Несколько слов («Иван Петров») и имя,
-    уже стоящее в именительном, не меняются (ё в имени сохраняется: «Алёна»); приведённое из словаря пишется как в
-    словаре (``ё → е``). Пусто - пусто."""
-    cleaned = str(name or "").strip().capitalize()
-    if not cleaned or len(cleaned.split()) > 1:
-        return cleaned
-    folded = cleaned.lower().replace("ё", "е")
-    nominative = nominative_name(folded)
-    return cleaned if nominative == folded else nominative.capitalize()
+    """Имя для профиля голоса (``register_speaker(name=…)``): без пробелов по краям. Одно слово - с заглавной и в
+    именительном падеже (:func:`nominative_name`): имя, которое модель написала так, как услышала («Тамарой»,
+    «Бориса»), не попадает в профиль падежом - профиль «Тамара», а не «Тамарой». ё остаётся: и в именительном
+    («Алёна»), и при приведении падежа («Алёну» → «Алёна», а не «Алена»: в профиле одно написание имени). Несколько слов
+    («Иван Петров») - как написаны: падеж не трогается и регистр не меняется, только первая буква заглавная. Пусто -
+    пусто."""
+    cleaned = str(name or "").strip()
+    if len(cleaned.split()) != 1:
+        return cleaned[:1].upper() + cleaned[1:]
+    written = cleaned.lower()
+    nominative = nominative_name(written.replace("ё", "е"))
+    return _with_written_yo(written, nominative).capitalize()
+
+
+def _with_written_yo(written: str, nominative: str) -> str:
+    """Именительный с ё слова, как оно написано: «алёну» → «алена» → «алёна». ё сохраняется в общей основе слов (буквы
+    сравниваются как ё → е); заменённое окончание и основа из ``NAME_CASE_STEMS`` («львом» → «лев») - от именительного."""
+    common = 0
+    while common < min(len(written), len(nominative)) and written[common].replace("ё", "е") == nominative[common]:
+        common += 1
+    return written[:common] + nominative[common:]
 
 
 def name_key(name: Any) -> str:
