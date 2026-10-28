@@ -37,9 +37,14 @@ class _Node:
 
     def __init__(self, *a, **kw):
         self.subscriptions_by_topic = {}
+        self.publishers_by_topic = {}
 
     def create_subscription(self, msg_type, topic, callback, qos):
         self.subscriptions_by_topic[topic] = (msg_type, callback)
+
+    def create_publisher(self, msg_type, topic, qos):
+        self.publishers_by_topic[topic] = MagicMock()
+        return self.publishers_by_topic[topic]
 
     def get_logger(self):
         return MagicMock()
@@ -390,3 +395,95 @@ def test_partials_of_a_phrase_that_the_window_passes_are_offered_as_before(node_
     _partials(node, "робот", "робот расскажи", "робот расскажи сказку")
     _phrase(node, clock, at=30.0, seconds=3.0)
     assert sent == ["робот", "робот расскажи", "робот расскажи сказку"]
+
+
+# --- stt_node: эхо словами речи робота (#4145) ---------------------------------------------------------------------
+
+#: Агитация из Telegram 28.10 (карточка #4145): начало реплики робота (SSML, как его кладёт speech_client) и что из
+#: её эха распознал STT в 08:58:18.657.
+AGITATION_SSML = "<speak>Дорогие друзья! Слушайте и не говорите, что не слышали! Наше ПТУ</speak>"
+AGITATION_ECHO = "дорогие друзья слушайте и не говорите что не слышали"
+
+
+def _agitation(node, clock, voice: bool = True) -> None:
+    """``SpeechRequest`` агитации и ``started``; ``voice`` — голос в микрофоне с 0,42 до 5,4 с (робот говорит)."""
+    _, on_request = node.subscriptions_by_topic[speech_client.SPEECH_REQUEST_TOPIC]
+    clock.t = 4999.8
+    on_request(M.SpeechRequest(speech_id="46fd3b27", text=AGITATION_SSML, agent="telegram", sink="speakers",
+                               commit=True))
+    steps = [(0.0, lambda: _say(node, SpeechEvent.KIND_STARTED, "46fd3b27", agent="telegram"))]
+    if voice:
+        steps += [(0.42, lambda: _vad(node, True)), (5.4, lambda: _vad(node, False))]
+    for at, step in steps:
+        clock.t = 5000.0 + at
+        step()
+
+
+def test_agitation_echo_does_not_reach_the_dialog_and_goes_to_biometry_as_echo(node_modules):
+    """Эхо агитации из лога: не в диалог (ни бэклога, ни модели), без «не расслышал»; в ``/voice/stt/echo`` — по нему
+    биометрия профиль не заводит (тот же utterance_id, что у фразы)."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, AGITATION_ECHO)
+    _agitation(node, clock)
+    _phrase(node, clock, at=5.447, seconds=5.38)
+    node._recognize_with_fallback.assert_called_once()
+    node.publish_result.assert_not_called()
+    node._publish_speaker.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()
+    node.publish_state.assert_called_with("ready")
+    (published,) = [c.args[0] for c in node.publishers_by_topic[echo_window.ECHO_TOPIC].publish.call_args_list]
+    assert (published.utterance_id, published.text, published.source) == (
+        node._active_utterance_id, AGITATION_ECHO, "respeaker")
+    assert published.utterance_id
+
+
+@pytest.mark.parametrize("text", ["робот стоп", "мама пришла давай ужинать"])
+def test_stop_and_a_human_phrase_during_robot_speech_go_on_as_before(node_modules, text):
+    """«Робот, стоп» во время речи и чужая фраза (не слова робота) — как раньше: в диалог; эхом не помечены."""
+    from rob_box_voice.core import echo_window
+
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, text)
+    _agitation(node, clock)
+    _phrase(node, clock, at=5.447, seconds=5.38)
+    assert node.publish_result.call_args.args[0] == text
+    node.publishers_by_topic[echo_window.ECHO_TOPIC].publish.assert_not_called()
+
+
+def test_phrase_dropped_before_stt_goes_to_biometry_as_echo_at_once(node_modules):
+    """Ревью #4161: software-AEC отбрасывает фразу, пока робот говорит, — до STT. Раньше биометрия ждала по ней
+    вердикта весь срок; теперь в ``/voice/stt/echo`` сразу уходит её utterance_id (хеш тех же PCM, что у
+    ``speaker_id_node``): профиль из неё не заводится и не растёт."""
+    from rob_box_voice.core import echo_window
+    from rob_box_voice.core.utterance_id import compute_utterance_id
+
+    clock = Clock()
+    node = _stt_node(node_modules[1], "software", clock)
+    node.sample_rate, node.wake_words = 16000, WAKE
+    node._recognize_with_fallback = MagicMock()
+    node.publish_result = MagicMock()
+    _say(node, SpeechEvent.KIND_STARTED)
+    pcm = b"\x00\x00" * int(16000 * 2.0)
+    node.speech_audio_callback(types.SimpleNamespace(data=list(pcm)))
+    node._recognize_with_fallback.assert_not_called()
+    node.publish_result.assert_not_called()
+    (published,) = [c.args[0] for c in node.publishers_by_topic[echo_window.ECHO_TOPIC].publish.call_args_list]
+    assert (published.utterance_id, published.text) == (compute_utterance_id(pcm), "")
+
+
+def test_robot_words_after_the_speech_outside_the_echo_window_go_on_as_before(node_modules):
+    """После конца речи и эхо-окна голос звучал в тишине: даже слова робота (человек цитирует) — в диалог."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, AGITATION_ECHO)
+    _agitation(node, clock, voice=False)
+    for at, step in (
+        (38.9, lambda: _say(node, SpeechEvent.KIND_FINISHED, "46fd3b27", agent="telegram")),
+        (45.0, lambda: _vad(node, True)),
+        (48.0, lambda: _vad(node, False)),
+    ):
+        clock.t = 5000.0 + at
+        step()
+    _phrase(node, clock, at=51.0, seconds=6.0)
+    assert node.publish_result.call_args.args[0] == AGITATION_ECHO

@@ -1,5 +1,6 @@
 """Бэклог неадресованных фраз (ADR-0150 §7.3 В12, #3767; приёмка A31: 0 чужих фраз в снимке адресованного хода)."""
 
+from rob_box_dialog.address import decide
 from rob_box_dialog.backlog import Backlog, Heard, pickup_summary, same_direction
 from rob_box_dialog.knowledge import (
     BACKGROUND_MAX_PHRASES,
@@ -10,8 +11,10 @@ from rob_box_dialog.knowledge import (
     BACKLOG_PICKUP_MAX,
     BACKLOG_PICKUP_S,
     BACKLOG_TTL_S,
+    DEFAULT_WAKE_WORDS,
 )
-from rob_box_dialog.speaker_adapter import VoiceTag
+from rob_box_dialog.speaker_adapter import VoiceTag, voice_tag
+from rob_box_dialog.turn import background_section, recent_section
 
 
 def _h(text, t, doa=None, person="", voice_s=0.0, faces=("f1",)):
@@ -35,7 +38,8 @@ def test_snapshot_gives_at_most_one_fresh_phrase_of_the_same_interlocutor_with_i
     backlog.add(_h("телевизор", t=96.0, doa=250.0))
     assert backlog.recent_unaddressed(_h("робот", t=100.0, doa=80.0)) == {
         "text": "покажи анимацию", "age_s": 5.0, "duration_s": 2.0, "doa_deg": 85, "same_direction": True,
-        "speaker": {"identified": False, "label": "неопознанный", "bio": "none"}, "same_as_caller": True}
+        "speaker": {"identified": False, "label": "неопознанный", "bio": "none"}, "speaker_id": "unknown",
+        "same_as_caller": True}
 
 
 def test_snapshot_by_person_is_not_same_direction():
@@ -190,3 +194,60 @@ def test_3975_addressed_turn_hides_earlier_phrases_from_the_far_pickup_until_cle
     backlog.clear()
     backlog.add(_h("после очистки", t=10.0, voice_s=2.0))
     assert [e.text for e in backlog.pickup(_h("робот", t=100.0))] == ["после очистки"]
+
+
+# --- #4145 (решение Шифу 28.10): у каждой записи бэклога автор — speaker id или unknown ------------------------------
+
+
+#: Биометрия фраз бэклога: узнан с именем, безымянный профиль с кличкой (#3858), незнакомый голос, спорный голос
+#: (#2809: ``speaker_id`` — лишь ближайший кандидат), результата нет вовсе.
+_AUTHORS = (
+    ("u-named", {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9}, "spk-boris"),
+    ("u-nameless", {"is_known": True, "speaker_id": "spk-76b59285", "epithet": "Наблюдатель", "confidence": 0.8},
+     "spk-76b59285"),
+    ("u-stranger", {"is_known": False}, "unknown"),
+    ("u-contested", {"is_known": True, "speaker_id": "spk-sasha", "tentative_name": "Саша",
+                     "tentative_kind": "contested", "confidence": 0.9}, "unknown"),
+    ("u-none", None, "unknown"),
+)
+
+
+def test_every_backlog_entry_has_an_author_speaker_id_or_unknown_4145():
+    """Шифу 28.10: «в бэклог должны уходить идентификаторы кто что сказал». Биометрия приходит после STT
+    (``note_voice``) — у каждой записи свой автор: id профиля (и безымянного с кличкой) или ``unknown``."""
+    backlog = Backlog()
+    for i, (uid, payload, _author) in enumerate(_AUTHORS):
+        backlog.add(Heard(text=f"фраза {uid}", t=90.0 + i, voice_s=3.0, utterance_id=uid))
+        if payload is not None:
+            backlog.note_voice(uid, voice_tag(payload))
+    authors = [author for _uid, _payload, author in _AUTHORS]
+    heard = _h("робот кто говорил", t=100.0, faces=())
+    assert [p["speaker_id"] for p in backlog.background_since_reply(heard)] == authors
+    taken = backlog.pickup(_h("робот", t=100.0, faces=()))
+    assert [Backlog.label(e, heard)["speaker_id"] for e in taken] == authors
+
+
+def test_author_of_a_backlog_phrase_reaches_the_wake_turn_snapshot_4145():
+    """Фраза без вейка безымянного голоса «Наблюдатель» (#3858), потом тот же голос с вейком: в снимке хода
+    (``recent_unaddressed``) — эта фраза и её автор, id профиля, а не только «неопознанный»."""
+    backlog = Backlog()
+    backlog.add(Heard(text="включи что нибудь весёлое", t=95.0, voice_s=3.0, utterance_id="u-bg"))
+    backlog.note_voice("u-bg", voice_tag(_AUTHORS[1][1]))
+    wake = Heard(text="Робот, ну что скажешь", t=100.0, voice_s=3.0, person_ref="spk-76b59285")
+    (recent,) = recent_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
+    assert recent["text"] == "включи что нибудь весёлое"
+    assert recent["speaker_id"] == "spk-76b59285" and recent["same_as_caller"] is True
+    assert recent["who"] == "незнакомый голос"  # имени нет — вслух не называем, но автор известен по id
+
+
+def test_two_nameless_voices_in_the_background_differ_by_author_id_4161():
+    """Ревью #4161: в `background_since_reply` снимка хода с вейком у двух безымянных голосов `who` один и тот же
+    («незнакомый голос») — различает их `speaker_id` профиля, у каждой фразы."""
+    backlog = Backlog()
+    for i, (uid, sid) in enumerate((("u-1", "spk-a"), ("u-2", "spk-b"))):
+        backlog.add(Heard(text=f"фраза {uid}", t=90.0 + i, voice_s=3.0, utterance_id=uid))
+        backlog.note_voice(uid, voice_tag({"is_known": True, "speaker_id": sid, "epithet": "Гость", "confidence": 0.8}))
+    wake = Heard(text="Робот, кто тут говорил", t=100.0, voice_s=3.0)
+    section = background_section(decide(wake, backlog, list(DEFAULT_WAKE_WORDS)))
+    assert [(p["who"], p["speaker_id"]) for p in section] == [("незнакомый голос", "spk-a"),
+                                                              ("незнакомый голос", "spk-b")]

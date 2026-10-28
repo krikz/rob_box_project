@@ -240,6 +240,20 @@ def asked_level(text: str) -> str:
     return asked.pop() if len(asked) == 1 else ""
 
 
+def words_in_order(heard: str, said: str) -> int:
+    """Сколько слов ``heard`` встречаются в ``said`` в том же порядке — длина наибольшей общей подпоследовательности
+    слов :func:`name_tokens` (нижний регистр, ё → е; знаки препинания не слова). «дорогие друзья слушайте и не
+    говорите что не слышали» в «Дорогие друзья! Слушайте и не говорите, что не слышали! Наше ПТУ…» — 9: фраза STT
+    повторяет речь робота слово в слово (эхо, #4145). Слово — целиком: «говоришь» не «говорите»."""
+    words, spoken = name_tokens(heard), name_tokens(said)
+    row = [0] * (len(spoken) + 1)
+    for word in words:
+        diagonal = 0
+        for j, other in enumerate(spoken, 1):
+            diagonal, row[j] = row[j], diagonal + 1 if word == other else max(row[j], row[j - 1])
+    return row[-1]
+
+
 def nominative_name(word: str) -> str:
     """Слово-имя (нижний регистр, ё → е, как в :func:`name_tokens`) в именительном падеже: «тамарой» → «тамара», «сашей»
     → «саша», «борисом» → «борис», «сергеем» → «сергей», «запиши как тамару» → «тамара», «запиши как бориса» → «борис»,

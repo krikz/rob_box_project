@@ -16,7 +16,9 @@
   бэклоге должна быть инфа кто чего сказал и когда») — чтобы «кто говорил на фоне?» было из чего отвечать.
 
 Каждая отданная фраза — :meth:`Backlog.label`: текст, возраст, длительность, DOA и кто её сказал
-(:func:`~rob_box_dialog.speaker_adapter.phrase_speaker`: узнанный спикер или «неопознанный» + что есть по голосу).
+(:func:`~rob_box_dialog.speaker_adapter.phrase_speaker`: узнанный спикер или «неопознанный» + что есть по голосу;
+``speaker_id`` — профиль голоса или ``unknown``, у каждой фразы, #4145). Эхо собственной речи робота сюда не
+попадает: ``stt_node`` его в диалог не отдаёт (``rob_box_voice.core.echo_window``, #4145).
 Всё остальное (телевизор, чужие разговоры) живёт только для счётчика «фоновая речь» и умирает по TTL.
 """
 
@@ -25,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence
 
+from rob_box_core.speaker_wire import NAME_UNKNOWN
 from rob_box_dialog.doa import angle_diff_deg
 from rob_box_dialog.knowledge import (
     BACKGROUND_MAX_PHRASES,
@@ -144,11 +147,14 @@ class Backlog:
 
     @staticmethod
     def label(entry: Heard, heard: Heard) -> Dict[str, Any]:
-        """Фраза для LLM структурой (#3767): что сказано, когда, сколько звучала, откуда и кто сказал."""
+        """Фраза для LLM структурой (#3767): что сказано, когда, сколько звучала, откуда и кто сказал. ``speaker_id`` —
+        автор у каждой фразы (решение Шифу 28.10, #4145): профиль, которому биометрия приписала голос (и безымянный
+        с кличкой, #3858), или ``unknown`` — голос не узнан, спорный или результата нет."""
         return {"text": entry.text, "age_s": round(heard.t - entry.t, 1), "duration_s": round(entry.voice_s, 1),
                 "doa_deg": None if entry.doa_deg is None else round(entry.doa_deg),
                 "same_direction": same_direction(entry.doa_deg, heard.doa_deg),
                 "speaker": phrase_speaker(entry.voice, entry.faces),
+                "speaker_id": entry.person_ref or NAME_UNKNOWN,
                 "same_as_caller": bool(same_interlocutor(entry, heard))}
 
     def _prune(self, now: float) -> None:

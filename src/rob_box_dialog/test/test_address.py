@@ -210,7 +210,8 @@ def test_3975_woken_turn_sees_far_unaddressed_phrases_with_their_author():
     out = decide(_heard("Робот, на ренардо", t=1000.0, doa=90.0), backlog, WAKES)
     assert out.source == VOICE and out.text == "на ренардо"
     assert out.recent == (), "recent_unaddressed - только свежее (моложе BACKLOG_FRESH_S)"
-    assert background_section(out) == ({"who": "Борис", "text": "сыграй мне что нибудь спокойное", "age_s": 170.0},)
+    assert background_section(out) == ({"who": "Борис", "speaker_id": "p1", "text": "сыграй мне что нибудь спокойное",
+                                        "age_s": 170.0},)
     assert backlog.background_phrases(1000.0) == 1, "из бэклога не уходит: подхват голым «Робот» по-прежнему возможен"
 
 

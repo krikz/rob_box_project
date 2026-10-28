@@ -312,6 +312,43 @@ def test_addressed_turn_sees_only_same_speakers_background_phrase_3894(node):
     assert '\\"who\\":\\"Саша\\"' in blob
 
 
+def test_backlog_phrase_of_a_nameless_voice_reaches_the_wake_turn_with_its_author_4145(node):
+    """Решение Шифу 28.10 (#4145): у фразы бэклога автор — id профиля. Безымянный голос с кличкой (#3858) сказал фразу
+    без вейка (биометрия пришла ПОСЛЕ STT), потом тот же голос — с вейком: в снимке LLM `recent_unaddressed` фраза с
+    `speaker_id` этого профиля (имени нет — `who` «незнакомый голос»)."""
+    nameless = {"is_known": True, "speaker_id": "spk-nab", "epithet": "Наблюдатель", "confidence": 0.81}
+    node._on_utterance(_long("поставь что нибудь весёлое", "u-bg", 4.0))
+    node._on_speaker(_voice({**nameless, "utterance_id": "u-bg"}))
+    node._on_speaker(_voice({**nameless, "utterance_id": "u-q"}))
+    node._on_utterance(_long("Робот, ну что скажешь", "u-q"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    recent = blob.split("recent_unaddressed")[1].split("background_since_reply")[0]
+    assert "поставь что нибудь весёлое" in recent
+    assert '\\"speaker_id\\":\\"spk-nab\\"' in recent
+
+
+def test_barge_in_whose_voice_comes_first_gets_its_own_speaker_and_no_foreign_backlog_4161(node):
+    """Ревью #4161 (зонд ``test_zz_probe_4145_order``): Борис без вейка «закажи пиццу на вечер», потом Саша перебивает
+    робота «Робот, что скажешь». Опознание фразы рядом с речью робота ``speaker_id_node`` публикует сразу (изменения
+    профилей ждут вердикта) — порядок как у любой фразы: SpeakerResult Саши, затем её Utterance. Собеседник хода —
+    Саша, фразы Бориса в `recent_unaddressed` нет. Порядок со стороны биометрии —
+    ``test_issue_4145_echo_not_a_voice_profile.test_barge_in_result_reaches_the_dialog_before_its_utterance``."""
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-b"}))
+    node._on_utterance(_long("закажи пиццу на вечер", "u-b", 6.0))
+    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
+                             "utterance_id": "u-q"}))
+    node._on_utterance(_long("Робот, что скажешь", "u-q"))
+    node.last_turn.result(timeout=10)
+    blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
+    speaker = blob.split("<speaker>")[1].split("</speaker>")[0]
+    assert "Саша" in speaker and "Борис" not in speaker
+    recent = blob.split("recent_unaddressed")[1].split("background_since_reply")[0] if "recent_unaddressed" in blob \
+        else ""
+    assert "закажи пиццу" not in recent
+
+
 def test_addressed_turn_sees_all_background_of_the_last_3_minutes_3892(node):
     """Решение Шифу 23.10 (В23): Борис и незнакомец говорят без вейка, Саша «Робот, кто говорил на фоне?» — в
     запросе LLM раздел `background_since_reply` с обеими фразами, авторами и возрастом; ответ робота его не обнуляет, фраза старше окна не попадает."""
