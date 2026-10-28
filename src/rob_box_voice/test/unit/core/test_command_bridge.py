@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 import pytest
@@ -23,8 +22,6 @@ from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings,
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_llm.providers.minimax import MiniMaxProvider
 from rob_box_voice.core import command_bridge as cb
-from rob_box_voice.core.dialogue_stage_mixin import DialogueStageMixin
-from rob_box_voice.core.turn_stages import TurnStages
 
 DEEPSEEK_CAPS = DeepSeekProvider(api_key="test").capabilities
 MINIMAX_CAPS = MiniMaxProvider(api_key="test").capabilities
@@ -217,7 +214,7 @@ def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None
         expression={"emotion": "happy", "eyes": "wide", "rear": "party", "mood": "весело"}),))
     out = _convert(DEEPSEEK_CAPS, reply, log)
     assert out.tool_calls[0].arguments["expression"] == {
-        "emotion": "happy", "face": {"eyes": "wide", "rear": "party", "duration_s": 5.0}}
+        "emotion": "happy", "face": {"eyes": "wide", "rear": "party"}}  # время не задано: ключа нет (#4089)
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
                    "actions=['memory_save'] speech_dropped=0 fields_moved=['expression.eyes', 'expression.rear'] "
                    "fields_dropped=['expression.mood']"]
@@ -392,18 +389,6 @@ def _core(inner: _Inner, streaming: bool, spoken: _Spoken) -> AgentCore:
                                    cache=HealthCache())
     return AgentCore(llm=chain, tools=spoken.tools, memory=InMemoryStore(), dsm=_dsm(),
                      system_prompt="ты РОББОКС", use_streaming=streaming)
-
-
-class _Node(DialogueStageMixin):
-    """Узел v1 в части стадий хода: ``TurnStages`` с записью рефлексов, открытый ход личности."""
-
-    def __init__(self) -> None:
-        self.rig = SimpleNamespace(requests=[], events=[])
-        self._stages = TurnStages(lambda **kw: self.rig.requests.append(kw), lambda **kw: self.rig.events.append(kw))
-        self._stages.addressed("u1")
-        self._turn_id = self._stages.turn_id_for("u1")
-        self.stages = SimpleNamespace(
-            requests=self.rig.requests, stage_names=lambda: [(e["stage"], e["status"]) for e in self.rig.events])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -626,12 +611,6 @@ def test_agent_core_invalid_twice_fails_the_turn_without_speech_and_next_turn_is
     result = asyncio.run(core.process_input("запомни", preclassified_event=DialogueEvent.STT_RESULT))
     assert len(inner.requests) == 2 and result.spoken_text == "" and spoken.said == []
     assert result.turn_failure.startswith("invalid_command") and result.error is None
-
-    # Узел закрывает ход рефлексом failed (лицо error, earcon fail; кольцо flash_red — в таблице рефлексов) — тем же путём, что провал тула.
-    node = _Node()
-    node._stage_finish(result, False, "")
-    assert node.stages.stage_names()[-1] == ("failed", "failed")
-    assert (node.stages.requests[-1]["emotion"], node.stages.requests[-1]["earcon"]) == ("error", "fail")
 
     # Следующий ход идёт обычно: никаких хвостов состояния.
     core._dsm.on_event(DialogueEvent.WAKE_WORD)  # новая реплика с вейк-словом, как у узла

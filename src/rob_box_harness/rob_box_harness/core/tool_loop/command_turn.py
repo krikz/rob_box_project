@@ -124,7 +124,7 @@ class CommandTurn:
         self._turn = uuid.uuid4().hex[:12]
         self._queries = 0
         self._n = 0
-        #: Причина провала хода (``""`` — не провалился): невалидная команда → ``TurnStages.finish(ok=False)``.
+        #: Причина провала хода (``""`` — не провалился): невалидная команда → ход провален (``turn_failure``).
         self.failure = ""
 
     @staticmethod

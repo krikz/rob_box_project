@@ -1,4 +1,4 @@
-"""Похожа ли фраза на ответ на приветствие робота — по таблице ``knowledge.GREETING_REPLIES`` (#3776; ADR-0148)."""
+"""Похожа ли фраза на ответ на приветствие робота — по таблице ``knowledge.GREETING_REPLIES`` (ADR-0148)."""
 
 from __future__ import annotations
 

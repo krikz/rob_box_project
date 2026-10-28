@@ -14,7 +14,7 @@ from typing import Any, Mapping, Optional, Tuple
 import yaml
 
 CATALOG_PATH = pathlib.Path(__file__).with_name("ru.yaml")
-#: 10 — стартовых фраз 9 (требование #1003 «6–10 вариантов»), остальным хватает 1–8.
+#: 10 — стартовых фраз 9 (требование «6–10 вариантов»), остальным хватает 1–8.
 MAX_VARIANTS = 10
 
 
@@ -35,7 +35,7 @@ def text(key: str, variant: int = 0, /, **slots: Any) -> str:
     """Вариант ``variant`` (по модулю числа вариантов) фразы ``key`` со слотами.
 
     ``key`` и ``variant`` — только позиционные: слоты приходят из данных результата исполнителя (``variant`` есть у
-    трека gen-библиотеки), и слот с таким именем не должен ронять ход ``TypeError: multiple values`` (#3974)."""
+    трека gen-библиотеки), и слот с таким именем не должен ронять ход ``TypeError: multiple values``."""
     variants = catalog()[key]
     return variants[variant % len(variants)].format(**slots)
 
