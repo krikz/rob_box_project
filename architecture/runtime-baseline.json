@@ -8,10 +8,6 @@
       "scope": "repo"
     },
     {
-      "key": "dead_input|/battery_state|",
-      "scope": "repo"
-    },
-    {
       "key": "dead_input|/device/snapshot|",
       "scope": "repo"
     },

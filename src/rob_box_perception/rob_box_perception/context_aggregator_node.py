@@ -22,7 +22,7 @@ Perception Context Aggregator node.
 - /voice/dialogue/response (ответы робота, только dialogue_node v1; TEMP до PR-15 #3711)
 - /voice/command/intent (intent команд)
 - /voice/command/feedback (feedback команд)
-- /dynamic_joint_states (battery/voltage)
+- /dynamic_joint_states (joint battery, интерфейс voltage)
 
 Публикует:
 - /perception/context_update (PerceptionEvent) - агрегированный контекст
@@ -45,6 +45,7 @@ from rcl_interfaces.msg import Log
 import rclpy
 from rclpy.node import Node
 
+from rob_box_perception.battery_state import extract_battery_voltage
 from rob_box_perception.core.robot_speech import SPEECH_REQUEST_TOPIC, robot_said
 from rob_box_perception.utils.internet_monitor import (
     InternetConnectivityMonitor,
@@ -399,13 +400,10 @@ class ContextAggregatorNode(Node):
                 self.recent_warnings.pop(0)
 
     def on_joint_states(self, msg: DynamicJointState):
-        """Обновление данных ros2_control."""
-        for interface_values in msg.interface_values:
-            for name, value in zip(interface_values.interface_names,
-                                   interface_values.values):
-                if name == 'battery/voltage':
-                    self.current_sensors['battery'] = value
-                    break
+        """Напряжение батареи: joint ``battery``, интерфейс ``voltage`` (#4001)."""
+        volts = extract_battery_voltage(msg.joint_names, msg.interface_values)
+        if volts is not None:
+            self.current_sensors['battery'] = volts
 
     def on_user_speech(self, msg: Utterance):
         """Получена речь пользователя (STT, ``Utterance`` - ADR-0150 PR-2)."""

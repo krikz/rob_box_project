@@ -37,6 +37,9 @@ setup(
             'rob_box_perception.context_aggregator_node:main',
             'health_monitor = '
             'rob_box_perception.health_monitor:main',
+            # #4002: /battery_state из joint battery/voltage ros2_control.
+            'battery_state_publisher = '
+            'rob_box_perception.battery_state_node:main',
             'perception_bridge = '
             'rob_box_perception.perception_bridge:main',
             # ADR-0089 Phase 1: AI HAT+ inference node. Stub publishes

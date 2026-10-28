@@ -39,9 +39,13 @@ from typing import Any, Dict, List, Tuple
 # Батарея: вольты → проценты
 # ---------------------------------------------------------------------------
 # ``PerceptionEvent.battery_voltage`` — напряжение бортовой шины в вольтах
-# (context_aggregator_node берёт его из /dynamic_joint_states, ключ
-# ``battery/voltage``). Границы — по docs/architecture/HARDWARE.md: 10S LiPo,
+# (context_aggregator_node берёт его из /dynamic_joint_states: joint ``battery``,
+# интерфейс ``voltage``). Границы — по docs/architecture/HARDWARE.md: 10S LiPo,
 # 42 В заряжена (10 × 4.2), 30 В cutoff (10 × 3.0).
+#
+# Те же границы и формула (доля 0..1) продублированы в
+# ``rob_box_perception.battery_state`` — контейнер perception не содержит
+# rob_box_mcp_tools; паритет держит test_battery_state.py (rob_box_perception).
 #
 # Важно: агрегатор пишет 0.0, когда данных о батарее ещё не было
 # (``current_sensors.get('battery', 0.0)``). Ноль вольт на 10S — не «разряжена»,
