@@ -116,6 +116,7 @@ def _perform(loop: Any, n: int) -> tuple:
             host.tick()
             host.on_speech("finished", msg.speech_id, spoken_chars=len(_text(msg)))
         inbox += node.queue().drain()
+    _settle(loop)  # снятие подложки концом выступления исполнено до остановки loop (без «never awaited»)
     return node, events, delivered, heard
 
 

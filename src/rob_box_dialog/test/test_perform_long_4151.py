@@ -59,6 +59,9 @@ def test_long_performance_starts_after_lead_in_and_goes_in_order(n, kind):
     assert [e.segment_no for e in sim.events("segment_started")] == list(range(1, n + 1))
     assert sim.block.end_reason == "done" and sim.events("block_end")[0].segment_no == n
     assert max(_presynth_bursts(sim).values()) <= kn.PERFORM_PRESYNTH_WINDOW + 1  # окно + «Поехали!»
+    # такт старта (``at``) не уезжает вперёд на длинной форме: между репликами — хвост владельца и не больше такта
+    gaps = [b.start - a.end for a, b in zip(sim.heard, sim.heard[1:])]
+    assert max(gaps) <= kn.SPEECH_RELEASE_TAIL_S + 4 * 60.0 / BPM + 0.01
 
 
 def test_long_performance_without_pause_markup_or_backing_also_goes_in_order():

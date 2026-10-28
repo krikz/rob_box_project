@@ -610,7 +610,7 @@ class PerformBlock:
         """Сторож (#4151): речи нет ``PERFORM_SILENCE_MAX_S`` — снять речь и подложку сразу, сказать фразу кода.
         В логе — какую реплику ждали и в каком она состоянии (пред-синтез не ответил, звучание не встало)."""
         wait = self.lines.first("committed") or self.lines.first("pending")
-        what = "—" if wait is None else (f"реплика {wait.no} ({wait.state}, "
+        what = "—" if wait is None else (f"реплика {wait.no or wait.key} ({wait.state}, "
                                          f"{'синтез готов' if wait.ready else 'synthesized не пришёл'})")
         _LOG.warning(f"{LOG_MARK} {self.block_id[:8]}: речи нет {self.silent_s(now):.0f} с, жду: {what} — снимаю")
         self.log(f"сторож: речи нет {self.silent_s(now):.0f} с, жду: {what} — выступление снято")
