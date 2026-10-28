@@ -48,6 +48,9 @@ class Sim:
     fail_presynth: Tuple[str, ...] = ()     # тексты, чей пред-синтез владелец речи отвергает
     hiccup: Dict[str, float] = field(default_factory=dict)  # текст → задержка старта сверх at (сбой очереди)
     tts_provider: str = ""                 # провайдер TTS у хоста: паузы по сетке строк — у minimax (О11)
+    qos_depth: int = 0                     # очередь /voice/speech/{request,cancel} KEEP_LAST N (0 — без потерь)
+    synth_never: Tuple[str, ...] = ()      # тексты, на чей пред-синтез владелец речи не отвечает вовсе
+    voice_busy: Callable[[], bool] = lambda: False  # голос занят чужой речью (снимок планировщика у хоста)
     t: float = 1000.0
     block: PerformBlock = field(init=False)
     logs: List[str] = field(default_factory=list)
@@ -56,12 +59,13 @@ class Sim:
     effects: List[Tuple[float, object]] = field(default_factory=list)
     music_log: List[Tuple[float, object]] = field(default_factory=list)
     asks: List[AskReplace] = field(default_factory=list)
+    lost: List[object] = field(default_factory=list)  # запросы, выброшенные очередью KEEP_LAST (``qos_depth``)
 
     def __post_init__(self) -> None:
         ids = itertools.count(1)
         self.block = PerformBlock(self.perf, "blk-perform", output_latency_ms=LATENCY_MS,
                                   new_id=lambda: f"s{next(ids):02d}", log=self.logs.append,
-                                  tts_provider=self.tts_provider)
+                                  tts_provider=self.tts_provider, voice_busy=lambda: self.voice_busy())
         self._q: List[Tuple[float, int, Callable[[], None]]] = []
         self._seq = itertools.count()
         self._texts: Dict[str, Say] = {}
@@ -102,8 +106,22 @@ class Sim:
 
     # -- хост ------------------------------------------------------------------------------------------------------
 
+    def transport(self, effects) -> list:
+        """Очередь ``/voice/speech/request`` и ``/voice/speech/cancel`` при ``qos_depth``: из пачки одного вызова хоста
+        первую реплику исполнитель подписчика берёт сразу, остальные ждут в KEEP_LAST(N) — переполнение выбрасывает
+        самые старые (rmw_zenoh_cpp). Так на роботе 28.10 из 13 запросов дошли 11 (n412), из 12 — 11 (n802), #4151."""
+        effects = list(effects)
+        if not self.qos_depth:
+            return effects
+        kept = set()
+        for kind in (Say, Cancel):
+            burst = [id(e) for e in effects if isinstance(e, kind)]
+            kept |= set(burst[:1]) | set(burst[1:][-self.qos_depth:])
+        self.lost += [e for e in effects if isinstance(e, (Say, Cancel)) and id(e) not in kept]
+        return [e for e in effects if not isinstance(e, (Say, Cancel)) or id(e) in kept]
+
     def apply(self, effects) -> None:
-        for effect in effects:
+        for effect in self.transport(effects):
             self.effects.append((self.t, effect))
             if isinstance(effect, PlanEvent):
                 self.plan_events.append(effect)
@@ -139,6 +157,8 @@ class Sim:
         if not say.commit and say.text in self.fail_presynth:
             self.at(self.t + 0.2, lambda: self.speech_event("rejected", say.speech_id))
             return
+        if not say.commit and say.text in self.synth_never:
+            return  # провайдер завис: ни synthesized, ни rejected
         if not say.commit:
             ready = self.t + self.synth_s(say.text)
             self._ready[say.speech_id] = ready

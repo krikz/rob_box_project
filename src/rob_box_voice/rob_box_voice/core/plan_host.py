@@ -67,7 +67,8 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
                                      on_ask=lambda title: perform_ask.open_window(node, title),
-                                     tts_provider=lambda: _tts_provider(node))
+                                     tts_provider=lambda: _tts_provider(node),
+                                     speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
 
