@@ -370,7 +370,10 @@ _ASK_WORDS = frozenset((*kn.SING_VERBS, *kn.SING_PERFORM_VERBS, *kn.SING_CREATE_
 #: ``ap``) совпадает со словами фразы случайно — такое слово слышно только рядом с соседним словом названия.
 #: Сила совпадения (ревью #4124, круг 2: «уи вил рок ю» → «Rock With You», «ты ди си хэлл» → «Say Hello», «вот эту …
 #: та та та» → «Out Of Time»): название, которое звучит лишь частью услышанных слов, засчитывается, только если сумма
-#: согласных в ключах прозвучавших слов не меньше :data:`HEARD_EVIDENCE_MIN` («эй си ди си хайвэй ту хэлл»: h+t+hl);
+#: согласных в разных ключах прозвучавших слов не меньше :data:`HEARD_EVIDENCE_MIN` («эй си ди си хайвэй ту хэлл»:
+#: h+t+hl; повтор слога — не довод, #4159: «та да да дам» против «Di Di Dam» — t+tm), а среди прозвучавших есть слово
+#: длиннее :data:`HEARD_SLACK_WORD` (из одних коротких — служебных слов речи и слогов напева — силы нет, #4159: «где
+#: там» в «ту самую там где там там там» — не «Good Time»);
 #: короткое слабое («хэй джуд», «ай гот ю бейб») — только когда услышанные слова и есть название целиком; исполнитель
 #: — только целиком («поле берёза стояла» — не Belle Perez). Слово-напарник опоры в строке поиска — не слабее
 #: :data:`HEARD_PARTNER_MIN` («рок» + «вил» → «rock will»: слово «rock» у сотен записей, «We Will Rock You» в первые
@@ -487,8 +490,8 @@ def heard_title(library: Any, text: str, said: str = "") -> Heard:
     все значимые, по порядку, между ними у длинного названия не больше :data:`HEARD_GAP` чужих (одно может прозвучать
     иначе, :data:`HEARD_SLACK_FROM`), у короткого — только на месте служебного; прозвучать должна хотя бы
     :data:`HEARD_COVER_MIN` всех слов названия, а совпадение — быть сильным или целым (:func:`_sure`); название из
-    одного значимого слова не опознаётся. Находка — догадка кода: подтверждает её LLM или кэш разборов
-    (``engine.request_slots``)."""
+    одного значимого слова или одного звучания («Dam Dam», «Tick Tick», #4159) не опознаётся. Находка — догадка кода:
+    подтверждает её LLM или кэш разборов (``engine.request_slots``)."""
     span = _title_span(library, text)
     known = [t for found in span for t in found]
     count = sum(1 for found in span if found)
@@ -545,12 +548,14 @@ def _scored(records: Iterable[Dict[str, Any]],
 def _aligned(name: str, heard: Sequence[Tuple[str, bool]], whole: bool = False) -> Optional[Tuple[float, int]]:
     """``(доля прозвучавших слов названия, значимых слов)``, если название ``name`` звучит подряд идущими услышанными
     словами ``heard`` (``(ключ, короткое ли)``; условия — :func:`heard_title`, сила — :func:`_sure`; ``whole`` — имя
-    исполнителя: только целиком), иначе ``None``."""
+    исполнителя: только целиком), иначе ``None``. Название, чьи значимые слова звучат одним ключом («Dam Dam», «Tick
+    Tick», «Boom Boom Boom»), на слух не опознаётся, как и название из одного слова: от напева и повтора слога («там там
+    там», «тико тико») его не отличить (#4159)."""
     title = title_key(strip_version_tail(name)).split()
     significant = [i for i, w in enumerate(title) if w not in _STOP]
-    if len(significant) < 2:
-        return None
     tkeys = [phonetic_key(w) for w in title]
+    if len({tkeys[i] for i in significant}) < 2:  # одно звучание, хоть и повторено, — одно слово (#4159)
+        return None
     room = (int(len(significant) >= HEARD_SLACK_FROM), HEARD_GAP if len(significant) >= HEARD_GAP_FROM else 0)
     walks = (_walk(title, tkeys, heard, start, significant[0], room) for start, (key, _short) in enumerate(heard)
              if key == tkeys[significant[0]])
@@ -562,30 +567,35 @@ def _aligned(name: str, heard: Sequence[Tuple[str, bool]], whole: bool = False) 
 def _sure(matched: int, evidence: int, heard: Sequence[Any], whole: bool) -> bool:
     """Совпадение на слух не случайно (ревью #4124, круг 2): услышанные слова и есть название целиком («хэй джуд»,
     «ай гот ю бейб»: каждое услышанное слово прозвучало словом названия) или прозвучавшие слова сильные — согласных в
-    их ключах не меньше :data:`HEARD_EVIDENCE_MIN` («эй си ди си хайвэй ту хэлл»). Иначе «рок» + «ю» — ещё не «Rock
-    With You» в «уи вил рок ю», «си хэлл» — не «Say Hello» в «ты ди си хэлл». Исполнитель (``whole``) — только целиком:
+    их РАЗНЫХ ключах (:func:`_walk`) не меньше :data:`HEARD_EVIDENCE_MIN` («эй си ди си хайвэй ту хэлл»: h+t+hl).
+    Иначе «рок» + «ю» — ещё не «Rock With You» в «уи вил рок ю», «си хэлл» — не «Say Hello» в «ты ди си хэлл», а
+    повтор слога — не довод (#4159: «та да да дам» — t+tm, не «Di Di Dam»). Исполнитель (``whole``) — только целиком:
     «поле берёза» в «во поле берёза стояла» — не Belle Perez."""
     return matched == len(heard) or (not whole and evidence >= HEARD_EVIDENCE_MIN)
 
 
 def _walk(title: Sequence[str], tkeys: Sequence[str], heard: Sequence[Tuple[str, bool]], start: int, first: int,
           room: Tuple[int, int]) -> Optional[Tuple[int, int]]:
-    """``(сколько слов названия прозвучало, сумма согласных в их ключах)``, если его первое значимое слово —
-    услышанное ``start``. ``room`` — ``(slack, gap)``: значимое не прозвучало — ``None``, кроме ``slack`` слов, на месте
-    которых услышано другое короткое слово («зэт» вместо that); между прозвучавшими — не больше ``gap`` чужих слов, а
-    на месте непрозвучавших служебных («of», «the») — по одному («кинг оф зе хилл»: «зе» вместо the). Через чужие
-    слова — только между значимыми словами с сильными ключами (не слабее :data:`HEARD_FAR_MIN`): слово со слабым
-    ключом слышно лишь рядом с соседним словом названия — «эту как её там» не «Out Of Time» («эту» — ``at``), «си …
-    хэлл» не «Say Hello» (``s``)."""
+    """``(сколько слов названия прозвучало, сила совпадения)``, если его первое значимое слово — услышанное ``start``.
+    Сила (:func:`_force`) — сумма согласных в разных ключах прозвучавших слов: повторенное звучание считается один раз
+    (#4159: «там там там» против «Dam Dam» — tm, а не tm+tm); прозвучали одни короткие слова (не длиннее
+    :data:`HEARD_SLACK_WORD`: «где там» — «Good Time») — силы нет. ``room`` — ``(slack, gap)``: значимое не
+    прозвучало — ``None``, кроме ``slack`` слов, на месте которых услышано другое короткое слово («зэт» вместо that);
+    между прозвучавшими — не больше ``gap`` чужих слов, а на месте непрозвучавших служебных («of», «the») — по одному
+    («кинг оф зе хилл»: «зе» вместо the). Через чужие слова — только между значимыми словами с сильными ключами (не
+    слабее :data:`HEARD_FAR_MIN`): слово со слабым ключом слышно лишь рядом с соседним словом названия — «эту как её
+    там» не «Out Of Time» («эту» — ``at``), «си … хэлл» не «Say Hello» (``s``)."""
     (slack, gap), pos, matched, free = room, start + 1, 1, 0
-    evidence = _strength(tkeys[first])
-    strong = evidence >= HEARD_FAR_MIN  # у последнего прозвучавшего значимого слова сильный ключ
+    sounded, spoken = {tkeys[first]}, [start]  # разные ключи прозвучавших слов; где они услышаны
+    strong = _strength(tkeys[first]) >= HEARD_FAR_MIN  # у последнего прозвучавшего значимого слова сильный ключ
     for i in range(first + 1, len(title)):
         stop = title[i] in _STOP
         bridge = max(gap, free) if strong and (stop or _strength(tkeys[i]) >= HEARD_FAR_MIN) else 0
         hit = next((p for p in range(pos, min(len(heard), pos + bridge + 1)) if heard[p][0] == tkeys[i]), None)
         if hit is not None:
-            pos, matched, free, evidence = hit + 1, matched + 1, 0, evidence + _strength(tkeys[i])
+            pos, matched, free = hit + 1, matched + 1, 0
+            sounded.add(tkeys[i])
+            spoken.append(hit)
             strong = strong if stop else _strength(tkeys[i]) >= HEARD_FAR_MIN
         elif stop:
             free += 1
@@ -593,7 +603,13 @@ def _walk(title: Sequence[str], tkeys: Sequence[str], heard: Sequence[Tuple[str,
             pos, slack = pos + 1, slack - 1
         else:
             return None
-    return matched, evidence
+    return matched, _force(sounded, spoken, heard)
+
+
+def _force(keys: Iterable[str], spoken: Iterable[int], heard: Sequence[Tuple[str, bool]]) -> int:
+    """Сила совпадения на слух (:func:`_walk`): согласные разных ключей ``keys`` прозвучавших слов; услышаны они
+    (позиции ``spoken`` в ``heard``) одними короткими словами — 0 (#4159)."""
+    return sum(_strength(key) for key in keys) if any(not heard[p][1] for p in spoken) else 0
 
 
 def _archive_words(query_terms: List[Term]) -> List[Term]:

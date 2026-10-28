@@ -178,19 +178,22 @@ class Form:
     от хоста, ``knowledge.SING_FORMS``): живое — только ``perform`` под синт-подложку, генерация и трек закрыты;
     генерация — ``generate_music``, петь выступлением нельзя. ``sing_over`` — музыка уже играет при живом пении («под
     этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
-    (``knowledge.SING_FORMS["live_over"]``). ``speech_required`` — последняя итерация хода после выполненного запроса
-    (#4157, живой 28.10 13:40: «скажи обо мне пять фактов» — девять результатов памяти, а ответ последнего вызова — одно
-    лицо без слов): данные у модели, читать больше нечем, а ход повторить вызов уже не может; ответ без слов — нарушение
-    валидатора ``VIOLATION_SPEECH_REQUIRED`` (:func:`_check_answered`: повтор моста с подсказкой, затем код говорит по
-    данным, ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с
-    ``VIOLATION_SPEECH_WITH_ACTIONS`` - слышимое действие (звук, музыка) после запроса законно без слов, а со словами -
-    нарушение. Ставит его ход (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим
-    команд v1, тесты)."""
+    (``knowledge.SING_FORMS["live_over"]``). ``backing`` — модели можно заказать подложку сказке, анекдоту и стиху
+    (#4152): только когда человек сам назвал музыку в этой реплике (``tools_view.music_asked``); иначе подложка у этих
+    видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была.
+    ``speech_required`` — последняя итерация хода после выполненного запроса (#4157, живой 28.10 13:40: «скажи обо мне
+    пять фактов» — девять результатов памяти, а ответ последнего вызова — одно лицо без слов): данные у модели, читать
+    больше нечем, а ход повторить вызов уже не может; ответ без слов — нарушение валидатора
+    ``VIOLATION_SPEECH_REQUIRED`` (:func:`_check_answered`: повтор моста с подсказкой, затем код говорит по данным,
+    ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с ``VIOLATION_SPEECH_WITH_ACTIONS``
+    - слышимое действие (звук, музыка) после запроса законно без слов, а со словами - нарушение. Ставит его ход
+    (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
     sing: str = ""
     sing_over: bool = False
+    backing: bool = True
     speech_required: bool = False
 
     def closed(self) -> Tuple[str, ...]:
@@ -574,7 +577,11 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
-    cmd = _fit_sing_backing(_drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form), form)
+    cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
+    # подложка: сначала вид без просьбы о музыке теряет её (#4152), потом путь пения подгоняет остальное (#4079);
+    # число лиц по сегментам (#4174) правит другое поле выступления и идёт последним, порядок с подложкой не важен
+    cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
+    cmd = _fit_expression_count(cmd)
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -711,6 +718,22 @@ def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
     if cmd.voice is None or form.voice:
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
+
+
+def _drop_default_backing(cmd: Command, form: Form) -> Command:
+    """Подложка сказке, анекдоту и стиху без просьбы о музыке (#4152, решение Шифу 28.10: музыку включают, когда нужна
+    музыка, - рэп, песня) - не выбор модели: у этих видов бита по умолчанию нет (``knowledge.PERFORM_BACKING_BY_KIND``),
+    поле ``backing`` становится ``none``, оно - в ``dropped`` (лог ``fields_dropped``). Человек назвал музыку в этой
+    реплике (форма хода ``Form.backing``) - подложка модели остаётся. ``none`` подложку не заказывает, поэтому играющая
+    музыка выступлению не мешает и им не трогается. Правка идущего выступления судится так же, вид - из её
+    ``perform.kind``. Значение вне перечня (``bad_enum``) и вид вне таблицы сюда не относятся - их судит
+    :func:`_check_perform`."""
+    perf = cmd.perform
+    if perf is None or form.backing or perf.backing not in kn.PERFORM_BACKING_MOODS:
+        return cmd
+    if kn.PERFORM_BACKING_BY_KIND.get(perf.kind, True):
+        return cmd
+    return replace(cmd, perform=replace(perf, backing="none"), dropped=cmd.dropped + ("perform.backing",))
 
 
 def _fit_sing_backing(cmd: Command, form: Form) -> Command:
@@ -929,12 +952,29 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
     # поля, которые называет модель, - первыми: голоса сегментов решает код из role_per_segment (_voice_roles), и при
     # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит (#4112)
-    for name in ("expression_per_segment", "role_per_segment", "voice_per_segment"):
+    for name in ("role_per_segment", "voice_per_segment"):
         per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
     _check_roles(perf, busy)
     _check_edit(cmd.edit_pending, busy)
+
+
+def _fit_expression_count(cmd: Command) -> Command:
+    """Лиц по сегментам - ровно столько, сколько сегментов (#4174, n810 28.10: рэп с 4 куплетами и другим числом лиц
+    отвергнут целиком дважды). Лицо - косметика (ADR-0148, как #4138): лишние лица отрезаются, недостающие
+    дополняются последним лицом, пустой список - лиц нет (``None``); поправка - в ``dropped`` (лог ``fields_dropped``:
+    ``perform.expression_per_segment[3->4]``), выступление исполняется. Роли и голоса сегментов смысл несут (чья
+    реплика) - их длина по-прежнему нарушение ``bad_segments``. Число самих сегментов судит :func:`_check_segments`."""
+    perf = cmd.perform
+    faces = None if perf is None else perf.expression_per_segment
+    if faces is None or len(faces) == len(perf.segments):
+        return cmd
+    count = len(perf.segments)
+    fitted = faces[:count] + faces[-1:] * (count - len(faces)) if faces else ()
+    note = f"perform.expression_per_segment[{len(faces)}->{len(fitted)}]"
+    perf = replace(perf, expression_per_segment=fitted or None)
+    return replace(cmd, perform=perf, dropped=cmd.dropped + (note,))
 
 
 def _check_roles(perf: Performance, busy: Busy) -> None:
@@ -1057,7 +1097,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "unknown_tool": "такого тула нет",
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
-                    "списки expression_per_segment и role_per_segment — по числу сегментов",
+                    "список role_per_segment — по числу сегментов",
     perform_cast.TALE_WITHOUT_CAST: "сказка: perform.cast обязателен — герои с репликами (name и gender; героев нет — "
                                     "[]) и role_per_segment — чья реплика в каждом сегменте (\"\" — рассказчик); "
                                     "сегмент = реплика одного говорящего, повествование и каждая реплика героя — "
