@@ -20,7 +20,9 @@ from rob_box_dialog.plan.rap_pauses import breaks_to_newlines
 from rob_box_dialog.plan.sync import BeatGrid, bar_at_or_after, layout
 
 _LOG = logging.getLogger(__name__)
-_SPLIT_RE = re.compile(r"\n+|(?<=[.!?…])\s+")
+#: Знаки, которыми кончается предложение: по ним (и по строкам) :func:`cut` делит текст - одно знание о границе.
+SENTENCE_END = ".!?…"
+_SPLIT_RE = re.compile(rf"\n+|(?<=[{re.escape(SENTENCE_END)}])\s+")
 #: Реплики, которые ещё прозвучат или звучат.
 LIVE = ("pending", "committed", "active")
 #: Реплики, отданные владельцу речи: граница пройдена, их не правят.
@@ -47,6 +49,11 @@ def cut(text: str, limit: int = kn.SEGMENT_MAX_CHARS) -> Tuple[str, ...]:
         elif part:
             pieces.append(part)
     return tuple(pieces)
+
+
+def ends_sentence(piece: str) -> bool:
+    """Кусок :func:`cut` кончается знаком конца предложения, а не посреди него (обрыв по слову, строка без знака)."""
+    return piece.rstrip().endswith(tuple(SENTENCE_END))
 
 
 def segment_rows(perf: Performance, skip: int = 0) -> List[Row]:

@@ -8,6 +8,7 @@ import asyncio
 from typing import Any, AsyncIterator, Iterable, List, Mapping, Optional
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_llm.provider import LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities, ToolCall
 from rob_box_llm.providers.deepseek import DeepSeekProvider
 from rob_box_voice.core import command_bridge as cb
@@ -90,6 +91,20 @@ def test_still_over_after_compact_turn_is_trimmed_by_code_to_whole_sentences():
     assert out.content == N907 and len(requests) == 2  # три целых предложения, четвёртое не влезло
     assert out.tool_calls == ()
     assert any(line.startswith(cb.COMPACT_LOG_MARK) and f"ужата кодом до {len(N907)} символов" in line for line in log)
+
+
+def test_voice_list_that_stays_long_is_cut_by_code_with_the_cut_mark_not_a_dangling_name():
+    """Хвост ревью #4143: перечень голосов (#3883) длиннее проверки и после хода компактнее обрезался по слову
+    («…Голос38») и звучал как полный. Обрыв посреди предложения теперь кончает пометка каталога."""
+    voices = "У меня есть голоса " + ", ".join(f"Голос{n}" for n in range(60)) + "."
+    mark = phrases.text(kn.SPEECH_CUT_PHRASE)
+    out, requests, log = _answer(_reply(speech=voices), _reply(speech=voices))
+    assert len(requests) == 2 and out.tool_calls == ()
+    assert out.content.endswith(f" {mark}") and len(out.content) <= kn.SPEECH_ACCEPT_MAX_CHARS
+    head = out.content[:-len(mark)].rstrip()
+    assert voices.startswith(head) and not head.endswith(",")
+    assert any(line.startswith(cb.COMPACT_LOG_MARK) and f"ужата кодом до {len(out.content)} символов" in line
+               for line in log)
 
 
 def test_compact_turn_has_its_own_count_when_the_retry_went_to_another_violation():
