@@ -139,6 +139,23 @@ class _Segment:
         return (self.refined or self.final or "").strip()
 
 
+def text_kept_on_deadline(
+    segments: "YandexSegmentCollector", *, deadline_exceeded: bool
+) -> Optional[str]:
+    """Что оставить от стрима, упавшего по ошибке gRPC (issue #4175, решение Шифу 28.10).
+
+    Yandex может выдать готовый final с EOU и всё равно не закрыть стрим до
+    дедлайна; ``DEADLINE_EXCEEDED`` тогда выбрасывал уже распознанную фразу, и
+    она уходила в фолбек, теряя «Робот». Берём собранный текст ТОЛЬКО при
+    дедлайне и ТОЛЬКО если фраза закрыта (:meth:`YandexSegmentCollector.text_if_utterance_closed`).
+    Любая другая ошибка и любой неполный стрим — ``None``: поведение прежнее.
+    """
+    if not deadline_exceeded:
+        return None
+    text = segments.text_if_utterance_closed()
+    return text.strip() if text and text.strip() else None
+
+
 class YandexSegmentCollector:
     """Собирает текст всех сегментов одного стрима по порядку, без дублей."""
 
@@ -150,6 +167,12 @@ class YandexSegmentCollector:
         self._orphans: List[str] = []
         self._last_final_end_ms = 0
         self._trace: List[str] = []
+        # #4175: сервер сам прислал непустой final (не наш promote из partial).
+        self._has_server_final = False
+        # #4175: после последнего непустого final пришёл eou_update — сервер
+        # считает фразу законченной (иначе это может быть сегмент, за которым
+        # ещё идёт речь).
+        self._closed_by_eou = False
 
     # ── приём событий ────────────────────────────────────────────────
     def feed(self, response, event_type: str) -> None:
@@ -163,6 +186,7 @@ class YandexSegmentCollector:
             self._add_refinement(response.final_refinement)
         elif event_type == "eou_update":
             self._trace.append("E")
+            self._closed_by_eou = self._has_server_final
 
     def _add_partial(self, response) -> None:
         alt = _first_alternative(getattr(response, "partial", None))
@@ -186,6 +210,11 @@ class YandexSegmentCollector:
         alt = _first_alternative(getattr(response, "final", None))
         text = (getattr(alt, "text", "") or "").strip() if alt is not None else ""
         start_ms = _time_ms(alt, "start_time_ms")
+        if text:
+            # Новый непустой final после EOU — за ним может идти ещё речь,
+            # пока свой EOU не придёт, фраза не «закрыта» (#4175).
+            self._has_server_final = True
+            self._closed_by_eou = False
         self._flush_partial_trace()
         self._segments.extend(_Segment(index, orphan) for orphan in self._orphans)
         self._orphans = []
@@ -282,6 +311,18 @@ class YandexSegmentCollector:
         """Склеенный текст всех непустых сегментов или ``None``."""
         parts = self._parts()
         return " ".join(parts) if parts else None
+
+    def text_if_utterance_closed(self) -> Optional[str]:
+        """Текст, если сервер закрыл фразу: непустой final и EOU после него (#4175).
+
+        Нужен, когда стрим не закрылся до дедлайна: final без EOU может быть
+        сегментом посреди фразы (пауза > max_pause), и взять его значит
+        отдать обрезанную фразу. ``None`` — фраза не закрыта (только partial,
+        пустой final, final без EOU после него).
+        """
+        if not (self._has_server_final and self._closed_by_eou):
+            return None
+        return self.text()
 
     def trace(self) -> str:
         """Короткая запись событий стрима для INFO-лога (issue #2931).
