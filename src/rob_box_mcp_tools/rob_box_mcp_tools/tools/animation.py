@@ -10,9 +10,10 @@ from typing import Dict, List, Optional
 
 from rob_box_dialog import face_scene
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog.expression import show_seconds
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
-from ..animations import KNOWN_ANIMATIONS, clamp_show_seconds, normalize_animation
+from ..animations import KNOWN_ANIMATIONS, normalize_animation
 
 
 def _face_properties() -> Dict[str, MCPToolParameter]:
@@ -77,7 +78,7 @@ class PlayAnimationTool(MCPTool):
             MCPToolParameter(
                 name="duration",
                 type="number",
-                description="Длительность анимации в секундах (рекомендуется от 2 до 30, значения вне диапазона будут установлены в 2)",
+                description=kn.FACE_SHOW_DURATION_HINT,
                 required=False,
             ),
             MCPToolParameter(
@@ -132,12 +133,12 @@ class PlayAnimationTool(MCPTool):
                 )
             data["animation"] = resolved
 
-        # Валидация длительности - вне диапазона ставится минимальная (правило тула и v1; диалог v2 приводит её к
-        # своему времени показа expression.show_seconds, #4083 - см. animations.clamp_show_seconds)
+        # Время показа - то же правило, что у диалога (``rob_box_dialog.expression.show_seconds``, #4089): пределы
+        # ``[FACE_SHOW_MIN_S, FACE_SCENE_MAX_S]``. Не задано - в данных его нет, умолчание ставит то же правило у диалога.
         if duration is not None:
-            original_duration, duration = duration, clamp_show_seconds(duration)
+            original_duration, duration = duration, show_seconds(duration)
             if duration != original_duration:
-                self.log_info(f"Длительность {original_duration}s вне диапазона, установлена минимальная: {duration}s")
+                self.log_info(f"Длительность {original_duration}s приведена к правилу показа: {duration}s")
             data["duration"] = duration
         if scene is not None:
             data["face"] = scene.to_dict()

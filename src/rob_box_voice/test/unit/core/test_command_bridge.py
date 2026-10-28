@@ -214,7 +214,7 @@ def test_face_slots_beside_expression_are_moved_and_logged_not_invalid() -> None
         expression={"emotion": "happy", "eyes": "wide", "rear": "party", "mood": "весело"}),))
     out = _convert(DEEPSEEK_CAPS, reply, log)
     assert out.tool_calls[0].arguments["expression"] == {
-        "emotion": "happy", "face": {"eyes": "wide", "rear": "party", "duration_s": 5.0}}
+        "emotion": "happy", "face": {"eyes": "wide", "rear": "party"}}  # время не задано: ключа нет (#4089)
     assert log == [f"{cb.COMMAND_LOG_MARK} provider=deepseek mode=tool_choice verdict=command "
                    "actions=['memory_save'] speech_dropped=0 fields_moved=['expression.eyes', 'expression.rear'] "
                    "fields_dropped=['expression.mood']"]

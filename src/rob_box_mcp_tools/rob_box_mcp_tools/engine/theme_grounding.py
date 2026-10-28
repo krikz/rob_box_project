@@ -30,6 +30,7 @@ from rob_box_music import knowledge as kn
 from rob_box_music.theme import match_style
 from rob_box_music.universes import is_mood, universe_of, universe_spans, words_of
 
+from .brief import split_brief
 from .search import _PART_RE, blank_style, content_stems, genre_of
 
 _AND = frozenset({"и", "and"})
@@ -67,11 +68,12 @@ def heard_theme(text: str) -> str:
     """Тема из реплики человека: слова без просьбы, «ты диджей X», стиля, громкости и длины сета; «и» между словами
     темы и запятые остаются (границы частей темы-перечисления, ``search.theme_parts``). «Не» связано со словом после
     него: слово громкости уходит из темы вместе с «не» («только не громко» - громкость, не тема «...громко»), слово темы
-    остаётся с ним («не космос» не станет «космос»). Значимых слов нет - ``""``."""
+    остаётся с ним («не космос» не станет «космос»). Значимых слов нет - ``""``. Подробный промт (роль, BPM, ноты, таблица
+    MIDI; #3845) - тема только из его просьбы (``brief.split_brief``): спецификация темой не становится."""
     from rob_box_voice.core.media_command_grammar import SET_REQUEST_WORDS, dj_persona_span
     from rob_box_voice.core.set_length_words import split_set_length, tokens  # длину сета разбирает одна грамматика
 
-    _tracks, rest = split_set_length(text or "")
+    _tracks, rest = split_set_length(split_brief(text).head)  # подробный промт (#3845): тема - из просьбы, не из спецификации
     persona = dj_persona_span(rest)
     if persona:
         rest = rest[:persona[0]] + " " * (persona[1] - persona[0]) + rest[persona[1]:]

@@ -18,7 +18,7 @@ def test_twenty_cases_validate_and_keep_their_slots():
         scene, why = fs.validate(case["face"])
         assert why == "" and scene is not None, case
         assert scene.slots() == {k: v for k, v in case["face"].items() if k != "duration_s"}, case
-        assert scene.duration_s == case["face"].get("duration_s", kn.FACE_SCENE_DEFAULT_S)
+        assert scene.duration_s == case["face"].get("duration_s"), "не задано - None, умолчание ставит show_seconds"
 
 
 def test_cases_reach_every_slot():
@@ -64,6 +64,18 @@ def test_to_dict_round_trips_through_validate():
     for case in CASES:
         scene, _ = fs.validate(case["face"])
         assert fs.validate(json.loads(json.dumps(scene.to_dict()))) == (scene, "")
+
+
+def test_scene_without_time_has_none_and_one_default_comes_from_the_show_rule():
+    """#4089: у сцены нет своего умолчания - «не задано» и «задано 5» различаются; время ставит ``show_seconds``."""
+    from rob_box_dialog.expression import show_seconds
+
+    scene, _ = fs.validate({"eyes": "wide"})
+    assert scene.duration_s is None and "duration_s" not in scene.to_dict()
+    assert fs.validate(scene.to_dict()) == (scene, "")
+    assert show_seconds(scene.duration_s) == kn.FACE_SHOW_DEFAULT_S
+    five, _ = fs.validate({"eyes": "wide", "duration_s": 5})
+    assert five.duration_s == 5.0 != scene.duration_s
 
 
 def test_one_schema_for_the_tool_and_the_command():

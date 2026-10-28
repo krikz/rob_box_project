@@ -452,6 +452,15 @@ class TurnLog:
             self._performs.pop(gone, None)
 
 
+def results_of(log: TurnLog, turn_id: str) -> Tuple[WindowEntry, ...]:
+    """Записи ``tool`` самого хода ``turn_id``: исходы, что он уже исполнил. Окно (:meth:`TurnLog.window`) их не выдаёт -
+    ход, что спрашивает модель, из него исключён; нужны остатку фразы после ясного стопа (``turn._tier1_then_rest``), чьё
+    стоп-действие исполнено ДО вызова модели в том же ходе (n709). Хода нет в журнале - ``()``. Свободная
+    функция модуля журнала, а не метод: класс журнала на пороге бюджета (``class_budget``)."""
+    turn = log._turns.get(turn_id)
+    return tuple(e for e in turn.entries if e.role == TOOL) if turn is not None else ()
+
+
 __all__ = ["AGGREGATE_MARK", "ASSISTANT", "OnOutcome", "PERFORM_CLASS", "PERFORM_DONE", "PERFORM_INTERRUPTED",
            "PERFORM_STARTED", "PERFORM_STOPPED", "PERFORM_TOOL", "TOOL", "TurnAggregate", "TurnLog", "USER",
-           "WindowEntry", "perform_status", "phrase_label", "speaker_label"]
+           "WindowEntry", "perform_status", "phrase_label", "results_of", "speaker_label"]
