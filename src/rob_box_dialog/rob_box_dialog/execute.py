@@ -10,9 +10,9 @@
 решает планировщик ресурсов у транспорта (``plan.runner``, PR-7b) по ``knowledge.COMPOSITION``. Событие
 ``pending`` (обещание: «Еду к…») закрывает ожидание статусом ``pending``; итог по его ``event_ref`` придёт позже —
 в ``on_late``. Транспорт (ROS-топик, вызов MCP) — снаружи: модуль чистый, без ROS; сколько транспорт ждёт итог тула с
-поздним итогом, решает :func:`transport_timeouts` (дольше срока класса, #3960).
+поздним итогом, решает :func:`transport_timeouts` (дольше срока класса).
 
-Эпоха (PR-9 #3703, §6.2): исполнитель с ``epoch`` (текущая эпоха сессии) отбрасывает исход запроса прошлой эпохи —
+Эпоха (PR-9, §6.2): исполнитель с ``epoch`` (текущая эпоха сессии) отбрасывает исход запроса прошлой эпохи —
 ``WARNING stale_epoch``, в ход он приходит ``cancelled{stale_epoch}``, в ``on_late`` не попадает. Отмена хода
 (перебивание) запросы непрерываемых классов (``interrupt.survives``: память, голос, знакомство, движение) не рвёт:
 их отправка доживает до события владельца; остальные отменяются вместе с ходом.
@@ -79,7 +79,7 @@ def transport_timeouts() -> Mapping[str, float]:
     """Сколько транспорт тула (MCP-вызов v2, ``ROSMCPToolProvider``) ждёт его итог, по тулам классов с поздним итогом
     (``LATE_SPOKEN_CLASSES``): дольше срока класса — до потолка хода. Срок класса закрывает ожидание хода честным
     ``timeout``, а итог, пришедший позже, транспорт ещё несёт исполнителю — в ``on_late``. Транспорт со сроком, равным
-    сроку класса, бросал итог вместе с ходом (n809, #3960: трек заиграл через 1,4 с после срока, мост вернул «Timeout
+    сроку класса, бросал итог вместе с ходом (n809: трек заиграл через 1,4 с после срока, мост вернул «Timeout
     ожидания результата», «Включаю музыку.» не прозвучало). Поздний итог исполнитель держит только у этих классов,
     поэтому тулам остальных транспорт ждёт как раньше (``default_timeout``)."""
     return MappingProxyType({tool: max(deadline_s(cls) + kn.ACTION_GRACE_S, float(kn.TURN_CEILING_S))
@@ -106,7 +106,7 @@ class Executor:
         self._loop = asyncio.get_running_loop()
         planned = [self._request(call, snapshot, f"{turn_id}/{n}") for n, call in enumerate(actions)]
         sent = iter(await asyncio.gather(*(self._one(r) for r, bound in planned if bound)))
-        unbound = memory.unbound_reason(snapshot)  # нет собеседника или голос не подтверждён (#3993)
+        unbound = memory.unbound_reason(snapshot)  # нет собеседника или голос не подтверждён
         return [next(sent) if bound else _result(r, OwnerEvent(r.turn_id, "rejected", unbound))
                 for r, bound in planned]
 
@@ -184,7 +184,7 @@ class Executor:
                 self._log.warning(f"⏱ [execute] {request.tool} {request.turn_id}: нет события за "
                                   f"{request.timeout_s:.0f} с")
                 return _result(request, OwnerEvent(request.turn_id, "timeout"))
-            event = future.result()  # итог лёг в ожидание в такте срока (n809, #3960): он - ходу, а не в никуда
+            event = future.result()  # итог лёг в ожидание в такте срока (n809): он - ходу, а не в никуда
             self._log.info(f"⏱ [execute] {request.tool} {request.turn_id}: событие {event.status} - на сроке класса")
         except Exception as exc:  # noqa: BLE001 — запрос не ушёл: честный отказ, а не падение хода
             self._log.warning(f"⚠️ [execute] {request.tool} {request.turn_id}: запрос не отправлен: {exc}")
@@ -223,7 +223,7 @@ class Executor:
 
     def _deliver(self, event: OwnerEvent) -> None:
         """Событие владельца в цикле исполнителя: ожидание хода, поздний итог (``on_late``) или ``stale_event``.
-        Строка лога на входе - всегда: в n809 (#3960) нельзя было понять, дошёл ли итог до исполнителя вообще."""
+        Строка лога на входе - всегда: в n809 нельзя было понять, дошёл ли итог до исполнителя вообще."""
         request = self._requests.get(event.ref)
         self._log.info(f"📨 [execute] событие {request.tool if request else '?'} {event.ref} {event.status} "
                        f"{event.reason or '-'} ход_ждёт={event.ref in self._waiting} запрос={request is not None}")

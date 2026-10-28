@@ -1,4 +1,4 @@
-"""Деградация провайдеров: режим команд и порядок (ADR-0150 §4.5, §8; карточка #3686).
+"""Деградация провайдеров: режим команд и порядок (ADR-0150 §4.5, §8).
 
 Чистый Python, без ROS и без импорта адаптеров: пакет не знает ни одного провайдера, возможности приходят
 утиным объектом (``Capabilities`` — подмножество ``rob_box_llm.provider.ProviderCapabilities``).
@@ -16,7 +16,7 @@ from .knowledge import PROVIDER_HEALTH, PROVIDER_KINDS, PROVIDER_STALE_S, PROVID
 CommandMode = Literal["structured_output", "tool_choice", "json_mode", "tool_offered", "json_in_text"]
 
 # Порядок §4.5: от самого строгого к самому слабому. Единственная таблица знания о режимах.
-# ``tool_offered`` (#3698 ч.7d): тул ``command`` в запросе, ``tool_choice`` не отправляется — схему несёт тул, а не
+# ``tool_offered``: тул ``command`` в запросе, ``tool_choice`` не отправляется — схему несёт тул, а не
 # промпт; для адаптера, который умеет тулы, но принуждение не держит (MiniMax, ADR-0143) или думает (400 на required).
 MODE_ORDER: tuple[CommandMode, ...] = ("structured_output", "tool_choice", "json_mode", "tool_offered", "json_in_text")
 
@@ -40,7 +40,7 @@ class Capabilities(Protocol):
     tool_choice: bool
     json_mode: bool
     structured_output: bool
-    thinking: bool  # модель думает (reasoning) — обязательный тул в этом режиме не принимается (#3798)
+    thinking: bool  # модель думает (reasoning) — обязательный тул в этом режиме не принимается
 
 
 @dataclass(frozen=True)
@@ -59,12 +59,12 @@ def select_mode(caps: Capabilities) -> CommandMode:
     if caps.structured_output:
         return "structured_output"
     # Модель в режиме размышлений не принимает обязательный тул: DeepSeek V4 отвечает 400 «Thinking mode does not
-    # support this tool_choice» (замер 21.10, #3798) — тогда команда идёт JSON-ом.
+    # support this tool_choice» (замер 21.10) — тогда команда идёт JSON-ом.
     if caps.tool_choice and caps.tools and not caps.thinking:
         return "tool_choice"
     if caps.json_mode:
         return "json_mode"
-    # Тул без принуждения: замер #3698 ч.7d (docs/research/minimax_command_mode_bench_2026-10-22.md) — у MiniMax
+    # Тул без принуждения: замер (docs/research/minimax_command_mode_bench_2026-10-22.md) — у MiniMax
     # схема в тулах даёт больше валидных команд, чем схема словами в промпте; tool_choice модель не исполняет.
     if caps.tools:
         return "tool_offered"
@@ -140,7 +140,7 @@ def _was_active(cur: ProviderState, prev: Optional[ProviderState], states: Seque
     """``cur`` был тем провайдером своего вида, которым робот отвечал человеку, ДО отказа.
 
     Активный - первый пригодный в порядке вида при состоянии, каким оно было до перехода. Сбой запасного при живом
-    основном человеку ничего не меняет: фразы нет (ADR §8 «одна фраза на смену, которую слышит человек», #3755).
+    основном человеку ничего не меняет: фразы нет (ADR §8 «одна фраза на смену, которую слышит человек»).
     """
     before = [prev or ProviderState(cur.name, cur.kind, "ok") if s is cur else s for s in states]
     order = provider_order(before, priority, cur.kind)
