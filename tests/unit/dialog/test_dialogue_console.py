@@ -175,8 +175,11 @@ def test_console_clock_is_the_real_time_by_default(tmp_path):
     reported = datetime.fromisoformat(data["iso"])
     assert before.replace(microsecond=0) <= reported <= after
     assert data["date"].startswith(str(before.day)) and str(before.year) in data["date"]
-    hour_period = {range(0, 6): "ночь", range(6, 12): "утро", range(12, 18): "день", range(18, 24): "вечер"}
-    assert data["period"] in {p for r, p in hour_period.items() if before.hour in r or after.hour in r}
+    # Время суток считает настоящий тул: своя таблица в тесте разошлась с ним на 17:00-18:00 (CI 28.10, #4177).
+    from dry_stand import load_tool_module
+
+    hour_period = load_tool_module("system")._hour_period  # noqa: SLF001
+    assert data["period"] in {hour_period(before.hour), hour_period(after.hour)}
     assert not data["iso"].startswith("2026-10-24T01:4")  # не NIGHT_START
 
 

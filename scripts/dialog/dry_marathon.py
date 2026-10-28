@@ -213,15 +213,41 @@ def turn_stats(heard: Any) -> Dict[str, Any]:
                                                  "output_tokens": route.output_tokens}}
 
 
-async def run_act(stand: DryStand, act: Act, budget: int, max_retries: Optional[int],
-                  only: Optional[Sequence[str]] = None) -> List[StepReport]:
-    """Акт целиком: изоляция в начале (как ``isolate_act_start``), затем шаги по порядку."""
+#: Фазы режима e2e марафона (``run_night_marathon.sh`` → ``marathon_e2e_mode``, #3972); ``NO_PHASE`` - акт вне марафона.
+FIRST, MIDDLE, LAST, NO_PHASE = "first", "middle", "last", ""
+
+
+def marathon_phases(acts: Sequence[Act]) -> List[str]:
+    """Фаза режима e2e каждого акта плана - как у раннера марафона (``run_night_marathon.sh``, #3972): от двух актов и
+    первый не наследует - ``first``/``middle``/``last``; иначе фазы нет, и акт держит режим сам по своему содержимому."""
+    n = len(acts)
+    if n < 2 or acts[0].inherits:
+        return [NO_PHASE] * n
+    return [FIRST if i == 0 else LAST if i == n - 1 else MIDDLE for i in range(n)]
+
+
+def isolate_act_start(stand: DryStand, act: Act, phase: str = NO_PHASE) -> str:
+    """Изоляция акта до первого шага - как у харнесса (``isolate_act_start`` и предусловия акта в
+    ``e2e_voice_test.sh``). Возвращает вердикт предусловия музыки (``was_idle`` | ``stopped``).
+
+    * e2e-БД (каст дикторов и память фактов): марафон стирает их ОДИН раз, актом ``first``; ``middle``/``last`` их не
+      трогают - каст и память прошлых актов на месте (#3972: иначе 2b/2c стирали Сашу и Бориса акта 2). Вне марафона
+      акт с ``register_speaker``/``memory_save`` стирает обе (``enter_e2e_mode``, #2750/#2781);
+    * сессия: акт, не наследующий прошлый, - сброс (``reset_dialog_v2_session_for_act``);
+    * музыка: играет трек или сет - стоп (``ensure_music_stopped_for_act``, #3871/#4027)."""
+    wipe = phase == FIRST if phase else (act.registers_speakers or act.writes_memory)
+    if wipe:
+        stand.reset_speakers()
+        stand.reset_memory()
     if not act.inherits:
         stand.reset_session()
-    if act.registers_speakers:
-        stand.reset_speakers()
-    if act.registers_speakers or act.writes_memory:
-        stand.reset_memory()
+    return stand.stop_music_for_act()
+
+
+async def run_act(stand: DryStand, act: Act, budget: int, max_retries: Optional[int],
+                  only: Optional[Sequence[str]] = None, phase: str = NO_PHASE) -> List[StepReport]:
+    """Акт целиком: изоляция в начале (:func:`isolate_act_start`, ``phase`` - :func:`marathon_phases`), затем шаги."""
+    isolate_act_start(stand, act, phase)
     reports: List[StepReport] = []
     speech = ""
     for step in act.steps:
@@ -343,8 +369,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     results: Dict[str, Sequence[StepReport]] = {}
 
     async def go() -> None:
-        for act in acts:
-            results[act.key] = await run_act(stand, act, args.budget, args.max_retries, only)
+        for act, phase in zip(acts, marathon_phases(acts)):
+            results[act.key] = await run_act(stand, act, args.budget, args.max_retries, only, phase)
             print(f"-- акт {act.key}: запросов LLM {stand.counter.calls}/{args.budget}", flush=True)
 
     try:
