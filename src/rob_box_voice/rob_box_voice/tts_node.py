@@ -2,8 +2,8 @@
 """
 TTSNode - Text-to-Speech с Yandex Cloud TTS API v3 (gRPC) + Silero fallback + MiniMax (HTTP)
 
-Подписывается на: /voice/dialogue/response (JSON chunks)
-Публикует: /voice/audio/speech (AudioData)
+Подписывается на: /voice/speech/request, /voice/speech/cancel (SpeechRequest/SpeechCancel), /avatar/tts/request (ТАРС в шлем)
+Публикует: /voice/audio/speech (AudioData), /voice/speech/event, /voice/speech/envelope
 Использует:
   - Yandex Cloud TTS API v3 (gRPC, primary, anton voice)
   - Silero TTS v4 (fallback, офлайн, всегда работает)
@@ -100,9 +100,12 @@ from .tts_engines import (
 )
 from .utils.stderr_silence import silence_alsa_errors
 
-# Markdown sanitisation for TTS (issue #988) — shared with dialogue_node.
-from .core.speak_helpers import (
-    strip_bracket_asides, strip_markdown, unsupported_language_notice,
+# Очистка текста перед синтезом (issue #988) и отказ на куске системного шаблона (issue #2175) — один модуль
+# знания «что не озвучивается»; ответ из <system>…</system> проверяется на сыром SSML (теги ещё на месте).
+from .tts_text_clean import (
+    is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
+    strip_bracket_asides,
+    strip_markdown,
 )
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from rob_box_core.utterance import missing_tts_request_fields
@@ -112,12 +115,10 @@ from .core.provider_health import record_tts_death, tts_provider_states
 from .core.voice_owner import attach_voice_owner
 
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
-# огибающая; старые JSON-входы — один адаптер speech_compat.
-from .core import speech_compat
-from rob_box_core import dialog_engine
+# огибающая. Старых JSON-входов речи нет (PR-15 часть 15-core, #3711).
 from .core.speech_owner import SpeechOwner, owner_of
 from .core.speech_timing import PREFETCH_PROVIDER
-from .tts_voice_registry import known_provider
+from .tts_voice_registry import known_provider, unsupported_language_notice
 from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
@@ -176,20 +177,11 @@ from .tts_text_guard import ensure_readable as _tts_guard_ensure_readable
 from .tts_text_guard import readable_chain as _tts_guard_readable_chain
 from .tts_text_guard import should_skip as _tts_guard_should_skip
 
-# Issue #2175 — refuse to synthesize MiniMax's regurgitated
-# ``<system>...</system>`` template (regex учитывает ``<speak>``-обёртку).
-# ADR-0150 PR-7 ч.7d-2 (#3698): ретрай LLM в dialogue_node удалён — отказ
-# здесь единственная защита.
-from .core.dialogue_guards import (
-    is_system_template_regurgitated_in_ssml as _is_system_template_regurgitated_ssml,
-)
-
-# Issue #2760 — тот же приём для разметки протокола tool-calls: модель
-# печатает ``<function_calls><invoke name="...">`` текстом; этот уровень
-# гарантирует, что теги не прозвучат (прогон 35704637846: два чанка ушли в
-# синтез; ретрай в dialogue_node удалён в ADR-0150 PR-7 ч.7d-2, #3698).
-# Детектор ``search``-овый, поэтому работает и на сыром SSML.
-from .core.dialogue_guards import is_tool_call_markup as _is_tool_call_markup
+# Issue #2760 — разметка протокола tool-calls: модель печатает
+# ``<function_calls><invoke name="...">`` текстом; этот уровень гарантирует, что теги не прозвучат (прогон
+# 35704637846: два чанка ушли в синтез). Детектор ``search``-овый, поэтому работает и на сыром SSML. Одна копия
+# регекса на tts_node и harness — ``rob_box_core.tool_call_markup`` (отказ здесь — единственная защита, ADR-0150 PR-7).
+from rob_box_core.tool_call_markup import is_tool_call_markup as _is_tool_call_markup
 
 # Transcoding helpers for converting provider audio blobs (PCM/WAV/MP3/OGG)
 # into ROS-ready int16 LE PCM. Imported independently from the optional MiniMax
@@ -847,7 +839,6 @@ class TTSNode(Node):
         self.declare_parameter("headset_audio_meta_topic", "/avatar/tts/audio_meta")
         self.declare_parameter("avatar_request_topic", "/avatar/tts/request")
         self.declare_parameter("avatar_error_topic", "/avatar/tts/error")
-        self.declare_parameter("avatar_control_topic", "/avatar/tts/control")
         # ADR-0079 / issue #2138.A.3 — preview-канал для picker'а голосов.
         # Контракт публикаций — зеркалирует ``avatar_*``:
         #   * ``/avatar/preview_voice/audio``  — String JSON {request_id,
@@ -1100,9 +1091,6 @@ class TTSNode(Node):
             self.get_parameter("avatar_request_topic").value
         )
         self.avatar_error_topic = str(self.get_parameter("avatar_error_topic").value)
-        self.avatar_control_topic = str(
-            self.get_parameter("avatar_control_topic").value
-        )
 
         # Общие
         self.chipmunk_mode = self.get_parameter("chipmunk_mode").value
@@ -1266,23 +1254,20 @@ class TTSNode(Node):
         self.playback_manager = AudioPlaybackManager.get_instance()
 
         # ADR-0150 PR-3 (#3688) — владелец речи: /voice/speech/{request,cancel}
-        # → конвейер ниже → /voice/speech/{event,envelope}. Старые JSON-входы
+        # → конвейер ниже → /voice/speech/{event,envelope}. Старых JSON-входов
         # (/voice/dialogue/response, /voice/tts/request, STOP в /voice/tts/control
-        # и avatar-control) — один адаптер ``core/speech_compat.py``.
+        # и avatar-control) у ноды нет: PR-15 часть 15-core (#3711) удалила адаптер
+        # ``core/speech_compat.py`` — писателей в src/ не осталось, отмена — SpeechCancel.
         self._speech = SpeechOwner(
             self, output_latency_ms=int(self.get_parameter("output_latency_ms").value)
         )
         self._speech.attach()
-        # PR-8 (#3702): ответы dialogue_node (/voice/dialogue/response) адаптер слушает только при dialog_engine=v1.
-        speech_compat.attach_legacy(self, avatar_control_topic=self.avatar_control_topic,
-                                    engine=dialog_engine.declare(self))
 
         # ADR-0055 / issue #1993 — подписка на запросы ТАРС в шлем.
-        # Контракт String JSON повторяет /voice/tts/request (см. dialogue_callback)
+        # Контракт — String JSON с ``ssml`` (см. dialogue_callback)
         # плюс обязательное поле ``sink=="headset"``. Невалидный sink →
         # self._avatar_tts_error_pub.publish({request_id, error:"invalid_sink"})
-        # и DROP (ADR-0055 §tts_node). STOP — общий с /voice/tts/control
-        # (адаптер speech_compat).
+        # и DROP (ADR-0055 §tts_node).
         self._avatar_tts_request_sub = self.create_subscription(
             String, self.avatar_request_topic, self._on_avatar_tts_request, 10
         )
@@ -2342,7 +2327,7 @@ class TTSNode(Node):
         text = re.sub(r"<[^>]+>", "", ssml)
         # Раскрываем entity, оставшиеся в текстовом содержимом.
         text = html.unescape(text)
-        text = strip_bracket_asides(text, keep_service=False)
+        text = strip_bracket_asides(text)
         return strip_markdown(text).strip()
 
     def _on_avatar_tts_request(self, msg: String) -> None:
@@ -2389,8 +2374,7 @@ class TTSNode(Node):
         ниже.
 
         Различия от ``dialogue_callback``:
-        * ``_avatar_tts_request_id`` обновляется при старте (диагностика;
-          STOP через /avatar/tts/control — адаптер speech_compat).
+        * ``_avatar_tts_request_id`` обновляется при старте (диагностика; отмена — SpeechCancel).
         * Нет ``_on_set_provider`` / state-паблиша — это НЕ ``/voice/tts/*``,
           для контроля провайдера есть существующий /voice/tts/set_provider.
         * ``/voice/tts/finished`` всё равно публикуется (тот же топик) —
@@ -2628,8 +2612,8 @@ class TTSNode(Node):
           * ``"speakers"`` (issue #2318) — то же самое, что ``"speaker"``.
             Это значение ``Sink.SPEAKERS`` из SoT-сборщика
             ``rob_box_core.utterance`` (ADR-0080 §2.3), которым публикуют
-            ВСЕ пять продюсеров (dialogue_node, telegram_node, stt_node,
-            speak_helpers; нода приветствия удалена в #3684). До фикса оно не было в
+            ВСЕ продюсеры (dialogue_node, telegram_node, stt_node и др.;
+            нода приветствия удалена в #3684). До фикса оно не было в
             whitelist → каждая реплика в динамики уходила в DROP.
             Канонизируем в ``"speaker"``, чтобы ниже по стеку
             (``_submit_synthesis(sink=...)`` → ``_sap_publish_for_sink``)

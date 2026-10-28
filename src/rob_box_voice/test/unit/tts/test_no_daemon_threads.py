@@ -18,7 +18,8 @@ was deleted together with its tests.
 
 from __future__ import annotations
 
-import re
+import io
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -37,16 +38,29 @@ def _strip_strings_and_comments(source: str) -> str:
     We blank rather than strip so line numbers in the residual text still
     align with the original file — the assertion message includes the
     offending line number.
+
+    PR-15 (#3711, part 15-core): the spans come from ``tokenize``, not from a
+    regex over the whole file. The old regex paired quote characters across
+    comments and docstrings, so ONE apostrophe added to or removed from any
+    comment above shifted every later "string" and either hid or exposed a
+    ``daemon=True`` marker far below (the file passed only by accident of
+    quote parity).
     """
-    # Triple-quoted strings (incl. f-strings) — non-greedy across lines.
-    no_triple = re.sub(
-        r'("[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\')',
-        lambda m: " " * len(m.group(0)),
-        source,
-    )
-    # Single-line comments.
-    no_comments = re.sub(r"(?m)#.*$", lambda m: " " * len(m.group(0)), no_triple)
-    return no_comments
+    lines = source.splitlines(keepends=True)
+    grid = [list(line) for line in lines]
+    fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", None)  # Python 3.12+
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type not in (tokenize.STRING, tokenize.COMMENT) and tok.type != fstring_middle:
+            continue
+        (row1, col1), (row2, col2) = tok.start, tok.end
+        for row in range(row1, row2 + 1):
+            cells = grid[row - 1]
+            lo = col1 if row == row1 else 0
+            hi = col2 if row == row2 else len(cells)
+            for col in range(lo, min(hi, len(cells))):
+                if cells[col] not in "\r\n":
+                    cells[col] = " "
+    return "".join("".join(cells) for cells in grid)
 
 
 def _live_substring_matches(source: str, pattern: str) -> list[tuple[int, str]]:

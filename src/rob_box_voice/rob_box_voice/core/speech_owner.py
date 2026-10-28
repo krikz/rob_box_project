@@ -15,8 +15,9 @@
 новее ``epoch``); реплики другой эпохи и другого агента не трогаются. Играющая
 глушится сразу, ожидающая снимается у FIFO-ворот ``tts_node`` без звука.
 
-Конвейер ``tts_node`` ест словарь-чанк v1; поле ``_speech`` несёт метаданные
-реплики (:func:`chunk_from_request`), старый JSON - :mod:`.speech_compat`.
+Конвейер ``tts_node`` ест словарь-чанк; поле ``_speech`` несёт метаданные реплики (:func:`chunk_from_request`).
+Старых JSON-входов речи (``/voice/tts/request``, ``/voice/dialogue/response``, STOP в ``/voice/tts/control``) у ноды
+нет (PR-15 часть 15-core, #3711): речь приходит только как ``SpeechRequest``.
 ``at`` / ``boundary=sentence`` / ``commit=false`` - :mod:`.speech_timing`.
 """
 
@@ -33,11 +34,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from rob_box_core.speech_client import ANY_AGENT, EPOCH_ALL, PRIORITY_OPERATOR_U8, VOICE_OWNER_AGENT
+from rob_box_core.speech_client import ANY_AGENT, PRIORITY_OPERATOR_U8, VOICE_OWNER_AGENT
 from rob_box_dialog import knowledge as kn
 from rob_box_core.utterance import Utterance
 
-from . import speech_compat
 from .speech_timing import PREFETCH_PROVIDER, Presynth, at_delay_s
 
 FRAME_MS = 40
@@ -97,7 +97,7 @@ class SpeechMeta:
         raw = chunk.get("_speech")
         if isinstance(raw, dict):
             return cls(**{k: raw[k] for k in asdict(cls()) if k in raw})
-        return speech_compat.meta_from_legacy(chunk, cls)
+        return cls()
 
 
 def unsupported_field(msg: Any) -> str:
@@ -313,13 +313,6 @@ class SpeechOwner:
     def shutdown(self) -> None:
         """Нода уходит: пул пред-синтеза гасится, ждущие сегменты не синтезируются."""
         self.presynth.shutdown()
-
-    def cancel_all(self, reason: str) -> None:
-        """Старый STOP: отменить всё и заглушить то, что звучит (даже без записи)."""
-        targets = self.ledger.select_cancel("", EPOCH_ALL, ANY_AGENT)
-        self._drop_presynth({rec.speech_id for rec in targets})
-        self._log(f"🛑 STOP ({reason}): все реплики отменены")
-        self._node._interrupt_playback()
 
     # -- переходы, которые зовёт конвейер tts_node -------------------------------
 

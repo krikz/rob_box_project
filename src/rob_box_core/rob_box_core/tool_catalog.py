@@ -68,8 +68,8 @@ class ToolCatalogEntry:
     destructive: bool = True
     idempotent: bool = False
     #: Инструмент запускает слышимую музыку (Renardo или mp3). Питает
-    #: ``dialogue_guards.MUSIC_STARTING_TOOLS`` — единственный источник для
-    #: post-turn music guard'а (был дублирован в frozenset'ах и дрейфовал).
+    #: ``track_start_guard.TRACK_STARTING_TOOLS`` — единственный источник для
+    #: лимита «один трек за ход» (был дублирован в frozenset'ах и дрейфовал).
     starts_music: bool = False
     execution_type: str = "medium"
     #: Источник события владельца об исходе действия (``/топик``, ``srv:/…``, ``action:/…``, ``inproc:<владелец>``;

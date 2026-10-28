@@ -77,11 +77,11 @@ nodes:
   tts_node:
     owner: voice
     package: rob_box_voice
-    # PR-3 (#3688): владелец речи - журнал/события/огибающая и адаптер v1
+    # PR-3 (#3688): владелец речи - журнал/события/огибающая. Адаптер старых JSON-входов (speech_compat) удалён в
+    # PR-15 части 15-core (#3711): речь приходит только как SpeechRequest.
     source:
       - src/rob_box_voice/rob_box_voice/tts_node.py
       - src/rob_box_voice/rob_box_voice/core/speech_owner.py
-      - src/rob_box_voice/rob_box_voice/core/speech_compat.py
   speech_client:
     owner: voice
     package: rob_box_core

@@ -791,9 +791,9 @@ chore(docker): update base images to latest versions
 #2999/#3125, Bug F→#2565, #1881→#1895). Вокруг ответа LLM уже ~27 точек
 принятия решений, из них ~20 — регекс или подстрока.
 
-- Новые `re.compile(...)` в `src/rob_box_voice/rob_box_voice/core/dialogue_guards.py`,
-  `core/music_guard.py`, `core/media_command_grammar.py` — **только с явного
-  разрешения товарища Шифу**, пока не закрыты шаги Ш1 и Ш2 того же плана.
+- Новые `re.compile(...)` в `src/rob_box_voice/rob_box_voice/core/media_command_grammar.py`
+  (`core/dialogue_guards.py` и `core/music_guard.py` удалены: PR-15 часть 15-core, #3711) —
+  **только с явного разрешения товарища Шифу**, пока не закрыты шаги Ш1 и Ш2 того же плана.
   (`core/music_volume_request.py` удалён в #3134: его грамматика переехала
   в `media_command_grammar.py` — роутер медиакоманд до LLM.)
 - Проверяется механически: `src/rob_box_voice/test/unit/core/test_issue_3132_music_regex_moratorium.py`

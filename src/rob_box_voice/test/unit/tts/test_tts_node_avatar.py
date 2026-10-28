@@ -8,10 +8,10 @@
   с ``sink="headset"`` (worker берёт headset-путь).
 * ``_publish_headset_audio`` шлёт AudioData в ``headset_audio_topic``,
   формат — int16 LE PCM (тот же, что ``/voice/audio/speech``).
-* Управляющий топик ``/avatar/tts/control`` идёт через адаптер
-  ``core/speech_compat.on_control`` (тот же STOP, ADR-0150 PR-3).
+* Управляющего топика ``/avatar/tts/control`` у ноды нет: STOP принимал адаптер ``core/speech_compat``, писателей не
+  было, адаптер удалён (ADR-0150 PR-15 часть 15-core, #3711); отмена — ``SpeechCancel``.
 * Параметры ноды: ``headset_audio_topic`` / ``avatar_request_topic`` /
-  ``avatar_error_topic`` / ``avatar_control_topic`` объявлены в ``__init__``.
+  ``avatar_error_topic`` объявлены в ``__init__``.
 
 Запуск:
     PYTHONPATH=src/rob_box_voice:src/rob_box_core:src/rob_box_harness:src/rob_box_llm \\
@@ -401,12 +401,12 @@ def test_tts_node_declares_avatar_topics_as_parameters():
     assert 'declare_parameter("headset_audio_topic"' in src
     assert 'declare_parameter("avatar_request_topic"' in src
     assert 'declare_parameter("avatar_error_topic"' in src
-    assert 'declare_parameter("avatar_control_topic"' in src
+    assert 'declare_parameter("avatar_control_topic"' not in src
     # Дефолты — ровно те, что в ADR-0055 §tts_node.
     assert '"/avatar/tts/audio"' in src
     assert '"/avatar/tts/request"' in src
     assert '"/avatar/tts/error"' in src
-    assert '"/avatar/tts/control"' in src
+    assert '"/avatar/tts/control"' not in src
 
 
 def test_sink_kwarg_in_synthesize_and_play_signature():
