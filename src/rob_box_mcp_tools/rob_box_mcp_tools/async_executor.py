@@ -12,7 +12,7 @@ async_executor.py - Асинхронный движок выполнения MCP
 import asyncio
 import json
 import uuid
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass
 from enum import Enum
 
@@ -97,6 +97,10 @@ class AsyncToolExecutor:
         # Кэш результатов: request_id -> result
         self.results_cache: Dict[str, Dict[str, Any]] = {}
 
+        # request_id запросов, чей ответ ждёт этот исполнитель (FAST/MEDIUM/LONG): чужие ответы с общего
+        # ``/mcp/result`` в кэш не кладутся (#4081)
+        self._awaited: Set[str] = set()
+
         # Timeouts по типам (seconds)
         self.timeouts = {
             ToolExecutionType.INSTANT: 0.1,   # Fire-and-forget, не ждём
@@ -136,6 +140,10 @@ class AsyncToolExecutor:
         """
         return sequence_id == self._current_sequence_id
 
+    def expects(self, request_id: str) -> bool:
+        """Этот исполнитель ждёт ответ на запрос ``request_id`` (выпустил его и не дождался)."""
+        return request_id in self._awaited
+
     def on_result_received(self, request_id: str, result: Dict[str, Any]) -> None:
         """
         Callback когда получен результат от MCP сервера
@@ -144,6 +152,9 @@ class AsyncToolExecutor:
             request_id: ID запроса
             result: Результат выполнения
         """
+        if request_id not in self._awaited:  # чужой или уже не ждём (#4081)
+            return
+        self._awaited.discard(request_id)
         self.results_cache[request_id] = result
 
         # Удаляем из long_tasks если там был
@@ -202,6 +213,8 @@ class AsyncToolExecutor:
 
         # Публикуем запрос в ROS
         from std_msgs.msg import String
+        if execution_type != ToolExecutionType.INSTANT:  # INSTANT ответа не ждёт
+            self._awaited.add(request_id)
         if self.authenticator is not None:
             request = self.authenticator.sign(request)
         msg = String()
@@ -284,6 +297,7 @@ class AsyncToolExecutor:
 
         while request_id not in self.results_cache:
             if asyncio.get_event_loop().time() - start_time > timeout:
+                self._awaited.discard(request_id)  # запоздалый ответ - уже чужой
                 raise asyncio.TimeoutError()
 
             await asyncio.sleep(0.05)  # Poll interval
@@ -343,6 +357,8 @@ class AsyncToolExecutor:
                 "error": "Операция отменена",
                 "cancelled": True
             }
+        finally:
+            self._awaited.discard(request_id)
 
     async def execute_tools_parallel(
         self,
