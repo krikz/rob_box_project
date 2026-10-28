@@ -30,7 +30,7 @@ from rob_box_core.utterance import Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Performance
 from rob_box_dialog.plan.backing import Backing, MusicStop
-from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block
+from rob_box_dialog.plan.perform import AskReplace, Cancel, PerformBlock, Say, context_block, edit_asks_backing
 from rob_box_dialog.plan.plan_events import PlanEvent
 from rob_box_llm.provider import ToolCall, ToolResult
 
@@ -259,7 +259,8 @@ class PerformHost:
         block = self.block
         if block is None or block.ended:
             return {"status": "rejected", "reason": "edit_without_active_perform"}
-        added = perf.backing in kn.PERFORM_BACKING_MOODS and self._add_backing_locked(block, perf.backing)
+        foreign = bool(self._playing()) and not block.backing.sounding  # играет чужое, а не бит этого выступления
+        added = edit_asks_backing(perf, foreign) and self._add_backing_locked(block, perf.backing)
         if not perf.segments:  # «добавь бит» командой выступления (#993, A22 #3700): только бит, куплеты прежние
             return {"status": "done", "backing": True} if added else {"status": "rejected", "reason": "no_backing"}
         perf = replace(perf, from_segment=(block.active_segment or 0) + 1)  # роли и их голоса — как решил код (#4084)
