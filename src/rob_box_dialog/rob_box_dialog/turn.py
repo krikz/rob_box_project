@@ -158,10 +158,10 @@ class Ports(Protocol):
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "",
               cls: Optional[str] = None, llm_calls: int = 0, provider: str = "", source: str = "",
-              expression: Optional[Expression] = None) -> None:
+              expression: Optional[Expression] = None) -> Optional[bool]:
         """Событие стадии и рефлекс. ``expression`` (необязательный, #3997) — экспрессия команды на итоге ``done``
-        (:func:`done_expression`): красит рефлекс. Порт без этого параметра (чат, шлем оператора — лица у них нет)
-        зовётся прежним вызовом (:func:`finish_stage`)."""
+        (:func:`done_expression`): красит рефлекс. Порт без этого параметра (шлем оператора — лица у него нет)
+        зовётся прежним вызовом (:func:`finish_stage`); ``False`` в ответ — лицо порт не показал (пульт чата, #4040)."""
         ...
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None: ...
@@ -177,8 +177,8 @@ class Ports(Protocol):
 
     def perform(self, turn_id: str, epoch: int, perf: Performance, edit: bool) -> Optional[Mapping[str, Any]]:
         """Выступление — его владельцу (хост ``PerformBlock``: сегменты на тактах, подложка, паузы по сетке строк);
-        исход владельца (``pending``/``done``/``rejected``). ``None`` — владельца выступлений у агента нет (чат,
-        оператор): сегменты звучат репликами хода."""
+        исход владельца (``pending``/``done``/``rejected``). ``None`` — владельца выступлений у агента нет
+        (оператор): сегменты звучат репликами хода. У чата выступление исполняет робот (пульт, #4040)."""
         ...
 
 
@@ -508,15 +508,16 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
 
 def finish_stage(ports: Any, turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
     """Итог хода в ``Ports.stage``. Экспрессия команды (:func:`done_expression`) уходит, только если порт объявил
-    ``expression``: лицо есть у Личности, а чат и шлем оператора зовутся прежним вызовом (как ``stop_performance``).
-    Возвращает лицо, которое порт получил (``None`` - рефлекс как есть или порт лица не принимает): ход записывает его в
-    окно (``TurnLog.faced``, #4073), и запись «показано» не опережает показ - у чата и шлема оператора лица нет."""
+    ``expression``: лицо есть у Личности и у пульта чата (#4040: лицо робота), а шлем оператора зовётся прежним вызовом
+    (как ``stop_performance``). Возвращает лицо, которое порт показал (``None`` - рефлекс как есть, порт лица не
+    принимает или ответил ``False``: чат без пульта, лицо - настроение текста в чат): ход записывает его в окно
+    (``TurnLog.faced``, #4073), и запись «показано» не опережает показ."""
     face = done_expression(turn, snapshot)
     shown = face if face is not None and _accepts(ports.stage, "expression") else None
     extra = {"expression": shown} if shown is not None else {}
-    ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
-                provider=turn.provider, **extra)
-    return shown
+    took = ports.stage(turn.turn_id, turn.epoch, turn.stage, turn.status, turn.reason, llm_calls=turn.llm_calls,
+                       provider=turn.provider, **extra)
+    return None if took is False else shown
 
 
 def prosody_phrase(results: Sequence[ActionResult]) -> str:
@@ -621,10 +622,12 @@ def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
                     performing: bool = False) -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
     простом успехе (``respond.audible``, #3953), а при идущем выступлении (``performing``) молчит общий успех запуска
-    музыки (#4075). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели (:func:`query_more`, там же отказ
-    чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
+    музыки (#4075) — только у агента, чьи фразы звучат в динамиках поверх выступления: чату о запуске музыки на роботе
+    код говорит всегда (пульт, #4040). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
+    (:func:`query_more`, там же отказ чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
-    return outcome_phrase(audible(results, speaks, performing)) if results else None
+    over_performance = performing and agent_spec(agent).sink == Sink.SPEAKERS
+    return outcome_phrase(audible(results, speaks, over_performance)) if results else None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:

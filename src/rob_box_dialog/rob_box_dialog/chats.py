@@ -6,12 +6,17 @@
 (``NotAddressed(coordinator)``). Команды роботу идут к тем же владельцам (исполнитель хоста), а фразы — и слова модели,
 и фраза кода об исходе по событию — уходят текстом в чат (:class:`ChatPorts`, ``DialogOutput``), а не в динамики.
 
+Пульт робота (#4040, решение Шифу 28.10, ``knowledge.CHAT_OUTLETS``): просьбу действия на роботе исполняет РОБОТ от
+своего имени — выступление (``perform``: «спой», рэп, сказка) уходит хосту выступления Личности через пульт хоста
+(:class:`Robot`), ответ лицом и сцены ``play_animation`` — на лицо робота; служебного текста агента там нет. В чат —
+фраза кода из результата («Пою на роботе: «…»», «Показываю на роботе: …», отказ — «Не вышло.»), а не текст песни.
+
 Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` — действие класса ``action.speak_aloud``. Тул ждёт только начала
 реплики (``pending`` с ``event_ref=speech_id``), а «Озвучил (12 с)» приходит позже событием ``SpeechEvent finished``
 (:meth:`ChatTurns.on_speech` → :meth:`ChatPorts.late`): дедлайн хода рассказ не ждёт, «отправил» без события нет.
 Тишина — кадр Личности и чата не касается (О2); ``OperatorHold`` — отказ ``operator_hold`` кодом (:meth:`ChatPorts.execute`).
 
-Чистый модуль: транспорт (LLM, исполнитель, публикация ``DialogOutput``) — снаружи, у ROS-хоста.
+Чистый модуль: транспорт (LLM, исполнитель, публикация ``DialogOutput``, пульт робота) — снаружи, у ROS-хоста.
 """
 
 from __future__ import annotations
@@ -19,14 +24,17 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Sequence
 
 from rob_box_core import speech_client
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_dialog.address import SOURCE_TELEGRAM, Decision, decide
 from rob_box_dialog.backlog import Heard
 from rob_box_dialog.execute import OwnerEvent
+from rob_box_dialog.expression import face_label
 from rob_box_dialog.respond import ActionResult, phrase_from_result
+from rob_box_dialog.turn import Shown
 
 _LOG = logging.getLogger(__name__)
 #: Строка лога телеграм-агента.
@@ -51,6 +59,56 @@ def chat_of(ref: str) -> Optional[int]:
         return None
 
 
+class Robot(Protocol):
+    """Пульт робота для агента чата (#4040): то, что чат исполняет РОБОТОМ. Хост (``dialog_node.RobotRemote``) отдаёт
+    это портам Личности — её эпоха, её голос и лицо: со стороны робот делает это сам."""
+
+    def perform(self, turn_id: str, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Выступление хосту выступления робота; исход старта (``status``: ``pending``/``done``/``rejected``) или
+        ``None`` — хоста выступления нет."""
+
+    def show(self, turn_id: str, expression: Any) -> None:
+        """Лицо — на лицо робота (без стадии хода и earcon'а)."""
+
+
+def quote(text: str) -> str:
+    """Строка выступления цитатой для чата: пробелы схлопнуты, не длиннее ``REMOTE_QUOTE_MAX_CHARS`` (дальше «…»)."""
+    line = " ".join(str(text or "").split())
+    limit = kn.REMOTE_QUOTE_MAX_CHARS
+    return line if len(line) <= limit else line[:limit - 1].rstrip() + "…"
+
+
+def perform_phrase(perf: Any, outcome: Mapping[str, Any]) -> Optional[str]:
+    """Фраза кода в чат об исходе выступления на роботе (ADR-0148: из ответа его хоста, а не из слов модели): старт
+    (``pending``) — по виду выступления с цитатой первой строки, правка идущего (``done``: хост влил куплеты) —
+    «добавил», «добавь бит» без куплетов (``backing``) — «добавил бит». Отказ — ``None``: его фразу говорит ход
+    (``turn.hand_perform``: «Не вышло.»)."""
+    status = str(outcome.get("status") or "")
+    segments = tuple(perf.segments or ())
+    if status == "done" and not segments:
+        return phrases.text(kn.REMOTE_PERFORM_BACKING_PHRASE) if outcome.get("backing") else None
+    key = {"pending": kn.REMOTE_PERFORM_PHRASES.get(perf.kind), "done": kn.REMOTE_PERFORM_EDIT_PHRASE}.get(status)
+    if key is None or not segments:
+        return None
+    return phrases.text(key, line=quote(segments[0]))
+
+
+def robot_face(expression: Any, said: bool) -> Optional[Any]:
+    """Лицо итога хода чата, которое показывает робот (``knowledge.CHAT_OUTLETS["expression"]``): сцены исполненных
+    ``play_animation`` (``turn.Shown``) — всегда, это действие на роботе; лицо команды — только как ответ лицом, когда
+    текста в чат в этом ходе не было (``said``): рядом с текстом это настроение текста, а не просьба к роботу (на
+    «который час» лицо робота не меняется). Показывать нечего — ``None``."""
+    if expression is None or kn.CHAT_OUTLETS["expression"] != kn.REMOTE_ROBOT:
+        return None
+    return expression if isinstance(expression, Shown) or not said else None
+
+
+def face_words(expression: Any) -> str:
+    """Что показал робот, словами кода для фразы чата: сцены по очереди (пачка ``play_animation`` — ``Shown.then``)."""
+    scenes = (expression, *getattr(expression, "then", ()))
+    return ", ".join(dict.fromkeys(filter(None, (face_label(s.emotion, s.gesture, s.face) for s in scenes))))
+
+
 def _result_term_s(duration_ms: Any) -> float:
     """Срок позднего итога реплики: длительность + запас, не больше потолка; длительность неизвестна - потолок."""
     seconds = float(duration_ms or 0) / 1000.0
@@ -60,18 +118,21 @@ def _result_term_s(duration_ms: Any) -> float:
 
 
 class ChatPorts:
-    """Порты хода одного чата: LLM и исполнение — общие порты хоста (``base``), речь — текст в чат.
+    """Порты хода одного чата: LLM и исполнение — общие порты хоста (``base``), речь — текст в чат, действия на роботе
+    — пульт хоста (``robot``, #4040): выступление и ответ лицом исполняет робот, в чат — фраза кода об исполнении.
 
-    Стадии хода лицо и кольцо не трогают (чат — не разговор с роботом вслух), отменять в чате нечего, выступление
+    Стадии хода кольцо не трогают (чат — не разговор с роботом вслух), отменять в чате нечего, выступление
     личности стоп из чата не рвёт; стоп движения — тот же интент, что у голоса."""
 
     def __init__(self, base: Any, chat_id: int, send: Send, log: Callable[[str], None] = _LOG.info,
-                 hold: Callable[[], bool] = lambda: False) -> None:
+                 hold: Callable[[], bool] = lambda: False, robot: Optional[Robot] = None) -> None:
         self._base = base
         self._ref = channel_ref(chat_id)
         self._send = send
         self._log = log
         self._hold = hold  # держит ли оператор Личность (кадр ``OperatorHold`` её сессии)
+        self._robot = robot
+        self._said = ""  # ход, в котором в чат ушёл текст: ответ лицом на роботе — только без него (:func:`robot_face`)
 
     def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Any:
         return self._base.ask(messages, tools, timeout_s)
@@ -102,16 +163,30 @@ class ChatPorts:
 
     def say(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
             emotion: Optional[str] = None) -> str:
+        """Реплика хода (слова модели, фраза кода об исходе) — текстом в чат; в динамики робота она не идёт."""
         speech_id = uuid.uuid4().hex
+        self._said = turn_id
         self._send(self._ref, text, speech_id)
         self._log(f"{LOG_MARK} → {self._ref} turn={turn_id} epoch={epoch} chars={len(text)}")
         return speech_id
 
     def stage(self, turn_id: str, epoch: int, stage: str, status: str, reason: str = "", cls: Optional[str] = None,
-              llm_calls: int = 0, provider: str = "", source: str = "") -> None:
+              llm_calls: int = 0, provider: str = "", source: str = "", expression: Optional[Any] = None) -> bool:
+        """Стадия хода чата — строка лога; лицо итога ``done`` (``turn.finish_stage``) — на лицо робота, когда это
+        действие на роботе (:func:`robot_face`), и фраза кода в чат о том, что робот показал (#4040). ``True`` —
+        робот показал лицо; ``False`` — нет (пульта нет, лицо — настроение текста в чат): в окне его нет."""
         if status != "started":
             self._log(f"{LOG_MARK} {self._ref} turn={turn_id} stage={stage} status={status} reason={reason or '-'} "
                       f"llm_calls={llm_calls} provider={provider or '-'}")
+        face = robot_face(expression, said=self._said == turn_id)
+        if face is None or self._robot is None:
+            return False
+        self._robot.show(turn_id, face)
+        words = face_words(face)
+        self._log(f"{LOG_MARK} {self._ref} → робот: лицо {words or '-'} turn={turn_id}")
+        if words:
+            self._send(self._ref, phrases.text(kn.REMOTE_SHOW_PHRASE, face=words), uuid.uuid4().hex)
+        return True
 
     def cancel_speech(self, epoch: int, reason: str, boundary: str = "as_requested") -> None:
         return None
@@ -119,9 +194,23 @@ class ChatPorts:
     def stop_perform(self, how: str) -> bool:
         return False
 
-    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> None:
-        """Выступлений у чата нет: сегменты — текстом в чат, как реплики."""
-        return None
+    def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
+        """Выступление агента чата исполняет робот (#4040, ``knowledge.CHAT_OUTLETS["perform"]``): пульт хоста отдаёт
+        его хосту выступления Личности в ЕЁ эпохе (``epoch`` чата сюда не идёт: «Робот, хватит» голосом гасит и это
+        выступление), сегменты звучат голосом робота, а не текстом в чат. В чат — фраза кода из исхода старта
+        (:func:`perform_phrase`); отказ хоста — фраза хода «Не вышло.». Пульта или хоста выступления нет — отказ
+        кодом ``no_robot``: текст песни в чат не уходит и тогда."""
+        if kn.CHAT_OUTLETS["perform"] != kn.REMOTE_ROBOT:
+            return None
+        outcome = self._robot.perform(turn_id, perf, edit) if self._robot is not None else None
+        result = dict(outcome) if outcome is not None else {"status": "rejected", "reason": kn.REMOTE_NO_ROBOT}
+        self._log(f"{LOG_MARK} {self._ref} → робот: выступление {'правка' if edit else 'старт'} kind={perf.kind} "
+                  f"segments={len(perf.segments)} → {result.get('status')} {result.get('reason') or '-'} "
+                  f"turn={turn_id}")
+        said = perform_phrase(perf, result)
+        if said:
+            self._send(self._ref, said, uuid.uuid4().hex)
+        return result
 
     def intent(self, turn_id: str, epoch: int, kind: str) -> None:
         self._base.intent(turn_id, epoch, kind)
@@ -200,4 +289,5 @@ class ChatTurns:
                 return None
 
 
-__all__ = ["CHANNEL_PREFIX", "ChatPorts", "ChatTurns", "LOG_MARK", "channel_ref", "chat_of"]
+__all__ = ["CHANNEL_PREFIX", "ChatPorts", "ChatTurns", "LOG_MARK", "Robot", "channel_ref", "chat_of", "face_words",
+           "perform_phrase", "quote", "robot_face"]

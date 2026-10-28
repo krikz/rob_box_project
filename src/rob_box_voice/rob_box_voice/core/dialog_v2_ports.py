@@ -11,7 +11,8 @@
   Топик ``ActionRequest`` не публикуется: подписчика у него нет (mcp_server слушает ``/mcp/execute``);
 * **речь / стадии / интент** — ``speech_client``, ``expression_client`` (+ рефлекс ``expression.reflex``, на итоге
   ``done`` окрашенный экспрессией команды через ``expression.merge``, #3997; пачка ``play_animation`` — очередью
-  сцен за итогом, ``expression.queued``, #4083), ``/dialog/intent``.
+  сцен за итогом, ``expression.queued``, #4083), ``/dialog/intent``; лицо пульта агента чата — :meth:`V2Ports.show`
+  (#4040: та же сцена без стадии хода и earcon'а).
 
 Модуль без класса ноды: ROS-хост ``dialog_node`` (ч.8e2) отдаёт сюда себя и собранные объекты.
 """
@@ -21,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
+from dataclasses import replace
 from typing import Any, AsyncIterator, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_core import expression_client, speech_client
@@ -110,6 +112,13 @@ def stage_plan(stage: str, cls: Optional[str] = None,
     seconds = expression.duration_s
     return merge(plan, stage, expression.emotion, expression.gesture, held_face(expression.face, seconds),
                  hold_ms(seconds))
+
+
+def show_plan(expression: Optional[Expression]) -> Optional[ExpressionPlan]:
+    """Лицо команды вне хода робота (пульт агента чата, #4040): тот же план, что у итога ``done`` (:func:`stage_plan`:
+    сцена, жест, сцена лица LLM, время показа), но без earcon'а «готово» - хода у робота нет, звенеть нечему."""
+    plan = stage_plan("done", None, expression)
+    return replace(plan, earcon="") if plan is not None else None
 
 
 def show_queue(stage: str, expression: Optional[Expression]) -> Tuple[Tuple[float, ExpressionPlan], ...]:
@@ -261,11 +270,28 @@ class V2Ports:
             held = f" ttl_ms={plan.ttl_ms}" if expression.duration_s is not None else ""
             self._log(f"🎭 [turn-v2] лицо команды на {stage}: emotion={plan.emotion} gesture={plan.gesture or '-'} "
                       f"face={'llm' if plan.face else '-'}{held} turn={turn_id}")
+        self._express(turn_id, epoch, plan, show_queue(stage, expression))
+
+    def show(self, turn_id: str, epoch: int, expression: Expression) -> None:
+        """Лицо команды без стадии хода (пульт агента чата, #4040, ``dialog_node.RobotRemote``): сцена и очередь пачки
+        ``play_animation`` — как на итоге ``done`` (:func:`show_plan`), но ``TurnEvent`` нет: хода у робота нет, кольцо
+        и метрики хода не трогаются. Недопоказанную очередь прошлого хода снимает, как любая новая стадия. Строка лога
+        своя (``лицо пульта``): разбор марафона считает «лицо команды на done» ответом хода Личности."""
+        self._drop_queue("show", turn_id)
+        plan = show_plan(expression)
+        if plan is not None:
+            self._log(f"🎭 [turn-v2] лицо пульта чата: emotion={plan.emotion} gesture={plan.gesture or '-'} "
+                      f"face={'llm' if plan.face else '-'} ttl_ms={plan.ttl_ms} turn={turn_id}")
+        self._express(turn_id, epoch, plan, show_queue("done", expression))
+
+    def _express(self, turn_id: str, epoch: int, plan: Optional[ExpressionPlan],
+                 shows: Sequence[Tuple[float, ExpressionPlan]]) -> None:
+        """План лица — ``ExpressionRequest``, сцены пачки — в очередь за ним."""
         if plan is not None:
             expression_client.express(self._node, turn_id=turn_id, epoch=epoch, agent=self._agent,
                                       emotion=plan.emotion, gesture=plan.gesture, earcon=plan.earcon, face=plan.face,
                                       ttl_ms=plan.ttl_ms)
-        self._queue_shows(turn_id, epoch, show_queue(stage, expression))
+        self._queue_shows(turn_id, epoch, shows)
 
     def _queue_shows(self, turn_id: str, epoch: int, shows: Sequence[Tuple[float, ExpressionPlan]]) -> None:
         """Сцены пачки — таймерами в свой срок (строка ``🎭 [turn-v2] очередь лица`` для живой проверки)."""
@@ -349,4 +375,4 @@ def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt_dir: Any,
 
 
 __all__ = ["CallCounter", "Counted", "EMPTY", "V2Ports", "assemble_llm", "command_providers", "counted_wrapper",
-           "follow_for", "show_queue", "stage_plan", "to_message", "to_result", "tool_schema"]
+           "follow_for", "show_plan", "show_queue", "stage_plan", "to_message", "to_result", "tool_schema"]
