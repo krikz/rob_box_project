@@ -91,7 +91,7 @@ class Line:
     @property
     def tts_text(self) -> str:
         """Что синтезировать: отданный текст (пред-синтез и звучание — одним текстом) или исходный."""
-        return self.speak or breaks_to_newlines(self.text)  # <br/> в синтез не уходит (#3924)
+        return self.speak or breaks_to_newlines(self.text)  # <br/> в синтез не уходит
 
     def length_s(self, rate: SpeechRate) -> float:
         """Длительность: синтезированная или оценка по скорости речи."""

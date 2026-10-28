@@ -4,7 +4,7 @@
 ``phrases/ru.yaml`` по ключу ``{класс}.{статус}[.{причина}]`` (или особому ключу тула, ``knowledge.TOOL_PHRASES``),
 :func:`join` собирает фразы нескольких действий хода в одну реплику. ``query`` с ``done`` фразы не даёт: данные
 уходят обратно LLM. Провал (:func:`failed`) грустит; отказ тула, который - вопрос человеку (:func:`asks`,
-``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал (#4062); эмоция фразы об исходах - :func:`outcome_emotion`.
+``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал; эмоция фразы об исходах - :func:`outcome_emotion`.
 """
 
 from __future__ import annotations
@@ -38,20 +38,20 @@ class ActionResult:
 
 
 def asks(result: ActionResult) -> bool:
-    """Отказ тула - вопрос человеку (``knowledge.TOOL_QUESTIONS``, #4062): «Удалить «X»? Скажи «да, удаляй».» -
+    """Отказ тула - вопрос человеку (``knowledge.TOOL_QUESTIONS``): «Удалить «X»? Скажи «да, удаляй».» -
     ничего не провалилось, тул ждёт ответа."""
     return result.status == "rejected" and (result.tool, result.reason) in kn.TOOL_QUESTIONS
 
 
 def failed(result: ActionResult) -> bool:
     """Исход - провал (``rejected``/``timeout``): фраза о нём грустит, лицо команды его не красит (§5.5.1). Вопрос
-    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad`` (#4062)."""
+    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad``."""
     return result.status in _FAILED and not asks(result)
 
 
 def outcome_emotion(results: Sequence[ActionResult], default: Optional[str] = None) -> Optional[str]:
-    """Эмоция фразы кода об исходах - одно правило для всех путей хода (#4062): провал - ``sad``; вопрос тула -
-    эмоция вопроса (``ToolQuestion.emotion``: не грусть провала и не настроение модели, ревью PR #4100); иначе
+    """Эмоция фразы кода об исходах - одно правило для всех путей хода: провал - ``sad``; вопрос тула -
+    эмоция вопроса (``ToolQuestion.emotion``: не грусть провала и не настроение модели); иначе
     ``default`` (лицо команды модели или ``None``)."""
     if any(failed(r) for r in results):
         return "sad"
@@ -61,7 +61,7 @@ def outcome_emotion(results: Sequence[ActionResult], default: Optional[str] = No
 
 def classed(result: ActionResult, args: Mapping[str, Any]) -> ActionResult:
     """Результат с классом ВЫЗОВА (``knowledge.call_class``): исполнитель клеит класс тула, а класс ``music_library``
-    зависит от ``action`` (#4020) - list/search/info это ``query`` (данные идут LLM), а не «Включаю музыку.».
+    зависит от ``action`` - list/search/info это ``query`` (данные идут LLM), а не «Включаю музыку.».
     ``args`` - аргументы вызова (для позднего исхода - данные результата: аргументы лежат в них поверх ответа тула)."""
     cls = kn.call_class(result.tool, args)
     return result if cls == result.cls else replace(result, cls=cls)
@@ -76,7 +76,7 @@ def _stops_music(result: ActionResult) -> bool:
 
 
 def reconcile_stops(stopped: bool, results: Sequence[ActionResult]) -> Tuple[bool, Tuple[ActionResult, ...]]:
-    """Исходы стопа музыки по ходу целиком, а не по одному тулу (#4173, ADR-0148: фраза об исходе - правда о ходе).
+    """Исходы стопа музыки по ходу целиком, а не по одному тулу (ADR-0148: фраза об исходе - правда о ходе).
     ``stopped`` - музыку в этом ходе уже выключил стоп прошлого вызова; результаты - по порядку вызовов. Стоп, что
     застал тишину (``was_playing=False``) после стопа этого же хода, - не «ничего не играет»: музыку выключил ход, и
     результату ставится ``knowledge.STOPPED_EARLIER_FIELD`` (фраза «Выключил музыку.»). Первый стоп хода, заставший
@@ -111,7 +111,7 @@ def _imitation_key(result: ActionResult) -> Optional[str]:
 def phrase_key(result: ActionResult) -> Optional[str]:
     """Ключ фразы результата или ``None``, если о таком исходе шаблон не говорит (``query.done`` — речь LLM;
     успех молчаливого действия ``knowledge.SILENT_DONE_TOOLS`` — звук сам себе доказательство, кроме звукоподражания;
-    исход с причиной из ``knowledge.VOICED_BY_OTHER_REASONS`` — о нём говорит другой результат команды, #4054: факт-имя
+    исход с причиной из ``knowledge.VOICED_BY_OTHER_REASONS`` — о нём говорит другой результат команды: факт-имя
     и ``register_speaker``). Фраза берётся из РЕЗУЛЬТАТА, а не из класса тула (ADR-0148): ``stop_music`` при
     ``was_playing=False`` - «ничего не играет», а не «Выключил музыку»; действия ``music_library`` - свои фразы
     (``knowledge.TOOL_PHRASES``)."""
@@ -131,7 +131,7 @@ def phrase_key(result: ActionResult) -> Optional[str]:
 def _phrase_reason(result: ActionResult) -> Optional[str]:
     """Причина для ключа фразы: ``no_person`` агента без собеседника-голоса (чат Telegram, ТАРС - не
     ``knowledge.PERSON_AGENTS``) - своя, ``knowledge.NO_PERSON_UNVOICED_REASON``: «Не узнаю твой голос» им неправда,
-    их голос никто не узнаёт (ревью PR #4121). Остальные - причина результата как есть."""
+    их голос никто не узнаёт. Остальные - причина результата как есть."""
     if result.reason == kn.NO_PERSON_REASON and result.agent not in kn.PERSON_AGENTS:
         return kn.NO_PERSON_UNVOICED_REASON
     return result.reason
@@ -148,9 +148,9 @@ def _slots(result: ActionResult) -> Mapping[str, Any]:
 
 
 def _owner_text(result: ActionResult) -> Tuple[str, str]:
-    """``(whole, note)`` — фраза кода владельца из данных успешного исхода (``knowledge.OUTCOME_OWNER_TEXT``, #4090).
+    """``(whole, note)`` — фраза кода владельца из данных успешного исхода (``knowledge.OUTCOME_OWNER_TEXT``).
     Пусто, когда об исходе говорит таблица диалога по данным (``knowledge.TOOL_PHRASES``: «песня пишется» —
-    ``knowledge.GEN_WAIT``, #4104): её фраза — единственная об этом факте, владелец её не подменяет и не дополняет."""
+    ``knowledge.GEN_WAIT``): её фраза — единственная об этом факте, владелец её не подменяет и не дополняет."""
     fields = kn.OUTCOME_OWNER_TEXT.get(result.tool)
     if result.status != "done" or fields is None or _tool_key(result) is not None:
         return "", ""
@@ -173,7 +173,7 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
 
 
 def quiet_in_performance(result: ActionResult) -> bool:
-    """Успех запуска музыки, который при идущем выступлении молчит (``knowledge.QUIET_IN_PERFORMANCE_KEYS``, #4075):
+    """Успех запуска музыки, который при идущем выступлении молчит (``knowledge.QUIET_IN_PERFORMANCE_KEYS``):
     общая фраза класса «Включаю музыку.» поверх рэпа - шум, а не исход. Решает ключ фразы результата: ожидание
     генерации и стоп (фразы по данным) и любой провал остаются."""
     return result.status == "done" and phrase_key(result) in kn.QUIET_IN_PERFORMANCE_KEYS
@@ -183,8 +183,8 @@ def audible(results: Sequence[ActionResult], speaks: bool, performing: bool = Fa
     """Исходы к озвучке. Звучит речь модели рядом с тихими действиями (``knowledge.QUIET_WITH_SPEECH_TOOLS``) - их
     простой успех (``done`` без причины) молчит: «Запомнил тебя, Борис» поверх «Приятно познакомиться, Борис» -
     две реплики об одном. Провал и успех с причиной (``already_known``, ``renamed``: исход не тот, что мог
-    подразумевать ответ модели) остаются: слова модели не выдают несделанное за сделанное (Шифу 23.10, #3953).
-    Идёт выступление (``performing``) - общий успех запуска музыки молчит (:func:`quiet_in_performance`, #4075)."""
+    подразумевать ответ модели) остаются: слова модели не выдают несделанное за сделанное (Шифу 23.10).
+    Идёт выступление (``performing``) - общий успех запуска музыки молчит (:func:`quiet_in_performance`)."""
     if not speaks and not performing:
         return results
     return [r for r in results
