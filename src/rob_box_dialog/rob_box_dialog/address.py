@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.heard import repair
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
 from rob_box_dialog.speaker_adapter import answer_to_greeting, answer_to_question, attributed_person, in_reply_window
@@ -71,6 +72,9 @@ class Addressed:
     #: целое не Tier-1 или спорно: перед вейком эхо речи робота (n811 27.10: «четыре недели робот хватит читать…» —
     #: спорный стоп). Модель видит ``text`` целиком. «» — команда и есть ``text``.
     command: str = ""
+    #: Починки STT по закрытой таблице (``heard.repair``, #4017): «что было» → «что стало» для строки лога хода;
+    #: ``text`` и ``command`` уже починены.
+    stt_fixes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,11 +170,14 @@ def decide_in_session(heard: Heard, backlog: Optional[Backlog], wake_words: Sequ
 
 def _woken(rest: str, heard: Heard, backlog: Optional[Backlog], command: str = "") -> Addressed:
     """Вейк со словами — ход с фразой и фоновой фразой того же собеседника (§7.3, #3894); голый — подхват (В12).
-    ``command`` — команда после вейка для Tier-1 (``Addressed.command``)."""
+    ``command`` — команда после вейка для Tier-1 (``Addressed.command``). Начало фразы и команды чинится по таблице
+    известных искажений STT (``heard.repair``, #4017) — до Tier-1 и до модели."""
     if not is_bare(rest):
+        said, after_wake = repair(rest), repair(command)
         recent = backlog.recent_unaddressed(heard) if backlog is not None else None
         since = backlog.background_since_reply(heard) if backlog is not None else []
-        return Addressed(rest, VOICE, recent=(recent,) if recent else (), background=tuple(since), command=command)
+        return Addressed(said.text, VOICE, recent=(recent,) if recent else (), background=tuple(since),
+                         command=after_wake.text, stt_fixes=said.fixes + after_wake.fixes)
     taken = backlog.pickup(heard) if backlog is not None else []
     if not taken:
         return Addressed("", BARE_WAKE)
