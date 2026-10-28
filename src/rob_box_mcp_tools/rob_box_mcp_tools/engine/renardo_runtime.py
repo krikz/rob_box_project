@@ -32,6 +32,7 @@ from rob_box_voice.core.sc_only_custom_synthdefs import (
     register_sc_only_custom_synthdefs,
 )
 
+from . import master_gain as gain_confirm
 from . import renardo_adapter
 
 #: Синты, которые проверяются ``/s_new`` после прелоада и досылаются, если пропали (live 12.08, 30.08: синт
@@ -372,17 +373,46 @@ class RenardoRuntime:
         """Текущий уровень мастер-фейдера (0.0–1.0), #3125."""
         return self._master_gain
 
-    def set_master_gain(self, gain: float) -> float:
-        """``/n_set 999 gain <v>`` — единственная ручка громкости музыки под речь (#986, #3125).
+    def _osc_exchange(self, calls: Any, timeout: float, is_final: Callable[[bytes], bool]) -> list:
+        """Транспорт :mod:`.master_gain`: сообщения подряд с одного сокета, ответы - до окончательного или таймаута.
 
-        Фейдер стоит после динамики ``masterfilter`` и сглажен ``Lag`` — без щелчка. Узла нет (образ без
-        ``masterfilter``) — scsynth ответит ``/fail``, музыка играет без фейдера. Возвращает применённое значение.
+        Свой сокет, а не ``send_osc``: ``/fail`` на запрос громкости - отказ громкости, а не трека, поэтому владельцу
+        плеера (``osc_fail_listener``) он не уходит. ``OSError`` (включая ``ECONNREFUSED`` при мёртвом scsynth) наружу.
         """
-        self._master_gain = max(0.0, min(1.0, float(gain)))
-        try:
-            self.send_osc("/n_set", self.MASTER_NODE, "gain", self._master_gain)
-        except OSError as exc:
-            self._log("warning", f"⚠️ [music] master gain не применён: {exc}")
+        replies: list = []
+        deadline = time.monotonic() + timeout
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for call in calls:
+                sock.sendto(osc_message(*call), (self.SC_HOST, self.SC_PORT))
+            while (left := deadline - time.monotonic()) > 0:
+                sock.settimeout(left)
+                try:
+                    data, _ = sock.recvfrom(4096)
+                except socket.timeout:
+                    break
+                replies.append(data)
+                if is_final(data):
+                    break
+        return replies
+
+    def apply_master_gain(self, gain: float) -> gain_confirm.GainOutcome:
+        """``/n_set 999 gain <v>`` с подтверждением сервера (``/s_get``, #3790): исход явный, не «отправили».
+
+        ``master_gain`` меняется только на то, что подтвердил сервер; отказ и тишина оставляют прежнее значение -
+        состояние не врёт о фейдере, который не сдвинулся.
+        """
+        outcome = gain_confirm.confirm_gain(self._osc_exchange, self.MASTER_NODE, max(0.0, min(1.0, float(gain))))
+        if outcome.confirmed is not None:
+            self._master_gain = outcome.confirmed
+        if not outcome.applied:
+            self._log("warning", f"⚠️ [music] master gain {outcome.requested:.2f} не применён: {outcome.status}"
+                                 f"/{outcome.reason} {outcome.detail}".rstrip())
+        return outcome
+
+    def set_master_gain(self, gain: float) -> float:
+        """Старт и прочие вызовы без разбора исхода: :meth:`apply_master_gain`; возвращает уровень, который сейчас
+        подтверждён (при отказе - прежний, не заказанный). Тул громкости зовёт :meth:`apply_master_gain`."""
+        self.apply_master_gain(gain)
         return self._master_gain
 
 
