@@ -361,14 +361,6 @@
       "how": "play",
       "run": "40477457939"
     },
-    "n309_bg_command_valera": {
-      "voice": "filipp",
-      "chars": 68,
-      "text_sha1": "a978a178d7d3",
-      "eq_s": 7.48,
-      "how": "play",
-      "run": "40477457939"
-    },
     "n310_execute_backlog_lru": {
       "voice": "anton",
       "chars": 6,
@@ -688,14 +680,6 @@
       "eq_s": 5.09,
       "how": "play",
       "run": "40475565313"
-    },
-    "n707_gen_track_info": {
-      "voice": "anton",
-      "chars": 64,
-      "text_sha1": "0efab8fed9a9",
-      "eq_s": 9.27,
-      "how": "play",
-      "run": "40482613938"
     },
     "n708_gen_play": {
       "voice": "anton",
