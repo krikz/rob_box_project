@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Замер «кто понимает фразу»: код по словам или модель (карточка #4163, этап 1).
+"""Замер «кто понимает фразу»: код по словам или модель (карточка #4163, этапы 1-2).
 
-    python scripts/dialog/understanding_measure.py --variants A,B --runs 1 --budget 800 --out ./out        # DeepSeek
+    python scripts/dialog/understanding_measure.py --variants A,C --parts 1,2,3,4 --runs 3 --budget 4000 --out ./out
     python scripts/dialog/understanding_measure.py --variants A,B,C --fake oracle --out ./out              # без ключа
     python scripts/dialog/understanding_measure.py --variants A --live-dir tests/e2e/_artifacts/night_20261028_092532
 
-Корпус - ``understanding_corpus/marathon.json`` (часть 1, заморожен коммитом, хеш сверяется при загрузке). Каждый
-вариант (``understanding_variants``: A - как сейчас, B - понимает модель, C - понимает Jev) проходит корпус N раз на своём
-стенде, акты по порядку, как живой марафон: 90 оцениваемых текстовых шагов и 42 акустических как контекст состояния.
-Вердикт шага - только ``dry_marathon.check_step`` (``e2e_tool_match.step_verdict`` / ``patterns_missing``): второй
-реализации правил здесь нет. Упал стенд или судья - «не оценено», не FAIL. Метрики 1-6 карточки - ``understanding_metrics``.
+Корпус - ``understanding_corpus/``: часть 1 - фразы марафона (``marathon.json``), части 2-4 - другие тексты тех же шагов
+(перефразы, реальные искажения STT, английский; :mod:`alternatives`). Все части заморожены коммитом, хеши сверяются
+при загрузке. Каждый вариант (``understanding_variants``: A - как сейчас, B - понимает модель, C - понимает Jev) проходит
+каждую часть N раз на свежем стенде, акты по порядку, как живой марафон. В частях 2-4 у оцениваемого шага с
+альтернативой текст заменён (прогон ``r`` - альтернатива ``((r - 1) mod K) + 1``), ожидание шага то же; остальные шаги
+идут исходным текстом как контекст и в метрику части не входят.
 
-``--budget`` - потолок вызовов LLM на ВСЕ варианты прогона (делится поровну между оставшимися вариантами: каждому не
-больше (остаток) / (сколько вариантов ещё ждёт)); вариант C сверх того считает вызовы Jev отдельно (``--jev-budget``).
-``--fake oracle|blind`` - фейковый провайдер вместо DeepSeek: проверка обвязки, а не качества (oracle отвечает по
-ожиданиям шага, blind - всегда «Не знаю.»). Ключи берутся из ``scripts/dialogue/.env`` и окружения; значения не
-печатаются и в отчёт не попадают.
+Вердикт шага - только ``dry_marathon.check_step`` (``e2e_tool_match.step_verdict`` / ``patterns_missing``): второй
+реализации правил здесь нет. Упал стенд или судья - «не оценено», не FAIL. Метрики 1-6 карточки -
+``understanding_metrics``, отчёт и правило решения - ``understanding_report``.
+
+Бюджет. ``--budget`` - потолок вызовов LLM на ВЕСЬ прогон. Порядок - «прогон 1 всех частей, потом прогон 2…», внутри -
+варианты подряд на одних текстах (слот). Слот запускается, только если остатка хватит всем его вариантам по самому
+дорогому уже сделанному проходу; иначе весь слот ``NOT_RUN`` (это видно в отчёте). Внутри слота остаток делится
+поровну между вариантами: варианты одного слота в равных условиях. Вызовы Jev (вариант C) - отдельный общий потолок
+``--jev-budget`` на весь прогон. ``--fake oracle|blind`` - фейковый провайдер вместо DeepSeek: проверка обвязки, а не
+качества. Ключи берутся из ``scripts/dialogue/.env`` и окружения; значения не печатаются и в отчёт не попадают.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,25 +42,24 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE / "understanding_corpus"))
 
+import alternatives as alt  # noqa: E402
 import build_marathon  # noqa: E402
 import dry_marathon as dm  # noqa: E402
 import jev_router  # noqa: E402
 import live_compare  # noqa: E402
 import understanding_metrics as um  # noqa: E402
+import understanding_report as ur  # noqa: E402
 import understanding_variants as uv  # noqa: E402
 from dry_stand import REPO, DryStand, new_workdir  # noqa: E402
 from env_files import load_env_files  # noqa: E402
 from rob_box_dialog import knowledge as kn  # noqa: E402
 from rob_box_dialog.words import strip_wake_word  # noqa: E402
+from understanding_report import (MAX_LATENCY_GROWTH_S, MAX_LIVE_DISAGREE, MAX_PASS_DROP_PP,  # noqa: E402,F401
+                                  decision_rule, render)
 
 CORPUS = _HERE / "understanding_corpus" / "marathon.json"
 ENV_FILES = (REPO / "scripts" / "dialogue" / ".env", REPO / ".env")
-#: Решение Шифу 28.10: B принимаем, если на фразах марафона он хуже A не больше чем на 3 п.п.
-MAX_PASS_DROP_PP = 3.0
-#: Решение Шифу 28.10 (Telegram, 17:34 UTC): «до 3-х секунд» - медиана хода варианта растёт относительно A не больше X с.
-MAX_LATENCY_GROWTH_S = 3.0
-#: Допуск расхождения вердиктов A с живым марафоном (поручение координатора): больше - B как вывод не подаётся.
-MAX_LIVE_DISAGREE = 0.10
+DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
 
 Run = Dict[str, List[dm.StepReport]]
 
@@ -87,6 +93,28 @@ def corpus_acts(corpus: Dict[str, Any], acts: Sequence[str] = (), only: Sequence
     return out
 
 
+def load_parts(base: Dict[str, Any], parts: Sequence[int]) -> Dict[int, Dict[str, Any]]:
+    """Части 2-4 из ``understanding_corpus`` (часть 1 - сам ``base``); неизвестная часть - громкий отказ."""
+    unknown = [p for p in parts if p != 1 and p not in alt.PARTS]
+    if unknown:
+        raise SystemExit(f"--parts: неизвестные части {unknown}; есть 1, {', '.join(map(str, alt.PARTS))}")
+    return {p: alt.load_part(p, base) for p in parts if p != 1}
+
+
+def part_view(base: Dict[str, Any], loaded: Dict[int, Dict[str, Any]], part: int, run: int) -> Dict[str, Any]:
+    """Корпус прогона ``run`` части: часть 1 как есть, части 2-4 - с подставленными альтернативами."""
+    return base if part == 1 else alt.part_corpus(base, loaded[part]["alternatives"], run)
+
+
+def corpus_meta(base: Dict[str, Any], loaded: Dict[int, Dict[str, Any]], parts: Sequence[int]) -> List[Dict[str, Any]]:
+    out = []
+    for p in parts:
+        data = base if p == 1 else loaded[p]
+        out.append({"part": p, "title": alt.TITLES[p], "name": data["name"], "sha256": data["corpus_sha256"],
+                    "counts": data["counts"]})
+    return out
+
+
 # ── Фейковый провайдер (проверка обвязки) ─────────────────────────────────────────────────────────────────────────
 
 #: Аргументы тулов, которых ждут шаги корпуса и у которых есть обязательные поля: фейк-oracle подставляет их по таблице.
@@ -101,11 +129,13 @@ ORACLE_ARGS: Dict[str, Dict[str, Any]] = {
 
 
 class Oracle:
-    """Знание фейка: реплика → шаг корпуса (по тексту после вейка); отвечает по ожиданиям шага, а не «понимает»."""
+    """Знание фейка: реплика → шаг корпуса (по тексту после вейка, в том числе по текстам альтернатив частей 2-4);
+    отвечает по ожиданиям шага, а не «понимает»."""
 
-    def __init__(self, corpus: Dict[str, Any], wake: Sequence[str]) -> None:
-        self._by_text = {strip_wake_word(s["step"]["text"], list(wake)): s for a in corpus["acts"]
-                         for s in a["steps"]}
+    def __init__(self, corpus: Dict[str, Any], wake: Sequence[str],
+                 extra: Sequence[Tuple[str, Dict[str, Any]]] = ()) -> None:
+        pairs = [(s["step"]["text"], s) for a in corpus["acts"] for s in a["steps"]] + list(extra)
+        self._by_text = {strip_wake_word(text, list(wake)): entry for text, entry in pairs}
 
     def step(self, text: str) -> Optional[Dict[str, Any]]:
         hits = [k for k in self._by_text if k and k in text]
@@ -114,6 +144,13 @@ class Oracle:
     def keywords(self, entry: Optional[Dict[str, Any]]) -> str:
         acc = (entry["step"].get("acceptance") or {}) if entry else {}
         return " ".join(acc.get("expected_keywords") or []) or "Хорошо."
+
+
+def alternative_texts(base: Dict[str, Any], loaded: Dict[int, Dict[str, Any]]) -> List[Tuple[str, Dict[str, Any]]]:
+    """Тексты альтернатив всех загруженных частей с записью шага части 1 - для фейка-oracle."""
+    index = corpus_index(base)
+    return [(row["text"], index[sid]) for data in loaded.values() for sid, rows in data["alternatives"].items()
+            for row in rows]
 
 
 def oracle_rule(oracle: Oracle, blind: bool) -> Callable[[List[Any], List[str]], Dict[str, Any]]:
@@ -180,6 +217,15 @@ def fake_stand(rule: Callable[[List[Any], List[str]], Dict[str, Any]], workdir: 
 
 
 @dataclass
+class Slot:
+    """Один проход марафона: прогон ``run`` части ``part`` - его делают все варианты на одних текстах."""
+
+    run: int
+    part: int
+    acts: List[dm.Act]
+
+
+@dataclass
 class VariantRun:
     variant: str
     run: int
@@ -189,6 +235,8 @@ class VariantRun:
     router: Optional[Dict[str, Any]] = None
     cap: int = 0
     notes: List[str] = field(default_factory=list)
+    part: int = 1
+    skipped: bool = False
 
 
 StandFactory = Callable[[str], Tuple[DryStand, Any]]
@@ -205,12 +253,13 @@ def real_factory(args: argparse.Namespace, jev: Optional[Callable[[], Any]]) -> 
     return make
 
 
-def fake_factory(corpus: Dict[str, Any], blind: bool) -> StandFactory:
+def fake_factory(corpus: Dict[str, Any], blind: bool,
+                 extra: Sequence[Tuple[str, Dict[str, Any]]] = ()) -> StandFactory:
     def make(variant: str) -> Tuple[DryStand, Any]:
         from dry_stand import WAKE_WORDS_YAML  # noqa: PLC0415
         from rob_box_dialog.address import wake_words  # noqa: PLC0415
 
-        oracle = Oracle(corpus, wake_words(str(WAKE_WORDS_YAML))[0])
+        oracle = Oracle(corpus, wake_words(str(WAKE_WORDS_YAML))[0], extra)
         router = OracleRouter(oracle) if variant == uv.C else None
         return fake_stand(oracle_rule(oracle, blind), new_workdir("understanding_fake_"), variant, router), router
 
@@ -218,53 +267,89 @@ def fake_factory(corpus: Dict[str, Any], blind: bool) -> StandFactory:
 
 
 def jev_factory(args: argparse.Namespace) -> Callable[[], Any]:
-    """Классификатор Jev (ключ ``JEV_API_KEY`` из env). Нет ключа - громкий отказ, а не тихий срез B."""
+    """Классификатор Jev (ключ ``JEV_API_KEY`` из env). Нет ключа - громкий отказ, а не тихий срез B. Потолок вызовов
+    ``--jev-budget`` - общий на весь прогон: каждый новый роутер получает остаток после прошлых."""
     from rob_box_harness.decision import jev_from_env  # noqa: PLC0415
 
     provider = jev_from_env(timeout_s=jev_router.DEFAULT_TIMEOUT_S)
     if provider is None:
         raise SystemExit("вариант C: нет JEV_API_KEY (scripts/dialogue/.env или окружение)")
     spec = jev_router.load_spec(Path(args.jev_groups))
-    return lambda: jev_router.JevRouter(provider, spec, args.threshold, args.jev_budget)
+    made: List[jev_router.JevRouter] = []
+
+    def make() -> jev_router.JevRouter:
+        left = max(0, args.jev_budget - sum(r.calls for r in made))
+        made.append(jev_router.JevRouter(provider, spec, args.threshold, left))
+        return made[-1]
+
+    return make
 
 
-async def run_variant(variant: str, run_no: int, acts: Sequence[dm.Act], make: StandFactory, cap: int,
+async def run_variant(variant: str, slot: Slot, make: StandFactory, cap: int,
                       max_retries: Optional[int]) -> VariantRun:
-    """Один вариант, один прогон корпуса на свежем стенде; акты по порядку, состояние переходит между актами."""
+    """Один вариант, один проход марафона на свежем стенде; акты по порядку, состояние переходит между актами."""
     stand, router = make(variant)
     started = time.monotonic()
     run: Run = {}
     try:
-        for act, phase in zip(acts, dm.marathon_phases(acts)):  # режим e2e - как у раннера марафона (#3972)
+        for act, phase in zip(slot.acts, dm.marathon_phases(slot.acts)):  # режим e2e - как у раннера марафона (#3972)
             run[act.key] = await dm.run_act(stand, act, cap, max_retries, phase=phase)
-            print(f"-- {variant} прогон {run_no}, акт {act.key}: запросов LLM {stand.counter.calls}/{cap}", flush=True)
+            print(f"-- {variant} часть {slot.part} прогон {slot.run}, акт {act.key}: запросов LLM "
+                  f"{stand.counter.calls}/{cap}", flush=True)
     finally:
         calls = stand.counter.calls
         stand.close()
-    return VariantRun(variant, run_no, run, calls, time.monotonic() - started,
-                      router.stats() if router is not None else None, cap)
+    return VariantRun(variant, slot.run, run, calls, time.monotonic() - started,
+                      router.stats() if router is not None else None, cap, part=slot.part)
+
+
+def skipped_run(variant: str, slot: Slot, why: str) -> VariantRun:
+    """Проход, на который не хватило бюджета: все шаги ``NOT_RUN`` с причиной - видно в отчёте, а не пропадает."""
+    reports: Run = {}
+    for act in slot.acts:
+        reports[act.key] = []
+        for step in act.steps:
+            kind, reasons = dm.classify_step(step)
+            reports[act.key].append(dm.StepReport(act.key, step["label"], step["text"], kind, reasons,
+                                                  verdict=dm.NOT_RUN, fail=[why]))
+    return VariantRun(variant, slot.run, reports, 0, 0.0, None, 0, part=slot.part, skipped=True)
+
+
+async def run_plan(variants: Sequence[str], slots: Sequence[Slot], make: StandFactory, budget: int,
+                   max_retries: Optional[int]) -> List[VariantRun]:
+    """Слоты по порядку. Слот идёт, если остатка хватит всем вариантам по самому дорогому сделанному проходу (+ запас
+    шага); иначе весь слот ``NOT_RUN``. Внутри слота остаток делится поровну между вариантами (как в этапе 1)."""
+    spent, costliest, done = 0, 0, []
+    for slot in slots:
+        remaining = budget - spent
+        need = len(variants) * (costliest + dm.STEP_CALLS_RESERVE) if costliest else 1
+        if remaining < need:
+            why = f"бюджет LLM: проход не запущен (остаток {remaining} < {need} на {len(variants)} вариант(а))"
+            done += [skipped_run(v, slot, why) for v in variants]
+            continue
+        for n, variant in enumerate(variants):
+            cap = (budget - spent) // (len(variants) - n)
+            result = await run_variant(variant, slot, make, cap, max_retries)
+            spent += result.llm_calls
+            costliest = max(costliest, result.llm_calls)
+            done.append(result)
+    return done
+
+
+def plan_slots(base: Dict[str, Any], loaded: Dict[int, Dict[str, Any]], parts: Sequence[int], runs: int,
+               acts: Sequence[str] = (), only: Sequence[str] = ()) -> List[Slot]:
+    """Порядок проходов: прогон 1 всех частей, потом прогон 2… - кончился бюджет, теряются последние прогоны, а не части."""
+    return [Slot(r, p, corpus_acts(part_view(base, loaded, p, r), acts, only)) for r in range(1, runs + 1)
+            for p in parts]
 
 
 async def run_all(variants: Sequence[str], runs: int, acts: Sequence[dm.Act], make: StandFactory, budget: int,
                   max_retries: Optional[int]) -> List[VariantRun]:
-    """Все варианты × N прогонов. Бюджет делится по очереди: каждому прогону - остаток / число ждущих прогонов."""
-    plan = [(r, v) for r in range(1, runs + 1) for v in variants]
-    spent, done = 0, []
-    for n, (run_no, variant) in enumerate(plan):
-        cap = (budget - spent) // (len(plan) - n)
-        result = await run_variant(variant, run_no, acts, make, cap, max_retries)
-        spent += result.llm_calls
-        done.append(result)
-    return done
+    """Часть 1 (этап 1): N прогонов одних и тех же актов."""
+    return await run_plan(variants, [Slot(r, 1, list(acts)) for r in range(1, runs + 1)], make, budget, max_retries)
 
 
 # ── Отчёт ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-
-def step_record(act: str, report: dm.StepReport, entry: Dict[str, Any]) -> Dict[str, Any]:
-    return {"id": um.key(act, report), "kind": report.kind, "scored": entry["scored"], "verdict": report.verdict,
-            "first_verdict": report.first_verdict, "attempts": report.attempts, "fail": report.fail,
-            "tools": report.tools, "said": report.said, "llm_calls": report.llm_calls, "turns": report.turns}
 
 
 def price_line(stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -279,210 +364,59 @@ def price_line(stats: Dict[str, Any]) -> Dict[str, Any]:
     return {"usd": usd, "price_per_mtok_in_out": [price_in, price_out], "note": "PRICE_PER_MTOK jev_eval.py, НЕ СВЕРЕНО с тарифом"}
 
 
+def deepseek_balance() -> Optional[Dict[str, Any]]:
+    """Баланс аккаунта DeepSeek (``/user/balance``): ключ из env, наружу - только валюта и сумма. Сбой - ``None``."""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        return None
+    request = urllib.request.Request(DEEPSEEK_BALANCE_URL, headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310 — фиксированный https-адрес
+            info = json.loads(resp.read().decode("utf-8"))["balance_infos"][0]
+    except Exception:  # noqa: BLE001 — баланс справочный: нет ответа - так и пишем, прогон не роняем
+        return None
+    return {"currency": str(info.get("currency")), "total": float(info.get("total_balance"))}
+
+
+def deepseek_spend(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if before is None or after is None or before["currency"] != after["currency"]:
+        return {"before": before, "after": after, "spent": None, "note": "баланс не получен - цена не измерена"}
+    return {"before": f"{before['total']:.4f} {before['currency']}", "after": f"{after['total']:.4f} {after['currency']}",
+            "spent": f"{before['total'] - after['total']:.4f} {before['currency']}",
+            "note": "разница баланса аккаунта до и после прогона; ключ общий - в неё входят и чужие вызовы этого ключа"}
+
+
+def meta(corpus: List[Dict[str, Any]], args: argparse.Namespace, parts: Sequence[int],
+         results: Sequence[VariantRun]) -> Dict[str, Any]:
+    tokens = sum(t["tokens"] for r in results for reps in r.reports.values() for rep in reps for t in rep.turns)
+    return {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), "corpus": corpus,
+            "parts": list(parts), "variants": args.variants, "runs": args.runs, "budget": args.budget,
+            "jev_budget": args.jev_budget, "providers": "fake:" + args.fake if args.fake else args.providers,
+            "model": args.model or None, "fake": args.fake or None, "threshold": args.threshold,
+            "max_latency_growth_s": args.max_latency_growth_s,
+            "llm_calls_total": sum(r.llm_calls for r in results), "prompt_tokens_total": tokens,
+            "note": f"N={args.runs}, части {','.join(map(str, parts))}" + (
+                ", только корпус марафона (часть 1), предварительно" if list(parts) == [1] else ""),
+            "rotation": "Части 2-4: прогон r берёт альтернативу ((r-1) mod K)+1 шага (K - сколько их у шага). Поэтому "
+                        "устойчивость части 2 при K = N - тот же вердикт на РАЗНЫХ перефразах (шум модели и перефраз "
+                        "вместе), а не повтор одного текста; у частей 1 и 4 (K = 1) - повтор одного текста."}
+
+
 def build_report(results: Sequence[VariantRun], corpus: Dict[str, Any], args: argparse.Namespace,
-                 live: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    index = corpus_index(corpus)
-    variants: Dict[str, Any] = {}
-    for variant in dict.fromkeys(r.variant for r in results):
-        mine = [r for r in results if r.variant == variant]
-        metrics = um.variant_metrics([r.reports for r in mine], index)
-        items = [i for r in mine for i in um.scored_items(r.reports, index)]
-        entry: Dict[str, Any] = {"metrics": metrics, "llm_calls_total": sum(r.llm_calls for r in mine),
-                                 "elapsed_s": [round(r.elapsed_s, 1) for r in mine],
-                                 "caps": [r.cap for r in mine],
-                                 "runs": [[step_record(a, rep, index[um.key(a, rep)]) for a, reps in r.reports.items()
-                                           for rep in reps if um.key(a, rep) in index] for r in mine]}
-        if variant == uv.C:
-            routers = [r.router for r in mine if r.router]
-            jev = {k: sum(x[k] for x in routers) for k in ("calls", "errors", "input_tokens", "output_tokens")}
-            entry["jev"] = {**jev, "threshold": routers[0]["threshold"] if routers else None,
-                            "groups_file": str(Path(args.jev_groups).name), "price": price_line(jev),
-                            "route_agreement": um.route_agreement(items)}
-        variants[variant] = entry
-    report = {"meta": meta(corpus, args, results), "variants": variants,
-              "decision_rule": decision_rule(variants, args.max_latency_growth_s)}
-    if live is not None:
-        report["live"] = live
-    return report
-
-
-def meta(corpus: Dict[str, Any], args: argparse.Namespace, results: Sequence[VariantRun]) -> Dict[str, Any]:
-    return {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "corpus": {"name": corpus["name"], "sha256": corpus["corpus_sha256"], "counts": corpus["counts"]},
-            "variants": args.variants, "runs": args.runs, "budget": args.budget, "jev_budget": args.jev_budget,
-            "providers": "fake:" + args.fake if args.fake else args.providers, "model": args.model or None,
-            "fake": args.fake or None, "threshold": args.threshold, "max_latency_growth_s": args.max_latency_growth_s,
-            "note": f"N={args.runs}, только корпус марафона (часть 1), предварительно"}
-
-
-def _pp(a: Optional[float], b: Optional[float]) -> Optional[float]:
-    return None if a is None or b is None else (a - b) * 100.0
-
-
-def _growth_ms(mine: Optional[float], ref: Optional[float]) -> Optional[float]:
-    """Рост медианы хода варианта над A, мс; медианы нет хоть у одного - не измерено (``None``), а не «0 мс»."""
-    return None if mine is None or ref is None else mine - ref
-
-
-def decision_rule(variants: Dict[str, Any], max_latency_growth_s: float = MAX_LATENCY_GROWTH_S) -> Dict[str, Any]:
-    """Критерии «B принимаем» (карточка), заданные ДО прогона: что можно проверить на части 1, посчитано; остальное -
-    «не измерено». Медиана хода: рост над A не больше ``max_latency_growth_s`` (X Шифу 28.10) - ``True``, больше -
-    ``False``, медианы нет - ``None``. Вердикта «принимаем» здесь нет: решает Шифу по таблице."""
-    base = variants.get(uv.A)
-    out: Dict[str, Any] = {}
-    for name in (uv.B, uv.C):
-        if base is None or name not in variants:
-            continue
-        mine, ref = variants[name]["metrics"], base["metrics"]
-        drop = _pp(ref["pass"]["share"], mine["pass"]["share"])
-        d_lat = _growth_ms(mine["latency"]["median_ms"], ref["latency"]["median_ms"])
-        out[name] = {
-            "pass_drop_pp": drop, "pass_drop_ok": None if drop is None else drop <= MAX_PASS_DROP_PP,
-            "paraphrases_and_stt": "не измерено (этап 2)",
-            "danger_A_B": [ref["danger"]["total"], mine["danger"]["total"]],
-            "danger_ok": mine["danger"]["total"] <= ref["danger"]["total"],
-            "median_latency_growth_ms": d_lat, "median_latency_limit_s": max_latency_growth_s,
-            "median_latency_ok": None if d_lat is None else d_lat <= max_latency_growth_s * 1000.0}
-    return out
-
-
-# ── Markdown ──────────────────────────────────────────────────────────────────────────────────────────────────────
-
-
-def pct(value: Optional[float]) -> str:
-    return "n/a" if value is None else f"{value * 100:.1f} %"
-
-
-def num(value: Optional[float], digits: int = 0) -> str:
-    return "n/a" if value is None else f"{value:.{digits}f}"
-
-
-def signed_ms(value: Optional[float]) -> str:
-    return "n/a" if value is None else f"{value:+.0f} мс"
-
-
-def _row(label: str, variants: Dict[str, Any], cell: Callable[[Dict[str, Any]], str]) -> str:
-    return f"| {label} | " + " | ".join(cell(v) for v in variants.values()) + " |"
-
-
-def metrics_table(variants: Dict[str, Any]) -> List[str]:
-    heads = list(variants)
-    lines = ["| метрика | " + " | ".join(heads) + " |", "|---|" + "---|" * len(heads)]
-    m = lambda v: v["metrics"]  # noqa: E731
-    lines += [
-        _row("1. оцениваемых шагов (PASS / FAIL / не оценено / NOT_RUN)", variants, lambda v: "{} / {} / {} / {} / {}".format(
-            m(v)["pass"]["steps"], m(v)["pass"]["PASS"], m(v)["pass"]["FAIL"], m(v)["pass"]["NOT_EVALUATED"],
-            m(v)["pass"]["NOT_RUN"])),
-        _row("1. доля PASS (из PASS+FAIL)", variants, lambda v: pct(m(v)["pass"]["share"])),
-        _row("1. доля PASS с первой попытки", variants, lambda v: pct(m(v)["pass"]["first_attempt_share"])),
-        _row("2. опасных ошибок всего", variants, lambda v: str(m(v)["danger"]["total"])),
-    ]
-    for kind, label in (("false_stop", "ложный стоп"), ("motion_instead_of_look", "движение вместо взгляда"),
-                        ("delete_without_confirm", "удаление без подтверждения"),
-                        ("claimed_without_tool", "«сделал» без исполненного тула")):
-        lines.append(_row(f"2.  - {label}", variants, lambda v, k=kind: str(m(v)["danger"][k]["count"]) + (
-            "" if m(v)["danger"][k]["measurable"] else " (в корпусе не измеряется)")))
-    lines += [
-        _row("3. размер среза (медиана / p90 / макс), тулов", variants, lambda v: "{} / {} / {}".format(
-            num(m(v)["slice"]["size"]["median"]), num(m(v)["slice"]["size"]["p90"]), num(m(v)["slice"]["size"]["max"]))),
-        _row("3. ожидаемый тул: вызван / нет в срезе / мост добавил / в срезе, но выбран другой", variants,
-             lambda v: "{called} / {missing} / {rescued} / {wrong_choice}".format(**m(v)["slice"]["expected_tool_checks"])),
-        _row("4. время хода, мс (медиана / p90)", variants,
-             lambda v: f"{num(m(v)['latency']['median_ms'])} / {num(m(v)['latency']['p90_ms'])}"),
-        _row("4. доля ходов без LLM", variants, lambda v: pct(m(v)["latency"]["without_llm_share"])),
-        _row("5. вызовов LLM на ход", variants, lambda v: num(m(v)["llm"]["calls_per_turn"], 2)),
-        _row("5. токенов на ход с LLM", variants, lambda v: num(m(v)["llm"]["tokens_per_llm_turn"])
-             if m(v)["llm"]["tokens_reported"] else "n/a (провайдер не прислал usage)"),
-        _row("6. устойчивость (тот же вердикт во всех прогонах)", variants,
-             lambda v: pct(m(v)["stability"]["same_verdict_share"]) if m(v)["stability"]["same_verdict_share"] is not None
-             else m(v)["stability"]["note"]),
-        _row("вызовов LLM за прогон(ы), всего", variants, lambda v: str(v["llm_calls_total"])),
-    ]
-    return lines
-
-
-def act_table(variants: Dict[str, Any]) -> List[str]:
-    acts = list(dict.fromkeys(a for v in variants.values() for a in v["metrics"]["by_act"]))
-    heads = list(variants)
-    lines = ["| акт | " + " | ".join(f"{h}: PASS/FAIL" for h in heads) + " |", "|---|" + "---|" * len(heads)]
-    for act in acts:
-        cells = []
-        for v in variants.values():
-            row = v["metrics"]["by_act"].get(act)
-            cells.append(f"{row['PASS']}/{row['FAIL']}" if row else "-")
-        lines.append(f"| {act} | " + " | ".join(cells) + " |")
-    return lines
-
-
-def disagreements(variants: Dict[str, Any]) -> List[str]:
-    """Шаги, где вердикты вариантов разошлись (по первому прогону): что разное - то и надо читать глазами."""
-    base = list(variants)[0]
-    lines: List[str] = []
-    first = {name: {s["id"]: s for s in v["runs"][0] if s["scored"]} for name, v in variants.items()}
-    for item_id, step in first[base].items():
-        verdicts = {name: first[name].get(item_id, {}).get("verdict", "-") for name in variants}
-        if len(set(verdicts.values())) > 1:
-            why = "; ".join(f"{n}: {first[n][item_id]['fail'][0][:90]}" for n in variants
-                            if item_id in first[n] and first[n][item_id]["fail"])
-            lines.append(f"| {item_id} | " + " | ".join(verdicts.values()) + f" | {why} |")
-    head = ["| шаг | " + " | ".join(variants) + " | чем не прошёл |", "|---|" + "---|" * len(variants) + "---|"]
-    return head + lines if lines else ["(вердикты вариантов совпали на всех шагах)"]
-
-
-def render(report: Dict[str, Any]) -> str:
-    variants, meta_ = report["variants"], report["meta"]
-    out = [f"# Замер понимания фразы, этап 1 ({meta_['generated_utc']} UTC)", "",
-           f"Пометка: **{meta_['note']}**. Корпус `{meta_['corpus']['name']}` sha256 `{meta_['corpus']['sha256'][:12]}`: "
-           f"{meta_['corpus']['counts']}. Провайдер: {meta_['providers']}, варианты {meta_['variants']}, "
-           f"прогонов {meta_['runs']}, бюджет LLM {meta_['budget']}.", ""]
-    if meta_["fake"]:
-        out += [f"**Фейковый провайдер (`{meta_['fake']}`): проверка обвязки, цифры не характеризуют ни код, ни модель.**", ""]
-    out += ["## Метрики", "", *metrics_table(variants), "", "## По актам", "", *act_table(variants), ""]
-    out += ["## Где вердикты вариантов разошлись (прогон 1)", "", *disagreements(variants), ""]
-    out += ["## Опасные ошибки по шагам", ""]
-    for name, v in variants.items():
-        for kind, found in v["metrics"]["danger"].items():
-            if isinstance(found, dict) and found["count"]:
-                out.append(f"- {name} / {kind}: {', '.join(found['steps'])}")
-    out += ["", "## Правило решения Шифу (часть 1)", "",
-            f"Допуски (решения Шифу 28.10): потеря доли PASS против A - не больше {MAX_PASS_DROP_PP:g} п.п.; рост "
-            f"медианы хода против A - не больше {meta_['max_latency_growth_s']:g} с.", ""]
-    for name, rule in report["decision_rule"].items():
-        out.append(f"- {name} против A: потеря PASS {num(rule['pass_drop_pp'], 1)} п.п. (допуск {MAX_PASS_DROP_PP:g}: "
-                   f"{rule['pass_drop_ok']}); перефразы и искажения STT: {rule['paraphrases_and_stt']}; опасных A/{name}: "
-                   f"{rule['danger_A_B'][0]}/{rule['danger_A_B'][1]} ({rule['danger_ok']}); медиана хода "
-                   f"{signed_ms(rule['median_latency_growth_ms'])} (допуск {rule['median_latency_limit_s']:g} с: "
-                   f"{rule['median_latency_ok']}).")
-    for name, v in variants.items():
-        if "jev" in v:
-            j = v["jev"]
-            out += ["", f"## Jev (вариант {name}) - отдельная строка бюджета", "",
-                    f"- вызовов Jev: {j['calls']}, сбоев: {j['errors']}, токены вход/выход: {j['input_tokens']}/"
-                    f"{j['output_tokens']}, порог уверенности {j['threshold']}, файл описаний групп `{j['groups_file']}`;",
-                    f"- цена: {j['price']}; совпадение выбора Jev с группой ожидаемого тула: {j['route_agreement']}."]
-    if "live" in report:
-        out += ["", *render_live(report["live"])]
-    return "\n".join(out) + "\n"
-
-
-def render_live(live: Dict[str, Any]) -> List[str]:
-    cmp_ = live["compare"]
-    lines = [f"## Сверка A с живым марафоном ({live['dir']})", "",
-             f"- сравнено шагов: {cmp_['compared']}, расхождений: {cmp_['disagree']} ({pct(cmp_['share'])}; допуск "
-             f"{MAX_LIVE_DISAGREE * 100:.0f} %): {'в допуске' if live['within_tolerance'] else 'ВЫШЕ ДОПУСКА - B как вывод не подавать'};",
-             f"- живой FAIL, стенд PASS: {', '.join(cmp_['live_fail_dry_pass']) or '-'}; "
-             f"живой PASS, стенд FAIL: {', '.join(cmp_['live_pass_dry_fail']) or '-'}; "
-             f"не сравнено: {len(cmp_['skipped'])}.", ""]
-    rows = [r for r in cmp_["rows"] if not r["agree"]]
-    if rows:
-        lines += ["| шаг | живой | стенд A | живая строка |", "|---|---|---|---|"]
-        lines += [f"| {r['id']} | {r['live']} | {r['dry']} | {r['live_line'][:110]} |" for r in rows]
-    return lines
+                 live: Optional[Dict[str, Any]], loaded: Optional[Dict[int, Dict[str, Any]]] = None,
+                 deepseek: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    loaded = loaded or {}
+    parts = list(dict.fromkeys(r.part for r in results))
+    indexes = {p: corpus_index(part_view(corpus, loaded, p, 1)) for p in parts}
+    head = meta(corpus_meta(corpus, loaded, parts), args, parts, results)
+    if deepseek is not None:
+        head["deepseek"] = deepseek
+    return ur.build_report(results, indexes, head, live, Path(args.jev_groups).name, price_line)
 
 
 def live_section(results: Sequence[VariantRun], corpus: Dict[str, Any], directory: Path) -> Optional[Dict[str, Any]]:
-    """Вердикты A (первый прогон) против последних строк ``>>> STEP`` живого марафона по оцениваемым шагам."""
-    base = next((r for r in results if r.variant == uv.A), None)
+    """Вердикты A (первый прогон части 1) против последних строк ``>>> STEP`` живого марафона по оцениваемым шагам."""
+    base = next((r for r in results if r.variant == uv.A and r.part == 1 and not r.skipped), None)
     if base is None:
         return None
     index = corpus_index(corpus)
@@ -494,12 +428,12 @@ def live_section(results: Sequence[VariantRun], corpus: Dict[str, Any], director
 
 
 def write_out(out: Path, report: Dict[str, Any], results: Sequence[VariantRun]) -> None:
-    """report.json, report.md и сырые логи шагов ``logs/<вариант>_<прогон>/act<акт>_<метка>.log`` (в репозиторий не кладутся)."""
+    """report.json, report.md и сырые логи шагов ``logs/<вариант>[_p<часть>]_<прогон>/act<акт>_<метка>.log``."""
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     (out / "report.md").write_text(render(report), encoding="utf-8")
     for res in results:
-        folder = out / "logs" / f"{res.variant}_{res.run}"
+        folder = out / "logs" / (f"{res.variant}_{res.run}" if res.part == 1 else f"{res.variant}_p{res.part}_{res.run}")
         folder.mkdir(parents=True, exist_ok=True)
         for act, reports in res.reports.items():
             for rep in reports:
@@ -512,9 +446,11 @@ def write_out(out: Path, report: Dict[str, Any], results: Sequence[VariantRun]) 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--variants", default="A,B", help="варианты через запятую: A, B, Bn, C")
-    ap.add_argument("--runs", type=int, default=1, help="прогонов корпуса на вариант (N)")
-    ap.add_argument("--budget", type=int, default=800, help="потолок вызовов LLM на все варианты прогона")
-    ap.add_argument("--jev-budget", type=int, default=400, help="потолок вызовов Jev (вариант C), отдельно от LLM")
+    ap.add_argument("--parts", default="1", help="части корпуса через запятую: 1 - марафон, 2 - перефразы, "
+                                                 "3 - искажения STT, 4 - английский")
+    ap.add_argument("--runs", type=int, default=1, help="прогонов каждой части на вариант (N)")
+    ap.add_argument("--budget", type=int, default=800, help="потолок вызовов LLM на весь прогон")
+    ap.add_argument("--jev-budget", type=int, default=400, help="потолок вызовов Jev (вариант C) на весь прогон")
     ap.add_argument("--providers", default=os.environ.get("ROBBOX_LLM_PROVIDERS", "deepseek"))
     ap.add_argument("--model", default="", help="модель цепочки (по умолчанию - провайдера)")
     ap.add_argument("--fake", choices=("oracle", "blind"), default="", help="фейковый провайдер вместо настоящей LLM")
@@ -532,23 +468,30 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def split(value: str) -> List[str]:
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     for path, applied in load_env_files(ENV_FILES):
         print(f"env: {path.name} ({applied} перем.)")
     os.environ.setdefault("ROBOT_LLM_VERBOSE", "0")
-    variants = [uv.check(v.strip()) for v in args.variants.split(",") if v.strip()]
+    variants = [uv.check(v) for v in split(args.variants)]
+    parts = [int(p) for p in split(args.parts)]
     corpus = load_corpus()
-    acts = corpus_acts(corpus, [a.strip() for a in args.acts.split(",") if a.strip()],
-                       [s.strip() for s in args.only.split(",") if s.strip()])
+    loaded = load_parts(corpus, parts)
+    slots = plan_slots(corpus, loaded, parts, args.runs, split(args.acts), split(args.only))
     if args.fake:
-        make = fake_factory(corpus, args.fake == "blind")
+        make = fake_factory(corpus, args.fake == "blind", alternative_texts(corpus, loaded))
     else:
         make = real_factory(args, jev_factory(args) if uv.C in variants else None)
-    results = asyncio.run(run_all(variants, args.runs, acts, make, args.budget, args.max_retries))
+    before = None if args.fake else deepseek_balance()
+    results = asyncio.run(run_plan(variants, slots, make, args.budget, args.max_retries))
+    spend = None if args.fake else deepseek_spend(before, deepseek_balance())
     live = live_section(results, corpus, Path(args.live_dir)) if args.live_dir else None
-    report = build_report(results, corpus, args, live)
+    report = build_report(results, corpus, args, live, loaded, spend)
     print(render(report))
     if args.out:
         write_out(Path(args.out), report, results)

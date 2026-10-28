@@ -220,12 +220,13 @@ def args_for(**kw):
 def test_fake_run_produces_report_for_every_variant(corpus):
     results = run_fake(corpus, ["A", "B", "C"], 2, 400)
     report = um.build_report(results, corpus, args_for(variants="A,B,C", runs=2, fake="oracle"), None)
-    assert set(report["variants"]) == {"A", "B", "C"}
-    for variant in report["variants"].values():
+    part = report["parts"]["1"]
+    assert set(part["variants"]) == {"A", "B", "C"}
+    for variant in part["variants"].values():
         assert variant["metrics"]["pass"]["steps"] == 20 and len(variant["runs"]) == 2  # 10 оцениваемых × 2 прогона
         assert variant["metrics"]["stability"]["same_verdict_share"] == 1.0  # фейк детерминирован
-    assert report["variants"]["C"]["jev"]["calls"] > 0
-    assert set(report["decision_rule"]) == {"B", "C"}
+    assert part["variants"]["C"]["jev"]["calls"] > 0
+    assert set(part["decision_rule"]) == {"B", "C"}
     text = um.render(report)
     assert "Фейковый провайдер" in text and "N=2" in text and "| метрика | A | B | C |" in text
 
@@ -249,7 +250,7 @@ def test_report_json_roundtrip_and_logs_written(corpus, tmp_path):
     report = um.build_report(results, corpus, args_for(variants="A,B", fake="oracle"), None)
     um.write_out(tmp_path, report, results)
     loaded = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-    assert loaded["variants"]["B"]["metrics"]["pass"]["steps"] == 10
+    assert loaded["parts"]["1"]["variants"]["B"]["metrics"]["pass"]["steps"] == 10
     assert (tmp_path / "report.md").read_text(encoding="utf-8").startswith("# Замер понимания фразы")
     assert any((tmp_path / "logs" / "A_1").glob("act1_*.log"))
 
@@ -295,7 +296,7 @@ def test_report_md_prints_x_and_the_latency_verdict(corpus):
     text = um.render(report)
     assert report["meta"]["max_latency_growth_s"] == 2.5
     assert "рост медианы хода против A - не больше 2.5 с" in text
-    assert f"(допуск 2.5 с: {report['decision_rule']['B']['median_latency_ok']})" in text
+    assert f"(допуск 2.5 с: {report['parts']['1']['decision_rule']['B']['median_latency_ok']})" in text
     assert "X не задан" not in text
 
 
