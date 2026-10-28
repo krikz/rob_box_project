@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import socket
 import sys
 import threading
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rob_box_core import speech_client
+from rob_box_core import speech_client, tools_db
 from rob_box_core.msg_stub import install_dialog_msgs_stub
 
 M = install_dialog_msgs_stub()
@@ -61,7 +62,11 @@ class _Tools:
 
 
 @pytest.fixture()
-def node(monkeypatch):
+def node(monkeypatch, tmp_path):
+    # путь БД памяти инструментов нода берёт при старте (``rob_box_core.tools_db``): без env тест открывал бы настоящую
+    # ``/data/voice_memory.db`` хоста, где он идёт (на роботе - живые факты людей). Тест, что задал путь сам до ноды,
+    # его и получит.
+    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, os.environ.get(tools_db.TOOLS_DB_ENV) or str(tmp_path / "tools_isolated.db"))
     llm = _LLM([LLMResponse(content="Привет, я робот.")])
     chat_llm = _LLM([LLMResponse(content="Привет из чата.")])
     tools = _Tools()
@@ -102,6 +107,14 @@ def test_wiring_v2_topics_and_no_v1_dialogue_topics(node):
     for legacy in ("/voice/dialogue/response", "/voice/tts/request", "/dialogue/control", "/dialogue/control_ack"):
         assert legacy not in subs | pubs, legacy
     assert node.engine_flag == "v2"  # дефолт v2 (Шифу 23.10); параметр есть; какую ноду стартовать, решает launch по dialog_engine.yaml
+
+
+def test_node_fixture_never_points_the_facts_reader_at_the_host_voice_memory_db(request, monkeypatch, tmp_path):
+    """Хвост ревью #4131: фикстура ``node`` не открывает настоящую ``/data/voice_memory.db`` хоста, где идут тесты."""
+    monkeypatch.delenv(tools_db.TOOLS_DB_ENV, raising=False)
+    made = request.getfixturevalue("node")
+    assert made._speaker_memory._facts_db == str(tmp_path / "tools_isolated.db")
+    assert made._speaker_memory._facts_db != tools_db.TOOLS_DB_DEFAULT
 
 
 def test_addressed_utterance_runs_turn_and_speaks(node):

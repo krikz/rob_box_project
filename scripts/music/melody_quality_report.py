@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import List
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-for _pkg in ("rob_box_mcp_tools", "rob_box_music", "rob_box_voice"):
+for _pkg in ("rob_box_core", "rob_box_mcp_tools", "rob_box_music", "rob_box_voice"):
     if str(_REPO_ROOT / "src" / _pkg) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT / "src" / _pkg))
 
