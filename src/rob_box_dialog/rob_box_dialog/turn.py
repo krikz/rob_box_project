@@ -93,7 +93,7 @@ from rob_box_dialog.heard import HEARD_MARK
 from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls, stops_music
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
-from rob_box_dialog.speaker_adapter import recognition_reply, speaker_block
+from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
 from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
@@ -207,6 +207,7 @@ class _Turn:
     command: str = ""  # запасной разбор Tier-1 (:func:`tier1_of`): слова после вейка (``Addressed.command``, n811)
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется (#4069 п.1)
     sad: bool = False  # прозвучала грустная фраза (провал, отказ): лицо итога без лица команды - грусть (#4069 п.8)
+    utterance_id: str = ""  # фраза STT хода (``Addressed.utterance_id``): по ней - её SpeakerResult (#4141)
 
 
 def picked_heard(addressed: Addressed) -> Tuple[Tuple[str, str], ...]:
@@ -349,6 +350,15 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
 #: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``; не пение, а
 #: правка играющей музыки — ``edit:<вид>+…`` (#4029, ``rob_box_music.track_edit.edit_route``, ``knowledge.EDIT_ROUTE``).
 SingRouter = Callable[[str, Sequence[str], bool], str]
+#: Голос фразы от хоста (#4141): ``(utterance_id, сколько ждать, с) -> SpeakerResult этой фразы`` (словарь
+#: ``rob_box_core.speaker_wire``) или ``None`` - не пришёл за это время. Хост ``dialog_node`` - реестр биометрии по id
+#: фразы (``UtteranceSpeakerRegistry.resolve``).
+PhraseVoice = Callable[[str, float], Awaitable[Optional[Mapping[str, Any]]]]
+
+
+async def no_phrase_voice(_utterance_id: str, _wait_s: float) -> Optional[Mapping[str, Any]]:
+    """Хост без биометрии фраз: голоса фразы нет - на «ты меня узнал?» код честно «не уверен»."""
+    return None
 
 
 async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> str:
@@ -609,19 +619,22 @@ def hold_silence(engine: "TurnEngine", turn: "_Turn") -> bool:
     return True
 
 
-def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> bool:
-    """«Ты меня узнал?» (#3993, решение Шифу 26.10): ответ строит код по собеседнику снимка хода
-    (``speaker_adapter.recognition_reply``), LLM не зовётся - модель не выдумает «узнал» спорному голосу и «голос не
-    запомнил» узнанному. Только у агента с голосом (``PERSON_AGENTS``) и не в подхвате бэклога: там вопрос мог задать
-    не тот, кто сказал «робот». Реплика - не этот вопрос - ``False``, ход идёт модели."""
-    if turn.pickup or snap.agent not in kn.PERSON_AGENTS:
+async def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> bool:
+    """«Ты меня узнал?» (#3993, решение Шифу 26.10): ответ строит код (``speaker_adapter.recognition_reply``), LLM не
+    зовётся - модель не выдумает «узнал» спорному голосу и «голос не запомнил» узнанному. Голос - ЭТОЙ фразы (#4141):
+    её SpeakerResult по ``utterance_id`` от хоста, не дольше ``RECOGNIZED_VOICE_WAIT_S`` (биометрия и STT не
+    упорядочены); не пришёл - «не уверен», а не собеседник прошлой фразы, иначе опоздавшая биометрия дала бы новому
+    голосу чужое имя. Собеседник снимка нужен только короткой фразе без оценки (``inconclusive``, #2863). Только у
+    агента с голосом (``PERSON_AGENTS``) и не в подхвате бэклога: там вопрос мог задать не тот, кто сказал «робот».
+    Реплика - не этот вопрос - ``False``, ход идёт модели."""
+    if turn.pickup or snap.agent not in kn.PERSON_AGENTS or not asks_recognized(turn.text):
         return False
-    reply = recognition_reply(turn.text, snap.speaker)
-    if reply is None:
-        return False
-    state, said = reply
+    result = await engine._phrase_voice(turn.utterance_id, kn.RECOGNIZED_VOICE_WAIT_S)
+    state, said = recognition_reply(result, snap.speaker, now=engine.session.now())
     turn.stage, turn.reason = "done", f"{kn.RECOGNIZED_TURN_REASON}:{state}"
-    engine._log.info(f"{LOG_MARK} узнал? {state}: ответ кодом по снимку, LLM не зовётся turn={turn.turn_id}")
+    voice = "нет за окно" if result is None else "есть"
+    engine._log.info(f"{LOG_MARK} узнал? {state}: ответ кодом по голосу фразы utterance={turn.utterance_id or '-'} "
+                     f"({voice}), LLM не зовётся turn={turn.turn_id}")
     engine._say(turn, said)
     return True
 
@@ -630,7 +643,7 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
     код (:func:`answer_recognized`), — в форме команды хода (:func:`command_form`, #4021): схема и валидатор моста видят
     её на время вызовов LLM этого хода."""
-    if hold_silence(engine, turn) or answer_recognized(engine, turn, snap):
+    if hold_silence(engine, turn) or await answer_recognized(engine, turn, snap):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
@@ -1152,9 +1165,10 @@ class TurnEngine:
                  events: Any = None, new_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
                  clock: Callable[[], float] = time.monotonic, deadline_s: float = kn.TURN_CEILING_S,
                  log: Optional[logging.Logger] = None, rng: Optional[random.Random] = None,
-                 sing: Optional[SingRouter] = None) -> None:
+                 sing: Optional[SingRouter] = None, phrase_voice: PhraseVoice = no_phrase_voice) -> None:
         self.session = session
         self._sing = sing  # путь пения от хоста (#4079); нет — форма хода без пути пения
+        self._phrase_voice = phrase_voice  # голос фразы по её id от хоста (#4141)
         self._rng = rng
         self._pick = phrases.Picker(rng)
         self.log = turn_log or TurnLog()
@@ -1177,7 +1191,8 @@ class TurnEngine:
         turn = _Turn(self._new_id(), snap.epoch, addressed.text.strip(), addressed.source,
                      TurnDeadline(self._deadline_s, clock=self._clock), pickup=addressed.pickup,
                      heard=picked_heard(addressed), recent=recent_section(addressed),
-                     background=background_section(addressed), command=addressed.command)
+                     background=background_section(addressed), command=addressed.command,
+                     utterance_id=addressed.utterance_id)
         self.log.begin(turn.turn_id, turn.epoch, turn.text, speaker_label(snap.speaker), turn.heard)
         log_pickup(self._log, addressed, turn)
         log_stt_fixes(self._log, addressed, turn)
