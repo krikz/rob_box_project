@@ -554,13 +554,16 @@ def test_invalid_command_with_nothing_to_run_is_said_by_code_not_silence():
     assert ports.stages[-1] == ("done", "done", "invalid_salvaged:bad_json")
 
 
-def test_too_long_answer_is_said_as_too_long_not_as_not_understood():
-    """#3883/#3953: модель поняла, а ответ не влез в лимит речи - «не понял» было бы неправдой."""
-    ports = Ports(answers=[Answer(Invalid("too_long", "speech: 900 > 600"), "deepseek", calls=2)])
+@pytest.mark.parametrize("reason", [kn.VIOLATION_SPEECH_TOO_LONG, "too_long"],
+                         ids=["speech_next_to_another_violation", "segment_or_voice"])
+def test_too_long_answer_is_said_as_too_long_not_as_not_understood(reason):
+    """#3883/#3953: модель поняла, а ответ не влез в лимит - «не понял» было бы неправдой. Речь длиннее проверки
+    (``VIOLATION_SPEECH_TOO_LONG``, #4137) и сегмент/имя/голос (``too_long``) говорят одну фразу."""
+    ports = Ports(answers=[Answer(Invalid(reason, "speech: 900 > 350"), "deepseek", calls=2)])
     agg = _run(_engine(ports), "перечисли все голоса")
-    assert [t for t, _, _ in ports.said] == [phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])]
-    assert phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"]) != phrases.text(kn.INVALID_COMMAND_PHRASE)
-    assert ports.stages[-1] == ("done", "done", "invalid_salvaged:too_long") and agg.status == "done"
+    assert [t for t, _, _ in ports.said] == [phrases.text(kn.INVALID_COMMAND_PHRASES[reason])]
+    assert phrases.text(kn.INVALID_COMMAND_PHRASES[reason]) != phrases.text(kn.INVALID_COMMAND_PHRASE)
+    assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{reason}") and agg.status == "done"
 
 
 def test_two_violations_in_a_row_run_the_valid_actions_and_code_tells_the_outcome():
@@ -1110,14 +1113,14 @@ def _voices_turn(second):
 
 def test_invalid_after_query_is_not_silent_code_says_a_phrase_from_the_data():
     """#3883: запрос выполнен, ответ модели невалиден и после повтора - говорит код по данным, ход не failed."""
-    ports, agg = _voices_turn(Invalid("too_long", "speech"))
+    ports, agg = _voices_turn(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"))
     assert [t for t, _, _ in ports.said] == ["Голосов у меня так: Яндекс — 13, MiniMax — 10. Назвать какие-нибудь?"]
     assert (agg.stage, agg.status) == ("done", "done")
 
 
 def test_invalid_after_query_of_a_tool_without_phrase_says_generic_phrase():
     q = Command(actions=(ToolCall("get_current_time", {}),))
-    ports = Ports(answers=[Answer(q, "deepseek"), Answer(Invalid("too_long", "speech"), "deepseek")])
+    ports = Ports(answers=[Answer(q, "deepseek"), Answer(Invalid(kn.VIOLATION_SPEECH_TOO_LONG, "speech"), "deepseek")])
     agg = _run(_engine(ports), "который час")
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)] and agg.status == "done"
 

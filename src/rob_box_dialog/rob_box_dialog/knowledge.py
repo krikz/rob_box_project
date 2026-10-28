@@ -1480,6 +1480,10 @@ INVALID_COMMAND_PHRASE = "command.invalid_generic"
 #: #4137) - своя, не ``too_long`` полей выступления и голоса: одна она у команды - мост просит ход компактнее
 #: (``SPEECH_COMPACT_TURNS``), и после него длинно - речь ужимает код (``command.fit_speech``), а не заглушка.
 VIOLATION_SPEECH_TOO_LONG = "speech_too_long"
+#: Пометка обрыва (#4137, хвост ревью: перечень голосов «…Голос38» звучал как полный): речь, которую ``command.fit_speech``
+#: оборвал посреди предложения, кончается этой фразой каталога - человек слышит, что названо не всё. Обрыв по границе
+#: предложения пометки не просит: оставленные предложения целые.
+SPEECH_CUT_PHRASE = "command.speech_cut"
 #: Фраза по ПРИЧИНЕ нарушения вместо общей: «не понял» была бы неправдой, когда модель поняла, а ответ не влез. Речь
 #: одна длинная до хода сюда не доходит (её ужимает код, #4137) - только рядом с другим нарушением, которое не
 #: исправил и повтор; ``too_long`` - сегмент выступления, имя роли или голоса длиннее предела. Единственная таблица
@@ -1494,7 +1498,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER,)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
-    *INVALID_COMMAND_PHRASES.values(),
+    SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()
       for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
@@ -2348,6 +2352,29 @@ FORM_FIELDS: Tuple[str, ...] = ("passed", "voice")
 #: Символы, которых в тексте речи не бывает: U+FFFD - битый UTF-8 в ответе провайдера (n105 23.10: «Остально<U+FFFD×2> в
 #: порядке» ушло в TTS). Разбор команды их вырезает (``command._clean``), вырезанное - в ``fields_dropped``.
 SPEECH_DROPPED_CHARS: Tuple[str, ...] = ("\ufffd",)
+
+
+@dataclass(frozen=True)
+class Droppable:
+    """Что код выбрасывает из команды, а не отвергает её целиком (#4138, n904 28.10; ADR-0148: решает код, а не
+    повтор модели): поле уходит в ``Command.dropped`` (лог ``fields_dropped``), действие исполняется.
+
+    ``expression`` - поля экспрессии, чьё значение не из перечня (``earcon: none``) выбрасывается: звук-сопровождение
+    смысла ответа не несёт. ``tool_args`` - тулы, у которых выбрасывается ЛИШНИЙ аргумент верхнего уровня, которого нет
+    в схеме тула (``play_animation.animated``): тул -> аргументы, несущие смысл вызова; хоть один из них должен быть,
+    иначе без лишнего поля вызов теряет смысл и отвергается, как раньше (``bad_args``).
+
+    Чего в таблице нет, не выбрасывается: ``emotion`` и ``gesture`` могут быть самой просьбой («покажи, как тебе
+    грустно», «подмигни»), а у ``set_volume``, ``request_music`` и прочих лишний аргумент (``channel``, ``genre``)
+    молча менял бы действие. Лишние поля ВЛОЖЕННЫХ объектов аргументов (``play_animation.face.emotion``, #3974) код
+    выбрасывает у любого тула. Нет обязательного аргумента, неизвестный тул - отказ всегда."""
+
+    expression: Tuple[str, ...]
+    tool_args: Mapping[str, Tuple[str, ...]]
+
+
+DROPPABLE = Droppable(expression=("earcon",),
+                      tool_args=MappingProxyType({"play_animation": ("animation", "face")}))
 #: Режимы формы ответа (§4.5): ``tool`` — один обязательный тул ``command``; ``json`` — схема для
 #: structured_output/JSON-режима и для JSON в тексте.
 COMMAND_MODES: Tuple[str, ...] = ("tool", "json")

@@ -285,8 +285,9 @@ def test_when_now_is_cut_against_uninterruptible_busy_class():
 def test_expression_enums():
     bad({"expression": {"emotion": "joy"}}, "bad_enum")
     bad({"expression": {"gesture": "dance"}}, "bad_enum")
-    bad({"expression": {"earcon": "boop"}}, "bad_enum")
     assert ok({"expression": {"emotion": "sad", "gesture": "wink", "earcon": "heard"}}).expression.earcon == "heard"
+    # earcon не из перечня - косметика: выбрасывается, а не валит команду (#4138, test_cosmetic_fields_4138.py)
+    assert ok({"expression": {"emotion": "sad", "earcon": "boop"}}).dropped == ("expression.earcon",)
 
 
 def test_valid_face_scene_is_kept():
@@ -454,10 +455,10 @@ def test_thousands_of_random_commands_never_raise():
 
 
 def test_validator_reports_every_violation_first_one_is_the_reason():
-    res = bad({"speech": "x", "perform": _perform(), "when": "later", "expression": {"earcon": "beep"}},
+    res = bad({"speech": "x", "perform": _perform(), "when": "later", "expression": {"gesture": "beep"}},
               "perform_with_speech")
     assert [v.reason for v in res.all] == ["perform_with_speech", "bad_enum", "bad_enum"]
-    assert [v.allowed for v in res.all][1:] == [kn.WHEN, kn.EARCONS]
+    assert [v.allowed for v in res.all][1:] == [kn.WHEN, kn.GESTURES]
 
 
 def test_explain_says_what_is_wrong_and_what_is_allowed():
