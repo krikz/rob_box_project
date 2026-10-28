@@ -125,6 +125,9 @@ pis:
           groups:
             - paths: [src/rob_box_perception/rob_box_perception]
               extensions: [".py"]
+            # #4167: rob_box_core собирается в этом образе (exec_depend perception).
+            - paths: [src/rob_box_core]
+              extensions: [".py"]
             - paths: [src/rob_box_perception_msgs]
               extensions: [".msg", "CMakeLists.txt", "package.xml"]
             # ADR-0150 PR-2 (#3687): vision_face_node читает SpeakerResult.
