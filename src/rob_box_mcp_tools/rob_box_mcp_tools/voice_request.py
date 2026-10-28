@@ -20,13 +20,19 @@ EVENT_TOPIC = "/voice/speech/event"
 WAIT_S = 4.0
 
 try:
-    from rob_box_voice.tts_voice_registry import resolve_voice, robot_default_voice
+    from rob_box_voice.tts_voice_registry import (PROVIDER_LABELS, resolve_voice, robot_default_voice,
+                                                  voice_display_name)
 except ImportError:  # pragma: no cover - минимальные окружения без rob_box_voice
+    PROVIDER_LABELS: Dict[str, str] = {}
+
     def resolve_voice(provider: str, requested: Optional[str]) -> Tuple[str, bool]:
         return (requested or ""), False
 
     def robot_default_voice() -> Tuple[str, str]:
         return "", ""
+
+    def voice_display_name(provider: str, voice_id: str) -> str:
+        return voice_id
 
 
 @dataclass(frozen=True)
@@ -88,13 +94,15 @@ def outcome_data(outcome: VoiceOutcome) -> Dict[str, Any]:
     """Данные исхода для фразы диалога (``knowledge.VOICE_DONE`` / ``VOICE_FAILED``): исход владельца и слоты фраз.
 
     ``status`` - ``applied`` / ``fallback`` / ``timeout`` (``already_default`` - голос и так обычный, владельцу ничего
-    не просили); ``voice_name`` / ``requested_name`` / ``provider_label`` - названия для озвучки; ``voice_default`` -
-    применённый голос и есть обычный голос робота (нет применённого - ключа нет); у неудачи - ``reason`` (диалог берёт
-    её из данных результата, а не из текста ошибки)."""
+    не просили); ``voice_name`` / ``requested_name`` / ``provider_label`` - названия для озвучки из каталога голосов
+    (``tts_voice_registry.voice_display_name``: «Весельчак», а не ``English_Jovialman``; чужое имя - как сказали);
+    ``voice_default`` - применённый голос и есть обычный голос робота (нет применённого - ключа нет); у неудачи -
+    ``reason`` (диалог берёт её из данных результата, а не из текста ошибки)."""
     data: Dict[str, Any] = {
         "status": outcome.status, "voice_requested": outcome.requested, "voice_applied": outcome.applied,
-        "provider": outcome.provider, "voice_name": outcome.applied, "requested_name": outcome.requested,
-        "provider_label": outcome.provider,
+        "provider": outcome.provider, "voice_name": voice_display_name(outcome.provider, outcome.applied),
+        "requested_name": voice_display_name(outcome.provider, outcome.requested),
+        "provider_label": PROVIDER_LABELS.get(outcome.provider, outcome.provider),
     }
     if outcome.applied:
         data["voice_default"] = (outcome.provider, outcome.applied) == robot_default_voice()

@@ -84,7 +84,7 @@ def test_fallback_outcome_data_names_both_voices(vr):
     out = vr.VoiceRequests(node).request("alena")
     assert out.status == "fallback"
     data = vr.outcome_data(out)
-    assert (data["requested_name"], data["voice_name"], data["reason"]) == ("alena", "male-qn-qingse", "voice_unavailable")
+    assert (data["requested_name"], data["voice_name"], data["reason"]) == ("alena", "Qingse (legacy)", "voice_unavailable")
     assert data["voice_default"] is True  # применён обычный голос робота (minimax/male-qn-qingse): диалог так и скажет
 
 
@@ -121,11 +121,15 @@ def test_speak_voice_resolution(vr):
 
 @pytest.mark.parametrize("args, status, expected", [
     (("applied", "male-qn-qingse", "male-qn-qingse", "minimax"), "done", "Говорю своим обычным голосом."),
-    (("applied", "zahar", "zahar", "yandex"), "done", "Говорю голосом zahar."),
+    (("applied", "zahar", "zahar", "yandex"), "done", "Говорю голосом Захар."),
+    (("applied", "Весельчак", "English_Jovialman", "minimax"), "done", "Говорю голосом Весельчак."),
+    (("applied", "Russian_ReliableMan", "Russian_ReliableMan", "minimax"), "done", "Говорю голосом Надёжный мужчина."),
     (("fallback", "alena", "male-qn-qingse", "minimax", "voice_unavailable"), "rejected",
      "Голос alena недоступен, остаюсь на обычном."),
     (("fallback", "alena", "zahar", "yandex", "voice_unavailable"), "rejected",
-     "Голос alena недоступен, остаюсь на zahar."),
+     "Голос Алёна недоступен, остаюсь на Захар."),
+    (("fallback", "x", "", "yandex", "unknown_provider"), "rejected",
+     "Не получилось сменить голос: провайдер Яндекс не подходит."),
     (("fallback", "x", "", "eleven", "unknown_provider"), "rejected",
      "Не получилось сменить голос: провайдер eleven не подходит."),
     (("timeout", "zahar", "", "yandex"), "rejected", "Не дождался подтверждения смены голоса, не знаю, какой сейчас."),

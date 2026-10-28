@@ -243,12 +243,18 @@ def voices_for(provider: str) -> list[str]:
     return list(PROVIDER_VOICES.get(provider, []))
 
 
+def voice_display_name(provider: str, voice_id: str) -> str:
+    """Название голоса, как его говорят вслух: русское ``display_name`` из ``VOICE_METADATA`` («Весельчак», «Надёжный
+    мужчина»), нет записи в каталоге - сам id. Единственное место, где id голоса превращается в слова: фразы исхода
+    смены голоса («Говорю голосом Весельчак.») и Tier-1 «включи голос <имя>» берут название отсюда."""
+    return str((VOICE_METADATA.get(f"{provider}:{voice_id}") or {}).get("display_name") or voice_id)
+
+
 def named_voices_for(provider: str) -> list[tuple[str, str]]:
     """``(voice_id, display_name)`` голосов провайдера - то, по чему Tier-1 «включи голос <имя>» находит голос в реестре
-    (``rob_box_dialog.grammar``, #4086). Имя - русское ``display_name`` из ``VOICE_METADATA``, нет записи - сам id.
-    Одно знание для v1 (``tier1_host``) и v2 (``dialog_node``); провайдер неизвестен - пустой список."""
-    return [(vid, (VOICE_METADATA.get(f"{provider}:{vid}") or {}).get("display_name", vid))
-            for vid in voices_for(provider)]
+    (``rob_box_dialog.grammar``, #4086). Имя - :func:`voice_display_name`. Одно знание для v1 (``tier1_host``) и v2
+    (``dialog_node``); провайдер неизвестен - пустой список."""
+    return [(vid, voice_display_name(provider, vid)) for vid in voices_for(provider)]
 
 
 def known_provider(name: object) -> str:

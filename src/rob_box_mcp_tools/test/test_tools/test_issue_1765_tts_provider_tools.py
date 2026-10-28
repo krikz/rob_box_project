@@ -178,7 +178,7 @@ class TestSetVoiceToolWithProvider:
         assert result.success is False
         assert result.data["voice_applied"] == "anton"
         assert (result.data["status"], result.data["reason"]) == ("fallback", "voice_unavailable")
-        assert (result.data["requested_name"], result.data["voice_name"]) == ("female-shaonv", "anton")
+        assert (result.data["requested_name"], result.data["voice_name"]) == ("female-shaonv", "Антон")
         assert "zahar" in result.data["available"]
 
     def test_no_confirmation_from_owner_is_honest(self, mock_node, fake_requests) -> None:
