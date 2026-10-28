@@ -131,6 +131,33 @@ def test_n307_the_four_voices_of_act3_are_the_cast():
     assert gen.COUNT_FOUR.startswith("четыр")
 
 
+# ── n306: «кого узнал, а кого нет» (марафон-4, 21:55:10) ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("said", [
+    "Борис — узнал. Саша тоже. А третий голос не узнал.",  # марафон-4, попытка 2
+    "Бориса узнал, а вот голос женщины не узнала.", "Борис знакомый, остальных не узнаю.",
+    "Борис это Борис, а кто ещё говорил — не знаю, кто.", "Борис есть, один голос незнакомый.",
+    "Борис, а остальные неопознанные.",
+])
+def test_n306_any_wording_of_the_unrecognized_is_green(said):
+    assert _verdict("n306_who_was_talking", _tts(said), DONE)["pass"], said
+
+
+@pytest.mark.parametrize("said", [
+    "Всех узнал: Борис, Саша и остальные.",  # в бэклоге был незнакомый -- честный красный
+    "Борис говорил, больше никого не было.", "Узнал Бориса и Сашу.",
+    "Не знаю, о чём ты.",  # нет Бориса
+])
+def test_n306_claiming_to_know_everyone_stays_red(said):
+    assert not _verdict("n306_who_was_talking", _tts(said), DONE)["pass"], said
+
+
+def test_n306_key_is_the_one_constant():
+    assert _steps()["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", gen.UNKNOWN_VOICE_ANSWER]
+    assert "незнаком" in gen.UNKNOWN_VOICE_ANSWER and "неопознан" in gen.UNKNOWN_VOICE_ANSWER
+
+
 # ── п.2/4: предусловие «музыка играет» -- n507, n511, n312 ──────────────────────────────────────────────────
 
 

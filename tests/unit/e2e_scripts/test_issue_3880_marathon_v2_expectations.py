@@ -152,7 +152,7 @@ def test_act3_backlog_flow_is_bare_robot_pickup():
     assert labels.index("n305b_bare_robot_pickup") == labels.index("n305_bg_valera_unknown") + 1
     assert labels.index("n310_execute_backlog_lru") == labels.index("n309_bg_command_valera") + 1
     # диктора проверяет ответ робота, а не строка бэклога (#3971, разбор 26.10: «неопознан» -- тоже честная метка)
-    assert steps["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", "незнаком|неопознан"]
+    assert steps["n306_who_was_talking"]["acceptance"]["expected_keywords"] == ["Борис", _gen().UNKNOWN_VOICE_ANSWER]
     assert "patterns" in steps["n306_who_was_talking"] and not steps["n306_who_was_talking"]["patterns"]
 
 

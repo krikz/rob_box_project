@@ -5,14 +5,14 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "43ef2927d91d47072686220bc5772ff509a8a8df",
+  "last_commit": "15653015ef5ba98441d88e70b71d0c6570eb7aa2",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "6688fca34629a89523795fc5aefac842b4bc2bec7ec423dd2c2f571108bc85eb",
    "night_marathon_act1_wakeup_v1.json": "f7c745898dbd5e1e2c864d8f7fd679fc052d2f6c0405e9bf0c0a39db6237db6b",
    "night_marathon_act2_acquaintance_v1.json": "35425c35cf4e238acedb27c11793e44c29637039efb3020dca76f31a361d23aa",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
-   "night_marathon_act3_backlog_diarization_v1.json": "ce1c4d87fec89912ee152d21deba290ae5b51b149c6a1ecfbf259f56be633cb9",
+   "night_marathon_act3_backlog_diarization_v1.json": "e53e80e5bbec0cdc7981a541b45f6dc0647559d4dfffe15e287da0a20f525d88",
    "night_marathon_act4_voice_prosody_v1.json": "a8b3b36af5a71a5eb02a66c47113f420e174f74031892667e0a522bea69840b1",
    "night_marathon_act5_renardo_live_v1.json": "6eebdc8ce80d8060a983697cab72c1f1f9202d8524d80e1d3453f0febae18d84",
    "night_marathon_act6_dj_booth_v1.json": "8a8834b29725aea0ea1e501519d72517bfdf80f4a48a08ab90f95e69ba0574d1",
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "553a1065b03ec90b2623a9e91fbade5fe14bdaa84518808ac0b68550569fb26a",
+ "corpus_sha256": "808381ad114a687d0c09d760ba57714781862080f8bdb6004e71e6e6d048605b",
  "acts": [
   {
    "act": "1",
@@ -1408,7 +1408,7 @@
        ],
        "expected_keywords": [
         "Борис",
-        "незнаком|неопознан"
+        "незнаком|неопознан|не узнал|не узнаю|не узнан|не знаю, кто|не знаю кто|не знаю, кого|не знаю кого"
        ],
        "expected_tool_calls": []
       },
