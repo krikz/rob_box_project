@@ -151,6 +151,16 @@ def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()
     return voice_named(text, voices)
 
 
+def music_asked(text: str) -> bool:
+    """Просил ли человек музыку в ЭТОЙ реплике (#4152): слово группы ``music`` из ``knowledge.TOOL_GROUPS`` («музыку»,
+    «бит», «подложку», «ритм», «спой», «рэп»…) - та же таблица слов, что открывает музыкальные тулы; второй нет.
+    Только основы группы: общие глаголы ``weak`` («включи», «поставь») музыку не называют («включи сказку»). Решает по
+    тексту ЧЕЛОВЕКА, не по ответу модели и не по сцене снимка: играющая музыка слов не заменяет (её выступление и так не
+    трогает). Читает ``command_form``: у сказки, анекдота и стиха подложка - только по этой просьбе
+    (``knowledge.PERFORM_BACKING_BY_KIND``)."""
+    return has_word(text or "", kn.TOOL_GROUPS["music"].stems)
+
+
 def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
     """Назван ли в ЭТОЙ реплике голос реестра по имени (``voices`` — id, название, алиасы, каждое целым словом): «спой
     голосом Алисы». Такой голос звучит только речью робота (TTS): путь пения с ним — живое выступление, а не генерация
@@ -249,5 +259,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
 
 
 __all__ = ["asked_groups", "available_tools", "command_groups", "face_asked", "groups_for", "motion_named",
-           "motion_refusal", "needs_words", "requested_groups", "robot_asked", "show_asked", "silent_asked",
-           "voice_asked", "voice_named", "widen_for"]
+           "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked", "show_asked",
+           "silent_asked", "voice_asked", "voice_named", "widen_for"]
