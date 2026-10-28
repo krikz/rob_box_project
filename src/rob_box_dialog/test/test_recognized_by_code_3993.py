@@ -301,7 +301,7 @@ def test_act2b_n704_remember_me_goes_to_the_model_with_memory_3993(result):
     расскажет о человеке из памяти), а не «Узнал — ты Саша.» кодом; модель зовётся один раз, фразу кода вместо неё
     никто не говорит."""
     engine, ports, _ = _engine(result, [Answer(Command(speech="Помню: ты Саша, чинишь технику."), "deepseek")])
-    asyncio.run(engine.run(Addressed(strip_wake_word(ACT2B[3][1]), VOICE)))
+    asyncio.run(engine.run(_ask(strip_wake_word(ACT2B[3][1]))))
     assert ACT2B[3][0] == "n704"
     assert len(ports.asked) == 1
     assert ports.said == ["Помню: ты Саша, чинишь технику."]
