@@ -143,7 +143,7 @@ var reloadKnownPath = { |path|
 // Вызывать ТОЛЬКО из Routine (внутри Server.sync и Condition.wait).
 var armMasterFilter = {
     var done = Condition(false);
-    var state = nil;     // nil | \go | \info | ail | 	imeout
+    var state = nil;     // nil | \go | \info | \fail | \timeout
     var failText = "";
     var finish = { |s|
         if(state.isNil) { state = s; done.test = true; done.signal };
@@ -158,7 +158,7 @@ var armMasterFilter = {
         var cmd = msg[1].asString;
         if(cmd == "/s_new" || { cmd == "/n_query" }) {
             if(state.isNil) { failText = cmd ++ ": " ++ msg[2] };
-            finish.value(ail);
+            finish.value(\fail);
         };
     }, '/fail');
     var ok;
@@ -170,7 +170,7 @@ var armMasterFilter = {
     // Узел создан или /s_new уже ответил /fail; /n_query даёт подтверждение
     // без зависимости от /notify.
     Server.default.sendMsg("/n_query", masterLimiterNode);
-    SystemClock.sched(3.0, { finish.value(	imeout); nil });
+    SystemClock.sched(3.0, { finish.value(\timeout); nil });
     done.wait;
 
     goFunc.free; infoFunc.free; failFunc.free;
@@ -182,7 +182,7 @@ var armMasterFilter = {
             ++ if(state == \go) { "n_go" } { "n_info" } ++ ")").postln;
     } {
         ("ERROR: Master filter NOT armed (node " ++ masterLimiterNode
-            ++ "): " ++ if(state == ail) { failText } { "нет ответа scsynth за 3 с" }).postln;
+            ++ "): " ++ if(state == \fail) { failText } { "нет ответа scsynth за 3 с" }).postln;
     };
     ok
 };

@@ -241,3 +241,18 @@ def test_recovery_does_not_claim_success_when_filter_not_armed() -> None:
         "после рестарта scsynth сообщение «восстановлены» обязано зависеть "
         "от результата armMasterFilter"
     )
+
+
+def test_script_has_no_stray_control_characters() -> None:
+    """Литерал \\fail/\\timeout не должен превратиться в FF/TAB (#3795).
+
+    sclang-символ ``\\name`` легко испортить при генерации правки: ``\\f`` и
+    ``\\t`` становятся управляющими символами, и файл не компилируется.
+    """
+    bad = sorted(
+        {hex(ord(c)) for c in _script() if ord(c) < 32 and c not in "\r\n"}
+    )
+    assert not bad, f"управляющие символы в foxdot_init.sc: {bad}"
+    code = _executable_lines(_script())
+    for symbol in ("\\go", "\\info", "\\fail", "\\timeout"):
+        assert symbol in code, f"нет sclang-символа {symbol}"
