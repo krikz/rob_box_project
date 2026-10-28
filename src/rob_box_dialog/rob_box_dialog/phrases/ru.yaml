@@ -197,8 +197,9 @@ remote.show: ["Показываю на роботе: {face}."]
 # лицо не показано (knowledge.REMOTE_SHOW_REFUSALS): фраза по причине, а не «Показываю»
 remote.show.rejected.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
 remote.show.rejected.silenced: ["Не показал на роботе: у него тишина, рот заклеен. Снять — «Робот, говори»."]
-# просили сделать роботом, а команда ничего на нём не сделала (knowledge.VIOLATION_REMOTE_OWED)
-remote.nothing_done: ["На роботе ничего не сделал — напиши, что именно сделать."]
+# просили сделать роботом, а команда и после повтора ничего на нём не сделала (knowledge.VIOLATION_REMOTE_OWED):
+# факт кода рядом со словами модели, а не вместо них (ревью #4153: справку не подменяем)
+remote.nothing_done: ["На роботе ничего не сделал."]
 # отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
 perform.rejected.operator_hold: *remote_held
 

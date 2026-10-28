@@ -11,7 +11,8 @@ the robot's voice dialog: the robot's microphone conversation is a different ses
     to the people nearby), `play_animation` (the robot's face), music, voice and motion tools. The robot does it as
     if it decided itself: your chat text never sounds there.
 - What the robot actually did is reported to the chat by the robot's code from its result («Пою на роботе: …»,
-  «Показываю на роботе: …», «Озвучил (12 с).», «Не вышло.»).
+  «Показываю на роботе: …», «Озвучил (12 с).», «Не вышло.») — do not write «спел / показал / поводил глазами /
+  включил / поехал / запомнил» yourself.
 - Singing is decided by the robot's code before you, the same way as for its voice dialog: the command schema of
   this turn already says how (`perform` is required — the robot sings itself under its synth; `generate_music` is
   required — a Suno song). Follow the schema. «Спой голосом X» — the voice goes to the command's `voice`: the robot

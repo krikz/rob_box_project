@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
+    ASK_LEAD_SKIP,
     DEFAULT_WAKE_WORDS,
     INTRO_ADJECTIVE_ENDINGS,
     INTRO_GREETING_WORDS,
@@ -22,11 +23,13 @@ from rob_box_dialog.knowledge import (
     NAME_CASE_STEMS,
     NAME_CASE_SURE_TAILS,
     NAME_CASE_TAILS,
+    QUESTION_LEADS,
     REACH_END_OR_NEXT,
     REACH_NEXT,
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
+    REQUEST_LEADS,
     SELF_MEMORY_ASK,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
@@ -326,6 +329,21 @@ def asks_own_memory(text: str) -> bool:
         return False
     return has_form(said, SELF_MEMORY_ASK["whole"]) or (
         has_word(said, SELF_MEMORY_ASK["verbs"]) and has_form(said, SELF_MEMORY_ASK["self"]))
+
+
+def asks_question(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Реплика — вопрос или справка, а не просьба сделать (ревью #4153; таблицы ``knowledge.QUESTION_LEADS``): первое
+    слово после вейка и вводных (``ASK_LEAD_SKIP``: «а», «ну», «скажи», «подскажи») — вопросительное («как управлять
+    роботом», «Робот, скажи сколько секунд займёт…»), или в реплике знак «?» или частица «ли» не после
+    просьбы-модальности (``REQUEST_LEADS``: «можешь покекать роботом?» — просьба; «ты себя считаешь человеком или
+    роботом?» — вопрос). Слова — как у :func:`name_tokens`."""
+    rest = strip_wake_word(text, wake_words)
+    tokens = name_tokens(rest)
+    lead = next((token for token in tokens if token not in ASK_LEAD_SKIP), "")
+    if lead in QUESTION_LEADS:
+        return True
+    marked = "?" in rest or bool(set(tokens) & set(STOP_QUESTION_PARTICLES))
+    return marked and lead not in REQUEST_LEADS
 
 
 @dataclass(frozen=True)

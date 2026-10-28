@@ -712,13 +712,16 @@ def sing_markers(text: str) -> str:
 class SingContext:
     """Контекст выбора пути пения (собирает хост диалога, без сети и БД): ``recent`` — последние реплики человека
     (``SING_CONTEXT_REPLIES``, старые первыми), ``playing`` — звучит музыка, ``gen_ok`` — генерация жива (здоровье
-    провайдера ``music_gen`` годно или неизвестно), ``gen_health`` — это здоровье словом для чойсера («» — неизвестно).
-    Баланса KIE хост диалога не знает: деньги и лимиты проверяет тул генерации (:func:`gen_block`) с фразой кода."""
+    провайдера ``music_gen`` годно или неизвестно), ``gen_health`` — это здоровье словом для чойсера («» — неизвестно),
+    ``voiced`` — человек назвал в реплике голос реестра TTS по имени («спой голосом Алисы»: решает диалог,
+    ``tools_view.voice_named``; «своим голосом» — не имя). Баланса KIE хост диалога не знает: деньги и лимиты проверяет
+    тул генерации (:func:`gen_block`) с фразой кода."""
 
     recent: Tuple[str, ...] = ()
     playing: bool = False
     gen_ok: bool = True
     gen_health: str = ""
+    voiced: bool = False
 
 
 @dataclass(frozen=True)
@@ -759,9 +762,11 @@ def _sing_gen_option(robot_voice: bool, asked: bool, recent: bool, synth_poor: b
 def sing_candidates(text: str, ctx: SingContext) -> Tuple[Option, ...]:
     """Кандидаты пути пения (код, жёсткие фильтры до выбора): не пение — пусто; путь назван словами
     (:func:`sing_markers`) — только он (просили сгенерировать — генерация и при мёртвом провайдере: тул скажет причину
-    сам и предложит спеть вживую); иначе живое и генерация (генерация жива, ``gen_ok``). Маркер пути в последних
-    репликах — признак ``recent_asked``; жанр, который синт не играет («спой метал»), — признак генерации
-    ``synth_poor`` (перевес генерации, решает модель чойсера, ``SOURCE_WEIGHTS``)."""
+    сам и предложит спеть вживую); голос реестра назван по имени (``SingContext.voiced``: «спой голосом Алисы») —
+    только живое: этим голосом поёт робот сам, генерация его не споёт и голос потерялся бы молча (ревью #4153); иначе
+    живое и генерация (генерация жива, ``gen_ok``). Маркер пути в последних репликах — признак ``recent_asked``; жанр,
+    который синт не играет («спой метал»), — признак генерации ``synth_poor`` (перевес генерации, решает модель
+    чойсера, ``SOURCE_WEIGHTS``)."""
     kind = sing_kind(text)
     if not kind:
         return ()
@@ -771,7 +776,7 @@ def sing_candidates(text: str, ctx: SingContext) -> Tuple[Option, ...]:
     gen = _sing_gen_option(_path_ask(text, kind).robot_voice, named == GENERATE, GENERATE in recent, bool(poor))
     if named:
         return (live,) if named == LIVE else (gen,)
-    return (live, gen) if ctx.gen_ok else (live,)
+    return (live, gen) if ctx.gen_ok and not ctx.voiced else (live,)
 
 
 def _recent(ctx: SingContext) -> Tuple[str, ...]:

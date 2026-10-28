@@ -63,7 +63,7 @@ from rob_box_dialog.address import log_label
 from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
-from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
+from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
@@ -372,10 +372,11 @@ class DialogNode(Node):
         intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", 10)
         voices = functools.partial(tts_voices, self)  # реестр имён Tier-1 «голос <имя>» (#4086) — и для чата (#4142)
         sing = build_sing(self, lambda: self._reporter.all_states())  # путь пения (#4079): один на Личность и чат
+        chat_sing = sing.for_log(CHAT_LOG_MARK)  # тот же выбор, строка лога чата не похожа на голосовую (ревью #4153)
         self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake,
                                   hold=lambda: self._session.snapshot.top("OperatorHold") is not None,
                                   robot=RobotRemote(self),  # пульт робота (#4040): порты Личности ниже
-                                  sing=sing, voices=voices)
+                                  sing=chat_sing, voices=voices)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self))

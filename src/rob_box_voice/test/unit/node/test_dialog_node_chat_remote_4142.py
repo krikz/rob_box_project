@@ -120,10 +120,18 @@ SHOW = {"actions": [{"tool": "play_animation", "args": {"animation": "victory"}}
 
 @pytest.mark.parametrize("made", [SING], indirect=True)
 def test_chat_and_personality_share_one_sing_route_host(made):
-    """Одно место решения пути пения (#4079): у чата тот же хост, что у Личности, а не второй."""
+    """Одно место решения пути пения (#4079): у чата тот же хост, что у Личности (тот же выбиратель и доска
+    провайдеров), а не второй; строка лога чата — со своей меткой (ревью #4153: харнесс читает ``🎚️ [source] пение``
+    как голосовой путь)."""
+    from rob_box_dialog.chats import LOG_MARK
+    from rob_box_mcp_tools.engine.sing_route import MARK
+
     _chat(made, "привет")
 
-    assert made._chats.engine(42)._sing is made._engine._sing is not None
+    chat, voice = made._chats.engine(42)._sing, made._engine._sing
+    assert voice is not None and chat is not voice
+    assert type(chat) is type(voice) and chat._chooser is voice._chooser and chat._states is voice._states
+    assert (voice._mark, chat._mark) == (MARK, LOG_MARK)
 
 
 @pytest.mark.parametrize("made", [SUNO], indirect=True)

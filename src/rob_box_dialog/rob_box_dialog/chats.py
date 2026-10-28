@@ -11,8 +11,8 @@
 сцены ``play_animation`` — на лицо робота; служебного текста агента там нет. В чат — фраза кода из результата («Пою на
 роботе: «…»», «Показываю на роботе: радость.», отказ — «Не вышло.», лицо в тишине Личности — «Не показал…»), а не
 текст песни. «Спой» из чата решает тот же путь пения, что у голоса (#4142: хост даёт движку чата тот же
-``SingRouteHost``, музыку робота — :meth:`ChatTurns.set_music`); конец выступления закрывает его запись и в окне чата
-(:meth:`ChatTurns.performance_ended`).
+``SingRouteHost`` — тот же выбиратель и доска провайдеров, строка лога с меткой чата; музыку робота —
+:meth:`ChatTurns.set_music`); конец выступления закрывает его запись и в окне чата (:meth:`ChatTurns.performance_ended`).
 
 Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` — действие класса ``action.speak_aloud``. Тул ждёт только начала
 реплики (``pending`` с ``event_ref=speech_id``), а «Озвучил (12 с)» приходит позже событием ``SpeechEvent finished``
@@ -277,15 +277,21 @@ class ChatTurns:
         чат — пульт робота, и его путь пения и срез тулов судят по тому, что играет на роботе (#4142: «под этот бит
         зачитай» — поверх играющего, «сделай бит потяжелее» — правка играющего, как у голоса)."""
         self._music = music
-        for engine in self._engines.values():
+        for engine in self._engaged():
             engine.session.set_music(music)
 
     def performance_ended(self, turn_id: str, end_reason: str, segments_done: int = 0) -> bool:
         """Выступление на роботе кончилось (``block_end`` его хоста): запись «идёт» закрывается и в окне каждого чата
         (#4142 п.2: иначе модель чата видела «выступление идёт», пока ход не выпадал из окна). Выступление на роботе
         одно за раз (``TurnLog.performance_ended`` закрывает все записи «идёт»). Закрыта хоть одна — ``True``."""
-        closed = [engine.log.performance_ended(turn_id, end_reason, segments_done) for engine in self._engines.values()]
+        closed = [engine.log.performance_ended(turn_id, end_reason, segments_done) for engine in self._engaged()]
         return any(closed)
+
+    def _engaged(self) -> list:
+        """Движки чатов копией: ``set_music`` и ``performance_ended`` зовут ROS-колбэки музыки и ``block_end``, а
+        :meth:`engine` добавляет чат из колбэка реплик — при многопоточном исполнителе обход самого словаря упал бы
+        «dictionary changed size during iteration» (ревью #4153)."""
+        return list(self._engines.values())
 
     def adopt(self, executor: Any) -> None:
         """Исполнитель чата, чьи ``pending``-обещания ждут событий владельца (хост зовёт при создании движка)."""

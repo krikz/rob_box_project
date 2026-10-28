@@ -6,7 +6,10 @@
 3. Конец выступления закрывает его запись «идёт» и в окне чата.
 4. Выступление + лицо команды — одно сообщение в чат.
 5. Слова сцен в чат — русские, из одного словаря (``knowledge.SCENE_WORDS``).
-6. Просьба сделать роботом, а команда — только текст в чат: нарушение и повтор, затем фраза кода (классы 1 и 3 #4040).
+6. Просьба сделать роботом, а команда — только текст в чат: нарушение и повтор, затем слова модели и рядом факт кода
+   (классы 1 и 3 #4040); вопрос с теми же словами — справка в чат без повтора (ревью #4153).
+7. Ревью #4153: названный голос реестра сужает путь пения до живого; путь Личности (голос сегментов, подложка-пьеса);
+   обход чатов из ROS-колбэков — копией; слово сцены читается назад в ту же анимацию.
 """
 
 import asyncio
@@ -21,8 +24,10 @@ from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref, face_words, 
 from rob_box_dialog.command import Command, Expression, Performance, ToolCall, current_form
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import MusicStateRef, Session
+from rob_box_dialog.tools_view import robot_asked
 from rob_box_dialog.turn import Answer, Shown, TurnEngine, asked_voice, over_ordered_music, robot_owed
 from rob_box_dialog.turn_log import PERFORM_STARTED
+from rob_box_dialog.words import asks_question
 
 BOAR = ("Вот идёт кабан по грязи, катится с холма как камень с горы", "Роллинг ап зе Хилл — кабан летит вниз")
 SONG = Performance(kind="song", segments=BOAR, backing="beat")
@@ -73,16 +78,19 @@ class Base:
 class Host:
     """Хост чата, как ``dialog_node.build_chats``: ``sing`` — путь пения хоста (тот же, что у Личности)."""
 
-    def __init__(self, answers, robot=None, sing=None, status=None):
+    def __init__(self, answers, robot=None, sing=None, status=None, voices=()):
         self.base = Base(answers, status)
         self.robot = Robot() if robot is None else robot
         self.sent = []
         self.routed = []
+        self.voiced = []
         self.sing = sing
+        self.voices = tuple(voices)
         self.chats = ChatTurns(self._make, ("робот",), lambda line: None)
 
-    def _route(self, text, recent, playing):
+    def _route(self, text, recent, playing, voiced=False):
         self.routed.append((text, playing))
+        self.voiced.append(voiced)
         return self.sing(text) if callable(self.sing) else (self.sing or "")
 
     def _make(self, chat_id):
@@ -90,7 +98,7 @@ class Host:
         ports = ChatPorts(self.base, chat_id, lambda ref, text, sid: self.sent.append(text), lambda line: None,
                           robot=self.robot)
         return TurnEngine(session, ports, system_prompt="Ты пульт робота в чате.",
-                          sing=self._route if self.sing is not None else None)
+                          sing=self._route if self.sing is not None else None, voices=lambda: self.voices)
 
     def say(self, text, chat_id=7):
         decision = self.chats.decide(chat_id, text, 0.0)
@@ -309,13 +317,16 @@ def test_through_the_robot_ask_ends_with_say_aloud_not_chat_text():
     assert "Кек. Кек-кек. Кеково!" not in host.sent
 
 
-def test_robot_ask_still_answered_by_text_after_the_retry_gets_the_code_phrase():
+def test_robot_ask_still_answered_by_text_after_the_retry_keeps_the_words_and_the_code_says_the_fact():
+    """Ревью #4153: после повтора ответ модели не подменяется фразой кода (промах признака на справке терял ответ), а
+    факт по исходу — на роботе ничего не исполнено — код говорит рядом: «покекал» без тула не остаётся без опровержения."""
     host = Host([_answer(Command(speech=CLAIM)), _answer(Command(speech=CLAIM))])
 
     host.say("покекай роботом")
 
-    assert host.base.executed == []
-    assert host.sent == [phrases.text(kn.REMOTE_OWED_PHRASE)], "о несделанном говорит код, а не модель"
+    assert len(host.base.asked) == 2 and host.base.executed == []
+    assert host.sent == [CLAIM, phrases.text(kn.REMOTE_OWED_PHRASE)]
+    assert phrases.text(kn.REMOTE_OWED_PHRASE) == "На роботе ничего не сделал."
 
 
 def test_reference_question_in_chat_is_answered_by_text_without_a_retry():
@@ -324,6 +335,55 @@ def test_reference_question_in_chat_is_answered_by_text_without_a_retry():
     host.say("который час")
 
     assert len(host.base.asked) == 1 and host.sent == ["Сейчас 15:30."]
+
+
+#: Зонд ревьюера #4153 (probe_owed.py): справки и вопросы со словами из ``CHAT_ROBOT_ASK_FORMS`` — на HEAD a74eb5b2e
+#: 9 из 11 уходили на повтор, и в чат шло «На роботе ничего не сделал…» вместо ответа модели.
+REFERENCE_QUESTIONS = (
+    "Как управлять роботом?",
+    "Что ты умеешь делать роботом?",
+    "Что народ пишет про новый айфон?",
+    "Как переводится слово народ на английский?",
+    "Почему детям полезно читать вслух?",
+    "Ты себя считаешь человеком или роботом?",
+    "Что думает народ о погоде?",
+    "Как успокоить толпу на митинге?",
+    # .github/e2e/scenarios/dialogue_tools_coverage_v1.json:87
+    "Робот, скажи сколько секунд займёт если ты прочитаешь вслух первый куплет любой песни",
+    "как управлять роботом",  # в Telegram «?» часто не пишут
+    "что народ пишет про айфон",
+)
+
+
+@pytest.mark.parametrize("text", REFERENCE_QUESTIONS)
+def test_question_with_a_robot_word_is_a_reference_answered_in_the_chat_without_a_retry(text):
+    """Решение Шифу 28.10: «если я спрашиваю … он должен ответить мне в телеге». Вопрос со словом «роботом», «народ»,
+    «вслух», «толпу» — справка: ответ модели в чат одним вызовом, без нарушения и без фразы «ничего не сделал»."""
+    host = Host([_answer(Command(speech="Ответ справкой."))])
+
+    host.say(text)
+
+    assert len(host.base.asked) == 1, "без повтора с нарушением"
+    assert host.sent == ["Ответ справкой."]
+    assert not robot_asked(text) and asks_question(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Покекай роботом", "Именно через робота чтобы хороший кек", "развлекай народ, говори о том, какой прекрасный день",
+    "скажи всем вокруг привет", "Скажи вслух, который час", "агитируй толпу под Калинку-Малинку",
+    "Можешь покекать роботом?", "А можно вслух прочитать стих?",  # просьба-модальность со знаком «?» — просьба
+])
+def test_request_to_act_on_the_robot_is_not_a_question(text):
+    assert robot_asked(text) and not asks_question(text)
+
+
+@pytest.mark.parametrize("text, asks", [
+    ("как управлять роботом", True), ("Робот, а сколько тебе лет", True), ("скажи, почему небо голубое", True),
+    ("Ты меня слышишь?", True), ("Хватит ли нам сил", True), ("можешь спеть?", False), ("покекай роботом", False),
+    ("Скажи всем вокруг, какой прекрасный день", False), ("что-нибудь спой", False),
+])
+def test_asks_question_reads_the_words_of_the_person(text, asks):
+    assert asks_question(text) is asks
 
 
 def test_robot_owed_is_only_for_the_chat_agent_and_only_without_robot_outlets():
@@ -340,6 +400,116 @@ def test_robot_owed_is_only_for_the_chat_agent_and_only_without_robot_outlets():
     assert not robot_owed(chat, turn, Command(actions=(ToolCall("say_aloud", {"text": "кек"}),)))
     plain = _Turn("t2", 0, "расскажи анекдот", "telegram", TurnDeadline(30.0))
     assert not robot_owed(chat, plain, speech), "без просьбы сделать роботом — текст в чат законен"
+    question = _Turn("t4", 0, "Как управлять роботом?", "telegram", TurnDeadline(30.0))
+    assert not robot_owed(chat, question, speech), "вопрос со словом «роботом» — справка (ревью #4153)"
     acted = _Turn("t3", 0, "покекай роботом", "telegram", TurnDeadline(30.0),
                   acted=(ToolCall("play_animation", {"animation": "happy"}),))
     assert not robot_owed(chat, acted, speech), "на роботе в этом ходе уже сделано"
+
+
+# --- 7. ревью #4153 -----------------------------------------------------------------------------------------------
+
+
+def test_named_voice_of_the_registry_reaches_the_sing_route_host():
+    """«Спой голосом Алисы»: голос реестра назван — хост пути пения узнаёт это (``voiced``) и сужает путь до живого
+    (``rob_box_music.source.sing_candidates``); без имени голоса — ``False``, как раньше."""
+    alice = ("alice", "Алиса", "алисы", "алисой")
+    host = Host([_answer(Command(perform=SONG, voice="alice")), _answer(Command(perform=SONG))], sing="live:song",
+                voices=(alice,))
+
+    host.say("спой голосом Алисы про кабана")
+    host.say("спой про кабана")
+
+    assert host.voiced == [True, False]
+
+
+class Personality:
+    """Порты Личности для пути выступления (``Ports``): выступление уходит её хосту (``perform``), речь — в динамики."""
+
+    def __init__(self, answers, status=None):
+        self.base = Base(answers, status)
+        self.performed, self.said = [], []
+
+    async def ask(self, messages, tools, timeout_s):
+        return await self.base.ask(messages, tools, timeout_s)
+
+    async def execute(self, actions, snapshot, turn_id):
+        return await self.base.execute(actions, snapshot, turn_id)
+
+    def say(self, turn_id, epoch, text, voice=None, emotion=None):
+        self.said.append((text, voice))
+        return f"sp{len(self.said)}"
+
+    def stage(self, *args, **kwargs):
+        return False
+
+    def cancel_speech(self, *args, **kwargs):
+        return None
+
+    def stop_perform(self, how, keep_backing=False):
+        return False
+
+    def intent(self, turn_id, epoch, kind):
+        return None
+
+    def perform(self, turn_id, epoch, perf, edit):
+        self.performed.append(perf)
+        return {"status": "pending", "block_id": f"perform-{turn_id}"}
+
+
+def _personality(answers):
+    ports = Personality(answers)
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    return ports, engine
+
+
+def test_personality_sings_in_the_asked_voice_once():
+    """Путь Личности (ревью #4153: ``asked_voice`` в общем ``_speak``): «Робот, спой голосом Алисы» — сегменты голосом
+    команды, один раз; голос робота (``set_voice``) не вызывается."""
+    ports, engine = _personality([_answer(Command(perform=SONG, voice="alice"))])
+
+    asyncio.run(engine.run(Addressed(text="Робот, спой голосом Алисы про кабана", source="voice")))
+
+    assert [p.voice_per_segment for p in ports.performed] == [("alice", "alice")]
+    assert ports.base.executed == [], "set_voice не зовётся"
+
+
+def test_personality_performs_over_the_piece_its_command_ordered():
+    """Путь Личности: «Робот, агитируй толпу под Калинку-Малинку» → ``request_music`` + выступление поверх
+    (``backing=none``); музыка не пошла — подложка как просила модель."""
+    piece = ToolCall("request_music", {"intent": "melody", "text": "калинку-малинку"})
+    agitation = Performance("poem", ("Народ, не стой, иди сюда!", "Робот зажигает под Калинку!"), backing="beat")
+    ports, engine = _personality([_answer(Command(actions=(piece,), perform=agitation))])
+
+    asyncio.run(engine.run(Addressed(text="Робот, агитируй толпу под Калинку-Малинку", source="voice")))
+
+    assert ports.base.executed == [["request_music"]]
+    assert [p.backing for p in ports.performed] == ["none"]
+
+
+def test_chats_are_walked_by_a_copy_when_a_callback_adds_a_chat():
+    """ROS-колбэк музыки обходит чаты, а колбэк реплик добавляет новый (многопоточный исполнитель): обход словаря упал
+    бы «dictionary changed size during iteration» (ревью #4153). Здесь колбэк добавляет чат прямо посреди обхода."""
+    host = Host([])
+    first = host.chats.engine(1)
+    session_set = first.session.set_music
+
+    def adds_a_chat(music):
+        session_set(music)
+        host.chats.engine(2)
+
+    first.session.set_music = adds_a_chat
+
+    host.chats.set_music(MusicStateRef("playing", track_id="t1"))
+    assert host.chats.performance_ended("t-none", "done") is False
+
+    assert host.chats.engine(2).session.snapshot.music_playing, "новый чат взял снимок музыки робота"
+
+
+def test_scene_word_in_the_chat_reads_back_to_the_same_animation():
+    """Ревью #4153: «сцена → слово» (``SCENE_WORDS``) и «слово → анимация» (``ANIMATION_ALIASES``) — одно знание:
+    слово анимации из одного слова, которое робот пишет в чат, в речи человека ведёт к той же анимации."""
+    for name in kn.KNOWN_ANIMATIONS:
+        word = kn.SCENE_WORDS[name]
+        if " " not in word:
+            assert kn.animation_name(word) == name, (name, word)
