@@ -104,6 +104,7 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls,
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
+from rob_box_dialog.words import asks_to_listen
 from rob_box_dialog.tools_view import (available_tools, music_asked, needs_words, robot_asked, show_asked,
                                        voice_asked, voice_named)
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
@@ -415,12 +416,17 @@ def form_tools(tools: Sequence[Any], form: Form, agent: str) -> Tuple[Any, ...]:
     return tuple(kept)
 
 
-def words_owed(snapshot: SessionSnapshot, pickup: bool, text: str, cmd: Command) -> bool:
-    """Команда модели не слышна, а человек ждёт слов (#3995): агент говорит в динамики (Личность, не шлем оператора и
-    не чат), реплика адресована - не подхват бэклога и не тишина (:func:`voices_passed`), и сама команда без слов
-    (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
-    return (agent_spec(snapshot.agent).sink == Sink.SPEAKERS and voices_passed(pickup, snapshot)
-            and needs_words(text, cmd))
+def speaks_aloud(snapshot: SessionSnapshot) -> bool:
+    """Кто ждёт слов от хода (#3995, #4179): агент говорит в динамики (Личность, не шлем оператора и не чат) и не тишина.
+    Подхват бэклога - тоже: он бывает только по голому «робот», человек обратился к роботу (живое 28.10 17:55 и n301:
+    «Робот.» → подхват → ответ одним лицом, тишина)."""
+    return agent_spec(snapshot.agent).sink == Sink.SPEAKERS and snapshot.top("Silence") is None
+
+
+def words_owed(snapshot: SessionSnapshot, text: str, cmd: Command) -> bool:
+    """Команда модели не слышна, а человек ждёт слов (#3995): :func:`speaks_aloud` (и при подхвате бэклога, #4179), и
+    сама команда без слов (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
+    return speaks_aloud(snapshot) and needs_words(text, cmd)
 
 
 def done_expression(turn: "_Turn", snapshot: SessionSnapshot) -> Optional[Expression]:
@@ -674,11 +680,24 @@ async def answer_recognized(engine: "TurnEngine", turn: "_Turn", snap: SessionSn
     return True
 
 
+def answer_listen_only(engine: "TurnEngine", turn: "_Turn") -> bool:
+    """Голое «робот» подхватило из бэклога просьбу слушать и не встревать (#4179, марафон-2 n301: «ты просто слушай и не
+    влезай»; ``words.asks_to_listen``): подхват адресован, молчать нельзя, но и отвечать по существу не о чем - код
+    говорит короткое ``LISTEN_ONLY_PHRASE`` («Слушаю»), LLM не зовётся. Другой подхват или не подхват - ``False``."""
+    if not turn.pickup or not asks_to_listen(turn.text):
+        return False
+    turn.stage, turn.reason = "done", kn.LISTEN_ONLY_PHRASE
+    engine._log.info(f"{LOG_MARK} подхват бэклога - просьба слушать {turn.text[:80]!r} → «слушаю» кодом, LLM не "
+                     f"зовётся turn={turn.turn_id}")
+    engine._say(turn, phrases.text(kn.LISTEN_ONLY_PHRASE))
+    return True
+
+
 async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> None:
     """Ход к LLM (``TurnEngine._understand``), если его не проглотила тишина (:func:`hold_silence`) и на него не ответил
-    код (:func:`answer_recognized`), — в форме команды хода (:func:`command_form`, #4021): схема и валидатор моста видят
-    её на время вызовов LLM этого хода."""
-    if hold_silence(engine, turn) or await answer_recognized(engine, turn, snap):
+    код (:func:`answer_listen_only`, :func:`answer_recognized`), — в форме команды хода (:func:`command_form`, #4021):
+    схема и валидатор моста видят её на время вызовов LLM этого хода."""
+    if hold_silence(engine, turn) or answer_listen_only(engine, turn) or await answer_recognized(engine, turn, snap):
         return
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
@@ -831,11 +850,10 @@ def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot
     query-тулы) - ответ без слов нарушает ``VIOLATION_SPEECH_REQUIRED``, и ход даёт модели повторы за словами
     (:func:`_push_for_words`; живой 28.10 13:40: «скажи обо мне пять фактов» - два поиска по памяти, а ответ
     последнего вызова - одно лицо; марафон-2 n109, n908).
-    Слов ждут те же, кому их должен :func:`words_owed`: агент говорит в динамики, реплика адресована и не в тишине
-    (:func:`voices_passed`: из бэклога честное молчание открыто), лицо без слов человек не просил
-    (``tools_view.show_asked``). Путь пения решён кодом (``perform`` или тул пути обязательны) - не трогаем."""
-    owed = (last and bool(turn.queried) and not form.sing and agent_spec(snapshot.agent).sink == Sink.SPEAKERS
-            and voices_passed(turn.pickup, snapshot) and not show_asked(turn.text))
+    Слов ждут те же, кому их должен :func:`words_owed` (:func:`speaks_aloud`: динамики, не тишина; подхват бэклога
+    голым «робот» - тоже, #4179), лицо без слов человек не просил (``tools_view.show_asked``). Путь пения решён кодом
+    (``perform`` или тул пути обязательны) - не трогаем."""
+    owed = (last and bool(turn.queried) and not form.sing and speaks_aloud(snapshot) and not show_asked(turn.text))
     return replace(form, speech_required=owed)
 
 
@@ -1123,7 +1141,7 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
     if queried:
         return " ".join(text for text in (said, query_fallback(queried)) if text)
     snap = engine.session.snapshot
-    if said or (results and not words_owed(snap, turn.pickup, turn.text, Command(actions=tuple(invalid.salvage)))):
+    if said or (results and not words_owed(snap, turn.text, Command(actions=tuple(invalid.salvage)))):
         return said or ""
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
 
@@ -1149,7 +1167,7 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> str:
     """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
     адресованную реплику (:func:`words_owed`, #3995) или только текст в чат на просьбу сделать роботом
     (:func:`robot_owed`, #4142)."""
-    if words_owed(snapshot, turn.pickup, turn.text, cmd):
+    if words_owed(snapshot, turn.text, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     return kn.VIOLATION_REMOTE_OWED if robot_owed(snapshot, turn, cmd) else ""
 

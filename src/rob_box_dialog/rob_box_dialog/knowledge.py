@@ -168,6 +168,15 @@ WAKE_NAMESPACES: Tuple[str, ...] = ("personality", "operator")
 SILENCE_WORDS: Tuple[str, ...] = ("помолч", "замолч")
 #: Снятие тишины (в состоянии SILENCED): «говори», «включайся», «работай», «отвечай», «разговаривай».
 UNSILENCE_WORDS: Tuple[str, ...] = ("говори", "включ", "работ", "отвеч", "разговар")
+#: Просьба слушать и не встревать (#4179; марафон-2 n301 «ты просто слушай и не влезай», живое «не вылезай»): не
+#: тишина SILENCED (её включает Tier-1 по :data:`SILENCE_WORDS`), а «слушай дальше». Подхват бэклога голым «робот»
+#: адресован и ждёт слов (``turn.words_owed``), кроме одного случая: подхваченная фраза - такая просьба (эти формы
+#: целиком или :data:`SILENCE_WORDS`, ``words.asks_to_listen``) - тогда код отвечает :data:`LISTEN_ONLY_PHRASE`
+#: («Слушаю»), LLM не зовётся.
+LISTEN_ONLY_FORMS: Tuple[str, ...] = (
+    "просто слушай", "просто слушайте", "не влезай", "не влезайте", "не вылезай", "не вылезайте", "не встревай",
+    "не встревайте", "не перебивай", "не перебивайте", "не вмешивайся", "не вмешивайтесь")
+LISTEN_ONLY_PHRASE = "understand.listening"
 
 
 #: Политики BML при новой команде во время исполнения (§5.6.4) и границы, на которых они срабатывают.
@@ -1641,6 +1650,7 @@ CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_RE
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
+    LISTEN_ONLY_PHRASE,
     SPEECH_CUT_PHRASE, *INVALID_COMMAND_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
     *(key for entry in QUERY_FALLBACK_PHRASES.values()

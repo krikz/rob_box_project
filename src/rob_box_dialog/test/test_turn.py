@@ -723,21 +723,23 @@ def test_3995_animation_asked_in_words_runs_silently_without_retry(text):
     assert ports.said == [] and (agg.stage, agg.status) == ("done", "finished")
 
 
-def test_3995_backlog_pickup_bare_animation_runs_without_retry():
-    ports = Ports(answers=[_bare(HAPPY)])
+def test_4179_backlog_pickup_bare_animation_is_retried_for_words():
+    """Подхват бэклога бывает только по голому «робот» - он адресован (#4179): голая анимация - нарушение и повтор,
+    а не тишина (было #3995: исполнялась без повтора)."""
+    ports = Ports(answers=[_bare(HAPPY), Answer(Command(speech="Слышу, ты меня слышишь."), "deepseek")])
     _run_addressed(_engine(ports), Addressed("ты меня слышишь", "backlog_pickup", True, ()))
-    assert len(ports.asked) == 1 and ports.executed == [[("play_animation", dict(HAPPY.args))]] and ports.said == []
+    assert len(ports.asked) == 2 and kn.VIOLATION_SILENT_ANSWER in ports.asked[1][0][-1]["content"]
+    assert [t for t, _, _ in ports.said] == ["Слышу, ты меня слышишь."]
 
 
-def test_3995_words_owed_only_for_speakers_addressed_and_not_silenced():
-    """Правило — только у Личности (речь в динамики), на адресованную реплику: не подхват бэклога, не тишина."""
+def test_3995_words_owed_only_for_speakers_and_not_silenced():
+    """Правило — только у Личности (речь в динамики) и не в тишине; подхват бэклога голым «робот» - тоже (#4179)."""
     bare = Command(actions=(HAPPY,))
     personality = Session("personality")
-    assert words_owed(personality.snapshot, False, N101, bare)
-    assert not words_owed(personality.snapshot, True, N101, bare), "подхват бэклога"
-    assert not words_owed(Session("operator").snapshot, False, N101, bare), "шлем оператора — не динамики"
+    assert words_owed(personality.snapshot, N101, bare)
+    assert not words_owed(Session("operator").snapshot, N101, bare), "шлем оператора — не динамики"
     personality.push_scene("Silence", "user")
-    assert not words_owed(personality.snapshot, False, N101, bare), "тишина"
+    assert not words_owed(personality.snapshot, N101, bare), "тишина"
 
 
 def test_3995_invalid_command_with_only_animation_salvaged_still_speaks():

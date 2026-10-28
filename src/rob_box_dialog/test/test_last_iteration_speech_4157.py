@@ -161,7 +161,7 @@ def test_form_is_open_when_the_query_was_never_done(monkeypatch):
 
 @pytest.mark.parametrize("kw, snap, expected", [
     ({}, {}, True),
-    ({"pickup": True}, {}, False),                       # подхват бэклога: честное молчание открыто
+    ({"pickup": True}, {}, True),                        # подхват бэклога голым «робот» адресован (#4179)
     ({"text": "покажи как тебе грустно"}, {}, False),   # лицо по просьбе человека - ответ без слов законен
     ({"text": "покажи это молча"}, {}, False),
     ({"queried": ()}, {}, False),                        # запроса в ходе не было
