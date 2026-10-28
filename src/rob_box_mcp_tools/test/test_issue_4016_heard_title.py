@@ -206,6 +206,18 @@ def test_two_word_title_is_not_assembled_from_scattered_words(archive):
     assert _aligned("Hey Jude", _keys("хэй", "джуд")) is not None
 
 
+def test_weak_key_word_is_heard_only_next_to_its_neighbour(archive):
+    """Ревью #4124 (минимальная сила ключа): слово названия с ключом из одной согласной («эту» — ``at``, «си» — ``s``)
+    совпадает со словами фразы случайно — через чужие слова оно не слышно. «ну эту как её там с хэллоу» — не «Out Of
+    Time» («эту» … «там» через «её»); названия, где слабые слова стоят рядом, находятся как были."""
+    assert heard_title(archive, "ну эту как её там с хэллоу").record is None
+    assert _aligned("Out Of Time", _keys("эту", "ее", "там")) is None
+    assert _aligned("Say Hello", _keys("си", "ди", "хэлл")) is None
+    for text, title in (("лет ит би", "Let It Be"), ("уопс ай дид ит эгейн", "Oops I Did It again"),
+                        ("хайвэй ту хэлл", "Highway To Hell"), ("тайм ту сэй гудбай", "Time To Say Goodbye")):
+        assert heard_title(archive, text).name == title, text
+
+
 def test_sound_index_is_warmed_at_start_not_in_the_first_order(archive):
     """Ревью #4124: указатель звучаний (14 тыс. слов) строился в первом заказе с непонятым названием (0.15–1 с).
     Прогрев ноды (``RequestMusicTool.warm`` → ``RequestSlotParser.warm``) строит его в фоне при старте."""

@@ -876,10 +876,14 @@ class RequestMusicTool(MCPTool):
             self._write_model(model)
 
     def _stage_piece(self, text: str, heard_text: Optional[str]) -> Dict[str, Any]:
-        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез)."""
+        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез).
+        Просили сочинить песню (:func:`song_asked`), а пьеса собралась по словам темы — она не названа (#4015)."""
         lead = lead_for(heard_text, text)
         staged = self._stage_classic(text, lead, asks_more(heard_text))
         staged.update(lead_data(lead))
+        played = staged.get("played") or {}
+        if played.get("named") and song_asked(heard_text or text):
+            staged["played"] = {**played, "named": False}
         return staged
 
     def _stage(self, route: Route, piece: Optional[Dict[str, Any]], text: str, mood: Optional[str],
@@ -1027,6 +1031,15 @@ def _doubt_refusal(heard: str) -> Dict[str, Any]:
     услышаны, и фразой кода «не уверен, что это за песня — «…»?» (её скажет голос, :func:`tool_result`)."""
     return {"ok": False, "found": False, "reason": NOT_FOUND, "query": heard, DOUBT: heard,
             "message": doubt_text(heard)}
+
+
+def song_asked(said: str) -> bool:
+    """Человек просил сочинить или спеть песню (про что-то, «что-нибудь», «народную»), а не назвал пьесу (#4015 ревью):
+    грамматика узнала в его словах ``GENERATE``. «Спой о море» — песня о море, а не «Baby One More Time» по слову
+    «море»; «спой валькирии» — не ``GENERATE`` (название решают слова названия, ``piece.named_pick``)."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    return parse_media_command(said or "").intent is MediaIntent.GENERATE
 
 
 def _asked_back(piece: Optional[Mapping[str, Any]]) -> bool:

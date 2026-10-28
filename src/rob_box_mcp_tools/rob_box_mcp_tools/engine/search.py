@@ -343,7 +343,9 @@ _ASK_WORDS = frozenset((*kn.SING_VERBS, *kn.SING_PERFORM_VERBS, *kn.SING_CREATE_
 #: «Say Hello»), доля слов названия, которая должна прозвучать (больше половины: «ин блэк» — не «Yenny From The
 #: Block»), с какого числа значимых слов одно может прозвучать иначе («раннинг ап зэт хилл»: «зэт» — that) и каким
 #: коротким должно быть услышанное на его месте слово (служебное английское: that, the, it; «брейк» вместо «be» — уже
-#: другое название).
+#: другое название). Сила ключа (согласных в :func:`phonetic_key`), с которой значимые слова названия могут прозвучать
+#: через чужие слова (:data:`HEARD_FAR_MIN`, ревью #4124): ключ из одной согласной («си» — ``s``, «эту» — ``at``, «ап» —
+#: ``ap``) совпадает со словами фразы случайно — такое слово слышно только рядом с соседним словом названия.
 HEARD_ALTS = 2
 HEARD_QUERIES = 4
 HEARD_ANCHOR_MIN = 2
@@ -352,6 +354,7 @@ HEARD_GAP_FROM = 3
 HEARD_COVER_MIN = 0.6
 HEARD_SLACK_FROM = 4
 HEARD_SLACK_WORD = 3
+HEARD_FAR_MIN = 2
 #: Жанровое слово в конце текста: грамматика снимает его перед названием как род музыки («сыграй рок эраунд зе
 #: клок» → название «эраунд зе клок»), а в звучании оно — первое слово названия (:func:`_sound_words`).
 _LEAD_STYLE_RE = re.compile(r"(?:" + "|".join(kn.SEARCH_STYLE_PATTERNS) + r")\s*$", re.IGNORECASE)
@@ -507,15 +510,20 @@ def _walk(title: Sequence[str], tkeys: Sequence[str], heard: Sequence[Tuple[str,
           room: Tuple[int, int]) -> Optional[int]:
     """Сколько слов названия прозвучало, если его первое значимое слово — услышанное ``start``. ``room`` — ``(slack,
     gap)``: значимое не прозвучало — ``None``, кроме ``slack`` слов, на месте которых услышано другое короткое слово
-    («зэт» вместо that); между прозвучавшими — не больше ``gap`` чужих слов, а на месте непрозвучавших служебных («of»,
-    «the») — по одному («кинг оф зе хилл»: «зе» вместо the)."""
+    («зэт» вместо that); между прозвучавшими — не больше ``gap`` чужих слов, а на месте непрозвучавших служебных
+    («of», «the») — по одному («кинг оф зе хилл»: «зе» вместо the). Через чужие слова — только между значимыми словами
+    с сильными ключами (не слабее :data:`HEARD_FAR_MIN`): слово со слабым ключом слышно лишь рядом с соседним словом
+    названия — «эту как её там» не «Out Of Time» («эту» — ``at``), «си … хэлл» не «Say Hello» (``s``)."""
     (slack, gap), pos, matched, free = room, start + 1, 1, 0
+    strong = _strength(tkeys[first]) >= HEARD_FAR_MIN  # у последнего прозвучавшего значимого слова сильный ключ
     for i in range(first + 1, len(title)):
-        reach = min(len(heard), pos + max(gap, free) + 1)
-        hit = next((p for p in range(pos, reach) if heard[p][0] == tkeys[i]), None)
+        stop = title[i] in _STOP
+        bridge = max(gap, free) if strong and (stop or _strength(tkeys[i]) >= HEARD_FAR_MIN) else 0
+        hit = next((p for p in range(pos, min(len(heard), pos + bridge + 1)) if heard[p][0] == tkeys[i]), None)
         if hit is not None:
             pos, matched, free = hit + 1, matched + 1, 0
-        elif title[i] in _STOP:
+            strong = strong if stop else _strength(tkeys[i]) >= HEARD_FAR_MIN
+        elif stop:
             free += 1
         elif slack and pos < len(heard) and heard[pos][1]:
             pos, slack = pos + 1, slack - 1
@@ -839,8 +847,9 @@ def theme_hooks(library: Any, theme: str, limit: int = THEME_HOOKS) -> Tuple[str
 
 
 __all__ = ["CONTOUR_NOTES", "FOUND_MIN", "Found", "HEARD_ALTS", "HEARD_ANCHOR_MIN", "HEARD_COVER_MIN", "HEARD_GAP",
-           "HEARD_GAP_FROM", "HEARD_QUERIES", "HEARD_SLACK_FROM", "HEARD_SLACK_WORD", "Heard", "RARE_MAX",
-           "heard_title", "phonetic_key", "rarely_named", "warm_heard", "PartQuery", "SEARCH_LIMIT", "THEME_HOOKS", "THEME_LIST_HOOKS",
+           "HEARD_FAR_MIN", "HEARD_GAP_FROM", "HEARD_QUERIES", "HEARD_SLACK_FROM", "HEARD_SLACK_WORD", "Heard",
+           "RARE_MAX", "heard_title", "phonetic_key", "rarely_named", "warm_heard", "PartQuery", "SEARCH_LIMIT",
+           "THEME_HOOKS", "THEME_LIST_HOOKS",
            "Term", "ThemeHits", "ThemeQuery", "blank_style", "by_part", "consensus_order", "coverage", "find",
            "genre_hooks", "genre_of", "part_query", "ranked", "round_robin", "sound_key", "stem", "terms",
            "theme_hooks",

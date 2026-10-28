@@ -6,8 +6,9 @@
 исполнимой только при ``route.work is None``. Теперь «не подключено» — только когда исполнителя нет, а песня на
 названное произведение — своя причина (``named_song``) до выбора, с фразой кода и строкой лога с ``work``.
 
-Ревью PR #4124: «названное» — это пьеса, чьё название несёт понятые слова заказа (``CoverWork.named``,
-``piece.named_pick``), а не любая собранная пьеса: «спой что-нибудь», «спой народную песню» — песня робота.
+Ревью PR #4124: «названное» — это пьеса, чьё название несёт понятые слова заказа или которую подтвердил каталог
+(``CoverWork.named``, ``piece.named_pick``), а не любая собранная пьеса: «спой что-нибудь», «спой народную песню» —
+песня робота; просьба сочинить песню о чём-то (грамматика: ``GENERATE``, ``tools_v2.song_asked``: «спой о море») — тоже.
 """
 
 from __future__ import annotations
@@ -19,14 +20,16 @@ import pytest
 
 from rob_box_mcp_tools.base import MCPToolResult
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
+from rob_box_mcp_tools.engine.piece import named_pick
 from rob_box_mcp_tools.engine.search import ThemeHits, ThemeQuery, part_query
 from rob_box_mcp_tools.engine.song_order import SongOrder
 from rob_box_mcp_tools.engine.instrumental_order import InstrumentalOrder
 from rob_box_mcp_tools.engine.source_route import SourceRouter
-from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool
+from rob_box_mcp_tools.engine.tools_v2 import SOURCE_DECLINED, DjSetTool, RequestMusicTool, song_asked
 from rob_box_music.choice import DeterministicChooser
 from rob_box_music.source import (DECLINE, GENERATE, NAMED_SONG, REASON_WORDS, CoverWork, Route, SourceAsk,
                                   SourceContext, decline_text, source_ask, source_candidates)
+from rob_box_music.works import RTTTL, WorkCandidate, WorkRef, WorkWord
 
 from .test_adr0158_pr4_cover import FakeMaker, _records
 from .test_adr0158_pr7_song import FakeStudio
@@ -166,6 +169,28 @@ def test_sing_with_a_piece_the_code_picked_orders_a_song_not_named_song(tmp_path
     assert result.data.get("route") != f"decline:{NAMED_SONG}", result.data
     assert REASON_WORDS[NAMED_SONG] not in str(result.error or "") + str(result.data.get("message") or "")
     assert len(studio.requests) == 1 and maker.orders == []
+
+
+@pytest.mark.parametrize("text", ["спой песню про валькирий", "спой о валькириях"])
+def test_song_about_a_theme_is_not_a_named_song_even_if_a_piece_matched(tmp_path, text):
+    """Просьба сочинить песню о чём-то (грамматика: ``GENERATE``) — не «чужая песня по названию», даже когда пьеса
+    собралась по слову темы (живой архив: «спой о море» — «Baby One More Time» по «море»). Студия пишет песню робота."""
+    assert song_asked(f"Робот, {text}") and not song_asked("Робот, спой валькирии")
+    studio, maker, played = FakeStudio(), FakeMaker(), []
+    req, _rig_ = _request(tmp_path, studio, maker, played)
+    assert req._stage_piece(text, f"Робот, {text}")["played"]["named"] is False  # noqa: SLF001
+    result = req.execute(intent="melody", text=text, heard_text=f"Робот, {text}")
+    assert result.data.get("route") != f"decline:{NAMED_SONG}", result.data
+    assert len(studio.requests) == 1 and maker.orders == []
+
+
+def test_catalog_confirmed_work_counts_as_named():
+    """``work_confirmed`` (LLM или звучание подтвердили произведение каталогом) — человек назвал пьесу, даже если слова
+    заказа в её названии не стоят (русское название, переведённое LLM); пьесы нет — не названа."""
+    ref = WorkRef(title=(WorkWord(alts=("polet",)),))
+    chosen = WorkCandidate("flightof", RTTTL, "Flight Of The Bumblebee", "Rimsky-Korsakov", 0.0)
+    assert not named_pick(ref, chosen) and named_pick(ref, chosen, confirmed=True)
+    assert not named_pick(ref, None, confirmed=True) and named_pick(ref, None, whole=True)
 
 
 def test_named_piece_is_marked_named_and_a_picked_one_is_not(tmp_path):

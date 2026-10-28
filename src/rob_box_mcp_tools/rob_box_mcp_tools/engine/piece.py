@@ -126,14 +126,16 @@ def chosen_of(pick: Optional[ClassicPick], candidates: Sequence[WorkCandidate]) 
     return next((c for c in candidates if pick is not None and c.id == pick.melody_id), None)
 
 
-def named_pick(ref: WorkRef, chosen: Optional[WorkCandidate], whole: bool = False) -> bool:
-    """Пьесу назвал человек (#4015, ``played["named"]``): слово названия заказа, которое архив знает, стоит в названии
-    выбранной (``WorkWord.named_in``), или она нашлась поиском по названию целиком (``whole``). ``title_match`` для
-    этого не годится: слово без написания в архиве ``WorkRef.rtttl`` засчитывает найденным (запись нашёл поиск). Пьеса,
-    подобранная по жанру, автору или «ближайшему» («спой что-нибудь», «спой народную песню»), — не названная."""
+def named_pick(ref: WorkRef, chosen: Optional[WorkCandidate], confirmed: bool = False, whole: bool = False) -> bool:
+    """Пьесу назвал человек (#4015, ``played["named"]``): каталог подтвердил произведение заказа (``confirmed`` —
+    ``RequestSlots.work_confirmed``: LLM или звучание, #3609/#4016), слово названия заказа, которое архив знает, стоит
+    в названии выбранной (``WorkWord.named_in``), или она нашлась поиском по названию целиком (``whole``).
+    ``title_match`` для этого не годится: слово без написания в архиве ``WorkRef.rtttl`` засчитывает найденным (запись
+    нашёл поиск). Пьеса, подобранная по жанру, автору или «ближайшему» («спой что-нибудь классическое»), — не
+    названная; просьбу сочинить песню («спой о море») решает грамматика (``tools_v2.song_asked``)."""
     if whole:
-        return ref.named
-    return chosen is not None and any(word.named_in(chosen.title) for word in ref.title)
+        return ref.named or confirmed
+    return chosen is not None and (confirmed or any(word.named_in(chosen.title) for word in ref.title))
 
 
 class PieceChain:
@@ -181,11 +183,11 @@ class PieceChain:
             return self._play_fresh(work, key, seed, lead, confirmed)
         pick, failed, count, ref, chosen = self._work_pick(work, key, seed, lead, confirmed)
         replacement = work if pick is not None and ref.named and chosen and not chosen.title_match else None
-        named = named_pick(ref, chosen)
+        named = named_pick(ref, chosen, confirmed)
         if pick is None:
             old = whole_name(self._classic, ref, work, seed, lead)
             pick, count = (old, count + 1) if old.found else (None, count)
-            named = named_pick(ref, None, old.found)
+            named = named_pick(ref, None, confirmed, old.found)  # не нашлось и здесь — «ближайшее» не названо
         if pick is None:
             near, more, extra = self._near_pick(work, key, seed, lead, [c.id for c, _why in failed])
             pick, failed, count, replacement = near, failed + more, count + extra, work if near else None
@@ -213,7 +215,7 @@ class PieceChain:
             return None, ({"repeats": repeats} if repeats else {}), reasons, len(candidates)
         played = {"work": work, "title": pick.title, "composer": pick.composer, "source": pick.source,
                   "replacement_for": None, "scores_failed": sum(c.kind == SCORE for c, _why in failed),
-                  "named": named_pick(ref, chosen_of(pick, fresh))}
+                  "named": named_pick(ref, chosen_of(pick, fresh), confirmed)}
         return pick, played, reasons, len(candidates)
 
     def candidates(self, work: str, key: str = "") -> Tuple[WorkRef, List[WorkCandidate], Dict[str, Any]]:
