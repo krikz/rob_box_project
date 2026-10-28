@@ -284,6 +284,29 @@ def check(path: Path) -> int:
     return 1 if bad else 0
 
 
+def drop_failing(data: Dict[str, Any], base: Dict[str, Any]) -> Dict[str, Any]:
+    """Убрать из замороженной части перефразы, которые перестали проходить автопроверку, БЕЗ новых текстов и без сети (#4196:
+    ожидания шага n306 выросли на «не узнал», и перефраза «…а кого так и не узнал?» подсказывает ответ). Остаётся подмножество
+    измеренных перефраз; убранные - в ``method.dropped_rows`` (текст и причина). Шаг, у которого осталось меньше
+    :data:`MIN_KEEP`, - ``SystemExit``: недостающее дописывает ``--top-up`` с моделью, это решает человек, а не молчаливая потеря."""
+    wakes = wake_table()
+    items = {item["id"]: item for item in plan(base, wakes)[0]}
+    keep: Dict[str, List[Dict[str, Any]]] = {}
+    dropped: List[Dict[str, Any]] = []
+    for sid, rows in data["alternatives"].items():
+        good = [r for r in rows if sid in items and not problems_of(items[sid], r["text"], wakes)]
+        dropped += [{"id": sid, "text": r["text"], "problems": problems_of(items[sid], r["text"], wakes) if sid in items
+                     else ["шаг исключён из части 2"]} for r in rows if r not in good]
+        if len(good) < MIN_KEEP:
+            raise SystemExit(f"{sid}: после снятия непрошедших осталось {len(good)} перефраз (< {MIN_KEEP}) - нужен --top-up")
+        keep[sid] = good
+    method = {**data["method"], "dropped_rows": [*data["method"].get("dropped_rows", []), *dropped]}
+    counts = alt.recount(data["counts"], keep, data["excluded"])
+    counts.update({f"steps_with_{n}": sum(len(r) == n for r in keep.values()) for n in (3, 2, 1)})
+    counts["steps_below_min"] = sum(len(r) < MIN_KEEP for r in keep.values())
+    return {**data, "method": method, "counts": counts, "alternatives": keep}
+
+
 def sample(path: Path, n: int) -> List[Tuple[str, str, str]]:
     """N случайных пар «исходник → перефраза» (зерно :data:`SEED`) для ручной проверки."""
     base = load_base()
@@ -304,9 +327,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                                           "недостающие (после правки MANUAL_REJECT)")
     ap.add_argument("--repoint-from", default="", help="старый marathon.json: перевесить файл на текущую часть 1 без "
                                                        "новых текстов (alternatives.repoint)")
+    ap.add_argument("--drop-failing", action="store_true", help="убрать перефразы, переставшие проходить автопроверку "
+                                                                "(без сети и новых текстов)")
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    if args.drop_failing:
+        base = load_base()
+        out = Path(args.out)
+        data = drop_failing(alt.load_part(PART, base, out), base)
+        before = json.loads(out.read_text(encoding="utf-8"))["corpus_sha256"]
+        sha = alt.write_part(out, data)
+        print(f"часть {PART}: убрано непрошедших {len(data['method']['dropped_rows'])}, {data['counts']}, sha256 {sha[:12]} "
+              f"(было {before[:12]})")
+        return 0
     if args.repoint_from:
         alt.repoint_file(PART, Path(args.out), Path(args.repoint_from), load_base())
         return 0

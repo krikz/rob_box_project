@@ -135,10 +135,14 @@ def repoint(data: Dict[str, Any], old_base: Dict[str, Any], new_base: Dict[str, 
                         "reason": f"часть 1 пересобрана ({old_base['corpus_sha256'][:12]} → "
                                   f"{new_base['corpus_sha256'][:12]}): текст шага сменился «{before}» → «{after}», "
                                   f"альтернативы старого текста к новому шагу не относятся"})
-    method = {**data["method"], "repointed": {"measured_sha256": data["corpus_sha256"],
-                                              "from_base": old_base["corpus_sha256"],
+    # Повторный перевес (#4196: часть 1 пересобрана ещё раз, ни один шаг не сменился) хранит цепочку: хеш ИЗМЕРЕННОГО
+    # корпуса и первая часть 1 остаются прежними, убранные шаги копятся - файл по-прежнему подмножество измеренного.
+    prev = data["method"].get("repointed") or {}
+    method = {**data["method"], "repointed": {"measured_sha256": prev.get("measured_sha256", data["corpus_sha256"]),
+                                              "from_base": prev.get("from_base", old_base["corpus_sha256"]),
                                               "to_base": new_base["corpus_sha256"],
-                                              "dropped_steps": [d["id"] for d in dropped]}}
+                                              "dropped_steps": [*prev.get("dropped_steps", []),
+                                                                *(d["id"] for d in dropped)]}}
     excluded = [*data.get("excluded", []), *dropped]
     return {**data, "base": base_ref(new_base), "method": method, "excluded": excluded, "alternatives": keep,
             "counts": recount(data["counts"], keep, excluded)}

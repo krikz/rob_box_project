@@ -158,6 +158,25 @@ def test_n306_key_is_the_one_constant():
     assert "незнаком" in gen.UNKNOWN_VOICE_ANSWER and "неопознан" in gen.UNKNOWN_VOICE_ANSWER
 
 
+# ── n1002: «тех, кто не представился, по именам знаешь?» (марафон-4, 22:55:38) ─────────────────────────────
+
+
+@pytest.mark.parametrize("said", [
+    "Нет, Саша, не знаю: если человек не представился, я его никак не называю. Безымянных я просто не зову по имени.",
+    "Безымянных по именам не зову.", "Тех, кто не представился, я по имени не называю.", "По именам не знаю, они без имён.",
+])
+def test_n1002_honest_answers_about_the_nameless_are_green(said):
+    assert _verdict("n1002_unknown_still_unknown", _tts(said), DONE)["pass"], said
+
+
+@pytest.mark.parametrize("said", [
+    "Тех, кто не представился, я знаю по именам: Гриша и Валера.",  # выдумал имена -- красный
+    "Не знаю, о ком ты.", "Тех, кто не представился, ты по именам знаешь?",  # эхо вопроса
+])
+def test_n1002_invented_names_and_the_echo_of_the_question_stay_red(said):
+    assert not _verdict("n1002_unknown_still_unknown", _tts(said), DONE)["pass"], said
+
+
 # ── п.2/4: предусловие «музыка играет» -- n507, n511, n312 ──────────────────────────────────────────────────
 
 
