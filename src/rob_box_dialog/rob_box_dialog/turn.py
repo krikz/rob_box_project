@@ -80,7 +80,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from rob_box_core.tool_catalog import get_tool
 from rob_box_core.utterance import Sink, Utterance
@@ -92,7 +92,7 @@ from rob_box_dialog import tool_ask
 from rob_box_dialog.address import BARE_WAKE, Addressed
 from rob_box_dialog.agents import agent_spec, allows_tier1, tools_for
 from rob_box_dialog.command import (Command, Expression, Form, Invalid, Performance, Result, ToolCall, current_form,
-                                    explain, loud_actions, turn_form)
+                                    explain, fit_speech, loud_actions, turn_form)
 from rob_box_dialog.context import build_context
 from rob_box_dialog.deadline import TIMEOUT_PHRASE, DeadlineExpired, ProviderFailed, TurnDeadline, latency_line
 from rob_box_dialog.execute import deadline_s
@@ -820,6 +820,20 @@ def _offered(tools: Sequence[Any], last: bool) -> Tuple[Any, ...]:
     return tuple(t for t in tools if not last or kn.TOOL_CLASSES.get(t.name) != _QUERY)
 
 
+def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot) -> Form:
+    """Форма вызова модели одной итерации (#4157, ADR-0148 п.2: валидатор с понятной ошибкой, а не правило в промпте).
+    Последняя итерация после выполненного запроса: данные у модели, читать больше нечем (:func:`_offered` убрал
+    query-тулы), а ход повторить вызов уже не может (:func:`_answer_owed` повторяет только не на последней) - ответ без
+    слов нарушает ``VIOLATION_SPEECH_REQUIRED``, и повтор с подсказкой даёт мост в том же запросе (живой 28.10 13:40:
+    «скажи обо мне пять фактов» - два поиска по памяти, а ответ последнего вызова - одно лицо; марафон-2 n109, n908).
+    Слов ждут те же, кому их должен :func:`words_owed`: агент говорит в динамики, реплика адресована и не в тишине
+    (:func:`voices_passed`: из бэклога честное молчание открыто), лицо без слов человек не просил
+    (``tools_view.show_asked``). Путь пения решён кодом (``perform`` или тул пути обязательны) - не трогаем."""
+    owed = (last and bool(turn.queried) and not form.sing and agent_spec(snapshot.agent).sink == Sink.SPEAKERS
+            and voices_passed(turn.pickup, snapshot) and not show_asked(turn.text))
+    return replace(form, speech_required=owed)
+
+
 def _close_unread(turn: _Turn, acted: bool) -> str:
     """Модель на последней итерации ещё просит ``query`` (его уже не исполняют, :func:`_runnable`) или только
     повторяет исполненное в ходе (:func:`unrepeated`, #4069 п.1), а её слов не слышно: ответа она не дала
@@ -868,7 +882,7 @@ def query_more(engine: "TurnEngine", turn: _Turn, results: Sequence[ActionResult
         engine._log.info(f"{LOG_MARK} query {[r.tool for r in readable]} рядом с действиями "
                          f"{[(r.tool, r.status) for r in acted]} → данные модели, итог действий сказал код "
                          f"turn={turn.turn_id}")
-    turn.queried = readable
+    turn.queried += readable  # всё прочитанное в ходе: фраза кода по данным (#4157) видит и прошлые итерации
     return _query_data(readable)
 
 
@@ -915,20 +929,84 @@ def _library_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
     return {"total": total, "names": ", ".join(names)} if names or total <= 0 else None
 
 
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _facts_slots(texts: Iterable[Any]) -> Optional[Mapping[str, Any]]:
+    """Слоты фразы по данным памяти (#4157): первые ``MEMORY_SUMMARY_FACTS`` разных фактов как есть, через «;» (точка в
+    конце факта во фразе лишняя). Фактов нет - ``None``: фразы по данным нет."""
+    cleaned = (" ".join(str(text or "").split()).rstrip(".;").strip() for text in texts)
+    facts = list(dict.fromkeys(fact for fact in cleaned if fact))[:kn.MEMORY_SUMMARY_FACTS]
+    return {"facts": "; ".join(facts)} if facts else None
+
+
+def _score(row: Mapping[str, Any]) -> float:
+    score = row.get("score")
+    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else 0.0
+
+
+def _search_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``memory_search``: записи ``kind=fact`` по убыванию ``score``; реплики прошлых разговоров (``kind=turn``) - не
+    факты о человеке, их фраза не называет."""
+    rows = [r for r in data.get("results") or () if isinstance(r, Mapping) and r.get("kind") == "fact"]
+    return _facts_slots(r.get("content") for r in sorted(rows, key=_score, reverse=True))
+
+
+def _context_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``memory_context``: ``facts`` - факты о собеседнике (``{fact, category, …}``) в порядке владельца памяти."""
+    return _facts_slots(f.get("fact") for f in data.get("facts") or () if isinstance(f, Mapping))
+
+
+def _sounds_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Слоты фразы каталога звуков (``get_sound_info`` без аргументов, #4157): сколько звуков всего и по каким
+    категориям (``knowledge.SOUND_CATEGORY_NAMES``; звуки прочих категорий - «другие»). Список одной категории или один
+    звук - слов по данным нет (``None``)."""
+    total, counts = data.get("total_sounds"), data.get("categories")
+    if not _is_count(total) or total <= 0 or not isinstance(counts, Mapping):
+        return None
+    named = [(label, counts.get(key)) for key, label in kn.SOUND_CATEGORY_NAMES.items()]
+    named.append((kn.SOUND_OTHER_NAME, total - sum(n for _, n in named if _is_count(n))))
+    names = ", ".join(f"{label} — {n}" for label, n in named if _is_count(n) and n > 0)
+    return {"total": total, "names": names} if names else None
+
+
+def _web_slots(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """``search_web`` (#4157, n908): текст (``body``) первой строки выдачи с текстом, без хвостового многоточия обрезки
+    тула. Выдача пуста - ``None``: фразы по данным нет."""
+    bodies = (" ".join(str(r.get("body") or "").split()) for r in data.get("results") or () if isinstance(r, Mapping))
+    text = next((body.rstrip(".…;: ") for body in bodies if body.rstrip(".…;: ")), "")
+    return {"text": text} if text else None
+
+
 #: Слоты фразы кода по данным ``query`` - по тулу таблицы ``knowledge.QUERY_FALLBACK_PHRASES`` (ключи совпадают).
 _QUERY_SLOTS: Mapping[str, Callable[[Mapping[str, Any]], Optional[Mapping[str, Any]]]] = {
-    "list_tts_voices": _voices_slots, kn.LIBRARY_TOOL: _library_slots}
+    "list_tts_voices": _voices_slots, kn.LIBRARY_TOOL: _library_slots, "memory_search": _search_slots,
+    "memory_context": _context_slots, "get_sound_info": _sounds_slots, "search_web": _web_slots}
+
+
+def _answer_sources(results: Sequence[ActionResult]) -> List[ActionResult]:
+    """Выполненные ``query`` хода, по данным которых код может ответить: память о собеседнике
+    (``knowledge.MEMORY_FACTS_TOOLS``) - только когда ход больше ничего не читал (n908: память рядом с ``search_web`` -
+    контекст, а не ответ на «рецепт борща»)."""
+    done = [r for r in results if r.status == "done"]
+    others = [r for r in done if r.tool not in kn.MEMORY_FACTS_TOOLS]
+    return others or done
 
 
 def query_answer(results: Sequence[ActionResult]) -> Optional[str]:
-    """Ответ кода по данным выполненного ``query`` (#3883, #4069 п.3): фраза тула (``knowledge.QUERY_FALLBACK_PHRASES``,
+    """Ответ кода по данным выполненного ``query`` (#3883, #4069 п.3, #4157): фраза тула (``knowledge.QUERY_FALLBACK_PHRASES``,
     ключ - по данным вызова) со слотами из данных результата: голоса - сводка по провайдерам, список библиотеки - число
-    треков и 2–3 названия. Фразы по данным нет - ``None``."""
-    for r in results:
-        entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool) if r.status == "done" else None
+    треков и 2–3 названия, память - 2–3 факта (только если ход читал одну её, :func:`_answer_sources`), каталог звуков -
+    сколько и каких категорий, поиск в сети - текст первой строки выдачи. Одно место слотов: что модель
+    прочла и не сказала, называет код. Ответ не длиннее речи, которую слышат (``command.fit_speech``). Фразы по данным
+    нет - ``None``."""
+    for r in _answer_sources(results):
+        entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
         slots = _QUERY_SLOTS[r.tool](r.data) if entry is not None else None
         if slots is not None:
-            return phrases.text(entry.key(r.data) if isinstance(entry, kn.ByData) else entry, **slots)
+            text = phrases.text(entry.key(r.data) if isinstance(entry, kn.ByData) else entry, **slots)
+            return fit_speech(Command(speech=text)).speech
     return None
 
 
@@ -1388,11 +1466,13 @@ class TurnEngine:
         offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
+        form = current_form()
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
             turn.waiting = "llm"
-            answer = await turn.deadline.wait(self._ports.ask(messages, _offered(tools, last), turn.deadline.left()),
-                                              "llm")
+            with turn_form(answer_form(form, turn, last, self.session.snapshot)):  # валидатор моста - форму итерации
+                answer = await turn.deadline.wait(
+                    self._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
             turn.llm_calls += answer.calls
             turn.provider, turn.tokens = answer.provider or turn.provider, turn.tokens + answer.tokens
             if self._stale(turn, "answer"):

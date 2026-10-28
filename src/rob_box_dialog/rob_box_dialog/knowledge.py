@@ -1566,19 +1566,44 @@ SILENT_ANSWER_PHRASE = "understand.silent_answer"
 #: Поле с данными ``query`` в сообщении, которым ход возвращает их модели (``turn._query_data``); по нему мост узнаёт,
 #: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
 QUERY_RESULTS_FIELD = "query_results"
+#: Фраза по данным памяти (``memory_search``/``memory_context``, #4157): факты, которые модель прочла и не сказала.
+MEMORY_FACTS_PHRASE = "query.memory_facts"
+#: Сколько фактов называет фраза по данным памяти: 2–3, не весь перечень (живой 28.10 13:40, «скажи обо мне пять
+#: фактов»: девять результатов, а на последней итерации - одно лицо без слов).
+MEMORY_SUMMARY_FACTS = 3
+#: Тулы чтения памяти о собеседнике (#4157): их факты - ответ кода, только если ход больше ничего не читал. Рядом с
+#: другими данными память - контекст, а ответ - в них (марафон-2 28.10 n908: «рецепт борща без лука» -
+#: ``memory_search 'еда'``/``'лук'`` и ``search_web``; факты о еде вместо рецепта были бы ответом не на тот вопрос).
+MEMORY_FACTS_TOOLS: Tuple[str, ...] = ("memory_search", "memory_context")
+#: Категории звуков каталога (``get_sound_info`` без аргументов: ``base``/``ui``/``robot``) → как их зовёт робот вслух;
+#: порядок таблицы - порядок во фразе. Звуки остальных категорий (``other``, ``unknown``) - «другие».
+SOUND_CATEGORY_NAMES: Mapping[str, str] = MappingProxyType({"base": "эмоции", "ui": "интерфейс", "robot": "эффекты"})
+SOUND_OTHER_NAME = "другие"
 #: Страховка от молчания (#3883, решение Шифу 23.10): речь невалидна и после повтора, а запрос хода выполнен — код
 #: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
 #: код (``turn.query_answer``). ``music_library`` ``list`` (#4069 п.3; живой 27.10: на последней итерации звучала общая
 #: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
-#: фраза о пустой; ``search``/``info`` своей фразы нет - общая.
+#: фраза о пустой; ``search``/``info`` своей фразы нет - общая. Память (#4157) - 2–3 факта как есть
+#: (:data:`MEMORY_SUMMARY_FACTS`), когда ход читал только её (:data:`MEMORY_FACTS_TOOLS`); каталог звуков без аргументов (живой 28.10 15:22, «какие звуки ты умеешь
+#: издавать») - сколько звуков и по каким категориям (:data:`SOUND_CATEGORY_NAMES`); поиск в сети (марафон-2 n908,
+#: «рецепт борща без лука») - текст первой строки выдачи как есть, речь ужимает ``command.fit_speech``.
 QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
     "list_tts_voices": "query.voices_summary",
     LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+    "memory_search": MEMORY_FACTS_PHRASE,
+    "memory_context": MEMORY_FACTS_PHRASE,
+    "get_sound_info": "query.sounds_summary",
+    "search_web": "query.web_found",
 })
 #: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
 LIBRARY_SUMMARY_NAMES = 3
-#: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
+#: Тулов с фразой нет (или данные не дают слов) — общая честная фраза: данные получены, ответ не сложился. Причины
+#: она не называет: «слишком длинно» говорит только ``VIOLATION_SPEECH_TOO_LONG`` (#4137), а бывает, что слов просто нет.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
+#: Последняя итерация хода после выполненного запроса (#4157, ADR-0148 п.2: валидатор с понятной ошибкой): данные у
+#: модели, читать больше нечем, а ход повторить вызов уже не может - ответ без слов (одно лицо или анимация,
+#: ``command.bare_answer``) нарушает это правило, и мост даёт повтор в том же запросе (``command.Form.speech_required``).
+VIOLATION_SPEECH_REQUIRED = "speech_required"
 #: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
 #: исполнены, об исходе говорит код; исполнять нечего - эта честная фраза, а не молчание на адресованную реплику.
 INVALID_COMMAND_PHRASE = "command.invalid_generic"
@@ -1601,7 +1626,7 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось (ревью #4041: «Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
-CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER,)
+CALM_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SILENT_ANSWER, VIOLATION_SPEECH_REQUIRED)
 #: Особые ключи каталога фраз (не по классу действия): их обязан содержать ``phrases/ru.yaml``.
 PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
