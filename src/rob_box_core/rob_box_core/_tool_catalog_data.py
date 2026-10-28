@@ -2422,10 +2422,31 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                            'на '
                                                                            'ближайшем '
                                                                            'такте',
-                                                            'enum': ['now', 'bar']}},
+                                                            'enum': ['now', 'bar']},
+                                            'track_id': {   'type': 'string',
+                                                            'description': 'только для '
+                                                                           'кода '
+                                                                           'выступления: '
+                                                                           'снять '
+                                                                           'именно '
+                                                                           'этот трек '
+                                                                           '(его бит); '
+                                                                           'играет '
+                                                                           'другая '
+                                                                           'музыка — '
+                                                                           'не '
+                                                                           'трогать. '
+                                                                           'Не '
+                                                                           'указывай: '
+                                                                           '«выключи '
+                                                                           'музыку» '
+                                                                           'гасит '
+                                                                           'всё'}},
                           'required': [],
                           'additionalProperties': False},
-        'signature': {'params': ['boundary'], 'required': [], 'accepts_kwargs': False},
+        'signature': {   'params': ['boundary', 'track_id'],
+                         'required': [],
+                         'accepts_kwargs': False},
         'skill': ('composer', 'dj', 'player')},
     {   'llm_visible': True,
         'operator_visible': False,

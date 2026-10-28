@@ -39,8 +39,10 @@ from rob_box_dialog.words import strip_wake_word  # noqa: E402
 
 #: Шаги акта 2b, на которые отвечает код (вопрос узнавания), - остальные идут модели: память (n703, n707),
 #: самопредставление (n701, n705, n709), выбор из имён «кто говорит, я или Борис?» (n708 - кодом не покрыт).
-BY_CODE = ("n702_sasha_recognized_no_question", "n704_sasha_after_gap_no_question",
-           "n706_boris_recognized_no_question", "n710_grisha_not_named_by_voice")
+BY_CODE = ("n702_sasha_recognized_no_question", "n706_boris_recognized_no_question",
+           "n710_grisha_not_named_by_voice")
+#: n704 «ты ещё здесь, помнишь меня?» - с 28.10 вопрос к памяти (решение Шифу, вариант Б, #3993): отвечает модель.
+BY_MODEL_REMEMBER = "n704_sasha_after_gap_no_question"
 #: Снимок каждого шага, каким его ждёт акт: Саша и Борис записаны в акте 2 (имя подтверждено), тётя Гриша - профиль
 #: без имени (#3858). Спор 23.10 (0.944, имя скрыто, run 40027008219) - отдельный случай ниже.
 CONFIRMED = {"anton": {"is_known": True, "speaker_id": "429eae2c", "name": "Саша", "confidence": 0.934},
@@ -122,6 +124,13 @@ def test_by_code_steps_are_exactly_the_recognition_questions_of_the_scenario():
     assert {label for label, s in steps.items() if asks_recognized(strip_wake_word(s["text"]))} == set(BY_CODE)
 
 
+def test_remember_me_step_goes_to_the_model_not_to_the_snapshot_3993():
+    """Решение Шифу 28.10 (вариант Б): n704 «ты ещё здесь, помнишь меня?» - ход модели с памятью, код не отвечает."""
+    step = _steps()[BY_MODEL_REMEMBER]
+    assert "помнишь" in step["text"]
+    assert not asks_recognized(strip_wake_word(step["text"]))
+
+
 @pytest.mark.parametrize("label", BY_CODE)
 def test_code_answer_passes_the_step_judge(label):
     """Снимок, которого ждёт акт: 0 вызовов LLM, а сказанное кодом проходит acceptance и patterns шага (имя есть,
@@ -136,7 +145,7 @@ def test_code_answer_passes_the_step_judge(label):
     assert etm.patterns_missing(log, step.get("patterns") or []) == []
 
 
-@pytest.mark.parametrize("label", BY_CODE[:3])
+@pytest.mark.parametrize("label", BY_CODE[:2])
 def test_contested_voice_gets_no_lie_and_no_candidate_name(label):
     """Спор 23.10 (0.944, имя скрыто): код не говорит «не запомнил» и не называет кандидата; шаг всё равно красный -
     по вердикту биометрии (имя не опубликовано), а не по выдумке модели."""
@@ -153,7 +162,7 @@ def test_grisha_enrolled_from_this_very_phrase_is_not_told_her_voice_is_remember
     """Круг 1 ревью PR #4121 (блокер): если профиль тёти Гриши заведён из САМОЙ реплики n710 (речь ≥ 3 с, #3858
     ``source=enroll``), голос слышен впервые - код говорит «по голосу пока не узнаю», а не «голос твой помню»; судья
     шага (имена и факты Саши и Бориса не звучат) это пропускает."""
-    label = BY_CODE[3]
+    label = BY_CODE[2]
     step = _steps()[label]
     enrolled = {**CONFIRMED[step["voice"]], "confidence": 0.0, "source": "enroll"}
     agg, ports = _code_turn(step["text"], enrolled)

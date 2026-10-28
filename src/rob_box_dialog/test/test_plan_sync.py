@@ -109,6 +109,7 @@ def test_verdicts_follow_the_backing_state():
     assert track.verdict("nearly_finished", "x", 0.5) == "ignore"
     assert track.verdict("started", "t1", 0.7) == "ignore"  # событие плеера до исхода запроса — не наше (#4085)
     assert track.verdict("rejected", None, 0.5, own=True) == "rejected"
+    track.request(0.6, 30.0)  # отказ - вторая попытка: ещё один запрос, ещё один исход в пути
     assert track.verdict("started", "t1", 1.0, own=True) == "started"  # исход НАШЕГО запроса — ответ тула
     track.started("t1", {"bpm": 120, "beat_at": 2.0, "bar_beats": 4})
     assert track.grid is not None
@@ -120,15 +121,28 @@ def test_verdicts_follow_the_backing_state():
     assert track.verdict("started", "users_track", 3.0) == "ended"  # деку заняла другая музыка — тактов нет
 
 
-def test_late_started_is_ours_only_shortly_after_giving_up():
-    """Сняли подложку до её started (таймаут, «хватит»): её поздний started ещё PERFORM_BACKING_START_S — наш
-    (снять), позже — чужой трек (музыку, которую человек поставил потом, выступление не трогает)."""
+def test_late_started_is_ours_only_as_the_outcome_of_our_own_request():
+    """Сняли подложку до её started (таймаут, «хватит»): исход нашего запроса (ответ тула) ещё в пути - его поздний
+    started наш (снять по id), сколько бы времени ни прошло; второй «исход» без запроса - чужой трек (музыку, которую
+    человек поставил потом, выступление не трогает). Хвост ревью PR #4111: окно по времени заменено счётчиком
+    запросов в пути."""
     track = BackingTrack("beat")
     track.request(0.0, 30.0)
     track.fail("timeout", 6.0)
+    assert track.awaiting == 1
     assert track.verdict("started", "users_track", 7.0) == "ignore"  # чужой трек от плеера — не «поздний» (#4085)
-    assert track.verdict("started", "late", 7.0, own=True) == "late"
-    assert track.verdict("started", "users_track", 6.0 + kn.PERFORM_BACKING_START_S + 0.1, own=True) == "ignore"
+    assert track.awaiting == 1, "событие плеера исходом запроса не считается"
+    assert track.verdict("started", "late", 60.0, own=True) == "late"  # поздно - но это исход нашего запроса
+    assert track.awaiting == 0
+    assert track.verdict("started", "users_track", 61.0, own=True) == "ignore"  # запроса в пути больше нет
+    rejected = BackingTrack("beat")
+    rejected.request(0.0, 30.0)
+    rejected.stopped(1.0)
+    assert rejected.verdict("rejected", "pending", 9.0, own=True) == "late"  # поставлен, не встал: отменить по id
+    nobody = BackingTrack("beat")
+    nobody.request(0.0, 30.0)
+    nobody.stopped(1.0)
+    assert nobody.verdict("rejected", None, 9.0, own=True) == "ignore"  # отказ без id - снимать нечего
     playing = BackingTrack("beat")
     playing.request(0.0, 30.0)
     playing.started("t1", {})

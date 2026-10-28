@@ -29,10 +29,16 @@ class Backing:
 
 @dataclass(frozen=True)
 class MusicStop:
-    """Эффект: снять подложку — ``bar`` (outro на ближайшем такте) или ``now`` (сразу)."""
+    """Эффект: снять НАШУ подложку — ``bar`` (outro на ближайшем такте) или ``now`` (сразу).
+
+    ``track_id`` обязателен (ADR-0148, хвост ревью PR #4111): снимается именно этот трек, а на деке уже чужая музыка
+    (человек заказал трек, пока бит просили или после его отказа) - тул ничего не трогает. Подложку, чей запрос ещё в
+    пути (id не знаем), вслепую не снимают: id приходит ответом тула, и поздний ``started`` (или ``rejected`` с id
+    ещё не вставшего трека) снимается по нему (:meth:`BackingTrack.verdict` → ``late``)."""
 
     boundary: str
     reason: str
+    track_id: str
 
 
 def grid_of(fields: Mapping[str, Any]) -> Optional[BeatGrid]:
@@ -63,7 +69,9 @@ class BackingTrack:
         self.track_id = ""
         self.grid: Optional[BeatGrid] = None
         self.reason = ""
-        self.late_until = 0.0
+        #: Запросов подложки (``request``), исход которых (ответ тула) ещё не пришёл. Пока он >0, исход - наш, даже
+        #: если выступление уже сдалось (срок/«хватит»): поздний ``started`` снимается по id, а не вслепую.
+        self.awaiting = 0
 
     @property
     def wanted(self) -> bool:
@@ -86,6 +94,7 @@ class BackingTrack:
     def request(self, now: float, min_s: float, replace: bool = False) -> Backing:
         """Следующая попытка: настроение по порядку, срок ``started`` — ``PERFORM_BACKING_START_S``."""
         self.attempt += 1
+        self.awaiting += 1
         self.state, self.deadline = "requested", now + kn.PERFORM_BACKING_START_S
         return Backing(self.mood, round(min_s, 1), replace=replace)
 
@@ -109,7 +118,7 @@ class BackingTrack:
         self.state, self.grid = "ended", None
 
     def stopped(self, now: float) -> None:
-        self._give_up("stopped", now)
+        self._give_up("stopped")
 
     def kept(self) -> bool:
         """«А музыку оставь»: играющий бит больше не наш (``True``); не играл — оставлять нечего (``False``)."""
@@ -120,14 +129,13 @@ class BackingTrack:
 
     def fail(self, reason: str, now: float) -> str:
         """Отказ без новой попытки: причина фразы (``quota``/``network``/``timeout`` или ``error``)."""
-        self._give_up("failed", now)
+        self._give_up("failed")
         self.reason = reason if reason in kn.PERFORM_NO_BACKING_REASONS else "error"
         return self.reason
 
-    def _give_up(self, state: str, now: float) -> None:
-        """Подложку больше не ждём. Если она так и не встала — её поздний ``started`` ещё ``PERFORM_BACKING_START_S``
-        считается нашим (снять, а не оставить играть без выступления)."""
-        self.late_until = now + kn.PERFORM_BACKING_START_S if self.state == "requested" else 0.0
+    def _give_up(self, state: str) -> None:
+        """Подложку больше не ждём. Если запрос ещё в пути (``awaiting``), его поздний исход остаётся нашим: ``started``
+        снимается по id, а не оставляется играть без выступления."""
         self.state, self.deadline = state, None
 
     def can_retry(self) -> bool:
@@ -137,30 +145,34 @@ class BackingTrack:
         return self.unresolved and self.deadline is not None and now >= self.deadline
 
     def verdict(self, kind: str, track_id: Optional[str], now: float, own: bool = False) -> str:
-        """Что событие значит для выступления: ``ignore``; ``late`` (наша подложка встала, когда её уже не
-        ждут — снять); ``started``/``rejected`` (исход запроса); ``nearly`` (скоро конец формы); ``ended`` (кончилась
-        или деку заняла другая музыка — тактов нашей подложки больше нет). ``own`` — исход НАШЕГО запроса
+        """Что событие значит для выступления: ``ignore``; ``late`` (исход нашего запроса пришёл, когда выступление
+        уже сдалось: ``started`` - трек встал, ``rejected`` с id - трек поставлен, но не встал и может встать
+        позже; снять по id); ``started``/``rejected`` (исход запроса); ``nearly`` (скоро конец формы); ``ended``
+        (кончилась или деку заняла другая музыка — тактов нашей подложки больше нет). ``own`` — исход НАШЕГО запроса
         (ответ ``request_music(intent=backing)``), а не событие плеера о любой музыке (:meth:`mine`)."""
         if self.state == "playing" and kind == "started" and track_id and track_id != self.track_id:
             return "ended"
-        if not self.mine(track_id, now, own):
+        mine = self.mine(track_id, own)
+        if own and self.awaiting:
+            self.awaiting -= 1  # ответ тула - исход одного запроса; следующий ответ принадлежит следующему
+        if not mine:
             return "ignore"
         if self.state in ("stopped", "failed"):
-            return "late" if kind == "started" else "ignore"
+            return "late" if kind == "started" or (kind == "rejected" and track_id) else "ignore"
         if self.state == "requested":
             return kind if kind in ("started", "rejected") else "ignore"
         if self.state != "playing":
             return "ignore"
         return {"nearly_finished": "nearly", "finished": "ended", "idle": "ended"}.get(kind, "ignore")
 
-    def mine(self, track_id: Optional[str], now: float, own: bool = False) -> bool:
+    def mine(self, track_id: Optional[str], own: bool = False) -> bool:
         """Событие о нашей подложке (владение — по id трека, #4085): id знаем — трек тот же; до ``started`` id не
-        знаем — наше только исход нашего же запроса (``own``), пока просим или недолго после отказа (поздний
-        ``started``). Событие плеера о чужом треке (человек заказал музыку, пока бит просили или после отказа) — не
-        наше: конец выступления его не снимает."""
+        знаем — наше только исход нашего же запроса (``own``), пока он не пришёл (``awaiting``) — и во время ожидания,
+        и после того, как выступление сдалось (поздний исход снимается по id). Событие плеера о чужом треке (человек
+        заказал музыку, пока бит просили или после отказа) — не наше: конец выступления его не снимает."""
         if self.track_id:
             return track_id == self.track_id
-        return own and (self.state == "requested" or now <= self.late_until)
+        return own and self.awaiting > 0
 
 
 __all__ = ["Backing", "BackingTrack", "MusicStop", "grid_of"]

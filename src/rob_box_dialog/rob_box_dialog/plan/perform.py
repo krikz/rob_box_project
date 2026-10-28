@@ -306,7 +306,7 @@ class MusicSide:
             return []
         self._block.touch(now)
         if verdict == "late" or self._block.ended:  # встала, когда её уже не ждут — снять, а не оставить играть
-            return [MusicStop("now", "backing_late")] if verdict == "late" else []
+            return [MusicStop("now", "backing_late", track_id)] if verdict == "late" and track_id else []
         handlers: Dict[str, Callable[[], List[Effect]]] = {
             "started": lambda: self._started(track_id or "", fields, now),
             "rejected": lambda: self._rejected(str(fields.get("reason") or "error"), now),
@@ -337,12 +337,13 @@ class MusicSide:
 
     def expired(self, now: float) -> List[Effect]:
         """Срок вышел: вопрос без ответа — «нет» (без бита поверх играющей музыки); бит не встал за
-        ``PERFORM_BACKING_START_S`` — снять его и читать без."""
+        ``PERFORM_BACKING_START_S`` — читать без него. Вслепую деку не гасим (на ней мог оказаться трек человека):
+        запрос в пути, его исход (ответ тула) придёт с id, и поздний ``started`` снимется по нему (``late``)."""
         if not self.track.timed_out(now):
             return []
         if self.track.state == "asking":
             return self.answer(False, now)
-        return [MusicStop("now", "backing_timeout"), *self.failed("timeout", now)]
+        return self.failed("timeout", now)
 
     def keep(self) -> None:
         """«А музыку оставь» (#3994): играющий бит доигрывает сам — снимать его концом выступления не будем."""
@@ -350,11 +351,12 @@ class MusicSide:
             self._block.log(f"бит {self.track.track_id} оставлен играть (музыку оставили)")
 
     def release(self, now: float, boundary: str, reason: str, states: Tuple[str, ...]) -> List[Effect]:
-        """Выступление кончилось или снято: подложку в состояниях ``states`` снять на ``boundary``."""
+        """Выступление кончилось или снято: подложку в состояниях ``states`` снять на ``boundary`` - по её ``track_id``.
+        Бит ещё не встал (запрос в пути, id нет) - вслепую не снимаем: его исход придёт с id и снимется как поздний."""
         if self.track.state not in states:
             return []
         self.track.stopped(now)
-        return [MusicStop(boundary, reason)]
+        return [MusicStop(boundary, reason, self.track.track_id)] if self.track.track_id else []
 
     def failed(self, reason: str, now: float) -> List[Effect]:
         """Подложки не будет: фраза по причине и чтение без бита (рэп в тишину молча не начинается)."""

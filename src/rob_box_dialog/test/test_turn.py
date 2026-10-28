@@ -693,7 +693,7 @@ def test_3995_last_iteration_never_asks_again():
     search = [Answer(Command(actions=(ToolCall("memory_search", {"query": q}),)), "deepseek",
                      follow=lambda data: ({"role": "tool", "content": data},)) for q in ("Борис", "Спартак")]
     ports = Ports(answers=[*search, _bare(HAPPY)], outcomes={"memory_search": ("done", {"results": []})})
-    # вопрос о фактах идёт модели; «а ты меня помнишь» - вопрос узнавания, на него отвечает код (#3993, PR #4121)
+    # вопрос о фактах идёт модели; «а ты меня помнишь» - тоже модели (решение Шифу 28.10, #3993); код - только «узнал ли»
     agg = _run(_engine(ports), "а что ты про меня помнишь")
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1 and agg.status == "done"
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]

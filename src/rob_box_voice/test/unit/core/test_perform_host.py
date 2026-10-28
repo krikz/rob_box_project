@@ -8,6 +8,7 @@ import asyncio
 import html
 import re
 import threading
+import time
 import types
 from typing import Any, Dict, List
 
@@ -70,12 +71,21 @@ class _Node:
 class _Tools:
     """Тулы музыки: ответ по сценарию, журнал вызовов."""
 
-    def __init__(self, backing: Dict[str, Any]) -> None:
+    def __init__(self, backing: Dict[str, Any], hold: bool = False) -> None:
         self.backing = backing
         self.calls: List[Any] = []
+        #: ``hold`` - ответ ``request_music`` не уходит, пока тест не вызовет ``release.set()``: порядок «ответ тула
+        #: после «стой»» задаёт тест, а не гонка потока цикла с главным потоком (хвост PR #4111, карточка #4085).
+        self.release = threading.Event()
+        if not hold:
+            self.release.set()
 
     async def run(self, call: Any) -> ToolResult:
         self.calls.append(call)
+        for _ in range(400):  # потолок 2 с: забытый ``release`` не вешает цикл
+            if self.release.is_set():
+                break
+            await asyncio.sleep(0.005)
         data = self.backing if call.name == "request_music" else {"ok": True}
         return ToolResult(call.id, "ok", data=data)
 
@@ -90,8 +100,8 @@ def loop():
     thread.join(timeout=2)
 
 
-def _host(loop: Any, backing: Dict[str, Any]) -> tuple:
-    node, tools, events = _Node(), _Tools(backing), []
+def _host(loop: Any, backing: Dict[str, Any], hold: bool = False) -> tuple:
+    node, tools, events = _Node(), _Tools(backing, hold), []
     host = PerformHost(node, tools.run, lambda: loop, events.append, kn.SPEECH_OUTPUT_LATENCY_MS,
                        clock=lambda: node.now_s)
     return host, node, tools, events
@@ -99,6 +109,15 @@ def _host(loop: Any, backing: Dict[str, Any]) -> tuple:
 
 def _settle(loop: Any) -> None:
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+
+
+def _wait_calls(tools: _Tools, count: int) -> None:
+    """Ждать, пока тулы получат ``count`` вызовов (до 2 с): цепочка «ответ тула → снятие бита» идёт в цикле, и под
+    нагрузкой её не уложить в фиксированные 50 мс ``_settle``."""
+    for _ in range(400):
+        if len(tools.calls) >= count:
+            return
+        time.sleep(0.005)
 
 
 STARTED = {"ok": True, "started": True, "track_id": "trk1", "bpm": 120.0, "beat_at": 1002.0, "bar_beats": 4.0,
@@ -214,7 +233,8 @@ def test_stop_finishes_the_sentence_halt_cuts_now(loop):
     assert host2.halt()
     assert node2.cancels()[0].boundary == M.SpeechCancel.BOUNDARY_NOW
     _settle(loop)
-    assert [c.arguments for c in tools2.calls if c.name == "stop_music"] == [{"boundary": "now"}]
+    # свой бит снимается по id (хвост ревью PR #4111): на деке чужая музыка - тул её не тронет
+    assert [c.arguments for c in tools2.calls if c.name == "stop_music"] == [{"boundary": "now", "track_id": "trk1"}]
     assert host2.active_segment is None and not host2.halt()  # выступления больше нет
 
 
@@ -453,6 +473,29 @@ def test_4085_own_beat_is_outroed_at_the_end_of_the_performance(loop):
     _settle(loop)
     assert host.block.ended and host.block.end_reason == "done"
     assert [(c.name, c.arguments.get("boundary")) for c in tools.calls][1:] == [("stop_music", "bar")]
+    assert tools.calls[-1].arguments == {"boundary": "bar", "track_id": "trk1"}  # outro именно своего бита
+
+
+def test_4111_beat_that_stood_after_the_halt_is_stopped_by_its_id_not_blindly(loop):
+    """«Стой» до старта бита: деку не гасим вслепую (на ней мог оказаться трек человека). Ответ тула придёт с id и
+    снимается по нему."""
+    host, node, tools, _ = _host(loop, {"ok": False, "reason": "not_started", "track_id": "pending-beat"}, hold=True)
+    host.start(RAP, "t1")
+    assert host.halt()
+    tools.release.set()  # ответ тула - уже после «стой»: на живом роботе так и бывает (бит ещё не встал)
+    _wait_calls(tools, 2)
+    # ответ тула: бит поставлен, но не встал (``not_started``) и может встать позже - отменяем именно его
+    assert [(c.name, c.arguments) for c in tools.calls] == [
+        ("request_music", tools.calls[0].arguments), ("stop_music", {"boundary": "now", "track_id": "pending-beat"})]
+
+
+def test_4111_rejected_beat_without_id_stops_nothing(loop):
+    """Отказ без id (``busy``: играет чужая музыка) - снимать нечего: стопа в списке вызовов нет."""
+    host, node, tools, _ = _host(loop, {"ok": False, "reason": "busy"})
+    host.start(RAP, "t1")
+    assert host.halt()
+    _settle(loop)
+    assert [c.name for c in tools.calls] == ["request_music"]
 
 
 def test_4085_foreign_started_before_the_tool_answer_is_not_the_beat(loop):

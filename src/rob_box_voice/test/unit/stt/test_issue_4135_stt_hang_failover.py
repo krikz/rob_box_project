@@ -29,13 +29,20 @@ from unittest.mock import MagicMock
 import pytest
 
 from rob_box_core.msg_stub import install_dialog_msgs_stub
+from rob_box_voice.core.provider_health import stt_provider_states
 from rob_box_voice.stt_fallback import (
     DEFAULT_HANG_GRACE_S,
+    YANDEX_STT_PHASES,
     ProviderDeadCache,
     ProviderPolicy,
+    STTQuotaError,
     STTTimeoutError,
+    effective_provider,
+    http_call_limit_s,
+    hung_providers,
     select_recognition,
     summarize_attempts,
+    yandex_call_limit_s,
 )
 from rob_box_voice.stt_hang_guard import HangGuard
 
@@ -550,3 +557,363 @@ def test_hung_yandex_call_phrase_goes_to_minimax_within_guard(
     assert _wait_until(lambda: node._hang_guard.hung_for_s("yandex") is None)
     text, attempts = node._recognize_with_fallback(AUDIO)
     assert text == "робот привет" and len(calls) == 2
+
+
+# ── хвосты ревью PR #4140 (карточка #4135, пачка мелочи 10) ───────────────────────────────────────────────────────
+
+
+class _Late:
+    """Провайдер: вызов висит на ``block``, потом отдаёт исход (текст или исключение) - «вернулся после предела»."""
+
+    def __init__(self, name: str, block: threading.Event, outcome):
+        self.name, self._block, self._outcome = name, block, outcome
+        self.calls = 0
+
+    def recognize(self, audio_bytes: bytes):
+        self.calls += 1
+        self._block.wait()
+        if isinstance(self._outcome, BaseException):
+            raise self._outcome
+        return self._outcome
+
+
+class _TwoPhase:
+    """Провайдер из двух последовательных фаз (как Yandex: REAL_TIME, затем FULL_DATA) по ``phase_s`` каждая."""
+
+    def __init__(self, name: str, phase_s: float):
+        self.name, self._phase_s = name, phase_s
+
+    def recognize(self, audio_bytes: bytes):
+        time.sleep(self._phase_s)
+        time.sleep(self._phase_s)
+        return TEXT
+
+
+def test_policy_hang_limit_is_the_providers_worst_case_plus_grace():
+    """Пункт 1 и 6: предел сторожа - из политики провайдера, а не плоский ``timeout_s`` + запас для всех."""
+    assert ProviderPolicy(timeout_s=5.0, hang_grace_s=2.0).hang_limit_s == 7.0
+    assert ProviderPolicy(timeout_s=5.0, hang_grace_s=2.0, call_limit_s=10.0).hang_limit_s == 12.0
+    # худший случай не бывает меньше мягкого срока
+    assert ProviderPolicy(timeout_s=5.0, hang_grace_s=2.0, call_limit_s=1.0).hang_limit_s == 7.0
+    assert yandex_call_limit_s(5.0) == YANDEX_STT_PHASES * 5.0 == 10.0
+    stages = SimpleNamespace(pool=5.0, connect=5.0, write=10.0, read=15.0)
+    assert http_call_limit_s(stages) == 35.0
+    assert http_call_limit_s(SimpleNamespace(pool=None, connect=5.0, write=None, read=15.0)) == 20.0
+
+
+def test_slow_provider_inside_its_own_limit_is_error_not_hung():
+    """Пункт 1: живой minimax отвечал ошибкой за 10-20 с при мягком сроке 5 с - это ``error`` со своим классом,
+    а не «завис». Плоский предел (``timeout_s`` + запас) называл такую попытку зависшей."""
+
+    class _SlowError:
+        name = "minimax"
+
+        def recognize(self, audio_bytes):
+            time.sleep(0.15)
+            raise RuntimeError("HTTP 500 plan")
+
+    flat = {"minimax": ProviderPolicy(timeout_s=0.05, hang_grace_s=0.05)}
+    own = {"minimax": ProviderPolicy(timeout_s=0.05, hang_grace_s=0.05, call_limit_s=0.5)}
+    messages: list[str] = []
+
+    _, attempts = select_recognition([_SlowError()], AUDIO, policies=own, guard=HangGuard(log=messages.append))
+    assert [(a.reason, a.hung) for a in attempts] == [("error", False)], summarize_attempts(attempts)
+    assert not any("не вернулся" in m for m in messages), messages
+
+    # контроль: плоский предел 0.1 с (старое поведение) называет ту же попытку зависшей
+    _, attempts = select_recognition([_SlowError()], AUDIO, policies=flat, guard=HangGuard(log=lambda m: None))
+    assert [(a.reason, a.hung) for a in attempts] == [("timeout", True)]
+
+
+def test_two_phase_provider_is_not_called_hung_while_inside_both_phases():
+    """Пункт 6: две фазы Yandex (до 2 × дедлайн) - не «завис». Мягкий срок не тронут: ответ позже ``timeout_s``
+    по-прежнему ``timeout`` (текст отброшен), но без ложного «завис» в логе."""
+    timeout_s, phase_s = 0.4, 0.3  # обе фазы 0.6 с: больше timeout_s + запас (0.45), меньше двух дедлайнов + запас (0.85)
+    messages: list[str] = []
+    own = {"yandex": ProviderPolicy(timeout_s=timeout_s, hang_grace_s=0.05, call_limit_s=yandex_call_limit_s(timeout_s))}
+    _, attempts = select_recognition(
+        [_TwoPhase("yandex", phase_s)], AUDIO, policies=own, guard=HangGuard(log=messages.append)
+    )
+    assert [(a.reason, a.hung) for a in attempts] == [("timeout", False)], summarize_attempts(attempts)
+    assert not any("не вернулся" in m or "завис" in m for m in messages), messages
+
+    flat = {"yandex": ProviderPolicy(timeout_s=timeout_s, hang_grace_s=0.05)}
+    _, attempts = select_recognition([_TwoPhase("yandex", phase_s)], AUDIO, policies=flat, guard=HangGuard(log=lambda m: None))
+    assert attempts[0].hung, "контроль: без учёта второй фазы тот же вызов назван зависшим"
+
+
+def test_guard_hands_the_late_outcome_to_on_late(hangs):
+    """Пункт 2: брошенный вызов, вернувшийся позже, отдаёт свой исход; вернувшийся в срок - не зовёт ``on_late``."""
+    block = threading.Event()
+    hangs.append(block)
+    late: list = []
+    guard = HangGuard(log=lambda m: None)
+
+    def call():
+        block.wait()
+        raise RuntimeError("402 quota")
+
+    assert guard.run("minimax", call, 0.05, on_late=late.append).hung is True
+    assert late == []
+    block.set()
+    assert _wait_until(lambda: len(late) == 1)
+    assert isinstance(late[0].exc, RuntimeError) and "402" in str(late[0].exc) and not late[0].hung
+    assert guard.hung_for_s("minimax") is None
+
+    in_time: list = []
+    assert guard.run("vosk", lambda: "робот", 1.0, on_late=in_time.append).value == "робот"
+    assert in_time == []
+
+    def broken_on_late(outcome):
+        raise ValueError("handler bug")
+
+    block2 = threading.Event()
+    hangs.append(block2)
+    messages: list[str] = []
+    guard = HangGuard(log=messages.append)
+    assert guard.run("minimax", lambda: block2.wait(), 0.05, on_late=broken_on_late).hung is True
+    block2.set()
+    assert _wait_until(lambda: any("поздний исход не разобран" in m for m in messages)), messages
+    assert guard.hung_for_s("minimax") is None  # сторож жив, брошенный вызов снят
+
+
+def test_late_quota_after_guard_limit_is_not_lost(hangs):
+    """Пункт 2: квота кончилась, а ответ пришёл после предела сторожа - провайдер мёртв надолго (300 с, класс quota),
+    а не на транзиентные 30 с «завис»."""
+    block = threading.Event()
+    hangs.append(block)
+    minimax = _Late("minimax", block, STTQuotaError("402 insufficient balance"))
+    cache = ProviderDeadCache(ttl_s=300.0, transient_ttl_s=30.0)
+    messages: list[str] = []
+    policies = {
+        "minimax": ProviderPolicy(timeout_s=0.05, hang_grace_s=0.05),
+        "vosk": ProviderPolicy(timeout_s=1.0, hang_grace_s=0.5),
+    }
+
+    text, attempts = select_recognition(
+        [minimax, _Provider("vosk", TEXT)], AUDIO, policies=policies, dead_cache=cache, guard=HangGuard(log=messages.append)
+    )
+    assert text == TEXT and attempts[0].hung
+    assert cache.remaining_s("minimax") <= 30.0  # пока вызов молчит - только «завис»
+
+    block.set()
+    assert _wait_until(lambda: cache.health_class("minimax") == "quota")
+    assert 250.0 < cache.remaining_s("minimax") <= 300.0
+    assert any("поздний отказ (quota)" in m for m in messages), messages
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [STTTimeoutError("поздно"), RuntimeError("HTTP 500"), "робот привет"],
+    ids=["timeout", "error", "text"],
+)
+def test_late_non_permanent_outcome_keeps_the_hung_mark(hangs, outcome):
+    """Поздний текст/таймаут/сетевая ошибка отметку «завис» (транзиентную) не меняют: она им и соответствует."""
+    block = threading.Event()
+    hangs.append(block)
+    cache = ProviderDeadCache(ttl_s=300.0, transient_ttl_s=30.0)
+    guard = HangGuard(log=lambda m: None)
+    policies = {"minimax": ProviderPolicy(timeout_s=0.05, hang_grace_s=0.05)}
+    select_recognition([_Late("minimax", block, outcome)], AUDIO, policies=policies, dead_cache=cache, guard=guard)
+    before = cache.remaining_s("minimax")
+    block.set()
+    assert _wait_until(lambda: guard.hung_for_s("minimax") is None)
+    assert cache.remaining_s("minimax") <= before <= 30.0
+    assert cache.reason("minimax").startswith("timeout>")
+
+
+def test_late_permanent_mark_gives_back_the_transient_streak_step():
+    """Отметка «завис» была транзиентной (шаг лестницы 30 -> 120 -> 300 с); поправка на постоянную возвращает шаг,
+    иначе один отказ считался бы дважды."""
+    cache = ProviderDeadCache(ttl_s=300.0, transient_ttl_s=30.0, clock=lambda: 0.0)
+    assert cache.mark_dead("minimax", "hung") == 30.0
+    assert cache.mark_dead("minimax", "402", transient=False, health_class="quota", replaces_transient=True) == 300.0
+    assert cache.mark_dead("minimax", "net") == 30.0  # шаг лестницы возвращён: следующий транзиентный - первый
+
+    twice = ProviderDeadCache(ttl_s=300.0, transient_ttl_s=30.0, clock=lambda: 0.0)
+    twice.mark_dead("minimax", "hung")
+    twice.mark_dead("minimax", "402", transient=False, health_class="quota")
+    assert twice.mark_dead("minimax", "net") == 120.0, "контроль: без возврата шага лестница ушла вверх"
+
+
+def test_release_is_atomic_one_close_in_flight_per_name(hangs):
+    """Пункт 4: два DEADLINE подряд (в пределах срока закрытия) - один висящий close. Проверка занятости и резерв
+    имени - один шаг под замком."""
+    block, entered = threading.Event(), threading.Event()
+    hangs.append(block)
+    closes: list[int] = []
+    guard = HangGuard(log=lambda m: None)
+
+    def stuck_close():
+        closes.append(1)
+        entered.set()
+        block.wait()
+
+    assert guard.release("yandex.channel.close", stuck_close, limit_s=30.0) is True
+    assert entered.wait(1.0)
+    second = MagicMock()
+    assert guard.release("yandex.channel.close", second, limit_s=30.0) is False  # первое ещё идёт, не брошено
+    second.assert_not_called()
+    assert closes == [1]
+
+    block.set()
+    done = threading.Event()
+    assert _wait_until(lambda: guard.release("yandex.channel.close", done.set, limit_s=1.0))
+    assert done.wait(1.0)  # после возврата первого имя свободно
+
+
+def test_release_from_many_threads_runs_exactly_one_close(hangs):
+    """Пункт 4 в гонке: восемь потоков отпускают канал одновременно - закрытие запущено ровно одно."""
+    block = threading.Event()
+    hangs.append(block)
+    closes: list[int] = []
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+    guard = HangGuard(log=lambda m: None)
+
+    def close():
+        closes.append(1)
+        block.wait()
+
+    def racer():
+        barrier.wait()
+        results.append(guard.release("yandex.channel.close", close, limit_s=30.0))
+
+    threads = [threading.Thread(target=racer) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(2.0)
+    assert sorted(results) == [False] * 7 + [True]
+    assert _wait_until(lambda: len(closes) == 1) and len(closes) == 1
+
+
+def test_release_name_is_free_after_a_hung_close_finally_returns(hangs):
+    block = threading.Event()
+    hangs.append(block)
+    guard = HangGuard(log=lambda m: None)
+    assert guard.release("x", block.wait, limit_s=0.05) is True
+    assert _wait_until(lambda: guard.hung_for_s("x") is not None)
+    assert guard.release("x", lambda: None, limit_s=1.0) is False  # висит
+    block.set()
+    assert _wait_until(lambda: guard.hung_for_s("x") is None)
+    assert _wait_until(lambda: guard.release("x", lambda: None, limit_s=1.0))
+
+
+def test_thread_start_failure_is_an_outcome_not_a_crash_of_the_phrase_thread(monkeypatch):
+    """Пункт 5: ``Thread.start()`` в try. Нет ресурса на поток - ``Watched.exc`` (попытка провалена, цепочка идёт
+    дальше), а не исключение в потоке фразы; резерв имени в ``release`` не остаётся навсегда."""
+    messages: list[str] = []
+    guard = HangGuard(log=messages.append)
+    real_start = threading.Thread.start
+    refuse = [True]
+
+    def start(self):
+        if refuse[0] and self.name.startswith("hang-guard"):
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    outcome = guard.run("yandex", lambda: "никогда", 1.0)
+    assert outcome.hung is False and isinstance(outcome.exc, RuntimeError) and outcome.value is None
+    assert guard.hung_for_s("yandex") is None
+
+    class _P:
+        name = "yandex"
+
+        def recognize(self, audio_bytes):
+            raise AssertionError("вызов не должен выполняться без потока")
+
+    _, attempts = select_recognition([_P(), _Provider("minimax", TEXT)], AUDIO, policies=_fast_policies(), guard=guard)
+    assert attempts[0].provider == "yandex" and attempts[0].reason == "error"
+
+    assert guard.release("yandex.channel.close", lambda: None) is False
+    assert any("поток закрытия не запустился" in m for m in messages), messages
+    refuse[0] = False
+    done = threading.Event()
+    assert guard.release("yandex.channel.close", done.set, limit_s=1.0) is True  # резерв не залип
+    assert done.wait(1.0)
+
+
+def test_node_policies_take_the_guard_limit_from_each_providers_own_timeouts(stt_node_module, log_lines):
+    """Пункты 1 и 6 на проводке ноды: Yandex - две фазы, MiniMax - HTTP-стадии, Vosk - один проход."""
+    from rob_box_voice.stt_providers.minimax_provider import DEFAULT_TIMEOUT
+
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex", "minimax", "vosk"], minimax_text=TEXT, yandex_timeout_s=5.0)
+    policies = node._provider_policies()
+
+    stages = DEFAULT_TIMEOUT.pool + DEFAULT_TIMEOUT.connect + DEFAULT_TIMEOUT.write + DEFAULT_TIMEOUT.read
+    assert policies["yandex"].hang_limit_s == 2 * 5.0 + DEFAULT_HANG_GRACE_S
+    assert policies["minimax"].hang_limit_s == stages + DEFAULT_HANG_GRACE_S
+    assert policies["vosk"].hang_limit_s == 10.0 + DEFAULT_HANG_GRACE_S
+    # живые замеры 28.10 (minimax:timeout 7.4-13.2 с, minimax:error 10-20 с) лежат внутри предела
+    assert policies["minimax"].hang_limit_s > 20.0 + DEFAULT_HANG_GRACE_S
+    # клиент MiniMax собирается с теми же таймаутами, от которых посчитан предел
+    assert node._ensure_minimax_provider()._timeout is stt_node_module._minimax_http_timeout()
+
+
+def test_node_without_minimax_does_not_pull_its_http_stack_into_policies(stt_node_module, log_lines):
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex", "vosk"])
+    assert node._provider_policies()["minimax"].call_limit_s is None
+
+
+def test_yandex_phase_count_matches_the_policy_constant(stt_node_module, log_lines):
+    """Тот самый «две фазы»: пустой ответ REAL_TIME отправляет вызов во вторую фазу (FULL_DATA) - число проходов
+    стрима равно ``YANDEX_STT_PHASES``, от которой посчитан предел сторожа."""
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex"])
+    node.yandex_stub = _stub()
+    assert node._recognize_yandex(AUDIO) is None
+    assert node.yandex_stub.RecognizeStreaming.call_count == YANDEX_STT_PHASES
+
+
+def test_hung_provider_is_not_ok_in_state_after_its_dead_ttl_expires(stt_node_module, log_lines, hangs):
+    """Пункт 3: вечный зависший вызов. ``_skip_hung`` выключает Yandex, а состояние через TTL отметки показывало бы
+    его живым. ``stt_provider_states`` (то, что публикует ``/voice/providers/state``) и ``_effective_provider`` -
+    с учётом сторожа."""
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex", "minimax", "vosk"], minimax_text=TEXT)
+    block = threading.Event()
+    hangs.append(block)
+    assert node._hang_guard.run("yandex", block.wait, 0.05).hung is True
+    # TTL транзиентной отметки истёк (кэш чист), а вызов всё ещё висит
+    assert not node._provider_dead_cache.is_dead("yandex")
+
+    states = {s.name: s.health for s in stt_provider_states(node)}
+    assert states == {"yandex": "timeout", "minimax": "ok", "vosk": "ok"}
+    assert node._effective_provider() == "minimax"
+
+    block.set()
+    assert _wait_until(lambda: node._hang_guard.hung_for_s("yandex") is None)
+    assert {s.health for s in stt_provider_states(node)} == {"ok"}
+    assert node._effective_provider() == "yandex"
+
+
+def test_effective_provider_skips_dead_and_hung_and_falls_back_to_the_last(hangs):
+    """Глухой робот хуже медленного: недоступны все - последний. Пустая цепочка - ``None``; без кэша и сторожа - голова."""
+    cache = ProviderDeadCache()
+    guard = HangGuard(log=lambda m: None)
+    chain = ["yandex", "minimax", "vosk"]
+    assert effective_provider(chain, None, None) == "yandex"
+    assert effective_provider([], cache, guard) is None
+
+    cache.mark_dead("yandex", "net")
+    assert effective_provider(chain, cache, guard) == "minimax"
+    block = threading.Event()
+    hangs.append(block)
+    assert guard.run("minimax", block.wait, 0.05).hung is True
+    assert effective_provider(chain, cache, guard) == "vosk"
+    cache.mark_dead("vosk", "net")
+    assert effective_provider(chain, cache, guard) == "vosk"  # недоступны все - последний
+    assert hung_providers(chain, guard).keys() == {"minimax"} and hung_providers(chain, None) == {}
+
+
+def test_dead_cache_state_still_wins_when_nothing_hangs(stt_node_module, log_lines):
+    logger, _lines = log_lines
+    node = _node(stt_node_module, logger, chain=["yandex", "minimax", "vosk"], minimax_text=TEXT)
+    node._provider_dead_cache.mark_dead("yandex", "402", transient=False, health_class="quota")
+    assert {s.name: s.health for s in stt_provider_states(node)}["yandex"] == "quota"
+    assert node._effective_provider() == "minimax"

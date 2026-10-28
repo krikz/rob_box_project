@@ -124,6 +124,10 @@ def stop_text(was_playing: bool) -> str:
     return "Музыка остановлена." if was_playing else "Музыка и так не играла — на всякий случай всё остановил."
 
 
+#: Стоп по ``track_id``, а на деке уже другая музыка (трек человека): тул её не трогает и говорит об этом.
+STOP_OTHER_TRACK_TEXT = "Этот трек уже не играет — другую музыку не трогал."
+
+
 class StopMusicTool(MCPTool):
     """Выключить всю музыку: сет и деку движка v2 (через их владельцев) и mp3 из библиотеки в ``sound_node``."""
 
@@ -144,7 +148,10 @@ class StopMusicTool(MCPTool):
     @property
     def parameters(self) -> List[MCPToolParameter]:
         return [MCPToolParameter(name="boundary", type="string", required=False, enum=["now", "bar"],
-                                 description="now — сразу (по умолчанию); bar — бит выступления на ближайшем такте")]
+                                 description="now — сразу (по умолчанию); bar — бит выступления на ближайшем такте"),
+                MCPToolParameter(name="track_id", type="string", required=False,
+                                 description="только для кода выступления: снять именно этот трек (его бит); играет "
+                                             "другая музыка — не трогать. Не указывай: «выключи музыку» гасит всё")]
 
     @property
     def execution_type(self) -> ToolExecutionType:
@@ -154,9 +161,12 @@ class StopMusicTool(MCPTool):
     def destructive(self) -> bool:
         return False
 
-    def execute(self, boundary: str = "now") -> MCPToolResult:
+    def execute(self, boundary: str = "now", track_id: str = "") -> MCPToolResult:
         """Сет закрывает ``DjSetTool``, деку — ``PlayerOwner`` (``MCPServer._stop_deck``); трек кэша тоже на деке (ADR-0158 PR-2).
-        ``boundary=bar`` при звучащем бите выступления — outro на ближайшем такте (``BackingDeck``, ADR-0150 PR-7c)."""
+        ``boundary=bar`` при звучащем бите выступления — outro на ближайшем такте (``BackingDeck``, ADR-0150 PR-7c).
+        ``track_id`` — снять только его (бит выступления, хвост ревью PR #4111): :meth:`_stop_track`."""
+        if track_id:
+            return self._stop_track(track_id, boundary)
         deck = getattr(self.node, "_backing_deck", None)
         if boundary == "bar" and deck is not None and deck.playing:
             outro = deck.outro()
@@ -172,6 +182,25 @@ class StopMusicTool(MCPTool):
             owner.stop("user_stop")  # явный стоп в «тишине»: снять деку и погасить группу всё равно
         self.log_info(f"[stop_music] was_playing={was_playing}")
         return MCPToolResult(success=True, data={"was_playing": was_playing}, message=stop_text(was_playing))
+
+    def _stop_track(self, track_id: str, boundary: str) -> MCPToolResult:
+        """Снять ОДИН трек, а не всю музыку: код выступления снимает свой бит по id (ADR-0148). На деке этого id нет
+        (трек уже кончился, или человек поставил другой) — ничего не трогаем: чужую музыку выступление не гасит."""
+        deck = getattr(self.node, "_backing_deck", None)
+        if boundary == "bar" and deck is not None and deck.playing and deck.track_id == track_id:
+            outro = deck.outro()
+            self.log_info(f"[stop_music] outro бита выступления: {outro}")
+            return MCPToolResult(success=True, data={"was_playing": True, **outro}, message=stop_text(True))
+        owner = getattr(self.node, "_player_owner", None)
+        state = owner.now_playing() if owner is not None else {}
+        if track_id not in (state.get("track_id"), state.get("pending")):
+            self.log_info(f"[stop_music] track_id={track_id} на деке нет — другую музыку не трогаю")
+            return MCPToolResult(success=True, data={"was_playing": False, "stopped": False, "track_id": track_id},
+                                 message=STOP_OTHER_TRACK_TEXT)
+        owner.stop("user_stop")
+        self.log_info(f"[stop_music] снят track_id={track_id}")
+        return MCPToolResult(success=True, data={"was_playing": True, "stopped": True, "track_id": track_id},
+                             message=stop_text(True))
 
 
 class GetMusicStateTool(MCPTool):

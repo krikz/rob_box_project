@@ -143,8 +143,19 @@ def test_registry_entries_are_catalog_ids_with_russian_display_names_and_aliases
 
 def _name_words(voice_id, display):
     """Слова, которыми голос называли до алиасов: русское название и хвост id по границам регистра."""
-    tail = re.sub(r"([a-z])([A-Z])", r" ", voice_id.split("_", 1)[-1])
+    tail = re.sub(r"([a-z])([A-Z])", r"\1 \2", voice_id.split("_", 1)[-1])
     return {w for w in re.findall(r"[^\W_]+", f"{display} {tail}") if len(w) >= 3}
+
+
+def test_name_words_cut_the_camel_case_tail_of_the_id_into_whole_words():
+    """Хвост ревью PR #4129: в ``re.sub`` лежали сырые управляющие байты 0x01/0x02 вместо групп ``\\1 \\2`` - стык
+    ``eS`` в ``WiseScholar`` съедал обе буквы, обход ниже ходил по обрубкам «Wis»/«cholar», которых никто не
+    произнесёт. Слова хвоста - целые, в том числе на стыке регистров."""
+    words = _name_words("English_WiseScholar", "Мудрый учёный")
+    assert {"Wise", "Scholar"} <= words
+    assert not {"Wis", "cholar"} & words
+    assert {"Jovialman"} <= _name_words("English_Jovialman", "Весельчак")
+    assert {"Bright", "Heroine"} <= _name_words("Russian_BrightHeroine", "Яркая героиня")
 
 
 def test_aliases_do_not_break_any_name_word_that_led_to_a_voice_before_them():
@@ -165,7 +176,7 @@ def test_aliases_do_not_break_any_name_word_that_led_to_a_voice_before_them():
                 if was is not None:
                     checked += 1
                     assert match(f"включи голос {word}", snapshot, registry) == was, (provider, vid, word)
-    assert checked > 30, "обход не пустой: слов-имён, ведущих к голосу, на 28.10 было 82"
+    assert checked > 30, "обход не пустой: слов-имён, ведущих к голосу, на 28.10 - 93 (с обрубками хвостов id было 82)"
     heroine = match("включи голос героиня", snapshot, named_voices_for("minimax"))
     assert heroine is not None and heroine.args["voice"] == "Russian_BrightHeroine"
 
