@@ -207,6 +207,13 @@ class STTDeadlineFinal(STTTimeoutError):
 # Пометка попытки в ``[stt_attempt]``: ``ok`` получен по дедлайну из уже закрытой фразы (#4175).
 NOTE_DEADLINE_FINAL = "deadline_final"
 
+# Пометка попытки: ответ фолбека - короткая латиница на кириллический обрывок первого провайдера (#3737).
+NOTE_SCRIPT_MISMATCH = "script_mismatch"
+
+# Латинский ответ фолбека короче этого числа слов, если первый провайдер дал кириллицу того же звука, - угаданное
+# междометие («Yeah.», «Yes.», «Thank you.»), а не английская фраза. Три слова и больше принимаются.
+SCRIPT_MISMATCH_MAX_WORDS = 2
+
 
 class STTHungError(STTTimeoutError):
     """Попытка не вернулась за предел сторожа своей политики (худший случай вызова + запас) — брошена (#4135).
@@ -607,6 +614,48 @@ def is_short_phrase(text: Optional[str], min_chars: int = DEFAULT_MIN_TEXT_CHARS
     return len(letters) < min_chars or len(set(letters)) == 1  # «э», «ммм», «ааа» - междометия, не речь
 
 
+def _has_script(text: str, letter_range: Callable[[str], bool]) -> bool:
+    return any(letter_range(ch) for ch in text if ch.isalpha())
+
+
+def _is_cyrillic(ch: str) -> bool:
+    return "Ѐ" <= ch <= "ӿ"
+
+
+def _is_latin(ch: str) -> bool:
+    return ch.isascii() or "À" <= ch <= "ɏ"
+
+
+def is_latin_guess_on_cyrillic_noise(text: Optional[str], earlier_texts: Sequence[str]) -> bool:
+    """Ответ фолбека - короткая латиница на звук, который первый провайдер расслышал кириллицей (#3737).
+
+    Живой кейс 21.10: ``yandex:low_confidence('э') -> minimax:ok('Yeah.')``. Язык MiniMax уже ``ru``, но на
+    односложный звук без речи он всё равно угадывает английское слово; письменность гейта фразы
+    (:func:`is_short_phrase`) латиницу разрешает, и «Yeah.» уходило личности как реплика. Признак угадывания: у
+    предыдущей отклонённой попытки того же сегмента (``earlier_texts``) есть кириллица, а в ответе её нет и
+    слов не больше :data:`SCRIPT_MISMATCH_MAX_WORDS`. Английская фраза от человека не задевается: Yandex
+    ru-RU даёт на неё кириллицу достаточной длины и принимает сам (фолбек не зовётся), а длинная латиница
+    фолбека (3+ слов) проходит.
+    """
+    if not text or not _has_script(text, _is_latin) or _has_script(text, _is_cyrillic):
+        return False
+    if not any(_has_script(earlier, _is_cyrillic) for earlier in earlier_texts):
+        return False
+    return len(text.split()) <= SCRIPT_MISMATCH_MAX_WORDS
+
+
+def _screen_fallback_text(
+    reason: FallbackReason, text: Optional[str], attempts: Sequence[STTAttempt]
+) -> tuple[FallbackReason, Optional[str]]:
+    """``ok`` от фолбека, угадавшего латиницу на кириллический обрыв, становится ``low_confidence`` + пометка."""
+    if reason != "ok":
+        return reason, None
+    earlier = [a.text for a in attempts if a.reason == "low_confidence" and a.text]
+    if is_latin_guess_on_cyrillic_noise(text, earlier):
+        return "low_confidence", NOTE_SCRIPT_MISMATCH
+    return reason, None
+
+
 def _measure(
     call: Callable[[], Optional[str]],
     timeout_s: float,
@@ -807,6 +856,7 @@ def _run_provider(
             on_late=lambda outcome, name=provider.name: _note_late_outcome(dead_cache, guard, name, outcome),
         )
         reason, text = _classify_attempt(text, error, min_text_chars)
+        reason, screen_note = _screen_fallback_text(reason, text, attempts)
         attempts.append(
             STTAttempt(
                 provider=provider.name,
@@ -816,7 +866,7 @@ def _run_provider(
                 error=error,
                 attempt_index=attempt_idx,
                 hung=isinstance(exc, STTHungError),
-                note=NOTE_DEADLINE_FINAL if isinstance(exc, STTDeadlineFinal) else None,
+                note=screen_note or (NOTE_DEADLINE_FINAL if isinstance(exc, STTDeadlineFinal) else None),
             )
         )
 
@@ -1061,7 +1111,9 @@ def select_recognition(
     # почти наверняка эхо собственного TTS/музыки — issue 989: молчим).
     last_text: Optional[str] = None
     for _a in attempts:
-        if _a.text:
+        # Отклонённая по письменности догадка фолбека (#3737) не итог: stt_node перепроверяет текст гейтом фразы,
+        # и «Yeah.» там прошло бы. Итогом остаётся кириллический обрывок первого провайдера -> rejected(short).
+        if _a.text and _a.note != NOTE_SCRIPT_MISMATCH:
             last_text = _a.text
     return last_text, attempts
 

@@ -38,7 +38,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapp
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
-                                    form_schema, is_empty, is_query_data, overlong_only, parse, to_args, validate)
+                                    form_schema, is_empty, is_query_data, overlong_only, parse, to_args, validate,
+                                    words_only)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -319,9 +320,10 @@ class CommandModeLLM(LLMProvider):
         """Ответ провайдера → ответ в форме v1 (речь текстом или вызовы тулов). Невалидная команда — повтор в том же
         запросе с нарушениями, не больше ``COMMAND_RETRIES_MAX`` раз; речь длиннее, чем звучит (одно это нарушение,
         ``command.overlong_only``) — ход компактнее своим счётом ``SPEECH_COMPACT_TURNS``, а и после него длинно —
-        речь ужимает код (:meth:`_fitted`, #4137). Строка лога на каждый ответ и на повтор. ``widen`` - первый ответ с
-        тулом вне среза (``tool_not_available``) не повторяется как есть: :class:`_Widen` просит запрос с группой этого
-        тула (#3960)."""
+        речь ужимает код (:meth:`_fitted`, #4137). Ответ без слов на последней итерации (``command.words_only``, #4157)
+        уходит ходу сразу: повторы за словами даёт ход, он знает свой потолок. Строка лога на каждый ответ и на
+        повтор. ``widen`` - первый ответ с тулом вне среза (``tool_not_available``) не повторяется как есть:
+        :class:`_Widen` просит запрос с группой этого тула (#3960)."""
         available = frozenset(_tool_name(t) for t in offered)
         response = without_reasoning(await ask(msgs))
         result = self._judged(response, available)
@@ -332,7 +334,7 @@ class CommandModeLLM(LLMProvider):
                 raise _Widen(names)
         left = {False: kn.COMMAND_RETRIES_MAX, True: kn.SPEECH_COMPACT_TURNS}  # счёт повторов: общий и на длину
         attempt = 0
-        while isinstance(result, Invalid) and left[overlong_only(result)] > 0:
+        while isinstance(result, Invalid) and not words_only(result) and left[overlong_only(result)] > 0:
             left[overlong_only(result)] -= 1
             attempt += 1
             response, result = await self._retried(ask, msgs, available, response, result, attempt)
