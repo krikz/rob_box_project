@@ -50,6 +50,8 @@ CORPUS = _HERE / "understanding_corpus" / "marathon.json"
 ENV_FILES = (REPO / "scripts" / "dialogue" / ".env", REPO / ".env")
 #: Решение Шифу 28.10: B принимаем, если на фразах марафона он хуже A не больше чем на 3 п.п.
 MAX_PASS_DROP_PP = 3.0
+#: Решение Шифу 28.10 (Telegram, 17:34 UTC): «до 3-х секунд» - медиана хода варианта растёт относительно A не больше X с.
+MAX_LATENCY_GROWTH_S = 3.0
 #: Допуск расхождения вердиктов A с живым марафоном (поручение координатора): больше - B как вывод не подаётся.
 MAX_LIVE_DISAGREE = 0.10
 
@@ -233,8 +235,8 @@ async def run_variant(variant: str, run_no: int, acts: Sequence[dm.Act], make: S
     started = time.monotonic()
     run: Run = {}
     try:
-        for act in acts:
-            run[act.key] = await dm.run_act(stand, act, cap, max_retries)
+        for act, phase in zip(acts, dm.marathon_phases(acts)):  # режим e2e - как у раннера марафона (#3972)
+            run[act.key] = await dm.run_act(stand, act, cap, max_retries, phase=phase)
             print(f"-- {variant} прогон {run_no}, акт {act.key}: запросов LLM {stand.counter.calls}/{cap}", flush=True)
     finally:
         calls = stand.counter.calls
@@ -297,7 +299,8 @@ def build_report(results: Sequence[VariantRun], corpus: Dict[str, Any], args: ar
                             "groups_file": str(Path(args.jev_groups).name), "price": price_line(jev),
                             "route_agreement": um.route_agreement(items)}
         variants[variant] = entry
-    report = {"meta": meta(corpus, args, results), "variants": variants, "decision_rule": decision_rule(variants)}
+    report = {"meta": meta(corpus, args, results), "variants": variants,
+              "decision_rule": decision_rule(variants, args.max_latency_growth_s)}
     if live is not None:
         report["live"] = live
     return report
@@ -308,7 +311,7 @@ def meta(corpus: Dict[str, Any], args: argparse.Namespace, results: Sequence[Var
             "corpus": {"name": corpus["name"], "sha256": corpus["corpus_sha256"], "counts": corpus["counts"]},
             "variants": args.variants, "runs": args.runs, "budget": args.budget, "jev_budget": args.jev_budget,
             "providers": "fake:" + args.fake if args.fake else args.providers, "model": args.model or None,
-            "fake": args.fake or None, "threshold": args.threshold,
+            "fake": args.fake or None, "threshold": args.threshold, "max_latency_growth_s": args.max_latency_growth_s,
             "note": f"N={args.runs}, только корпус марафона (часть 1), предварительно"}
 
 
@@ -316,9 +319,15 @@ def _pp(a: Optional[float], b: Optional[float]) -> Optional[float]:
     return None if a is None or b is None else (a - b) * 100.0
 
 
-def decision_rule(variants: Dict[str, Any]) -> Dict[str, Any]:
+def _growth_ms(mine: Optional[float], ref: Optional[float]) -> Optional[float]:
+    """Рост медианы хода варианта над A, мс; медианы нет хоть у одного - не измерено (``None``), а не «0 мс»."""
+    return None if mine is None or ref is None else mine - ref
+
+
+def decision_rule(variants: Dict[str, Any], max_latency_growth_s: float = MAX_LATENCY_GROWTH_S) -> Dict[str, Any]:
     """Критерии «B принимаем» (карточка), заданные ДО прогона: что можно проверить на части 1, посчитано; остальное -
-    «не измерено». Вердикта «принимаем» здесь нет: решает Шифу по таблице."""
+    «не измерено». Медиана хода: рост над A не больше ``max_latency_growth_s`` (X Шифу 28.10) - ``True``, больше -
+    ``False``, медианы нет - ``None``. Вердикта «принимаем» здесь нет: решает Шифу по таблице."""
     base = variants.get(uv.A)
     out: Dict[str, Any] = {}
     for name in (uv.B, uv.C):
@@ -326,13 +335,14 @@ def decision_rule(variants: Dict[str, Any]) -> Dict[str, Any]:
             continue
         mine, ref = variants[name]["metrics"], base["metrics"]
         drop = _pp(ref["pass"]["share"], mine["pass"]["share"])
-        d_lat = (mine["latency"]["median_ms"] or 0) - (ref["latency"]["median_ms"] or 0)
+        d_lat = _growth_ms(mine["latency"]["median_ms"], ref["latency"]["median_ms"])
         out[name] = {
             "pass_drop_pp": drop, "pass_drop_ok": None if drop is None else drop <= MAX_PASS_DROP_PP,
             "paraphrases_and_stt": "не измерено (этап 2)",
             "danger_A_B": [ref["danger"]["total"], mine["danger"]["total"]],
             "danger_ok": mine["danger"]["total"] <= ref["danger"]["total"],
-            "median_latency_growth_ms": d_lat, "median_latency_limit": "X не задан Шифу"}
+            "median_latency_growth_ms": d_lat, "median_latency_limit_s": max_latency_growth_s,
+            "median_latency_ok": None if d_lat is None else d_lat <= max_latency_growth_s * 1000.0}
     return out
 
 
@@ -345,6 +355,10 @@ def pct(value: Optional[float]) -> str:
 
 def num(value: Optional[float], digits: int = 0) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def signed_ms(value: Optional[float]) -> str:
+    return "n/a" if value is None else f"{value:+.0f} мс"
 
 
 def _row(label: str, variants: Dict[str, Any], cell: Callable[[Dict[str, Any]], str]) -> str:
@@ -430,12 +444,15 @@ def render(report: Dict[str, Any]) -> str:
         for kind, found in v["metrics"]["danger"].items():
             if isinstance(found, dict) and found["count"]:
                 out.append(f"- {name} / {kind}: {', '.join(found['steps'])}")
-    out += ["", "## Правило решения Шифу (часть 1)", ""]
+    out += ["", "## Правило решения Шифу (часть 1)", "",
+            f"Допуски (решения Шифу 28.10): потеря доли PASS против A - не больше {MAX_PASS_DROP_PP:g} п.п.; рост "
+            f"медианы хода против A - не больше {meta_['max_latency_growth_s']:g} с.", ""]
     for name, rule in report["decision_rule"].items():
         out.append(f"- {name} против A: потеря PASS {num(rule['pass_drop_pp'], 1)} п.п. (допуск {MAX_PASS_DROP_PP:g}: "
                    f"{rule['pass_drop_ok']}); перефразы и искажения STT: {rule['paraphrases_and_stt']}; опасных A/{name}: "
                    f"{rule['danger_A_B'][0]}/{rule['danger_A_B'][1]} ({rule['danger_ok']}); медиана хода "
-                   f"{rule['median_latency_growth_ms']:+.0f} мс ({rule['median_latency_limit']}).")
+                   f"{signed_ms(rule['median_latency_growth_ms'])} (допуск {rule['median_latency_limit_s']:g} с: "
+                   f"{rule['median_latency_ok']}).")
     for name, v in variants.items():
         if "jev" in v:
             j = v["jev"]
@@ -505,6 +522,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--only", default="", help="id или метки шагов через запятую")
     ap.add_argument("--max-retries", type=int, default=None, help="потолок повторов шага (по умолчанию как в сценарии)")
     ap.add_argument("--deadline-s", type=float, default=None, help="потолок хода, с")
+    ap.add_argument("--max-latency-growth-s", type=float, default=MAX_LATENCY_GROWTH_S,
+                    help="правило решения: на сколько секунд медиана хода варианта может вырасти над A (решение Шифу "
+                         "28.10: «до 3-х секунд»)")
     ap.add_argument("--threshold", type=float, default=jev_router.DEFAULT_THRESHOLD, help="порог уверенности Jev")
     ap.add_argument("--jev-groups", default=str(jev_router.DEFAULT_SPEC), help="файл описаний групп для Jev")
     ap.add_argument("--live-dir", default="", help="каталог логов живого марафона для сверки A")
