@@ -289,12 +289,17 @@ STOP_SCOPE = StopScopeWords(
 )
 
 
+#: Где ворота ищут знак после ведущего слова (:attr:`SlipGate.reach`): ``window`` - в ближайших ``WAKE_SLIP_CUE_WINDOW``
+#: словах; ``next`` - знак стоит СРАЗУ за ведущим (вежливые слова :data:`WAKE_SLIP_POLITE` не в счёт); ``end_or_next`` -
+#: то же, но фраза может и кончиться на ведущем: «роботы громче» просьба, «роботы громче всех» - нет (ревью PR #4123).
+REACH_WINDOW, REACH_NEXT, REACH_END_OR_NEXT = "window", "next", "end_or_next"
+
+
 @dataclass(frozen=True)
 class SlipGate:
     """Ворота искажённого вейка (:func:`rob_box_dialog.words.slipped_wake_rest`): слово «работа/роботы/рада»
-    будит, когда следующее за ним слово — ведущее ворот и (если задан знак) в ближайших ``WAKE_SLIP_CUE_WINDOW``
-    словах после него есть слово целиком из ``forms`` или слово, начинающееся с основы из ``stems``. Знака нет —
-    ведущего слова достаточно.
+    будит, когда следующее за ним слово — ведущее ворот и (если задан знак) рядом с ним, как велит ``reach``, есть
+    слово целиком из ``forms`` или слово, начинающееся с основы из ``stems``. Знака нет — ведущего слова достаточно.
 
     Ведущее слово — слово целиком из ``leads`` либо основа из ``lead_stems`` с окончанием из ``lead_endings`` («ускор» +
     «ь»): так просьба («ускорь», «быстрее») отличается от рассказа («ускоряются», «быстро»). ``under_music`` — ворота
@@ -306,6 +311,7 @@ class SlipGate:
     lead_stems: Tuple[str, ...] = ()
     lead_endings: Tuple[str, ...] = ()
     under_music: bool = False
+    reach: str = REACH_WINDOW
 
 
 #: Тема, о которой просят робота (знак для ворот 3 и 4): музыка (ТА ЖЕ таблица, что для группы тулов) и «что сейчас
@@ -322,8 +328,10 @@ VOLUME_CHANNEL_STEMS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "music": MUSIC_STEMS,
     "tts": ("голос", "говори", "говорить", "разговарива", "себя"),
 })
+#: Существительные «про громкость»: «громкость потише», «звук погромче», «уровень повыше».
+VOLUME_NOUN_STEMS: Tuple[str, ...] = ("громк", "звук", "уровень")
 #: Слова «про громкость», не меняющие ни намерения, ни канала: «сделай громкость потише», «звук погромче».
-VOLUME_TOPIC_STEMS: Tuple[str, ...] = ("громк", "звук", "уровень", "сделай", "можешь", "можно")
+VOLUME_TOPIC_STEMS: Tuple[str, ...] = (*VOLUME_NOUN_STEMS, "сделай", "можешь", "можно")
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tier-1 закрытая грамматика (§4.2, ``grammar.match``): виды команд, служебные слова, голос, новая сессия
@@ -835,28 +843,69 @@ EDIT_OTHER_OWNER_STEMS: Tuple[str, ...] = SPEECH_OWNER_STEMS + MOTION_VERB_STEMS
 #: под диджей-сетом не разбудило — ведущих слов ворот 1–4 в нём нет; так же n506 23.10 и 27.10 09:26). Это не новый
 #: список слов: те же основы, которыми Tier-1 и срез тулов зовут правку музыки, — «громче/тише/прибавь/убавь»
 #: (:data:`VOLUME_STEMS`) и «темп/быстрее/ускорь/замедли/жёстче/мягче» (:data:`MUSIC_AMBIGUOUS_STEMS`: через них «ускорь
-#: темп» под музыкой уходит в группу music, а не в голос).
-WAKE_SLIP_TWEAK_STEMS: Tuple[str, ...] = tuple(dict.fromkeys((
-    *VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS)))
-#: Окончания, после которых основа правки — просьба, а не рассказ: повелительное («ускорь/ускорьте/замедли/замедлите/
-#: убавь/подкрути/ускоряй»), сравнительное («быстрее/быстрей/помедленнее»); пусто — основа уже слово («громче», «тише»,
-#: «темп»). «роботы ускоряются», «роботы быстро учатся», «темпы растут» под них не подходят и не будят.
-WAKE_SLIP_TWEAK_ENDINGS: Tuple[str, ...] = ("", "ь", "ьте", "и", "ите", "яй", "яйте", "е", "ее", "ей")
-#: «Добавь» — просьба и про музыку («добавь бас», «добавь бит», «добавь куплет»), и про что угодно («добавь соли»): будит
-#: под музыкой, только если в ближайших словах есть тема — музыка (:data:`WAKE_SLIP_TOPIC_STEMS`), слово правки
-#: (:data:`MUSIC_AMBIGUOUS_STEMS`) или «бас» (:data:`MUSIC_AMBIGUOUS_WORDS`).
-WAKE_SLIP_ADD_LEADS: Tuple[str, ...] = ("добавь", "добавьте")
-#: Все ворота искажённого вейка: слово будит, если открыта ХОТЬ ОДНА. Ведущее слово принадлежит одним воротам. Ворота
-#: правки музыки (``under_music``) действуют только пока музыка играет: без неё «ускорь/быстрее/громче» не про музыку
-#: (темп речи, обычный разговор), и «роботы ускорь» — как раньше, не будит, фраза уходит в бэклог.
+#: темп» под музыкой уходит в группу music, а не в голос). Сверка идёт после ё → е, поэтому основы здесь без ё («жестч»,
+#: а не «жёстч»: с «ё» основа не совпала бы ни с одним словом фразы).
+WAKE_SLIP_TWEAK_STEMS: Tuple[str, ...] = tuple(dict.fromkeys(
+    stem.replace("ё", "е") for stem in (*VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS)))
+#: Из них существительные: «темп», «скорость» - называют, что правят, а не просят («роботы темп задают», «рады скорости
+#: не боятся»). Сами по себе они не просьба: знак при другом ведущем и ведущие только «с продолжением» («темп
+#: побыстрее»). Подмножество :data:`MUSIC_AMBIGUOUS_STEMS`, сверяет тест.
+WAKE_SLIP_TWEAK_NOUN_STEMS: Tuple[str, ...] = ("темп", "скорост")
+#: Остальные - слова просьбы: повелительное («ускорь», «убавь», «замедли»), наречие и сравнительная степень («громче»,
+#: «потише», «быстрее», «помедленнее», «мягче»).
+WAKE_SLIP_TWEAK_REQUEST_STEMS: Tuple[str, ...] = tuple(
+    stem for stem in WAKE_SLIP_TWEAK_STEMS if stem not in WAKE_SLIP_TWEAK_NOUN_STEMS)
+#: Окончания, после которых основа правки - просьба сама по себе: повелительное («ускорь/ускорьте/замедли/замедлите/
+#: убавь/подкрути/ускоряй»). «роботы ускоряются», «роботы ускоряют производство» под них не подходят и не будят.
+WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS: Tuple[str, ...] = ("ь", "ьте", "и", "ите", "яй", "яйте")
+#: Окончания сравнительной степени и наречия («быстрее/быстрей/помедленнее», «громче» целиком - пустое окончание): просьба,
+#: только если фраза на этом кончается или дальше идёт знак (:data:`WAKE_SLIP_TWEAK_CUE_STEMS`), а не «работа громче
+#: всех» (ревью PR #4123).
+WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS: Tuple[str, ...] = ("", "е", "ее", "ей")
+#: Все окончания, при которых основа правки - ведущее слово (объединение двух таблиц выше).
+WAKE_SLIP_TWEAK_ENDINGS: Tuple[str, ...] = (*WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS, *WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS)
+#: Окончания существительных правки («темп», «скорость», «скорости»): основа из :data:`WAKE_SLIP_TWEAK_NOUN_STEMS` + одно
+#: из них - ведущее слово «с продолжением». «темпы», «скоростные» не подходят.
+WAKE_SLIP_TWEAK_NOUN_ENDINGS: Tuple[str, ...] = ("", "ь", "и")
+#: Слова просьбы целиком: основа просьбы + окончание («ускорь», «убавь», «громче», «быстрее»). Знак для ворот, где после
+#: ведущего слова обязано идти слово правки («ещё быстрее», «бас потише»): основой по левой границе здесь нельзя -
+#: «быстро» начинается с «быстр», а «роботы еще быстро учатся» - рассказ. Среди форм есть и несуществующие («ускор»,
+#: «громчеь»): они никогда не звучат в речи и ничего не будят.
+WAKE_SLIP_TWEAK_FORMS: Tuple[str, ...] = tuple(dict.fromkeys(
+    stem + ending for stem in WAKE_SLIP_TWEAK_REQUEST_STEMS for ending in WAKE_SLIP_TWEAK_ENDINGS))
+#: Знак «это про музыку» после сравнительной степени (основы, левая граница): музыка (:data:`WAKE_SLIP_TOPIC_STEMS`) и
+#: громкость («громче звук», :data:`VOLUME_NOUN_STEMS`). Кроме них знаком служат «бас» (:data:`MUSIC_AMBIGUOUS_WORDS`,
+#: слово целиком) и слово правки (:data:`WAKE_SLIP_TWEAK_FORMS`, «громче быстрее»). Любое другое продолжение («громче
+#: всех», «быстрее нас считают») - рассказ, не просьба.
+WAKE_SLIP_TWEAK_CUE_STEMS: Tuple[str, ...] = (*WAKE_SLIP_TOPIC_STEMS, *VOLUME_NOUN_STEMS)
+#: Вежливые слова между словом правки и знаком: «погромче пожалуйста», «ещё чуть быстрее» - просьбу не меняют.
+WAKE_SLIP_POLITE: Tuple[str, ...] = ("пожалуйста", "немного", "чуть", "чуть-чуть", "слегка")
+#: «Добавь/сделай» - просьба и про музыку («добавь бас», «сделай тише», «сделай бит потяжелее»), и про что угодно («добавь
+#: соли», «сделай чаю»): будит под музыкой, только если в ближайших словах есть знак - музыка
+#: (:data:`WAKE_SLIP_TOPIC_STEMS`), слово правки (:data:`WAKE_SLIP_TWEAK_STEMS`), громкость или «бас»
+#: (:data:`MUSIC_AMBIGUOUS_WORDS`).
+WAKE_SLIP_DO_LEADS: Tuple[str, ...] = ("добавь", "добавьте", "сделай", "сделайте")
+#: Все ворота искажённого вейка: слово будит, если открыта ХОТЬ ОДНА. Ведущее слово принадлежит одним воротам (при том
+#: же ``under_music``). Ворота правки музыки (``under_music``) действуют только пока музыка играет: без неё «ускорь/
+#: быстрее/громче» не про музыку (темп речи, обычный разговор), и «роботы ускорь» — как раньше, не будит, фраза уходит
+#: в бэклог. Под музыкой слово правки будит так: повелительное («ускорь») - всегда; сравнительная степень («громче») -
+#: если фраза на ней кончается или сразу дальше знак «про музыку»; существительное («темп», «бас») - только перед
+#: словом правки («темп побыстрее», «бас потише»); «ещё» - перед словом правки («ещё быстрее»); «добавь/сделай» - со
+#: знаком «про музыку» в ближайших словах.
 WAKE_SLIP_GATES: Tuple[SlipGate, ...] = (
     SlipGate(WAKE_SLIP_COMMAND_LEADS),
     SlipGate(WAKE_SLIP_QUESTION_LEADS),
     SlipGate(WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_TOPIC_STEMS),
     SlipGate(WAKE_SLIP_MORE_LEADS, stems=WAKE_SLIP_TOPIC_STEMS),
-    SlipGate(MUSIC_AMBIGUOUS_WORDS, lead_stems=WAKE_SLIP_TWEAK_STEMS, lead_endings=WAKE_SLIP_TWEAK_ENDINGS,
+    SlipGate(lead_stems=WAKE_SLIP_TWEAK_REQUEST_STEMS, lead_endings=WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS,
              under_music=True),
-    SlipGate(WAKE_SLIP_ADD_LEADS, MUSIC_AMBIGUOUS_WORDS, WAKE_SLIP_TOPIC_STEMS + MUSIC_AMBIGUOUS_STEMS,
+    SlipGate(forms=(*MUSIC_AMBIGUOUS_WORDS, *WAKE_SLIP_TWEAK_FORMS), stems=WAKE_SLIP_TWEAK_CUE_STEMS,
+             lead_stems=WAKE_SLIP_TWEAK_REQUEST_STEMS, lead_endings=WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS,
+             under_music=True, reach=REACH_END_OR_NEXT),
+    SlipGate(MUSIC_AMBIGUOUS_WORDS, forms=WAKE_SLIP_TWEAK_FORMS, lead_stems=WAKE_SLIP_TWEAK_NOUN_STEMS,
+             lead_endings=WAKE_SLIP_TWEAK_NOUN_ENDINGS, under_music=True, reach=REACH_NEXT),
+    SlipGate(WAKE_SLIP_MORE_LEADS, forms=WAKE_SLIP_TWEAK_FORMS, under_music=True, reach=REACH_NEXT),
+    SlipGate(WAKE_SLIP_DO_LEADS, MUSIC_AMBIGUOUS_WORDS, WAKE_SLIP_TOPIC_STEMS + WAKE_SLIP_TWEAK_STEMS + VOLUME_NOUN_STEMS,
              under_music=True),
 )
 #: Русские названия звуков каталога ``sound_pack/sound_catalog.json``: группа тулов ``sound`` открывается не только

@@ -5,8 +5,10 @@ import pytest
 from rob_box_dialog.knowledge import (
     DEFAULT_WAKE_WORDS, MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, SILENCE_WORDS, STOP_LEAD_WORDS, STOP_WORDS,
     TIER1_POLICY, UNSILENCE_WORDS, VOLUME_STEMS, WAKE_SLIP_ADDRESSEE, WAKE_SLIP_AMBIGUOUS, WAKE_SLIP_COMMAND_LEADS,
-    WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_QUESTION_CUED_LEADS,
-    WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
+    WAKE_SLIP_GATES, WAKE_SLIP_MORE_LEADS, WAKE_SLIP_NEVER, WAKE_SLIP_PLURAL, WAKE_SLIP_POLITE,
+    WAKE_SLIP_QUESTION_CUED_LEADS, WAKE_SLIP_QUESTION_LEADS, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS,
+    WAKE_SLIP_TWEAK_ENDINGS, WAKE_SLIP_TWEAK_FORMS, WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_NOUN_STEMS,
+    WAKE_SLIP_TWEAK_REQUEST_STEMS, WAKE_SLIP_TWEAK_STEMS, WAKE_SLIP_VARIANTS,
 )
 from rob_box_dialog.words import (
     NO_SCOPE, STOP_CLEAR, STOP_DISPUTED, STOP_NONE, StopScope, has_form, has_wake_word, has_word, introduces_self,
@@ -260,7 +262,9 @@ def test_slipped_wake_rest_needs_a_robot_wake_word_in_the_table():
 
 def test_slip_tables_do_not_contradict_each_other():
     leads = [lead for gate in WAKE_SLIP_GATES for lead in gate.leads]
-    assert len(leads) == len(set(leads)), "ведущее слово принадлежит одним воротам"
+    for under_music in (False, True):
+        mine = [lead for gate in WAKE_SLIP_GATES if gate.under_music is under_music for lead in gate.leads]
+        assert len(mine) == len(set(mine)), "ведущее слово принадлежит одним воротам (при том же under_music)"
     for word in (*leads, *WAKE_SLIP_ADDRESSEE, *WAKE_SLIP_AMBIGUOUS, *WAKE_SLIP_PLURAL, *WAKE_SLIP_NEVER):
         assert word == word.lower() and "ё" not in word and " " not in word, word
     gated = set(WAKE_SLIP_AMBIGUOUS) | set(WAKE_SLIP_PLURAL)
@@ -290,7 +294,19 @@ TWEAK_UNDER_MUSIC = [
     ("роботы жёстче", "жёстче"),
     ("рады мягче", "мягче"),
     ("роботы темп побыстрее", "темп побыстрее"),
-    ("роботы бас потяжелее", "бас потяжелее"),
+    ("роботы бас потише", "бас потише"),
+    ("рады басы погромче", "басы погромче"),
+    ("роботы темп помедленнее", "темп помедленнее"),
+    ("роботы громче пожалуйста", "громче пожалуйста"),
+    # ревью PR #4123: естественное «ещё быстрее/громче» и «сделай тише»
+    ("роботы ещё быстрее", "ещё быстрее"),
+    ("роботы ещё громче", "ещё громче"),
+    ("рада еще тише", "еще тише"),
+    ("роботы ещё чуть быстрее", "ещё чуть быстрее"),
+    ("роботы сделай тише", "сделай тише"),
+    ("работа сделайте погромче", "сделайте погромче"),
+    ("рада сделай музыку потише", "сделай музыку потише"),
+    ("роботы сделай бит потяжелее", "сделай бит потяжелее"),
     ("роботы добавь бас", "добавь бас"),
     ("работа добавь бит", "добавь бит"),
     ("рада добавьте куплет про комара", "добавьте куплет про комара"),
@@ -300,6 +316,15 @@ TWEAK_NOT_WAKE_UNDER_MUSIC = [
     "роботы захватят мир", "роботы ускоряются", "роботы быстро учатся", "роботы ускоряют производство",
     "работа темпы растут", "рада тебя видеть", "роботы это сложно", "работа добавь соли", "рада добавь воды",
     "роботы скоро будут", "роботы бассейн", "работа мягкий плед", "роботы громкие",
+    # ревью PR #4123: слово правки в начале рассказа - не просьба (за ним не конец фразы и не знак «про музыку»)
+    "роботы темп задают", "рады скорости не боятся", "работа громче всех", "роботы быстрее нас считают",
+    "роботы скорость набирают", "работа тише воды", "роботы тише воды ниже травы",
+    # «бас» без слова правки и голые существительные не будят
+    "роботы бас", "роботы басы", "роботы бас играет", "роботы басы играют", "роботы темп", "рады скорость",
+    "рады скорость растёт",
+    # «ещё» и «сделай» без слова правки или музыки рядом
+    "роботы еще быстро учатся", "роботы ещё не умеют быстрее", "роботы еще", "роботы сделай чай",
+    "работа сделайте шаг назад", "роботы сделай это сам",
 ]
 
 
@@ -330,20 +355,76 @@ def test_music_does_not_change_the_unconditional_gates():
 
 
 def test_tweak_gate_stems_come_from_the_existing_tables_not_a_copy():
-    """Одна таблица знания (ADR-0148): основы ведущих слов правки - объединение основ громкости и темпа, своих слов нет."""
-    known = {*VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS}
-    assert set(WAKE_SLIP_TWEAK_STEMS) == known
+    """Одна таблица знания (ADR-0148): основы ведущих слов правки - объединение основ громкости и темпа, своих слов нет.
+    Основы сверяются после ё → е («жёстч» из таблицы темпа стоит здесь как «жестч»: с «ё» она не совпала бы ни с одним
+    словом фразы)."""
+    known = {s.replace("ё", "е") for s in (*VOLUME_STEMS["louder"], *VOLUME_STEMS["quieter"], *MUSIC_AMBIGUOUS_STEMS)}
+    assert set(WAKE_SLIP_TWEAK_STEMS) == known and len(WAKE_SLIP_TWEAK_STEMS) == len(known)
+    assert "жестч" in WAKE_SLIP_TWEAK_STEMS and "жёстч" not in WAKE_SLIP_TWEAK_STEMS
+    assert set(WAKE_SLIP_TWEAK_NOUN_STEMS) <= set(MUSIC_AMBIGUOUS_STEMS), "существительные - из таблицы темпа"
+    assert set(WAKE_SLIP_TWEAK_REQUEST_STEMS) | set(WAKE_SLIP_TWEAK_NOUN_STEMS) == set(WAKE_SLIP_TWEAK_STEMS)
+    assert not set(WAKE_SLIP_TWEAK_REQUEST_STEMS) & set(WAKE_SLIP_TWEAK_NOUN_STEMS)
+    assert not any("ё" in form for form in WAKE_SLIP_TWEAK_FORMS), "формы сверяются после ё → е"
+    assert {stem + ending for stem in WAKE_SLIP_TWEAK_REQUEST_STEMS for ending in WAKE_SLIP_TWEAK_ENDINGS} == set(
+        WAKE_SLIP_TWEAK_FORMS), "слова просьбы - основы из таблиц × окончания, своих слов нет"
     tweak_gates = [gate for gate in WAKE_SLIP_GATES if gate.under_music]
     assert tweak_gates, "ворота правки музыки есть"
-    assert any(gate.lead_stems == WAKE_SLIP_TWEAK_STEMS and gate.lead_endings == WAKE_SLIP_TWEAK_ENDINGS
-               and set(MUSIC_AMBIGUOUS_WORDS) <= set(gate.leads) for gate in tweak_gates)
+    by_ending = {gate.lead_endings for gate in tweak_gates if gate.lead_stems == WAKE_SLIP_TWEAK_REQUEST_STEMS}
+    assert by_ending == {WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS, WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS}
+    assert any(gate.lead_stems == WAKE_SLIP_TWEAK_NOUN_STEMS and set(MUSIC_AMBIGUOUS_WORDS) <= set(gate.leads)
+               for gate in tweak_gates), "существительные (темп, бас) - свои ворота"
     assert not any(gate.under_music for gate in WAKE_SLIP_GATES[:4]), "прежние ворота музыки не требуют"
 
 
 def test_tweak_endings_table_is_lowercase_and_unique():
     assert len(WAKE_SLIP_TWEAK_ENDINGS) == len(set(WAKE_SLIP_TWEAK_ENDINGS))
-    for part in (*WAKE_SLIP_TWEAK_ENDINGS, *WAKE_SLIP_TWEAK_STEMS):
+    assert set(WAKE_SLIP_TWEAK_ENDINGS) == set(WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS) | set(
+        WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS)
+    assert not set(WAKE_SLIP_TWEAK_IMPERATIVE_ENDINGS) & set(WAKE_SLIP_TWEAK_COMPARATIVE_ENDINGS)
+    for part in (*WAKE_SLIP_TWEAK_ENDINGS, *WAKE_SLIP_TWEAK_STEMS, *WAKE_SLIP_POLITE):
         assert part == part.lower() and " " not in part, part
+
+
+#: Ревью PR #4123: слово правки сравнительной степенью (громче, тише, быстрее, жёстче) - просьба, если фраза на нём
+#: кончилась или сразу за ним слово «про музыку»; любое другое продолжение - уже рассказ.
+COMPARATIVES = ("громче", "погромче", "тише", "потише", "быстрее", "быстрей", "побыстрее", "помедленнее", "жёстче",
+                "мягче")
+
+
+@pytest.mark.parametrize("word", COMPARATIVES)
+def test_comparative_wakes_at_the_end_of_the_phrase_or_before_a_music_word_only(word):
+    for tail, wakes in (("", True), (" пожалуйста", True), (" музыку", True), (" басы", True), (" быстрее", True),
+                        (" всех", False), (" нас считают", False), (" воды", False), (" чем вчера", False)):
+        text = f"роботы {word}{tail}"
+        got = slipped_wake_rest(text, music_playing=True)
+        assert (got is not None) is wakes, text
+        assert slipped_wake_rest(text) is None, f"{text}: без музыки ворота закрыты"
+
+
+@pytest.mark.parametrize("word", ("ускорь", "ускорьте", "замедли", "замедлите", "убавь", "прибавь", "подкрути", "приглуши"))
+def test_imperative_wakes_whatever_follows(word):
+    """Повелительное («ускорь», «убавь») - просьба по форме: живая n506 27.10 («ускорь там потом мы тут засыпаем оба»)
+    будит и тогда, когда STT исказил слово после него."""
+    for tail in ("", " темп", " там потом мы тут засыпаем оба", " всех"):
+        assert slipped_wake_rest(f"роботы {word}{tail}", music_playing=True) == f"{word}{tail}"
+        assert slipped_wake_rest(f"роботы {word}{tail}") is None
+
+
+@pytest.mark.parametrize("noun", ("темп", "скорость", "скорости", "бас", "басы", "баса"))
+def test_noun_leads_only_before_a_tweak_word(noun):
+    """«темп/скорость/бас» называют, что правят: будят только перед словом правки («темп побыстрее», «бас потише»)."""
+    assert slipped_wake_rest(f"роботы {noun}", music_playing=True) is None
+    assert slipped_wake_rest(f"роботы {noun} задают", music_playing=True) is None
+    assert slipped_wake_rest(f"роботы {noun} играет", music_playing=True) is None
+    if noun in ("темп", "бас", "басы", "баса"):
+        assert slipped_wake_rest(f"роботы {noun} потише", music_playing=True) == f"{noun} потише"
+        assert slipped_wake_rest(f"роботы {noun} чуть быстрее", music_playing=True) == f"{noun} чуть быстрее"
+
+
+def test_the_politeness_words_do_not_make_a_request_of_a_story():
+    assert slipped_wake_rest("роботы чуть быстрее", music_playing=True) is None, "«чуть» - не ведущее слово"
+    assert slipped_wake_rest("роботы ещё чуть", music_playing=True) is None
+    assert slipped_wake_rest("роботы ещё чуть быстрее", music_playing=True) == "ещё чуть быстрее"
 
 
 # --- #3994: охват ясного стопа (STOP_SCOPE, words.stop_scope) ------------------------------------------------------

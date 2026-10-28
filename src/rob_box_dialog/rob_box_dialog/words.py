@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
@@ -20,6 +21,8 @@ from rob_box_dialog.knowledge import (
     NAME_CASE_MIN_STEM,
     NAME_CASE_SURE_TAILS,
     NAME_CASE_TAILS,
+    REACH_END_OR_NEXT,
+    REACH_NEXT,
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
@@ -35,6 +38,7 @@ from rob_box_dialog.knowledge import (
     WAKE_SLIP_GATES,
     WAKE_SLIP_NEVER,
     WAKE_SLIP_PLURAL,
+    WAKE_SLIP_POLITE,
     WAKE_SLIP_TARGETS,
     WAKE_SLIP_VARIANTS,
     SlipGate,
@@ -100,12 +104,23 @@ def _slip_kind(token: str) -> str:
     return "wake" if near else ""
 
 
+def _is_cue(token: str, gate: SlipGate) -> bool:
+    return token in gate.forms or token.startswith(gate.stems)
+
+
 def _gate_cue(tail: Sequence[str], gate: SlipGate) -> bool:
-    """Есть ли в ``tail`` знак ворот: слово целиком из ``forms`` или начинающееся с основы из ``stems``.
-    Ворота без знака пропускают всегда."""
+    """Есть ли в ``tail`` (всё, что идёт за ведущим словом) знак ворот: слово целиком из ``forms`` или начинающееся с
+    основы из ``stems``. Ворота без знака пропускают всегда. ``gate.reach`` - где искать: в ближайших
+    ``WAKE_SLIP_CUE_WINDOW`` словах (по умолчанию) либо только сразу за ведущим, не считая вежливых слов
+    (``REACH_NEXT``); ``REACH_END_OR_NEXT`` пропускает и фразу, которая кончилась на ведущем."""
     if not (gate.forms or gate.stems):
         return True
-    return any(t in gate.forms or t.startswith(gate.stems) for t in tail)
+    if gate.reach not in (REACH_NEXT, REACH_END_OR_NEXT):
+        return any(_is_cue(t, gate) for t in tail[:WAKE_SLIP_CUE_WINDOW])
+    rest = tuple(itertools.dropwhile(lambda t: t in WAKE_SLIP_POLITE, tail))
+    if not rest:
+        return gate.reach == REACH_END_OR_NEXT
+    return _is_cue(rest[0], gate)
 
 
 def _gate_lead(token: str, gate: SlipGate) -> bool:
@@ -123,8 +138,7 @@ def _gates_open(rest: str, music_playing: bool = False) -> bool:
     tokens = name_tokens(rest)
     if not tokens:
         return False
-    tail = tokens[1:1 + WAKE_SLIP_CUE_WINDOW]
-    return any(_gate_lead(tokens[0], gate) and _gate_cue(tail, gate)
+    return any(_gate_lead(tokens[0], gate) and _gate_cue(tokens[1:], gate)
                for gate in WAKE_SLIP_GATES if music_playing or not gate.under_music)
 
 

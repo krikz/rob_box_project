@@ -506,9 +506,25 @@ def test_3975_music_that_stopped_closes_the_gate_again():
 @pytest.mark.parametrize("text", [
     "роботы захватят мир", "роботы ускоряются", "роботы быстро учатся", "работа добавь соли", "рада тебя видеть",
     "работа не волк", "роботы ещё не умеют летать",
+    # ревью PR #4123: слово правки в начале рассказа и голое «бас» не будят (ложные побудки под музыкой)
+    "роботы темп задают", "рады скорости не боятся", "работа громче всех", "роботы бас",
 ])
 def test_3975_ordinary_speech_does_not_wake_even_under_music(text):
     assert _in_session(text, _session("playing", dj=True)) == NotAddressed(NO_WAKE), text
+
+
+@pytest.mark.parametrize("text,rest", [
+    # ревью PR #4123: естественные просьбы после искажённого вейка
+    ("роботы ещё быстрее", "ещё быстрее"),
+    ("роботы ещё громче", "ещё громче"),
+    ("роботы сделай тише", "сделай тише"),
+    ("роботы бас потише", "бас потише"),
+    ("работа громче", "громче"),
+])
+@pytest.mark.parametrize("session", [_session("playing"), _session("idle", dj=True)], ids=["player-playing", "dj-scene"])
+def test_3975_natural_tweak_requests_wake_under_music_and_not_without_it(text, rest, session):
+    assert _in_session(text, session) == Addressed(rest, VOICE)
+    assert _in_session(text, _session("idle")) == NotAddressed(NO_WAKE)
 
 
 @pytest.mark.parametrize("text", [*SLIPPED_NOT_WAKE, *MARATHON_NO_WAKE])
