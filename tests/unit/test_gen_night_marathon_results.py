@@ -564,7 +564,7 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
         assert "skip_when" not in steps[label], label
     assert not any("_skip_when" in s for s in steps.values())
     # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
-    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "TRACK_ENDED"}  # TRACK_ENDED (#4176, n312): трек доиграл сам
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506"}  # #4196: дека пуста (каскад)
     assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
         "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
     for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
