@@ -51,7 +51,8 @@ ACT2B = (
     ("n701", "Робот, здравствуй, я Саша, чиню технику, сегодня перебираю колёса.", False),
     ("n702", "Робот, ты меня узнал по голосу, я тот же, кто заходил недавно?", True),
     ("n703", "Робот, а что ты про меня помнишь с прошлого раза, какой чай я обычно пью?", False),  # память - модели
-    ("n704", "Робот, ты ещё здесь, помнишь меня? Мы недавно уже говорили.", True),
+    # «помнишь меня» - вопрос к памяти, не к снимку (решение Шифу 28.10, вариант Б): отвечает модель с фактами из памяти
+    ("n704", "Робот, ты ещё здесь, помнишь меня? Мы недавно уже говорили.", False),
     ("n705", "Робот, привет, я Борис, заглянул проверить проводку, в щитке у окна опять что-то потрескивает.", False),
     ("n706", "Робот, а меня ты по голосу узнаёшь? Скажи, кто я такой и откуда ты меня знаешь.", True),
     ("n707", "Робот, а что ты про меня помнишь, за какую футбольную команду я болею?", False),  # память - модели
@@ -77,15 +78,25 @@ def test_whole_recognition_question(text):
     assert asks_recognized(text)
 
 
-@pytest.mark.parametrize("text", ["помнишь меня?", "а ты меня помнишь", "знаешь, кто я?", "вы меня узнаёте?",
+@pytest.mark.parametrize("text", ["знаешь, кто я?", "вы меня узнаёте?",
                                   "ты меня узнал или нет?", "ты меня узнал, да?", "ты меня запомнил?",
                                   "ты меня узнал по голосу я тот же кто заходил недавно"])  # последняя - STT без знаков
 def test_recognition_question_vocabulary(text):
-    """Словарь ревью PR #4121: «помнишь меня?», «знаешь, кто я?», «вы меня узнаёте?», «…или нет?», «…, да?»."""
+    """Словарь ревью PR #4121: «знаешь, кто я?», «вы меня узнаёте?», «…или нет?», «…, да?»."""
     assert asks_recognized(text)
 
 
-@pytest.mark.parametrize("text", ["ты меня не помнишь?", "не узнал меня?", "ты не узнал меня теперь",
+@pytest.mark.parametrize("text", ["помнишь меня?", "а ты меня помнишь", "ты меня помнишь?", "вы меня помните?",
+                                  "ты меня не помнишь?", "не помнишь меня?", "ты еще здесь, помнишь меня?",
+                                  "Мы недавно уже говорили, ты меня помнишь?"])
+def test_remember_me_is_a_question_to_memory_not_to_the_snapshot_3993(text):
+    """Решение Шифу 28.10 (вариант Б): «помнишь/помните» - не глагол узнавания. «А ты меня помнишь?» - ход модели:
+    с небольшим рассказом о человеке из памяти (memory_search), а не «Узнал — ты Саша.» вместо фактов. Код отвечает
+    только на «ты меня узнал?» (``test_whole_recognition_question``). Отрицание «не помнишь» - то же."""
+    assert not asks_recognized(text)
+
+
+@pytest.mark.parametrize("text", ["ты меня не узнал?", "не узнал меня?", "ты не узнал меня теперь",
                                   "ты меня узнаешь, да?", "а ты знаешь меня?", "ты знаешь, кто я такой?"])
 def test_negated_and_tagged_recognition_question(text):
     """Круг 1 ревью PR #4121: отрицание глагола узнавания и переспрос в конце - всё ещё вопрос узнавания."""
@@ -113,8 +124,9 @@ def test_statement_or_stt_fragment_goes_to_the_model(text):
 
 @pytest.mark.parametrize("label, text, by_code", ACT2B, ids=[a[0] for a in ACT2B])
 def test_act2b_lines_recognition_by_code(label, text, by_code):
-    """Ревью PR #4121 (блокер): реплики акта 2b, ради которых заведена карточка, - вопрос узнавания (n702, n704,
-    n706, n710) отвечает код; память (n703, n707), самопредставление и выбор из имён (n708) - модель."""
+    """Ревью PR #4121 (блокер): реплики акта 2b, ради которых заведена карточка, - вопрос узнавания (n702, n706,
+    n710) отвечает код; память (n703, n707), «помнишь меня?» (n704, решение Шифу 28.10), самопредставление и выбор из
+    имён (n708) - модель."""
     assert asks_recognized(strip_wake_word(text)) is by_code
 
 
@@ -249,6 +261,19 @@ def test_act2b_memory_question_still_goes_to_the_model():
     engine, ports, _ = _engine(CONFIRMED, [Answer(Command(speech="Ты пьёшь зелёный чай."), "deepseek")])
     asyncio.run(engine.run(Addressed(strip_wake_word(ACT2B[2][1]), VOICE)))
     assert len(ports.asked) == 1 and ports.said == ["Ты пьёшь зелёный чай."]
+
+
+@pytest.mark.parametrize("result", [CONFIRMED, CONTESTED], ids=["confirmed", "contested"])
+def test_act2b_n704_remember_me_goes_to_the_model_with_memory_3993(result):
+    """Решение Шифу 28.10 (вариант Б): n704 «ты ещё здесь, помнишь меня?» подтверждённому голосу - ход модели (она
+    расскажет о человеке из памяти), а не «Узнал — ты Саша.» кодом; модель зовётся один раз, фразу кода вместо неё
+    никто не говорит."""
+    engine, ports, _ = _engine(result, [Answer(Command(speech="Помню: ты Саша, чинишь технику."), "deepseek")])
+    asyncio.run(engine.run(Addressed(strip_wake_word(ACT2B[3][1]), VOICE)))
+    assert ACT2B[3][0] == "n704"
+    assert len(ports.asked) == 1
+    assert ports.said == ["Помню: ты Саша, чинишь технику."]
+    assert YES_SASHA not in ports.said and UNSURE not in ports.said
 
 
 def test_question_inside_another_request_goes_to_the_model():
