@@ -1,12 +1,13 @@
-"""#4157: «скажи обо мне пять фактов» - на последней итерации после чтения памяти модель вернула одно лицо без слов, а код
-сказал неправду «не смог сложить в короткую фразу» (ADR-0148: решает код, а не промпт). Марафон-2 28.10: n109 «какие
-звуки ты умеешь издавать», n908 «рецепт борща без лука» (``memory_search`` + ``search_web``, последняя - одно лицо).
+"""#4157: «скажи обо мне пять фактов» - на последней итерации после чтения памяти модель вернула одно лицо без слов,
+а код сказал неправду «не смог сложить в короткую фразу» (ADR-0148: решает код, а не промпт). Марафон-2 28.10: n109
+«какие звуки ты умеешь издавать», n908 «рецепт борща без лука» (``memory_search`` + ``search_web``, последняя - одно лицо).
 
 1. Форма последней итерации после выполненного запроса (``turn.answer_form`` → ``Form.speech_required``): ответ без слов
    - нарушение валидатора ``VIOLATION_SPEECH_REQUIRED`` (повтор моста с подсказкой). Схему форма не меняет:
    ``required: [speech]`` спорил бы с ``speech_with_actions`` (звук после запроса законен без слов).
 2. Модель всё равно без слов - код называет 2–3 пункта из данных (``turn.query_answer``): факты памяти (kind=fact, по
-   score; только если ход читал одну память), категории звуков. Слоты строит одно место; общая фраза причины не называет.
+   score; только если ход читал одну память), категории звуков, выдача поиска. Слоты строит одно место; общая фраза
+   причины не называет.
 """
 
 import asyncio
@@ -135,8 +136,8 @@ def test_only_the_last_iteration_after_a_query_owes_words():
 
 
 def test_the_schema_does_not_require_speech_it_would_contradict_speech_with_actions():
-    """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``), а слова рядом
-    со звуком - ``speech_with_actions``. ``required: [speech]`` толкал бы модель в это нарушение."""
+    """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``), а слова
+    рядом со звуком - ``speech_with_actions``. ``required: [speech]`` толкал бы модель в это нарушение."""
     final = Answer(Command(speech="Звуков много."), "deepseek")
     ports = Ports([_query(SOUNDS), _query(SOUNDS), final], {"get_sound_info": ("done", SOUND_DATA)})
     _run(ports, N_SOUNDS)
@@ -202,7 +203,8 @@ def test_answer_without_words_on_the_asked_form_is_a_violation_with_a_hint(raw):
     assert isinstance(res, Invalid) and res.reason == kn.VIOLATION_SPEECH_REQUIRED
     note = cm.explain(res, after_query=True)
     assert kn.VIOLATION_SPEECH_REQUIRED in note and "в speech" in note and "данные запроса уже получены" in note
-    assert isinstance(validate(parse(raw), ALL, form=Form(passed=False, voice=False)), Command), "форма открыта - как было"
+    opened = Form(passed=False, voice=False)
+    assert isinstance(validate(parse(raw), ALL, form=opened), Command), "форма открыта - как было"
 
 
 @pytest.mark.parametrize("raw", [
@@ -220,8 +222,8 @@ def test_answer_with_words_or_an_action_the_code_voices_passes_the_asked_form(ra
 
 
 def test_model_without_words_after_memory_search_code_names_the_facts_of_the_result():
-    """Живой 28.10 13:40: два чтения памяти, на последней итерации - одно лицо. Код называет факты из результата (kind=fact,
-    по score, без дублей, без реплик прошлых разговоров), не «не смог сложить в короткую фразу»."""
+    """Живой 28.10 13:40: два чтения памяти, на последней итерации - одно лицо. Код называет факты из результата
+    (kind=fact, по score, без дублей, без реплик прошлых разговоров), не «не смог сложить в короткую фразу»."""
     ports = Ports([_query(SEARCH), _query(SEARCH_2), _bare()], {"memory_search": ("done", {"results": HITS})})
     agg = _run(ports, N_FACTS)
     assert len(ports.asked) == MAX + 1 and (agg.stage, agg.status) == ("done", "done")
@@ -253,8 +255,9 @@ FOOD = [{"kind": "fact", "content": "Денчик не ест лук.", "score":
 
 
 def test_n908_memory_beside_a_web_search_the_code_reads_the_search_not_the_food_facts():
-    """Марафон-2 n908: ``memory_search 'еда'`` + ``search_web``, затем ``memory_search 'лук'``, на последней - одно лицо.
-    Данные ответа - выдача поиска; факты о еде рядом с ней - контекст, не ответ на «рецепт борща». Не общая заглушка."""
+    """Марафон-2 n908: ``memory_search 'еда'`` + ``search_web``, затем ``memory_search 'лук'``, на последней - одно
+    лицо. Данные ответа - выдача поиска; факты о еде рядом с ней - контекст, не ответ на «рецепт борща». Не общая
+    заглушка."""
     first = _query(ToolCall("memory_search", {"query": "еда"}), ToolCall("search_web", {"query": WEB["query"]}))
     ports = Ports([first, _query(ToolCall("memory_search", {"query": "лук"})), _bare()],
                   {"memory_search": ("done", {"results": FOOD}), "search_web": ("done", WEB)})
@@ -304,7 +307,8 @@ def test_memory_search_names_up_to_three_distinct_facts_by_score():
     assert query_answer([_result("memory_search", {"results": no_score})]) == "Вот что нашёл в памяти: Первый; Второй."
 
 
-@pytest.mark.parametrize("data", [{}, {"results": []}, {"results": "нет"}, {"results": [{"kind": "turn", "content": "x"}]},
+@pytest.mark.parametrize("data", [{}, {"results": []}, {"results": "нет"},
+                                  {"results": [{"kind": "turn", "content": "x"}]},
                                   {"results": [{"kind": "fact", "content": "  "}]}])
 def test_memory_search_without_facts_has_no_phrase_by_data(data):
     assert query_answer([_result("memory_search", data)]) is None
@@ -321,13 +325,15 @@ def test_memory_phrase_is_not_longer_than_the_speech_that_is_heard():
     long_fact = ("Очень длинный рассказ о том, как мы вместе собирали робота и спорили о синтезаторах. " * 3).strip()
     hits = [{"kind": "fact", "content": f"{n}. {long_fact}", "score": 1 - n / 10} for n in range(3)]
     text = query_answer([_result("memory_search", {"results": hits})])
-    assert text is not None and len(text) <= kn.SPEECH_ACCEPT_MAX_CHARS and text.startswith("Вот что нашёл в памяти: 0.")
+    assert text is not None and len(text) <= kn.SPEECH_ACCEPT_MAX_CHARS
+    assert text.startswith("Вот что нашёл в памяти: 0.")
 
 
 def test_get_sound_info_overview_names_the_categories_and_the_rest_as_other():
     assert query_answer([_result("get_sound_info", SOUND_DATA)]) == SOUNDS_PHRASE
     odd = {"total_sounds": 5, "categories": {"base": 2, "ui": 0, "robot": 0, "weird": 3}}
-    assert query_answer([_result("get_sound_info", odd)]) == "Звуков у меня 5: эмоции — 2, другие — 3. Назвать какие-нибудь?"
+    expected = "Звуков у меня 5: эмоции — 2, другие — 3. Назвать какие-нибудь?"
+    assert query_answer([_result("get_sound_info", odd)]) == expected
 
 
 @pytest.mark.parametrize("data", [

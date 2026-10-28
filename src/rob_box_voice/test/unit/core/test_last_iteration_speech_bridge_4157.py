@@ -79,8 +79,8 @@ class _Inner:
 
 def _after_query() -> List[LLMMessage]:
     """Запрос с данными ``query`` хода (их возвращает ``turn._query_data``): мост узнаёт по ним, что запрос выполнен."""
-    data = json.dumps({kn.QUERY_RESULTS_FIELD: [{"tool": "memory_search", "status": "done", "data": {"results": HITS}}]},
-                      ensure_ascii=False)
+    rows = [{"tool": "memory_search", "status": "done", "data": {"results": HITS}}]
+    data = json.dumps({kn.QUERY_RESULTS_FIELD: rows}, ensure_ascii=False)
     return [LLMMessage(role="user", content=N_FACTS), LLMMessage(role="tool", content=data, tool_call_id="q1")]
 
 
@@ -104,7 +104,8 @@ def test_asked_form_leaves_the_request_schema_as_it_was():
 
 def test_a_sound_without_words_on_the_asked_form_passes_without_retry():
     """«Какие звуки» (n109): после запроса модель играет звук - слышно, слов не надо, повтора нет."""
-    inner = _Inner([LLMResponse(tool_calls=(_call(actions=[{"tool": "play_sound", "args": {"sound": "robot_happy"}}]),))])
+    sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
+    inner = _Inner([LLMResponse(tool_calls=(_call(actions=sound),))])
     bridge = cb.CommandModeLLM(inner)
 
     async def run() -> LLMResponse:
@@ -133,7 +134,8 @@ def test_bare_face_on_the_asked_form_is_retried_with_the_hint_and_the_words_are_
 
 
 def test_bare_face_twice_goes_to_the_turn_as_the_speech_required_violation():
-    inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),)), LLMResponse(tool_calls=(_call(expression=FACE),))])
+    inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),)),
+                    LLMResponse(tool_calls=(_call(expression=FACE),))])
     bridge = cb.CommandModeLLM(inner)
 
     async def run() -> LLMResponse:
@@ -141,7 +143,8 @@ def test_bare_face_twice_goes_to_the_turn_as_the_speech_required_violation():
             return await bridge.complete(_after_query(), tools=[_tool("memory_search")])
 
     out = asyncio.run(run())
-    assert len(inner.requests) == 2 and out.tool_calls[0].arguments[kn.COMMAND_INVALID_FIELD] == kn.VIOLATION_SPEECH_REQUIRED
+    assert len(inner.requests) == 2
+    assert out.tool_calls[0].arguments[kn.COMMAND_INVALID_FIELD] == kn.VIOLATION_SPEECH_REQUIRED
 
 
 def test_the_same_face_on_an_open_form_is_a_valid_command_without_retry():

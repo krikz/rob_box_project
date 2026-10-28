@@ -834,6 +834,15 @@ def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot
     return replace(form, speech_required=owed)
 
 
+async def _ask_iteration(engine: "TurnEngine", turn: _Turn, messages: Sequence[Any], tools: Sequence[Any],
+                         last: bool) -> "Answer":
+    """Один вызов модели хода в форме ЭТОЙ итерации (:func:`answer_form`, #4157): её видят схема и валидатор моста;
+    после вызова снова форма хода."""
+    turn.waiting = "llm"
+    with turn_form(answer_form(current_form(), turn, last, engine.session.snapshot)):
+        return await turn.deadline.wait(engine._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
+
+
 def _close_unread(turn: _Turn, acted: bool) -> str:
     """Модель на последней итерации ещё просит ``query`` (его уже не исполняют, :func:`_runnable`) или только
     повторяет исполненное в ходе (:func:`unrepeated`, #4069 п.1), а её слов не слышно: ответа она не дала
@@ -995,12 +1004,12 @@ def _answer_sources(results: Sequence[ActionResult]) -> List[ActionResult]:
 
 
 def query_answer(results: Sequence[ActionResult]) -> Optional[str]:
-    """Ответ кода по данным выполненного ``query`` (#3883, #4069 п.3, #4157): фраза тула (``knowledge.QUERY_FALLBACK_PHRASES``,
-    ключ - по данным вызова) со слотами из данных результата: голоса - сводка по провайдерам, список библиотеки - число
-    треков и 2–3 названия, память - 2–3 факта (только если ход читал одну её, :func:`_answer_sources`), каталог звуков -
-    сколько и каких категорий, поиск в сети - текст первой строки выдачи. Одно место слотов: что модель
-    прочла и не сказала, называет код. Ответ не длиннее речи, которую слышат (``command.fit_speech``). Фразы по данным
-    нет - ``None``."""
+    """Ответ кода по данным выполненного ``query`` (#3883, #4069 п.3, #4157): фраза тула
+    (``knowledge.QUERY_FALLBACK_PHRASES``, ключ - по данным вызова) со слотами из данных результата: голоса - сводка по
+    провайдерам, список библиотеки - число треков и 2–3 названия, память - 2–3 факта (только если ход читал одну её,
+    :func:`_answer_sources`), каталог звуков - сколько и каких категорий, поиск в сети - текст первой строки выдачи.
+    Одно место слотов: что модель прочла и не сказала, называет код. Ответ не длиннее речи, которую слышат
+    (``command.fit_speech``). Фразы по данным нет - ``None``."""
     for r in _answer_sources(results):
         entry = kn.QUERY_FALLBACK_PHRASES.get(r.tool)
         slots = _QUERY_SLOTS[r.tool](r.data) if entry is not None else None
@@ -1466,13 +1475,9 @@ class TurnEngine:
         offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
-        form = current_form()
         for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
-            turn.waiting = "llm"
-            with turn_form(answer_form(form, turn, last, self.session.snapshot)):  # валидатор моста - форму итерации
-                answer = await turn.deadline.wait(
-                    self._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
+            answer = await _ask_iteration(self, turn, messages, tools, last)
             turn.llm_calls += answer.calls
             turn.provider, turn.tokens = answer.provider or turn.provider, turn.tokens + answer.tokens
             if self._stale(turn, "answer"):
