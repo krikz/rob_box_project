@@ -31,12 +31,13 @@ _LOG = logging.getLogger(__name__)
 def cover_work(staged: Optional[Mapping[str, Any]]) -> Optional[CoverWork]:
     """Собранная пьеса (``request_music._stage_classic``) → :class:`CoverWork`; пьеса не собралась — ``None``.
     Материал кавера — мелодия, из которой собран лид моста (В14: та же мелодия у моста и у кавера, без подмены);
-    лида и хука нет — ``material`` пуст, кавер-кандидата нет."""
+    лида и хука нет — ``material`` пуст, кавер-кандидата нет. ``named`` — пьесу назвал человек (``played["named"]``,
+    ``engine.piece.named_pick``, #4015)."""
     if not staged or "program" not in staged or not staged.get("work"):
         return None
     material = str(staged.get("melody_id") or staged["work"]) if melody_notes(staged.get("track")) else ""
     return CoverWork(str(staged["work"]), material, str(staged.get("instrument") or ""),
-                     str(staged.get("title") or ""))
+                     str(staged.get("title") or ""), bool((staged.get("played") or {}).get("named")))
 
 
 #: ``{id: (запись RTTTL, название для голоса)}`` по id хуков (``tools_v2.library_records``).

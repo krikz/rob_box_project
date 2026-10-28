@@ -51,8 +51,9 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine, cache_text,
-                                  decline_text, engine_route, route_note, settle_engine, source_ask)
+from rob_box_music.source import (CACHE, GEN_KINDS, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine,
+                                  cache_text, decline_text, engine_route, gen_kind, route_note, settle_engine,
+                                  source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .backing_deck import BACKING_INTENT, BackingDeck, backing_order
@@ -64,7 +65,7 @@ from .dj_lines import TransitionLines, Titles, latin_fold, library_titles
 from .piece import COMPOSER_MISSING, PieceChain, RecordLookup
 from .piece_cover import PieceCover, cover_work, theme_covers
 from .reasoner import SetPlanBox, SetReasoner
-from .request_slots import Catalog, RequestSlotParser
+from .request_slots import Catalog, RequestSlotParser, doubt_text
 from .score_library import ScoreLibrary, seed_plan, track_materials
 from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
@@ -98,14 +99,17 @@ NOT_FOUND = "not_found"
 #: Код отказа ``request_music``: просили «ещё <автор>», а всё подходящее уже играло (#3599); фразу строит код
 #: (``rob_box_voice.core.media_phrases.NO_MORE_REASON``, равенство держит тест).
 NO_MORE = "no_more"
+#: Поле отказа ``request_music`` (``reason=not_found``): слова названия, как услышаны, когда код не понял, что названо
+#: (#4016, ``RequestSlots.doubt``); фраза — ``request_slots.doubt_text``, ни пьеса, ни песня по обрывку не ставятся.
+DOUBT = "doubt"
 #: Код отказа ``dj_set(start)``: в реплике хода нет слова сета/диджея/вечеринки и стиля — человек просил одну пьесу
 #: (ADR-0157 §2.1, прогон 09.10: «сыграй баха на трамбоне» → LLM ``dj_set``). Решает код по ``heard_text``.
 NOT_A_SET_REQUEST = "not_a_set_request"
 #: Код отказа ``request_music``/``generate_music``: путь музыки не нашёл, чем играть просьбу (ADR-0158 PR-3); фразу
 #: строит ``rob_box_music.source.decline_text`` (``media_phrases.SOURCE_DECLINED_REASON``, равенство держит тест).
 SOURCE_DECLINED = "music_source"
-#: ``generate_music``: что просили (``kind``) и в каком жанре (``style``, ключи ``knowledge.GEN_STYLES``).
-GEN_KINDS = ("instrumental", "song", "robot_song")
+#: ``generate_music``: что просили (``kind`` — ``source.GEN_KINDS``, одна таблица видов) и в каком жанре (``style``,
+#: ключи ``knowledge.GEN_STYLES``).
 GEN_STYLE_CHOICES = ("", *kn.GEN_STYLES)
 
 
@@ -762,8 +766,10 @@ class RequestMusicTool(MCPTool):
 
     def warm(self) -> threading.Thread:
         """Прогреть путь одиночной пьесы в фоне (#3577: первый заказ после рестарта — 4.6 с при бюджете 2.5 с):
-        индекс партитур, каталог RTTTL, история — до первого заказа, старт ноды не ждёт."""
-        thread = threading.Thread(target=self._pieces.warm, name="rbx-piece-warm", daemon=True)
+        индекс партитур, каталог RTTTL, история, указатель звучаний разбора на слух (#4016) — до первого заказа, старт
+        ноды не ждёт."""
+        thread = threading.Thread(target=warm_order, args=(self._pieces, self._slots), name="rbx-piece-warm",
+                                  daemon=True)
         thread.start()
         return thread
 
@@ -840,6 +846,8 @@ class RequestMusicTool(MCPTool):
         ask = settled_ask(ask or source_ask(heard_text or text), engine, (text, heard_text), classic, self._owner,
                           self._log())
         piece = self._stage_piece(text, heard_text) if classic else None
+        if _asked_back(piece):  # непонятно, что названо (#4016): переспрос, а не песня или пьеса по обрывку
+            return tool_result(piece, what)
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
@@ -868,10 +876,14 @@ class RequestMusicTool(MCPTool):
             self._write_model(model)
 
     def _stage_piece(self, text: str, heard_text: Optional[str]) -> Dict[str, Any]:
-        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез)."""
+        """Пьеса по названию с инструментом реплики — собрана, не запущена (мост/фолбэк кавера и сам синтез).
+        Просили сочинить песню (:func:`song_asked`), а пьеса собралась по словам темы — она не названа (#4015)."""
         lead = lead_for(heard_text, text)
         staged = self._stage_classic(text, lead, asks_more(heard_text))
         staged.update(lead_data(lead))
+        played = staged.get("played") or {}
+        if played.get("named") and song_asked(heard_text or text):
+            staged["played"] = {**played, "named": False}
         return staged
 
     def _stage(self, route: Route, piece: Optional[Dict[str, Any]], text: str, mood: Optional[str],
@@ -965,6 +977,8 @@ class RequestMusicTool(MCPTool):
         query = command.name if command.intent is MediaIntent.PLAY_NAMED else text
         work, key = key_slot(query)
         slots, slot_lead = self._request_slots(text, work, command, lead)
+        if slots.doubt:  # непонятых слов больше понятых, на слух не нашлось (#4016): не играть по обрывку «хилл»
+            return _doubt_refusal(slots.doubt)
         work, lead = slots.query, lead or slot_lead
         seed = self._seed()
         try:
@@ -975,22 +989,64 @@ class RequestMusicTool(MCPTool):
         self._log().info(f"🎼 [classic] «{work}» тональность={key or '—'}: кандидатов {count}, недавние "
                          f"{self._pieces.memory.recent()} → {_piece_line(pick, played)}; "
                          f"отказы: {'; '.join(reasons) or '—'}")
-        if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
-            from rob_box_voice.core.media_phrases import no_more_text
-            return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
-                    "message": no_more_text(work, played["repeats"][0])}
-        if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
-            from rob_box_voice.core.media_phrases import composer_missing_text
-            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
-                    "composer_missing": True,
-                    "message": composer_missing_text(str(played.get("composer") or ""))}
-        if pick is None and not count:
-            return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
-        if pick is None:
-            return self._owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
-        return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
-                "bpm": pick.bpm, "key": pick.key, "played": played, "history": dict(pick.history), "track": pick.track,
-                "work": pick.work, **lead_data(slot_lead)}
+        return _classic_outcome(self._owner, work, (pick, played, reasons, count), slot_lead, slots.by_sound)
+
+
+def warm_order(pieces: PieceChain, slots: Optional[RequestSlotParser]) -> None:
+    """Прогрев заказа пьесы (в фоне, ``RequestMusicTool.warm``): цепочка пьес (#3577), затем указатель звучаний разбора
+    на слух (#4016). Упал — заказ построит указатель сам, нода не падает."""
+    pieces.warm()
+    try:
+        if slots is not None:
+            slots.warm()
+    except Exception as exc:  # noqa: BLE001 — прогрев не держит ноду
+        _LOG.warning(f"⚠️ [request-slots] прогрев указателя звучаний упал: {type(exc).__name__}: {exc}")
+
+
+def _classic_outcome(owner: Any, work: str, chosen: Tuple[Any, Dict[str, Any], List[str], int],
+                     slot_lead: Optional[LeadChoice], heard: bool = False) -> Dict[str, Any]:
+    """Исход заказа пьесы по выбору ``PieceChain.play`` (``chosen`` — ``(pick, played, reasons, count)``): собранная
+    пьеса или отказ с фразой кода (вынесено из ``RequestMusicTool._stage_classic``: бюджет класса, ADR-0145).
+    ``heard`` — название узнано на слух (``RequestSlots.by_sound``): пьесу назвал человек (``played["named"]``), хотя
+    каталог её не подтвердил («спой раннинг ап дэд хилл» — чужая песня по названию, #4015)."""
+    pick, played, reasons, count = chosen
+    if pick is None and played.get("repeats"):  # просили «ещё», а всё подходящее уже играло
+        from rob_box_voice.core.media_phrases import no_more_text
+        return {"ok": False, "found": True, "reason": NO_MORE, "query": work,
+                "message": no_more_text(work, played["repeats"][0])}
+    if pick is None and played.get(COMPOSER_MISSING):  # композитор назван, его пьес нет: фраза кода (#3604)
+        from rob_box_voice.core.media_phrases import composer_missing_text
+        return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work,
+                "composer_missing": True,
+                "message": composer_missing_text(str(played.get("composer") or ""))}
+    if pick is None and not count:
+        return {"ok": False, "found": False, "reason": NOT_FOUND, "detail": "; ".join(reasons), "query": work}
+    if pick is None:
+        return owner.reject(f"classic:{work}", "compose_error", "; ".join(reasons))
+    return {"program": pick.program, "once": True, "found": True, "title": pick.title, "melody_id": pick.melody_id,
+            "bpm": pick.bpm, "key": pick.key, "played": {**played, "named": bool(played.get("named")) or heard},
+            "history": dict(pick.history), "track": pick.track, "work": pick.work, **lead_data(slot_lead)}
+
+
+def _doubt_refusal(heard: str) -> Dict[str, Any]:
+    """Отказ заказа пьесы, когда непонятно, что названо (#4016, ``RequestSlots.doubt``): ``not_found`` со словами, как
+    услышаны, и фразой кода «не уверен, что это за песня — «…»?» (её скажет голос, :func:`tool_result`)."""
+    return {"ok": False, "found": False, "reason": NOT_FOUND, "query": heard, DOUBT: heard,
+            "message": doubt_text(heard)}
+
+
+def song_asked(said: str) -> bool:
+    """Человек просил сочинить или спеть песню (про что-то, «что-нибудь», «народную»), а не назвал пьесу (#4015 ревью):
+    грамматика узнала в его словах ``GENERATE``. «Спой о море» — песня о море, а не «Baby One More Time» по слову
+    «море»; «спой валькирии» — не ``GENERATE`` (название решают слова названия, ``piece.named_pick``)."""
+    from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
+
+    return parse_media_command(said or "").intent is MediaIntent.GENERATE
+
+
+def _asked_back(piece: Optional[Mapping[str, Any]]) -> bool:
+    """Заказ пьесы кончился переспросом (:func:`_doubt_refusal`): ни мост, ни песня, ни кавер по обрывку не нужны."""
+    return bool(piece and piece.get(DOUBT))
 
 
 class GenerateMusicTool(MCPTool):
@@ -1226,7 +1282,7 @@ def play_cache(play: Callable[..., MCPToolResult], route: Route, what: str,
 
 def is_bridge(route: Route, cover: Any) -> bool:
     """Путь — кавер пьесы, и исполнитель кавера есть: синтез пьесы играет мостом (ADR-0158 PR-4)."""
-    return route.kind == GENERATE and route.work is not None and cover is not None
+    return route.kind == GENERATE and gen_kind(route.id) == "cover" and route.work is not None and cover is not None
 
 
 def unstage(staged: Dict[str, Any]) -> Tuple[Any, bool, Dict[str, Any], Any]:

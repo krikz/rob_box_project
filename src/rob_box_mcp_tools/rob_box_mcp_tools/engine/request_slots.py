@@ -15,9 +15,17 @@
    «отброшено». Подтверждённое произведение играется само: свежесть его не вытесняет (``piece.levels``).
 4. LLM не ответила вовремя — код-разбор (известные слова), честная строка лога; опоздавший ответ проверяется и
    ложится в кэш в фоне — следующий такой заказ без LLM.
+5. **На слух** (#4016, живой прогон 24.10: «раннинг ап дэд хилл» → «хилл» → «King Of The Hill»): непонятых слов
+   названия больше понятых, а понятое само ничего не называет (не «что-то похожее на **марио**», не «просто **Баха**»)
+   — код ищет запись архива, чьё название звучит этими словами (``search.heard_title``): «Running Up That Hill».
+   Находка — догадка, не подтверждение: кэш и LLM спрашиваются; назвали другое — решают они, молчат или опоздали —
+   играет находка (``source=sound``, без ``work_confirmed``). Не нашлось, а LLM не подтвердила ни произведение, ни
+   автора — заказ не урезается молча до понятых слов: ``RequestSlots.doubt`` и фраза кода :func:`doubt_text` («не
+   уверен, что это за песня — «…»?»).
 
-Одна строка лога на заказ: ``[request-slots] «…» source=code|llm|cache ms=… <слоты> → «запрос»; llm=a/n cache=b
-p50/p95``. Решение «что играть» — дальше, у ``PieceChain`` (кандидаты по ``RequestSlots.query``).
+Одна строка лога на заказ: ``[request-slots] «…» source=code|llm|cache|sound ms=… <слоты> → «запрос» (или
+``не уверен: «…»``); llm=a/n cache=b p50/p95``. Решение «что играть» — дальше, у ``PieceChain`` (кандидаты по
+``RequestSlots.query``).
 """
 
 from __future__ import annotations
@@ -37,9 +45,10 @@ from rob_box_music import request_slots as rs
 from rob_box_music.theme_queries import QueriesInvalid
 from rob_box_music.works import WorkRef, WorkWord, theme_phrase
 
+from ..core.translit_ru import strip_version_tail
 from .piece import work_word
-from .search import Term, terms
-from .theme_links import Ask, in_time, tool_payload, verify
+from .search import Heard, Term, heard_title, terms, title_key, warm_heard
+from .theme_links import Ask, later, tool_payload, verify
 
 _LOG = logging.getLogger(__name__)
 #: Слова фразы: ``текст -> Term`` (``search.terms`` по словарю архива).
@@ -75,6 +84,16 @@ class Catalog:
                 return word.capitalize()
         return ""
 
+    def heard(self, text: str, said: str = "") -> Heard:
+        """Название заказа на слух (``search.heard_title``, #4016): слова названия ``text``, сколько из них архив
+        знает, и запись, чьё название звучит ими (с жанровым словом перед названием в словах человека ``said``), когда
+        непонятых больше."""
+        return heard_title(self._library(), text, said)
+
+    def warm(self) -> int:
+        """Указатель звучаний архива для разбора на слух — заранее (``search.warm_heard``)."""
+        return warm_heard(self._library())
+
     def work(self, title: str, composer: str) -> bool:
         """Произведение есть в каталоге: запись RTTTL со всеми словами названия или партитура с полным совпадением."""
         if verify(self._library(), title):
@@ -106,21 +125,47 @@ class RequestSlotParser:
 
     def parse(self, text: str, work: str, command: Any = None) -> rs.RequestSlots:
         """Слоты заказа: ``work`` — название от грамматики (без глагола и тональности), ``text`` — слова человека,
-        ``command`` — ``MediaCommand`` (инструмент, стиль, настроение грамматики)."""
+        ``command`` — ``MediaCommand`` (инструмент, стиль, настроение грамматики). Непонятых слов названия больше
+        понятых (#4016; пояснение после названия — «дарта вейдера», «только быстрее» — не в счёт; понятое слово само
+        называет мелодию или автора — «что-то похожее на марио» — тоже) — название по звучанию (``Catalog.heard``).
+        Находка на слух — догадка кода, а не подтверждение (ревью #4124, круг 2: «уи вил рок ю» → «Rock With You»):
+        кэш разборов и LLM спрашиваются как обычно; назвали произведение или автора — решают они (проверенные каталогом),
+        молчат или не успели — играет находка, ``work_confirmed`` у неё нет. Не нашлось, а LLM не подтвердила ни
+        произведение, ни автора — ``doubt``: слова, как услышаны, вместо поиска по одним понятым."""
         started = self._clock()
         words = list(self._words(work))
         missing = unknown(words)
         code = self._code(work, words, missing, command)
-        key = theme_phrase(work)
-        answer, source = None, "code"
-        if missing:
-            answer, source = self._cached(key), "cache"
-            if answer is None and self._ask is not None:
-                answer, source = self._llm(text, key, [t.word for t in missing])
-        slots = replace(self._merge(code, answer, words) if answer is not None else code,
-                        source=source if answer is not None else "code", ms=(self._clock() - started) * 1000.0)
+        pending = self._answer(text, work, [t.word for t in missing])  # LLM думает, пока код слушает (ревью #4124)
+        heard = self._catalog.heard(work, text)
+        if not missing and (heard.record is not None or heard.truncated):  # «ап», «си» ``terms`` отбросил как короткие
+            pending = self._answer(text, work, list(heard.words))
+        answer, source = pending()
+        merged = self._merge(code, answer, words) if answer is not None else code
+        slots, source = _settle(code, merged, heard, answer, source)
+        slots = replace(slots, source=source, ms=(self._clock() - started) * 1000.0)
         self._note(work, slots, source)
         return slots
+
+    def warm(self) -> float:
+        """Прогрев разбора на слух (#4016): указатель звучаний архива строится при старте в фоне
+        (``RequestMusicTool.warm``), а не в первом заказе с непонятым названием (там 0.15–1 с); мс — в лог."""
+        started = self._clock()
+        count = self._catalog.warm()
+        ms = (self._clock() - started) * 1000.0
+        self._log().info(f"🧩 [request-slots] прогрев: указатель звучаний ({count}) {ms:.0f} мс")
+        return ms
+
+    def _answer(self, text: str, work: str, missing: List[str]) -> Callable[[], Tuple[Optional[Dict[str, Any]], str]]:
+        """Проверенный каталогом разбор непонятых слов ``missing``: кэш разборов этой фразы или LLM (вопрос уходит
+        сразу, в фоне). Вернувшаяся функция — ``(ответ, источник)``; непонятых нет, LLM нет, не успела или ответ не по
+        схеме — ``(None, "code")``."""
+        answer = self._cached(theme_phrase(work)) if missing else None
+        if answer is not None:
+            return lambda: (answer, "cache")
+        if not missing or self._ask is None:
+            return lambda: (None, "code")
+        return self._llm(text, theme_phrase(work), missing)
 
     @staticmethod
     def _code(work: str, words: Sequence[Term], missing: Sequence[Term], command: Any) -> rs.RequestSlots:
@@ -146,8 +191,9 @@ class RequestSlotParser:
             while len(self._cache) > CACHE_SIZE:
                 self._cache.popitem(last=False)
 
-    def _llm(self, text: str, key: str, missing: List[str]) -> Tuple[Optional[Dict[str, Any]], str]:
-        """Спросить LLM и проверить ответ каталогом; ждём не дольше ``wait_s``, опоздавший ответ — в кэш."""
+    def _llm(self, text: str, key: str, missing: List[str]) -> Callable[[], Tuple[Optional[Dict[str, Any]], str]]:
+        """Спросить LLM (сразу, в фоне) и проверить ответ каталогом; вернувшаяся функция ждёт ответа не дольше
+        ``wait_s`` от вопроса — ``(ответ, "llm")``, опоздал или ошибка — ``(None, "code")``; опоздавший ответ — в кэш."""
         def run() -> Optional[Dict[str, Any]]:
             started = self._clock()
             try:
@@ -161,16 +207,22 @@ class RequestSlotParser:
             return answer
 
         self.metrics.count("llm")
-        done, answer = in_time(self._spawn, self._wait_s, run)
-        if not done:
-            self.metrics.count("late")
-            self._log().warning(f"⚠️ [request-slots] «{key}»: LLM не ответила за {self._wait_s:g} с — код-разбор, "
-                                "ответ допишется в кэш")
-            return None, "code"
-        return answer, "llm"
+        asked, waiter = self._clock(), later(self._spawn, run)
+
+        def wait() -> Tuple[Optional[Dict[str, Any]], str]:
+            done, answer = waiter(max(0.0, self._wait_s - (self._clock() - asked)))
+            if not done:
+                self.metrics.count("late")
+                self._log().warning(f"⚠️ [request-slots] «{key}»: LLM не ответила за {self._wait_s:g} с — код-разбор, "
+                                    "ответ допишется в кэш")
+                return None, "code"
+            return (answer, "llm") if answer is not None else (None, "code")
+
+        return wait
 
     def _checked(self, text: str, missing: List[str]) -> Optional[Dict[str, Any]]:
-        """Ответ LLM по схеме и проверка каталогом: ``{поле: значение, work_confirmed, rejected}`` или ``None``."""
+        """Ответ LLM по схеме и проверка каталогом: ``{поле: значение, work_confirmed, rejected, said}`` или ``None``
+        (``said`` — название от LLM как есть: сверка с находкой на слух, :func:`_agrees`)."""
         system, user = rs.prompt(text, missing)
         outcome, response, detail = self._ask(system, user, rs.tool(), kn.REQUEST_SLOTS_CALL_MS / 1000.0,
                                               ASK_MAX_TOKENS)
@@ -190,7 +242,7 @@ class RequestSlotParser:
         if fields["work"] and not confirmed:
             rejected.append(f"work={fields['work']}")
         return {**fields, "composer": composer, "work": fields["work"] if confirmed else "",
-                "work_confirmed": confirmed, "rejected": tuple(rejected)}
+                "work_confirmed": confirmed, "rejected": tuple(rejected), "said": fields["work"]}
 
     def _merge(self, code: rs.RequestSlots, answer: Mapping[str, Any], words: Sequence[Term]) -> rs.RequestSlots:
         """Слоты грамматики важнее (инструмент «на органе» назван словами); пустые — из проверенного ответа LLM.
@@ -211,13 +263,62 @@ class RequestSlotParser:
         tail = (f"llm={counts.get('llm', 0)}/{counts.get('parse', 0)} late={counts.get('late', 0)} "
                 f"cache={counts.get('source_cache', 0)} p50={_ms(lat.p50_ms)} p95={_ms(lat.p95_ms)} "
                 f"llm_p50={_ms(llm.p50_ms)} llm_p95={_ms(llm.p95_ms)}")
+        target = f"не уверен: «{slots.doubt}»" if slots.doubt else f"«{slots.query}»"
         self._log().info(f"🧩 [request-slots] «{work}» source={slots.source} ms={slots.ms:.0f} {slots.describe()} "
-                         f"непонятые={list(slots.unknown)} отброшено={list(slots.rejected)} → «{slots.query}»; "
+                         f"непонятые={list(slots.unknown)} отброшено={list(slots.rejected)} → {target}; "
                          f"{tail}")
 
 
 def _ms(value: Optional[float]) -> str:
     return "-" if value is None else f"{value:.0f}"
+
+
+def _sounded(code: rs.RequestSlots, heard: Heard) -> rs.RequestSlots:
+    """Слоты по названию, найденному на слух (#4016): название записи — произведение и строка поиска; совпал
+    исполнитель («роллинг стоунз») — автор, строка поиска — его имя. ``work_confirmed`` нет: запись в каталоге есть, но
+    что человек назвал именно её — догадка по звучанию (ревью #4124, круг 2), её не подтвердили ни LLM, ни кэш."""
+    if heard.field == "artist":
+        return replace(code, query=heard.name, composer=heard.name)
+    return replace(code, query=heard.name, work=heard.name)
+
+
+def _settle(code: rs.RequestSlots, merged: rs.RequestSlots, heard: Heard, answer: Optional[Mapping[str, Any]],
+            source: str) -> Tuple[rs.RequestSlots, str]:
+    """Слоты заказа (``(слоты, источник)``) из код-разбора ``code``, разбора LLM/кэша, проверенного каталогом
+    (``merged``, поля ответа — ``answer``), и находки на слух ``heard`` (ревью #4124, круг 2): LLM назвала то же
+    произведение (:func:`_agrees`) — находка подтверждена; LLM молчит о произведении и авторе или не успела — догадка
+    (``source=sound``); LLM назвала другое — решает её разбор; не нашлось, урезано и ничего не подтверждено — переспрос
+    (``doubt``)."""
+    if heard.record is not None and _agrees(heard, answer):
+        return replace(merged, query=heard.name, work=heard.name, work_confirmed=True), source
+    if heard.record is not None and not _names(answer):
+        return _sounded(code, heard), "sound"
+    if heard.truncated and not (merged.work_confirmed or merged.composer):
+        return replace(merged, doubt=heard.spoken), source
+    return merged, source
+
+
+def _agrees(heard: Heard, answer: Optional[Mapping[str, Any]]) -> bool:
+    """LLM (или кэш) назвала то же произведение, что нашлось на слух: все слова названия находки (без хвоста версии)
+    — в её названии («Running Up That Hill» в «Running Up That Hill (A Deal with God)»: полного названия LLM в архиве
+    может не быть — запись находки в нём есть). Автор LLM записи не отменяет: «Kate Bush» при кавере Within
+    Temptation на develop кончался отказом «Пьес автора «Bush hill» у меня не нашлось»."""
+    if answer is None or heard.field != "title":
+        return False
+    found = set(title_key(strip_version_tail(heard.name)).split())
+    return bool(found) and found <= set(title_key(answer.get("said") or answer["work"]).split())
+
+
+def _names(answer: Optional[Mapping[str, Any]]) -> bool:
+    """LLM (или кэш её разборов) назвала произведение или автора — подтверждённых каталогом или отброшенных: тогда
+    решает её разбор, а не находка на слух («тико тико» — «Tico Tico no Fuba», которого в архиве нет, а не «Tick Tick»).
+    Молчит о них (только инструмент, стиль, режим) — находке не возражает."""
+    return answer is not None and bool(answer["work"] or answer["composer"] or answer["rejected"])
+
+
+def doubt_text(heard: str) -> str:
+    """Фраза кода, когда непонятно, что названо (``RequestSlots.doubt``, #4016): слова — как услышаны."""
+    return kn.REQUEST_SLOTS_DOUBT_TEXT.format(heard=heard)
 
 
 class HarnessAsk:
@@ -267,4 +368,4 @@ def harness_ask(env: Optional[Mapping[str, str]] = None, log: Callable[[], Any] 
     return HarnessAsk(provider)
 
 
-__all__ = ["CACHE_SIZE", "Catalog", "HarnessAsk", "RequestSlotParser", "Terms", "harness_ask", "unknown"]
+__all__ = ["CACHE_SIZE", "Catalog", "HarnessAsk", "RequestSlotParser", "Terms", "doubt_text", "harness_ask", "unknown"]

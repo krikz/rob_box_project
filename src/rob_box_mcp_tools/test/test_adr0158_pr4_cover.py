@@ -175,7 +175,8 @@ def test_instrument_order_bridges_with_our_synth_then_the_cover_takes_the_deck(t
     assert data["melody_id"] == "rideofth" and data["instrument"] == "guitar" and rig.owner.is_playing()
     assert launch_text("", data).startswith("Живую версию на гитаре готовлю — секунд через 50, а пока своя. Ставлю")
     order = maker.orders[0]
-    assert order.work == CoverWork("Ride Of The Valkyries", "rideofth", "guitar", data["title"]) and order.track is not None
+    work = CoverWork("Ride Of The Valkyries", "rideofth", "guitar", data["title"], named=True)  # назвали (#4015)
+    assert order.work == work and order.track is not None
     rig.clock.run_until(rig.clock.beat + 2)  # мост встал
     bridge = [e for e in rig.events if e["event"] == "started"][0]
     rig.clock.run_until(bridge["start_beat"] + 3 * bridge["form_beats"])  # кавер пишется — мост повторяет форму
@@ -222,5 +223,6 @@ def test_cover_material_is_the_bridge_melody_itself_without_public_domain_swap()
     staged = {"program": object(), "work": "Valkyrie", "title": "Valkyrie", "melody_id": "valkyrie", "instrument": "",
               "track": _track()}
     assert cover_work(staged) == CoverWork("Valkyrie", "valkyrie", "", "Valkyrie")
+    assert cover_work(dict(staged, played={"named": True})).named  # пьесу назвал человек (#4015)
     assert cover_work(dict(staged, track=None)).material == ""
     assert cover_work({"work": "Valkyrie"}) is None

@@ -25,8 +25,9 @@ TEXT_FIELDS = ("composer", "work")
 ENUM_FIELDS: Mapping[str, Tuple[str, ...]] = {"instrument": tuple(kn.INSTRUMENTS), "style": tuple(kn.STYLES),
                                               "mood": tuple(kn.MOOD_ENERGY), "mode": MODES}
 FIELDS = (*TEXT_FIELDS, *ENUM_FIELDS)
-#: Откуда значение слота: грамматика и каталог (``code``), LLM с проверкой каталогом (``llm``), кэш разборов.
-SOURCES = ("code", "llm", "cache")
+#: Откуда значение слота: грамматика и каталог (``code``), LLM с проверкой каталогом (``llm``), кэш разборов,
+#: название по звучанию слов (``sound``: STT записал английское название кириллицей, #4016).
+SOURCES = ("code", "llm", "cache", "sound")
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,8 @@ class RequestSlots:
     (код-путь); ``query`` — строка, по которой код строит кандидатов произведения; ``work_confirmed`` — произведение
     подтверждено каталогом (названное играется само, свежесть его не вытесняет); ``source`` — кто разобрал,
     ``ms`` — сколько; ``unknown`` — слова, которых каталог не знает; ``rejected`` — что LLM дала, а каталог не
-    подтвердил."""
+    подтвердил; ``doubt`` — слова названия, как услышаны, когда код не понял, что названо (непонятых больше понятых, по
+    звучанию не нашлось, LLM не подтвердила, #4016): заказ не урезается молча до понятых слов, а переспрашивает."""
 
     query: str = ""
     composer: str = ""
@@ -49,6 +51,13 @@ class RequestSlots:
     ms: float = 0.0
     unknown: Tuple[str, ...] = ()
     rejected: Tuple[str, ...] = field(default=())
+    doubt: str = ""
+
+    @property
+    def by_sound(self) -> bool:
+        """Название узнано на слух (``source=sound``, #4016): человек назвал пьесу, а какую — код нашёл по звучанию
+        слов; пьеса названа, но каталог не подтвердил, что именно эта (``work_confirmed`` нет, ревью #4124)."""
+        return self.source == "sound"
 
     def describe(self) -> str:
         """Слоты для строки лога: ``composer=Wagner work=«Ride Of The Valkyries» instrument=— …``."""

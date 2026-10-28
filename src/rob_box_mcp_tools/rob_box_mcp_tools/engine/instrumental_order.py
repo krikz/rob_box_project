@@ -43,7 +43,8 @@ class InstrumentalOrder:
         self._maker, self._play, self._speak, self._hold, self._log = maker, play, speak, hold, log
 
     def handles(self, route: Route) -> bool:
-        return route.kind == GENERATE and route.work is None and gen_kind(route.id) == "instrumental"
+        """Путь выбрал генерацию инструментала (у названной пьесы её нет: там кандидаты кавера, #4015)."""
+        return route.kind == GENERATE and gen_kind(route.id) == "instrumental"
 
     def start(self, route: Route, ask: SourceAsk, args: Tuple[Any, ...], order: Callable[..., Any],
               wrap: Callable[..., Any]) -> Any:
