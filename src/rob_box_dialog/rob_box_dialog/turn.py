@@ -36,6 +36,14 @@
   команда из одной ``expression`` — тот же класс (#3997): по прямой просьбе («покажи, как тебе грустно») лицо молча,
   иначе повтор; человек сам просил без слов («молча», «без слов», ``tools_view.silent_asked``, #4083) — лицом и
   анимацией одинаково без речи и без нарушения;
+* агент чата: человек просит сделать роботом («покекай роботом», «через робота», «вслух» —
+  ``knowledge.CHAT_ROBOT_ASK_FORMS``; вопрос с теми же словами — справка, ``words.asks_question``), а команда — только
+  текст в чат (:func:`robot_owed`, #4142): тот же путь — нарушение ``VIOLATION_REMOTE_OWED`` и повтор, повтор
+  кончился — слова модели уходят в чат, а рядом код говорит факт «На роботе ничего не сделал.» (ответ не подменяется,
+  ревью #4153);
+* выступление рядом с музыкой, запущенной той же командой («агитируй толпу под Калинку-Малинку»), идёт поверх неё
+  (:func:`over_ordered_music`, ``knowledge.PERFORM_OVER_TOOLS``); голос, о котором просил человек («спой голосом
+  Алисы», поле ``voice`` открыто формой), — голос всех его сегментов один раз (:func:`asked_voice`, #4142);
 * экспрессия команды (эмоция, жест, сцена лица LLM) красит рефлекс итога ``done`` (:func:`done_expression` →
   ``Ports.stage(..., expression=)`` → ``expression.merge``), отдельного запроса лицу нет; исполненный ``play_animation``
   красит его своей сценой, сценой лица и временем (:func:`shown_face`, #4049: тул лицо не трогает); в тишине и у
@@ -64,6 +72,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
@@ -94,7 +103,8 @@ from rob_box_dialog.interrupt import Interrupt, interrupt_for, stop_music_calls,
 from rob_box_dialog.respond import ActionResult, asks, audible, classed, failed, join, outcome_emotion
 from rob_box_dialog.session import Session, SessionSnapshot
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, speaker_block
-from rob_box_dialog.tools_view import available_tools, needs_words, show_asked, voice_asked
+from rob_box_dialog.tools_view import (available_tools, needs_words, robot_asked, show_asked, voice_asked,
+                                       voice_named)
 from rob_box_dialog.turn_log import PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, speaker_label
 
 _LOG = logging.getLogger(__name__)
@@ -202,7 +212,7 @@ class _Turn:
     said: List[str] = field(default_factory=list)
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания, #3883)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
-    retried: int = 0  # повторы модели за голый неслышимый ответ (``VIOLATION_SILENT_ANSWER``, #3995)
+    retried: int = 0  # повторы модели за ответ не тот (``VIOLATION_SILENT_ANSWER`` #3995, ``…_REMOTE_OWED`` #4142)
     expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done`` (#3997)
     command: str = ""  # запасной разбор Tier-1 (:func:`tier1_of`): слова после вейка (``Addressed.command``, n811)
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется (#4069 п.1)
@@ -349,7 +359,9 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
 #: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``; не пение, а
 #: правка играющей музыки — ``edit:<вид>+…`` (#4029, ``rob_box_music.track_edit.edit_route``, ``knowledge.EDIT_ROUTE``).
-SingRouter = Callable[[str, Sequence[str], bool], str]
+#: Хост с параметром ``voiced`` получает и то, назван ли в реплике голос реестра (``tools_view.voice_named``: «спой
+#: голосом Алисы» — только живое, ревью #4153).
+SingRouter = Callable[..., str]
 #: Голос фразы от хоста (#4141): ``(utterance_id, сколько ждать, с) -> SpeakerResult этой фразы`` (словарь
 #: ``rob_box_core.speaker_wire``) или ``None`` - не пришёл за это время. Хост ``dialog_node`` - реестр биометрии по id
 #: фразы (``UtteranceSpeakerRegistry.resolve``).
@@ -363,7 +375,9 @@ async def no_phrase_voice(_utterance_id: str, _wait_s: float) -> Optional[Mappin
 
 async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot) -> str:
     """Путь пения до основной модели (#4079, решение Шифу 27.10): решает хост (маркеры слов, чойсер с контекстом), ход
-    сужает по нему форму команды. Хоста пути пения нет (чат, оператор) или подхват бэклога — «»: форма не меняется.
+    сужает по нему форму команды. У чата Telegram тот же хост, что у Личности (#4142, решение Шифу 28.10: «спой» из
+    чата — по контексту, как голосом), музыка в его снимке — музыка робота. Хоста пути пения нет (оператор, тесты) или
+    подхват бэклога — «»: форма не меняется.
     Чойсер может спросить модель (Jev/LLM при неясном разрыве) — вызов в пуле, петля хода не стоит. Исключение хоста
     ход не роняет (ревью #4071 N5): строка WARNING и ход без формы пения, как без хоста."""
     import asyncio  # noqa: PLC0415 — asyncio тянет socket: импорт пакета чистый (test_purity)
@@ -371,9 +385,12 @@ async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     if engine._sing is None or turn.pickup:
         return ""
     recent = tuple(str(e.content) for e in engine.log.window(exclude=turn.turn_id) if e.role == USER)
+    names = tuple(name for entry in engine._voices() for name in entry if name)
+    route = functools.partial(engine._sing, turn.text, recent, snap.music_playing)
+    if _accepts(engine._sing, "voiced"):  # голос реестра назван — путь только живой (ревью #4153)
+        route = functools.partial(route, voiced=voice_named(turn.text, names))
     try:
-        return await asyncio.get_running_loop().run_in_executor(None, engine._sing, turn.text, recent,
-                                                                snap.music_playing)
+        return await asyncio.get_running_loop().run_in_executor(None, route)
     except Exception as exc:  # noqa: BLE001 — путь пения не держит ход: без него модель решает как раньше
         engine._log.warning(f"{LOG_MARK} путь пения не решён ({type(exc).__name__}: {exc}) — ход без формы пения "
                             f"turn={turn.turn_id}")
@@ -727,6 +744,31 @@ def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any 
     return True, phrases.text(str(key))
 
 
+def asked_voice(cmd: Command) -> Command:
+    """Голос, которым человек просил выступить («спой голосом Алисы», решение Шифу 28.10, #4142): поле ``voice``
+    команды форма хода открывает только по просьбе о голосе в этой реплике (``Form.voice``), валидатор сверяет его с
+    каталогом звучащего провайдера — им звучат все сегменты выступления этой команды, один раз, без ``set_voice``
+    (голос робота не меняется). Голоса ролей сказки уже решил код (#4084, ``voice_per_segment``) — их это не трогает."""
+    perf = cmd.perform
+    if perf is None or not cmd.voice or perf.voice_per_segment:
+        return cmd
+    return replace(cmd, perform=replace(perf, voice_per_segment=(cmd.voice,) * len(perf.segments)))
+
+
+def over_ordered_music(cmd: Command, results: Sequence[ActionResult]) -> Command:
+    """Выступление рядом с музыкой, которую запустила та же команда (#4142, решение Шифу 28.10: «агитируй толпу под
+    Калинку-Малинку» → ``request_music`` пьесы + выступление): заказанное и есть подложка — ``backing=none``, поверх
+    него, без второго бита и без вопроса «выключить и зачитать?» (``knowledge.PERFORM_OVER_TOOLS``). Решает код по
+    исходам команды: музыка не пошла (отказ, таймаут) — подложка как просила модель; правка идущего — не трогается."""
+    perf = cmd.perform
+    if perf is None or cmd.edit_pending or perf.backing == "none":
+        return cmd
+    if not any(r.tool in kn.PERFORM_OVER_TOOLS and r.status in ("done", "pending") for r in results):
+        return cmd
+    _LOG.info(f"{LOG_MARK} выступление поверх музыки этой команды: backing {perf.backing or '-'} → none")
+    return replace(cmd, perform=replace(perf, backing="none"))
+
+
 def note_perform_start(log: TurnLog, turn_id: str, cmd: Command, taken: bool) -> None:
     """Владелец взял выступление (``taken``): в окне LLM просьба закрыта записью о старте, дальше её обновляет конец
     выступления (``TurnLog.performance_ended``, #3973). Сегменты звучат у владельца мимо реплик хода - без записи
@@ -956,22 +998,79 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
     return engine._pick(kn.INVALID_COMMAND_PHRASES.get(invalid.reason, kn.INVALID_COMMAND_PHRASE))
 
 
-async def _answer_in_words(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: SessionSnapshot,
-                           last: bool) -> Optional[str]:
-    """Голый неслышимый ответ на адресованную реплику (#3995, ADR-0148: решает код). Повтор есть (не последняя
-    итерация, ≤ ``COMMAND_RETRIES_MAX``) - команда не исполняется, модели уходит нарушение ``VIOLATION_SILENT_ANSWER``
-    в форме ``command.explain`` (следующая итерация ``_understand``). Повтора нет - анимация исполняется, а говорит код
-    (:func:`_close_invalid` с этой причиной), не молчание."""
+def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
+    """Человек в чате просит сделать это РОБОТОМ (``tools_view.robot_asked``: «покекай роботом», «через робота»,
+    «вслух» — и реплика не вопрос: «Как управлять роботом?» — справка, ревью #4153), а команда на роботе ничего не
+    делает — только текст в чат (#4142 п.7, классы 1 и 3 #4040: «Покекал: глазами поводил, повертелся» без единого
+    тула; «через робота» текстом в чат вместо ``say_aloud``). Решает код по словам ЧЕЛОВЕКА и по структуре команды, а
+    не по тексту ответа модели: в команде нет действий, выступления и лица, и прошлые итерации хода на роботе тоже
+    ничего не исполнили (``_Turn.acted``; прочитанный ``query`` — не действие: «прочитай вслух, который час» после
+    ``get_current_time`` ждёт ``say_aloud``). Только агент с текстовым каналом (чат): у Личности речь и есть голос
+    робота."""
+    if snapshot.agent != kn.TEXT_CHANNEL_AGENT or turn.pickup or turn.acted:
+        return False
+    face = cmd.expression
+    if cmd.actions or cmd.perform is not None or cmd.passed or shows(face.emotion, face.gesture, face.face):
+        return False
+    return robot_asked(turn.text)
+
+
+def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> str:
+    """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
+    адресованную реплику (:func:`words_owed`, #3995) или только текст в чат на просьбу сделать роботом
+    (:func:`robot_owed`, #4142)."""
+    if words_owed(snapshot, turn.pickup, turn.text, cmd):
+        return kn.VIOLATION_SILENT_ANSWER
+    return kn.VIOLATION_REMOTE_OWED if robot_owed(snapshot, turn, cmd) else ""
+
+
+@dataclass(frozen=True)
+class _Owed:
+    """Нарушение «ответ не тот, что ждут» (ADR-0148 п.2: валидатор с понятной ошибкой): ``hint`` — подсказка модели,
+    ``what`` — что в логе, ``keeps_words`` — после повтора слова модели уходят как есть, а код говорит рядом факт
+    (фраза ``INVALID_COMMAND_PHRASES``), а не вместо них."""
+
+    hint: str
+    what: str
+    keeps_words: bool = False
+
+
+#: Голый неслышимый ответ на адресованную реплику (#3995): слов модели нет — говорит код. Текст в чат на просьбу
+#: сделать роботом (#4142): слова модели — её ответ, их не подменяем (промах признака на справке не теряет ответ, ревью
+#: #4153), а факт «на роботе ничего не сделал» говорит код рядом.
+_OWED: Mapping[str, _Owed] = {
+    kn.VIOLATION_SILENT_ANSWER: _Owed(kn.SILENT_ANSWER_HINT, "без слов на адресованную реплику"),
+    kn.VIOLATION_REMOTE_OWED: _Owed(kn.REMOTE_OWED_HINT, "только текст в чат на просьбу сделать роботом",
+                                    keeps_words=True),
+}
+
+
+async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: SessionSnapshot, last: bool,
+                       reason: str = kn.VIOLATION_SILENT_ANSWER) -> Optional[str]:
+    """Ответ не тот, что ждёт человек (ADR-0148: решает код): голый неслышимый ответ на адресованную реплику (#3995,
+    ``VIOLATION_SILENT_ANSWER``) или только текст в чат на просьбу сделать роботом (#4142, ``VIOLATION_REMOTE_OWED``,
+    :func:`robot_owed`). Повтор есть (не последняя итерация, ≤ ``COMMAND_RETRIES_MAX``) - команда не исполняется,
+    модели уходит нарушение в форме ``command.explain`` (следующая итерация ``_understand``). Повтора нет: голый ответ -
+    действия и лицо команды исполняются, а говорит код (:func:`_close_invalid` с этой причиной, фраза
+    ``INVALID_COMMAND_PHRASES``), не молчание; текст в чат (``_Owed.keeps_words``) - слова модели уходят в чат, а рядом
+    код говорит факт по исходу (на роботе ничего не исполнено), не подменяя её ответ (ревью #4153)."""
+    owed = _OWED[reason]
     tools = [a.tool for a in cmd.actions] or [f"expression:{cmd.expression.emotion}"]
     if not last and turn.retried < kn.COMMAND_RETRIES_MAX:
         turn.retried += 1
-        engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SILENT_ANSWER}: {tools} без слов на адресованную реплику → "
-                            f"повтор с нарушением turn={turn.turn_id}")
-        return explain(Invalid(kn.VIOLATION_SILENT_ANSWER, kn.SILENT_ANSWER_HINT), after_query=bool(turn.queried))
-    engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SILENT_ANSWER}: {tools} без слов и после повтора → анимация и "
-                        f"фраза кода turn={turn.turn_id}")
+        engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} → повтор с нарушением turn={turn.turn_id}")
+        return explain(Invalid(reason, owed.hint), after_query=bool(turn.queried))
+    if owed.keeps_words:
+        engine._log.warning(f"{LOG_MARK} {reason}: {owed.what} и после повтора → слова модели в чат, рядом факт кода "
+                            f"turn={turn.turn_id}")
+        turn.reason = reason
+        engine._speak(turn, cmd, ())
+        engine._say(turn, engine._pick(kn.INVALID_COMMAND_PHRASES[reason]))
+        return None
+    engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} и после повтора → исполняем, говорит код "
+                        f"turn={turn.turn_id}")
     # лицо команды, как и её анимация, показывается — говорит код (#3997)
-    await _close_invalid(engine, turn, Invalid(kn.VIOLATION_SILENT_ANSWER, salvage=cmd.actions), snap, cmd.expression)
+    await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
     return None
 
 
@@ -1326,8 +1425,9 @@ class TurnEngine:
                 self._say(turn, self._pick(kn.PASSED_ADDRESSED_PHRASE))
             return None
         fresh = unrepeated(self._log, turn, cmd)
-        if words_owed(self.session.snapshot, turn.pickup, turn.text, fresh):
-            return await _answer_in_words(self, turn, fresh, snap, last)
+        owed = owed_reason(self.session.snapshot, turn, fresh)
+        if owed:
+            return await _answer_owed(self, turn, fresh, snap, last, owed)
         runnable = _runnable(fresh.actions, last)
         results = await self._execute(turn, runnable, snap)
         if self._stale(turn, "results"):
@@ -1348,7 +1448,8 @@ class TurnEngine:
         outcome = _spoken_outcome(cmd, results, self.session.snapshot.agent, self.log.performing())
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?», #4062) - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
-        owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, cmd, self._log)
+        asked = over_ordered_music(asked_voice(cmd), results)  # голос и подложка, о которых просил человек (#4142)
+        owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
         note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
         self._say(turn, refusal, None, "sad")  # отказ владельца выступления — фраза кода, а не тишина ("" — нет)
         lines = _content_lines(cmd, self.session.snapshot.agent, segments=not owned)
@@ -1448,7 +1549,7 @@ class TurnEngine:
 
 __all__ = ["ASK_MARK", "Answer", "LOG_MARK", "Ports", "RECENT_ACTIONS", "RECENT_UNADDRESSED", "BACKGROUND_SINCE_REPLY",
            "SAD_FACE", "Shown", "TurnEngine", "answer_recognized", "command_face", "command_form", "done_expression",
-           "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
-           "invalid_emotion", "outcome_phrase", "query_answer", "query_fallback", "show_queue_phrase",
-           "stop_performance", "tier1_actions", "tier1_face", "tier1_for", "tier1_phrase", "turn_work", "answer_tool",
-           "unrepeated", "voices_passed", "words_owed"]
+           "asked_voice", "finish_stage", "hand_perform", "held_expression", "host_sections", "shown_face",
+           "invalid_emotion", "outcome_phrase", "over_ordered_music", "owed_reason", "query_answer", "query_fallback",
+           "robot_owed", "show_queue_phrase", "stop_performance", "tier1_actions", "tier1_face", "tier1_for",
+           "tier1_phrase", "turn_work", "answer_tool", "unrepeated", "voices_passed", "words_owed"]

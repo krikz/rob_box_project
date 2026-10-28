@@ -20,7 +20,8 @@ LLM-цепочка с мостом команд, MCP-тулы под плани�
 телеграм-агента своего чата (``rob_box_dialog.chats``: сессия ``telegram:<chat_id>``, своя история и LLM-цепочка
 ``telegram_*``); ответ и фразы об исходе — ``DialogOutput`` в ``/dialog/output`` (его читает ``telegram_node``).
 Чат — пульт робота (#4040, :class:`RobotRemote`): выступление и ответ лицом агента чата исполняет Личность в своей
-эпохе, в чат — фраза кода об исполнении.
+эпохе, в чат — фраза кода об исполнении (лицо в тишине Личности не показывается — фраза о причине, #4142). Путь пения
+и реестр голосов у чата те же, что у Личности, музыка в его сессии — музыка робота (#4142).
 
 Перебивание (PR-9 #3703, ``rob_box_dialog.interrupt``): ясный стоп — с ``/dialog/interrupt_request`` (ранний
 сегмент STT) или с адресованной реплики — отменяет речь эпохи (граница по слову) и все хода в полёте: отмена задачи
@@ -62,7 +63,7 @@ from rob_box_dialog.address import log_label
 from rob_box_dialog.address import person_ref_from
 from rob_box_dialog.address import wake_words as load_wake_words
 from rob_box_dialog.backlog import Backlog
-from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref
+from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
@@ -283,18 +284,27 @@ class RobotRemote:
     def perform(self, turn_id: str, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
         return self._node._ports.perform(turn_id, self._epoch(), perf, edit)
 
-    def show(self, turn_id: str, expression: Any) -> None:
-        self._node._ports.show(turn_id, self._epoch(), expression)
+    def show(self, turn_id: str, expression: Any) -> str:
+        """Лицо — лицу робота; исход показа строит код ДО показа (#4142 п.1, ADR-0148): у Личности тишина (кадр
+        ``Silence`` её сессии — по нему же ``face_node`` заклеивает рот и отвечает ``skipped{silenced}``) — лицо не
+        уходит, причина ``silenced``; иначе «» — запрос лицу робота отдан."""
+        snap = self._node._session.snapshot
+        if snap.top("Silence") is not None:
+            return kn.REMOTE_SILENCED
+        self._node._ports.show(turn_id, int(snap.epoch), expression)
+        return ""
 
     def _epoch(self) -> int:
         return int(self._node._session.snapshot.epoch)
 
 
 def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = lambda: False,
-                robot: Any = None) -> ChatTurns:
+                robot: Any = None, sing: Any = None, voices: Any = None) -> ChatTurns:
     """Телеграм-агент: своя LLM-цепочка, исполнитель — свой под общим планировщиком Личности (те же владельцы),
     ответ — ``DialogOutput``; ``hold`` — держит ли оператор Личность (отказ ``say_aloud``, §9.2.3); ``robot`` — пульт
-    робота (:class:`RobotRemote`, #4040): выступление и ответ лицом чата исполняет робот."""
+    робота (:class:`RobotRemote`, #4040): выступление и ответ лицом чата исполняет робот. ``sing`` и ``voices`` — те же
+    путь пения и реестр голосов, что у Личности (#4142: «спой» из чата решает тот же код, что голосом — живое или
+    Suno, «с Suno», «на синтезаторе», «спой голосом X»)."""
     counter = CallCounter()
     llm, system = build_llm(node, counter, kn.TEXT_CHANNEL_AGENT)
     pub = node.create_publisher(DialogOutput, "/dialog/output", 10)
@@ -313,7 +323,8 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
                        epoch=lambda: session.snapshot.epoch)
         ports = ChatPorts(base, chat_id, send, log, hold, robot)
         chats.adopt(base.executor)
-        engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()))  # потолок хода (В31)
+        engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
+                            sing=sing, voices=voices)
         base.on_late = functools.partial(late_outcome, engine, ports.late)
         return engine
 
@@ -359,19 +370,21 @@ class DialogNode(Node):
         llm, system = build_llm(self, counter)
         self._tool_executor = build_tools(self)
         intent_pub = self.create_publisher(IntentMsg, "/dialog/intent", 10)
+        voices = functools.partial(tts_voices, self)  # реестр имён Tier-1 «голос <имя>» (#4086) — и для чата (#4142)
+        sing = build_sing(self, lambda: self._reporter.all_states())  # путь пения (#4079): один на Личность и чат
+        chat_sing = sing.for_log(CHAT_LOG_MARK)  # тот же выбор, строка лога чата не похожа на голосовую (ревью #4153)
         self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake,
                                   hold=lambda: self._session.snapshot.top("OperatorHold") is not None,
-                                  robot=RobotRemote(self))  # пульт робота (#4040): порты Личности ниже
+                                  robot=RobotRemote(self),  # пульт робота (#4040): порты Личности ниже
+                                  sing=chat_sing, voices=voices)
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self))
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
-                                  voices=functools.partial(tts_voices, self),  # реестр имён Tier-1 «голос <имя>» (#4086)
-                                  turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в журнал смены
-                                  events=self._open_events(), log=_RosLog(self.get_logger()),
-                                  sing=build_sing(self, self._reporter.all_states),  # путь пения до модели (#4079)
+                                  voices=voices, turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в смену
+                                  events=self._open_events(), log=_RosLog(self.get_logger()), sing=sing,
                                   phrase_voice=self._speakers.resolve)  # голос фразы по её id (#4141)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
@@ -502,8 +515,9 @@ class DialogNode(Node):
         self._shift.music(snap, self._music.last_ended)  # что звучало за смену и как кончилось (#4076)
         plan_host.on_music(self, snap)
         title = str((snap.dj_info or {}).get("title") or "") or None
-        self._session.set_music(MusicStateRef("playing" if snap.is_playing() else "idle", track_id=snap.track_id,
-                                              title=title))
+        music = MusicStateRef("playing" if snap.is_playing() else "idle", track_id=snap.track_id, title=title)
+        self._session.set_music(music)
+        self._chats.set_music(music)  # чат — пульт робота: путь пения и срез судят по музыке робота (#4142)
         self._scenes.on_music(bool(snap.dj), snap.dj_info)
 
     def _on_interrupt(self, msg: Any) -> None:

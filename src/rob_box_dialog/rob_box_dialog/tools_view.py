@@ -24,7 +24,7 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.expression import shows
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import has_form, has_speech_manner, has_word, introduces_self, without_forms
+from rob_box_dialog.words import asks_question, has_form, has_speech_manner, has_word, introduces_self, without_forms
 
 if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
     from rob_box_dialog.command import Command
@@ -126,6 +126,14 @@ def silent_asked(text: str) -> bool:
     return has_form(text or "", kn.SILENT_SHOW_FORMS) and has_word(text or "", kn.FACE_SHOW_STEMS)
 
 
+def robot_asked(text: str) -> bool:
+    """Просил ли человек в чате сделать это РОБОТОМ (#4142 п.7, классы 1 и 3 #4040): форма из
+    ``knowledge.CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ») — и реплика не
+    вопрос (``words.asks_question``, ревью #4153: «Как управлять роботом?», «Почему детям полезно читать вслух?» — справка
+    в чат, робот ничего не делает). Целыми словами: «робота-курьера» — не «через робота». Таблицы — ``knowledge``."""
+    return has_form(text or "", kn.CHAT_ROBOT_ASK_FORMS) and not asks_question(text or "")
+
+
 def show_asked(text: str) -> bool:
     """Просил ли человек показать лицо: словами о лице (группа ``FACE_ASK_GROUP``, :func:`face_asked`) или ответа без
     слов (:func:`silent_asked`). Тогда ответ лицом без речи - норма (:func:`needs_words`), а лицо команды держится как
@@ -140,6 +148,13 @@ def voice_asked(snapshot: SessionSnapshot, text: str, voices: Sequence[str] = ()
     закрыт формой хода: голос сам собой не меняется."""
     if set(groups_for(snapshot, text)) & set(kn.TOOL_GROUPS_EXPLICIT):
         return True
+    return voice_named(text, voices)
+
+
+def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
+    """Назван ли в ЭТОЙ реплике голос реестра по имени (``voices`` — id, название, алиасы, каждое целым словом): «спой
+    голосом Алисы». Такой голос звучит только речью робота (TTS): путь пения с ним — живое выступление, а не генерация
+    Suno, где голос молча потерялся бы (ревью #4153, ``turn.sing_route``). «Своим голосом» — не имя реестра."""
     return has_form(text or "", tuple(v for v in voices if v))
 
 
@@ -234,5 +249,5 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
 
 
 __all__ = ["asked_groups", "available_tools", "command_groups", "face_asked", "groups_for", "motion_named",
-           "motion_refusal", "needs_words", "requested_groups", "show_asked", "silent_asked", "voice_asked",
-           "widen_for"]
+           "motion_refusal", "needs_words", "requested_groups", "robot_asked", "show_asked", "silent_asked",
+           "voice_asked", "voice_named", "widen_for"]

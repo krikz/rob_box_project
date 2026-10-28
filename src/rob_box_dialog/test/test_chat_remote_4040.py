@@ -1,4 +1,4 @@
-"""Чат Telegram — пульт робота (#4040, решение Шифу 28.10, ``knowledge.CHAT_OUTLETS``).
+"""Чат Telegram — пульт робота (#4040, решение Шифу 28.10; хвосты — #4142, ``test_chat_remote_4142.py``).
 
 Просьбу действия на роботе исполняет РОБОТ от своего имени (выступление — хосту выступления, лицо — лицу робота), в
 чат — фраза кода об исполнении из результата, а не текст песни; справку агент отвечает в чат, робот молчит; служебный
@@ -12,7 +12,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import Addressed
 from rob_box_dialog.chats import ChatPorts, ChatTurns, channel_ref, face_words, perform_phrase, quote, robot_face
-from rob_box_dialog.command import Command, Expression, Performance, ToolCall, _COMMAND_FIELDS
+from rob_box_dialog.command import Command, Expression, Performance, ToolCall
 from rob_box_dialog.respond import ActionResult, quiet_in_performance
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, Shown, TurnEngine, outcome_phrase
@@ -35,6 +35,7 @@ class Robot:
 
     def show(self, turn_id, expression):
         self.shown.append(expression)
+        return ""
 
 
 class Base:
@@ -127,7 +128,7 @@ def test_service_text_of_the_chat_agent_goes_to_the_chat_and_never_to_the_robot(
 
     assert host.robot.performed == [], "речь агента выступлением робота не звучит"
     assert [s.emotion for s in host.robot.shown] == ["happy"]
-    assert host.sent == [SERVICE, "Показываю на роботе: happy."]
+    assert host.sent == [SERVICE, "Показываю на роботе: радость."]
 
 
 def test_bare_face_answer_from_chat_shows_on_the_robot_instead_of_silence():
@@ -150,7 +151,7 @@ def test_refusal_of_the_robot_performer_is_said_by_code_without_lyrics():
 
 def test_operator_hold_refuses_robot_actions_from_chat_like_say_aloud():
     """Оператор держит робота (§9.2.3): ни выступления, ни лица из чата — отказ кодом без запроса пульту."""
-    held = phrases.text(kn.REMOTE_HOLD_PHRASE)
+    held = phrases.text(f"{kn.REMOTE_SHOW_REJECTED_PHRASE}.operator_hold")
     sing = Host([_answer(Command(perform=SONG))], hold=True)
     sing.say("спой")
     show = Host([_answer(Command(actions=(ToolCall("play_animation", {"animation": "rainbow"}),)))], hold=True)
@@ -222,9 +223,6 @@ def test_face_the_chat_port_did_not_show_is_not_written_as_shown_4073():
     assert finish_stage(remote, turn, snap) is None and len(robot.shown) == 1
 
 
-def test_chat_outlets_table_names_command_fields_and_every_perform_kind_has_a_phrase():
-    assert set(kn.CHAT_OUTLETS) <= set(_COMMAND_FIELDS)
-    assert set(kn.CHAT_OUTLETS.values()) <= {kn.REMOTE_ROBOT, kn.REMOTE_CHAT}
-    assert kn.CHAT_OUTLETS["speech"] == kn.REMOTE_CHAT and kn.CHAT_OUTLETS["perform"] == kn.REMOTE_ROBOT
+def test_every_perform_kind_has_a_remote_phrase():
     assert set(kn.REMOTE_PERFORM_PHRASES) == set(kn.PERFORM_KINDS)
     assert all(key in phrases.catalog() for key in kn.REMOTE_PERFORM_PHRASES.values())

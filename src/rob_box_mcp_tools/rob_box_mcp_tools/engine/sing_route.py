@@ -35,27 +35,42 @@ def gen_health(states: Sequence[Any]) -> str:
     return next((str(s.health) for s in states if getattr(s, "kind", "") == GEN_KIND), "")
 
 
-class SingRouteHost:
-    """``(реплика, прошлые реплики, играет ли музыка) -> id пути пения``: контекст процесса диалога → ``choose_sing``
-    → строка лога ``🎚️ [source] пение … кандидаты=[…] → <id> (code|chooser:…)``. ``states`` — состояния провайдеров
-    (доска ``ProviderStateReporter``), ``chooser`` — тот же выбиратель, что у пути музыки (``chooser_from_env``)."""
+#: Метка строк лога пути пения хода Личности (харнесс читает ``🎚️ [source] пение …`` как голосовой путь).
+MARK = "🎚️"
 
-    def __init__(self, chooser: Chooser, states: Callable[[], Sequence[Any]], log: Callable[[str], Any]) -> None:
+
+class SingRouteHost:
+    """``(реплика, прошлые реплики, играет ли музыка, назван ли голос реестра) -> id пути пения``: контекст процесса
+    диалога → ``choose_sing`` → строка лога ``<метка> [source] пение … кандидаты=[…] → <id> (code|chooser:…)``.
+    ``states`` — состояния провайдеров (доска ``ProviderStateReporter``), ``chooser`` — тот же выбиратель, что у пути
+    музыки (``chooser_from_env``); ``mark`` — метка строки лога: у Личности :data:`MARK`, у чата Telegram — своя
+    (:meth:`for_log`, ревью #4153: ход чата не принимается за голосовой путь)."""
+
+    def __init__(
+        self, chooser: Chooser, states: Callable[[], Sequence[Any]], log: Callable[[str], Any], mark: str = MARK
+    ) -> None:
         self._chooser = chooser
         self._states = states
         self._log = log
+        self._mark = mark
 
-    def __call__(self, text: str, recent: Sequence[str], playing: bool) -> str:
+    def for_log(self, mark: str) -> "SingRouteHost":
+        """Тот же путь пения (выбиратель и доска провайдеров — одни), строки лога — с другой меткой: хост чата."""
+        return SingRouteHost(self._chooser, self._states, self._log, mark)
+
+    def __call__(self, text: str, recent: Sequence[str], playing: bool, voiced: bool = False) -> str:
         health = gen_health(self._states())
-        ctx = SingContext(tuple(recent), playing, not health or health in PROVIDER_USABLE_HEALTH, health)
+        ctx = SingContext(tuple(recent), playing, not health or health in PROVIDER_USABLE_HEALTH, health, voiced)
         route = choose_sing(text, ctx, self._chooser)
         if route.id:
-            self._log(f"🎚️ {route.line()}")
+            self._log(f"{self._mark} {route.line()}{' голос назван' if voiced else ''}")
             return route.id
         edit = "" if has_word(text, EDIT_OTHER_OWNER_STEMS) else edit_route(text, playing)
         if edit:
-            self._log(f"🎚️ [edit] путь хода {edit}: играет музыка, реплика её правит — новый трек не заказываем")
+            self._log(
+                f"{self._mark} [edit] путь хода {edit}: играет музыка, реплика её правит — новый трек не заказываем"
+            )
         return edit
 
 
-__all__ = ["GEN_KIND", "SingRouteHost", "gen_health"]
+__all__ = ["GEN_KIND", "MARK", "SingRouteHost", "gen_health"]

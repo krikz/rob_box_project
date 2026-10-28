@@ -118,6 +118,25 @@ def test_gen_health_reads_the_music_gen_record_only():
     assert gen_health([SimpleNamespace(kind="tts", health="down")]) == ""
 
 
+def test_named_voice_of_the_registry_makes_the_bare_sing_live_by_code():
+    """Ревью #4153: «спой голосом Алисы» — голос назван (``voiced``), путь только живой, модель чойсера не зовётся
+    (``NoModel``): генерация голос молча потеряла бы. Строка лога говорит, почему кандидат один."""
+    host, lines = _host([_state("ok")])
+    assert host("Робот, спой голосом Алисы про кабана", (), False, voiced=True) == "live:song"
+    assert lines == ["🎚️ [source] пение song слова=— кандидаты=[live:song] → live:song (code) голос назван"]
+
+
+def test_chat_host_is_the_same_route_with_its_own_log_mark():
+    """Чат Telegram — тот же путь пения (выбиратель и доска провайдеров одни), а строка лога — с меткой чата: харнесс
+    читает ``🎚️ [source] пение`` как голосовой путь Личности (ревью #4153)."""
+    model = Model("generate:song:V6")
+    host, lines = _host([_state("ok")], model)
+    chat = host.for_log("💬 [tg-agent]")
+    assert chat("спой про енота", ("сохрани для Бориса",), False) == "generate:song:V6"
+    assert len(model.questions) == 1, "тот же выбиратель"
+    assert lines[0].startswith("💬 [tg-agent] [source] пение ") and "🎚️" not in lines[0]
+
+
 # -- связка целиком: реплика → хост → форма хода → срез и валидатор ----------------------------------------------
 
 
