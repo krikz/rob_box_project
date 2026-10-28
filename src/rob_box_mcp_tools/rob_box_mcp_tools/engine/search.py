@@ -438,7 +438,8 @@ def _sound_queries(vocab: _Vocab, words: Sequence[str], keys: Sequence[str]) -> 
 
 def _scored(records: Iterable[Dict[str, Any]],
             heard: Sequence[Tuple[str, bool]]) -> List[Tuple[Tuple[float, int], Dict[str, Any], str]]:
-    """``(оценка, запись, поле)`` записей, чьё название или исполнитель звучит услышанными словами (:func:`_aligned`)."""
+    """``(оценка, запись, поле)`` записей, чьё название или исполнитель звучит услышанными словами
+    (:func:`_aligned`)."""
     return [(score, record, field) for record in records for field in ("title", "artist")
             if (score := _aligned(str(record.get(field) or ""), heard)) is not None]
 
