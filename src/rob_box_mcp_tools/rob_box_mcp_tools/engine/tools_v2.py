@@ -69,6 +69,7 @@ from .search import ThemeHits, part_query, ThemeQuery, terms, theme_search
 from .session import SetMemory, SetSession, plan_source, write_track_file
 from .instrumental_order import InstrumentalOrder
 from .source_route import SourceRouter
+from .track_edit import LiveRecipe, TrackEditor, synth_title
 from .theme_grounding import heard_theme, set_slots
 from .theme_links import Ask, ThemeLinks
 
@@ -737,6 +738,8 @@ class RequestMusicTool(MCPTool):
         self._play_cached = play_cached  # трек кэша — play_library_track: дека владельца (ADR-0158 PR-2)
         #: Подложка выступления (``intent=backing``, ADR-0150 PR-7c): ставит ``mcp_server`` — ей нужен клок адаптера.
         self.backing: Optional[BackingDeck] = None
+        #: Правка играющего (#4029): рецепты своих синт-треков (трек и подложка) — тул ``edit_music``.
+        self.editor = TrackEditor(owner, log=self._log)
         # кавер пьесы (ADR-0158 PR-4): ``cover`` — gen.cover.CoverMaker; нет — кавер-кандидатов нет
         self._cover = PieceCover(cover, speak, self._log) if cover is not None else None
         self._tracks_dir = tracks_dir or None  # модели сыгранных пьес, как у треков сета (I24)
@@ -910,13 +913,16 @@ class RequestMusicTool(MCPTool):
         energy = kn.MOOD_ENERGY.get(mood or "", kn.ENERGY_WAVE[0])
         track_no = kn.ENERGY_WAVE.index(energy) + 1
         try:
-            model = compose(plan, track_no, melodies=self._melodies(profile.hook_ids), deck="A",
-                            materials=self._dj.plan_materials(plan), lead_synth=lead and lead.synth)
+            recipe = LiveRecipe(plan, track_no, self._melodies(profile.hook_ids), self._dj.plan_materials(plan),
+                                lead and lead.synth, "A", label)
+            model = compose(plan, track_no, melodies=recipe.melodies, deck="A", materials=recipe.materials,
+                            lead_synth=recipe.lead_synth)
             program = render(model, "A")
         except Exception as exc:  # noqa: BLE001 — отказ громкий (I25), звука нет
             return self._owner.reject(f"{plan.set_id}:{track_no:02d}:A", "compose_error",
                                       f"{type(exc).__name__}: {exc}")
-        title = f"{label or 'клубный трек'} · {plan.bpm} BPM"
+        self.editor.remember(program.track_id, replace(recipe, code=program.code))  # «потяжелее» — правка (#4029)
+        title = synth_title(label, plan.bpm)
         return {"program": program, "once": False, "bridge_model": model, "title": title,
                 "name": club_name(text, label),
                 "source": SOURCE_SYNTH, "style": plan.style, "bpm": plan.bpm, "energy": energy,
@@ -1040,6 +1046,58 @@ class GenerateMusicTool(MCPTool):
                       engine=ask_engine(heard_text or theme or "", by_meaning=False))
         return self._request.order("track", theme or heard_text or "", turn_id=turn_id, heard_text=heard_text,
                                    ask=ask)
+
+
+class EditMusicTool(MCPTool):
+    """«Сделай бит потяжелее», «ускорь», «добавь баса» (#4029): правка ИГРАЮЩЕЙ музыки, а не заказ новой. Виды правки
+    решает код по словам реплики хода (``knowledge.TRACK_EDITS``), слот ``change`` — только когда слова их не
+    называют; свой синт-трек и бит выступления меняются на ближайшем такте (``engine.track_edit``), готовая запись,
+    пьеса и сет — честный отказ кодом с предложением. Фраза исхода — ``message`` результата."""
+
+    event_source = "inproc:player_owner"
+
+    def __init__(self, node: Any, request: RequestMusicTool) -> None:
+        super().__init__(node)
+        self._request = request
+
+    @property
+    def name(self) -> str:
+        return "edit_music"
+
+    @property
+    def description(self) -> str:
+        return ("Поменять ИГРАЮЩУЮ музыку на ходу, не заказывая новую: быстрее/медленнее, тяжелее (металличнее), "
+                "мрачнее, светлее, мягче, больше или меньше баса, «играй дальше в том же духе». Свой бит и бит "
+                "выступления меняются на ближайшем такте, выступление не прерывается; готовую запись так не "
+                "изменить — тул честно скажет, что может. Что сказать, вернёт тул.")
+
+    @property
+    def parameters(self) -> List[MCPToolParameter]:
+        return [
+            MCPToolParameter(name="change", type="string", required=False, enum=list(kn.TRACK_EDITS),
+                             description="Что поменять, если человек сказал это не прямыми словами"),
+        ]
+
+    @property
+    def slice(self) -> str:
+        return "personality"
+
+    @property
+    def execution_type(self) -> ToolExecutionType:
+        return ToolExecutionType.FAST
+
+    @property
+    def destructive(self) -> bool:
+        return False
+
+    def execute(self, change: Optional[str] = None, turn_id: Optional[str] = None,
+                heard_text: Optional[str] = None) -> MCPToolResult:
+        """``heard_text`` — скрытый аргумент хода (``llm_adapter.TURN_CONTEXT_ARGS``): виды правки — из него."""
+        slot = (change,) if change in kn.TRACK_EDITS else ()
+        data = self._request.editor.edit(slot, heard_text)
+        if data.get("ok"):
+            return MCPToolResult(success=True, data=data)
+        return MCPToolResult(success=False, data=data, error=str(data.get("message") or "музыка не изменилась"))
 
 
 def bridge_source(dj: DjSetTool, theme: str, set_id: str,

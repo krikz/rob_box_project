@@ -335,15 +335,19 @@ PROSODY_NORMAL_KIND = "prosody_normal"
 #: анимаций (:func:`animation_name`), а не модель. Живая проверка 27.10 18:55: DeepSeek на такую просьбу делал ОДИН
 #: ``play_animation thinking`` - ни одной из трёх сцен, до очереди #4088 дело не доходило. Слова - ``SHOW_QUEUE_*``.
 SHOW_QUEUE_KIND = "show_queue"
+#: Вид Tier-1 «шаг голоса» (#4074): темп или тон речи шагом (``set_speed``/``set_pitch``); слова - :data:`VOICE_STEP`.
+VOICE_STEP_KIND = "voice_step"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
-#: ``prosody_normal`` звучит: тулы сброса молчат, фразу о результате говорит код. ``show_queue`` не звучит, но в
-#: тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход молчит, как вся тишина (#3982).
+#: ``prosody_normal`` и ``voice_step`` звучат: тулы темпа и тона молчат, фразу о результате говорит код.
+#: ``show_queue`` не звучит, но в тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход
+#: молчит, как вся тишина (#3982).
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
-    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, "answer": False, SHOW_QUEUE_KIND: True,
+    "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, VOICE_STEP_KIND: True, "answer": False,
+    SHOW_QUEUE_KIND: True,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -387,9 +391,10 @@ VOICE_DEFAULT_FILLER: Tuple[str, ...] = (
 #: и та отвечала «Возвращаю обычный темп» без вызова тула - скорость оставалась 0.8 (живой прогон 26.10 20:58:30,
 #: ADR-0148). Команда покрыта грамматикой ЦЕЛИКОМ: речевой глагол (точные формы: «говоришь» - не просьба) или «речи»,
 #: слово «нормально» (``PROSODY_NORMAL_STEMS``) и только слова ниже; «обычным ГОЛОСОМ» - не скорость, а голос робота
-#: (``set_voice``, #3803).
+#: (``set_voice``, #3803). «говорит» - так STT слышит «говори» в начале команды (марафон 27.10 n411: «Робот, говори
+#: басом…» → «робот говорит басом…»); до грамматики доходит только адресованная реплика.
 PROSODY_VERBS: Tuple[str, ...] = (
-    "говори", "говорите", "разговаривай", "разговаривайте", "читай", "читайте", "произноси",
+    "говори", "говорите", "говорит", "разговаривай", "разговаривайте", "читай", "читайте", "произноси",
 )
 #: Тулы сброса и их аргумент: оба сразу, у каждого своя ось и свой исход.
 PROSODY_RESET_TOOLS: Tuple[str, ...] = ("set_speed", "set_pitch")
@@ -426,6 +431,87 @@ SHOW_QUEUE_FILLER: Tuple[str, ...] = (
     "нам", "пожалуйста", "ну", "давай", "свое", "свою", "свои", "эмоции", "эмоцию", "анимации", "анимацию",
 )
 SHOW_QUEUE_MIN, SHOW_QUEUE_MAX = 2, 5
+
+
+@dataclass(frozen=True)
+class VoiceStepWords:
+    """Закрытая грамматика шага голоса (#4074, Tier-1 ``voice_step``, разбор - ``grammar._voice_step``).
+
+    ``requests`` - ``(тул, действие)`` → основы слов просьбы («быстрее», «басом», «как диктор»): слово начинается с
+    основы. Просьба - только рядом с речевым глаголом ``owners`` («говори басом»; голое «быстрее» под музыку - темп
+    трека) или основой из ``self_owned``, которая сама речевой глагол в повелительной форме («тараторь», «тараторьте»;
+    «ты тараторишь» - жалоба, а не просьба ускориться). ``speech_only`` - основы глаголов, которые называют только
+    речь (любая форма: «ты тараторишь», «мямлишь»): открывают тулы голоса в срезе и под музыкой не двусмысленны.
+    ``manners`` - форма глагола манеры речи робота (инфинитив или повелительная) после ``manner_leads`` («хватит
+    тянуть», «не тараторь»; между ними может стоять слово ``manner_gap``: «хватит так тараторить») → ``(тул,
+    действие)``, которое её исправляет: это просьба о темпе, а не стоп. ``inverse`` после манеры («теперь наоборот»,
+    STT: «на оборот») - одно следующее слово (служебные перед ним не в счёт) пересказывает противоположную манеру,
+    направление уже известно (STT его искажает: «тараторь» → «ораторь»); слово другой команды Tier-1 (стоп, тишина,
+    громкость) пересказом не бывает. ``simile`` - «как …» до конца части: образ просьбы («как диктор в старом кино»),
+    только если шаг в реплике есть («говори как пират» - не шаг); ``likeness`` - основы образов, которые сами шаг, но
+    только после «как» («как диктор» - тон ниже; голое «диктор» - не просьба, и срез тулов по нему голос не
+    открывает). ``filler`` - служебные слова сверх ``GRAMMAR_FILLER`` и ``STOP_LEAD_WORDS``; ``joins`` - союзы между
+    частями: непокрытая часть после союза или знака препинания - новая просьба (``Tier1Command.rest``)."""
+
+    requests: Mapping[Tuple[str, str], Tuple[str, ...]]
+    owners: Tuple[str, ...]
+    self_owned: Tuple[str, ...]
+    speech_only: Tuple[str, ...]
+    manners: Mapping[str, Tuple[str, str]]
+    manner_leads: Tuple[str, ...]
+    manner_gap: Tuple[str, ...]
+    inverse: Tuple[str, ...]
+    simile: Tuple[str, ...]
+    likeness: Mapping[Tuple[str, str], Tuple[str, ...]]
+    filler: Tuple[str, ...]
+    joins: Tuple[str, ...]
+
+
+_FASTER, _SLOWER = ("set_speed", "faster"), ("set_speed", "slower")
+#: Темп и тон речи робота (#4074, марафон 27.10): «говори басом / пониже / как диктор» - режим тона того же голоса
+#: (``set_pitch lower``, решение Шифу 27.10: голос не меняется, держится до «говори нормально» или «обычным голосом»);
+#: «тараторь», «говори быстрее / медленнее», «хватит тянуть, теперь наоборот - тараторь» - ``set_speed``. Решает код
+#: (ADR-0148): раньше n410 уходил в стоп по «хватит» и в LLM, а та врала «теперь тараторю» без вызова тула; n411 -
+#: одна фраза другим голосом (``command.voice``) вместо тона. Фразу об исходе строит код по результату тула
+#: (:data:`TOOL_PHRASES`). «бубнить» - не темп (непонятно, быстрее или громче): «хватит бубнить» остаётся стопом.
+#: Манеры - точные формы, а не основы: «хватит тянет», «стой, тороплюсь», «замолчи, тараторка» - не просьба о темпе.
+VOICE_STEP = VoiceStepWords(
+    requests=MappingProxyType({
+        _FASTER: ("быстр", "побыстр", "ускор", "тараторь", "живее", "поживее"),
+        _SLOWER: ("медленн", "помедленн", "замедл"),
+        ("set_pitch", "lower"): ("басом", "басовит", "ниже", "пониже", "низким", "баритон"),
+        ("set_pitch", "higher"): ("выше", "повыше", "высоким", "тоньше", "тоненьк", "пискляв"),
+    }),
+    owners=PROSODY_VERBS,
+    self_owned=("тараторь",),
+    speech_only=("тарато", "мямл"),
+    manners=MappingProxyType({
+        "тянуть": _FASTER, "тяни": _FASTER, "тяните": _FASTER,
+        "мямлить": _FASTER, "мямли": _FASTER, "мямлите": _FASTER,
+        "тараторить": _SLOWER, "тараторь": _SLOWER, "тараторьте": _SLOWER,
+        "торопиться": _SLOWER, "торопись": _SLOWER, "торопитесь": _SLOWER,
+        "спешить": _SLOWER, "спеши": _SLOWER, "спешите": _SLOWER,
+    }),
+    manner_leads=("хватит", "не", "перестань", "прекрати"),
+    manner_gap=("так",),
+    inverse=("наоборот", "оборот"),
+    simile=("как",),
+    likeness=MappingProxyType({("set_pitch", "lower"): ("диктор",)}),
+    filler=("голосом", "голос", "тоном", "тон", "темпом", "темп", "речь", "речи", "теперь", "лучше", "более", "чем",
+            "можешь", "своим", "режиме", "с", "со"),
+    joins=("а", "и", "но"),
+)
+#: Основы всех просьб шага (порядок таблицы): их же видит срез тулов (группа voice, :data:`TOOL_GROUPS`).
+VOICE_STEP_STEMS: Tuple[str, ...] = tuple(dict.fromkeys(s for stems in VOICE_STEP.requests.values() for s in stems))
+#: Группа среза тулов, которую открывает манера речи с ведущим словом («хватит тянуть резину», ``words.speech_manner``):
+#: фразу не покрыла грамматика шага - решает модель, и ``set_speed`` у неё в срезе.
+VOICE_STEP_GROUP = "voice"
+#: Причина исхода тула темпа/тона «ось уже на границе, записи не было» (``rob_box_mcp_tools.tools.system``).
+VOICE_STEP_AT_LIMIT = "at_limit"
+#: «Говори обычным голосом» (``set_voice`` default, #3803) снимает и режим тона (#4074, решение Шифу 27.10: бас - тот
+#: же голос с тоном ниже): к смене голоса - сброс этих тулов (``action=normal``). Скорость - не голос, её снимает
+#: «говори нормально».
+VOICE_DEFAULT_RESETS: Tuple[str, ...] = ("set_pitch",)
 #: «Новая сессия» (U8): фразы — подстрокой после снятия вейка (как в v1); Telegram «/clear» — правило хоста.
 NEW_SESSION_PHRASES: Tuple[str, ...] = (
     "новая сессия", "новую сессию", "новый диалог", "новый разговор",
@@ -532,7 +618,9 @@ INTERRUPT_STOPS_CLASSES: Tuple[str, ...] = ("action.media",)
 #: Выступление идёт (рэп, сказка, песня вживую): общий успех запуска музыки не озвучивается отдельной фразой (#4075;
 #: живой 27.10 15:16:58: смена подложки посреди рэпа - поверх выступления «Включаю музыку.»). Молчит только ключ общего
 #: успеха класса ``action.media``; фразы по данным результата (ожидание генерации, стоп) и любой провал говорятся.
-QUIET_IN_PERFORMANCE_KEYS: Tuple[str, ...] = (ACTION_CLASSES["action.media"].phrases["done"],)
+#: ``music.edit_heard`` (#4029, Шифу 27.10: «просто входящий запрос на изменение текущего трека»): правка бита
+#: выступления слышна сама - фразы поверх рэпа нет; предел и отказ правки - другой ключ (``music.edit_said``), говорятся.
+QUIET_IN_PERFORMANCE_KEYS: Tuple[str, ...] = (ACTION_CLASSES["action.media"].phrases["done"], "music.edit_heard")
 
 #: Тул каталога ``rob_box_core.tool_catalog`` → класс действия. Тул вне таблицы командой не исполняется
 #: (валидатор отвергает); полноту против каталога держит тест.
@@ -549,7 +637,7 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
         "set_volume",
     )},
     **{t: "action.media" for t in (
-        "dj_set", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
+        "dj_set", "edit_music", "generate_music", "music_library", "play_sound", "request_music", "stop_music",
     )},
     # долгие операции навигационного стека (Nav2/картирование): тот же дедлайн 120 с и непрерываемость
     **{t: "action.motion" for t in (
@@ -562,6 +650,8 @@ TOOL_CLASSES: Mapping[str, str] = MappingProxyType({
 })
 #: Тул библиотеки сгенерированной музыки: семь действий одним тулом каталога (``action``), а класс у них разный.
 LIBRARY_TOOL = "music_library"
+#: Тул правки ИГРАЮЩЕЙ музыки (#4029): темп, тембр, бас своего синт-трека на такте или честный отказ кодом.
+EDIT_TOOL = "edit_music"
 #: Название трека в слоте ``{name}`` фраз библиотеки, когда в данных результата его нет (удаление отдаёт без названия).
 LIBRARY_UNNAMED = "этот трек"
 #: Класс ВЫЗОВА, когда он зависит от аргумента (#4020, ADR-0148: фразу об исходе строит код по результату, а не по тулу):
@@ -688,7 +778,13 @@ MOTION_TOOLS: Tuple[str, ...] = ("move_direction", "navigate_to_waypoint", "navi
 #: «ускорь темп» в тишине - речь («ускор» - основа группы voice). Это та часть основ voice, что называет только скорость;
 #: «голос», «тембр», «басом» голос называют однозначно и сюда не входят. Одна таблица: ``TOOL_GROUPS["voice"]`` берёт
 #: их отсюда, ``tools_view`` - тоже (n506 23.10: «ускорь темп, а то мы тут засыпаем» → ``set_speed`` вместо музыки).
-VOICE_PACE_STEMS: Tuple[str, ...] = ("быстр", "побыстр", "медленн", "помедленн", "скорост", "ускор", "замедл")
+#: Слова просьб о скорости - из таблицы шага голоса (:data:`VOICE_STEP`, #4074), плюс «скорость»; глаголы только о
+#: речи (``VOICE_STEP.speech_only``: «тараторь») не двусмысленны и сюда не входят - их ``TOOL_GROUPS["voice"]`` берёт
+#: отдельно, и под музыкой они голос не теряют.
+VOICE_PACE_STEMS: Tuple[str, ...] = tuple(dict.fromkeys((
+    *(s for (tool, _), stems in VOICE_STEP.requests.items() if tool == "set_speed" for s in stems
+      if not s.startswith(VOICE_STEP.speech_only)),
+    "скорост")))
 #: Слова, которые под играющей музыкой уходят в группу music, а не в voice. Основы (левая граница): темп, быстрее,
 #: медленнее, жёстче, мягче. «громче/тише» сюда не входят: их называет группа volume (``set_music_volume`` рядом с
 #: ``set_volume``), а сцена играющей музыки добавляет music следом, и срез не теряет ни одну из групп.
@@ -700,6 +796,11 @@ MUSIC_AMBIGUOUS_WORDS: Tuple[str, ...] = ("бас", "баса", "басу", "б�
 SPEECH_OWNER_STEMS: Tuple[str, ...] = (
     "говори", "говорить", "говоришь", "разговарива", "речь", "речи", "читай", "рассказывай", "тараторь", "произноси",
     "озвуч", "голос", "тембр", "басом")
+#: Реплика называет другого владельца слов правки (#4029, ревью PR #4116): речь робота (:data:`SPEECH_OWNER_STEMS`:
+#: «читай быстрее») или движение базы (:data:`MOTION_VERB_STEMS`, :data:`MOTION_TURN_STEMS`: «иди быстрее под бит») -
+#: «быстрее» в ней не про играющую музыку. Путь хода «правка играющего» хост (``rob_box_mcp_tools.engine.sing_route``)
+#: тогда не решает; тему музыки в остальном решает ``rob_box_music.track_edit.music_edits``.
+EDIT_OTHER_OWNER_STEMS: Tuple[str, ...] = SPEECH_OWNER_STEMS + MOTION_VERB_STEMS + MOTION_TURN_STEMS
 #: Русские названия звуков каталога ``sound_pack/sound_catalog.json``: группа тулов ``sound`` открывается не только
 #: словом «звук», но и теми, как человек называет сам звук («сирену и мигалку покажи» - n903 23.10). Пары
 #: (триггеры каталога, основы слов): каталог хранит ``trigger`` и английское/русское описание, разговорных названий в нём нет;
@@ -767,11 +868,13 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     ),
     "volume": ToolGroup(("громк", "громче", "погромче", "тише", "потише"), ("set_volume", "set_music_volume")),
     "voice": ToolGroup(
-        ("голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", *VOICE_PACE_STEMS,
-         "темп реч", "выше", "ниже", "тембр",
-         # живой прогон 23.10, акт 4 n411: «говори басом» не открывало set_pitch/set_voice — робот ответил «таких
-         # инструментов у меня нет» (они есть, но не в срезе хода)
-         "басом", "басов", "тарато"),
+        tuple(dict.fromkeys((
+            "голос", "провайдер", "яндекс", "минимакс", "силеро", "silero", "yandex", "minimax", *VOICE_PACE_STEMS,
+            "темп реч", "тембр",
+            # живой прогон 23.10, акт 4 n411: «говори басом» не открывало set_pitch/set_voice — робот ответил «таких
+            # инструментов у меня нет» (они есть, но не в срезе хода); просьбы темпа и тона и глаголы только о речи
+            # («ты тараторишь» - жалоба, её решает модель с set_speed в срезе) - таблица шага (#4074)
+            "басов", *VOICE_STEP_STEMS, *VOICE_STEP.speech_only))),
         ("set_voice", "set_tts_provider", "list_tts_voices", "set_speed", "set_pitch", "estimate_tts_duration"),
     ),
     "navigation": ToolGroup(
@@ -891,7 +994,7 @@ WINDOW_FACE_SCENE = "сцена лица"
 #: тула нет в таблице или поля нет в данных - только имя тула. ``perform`` - запись выступления в окне (``turn_log``).
 WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
     "play_animation": "animation", "play_sound": "sound", LIBRARY_TOOL: "action", "request_music": "intent",
-    "dj_set": "action", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
+    "dj_set": "action", "edit_music": "changes", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
 })
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
@@ -1001,9 +1104,21 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
             ("rate",): "music.library_fail", ("update",): "music.library_fail", ("delete",): "music.library_fail",
         }),
     }),
-    # «Говори нормально» (PROSODY_NORMAL_KIND): сброс по результату тула, а не «Готово.» - ни о чём не говорящее слово
-    "set_speed": MappingProxyType({"done": ByData(("action",), {("normal",): "speed.normal"})}),
-    "set_pitch": MappingProxyType({"done": ByData(("action",), {("normal",): "pitch.normal"})}),
+    # «Говори нормально» (PROSODY_NORMAL_KIND) и шаг голоса (VOICE_STEP_KIND, #4074): фраза по действию из результата
+    # тула («Говорю быстрее.»), а не «Готово.» - ни о чём не говорящее слово; ось уже на границе (причина
+    # VOICE_STEP_AT_LIMIT) - ключ «….at_limit»
+    "set_speed": MappingProxyType({"done": ByData(("action",), {
+        ("normal",): "speed.normal", ("faster",): "speed.faster", ("slower",): "speed.slower"})}),
+    "set_pitch": MappingProxyType({"done": ByData(("action",), {
+        ("normal",): "pitch.normal", ("lower",): "pitch.lower", ("higher",): "pitch.higher"})}),
+    # правка играющего (#4029): фразу исхода строит код музыки из исхода (``rob_box_music.track_edit.edit_text`` -
+    # ``message`` результата: сделано, предел, честный отказ с предложением), а не «Включаю музыку.» класса;
+    # ``heard`` (поменялся бит выступления, без предела и отказа) - ключ, который молчит во время выступления
+    EDIT_TOOL: MappingProxyType({
+        "done": ByData(("heard",), {(True,): "music.edit_heard"}, "music.edit_said"),
+        "rejected": ByData(("message",), {(None,): "music.edit_fail"}, "music.edit_said"),
+        "timeout": "music.edit_timeout",
+    }),
 })
 
 
@@ -1201,6 +1316,9 @@ PHRASE_KEYS: Tuple[str, ...] = (
     # исход по результату тула (#4020, #4022, #4031): «говори нормально», отказ без регулировки (причина тула
     # ``speed_unsupported``/``pitch_unsupported``), звукоподражание
     PROSODY_NORMAL_PHRASE, "local.rejected.speed_unsupported", "local.rejected.pitch_unsupported",
+    # шаг голоса на границе оси (#4074): «Быстрее уже некуда», а не «Говорю быстрее» без перемены
+    *(f"{axis}.{step}.{VOICE_STEP_AT_LIMIT}" for axis, step in (
+        ("speed", "faster"), ("speed", "slower"), ("pitch", "lower"), ("pitch", "higher"))),
     *SOUND_IMITATIONS.values(),
     # отказ памяти при узнанном, но не подтверждённом голосе (#3993): своя фраза, не «Не узнаю твой голос»
     f"local.rejected.{VOICE_UNCONFIRMED_REASON}",
@@ -1830,6 +1948,9 @@ COMPOSITION_KIND_BY_CLASS: Mapping[str, str] = MappingProxyType({
 #: Тулы, чья строка не следует из класса: звук — SFX, анимация — экспрессия, тул речи — реплика.
 COMPOSITION_KIND_BY_TOOL: Mapping[str, str] = MappingProxyType({
     "play_sound": "sfx", "play_animation": "expression", "speak_text": "speech",
+    # правка играющего (#4029) ничего не занимает и не вытесняет: бит меняется на такте под идущее выступление (строка
+    # ``music`` вытеснила бы выступление на такте - кейс Шифу 27.10: рэп без тактов после «сделай бит потяжелее»)
+    "edit_music": "query",
 })
 #: Какой ресурс (столбец) занимает начатый блок строки; ``halt`` и ``query`` ничего не занимают. Подложку
 #: выступления (``backing``) запускает выступление (PR-7c), а не строка ``music``.
@@ -2024,15 +2145,27 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live_over": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True, backings=("none",)),
     "generate": SingForm(needs_tool="generate_music",
                          kinds=tuple(k for k in PERFORM_KINDS if k not in SING_PERFORM_KINDS)),
+    # правка играющего (#4029): заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
+    "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
+                     kinds=PERFORM_KINDS),
 })
+#: Голова id пути хода «правка играющего» (``edit:<вид>+…``, #4029): музыка играет, а реплика её правит («сделай бит
+#: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
+#: вызовом, что путь пения (``rob_box_music.track_edit.edit_route``: слова правки ``TRACK_EDITS`` и снимок плеера), и
+#: форма хода сужает выбор структурой (ADR-0148 п.2): ``request_music``/``dj_set``/``generate_music`` вне среза и вне
+#: команды, ``edit_music`` обязателен - правка на такте играющего, а не новый трек, платная генерация и мост.
+EDIT_ROUTE = "edit"
 #: Нарушение формы пути пения: подробность — что именно, допустимое — из :class:`SingForm`.
 VIOLATION_SING_ROUTE = "sing_route"
 
 
 def sing_family(route: str, over_music: bool = False) -> str:
-    """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); иной
-    непустой (``generate:*``, ``cache:*``) — ``generate``; «» — не пение."""
+    """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); правка
+    играющего ``edit:*`` (:data:`EDIT_ROUTE`) — ``edit``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
+    «» — не пение."""
     head = (route or "").split(":", 1)[0]
+    if head == EDIT_ROUTE:
+        return "edit"
     if head == "live":
         return "live_over" if over_music else "live"
     return "generate" if head else ""

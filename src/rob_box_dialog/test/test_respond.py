@@ -66,9 +66,18 @@ def test_join_collects_turn_phrases_in_order():
 
 def test_identical_outcomes_are_said_once():
     """Живой прогон 27.10 18:56 UTC: «сделай свой голос помягче» - ``set_pitch lower`` + ``set_speed slower``, оба
-    ``local.done`` -> TTS говорил «Готово. Готово.». Одинаковые исходы - одна фраза."""
-    said = join([_result("set_pitch", "done", action="lower"), _result("set_speed", "done", action="slower")])
+    ``local.done`` -> TTS говорил «Готово. Готово.». Одинаковые исходы - одна фраза: громкость речи и музыки
+    (общая ``local.done``) звучат одним «Готово.»."""
+    said = join([_result("set_volume", "done"), _result("set_music_volume", "done")])
     assert said.text == "Готово."
+    assert said.emotion == "neutral"
+
+
+def test_pitch_and_speed_steps_say_each_axis_not_done_twice():
+    """Тот же случай 27.10 после #4074: у шага темпа и тона своя фраза по действию из результата тула - звучит, что
+    поменялось на каждой оси, без «Готово. Готово.»."""
+    said = join([_result("set_pitch", "done", action="lower"), _result("set_speed", "done", action="slower")])
+    assert said.text == "Говорю ниже. Говорю медленнее."
     assert said.emotion == "neutral"
 
 

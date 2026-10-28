@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import struct
 import time
@@ -43,6 +44,10 @@ RAMP_DOWN_RELEASE_SECONDS = 0.05
 #: Уходящая дека снимается за 1/32 до доли стыка: её события на самой доле (повтор формы —
 #: бочка, аккорд пэда) не звучат поверх входящего трека (PR-5).
 HANDOFF_STOP_BEATS = 0.125
+
+#: Правка играющего трека (#4029) исполняется за 1/32 до границы такта: события плееров на самой доле такта уже звучат
+#: с новыми атрибутами, а прошлый такт доигрывает как был.
+RETUNE_LEAD_BEATS = 0.125
 
 #: Проблема с ресурсом до exec: ``(reason, detail)``.
 Problem = Tuple[str, str]
@@ -341,6 +346,40 @@ class RenardoAdapter:
 
         clock.schedule(_rbx_fade, at_beat + float(clock.latency) * float(bpm) / 60.0)
 
+    def retune(self, program: Any, start_beat: float, bpm: Optional[float], guard: Callable[[], bool],
+               on_done: Callable[[Dict[str, Any]], None]) -> float:
+        """Правка ИГРАЮЩЕГО трека на ходу (#4029): программа той же деки исполняется в те же слоты на ближайшей
+        границе такта формы (от ``start_beat``), с ней — темп ``bpm`` (``None`` — тот же). Плееры на ``>>`` меняют
+        атрибуты и играют дальше с текущей доли, секции ``var`` — от доли старта формы (``render.at_form_start``):
+        трек не перезапускается, сетка тактов та же. Возвращает долю правки; исход — ``on_done`` из потока клока.
+        ``guard`` — играет ли ещё тот трек (стык сета, стоп): нет — правка холостая."""
+        from rob_box_music.model import BEATS_PER_BAR
+        from rob_box_music.render.renardo import at_form_start
+
+        ns = self._namespace()
+        clock = ns["Clock"]
+        generation = self._generation
+        code = at_form_start(program.code, start_beat)
+        bar = float(BEATS_PER_BAR)
+        ahead = float(clock.now()) + RETUNE_LEAD_BEATS - float(start_beat)
+        at = float(start_beat) + max(0, math.ceil(ahead / bar - 1e-9)) * bar
+
+        def _rbx_retune() -> None:
+            if generation != self._generation or not guard():
+                return  # стоп, новый трек или стык сета раньше такта правки
+            try:
+                if bpm:
+                    clock.update_tempo_now(float(bpm))
+                exec(code, ns)  # noqa: S102 — программа v2 = вывод render(), не текст LLM
+            except Exception as exc:  # noqa: BLE001 — отказ громкий, трек играет как было
+                on_done({"ok": False, "reason": "exec_error", "detail": f"{type(exc).__name__}: {exc}"})
+                return
+            on_done({"ok": True, "at_beat": at, "clock_beat": round(float(clock.now()), 3),
+                     "bpm": float(clock.get_bpm())})
+
+        clock.schedule(_rbx_retune, at - RETUNE_LEAD_BEATS)
+        return at
+
     def beat_now(self) -> float:
         """Доля клока Renardo сейчас (вход результата по такту поверх моста ожидания)."""
         return float(self._namespace()["Clock"].now())
@@ -444,7 +483,8 @@ class RenardoAdapter:
 
 
 __all__ = [
-    "HANDOFF_STOP_BEATS", "MASTER_NODE", "RAMP_DOWN_RELEASE_SECONDS", "RenardoAdapter", "V2_CLOCK_LATENCY_S",
+    "HANDOFF_STOP_BEATS", "MASTER_NODE", "RAMP_DOWN_RELEASE_SECONDS", "RETUNE_LEAD_BEATS", "RenardoAdapter",
+    "V2_CLOCK_LATENCY_S",
     "audio_files", "decode_osc_args", "free_buffers", "load_sample_buffers", "osc_fail_detail", "ramp_down_group", "set_master_controls",
     "split_osc_address",
 ]

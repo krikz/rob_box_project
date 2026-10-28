@@ -25,6 +25,8 @@ import os
 import threading
 from typing import Callable, List, NamedTuple, Optional, TYPE_CHECKING
 
+from rob_box_dialog.knowledge import VOICE_STEP_AT_LIMIT
+
 # Ленивый импорт ROS 2 модулей для поддержки unit тестов
 if TYPE_CHECKING:
     import rclpy
@@ -275,7 +277,8 @@ def _step_axis(tts: TtsParams, axis, step: _Step, provider: str, kind: str,
     """Шаг по оси активного провайдера: прочитать, записать, прочитать назад. Фраза — из прочитанного значения (#4022).
 
     Параметр, который нода записала, но не применила к синтезу, — не успех: ответ «готово» ставит код только после
-    того, как значение прочитано обратно и совпало с запрошенным.
+    того, как значение прочитано обратно и совпало с запрошенным. Ось уже на границе — ``done`` с причиной
+    ``VOICE_STEP_AT_LIMIT`` (по ней диалог говорит «Быстрее уже некуда», а не «Говорю быстрее», #4074).
     """
     from rob_box_voice.tts_prosody import target_value
 
@@ -286,7 +289,7 @@ def _step_axis(tts: TtsParams, axis, step: _Step, provider: str, kind: str,
     data = {"provider": provider, "param": axis.param, f"old_{kind}": current}
     if abs(target - current) < 0.01:
         return MCPToolResult(success=True, message=step.edge,
-                             data={**data, "status": "done", "reason": "at_limit", f"new_{kind}": current})
+                             data={**data, "status": "done", "reason": VOICE_STEP_AT_LIMIT, f"new_{kind}": current})
     error = tts.write(axis.param, target)
     if error is not None:
         return _rejected("set_failed", f"Не удалось установить {axis.param}: {error}", **data)
@@ -345,8 +348,13 @@ class SetPitchTool(MCPTool):
         return "personality"
 
     def execute(self, action: str) -> MCPToolResult:
-        """Установить высоту голоса: параметром активного провайдера, а нет такого — честный отказ (#4022)."""
-        from rob_box_voice.tts_prosody import describe_pitch, pitch_axis
+        """Установить высоту голоса: параметром активного провайдера, а нет такого — честный отказ (#4022).
+
+        ``normal`` снимает режим тона («басом», #4074) у любого провайдера: ось тона одна (``PITCH_AXIS``), и
+        стоящий на ней шаг, не слышный у этого голоса, зазвучит, когда вернётся голос с тоном («обычным голосом» с
+        голоса Алёны на MiniMax). Отказ ``pitch_unsupported`` — только у шага вверх/вниз, которого не будет слышно.
+        """
+        from rob_box_voice.tts_prosody import PITCH_AXIS, describe_pitch, pitch_axis
 
         self.log_info(f"Изменение pitch: {action}")
         step = self._STEPS.get(action)
@@ -358,7 +366,7 @@ class SetPitchTool(MCPTool):
         if chipmunk is None:
             return _rejected("read_failed", "Не удалось прочитать chipmunk_mode")
         provider = _active_provider(self.node)
-        axis = pitch_axis(provider, bool(chipmunk))
+        axis = pitch_axis(provider, bool(chipmunk)) or (PITCH_AXIS if step.direction == 0 else None)
         if axis is None:
             return _unsupported("pitch", provider)
         result = _step_axis(self.tts, axis, step, provider, "pitch",

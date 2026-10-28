@@ -258,21 +258,30 @@ def tier1_of(text: str, after_wake: str, snapshot: SessionSnapshot,
 
 
 def tier1_actions(command: Tier1Command, snapshot: SessionSnapshot) -> Tuple[ToolCall, ...]:
-    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice``, «говори нормально» — сброс скорости и
-    тона (``set_speed``/``set_pitch`` ``normal``, #4022), очередь показа — ``play_animation`` на каждую сцену по
-    порядку реплики (#4103: та же дорога исполнения, что у вызовов модели; окно LLM видит исход), стоп всего — музыка,
-    если играет (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и оговорка «музыку
-    оставь» (#3994) музыку не трогают."""
+    """Действия Tier-1 владельцам: громкость — тул канала, голос — ``set_voice`` (обычный голос снимает и режим тона:
+    ``knowledge.VOICE_DEFAULT_RESETS``, #4074), «говори нормально» — сброс скорости и тона (``set_speed``/``set_pitch``
+    ``normal``, #4022), шаг голоса — ``set_speed``/``set_pitch`` шагом (#4074), очередь показа — ``play_animation``
+    на каждую сцену по порядку реплики (#4103: та же дорога исполнения, что у вызовов модели; окно LLM видит исход),
+    стоп всего — музыка, если играет (:func:`~rob_box_dialog.interrupt.stops_music`); стоп речи (``stop_speech``) и
+    оговорка «музыку оставь» (#3994) музыку не трогают."""
     if command.kind == "volume":
         tool = kn.VOLUME_CHANNELS[command.args["channel"]].tool
         return (ToolCall(tool, {"action": command.args["action"]}),) if tool else ()
     if command.kind == "set_voice":
-        return (ToolCall("set_voice", {"voice": command.args["voice"]}),)
+        voice = command.args["voice"]
+        resets = kn.VOICE_DEFAULT_RESETS if voice == kn.VOICE_DEFAULT_ARG else ()
+        return (ToolCall("set_voice", {"voice": voice}),) + _resets(resets)
     if command.kind == kn.PROSODY_NORMAL_KIND:
-        return tuple(ToolCall(tool, {"action": kn.PROSODY_NORMAL_ARG}) for tool in kn.PROSODY_RESET_TOOLS)
+        return _resets(kn.PROSODY_RESET_TOOLS)
+    if command.kind == kn.VOICE_STEP_KIND:
+        return tuple(ToolCall(tool, {"action": action}) for tool, action in command.args["steps"])
     if command.kind == kn.SHOW_QUEUE_KIND:  # #4103: сцены по порядку реплики, время - по умолчанию показа
         return tuple(ToolCall(kn.SHOW_TOOL, {"animation": name}) for name in command.args["scenes"])
     return stop_music_calls(snapshot) if stops_music(command) else ()
+
+
+def _resets(tools: Sequence[str]) -> Tuple[ToolCall, ...]:
+    return tuple(ToolCall(tool, {"action": kn.PROSODY_NORMAL_ARG}) for tool in tools)
 
 
 def stop_performance(ports: Any, how: str, keep_backing: bool = False) -> bool:
@@ -326,7 +335,8 @@ def music_playing(snap: SessionSnapshot) -> bool:
 
 
 #: Путь пения хода от хоста (#4079): ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
-#: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``.
+#: (``live:song``, ``generate:robot_song:V6``; «» — не пение). Строит ``rob_box_music.source.choose_sing``; не пение, а
+#: правка играющей музыки — ``edit:<вид>+…`` (#4029, ``rob_box_music.track_edit.edit_route``, ``knowledge.EDIT_ROUTE``).
 SingRouter = Callable[[str, Sequence[str], bool], str]
 
 
@@ -516,14 +526,20 @@ def tier1_face(command: Tier1Command, results: Sequence[ActionResult], text: str
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
                  pick: Callable[[str], str] = lambda key: "") -> Optional[str]:
     """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
+    шаг голоса — по исходам тулов («Говорю ниже.», ось на границе — «Ниже уже некуда…», отказ — его фраза, #4074);
     новая сессия — вариант из каталога; очередь показа — лицом, слова только о провале (:func:`show_queue_phrase`);
-    стоп и тишина молчат; голос говорит сам тул (SpeechEvent)."""
+    стоп и тишина молчат; голос говорит сам тул (SpeechEvent), а снятый вместе с ним режим тона — код, только если
+    тон правда менялся или сброс не вышел (ось уже на норме — молчит)."""
     if command.kind == "new_session":
         return pick(kn.NEW_SESSION_PHRASE)
     if command.kind == kn.PROSODY_NORMAL_KIND:
         return prosody_phrase(results)
     if command.kind == kn.SHOW_QUEUE_KIND:
         return show_queue_phrase(results)
+    if command.kind == kn.VOICE_STEP_KIND:
+        return outcome_phrase(results)
+    if command.kind == "set_voice":
+        return outcome_phrase([r for r in results if r.reason != kn.VOICE_STEP_AT_LIMIT])
     if command.kind != "volume":
         return None
     prefix = "music" if command.args["channel"] == "music" else "voice"

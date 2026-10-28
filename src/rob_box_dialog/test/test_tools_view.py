@@ -66,9 +66,11 @@ def test_groups_are_small_and_point_into_the_catalog():
 
 
 def test_every_llm_visible_tool_is_reachable_or_code_only():
-    """Никакой тул не пропадает молча: либо всегда виден, либо в группе, либо явно «только кодом»."""
+    """Никакой тул не пропадает молча: либо всегда виден, либо в группе, либо его требует форма хода (кодом добавляет
+    ``turn.form_tools``: ``edit_music`` — путь «правка играющего», #4029), либо явно «только кодом»."""
     reachable = set(kn.TOOLS_ALWAYS) | {t for g in kn.TOOL_GROUPS.values() for t in g.tools}
-    missing = {t.name for t in llm_visible_tools()} - reachable - set(kn.TOOLS_CODE_ONLY)
+    by_form = {form.needs_tool for form in kn.SING_FORMS.values() if form.needs_tool}
+    missing = {t.name for t in llm_visible_tools()} - reachable - by_form - set(kn.TOOLS_CODE_ONLY)
     assert missing == set()
 
 

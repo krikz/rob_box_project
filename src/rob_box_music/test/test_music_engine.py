@@ -184,8 +184,9 @@ def test_playing_engine_is_not_inherited_by_a_request_that_does_not_tweak_it(tex
 
 
 def test_tweak_words_are_one_table_and_a_phrase_must_stand_in_a_row():
-    """Единственная таблица ``ENGINE_TWEAK_WORDS``: все виды правки в ней; одно слово — основа, несколько — подряд."""
-    assert set(kn.ENGINE_TWEAK_WORDS) == {"tempo", "bass", "timbre", "develop"}
+    """Единственная таблица правок играющего ``TRACK_EDITS`` (#4029; была ``ENGINE_TWEAK_WORDS``): все виды правки в
+    ней; одно слово — основа, несколько — подряд."""
+    assert {edit.group for edit in kn.TRACK_EDITS.values()} == {"tempo", "bass", "timbre", "develop"}
     assert ask_tweak("в том же духе") and not ask_tweak("в том городе же")
     assert ask_tweak("ускорь") and not ask_tweak("")
 

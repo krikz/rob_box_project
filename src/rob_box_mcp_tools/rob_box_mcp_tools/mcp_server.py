@@ -68,7 +68,7 @@ from .engine.renardo_runtime import RenardoRuntime
 from .engine.speech_duck import SpeechDuck, duck_controls
 from .engine.reasoner import DEADLINE_S as V2_REASONER_DEADLINE_S, SetReasoner
 from .engine.request_slots import harness_ask
-from .engine.tools_v2 import DjSetTool, GenerateMusicTool, RequestMusicTool, music_busy
+from .engine.tools_v2 import DjSetTool, EditMusicTool, GenerateMusicTool, RequestMusicTool, music_busy
 from .registry import MCPToolRegistry
 from .tools import (
     NavigateToWaypointTool,
@@ -348,8 +348,10 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
     request.backing = BackingDeck(owner, adapter, lambda mood: request._stage_club("", mood),  # noqa: SLF001
                                   confirm, lambda: music_busy(owner, dj_set), log=node.get_logger())
     node._backing_deck = request.backing
+    request.editor.adapter = adapter  # #4029: правка играющего — в слоты деки на такте клока Renardo
     node.registry.register(request)
     node.registry.register(GenerateMusicTool(node, request))  # ADR-0158 §3.3: просьба, тот же путь
+    node.registry.register(EditMusicTool(node, request))  # #4029: правка играющего на такте, не новый трек
     request.warm()  # #3577: индекс партитур и каталог — в фоне до первого заказа (бюджет старта 2.5 с)
     owner.publish_state()
     node.get_logger().info(

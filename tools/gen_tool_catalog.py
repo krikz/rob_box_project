@@ -344,6 +344,11 @@ def _engine_values() -> list[str]:
     return [_knowledge().ENGINE_AUTO, *_knowledge().MUSIC_ENGINES]
 
 
+def _edit_values() -> list[str]:
+    """``edit_music.change`` enum — ключи ``knowledge.TRACK_EDITS`` (одна таблица правок играющего, #4029)."""
+    return list(_knowledge().TRACK_EDITS)
+
+
 def _style_values() -> list[str]:
     """``dj_set.style`` enum — ``auto`` и ключи ``knowledge.STYLES`` (ADR-0153 S1; ``tools_v2.STYLE_CHOICES``)."""
     return ["auto", *_knowledge().STYLES]
@@ -411,6 +416,7 @@ DYNAMIC_ENUMS = {
     ("request_music", "engine"): _engine_values,
     ("dj_set", "style"): _style_values,
     ("generate_music", "style"): _gen_style_values,
+    ("edit_music", "change"): _edit_values,
     ("dj_set", "styles[]"): _set_styles_values,  # ``items`` массива: ключ — имя параметра + «[]»
 }
 
@@ -488,6 +494,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "get_music_state",
         "stop_music",
         "set_music_volume",
+        "edit_music",
     ),
     "dj": (
         # ADR-0149: движок v2 (с PR-13b — единственный музыкальный путь)
@@ -497,6 +504,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "get_music_state",
         "stop_music",
         "set_music_volume",
+        "edit_music",
     ),
     "player": (
         "generate_music",
