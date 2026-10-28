@@ -8,14 +8,16 @@
 настоящих фразах акта 2b прежний матч «реплика целиком = глагол + дополнение» не срабатывал ни разу - они здесь
 (``ACT2B``), как положительные и как честно отрицательные. Круг 1 ревью PR #4121: профиль, заведённый из этой же
 фразы (#3858, ``source=enroll``), - голос слышен впервые, ответ «не узнаю» (``ENROLLED_NOW``); утверждения и обрывки
-STT («ты же меня знаешь», «знаешь, что меня…») - ход модели.
+STT («ты же меня знаешь», «знаешь, что меня…») - ход модели. #4141: ответ - по SpeakerResult ЭТОЙ фразы (по её
+``utterance_id``); здесь он приходит сразу, порядок событий и опоздание - ``test_recognition_this_phrase_4141``.
 """
 
 import asyncio
 
 import pytest
 
-from rob_box_core.speaker_wire import SOURCE_ENROLL
+from rob_box_core.speaker_wire import (NAME_CONFIRMED, NAME_CONTESTED, NAME_NAMELESS, NAME_TENTATIVE, NAME_UNKNOWN,
+                                       SOURCE_ENROLL)
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
 from rob_box_dialog.address import VOICE, Addressed
@@ -43,6 +45,9 @@ YES_SASHA = "Узнал — ты Саша."
 UNSURE = "Голос знакомый, но не уверен, чей."
 NOT_KNOWN = "По голосу пока не узнаю."
 NAMELESS_SAID = "Голос твой помню, а имени не знаю."
+UNHEARD = "Пока не уверен, кто ты: голос этой фразы не успел разобрать."
+#: id фразы вопроса (``Addressed.utterance_id``): по нему ход берёт её SpeakerResult (#4141).
+UID = "u-ask"
 
 #: Реплики рукописного акта 2b (``.github/e2e/scenarios/night/night_marathon_act2b_identity_question_v1.json``, текст
 #: шага как есть; ход получает его без вейка - ``strip_wake_word``, как ``address.decide``) и отвечает ли на них код.
@@ -65,6 +70,11 @@ ACT2B_BY_CODE = [(label, text) for label, text, by_code in ACT2B if by_code]
 
 def _ref(result):
     return speaker_ref(result, now=1.0)
+
+
+def _reply(result, prev=None):
+    """Ответ кода по SpeakerResult ЭТОЙ фразы (``None`` - не пришёл за окно) при собеседнике сессии ``prev``."""
+    return recognition_reply(result, prev, now=1.0)
 
 
 # -- вопрос целиком ---------------------------------------------------------------------------------------------
@@ -122,13 +132,14 @@ def test_act2b_lines_recognition_by_code(label, text, by_code):
 
 
 def test_reply_by_name_state():
-    assert recognition_reply("ты меня узнал?", _ref(CONFIRMED)) == ("confirmed", YES_SASHA)
-    assert recognition_reply("ты меня узнал?", _ref(CONTESTED)) == ("contested", UNSURE)
-    assert recognition_reply("ты меня узнал?", _ref(TENTATIVE)) == ("tentative", UNSURE)
-    assert recognition_reply("ты меня узнал?", _ref(NAMELESS)) == ("nameless", NAMELESS_SAID)
-    assert recognition_reply("ты меня узнал?", _ref(UNKNOWN)) == ("unknown", NOT_KNOWN)
-    assert recognition_reply("ты меня узнал?", None)[0] == "unknown"
-    assert recognition_reply("включи музыку", _ref(CONFIRMED)) is None
+    assert _reply(CONFIRMED) == ("confirmed", YES_SASHA)
+    assert _reply(CONTESTED) == ("contested", UNSURE)
+    assert _reply(TENTATIVE) == ("tentative", UNSURE)
+    assert _reply(NAMELESS) == ("nameless", NAMELESS_SAID)
+    assert _reply(UNKNOWN) == ("unknown", NOT_KNOWN)
+    assert _reply(None) == ("unheard", UNHEARD), "результата этой фразы нет - «не уверен», а не «не узнаю»"
+    assert _reply(None, _ref(CONFIRMED)) == ("unheard", UNHEARD), "и не собеседник прошлой фразы (#4141)"
+    assert not asks_recognized("включи музыку")
 
 
 @pytest.mark.parametrize("label, text", [("short", "ты меня узнал?")] + ACT2B_BY_CODE,
@@ -139,29 +150,32 @@ def test_voice_enrolled_from_this_very_phrase_is_not_recognized(label, text):
     незнакомцу; профиль для памяти при этом свой (``person_ref`` есть)."""
     ref = _ref(ENROLLED_NOW)
     assert (ref.person_ref, ref.first_heard) == ("spk-guest-4", True)
-    assert recognition_reply(strip_wake_word(text), ref) == ("unknown", NOT_KNOWN)
+    assert asks_recognized(strip_wake_word(text))
+    assert _reply(ENROLLED_NOW) == ("unknown", NOT_KNOWN)
 
 
 def test_next_phrase_of_the_enrolled_voice_is_the_nameless_profile():
     """Следующая фраза того же голоса - обычное узнавание (``source`` нет): робот его уже слышал - «голос помню»."""
     first = _ref(ENROLLED_NOW)
-    again = speaker_ref({**ENROLLED_NOW, "confidence": 0.86, "source": None}, now=2.0, prev=first)
+    next_phrase = {**ENROLLED_NOW, "confidence": 0.86, "source": None}
+    again = speaker_ref(next_phrase, now=2.0, prev=first)
     assert (again.person_ref, again.first_heard, again.since) == ("spk-guest-4", False, first.since)
-    assert recognition_reply("ты меня узнал?", again) == ("nameless", NAMELESS_SAID)
+    assert _reply(next_phrase, first) == ("nameless", NAMELESS_SAID)
 
 
 @pytest.mark.parametrize("result", [CONTESTED, TENTATIVE])
 def test_unconfirmed_voice_gets_no_candidate_name_and_no_identity_question(result):
     """Решение Шифу 26.10: «ты Саша?» не спрашиваем; имя кандидата вслух - утечка (n210 must_not_say)."""
-    _state, said = recognition_reply("ты меня узнал?", _ref(result))
+    _state, said = _reply(result)
     assert "Саша" not in said and "?" not in said
     assert "не запомнил" not in said, "голос узнан - «не запомнил» неправда (акт 2b 23.10)"
 
 
-@pytest.mark.parametrize("result", [CONFIRMED, CONTESTED, TENTATIVE, NAMELESS, UNKNOWN])
+@pytest.mark.parametrize("result", [CONFIRMED, CONTESTED, TENTATIVE, NAMELESS, UNKNOWN, None])
 def test_reply_to_a_negative_question_is_not_a_bare_yes_or_no(result):
     """Ревью PR #4121: на «ты меня НЕ узнал?» «Да, …»/«Нет, …» двусмысленны - фраза кода без них в начале."""
-    _state, said = recognition_reply("ты меня не узнал?", _ref(result))
+    assert asks_recognized("ты меня не узнал?")
+    _state, said = _reply(result)
     assert not said.lower().startswith(("да", "нет")), said
 
 
@@ -172,9 +186,14 @@ def test_confirmed_without_name_is_not_a_hollow_yes():
 
 
 def test_every_name_state_has_a_reply_phrase():
-    for state in (*kn.VOICE_UNCONFIRMED_STATES, "confirmed", "nameless", "unknown"):
-        assert phrases.text(kn.RECOGNIZED_REPLIES[state], name="Саша"), state
-    assert set(kn.RECOGNIZED_REPLIES.values()) <= set(kn.PHRASE_KEYS)
+    """Исход узнавания - состояние имени словаря ``speaker_wire.NAME_*`` (одно знание, #4141) или «не пришёл»: у
+    каждого своя фраза ``speaker.recognized.<исход>``; спор и гипотеза - одна фраза (якорь YAML)."""
+    states = (NAME_CONFIRMED, NAME_TENTATIVE, NAME_CONTESTED, NAME_NAMELESS, NAME_UNKNOWN, kn.RECOGNIZED_UNHEARD)
+    keys = [f"{kn.RECOGNIZED_PHRASE}.{state}" for state in states]
+    assert [k for k in keys if k not in phrases.catalog()] == []
+    assert all(phrases.text(key, name="Саша") for key in keys)
+    catalog = phrases.catalog()
+    assert catalog[f"{kn.RECOGNIZED_PHRASE}.{NAME_TENTATIVE}"] == catalog[f"{kn.RECOGNIZED_PHRASE}.{NAME_CONTESTED}"]
 
 
 # -- ход целиком -------------------------------------------------------------------------------------------------
@@ -214,17 +233,30 @@ class Ports:
 
 
 def _engine(result, answers=(), agent="personality"):
+    """Ход, в котором биометрия фразы ``UID`` (``result``) пришла раньше STT: собеседник сессии - по ней, и голос
+    фразы хост отдаёт сразу (``phrase_voice``, как ``UtteranceSpeakerRegistry.resolve``)."""
     session = Session(agent)
+    voices = {}
     if result is not None:
         session.set_speaker(_ref(result))
+        voices[UID] = {**result, "utterance_id": UID}
+
+    async def phrase_voice(uid, wait_s):
+        return voices.get(uid)
+
     ports = Ports(answers)
-    return TurnEngine(session, ports, system_prompt="Ты робот."), ports, session
+    return TurnEngine(session, ports, system_prompt="Ты робот.", phrase_voice=phrase_voice), ports, session
+
+
+def _ask(text, **kwargs):
+    """Реплика с вейком, текст хода - сама фраза ``UID`` (``address.decide`` кладёт её id)."""
+    return Addressed(text, VOICE, utterance_id=UID, **kwargs)
 
 
 @pytest.mark.parametrize("result, said", [(CONTESTED, UNSURE), (CONFIRMED, YES_SASHA)])
 def test_recognition_question_is_answered_by_code_without_llm(result, said):
     engine, ports, _ = _engine(result)
-    agg = asyncio.run(engine.run(Addressed("ты меня узнал?", VOICE)))
+    agg = asyncio.run(engine.run(_ask("ты меня узнал?")))
     assert ports.asked == [], "модель не зовётся"
     assert ports.said == [said]
     assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 0)
@@ -238,7 +270,7 @@ def test_act2b_question_is_answered_by_code_without_llm(label, text, result, sai
     """Акт 2b через ход: реплика без вейка (как у ``address.decide``) - 0 вызовов LLM, фраза кода по снимку. Спорный
     голос 23.10 (0.944, имя скрыто) - «знакомый, не уверен», а не «голос не запомнил, но имя знаю — Саша»."""
     engine, ports, _ = _engine(result)
-    agg = asyncio.run(engine.run(Addressed(strip_wake_word(text), VOICE)))
+    agg = asyncio.run(engine.run(_ask(strip_wake_word(text))))
     assert ports.asked == [], "модель не зовётся"
     assert ports.said == [said]
     assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 0)
@@ -247,20 +279,20 @@ def test_act2b_question_is_answered_by_code_without_llm(label, text, result, sai
 def test_act2b_memory_question_still_goes_to_the_model():
     """n703 «что ты про меня помнишь…» - вопрос о фактах, а не «узнал ли»: ход модели (память - её тулом)."""
     engine, ports, _ = _engine(CONFIRMED, [Answer(Command(speech="Ты пьёшь зелёный чай."), "deepseek")])
-    asyncio.run(engine.run(Addressed(strip_wake_word(ACT2B[2][1]), VOICE)))
+    asyncio.run(engine.run(_ask(strip_wake_word(ACT2B[2][1]))))
     assert len(ports.asked) == 1 and ports.said == ["Ты пьёшь зелёный чай."]
 
 
 def test_question_inside_another_request_goes_to_the_model():
     engine, ports, _ = _engine(CONTESTED, [Answer(Command(speech="Включаю."), "deepseek")])
-    asyncio.run(engine.run(Addressed("ты меня узнал? включи музыку", VOICE)))
+    asyncio.run(engine.run(_ask("ты меня узнал? включи музыку")))
     assert len(ports.asked) == 1 and ports.said == ["Включаю."]
 
 
 def test_silence_swallows_the_question_too():
     engine, ports, session = _engine(CONFIRMED)
     session.push_scene("Silence", "user")
-    asyncio.run(engine.run(Addressed("ты меня узнал?", VOICE)))
+    asyncio.run(engine.run(_ask("ты меня узнал?")))
     assert ports.asked == [] and ports.said == []
 
 
@@ -280,6 +312,6 @@ def test_telegram_chat_has_no_voice_and_asks_the_model():
 def test_code_reply_lands_in_the_window_as_robot_speech():
     """Ответ кода - реплика робота в окне (после ``SpeechEvent``), как любая речь хода."""
     engine, ports, _ = _engine(CONTESTED)
-    asyncio.run(engine.run(Addressed("ты меня узнал?", VOICE)))
+    asyncio.run(engine.run(_ask("ты меня узнал?")))
     engine.speech_ended("sp1", len(UNSURE))
     assert [(e.role, e.content) for e in engine.log.window()][-1] == ("assistant", UNSURE)

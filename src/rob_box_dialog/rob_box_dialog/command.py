@@ -10,6 +10,10 @@ tool-результатом, один раз на ответ (мост, реше
 нарушение ``VIOLATION_SPEECH_TOO_LONG``; одно оно у команды (:func:`overlong_only`) — мост даёт модели ход компактнее, и
 после него длинно — речь ужимает код (:func:`fit_speech`).
 
+Косметику код выбрасывает, а не отвергает команду целиком (#4138): ``knowledge.DROPPABLE`` - единственная таблица того,
+что можно выбросить (earcon не из перечня, лишний аргумент ``play_animation``); выброшенное - в ``Command.dropped``
+(лог ``fields_dropped``). Нет обязательного аргумента или тула - команда невалидна, как раньше.
+
 :class:`Form` — форма команды ХОДА (#4021): какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
 (:func:`turn_form`), мост строит по ней схему (:func:`form_schema`), :func:`validate` по ней же судит ответ — одно
 решение кода в одном месте, не правило в промпте.
@@ -28,6 +32,7 @@ from typing import Any, Callable, Collection, Dict, FrozenSet, Iterator, List, M
 from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import cast as perform_cast
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_dialog.cast import Role
 from rob_box_dialog.face_scene import FIELDS as FACE_FIELDS, FaceScene, problem as face_problem
 
@@ -550,9 +555,11 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
-    же и голос реплики без просьбы о голосе отбрасываются (``dropped``). Невалидная сцена лица отбрасывается (``dropped``), а не валит команду (§5.5.9);
-    так же лишние поля ВЛОЖЕННЫХ объектов аргументов тула (``play_animation.face.emotion``, #3974): без отказа
-    команды, с записью в ``dropped``. Обязательные поля, типы и enum по-прежнему проверяет схема.
+    же и голос реплики без просьбы о голосе отбрасываются (``dropped``). Невалидная сцена лица и earcon не из перечня
+    отбрасываются (``dropped``), а не валят команду (§5.5.9, #4138); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
+    тула (``play_animation.face.emotion``, #3974) и лишние аргументы верхнего уровня тулов таблицы
+    ``knowledge.DROPPABLE`` (``play_animation.animated``, #4138): без отказа команды, с записью в ``dropped``.
+    Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
@@ -573,7 +580,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
         lambda: _check_when(cmd.when, busy),
-        lambda: _drop_bad_faces(cmd),
+        lambda: _drop_bad_expression(cmd),
     )
     outcomes = [_outcome(check) for check in checks]
     found = tuple(v for v in outcomes if isinstance(v, Violation))
@@ -583,12 +590,14 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     return outcomes[-1]
 
 
-def _drop_extra(schema: Mapping[str, Any], value: Any, path: str, nested: bool) -> Tuple[Any, List[str]]:
+def _drop_extra(schema: Mapping[str, Any], value: Any, path: str, droppable: bool) -> Tuple[Any, List[str]]:
     """Значение без лишних полей вложенных закрытых объектов (``additionalProperties: false``) и список отброшенных
-    путей. Верхний уровень аргументов не трогаем: лишний аргумент тула — по-прежнему ``bad_args``."""
+    путей. ``droppable`` - выбрасываются ли лишние поля самого этого объекта: вложенные - да, верхний уровень аргументов
+    тула - только по таблице ``knowledge.DROPPABLE.tool_args`` (:func:`_extra_args_droppable`), иначе лишний аргумент
+    тула - по-прежнему ``bad_args``."""
     if isinstance(value, Mapping):
         props = schema.get("properties", {})
-        closed = nested and schema.get("additionalProperties") is False
+        closed = droppable and schema.get("additionalProperties") is False
         dropped = [f"{path}.{k}" for k in value if closed and k not in props]
         kept: Dict[str, Any] = {}
         for key, item in value.items():
@@ -605,9 +614,19 @@ def _drop_extra(schema: Mapping[str, Any], value: Any, path: str, nested: bool) 
     return value, []
 
 
+def _extra_args_droppable(call: ToolCall) -> bool:
+    """Лишние аргументы верхнего уровня этого вызова выбрасываются (#4138): тул в ``knowledge.DROPPABLE.tool_args`` и в
+    вызове есть хоть один аргумент, несущий смысл (``play_animation``: ``animation`` или ``face``). Только лишнее
+    поле (``{"animated": true}``) - вызов без смысла, его отвергает схема, как раньше."""
+    meaning = kn.DROPPABLE.tool_args.get(call.tool, ())
+    return any(name in call.args for name in meaning)
+
+
 def _drop_nested_extras(cmd: Command) -> Command:
-    """Аргументы действий без лишних вложенных полей (#3974): «n905: play_animation.face.emotion: лишнее поле» не
-    повод отказывать команде. Отброшенное - в ``dropped`` (лог ``fields_dropped``)."""
+    """Аргументы действий без лишних полей, которые не меняют действие: вложенные у любого тула (#3974: «n905:
+    play_animation.face.emotion: лишнее поле») и верхнего уровня у тулов таблицы (#4138: «n904:
+    play_animation.animated: лишнее поле» при ``animation: sad``) - не повод отказывать команде. Отброшенное - в
+    ``dropped`` (лог ``fields_dropped``)."""
     actions, notes = [], []
     for i, call in enumerate(cmd.actions):
         try:
@@ -615,7 +634,7 @@ def _drop_nested_extras(cmd: Command) -> Command:
         except KeyError:  # тула нет в каталоге - скажет _check_actions
             actions.append(call)
             continue
-        args, dropped = _drop_extra(schema, call.args, f"actions[{i}].{call.tool}", False)
+        args, dropped = _drop_extra(schema, call.args, f"actions[{i}].{call.tool}", _extra_args_droppable(call))
         actions.append(replace(call, args=MappingProxyType(args)) if dropped else call)
         notes += dropped
     if not notes:
@@ -757,7 +776,12 @@ def _check_speech(text: Optional[str], limit: int, where: str) -> None:
         return
     if len(text) > limit:
         raise _Bad("too_long", f"{where}: {len(text)} > {limit}")
-    if any(unicodedata.category(c) == "Cc" and c != "\n" for c in text):
+    _check_chars(text, where)
+
+
+def _check_chars(text: Optional[str], where: str) -> None:
+    """В тексте нет управляющих символов (перевод строки — можно)."""
+    if text is not None and any(unicodedata.category(c) == "Cc" and c != "\n" for c in text):
         raise _Bad("control_chars", where)
 
 
@@ -766,7 +790,7 @@ def _check_spoken(text: Optional[str], where: str) -> None:
     и просим о ``SPEECH_MAX_CHARS``; длиннее — своё нарушение ``VIOLATION_SPEECH_TOO_LONG``, не ``too_long``."""
     if text is not None and len(text) > kn.SPEECH_ACCEPT_MAX_CHARS:
         raise _Bad(kn.VIOLATION_SPEECH_TOO_LONG, f"{where} {len(text)} > {kn.SPEECH_ACCEPT_MAX_CHARS}")
-    _check_speech(text, kn.SPEECH_ACCEPT_MAX_CHARS, where)
+    _check_chars(text, where)
 
 
 def overlong_only(result: Result) -> bool:
@@ -779,14 +803,22 @@ def fit_speech(cmd: Command) -> Command:
     """Последний запас (#4137, решение Шифу 28.10): речь человеку (``speech``, ``ask.text``) длиннее
     ``SPEECH_ACCEPT_MAX_CHARS`` и после хода компактнее — первые целые предложения, пока влезают; первое само длиннее —
     по слову. Режет тот же код, что сегменты выступления (``plan.segments.cut``: строки и предложения, слово неделимо),
-    второго знания о границах предложения нет; хвостовая запятая или тире обрыва по слову не звучат. Не длиннее — как
-    есть."""
-    from rob_box_dialog.plan.segments import cut  # noqa: PLC0415 — plan.segments сам импортирует command
+    второго знания о границах предложения нет; хвостовая запятая или тире обрыва по слову не звучат. Оборванное
+    посреди предложения (перечень голосов, #3883: «…Голос38» звучал как полный) кончает пометка каталога
+    ``knowledge.SPEECH_CUT_PHRASE`` («и так далее.»), она входит в предел. Целые предложения - без пометки. Не длиннее —
+    как есть."""
+    from rob_box_dialog.plan.segments import cut, ends_sentence  # noqa: PLC0415 — plan.segments сам импортирует command
 
     limit = kn.SPEECH_ACCEPT_MAX_CHARS
 
     def fit(text: Optional[str]) -> Optional[str]:
-        return cut(text, limit)[0].rstrip(" ,;:—–-") if text is not None and len(text) > limit else text
+        if text is None or len(text) <= limit:
+            return text
+        head = cut(text, limit)[0]
+        if ends_sentence(head):
+            return head
+        mark = phrases.text(kn.SPEECH_CUT_PHRASE)
+        return f"{cut(text, limit - len(mark) - 1)[0].rstrip(' ,;:—–-')} {mark}"
 
     ask = None if cmd.ask is None else replace(cmd.ask, text=fit(cmd.ask.text))
     return replace(cmd, speech=fit(cmd.speech), ask=ask)
@@ -913,17 +945,26 @@ def _check_when(when: str, busy: Busy) -> None:
             raise _Bad("now_vs_uninterruptible", ", ".join(hard))
 
 
-def _expression_ok(expr: Expression) -> Tuple[Expression, bool]:
-    """Проверенная экспрессия и флаг «сцена лица отброшена». Чужая эмоция/жест/earcon — команда невалидна."""
-    if expr.emotion not in kn.EMOTIONS:
-        raise _Bad("bad_enum", f"emotion={expr.emotion}", tuple(kn.EMOTIONS))
-    if expr.gesture is not None and expr.gesture not in kn.GESTURES:
-        raise _Bad("bad_enum", f"gesture={expr.gesture}", kn.GESTURES)
-    if expr.earcon is not None and expr.earcon not in kn.EARCONS:
-        raise _Bad("bad_enum", f"earcon={expr.earcon}", kn.EARCONS)
-    if expr.face is None or _face_ok(expr.face):
-        return expr, False
-    return replace(expr, face=None), True
+#: Перечни полей экспрессии с enum (имя поля -> допустимое): значение не из перечня - нарушение ``bad_enum``, кроме
+#: полей ``knowledge.DROPPABLE.expression`` (#4138): те выбрасываются.
+_EXPRESSION_ENUMS: Mapping[str, Collection[str]] = MappingProxyType(
+    {"emotion": kn.EMOTIONS, "gesture": kn.GESTURES, "earcon": kn.EARCONS})
+
+
+def _expression_ok(expr: Expression) -> Tuple[Expression, Tuple[str, ...]]:
+    """Проверенная экспрессия и имена отброшенных полей. Чужая эмоция/жест - команда невалидна; чужой earcon (``none``,
+    n904 #4138: «покажи, как тебе грустно» отвергнута целиком) и невалидная сцена лица (§5.5.9) - поле выбрасывается."""
+    dropped: List[str] = []
+    for name, allowed in _EXPRESSION_ENUMS.items():
+        value = getattr(expr, name)
+        if value is None or value in allowed:
+            continue
+        if name not in kn.DROPPABLE.expression:
+            raise _Bad("bad_enum", f"{name}={value}", tuple(allowed))
+        expr, dropped = replace(expr, **{name: None}), [*dropped, name]
+    if expr.face is not None and not _face_ok(expr.face):
+        expr, dropped = replace(expr, face=None), [*dropped, "face"]
+    return expr, tuple(dropped)
 
 
 def _face_ok(face: Any) -> bool:
@@ -931,13 +972,17 @@ def _face_ok(face: Any) -> bool:
     return face_problem(face) == ""
 
 
-def _drop_bad_faces(cmd: Command) -> Command:
-    expression, dropped = _expression_ok(cmd.expression)
-    notes = ["expression.face"] if dropped else []
+def _drop_bad_expression(cmd: Command) -> Command:
+    """Экспрессия команды и экспрессии сегментов выступления без отброшенных полей (:func:`_expression_ok`); отброшенное
+    - в ``dropped`` (лог ``fields_dropped``): ``expression.face``, ``expression.earcon``,
+    ``perform.expression_per_segment[i].face``."""
+    expression, gone = _expression_ok(cmd.expression)
+    notes = [f"expression.{name}" for name in gone]
     perf = cmd.perform
     if perf is not None and perf.expression_per_segment is not None:
         checked = [_expression_ok(e) for e in perf.expression_per_segment]
-        notes += [f"perform.expression_per_segment[{i}].face" for i, (_, d) in enumerate(checked) if d]
+        notes += [f"perform.expression_per_segment[{i}].{name}"
+                  for i, (_, names) in enumerate(checked) for name in names]
         perf = replace(perf, expression_per_segment=tuple(e for e, _ in checked))
     return replace(cmd, expression=expression, perform=perf, dropped=cmd.dropped + tuple(notes))
 

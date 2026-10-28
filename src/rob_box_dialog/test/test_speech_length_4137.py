@@ -1,11 +1,13 @@
 """Длина речи человеку (#4137, решение Шифу 28.10; n907): модель просим о ``SPEECH_MAX_CHARS`` (280), речь проверяем
 по ``SPEECH_ACCEPT_MAX_CHARS`` (350). Длиннее - своё нарушение ``VIOLATION_SPEECH_TOO_LONG`` (мост даёт ход
-компактнее), последний запас - :func:`command.fit_speech`: целые предложения с начала, пока влезают."""
+компактнее), последний запас - :func:`command.fit_speech`: целые предложения с начала, пока влезают; оборванное
+посреди предложения кончает пометка каталога ``command.speech_cut`` (хвост ревью #4143)."""
 
 from __future__ import annotations
 
 from rob_box_dialog import command as cm
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_dialog.command import Command, Invalid, parse, validate
 
 TOOLS = ("memory_save", "play_sound", "set_volume")
@@ -41,6 +43,16 @@ def test_speech_and_ask_longer_than_check_are_their_own_violation_not_too_long()
         assert cm.overlong_only(res)
 
 
+def test_spoken_text_has_one_length_violation_and_keeps_the_control_chars_rule():
+    """Проверка речи не имеет второй, недостижимой ветки ``too_long``: длину судит только ``speech_too_long``, а
+    управляющие символы - своё нарушение (ревью #4143)."""
+    for raw in ({"speech": N907 + TAIL}, {"ask": {"expects": "free", "text": N907 + TAIL}}):
+        assert [v.reason for v in _check(raw).all] == [kn.VIOLATION_SPEECH_TOO_LONG]
+    assert _check({"speech": "Привет\x07"}).reason == "control_chars"
+    assert _check({"ask": {"expects": "free", "text": "Привет\x07"}}).reason == "control_chars"
+    assert _check({"speech": "Строка один.\nСтрока два."}).speech == "Строка один.\nСтрока два."
+
+
 def test_overlong_with_another_violation_is_not_overlong_only():
     res = _check({"speech": N907 + TAIL, "voice": "z" * (kn.VOICE_MAX_CHARS + 1)})
     assert isinstance(res, Invalid) and not cm.overlong_only(res)
@@ -62,11 +74,38 @@ def test_fit_keeps_whole_sentences_from_the_start_while_they_fit():
     assert isinstance(validate(fitted, TOOLS), Command)
 
 
-def test_fit_cuts_one_sentence_longer_than_check_at_a_word_without_a_dangling_comma():
-    one = "Я знаю голоса " + ", ".join(f"голос{n}" for n in range(80)) + "."
-    fitted = cm.fit_speech(Command(speech=one)).speech
-    assert len(fitted) <= kn.SPEECH_ACCEPT_MAX_CHARS and one.startswith(fitted) and not fitted.endswith(",")
-    assert fitted.split()[-1] in one.split() or f"{fitted.split()[-1]}," in one.split()
+ONE_SENTENCE = "Я знаю голоса " + ", ".join(f"голос{n}" for n in range(80)) + "."
+CUT_MARK = phrases.text(kn.SPEECH_CUT_PHRASE)
+
+
+def test_fit_cuts_one_sentence_longer_than_check_at_a_word_and_marks_the_cut():
+    """Хвост ревью #4143: перечень голосов («…Голос38») обрезался по слову и звучал как полный. Теперь обрыв посреди
+    предложения кончает пометка каталога, она входит в предел; запятая обрыва не звучит."""
+    fitted = cm.fit_speech(Command(speech=ONE_SENTENCE)).speech
+    head = fitted[:-len(CUT_MARK)].rstrip()
+    assert fitted.endswith(f" {CUT_MARK}") and len(fitted) <= kn.SPEECH_ACCEPT_MAX_CHARS
+    assert ONE_SENTENCE.startswith(head) and not head.endswith(",")
+    assert head.split()[-1] in ONE_SENTENCE.split() or f"{head.split()[-1]}," in ONE_SENTENCE.split()
+    assert isinstance(validate(parse({"speech": fitted}), TOOLS), Command)  # мост перепроверяет ужатое
+
+
+def test_fit_keeps_the_longest_possible_head_when_it_marks_the_cut():
+    fitted = cm.fit_speech(Command(speech=ONE_SENTENCE)).speech
+    head = fitted[:-len(CUT_MARK)].rstrip()
+    next_word = ONE_SENTENCE[len(head):].lstrip(", ").split(" ")[0]
+    assert len(f"{head}, {next_word} {CUT_MARK}") > kn.SPEECH_ACCEPT_MAX_CHARS, "следующее слово уже не влезало"
+
+
+def test_fit_marks_ask_text_cut_mid_sentence_too_but_not_whole_sentences():
+    asked = cm.fit_speech(Command(ask=cm.Ask(expects="free", text=ONE_SENTENCE)))
+    assert asked.ask.text.endswith(CUT_MARK) and asked.ask.expects == "free"
+    whole = cm.fit_speech(Command(speech=N907 + TAIL)).speech
+    assert whole == N907 and CUT_MARK not in whole, "целые предложения - без пометки: они не оборваны"
+
+
+def test_fit_cut_mark_is_one_phrase_from_the_catalog():
+    assert kn.SPEECH_CUT_PHRASE in kn.PHRASE_KEYS and kn.SPEECH_CUT_PHRASE in phrases.catalog()
+    assert len(CUT_MARK) < kn.SPEECH_MAX_CHARS // 4, "пометка короткая"
 
 
 def test_fit_touches_only_overlong_speech_and_ask_text():

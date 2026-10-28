@@ -295,10 +295,98 @@ def test_phrase_from_during_the_reply_delivered_after_it_is_not_dropped(node_mod
     assert node.publish_result.call_args.args[0] == "да давай"
 
 
-def test_short_blip_while_robot_speaks_never_reaches_stt(node_modules):
+@pytest.mark.parametrize("blip", ["робот", "щелчок", None])
+def test_short_blip_while_robot_speaks_is_recognized_but_never_published(node_modules, blip):
+    """< 0,8 с при звучащей речи: щелчок и эхо до диалога не доходят, как и раньше, но решает текст, а не длина."""
     clock = Clock()
-    node = _pipeline(node_modules[1], clock, "робот")
+    node = _pipeline(node_modules[1], clock, blip)
     _say(node, SpeechEvent.KIND_STARTED)
     _phrase(node, clock, at=1.0, seconds=0.5)
-    node._recognize_with_fallback.assert_not_called()
+    node._recognize_with_fallback.assert_called_once()
     node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()  # молча, без «не расслышал» (петля #989)
+
+
+def test_short_stop_while_robot_speaks_reaches_the_dialog(node_modules):
+    """Ревью #4122: «Робот, стоп» короче 0,8 с при звучащей речи раньше выбрасывалось до STT (DROP_SHORT)."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "робот стоп")
+    _say(node, SpeechEvent.KIND_STARTED)
+    _phrase(node, clock, at=1.0, seconds=0.5)
+    node._recognize_with_fallback.assert_called_once()
+    assert node.publish_result.call_args.args[0] == "робот стоп"
+
+
+# --- промежуточные результаты STT идут в диалог только через окно (ревью #4122) ----------------------------------------
+
+
+def _offers(node):
+    """Реальный ``InterruptOffer`` ноды; ``sent`` - тексты, ушедшие в ``/dialog/interrupt_request``."""
+    from rob_box_voice.core.interrupt_request import InterruptOffer
+
+    sent = []
+    node._interrupts = InterruptOffer(
+        lambda msg: sent.append(msg.text_partial),
+        lambda: types.SimpleNamespace(stamp=types.SimpleNamespace(sec=0, nanosec=0)),
+        lambda: WAKE,
+        lambda: None,
+    )
+    node._active_utterance_id = "u1"
+    return sent
+
+
+def _partials(node, *texts):
+    """STT, у которого Yandex присылает промежуточные результаты ``texts`` (и финал - последний из них)."""
+
+    def recognize(_audio):
+        for text in texts:
+            node._offer_interrupt(text)
+        return texts[-1], []
+
+    node._recognize_with_fallback = MagicMock(side_effect=recognize)
+
+
+def _echo_in_the_window(node, clock):
+    for at, step in (
+        (0.0, lambda: _say(node, SpeechEvent.KIND_STARTED)),
+        (5.0, lambda: _say(node, SpeechEvent.KIND_FINISHED)),
+        (5.2, lambda: _vad(node, True)),
+        (5.6, lambda: _vad(node, False)),
+    ):
+        clock.t = 5000.0 + at
+        step()
+
+
+def test_partials_of_echo_with_a_wake_word_do_not_interrupt_the_speech(node_modules):
+    """Голос только в эхо-окне, в хвосте реплики есть «робот»: partial «робот расскажи…» раньше уходил в
+    ``/dialog/interrupt_request`` до проверки окна; теперь - ни partial, ни финал, пока фраза не ясный стоп."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "")
+    sent = _offers(node)
+    _partials(node, "робот", "робот расскажи", "робот расскажи дальше")
+    _echo_in_the_window(node, clock)
+    _phrase(node, clock, at=8.6, seconds=3.4)
+    assert sent == []
+    node.publish_result.assert_not_called()
+
+
+def test_partial_clear_stop_from_the_window_phrase_interrupts(node_modules):
+    """Тот же путь, но человек сказал стоп в паузе: слова без стопа молчат, ясный стоп с вейком уходит сразу."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "")
+    sent = _offers(node)
+    _partials(node, "робот", "робот хватит", "робот хватит замолчи")
+    _echo_in_the_window(node, clock)
+    _phrase(node, clock, at=8.6, seconds=3.4)
+    assert sent == ["робот хватит", "робот хватит замолчи"]
+    assert node.publish_result.call_args.args[0] == "робот хватит замолчи"
+
+
+def test_partials_of_a_phrase_that_the_window_passes_are_offered_as_before(node_modules):
+    """Окно фразу пропускает (робот молчит давно): partial с вейком уходит в диалог сразу, как до правки."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "")
+    sent = _offers(node)
+    _partials(node, "робот", "робот расскажи", "робот расскажи сказку")
+    _phrase(node, clock, at=30.0, seconds=3.0)
+    assert sent == ["робот", "робот расскажи", "робот расскажи сказку"]

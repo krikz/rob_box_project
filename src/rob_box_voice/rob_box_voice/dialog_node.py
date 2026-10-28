@@ -371,7 +371,8 @@ class DialogNode(Node):
                                   voices=functools.partial(tts_voices, self),  # реестр имён Tier-1 «голос <имя>» (#4086)
                                   turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в журнал смены
                                   events=self._open_events(), log=_RosLog(self.get_logger()),
-                                  sing=build_sing(self, self._reporter.all_states))  # путь пения до модели (#4079)
+                                  sing=build_sing(self, self._reporter.all_states),  # путь пения до модели (#4079)
+                                  phrase_voice=self._speakers.resolve)  # голос фразы по её id (#4141)
         self._ports.on_late = functools.partial(late_outcome, self._engine,
                                                 functools.partial(say_late, self._engine))  # поздний итог (#3960)
         self._subscribe()
@@ -462,7 +463,8 @@ class DialogNode(Node):
         self._turn_memory = (profiled_person(speaker), section)
 
     def _on_speaker(self, msg: Any) -> None:
-        """Биометрия фразы: реестр по ``utterance_id`` и собеседник сессии (имя — только при ``confirmed``)."""
+        """Биометрия фразы: реестр по ``utterance_id`` и собеседник сессии (имя — только при ``confirmed``; фраза без
+        оценки биометрии, ``inconclusive``, собеседника не сбрасывает — решает ``speaker_ref``, #2863/#4141)."""
         data = speaker_result_to_payload(msg)
         if data.get("event"):
             return
@@ -605,6 +607,10 @@ class RosLogHandler(logging.Handler):
     вызывались, - ``Executor`` пишет в ``logging.getLogger(__name__)``, а у python logging без обработчика уровня INFO
     нет (только WARNING и выше, через ``lastResort``). Передавать ``log=`` каждому модулю по отдельности - значит терять
     строки тех, кому его забыли дать (``turn.py``, ``plan.rap_pauses``); обработчик на логгер пакета берёт их все.
+
+    Запись принадлежит логгеру ROS, а не корневому обработчику python (28.10: строка ``📨 [execute] …`` шла в лог дважды -
+    через этот обработчик и второй раз через корневой с префиксом ``[… - rob_box_dialog.execute:228 - INFO]``):
+    ``attach`` ставит логгеру пакета ``propagate=False``, ``close`` возвращает прежнее значение.
     """
 
     def __init__(self, ros_logger: Any, package: str = DIALOG_LOGGER) -> None:
@@ -612,6 +618,7 @@ class RosLogHandler(logging.Handler):
         self._ros = ros_logger
         self._package = logging.getLogger(package)
         self._was_level = self._package.level
+        self._was_propagate = self._package.propagate
 
     @classmethod
     def attach(cls, ros_logger: Any, package: str = DIALOG_LOGGER) -> "RosLogHandler":
@@ -621,6 +628,7 @@ class RosLogHandler(logging.Handler):
         handler = cls(ros_logger, package)
         handler._package.addHandler(handler)
         handler._package.setLevel(logging.INFO)
+        handler._package.propagate = False  # строка уже в логе ROS: корневой обработчик python её не дублирует
         return handler
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -638,10 +646,11 @@ class RosLogHandler(logging.Handler):
             self.handleError(record)
 
     def close(self) -> None:
-        """Отвязать от логгера пакета и вернуть ему прежний уровень (повторно безопасно)."""
+        """Отвязать от логгера пакета и вернуть ему прежние уровень и ``propagate`` (повторно безопасно)."""
         if self in self._package.handlers:
             self._package.removeHandler(self)
             self._package.setLevel(self._was_level)
+            self._package.propagate = self._was_propagate
         super().close()
 
 

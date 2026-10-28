@@ -324,17 +324,22 @@ def test_3883_long_answer_is_retried_into_a_short_one(make_env):
     report = env.run(VOICES)
     assert report.verdict == dm.PASS, report.fail
     assert report.llm_calls == 2
-    assert any("retry=1" in line and "too_long" in line for line in report.log.splitlines())
+    assert any("retry=1" in line and f"violations=['{kn.VIOLATION_SPEECH_TOO_LONG}']" in line
+               for line in report.log.splitlines())
 
 
 def test_4137_long_answer_that_stays_long_is_trimmed_by_code_not_a_stub(make_env):
     """Решение Шифу 28.10 (#4137): длинно и после хода компактнее - не падать и не заглушка, речь ужимает код
-    (обрыв по слову: у перечня одно предложение длиннее предела, хвостовая запятая не звучит)."""
+    (обрыв по слову: у перечня одно предложение длиннее предела, хвостовая запятая не звучит; обрыв посреди
+    предложения кончает пометка «и так далее» - перечень не звучит как полный, хвост ревью #4143)."""
     env = make_env(lambda env, msgs, tools: {"speech": LONG})
     report = env.run(VOICES)
     assert report.llm_calls == 2  # ответ и один ход компактнее; общий повтор на длину не тратится
     (said,) = report.said
-    assert len(said) <= kn.SPEECH_ACCEPT_MAX_CHARS and LONG.startswith(said) and not said.endswith(",")
+    mark = phrases.text(kn.SPEECH_CUT_PHRASE)
+    head = said[:-len(mark)].rstrip()
+    assert said.endswith(f" {mark}") and len(said) <= kn.SPEECH_ACCEPT_MAX_CHARS
+    assert LONG.startswith(head) and not head.endswith(",")
     assert said != phrases.text(kn.INVALID_COMMAND_PHRASES["too_long"])
     assert "прошу компактнее" in report.log and "ужата кодом" in report.log
 
@@ -385,7 +390,8 @@ def test_3883_long_speech_after_query_gets_honest_hint_and_turn_speaks(make_env)
     assert report.verdict == dm.PASS, report.fail
     assert report.said and "Назвать какие-нибудь" in report.said[-1]
     assert not any("speech_with_actions" in line for line in report.log.splitlines())
-    assert any("retry=1" in line and "too_long" in line for line in report.log.splitlines())
+    assert any("retry=1" in line and f"violations=['{kn.VIOLATION_SPEECH_TOO_LONG}']" in line
+               for line in report.log.splitlines())
 
 
 def test_3883_no_words_after_retry_code_says_summary_not_silence(make_env):
@@ -490,6 +496,41 @@ def test_4137_compact_turn_happens_even_when_the_retry_went_to_another_violation
     assert any(f"retry=2 violations=['{kn.VIOLATION_SPEECH_TOO_LONG}'] → verdict=speech" in line for line in lines)
 
 
+# ── #4138 (n904, 28.10): косметика не отвергает команду целиком ───────────────────────────────────────────────────
+
+
+SHOW_SAD = "Робот, покажи, как тебе грустно"
+
+
+def _show_sad(expression=None, args=None):
+    """«Модель» показывает грусть: ``play_animation sad`` + экспрессия; ``expression``/``args`` - косметика поверх."""
+    cmd = {"expression": {"emotion": "sad", **(expression or {})},
+           "actions": [{"tool": "play_animation", "args": {"animation": "sad", **(args or {})}}]}
+    return lambda env, msgs, tools: cmd
+
+
+@pytest.mark.parametrize("mistake,dropped", [
+    ({"expression": {"earcon": "none"}}, "expression.earcon"),
+    ({"args": {"animated": True}}, "actions[0].play_animation.animated"),
+], ids=["n904_first_earcon_none", "n904_retry_extra_animated"])
+def test_4138_cosmetic_mistake_does_not_reject_the_show_command(make_env, mistake, dropped):
+    env = make_env(_show_sad(**mistake))
+    heard = env.hear(SHOW_SAD)
+    assert heard.tools == ["play_animation"], "анимация исполнена"
+    assert phrases.text(kn.INVALID_COMMAND_PHRASE) not in heard.said, "заглушки «Не понял, как это сделать» нет"
+    assert not any("retry=" in line for line in heard.log.splitlines()), "повтор не понадобился"
+    assert any(f"fields_dropped=['{dropped}']" in line for line in heard.log.splitlines())
+
+
+def test_4138_regression_table_without_cosmetics_makes_the_same_step_say_the_stub(make_env, monkeypatch):
+    """Откат: пустая таблица ``DROPPABLE`` - как до карточки; ответ n904 с лишним ``animated`` отвергнут целиком
+    (допустимых действий нет), анимации нет, звучит заглушка «Не понял, как это сделать»."""
+    monkeypatch.setattr(kn, "DROPPABLE", kn.Droppable(expression=(), tool_args={}))
+    env = make_env(_show_sad(args={"animated": True}))
+    heard = env.hear(SHOW_SAD)
+    assert heard.tools == [] and phrases.text(kn.INVALID_COMMAND_PHRASE) in heard.said
+
+
 # ── #3894: фоновая фраза того же собеседника в снимке адресованного хода ──────────────────────────────────────────
 
 
@@ -575,13 +616,14 @@ def test_budget_stops_before_the_step_that_would_overshoot(make_env):
     assert report.verdict == dm.NOT_RUN and env.inner.calls == []
 
 
-def test_voice_owner_speaks_the_outcome_itself_and_the_log_line_is_checkable(make_env):
-    """Смену голоса озвучивает сам тул (``OUTCOME_SPOKEN_ELSEWHERE``): ход не молчит, строка ``[set_voice]`` в логе."""
+def test_voice_outcome_is_said_once_by_the_dialog_and_the_log_line_is_checkable(make_env):
+    """Тул смены голоса молчит, исход говорит диалог по его данным (``knowledge.VOICE_DONE``): ход не молчит и не
+    говорит дважды, строка ``[set_voice]`` в логе."""
     args = {"actions": [{"tool": "set_voice", "args": {"voice": "alena", "provider": "yandex"}}]}
     env = make_env(lambda env, msgs, tools: args)
     report = env.run(step("n403", "Робот, говори голосом Алёны.", expect_tools=["set_voice"], voice_changed=True))
     assert report.verdict == dm.PASS, report.fail
-    assert report.said == ["Говорю голосом alena."]
+    assert report.said == ["Говорю голосом Алёна."]
     assert "[set_voice] voice='alena' provider=yandex" in report.log and env.stand.voice_provider == "yandex"
 
 
@@ -600,7 +642,7 @@ def test_cast_voice_named_by_catalog_name_is_applied_by_id_like_the_owner_does(m
     heard = env.hear("Робот, говори голосом Весельчак.")
     assert heard.outcomes == [("set_voice", "done", None)]
     assert env.stand.voice_provider == "minimax" and env.stand.session.snapshot.voice.applied == "English_Jovialman"
-    assert "English_Jovialman" in heard.said[0]
+    assert "Весельчак" in heard.said[0] and "English_Jovialman" not in heard.said[0]
 
 
 def test_expect_backlog_step_fails_when_the_phrase_is_addressed(make_env):

@@ -58,7 +58,7 @@ def test_no_event_until_class_deadline_is_honest_timeout(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         [res] = _run(ex.run([ToolCall("set_voice", {"voice": "alena"})], SNAP, "t2"))
     assert res.status == "timeout"
-    assert respond.phrase_from_result(res).text == "Не дождался подтверждения — не знаю, вышло ли."
+    assert respond.phrase_from_result(res).text == "Не дождался подтверждения смены голоса, не знаю, какой сейчас."
     assert "нет события" in caplog.text
 
 

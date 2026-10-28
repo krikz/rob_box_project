@@ -53,6 +53,7 @@ def test_default_when_already_default_is_honest_noop(mock_node, monkeypatch):
     result = SetVoiceTool(mock_node).execute(voice="default")
     assert owner.calls == []
     assert result.success is True and result.data["status"] == "already_default"
+    assert result.data["voice_default"] is True  # диалог скажет «Я и так говорю своим обычным голосом.» (VOICE_DONE)
     assert "и так" in result.message
 
 

@@ -36,6 +36,20 @@ def test_offer_ignores_phrases_without_wake_word_on_word_boundaries():
     assert sent == []
 
 
+def test_offer_waits_for_the_echo_window_to_pass_the_phrase():
+    """Ревью #4122: partial с вейком из фразы, которую окно пускает только как стоп, запроса не шлёт, пока текст не стал
+    ясным стопом; фраза, пропущенная окном целиком (или без окна), - как раньше."""
+    from rob_box_voice.core import echo_window as ew
+
+    offer, sent = _offer()
+    window_only_stop = ew.Admission(ew.STOP_ONLY)
+    assert not offer.offer("робот расскажи", "u1", window_only_stop)
+    assert not offer.offer("робот", "u1", window_only_stop)
+    assert offer.offer("робот хватит", "u1", window_only_stop)
+    assert offer.offer("робот расскажи", "u2", ew.OPEN) and offer.offer("робот стоп", "u3", None)
+    assert [m.text_partial for m in sent] == ["робот хватит", "робот расскажи", "робот стоп"]
+
+
 def test_offer_unknown_direction_is_nan():
     offer, sent = _offer(doa=None)
     offer.offer("Робот, стоп", "")

@@ -132,10 +132,11 @@ class Maker:
 SOURCES = (("pdmx:theme", "M-theme"), ("pdmx:main", "M-main"), ("pdmx:bells", "M-bells"), ("rtttl:user_st", "M-hook"))
 
 
-def test_turn_sources_rotate_and_keep_the_rest_as_retries():
+def test_turn_sources_rotate_scores_and_keep_the_rest_as_retries():
+    """Вращаются партитуры; RTTTL хука - всегда запас в хвосте (ревью #4119: четвёртая задача не начинает с хука)."""
     assert gs.turn_sources(SOURCES, 0) == SOURCES
-    assert [s for s, _t in gs.turn_sources(SOURCES, 1)] == ["pdmx:main", "pdmx:bells", "rtttl:user_st", "pdmx:theme"]
-    assert gs.turn_sources(SOURCES, 4) == SOURCES and gs.turn_sources((), 3) == ()
+    assert [s for s, _t in gs.turn_sources(SOURCES, 1)] == ["pdmx:main", "pdmx:bells", "pdmx:theme", "rtttl:user_st"]
+    assert gs.turn_sources(SOURCES, 3) == SOURCES and gs.turn_sources((), 3) == ()
 
 
 def test_one_piece_set_gives_each_task_another_source_and_neighbours_differ(tmp_path, caplog):
