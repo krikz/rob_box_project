@@ -214,6 +214,7 @@ class _Turn:
     queried: Tuple[ActionResult, ...] = ()  # исходы выполненного в этом ходе query (для страховки от молчания, #3883)
     waiting: str = "llm"  # чего ждёт ход: ответа LLM или события владельца (класс действия) — фразы В31
     retried: int = 0  # повторы модели за ответ не тот (``VIOLATION_SILENT_ANSWER`` #3995, ``…_REMOTE_OWED`` #4142)
+    pushed: int = 0  # повторы за словами на последней итерации (``SPEECH_PUSHES_MAX``, #4157)
     expression: Optional[Expression] = None  # экспрессия исполненной команды — красит рефлекс ``done`` (#3997)
     command: str = ""  # запасной разбор Tier-1 (:func:`tier1_of`): слова после вейка (``Addressed.command``, n811)
     acted: Tuple[ToolCall, ...] = ()  # исполненные в ходе вызовы (не ``query``): повтор не исполняется (#4069 п.1)
@@ -827,9 +828,9 @@ def _offered(tools: Sequence[Any], last: bool) -> Tuple[Any, ...]:
 def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot) -> Form:
     """Форма вызова модели одной итерации (#4157, ADR-0148 п.2: валидатор с понятной ошибкой, а не правило в промпте).
     Последняя итерация после выполненного запроса: данные у модели, читать больше нечем (:func:`_offered` убрал
-    query-тулы), а ход повторить вызов уже не может (:func:`_answer_owed` повторяет только не на последней) - ответ без
-    слов нарушает ``VIOLATION_SPEECH_REQUIRED``, и повтор с подсказкой даёт мост в том же запросе (живой 28.10 13:40:
-    «скажи обо мне пять фактов» - два поиска по памяти, а ответ последнего вызова - одно лицо; марафон-2 n109, n908).
+    query-тулы) - ответ без слов нарушает ``VIOLATION_SPEECH_REQUIRED``, и ход даёт модели повторы за словами
+    (:func:`_push_for_words`; живой 28.10 13:40: «скажи обо мне пять фактов» - два поиска по памяти, а ответ
+    последнего вызова - одно лицо; марафон-2 n109, n908).
     Слов ждут те же, кому их должен :func:`words_owed`: агент говорит в динамики, реплика адресована и не в тишине
     (:func:`voices_passed`: из бэклога честное молчание открыто), лицо без слов человек не просил
     (``tools_view.show_asked``). Путь пения решён кодом (``perform`` или тул пути обязательны) - не трогаем."""
@@ -845,6 +846,40 @@ async def _ask_iteration(engine: "TurnEngine", turn: _Turn, messages: Sequence[A
     turn.waiting = "llm"
     with turn_form(answer_form(current_form(), turn, last, engine.session.snapshot)):
         return await turn.deadline.wait(engine._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
+
+
+def _push_for_words(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
+    """Последняя итерация после запроса, а модель без слов (``VIOLATION_SPEECH_REQUIRED``; решение Шифу 28.10 по PR
+    #4190: «модель не должна молчать… пнуть модель»): данные хода уже в её окне - ещё один вызов с подсказкой нарушения
+    (``command.HINTS``: ответь словами по этим данным, коротко), не больше ``SPEECH_PUSHES_MAX`` на ход и только если до
+    потолка хода осталось ``SPEECH_PUSH_MIN_LEFT_S``. Повторов нет (лимит, время, форма итерации слов не ждёт) -
+    ``None``: тогда говорит код по данным (:func:`query_fallback`) как последняя страховка."""
+    owed = answer_form(current_form(), turn, True, engine.session.snapshot).speech_required
+    if not owed or turn.pushed >= kn.SPEECH_PUSHES_MAX or turn.deadline.left() < kn.SPEECH_PUSH_MIN_LEFT_S:
+        return None
+    turn.pushed += 1
+    engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: последняя итерация без слов → повтор за словами "
+                        f"{turn.pushed}/{kn.SPEECH_PUSHES_MAX} (осталось {turn.deadline.left():.1f} с) "
+                        f"turn={turn.turn_id}")
+    return explain(Invalid(kn.VIOLATION_SPEECH_REQUIRED), after_query=True)
+
+
+#: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
+#: от валидатора моста (форма итерации) и от хода (голый ответ, когда мост команду не судит).
+_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SILENT_ANSWER)
+
+
+def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:
+    """Последняя итерация, а ответ без слов (:data:`_WORDS_MISSED`): подсказка повтора за словами
+    (:func:`_push_for_words`) или ``None`` - повторов больше нет. Модель молчала и после повторов - строка нарушения
+    в лог (страховка кода по данным видна в марафоне)."""
+    if reason not in _WORDS_MISSED:
+        return None
+    more = _push_for_words(engine, turn)
+    if more is None and turn.pushed:
+        engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: без слов и после {turn.pushed} повторов → "
+                            f"страховка: фраза кода по данным turn={turn.turn_id}")
+    return more
 
 
 def _close_unread(turn: _Turn, acted: bool) -> str:
@@ -1042,6 +1077,9 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     ``expression`` - лицо команды, исполняемой после нарушения ``silent_answer`` (#3997): красит итог вместе с её
     действиями, если они не провалились (:func:`command_face`)."""
     log, why = engine._log, invalid.reason
+    pushed = _missed_words(engine, turn, why) if last else None
+    if pushed is not None:
+        return pushed
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
         turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
@@ -1161,9 +1199,9 @@ async def _answer_owed(engine: "TurnEngine", turn: _Turn, cmd: Command, snap: Se
         return None
     engine._log.warning(f"{LOG_MARK} {reason}: {tools} {owed.what} и после повтора → исполняем, говорит код "
                         f"turn={turn.turn_id}")
-    # лицо команды, как и её анимация, показывается — говорит код (#3997)
-    await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
-    return None
+    # лицо команды, как и её анимация, показывается — говорит код (#3997); последняя итерация после запроса - сначала
+    # повтор за словами (:func:`_push_for_words`, #4157)
+    return await _close_invalid(engine, turn, Invalid(reason, salvage=cmd.actions), snap, cmd.expression)
 
 
 def query_fallback(results: Sequence[ActionResult]) -> str:
@@ -1474,12 +1512,13 @@ class TurnEngine:
         return True
 
     async def _understand(self, turn: _Turn, snap: SessionSnapshot) -> None:
-        """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь."""
+        """Команда модели: ≤ ``LLM_QUERY_ITERATIONS_MAX`` итераций ``query``, затем действия и/или речь; последняя без
+        слов после запроса - ещё ≤ ``SPEECH_PUSHES_MAX`` вызовов за словами (:func:`_push_for_words`, #4157)."""
         self._ports.stage(turn.turn_id, turn.epoch, "thinking", "started")
         offered = available_tools(snap, None, snap.agent, turn.text, asked=tool_ask.asked_tools(self.session))
         tools = form_tools(offered, current_form(), snap.agent)
         messages: List[Any] = self._messages(turn, snap)
-        for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1):
+        for iteration in range(kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX):  # + повторы за словами
             last = iteration >= kn.LLM_QUERY_ITERATIONS_MAX
             answer = await _ask_iteration(self, turn, messages, tools, last)
             turn.llm_calls += answer.calls

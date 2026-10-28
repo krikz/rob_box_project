@@ -1,7 +1,8 @@
-"""#4157: форма последней итерации на мосту режима команд - схема требует ``speech``, ответ одним лицом получает повтор
-с подсказкой; и весь ход v2 (``TurnEngine`` → ``V2Ports`` → мост) на живом 28.10 13:40 «скажи обо мне пять фактов»:
-два чтения памяти, на последней итерации - одно лицо без слов; говорит код по данным, а не «не смог сложить в
-короткую фразу».
+"""#4157: форма последней итерации на мосту режима команд - схема прежняя, ответ одним лицом мост сразу отдаёт ходу
+(``speech_required``, без своего повтора); и весь ход v2 (``TurnEngine`` → ``V2Ports`` → мост) на живом 28.10 13:40
+«скажи обо мне пять фактов»: два чтения памяти, на последней итерации - одно лицо без слов; ход дожимает модель
+повторами за словами (решение Шифу 28.10 по PR #4190), и только если она молчит и после них - страховка: код говорит
+по данным, а не «не смог сложить в короткую фразу».
 """
 
 from __future__ import annotations
@@ -116,26 +117,9 @@ def test_a_sound_without_words_on_the_asked_form_passes_without_retry():
     assert len(inner.requests) == 1 and kn.COMMAND_INVALID_FIELD not in out.tool_calls[0].arguments
 
 
-def test_bare_face_on_the_asked_form_is_retried_with_the_hint_and_the_words_are_spoken():
-    inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),)),
-                    LLMResponse(tool_calls=(_call(speech="Помню: ты просил звать тебя Шифу."),))])
-    lines: List[str] = []
-    bridge = cb.CommandModeLLM(inner, log=lines.append)
-
-    async def run() -> LLMResponse:
-        with cm.turn_form(ASKED):
-            return await bridge.complete(_after_query(), tools=[_tool("memory_search")])
-
-    out = asyncio.run(run())
-    assert out.content == "Помню: ты просил звать тебя Шифу." and not out.tool_calls
-    note = next(m.content for m in inner.requests[1]["messages"] if m.role == "tool" and m.tool_call_id == "c1")
-    assert kn.VIOLATION_SPEECH_REQUIRED in note and "данные запроса уже получены" in note
-    assert any(f"violations=['{kn.VIOLATION_SPEECH_REQUIRED}']" in line for line in lines)
-
-
-def test_bare_face_twice_goes_to_the_turn_as_the_speech_required_violation():
-    inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),)),
-                    LLMResponse(tool_calls=(_call(expression=FACE),))])
+def test_bare_face_on_the_asked_form_goes_to_the_turn_at_once_without_a_bridge_retry():
+    """Повторы за словами даёт ход (он знает потолок хода): мост не тратит на них свой повтор."""
+    inner = _Inner([LLMResponse(tool_calls=(_call(expression=FACE),))])
     bridge = cb.CommandModeLLM(inner)
 
     async def run() -> LLMResponse:
@@ -143,7 +127,7 @@ def test_bare_face_twice_goes_to_the_turn_as_the_speech_required_violation():
             return await bridge.complete(_after_query(), tools=[_tool("memory_search")])
 
     out = asyncio.run(run())
-    assert len(inner.requests) == 2
+    assert len(inner.requests) == 1
     assert out.tool_calls[0].arguments[kn.COMMAND_INVALID_FIELD] == kn.VIOLATION_SPEECH_REQUIRED
 
 
@@ -214,19 +198,31 @@ def _live_trace(last: List[LLMResponse]) -> tuple:
     return agg, node, inner, tools
 
 
-def test_five_facts_trace_face_without_words_twice_code_names_the_facts():
-    """Лицо без слов на последней итерации: форма требовала слов, мост дал повтор с подсказкой, и после него без слов -
-    говорит код по данным результатов, а не «не смог сложить в короткую фразу»."""
-    agg, node, inner, tools = _live_trace([LLMResponse(tool_calls=(_call(expression=FACE),)),
-                                           LLMResponse(tool_calls=(_call(expression=FACE),))])
+def _pushed(request: Mapping[str, Any]) -> bool:
+    return any(kn.VIOLATION_SPEECH_REQUIRED in (m.content or "") for m in request["messages"])
+
+
+def test_five_facts_trace_face_without_words_every_time_the_insurance_names_the_facts():
+    """Лицо без слов на последней итерации и на всех повторах хода за словами: страховка - код говорит по данным
+    результатов, а не «не смог сложить в короткую фразу»."""
+    silent = [LLMResponse(tool_calls=(_call(expression=FACE),))] * (1 + kn.SPEECH_PUSHES_MAX)
+    agg, node, inner, tools = _live_trace(silent)
     assert [c[1].get("query") for c in tools.calls] == ["факт", "Денчик", "любить"]
-    assert len(inner.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 2, "последняя итерация + один повтор моста"
-    retry = [m.content for m in inner.requests[-1]["messages"] if m.role == "tool" and m.tool_call_id == "c1"]
-    assert retry and kn.VIOLATION_SPEECH_REQUIRED in retry[-1], "повтор моста - за словами"
+    assert len(inner.requests) == kn.LLM_QUERY_ITERATIONS_MAX + 1 + kn.SPEECH_PUSHES_MAX, "последняя + повторы хода"
+    assert [_pushed(r) for r in inner.requests] == [False] * (kn.LLM_QUERY_ITERATIONS_MAX + 1) + [True] * 2
     said = _said(node)
     assert len(said) == 1 and FACTS_PHRASE in said[0]
     assert not any(v in said[0] for v in phrases.catalog()[kn.QUERY_FALLBACK_GENERIC])
     assert (agg.stage, agg.status) == ("done", "done")
+
+
+def test_five_facts_trace_silent_on_the_first_push_speaks_on_the_second():
+    """Модель молчит на 1-м повторе и отвечает на 2-м - звучат её слова."""
+    agg, node, inner, _ = _live_trace([LLMResponse(tool_calls=(_call(expression=FACE),)),
+                                       LLMResponse(tool_calls=(_call(expression=FACE),)),
+                                       LLMResponse(tool_calls=(_call(speech="Ты болеешь за Спартак."),))])
+    assert _said(node) == ["<speak>Ты болеешь за Спартак.</speak>"]
+    assert (agg.stage, agg.status) == ("done", "finished")
 
 
 def test_five_facts_trace_the_retry_gets_words_and_the_model_speaks_for_itself():

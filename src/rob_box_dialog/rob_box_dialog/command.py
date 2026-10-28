@@ -183,11 +183,12 @@ class Form:
     видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была.
     ``speech_required`` — последняя итерация хода после выполненного запроса (#4157, живой 28.10 13:40: «скажи обо мне
     пять фактов» — девять результатов памяти, а ответ последнего вызова — одно лицо без слов): данные у модели, читать
-    больше нечем, а ход повторить вызов уже не может; ответ без слов — нарушение валидатора
-    ``VIOLATION_SPEECH_REQUIRED`` (:func:`_check_answered`: повтор моста с подсказкой, затем код говорит по данным,
-    ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с ``VIOLATION_SPEECH_WITH_ACTIONS``
-    - слышимое действие (звук, музыка) после запроса законно без слов, а со словами - нарушение. Ставит его ход
-    (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
+    больше нечем; ответ без слов — нарушение валидатора ``VIOLATION_SPEECH_REQUIRED`` (:func:`_check_answered`:
+    до ``SPEECH_PUSHES_MAX`` повторов хода за словами, затем страховка - код говорит по данным,
+    ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с
+    ``VIOLATION_SPEECH_WITH_ACTIONS`` - слышимое действие (звук, музыка) после запроса законно без слов, а со словами -
+    нарушение. Ставит его ход (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим
+    команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
@@ -820,8 +821,9 @@ def bare_answer(cmd: Command) -> bool:
 
 def _check_answered(cmd: Command, form: Form) -> None:
     """Последняя итерация после выполненного запроса (``Form.speech_required``, #4157): ответ без слов - одно лицо или
-    анимация - нарушение ``VIOLATION_SPEECH_REQUIRED``. Данные у модели, читать больше нечем; мост даёт ей повтор с
-    подсказкой, и повтор без слов закрывает код фразой по данным (``turn.query_answer``). Пустая команда - нарушение
+    анимация - нарушение ``VIOLATION_SPEECH_REQUIRED``. Данные у модели, читать больше нечем; ход даёт ей повторы с
+    подсказкой (:func:`words_only`, ``turn._push_for_words``), и без слов после них закрывает код фразой по данным
+    (``turn.query_answer``). Пустая команда - нарушение
     ``empty_command`` моста; слышимые действия (звук, музыка) и действия, исход которых говорит код, ответом остаются -
     слова рядом с ними были бы ``VIOLATION_SPEECH_WITH_ACTIONS``."""
     if form.speech_required and bare_answer(cmd):
@@ -854,6 +856,13 @@ def overlong_only(result: Result) -> bool:
     """Команда отвергнута только за длину речи (все нарушения — ``VIOLATION_SPEECH_TOO_LONG``): ей ход компактнее
     (``knowledge.SPEECH_COMPACT_TURNS``), затем :func:`fit_speech`, а не общий повтор и заглушка (#4137)."""
     return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_TOO_LONG for v in result.all)
+
+
+def words_only(result: Result) -> bool:
+    """Команда отвергнута только за ответ без слов на последней итерации (все нарушения —
+    ``VIOLATION_SPEECH_REQUIRED``, #4157): повтор за словами даёт ход (``turn._push_for_words``: он знает потолок
+    хода), мост такую команду отдаёт ходу сразу, без своего повтора."""
+    return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_REQUIRED for v in result.all)
 
 
 def fit_speech(cmd: Command) -> Command:
@@ -1112,9 +1121,9 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "passed_with_content": "passed — только без речи и действий",
     kn.VIOLATION_PASSED_ADDRESSED: "реплика адресована тебе — молчать нельзя, поля passed в этом ходе нет: ответь "
                                    "словами в speech (не понял — переспроси в ask)",
-    kn.VIOLATION_SPEECH_REQUIRED: f"это последний ответ хода, данные запроса уже у тебя, читать больше нечем: лицо и "
-                                  f"анимация слов не заменяют — ответь словами по этим данным в speech, не длиннее "
-                                  f"{kn.SPEECH_MAX_CHARS} символов",
+    kn.VIOLATION_SPEECH_REQUIRED: f"молчать нельзя: это последний ответ хода, данные запроса уже выше в окне, читать "
+                                  f"больше нечем; лицо и анимация слов не заменяют — ответь словами по этим данным в "
+                                  f"speech, коротко, не длиннее {kn.SPEECH_MAX_CHARS} символов",
     "bad_ask": "у ask нужен text",
     "bad_tool_call": "вызов — объект с name и arguments",
     "class_not_for_agent": "этот класс действий тебе недоступен",
