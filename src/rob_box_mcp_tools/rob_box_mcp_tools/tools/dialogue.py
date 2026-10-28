@@ -16,11 +16,10 @@ from rob_box_core import speech_client
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..owner_event import OwnerEvents, owner_events
-from rob_box_dialog import phrases
 from rob_box_dialog.knowledge import VOICE_DEFAULT_ARG
 from rob_box_dialog.words import name_key
 
-from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
+from ..voice_request import VoiceOutcome, outcome_data, resolve_speak_voice, voice_requests
 from ..animations import (
     KNOWN_ANIMATIONS,
     normalize_animation,
@@ -1261,13 +1260,11 @@ class SetVoiceTool(MCPTool):
             # «Обычный голос» - голос робота по умолчанию (#3803), а не дефолт ТЕКУЩЕГО провайдера: решает код.
             provider, voice_clean = robot_default_voice()
             if self._already_default(provider, voice_clean):
-                phrase = phrases.text("voice.already_default")
                 self.log_info(f"[set_voice] voice={voice_clean!r} provider={provider} status=already_default")
-                _say_outcome(self.node, phrase)
                 return MCPToolResult(
                     success=True,
-                    data={"status": "already_default", "voice_applied": voice_clean, "provider": provider},
-                    message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
+                    data=outcome_data(VoiceOutcome("already_default", voice_clean, voice_clean, provider)),
+                    message="Голос и так обычный: менять нечего.",
                 )
         requested_provider, prov_err = _validate_provider(provider)
         if prov_err == "provider_empty":
@@ -1298,29 +1295,27 @@ class SetVoiceTool(MCPTool):
             requested_provider and requested_provider != active_provider
         )
 
-        # Голос хранит и применяет tts_node (VoiceOwner): просим и ждём SpeechEvent voice_changed (PR-4 ч.3). Фразу об
-        # исходе («Говорю голосом X» / «Голос X недоступен, остаюсь на Y») строит код по событию, а не LLM.
+        # Голос хранит и применяет tts_node (VoiceOwner): просим и ждём SpeechEvent voice_changed (PR-4 ч.3). Тул молчит:
+        # фразу об исходе («Говорю голосом X» / «Голос X недоступен, остаюсь на Y») строит диалог по данным результата
+        # (knowledge.VOICE_DONE, ADR-0148) - одна фраза на ход, вместе с фразой сброса тона у «обычного голоса».
         outcome = voice_requests(self.node).request(voice_clean, requested_provider or "")
-        phrase = outcome_phrase(outcome)
         # Формат строки читают e2e-скрипты (voice_changed: голос != default): голос здесь - ПРИМЕНЁННЫЙ.
         shown = outcome.provider or target_provider
         self.log_info(
             f"[set_voice] voice={(outcome.applied or voice_clean)!r} provider={shown} "
             f"default={default_voice_for(shown)} switched={provider_switched} status={outcome.status}"
         )
-        _say_outcome(self.node, phrase)
         return MCPToolResult(
             success=outcome.status == "applied",
             data={
-                "status": outcome.status,
+                **outcome_data(outcome),
                 "voice_requested": voice_clean,
-                "voice_applied": outcome.applied,
                 "provider": outcome.provider or target_provider,
                 "previous_provider": active_provider if provider_switched else None,
                 "provider_switched": provider_switched,
                 "available": voices_for(outcome.provider or target_provider),
             },
-            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
+            message=_outcome_message(outcome),
         )
 
 
@@ -1425,8 +1420,9 @@ class SetTtsProviderTool(MCPTool):
             return MCPToolResult(
                 success=True,
                 data={
-                    "status": "ok",
+                    "status": "noop",
                     "provider": target_provider,
+                    "provider_label": target_provider,
                     "default_voice": default_voice_for(target_provider),
                     "provider_switched": False,
                     "noop": True,
@@ -1439,31 +1435,29 @@ class SetTtsProviderTool(MCPTool):
 
         # Провайдера переключает владелец голоса (tts_node); пустой голос = дефолт нового провайдера. Исход - событие.
         outcome = voice_requests(self.node).request("", target_provider)
-        phrase = outcome_phrase(outcome)
         self.log_info(
             f"[set_tts_provider] provider={target_provider!r} -> {outcome.status} "
             f"applied={outcome.applied!r} previous={active_provider!r}"
         )
-        _say_outcome(self.node, phrase)
         return MCPToolResult(
             success=outcome.status == "applied",
             data={
-                "status": outcome.status,
+                **outcome_data(outcome),
                 "provider": outcome.provider or target_provider,
-                "voice_applied": outcome.applied,
                 "previous_provider": active_provider,
                 "provider_switched": True,
             },
-            message=f"Робот сам сказал: «{phrase}». Заверши ход словом done.",
+            message=_outcome_message(outcome),
         )
 
 
-def _say_outcome(node, phrase: str) -> None:
-    """Озвучить фразу исхода смены голоса (новым голосом); сбой озвучки не меняет исход."""
-    try:
-        node.registry.execute("speak_text", text=phrase)
-    except Exception:  # noqa: BLE001 - озвучка best-effort, результат тула уже честный
-        pass
+def _outcome_message(outcome: VoiceOutcome) -> str:
+    """Короткий итог смены голоса для журнала вызова тула: факт без озвучки (фразу говорит диалог по данным)."""
+    if outcome.status == "applied":
+        return f"Голос {outcome.applied} ({outcome.provider}) установлен."
+    if outcome.status == "timeout":
+        return "Владелец голоса не подтвердил смену: неизвестно, какой голос сейчас."
+    return f"Голос {outcome.requested or '?'} не применён: {outcome.reason or outcome.status}."
 
 
 class ListTtsVoicesTool(MCPTool):

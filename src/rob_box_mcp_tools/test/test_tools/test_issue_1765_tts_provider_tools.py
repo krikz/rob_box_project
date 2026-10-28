@@ -133,7 +133,7 @@ def _active(mock_node, provider: str) -> None:
 
 
 class TestSetVoiceToolWithProvider:
-    """Тул ничего не хранит и не публикует голос: просит владельца и говорит исход."""
+    """Тул ничего не хранит, не публикует голос и не говорит: просит владельца и отдаёт исход данными (фразу строит диалог)."""
 
     def test_schema_includes_provider_param(self, mock_node) -> None:
         tool = SetVoiceTool(mock_node)
@@ -149,7 +149,17 @@ class TestSetVoiceToolWithProvider:
         assert result.success is True
         assert result.data["voice_applied"] == "female-shaonv"
         assert result.data["provider_switched"] is False
-        assert "Говорю голосом female-shaonv" in result.message
+        assert result.data["status"] == "applied" and result.data["voice_default"] is False
+
+    def test_voice_tools_stay_silent_the_dialog_speaks_the_outcome(self, mock_node, fake_requests) -> None:
+        """Живое 28.10: тул озвучивал исход сам (``speak_text``), а код диалога - свою фразу рядом: две реплики на ход."""
+        mock_node.registry = Mock()
+        _active(mock_node, "minimax")
+        SetVoiceTool(mock_node).execute(voice="female-shaonv")
+        SetVoiceTool(mock_node).execute(voice="default")
+        SetTtsProviderTool(mock_node).execute(provider="yandex")
+        SetTtsProviderTool(mock_node).execute(provider="minimax")
+        mock_node.registry.execute.assert_not_called()
 
     def test_cross_provider_asks_owner_with_provider(self, mock_node, fake_requests) -> None:
         _active(mock_node, "minimax")
@@ -167,7 +177,8 @@ class TestSetVoiceToolWithProvider:
         result = SetVoiceTool(mock_node).execute(voice="female-shaonv", provider="yandex")
         assert result.success is False
         assert result.data["voice_applied"] == "anton"
-        assert "Голос female-shaonv недоступен, остаюсь на anton" in result.message
+        assert (result.data["status"], result.data["reason"]) == ("fallback", "voice_unavailable")
+        assert (result.data["requested_name"], result.data["voice_name"]) == ("female-shaonv", "anton")
         assert "zahar" in result.data["available"]
 
     def test_no_confirmation_from_owner_is_honest(self, mock_node, fake_requests) -> None:
@@ -175,7 +186,8 @@ class TestSetVoiceToolWithProvider:
         fake_requests.outcome = VoiceOutcome("timeout", "zahar", "", "yandex")
         result = SetVoiceTool(mock_node).execute(voice="zahar", provider="yandex")
         assert result.success is False
-        assert "Не дождался подтверждения" in result.message
+        assert (result.data["status"], result.data["reason"]) == ("timeout", "timeout")
+        assert "voice_default" not in result.data  # применённого голоса нет - «обычный» не утверждаем
         assert "установлен" not in result.message
 
     def test_unknown_provider_returns_error_without_request(self, mock_node, fake_requests) -> None:
@@ -214,7 +226,7 @@ class TestSetTtsProviderTool:
     def test_switch_to_same_provider_is_noop_without_request(self, mock_node, fake_requests) -> None:
         _active(mock_node, "yandex")
         result = SetTtsProviderTool(mock_node).execute(provider="yandex")
-        assert result.success is True and result.data["noop"] is True
+        assert result.success is True and result.data["noop"] is True and result.data["status"] == "noop"
         assert fake_requests.calls == []
 
     def test_unknown_and_empty_provider(self, mock_node, fake_requests) -> None:

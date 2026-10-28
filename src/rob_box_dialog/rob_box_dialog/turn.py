@@ -550,15 +550,28 @@ def repeat_phrase(last_spoken: str) -> str:
     return last_spoken or phrases.text(kn.REPEAT_NOTHING_PHRASE)
 
 
+def voice_phrase(results: Sequence[ActionResult]) -> Optional[str]:
+    """Фраза смены голоса Tier-1 (``set_voice``, #4074): ОДНА реплика по результатам тулов команды (ADR-0148), тул голоса
+    сам не говорит. Обычный голос (``set_voice`` default) снимает и режим тона: голос применён (или уже обычный) и тон
+    правда менялся — «Говорю своим обычным голосом.» целиком (``knowledge.VOICE_DEFAULT_PHRASE``): «Я и так говорю…»
+    было бы неправдой, а отдельное «Тон голоса обычный.» — второй репликой об одном. Ось уже на норме (причина
+    ``VOICE_STEP_AT_LIMIT``) молчит; не вышло что-то — фразы исходов (``outcome_phrase``), и сброс тона, и голос."""
+    own = [r for r in results if r.reason != kn.VOICE_STEP_AT_LIMIT]
+    lifted = any(r.tool in kn.VOICE_DEFAULT_RESETS and r.status == "done" for r in own)
+    voice_ok = any(r.tool == "set_voice" and r.status == "done" for r in own)
+    if lifted and voice_ok:
+        return phrases.text(kn.VOICE_DEFAULT_PHRASE)
+    return outcome_phrase(own)
+
+
 def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
                  pick: Callable[[str], str] = lambda key: "", last_spoken: str = "") -> Optional[str]:
     """Фраза Tier-1: громкость — по исходу тула; сброс скорости и тона — по исходам тулов (:func:`prosody_phrase`);
     шаг голоса — по исходам тулов («Говорю ниже.», ось на границе — «Ниже уже некуда…», отказ — его фраза, #4074);
     новая сессия — вариант из каталога; очередь показа — лицом, слова только о провале (:func:`show_queue_phrase`);
     «повтори» — ``last_spoken`` дословно (последняя озвученная реплика робота, ``TurnLog.last_spoken``, #4028), а
-    повторять нечего — фраза кода ``REPEAT_NOTHING_PHRASE``; стоп и тишина молчат; голос говорит сам тул
-    (SpeechEvent), а снятый вместе с ним режим тона — код, только если тон правда менялся или сброс не вышел (ось уже
-    на норме — молчит)."""
+    повторять нечего — фраза кода ``REPEAT_NOTHING_PHRASE``; стоп и тишина молчат; смена голоса — одна фраза кода по
+    результатам тулов (:func:`voice_phrase`), тул голоса не говорит."""
     if command.kind == kn.REPEAT_KIND:
         return repeat_phrase(last_spoken)
     if command.kind == "new_session":
@@ -570,7 +583,7 @@ def tier1_phrase(command: Tier1Command, results: Sequence[ActionResult],
     if command.kind == kn.VOICE_STEP_KIND:
         return outcome_phrase(results)
     if command.kind == "set_voice":
-        return outcome_phrase([r for r in results if r.reason != kn.VOICE_STEP_AT_LIMIT])
+        return voice_phrase(results)
     if command.kind != "volume":
         return None
     prefix = "music" if command.args["channel"] == "music" else "voice"
@@ -606,9 +619,10 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
 
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
-    """Фраза кода об исходе действий хода (``respond.join``): без ``query`` и без тулов, которые говорят сами
-    (``knowledge.OUTCOME_SPOKEN_ELSEWHERE == "tool"``). Слота нет в данных события — общая фраза ``local.*``."""
-    own = [r for r in results if r.cls != _QUERY and kn.OUTCOME_SPOKEN_ELSEWHERE.get(r.tool) != "tool"]
+    """Фраза кода об исходе действий хода (``respond.join``): без ``query`` (его данные уходят модели). Голос тоже
+    здесь: тулы ``set_voice``/``set_tts_provider`` молчат, фраза — по их результату (``knowledge.VOICE_DONE``). Слота нет
+    в данных события — общая фраза ``local.*``."""
+    own = [r for r in results if r.cls != _QUERY]
     try:
         said = join(own)
     except KeyError:

@@ -883,10 +883,13 @@ def test_without_events_writer_nothing_is_written(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_outcome_phrase_skips_query_and_self_speaking_tools():
-    r = [ActionResult("t/0", 0, "personality", "set_voice", "action.local", "done"),
+def test_outcome_phrase_skips_query_and_speaks_the_voice_outcome_from_the_result():
+    """Данные ``query`` уходят модели, а смена голоса - фраза кода по результату тула (тул голоса не говорит сам)."""
+    voice = {"status": "applied", "voice_default": False, "voice_name": "Весельчак"}
+    r = [ActionResult("t/0", 0, "personality", "set_voice", "action.local", "done", None, voice),
          ActionResult("t/1", 0, "personality", "get_current_time", "query", "done")]
-    assert outcome_phrase(r) is None
+    assert outcome_phrase(r) == "Говорю голосом Весельчак."
+    assert outcome_phrase(r[1:]) is None
 
 
 @pytest.mark.parametrize("text", ["", "   "])

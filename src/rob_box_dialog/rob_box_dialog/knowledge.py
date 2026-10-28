@@ -364,7 +364,7 @@ VOICE_STEP_KIND = "voice_step"
 REPEAT_KIND = "repeat"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
-#: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
+#: «Говорю голосом X» говорит код по результату ``set_voice`` (:data:`VOICE_DONE`). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
 #: ``prosody_normal`` и ``voice_step`` звучат: тулы темпа и тона молчат, фразу о результате говорит код.
 #: ``show_queue`` не звучит, но в тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход
@@ -1211,9 +1211,29 @@ DJ_STOP = ByData(("action", "was_playing"), {
     ("stop", False): "music.stop_idle", ("stop", True): "music.stop_ok", ("stop", None): "music.stop_ok",
 })
 DJ_STOP_FAIL = ByData(("action",), {("stop",): "music.stop_fail"})
+#: Смена голоса (``set_voice``, ``set_tts_provider``): фразу строит диалог по ДАННЫМ исхода, который тул взял у владельца
+#: голоса (``SpeechEvent voice_changed``), а не тул своим ``speak_text``. Живое 28.10 00:48:51 («говори обычным голосом»):
+#: тул сказал «Я и так говорю своим обычным голосом.», а код сброса тона следом «Тон голоса обычный.» - две реплики на один
+#: ход, и первая была неправдой (тон только что менялся). Поля данных: ``status`` - исход тула (``applied`` / ``fallback`` /
+#: ``timeout`` / ``already_default`` / ``noop``), ``voice_default`` - применённый голос и есть обычный голос робота
+#: (``True``/``False``; нет применённого голоса - поля нет). Слоты фраз - ``voice_name``, ``requested_name``,
+#: ``provider_label``: названия вслух (``rob_box_mcp_tools.voice_request.outcome_data``), а не id латиницей.
+VOICE_DONE = ByData(("status", "voice_default"), {
+    ("applied", True): "voice.applied_default", ("applied", False): "voice.applied",
+    ("already_default", True): "voice.already_default", ("noop", None): "voice.provider_same",
+})
+VOICE_FAILED = ByData(("status", "voice_default"), {
+    ("fallback", True): "voice.unavailable_default", ("fallback", False): "voice.unavailable",
+    ("fallback", None): "voice.rejected", ("timeout", None): "voice.timeout",
+})
+#: Фраза «обычный голос» целиком: голос робота по умолчанию звучит, а режим тона («басом», #4074), снятый вместе с ним,
+#: этой фразой и сказан - отдельное «Тон голоса обычный.» рядом не нужно (``turn.voice_phrase``).
+VOICE_DEFAULT_PHRASE = "voice.applied_default"
 #: Ключи фраз, особые для тула (поверх ключа класса): «Запомнил: …» строится по событию saved владельца памяти.
 TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "memory_save": MappingProxyType({"done": "memory.saved"}),
+    "set_voice": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
+    "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
     "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
     # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media. Тул сказал, что играть
@@ -1363,11 +1383,11 @@ VIOLATION_SILENT_ANSWER = "silent_answer"
 SILENT_ANSWER_HINT = (f"человек ждёт ответа словами, а {', '.join(INAUDIBLE_TOOLS)} и expression не слышно: ответь"
                       f" словами в speech; анимацию положи в actions рядом, эмоцию оставь в expression — speech с"
                       f" {', '.join(INAUDIBLE_TOOLS)} и expression звучит")
-#: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: голос -
-#: сам тул (``voice_request``, SpeechEvent ``voice_changed``), запуск музыки и библиотека - музыкальный ход ноды
-#: (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует; в v2 (PR-8) - фраза респонда.
+#: Тулы, об исходе которых в v1 говорит не фраза исполнителя (``respond``), а другой код по тому же событию: запуск музыки
+#: и библиотека - музыкальный ход ноды (``music_turn``, ADR-0157 R6). Режим команд v1 (PR-7 ч.7c) их фразу не дублирует;
+#: в v2 (PR-8) - фраза респонда. Голос здесь больше не значится: тулы голоса молчат, фраза - по их результату
+#: (:data:`VOICE_DONE`), как у ``set_speed``/``set_pitch``.
 OUTCOME_SPOKEN_ELSEWHERE: Mapping[str, str] = MappingProxyType({
-    "set_voice": "tool", "set_tts_provider": "tool",
     "dj_set": "music_turn", "request_music": "music_turn", "generate_music": "music_turn", "music_library": "music_turn",
 })
 #: play_sound при занятом канале (#3698, просьба Шифу 21.10): короткий текущий звук (earcon ~1 с) - запрос ждёт в
@@ -1447,6 +1467,7 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "motion.rejected.not_asked", "provider.switched", "provider.no_fallback", "provider.switched.stt",
     *(f"provider.subject.{kind}" for kind in PROVIDER_KINDS),
     "voice.applied", "voice.unavailable", "voice.rejected", "voice.timeout", "voice.already_default",
+    "voice.applied_default", "voice.unavailable_default", "voice.provider_same",
     *(f"perform.no_backing.{reason}" for reason in ("quota", "network", "timeout", "error")),
     "perform.ask_replace_music", "perform.edit_rejected", "identity.ask_name", "identity.confirm",
     # Tier-1 громкость по каналу (``grammar``): фраза после ответа тула владельца канала

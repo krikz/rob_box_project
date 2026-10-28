@@ -165,7 +165,9 @@ def test_outcome_tables_name_action_tools_of_the_catalog():
     """Фразу об исходе этих тулов говорит не исполнитель (PR-7 ч.7c): тулы — действия из таблицы классов."""
     for tool in (*kn.OUTCOME_SPOKEN_ELSEWHERE, *kn.SILENT_DONE_TOOLS, *kn.TOOL_PHRASES):
         assert kn.TOOL_CLASSES[tool].startswith("action."), tool
-    assert set(kn.OUTCOME_SPOKEN_ELSEWHERE.values()) <= {"tool", "music_turn"}
+    # голос больше не в таблице: тулы голоса молчат, фраза - по их результату (VOICE_DONE), как у темпа и тона
+    assert set(kn.OUTCOME_SPOKEN_ELSEWHERE.values()) == {"music_turn"}
+    assert {"set_voice", "set_tts_provider"} <= set(kn.TOOL_PHRASES)
 
 
 def test_session_budgets():

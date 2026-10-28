@@ -160,12 +160,12 @@ class TestSetVoiceTool:
 
         monkeypatch.setattr("rob_box_mcp_tools.tools.dialogue.voice_requests", lambda node: _Fake())
 
-    def test_set_voice_ok_phrase_comes_from_event(self, mock_node):
+    def test_set_voice_ok_outcome_comes_from_event(self, mock_node):
         result = SetVoiceTool(mock_node).execute(voice="female-shaonv")
         assert self.calls == [("female-shaonv", "")]
         assert result.success is True
         assert result.data["voice_applied"] == "female-shaonv"
-        assert "Говорю голосом female-shaonv" in result.message
+        assert result.data["status"] == "applied" and result.data["voice_default"] is False
 
     def test_set_voice_passes_the_name_as_said_and_code_of_the_owner_finds_the_id(self, mock_node):
         """#4086: тул не угадывает голос по имени сам - просит владельца («Весельчак»), id находит реестр владельца."""
@@ -176,14 +176,14 @@ class TestSetVoiceTool:
         assert result.data["voice_requested"] == "Весельчак"
         assert result.data["voice_applied"] == "English_Jovialman"
         assert "English_Jovialman" in result.data["available"]
-        assert "Говорю голосом English_Jovialman" in result.message
+        assert result.data["status"] == "applied"
 
     def test_set_voice_unknown_voice_is_owner_decision(self, mock_node):
         self.outcome = VoiceOutcome("fallback", "terminator_3000", "male-qn-qingse", "minimax", "voice_unavailable")
         result = SetVoiceTool(mock_node).execute(voice="terminator_3000")
         assert result.success is False
         assert result.data["voice_applied"] == "male-qn-qingse"
-        assert "terminator_3000 недоступен, остаюсь на male-qn-qingse" in result.message
+        assert result.data["status"] == "fallback" and result.data["voice_default"] is True
 
     def test_set_voice_empty_rejected(self, mock_node):
         result = SetVoiceTool(mock_node).execute(voice="  ")

@@ -487,8 +487,9 @@ def test_budget_stops_before_the_step_that_would_overshoot(make_env):
     assert report.verdict == dm.NOT_RUN and env.inner.calls == []
 
 
-def test_voice_owner_speaks_the_outcome_itself_and_the_log_line_is_checkable(make_env):
-    """Смену голоса озвучивает сам тул (``OUTCOME_SPOKEN_ELSEWHERE``): ход не молчит, строка ``[set_voice]`` в логе."""
+def test_voice_outcome_is_said_once_by_the_dialog_and_the_log_line_is_checkable(make_env):
+    """Тул смены голоса молчит, исход говорит диалог по его данным (``knowledge.VOICE_DONE``): ход не молчит и не
+    говорит дважды, строка ``[set_voice]`` в логе."""
     args = {"actions": [{"tool": "set_voice", "args": {"voice": "alena", "provider": "yandex"}}]}
     env = make_env(lambda env, msgs, tools: args)
     report = env.run(step("n403", "Робот, говори голосом Алёны.", expect_tools=["set_voice"], voice_changed=True))
