@@ -238,6 +238,62 @@ def test_marks_and_pending_speech_are_not_spoken():
     assert log.last_spoken() == "Текст в чат.", "текстовый канал: доставлено - значит сказано"
 
 
+# -- #4136 п.4 (n808): заглушка ожидания не входит в «последнюю озвученную реплику» -----------------------------------
+
+
+class SlowPorts(Ports):
+    """LLM отвечает не сразу: за это время ход говорит заглушку ожидания (``knowledge.PROGRESS_AFTER_S``)."""
+
+    async def ask(self, messages, tools, timeout_s):
+        await asyncio.sleep(0.2)
+        return await super().ask(messages, tools, timeout_s)
+
+
+def test_n808_repeat_does_not_repeat_the_waiting_filler(monkeypatch):
+    """28.10 07:00: «повтори» сказал «Сейчас, соображаю. Семь на восемь — пятьдесят шесть.» - вместе с заглушкой,
+    которую робот сказал, пока думала модель. Повтор - только ответ."""
+    monkeypatch.setattr(kn, "PROGRESS_AFTER_S", 0.03)
+    ports = SlowPorts([Answer(Command(speech=FIFTY_SIX), "deepseek")])
+    engine = _engine(ports)
+    _turn(engine, N803)
+    assert len(ports.said) == 2 and ports.said[0] in phrases.catalog()[kn.PROGRESS_LLM_PHRASE]
+    assert ports.said[1] == FIFTY_SIX
+    assert any(e.filler and e.voiced for e in engine.log.window()), "заглушка в окне модели осталась (человек её слышал)"
+    _turn(engine, N808)
+    assert ports.said[-1] == FIFTY_SIX, "повтор - ответ без заглушки"
+    assert len(ports.asked) == 1, "и 0 вызовов LLM на повтор"
+
+
+def test_last_spoken_skips_a_filler_and_an_unanswered_turn_is_not_the_last_spoken():
+    log = TurnLog()
+    log.begin("t1", 0, "сколько будет семью восемь")
+    log.said("t1", "s1", "Сейчас, соображаю.", filler=True)
+    log.spoken("s1", 100)
+    log.said("t1", "s2", FIFTY_SIX)
+    log.spoken("s2", 100)
+    assert log.last_spoken() == FIFTY_SIX
+    log.begin("t2", 0, "а умножить на девять")
+    log.said("t2", "s3", "Дай подумать.", filler=True)
+    log.spoken("s3", 100)
+    assert log.last_spoken() == FIFTY_SIX, "ход, сказавший одну заглушку, не «говорил»: повтор идёт к прошлому ответу"
+    log.said("t2", "s4", "Дай подумать.", delivered=True, filler=True)  # текстовый канал: та же заглушка
+    assert log.last_spoken() == FIFTY_SIX
+
+
+def test_filler_flag_survives_a_superseded_phrase_and_a_reset():
+    log = TurnLog()
+    log.begin("t1", 0, "включи музыку")
+    log.said("t1", "s1", "Секунду, музыка запускается. Музыка пока не заиграла.", filler=True)
+    log.spoken("s1", 100)
+    entry = log.window()[-1]
+    assert entry.filler and entry.voiced
+    log.reset()
+    log.begin("t2", 0, "повтори")
+    log.said("t2", "s1", "новая", filler=False)  # тот же speech_id после сброса не наследует флаг
+    log.spoken("s1", 100)
+    assert not log.window()[-1].filler
+
+
 def test_phrase_keys_of_the_repeat_exist():
     assert kn.REPEAT_NOTHING_PHRASE in kn.PHRASE_KEYS and NOTHING
     assert all(" " not in word for word in kn.REPEAT.filler)

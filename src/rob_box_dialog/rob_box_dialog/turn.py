@@ -1099,7 +1099,7 @@ async def _progress(engine: "TurnEngine", turn: _Turn) -> None:
     if text:
         engine._log.info(f"{LOG_MARK} промежуточная фраза: ждём {turn.waiting} {turn.deadline.elapsed():.1f} с "
                          f"turn={turn.turn_id}")
-        engine._say(turn, text)
+        engine._say(turn, text, filler=True)  # заглушка: в окне есть, «повтори» её не повторяет (#4136, n808)
 
 
 def ceiling_phrase(turn: _Turn, provider: str) -> str:
@@ -1378,14 +1378,15 @@ class TurnEngine:
         messages.append({"role": "user", "content": f"{context}\n\n{user_text(turn)}"})
         return messages
 
-    def _say(self, turn: _Turn, text: str, voice: Optional[str] = None, emotion: Optional[str] = None) -> None:
+    def _say(self, turn: _Turn, text: str, voice: Optional[str] = None, emotion: Optional[str] = None,
+             filler: bool = False) -> None:
         if not text or self._stale(turn, "speech"):
             return
         turn.sad |= emotion == "sad"  # лицо итога без лица команды - по грустной фразе (#4069 п.8)
         speech_id = self._ports.say(turn.turn_id, turn.epoch, text, voice, emotion)
         # реплика не в динамики (чат, шлем оператора) — SpeechEvent о ней не придёт: в окне она сразу, как отдана
         delivered = agent_spec(self.session.snapshot.agent).sink != Sink.SPEAKERS
-        self.log.said(turn.turn_id, speech_id, text, delivered=delivered)
+        self.log.said(turn.turn_id, speech_id, text, delivered=delivered, filler=filler)
         turn.said.append(speech_id)
         self._event("speech_requested", turn, text=text, data={"speech_id": speech_id, "voice": voice or ""})
 
