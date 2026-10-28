@@ -4,18 +4,18 @@ LLM на каждом ходе отдаёт ОДНУ команду: речь, �
 собирает её из ``tool_calls``, JSON или свободного текста с JSON-объектом; :func:`validate` проверяет по таблицам
 :mod:`.knowledge` и JSON-схемам каталога тулов. Невалидно — :class:`Invalid` со списком нарушений (:class:`Violation`)
 без вопроса человеку: ход закрывает провал (рефлекс ``failed``). :func:`explain` — нарушения словами для модели: мост режима команд возвращает их
-tool-результатом, один раз на ответ (мост, решение Шифу 21.10 по #3698; ADR-0148 п.2).
+tool-результатом, один раз на ответ (мост, решение Шифу 21.10; ADR-0148 п.2).
 
-Речь человеку просим не длиннее ``SPEECH_MAX_CHARS``, а проверяем по ``SPEECH_ACCEPT_MAX_CHARS`` (#4137): длиннее —
+Речь человеку просим не длиннее ``SPEECH_MAX_CHARS``, а проверяем по ``SPEECH_ACCEPT_MAX_CHARS``: длиннее —
 нарушение ``VIOLATION_SPEECH_TOO_LONG``; одно оно у команды (:func:`overlong_only`) — мост даёт модели ход компактнее, и
 после него длинно — речь ужимает код (:func:`fit_speech`).
 
-Косметику код выбрасывает, а не отвергает команду целиком (#4138): ``knowledge.DROPPABLE`` - единственная таблица того,
-что можно выбросить (earcon не из перечня, лишний аргумент ``play_animation``, #4174: необязательный аргумент-подсказка
+Косметику код выбрасывает, а не отвергает команду целиком: ``knowledge.DROPPABLE`` - единственная таблица того,
+что можно выбросить (earcon не из перечня, лишний аргумент ``play_animation``: необязательный аргумент-подсказка
 тула с значением не из перечня - ``auto`` или выброс, ``DROPPABLE.soft_args``); выброшенное - в ``Command.dropped``
 (лог ``fields_dropped``). Нет обязательного аргумента или тула - команда невалидна, как раньше.
 
-:class:`Form` — форма команды ХОДА (#4021): какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
+:class:`Form` — форма команды ХОДА: какие поля модели можно на эту реплику. Ход ставит её на время вызова LLM
 (:func:`turn_form`), мост строит по ней схему (:func:`form_schema`), :func:`validate` по ней же судит ответ — одно
 решение кода в одном месте, не правило в промпте.
 """
@@ -45,7 +45,7 @@ _EXPRESSION_FIELDS: Tuple[str, ...] = tuple(kn.command_schema("json")["propertie
 @dataclass(frozen=True)
 class Expression:
     """Экспрессия хода: эмоция, жест, earcon, сцена лица — enum из :mod:`.knowledge`; ``duration_s`` — сколько держать
-    лицо команды, секунды (#4083; к пределам показа его приводит ``expression.show_seconds``), ``None`` — не задано."""
+    лицо команды, секунды (к пределам показа его приводит ``expression.show_seconds``), ``None`` — не задано."""
 
     emotion: str = "neutral"
     gesture: Optional[str] = None
@@ -76,13 +76,13 @@ class Ask:
 @dataclass(frozen=True)
 class Performance:
     """Выступление (§5.6.3): сегменты — содержимое, а не отчёт. ``from_segment`` — с какого править (edit_pending);
-    его выбирает код (хост выступления: первый ещё не отданный на звучание, #3700), LLM его не задаёт — разбор
+    его выбирает код (хост выступления: первый ещё не отданный на звучание), LLM его не задаёт — разбор
     отбрасывает это поле из ответа модели.
 
-    Роли (#4084): ``cast`` — герои с репликами (имя и пол), ``role_per_segment`` — чья реплика в сегменте (``""`` —
+    Роли: ``cast`` — герои с репликами (имя и пол), ``role_per_segment`` — чья реплика в сегменте (``""`` —
     рассказчик); их называет модель. ``voice_per_segment`` — голос каждого сегмента, его решает КОД
     (:func:`validate` → :mod:`.cast`): у роли один голос на всё выступление, песня и рэп — голосом робота; ``""`` —
-    текущий голос робота. Голос робота он не меняет: это ``set_voice`` (только по явной просьбе, #3744)."""
+    текущий голос робота. Голос робота он не меняет: это ``set_voice`` (только по явной просьбе)."""
 
     kind: str
     segments: Tuple[str, ...]
@@ -98,8 +98,8 @@ class Performance:
 class Command:
     """Одна команда хода. ``dropped`` — поля, которые разбор или валидатор отбросили, не отвергая команду (сцена
     лица, лишние поля экспрессии); ``moved`` — поля, которые разбор переложил на их место: слоты лица из
-    ``expression`` в ``expression.face`` (§5.5.9, #3698: DeepSeek кладёт их на уровень выше) и ``edit_pending`` из
-    ``perform`` в команду (#3700: DeepSeek кладёт флаг правки внутрь выступления).
+    ``expression`` в ``expression.face`` (§5.5.9: DeepSeek кладёт их на уровень выше) и ``edit_pending`` из
+    ``perform`` в команду (DeepSeek кладёт флаг правки внутрь выступления).
 
     ``voice`` — голос реплики ``speech``/``ask`` (не голос робота: его меняет ``set_voice``)."""
 
@@ -134,7 +134,7 @@ class Invalid:
     detail: str = ""
     violations: Tuple[Violation, ...] = ()
     #: Действия отвергнутой команды, допустимые каждое само по себе (не ``query``): после повтора моста ход
-    #: исполняет их и говорит итог кодом, а не молчит (#3953, решение Шифу 23.10).
+    #: исполняет их и говорит итог кодом, а не молчит (решение Шифу 23.10).
     salvage: Tuple[ToolCall, ...] = ()
 
     @property
@@ -145,10 +145,10 @@ class Invalid:
 @dataclass(frozen=True)
 class Busy:
     """Что занято сейчас — классы действий и ACTIVE-сегмент выступления (заполняет планировщик, PR-7b) - и каталог
-    голосов ролей звучащего провайдера TTS (#3959; пусто - каталог неизвестен: голоса сегментов тогда не решаются
+    голосов ролей звучащего провайдера TTS (пусто - каталог неизвестен: голоса сегментов тогда не решаются
     заново и не сверяются - так перепроверяется уже решённая команда).
 
-    ``voice_genders`` — пол голосов каталога ``(голос, пол)``: по нему код даёт голос роли (#4084); ``cast`` — роли
+    ``voice_genders`` — пол голосов каталога ``(голос, пол)``: по нему код даёт голос роли; ``cast`` — роли
     идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает."""
 
     classes: FrozenSet[str] = frozenset()
@@ -168,18 +168,18 @@ Result = Union[Command, Invalid]
 
 @dataclass(frozen=True)
 class Form:
-    """Форма команды хода (#4021, ADR-0148 п.2: выбор сужает структура, а не правило в промпте).
+    """Форма команды хода (ADR-0148 п.2: выбор сужает структура, а не правило в промпте).
 
     ``passed`` — модели можно «промолчать»: только при подхвате бэклога. Адресованность реплики решил код
     (``address.py``), и на адресованную реплику молчанием не ответить (решение Шифу 22.10; n813 23.10: «Робот, тишина?»
     → ``passed`` → «Хм, я задумался…»). ``voice`` — модели можно задать голос реплики (``Command.voice``): человек в
     этой реплике просил о голосе (``tools_view.voice_asked``; n109 23.10: на вопрос про звуки DeepSeek сам включил
-    female-shaonv). ``sing`` — путь пения, решённый кодом до модели (#4079: id кандидата ``live:song``/``generate:…``
+    female-shaonv). ``sing`` — путь пения, решённый кодом до модели (id кандидата ``live:song``/``generate:…``
     от хоста, ``knowledge.SING_FORMS``): живое — только ``perform`` под синт-подложку, генерация и трек закрыты;
     генерация — ``generate_music``, петь выступлением нельзя. ``sing_over`` — музыка уже играет при живом пении («под
     этот бит зачитай рэп», n810): играющее и есть подложка, выступление поверх без второго бита и без вопроса о смене
     (``knowledge.SING_FORMS["live_over"]``). ``backing`` — модели можно заказать подложку сказке, анекдоту и стиху
-    (#4152): только когда человек сам назвал музыку в этой реплике (``tools_view.music_asked``); иначе подложка у этих
+: только когда человек сам назвал музыку в этой реплике (``tools_view.music_asked``); иначе подложка у этих
     видов по умолчанию закрыта (``knowledge.PERFORM_BACKING_BY_KIND``), у песни и рэпа - как была. По умолчанию всё
     открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
@@ -339,7 +339,7 @@ def _only(data: Mapping[str, Any], allowed: Collection[str], where: str) -> None
 
 def _clean(text: str, where: str, fix: Optional[_Repairs]) -> str:
     """Текст речи без символов, которых в речи не бывает (``knowledge.SPEECH_DROPPED_CHARS``: U+FFFD — битый UTF-8 в
-    ответе провайдера, n105 #4021); вырезанное — в ``dropped`` (лог ``fields_dropped``), команда не отвергается."""
+    ответе провайдера, n105); вырезанное — в ``dropped`` (лог ``fields_dropped``), команда не отвергается."""
     kept = "".join(c for c in text if c not in kn.SPEECH_DROPPED_CHARS)
     if fix is not None and len(kept) != len(text):
         fix.dropped.append(f"{where}.U+FFFD")
@@ -364,7 +364,7 @@ def _expression(data: Any, where: str, fix: _Repairs) -> Expression:
 
 
 def _seconds(value: Any, where: str, fix: _Repairs) -> Optional[float]:
-    """Время лица команды (#4083): число больше нуля — как есть (пределы показа ставит ``expression.show_seconds``);
+    """Время лица команды: число больше нуля — как есть (пределы показа ставит ``expression.show_seconds``);
     ноль, отрицательное и ``NaN`` — время не задано (``None``: обычный ответ держит лицо временем рефлекса, а не
     показом по просьбе); не число — поле в ``dropped`` (лог ``fields_dropped``), команда не отвергается (§5.5.9:
     экспрессия команду не валит)."""
@@ -377,10 +377,10 @@ def _seconds(value: Any, where: str, fix: _Repairs) -> Optional[float]:
 
 
 def _lift_face(data: Mapping[str, Any], where: str, fix: _Repairs) -> Mapping[str, Any]:
-    """Лишние поля экспрессии не валят команду (§5.5.9, решение Шифу 21.10 по #3698): слоты лица на уровне
+    """Лишние поля экспрессии не валят команду (§5.5.9, решение Шифу 21.10): слоты лица на уровне
     ``expression`` переезжают в ``expression.face``, если ``face`` не задан и среди них есть хоть один слот; иначе они,
     как и прочие незнакомые поля, уходят в ``dropped``. ``duration_s`` на уровне ``expression`` - своё поле экспрессии
-    (время лица команды, #4083), а не лишнее: не переезжает и не выбрасывается."""
+    (время лица команды), а не лишнее: не переезжает и не выбрасывается."""
     stray = [k for k in data if k not in _EXPRESSION_FIELDS]
     if not stray:
         return data
@@ -491,7 +491,7 @@ def _names(data: Mapping[str, Any], key: str) -> Optional[Tuple[str, ...]]:
 
 
 def _cast(data: Mapping[str, Any], fix: _Repairs) -> Optional[Tuple[Role, ...]]:
-    """Герои выступления (#4084): ``{name, gender}``; строка — герой без пола. Пол вне ``ROLE_GENDERS`` и лишние поля
+    """Герои выступления: ``{name, gender}``; строка — герой без пола. Пол вне ``ROLE_GENDERS`` и лишние поля
     (``voice`` героя модель не выбирает) — в ``dropped``: голос подойдёт любой, команда не отвергается."""
     items = _get(data, "cast", list)
     if items is None:
@@ -511,7 +511,7 @@ def _cast(data: Mapping[str, Any], fix: _Repairs) -> Optional[Tuple[Role, ...]]:
 
 
 def _lift_edit(data: Mapping[str, Any], fix: _Repairs) -> Mapping[str, Any]:
-    """Поля правки выступления на их место (§5.6.4 X3, #3700). Живой прогон A20 22.10, DeepSeek 3 из 3 мимо схемы:
+    """Поля правки выступления на их место (§5.6.4 X3). Живой прогон A20 22.10, DeepSeek 3 из 3 мимо схемы:
     ``edit_pending`` внутри ``perform`` (→ переезжает в команду, ``moved``; флаг команды, если есть, главный) и
     ``from_segment`` в ``perform`` или в команде с номером звучащего сегмента. С какого сегмента править, выбирает код
     (первый не отданный на звучание — ``PerformHost.edit``), поэтому ``from_segment`` модели уходит в ``dropped``."""
@@ -560,18 +560,18 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
     же и голос реплики без просьбы о голосе отбрасываются (``dropped``). Невалидная сцена лица и earcon не из перечня
-    отбрасываются (``dropped``), а не валят команду (§5.5.9, #4138); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
-    тула (``play_animation.face.emotion``, #3974) и лишние аргументы верхнего уровня тулов таблицы
-    ``knowledge.DROPPABLE`` (``play_animation.animated``, #4138): без отказа команды, с записью в ``dropped``.
-    Необязательный аргумент-подсказка не из перечня (``request_music.genre``, #4174) - ``auto`` или выброс, тоже с записью.
+    отбрасываются (``dropped``), а не валят команду (§5.5.9); так же лишние поля ВЛОЖЕННЫХ объектов аргументов
+    тула (``play_animation.face.emotion``) и лишние аргументы верхнего уровня тулов таблицы
+    ``knowledge.DROPPABLE`` (``play_animation.animated``): без отказа команды, с записью в ``dropped``.
+    Необязательный аргумент-подсказка не из перечня (``request_music.genre``) - ``auto`` или выброс, тоже с записью.
     Обязательные поля, типы и enum по-прежнему проверяет схема.
     """
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
     cmd = _drop_closed_passed(_drop_unasked_voice(_fit_soft_args(_drop_nested_extras(cmd)), form), form)
-    # подложка: сначала вид без просьбы о музыке теряет её (#4152), потом путь пения подгоняет остальное (#4079);
-    # число лиц по сегментам (#4174) правит другое поле выступления и идёт последним, порядок с подложкой не важен
+    # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
+    # число лиц по сегментам правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
     cmd = _fit_expression_count(cmd)
     cmd = _voice_roles(cmd, busy)
@@ -624,7 +624,7 @@ def _drop_extra(schema: Mapping[str, Any], value: Any, path: str, droppable: boo
 
 
 def _extra_args_droppable(call: ToolCall) -> bool:
-    """Лишние аргументы верхнего уровня этого вызова выбрасываются (#4138): тул в ``knowledge.DROPPABLE.tool_args`` и в
+    """Лишние аргументы верхнего уровня этого вызова выбрасываются: тул в ``knowledge.DROPPABLE.tool_args`` и в
     вызове есть хоть один аргумент, несущий смысл (``play_animation``: ``animation`` или ``face``). Только лишнее
     поле (``{"animated": true}``) - вызов без смысла, его отвергает схема, как раньше."""
     meaning = kn.DROPPABLE.tool_args.get(call.tool, ())
@@ -632,8 +632,8 @@ def _extra_args_droppable(call: ToolCall) -> bool:
 
 
 def _drop_nested_extras(cmd: Command) -> Command:
-    """Аргументы действий без лишних полей, которые не меняют действие: вложенные у любого тула (#3974: «n905:
-    play_animation.face.emotion: лишнее поле») и верхнего уровня у тулов таблицы (#4138: «n904:
+    """Аргументы действий без лишних полей, которые не меняют действие: вложенные у любого тула («n905:
+    play_animation.face.emotion: лишнее поле») и верхнего уровня у тулов таблицы («n904:
     play_animation.animated: лишнее поле» при ``animation: sad``) - не повод отказывать команде. Отброшенное - в
     ``dropped`` (лог ``fields_dropped``)."""
     actions, notes = [], []
@@ -676,7 +676,7 @@ def _soften_args(call: ToolCall, index: int) -> Tuple[ToolCall, List[str]]:
 
 def _fit_soft_args(cmd: Command) -> Command:
     """Необязательные аргументы-подсказки тулов с неверным значением перечня (``request_music.genre='acoustic'``, n310
-    28.10 #4174: «Не понял, как это сделать» на просьбу о спокойной музыке) не валят команду: ``auto`` или выброс, запись
+    28.10: «Не понял, как это сделать» на просьбу о спокойной музыке) не валят команду: ``auto`` или выброс, запись
     в ``dropped`` (лог ``fields_dropped``) - :func:`_soften_args`. Смысл действия (обязательные поля, ``action``,
     ``track_id``, ``edit_music.change`` и пр.) по-прежнему проверяет схема."""
     pairs = [_soften_args(call, i) for i, call in enumerate(cmd.actions)]
@@ -728,9 +728,9 @@ def _check_passed(cmd: Command, form: Form) -> None:
 
 def _drop_closed_passed(cmd: Command, form: Form) -> Command:
     """``passed`` вместе с ответом (речь, вопрос, действия, выступление) там, где форма хода ``passed`` закрыла
-    (адресованная реплика, #4021) — лишнее поле, а не нарушение: ответ исполняется, поле — в ``dropped``. Иначе
-    ответ терялся: нарушение ``passed_addressed``, повтор, и после повтора ход мычал фразой ``passed`` (ревью #4053,
-    ``turn.silence_insisted``). Голый ``passed`` — по-прежнему нарушение; с открытой формой (подхват бэклога) правило
+    (адресованная реплика) — лишнее поле, а не нарушение: ответ исполняется, поле — в ``dropped``. Иначе
+    ответ терялся: нарушение ``passed_addressed``, повтор, и после повтора ход мычал фразой ``passed``
+    (``turn.silence_insisted``). Голый ``passed`` — по-прежнему нарушение; с открытой формой (подхват бэклога) правило
     ``passed_with_content`` прежнее."""
     content = cmd.speech or cmd.ask or cmd.actions or cmd.perform
     if cmd.passed is None or form.passed or not content:
@@ -739,7 +739,7 @@ def _drop_closed_passed(cmd: Command, form: Form) -> Command:
 
 
 def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
-    """Голос реплики без просьбы о голосе (форма хода закрыла ``voice``, #4021 n109) — не нарушение, а лишнее поле:
+    """Голос реплики без просьбы о голосе (форма хода закрыла ``voice`` n109) — не нарушение, а лишнее поле:
     реплика звучит текущим голосом робота, поле — в ``dropped`` (лог ``fields_dropped``)."""
     if cmd.voice is None or form.voice:
         return cmd
@@ -747,7 +747,7 @@ def _drop_unasked_voice(cmd: Command, form: Form) -> Command:
 
 
 def _drop_default_backing(cmd: Command, form: Form) -> Command:
-    """Подложка сказке, анекдоту и стиху без просьбы о музыке (#4152, решение Шифу 28.10: музыку включают, когда нужна
+    """Подложка сказке, анекдоту и стиху без просьбы о музыке (решение Шифу 28.10: музыку включают, когда нужна
     музыка, - рэп, песня) - не выбор модели: у этих видов бита по умолчанию нет (``knowledge.PERFORM_BACKING_BY_KIND``),
     поле ``backing`` становится ``none``, оно - в ``dropped`` (лог ``fields_dropped``). Человек назвал музыку в этой
     реплике (форма хода ``Form.backing``) - подложка модели остаётся. ``none`` подложку не заказывает, поэтому играющая
@@ -763,7 +763,7 @@ def _drop_default_backing(cmd: Command, form: Form) -> Command:
 
 
 def _fit_sing_backing(cmd: Command, form: Form) -> Command:
-    """Живое пение (#4079) — под синт-подложку: ``perform`` с подложкой вне перечня пути (``none``, не названа) получает
+    """Живое пение — под синт-подложку: ``perform`` с подложкой вне перечня пути (``none``, не названа) получает
     первую из перечня (``knowledge.SING_FORMS``), поле — в ``dropped``; музыка уже играет (``live_over``) — ``none``:
     поверх играющего. Подложку решает код по пути, модель — только настроение."""
     sing = form.sing_form
@@ -774,7 +774,7 @@ def _fit_sing_backing(cmd: Command, form: Form) -> Command:
 
 
 def _voice_roles(cmd: Command, busy: Busy) -> Command:
-    """Голоса сегментов выступления решает код (#4084, :mod:`.cast`), не модель. Песня и рэп — голосом робота: роли и
+    """Голоса сегментов выступления решает код (:mod:`.cast`), не модель. Песня и рэп — голосом робота: роли и
     голоса модели — в ``dropped``. Выступление с ролями — голос роли из каталога ``busy`` (у роли один на всё
     выступление, правка идущего не перекрашивает его роли); ``voice_per_segment`` модели — в ``dropped``. Каталог
     неизвестен (``busy.voices`` пуст: перепроверка уже решённой команды, вне хода) — голоса как есть."""
@@ -795,7 +795,7 @@ def _voice_roles(cmd: Command, busy: Busy) -> Command:
 
 
 def _check_sing(cmd: Command, form: Form) -> None:
-    """Путь пения, решённый кодом до модели (#4079, ``knowledge.SING_FORMS``): закрытые тулы не зовутся, живое пение —
+    """Путь пения, решённый кодом до модели (``knowledge.SING_FORMS``): закрытые тулы не зовутся, живое пение —
     ``perform`` вида пути, генерация — ``generate_music`` без выступления-песни. Правка идущего выступления
     (``edit_pending``) — не новая просьба спеть: форма её не судит."""
     sing = form.sing_form
@@ -815,7 +815,7 @@ def _check_sing(cmd: Command, form: Form) -> None:
 
 def _check_voice(voice: Optional[str], busy: Busy) -> None:
     """Голос реплики — из каталога звучащего провайдера (``Busy.voices``; пусто — не сверяется), как и голоса
-    сегментов (:func:`_check_voices`): чужое имя TTS подменил бы молча (#4021)."""
+    сегментов (:func:`_check_voices`): чужое имя TTS подменил бы молча."""
     _check_speech(voice, kn.VOICE_MAX_CHARS, "voice")
     if voice and busy.voices and voice not in busy.voices:
         raise _Bad("bad_enum", f"voice={voice}", busy.voices)
@@ -824,8 +824,8 @@ def _check_voice(voice: Optional[str], busy: Busy) -> None:
 def is_empty(cmd: Command) -> bool:
     """Команде нечего исполнить и нечего сказать: ни речи, ни вопроса, ни действий, ни выступления, ни экспрессии, и
     не ``passed``. Экспрессия сверх нейтрали (эмоция, жест, earcon, сцена лица) - полноценная команда «покажи на лице»
-    без слов (#3974: «покажи, как тебе грустно»); пустой ответ МОДЕЛИ мост режима команд считает нарушением
-    :data:`knowledge.VIOLATION_EMPTY_COMMAND` (#3698). Время без лица (``expression.duration_s`` при нейтрали, #4083)
+    без слов («покажи, как тебе грустно»); пустой ответ МОДЕЛИ мост режима команд считает нарушением
+    :data:`knowledge.VIOLATION_EMPTY_COMMAND`. Время без лица (``expression.duration_s`` при нейтрали)
     показать нечего — команда пустая."""
     return cmd.passed is None and replace(cmd.expression, duration_s=None) == Expression() and not (
         cmd.speech or cmd.ask or cmd.actions or cmd.perform)
@@ -846,7 +846,7 @@ def _check_chars(text: Optional[str], where: str) -> None:
 
 
 def _check_spoken(text: Optional[str], where: str) -> None:
-    """Речь человеку (``speech``, ``ask.text``, #4137): звучит до ``SPEECH_ACCEPT_MAX_CHARS`` включительно, хоть модель
+    """Речь человеку (``speech``, ``ask.text``): звучит до ``SPEECH_ACCEPT_MAX_CHARS`` включительно, хоть модель
     и просим о ``SPEECH_MAX_CHARS``; длиннее — своё нарушение ``VIOLATION_SPEECH_TOO_LONG``, не ``too_long``."""
     if text is not None and len(text) > kn.SPEECH_ACCEPT_MAX_CHARS:
         raise _Bad(kn.VIOLATION_SPEECH_TOO_LONG, f"{where} {len(text)} > {kn.SPEECH_ACCEPT_MAX_CHARS}")
@@ -855,16 +855,16 @@ def _check_spoken(text: Optional[str], where: str) -> None:
 
 def overlong_only(result: Result) -> bool:
     """Команда отвергнута только за длину речи (все нарушения — ``VIOLATION_SPEECH_TOO_LONG``): ей ход компактнее
-    (``knowledge.SPEECH_COMPACT_TURNS``), затем :func:`fit_speech`, а не общий повтор и заглушка (#4137)."""
+    (``knowledge.SPEECH_COMPACT_TURNS``), затем :func:`fit_speech`, а не общий повтор и заглушка."""
     return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_TOO_LONG for v in result.all)
 
 
 def fit_speech(cmd: Command) -> Command:
-    """Последний запас (#4137, решение Шифу 28.10): речь человеку (``speech``, ``ask.text``) длиннее
+    """Последний запас (решение Шифу 28.10): речь человеку (``speech``, ``ask.text``) длиннее
     ``SPEECH_ACCEPT_MAX_CHARS`` и после хода компактнее — первые целые предложения, пока влезают; первое само длиннее —
     по слову. Режет тот же код, что сегменты выступления (``plan.segments.cut``: строки и предложения, слово неделимо),
     второго знания о границах предложения нет; хвостовая запятая или тире обрыва по слову не звучат. Оборванное
-    посреди предложения (перечень голосов, #3883: «…Голос38» звучал как полный) кончает пометка каталога
+    посреди предложения (перечень голосов: «…Голос38» звучал как полный) кончает пометка каталога
     ``knowledge.SPEECH_CUT_PHRASE`` («и так далее.»), она входит в предел. Целые предложения - без пометки. Не длиннее —
     как есть."""
     from rob_box_dialog.plan.segments import cut, ends_sentence  # noqa: PLC0415 — plan.segments сам импортирует command
@@ -954,7 +954,7 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
     for i, segment in enumerate(perf.segments):
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
     # поля, которые называет модель, - первыми: голоса сегментов решает код из role_per_segment (_voice_roles), и при
-    # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит (#4112)
+    # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит
     for name in ("role_per_segment", "voice_per_segment"):
         per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
@@ -964,8 +964,8 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
 
 
 def _fit_expression_count(cmd: Command) -> Command:
-    """Лиц по сегментам - ровно столько, сколько сегментов (#4174, n810 28.10: рэп с 4 куплетами и другим числом лиц
-    отвергнут целиком дважды). Лицо - косметика (ADR-0148, как #4138): лишние лица отрезаются, недостающие
+    """Лиц по сегментам - ровно столько, сколько сегментов (n810 28.10: рэп с 4 куплетами и другим числом лиц
+    отвергнут целиком дважды). Лицо - косметика (ADR-0148, как у прочих выбрасываемых полей): лишние лица отрезаются, недостающие
     дополняются последним лицом, пустой список - лиц нет (``None``); поправка - в ``dropped`` (лог ``fields_dropped``:
     ``perform.expression_per_segment[3->4]``), выступление исполняется. Роли и голоса сегментов смысл несут (чья
     реплика) - их длина по-прежнему нарушение ``bad_segments``. Число самих сегментов судит :func:`_check_segments`."""
@@ -981,7 +981,7 @@ def _fit_expression_count(cmd: Command) -> Command:
 
 
 def _check_roles(perf: Performance, busy: Busy) -> None:
-    """Роли выступления (#4084, :func:`.cast.problem`): у сказки ``cast`` обязателен (#3959: без ролей она звучала одним
+    """Роли выступления (:func:`.cast.problem`): у сказки ``cast`` обязателен (без ролей она звучала одним
     голосом, а валидатор молчал), реплики — только героев из ``cast`` или рассказчика, героев с репликами без голоса не
     больше, чем свободных голосов ролей (голоса героев идущего выступления, ``busy.cast``, заняты). Уже решённая
     команда, перепроверяемая без каталога (голоса есть, ``busy.voices`` пуст), — не сказка без ролей."""
@@ -999,7 +999,7 @@ def _check_roles(perf: Performance, busy: Busy) -> None:
 
 def _check_segments(perf: Performance, busy: Busy) -> None:
     """Число сегментов. Во время выступления ``perform`` — правка (MERGE): хватает одного нового куплета, а без
-    куплетов, но с подложкой — «добавь бит» (#993), бит ставит хост выступления. A22 22.10 (#3700): DeepSeek на
+    куплетов, но с подложкой — «добавь бит» (#993), бит ставит хост выступления. A22 22.10: DeepSeek на
     «Робот, добавь бит» шлёт ``perform{backing: beat, segments: []}`` — раньше ``bad_segments`` и ход провален."""
     running = busy.active_segment is not None
     low = (0 if perf.backing in kn.PERFORM_BACKING_MOODS else 1) if running else kn.SEGMENTS_MIN
@@ -1008,7 +1008,7 @@ def _check_segments(perf: Performance, busy: Busy) -> None:
 
 
 def _check_edit(edit_pending: bool, busy: Busy) -> None:
-    """Правке нужно идущее выступление; с какого сегмента — решает его хост (#3700), не модель."""
+    """Правке нужно идущее выступление; с какого сегмента — решает его хост, не модель."""
     if edit_pending and busy.active_segment is None:
         raise _Bad("edit_without_active_perform", "править нечего: выступление не идёт")
 
@@ -1023,14 +1023,14 @@ def _check_when(when: str, busy: Busy) -> None:
 
 
 #: Перечни полей экспрессии с enum (имя поля -> допустимое): значение не из перечня - нарушение ``bad_enum``, кроме
-#: полей ``knowledge.DROPPABLE.expression`` (#4138): те выбрасываются.
+#: полей ``knowledge.DROPPABLE.expression``: те выбрасываются.
 _EXPRESSION_ENUMS: Mapping[str, Collection[str]] = MappingProxyType(
     {"emotion": kn.EMOTIONS, "gesture": kn.GESTURES, "earcon": kn.EARCONS})
 
 
 def _expression_ok(expr: Expression) -> Tuple[Expression, Tuple[str, ...]]:
     """Проверенная экспрессия и имена отброшенных полей. Чужая эмоция/жест - команда невалидна; чужой earcon (``none``,
-    n904 #4138: «покажи, как тебе грустно» отвергнута целиком) и невалидная сцена лица (§5.5.9) - поле выбрасывается."""
+    n904: «покажи, как тебе грустно» отвергнута целиком) и невалидная сцена лица (§5.5.9) - поле выбрасывается."""
     dropped: List[str] = []
     for name, allowed in _EXPRESSION_ENUMS.items():
         value = getattr(expr, name)
@@ -1065,12 +1065,12 @@ def _drop_bad_expression(cmd: Command) -> Command:
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# explain — нарушения словами для модели (повтор команды, #3698; по образцу deepseek-harness: invalid arguments)
+# explain — нарушения словами для модели (повтор команды; по образцу deepseek-harness: invalid arguments)
 # ---------------------------------------------------------------------------------------------------------------
 
 #: Первая строка tool-результата невалидной команде.
 INVALID_HEAD = "invalid arguments: команда не исполнена, ничего не сделано. Исправь нарушения и пришли команду заново."
-#: То же, когда запрос хода (``query``) уже выполнен и его данные у модели (#3883): честно, без «ничего не сделано» —
+#: То же, когда запрос хода (``query``) уже выполнен и его данные у модели: честно, без «ничего не сделано» —
 #: иначе модель кладёт запрос в ``actions`` заново и ход упирается в ``speech_with_actions``.
 INVALID_AFTER_QUERY_HEAD = (f"invalid arguments: данные запроса уже получены, запрос выполнен — повторять его не нужно. "
                             f"Пришли команду заново: ответ по этим данным в speech, не длиннее {kn.SPEECH_MAX_CHARS} "
@@ -1135,7 +1135,7 @@ def is_query_data(content: str) -> bool:
 
 def explain(invalid: Invalid, after_query: bool = False) -> str:
     """Нарушения невалидной команды словами для модели: причина, правило, где, что допустимо. ``after_query`` — запрос
-    хода уже выполнен: подсказка говорит, что данные получены, а не что «ничего не сделано» (#3883)."""
+    хода уже выполнен: подсказка говорит, что данные получены, а не что «ничего не сделано»."""
     lines = [INVALID_AFTER_QUERY_HEAD if after_query else INVALID_HEAD]
     for v in invalid.all:
         line = f"- {v.reason}: {HINTS.get(v.reason, 'нарушено правило команды')}"

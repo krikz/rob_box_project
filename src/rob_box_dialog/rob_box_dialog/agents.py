@@ -15,7 +15,7 @@ from rob_box_core.utterance import Sink
 from rob_box_dialog import knowledge as kn
 
 #: Группы закрытой грамматики Tier-1 (§4.2); разбор — ``grammar.py`` (PR-6). ``face`` — очередь показа лица
-#: (#4103): лицо есть только у Личности. ``repeat`` — «повтори» (#4028): повтор озвученной реплики, у Личности.
+#:: лицо есть только у Личности. ``repeat`` — «повтори»: повтор озвученной реплики, у Личности.
 GRAMMAR_GROUPS: Tuple[str, ...] = ("stop", "silence", "volume", "voice", "new_session", "dj", "yes_no", "face",
                                    "repeat")
 #: Вид команды Tier-1 (``grammar.match``, ``knowledge.TIER1_KINDS``) → группа грамматики агента.
