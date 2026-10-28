@@ -1565,19 +1565,38 @@ SILENT_ANSWER_PHRASE = "understand.silent_answer"
 #: Поле с данными ``query`` в сообщении, которым ход возвращает их модели (``turn._query_data``); по нему мост узнаёт,
 #: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
 QUERY_RESULTS_FIELD = "query_results"
+#: Фраза по данным памяти (``memory_search``/``memory_context``, #4157): факты, которые модель прочла и не сказала.
+MEMORY_FACTS_PHRASE = "query.memory_facts"
+#: Сколько фактов называет фраза по данным памяти: 2–3, не весь перечень (живой 28.10 13:40, «скажи обо мне пять
+#: фактов»: девять результатов, а на последней итерации - одно лицо без слов).
+MEMORY_SUMMARY_FACTS = 3
+#: Категории звуков каталога (``get_sound_info`` без аргументов: ``base``/``ui``/``robot``) → как их зовёт робот вслух;
+#: порядок таблицы - порядок во фразе. Звуки остальных категорий (``other``, ``unknown``) - «другие».
+SOUND_CATEGORY_NAMES: Mapping[str, str] = MappingProxyType({"base": "эмоции", "ui": "интерфейс", "robot": "эффекты"})
+SOUND_OTHER_NAME = "другие"
 #: Страховка от молчания (#3883, решение Шифу 23.10): речь невалидна и после повтора, а запрос хода выполнен — код
 #: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
 #: код (``turn.query_answer``). ``music_library`` ``list`` (#4069 п.3; живой 27.10: на последней итерации звучала общая
 #: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
-#: фраза о пустой; ``search``/``info`` своей фразы нет - общая.
+#: фраза о пустой; ``search``/``info`` своей фразы нет - общая. Память (#4157) - 2–3 факта как есть
+#: (:data:`MEMORY_SUMMARY_FACTS`); каталог звуков без аргументов (живой 28.10 15:22, «какие звуки ты умеешь
+#: издавать») - сколько звуков и по каким категориям (:data:`SOUND_CATEGORY_NAMES`).
 QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
     "list_tts_voices": "query.voices_summary",
     LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+    "memory_search": MEMORY_FACTS_PHRASE,
+    "memory_context": MEMORY_FACTS_PHRASE,
+    "get_sound_info": "query.sounds_summary",
 })
 #: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
 LIBRARY_SUMMARY_NAMES = 3
-#: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
+#: Тулов с фразой нет (или данные не дают слов) — общая честная фраза: данные получены, ответ не сложился. Причины
+#: она не называет: «слишком длинно» говорит только ``VIOLATION_SPEECH_TOO_LONG`` (#4137), а бывает, что слов просто нет.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
+#: Поле команды, которое схема последней итерации после выполненного запроса делает обязательным (#4157, ADR-0148 п.2):
+#: данные у модели, читать больше нечем - остаётся ответить словами. Нарушение: ответ без слов (одно лицо или анимация).
+SPEECH_FIELD = "speech"
+VIOLATION_SPEECH_REQUIRED = "speech_required"
 #: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
 #: исполнены, об исходе говорит код; исполнять нечего - эта честная фраза, а не молчание на адресованную реплику.
 INVALID_COMMAND_PHRASE = "command.invalid_generic"
@@ -2790,6 +2809,17 @@ def without_fields(schema: Mapping[str, Any], fields: Iterable[str]) -> Dict[str
     out = copy.deepcopy(dict(schema))
     for name in fields:
         out["properties"].pop(name, None)
+    return out
+
+
+def with_required(schema: Mapping[str, Any], fields: Iterable[str]) -> Dict[str, Any]:
+    """Схема команды, где поля верхнего уровня ``fields`` обязательны (``command.Form.required``: на последней итерации
+    после выполненного запроса - ``speech``, #4157; ADR-0148 п.2: выбор сужает структура, а не правило в промпте).
+    Поле, которого в схеме нет (закрыто формой хода), обязательным не делается. Пусто - схема без изменений."""
+    out = copy.deepcopy(dict(schema))
+    names = [name for name in fields if name in out.get("properties", {})]
+    if names:
+        out["required"] = sorted({*out.get("required", ()), *names})
     return out
 
 
