@@ -568,7 +568,10 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         return cmd
     form = form or current_form()
     cmd = _drop_closed_passed(_drop_unasked_voice(_drop_nested_extras(cmd), form), form)
+    # подложка: сначала вид без просьбы о музыке теряет её (#4152), потом путь пения подгоняет остальное (#4079);
+    # число лиц по сегментам (#4174) правит другое поле выступления и идёт последним, порядок с подложкой не важен
     cmd = _fit_sing_backing(_drop_default_backing(cmd, form), form)
+    cmd = _fit_expression_count(cmd)
     cmd = _voice_roles(cmd, busy)
     agent = getattr(session, "agent", None) or kn.AGENTS[0]
     # тулы, закрытые путём пения, судит _check_sing своим нарушением: не «тула нет в срезе» — мост его не расширяет
@@ -915,12 +918,29 @@ def _check_perform(cmd: Command, busy: Busy) -> None:
         _check_speech(segment, kn.SEGMENT_MAX_CHARS, f"perform.segments[{i}]")
     # поля, которые называет модель, - первыми: голоса сегментов решает код из role_per_segment (_voice_roles), и при
     # неверной длине ролей его voice_per_segment тоже не той длины - но модель такого поля не видит (#4112)
-    for name in ("expression_per_segment", "role_per_segment", "voice_per_segment"):
+    for name in ("role_per_segment", "voice_per_segment"):
         per = getattr(perf, name)
         if per is not None and len(per) != len(perf.segments):
             raise _Bad("bad_segments", f"{name} не по числу сегментов")
     _check_roles(perf, busy)
     _check_edit(cmd.edit_pending, busy)
+
+
+def _fit_expression_count(cmd: Command) -> Command:
+    """Лиц по сегментам - ровно столько, сколько сегментов (#4174, n810 28.10: рэп с 4 куплетами и другим числом лиц
+    отвергнут целиком дважды). Лицо - косметика (ADR-0148, как #4138): лишние лица отрезаются, недостающие
+    дополняются последним лицом, пустой список - лиц нет (``None``); поправка - в ``dropped`` (лог ``fields_dropped``:
+    ``perform.expression_per_segment[3->4]``), выступление исполняется. Роли и голоса сегментов смысл несут (чья
+    реплика) - их длина по-прежнему нарушение ``bad_segments``. Число самих сегментов судит :func:`_check_segments`."""
+    perf = cmd.perform
+    faces = None if perf is None else perf.expression_per_segment
+    if faces is None or len(faces) == len(perf.segments):
+        return cmd
+    count = len(perf.segments)
+    fitted = faces[:count] + faces[-1:] * (count - len(faces)) if faces else ()
+    note = f"perform.expression_per_segment[{len(faces)}->{len(fitted)}]"
+    perf = replace(perf, expression_per_segment=fitted or None)
+    return replace(cmd, perform=perf, dropped=cmd.dropped + (note,))
 
 
 def _check_roles(perf: Performance, busy: Busy) -> None:
@@ -1043,7 +1063,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
     "unknown_tool": "такого тула нет",
     "speech_channel_tool": "речь — поле speech, а не тул в actions",
     "bad_segments": f"в perform от {kn.SEGMENTS_MIN} до {kn.SEGMENTS_MAX} непустых сегментов, "
-                    "списки expression_per_segment и role_per_segment — по числу сегментов",
+                    "список role_per_segment — по числу сегментов",
     perform_cast.TALE_WITHOUT_CAST: "сказка: perform.cast обязателен — герои с репликами (name и gender; героев нет — "
                                     "[]) и role_per_segment — чья реплика в каждом сегменте (\"\" — рассказчик); "
                                     "сегмент = реплика одного говорящего, повествование и каждая реплика героя — "

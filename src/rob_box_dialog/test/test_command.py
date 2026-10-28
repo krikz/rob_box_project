@@ -190,7 +190,6 @@ def test_perform_shape():
     bad({"perform": _perform(kn.SEGMENTS_MAX + 1)}, "bad_segments")
     bad({"perform": {"kind": "rap", "segments": ["а" * (kn.SEGMENT_MAX_CHARS + 1), "б"]}}, "too_long")
     bad({"perform": {"kind": "opera", "segments": ["а", "б"]}}, "bad_enum")
-    bad({"perform": _perform(2, expression_per_segment=[{"emotion": "happy"}])}, "bad_segments")
 
 
 def test_quiet_actions_beside_speech_are_valid_loud_ones_are_not_3953():
