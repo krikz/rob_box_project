@@ -14,6 +14,10 @@ from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog.knowledge import (
     ASK_LEAD_SKIP,
+    CHAT_REFERENCE_LEADS,
+    CHAT_ROBOT_ACT_VERBS,
+    CHAT_ROBOT_ASK_FORMS,
+    CHAT_TOPIC_MARKERS,
     DEFAULT_WAKE_WORDS,
     INTRO_ADJECTIVE_ENDINGS,
     INTRO_GREETING_WORDS,
@@ -413,6 +417,30 @@ def asks_question(text: str, wake_words: Optional[Sequence[str]] = None) -> bool
         return True
     marked = "?" in rest or bool(set(tokens) & set(STOP_QUESTION_PARTICLES))
     return marked and lead not in REQUEST_LEADS
+
+
+def asks_reference(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Реплика - справка, а не просьба сделать на роботе (решение Шифу 28.10: «время, поиск, вопросы - ответом в чат»,
+    #4159 п.3): вопрос (:func:`asks_question`) или просьба найти/узнать/перевести/научить (``CHAT_REFERENCE_LEADS``: «найди,
+    что пишет народ») без глагола, которым робота просят что-то сказать или сделать (``CHAT_ROBOT_ACT_VERBS``: «найди
+    анекдот и прочитай вслух» - действие). Слова - как у :func:`name_tokens`."""
+    if asks_question(text, wake_words):
+        return True
+    tokens = name_tokens(strip_wake_word(text, wake_words))
+    lead = next((token for token in tokens if token not in ASK_LEAD_SKIP), "")
+    return lead in CHAT_REFERENCE_LEADS and not set(tokens) & set(CHAT_ROBOT_ACT_VERBS)
+
+
+def asks_robot_to_act(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Просит ли реплика в чате сделать что-то РОБОТОМ (#4142 п.7, #4159 п.3): в ней есть слово из
+    ``CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ») и оно не названо темой (после
+    слов ``CHAT_TOPIC_MARKERS``: «расскажи про народ», «переведи слово вслух» - предмет разговора, не адресат), а реплика -
+    не справка (:func:`asks_reference`: «как управлять роботом?», «найди, что пишет народ»). Решает код по словам человека,
+    а не по ответу модели; верный текстовый ответ на справку в чат не теряется и «ничего не сделал» к нему не клеится."""
+    said = " ".join(name_tokens(text))
+    topics = tuple(f"{marker} {form}" for marker in CHAT_TOPIC_MARKERS for form in CHAT_ROBOT_ASK_FORMS)
+    asked = has_form(without_forms(said, topics)[0], CHAT_ROBOT_ASK_FORMS)
+    return asked and not asks_reference(text, wake_words)
 
 
 @dataclass(frozen=True)

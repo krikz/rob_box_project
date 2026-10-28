@@ -24,7 +24,7 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.expression import shows
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import asks_question, has_form, has_speech_manner, has_word, introduces_self, without_forms
+from rob_box_dialog.words import asks_robot_to_act, has_form, has_speech_manner, has_word, introduces_self, without_forms
 
 if TYPE_CHECKING:  # только тип: срез тулов не тянет разбор команды
     from rob_box_dialog.command import Command
@@ -128,10 +128,11 @@ def silent_asked(text: str) -> bool:
 
 def robot_asked(text: str) -> bool:
     """Просил ли человек в чате сделать это РОБОТОМ (#4142 п.7, классы 1 и 3 #4040): форма из
-    ``knowledge.CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ») — и реплика не
-    вопрос (``words.asks_question``, ревью #4153: «Как управлять роботом?», «Почему детям полезно читать вслух?» — справка
-    в чат, робот ничего не делает). Целыми словами: «робота-курьера» — не «через робота». Таблицы — ``knowledge``."""
-    return has_form(text or "", kn.CHAT_ROBOT_ASK_FORMS) and not asks_question(text or "")
+    ``knowledge.CHAT_ROBOT_ASK_FORMS`` («покекай роботом», «через робота», «вслух», «развлекай народ»), не названная темой,
+    и реплика не справка (ревью #4153, #4159 п.3: «Как управлять роботом?», «Почему детям полезно читать вслух?»,
+    «найди, что пишет народ» - ответ в чат, робот ничего не делает). Целыми словами: «робота-курьера» - не «через
+    робота». Решение - ``words.asks_robot_to_act``, таблицы - ``knowledge``."""
+    return asks_robot_to_act(text or "")
 
 
 def show_asked(text: str) -> bool:
