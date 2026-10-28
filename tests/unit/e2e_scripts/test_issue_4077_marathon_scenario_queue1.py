@@ -168,7 +168,8 @@ def test_estimate_does_not_underrate_any_played_phrase_of_the_27_10_run():
     """Оценка не оптимистичнее замера ни для одной сыгранной фразы >= 55 символов (аудит брал 0.145 -- n607 0.163 не ловил)."""
     store = pb.load_store(gen.PHRASE_STORE_PATH)
     long_ones = [(k, v) for k, v in store.items() if v["chars"] >= 55]
-    assert len(long_ones) > 60
+    # #3971: замер n809 снят -- реплика сменилась («на синтезаторе»), замер был чужой
+    assert len(long_ones) >= 60
     for label, entry in long_ones:
         assert entry["eq_s"] <= entry["chars"] * pb.sec_per_char(entry["voice"]), label
 
@@ -319,6 +320,7 @@ def test_song_followups_wait_for_the_song_and_skip_without_it():
         "n707_gen_track_info": "NO_SONG",
         "n708_gen_play": "NO_SONG",
         "n709_stop_generated": "NO_SONG",
+        "n805b_unsilence": "NOT_SILENCED",  # #3971: «говори» без тишины от n805 не играется
     }
 
 
@@ -425,8 +427,9 @@ def test_n502_asks_the_synth_and_checks_the_synth_route_not_any_music_tool():
     )
     verdict = _verdict("n502_start_renardo", raw_2710)
     assert not verdict["pass"] and verdict["missing"] == [
-        gen.ROUTE_SYNTH
-    ], "27.10 PASS был ложным (#4070)"
+        gen.ROUTE_SYNTH,
+        gen.SYNTH_STARTED,
+    ], "27.10 PASS был ложным (#4070): ни синт-пути, ни синт-трека на деке (#3971)"
     cache = "\n".join([_source("cache:gen_5b4e8031", "own"), MUSIC_OK, STARTED, DONE])
     assert not _verdict("n502_start_renardo", cache)["pass"], "трек кэша — не синт"
     both = "\n".join([_source("synth:ambient"), LIBRARY_EXEC, MUSIC_OK, STARTED, DONE])
@@ -435,32 +438,31 @@ def test_n502_asks_the_synth_and_checks_the_synth_route_not_any_music_tool():
     ], "синт-маршрут и трек библиотеки на деке — подмена"
 
 
-@pytest.mark.parametrize(
-    "label, tool",
-    [
-        ("n504_add_bass", "request_music"),
-        ("n506_faster", "request_music"),
-        ("n505_vibe_dark", "dj_set"),
-    ],
+#: #4029 (PR #4116): правка играющего встала на такте того же трека (``engine/track_edit.py``).
+EDIT_OK = "✅ Инструмент edit_music выполнен успешно"
+EDIT_APPLIED = (
+    "🎚️ [music v2] edit applied track_id=req95964:01:A:f7de93b5 at_beat=9856 bpm=147"
 )
-def test_editing_the_playing_track_by_a_new_library_track_is_not_a_result(label, tool):
-    """27.10: n504 и n506 зелёные потому, что тул успешен, а поставлен ДРУГОЙ трек библиотеки (#4029)."""
-    ok = "\n".join([f"✅ Инструмент {tool} выполнен успешно", DONE])
+
+
+@pytest.mark.parametrize("label", ["n504_add_bass", "n506_faster", "n505_vibe_dark"])
+def test_editing_the_playing_track_by_a_new_library_track_is_not_a_result(label):
+    """27.10: n504 и n506 зелёные потому, что тул успешен, а поставлен ДРУГОЙ трек библиотеки. После #4029 правка --
+    ``edit_music`` на такте; любой новый трек на деке (``[music v2] exec``) -- подмена (#3971).
+    """
+    ok = "\n".join([EDIT_OK, EDIT_APPLIED, DONE])
     assert _verdict(label, ok)["pass"]
-    substituted = "\n".join(
-        [f"✅ Инструмент {tool} выполнен успешно", LIBRARY_EXEC, DONE]
-    )
+    substituted = "\n".join([EDIT_OK, EDIT_APPLIED, LIBRARY_EXEC, DONE])
     verdict = _verdict(label, substituted)
-    assert not verdict["pass"] and gen.LIBRARY_TRACK_EXEC in verdict["acc"]["reason"]
+    assert not verdict["pass"] and gen.TRACK_EXEC in verdict["acc"]["reason"]
 
 
-def test_n504_n506_are_red_by_design_until_4029_and_say_so_while_n505_is_not_claimed():
+def test_n504_n506_are_no_longer_red_by_design_after_4029():
+    """#4029 влит (PR #4116): у n504-n506 нет пометки «красный по делу», шаги ждут правку играющего."""
     steps = _steps()
-    for label in ("n504_add_bass", "n506_faster"):
-        assert "#4029" in steps[label]["_known_red"], label
-    assert (
-        "_known_red" not in steps["n505_vibe_dark"]
-    ), "n505 краснел 27.10 по другой причине (лицо вместо музыки)"
+    for label in ("n504_add_bass", "n505_vibe_dark", "n506_faster"):
+        assert "_known_red" not in steps[label], label
+        assert gen.TRACK_EXEC in steps[label]["acceptance"]["must_not_call"], label
 
 
 def test_n711_checks_the_synth_route_after_the_generation_series():
@@ -615,6 +617,13 @@ def _marathon_tree(tmp_path: Path) -> Path:
         ignore=shutil.ignore_patterns("tests", "__pycache__"),
     )
     shutil.copytree(NIGHT, tree / ".github" / "e2e" / "scenarios" / "night")
+    # #3971: генератор пишет поля судьи харнесса и сверяет их его таблицами (``e2e_events.COMPARES``)
+    harness = tree / ".github" / "workflows" / "scripts"
+    harness.mkdir(parents=True)
+    shutil.copy2(
+        ROOT / ".github" / "workflows" / "scripts" / "e2e_events.py",
+        harness / "e2e_events.py",
+    )
     return tree
 
 

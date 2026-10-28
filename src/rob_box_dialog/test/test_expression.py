@@ -45,7 +45,35 @@ def test_executing_media_shows_music_scene_by_tempo_only_after_started():
     assert ex.reflex("executing", "action.media", {**started, "bpm": 90}).emotion == "music_vibe"
     assert ex.reflex("executing", "action.media", {**started, "bpm": 120}).emotion == "music_groove"
     assert ex.reflex("executing", "action.media", {**started, "bpm": 140}).emotion == "music_shades"
-    assert ex.reflex("executing", "action.media", started).emotion == kn.EXECUTING_FACE["action.media"][0]
+    assert ex.reflex("executing", "action.media", started).emotion == ex.music_scene(None) == "music_groove"
+
+
+@pytest.mark.parametrize("bpm,scene", [(None, "music_groove"), (0, "music_groove"), (-5, "music_groove"), (60, "music_vibe"),
+                                       (99.9, "music_vibe"), (100, "music_groove"), (124.9, "music_groove"),
+                                       (125, "music_shades"), (130, "music_shades"), (200, "music_shades")])
+def test_4010_music_scene_of_a_new_track_is_chosen_by_tempo_as_before(bpm, scene):
+    assert ex.music_scene(bpm) == scene
+
+
+def test_4010_music_scene_walks_the_circle_whatever_the_tempo():
+    """Один темп весь сет: следующий трек и каждые MUSIC_SCENE_HOLD_S секунд - следующая сцена круга."""
+    circle = kn.MUSIC_SCENES
+    for bpm in (None, 90, 118, 130, 170):
+        first = circle.index(ex.music_scene(bpm))
+        assert [ex.music_scene(bpm, track_no=n) for n in range(4)] == [circle[(first + n) % 3] for n in range(4)]
+        step = kn.MUSIC_SCENE_HOLD_S
+        assert [ex.music_scene(bpm, 0, t) for t in (0, step - 0.1, step, 2 * step, 3 * step)] == [
+            circle[first], circle[first], circle[(first + 1) % 3], circle[(first + 2) % 3], circle[first]]
+        assert ex.music_scene(bpm, 2, 2 * step) == circle[(first + 4) % 3]    # трек и время складываются
+
+
+def test_4010_set_of_one_tempo_uses_every_music_scene():
+    seen = {ex.music_scene(130.0, track_no=n, elapsed_s=t) for n in range(3) for t in (0, 31, 62)}
+    assert seen == set(kn.MUSIC_SCENES) and len(seen) == 3
+
+
+def test_4010_music_scene_ignores_negative_input():
+    assert ex.music_scene(130, -3, -50) == ex.music_scene(130, 0, 0)
 
 
 def test_executing_scenes_exist_in_the_tables():

@@ -21,7 +21,7 @@ from rob_box_dialog.expression import held_face, hold_ms, merge, queued, reflex
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import needs_words, show_asked
-from rob_box_dialog.turn import Answer, Shown, TurnEngine
+from rob_box_dialog.turn import SAD_FACE, Answer, Shown, TurnEngine
 
 #: Фраза n905 как её слышит ход (вейк снимает адресация).
 N905 = "Робот, а теперь победную анимацию — блок питания наконец не гудит!"
@@ -219,7 +219,8 @@ def test_single_command_with_speech_is_as_before():
 
 
 def test_failed_action_of_the_later_iteration_leaves_the_reflex():
-    """«Радостно» о провале не бывает: действие второй итерации провалилось - лица команды нет (рефлекс как есть)."""
+    """«Радостно» о провале не бывает: действие второй итерации провалилось - лица команды нет, а лицо итога - грусть
+    фразы провала, а не рефлекс ``happy`` (#4069 п.8)."""
     class Failing(Ports):
         async def execute(self, actions, snapshot, turn_id):
             done = await super().execute(actions, snapshot, turn_id)
@@ -230,7 +231,7 @@ def test_failed_action_of_the_later_iteration_leaves_the_reflex():
     ports = Failing([Answer(Command(actions=(VICTORY, TIME)), "deepseek"),
                      Answer(Command(speech=SPEECH, actions=(ToolCall("stop_music", {}),)), "deepseek")])
     _run(ports)
-    assert ports.faces == []
+    assert ports.faces == [("done", SAD_FACE)]
 
 
 @pytest.mark.parametrize("text", [

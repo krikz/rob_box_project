@@ -17,6 +17,8 @@ import string
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from .track_brief import plural, track_brief, track_name
+
 #: Длина фразы LLM (схема) — короткий выкрик поверх музыки, не монолог.
 LINE_MAX = 80
 SUBMIT_TOOL = "submit_dj_line"
@@ -247,9 +249,7 @@ def mentions(name: str, text: str, fold: Fold = plain_fold) -> bool:
 
 def tracks_word(n: int) -> str:
     """«трек/трека/треков» к числу ``n``."""
-    if n % 10 == 1 and n % 100 != 11:
-        return "трек"
-    return "трека" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "треков"
+    return plural(n, "трек", "трека", "треков")
 
 
 def _quoted(names: Sequence[str]) -> str:
@@ -267,16 +267,18 @@ def set_not_found_text(missing: Sequence[str]) -> str:
 
 
 def now_playing_text(facts: Mapping[str, Any]) -> str:
-    """«Что играет» из фактов снимка сета (``dj``: ``track_no``, ``tracks``, ``melody``, ``next_melodies``,
-    ``not_found``) — фразу строит код (ADR-0148), не LLM. ``melody`` нет вовсе — мелодия не известна, о ней ни слова."""
-    no, total, melody = facts.get("track_no"), facts.get("tracks"), facts.get("melody")
-    head = f"Сейчас трек {no} из {total}" if total else f"Сейчас трек {no}"
-    if melody:
-        parts = [f"{head}: «{melody}»."]
-    elif melody == "":
-        parts = [f"{head}: свой мотив диджея, без мелодии из библиотеки."]
+    """«Что играет» из фактов снимка сета: короткое описание трека (:func:`track_brief` — название, стиль, движок, темп; у
+    кавера оригинал; без номера и id, #4060), потом ``next_melodies``, ``not_found`` — фразу строит код (ADR-0148), не LLM.
+    Описывать нечем (нет ни названия, ни оригинала кавера, ни стиля) — номер трека в сете, честно, без выдумок:
+    ``melody`` нет вовсе — о ней ни слова, ``""`` — у трека нет мелодии из библиотеки (свой мотив диджея)."""
+    no, total = facts.get("track_no"), facts.get("tracks")
+    brief, own_motif = track_brief(facts), facts.get("melody") == "" and not track_name(facts)
+    motif = "свой мотив диджея, без мелодии из библиотеки"
+    if brief:
+        parts = [f"Сейчас играет {brief}" + (f" — {motif}." if own_motif else ".")]
     else:
-        parts = [f"{head}."]
+        head = f"Сейчас трек {no} из {total}" if total else f"Сейчас трек {no}"
+        parts = [f"{head}: {motif}." if own_motif else f"{head}."]
     ahead = [m for m in facts.get("next_melodies") or () if m]
     if ahead:
         parts.append(f"Дальше по плану: {_quoted(ahead)}.")

@@ -48,7 +48,6 @@ def generate_launch_description():
     # Per-node config paths (issue #1004 fix).
     audio_node_yaml = PathJoinSubstitution([config_dir, 'audio_node.yaml'])
     led_node_yaml = PathJoinSubstitution([config_dir, 'led_node.yaml'])
-    dialogue_node_yaml = PathJoinSubstitution([config_dir, 'dialogue_node.yaml'])
     tts_node_yaml = PathJoinSubstitution([config_dir, 'tts_node.yaml'])
     stt_node_yaml = PathJoinSubstitution([config_dir, 'stt_node.yaml'])
     sound_node_yaml = PathJoinSubstitution([config_dir, 'sound_node.yaml'])
@@ -84,18 +83,8 @@ def generate_launch_description():
 
     # Лицо LED-матрицы — face_node в контейнере led-matrix на Vision Pi (ADR-0150 PR-3a, #3689).
 
-    # === Dialogue Node (Phase 2: DeepSeek streaming + accent_replacer) ===
-    dialogue_node = Node(
-        package='rob_box_voice',
-        executable='dialogue_node',
-        name='dialogue_node',
-        namespace=namespace,
-        parameters=[dialogue_node_yaml],
-        output='screen',
-        respawn=True,
-        respawn_delay=5.0,
-        arguments=['--ros-args', '--log-level', 'info']
-    )
+    # Нода диалога — dialog_node (v2): её строит dialog_engine.launch_nodes (OpaqueFunction ниже) из
+    # config_dir/dialog_node.yaml. Нода v1 удалена в PR-15 (#3711, часть 15p).
 
     # === TTS Node (Phase 2: Silero TTS v4 с бурундуком) ===
     tts_node_args = dict(
@@ -162,9 +151,9 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'info']
     )
 
-    # === Startup Greeting: переехал в dialogue_node (issue #1003, 06.08) ===
+    # === Startup Greeting: в ноде диалога (issue #1003, 06.08; v2 — #3912) ===
     # Отдельная нода приветствия убрана — страдала гонкой с
-    # инициализацией tts_node (фраза терялась). dialogue_node сам
+    # инициализацией tts_node (фраза терялась). dialog_node сам
     # говорит приветствие через startup_greeting_sec / startup_greeting_text.
 
     # === Speaker ID Node (issue #1077 — голосовая биометрия resemblyzer) ===
@@ -185,7 +174,8 @@ def generate_launch_description():
         namespace_arg,
         audio_node,
         led_node,
-        OpaqueFunction(function=dialog_engine.launch_nodes, args=[dialogue_node, tts_node_args]),
+        # dialog_node (v2) + tts_node; dialog_engine: v1 — ошибка (PR-15 #3711)
+        OpaqueFunction(function=dialog_engine.launch_nodes, args=[tts_node_args]),
         stt_node,
         sound_node,
         command_node,

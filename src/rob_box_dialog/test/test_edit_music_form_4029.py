@@ -90,6 +90,10 @@ def test_beat_edit_under_the_performance_is_heard_not_said():
     assert audible([heard], speaks=False, performing=True) == []
     # вне выступления (бит оставили играть) — говорится; предел и отказ под выступлением — тоже
     assert phrase_from_result(heard).text == "Сделал звук тяжелее."
+    # трек, который человек поставил до рэпа (28.10 01:20): бит выступления не при чём - слышна сама и эта правка
+    persons = _result("done", heard=True, backing=False, message="Сделал звук тяжелее.")
+    assert heard_quiet(persons) and audible([persons], speaks=False, performing=True) == []
+    assert audible([persons], speaks=False, performing=False) == [persons]
     limit = _result("done", heard=False, message="Тяжелее этот бит уже не сделаю.")
     refused = _result("rejected", "edit_backing_tempo", message="Под выступление темп не меняю.")
     assert audible([limit, refused], speaks=False, performing=True) == [limit, refused]

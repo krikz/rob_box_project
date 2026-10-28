@@ -88,6 +88,13 @@ def cache_item(track: CacheTrack, genre: str) -> SetItem:
     return SetItem(track.id, track.group or track.id, track.title, genre=genre, hook=hook)
 
 
+def item_facts(item: SetItem) -> Dict[str, str]:
+    """Факты описания трека сета (``rob_box_music.track_brief``, #4060): стиль слота трека (не стиль сета: в сете их
+    несколько) и у кавера его оригинал; чего у трека нет - ключа нет."""
+    facts = {"style": slot_style(item.genre), "cover": item.hook}
+    return {k: v for k, v in facts.items() if v}
+
+
 def pick_item(ready: Sequence[SetItem], used: Set[str], prev_group: str) -> Tuple[Optional[SetItem], str]:
     """Следующий трек из готовых: не сосед по задаче — ``ok`` (из задачи, у которой несыгранных больше: её второй
     вариант не останется последним без разделителя); иначе вариант той же задачи — ``sibling``; нет — None."""
@@ -430,7 +437,7 @@ class SetTalk:
         if self._publish is not None:
             self._publish(track_id, {"name": item.title, "source": "generated", "library_id": item.id,
                                      "track_no": no, "tracks": self._slots,
-                                     "title": f"{self.label} · трек {no} из {self._slots}"})
+                                     "title": f"{self.label} · трек {no} из {self._slots}", **item_facts(item)})
         return self._lines.on_started(track_id) if self._lines is not None else ""
 
 

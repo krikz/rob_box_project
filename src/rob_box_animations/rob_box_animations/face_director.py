@@ -22,7 +22,8 @@ import numpy as np
 
 from rob_box_core.speech_client import ANY_AGENT, SpeakingWatch, event_outcome
 from rob_box_dialog import expression as _expression
-from rob_box_dialog.knowledge import FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S
+from rob_box_dialog.knowledge import (FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S, MUSIC_DEFAULT_BPM,
+                                      MUSIC_SCENE_MIN_S)
 
 from .face import rear as R
 from .face.dsl import DSL_KEY, DSL_SPEC
@@ -32,9 +33,6 @@ from .face.sides import sides_frame
 from .face.states import SCENES, resolve
 from .outside import BatteryWatch, DriveTracker, calendar_rear, calendar_scene
 
-#: Scene by the tempo of the playing track (§5.5.5); thresholds by ear, Шифу.
-MUSIC_BY_BPM = ((100.0, 'music_vibe'), (125.0, 'music_groove'), (math.inf, 'music_shades'))
-MUSIC_DEFAULT_BPM = 118.0
 #: A requested emotion while the robot speaks becomes the tone of the talking
 #: face (the mouth keeps following the voice).
 MOOD_OF = {'happy': 'happy', 'victory': 'happy', 'wink': 'happy', 'talk_happy': 'happy', 'surprised': 'excited'}
@@ -107,15 +105,24 @@ class MouthTrack:
 
 
 class MusicTrack:
-    """The player owner's snapshot ``/voice/music/state`` (ADR-0141): playing, tempo, start."""
+    """The player owner's snapshot ``/voice/music/state`` (ADR-0141): playing, tempo, start.
+
+    The music scene (§5.5.5, #4010) is chosen by ``expression.music_scene`` - the one table of knowledge in
+    ``rob_box_dialog.knowledge`` (the tempo picks the first scene of a track, then the face walks the circle whatever the
+    tempo is). This class only knows what the code of the face must keep: which track this is (``track_no`` - how many
+    times the track changed since the music began), how long it plays, and the floor ``MUSIC_SCENE_MIN_S`` a scene is held."""
 
     def __init__(self) -> None:
         self.playing = False
         self.bpm: Optional[float] = None
         self.started_at: Optional[float] = None
         self.stops_at: Optional[float] = None
+        self.track_id: Optional[str] = None
+        self.track_no = 0
+        self._seen_at: Optional[float] = None
+        self._scene: Optional[Tuple[str, float]] = None   # (scene, since) shown now
 
-    def on_state(self, raw: str) -> bool:
+    def on_state(self, raw: str, now: Optional[float] = None) -> bool:
         try:
             snap = json.loads(raw)
         except (TypeError, ValueError):
@@ -125,16 +132,32 @@ class MusicTrack:
         dj = snap.get('dj') if isinstance(snap.get('dj'), dict) else {}
         self.playing = snap.get('state') == 'playing'
         self.bpm, self.started_at, self.stops_at = _num(dj.get('bpm')), _num(dj.get('started_at')), _num(snap.get('stops_at'))
+        self._follow_track((snap.get('track_id') or '') if self.playing else None, now)
         return True
+
+    def _follow_track(self, track_id: Optional[str], now: Optional[float]) -> None:
+        """A new track id while the music plays is the next track (the circle steps); silence forgets the set."""
+        if track_id is None:
+            self.track_id, self.track_no, self._seen_at, self._scene = None, 0, None, None
+        elif track_id != self.track_id:
+            self.track_no = self.track_no + 1 if self.track_id is not None else 0
+            self.track_id, self._seen_at = track_id, now
 
     def scene(self, now: float) -> Optional[Tuple[str, float, Optional[float]]]:
         """(scene, bpm, beats since start) while a track plays, else None."""
         if not self.playing or (self.stops_at is not None and now > self.stops_at + 1.0):
             return None
         bpm = self.bpm if self.bpm and self.bpm > 0 else MUSIC_DEFAULT_BPM
-        name = next(n for limit, n in MUSIC_BY_BPM if bpm < limit)
+        began = self.started_at if self.started_at is not None else self._seen_at
+        wanted = _expression.music_scene(self.bpm, self.track_no, now - began if began is not None else 0.0)
         beats = (now - self.started_at) * bpm / 60.0 if self.started_at is not None else None
-        return name, bpm, beats
+        return self._held(wanted, now), bpm, beats
+
+    def _held(self, wanted: str, now: float) -> str:
+        """The scene the face shows: a change waits until the current scene has played ``MUSIC_SCENE_MIN_S``."""
+        if self._scene is None or (wanted != self._scene[0] and now - self._scene[1] >= MUSIC_SCENE_MIN_S):
+            self._scene = (wanted, now)
+        return self._scene[0]
 
 
 def _num(v) -> Optional[float]:
@@ -235,7 +258,7 @@ class FaceDirector:
         self.mouth.add(speech_id, t0, frame_ms, levels, vowels)
 
     def on_music_state(self, raw: str, now: float) -> bool:
-        return self.music.on_state(raw)
+        return self.music.on_state(raw, now)
 
     def on_cmd_vel(self, linear_x: float, angular_z: float, now: float) -> None:
         self.drive.on_cmd(linear_x, angular_z, now)

@@ -187,10 +187,21 @@ def test_reflexes_use_known_scenes_ring_modes_and_earcons():
     for faces in kn.EXECUTING_FACE.values():
         assert set(faces) <= scenes
     assert {scene for _, scene in kn.MUSIC_SCENE_BPM} <= scenes
+    assert set(kn.MUSIC_SCENES) <= scenes
     assert set(kn.TURN_STAGES) <= set(kn.REFLEXES)
     assert set(kn.EXECUTING_FACE) <= set(kn.ACTION_CLASSES)
     assert kn.REFLEXES["addressed"].earcon == "heard" and kn.REFLEXES["addressed"].deadline_ms == 300
     assert set(kn.TOOL_PHRASES) <= set(kn.TOOL_CLASSES)
+
+
+def test_4010_music_scenes_have_one_table_of_knowledge():
+    """Сцены музыки лица - одна таблица: рефлексы и сцена на ``executing`` берут её, а не пишут своё перечисление."""
+    assert kn.MUSIC_SCENES == tuple(scene for _, scene in kn.MUSIC_SCENE_BPM) and len(set(kn.MUSIC_SCENES)) == 3
+    assert kn.REFLEXES["music.playing"].face == kn.MUSIC_SCENES == kn.EXECUTING_FACE["action.media"]
+    limits = [limit for limit, _ in kn.MUSIC_SCENE_BPM]
+    assert limits == sorted(limits) and limits[-1] == float("inf")
+    assert kn.MUSIC_SCENE_BPM[0][0] <= kn.MUSIC_DEFAULT_BPM < kn.MUSIC_SCENE_BPM[1][0]
+    assert 0 < kn.MUSIC_SCENE_MIN_S <= kn.MUSIC_SCENE_HOLD_S
 
 
 def test_reflex_ttl_is_set_for_every_turn_stage_and_fits_the_face_limit():

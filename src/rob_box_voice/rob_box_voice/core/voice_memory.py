@@ -20,7 +20,7 @@ Usage in DialogueNode:
     from rob_box_voice.core.voice_memory import VoiceMemory
 
     # Init once at node startup
-    self.voice_memory = VoiceMemory(db_path="/data/voice_memory.db")
+    self.voice_memory = VoiceMemory(db_path=tools_db_path())  # rob_box_core.tools_db
 
     # Reload context from previous sessions (turns go into the caller's own history;
     # the old ConversationHistory class was removed in PR-15 15a1, #3711)
@@ -212,7 +212,7 @@ class VoiceMemory:
         # instead was tried and reverted: that directory is a single
         # numbered stream covering SEVERAL unrelated databases (waypoints,
         # music library, github presets...), and running it wholesale
-        # against ``voice_memory.db`` hit a non-idempotent ``ALTER TABLE
+        # against the tools DB hit a non-idempotent ``ALTER TABLE
         # ... ADD COLUMN type`` in ``006_music_github_presets.sql`` —
         # "duplicate column name: type" — because an earlier migration in
         # that SAME stream had already added it via a different table.

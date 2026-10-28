@@ -686,7 +686,55 @@ def _resolve(
         if class_consts is not None:
             return class_consts.get(node.attr)
         return None
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and import_map and all_module_consts:
+        # ``module.TOPIC`` where ``module`` is an imported module of src/
+        # (``from rob_box_voice.core import identity_question`` or the relative
+        # ``from .core import identity_question``): the constant in that module.
+        module = _imported_module(import_map.get(node.value.id), all_module_consts)
+        if module is not None:
+            return all_module_consts[module].get(node.attr)
     return None
+
+
+def _imported_module(
+    target: tuple[str, str] | None, all_module_consts: dict[str, dict[str, str | None]]
+) -> str | None:
+    """Dotted name of the src/ module an import alias is bound to, or ``None``.
+
+    ``from pkg import module`` records ``(pkg, module)``; ``import pkg.module``
+    records ``(pkg, "pkg.module")`` (see :func:`_collect_imports`).
+    """
+    if target is None:
+        return None
+    mod, orig = target
+    for dotted in (f"{mod}.{orig}", orig):
+        if dotted in all_module_consts:
+            return dotted
+    return None
+
+
+def _relative_module_imports(
+    tree: ast.Module, dotted: str, is_package: bool, all_module_consts: dict[str, dict[str, str | None]]
+) -> dict[str, tuple[str, str]]:
+    """``from .core import identity_question`` -> alias -> (absolute package, module name).
+
+    Only imports that name a known src/ *module* are recorded (not relative
+    constants or classes), so the alias can resolve ``alias.TOPIC`` in
+    :func:`_resolve` and nothing else changes for msg-type resolution.
+    """
+    package = dotted.split(".") if is_package else dotted.split(".")[:-1]
+    found: dict[str, tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ImportFrom) and node.level > 0):
+            continue
+        base_parts = package[: len(package) - (node.level - 1)] if node.level > 1 else package
+        if not base_parts:
+            continue
+        base = ".".join(base_parts + ([node.module] if node.module else []))
+        for alias in node.names:
+            if f"{base}.{alias.name}" in all_module_consts:
+                found[alias.asname or alias.name] = (base, alias.name)
+    return found
 
 
 def _src(node: ast.AST) -> str:
@@ -1053,6 +1101,15 @@ def scan_files(files: list[Path]) -> SeamScan:
         dotted = _module_dotted_name(path)
         if dotted:
             all_module_consts[dotted] = module_consts
+
+    # Relative imports of whole modules (``from .core import identity_question``)
+    # need the full module index, so they are added after pass 1 (PR-15 #3711:
+    # dialog_node publishes /dialog/session as ``identity_question.SESSION_TOPIC``).
+    for path, rel, tree, is_test in trees:
+        dotted = None if is_test else _module_dotted_name(path)
+        if dotted:
+            relative = _relative_module_imports(tree, dotted, path.name == "__init__.py", all_module_consts)
+            per_file_imports[rel] = {**relative, **per_file_imports[rel]}
 
     # Pass 2 (prod files only): walk for topics + seam defs, now with full
     # cross-file constant knowledge available.

@@ -24,27 +24,10 @@ Run with::
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
 import rob_box_voice.core.speak_helpers as speak_helpers
 from rob_box_voice.core.speak_helpers import strip_meta_markers
-
-
-# Module-level fixture path — used by the wiring tests below.
-# Layout: src/rob_box_voice/test/unit/core/<this>.py
-#         parents[0] = test/unit/core/
-#         parents[1] = test/unit/
-#         parents[2] = test/
-#         parents[3] = src/rob_box_voice/   ← go up 3 to reach the
-#         rob_box_voice source root
-_DIALOGUE_NODE_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "rob_box_voice"
-    / "dialogue_node.py"
-)
 
 
 # Live-log shapes from the bug report (Vision Pi 15.09.2026, 12:01 MSK).
@@ -230,7 +213,8 @@ class TestStripMetaMarkersPassthrough:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module wiring — `strip_meta_markers` is in the public API of
-# speak_helpers and is imported by dialogue_node.
+# speak_helpers (PR-15 #3711, part 15p: the v1 dialogue node that
+# imported it is gone, its wiring check went with it).
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSpeakHelpersExports:
@@ -239,51 +223,6 @@ class TestSpeakHelpersExports:
 
     def test_strip_meta_markers_is_callable(self) -> None:
         assert callable(strip_meta_markers)
-
-
-class TestDialogueNodeImportsStripMetaMarkers:
-    """Regression: if dialogue_node stops importing strip_meta_markers,
-    the new ``spoken = strip_meta_markers(spoken)`` line in _handle_result
-    would NameError at runtime."""
-
-    @pytest.fixture(scope="module")
-    def dialogue_node_source(self) -> str:
-        return _DIALOGUE_NODE_PATH.read_text(encoding="utf-8")
-
-    def test_imports_strip_meta_markers(self, dialogue_node_source: str) -> None:
-        # Match either:
-        #   * `import strip_meta_markers` (anywhere in the file)
-        #   * `from X import (...)` parenthesised block that contains
-        #     `strip_meta_markers` (the style used in dialogue_node.py —
-        #     import statement spans multiple lines)
-        single_line = re.compile(r"^\s*import\s+strip_meta_markers\b",
-                                 flags=re.MULTILINE)
-        # Parenthesised `from X import ( ... strip_meta_markers ... )` —
-        # DOTALL so `.` matches newlines inside the parens.
-        from_block = re.compile(
-            r"from\s+\S+\s+import\s*\([^)]*\bstrip_meta_markers\b[^)]*\)",
-            flags=re.DOTALL,
-        )
-        assert single_line.search(dialogue_node_source) or from_block.search(
-            dialogue_node_source
-        ), (
-            "dialogue_node.py must import strip_meta_markers from "
-            "rob_box_voice.core.speak_helpers — otherwise the new "
-            "`spoken = strip_meta_markers(spoken)` line in _handle_result "
-            "raises NameError at runtime (issue #2547)."
-        )
-
-    def test_calls_strip_meta_markers_in_handle_result(
-        self, dialogue_node_source: str
-    ) -> None:
-        # We don't pin the exact line number — any grow of the file
-        # between commits shifts it. We DO require that
-        # ``strip_meta_markers`` is called at least once in the file
-        # (it has only one caller).
-        assert dialogue_node_source.count("strip_meta_markers(") >= 1, (
-            "Expected at least one `strip_meta_markers(...)` call in "
-            "dialogue_node.py — the post-strip chain in _handle_result."
-        )
 
 
 if __name__ == "__main__":

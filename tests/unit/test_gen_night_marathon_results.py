@@ -136,10 +136,10 @@ def test_every_music_action_step_has_a_result_marker():
         assert any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats), label
         assert gen.TURN_DONE in pats or gen.TURN_WITH_LLM in pats, label
         assert gen.TURN_TIMEOUT in step["acceptance"]["must_not_call"], label
-    assert gen.MUSIC_STARTED in _patterns("n502_start_renardo")
     assert gen.MUSIC_STARTED in _patterns("n602_dj_on")
-    assert gen.MUSIC_STARTED in _patterns("n809_music_bed")
-    assert gen.MUSIC_STARTED in _patterns("n711_renardo_not_broken")
+    # #3971 (сверка 27.10): «на синтезаторе» -- не любой трек на деке, а синт-трек (вид результата ``synth``)
+    for label in ("n502_start_renardo", "n809_music_bed", "n711_renardo_not_broken"):
+        assert gen.SYNTH_STARTED in _patterns(label), label
     for label in ("n511_stop_music", "n608_dj_off", "n709_stop_generated", "n712_stop_all", "n812_stop_music"):
         assert gen.MUSIC_STOPPED in _patterns(label), label
 
@@ -195,19 +195,24 @@ def test_tool_failure_is_not_a_result():
     assert not _verdict("n504_add_bass", log)["pass"]
 
 
-def test_live_music_edit_accepts_v2_tools_and_n506_forbids_voice_speed():
-    """n504-n506: честная попытка -- dj_set|request_music|generate_music; «ускорь темп» не крутит голос робота (#3976)."""
+def test_live_music_edit_is_the_edit_tool_on_the_playing_track_and_n506_forbids_voice_speed():
+    """n504-n506 (#4029, PR #4116): правка играющего -- ``edit_music`` и ``edit applied`` того же трека; новый заказ
+    (dj_set|request_music|generate_music) -- не правка; «ускорь темп» не крутит голос робота (#3976)."""
     ended = TURN_LINE % ("done", "finished")
-    for tool in gen.MUSIC_EDIT_TOOLS:
-        ok = "\n".join(["✅ Инструмент %s выполнен успешно" % tool, ended])
-        for label in ("n504_add_bass", "n505_vibe_dark", "n506_faster"):
-            assert _verdict(label, ok)["pass"], (label, tool)
+    applied = "🎚️ [music v2] edit applied track_id=req93513:01:A:bce191fa at_beat=9856 bpm=147"
+    edit = "\n".join(["✅ Инструмент edit_music выполнен успешно", applied, ended])
+    for label in ("n504_add_bass", "n505_vibe_dark", "n506_faster"):
+        assert _verdict(label, edit)["pass"], label
+        for tool in ("dj_set", "request_music", "generate_music"):
+            new_order = "\n".join(["✅ Инструмент %s выполнен успешно" % tool, ended])
+            assert not _verdict(label, new_order)["pass"], (label, tool)
+        claimed = "\n".join(["✅ Инструмент edit_music выполнен успешно", ended])
+        assert not _verdict(label, claimed)["pass"], (label, "успех тула без правки на такте")
     forbidden = _acc("n506_faster")["must_not_call"]
     assert "set_speed" in forbidden and "set_pitch" in forbidden
     voice_instead = "\n".join(["📤 Отправлен запрос ab: set_speed", "✅ Инструмент set_speed выполнен успешно", ended])
     assert not _verdict("n506_faster", voice_instead)["pass"]
-    voice_and_music = "\n".join(["tool_calls=(ToolCall(name='set_speed'),)",
-                                 "✅ Инструмент dj_set выполнен успешно", ended])
+    voice_and_music = "\n".join(["tool_calls=(ToolCall(name='set_speed'),)", edit])
     assert not _verdict("n506_faster", voice_and_music)["pass"]
 
 
@@ -413,12 +418,16 @@ def test_music_must_start_steps_forbid_the_timeout_phrase():
     """#3971 R22 / n809: «Музыка пока не заиграла.», а трек стартовал через 1,4 с -- ложь; n605 не ужесточён."""
     steps = _steps()
     assert MUSIC_MUST_START_LABELS <= set(steps)
+    lie = _tts("Музыка пока не заиграла.")
     for label in MUSIC_MUST_START_LABELS:
-        assert gen.MUSIC_NOT_STARTED in _acc(label)["must_not_say"], label
-    assert gen.MUSIC_NOT_STARTED not in (_acc("n605_dj_set_plan").get("must_not_say") or []), "#4006 ещё не влит"
-    ok = "\n".join(["✅ Инструмент request_music выполнен успешно", "🎵 [music v2] started track_id=req1:01:A", DONE])
+        assert etm.step_verdict(_acc(label), lie)["forbidden_said"], label
+    assert not etm.step_verdict(_acc("n605_dj_set_plan"), lie)["forbidden_said"], "#4006 ещё не влит"
+    # #3971: n809 просит синт («на синтезаторе») -- путь synth и синт-трек req… на деке
+    route = "🎚️ [source] asked=[] genre=— кандидаты=['synth:club'] → synth:club (code) gen=ok"
+    ok = "\n".join([route, "✅ Инструмент request_music выполнен успешно", "🎵 [music v2] started track_id=req1:01:A",
+                    DONE])
     assert _verdict("n809_music_bed", ok)["pass"]
-    lie = "\n".join([_tts("Музыка пока не заиграла."), "✅ Инструмент request_music выполнен успешно",
+    lie = "\n".join([_tts("Музыка пока не заиграла."), route, "✅ Инструмент request_music выполнен успешно",
                      "🎵 [music v2] started track_id=req1:01:A", DONE])
     assert not _verdict("n809_music_bed", lie)["pass"]
 
@@ -532,7 +541,8 @@ def test_n1002_and_n1007_judge_honesty_not_narrow_words():
     assert _verdict("n1007_no_leak", "\n".join([from_memory, DONE]))["pass"], "факты долгой памяти -- не утечка"
     leak = _tts("Ты спрашивал, знаю ли я тех, кто не представился, по именам.")
     assert not _verdict("n1007_no_leak", "\n".join([leak, DONE]))["pass"]
-    assert not _acc("n1007_no_leak")["must_not_call"], "подстрока по всему логу ловила факты памяти"
+    # #3971: у каждого шага в ``must_not_call`` есть ход, закрытый заглушкой; подстрок фактов памяти там нет
+    assert _acc("n1007_no_leak")["must_not_call"] == [gen.TURN_FALLBACK], "подстрока по всему логу ловила факты памяти"
 
 
 def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructive_is_left():
@@ -548,7 +558,10 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
                   "n711_renardo_not_broken", "n712_stop_all"):
         assert "skip_when" not in steps[label], label
     assert not any("_skip_when" in s for s in steps.values())
-    assert set(gen.SKIP_WHEN) == {"NO_SONG"}, "KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду"
+    # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
+    assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED"}
+    assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
+        "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
     for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
         assert label not in steps, label
     assert "'action': 'delete'" not in json.dumps([s["patterns"] for s in steps.values()], ensure_ascii=False)

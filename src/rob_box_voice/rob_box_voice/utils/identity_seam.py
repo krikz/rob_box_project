@@ -31,8 +31,8 @@ class VoiceIdentitySeam(IdentitySeam):
         биометрии. Используется «как есть», без изменения самого класса.
     :param memory: ``MemoryStore`` — памятный слой (профили/факты знакомых
         под ``speaker_scope(<id>)``). На роботе это ``harness_voice.db``.
-    :param legacy_facts_db_path: путь к ``voice_memory.db`` — второй, более
-        старый писатель фактов (MCP-инструмент ``memory_save``, таблица
+    :param legacy_facts_db_path: путь к БД инструментов
+        (``rob_box_core.tools_db``) — второй, более старый писатель фактов (MCP-инструмент ``memory_save``, таблица
         ``voice_facts``). Issue #2751: пока обе БД живы (миграция #2000
         не доведена до конца — см. ADR-0128), ``merge()`` без этого пути
         переносил бы только факты из ``harness_voice.db`` и молча пропускал
@@ -89,8 +89,8 @@ class VoiceIdentitySeam(IdentitySeam):
 
         ``facts_moved`` — сумма по ОБОИМ писателям фактов (issue #2751):
         ``harness_voice.db`` (``self._memory``, через ``merge_speaker_facts``)
-        и, если задан ``legacy_facts_db_path``, ``voice_facts`` в
-        ``voice_memory.db`` (через ``merge_legacy_voice_facts``). Без
+        и, если задан ``legacy_facts_db_path``, ``voice_facts`` в БД
+        инструментов (через ``merge_legacy_voice_facts``). Без
         второго слагаемого склейка двух профилей одного человека переносила
         бы только facts из harness-БД (в проде на 22.09.2026 — 10 старых
         строк) и молча теряла бы живые факты MCP-инструментов (100 строк).

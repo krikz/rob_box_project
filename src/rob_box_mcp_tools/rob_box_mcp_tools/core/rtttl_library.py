@@ -27,6 +27,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Tuple, Union
 
+from rob_box_core.tools_db import tools_db_path
 from rob_box_music import knowledge as kn
 from rob_box_music.works import alias_pairs, ru_phrase_by_query
 
@@ -658,7 +659,7 @@ class RtttlLibrary:
 
     При первом ``__init__`` читает ``data/rtttl_melodies.jsonl.gz`` и
     разворачивает его в таблицу ``rtttl_melodies`` той же БД, что и
-    WaypointStore/FAQStore (``VOICE_MEMORY_DB_PATH`` → ``/data/voice_memory.db``).
+    WaypointStore/FAQStore (БД инструментов, путь — ``rob_box_core.tools_db``).
     Импорт идемпотентен: если таблица уже заполнена — архив не читается.
     """
 
@@ -667,7 +668,7 @@ class RtttlLibrary:
         db_path: Optional[str] = None,
         archive_path: Optional[str] = None,
     ) -> None:
-        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        self._db_path = db_path or tools_db_path()
         self._archive: Union[Path, Any] = (
             Path(archive_path) if archive_path else _default_archive()
         )

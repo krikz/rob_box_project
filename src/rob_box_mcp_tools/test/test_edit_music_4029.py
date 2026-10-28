@@ -18,6 +18,7 @@ from rob_box_core.tool_catalog import get_tool
 from rob_box_dialog import knowledge as dkn
 from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, parse, validate
+from rob_box_dialog.respond import ActionResult, audible, phrase_from_result, phrase_key, quiet_in_performance
 from rob_box_dialog.session import MusicStateRef, Session
 from rob_box_dialog.turn import Answer, TurnEngine
 from rob_box_mcp_tools.engine.backing_deck import BackingDeck
@@ -170,9 +171,45 @@ def test_faster_on_our_synth_track_changes_the_tempo_on_the_bar_and_says_it():
     assert result.success, result
     new = round(old * kn.EDIT_TEMPO_STEP)
     assert result.data["changes"] == ["faster"] and result.data["bpm"] == new
-    assert result.data["message"] == f"Ускорил до {new} BPM." and result.data["heard"] is False
+    assert result.data["message"] == f"Ускорил до {new} BPM." and result.data["heard"] is True
     assert ("tempo", float(new)) in rig.clock.calls
     assert rig.owner.now_playing()["bpm"] == new and len(_events(rig, "started")) == 1
+
+
+def _as_result(data, status="done"):
+    """Результат тула глазами диалога (как ``to_result`` хоста): класс ``action.media``, ключ фразы по данным."""
+    return ActionResult("turn-1", 0, "personality", "edit_music", dkn.TOOL_CLASSES["edit_music"], status, None, data)
+
+
+def test_edit_of_the_persons_track_under_the_rap_is_heard_not_said_but_the_limit_is_said():
+    """Живой 28.10 01:20 (хвост #4029): «включи бит на Ренардо» → «под этот бит зачитай рэп» → «сделай бит потяжелее» -
+    правка трека человека (не подложки выступления), рэп идёт, а «Сделал звук тяжелее.» звучала посреди него. Пока идёт
+    выступление, успех правки молчит всегда (слышна сама); вне выступления говорится; предел и отказ говорятся и в нём."""
+    rig = _live_rig()
+    req, tool = _tools(rig)
+    assert req.execute(intent="track", text="поставь трек").success  # трек человека, подложки выступления нет
+    rig.clock.run_until(rig.clock.beat + 9)
+    req.order = _no_new_order
+
+    done = tool.execute(heard_text=SHIFU).data
+
+    assert done["changes"] == ["heavier"] and done["backing"] is False and done["heard"] is True
+    heard = _as_result(done)
+    assert phrase_key(heard) == "music.edit_heard" and quiet_in_performance(heard)
+    assert audible([heard], speaks=False, performing=True) == []
+    assert phrase_from_result(heard).text == done["message"] == "Сделал звук тяжелее."
+    assert audible([heard], speaks=False, performing=False) == [heard]  # вне выступления - говорится
+    # дальше тяжелее некуда - честный предел: его слышно не само, он говорится и посреди рэпа
+    rig.clock.run_until(rig.clock.beat + 9)
+    for _ in range(4):
+        again = tool.execute(heard_text=SHIFU).data
+        if again["limited"]:
+            break
+        rig.clock.run_until(rig.clock.beat + 9)
+    assert again["limited"] == ["heavier"] and again["heard"] is False
+    limit = _as_result(again)
+    assert phrase_key(limit) == "music.edit_said" and not quiet_in_performance(limit)
+    assert audible([limit], speaks=False, performing=True) == [limit]
 
 
 def test_slot_counts_only_when_the_words_name_nothing():

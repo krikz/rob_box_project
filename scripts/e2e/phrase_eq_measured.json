@@ -857,14 +857,6 @@
       "how": "play",
       "run": "40484087795"
     },
-    "n809_music_bed": {
-      "voice": "anton",
-      "chars": 62,
-      "text_sha1": "3e1f5b103c1c",
-      "eq_s": 7.05,
-      "how": "play",
-      "run": "40484087795"
-    },
     "n810_rap_over_music": {
       "voice": "anton",
       "chars": 62,

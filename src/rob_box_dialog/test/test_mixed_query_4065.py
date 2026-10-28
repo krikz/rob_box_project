@@ -23,7 +23,7 @@ from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, Expression, Form, Invalid, Performance, ToolCall, parse, validate
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
-from rob_box_dialog.turn import Answer, Shown, TurnEngine
+from rob_box_dialog.turn import SAD_FACE, Answer, Shown, TurnEngine
 
 #: Живой лог 27.10 06:36:19: реплика и команда модели (``play_animation sad`` - повтор действия прошлого хода).
 N_LIBRARY = "Робот, что у тебя в музыкальной библиотеке?"
@@ -140,7 +140,8 @@ BELL_CALL = ToolCall("play_sound", {"sound": "ui_bell"})
 def test_pr4067_salvaged_refused_memory_read_before_the_last_iteration_closes_the_turn_done(salvage):
     """Блокер ревью PR #4067: спасённые ``query`` невалидной команды - только озвученный отказ чтения памяти, итерации
     ещё есть. Фраза кода звучит одна, читать модели нечего - второго вызова LLM нет, и ход закрыт ``done`` (было:
-    итог ``addressed`` - рефлекс «услышал» и лицо «слушаю» после фразы отказа)."""
+    итог ``addressed`` - рефлекс «услышал» и лицо «слушаю» после фразы отказа). Лицо итога - грусть фразы отказа, а не
+    рефлекс ``happy`` (#4069 п.8, живой 27.10 08:20:52: «Не узнаю твой голос…» → ``happy -> happy (3.0 с)``)."""
     ports = Ports([Answer(Invalid("speech_with_actions", salvage=salvage), "deepseek", calls=2)],
                   {"memory_context": ("rejected", {}, kn.NO_PERSON_REASON)})
     agg = _run(ports, N_OWN_MEMORY)
@@ -148,17 +149,18 @@ def test_pr4067_salvaged_refused_memory_read_before_the_last_iteration_closes_th
     assert ports.said[0][0].startswith(phrases.text("query.rejected.no_person"))
     assert (agg.stage, agg.status) == ("done", "done")
     assert ports.stages[-1] == ("done", "done", "invalid_salvaged:speech_with_actions")
-    assert ports.faces == [], "провал чтения лицо итога не красит"
+    assert ports.faces == [("done", SAD_FACE)], "отказ чтения - грустное лицо итога, не happy"
 
 
 def test_pr4067_bare_query_expression_does_not_paint_the_done_face():
     """Ревью PR #4067: экспрессия команды с голым ``query`` написана до данных, как и её слова, - итог она не красит
-    (как до PR): данные модели, её ответ невалиден - фраза кода по данным под рефлекс ``done`` без ``happy``."""
+    (как до PR): данные модели, её ответ невалиден - фраза кода по данным, лицо итога - её грусть («не смог сложить»,
+    #4069 п.8), а не ``happy`` команды."""
     happy = Answer(Command(actions=(LIST_CALL,), expression=Expression(emotion="happy")), "deepseek")
     ports = Ports([happy, Answer(Invalid("too_long", "speech"), "deepseek", calls=2)], LIBRARY_DONE)
     _run(ports)
     assert [t for t, _, _ in ports.said] == [phrases.text(kn.QUERY_FALLBACK_GENERIC)]
-    assert ports.faces == [], "экспрессия до данных итог не красит"
+    assert ports.faces == [("done", SAD_FACE)], "экспрессия до данных итог не красит"
 
 
 def test_pr4067_executed_animation_next_to_query_still_paints_the_done_face():
@@ -183,11 +185,14 @@ def test_4065_invalid_answer_after_the_mixed_data_is_said_from_the_data_3883():
 
 def test_4065_mixed_on_the_last_iteration_without_words_is_said_by_code_from_the_data():
     """Модель до потолка просит ``[play_animation, list]`` без слов: на последней итерации list не исполняется
-    (читать некому), анимация исполнена и красит итог, а говорит код по данным хода - не тишина."""
+    (читать некому), анимация исполнена один раз (#4069 п.1: повтор в том же ходе не исполняется) и красит итог, а
+    говорит код по данным хода - не тишина."""
     ports = Ports([_mixed()] * (kn.LLM_QUERY_ITERATIONS_MAX + 1), LIBRARY_DONE)
     agg = _run(ports)
     assert len(ports.asked) == kn.LLM_QUERY_ITERATIONS_MAX + 1
-    assert ports.executed[-1] == [("play_animation", {"animation": "sad"})], "query на последней итерации не исполнен"
+    assert ports.executed == [[("play_animation", {"animation": "sad"}), ("music_library", dict(LIST_CALL.args))],
+                              [("music_library", dict(LIST_CALL.args))]], \
+        "анимация не повторена; query на последней итерации не исполнен"
     assert ports.said == [(phrases.text(kn.QUERY_FALLBACK_GENERIC), None, "sad")]
     assert (agg.stage, agg.status) == ("done", "done") and ports.stages[-1] == ("done", "done", "query_fallback:ceiling")
     assert ports.faces == [("done", Shown(emotion="sad", duration_s=kn.FACE_SHOW_DEFAULT_S))], \

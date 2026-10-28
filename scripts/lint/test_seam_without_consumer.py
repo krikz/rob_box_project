@@ -381,6 +381,52 @@ class ScanFilesIntegrationTests(unittest.TestCase):
         self.assertIn("/avatar/command", scan.pubs)
         self.assertIn("/avatar/command", scan.subs)
 
+    def test_module_attribute_constant_resolves_for_absolute_and_relative_imports(self):
+        # PR-15 #3711 (15p): dialog_node publishes /dialog/session as
+        # ``identity_question.SESSION_TOPIC`` after ``from .core import identity_question``;
+        # led_node subscribes ``voice_state.SESSION_TOPIC`` after an absolute module import.
+        scan, _ = self._scan(
+            {
+                "src/rob_box_voice/rob_box_voice/core/identity_question.py": (
+                    "SESSION_TOPIC = '/dialog/session'\n"
+                ),
+                "src/rob_box_core/rob_box_core/voice_state.py": (
+                    "SESSION_TOPIC = '/dialog/session'\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/dialog_node.py": (
+                    "from .core import identity_question\n"
+                    "class DialogNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(SessionState, identity_question.SESSION_TOPIC, 1)\n"
+                ),
+                "src/rob_box_voice/rob_box_voice/led_node.py": (
+                    "from rob_box_core import voice_state\n"
+                    "class LedNode:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_subscription(SessionState, voice_state.SESSION_TOPIC, self.cb, 1)\n"
+                ),
+            }
+        )
+        self.assertIn("/dialog/session", scan.pubs)
+        self.assertIn("/dialog/session", scan.subs)
+        self.assertEqual(scan.unresolved, [])
+
+    def test_relative_import_of_a_constant_is_not_guessed(self):
+        # Only whole modules are bound by relative imports; ``from .x import NAME`` of a
+        # constant stays unresolved (reported) rather than silently guessed.
+        scan, _ = self._scan(
+            {
+                "src/rob_box_voice/rob_box_voice/core/topics.py": "TOPIC = '/voice/x'\n",
+                "src/rob_box_voice/rob_box_voice/node.py": (
+                    "from .core.topics import TOPIC\n"
+                    "class Node:\n"
+                    "    def __init__(self):\n"
+                    "        self.create_publisher(String, TOPIC, 1)\n"
+                ),
+            }
+        )
+        self.assertNotIn("/voice/x", scan.pubs)
+
     def test_test_files_do_not_feed_the_topic_graph(self):
         # A fake node in a test file publishing/subscribing must not count
         # as a real ROS wiring — only the production graph matters.

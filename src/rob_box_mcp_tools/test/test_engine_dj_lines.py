@@ -266,7 +266,7 @@ def test_first_track_of_set_has_the_same_facts_as_queued_tracks():
     facts = published[-1][1]
     assert (facts["melody"], facts["track_no"], facts["tracks"]) == ("Тетрис", 1, 2)
     assert facts["next_melodies"] == ["Super Mario Bros"] and facts["played"] == []
-    assert dl.now_playing_text(facts) == "Сейчас трек 1 из 2: «Тетрис». Дальше по плану: «Super Mario Bros»."
+    assert dl.now_playing_text(facts) == "Сейчас играет «Тетрис». Дальше по плану: «Super Mario Bros»."
 
 
 def test_facts_not_ready_claim_no_melody():
@@ -309,7 +309,7 @@ def test_when_questions_on_first_and_last_track_of_two_track_set():
     expected = "«Тетрис» уже был — трек 1. «Тетрис» в этом сете больше не будет по плану — это последний трек сета."
     assert dl.when_text(on_last, "тетрис", fold) == expected
     assert "следующ" not in dl.when_text(on_last, "тетрис", fold)
-    assert dl.now_playing_text(on_last) == "Сейчас трек 2 из 2: «Super Mario Bros». Это последний трек сета."
+    assert dl.now_playing_text(on_last) == "Сейчас играет «Super Mario Bros». Это последний трек сета."
 
 
 def test_said_next_melody_is_the_one_the_composer_plays_with_past_sets_penalty():
