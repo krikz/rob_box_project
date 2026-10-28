@@ -237,7 +237,9 @@ def test_assemble_llm_puts_every_provider_into_command_mode_and_counts_calls(mon
     (tmp_path / "prompt.txt").write_text("Ты робот.\n", encoding="utf-8")
     counter = CallCounter()
     llm, system = assemble_llm(["deepseek", " "], counter, prompt_dir=tmp_path, system_prompt_file="prompt.txt")
-    assert system == "Ты робот." and llm.name == "deepseek" and llm.mode in ("tool_choice", "json_mode", "tool_offered")
+    # промпт агента = файл + правила из knowledge.PROMPT_RULES (PR-15 15-rule, #3711)
+    assert system == "Ты робот.\n\n" + kn.prompt_rules("personality")
+    assert llm.name == "deepseek" and llm.mode in ("tool_choice", "json_mode", "tool_offered")
     assert counter.calls == 0
 
 

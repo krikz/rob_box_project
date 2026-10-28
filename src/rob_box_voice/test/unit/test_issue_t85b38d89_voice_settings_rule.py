@@ -23,10 +23,10 @@ kanban-задачи t_85b38d89 (LLM-prompt: emotion/pitch/volume + skill set_pit
    синхронно с MCP ``SetPitchTool``.
 2. ``prompts/skills/voice-tts.txt`` документирует enum и step-control
    семантику; явно запрещает SSML pitch-атрибут как workaround.
-3. ``master_prompt_compact.txt`` имеет новый RULE #VOICE-SETTINGS
+3. ``master_prompt_compact.txt`` имел новое правило голосовых настроек
    с provider-conditional cheat sheet (minimax/yandex/silero).
 
-#3696 (ADR-0148, ADR-0150 A5): RULE #VOICE-SETTINGS и его тесты на текст промпта
+#3696 (ADR-0148, ADR-0150 A5): правило голосовых настроек и его тесты на текст промпта
 удалены — контракт живёт в схемах set_pitch/set_volume/set_speed (они ниже).
 
 Refs:
