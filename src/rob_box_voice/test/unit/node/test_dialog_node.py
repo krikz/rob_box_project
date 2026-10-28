@@ -728,6 +728,31 @@ def test_e2e_mode_of_the_owner_keeps_the_live_profile_untouched_3919(node, tmp_p
     assert not (tmp_path / "harness_voice.db").exists()
 
 
+def test_speaker_facts_are_read_from_the_tools_db_memory_save_writes_4082(monkeypatch, tmp_path, request):
+    """#4082: без своих путей в YAML нода читает факты из той же БД инструментов, куда их пишет ``memory_save``
+    (``rob_box_core.tools_db``); e2e-факты — из того же e2e-файла, что у ``mcp_server``."""
+    import sqlite3
+
+    from rob_box_core import tools_db
+
+    facts = tmp_path / "tools.db"
+    conn = sqlite3.connect(facts)
+    conn.execute("CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
+                 "created_at REAL, updated_at REAL)")
+    conn.execute("INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+                 "VALUES ('пьёт чай без сахара', 'general', 'spk-boris', 0, 1)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, str(facts))
+    made = request.getfixturevalue("node")  # нода строится после env: путь берётся при старте, как на роботе
+    made._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
+                             "utterance_id": "u-t"}))
+    made._on_utterance(_long("Робот, что скажешь", "u-t"))
+    made.last_turn.result(timeout=10)
+    assert "пьёт чай без сахара" in json.dumps(made.test_llm.messages[-1], ensure_ascii=False, default=str)
+    assert made._speaker_memory._e2e_facts_db == tools_db.TOOLS_E2E_DB_DEFAULT
+
+
 def test_snapshot_has_no_memory_of_unconfirmed_speaker_3919(node, tmp_path):
     _remember(node, tmp_path)
     node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))

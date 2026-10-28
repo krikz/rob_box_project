@@ -117,9 +117,8 @@ class SQLiteVoiceMemory(MemoryStore):
         ADR-0083 §2.4 — both dialogue_node (personality) and
         supervisor_node (operator) point at the same file; the column
         is what keeps their facts disjoint. Defaults to ``"default"``
-        so every pre-migration caller (tests, speaker profile helpers,
-        the VoiceMemoryAdapter shim) stays source-compatible. ADR-0083
-        §2.4 / ADR-0055 Phase 2.
+        so every pre-migration caller (tests, speaker profile helpers)
+        stays source-compatible. ADR-0083 §2.4 / ADR-0055 Phase 2.
     """
 
     name = "sqlite_voice"
@@ -266,8 +265,8 @@ class SQLiteVoiceMemory(MemoryStore):
         ``migrations/011_agent_namespace.sql``:
 
         * ``scope = 'mcp:legacy'``        → ``agent='personality'``
-          (VoiceMemoryAdapter Phase 1 rows that ADR-0055 §1.1 stitched
-          into the unified DB).
+          (rows of the removed VoiceMemoryAdapter, ADR-0055 Phase 1;
+          the adapter is gone since #4082, old rows still backfill).
         * ``scope LIKE 'operator.%'``     → ``agent='operator'``
         * everything else                 → ``agent='personality'``
 

@@ -53,6 +53,7 @@ from rob_box_core import dialog_engine, speech_client
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
+from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import BARE_WAKE, HELD, Addressed, NotAddressed, decide_in_session, heard_from
 from rob_box_dialog.address import log_label
@@ -119,11 +120,11 @@ def declare_params(node: Any) -> None:
     node.declare_parameter("startup_greeting_sec", kn.STARTUP_GREETING_DELAY_S)
     node.declare_parameter("startup_greeting_text", "")
     # «Робот помнит собеседника» (#3919, core/speaker_memory.py): профиль - harness_voice.db (шов note_seen, как у v1),
-    # факты - voice_facts из voice_memory.db (куда пишет memory_save); в e2e - e2e-БД фактов (как e2e_db_path MCP).
-    # Пустой путь - этой части нет.
+    # факты - voice_facts БД инструментов, куда пишет memory_save; в e2e - e2e-БД фактов MCP. Пути фактов по умолчанию -
+    # из rob_box_core.tools_db, те же, что у mcp_server (#4082); в YAML их нет. Пустой путь - этой части нет.
     node.declare_parameter("sqlite_db_path", "")
-    node.declare_parameter("voice_facts_db_path", "")
-    node.declare_parameter("e2e_voice_facts_db_path", "/data/voice_memory.e2e.db")
+    node.declare_parameter("voice_facts_db_path", tools_db_path())
+    node.declare_parameter("e2e_voice_facts_db_path", TOOLS_E2E_DB_DEFAULT)
     # Выбиратель пути пения (#4079) — тот же режим, что у пути музыки: значение ``mcp_server.music_chooser`` передаёт
     # launch (``rob_box_core.dialog_engine.shared_params``); пусто — умолчание ``chooser_model`` (цепочка).
     node.declare_parameter("music_chooser", "")

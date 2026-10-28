@@ -6,7 +6,8 @@ no DDL changes).
 The robot ships two SQLite databases on ``/data`` with **incompatible
 ``waypoints`` schemas**:
 
-* ``voice_memory.db`` (the MCP-side file, ``WaypointStore``'s home):
+* the tools DB (the MCP-side file, ``WaypointStore``'s home; path from
+  ``rob_box_core.tools_db``):
   ``waypoints(id PK, map_id NOT NULL FK -> maps, name, x, y, theta,
   created_at, updated_at, UNIQUE(map_id, name))``. Each waypoint
   belongs to a **map** (a mapping session identified by UUID).
@@ -138,7 +139,7 @@ class WaypointAdapter:
     """Schema-reconciling facade over :class:`WaypointStore`.
 
     Reads and writes always go through the MCP-schema file
-    (``voice_memory.db``). The harness-side
+    (the tools DB, ``rob_box_core.tools_db``). The harness-side
     ``harness_voice.db.waypoints`` table is **not** touched — ADR-0055
     §3 forbids DDL changes there. Future AgentCore-side code reads
     via the harness-view methods of this adapter (``map_id`` defaults
@@ -148,10 +149,9 @@ class WaypointAdapter:
     ----------
     store:
         A live :class:`WaypointStore`. Pass ``None`` to construct a
-        default one (which reads ``VOICE_MEMORY_DB_PATH`` / defaults
-        to ``/data/voice_memory.db`` — same fallback
-        :class:`WaypointStore` already uses today; this adapter does
-        NOT introduce a new knob).
+        default one (``rob_box_core.tools_db.tools_db_path()`` — same
+        path :class:`WaypointStore` uses; this adapter does NOT
+        introduce a new knob).
     default_map_id:
         ``map_id`` used by :meth:`save_waypoint_harness` when no map
         exists yet. Defaults to :data:`DEFAULT_MAP_ID`. Override only

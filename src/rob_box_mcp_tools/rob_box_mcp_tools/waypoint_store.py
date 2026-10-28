@@ -2,7 +2,8 @@
 """
 waypoint_store.py — SQLite-backed CRUD for named waypoints, scoped per map.
 
-Reuses the same database file as VoiceMemory (``VOICE_MEMORY_DB_PATH``).
+Reuses the same database file as VoiceMemory (the tools DB, path from
+``rob_box_core.tools_db.tools_db_path``).
 Migration ``003_waypoints.sql`` is applied idempotently on first init.
 
 NOT on ``/data/harness_voice.db`` (issue #2000 / ADR-0055): the dialogue
@@ -19,7 +20,7 @@ Thread-safe: every public method acquires ``self._lock``.
 
 Usage (inside MCPServer)::
 
-    store = WaypointStore()                    # reads VOICE_MEMORY_DB_PATH
+    store = WaypointStore()                    # tools_db_path()
     map_id = store.create_map("квартира")      # new mapping session
     store.save_waypoint("кухня", 2.0, 1.0, 0.0)
     store.list_waypoints()                     # → [{"name": "кухня", ...}]
@@ -35,6 +36,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from rob_box_core.tools_db import tools_db_path
 
 
 # Path to 003_waypoints.sql relative to the package root.
@@ -73,7 +76,7 @@ class WaypointStore:
     """SQLite CRUD for maps and waypoints."""
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        self._db_path = db_path or tools_db_path()
         self._lock = threading.Lock()
 
         # Ensure parent directory exists

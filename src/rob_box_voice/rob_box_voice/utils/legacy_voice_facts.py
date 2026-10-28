@@ -11,12 +11,12 @@ Issue #2751 (инвентаризация ``/data`` на Vision Pi), продо�
 модель scope/key/value). Живые пользовательские факты («не ем лук», «пью
 чай без сахара» и т. п.) копит СОВСЕМ ДРУГОЙ, более старый писатель —
 ``rob_box_voice.core.voice_memory.VoiceMemory`` (через MCP-инструмент
-``memory_save``), пишущий в таблицу ``voice_facts`` файла
-``/data/voice_memory.db`` (колонки ``speaker_id``, ``fact``, ``category`` —
-никакого отношения к scope/key модели харнесса).
+``memory_save``), пишущий в таблицу ``voice_facts`` БД инструментов
+(путь — ``rob_box_core.tools_db``; колонки ``speaker_id``, ``fact``,
+``category`` — никакого отношения к scope/key модели харнесса).
 
 Замер на роботе 22.09.2026 (issue #2751): ``harness_voice.db`` — 10 фактов,
-последняя запись 15.09 (см. ``docs/adr/0128-...``); ``voice_memory.db`` —
+последняя запись 15.09 (см. ``docs/adr/0128-...``); БД инструментов —
 100 фактов, записи сегодняшние. ``VoiceIdentitySeam.merge()`` до этого
 модуля видел только первую БД — склейка двух профилей одного человека
 переносила 10 старых фактов и НЕ трогала 100 живых.
@@ -42,8 +42,8 @@ __all__ = ["merge_legacy_voice_facts"]
 def merge_legacy_voice_facts(db_path: str, src_speaker_id: str, dst_speaker_id: str) -> int:
     """Переприсвоить ``voice_facts.speaker_id`` от ``src`` к ``dst``.
 
-    :param db_path: путь к ``voice_memory.db`` (легаси-БД MCP-инструментов,
-        ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db`` по умолчанию).
+    :param db_path: путь к БД MCP-инструментов (на роботе —
+        ``rob_box_core.tools_db.tools_db_path()``, его передаёт вызывающий).
     :param src_speaker_id: биометрический id профиля-источника (будет
         удалён вызывающим кодом после склейки — ``SpeakerDatabase.merge_speakers``).
     :param dst_speaker_id: биометрический id профиля-получателя.
