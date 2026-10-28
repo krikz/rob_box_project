@@ -44,10 +44,27 @@ def test_request_music_plays_one_club_track_on_the_v2_deck():
     started = _started(rig)
     assert [e["track_id"] for e in started] == [result.data["track_id"]] and started[0]["phase_in_form"] == 0.0
     assert rig.states[-1] and '"title"' in rig.states[-1]  # имя трека — в снимке для <music_state>
-    # #3613: факты трека в снимке — название как во фразе запуска («Включаю клубный трек.»), источник, стиль, время
+    # #3613: факты трека в снимке — источник, стиль, время. #4060: названия у своего синт-трека нет: слова заказа
+    # («поставь клубный трек») названием не служат и в снимок под ``name`` не ложатся
     dj = json.loads(rig.states[-1])["dj"]
-    assert dj["name"] == "клубный трек" and dj["source"] == "synth" and dj["style"] == "club"
+    assert "name" not in dj and dj["source"] == "synth" and dj["style"] == "club"
     assert dj["bpm"] == result.data["bpm"] and "started_at" in dj and "length_s" not in dj  # клубный — по кругу
+
+
+def test_4060_order_words_are_not_the_title_of_the_club_track():
+    """Живой 28.10 06:13: «какую нибудь спокойную музыку» легло в кавычки как название трека; описание - стиль, движок, темп."""
+    from rob_box_music.track_brief import plural, track_brief
+
+    rig = _rig()
+    _dj, req = _tools(rig)
+    result = req.execute(intent="track", text="включи какую нибудь спокойную музыку", mood="calm")
+    assert result.success
+    rig.clock.run_until(rig.clock.beat + 2)
+    dj = json.loads(rig.states[-1])["dj"]
+    assert "name" not in dj and "спокойную" not in json.dumps(dj, ensure_ascii=False)
+    bpm = int(round(result.data["bpm"]))
+    expected = f"трек в стиле клуб, синтез Ренардо, {bpm} {plural(bpm, 'удар', 'удара', 'ударов')} в минуту"
+    assert dj["brief"] == track_brief(dj) == expected
 
 
 def test_track_facts_of_a_piece_name_the_catalog_title_and_source():

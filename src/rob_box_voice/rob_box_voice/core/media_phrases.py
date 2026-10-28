@@ -21,7 +21,7 @@ from rob_box_dialog.knowledge import LIBRARY_UNNAMED
 from rob_box_dialog.phrases import text as _phrase
 from rob_box_music import knowledge as kn
 from rob_box_music.instruments import neighbors
-from rob_box_music.track_brief import cover_text, track_traits
+from rob_box_music.track_brief import cover_text, is_untitled, track_name, track_traits
 from rob_box_music.track_brief import plural as _plural
 
 
@@ -129,8 +129,10 @@ def now_playing_track_text(facts: Mapping[str, Any]) -> str:
     осталось (у пьесы — один проход формы; клубный трек повторяется до стопа). Фразу строит код (ADR-0148, #3613)."""
     if not facts.get("playing"):
         return PENDING_TEXT if facts.get("pending") else NOTHING_PLAYING_TEXT
-    name = str(facts.get("name") or facts.get("title") or "")
-    facts = {**facts, "name": name}  # снимок старого сервера: название - в ``title``
+    # название - настоящее (``track_name``); снимок старого сервера кладёт его в ``title``, но у своего синт-трека (``title``
+    # - «клубный трек · 136 BPM», метка деки) названия нет вовсе: «Сейчас играет музыка - клуб, синтез Ренардо, ...» (#4060)
+    name = track_name(facts) or ("" if is_untitled(facts) else str(facts.get("title") or ""))
+    facts = {**facts, "name": name}
     head = _phrase("music.now_playing_named", name=name) if name else _phrase("music.now_playing")
     if name and facts.get("composer"):  # автор — за кавычками, как во фразе запуска (piece_text)
         head += f", {facts['composer']}"

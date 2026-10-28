@@ -21,6 +21,10 @@ from . import knowledge as kn
 BRIEF_FACTS = ("name", "melody", "composer", "cover", "style", "bpm", "engine", "source", "instrument_played")
 #: Источники, у которых ``bpm`` снимка — темп деки (60 или темп сета), а не темп звучащего файла: темп не называем.
 TEMPO_UNKNOWN_SOURCES = frozenset({"generated"})
+#: Источники без настоящего названия (#4060): свой синт-трек собран кодом по теме заказа, у него нет названия из каталога,
+#: генерации или кавера. Слова заказа («какую нибудь спокойную музыку») названием не служат: живьём 28.10 06:13 они попали
+#: в кавычки как «название» трека. Такой трек описывает стиль, движок и темп; у трека сета название - мелодия (``melody``).
+UNTITLED_SOURCES = frozenset({"synth"})
 #: Движок трека словами (ключи ``knowledge.MUSIC_ENGINES``) и движок, которым играет источник.
 ENGINE_WORDS = {"synth": "синтез Ренардо"}
 ENGINE_OF_SOURCE = {"synth": "synth"}
@@ -64,9 +68,16 @@ def instrument_text(facts: Mapping[str, Any]) -> str:
     return f"на {lead.prepositional}" if lead is not None else ""
 
 
+def is_untitled(facts: Mapping[str, Any]) -> bool:
+    """Источник трека названия не имеет (:data:`UNTITLED_SOURCES`): ни ``name``, ни ``title`` снимка названием не служат."""
+    return str(facts.get("source") or "") in UNTITLED_SOURCES
+
+
 def track_name(facts: Mapping[str, Any]) -> str:
-    """Название трека: название заказа или генерации, иначе мелодия трека сета; нет — ``""``."""
-    return str(facts.get("name") or facts.get("melody") or "").strip()
+    """Настоящее название трека: каталога, генерации или кавера, иначе мелодия трека сета; нет — ``""``. У источника
+    без названия (:data:`UNTITLED_SOURCES`) слова заказа в ``name`` в счёт не идут - только мелодия сета."""
+    melody = str(facts.get("melody") or "").strip()
+    return melody if is_untitled(facts) else str(facts.get("name") or melody).strip()
 
 
 def named(facts: Mapping[str, Any]) -> str:
@@ -107,5 +118,5 @@ def track_brief(facts: Mapping[str, Any]) -> str:
     return ", ".join([*head, *traits])
 
 
-__all__ = ["BRIEF_FACTS", "ENGINE_WORDS", "TEMPO_UNKNOWN_SOURCES", "engine_word", "instrument_text", "named", "plural",
-           "style_name", "tempo_text", "track_brief", "track_name", "track_traits"]
+__all__ = ["BRIEF_FACTS", "ENGINE_WORDS", "TEMPO_UNKNOWN_SOURCES", "UNTITLED_SOURCES", "engine_word", "instrument_text",
+           "is_untitled", "named", "plural", "style_name", "tempo_text", "track_brief", "track_name", "track_traits"]
