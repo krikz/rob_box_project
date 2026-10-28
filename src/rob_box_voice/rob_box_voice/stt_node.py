@@ -32,6 +32,7 @@ from rob_box_core import speech_client
 from rob_box_core.provider_publisher import ProviderStatePublisher
 from .core.provider_health import stt_provider_states
 from .core.interrupt_request import InterruptOffer
+from .stt_hang_guard import HangGuard
 from std_msgs.msg import Bool, Int32, String
 from vosk import KaldiRecognizer, Model
 
@@ -592,6 +593,7 @@ class STTNode(Node):
         рвёт только через ~15 мин ретрансмиссий. Поэтому после
         DEADLINE_EXCEEDED канал пересоздаём: следующая фраза пойдёт по
         свежему соединению, а не по тому, что висит. Цена — один TLS-хендшейк.
+        Старый канал закрывается в фоне (#4135, :meth:`_reset_yandex_channel`).
         """
         self.get_logger().warning(
             f"⚠️ [issue 1477] stream error: {exc.code()} {exc.details()} [#2924 {context}]"
@@ -601,15 +603,17 @@ class STTNode(Node):
         return _map_grpc_error(exc, self.yandex_timeout_s)
 
     def _reset_yandex_channel(self) -> None:
-        """Закрыть канал Yandex STT и открыть новый (issue #2924)."""
+        """Открыть новый канал Yandex STT сразу, старый отпустить в фоне (issue #2924, #4135).
+
+        28.10 07:08 UTC ``old.close()`` здесь, в потоке стрима, повис навсегда: строки «пересоздаю канал» в логе
+        не было, попытка не вернулась, робот 5 минут не слышал ни одной фразы. Теперь поток фразы закрытия не
+        ждёт: новый канал — до него, ``close()`` старого — в фоне под сторожем (``HangGuard.release``).
+        """
         old = getattr(self, "yandex_channel", None)
-        if old is not None:
-            try:
-                old.close()
-            except Exception as e:  # noqa: BLE001 — закрытие не должно ронять STT
-                self.get_logger().warning(f"⚠️ [#2924] close старого канала Yandex STT: {e}")
-        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT")
+        self.get_logger().warning("🔌 [#2924] DEADLINE_EXCEEDED → пересоздаю канал Yandex STT (старый — в фоне, #4135)")
         self.initialize_yandex()
+        if old is not None:
+            self._hang_guard.release("yandex.channel.close", old.close)
 
     def initialize_vosk(self):
         """Load Vosk model (fallback provider).
@@ -1063,7 +1067,7 @@ class STTNode(Node):
         return budget if budget > 0 else None
 
     def _init_provider_chain_params(self) -> None:
-        """Прочитать параметры цепочки и собрать кэш «мёртвых».
+        """Прочитать параметры цепочки и собрать кэш «мёртвых» и сторож зависаний.
 
         Отдельный метод, а не кусок ``__init__``: ADR-0021 держит
         ``__init__`` в CC-бюджете 20, а дефолты цепочки и MiniMax сами по
@@ -1122,6 +1126,8 @@ class STTNode(Node):
             if ProviderDeadCache is not None
             else None
         )
+        # #4135: сторож зависаний — один на ноду, помнит брошенные вызовы провайдеров между фразами.
+        self._hang_guard = HangGuard(log=lambda message: self.get_logger().warning(message))
         # MiniMax-клиент создаётся лениво — при первом обращении к
         # провайдеру, а не на старте (httpx.Client держит сокеты, а
         # нода может вообще не дойти до MiniMax: Vosk-only режим).
@@ -1340,6 +1346,7 @@ class STTNode(Node):
             policies=self._provider_policies(),
             dead_cache=self._provider_dead_cache,
             max_total_s=self.stt_phrase_budget_s,
+            guard=self._hang_guard,
         )
         self._log_provider_state("recognize", attempts=attempts)
         return text, attempts

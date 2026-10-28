@@ -76,7 +76,7 @@
       "methods": 38
     },
     "src/rob_box_voice/rob_box_voice/stt_node.py:STTNode": {
-      "wmc": 207,
+      "wmc": 206,
       "methods": 39
     },
     "src/rob_box_voice/rob_box_voice/tts_node.py:TTSNode": {
