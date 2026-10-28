@@ -337,17 +337,21 @@ PROSODY_NORMAL_KIND = "prosody_normal"
 SHOW_QUEUE_KIND = "show_queue"
 #: Вид Tier-1 «шаг голоса» (#4074): темп или тон речи шагом (``set_speed``/``set_pitch``); слова - :data:`VOICE_STEP`.
 VOICE_STEP_KIND = "voice_step"
+#: Вид Tier-1 «повтори» (#4028): последнюю ОЗВУЧЕННУЮ реплику робота (``TurnLog.last_spoken``) говорит код дословно,
+#: без LLM. Марафон 23.10, n808: «повтори последнее ещё раз, я не расслышал» шло в LLM, и та во время выступления
+#: правкой (``edit_pending``) заменила его сегменты 3–11. Слова - :data:`REPEAT`.
+REPEAT_KIND = "repeat"
 #: Вид Tier-1 команды → звучит ли её исполнение. В SILENCED (§6.3) грамматика отдаёт только незвучащие виды:
 #: стоп, тишина, её снятие, громкость, новая сессия (сброс снимает и тишину, §7.1). Смена голоса звучит —
 #: тул ``set_voice`` сам говорит «Говорю голосом X» (PR-4). ``stop_speech`` (#3994) — «хватит читать/говорить/петь»,
 #: «…а музыку оставь»: речь и выступление гаснут, плеер музыки и движение — нет (охват — :data:`STOP_SCOPE`).
 #: ``prosody_normal`` и ``voice_step`` звучат: тулы темпа и тона молчат, фразу о результате говорит код.
 #: ``show_queue`` не звучит, но в тишине лицо - заклеенный рот (#3984): показа там нет, реплика идёт дальше и ход
-#: молчит, как вся тишина (#3982).
+#: молчит, как вся тишина (#3982). ``repeat`` звучит (повтор - речь): в тишине его нет, ход молчит.
 TIER1_KINDS: Mapping[str, bool] = MappingProxyType({
     "stop_all": False, "stop_speech": False, "silence": False, "unsilence": False, "volume": False,
     "new_session": False, "set_voice": True, PROSODY_NORMAL_KIND: True, VOICE_STEP_KIND: True, "answer": False,
-    SHOW_QUEUE_KIND: True,
+    SHOW_QUEUE_KIND: True, REPEAT_KIND: True,
 })
 #: Служебные слова закрытой грамматики: команда «покрыта целиком», если вне них в ней только слова команды.
 #: Этот же список — служебные слова медиа-грамматики v1 (``media_command_grammar._COMMON_FILLER``).
@@ -431,6 +435,30 @@ SHOW_QUEUE_FILLER: Tuple[str, ...] = (
     "нам", "пожалуйста", "ну", "давай", "свое", "свою", "свои", "эмоции", "эмоцию", "анимации", "анимацию",
 )
 SHOW_QUEUE_MIN, SHOW_QUEUE_MAX = 2, 5
+
+
+@dataclass(frozen=True)
+class RepeatWords:
+    """Закрытая грамматика «повтори» (#4028, Tier-1 :data:`REPEAT_KIND`): фраза покрыта ЦЕЛИКОМ просьбами ``asks``
+    (последовательности слов в нижнем регистре, ё → е; хоть одна обязательна) и служебными ``filler``. «Ещё раз» без
+    просьбы («ещё раз!» после анимации или песни - повтори действие, а не слова) и чужое слово («повтори песню»,
+    «повтори за мной», «я не понял, как это работает») - не Tier-1: решает модель."""
+
+    asks: Tuple[Tuple[str, ...], ...]
+    filler: Tuple[str, ...]
+
+
+REPEAT = RepeatWords(
+    asks=(("повтори",), ("повторите",), ("повторить",), ("повтори-ка",), ("не", "расслышал"), ("не", "расслышала"),
+          ("не", "расслышали"), ("не", "услышал"), ("не", "услышала"), ("не", "услышали"), ("скажи", "еще", "раз"),
+          ("скажите", "еще", "раз"), ("скажи", "снова"), ("скажи", "заново"), ("что", "ты", "сказал")),
+    filler=("последнее", "последний", "последнюю", "фразу", "еще", "раз", "снова", "заново", "опять", "я", "мы", "тебя",
+            "не", "понял", "поняла", "плохо", "извини", "прости", "можешь", "можно", "пожалуйста", "ну", "а", "ка",
+            "это", "что", "ты", "сказал", "давай"),
+)
+#: Повторять нечего: в журнале сессии нет озвученной реплики робота (новая сессия, перезапуск) - фраза кода, а не
+#: тишина на адресованную просьбу.
+REPEAT_NOTHING_PHRASE = "tier1.repeat_nothing"
 
 
 @dataclass(frozen=True)
@@ -1023,7 +1051,19 @@ WINDOW_FACE_SCENE = "сцена лица"
 WINDOW_ACTION_ARG: Mapping[str, str] = MappingProxyType({
     "play_animation": "animation", "play_sound": "sound", LIBRARY_TOOL: "action", "request_music": "intent",
     "dj_set": "action", "edit_music": "changes", "navigate_to_waypoint": "waypoint", "move_direction": "direction", "perform": "kind",
+    "generate_music": "kind",
 })
+#: Что именно заказано - поля данных результата после ключевого аргумента (#4069 п.4): у ``request_music`` ключевой
+#: ``intent`` (track/melody) не говорит, что играло, - «request_music track (text: ровный ритм; mood: спокойная)».
+#: Поля нет в данных - его нет и в реплике.
+WINDOW_ACTION_DETAILS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "request_music": ("text", "genre", "mood"), "generate_music": ("style", "theme"), "dj_set": ("theme",),
+})
+#: Исход по ДАННЫМ результата словами этой реплики (#4069 п.4): ключ фразы исхода (``respond.phrase_key`` - та же
+#: таблица :data:`TOOL_PHRASES` по данным, что строит фразу кода) -> слова после статуса. ``stop_music`` при
+#: ``was_playing=False`` - «сделано, ничего не играло», а не голое «сделано»: Tier-1 «хватит» гасит молча, и без этих
+#: слов модель считала бы, что музыка играла и выключена. Ключа нет в таблице - только статус.
+WINDOW_OUTCOME_NOTES: Mapping[str, str] = MappingProxyType({"music.stop_idle": "ничего не играло"})
 #: Статус исхода словами этой реплики: статусы исполнителя (:data:`ACTION_STATUSES`) и выступления (``turn_log``
 #: ``PERFORM_*``). Статус вне таблицы - как есть.
 WINDOW_ACTION_STATUS: Mapping[str, str] = MappingProxyType({
@@ -1305,8 +1345,16 @@ SILENT_ANSWER_PHRASE = "understand.silent_answer"
 #: что запрос в этом ходе уже выполнен (#3883): подсказка повтора не должна говорить «ничего не сделано».
 QUERY_RESULTS_FIELD = "query_results"
 #: Страховка от молчания (#3883, решение Шифу 23.10): речь невалидна и после повтора, а запрос хода выполнен — код
-#: говорит фразу по данным результата. Тул → ключ каталога; слоты строит код (``turn.query_fallback``).
-QUERY_FALLBACK_PHRASES: Mapping[str, str] = MappingProxyType({"list_tts_voices": "query.voices_summary"})
+#: говорит фразу по данным результата. Тул → ключ каталога (или :class:`ByData` - ключ по данным вызова); слоты строит
+#: код (``turn.query_answer``). ``music_library`` ``list`` (#4069 п.3; живой 27.10: на последней итерации звучала общая
+#: «Нашёл ответ, но не смог сложить…») - число треков и :data:`LIBRARY_SUMMARY_NAMES` названий, пустая библиотека -
+#: фраза о пустой; ``search``/``info`` своей фразы нет - общая.
+QUERY_FALLBACK_PHRASES: Mapping[str, Any] = MappingProxyType({
+    "list_tts_voices": "query.voices_summary",
+    LIBRARY_TOOL: ByData(("action", "total"), {("list", 0): "music.library_empty"}, "query.library_summary"),
+})
+#: Сколько названий называет фраза списка библиотеки: 2–3, не весь список (варианты одного заказа - одно имя).
+LIBRARY_SUMMARY_NAMES = 3
 #: Тулов с фразой нет — общая честная фраза: данные получены, ответ не сложился.
 QUERY_FALLBACK_GENERIC = "query.fallback_generic"
 #: Команда невалидна и после повтора, а запроса в ходе не было (#3953, решение Шифу 23.10): допустимые действия
@@ -1326,7 +1374,9 @@ PHRASE_KEYS: Tuple[str, ...] = (
     "understand.timeout", PASSED_ADDRESSED_PHRASE, NEW_SESSION_PHRASE, QUERY_FALLBACK_GENERIC, INVALID_COMMAND_PHRASE,
     *INVALID_COMMAND_PHRASES.values(),
     *(question.declined for question in TOOL_QUESTIONS.values()),
-    *QUERY_FALLBACK_PHRASES.values(),
+    *(key for entry in QUERY_FALLBACK_PHRASES.values()
+      for key in (entry.all_keys() if isinstance(entry, ByData) else (entry,))),
+    REPEAT_NOTHING_PHRASE,
     *(f"provider.exhausted.{reason}" for reason in ("quota", "network", "timeout", "auth", "error")),
     "speak_aloud.rejected.unsupported_script", "speak_aloud.rejected.operator_hold", "speak_aloud.timeout",
     "speak_aloud.lost",
