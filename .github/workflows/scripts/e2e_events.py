@@ -57,7 +57,9 @@ v1: ``🔊 TTS: speech_id=<8>`` открывает реплику, ``Публи�
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
 робота за акт значит, что шаг не играется, вердикт ``SKIP <reason>`` (:func:`skip_rule`, :func:`skip_verdict`). С
 ``"absent": true`` наоборот: шаг не играется, если строки НЕТ -- предусловие так и не наступило (n805b «Робот, говори»
-без тишины, которую должен был включить n805).
+без тишины, которую должен был включить n805). С ``"deck": "ended"`` предусловие -- состояние деки: шаг не
+играется, если последним событием деки за акт было ``finished`` (трек доиграл сам: «выключи» нечего выключать,
+n312 28.10); снятая стопом или не заигравшая дека шаг не гасит -- красный там честный.
 
 Вид результата музыки (#3971)
 =============================
@@ -497,11 +499,16 @@ class SkipRule(NamedTuple):
     reason: str
     log: Pattern[str]
     absent: bool = False
+    deck: str = ""
 
 
 #: Поле шага (пишет генератор марафона, таблица ``SKIP_WHEN``): ``{"reason": "KIE_QUOTA", "log": <regex>}``.
 SKIP_FIELD = "skip_when"
 _SKIP_REASON_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+#: ``deck`` правила: состояние деки, а не строка лога. ``ended`` -- последнее событие деки за акт ``finished``: трек
+#: доиграл сам, и стопить уже нечего (n312 28.10: кавер на 92 с кончился в 16:05:11, команда пришла в 16:05:12).
+DECK_ENDED = "ended"
+SKIP_DECKS = (DECK_ENDED,)
 #: Сколько символов строки-улики выводить в лог шага.
 EVIDENCE_CHARS = 200
 
@@ -520,8 +527,11 @@ def skip_rule(step: Mapping[str, Any]) -> Optional[SkipRule]:
     absent = raw.get("absent", False)
     if not isinstance(absent, bool):
         raise ValueError(f"{label}: {SKIP_FIELD}.absent -- true|false, а не {absent!r}")
+    deck = raw.get("deck", "")
+    if deck and deck not in SKIP_DECKS:
+        raise ValueError(f"{label}: {SKIP_FIELD}.deck -- одно из {list(SKIP_DECKS)}, а не {deck!r}")
     try:
-        return SkipRule(raw["reason"], re.compile(raw["log"]), absent)
+        return SkipRule(raw["reason"], re.compile(raw["log"]), absent, deck)
     except re.error as exc:
         raise ValueError(f"{label}: {SKIP_FIELD}.log -- не regex: {exc}") from exc
 
@@ -541,6 +551,8 @@ def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
     now, lines = split_input(text)
     if now is None:
         return {"fetch": 0, "skip": "-", "evidence": "-"}
+    if rule.deck:
+        return _deck_verdict(rule, lines)
     hit = next((line for line in lines if rule.log.search(line)), None)
     if rule.absent:
         if hit is not None:
@@ -549,6 +561,20 @@ def skip_verdict(rule: SkipRule, text: str) -> Dict[str, object]:
     if hit is None:
         return {"fetch": 1, "skip": "-", "evidence": "-"}
     return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(hit.split())[:EVIDENCE_CHARS]}
+
+
+def _deck_verdict(rule: SkipRule, lines: List[str]) -> Dict[str, object]:
+    """Правило с ``deck``: судит ПОСЛЕДНЕЕ событие деки за акт (``started``/``stop``/``finished``; правка ``edit``
+    трек не меняет). ``ended`` -- пропуск только если последним было ``finished`` (трек доиграл сам). Деку снял
+    стоп или она не заигрывала -- шаг играется: красный там честный, а не «трек кончился сам»."""
+    last: Optional[Tuple[MusicEvent, str]] = None
+    for line in lines:
+        event = music_event(line)
+        if event is not None and event.kind != "edit":
+            last = (event, line)
+    if last is None or last[0].kind != "finished" or not rule.log.search(last[1]):
+        return {"fetch": 1, "skip": "-", "evidence": "-"}
+    return {"fetch": 1, "skip": rule.reason, "evidence": " ".join(last[1].split())[:EVIDENCE_CHARS]}
 
 
 # -- вид результата музыки: сверка с тем, что играло ДО шага (#3971) -----------------------------------------------

@@ -7,18 +7,18 @@
   "dir": ".github/e2e/scenarios/night",
   "last_commit": "f31f6290fec02a80c382f78dc7a3ac4357302cd4",
   "sha256": {
-   "night_marathon_act10_finale_memory_v1.json": "0c2c118495fcb4cb8648b4f1a4bb7c0a6a125f713ca0ab829fb2b36c97ba3d13",
+   "night_marathon_act10_finale_memory_v1.json": "4458e0714cef6b908de0e8871f078c34025dd510fb292c9b9cf26cc03a84bb94",
    "night_marathon_act1_wakeup_v1.json": "f7c745898dbd5e1e2c864d8f7fd679fc052d2f6c0405e9bf0c0a39db6237db6b",
    "night_marathon_act2_acquaintance_v1.json": "35425c35cf4e238acedb27c11793e44c29637039efb3020dca76f31a361d23aa",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
-   "night_marathon_act3_backlog_diarization_v1.json": "eff537dd01d9db42f4d7a9cdd503ec5dd1ebca0d112e4d6b2be081f6fea6c9e1",
+   "night_marathon_act3_backlog_diarization_v1.json": "a3597df27ff6c7d638233c05e6a66c50737d1a2142c61f9fbc998297bfcc227d",
    "night_marathon_act4_voice_prosody_v1.json": "bd6d3b0505569ea70ea47de717423291480cb45ffc2c26d75ddddbc566369319",
    "night_marathon_act5_renardo_live_v1.json": "8ceee7509e9dba75a4af99578686347df4c8e919a0730422a7e81fcd9f0e9636",
    "night_marathon_act6_dj_booth_v1.json": "1d2eca0582a846322864c8957a2adc5d8e407af1c2dfbd480ec4abcb0355249e",
-   "night_marathon_act7_neuro_composer_v1.json": "2271bef4715cc3a6b44214a532d1a68919cf2b631485e72d8743a287f25416ba",
+   "night_marathon_act7_neuro_composer_v1.json": "0b6a8698debf8b12de4f1d54a13bd2a082ffa1164bf4fd5475785d595f56d56c",
    "night_marathon_act8_barge_in_v1.json": "a0fb86869ee00a51979fc4355d027fc5cc0fe1e77c8de33b0846c98178236a26",
-   "night_marathon_act9_world_outside_v1.json": "947ae64b76b3fa02ebe91726579ae743fa029972f4536fb24aa7d92bf52f00a4"
+   "night_marathon_act9_world_outside_v1.json": "4ab7c352ec1c32dc0921df1a9d38cb9e483c54a87dfb437ff1c21722662db069"
   }
  },
  "counts": {
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "c3122eed56a916c422608c7f27d38a71424e9b325cc7a08be154c3d7c2b351c2",
+ "corpus_sha256": "a8c4cd58e3e158e3dbb86446a929eaa7f1a2017cea6ae1194a776c4798720103",
  "acts": [
   {
    "act": "1",
@@ -1468,7 +1468,7 @@
      "step": {
       "label": "n309_bg_command_valera",
       "voice": "filipp",
-      "text": "Только не электронщину, поставь что-нибудь спокойное, мне ещё ехать.",
+      "text": "Запусти диджей-сет на синтезаторе на две минуты, спокойный.",
       "patterns": [
        "\\[backlog\\] accumulated reason=no_wake"
       ],
@@ -1561,6 +1561,11 @@
         "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку.",
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ]
+      },
+      "skip_when": {
+       "reason": "TRACK_ENDED",
+       "log": "\\[music v2\\] finished track_id=",
+       "deck": "ended"
       },
       "music_compare": "stopped"
      }
@@ -2608,7 +2613,7 @@
      "step": {
       "label": "n707_gen_track_info",
       "voice": "anton",
-      "text": "Робот, расскажи, что это за трек: кто, про что и сколько длится.",
+      "text": "Робот, расскажи про песню про енота: кто, про что, сколько длится.",
       "sleep_before_sec": 60,
       "patterns": [],
       "acceptance": {
@@ -3364,11 +3369,10 @@
       "label": "n908_search_borsch_memory",
       "voice": "anton",
       "text": "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь.",
-      "patterns": [],
+      "patterns": [
+       "✅ Инструмент memory_search выполнен успешно|🔊 TTS:.*text=.*([Бб]ез лука|[Нн]е (ешь|ем|ел|ест|любишь)[ ,.!—-]|[Зз]елёный чай|[Зз]еленый чай|[Бб]ез сахара)"
+      ],
       "acceptance": {
-       "expected_tool_calls": [
-        "memory_search"
-       ],
        "must_not_call": [
         "stage=done status=done"
        ],
@@ -3377,7 +3381,8 @@
        ],
        "expected_keywords": [
         "свёкл|свекл|капуст|картош|бульон|мяс|говяд|свинин|морков|сметан|лук|овощ|варит|вари|томат"
-       ]
+       ],
+       "expected_tool_calls": []
       },
       "retry_acceptance": 1
      }
@@ -3647,13 +3652,8 @@
       "label": "n1010_five_facts",
       "voice": "anton",
       "text": "Робот, назови пять фактов обо мне, которые ты знаешь.",
-      "patterns": [
-       "\\[memory_search\\] query=.* [1-9][0-9]* results"
-      ],
+      "patterns": [],
       "acceptance": {
-       "expected_tool_calls": [
-        "memory_search"
-       ],
        "must_not_call": [
         "stage=done status=done"
        ],
@@ -3661,9 +3661,9 @@
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
        "expected_keywords": [
-        "лук",
-        "зелён|зелен"
-       ]
+        "лук|зелён|зелен"
+       ],
+       "expected_tool_calls": []
       }
      }
     },

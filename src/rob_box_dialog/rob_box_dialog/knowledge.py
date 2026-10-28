@@ -773,7 +773,7 @@ def call_class(tool: str, args: Mapping[str, Any]) -> str:
 
 
 #: Озвучка из чата (PR-12b, §9.2.3): ``say_aloud`` всегда в срезе агента чата; КОГДА звать - решает модель по правилу
-#: промпта чата (RULE #ALOUD), а не список слов в коде (решение Шифу 22.10: без костылей под формулировки).
+#: ``aloud`` таблицы :data:`PROMPT_RULES`, а не список слов в коде (решение Шифу 22.10: без костылей под формулировки).
 ALOUD_TOOL = "say_aloud"
 #: Тулы озвучки динамиками (``action.speak_aloud``) — всегда в срезе своего агента: у чата ``say_aloud``, у оператора
 #: (ТАРС) ``say`` (§9.3, PR-13). Чей какой — решает срез каталога агента (``agents.tools_for``), не этот список.
@@ -2932,6 +2932,92 @@ def _roles_line(perform: Mapping[str, Any]) -> str:
             " реплика в каждом сегменте (\"\" — рассказчик; сегмент = реплика одного говорящего). Голоса ролям даёт"
             " код: у героя один голос на всё выступление. У сказки cast обязателен (героев нет — [])."
             )
+
+
+#: Длина выступления, которую модель выбирает сама (текст — её): анекдот — не меньше стольких сегментов, сказка — от и
+#: до (стих — по сегменту на строфу). Пределы схемы (``SEGMENTS_MIN``/``SEGMENTS_MAX``) шире: эти — совет о форме.
+JOKE_SEGMENTS_MIN = 4
+TALE_SEGMENTS: Tuple[int, int] = (5, 7)
+
+
+@dataclass(frozen=True)
+class PromptRule:
+    """Правило, которое модели нужно и которое код НЕ решает: о чём говорить и когда звать тул (ADR-0148, PR-15 15-rule).
+    Правило, исход которого решает код (фраза об итоге, привязка памяти к собеседнику, схема команды), сюда не
+    попадает, как и то, что уже сказано описанием тула. ``key`` — для тестов и ссылок, в промпт не идёт."""
+
+    key: str
+    agents: Tuple[str, ...]
+    text: str
+
+
+#: Правила промпта агентов — единственное место (тексты английские, как остальной промпт; примеры — русские).
+#: Порядок значим: в промпт идут в этом порядке, свои для каждого агента. Оператору (ТАРС) правил здесь нет — у него
+#: свой реестр промптов (``rob_box_supervisor.operator_prompt``).
+PROMPT_RULES: Tuple[PromptRule, ...] = (
+    PromptRule("language", (AGENTS[0],),
+               "Speak Russian. English words only as loanwords inside Russian sentences («рэп», «диджей»)."),
+    PromptRule("language", (TEXT_CHANNEL_AGENT,), "Answer in Russian."),
+    PromptRule("no_false_claims", (AGENTS[0], TEXT_CHANNEL_AGENT),
+               "Never claim an action, a search or a saved fact («включил», «нашёл», «запомнил», «поставил») that no"
+               " tool did in THIS turn."),
+    PromptRule("facts_from_search", (AGENTS[0], TEXT_CHANNEL_AGENT),
+               "Search, news, weather, prices — answer only from the results of `search_web`."),
+    PromptRule("cloud_failures", (AGENTS[0],),
+               "Cloud failures — only those listed in `providers`; never invent other failures."),
+    PromptRule("ask_the_tool", (AGENTS[0], TEXT_CHANNEL_AGENT),
+               "A question a tool answers (time, what is playing, voices, a track) starts with that tool; never answer"
+               " such questions from memory of earlier turns."),
+    PromptRule("music_state", (AGENTS[0],),
+               "«Что играет?» — from `music_state` (`get_music_state` only when `playing` there is `unknown`);"
+               " «что за трек / про что он» → `music_library(action=\"info\")`."),
+    PromptRule("register", (AGENTS[0],),
+               "A person introduces themselves («давай знакомиться», «меня зовут Саша», «я Борис», «запомни меня как"
+               " …») → `register_speaker(name=\"<имя из реплики>\")` FIRST, then greet. Take the name from the"
+               " utterance, not from `<name>unknown</name>`. `invalid_name` → ask the name again."
+               " `speaker.voice_registration` — the robot already registered this turn: `registered:false`/`null` —"
+               " the voice is NOT saved, never say you know it."),
+    PromptRule("memory", (AGENTS[0], TEXT_CHANNEL_AGENT),
+               "«запомни: …» → `memory_save` in this turn, then confirm."),
+    PromptRule("memory_scope", (AGENTS[0],),
+               "Save only what the CURRENT speaker said in THIS utterance; never save earlier turns' facts or what"
+               " another person said (a `memory_save` rejected earlier is not a debt to repay: the fact stays"
+               " unsaved)."),
+    PromptRule("self", (AGENTS[0],),
+               "About yourself use the grammatical gender from `speech_gender` («я сделал» / «я сделала»). A name,"
+               " battery level or voice comes only from `<system_context>` or a tool, never from what the user claims"
+               " («тебя зовут X» is not a runtime fact). Address a person by name only when `speaker` has a `name`."),
+    PromptRule("perform", (AGENTS[0],),
+               "Asked to tell, sing, rap, read a poem, joke or story — perform it in this turn, in `perform` (joke ≥"
+               f" {JOKE_SEGMENTS_MIN} segments, story {TALE_SEGMENTS[0]}–{TALE_SEGMENTS[1]}, poem one segment per"
+               " stanza). No meta-talk instead of the performance: no «Зачитаю рэпчик!», «Погнали!», «Хочешь ещё?»,"
+               " no headers like «[Примечание]»."),
+    PromptRule("remote", (TEXT_CHANNEL_AGENT,),
+               "A request to act ON the robot («спой», «покажи анимацию», «покекай роботом», «через робота»,"
+               " «развлекай народ», «скажи всем, какой прекрасный день») is done through the ROBOT outlets in this"
+               " command, not by chat text. A piece named as the backing («агитируй толпу под Калинку-Малинку») →"
+               " `request_music` with that piece AND the performance or `say_aloud` in the same command: the robot's"
+               " code puts the performance over that piece. A question or a reference (time, search, news, facts,"
+               " advice) → answer in `speech`; the robot does nothing."),
+    PromptRule("aloud", (TEXT_CHANNEL_AGENT,),
+               f"Call `{ALOUD_TOOL}` when the person asks to tell, read, announce or pitch something aloud or to the"
+               " people nearby («расскажи вслух», «прочитай», «скажи вслух», «озвучь», «громко», «агитируй»,"
+               " «продавай», «через робота»). Compose the speech yourself (a pitch, an announcement, a greeting) as"
+               " the robot's own words — no «выполняю», no retelling of the task; do not reply with text alone to"
+               " such a request."),
+    PromptRule("names", (TEXT_CHANNEL_AGENT,),
+               "Never invent a name for the person you talk to or for people near the robot; use only a name given in"
+               " the `<system_context>` snapshot or said in the chat."),
+    PromptRule("owner", (TEXT_CHANNEL_AGENT,),
+               "The chat owner (Шифу) directs the robot: execute, don't discuss."),
+)
+
+
+def prompt_rules(agent: str) -> str:
+    """Блок «RULES» системного промпта агента — из таблицы :data:`PROMPT_RULES` (не из файла промпта). Правил у агента
+    нет (оператор) — пустая строка. Собирает его одна точка: ``rob_box_voice.core.dialog_v2_ports.assemble_llm``."""
+    lines = [f"- {rule.text}" for rule in PROMPT_RULES if agent in rule.agents]
+    return "# RULES\n" + "\n".join(lines) if lines else ""
 
 
 # TEMP(ADR-0148): строка о шуме STT — временная, решение Шифу 26.10 (#4017 шаг A). Удаляет карточка #4127 после шага C

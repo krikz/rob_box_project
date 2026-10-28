@@ -10,10 +10,10 @@ Issue #1532 — LLM did NOT call ``set_voice`` for a multi-voice skazka
 
 Root cause: ``master_prompt_compact.txt`` had no rule teaching the LLM
 when/how to interleave ``set_voice`` between ``speak_text`` fragments for
-different characters. ``RULE #VOICE`` (issue #1219) only described global
+different characters. The voice rule (issue #1219) only described global
 voice-change, not per-character switching in a single narrative.
 
-Fix: explicit ``RULE #VOICE-MULTI`` block in ``master_prompt_compact.txt``
+Fix: an explicit multi-voice block in ``master_prompt_compact.txt``
 with:
 - per-character switching contract (example with 3 voices + 4 fragments)
 - 7 mandatory rules (full skazka 5-7 fragments, ≥2 different voices,
@@ -21,8 +21,8 @@ with:
 - ✅/❌ examples anchored to e2e #1532 mv03
 
 #3696 (ADR-0148, ADR-0150 A5): the prompt-wording tests were removed with the
-hand-written RULE #VOICE-MULTI block; per-reply voices are the ``voice``
-parameter of ``speak_text`` (its schema) and one line of RULE #PERFORM.
+hand-written multi-voice block; per-reply voices are the ``voice``
+parameter of ``speak_text`` (its schema) and the ``perform`` rule of ``knowledge.PROMPT_RULES``.
 What stays here is the e2e scenario contract (mv03) and the voice command file.
 
 Run with::
@@ -129,7 +129,7 @@ def test_scenario_mv03_acceptance_requires_keyword_krasnaya() -> None:
 def test_scenario_mv03_text_mentions_skazka_and_multi_voice() -> None:
     """The mv03 step text must mention 'сказку' and 'разными голосами'.
 
-    Это ключевые маркеры для LLM-маршрутизации (RULE #VOICE-MULTI) — без
+    Это ключевые маркеры для LLM-маршрутизации (мульти-голос) — без
     них LLM может не понять, что нужен multi-voice режим.
     """
     scenario = _read_scenario()
@@ -138,7 +138,7 @@ def test_scenario_mv03_text_mentions_skazka_and_multi_voice() -> None:
     text = step.get("text", "").lower()
     assert "сказку" in text or "сказк" in text, (
         f"mv03 step text must mention 'сказку' (a fairy tale) — that's "
-        f"the trigger for RULE #VOICE-MULTI. Current text: {step.get('text')!r}"
+        f"the trigger for the multi-voice route. Current text: {step.get('text')!r}"
     )
     assert "разными голосами" in text or "разные голоса" in text, (
         f"mv03 step text must mention 'разными голосами' — that's the "
