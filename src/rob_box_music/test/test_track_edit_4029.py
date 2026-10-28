@@ -137,6 +137,30 @@ def test_edit_of_the_music_names_it_or_is_the_whole_utterance(text, route):
     assert edit_route(text, playing=True) == route
 
 
+@pytest.mark.parametrize(
+    "text,route",
+    [
+        # #4172, n506 28.10: после искажённого вейка хвост «там, а то мы засыпаем» тему не называет — правка всё равно
+        ("ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("роботы ускорь там потом мы тут засыпаем оба", "edit:faster"),
+        ("Робот, ускорь, а то мы засыпаем", "edit:faster"),
+        ("ну ускоряй давай, спать хочется", "edit:faster"),
+        ("замедли, а то не успеваем танцевать", "edit:slower"),
+        # повелительное должно начинать часть: рассказ и вопрос - не правка
+        ("роботы ускоряются, мы тут засыпаем", ""),
+        ("мы засыпаем, а он ускоряет производство", ""),
+        ("не ускоряй, мы тут засыпаем", ""),
+        # заказ другого и стоп - не правка
+        ("включи другую, ускорь там", ""),
+        ("стоп, мы засыпаем", ""),
+        ("выключай, засыпаем", ""),
+    ],
+)
+def test_leading_speedup_imperative_is_an_edit_with_any_tail(text, route):
+    assert edit_route(text, playing=True) == route
+    assert edit_route(text, playing=False) == ""
+
+
 def test_a_question_is_not_a_request():
     assert asks("Это тот же трек?") and asks("Робот, а какой это темп") and asks("ускорил ли ты бит")
     assert not asks("можешь сделать бит потяжелее?") and not asks("Робот, сделай атмосферу помрачнее, как в киберпанке")
