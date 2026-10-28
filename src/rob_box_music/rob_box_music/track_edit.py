@@ -133,6 +133,15 @@ def _names_music(clause: Sequence[str]) -> bool:
     return any(word in topic.forms or word.startswith(topic.stems) for word in clause)
 
 
+def _leads_with(clause: Sequence[str]) -> Tuple[str, ...]:
+    """Виды правки, чьё повелительное (``TrackEdit.lead``) начинает часть реплики после обращения и служебных слов:
+    «ускорь там, а то мы тут засыпаем» — просьба править темп играющего, что бы ни шло дальше (n506 28.10)."""
+    topic = kn.EDIT_TOPIC
+    skip = set(topic.address) | set(topic.fillers) | set(topic.lead_skip)
+    lead = next((w for w in clause if w not in skip), "")
+    return tuple(kind for kind, edit in kn.TRACK_EDITS.items() if lead in edit.lead)
+
+
 def _only_edits(clauses: Sequence[Sequence[str]]) -> bool:
     """Вся реплика — правка: кроме записей ``TRACK_EDITS`` только обращение и служебные слова («Робот, давай
     побыстрее»). «Иди быстрее», «расскажи сказку побыстрее» — нет: там есть своё дело."""
@@ -157,8 +166,9 @@ def asks(text: str) -> bool:
 def music_edits(text: str) -> Tuple[str, ...]:
     """Виды правки ИГРАЮЩЕЙ музыки в реплике (ревью PR #4116): правка, чья часть реплики называет играющее
     (:func:`_names_music`), или правка ``TrackEdit.bare`` в реплике из одной правки (:func:`_only_edits`: «Робот,
-    ускорь»). Вопрос — не правка. «Иди быстрее к двери», «сделай лицо мрачнее», «продолжай рассказывать», «в комнате
-    стало теплее» — пусто: слова правки там не про музыку."""
+    ускорь») или повелительное темпа первым в части реплики (:func:`_leads_with`: «ускорь там, а то засыпаем»).
+    Вопрос — не правка. «Иди быстрее к двери», «сделай лицо мрачнее», «продолжай рассказывать», «в комнате стало
+    теплее» — пусто: слова правки там не про музыку."""
     if asks(text):
         return ()
     clauses = _parts(text)
@@ -167,7 +177,7 @@ def music_edits(text: str) -> Tuple[str, ...]:
         kind
         for clause in clauses
         for kind in _clause_edits(clause)
-        if _names_music(clause) or (bare and kn.TRACK_EDITS[kind].bare)
+        if _names_music(clause) or (bare and kn.TRACK_EDITS[kind].bare) or kind in _leads_with(clause)
     )
     return tuple(dict.fromkeys(kinds))
 
