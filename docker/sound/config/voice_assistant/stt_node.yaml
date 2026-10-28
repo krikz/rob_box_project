@@ -53,7 +53,7 @@ stt_node:
     provider_state_file: /data/stt_provider_state.json
     unclear_phrase: Не расслышал, скажи ещё раз
     unclear_cooldown_s: 5.0
-    tts_grace_s: 2.5
+    # tts_grace_s (эхо-окно после речи робота, #989/#4072): дефолт — knowledge.IDENTITY_MIC_GRACE_S, здесь не дублируется.
     # ADR-0150 PR-3b (#3690): раннего «булька» stt_node больше нет - сегмент с вейком уходит в
     # /dialog/interrupt_request, по нему диалог включает рефлекс addressed (лицо, кольцо, earcon «услышал»).
     # ADR-0150 PR-5 (#3694): речь stt_node не глушит — на сегмент с вейком

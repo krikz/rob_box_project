@@ -150,9 +150,7 @@ def _make_node(**overrides):
     defaults = dict(
         sample_rate=16000,
         aec_mode="software",
-        is_robot_speaking=False,
         tts_grace_s=2.5,
-        _tts_ended_at=0.0,
         min_text_chars=3,
         _last_speaker_tag=None,
         _phrase_started_at=0.0,
@@ -172,6 +170,10 @@ def _make_node(**overrides):
     defaults.update(overrides)
     for key, value in defaults.items():
         setattr(node, key, value)
+    # Речь робота и эхо-окно (#4072): робот молчит давно — фразы не режутся.
+    from rob_box_voice.core.echo_window import EchoWindow
+
+    node._echo = EchoWindow(node.tts_grace_s, node.aec_mode)
     node.get_logger = lambda: MagicMock(
         info=lambda *a, **kw: None,
         warning=lambda *a, **kw: None,

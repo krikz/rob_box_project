@@ -1,20 +1,23 @@
-"""Эхо-гейты микрофона по речи робота (PR-15 15-0b, #3711).
+"""Эхо-гейты микрофона по речи робота (PR-15 15-0b, #3711; эхо-окно #4072).
 
-``audio_node`` (сброс буфера, grace после речи) и ``stt_node`` (глушит распознавание при software-AEC, grace при
-hardware-AEC) раньше держали каждый свой список строк String-топика состояния TTS — и списки разъезжались
+``audio_node`` (pre-roll на фронтах речи) и ``stt_node`` (software-AEC глушит распознавание, эхо-окно после речи)
+раньше держали каждый свой список строк String-топика состояния TTS — и списки разъезжались
 (``stopped``/``tts_silero_warming`` залипали). Теперь оба подписаны одним помощником
 ``speech_client.watch_speaking`` на ``SpeechEvent``: «звучит» решает ``SpeakingWatch`` (реплика любого агента от
 ``started`` до ``finished|cancelled|rejected``), нода реагирует только на фронт.
 
+#4072: эхо-окно после речи одно — у ``stt_node`` (``core/echo_window.py``) и решает по тому, где звучал голос фразы
+(фронты ``/audio/vad``), а не по моменту доставки; ``audio_node`` после речи не глохнет и начатую фразу на фронте
+не сбрасывает — иначе «Робот, хватит» в паузе между сегментами выступления терялся.
+
 Ноды тянут rclpy/PyAudio/Vosk: модули грузятся с заглушками этих зависимостей (как в корневых тестах ``test/``)
-и выгружаются после теста; события идут через настоящую подписку ``watch_speaking``.
+и выгружаются после теста; события идут через настоящие подписки ``watch_speaking`` и ``/audio/vad``.
 """
 
 from __future__ import annotations
 
 import importlib
 import sys
-import time
 import types
 from unittest.mock import MagicMock
 
@@ -26,6 +29,7 @@ from rob_box_core.msg_stub import install_dialog_msgs_stub
 M = install_dialog_msgs_stub()
 SpeechEvent = M.SpeechEvent
 NODE_MODULES = ("rob_box_voice.audio_node", "rob_box_voice.stt_node")
+WAKE = ["робот", "робокс", "роббокс"]
 
 
 class _Node:
@@ -39,6 +43,14 @@ class _Node:
 
     def get_logger(self):
         return MagicMock()
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.t = 5000.0
+
+    def __call__(self) -> float:
+        return self.t
 
 
 def _forget_node_modules() -> None:
@@ -85,10 +97,10 @@ def _audio_node(module):
     node = module.AudioNode.__new__(module.AudioNode)
     _Node.__init__(node)
     node.get_logger = lambda: MagicMock()
-    node.tts_active, node._tts_ended_at, node.tts_grace_s = False, 0.0, 2.5
+    node.tts_active = False
     node.music_active, node.barge_in_with_music = False, True
     node.speech_audio_buffer, node.speech_prefetch_buffer, node.is_speeching = (
-        b"echo",
+        b"robot, hva",
         b"tail",
         True,
     )
@@ -96,12 +108,21 @@ def _audio_node(module):
     return node
 
 
-def _stt_node(module, aec_mode: str):
+def _stt_node(module, aec_mode: str, clock=None):
+    """STTNode без ROS с той же проводкой эхо-окна, что в ``__init__`` (``echo_window.watch``)."""
+    from rob_box_voice.core import echo_window
+
     node = module.STTNode.__new__(module.STTNode)
     _Node.__init__(node)
     node.get_logger = lambda: MagicMock()
-    node.aec_mode, node.is_robot_speaking, node._tts_ended_at = aec_mode, False, 0.0
-    node._robot_speech = speech_client.watch_speaking(node, node._on_robot_speech)
+    node.aec_mode, node.tts_grace_s = aec_mode, 2.5
+    node._echo = echo_window.watch(
+        node,
+        grace_s=node.tts_grace_s,
+        aec_mode=aec_mode,
+        vad_type=bool,
+        clock=clock or Clock(),
+    )
     return node
 
 
@@ -111,8 +132,18 @@ def _say(node, kind: int, sid: str = "s1", agent: str = "personality") -> None:
     callback(_event(kind, sid, agent))
 
 
-def test_audio_node_gate_follows_robot_speech_and_opens_grace_after_it(node_modules):
-    """started: эхо в буферах сброшено, VAD проходит (barge-in #993); finished: grace — VAD не речь (#989)."""
+def _vad(node, active: bool) -> None:
+    _, callback = node.subscriptions_by_topic["/audio/vad"]
+    callback(types.SimpleNamespace(data=active))
+
+
+# --- audio_node: фронты речи робота -------------------------------------------------------------------------------
+
+
+def test_audio_node_keeps_listening_through_robot_speech_and_after_it(node_modules):
+    """started: VAD проходит (barge-in #993), pre-roll чист; начатая фраза НЕ сбрасывается — это может быть стоп
+    человека, начатый в паузе между сегментами (#4072). finished: VAD тоже проходит — эхо-окно у stt_node.
+    """
     node = _audio_node(node_modules[0])
     _say(node, SpeechEvent.KIND_STARTED)
     assert node.tts_active is True
@@ -120,13 +151,17 @@ def test_audio_node_gate_follows_robot_speech_and_opens_grace_after_it(node_modu
         node.speech_audio_buffer,
         node.speech_prefetch_buffer,
         node.is_speeching,
-    ) == (b"", b"", False)
+    ) == (b"robot, hva", b"", True)
     assert node._vad_gated(True) is True
-    before = time.monotonic()
+    node.speech_prefetch_buffer = b"robot voice"
     _say(node, SpeechEvent.KIND_FINISHED)
     assert node.tts_active is False
-    assert node._tts_ended_at >= before
-    assert node._vad_gated(True) is False
+    assert (
+        node.speech_prefetch_buffer == b""
+    )  # хвост собственного голоса не станет pre-roll'ом
+    assert node._vad_gated(True) is True  # микрофон не глохнет после речи (#4072)
+    assert node._vad_gated(False) is False
+    assert not hasattr(node, "tts_grace_s")
 
 
 @pytest.mark.parametrize("end", [SpeechEvent.KIND_CANCELLED, SpeechEvent.KIND_REJECTED])
@@ -144,7 +179,7 @@ def test_audio_node_ignores_synthesis_without_sound_and_overlap_ends_with_the_la
     node = _audio_node(node_modules[0])
     _say(node, SpeechEvent.KIND_QUEUED)
     _say(node, SpeechEvent.KIND_SYNTHESIZED)
-    assert node.tts_active is False and node.speech_audio_buffer == b"echo"
+    assert node.tts_active is False and node.speech_prefetch_buffer == b"tail"
     _say(node, SpeechEvent.KIND_STARTED, "a")
     _say(node, SpeechEvent.KIND_STARTED, "op", agent="operator")
     _say(node, SpeechEvent.KIND_FINISHED, "a")
@@ -153,16 +188,21 @@ def test_audio_node_ignores_synthesis_without_sound_and_overlap_ends_with_the_la
     assert node.tts_active is False
 
 
+# --- stt_node: фронты речи робота -> эхо-окно ----------------------------------------------------------------------
+
+
 @pytest.mark.parametrize("aec_mode", ["software", "hardware"])
 def test_stt_node_robot_speaking_follows_speech_event(node_modules, aec_mode):
-    """started -> is_robot_speaking (software-AEC глушит фразы); finished -> конец речи с меткой для grace."""
-    node = _stt_node(node_modules[1], aec_mode)
+    """started -> робот говорит (software-AEC глушит фразы); finished -> конец речи открывает эхо-окно."""
+    clock = Clock()
+    node = _stt_node(node_modules[1], aec_mode, clock)
     _say(node, SpeechEvent.KIND_STARTED)
-    assert node.is_robot_speaking is True
-    before = time.monotonic()
+    assert node._echo.speaking is True
+    clock.t += 3.0
     _say(node, SpeechEvent.KIND_FINISHED)
-    assert node.is_robot_speaking is False
-    assert node._tts_ended_at >= before
+    assert node._echo.speaking is False
+    assert node._echo.ended_at == clock.t
+    assert node._echo.where() == "grace"
 
 
 def test_stt_node_does_not_stick_on_cancelled_speech(node_modules):
@@ -170,4 +210,95 @@ def test_stt_node_does_not_stick_on_cancelled_speech(node_modules):
     node = _stt_node(node_modules[1], "hardware")
     _say(node, SpeechEvent.KIND_STARTED)
     _say(node, SpeechEvent.KIND_CANCELLED)
-    assert node.is_robot_speaking is False
+    assert node._echo.speaking is False
+
+
+# --- stt_node: фраза ReSpeaker через _process_audio ----------------------------------------------------------------
+
+
+def _pipeline(module, clock, recognized):
+    """stt_node, у которого распознавание отдаёт ``recognized``, а публикации — моки."""
+    node = _stt_node(module, "hardware", clock)
+    node.sample_rate, node.min_text_chars, node.wake_words = 16000, 3, WAKE
+    node._last_speaker_tag, node._active_source = None, "respeaker"
+    node._recognize_with_fallback = MagicMock(return_value=(recognized, []))
+    node.publish_result = MagicMock()
+    node.publish_state = MagicMock()
+    node._publish_speaker = MagicMock()
+    node._maybe_speak_unclear = MagicMock()
+    return node
+
+
+def _phrase(node, clock, at: float, seconds: float) -> None:
+    clock.t = 5000.0 + at
+    node.speech_audio_callback(
+        types.SimpleNamespace(data=list(b"\x00\x00" * int(16000 * seconds)))
+    )
+
+
+def _segments_with_voice_in_the_pause(node, clock) -> None:
+    """Сегмент выступления, пауза 1,8 с с голосом человека, следующий сегмент (марафон 27.10, n805)."""
+    for at, step in (
+        (0.0, lambda: _say(node, SpeechEvent.KIND_STARTED, "seg9")),
+        (8.0, lambda: _say(node, SpeechEvent.KIND_FINISHED, "seg9")),
+        (8.3, lambda: _vad(node, True)),
+        (9.6, lambda: _vad(node, False)),
+        (9.8, lambda: _say(node, SpeechEvent.KIND_STARTED, "seg10")),
+    ):
+        clock.t = 5000.0 + at
+        step()
+
+
+def test_stop_between_performance_segments_reaches_the_dialog(node_modules):
+    """«Робот, всё, хватит, замолчи» в стык двух сегментов: распознан и опубликован (диалог рвёт выступление)."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "робот всё хватит замолчи")
+    _segments_with_voice_in_the_pause(node, clock)
+    _phrase(node, clock, at=12.6, seconds=5.8)
+    node._recognize_with_fallback.assert_called_once()
+    assert node.publish_result.call_args.args[0] == "робот всё хватит замолчи"
+
+
+@pytest.mark.parametrize("echo", ["и тогда кот посмотрел на меня", "да", None])
+def test_echo_in_the_window_after_a_reply_is_dropped_silently(node_modules, echo):
+    """Хвост собственной речи сразу после реплики: не стоп с вейком — не публикуется и без «не расслышал»."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, echo)
+    for at, step in (
+        (0.0, lambda: _say(node, SpeechEvent.KIND_STARTED)),
+        (5.0, lambda: _say(node, SpeechEvent.KIND_FINISHED)),
+        (5.2, lambda: _vad(node, True)),
+        (5.6, lambda: _vad(node, False)),
+    ):
+        clock.t = 5000.0 + at
+        step()
+    _phrase(node, clock, at=8.6, seconds=3.4)
+    node.publish_result.assert_not_called()
+    node._maybe_speak_unclear.assert_not_called()
+    node.publish_state.assert_called_with("ready")
+
+
+def test_phrase_from_during_the_reply_delivered_after_it_is_not_dropped(node_modules):
+    """va_marathon.log 23.10 22:53:21: человек говорил во время реплики, фраза доехала через 1,9 с после её конца —
+    раньше «Игнор фразы — grace 1.90с/2.5с», теперь идёт дальше."""
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "да давай")
+    for at, step in (
+        (10.3, lambda: _say(node, SpeechEvent.KIND_STARTED)),
+        (16.24, lambda: _vad(node, True)),
+        (18.45, lambda: _vad(node, False)),
+        (19.60, lambda: _say(node, SpeechEvent.KIND_FINISHED)),
+    ):
+        clock.t = 5000.0 + at
+        step()
+    _phrase(node, clock, at=21.45, seconds=6.62)
+    assert node.publish_result.call_args.args[0] == "да давай"
+
+
+def test_short_blip_while_robot_speaks_never_reaches_stt(node_modules):
+    clock = Clock()
+    node = _pipeline(node_modules[1], clock, "робот")
+    _say(node, SpeechEvent.KIND_STARTED)
+    _phrase(node, clock, at=1.0, seconds=0.5)
+    node._recognize_with_fallback.assert_not_called()
+    node.publish_result.assert_not_called()
