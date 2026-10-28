@@ -18,14 +18,12 @@ ROS 2 интерфейс:
 переключает активную БД долгосрочной памяти (voice_facts, ``memory_save``)
 боевая ↔ e2e_db_path по latched ``/e2e/mode``. Применённый режим — в
 параметре ``e2e_mode_applied`` (только чтение, его сверяет харнесс). См.
-``_apply_e2e_mode``. Реализовано только для legacy VoiceMemory
-(``/data/voice_memory.db``, активный бэкенд в проде на 22.09.2026) — при
-``MCP_USE_HARNESS_VOICE_MEMORY=1`` переключение отказывает (fail-fast),
-``e2e_mode_applied`` остаётся False и харнесс не прогоняет акт.
+``_apply_e2e_mode``. Бэкенд фактов один — ``VoiceMemory`` на БД инструментов
+(путь — ``rob_box_core.tools_db``, #4082).
 
 Parameters:
     e2e_db_path (str) — изолированная БД памяти для E2E-режима
-        [/data/voice_memory.e2e.db]
+        [``rob_box_core.tools_db.TOOLS_E2E_DB_DEFAULT``]
 """
 
 import rclpy
@@ -37,6 +35,7 @@ from rob_box_dialog import knowledge as _dialog_kn
 from rob_box_dialog_msgs.msg import SpeakerResult
 from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.speaker_wire import NAME_CONFIRMED, name_state, speaker_result_to_payload
+from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
 import asyncio
 import json
 import math
@@ -159,41 +158,11 @@ except ImportError:
     _FAQStore = None
     _load_event_profile = None
 
-# Issue #2000 / ADR-0055 — Phase 1 path consolidation. ONLY ``self.voice_memory``
-# (long-term facts, see ``_init_voice_memory`` below) can share
-# /data/harness_voice.db with the dialogue node, via VoiceMemoryAdapter (sync
-# facade over SQLiteVoiceMemory) — gated by this env var so production can
-# roll back to the legacy VoiceMemory without code edits.
-#
-# WaypointStore and FAQStore are NOT part of
-# this switch and stay on ``VOICE_MEMORY_DB_PATH`` (default
-# /data/voice_memory.db) regardless of this flag. Investigated for Phase 2
-# (issue #2000) and rejected as a plain path swap: SQLiteVoiceMemory already
-# defines its own ``waypoints`` (name TEXT PRIMARY KEY) and ``faq_items``
-# (created_at, no FTS5) tables in harness_voice.db, which collide by name
-# with incompatible schemas against WaypointStore's ``waypoints`` (id,
-# map_id NOT NULL FK -> maps) and the legacy FAQStore's ``faq_items``
-# (indexed_at, FTS5 triggers). ``CREATE TABLE IF NOT EXISTS`` would silently
-# keep whichever schema got created first and every write from the other
-# store would then fail with "no such column". See the comment on
-# ``sqlite_db_path`` in docker/sound/config/voice_assistant/dialogue_node.yaml
-# and docs/adr/0055-voice-memory-db-unify-with-harness.md (§1.3, §3) for the
-# full analysis. Merging them needs a schema-reconciling adapter (like this
-# one, but for waypoints/faq), not a default-value edit.
-_USE_HARNESS_VOICE_MEMORY = os.getenv("MCP_USE_HARNESS_VOICE_MEMORY", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
-try:
-    if _USE_HARNESS_VOICE_MEMORY:
-        from rob_box_harness.memory.voice_memory_adapter import (
-            VoiceMemoryAdapter as _VoiceMemoryAdapter,
-        )
-    else:
-        _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
-except ImportError:
-    _VoiceMemoryAdapter = None  # type: ignore[assignment,misc]
+# #4082: факты, вейпоинты, FAQ, RTTTL и история музыки — один файл, путь знает
+# ``rob_box_core.tools_db`` (там же — почему это не ``harness_voice.db``).
+# Второй бэкенд фактов (``VoiceMemoryAdapter`` за флагом
+# ``MCP_USE_HARNESS_VOICE_MEMORY``) удалён: флаг нигде не ставился, на роботе
+# всегда работал ``VoiceMemory``, а e2e-изоляции у адаптера не было.
 
 
 def _string_publisher(publisher: Any) -> Any:
@@ -322,7 +291,7 @@ def _attach_player_owner_v2(node: Any, runtime: Any) -> Optional[PlayerOwner]:
 
     node._music_confirm = confirm  # play_library_track: трек кэша на деке, ok — по started (ADR-0158 PR-2)
 
-    history = MusicHistory()  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
+    history = MusicHistory(tools_db_path())  # music_history: хуки и оси недавних сетов переживают перезапуск (I17, #3399)
     history.announce(node.get_logger())
     dj_set = DjSetTool(node, owner, confirm=confirm, reasoner=_set_reasoner(node), speak=_speaker(node),
                        history=history, tracks_dir=str(node.get_parameter("music_v2_tracks_dir").value),
@@ -456,28 +425,27 @@ class MCPServer(Node):
 
         # Issue #2781 — E2E-изоляция долгосрочной памяти (voice_facts),
         # по образцу speaker_id_node.e2e_mode (issue #2750/#2763). memory_save
-        # пишет факты в self.voice_memory (legacy VoiceMemory →
-        # /data/voice_memory.db), и до этой правки изоляция дикторов НЕ
+        # пишет факты в self.voice_memory (VoiceMemory на БД инструментов,
+        # rob_box_core.tools_db), и до этой правки изоляция дикторов НЕ
         # накрывала этот писатель: акт «Знакомство» ночного марафона
         # регистрирует голоса через speaker_id_node (изолирован) И называет
         # LLM факты через memory_save (НЕ изолирован) — 59 из 116 фактов
-        # боевой /data/voice_memory.db на 22.09.2026 оказались синтезированным
+        # боевой БД инструментов на 22.09.2026 оказались синтезированным
         # кастом марафона ("Саша"/"Борис"). Режим — не свой параметр, а
         # владельца /speaker_id_node (#3904, см. E2EModeFollower ниже).
-        self.declare_parameter("e2e_db_path", "/data/voice_memory.e2e.db")
+        self.declare_parameter("e2e_db_path", TOOLS_E2E_DB_DEFAULT)
 
         # Реестр инструментов
         self.registry = MCPToolRegistry()
 
         # Issue #2781 — состояние переключателя e2e_mode для voice_memory
         # (см. docstring declare_parameter выше и _apply_e2e_mode). Боевой
-        # путь запоминается в _init_voice_memory() (None, если активен
-        # harness-адаптер MCP_USE_HARNESS_VOICE_MEMORY=1 — для него
-        # переключение не реализовано, см. _apply_e2e_mode).
+        # путь запоминается в _init_voice_memory() (None, если rob_box_voice
+        # недоступен — тогда переключать нечего, см. _apply_e2e_mode).
         self._voice_memory_prod_db_path: "str | None" = None
         self._voice_memory_ollama_url: "str | None" = None
         self._voice_memory_e2e_db_path: str = str(
-            self.get_parameter("e2e_db_path").value or "/data/voice_memory.e2e.db"
+            self.get_parameter("e2e_db_path").value or TOOLS_E2E_DB_DEFAULT
         )
         self._voice_memory_e2e_mode_active: bool = False
         self._voice_memory_lock = threading.Lock()
@@ -721,10 +689,8 @@ class MCPServer(Node):
 
         ``EncounterSeam.observe`` — асинхронный метод (может дойти до
         ``IdentitySeam.since_last_seen``). Мостик sync ROS callback →
-        async вызов — ``asyncio.run`` за один вызов: тот же приём, что
-        ``VoiceMemoryAdapter`` уже использует в этом сервисе (см.
-        ``rob_box_harness/memory/voice_memory_adapter.py``, докстрока
-        «Why a per-call asyncio.run»). Идентичность шва здесь —
+        async вызов — ``asyncio.run`` за один вызов (частота — реплики
+        человека, не горячий цикл). Идентичность шва здесь —
         ``InMemoryStore`` (без диска), поэтому вызов не блокируется на
         реальном I/O и безопасен внутри ROS executor'а.
         """
@@ -791,8 +757,8 @@ class MCPServer(Node):
         """Инициализация адаптера для вейпоинтов.
 
         ADR-0055 Phase 2 v2 (issue #2000): ``WaypointAdapter`` —
-        schema-reconciling facade over ``WaypointStore``. Остаётся на
-        ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``; DDL
+        schema-reconciling facade over ``WaypointStore``. Остаётся на БД
+        инструментов (``rob_box_core.tools_db``); DDL
         ``harness_voice.db.waypoints`` НЕ трогается (ADR-0055 §3).
         Адаптер отдаёт:
 
@@ -812,9 +778,7 @@ class MCPServer(Node):
         (data-migration) могла сменить бэкенд «под ковром» без
         затрагивания вызывающего кода.
         """
-        import os
-
-        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        db_path = tools_db_path()
         try:
             store = WaypointStore(db_path=db_path)
             adapter = WaypointAdapter(store=store)
@@ -1049,48 +1013,14 @@ class MCPServer(Node):
     def _init_voice_memory(self) -> None:
         """Инициализация VoiceMemory (долгосрочная память). Не падает при ошибках.
 
-        ADR-0055 Phase 1 — when ``MCP_USE_HARNESS_VOICE_MEMORY=1`` the
-        adapter over ``SQLiteVoiceMemory`` is used so writes go to
-        ``/data/harness_voice.db`` (same file the dialogue node uses).
-        Otherwise we fall back to the legacy ``VoiceMemory`` →
-        ``/data/voice_memory.db``.
+        Факты (``voice_facts``) — в БД инструментов, путь — ``rob_box_core.tools_db``
+        (#4082). Бэкенд один: ``VoiceMemory``.
 
-        This flag only affects ``self.voice_memory`` (facts). It does
-        NOT unify ``self.waypoint_store`` or ``self.faq_store`` — those
-        stay on ``/data/voice_memory.db`` either way (see the module-level
-        comment above ``_USE_HARNESS_VOICE_MEMORY`` for why: their table
-        names collide with incompatible schemas already living in
-        harness_voice.db).
-
-        Issue #2781 — ``self._voice_memory_prod_db_path`` stays ``None``
-        when the harness adapter branch below is taken: ``_apply_e2e_mode``
-        only knows how to re-point the legacy ``_VoiceMemory`` class at a
-        different SQLite file, and treats ``None`` as "no E2E target for
-        this backend" (fails the ``ros2 param set`` instead of silently
-        no-op'ing — see its docstring).
+        Issue #2781 — ``self._voice_memory_prod_db_path`` остаётся ``None``,
+        если ``rob_box_voice`` недоступен: ``_apply_e2e_mode`` трактует это
+        как «переключать нечего» и отказывает ``ros2 param set``, а не
+        делает вид, что переключил (см. его докстринг).
         """
-        if _USE_HARNESS_VOICE_MEMORY and _VoiceMemoryAdapter is not None:
-            import os
-
-            # Default to the unified DB on /data/ but allow override for
-            # staging / test environments.
-            db_path = os.getenv(
-                "HARNESS_VOICE_DB", "/data/harness_voice.db"
-            )
-            try:
-                self.voice_memory = _VoiceMemoryAdapter(db_path=db_path)
-                stats = self.voice_memory.get_stats()
-                self.get_logger().info(
-                    f"🧠 VoiceMemoryAdapter (ADR-0055 Phase 1): {db_path} "
-                    f"(facts={stats.get('fact_count', 0)})"
-                )
-            except Exception as exc:
-                self.get_logger().error(
-                    f"❌ Ошибка инициализации VoiceMemoryAdapter: {exc}"
-                )
-                self.voice_memory = None
-            return
-
         if _VoiceMemory is None:
             self.get_logger().warning(
                 "⚠️ rob_box_voice не найден — VoiceMemory отключена. "
@@ -1100,7 +1030,7 @@ class MCPServer(Node):
 
         import os
 
-        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        db_path = tools_db_path()
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         try:
@@ -1125,7 +1055,7 @@ class MCPServer(Node):
     # #3904: режим — владельца /speaker_id_node (rob_box_core.e2e_mode);
     # эта нода только применяет его (E2EModeFollower → _apply_e2e_mode).
 
-    def _wipe_e2e_voice_memory_db_file(self) -> None:
+    def _wipe_e2e_facts_db_file(self) -> None:
         """Стереть файл ``e2e_db_path`` (и -wal/-shm/-journal) перед каждым ON.
 
         По образцу ``speaker_id_node._wipe_e2e_db_file``. НИКОГДА не трогает
@@ -1135,7 +1065,7 @@ class MCPServer(Node):
         """
         import os as _os
 
-        # Issue #2890 — боевая voice_memory.db не стирается НИКОГДА, даже
+        # Issue #2890 — боевая БД инструментов не стирается НИКОГДА, даже
         # если e2e_db_path в конфиге указал на неё же (опечатка в YAML,
         # симлинк): исключение прерывает переключение в _apply_e2e_mode,
         # харнесс получает отказ e2e_mode и фейлит акт.
@@ -1173,12 +1103,12 @@ class MCPServer(Node):
         накрывала только ``speakers.db``: акт «Знакомство» ночного марафона
         и регистрирует голоса (изолировано), и называет LLM факты через
         ``memory_save`` (НЕ изолировано) — замер на Vision Pi 22.09.2026
-        нашёл 59 из 116 фактов боевой ``/data/voice_memory.db``,
+        нашёл 59 из 116 фактов боевой БД инструментов (``rob_box_core.tools_db``),
         упоминающих синтезированный каст марафона ("Саша не ест лук",
         "Борис болеет за Спартак").
 
         Переход False→True стирает прежний файл ``e2e_db_path`` (см.
-        ``_wipe_e2e_voice_memory_db_file``) и открывает НОВЫЙ экземпляр
+        ``_wipe_e2e_facts_db_file``) и открывает НОВЫЙ экземпляр
         ``VoiceMemory`` на нём — гарантия пустой e2e-базы держится узлом,
         не вызывающим скриптом. Переход True→True (повторный
         ``ros2 param set ... true``) — no-op, не чистит базу второй раз
@@ -1186,10 +1116,9 @@ class MCPServer(Node):
         ``_voice_memory_prod_db_path`` никогда не удаляется и не изменяется.
 
         ``False`` — отказ (переключение НЕ применено, активная БД осталась
-        прежней): либо E2E-изоляция не реализована для активного бэкенда
-        (``self._voice_memory_prod_db_path is None`` — harness-адаптер
-        ``MCP_USE_HARNESS_VOICE_MEMORY=1`` или ``rob_box_voice`` недоступен,
-        ``self.voice_memory is None``), либо переоткрытие файла бросило
+        прежней): либо переключать нечего
+        (``self._voice_memory_prod_db_path is None`` — ``rob_box_voice``
+        недоступен, ``self.voice_memory is None``), либо переоткрытие файла бросило
         исключение. ``E2EModeFollower`` тогда не меняет ``e2e_mode_applied``,
         и харнесс (``enter_e2e_mode``) фейлит акт: лучше не прогнать акт,
         чем засорить боевую память.
@@ -1204,9 +1133,6 @@ class MCPServer(Node):
         if self._voice_memory_prod_db_path is None or _VoiceMemory is None:
             self.get_logger().error(
                 "❌ e2e_mode (voice_memory): нет боевого пути для переключения — "
-                "либо активен harness-адаптер (MCP_USE_HARNESS_VOICE_MEMORY=1, "
-                "E2E-изоляция для него не реализована, issue #2781 накрывает "
-                "только legacy VoiceMemory/voice_memory.db), либо "
                 "rob_box_voice недоступен и self.voice_memory не инициализирована. "
                 "Переключение отклонено."
             )
@@ -1222,7 +1148,7 @@ class MCPServer(Node):
                 old_memory = self.voice_memory
                 if enabled:
                     # Гарантия чистой базы — только на переходе в E2E-режим.
-                    self._wipe_e2e_voice_memory_db_file()
+                    self._wipe_e2e_facts_db_file()
                 self.voice_memory = _VoiceMemory(
                     db_path=target_path,
                     ollama_base_url=self._voice_memory_ollama_url,
@@ -1242,17 +1168,20 @@ class MCPServer(Node):
         # WARNING, не info: смена активной БД памяти обязана быть видна в
         # `docker logs voice-assistant` без фильтров (issue #2750 — то же
         # решение у speaker_id_node._apply_e2e_mode).
+        prod_note = (
+            f"боевая {self._voice_memory_prod_db_path!r} НЕ используется, пока режим включён"
+            if enabled else "вернулись на боевую"
+        )
         self.get_logger().warning(
             f"🧪 mcp_server: e2e_mode (voice_memory)={'ON' if enabled else 'OFF'} — "
-            f"voice_facts (memory_save) теперь пишутся в {target_path!r} "
-            f"({'боевая voice_memory.db НЕ используется, пока режим включён' if enabled else 'вернулись на боевую'})"
+            f"voice_facts (memory_save) теперь пишутся в {target_path!r} ({prod_note})"
         )
         return True
 
     def _init_faq_store(self) -> None:
         """Инициализация FAQStore и загрузка event profile (режим мероприятия).
 
-        Остаётся на ``VOICE_MEMORY_DB_PATH`` / ``/data/voice_memory.db``:
+        Остаётся на БД инструментов (``rob_box_core.tools_db``):
         ``faq_items`` в ``/data/harness_voice.db`` уже создаётся
         ``SQLiteVoiceMemory`` с другой схемой (``created_at`` вместо
         ``indexed_at``, без FTS5-триггеров) — см. ADR-0055.
@@ -1284,7 +1213,7 @@ class MCPServer(Node):
 
         self.event_profile = profile
 
-        db_path = os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+        db_path = tools_db_path()
         try:
             self.faq_store = _FAQStore(db_path=db_path)
             self.get_logger().info(

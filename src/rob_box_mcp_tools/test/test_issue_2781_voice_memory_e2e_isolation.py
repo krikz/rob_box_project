@@ -340,8 +340,7 @@ def test_mcp_server_has_no_e2e_switch_of_its_own(node):
 
 
 def test_no_prod_path_target_fails_fatally_instead_of_silently_passing(node):
-    """Issue #2781 — если активен harness-адаптер
-    (``MCP_USE_HARNESS_VOICE_MEMORY=1``) или ``rob_box_voice`` недоступен,
+    """Issue #2781 — если ``rob_box_voice`` недоступен,
     ``_voice_memory_prod_db_path`` остаётся ``None`` (см.
     ``_init_voice_memory``). Переключение обязано ОТКАЗАТЬ явно
     (``successful=False``), а не молча продолжить писать в боевую БД —

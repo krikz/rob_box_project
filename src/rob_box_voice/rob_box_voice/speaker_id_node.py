@@ -77,8 +77,9 @@ Parameters:
                                         ухода [30.0]
     memory_db_path              (str)   — harness_voice.db, факты через шов
                                         идентичности (issue #2440) [/data/harness_voice.db]
-    voice_facts_db_path         (str)   — voice_memory.db, второй писатель
-                                        фактов (issue #2751) [/data/voice_memory.db]
+    voice_facts_db_path         (str)   — БД инструментов, второй писатель
+                                        фактов (issue #2751)
+                                        [rob_box_core.tools_db.tools_db_path(), #4082]
     sample_rate                (int)   — PCM sample rate         [16000]
     enabled                    (bool)  — enable/disable node     [true]
 """
@@ -103,6 +104,7 @@ from std_msgs.msg import String
 from rob_box_core import speech_client
 from rob_box_core.e2e_mode import E2EModeOwner
 from rob_box_core.speaker_wire import TENTATIVE_CONTESTED, TENTATIVE_SINGLE, fill_speaker_result
+from rob_box_core.tools_db import tools_db_path
 
 from .core import epithets, unnamed_voice
 from .core.utterance_id import compute_utterance_id
@@ -674,9 +676,9 @@ class SpeakerIdNode(Node):
         # MCP-инструмент memory_save пишет в voice_facts этого файла (не в
         # harness_voice.db выше). Пока обе БД живы (миграция #2000 не
         # доведена до конца, см. ADR-0128), merge() без этого пути молча
-        # терял бы живые факты при склейке профилей. Тот же дефолт, что у
-        # VOICE_MEMORY_DB_PATH в mcp_server.py.
-        self.declare_parameter("voice_facts_db_path", "/data/voice_memory.db")
+        # терял бы живые факты при склейке профилей. Умолчание — тот же файл,
+        # что у mcp_server (rob_box_core.tools_db, #4082); задают только реплей/стенд.
+        self.declare_parameter("voice_facts_db_path", tools_db_path())
         # Issue #2750 — изолированная БД дикторов для E2E-актов знакомства.
         # По умолчанию не используется: узел открывает db_path (боевую) при
         # старте и остаётся на ней, пока ``ros2 param set ... e2e_mode true``
@@ -1958,10 +1960,10 @@ class SpeakerIdNode(Node):
         db_path = str(
             self.get_parameter("memory_db_path").value or "/data/harness_voice.db"
         )
-        # Issue #2751 — второй писатель фактов (voice_facts в
-        # voice_memory.db), см. docstring VoiceIdentitySeam.__init__.
+        # Issue #2751 — второй писатель фактов (voice_facts в БД
+        # инструментов), см. docstring VoiceIdentitySeam.__init__.
         legacy_facts_db_path = str(
-            self.get_parameter("voice_facts_db_path").value or "/data/voice_memory.db"
+            self.get_parameter("voice_facts_db_path").value or tools_db_path()
         )
         store = SQLiteVoiceMemory(db_path=db_path)
         try:

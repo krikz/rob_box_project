@@ -8,11 +8,12 @@
 * профиль (``first_seen/last_seen/dialog_count``) - тем же швом, что вёл v1: ``MemoryIdentitySeam.note_seen`` в
   ``harness_voice.db`` под ``speaker_scope(person_ref)``; счётчики v1 продолжаются, а не обнуляются. Диалог - ход
   с адресованной репликой (как у v1: ``touch_speaker`` на каждый ход);
-* факты - читаются из ``voice_facts`` (``voice_memory.db``), куда пишет ``memory_save`` и откуда читают
-  ``memory_search``/``memory_context``: одна память на ``person_ref`` (PR-11), вторую копию фактов не заводим.
+* факты - читаются из ``voice_facts`` (БД инструментов, путь - ``rob_box_core.tools_db``), куда пишет
+  ``memory_save`` и откуда читают ``memory_search``/``memory_context``: одна память на ``person_ref`` (PR-11),
+  вторую копию фактов не заводим.
 
 В режиме e2e боевые файлы не трогаются: профиль идёт в память процесса (на диск ни байта), факты читаются из e2e-БД
-``voice_memory.e2e.db``. Сбой памяти не валит ход: раздела (или его части) просто нет.
+фактов ``mcp_server`` (``tools_db.TOOLS_E2E_DB_DEFAULT``). Сбой памяти не валит ход: раздела (или его части) нет.
 """
 
 from __future__ import annotations

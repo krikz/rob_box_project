@@ -169,7 +169,8 @@ services:
       # ollama остался на Vision Pi (profile ai); с Sound Pi — по адресу узла.
       # Переопределение — OLLAMA_HOST_URL в .env (ADR-0159 §2.3).
       - OLLAMA_BASE_URL=${OLLAMA_HOST_URL:-http://10.1.1.11:11434}
-      - VOICE_MEMORY_DB_PATH=/data/voice_memory.db
+      # Путь БД инструментов (факты memory_save, вейпоинты, RTTTL) знает rob_box_core.tools_db (#4082);
+      # VOICE_MEMORY_DB_PATH — только переопределение для стенда.
       # Issue #1777 / #1763 — timezone для get_current_time tool. TZ нужен
       # для glibc strftime() и лог-timestamps, ROBOT_TIMEZONE — для
       # Python zoneinfo в GetCurrentTimeTool. Europe/Moscow по умолчанию,

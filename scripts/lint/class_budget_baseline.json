@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "created": "2026-10-27",
-  "base_sha": "5a1c8d7dd6482fb72b7bb6740de966bacd186bd3",
+  "created": "2026-10-28",
+  "base_sha": "2719e5553d39719128495c779b90f55d967bd9d8",
   "limits": {
     "wmc": 80,
     "methods": 40
@@ -24,7 +24,7 @@
       "methods": 15
     },
     "src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py:MCPServer": {
-      "wmc": 99,
+      "wmc": 96,
       "methods": 20
     },
     "src/rob_box_perception/rob_box_perception/face_recognition.py:FaceRecognizer": {

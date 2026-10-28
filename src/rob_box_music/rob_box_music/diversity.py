@@ -11,8 +11,9 @@ Issue #3224 (карточка (а) umbrella #3223, ADR-0146). Живой лог 
 
 Модуль чистый (без ROS/Renardo):
 
-* :class:`MusicHistory` — таблица ``music_history`` в SQLite (тот же
-  ``VOICE_MEMORY_DB_PATH``, что у ``RtttlLibrary``; схема создаётся кодом
+* :class:`MusicHistory` — таблица ``music_history`` в SQLite (путь передаёт
+  владелец: на роботе ``mcp_server`` даёт ту же БД инструментов, что у
+  ``RtttlLibrary``, ``rob_box_core.tools_db``; схема создаётся кодом
   ``CREATE TABLE IF NOT EXISTS``). Переживает перезапуск.
 * :func:`weighted_pick` — взвешенный выбор: штраф за появление значения в
   недавней истории затухает экспоненциально с давностью.
@@ -167,14 +168,15 @@ def _option_weight(option: Any, recent_values: Sequence[Any], decay: float, floo
 class MusicHistory:
     """Персистентная история сыгранного (таблица ``music_history``).
 
-    ``db_path``: ``None`` → ``$VOICE_MEMORY_DB_PATH`` или ``/data/voice_memory.db``;
+    ``db_path`` — обязателен: пакет чистый и пути робота не знает (#4082), его даёт
+    владелец (``mcp_server`` — ``rob_box_core.tools_db.tools_db_path()``);
     ``":memory:"`` — для тестов. Если БД не открылась — :attr:`available`
     ``False``, ``record`` возвращает ``False``, ``recent`` — ``[]``; причина
     в WARNING (это не молчаливая деградация).
     """
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
-        self._db_path = db_path or os.getenv("VOICE_MEMORY_DB_PATH", "/data/voice_memory.db")
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
         try:

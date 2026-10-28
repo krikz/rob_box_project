@@ -38,9 +38,10 @@ speaker_id_node:
     # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
     memory_db_path: "/data/harness_voice.db"
     # Issue #2751 — второй писатель фактов (MCP memory_save, таблица
-    # voice_facts) — без этого пути merge() терял бы живые факты, см.
-    # docstring VoiceIdentitySeam.__init__ и ADR-0128.
-    voice_facts_db_path: "/data/voice_memory.db"
+    # voice_facts) — merge() переносит и их, см. docstring
+    # VoiceIdentitySeam.__init__ и ADR-0128. Путь здесь не задаётся:
+    # voice_facts_db_path по умолчанию — rob_box_core.tools_db, тот же файл,
+    # что у mcp_server (#4082); задаёт его только реплей/стенд.
     # Issue #2750 — изолированная БД для E2E-акта «Знакомство»; узел
     # переключается на неё только параметром e2e_mode ниже, боевую
     # db_path выше это не трогает. См.
