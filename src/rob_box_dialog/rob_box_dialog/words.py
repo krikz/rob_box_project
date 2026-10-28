@@ -410,7 +410,8 @@ def self_intro_name(text: str) -> Optional[str]:
 
 def asks_to_listen(text: str) -> bool:
     """Просит ли фраза робота слушать и не встревать (#4179): формы ``knowledge.LISTEN_ONLY_FORMS`` целиком («ты просто
-    слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» - нет."""
+    слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» -
+    нет."""
     return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
 
 
