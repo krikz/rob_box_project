@@ -56,9 +56,10 @@ import sqlite3
 import struct
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, NamedTuple, Optional, Tuple
+from typing import Any, Iterator, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -488,17 +489,16 @@ class UnnamedProfiles:
         """
         if duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
             raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
-        conn = self._db._conn
         now = time.time()
         speaker_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)", (speaker_id, UNNAMED, now)
-        )
-        conn.execute(
-            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
-            (speaker_id, self._db._ndarray_to_blob(embedding), now),
-        )
-        conn.commit()
+        with _isolated_write(self._db._conn) as tx:  # #4115: профиль виден читателям только вместе с эмбеддингом
+            tx.execute(
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?)", (speaker_id, UNNAMED, now)
+            )
+            tx.execute(
+                "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+                (speaker_id, self._db._ndarray_to_blob(embedding), now),
+            )
         evicted = self._evict_over(max_unnamed, keep=speaker_id)
         logger.info(f"🆕 безымянный профиль id={speaker_id[:8]} (речь {duration_sec:.2f}с), вытеснено: {len(evicted)}")
         return UnnamedOutcome(speaker_id, tuple(evicted))
@@ -547,6 +547,7 @@ class UnnamedProfiles:
         twin = self._db._find_by_name(clean)
         twin_score = _twin_score(self._db, embedding, twin)
         self._db._conn.execute("UPDATE speakers SET name=? WHERE speaker_id=?", (clean, match.speaker_id))
+        self._db._conn.commit()  # #4115: register пишет на своём соединении, неподтверждённое имя держало бы ему замок
         self._db.register(clean, embedding, speaker_id=match.speaker_id, duration_sec=duration_sec)
         logger.info(
             f"🏷️ register_or_merge: безымянный профиль id={match.speaker_id[:8]} (кличка={match.epithet!r}, "
@@ -903,55 +904,16 @@ class SpeakerDatabase:
         if duration_sec is not None and duration_sec < MIN_REGISTER_AUDIO_DURATION_SEC:
             raise AudioTooShortError(duration_sec, MIN_REGISTER_AUDIO_DURATION_SEC)
         now = time.time()
-        if speaker_id is None:
-            speaker_id = str(uuid.uuid4())
-            self._conn.execute(
-                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
-                "ON CONFLICT(speaker_id) DO NOTHING",
-                (speaker_id, clean_name, now),
+        # Issue #4115: профиль и его эмбеддинг пишутся ОДНОЙ транзакцией на отдельном соединении. На общем соединении
+        # (``check_same_thread=False``) читатель другого потока видел профиль уже после первого ``INSERT`` -- «Борис, 0
+        # эмбеддингов», и ``identify`` давал ``None``: соединение видит свои неподтверждённые записи. Теперь читатели
+        # общего соединения видят профиль целиком после ``commit`` или не видят вовсе (``_isolated_write``).
+        with _isolated_write(self._conn) as tx:
+            speaker_id = _write_profile_row(tx, speaker_id, clean_name, now)
+            tx.execute(
+                "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+                (speaker_id, self._ndarray_to_blob(embedding), now),
             )
-        else:
-            # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
-            # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
-            # в запросе, возвращаются к дефолту. Здесь это молча стирало
-            # ``epithet`` / ``epithet_history`` / ``tags`` /
-            # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
-            # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
-            # то есть КАЖДАЯ повторная регистрация уже известного голоса
-            # обнуляла накопленный профиль. UPDATE трогает ровно одну
-            # колонку; ``created_at`` — «когда профиль создан», а не
-            # «когда его последний раз трогали», поэтому не обновляется.
-            prev = self._conn.execute(
-                "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
-            ).fetchone()
-            if prev is None:
-                # Явный id, которого ещё нет в БД (тест / миграция /
-                # восстановление): создаём строку, иначе FK-ссылка из
-                # embeddings повиснет на несуществующего спикера.
-                self._conn.execute(
-                    "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
-                    "ON CONFLICT(speaker_id) DO NOTHING",
-                    (speaker_id, clean_name, now),
-                )
-            elif prev[0] != clean_name:
-                # Переименование по ЯВНО переданному id — вызывающий код
-                # утверждает, что это тот же человек (rename-поток). Логируем
-                # на WARNING: имя профиля — единственное, что связывает
-                # биометрию с человеком, и его потеря необратима (ADR-0127).
-                logger.warning(
-                    f"register(speaker_id={speaker_id[:8]}): имя профиля "
-                    f"{prev[0]!r} → {clean_name!r} (явный id, переименование "
-                    f"по требованию вызывающего кода)"
-                )
-                self._conn.execute(
-                    "UPDATE speakers SET name=? WHERE speaker_id=?",
-                    (clean_name, speaker_id),
-                )
-        self._conn.execute(
-            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
-            (speaker_id, self._ndarray_to_blob(embedding), now),
-        )
-        self._conn.commit()
         logger.info(f"Registered speaker '{clean_name}' id={speaker_id[:8]}")
         return speaker_id
 
@@ -1403,6 +1365,88 @@ class SpeakerDatabase:
 
 
 # ── Хелперы сериализации профиля (issue #1787) ───────────────────────────────
+
+
+def _write_profile_row(tx: sqlite3.Connection, speaker_id: Optional[str], name: str, now: float) -> str:
+    """Строка профиля в транзакции записи ``tx`` (:func:`_isolated_write`): новый профиль (``speaker_id`` не задан),
+    явный id, которого ещё нет, или существующий (при другом имени -- переименование); id профиля. Эмбеддинг дописывает
+    вызывающий код в той же транзакции."""
+    if speaker_id is None:
+        speaker_id = str(uuid.uuid4())
+        tx.execute(
+            "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(speaker_id) DO NOTHING",
+            (speaker_id, name, now),
+        )
+    else:
+        # ADR-0097 / issue #2469 — НЕ ``INSERT OR REPLACE``. В SQLite
+        # REPLACE — это DELETE + INSERT: все колонки, не перечисленные
+        # в запросе, возвращаются к дефолту. Здесь это молча стирало
+        # ``epithet`` / ``epithet_history`` / ``tags`` /
+        # ``sentiment_score`` / ``last_epithet_review`` (issue #1787,
+        # добавлены миграцией) и переписывало ``created_at`` на «сейчас»,
+        # то есть КАЖДАЯ повторная регистрация уже известного голоса
+        # обнуляла накопленный профиль. UPDATE трогает ровно одну
+        # колонку; ``created_at`` — «когда профиль создан», а не
+        # «когда его последний раз трогали», поэтому не обновляется.
+        prev = tx.execute(
+            "SELECT name FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        if prev is None:
+            # Явный id, которого ещё нет в БД (тест / миграция /
+            # восстановление): создаём строку, иначе FK-ссылка из
+            # embeddings повиснет на несуществующего спикера.
+            tx.execute(
+                "INSERT INTO speakers (speaker_id, name, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(speaker_id) DO NOTHING",
+                (speaker_id, name, now),
+            )
+        elif prev[0] != name:
+            # Переименование по ЯВНО переданному id — вызывающий код
+            # утверждает, что это тот же человек (rename-поток). Логируем
+            # на WARNING: имя профиля — единственное, что связывает
+            # биометрию с человеком, и его потеря необратима (ADR-0127).
+            logger.warning(
+                f"register(speaker_id={speaker_id[:8]}): имя профиля "
+                f"{prev[0]!r} → {name!r} (явный id, переименование "
+                f"по требованию вызывающего кода)"
+            )
+            tx.execute(
+                "UPDATE speakers SET name=? WHERE speaker_id=?",
+                (name, speaker_id),
+            )
+    return speaker_id
+
+
+@contextmanager
+def _isolated_write(shared: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Транзакция записи, невидимая читателям общего соединения ``shared`` до ``commit`` (issue #4115).
+
+    Соединение ``SpeakerDatabase`` общее для потоков (``check_same_thread=False``) и видит собственные неподтверждённые
+    записи, поэтому профиль, вставленный раньше своего эмбеддинга, читатель другого потока находил с 0 эмбеддингов.
+    Здесь запись идёт на отдельном соединении к тому же файлу: другое соединение чужих неподтверждённых строк не видит
+    (изоляция SQLite), ``commit`` публикует профиль и эмбеддинг сразу вместе, ошибка откатывает обе вставки и не оставляет
+    «хвоста», который закоммитил бы чужой ``commit`` на общем соединении. Выбрано вместо замка на читателях: читателей
+    десятки (``identify``, ``list_speakers``, ...), а писатель один.
+
+    Пока на общем соединении висит неподтверждённая запись, этой транзакции придётся ждать её ``commit`` (до 5 с,
+    ``sqlite3``): вызывающий код подтверждает записи сразу. БД без файла (``:memory:``) изолировать нечем -- запись идёт
+    на общем соединении, как раньше."""
+    path = shared.execute("PRAGMA database_list").fetchone()[2]
+    if not path:
+        yield shared
+        shared.commit()
+        return
+    tx = sqlite3.connect(path)
+    try:
+        tx.execute("PRAGMA foreign_keys = ON")  # на каждое соединение отдельно (issue #2794)
+        yield tx
+        tx.commit()
+    except BaseException:
+        tx.rollback()
+        raise
+    finally:
+        tx.close()
 
 
 def _stored_name(conn: Any, speaker_id: str, fallback: str) -> str:

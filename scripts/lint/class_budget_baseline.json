@@ -88,7 +88,7 @@
       "methods": 98
     },
     "src/rob_box_voice/rob_box_voice/utils/speaker_embeddings.py:SpeakerDatabase": {
-      "wmc": 99,
+      "wmc": 97,
       "methods": 27
     }
   }

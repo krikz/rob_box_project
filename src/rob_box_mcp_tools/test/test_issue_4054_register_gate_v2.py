@@ -172,11 +172,22 @@ def test_unknown_voice_and_my_name_is_oleg_registers_a_new_profile() -> None:
     assert said == "Запомнил тебя, Олег."
 
 
-@pytest.mark.parametrize("heard", ["зови меня Тамара", "запомни меня как Тамара", "меня зовут не Нина, а Тамара"])
+@pytest.mark.parametrize("heard", ["зови меня Тамара", "запомни меня как Тамара", "меня зовут не Нина, а Тамара",
+                                   "зови меня Тамарой", "называй меня Тамарой", "запиши меня как Тамару"])
 def test_asking_to_be_called_otherwise_is_calling_oneself_a_name(heard: str) -> None:
-    """Просьба звать иначе - тоже «человек назвал себя» (грамматика #3801 ``classify_rename``): гейт пропускает."""
+    """Просьба звать иначе - тоже «человек назвал себя» (грамматика #3801 ``classify_rename``): гейт пропускает. Падеж
+    имени не мешает (ревью PR #4108): «зови меня Тамарой» + ``register_speaker("Тамара")`` - не «себя ты так не называл»."""
     _result, sent, said = _v2_register(heard, NINA, "Тамара", renames=True)
     assert sent == [{"name": "Тамара", "utterance_id": UID}] and said in _renamed_phrases("Тамара")
+
+
+def test_call_me_sasha_in_instrumental_passes_the_gate_and_a_fact_still_does_not() -> None:
+    """«Называй меня Сашей» голосом Нины + ``register_speaker("Саша")`` - гейт пропускает; а «Саша любит чай» тем же
+    голосом - по-прежнему отказ: приведение падежа гейт не ослабило."""
+    _result, sent, said = _v2_register("называй меня Сашей", NINA, "Саша", renames=True)
+    assert sent == [{"name": "Саша", "utterance_id": UID}] and said in _renamed_phrases("Саша")
+    result, sent, _said = _v2_register("запомни, что Саша любит чай", NINA, "Саша", renames=True)
+    assert sent == [] and result.reason == "not_self_introduction"
 
 
 def test_a_name_other_than_the_one_the_person_gave_is_refused() -> None:

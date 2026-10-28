@@ -527,7 +527,7 @@ SCENES = {
     'new_year_eve': _s(new_year_eve, 8.0, 'holiday', 'Новогодняя полночь', 'салют сзади, «2027» во рту'),
 }
 
-#: Names of the v1 vocabulary (rob_box_mcp_tools.animations.KNOWN_ANIMATIONS,
+#: Names of the animation vocabulary (``rob_box_dialog.knowledge.KNOWN_ANIMATIONS``,
 #: ``play_animation``) that are not scene names. ``talking``/``thinking``
 #: follow the node's ``mouth_design``/``thinking_design`` (decision В13).
 LEGACY = {'idle': 'idle_stare', 'braking': 'brake', 'talking': 'talk_{mouth}', 'thinking': '{thinking}'}

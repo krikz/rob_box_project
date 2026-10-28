@@ -18,6 +18,7 @@ from ..base import MCPTool, MCPToolParameter, MCPToolResult
 from ..owner_event import OwnerEvents, owner_events
 from rob_box_dialog import phrases
 from rob_box_dialog.knowledge import VOICE_DEFAULT_ARG
+from rob_box_dialog.words import name_key
 
 from ..voice_request import outcome_phrase, resolve_speak_voice, voice_requests
 from ..animations import (
@@ -977,10 +978,6 @@ class RegisterSpeakerTool(MCPTool):
         )
 
 
-def _name_key(name: str | None) -> str:
-    return (name or "").strip().casefold().replace("ё", "е")
-
-
 def _rename_source(old_name: str | None) -> str | None:
     """Имя профиля, который просят переименовать (``register_speaker(old_name=…)``), или ``None``: пусто, литерал
     ``null``/``none`` и однобуквенное «имя» переименованием не считаются (Issue #1101) - одно правило для публикации
@@ -1010,10 +1007,10 @@ def rename_gate(
     Граница та же, что у регистрации: голос не узнан уверенно (``known_speaker_name=None``) или хода нет (Telegram,
     синтетика) — гейт молчит, поправка «я не X, я Y» работает как раньше; пустое новое имя ничего не переименовывает.
     """
-    known = _name_key(known_speaker_name)
-    if not known or not _name_key(name):
+    known = name_key(known_speaker_name)
+    if not known or not name_key(name):
         return None
-    if _name_key(old_name) != known:
+    if name_key(old_name) != known:
         return "not_own_profile"
     return register_speaker_gate(name, self_intro_name, None, known_speaker_name)
 
@@ -1045,10 +1042,10 @@ def register_speaker_gate(
     """
     if intro_registered and self_intro_name:
         return "intro_already_sent"
-    known = _name_key(known_speaker_name)
-    if not known or _name_key(name) == known:
+    known = name_key(known_speaker_name)
+    if not known or name_key(name) == known:
         return None
-    if self_intro_name and _name_key(self_intro_name) == _name_key(name):
+    if self_intro_name and name_key(self_intro_name) == name_key(name):
         return None
     return "not_self_introduction"
 
