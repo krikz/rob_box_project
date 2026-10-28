@@ -268,29 +268,88 @@ def test_cli_skip_reads_the_rule_from_the_scenario_file_not_from_its_name(tmp_pa
     assert "skip=-" in run(started(T0))
 
 
-# ── п.3б: n309 -- музыка перед n312 длится ~2 минуты ─────────────────────────────────────────────────────────
+# ── п.3б: n309 -- музыка перед n312 длится ~2 минуты и не тратит KIE ─────────────────────────────────────────
 
 
-def test_n309_asks_for_a_two_minute_dj_set_that_the_grammar_reads_as_dj_with_seconds():
-    """Длину решает код: «на две минуты» -> 120 с, а фраза опознаётся грамматикой как DJ-сет (без «диджей-сет» -- NONE)."""
-    pytest.importorskip("rob_box_music")
-    step = _steps()["n309_bg_command_valera"]
-    assert "диджей-сет" in step["text"] and "две минуты" in step["text"]
-    assert step["text"].count(".") == 1
-    assert "#4176" in step["acceptance"]["_comment"] if "acceptance" in step else "#4176" in step["_why"]
+def _voice_imports():
     try:
+        from rob_box_music.source import SYNTH, engine_route, source_ask
         from rob_box_voice.core.media_command_grammar import MediaIntent, parse_media_command
-        from rob_box_voice.core.set_length_words import heard_set_seconds
+        from rob_box_voice.core.set_length_words import heard_set_length, heard_set_seconds
     except ImportError:
-        pytest.skip("rob_box_voice вне PYTHONPATH")
-    assert heard_set_seconds(step["text"]) == 120.0
-    assert parse_media_command(step["text"]).intent is MediaIntent.DJ
+        pytest.skip("rob_box_voice/rob_box_music вне PYTHONPATH (в CI есть)")
+    return SYNTH, engine_route, source_ask, MediaIntent, parse_media_command, heard_set_length, heard_set_seconds
+
+
+def test_n309_is_a_free_two_minute_synth_set_read_by_the_code():
+    """Деньги: «на синтезаторе» называет движок -> единственный кандидат синтез, генерации KIE нет. Длину решает код."""
+    synth, engine_route, source_ask, intent, parse, set_length, set_seconds = _voice_imports()
+    text = _steps()["n309_bg_command_valera"]["text"]
+    assert "диджей-сет" in text and "две минуты" in text
+    assert engine_route(source_ask(text).engine) == synth, "без названного движка сет идёт кэш -> платная генерация -> синтез"
+    assert set_seconds(text) == 120.0 and set_length(text) == 2
+    assert parse(text).intent is intent.DJ
+
+
+def test_n309_phrase_has_no_contradicting_negation_and_the_step_documents_the_money_path():
+    step = _steps()["n309_bg_command_valera"]
+    assert "электрон" not in step["text"].lower()
+    why = step["_why"] if "_why" in step else step["acceptance"]["_comment"]
+    assert "ДЕНЬГИ" in why and "_named_cell" in why and "#4176" in why
 
 
 def test_n310_still_accepts_dj_set_as_the_music_start():
     assert "dj_set" in gen.MUSIC_START_TOOLS
 
 
+# ── п.3в: n312 -- стоп сета ──────────────────────────────────────────────────────────────────────────────────
+
+
+def test_router_stop_calls_dj_set_stop_then_stop_music():
+    """Стоп «выключай музыку» при играющем сете: роутер зовёт ОБА тула, гейт акта 3 (``stop_music``) честен."""
+    try:
+        from rob_box_voice.core.media_command_grammar import MediaIntent, MediaCommand
+        from rob_box_voice.core.media_router import MediaState, plan_media_command
+    except ImportError:
+        pytest.skip("rob_box_voice вне PYTHONPATH (в CI есть)")
+    plan = plan_media_command(MediaCommand(intent=MediaIntent.STOP), MediaState(dj_enabled=True))
+    assert [c.name for c in plan.tool_calls] == ["dj_set", "stop_music"]
+    assert plan.tool_calls[0].arguments == {"action": "stop"}
+    assert plan.say_ok == gen.robot_said("music.stop_ok")
+
+
+def _stop_log(said: str, track: str = "set01234:2") -> List[str]:
+    """Окно шага n312 при стопе идущего сета: ``dj_set(stop)`` снимает деку с id трека, затем идемпотентный ``stop_music``."""
+    return [
+        _mcp(T0 + 60, "📥 Запрос выполнения: dj_set с параметрами {'action': 'stop'}"),
+        stopped(T0 + 60.5, track),
+        _mcp(T0 + 61, "📥 Запрос выполнения: stop_music с параметрами {}"),
+        _mcp(T0 + 61.1, "🎵 [music v2] stop track_id=None reason=user_stop"),
+        _mcp(T0 + 61.2, "[stop_music] was_playing=False"),
+        _mcp(T0 + 61.3, "✅ Инструмент stop_music выполнен успешно"),
+        _tts(said),
+        DONE,
+    ]
+
+
+def test_n312_set_stop_by_the_router_is_green_with_the_stop_ok_phrase():
+    got = _verdict("n312_stop_music", *_stop_log("Выключил музыку."))
+    assert got["pass"], got
+
+
+@pytest.mark.parametrize("said", [
+    "Сейчас ничего не играет — на всякий случай всё остановил.",  # дека была пуста -- гонка с концом (n312 28.10)
+    "Включаю музыку.",  # media.done после стопа (#4075)
+])
+def test_n312_forbidden_phrases_stay_red_for_a_set_stop(said):
+    got = _verdict("n312_stop_music", *_stop_log(said))
+    assert not got["pass"] and got["acc"]["forbidden_said"], said
+
+
+def test_n312_stop_without_a_real_track_on_the_deck_is_red():
+    """Только стоп вхолостую (``track_id=None``) -- стопа с треком нет, шаг не засчитывается."""
+    log = [line for line in _stop_log("Выключил музыку.") if "set01234" not in line]
+    assert not _verdict("n312_stop_music", *log)["pass"]
 # ── п.4: n707 -- песня названа во фразе ──────────────────────────────────────────────────────────────────────
 
 

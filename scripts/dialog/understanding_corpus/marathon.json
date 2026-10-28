@@ -5,14 +5,14 @@
  "generator": "scripts/dialog/understanding_corpus/build_marathon.py",
  "scenarios": {
   "dir": ".github/e2e/scenarios/night",
-  "last_commit": "511611162963a598bf512bfb45cbf7eb41dfb70f",
+  "last_commit": "03349c9bab1074e839a8dd0cdb9c9ef97e98c9c4",
   "sha256": {
    "night_marathon_act10_finale_memory_v1.json": "87fb13a607b04d4d548a47954eec052352c1f56b0b63b15ce567d0f3e28b4d8e",
    "night_marathon_act1_wakeup_v1.json": "9215d03c68aeae4defeb3856da24665b60cb0cddaf7d8711a6410388707a1684",
    "night_marathon_act2_acquaintance_v1.json": "0537e33d304f71f4100263638940b9cb5d2c14fb08d9df92fd9964a115498f6b",
    "night_marathon_act2b_identity_question_v1.json": "58e6678aafb3bfd3a6735c1c087cc9f1b0ce4b430b4cb80cc28f011188936fbc",
    "night_marathon_act2c_voice_conflict_question_v1.json": "98540c06002dacc2786ab5a669f62cd0279a2281393397495581ba9fe7c31c6f",
-   "night_marathon_act3_backlog_diarization_v1.json": "a13a38a2513d1847e48ff0c033e15431d1f12075a2cdcdd85b2c3b46dd1abe3c",
+   "night_marathon_act3_backlog_diarization_v1.json": "83baec1cbefc94f7043dfeb3be7910808a2ed728e9a374303d475623ec62463d",
    "night_marathon_act4_voice_prosody_v1.json": "a84735e8f809f7d2800942a6a8cfe0260f54ea9116fff373c4668e343974b8f7",
    "night_marathon_act5_renardo_live_v1.json": "6efce720f7ddf1dd94eb4cf726dd0f16e6cfea2c2cbdcf5e25168858f919e0c7",
    "night_marathon_act6_dj_booth_v1.json": "1224f7d49a13411586d0107a85ca11a6517f627f4c330d0be95818468c01796d",
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 130
  },
- "corpus_sha256": "5806e471fb495e5aab3b569c2ab807a876981411a24d6be8fb02b52032153bc2",
+ "corpus_sha256": "57f0c079476b287b5ed12c7b5ab3675f472840a89911c6f95ca7b9e9fcf14a5a",
  "acts": [
   {
    "act": "1",
@@ -1468,7 +1468,7 @@
      "step": {
       "label": "n309_bg_command_valera",
       "voice": "filipp",
-      "text": "Только не электронщину, запусти диджей-сет на две минуты, спокойный.",
+      "text": "Запусти диджей-сет на синтезаторе на две минуты, спокойный.",
       "patterns": [
        "\\[backlog\\] accumulated reason=no_wake"
       ],
