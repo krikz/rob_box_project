@@ -34,6 +34,7 @@ spec.loader.exec_module(graph)
 #: Nodes of that run removed from the code later (reason, PR).
 REMOVED_SINCE_RUN = {
     "voice_animation_player",  # PNG player -> face_node in led-matrix, ADR-0150 PR-3a #3689
+    "dialogue_node",  # dialog v1 -> dialog_node (v2), ADR-0150 PR-15 part 15p #3711
 }
 RUN_36339397150_NODES = """
 /apriltag /audio_node /avatar_arbiter /avatar_supervisor /behavior_server /bt_navigator
