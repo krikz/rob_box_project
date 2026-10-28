@@ -118,12 +118,73 @@ var reloadKnownPath = { |path|
     Server.default.sync;
 };
 
-// Вооружает мастер-шину заново — после рестарта scsynth старый node 999
-// исчез вместе со всем остальным состоянием сервера.
+// Вооружает мастер-шину: освобождает возможный старый узел 999 и ставит свежий
+// masterfilter. Возвращает true, только если scsynth ПОДТВЕРДИЛ узел.
+//
+// #3795: рестарт одного voice-assistant (hotpatch push/revert, docker restart
+// voice-assistant) не трогает scsynth — узел 999 от прошлого sclang там ещё
+// жив, и голый /s_new падал с `duplicate node ID`, а лог всё равно говорил
+// «armed». На шине оставался узел СТАРОГО SynthDef (без новых контролов, напр.
+// duck/duckDb): /n_set 999 duck молча уходил в пустоту.
+//
+// Почему /n_free + /s_new, а не /s_new с addAction 4 (replace): replace
+// требует, чтобы целевой узел существовал, — на холодном старте его нет, и
+// пришлось бы сначала выяснять, жив ли он (лишний круг + ветвление). /n_free
+// безусловен и идемпотентен: на холодном старте scsynth лишь пишет в свой лог
+// «Node 999 not found» (безвредно), а UDP-команды scsynth обрабатывает строго
+// по порядку, так что /s_new после /n_free видит свободный ID. Server.sync
+// между ними — страховка. Цена замены: ручки узла (trim, duck) сбрасываются в
+// дефолты SynthDef — их писатели пересылают значения на следующем переходе.
+//
+// ADR-0148: строку «armed» строит результат исполнения, а не факт отправки.
+// Подтверждение — /n_go 999 (если sclang подписан на уведомления) либо /n_info
+// на /n_query (прямой ответ отправителю, подписка не нужна). /fail на /s_new
+// (дубль ID, нет SynthDef) или тишина 3 с — честная ошибка в лог, не «armed».
+// Вызывать ТОЛЬКО из Routine (внутри Server.sync и Condition.wait).
 var armMasterFilter = {
+    var done = Condition(false);
+    var state = nil;     // nil | \go | \info | \fail | \timeout
+    var failText = "";
+    var finish = { |s|
+        if(state.isNil) { state = s; done.test = true; done.signal };
+    };
+    var goFunc = OSCFunc({ |msg|
+        if(msg[1] == masterLimiterNode) { finish.value(\go) };
+    }, '/n_go');
+    var infoFunc = OSCFunc({ |msg|
+        if(msg[1] == masterLimiterNode) { finish.value(\info) };
+    }, '/n_info');
+    var failFunc = OSCFunc({ |msg|
+        var cmd = msg[1].asString;
+        if(cmd == "/s_new" || { cmd == "/n_query" }) {
+            if(state.isNil) { failText = cmd ++ ": " ++ msg[2] };
+            finish.value(\fail);
+        };
+    }, '/fail');
+    var ok;
+
+    Server.default.sendMsg("/n_free", masterLimiterNode);
+    Server.default.sync;
     Server.default.sendMsg("/s_new", "masterfilter", masterLimiterNode, 1, 0);
-    ("Master filter armed at tail of RootNode (node "
-        ++ masterLimiterNode ++ ")").postln;
+    Server.default.sync;
+    // Узел создан или /s_new уже ответил /fail; /n_query даёт подтверждение
+    // без зависимости от /notify.
+    Server.default.sendMsg("/n_query", masterLimiterNode);
+    SystemClock.sched(3.0, { finish.value(\timeout); nil });
+    done.wait;
+
+    goFunc.free; infoFunc.free; failFunc.free;
+
+    ok = (state == \go) || { state == \info };
+    if(ok) {
+        ("Master filter armed at tail of RootNode (node "
+            ++ masterLimiterNode ++ ", confirmed by /"
+            ++ if(state == \go) { "n_go" } { "n_info" } ++ ")").postln;
+    } {
+        ("ERROR: Master filter NOT armed (node " ++ masterLimiterNode
+            ++ "): " ++ if(state == \fail) { failText } { "нет ответа scsynth за 3 с" }).postln;
+    };
+    ok
 };
 
 // serverRunning-вотчер (#1807): startAliveThread(0.5) ниже уже пингует
@@ -158,8 +219,11 @@ fork {
             // коллекции, по которой итерируется.
             fork {
                 loadedSynthPaths.copy.do({ |path| reloadKnownPath.value(path) });
-                armMasterFilter.value;
-                "[#1807] Палитра и masterfilter восстановлены после рестарта scsynth.".postln;
+                if(armMasterFilter.value) {
+                    "[#1807] Палитра и masterfilter восстановлены после рестарта scsynth.".postln;
+                } {
+                    "[#1807] Палитра перезалита, но masterfilter НЕ вооружён (см. ERROR выше).".postln;
+                };
             };
         };
         serverWasRunning = running;
