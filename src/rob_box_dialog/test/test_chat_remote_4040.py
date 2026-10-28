@@ -59,16 +59,17 @@ class Base:
 class Host:
     """Хост чата, как ``dialog_node.build_chats``; ``sent`` — тексты в чат, ``robot`` — что ушло роботу."""
 
-    def __init__(self, answers, robot=None):
+    def __init__(self, answers, robot=None, hold=False):
         self.base = Base(answers)
         self.robot = Robot() if robot is None else robot
         self.sent = []
+        self.hold = hold
         self.chats = ChatTurns(self._make, ("робот",), lambda line: None)
 
     def _make(self, chat_id):
         session = Session("telegram", session_id=channel_ref(chat_id))
         ports = ChatPorts(self.base, chat_id, lambda ref, text, sid: self.sent.append(text), lambda line: None,
-                          robot=self.robot)
+                          hold=lambda: self.hold, robot=self.robot)
         return TurnEngine(session, ports, system_prompt="Ты пульт робота в чате.")
 
     def say(self, text, chat_id=7):
@@ -145,6 +146,19 @@ def test_refusal_of_the_robot_performer_is_said_by_code_without_lyrics():
     host.say("спой")
 
     assert host.sent == [phrases.text("local.rejected")]
+
+
+def test_operator_hold_refuses_robot_actions_from_chat_like_say_aloud():
+    """Оператор держит робота (§9.2.3): ни выступления, ни лица из чата — отказ кодом без запроса пульту."""
+    held = phrases.text(kn.REMOTE_HOLD_PHRASE)
+    sing = Host([_answer(Command(perform=SONG))], hold=True)
+    sing.say("спой")
+    show = Host([_answer(Command(actions=(ToolCall("play_animation", {"animation": "rainbow"}),)))], hold=True)
+    show.say("покажи радугу")
+
+    assert sing.robot.performed == [] and sing.sent == [held]
+    assert show.robot.shown == [] and show.sent == [held]
+    assert held == phrases.text(f"{kn.PERFORM_REJECTED_PHRASE}.operator_hold"), "один текст отказа"
 
 
 def test_without_a_robot_remote_the_lyrics_still_do_not_go_to_the_chat():

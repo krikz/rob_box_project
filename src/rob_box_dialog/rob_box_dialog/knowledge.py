@@ -2295,8 +2295,14 @@ REMOTE_SHOW_PHRASE = "remote.show"
 REMOTE_QUOTE_MAX_CHARS = 60
 #: Причина отказа выступления, когда пульта робота у хоста нет (тест, хост без Личности): сегменты в чат не идут.
 REMOTE_NO_ROBOT = "no_robot"
+#: Оператор держит робота (кадр ``OperatorHold`` Личности, как отказ ``say_aloud`` §9.2.3): ни выступления, ни лица из
+#: чата; фраза кода об отказе — показ (``remote.operator_hold``) и выступление (``perform.rejected.<причина>``, её
+#: берёт ``turn.hand_perform``) — один текст.
+REMOTE_HOLD_PHRASE = "remote.operator_hold"
+PERFORM_REJECTED_PHRASE = "perform.rejected"
 PHRASE_KEYS = PHRASE_KEYS + (*REMOTE_PERFORM_PHRASES.values(), REMOTE_PERFORM_EDIT_PHRASE,
-                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE)
+                             REMOTE_PERFORM_BACKING_PHRASE, REMOTE_SHOW_PHRASE, REMOTE_HOLD_PHRASE,
+                             f"{PERFORM_REJECTED_PHRASE}.operator_hold")
 
 # ---------------------------------------------------------------------------------------------------------------
 # Путь пения (#4079, ADR-0158 §2.2; ADR-0148 п.2 — выбор сужает структура): решает код ДО основной модели

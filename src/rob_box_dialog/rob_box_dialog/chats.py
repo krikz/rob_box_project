@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Sequence
 from rob_box_core import speech_client
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import phrases
-from rob_box_dialog.address import SOURCE_TELEGRAM, Decision, decide
+from rob_box_dialog.address import HELD, SOURCE_TELEGRAM, Decision, decide
 from rob_box_dialog.backlog import Heard
 from rob_box_dialog.execute import OwnerEvent
 from rob_box_dialog.expression import face_label
@@ -151,7 +151,7 @@ class ChatPorts:
     @staticmethod
     def _held(call: Any, snapshot: Any, request_id: str) -> ActionResult:
         return ActionResult(request_id, snapshot.epoch, snapshot.agent, call.tool, kn.TOOL_CLASSES[call.tool],
-                            "rejected", "operator_hold")
+                            "rejected", HELD)
 
     def late(self, result: ActionResult) -> None:
         """Поздний итог действия (``Executor.on_late``): фраза кода по событию владельца — в чат («Озвучил (12 с)»)."""
@@ -174,12 +174,17 @@ class ChatPorts:
               llm_calls: int = 0, provider: str = "", source: str = "", expression: Optional[Any] = None) -> bool:
         """Стадия хода чата — строка лога; лицо итога ``done`` (``turn.finish_stage``) — на лицо робота, когда это
         действие на роботе (:func:`robot_face`), и фраза кода в чат о том, что робот показал (#4040). ``True`` —
-        робот показал лицо; ``False`` — нет (пульта нет, лицо — настроение текста в чат): в окне его нет."""
+        робот показал лицо; ``False`` — нет (пульта нет, лицо — настроение текста в чат, оператор держит робота —
+        тогда фраза кода об отказе, как у ``say_aloud``): в окне его нет."""
         if status != "started":
             self._log(f"{LOG_MARK} {self._ref} turn={turn_id} stage={stage} status={status} reason={reason or '-'} "
                       f"llm_calls={llm_calls} provider={provider or '-'}")
         face = robot_face(expression, said=self._said == turn_id)
         if face is None or self._robot is None:
+            return False
+        if self._hold():
+            self._log(f"{LOG_MARK} {self._ref} → робот: лицо не показано: оператор держит робота ({HELD})")
+            self._send(self._ref, phrases.text(kn.REMOTE_HOLD_PHRASE), uuid.uuid4().hex)
             return False
         self._robot.show(turn_id, face)
         words = face_words(face)
@@ -198,11 +203,15 @@ class ChatPorts:
         """Выступление агента чата исполняет робот (#4040, ``knowledge.CHAT_OUTLETS["perform"]``): пульт хоста отдаёт
         его хосту выступления Личности в ЕЁ эпохе (``epoch`` чата сюда не идёт: «Робот, хватит» голосом гасит и это
         выступление), сегменты звучат голосом робота, а не текстом в чат. В чат — фраза кода из исхода старта
-        (:func:`perform_phrase`); отказ хоста — фраза хода «Не вышло.». Пульта или хоста выступления нет — отказ
+        (:func:`perform_phrase`); отказ хоста — фраза хода по причине (``turn.hand_perform``). Оператор держит робота —
+        отказ ``operator_hold`` без запроса хосту (как ``say_aloud``, §9.2.3). Пульта или хоста выступления нет — отказ
         кодом ``no_robot``: текст песни в чат не уходит и тогда."""
         if kn.CHAT_OUTLETS["perform"] != kn.REMOTE_ROBOT:
             return None
-        outcome = self._robot.perform(turn_id, perf, edit) if self._robot is not None else None
+        if self._hold():
+            outcome: Optional[Mapping[str, Any]] = {"status": "rejected", "reason": HELD}
+        else:
+            outcome = self._robot.perform(turn_id, perf, edit) if self._robot is not None else None
         result = dict(outcome) if outcome is not None else {"status": "rejected", "reason": kn.REMOTE_NO_ROBOT}
         self._log(f"{LOG_MARK} {self._ref} → робот: выступление {'правка' if edit else 'старт'} kind={perf.kind} "
                   f"segments={len(perf.segments)} → {result.get('status')} {result.get('reason') or '-'} "

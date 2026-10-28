@@ -181,6 +181,9 @@ remote.perform.poem: ["Читаю стихи на роботе: «{line}»"]
 remote.perform.edit: ["Добавил к выступлению робота: «{line}»"]
 remote.perform.backing: ["Добавил бит к выступлению робота."]
 remote.show: ["Показываю на роботе: {face}."]
+remote.operator_hold: &remote_held ["Не сделал на роботе: оператор занял робота."]
+# отказ хоста выступления по причине (turn.hand_perform); причины без ключа — local.rejected «Не вышло.»
+perform.rejected.operator_hold: *remote_held
 
 perform.backing_started: ["Поехали!"]
 perform.finished: *done

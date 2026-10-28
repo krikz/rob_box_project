@@ -649,7 +649,8 @@ def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = Tru
 def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any = _LOG) -> Tuple[bool, str]:
     """Выступление команды — его владельцу (``Ports.perform``: такты, подложка, паузы по сетке строк). #3901: v2 читал
     сегменты рэпа репликами хода — без бита и без пауз. ``(взял ли владелец, фраза кода об отказе или "")``; не взял
-    (выступления нет, у агента нет владельца) — сегменты звучат репликами хода."""
+    (выступления нет, у агента нет владельца) — сегменты звучат репликами хода. Фраза отказа — по его причине
+    (``perform.rejected.<причина>``: пульт чата при ``operator_hold``, #4040), причины без ключа — «Не вышло.»."""
     if cmd.perform is None:
         return False, ""
     outcome = ports.perform(turn_id, epoch, cmd.perform, cmd.edit_pending)
@@ -658,7 +659,11 @@ def hand_perform(ports: Ports, turn_id: str, epoch: int, cmd: Command, log: Any 
     log.info(f"{LOG_MARK} выступление {'правка' if cmd.edit_pending else 'старт'} kind={cmd.perform.kind} "
              f"backing={cmd.perform.backing or '-'} segments={len(cmd.perform.segments)} → {dict(outcome)} "
              f"turn={turn_id}")
-    return True, phrases.text("local.rejected") if outcome.get("status") == "rejected" else ""
+    if outcome.get("status") != "rejected":
+        return True, ""
+    reason = outcome.get("reason")
+    key = phrases.first_key(f"{kn.PERFORM_REJECTED_PHRASE}.{reason}" if reason else None, "local.rejected")
+    return True, phrases.text(str(key))
 
 
 def note_perform_start(log: TurnLog, turn_id: str, cmd: Command, taken: bool) -> None:
