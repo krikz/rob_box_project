@@ -2,8 +2,11 @@
 
 Марафон 23.10, акт 2b: голос узнан (0.944), имя скрыто спором - модель сказала «Голос я пока не запомнил, но имя
 твоё знаю — Саша»: неправда и о голосе, и об имени. Вопрос «ты Саша?» в v2 не задаём (решение Шифу 26.10). Теперь
-реплика целиком «ты меня узнал?» закрывается фразой кода по ``name_state`` снимка: узнан с именем / знакомый, не уверен
-чей (без имени кандидата) / профиль без имени / не узнаю. LLM не зовётся.
+реплика, в которой нет ничего, кроме вопроса узнавания (глагол и дополнение где угодно, пояснения «я тот же», «мы
+недавно уже говорили» - тоже часть вопроса), закрывается фразой кода по ``name_state`` снимка: узнан с именем /
+знакомый, не уверен чей (без имени кандидата) / профиль без имени / не узнаю. LLM не зовётся. Ревью PR #4121: на
+настоящих фразах акта 2b прежний матч «реплика целиком = глагол + дополнение» не срабатывал ни разу - они здесь
+(``ACT2B``), как положительные и как честно отрицательные.
 """
 
 import asyncio
@@ -17,6 +20,7 @@ from rob_box_dialog.command import Command
 from rob_box_dialog.session import Session, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, recognition_reply, recognition_state, speaker_ref
 from rob_box_dialog.turn import Answer, TurnEngine
+from rob_box_dialog.words import strip_wake_word
 
 #: Акт 2b, 21:30:14: «Саша» 0.944, конкурент «Борис» - имя скрыто спором.
 CONTESTED = {"is_known": True, "speaker_id": "spk-sasha", "name": None, "confidence": 0.944, "epithet": "Спутник",
@@ -27,8 +31,28 @@ CONFIRMED = {"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "c
 NAMELESS = {"is_known": True, "speaker_id": "spk-guest-3", "name": None, "epithet": "Гость"}
 UNKNOWN = {"is_known": False}
 
-YES_SASHA = "Да, Саша, узнал."
+YES_SASHA = "Узнал — ты Саша."
 UNSURE = "Голос знакомый, но не уверен, чей."
+NOT_KNOWN = "По голосу пока не узнаю."
+NAMELESS_SAID = "Голос твой помню, а имени не знаю."
+
+#: Реплики рукописного акта 2b (``.github/e2e/scenarios/night/night_marathon_act2b_identity_question_v1.json``, текст
+#: шага как есть; ход получает его без вейка - ``strip_wake_word``, как ``address.decide``) и отвечает ли на них код.
+#: Сверка с файлом сценария - ``tests/unit/e2e_scripts/test_issue_3993_act2b_recognized_by_code.py``.
+ACT2B = (
+    ("n701", "Робот, здравствуй, я Саша, чиню технику, сегодня перебираю колёса.", False),
+    ("n702", "Робот, ты меня узнал по голосу, я тот же, кто заходил недавно?", True),
+    ("n703", "Робот, а что ты про меня помнишь с прошлого раза, какой чай я обычно пью?", False),  # память - модели
+    ("n704", "Робот, ты ещё здесь, помнишь меня? Мы недавно уже говорили.", True),
+    ("n705", "Робот, привет, я Борис, заглянул проверить проводку, в щитке у окна опять что-то потрескивает.", False),
+    ("n706", "Робот, а меня ты по голосу узнаёшь? Скажи, кто я такой и откуда ты меня знаешь.", True),
+    ("n707", "Робот, а что ты про меня помнишь, за какую футбольную команду я болею?", False),  # память - модели
+    # выбор из имён («я или Борис?») - не вопрос «узнал ли»: ход модели со снимком (name_state), кодом не покрыт
+    ("n708", "Робот, а сейчас с тобой кто говорит, я или Борис? Ответь по голосу.", False),
+    ("n709", "Робот, я заскочила на секунду, представляться пока не буду.", False),
+    ("n710", "Робот, а ты меня по голосу узнаёшь? Кто я такая, как думаешь?", True),
+)
+ACT2B_BY_CODE = [(label, text) for label, text, by_code in ACT2B if by_code]
 
 
 def _ref(result):
@@ -45,11 +69,28 @@ def test_whole_recognition_question(text):
     assert asks_recognized(text)
 
 
+@pytest.mark.parametrize("text", ["помнишь меня?", "а ты меня помнишь", "знаешь, кто я?", "вы меня узнаёте?",
+                                  "ты меня узнал или нет?", "ты меня узнал, да?", "ты меня запомнил?",
+                                  "ты меня узнал по голосу я тот же кто заходил недавно"])  # последняя - STT без знаков
+def test_recognition_question_vocabulary(text):
+    """Словарь ревью PR #4121: «помнишь меня?», «знаешь, кто я?», «вы меня узнаёте?», «…или нет?», «…, да?»."""
+    assert asks_recognized(text)
+
+
 @pytest.mark.parametrize("text", ["ты меня узнал? включи музыку", "узнай погоду", "что ты обо мне помнишь?",
                                   "ты узнал, что Саша любит чай?", "как меня зовут?", "узнал", "ты меня слышишь?",
-                                  "узнал узнал меня", ""])
+                                  "узнал узнал меня", "", "откуда ты меня знаешь?", "что ты про меня помнишь?",
+                                  "ты знаешь, кто такой Гагарин?", "помнишь, что я люблю зелёный чай?",
+                                  "мы уже знакомы?", "ты меня узнал? кстати, какая погода"])
 def test_not_the_recognition_question(text):
     assert not asks_recognized(text)
+
+
+@pytest.mark.parametrize("label, text, by_code", ACT2B, ids=[a[0] for a in ACT2B])
+def test_act2b_lines_recognition_by_code(label, text, by_code):
+    """Ревью PR #4121 (блокер): реплики акта 2b, ради которых заведена карточка, - вопрос узнавания (n702, n704,
+    n706, n710) отвечает код; память (n703, n707), самопредставление и выбор из имён (n708) - модель."""
+    assert asks_recognized(strip_wake_word(text)) is by_code
 
 
 # -- ответ по собеседнику снимка -------------------------------------------------------------------------------
@@ -59,8 +100,8 @@ def test_reply_by_name_state():
     assert recognition_reply("ты меня узнал?", _ref(CONFIRMED)) == ("confirmed", YES_SASHA)
     assert recognition_reply("ты меня узнал?", _ref(CONTESTED)) == ("contested", UNSURE)
     assert recognition_reply("ты меня узнал?", _ref(TENTATIVE)) == ("tentative", UNSURE)
-    assert recognition_reply("ты меня узнал?", _ref(NAMELESS)) == ("nameless", "Голос твой помню, а имени не знаю.")
-    assert recognition_reply("ты меня узнал?", _ref(UNKNOWN)) == ("unknown", "Нет, по голосу пока не узнаю.")
+    assert recognition_reply("ты меня узнал?", _ref(NAMELESS)) == ("nameless", NAMELESS_SAID)
+    assert recognition_reply("ты меня узнал?", _ref(UNKNOWN)) == ("unknown", NOT_KNOWN)
     assert recognition_reply("ты меня узнал?", None)[0] == "unknown"
     assert recognition_reply("включи музыку", _ref(CONFIRMED)) is None
 
@@ -71,6 +112,13 @@ def test_unconfirmed_voice_gets_no_candidate_name_and_no_identity_question(resul
     _state, said = recognition_reply("ты меня узнал?", _ref(result))
     assert "Саша" not in said and "?" not in said
     assert "не запомнил" not in said, "голос узнан - «не запомнил» неправда (акт 2b 23.10)"
+
+
+@pytest.mark.parametrize("result", [CONFIRMED, CONTESTED, TENTATIVE, NAMELESS, UNKNOWN])
+def test_reply_to_a_negative_question_is_not_a_bare_yes_or_no(result):
+    """Ревью PR #4121: на «ты меня НЕ узнал?» «Да, …»/«Нет, …» двусмысленны - фраза кода без них в начале."""
+    _state, said = recognition_reply("ты меня не узнал?", _ref(result))
+    assert not said.lower().startswith(("да", "нет")), said
 
 
 def test_confirmed_without_name_is_not_a_hollow_yes():
@@ -136,6 +184,26 @@ def test_recognition_question_is_answered_by_code_without_llm(result, said):
     assert ports.asked == [], "модель не зовётся"
     assert ports.said == [said]
     assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 0)
+
+
+@pytest.mark.parametrize("label, text", ACT2B_BY_CODE, ids=[a[0] for a in ACT2B_BY_CODE])
+@pytest.mark.parametrize("result, said", [(CONTESTED, UNSURE), (CONFIRMED, YES_SASHA), (NAMELESS, NAMELESS_SAID)],
+                         ids=["contested", "confirmed", "nameless"])
+def test_act2b_question_is_answered_by_code_without_llm(label, text, result, said):
+    """Акт 2b через ход: реплика без вейка (как у ``address.decide``) - 0 вызовов LLM, фраза кода по снимку. Спорный
+    голос 23.10 (0.944, имя скрыто) - «знакомый, не уверен», а не «голос не запомнил, но имя знаю — Саша»."""
+    engine, ports, _ = _engine(result)
+    agg = asyncio.run(engine.run(Addressed(strip_wake_word(text), VOICE)))
+    assert ports.asked == [], "модель не зовётся"
+    assert ports.said == [said]
+    assert (agg.stage, agg.status, agg.llm_calls) == ("done", "finished", 0)
+
+
+def test_act2b_memory_question_still_goes_to_the_model():
+    """n703 «что ты про меня помнишь…» - вопрос о фактах, а не «узнал ли»: ход модели (память - её тулом)."""
+    engine, ports, _ = _engine(CONFIRMED, [Answer(Command(speech="Ты пьёшь зелёный чай."), "deepseek")])
+    asyncio.run(engine.run(Addressed(strip_wake_word(ACT2B[2][1]), VOICE)))
+    assert len(ports.asked) == 1 and ports.said == ["Ты пьёшь зелёный чай."]
 
 
 def test_question_inside_another_request_goes_to_the_model():

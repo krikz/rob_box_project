@@ -215,22 +215,38 @@ def speaker_block(ref: Optional[SpeakerRef]) -> Dict[str, Any]:
 
 
 def recognition_state(ref: Optional[SpeakerRef]) -> str:
-    """Что код знает о собеседнике для ответа на «ты меня узнал?» (ключ ``knowledge.RECOGNIZED_REPLIES``): состояние
-    имени снимка; свой профиль без имени (#3858: ``person_ref`` есть, имени нет) - ``nameless``."""
-    if ref is None or ref.name_state not in kn.RECOGNIZED_REPLIES:
-        return "unknown"
-    if ref.name_state in ("unknown", "confirmed") and not ref.name:
-        return "nameless" if ref.person_ref else "unknown"
-    return ref.name_state
+    """Что код знает о собеседнике для ответа на «ты меня узнал?» (ключ ``knowledge.RECOGNIZED_REPLIES``): спор и
+    гипотеза голоса - состояние имени снимка; имя подтверждено - ``RECOGNIZED_CONFIRMED``; свой профиль без имени
+    (#3858: ``person_ref`` есть, имени нет; и битый «подтверждён» без имени) - ``RECOGNIZED_NAMELESS``; иначе - не
+    узнан."""
+    if ref is not None and ref.name_state in kn.VOICE_UNCONFIRMED_STATES:
+        return ref.name_state
+    if ref is not None and ref.name_state == kn.RECOGNIZED_CONFIRMED and ref.name:
+        return kn.RECOGNIZED_CONFIRMED
+    return kn.RECOGNIZED_NAMELESS if ref is not None and ref.person_ref else kn.RECOGNIZED_UNKNOWN
+
+
+def _without(words: Sequence[str], spans: Iterable[str]) -> List[str]:
+    """``words`` без вхождений фраз ``spans`` (каждая - слова через пробел, целиком и подряд; длинные первыми)."""
+    cut = sorted((tuple(s.split()) for s in spans), key=len, reverse=True)
+    out: List[str] = []
+    i = 0
+    while i < len(words):
+        hit = next((s for s in cut if tuple(words[i:i + len(s)]) == s), ())
+        out.extend(() if hit else (words[i],))
+        i += len(hit) or 1
+    return out
 
 
 def asks_recognized(text: str) -> bool:
-    """Реплика целиком - вопрос «ты меня узнал?» (таблица ``knowledge.RECOGNIZED_ASK``): её слова без связок - один
-    глагол узнавания и одно дополнение («меня», «мой голос», «кто я»). Вопрос внутри другой просьбы - нет."""
+    """В реплике нет ничего, кроме вопроса «ты меня узнал?» (таблица ``knowledge.RECOGNIZED_ASK``): без пояснений
+    (``along``: «я тот же», «мы недавно уже говорили») и связок - одно дополнение или больше («меня», «мой голос», «кто
+    я такой») и ровно один глагол узнавания, где угодно в реплике. Любое другое слово (другая просьба, «про меня») -
+    нет: ход идёт модели."""
     ask = kn.RECOGNIZED_ASK
-    said = [t for t in name_tokens(text) if t not in ask["filler"]]
-    verbs = [t for t in said if t in ask["verbs"]]
-    return len(verbs) == 1 and " ".join(t for t in said if t not in ask["verbs"]) in ask["objects"]
+    said = [t for t in _without(name_tokens(text), ask["along"]) if t not in ask["filler"]]
+    verbs = _without(said, ask["objects"])
+    return len(verbs) == 1 and verbs[0] in ask["verbs"] and len(said) > 1
 
 
 def recognition_reply(text: str, ref: Optional[SpeakerRef]) -> Optional[Tuple[str, str]]:
