@@ -1026,10 +1026,11 @@ class TestWakeWordInterruptRequest:
         assert utt.utterance_id == req.utterance_id
 
     def test_short_phrase_during_tts_ignored(self, stt_node):
-        """Hardware AEC: короткая фраза <0.8s во время TTS → игнор (эхо).
+        """Hardware AEC: короткая фраза <0.8s во время TTS, не стоп с вейком → игнор (эхо).
 
         Не путать с barge-in: короткие всплески собственного голоса
         (эхо) режутся, длинная команда пользователя (≥0.8s) проходит.
+        Режутся ПОСЛЕ распознавания (ревью #4122): «Робот, стоп» бывает короче порога.
         """
         stt_node._echo.on_speech(True)  # TTS активен
         stt_node._recognize_with_fallback = MagicMock(return_value=("робот", []))
@@ -1042,8 +1043,23 @@ class TestWakeWordInterruptRequest:
         msg.data = [0] * (16000 * 2 // 2)  # 0.5с PCM (<0.8s)
         stt_node.speech_audio_callback(msg)
 
-        stt_node._recognize_with_fallback.assert_not_called()
+        stt_node._recognize_with_fallback.assert_called_once()  # стоп ли это — видно только по тексту
         assert stt_node.publish_result.call_count == 0
+
+    def test_short_stop_with_wake_word_during_tts_passes(self, stt_node):
+        """Ревью #4122: короткий «Робот, стоп» при звучащей речи доходит до диалога, а не выбрасывается до STT."""
+        stt_node._echo.on_speech(True)  # TTS активен
+        stt_node._recognize_with_fallback = MagicMock(return_value=("робот стоп", []))
+        stt_node.utterance_pub = MagicMock()
+        stt_node.state_pub = MagicMock()
+        stt_node._speech_client_pubs = {"request": MagicMock()}
+        stt_node.publish_result = MagicMock()
+
+        msg = MagicMock()
+        msg.data = [0] * (16000 * 2 // 2)  # 0.5с PCM (<0.8s)
+        stt_node.speech_audio_callback(msg)
+
+        assert stt_node.publish_result.call_args.args[0] == "робот стоп"
 
 
 # ---------------------------------------------------------------------------

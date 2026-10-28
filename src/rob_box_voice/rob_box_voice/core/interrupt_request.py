@@ -43,10 +43,18 @@ class InterruptOffer:
         self._wake_words, self._doa_deg, self._clock = wake_words, doa_deg, clock
         self._last = ("", "")
 
-    def offer(self, text: str, utterance_id: str) -> bool:
-        """Опубликовать запрос, если в сегменте есть вейк и такой текст этой фразы ещё не отправлялся."""
+    def offer(self, text: str, utterance_id: str, admission: Any = None) -> bool:
+        """Опубликовать запрос, если в сегменте есть вейк и такой текст этой фразы ещё не отправлялся.
+
+        ``admission`` - решение эхо-окна по фразе (``echo_window.Admission``): фраза из окна после речи робота или
+        короткий обрывок при речи доходит до диалога, только когда её текст стал ясным стопом с вейком
+        (``Admission.keeps``), - partial с вейком из хвоста собственной речи речь не рвёт (ревью #4122). ``None`` - окно
+        фразу пускает как есть (шлем, окна нет)."""
         text = (text or "").strip()
-        if not text or (utterance_id, text) == self._last or not has_wake_word(text, self._wake_words()):
+        words = self._wake_words()
+        if not text or (utterance_id, text) == self._last or not has_wake_word(text, words):
+            return False
+        if admission is not None and not admission.keeps(text, words):
             return False
         self._last = (utterance_id, text)
         msg = self._make_msg()
